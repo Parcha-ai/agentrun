@@ -76,6 +76,12 @@ test("save, preview and oauthStart refuse a bad body before any network probe", 
 
 test("the registry is never made without a seal key (the server never starts without one): it refuses, and there is no keyless mode", async (t) => {
   const { store } = await storeOn(t);
-  // Its words, and a malformed key's, are every reader's (seal-key.test.mjs).
-  for (const given of [{}, { AGENTRUN_SEAL_KEY: "  " }, { AGENTRUN_SEAL_KEY: "not-a-key-".repeat(6) }]) assert.throws(() => reg(store, given), /AGENTRUN_SEAL_KEY/);
+  // Its words are every reader's (seal-key.test.mjs); here, that a malformed key is said by its length and never shown.
+  for (const given of [{}, { AGENTRUN_SEAL_KEY: "  " }]) assert.throws(() => reg(store, given), /AGENTRUN_SEAL_KEY\), and none was handed/);
+  const malformed = "not-a-key-".repeat(6);
+  assert.throws(() => reg(store, { AGENTRUN_SEAL_KEY: malformed }), (error) => {
+    assert.match(String(error.message), /AGENTRUN_SEAL_KEY\), and the one handed .*it has 60\)/);
+    for (let at = 0; at + 8 <= malformed.length; at++) assert.ok(!String(error.message).includes(malformed.slice(at, at + 8)), "no part of the key is in the refusal");
+    return true;
+  });
 });

@@ -422,7 +422,7 @@ test("money rule: the by-hand mean is the run view's (a compile turn is its revi
   await end("run-02", 1.3, { path: "agent" }, kept({ job: 1, look: 0.3, digest: C }));
   await end("run-03", 1, { path: "agent" });
   // COST_WINDOW (10) runs C served at $1.05 each: over the $1.00 by hand, under the $1.10 a compile-laden mean says.
-  for (let i = 1; i <= 10; i++) await end(`served-${String(i).padStart(2, "0")}`, 1.05, { path: "workflow", workflow: "answer", workflow_digest: C });
+  for (let i = 1; i <= 10; i++) await end(`served-${String(i).padStart(2, "0")}`, 1.05, { path: "workflow", workflow: "answer", workflow_digest: C, workflow_calls: [{ workflow: "answer", digest: C, caller: "platform", outcome: "answered", usd: 0.5 }] });
   const hand = await Promise.all(["run-01", "run-02", "run-03"].map((id) => runAllInOverStore(store, id)));
   assert.deepEqual(hand.map((one) => one.all_in_usd), [1, 1, 1], "the run view: run-02's compile turn is C's");
   const cost = await agentCostOverStore(store, "agent-1");

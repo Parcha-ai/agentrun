@@ -159,16 +159,17 @@ export function replayLaid(launch: RunLaunch, laid: readonly LearnedWorkflow[]):
 }
 
 /** The learned workflows a run's learned_workflow tool runs, once its first choice is made: what serves, never a
- *  revision its promotion has not promoted. The one its first choice served or the money rule stopped (laidFor: its
- *  champion in place of the laid revision) as chosen; any other the records name, its champion (championOf: the laid
- *  text when that is the champion, else its text at its record's commit), and none while nothing of it serves (none
- *  promoted yet, or the champion held): a revision replaying, held or never decided is never handed to the agent to run
- *  in its place. One the records never named is an unchecked draft and is not offered. A replay run's as
- *  laid (replayLaid). The records unread: only the chosen one, as the gate leaves a run to its agent. */
+ *  revision its promotion has not promoted. The one its first choice served (laidFor: its champion in place of the laid
+ *  revision) as chosen; any other the records name, its champion (championOf: the laid text when that is the champion,
+ *  else its text at its record's commit), and none while nothing of it serves (none promoted yet, or the champion
+ *  held): a revision replaying, held or never decided is never handed to the agent to run in its place. One the records
+ *  never named is an unchecked draft and is not offered. A replay run's as laid (replayLaid). The records unread: only
+ *  the one served first, as the gate leaves a run to its agent. The money rule over what this hands the tool, the one
+ *  its first choice stopped included, is runner/learned-first.ts's (workflow-first.ts toolStopsOf). */
 export async function toolFlowsFor(deps: Pick<PromotionDeps, "store" | "agentId" | "champion" | "log">, launch: RunLaunch, laid: readonly LearnedWorkflow[], choice: FirstChoice): Promise<LearnedWorkflow[]> {
   const chosen = laidFor(laid, choice);
   if (launch.replay || !chosen.length) return chosen;
-  const name = choice.serve?.name ?? choice.revise?.workflow;
+  const name = choice.serve?.name;
   let records: PromotionRecord[];
   try {
     records = await promotionsOf(deps.store.learning, deps.agentId);

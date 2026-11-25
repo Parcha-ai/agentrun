@@ -12,7 +12,7 @@ import { watchCommandsAt, wakeCommands } from "../command-wake.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { JOURNAL_FIRST_ID, RunStorage } from "../journal/storage.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
-import { COMMANDS_ONE_ANSWER, COMPUTER_INTERVALS, COMPUTER_INTERVALS_ADDED, COMPUTER_INTERVALS_RUN, DDL, diskUpgrade, HAND_BACKS, HAND_BACKS_AT, HAND_BACKS_KEPT_MS, HAND_BACKS_RUN, IMPORTED_TEMPLATES, LEARNING_LEDGER, LEARNING_LEDGER_AGENT, LEARNING_LEDGER_BY_HAND, LEARNING_ROWS, LEARNING_SPEND, LEARNING_SPEND_AGENT, LEARNING_SPEND_OF_RUN, ledgerUpgrade, learningRowsUpgrade, listingUpgrade, MINTED_TOKENS, purgeUpgrade, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUN_ATTEMPTS, RUNNERS, RUNNERS_ADDED, RUN_LAUNCH_CENSUS, RUN_LAUNCH_CENSUS_ERASED, RUN_LAUNCH_CENSUS_ERASED_MADE, RUN_LAUNCH_CENSUS_SETTLE, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, STORE_META_LEDGER_BACKFILLED, TRIGGERS_TEMPLATE_ID } from "../schema.js";
+import { COMMANDS_ONE_ANSWER, COMPUTER_INTERVALS, COMPUTER_INTERVALS_ADDED, COMPUTER_INTERVALS_RUN, DDL, diskUpgrade, HAND_BACKS, HAND_BACKS_AT, HAND_BACKS_KEPT_MS, HAND_BACKS_RUN, IMPORTED_TEMPLATES, LEARNING_LEDGER, LEARNING_LEDGER_ADDED, LEARNING_LEDGER_AGENT, LEARNING_LEDGER_BY_HAND, LEARNING_ROWS, LEARNING_SPEND, LEARNING_SPEND_AGENT, LEARNING_SPEND_OF_RUN, ledgerUpgrade, learningRowsUpgrade, listingUpgrade, MINTED_TOKENS, purgeUpgrade, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUN_ATTEMPTS, RUNNERS, RUNNERS_ADDED, RUN_LAUNCH_CENSUS, RUN_LAUNCH_CENSUS_ERASED, RUN_LAUNCH_CENSUS_ERASED_MADE, RUN_LAUNCH_CENSUS_SETTLE, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, STORE_META_LEDGER_BACKFILLED, TRIGGERS_TEMPLATE_ID } from "../schema.js";
 import {
   ActiveRuns, AgentArchived, AgentDeleting, AgentPurged, CommandTaken, ExternalBodyConflict, Fenced, FiringMoved, RunFinal, RunPurged, RunnerBelowFloor, RunsMadeFromLeft, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreAwaitsServer, StoreBusy, StoreConstraint, StoreFromEarlierVersion, TriggerFull, TriggersLeft, UPLOAD_PREFIX, type AgentRow, type Agents,
   type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
@@ -49,6 +49,7 @@ import { launchDiskOf, readableJson,readLaunch, readLearningStarts, readSeededBe
 import { canonical } from "../agent-body.js";
 import { mcpRecordKeys } from "../mcp-record-keys.js";
 import type { LedgerRow, SpendRow } from "../../learn/ledger.js";
+import { workflowCallsIn } from "../../learning-cost.js";
 import { readProjectCheckpoints } from "./project-checkpoints.js";
 import { aadOf, sealedAt } from "../seal.js";
 
@@ -366,7 +367,7 @@ export const SQLITE_RUNNER_NEEDS: readonly { readonly table: string; readonly co
   { table: "hand_backs", columns: ["run_id"], why: "keep each runner's version and slots, and each hand-back (runners.version, runners.slots, hand_backs)" },
   { table: "run_attempts", columns: ["run_id"], why: "keep each claim's turn and attempt (run_attempts)" },
   // A run's end writes its ledger row and spend rows (run-patch.ts applyRunPatch) in its own transaction.
-  { table: "learning_ledger", columns: ["run_id"], why: "write each run's learning ledger row and spend at its end (learning_ledger, learning_spend)" },
+  { table: "learning_ledger", columns: ["run_id", ...Object.keys(LEARNING_LEDGER_ADDED)], why: "write each run's learning ledger row and spend at its end (learning_ledger, learning_spend)" },
   { table: "learning_spend", columns: ["run_id"], why: "write each run's learning ledger row and spend at its end (learning_ledger, learning_spend)" },
   { table: "learning_saves", columns: ["merge_key"], why: "keep each agent's learning as rows (learning_saves, learning_items, learning_records)" },
 ];
@@ -561,10 +562,12 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
       throw new StoreAwaitsServer("keep each claim's turn and attempt (run_attempts)");
     }
     // A run's end writes its ledger row and spend rows (schema.ts LEARNING_LEDGER, LEARNING_SPEND) in its own transaction:
-    // a runner waits for the server that adds the tables (STORE_DDL at its start). The `epoch` version 15 kept on the
-    // ledger, which this build's end does not write, is the version's: a runner refuses 15 above.
+    // a runner waits for the server that adds the tables (STORE_DDL at its start) and their columns (LEARNING_LEDGER_ADDED).
+    // The `epoch` version 15 kept on the ledger, which this build's end does not write, is the version's: a runner
+    // refuses 15 above.
     const metaColumns = new Set((await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('store_meta')")).map((column) => column.name));
-    if (role === "runner" && (await connection.all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name IN ('learning_ledger', 'learning_spend')")).length < 2) {
+    const ledgerColumns = new Set((await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('learning_ledger')")).map((column) => column.name));
+    if (role === "runner" && ((await connection.all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name IN ('learning_ledger', 'learning_spend')")).length < 2 || Object.keys(LEARNING_LEDGER_ADDED).some((column) => !ledgerColumns.has(column)))) {
       throw new StoreAwaitsServer("write each run's learning ledger row and spend at its end (learning_ledger, learning_spend)");
     }
     // A run's merge and purge write the agent's learning rows (schema.ts LEARNING_ROWS) in their own transactions: a runner
@@ -632,6 +635,12 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
       const runnersNow = new Set((await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('runners')")).map((column) => column.name));
       const runnersMissing = Object.entries(RUNNERS_ADDED).filter(([column]) => !runnersNow.has(column)).map(([, sql]) => ({ sql }));
       if (runnersMissing.length > 0) await connection.write(runnersMissing, { full: true });
+      // A learning_ledger an earlier build of this version made keeps no calls (schema.ts LEARNING_LEDGER_ADDED): added
+      // where missing, its rows' calls none until their run's next end. Before the open's backfill (backfillLedger below),
+      // whose rows recordLedger writes with their calls.
+      const ledgerNow = new Set((await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('learning_ledger')")).map((column) => column.name));
+      const ledgerMissing = Object.entries(LEARNING_LEDGER_ADDED).filter(([column]) => !ledgerNow.has(column)).map(([, sql]) => ({ sql }));
+      if (ledgerMissing.length > 0) await connection.write(ledgerMissing, { full: true });
       await backfillNativeCommandOwners(connection);
       // Here `found` is SCHEMA_VERSION or a version in the window (any other was refused above): each step runs for the
       // versions before the one that first kept what it adds.
@@ -2148,17 +2157,17 @@ class SqliteStore implements Store {
       ledger: async (agentId, runIds) => {
         // One statement over both tables (a UNION ALL, each row marked by its table): one snapshot on either database, so
         // an end committed between two reads never mixes its row with another end's spend.
-        type Part = { part: "row" | "spend"; run_id: string; agent_id: string; started_at: number | string | null; path: string | null; workflow: string | null; digest: string | null; not_served: string | null; job_usd: number | null; look_back_usd: number | null; cost: string | null; kind: string | null; round: number | string | null; of_run: string | null; usd: number | null };
+        type Part = { part: "row" | "spend"; run_id: string; agent_id: string; started_at: number | string | null; path: string | null; workflow: string | null; digest: string | null; not_served: string | null; job_usd: number | null; look_back_usd: number | null; cost: string | null; workflow_calls: string | null; kind: string | null; round: number | string | null; of_run: string | null; usd: number | null };
         if (runIds !== undefined && runIds.length === 0) return { rows: [], spend: [] };
         const list = runIds === undefined ? "" : runIds.map(() => "?").join(", ");
         const rowsOf = runIds === undefined ? { sql: "", params: [] } : { sql: ` AND run_id IN (${list})`, params: [...runIds] };
         const spendOf = runIds === undefined ? { sql: "", params: [] } : { sql: ` AND (run_id IN (${list}) OR of_run IN (${list}))`, params: [...runIds, ...runIds] };
         const text = "CAST(NULL AS TEXT)", whole = "CAST(NULL AS BIGINT)", usd = "CAST(NULL AS DOUBLE PRECISION)";
         const parts = await db.all<Part>(
-          `SELECT 'row' AS part, run_id, agent_id, started_at, path, workflow, digest, not_served, job_usd, look_back_usd, cost, ${text} AS kind, ${whole} AS round, ${text} AS of_run, ${usd} AS usd
+          `SELECT 'row' AS part, run_id, agent_id, started_at, path, workflow, digest, not_served, job_usd, look_back_usd, cost, workflow_calls, ${text} AS kind, ${whole} AS round, ${text} AS of_run, ${usd} AS usd
              FROM learning_ledger WHERE agent_id = ?${rowsOf.sql}
            UNION ALL
-           SELECT 'spend' AS part, run_id, agent_id, ${whole}, ${text}, workflow, digest, ${text}, ${usd}, ${usd}, ${text}, kind, round, of_run, usd
+           SELECT 'spend' AS part, run_id, agent_id, ${whole}, ${text}, workflow, digest, ${text}, ${usd}, ${usd}, ${text}, ${text}, kind, round, of_run, usd
              FROM learning_spend WHERE agent_id = ?${spendOf.sql}`,
           agentId, ...rowsOf.params, agentId, ...spendOf.params,
         );
@@ -2166,6 +2175,8 @@ class SqliteStore implements Store {
         const rows = parts.filter((one) => one.part === "row").map((row): LedgerRow => ({
           runId: row.run_id, agentId: row.agent_id, startedAt: Number(row.started_at), path: row.path as LedgerRow["path"], workflow: row.workflow, digest: row.digest,
           notServed: row.not_served as LedgerRow["notServed"], jobUsd: usdOf(row.job_usd), lookBackUsd: usdOf(row.look_back_usd), cost: row.cost as LedgerRow["cost"],
+          // Its calls as its end wrote them (record), each checked again as read.
+          workflowCalls: workflowCallsIn({ workflow_calls: JSON.parse(row.workflow_calls ?? "[]") as unknown }),
         }));
         const spend = parts.filter((one) => one.part === "spend").map((row): SpendRow => ({
           runId: row.run_id, round: Number(row.round), agentId: row.agent_id, kind: row.kind as SpendRow["kind"], ofRun: row.of_run, workflow: row.workflow, digest: row.digest, usd: usdOf(row.usd),

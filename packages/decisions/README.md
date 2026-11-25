@@ -55,6 +55,29 @@ The key is `OPENROUTER_API_KEY`, read by name when a request is made, or `apiKey
 - **Replay.** As Parallel: `replay: "never"`. A request is sent again only when it never reached OpenRouter, or on a 429 with `Retry-After` (up to `maxAttempts`, default 3). A 408, a 5xx, a connection lost after sending or a deadline in flight is `outcome_unknown` at an unknown cost.
 - **Images (experimental).** OpenRouter takes JSON only, so a request's images go in the body as `assets` (`{ type: "image", format, data_base64 }`) with the `TypeSafe-Danger-Zone-Images` header, and only to a model the public catalog (`/v1/models?output_modalities=decisions`) lists with image input (`takesImages` overrides the catalog). Jev reads an image token anywhere in the state or a question, and refuses an image over 1568 px on a side, which the provider refuses before sending. Every other model reads an image only as a top-level item of an array state: an object state whose tokens are whole top-level values goes as `[{ the other fields, image_fields }, "<token>", ...]`, where `image_fields` names, in order, the field each image stood in (`{ invoice: "<i1>", receipt: "<i2>" }` goes as `[{ image_fields: ["invoice", "receipt"] }, "<i1>", "<i2>"]`), and a token anywhere else is refused before sending. A request waits for that image check only within its own deadline and cancel. The catalog read behind the check is shared by every request and is not cut with one: it goes on under its own 10 s timeout, and its answer serves the requests after it (a read that fails is tried again by the next one). OpenRouter documents image assets as alpha, so the provider lists `image` under `experimental.inputs`.
 
+## A prompted Claude model
+
+`anthropicProvider()` asks a Claude model through the Messages API (`POST {base}/v1/messages`), Claude Haiku 5.5 by
+default: the System One request (`{ state, questions }`) as the user message, under a short system prompt
+(`ANTHROPIC_SYSTEM`) that states the task and nothing else, with the answers held to a JSON schema built from the
+questions. It is the prompted-LLM control for a decision model: the same request, answered by a general model.
+
+The key is `ANTHROPIC_API_KEY` and the root `ANTHROPIC_BASE_URL` (default `https://api.anthropic.com`), both read when a
+request is made, or `apiKey` and `baseURL`.
+
+- **Types.** `noul` and `choice`. A choice's probabilities are read per option and normalized; its `choice` is the
+  likeliest. Probabilities are the model's own (`probability: "self_reported"`).
+- **Sampling.** One table decides, by model, what is sent (`temperatureFor`, `takesEffort`): temperature 0 to a model
+  that takes one, none to Opus 4.7 and later, the Claude 5 family, Fable or Mythos, which refuse it; low effort to a
+  model that takes effort (not Haiku 4.5 or Sonnet 4.5). No top_p or top_k. The outcome carries `temperature_sent` and
+  `temperature_applied`: true direct to Anthropic, "unknown" through any other root (a proxy may drop the field),
+  false when none was sent.
+- **Refusal.** `stop_reason: "refusal"` refuses every question, booked at its cost.
+- **Cost.** Usage at Anthropic's published price (`ANTHROPIC_PUBLISHED_PRICING`), as an estimate; long-prompt rates past
+  100,000 input tokens. A model it lists no price for costs null (unknown) unless `pricing` is given.
+- **Replay and errors.** As OpenRouter's: `replay: "never"`, the same error codes, and an answer that is cut at
+  `max_tokens`, is not JSON, or does not match the questions is `invalid_response`, booked at its cost.
+
 `@parcha/agentrun-decisions/testing/faux-system-one` is a fake System One endpoint for a host's tests: its answers are made up but stable (drawn from a hash of the model, the question and the state), it lists a small Decisions catalog, and it reads images as OpenRouter does. No request leaves the process.
 
 ## Tests

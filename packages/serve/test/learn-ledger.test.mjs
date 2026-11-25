@@ -28,11 +28,12 @@ const AT = "2026-11-24T00:00:00.000Z";
 const endOf = ({ id = "r", startedAt = 0, costUsd = null, costAtMostUsd = null, metrics = { path: "agent" }, rounds = [], auditOf }) => ({ id, agentId: "a", startedAt, costUsd, costAtMostUsd, metrics, rounds, ...(auditOf === undefined ? {} : { auditOf }) });
 /** A kept round: its job's cost as it answered, its compile turn's (look_back_usd), and the draft it kept. */
 const round = (job, look, extra = {}) => ({ round: 1, proposal: { state: "dropped", reason: "empty", detail: "d", answered_at: AT, job_cost_usd: job, look_back_usd: look, ...extra } });
-const row = (over) => ({ runId: "r", agentId: "a", startedAt: 0, path: "agent", workflow: null, digest: null, notServed: null, jobUsd: null, lookBackUsd: 0, cost: "known", ...over });
+const row = (over) => ({ runId: "r", agentId: "a", startedAt: 0, path: "agent", workflow: null, digest: null, notServed: null, jobUsd: null, lookBackUsd: 0, cost: "known", workflowCalls: [], ...over });
 const spendRow = (over) => ({ runId: "r", agentId: "a", round: 0, ofRun: null, workflow: null, digest: null, usd: null, ...over });
 
 test("record: one ledger row a run, and a spend row for each compile turn, check and audit, keyed to the revision it is for", () => {
   const served = { path: "workflow", workflow: "answer", workflow_digest: C };
+  const call = { workflow: "answer", digest: C, caller: "agent", outcome: "answered", usd: 0.1 };
   for (const [why, end, want] of [
     ["by hand, no rounds", endOf({ costUsd: 0.5 }), { row: row({ jobUsd: 0.5 }), spend: [] }],
     ["a compile that drafted C: its turn is C's", endOf({ costUsd: 1.3, rounds: [round(1, 0.3, { compiled: { workflow: "answer", digest: C } })] }), { row: row({ jobUsd: 1, lookBackUsd: 0.3 }), spend: [spendRow({ round: 1, kind: "compile", workflow: "answer", digest: C, usd: 0.3 })] }],
@@ -43,6 +44,7 @@ test("record: one ledger row a run, and a spend row for each compile turn, check
     ["a bound is at most, never a cost", endOf({ costAtMostUsd: 0.5 }), { row: row({ cost: "at_most" }), spend: [] }],
     ["an unknown cost", endOf({}), { row: row({ cost: "unknown" }), spend: [] }],
     ["a served run", endOf({ costUsd: 0.1, metrics: served }), { row: row({ path: "workflow", workflow: "answer", digest: C, jobUsd: 0.1 }), spend: [] }],
+    ["a run its agent's call served: the call on its row", endOf({ costUsd: 0.1, metrics: { path: "workflow", workflow: "answer", workflow_calls: [call] } }), { row: row({ path: "workflow", workflow: "answer", jobUsd: 0.1, workflowCalls: [call] }), spend: [] }],
     ["a check's replay: its cost is its revision's", endOf({ costUsd: 0.3, metrics: { ...served, path: "replay" } }), { row: row({ path: "replay", workflow: "answer", digest: C, jobUsd: 0.3 }), spend: [spendRow({ kind: "check", workflow: "answer", digest: C, usd: 0.3 })] }],
     ["an audit's shadow: its cost is the run it audits'", endOf({ costUsd: 0.05, metrics: { path: "audit", audit: { of: "s", workflow: "answer", digest: C } } }), { row: row({ path: "audit", workflow: "answer", digest: C, jobUsd: 0.05 }), spend: [spendRow({ kind: "audit", ofRun: "s", workflow: "answer", digest: C, usd: 0.05 })] }],
     ["an audit's shadow whose end named no audit (it failed first): its cost is the run its launch audits'", endOf({ id: "audit.s", costUsd: 0.05, metrics: {}, auditOf: "s" }), { row: row({ runId: "audit.s", path: "audit", jobUsd: 0.05 }), spend: [spendRow({ runId: "audit.s", kind: "audit", ofRun: "s", usd: 0.05 })] }],

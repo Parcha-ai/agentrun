@@ -16,7 +16,7 @@ import { settleAudits } from "./audit.js";
 import { held } from "./held.js";
 import type { AuxiliaryAdmitter } from "../source-sync/auxiliary.js";
 import { claimPromotion, promotionGate, replayClaimed, replayLaid, replayRecordedFor, toolFlowsFor } from "./promotion.js";
-import { type FirstChoice, workflowFirstOf } from "./workflow-first.js";
+import { type FirstChoice, type PastRuns, toolStopsOf, workflowFirstOf } from "./workflow-first.js";
 
 /** The claim, as the runner read it, for learnedFirst. */
 export interface LearnedFirstDeps {
@@ -53,12 +53,26 @@ export async function learnedFirst(deps: LearnedFirstDeps, laid: readonly Learne
   const laidFlows = replayLaid(launch, laid);
   if (launch.learning && !launch.replay && !launch.audit) await settleAudits({ store, agentId, revisionId, context, log, shown, ...own });
   const promotion = claimPromotion({ store, agentId, runId, revisionId, launch, context, log, shown, ...own });
-  const choice = learnsWorkflows(deps.kind, laidFlows) ? await workflowFirstOf(deps.kind, laidFlows, launch, log, () => pastRunsOverStore(store, agentId), promotionGate(promotion), deps.outputSchema) : {};
+  const learns = learnsWorkflows(deps.kind, laidFlows);
+  // The agent's past runs, read once for both sides of the money rule: the platform's first choice and the agent's tool.
+  let read: Promise<PastRuns> | undefined;
+  const past = () => (read ??= pastRunsOverStore(store, agentId));
+  let choice: FirstChoice = learns ? await workflowFirstOf(deps.kind, laidFlows, launch, log, past, promotionGate(promotion), deps.outputSchema) : { reason: "none_laid" };
   // A replay run runs only its revision, while it still replays: else its claim is refused (the run ends failed, no agent).
   await replayClaimed(store, agentId, runId, launch, choice);
   const recorded = await replayRecordedFor(store, launch, context);
-  // The tool runs what serves, never a revision not promoted (promotion.ts toolFlowsFor).
-  const workflows = await toolFlowsFor(promotion, launch, laidFlows, choice);
+  // The tool runs what serves, never a revision not promoted (promotion.ts toolFlowsFor), nor one the money rule stops,
+  // whoever made its calls (workflow-first.ts toolStopsOf): a learning run's, not a replay's (it runs its revision, read
+  // past or not). A shadow has no learning start (runner/audit.ts): it lays no workflow and reads no past.
+  let workflows = await toolFlowsFor(promotion, launch, laidFlows, choice);
+  if (learns && launch.learning && !launch.replay && workflows.length) {
+    const money = toolStopsOf(await past().catch((error: unknown) => ({ unread: error instanceof Error ? error.message : String(error) })), workflows);
+    for (const line of money.said) log(line);
+    workflows = money.flows;
+    // A stop asks for its revision on a run nothing else serves or stops first (the run's one WORKFLOW_FIRST entry).
+    const stop = money.stops[0];
+    if (stop && !choice.serve && !choice.revise) choice = { ...choice, reason: "cost_stop", revise: { ...stop, revision: launch.learning.seed, ...(deps.outputSchema !== undefined ? { outputSchema: deps.outputSchema } : {}) } };
+  }
   return { choice, workflows, ...(recorded ? { recorded: [...recorded] } : {}) };
 }
 

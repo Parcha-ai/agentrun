@@ -21,6 +21,7 @@ import { dirname, join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { encode, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, withoutSecrets } from "../secrets.js";
 import { genAiTracing, type GenAiTracing, tracePosts } from "../otel/tracer.js";
+import { agentOfRun } from "../otel/genai.js";
 import { putLiveViewer, dropLiveViewer } from "../browser-live.js";
 import { CALENDAR_EVENTS } from "../calendar/names.js";
 import { openCalendar } from "../calendar/address.js";
@@ -37,7 +38,7 @@ import { DECISION_PROVIDER_KEYS } from "../tool-plane.js";
 import { learningEndOfRun } from "./learning-end.js";
 import { cutDeep, type HeldRedact, type Redact, runnerSecrets } from "./redact.js";
 import { storeSecrets } from "./store-secrets.js";
-import { FAUX_ENV, FAUX_PROVIDER, GATEWAY_KEY_ENV } from "../model.js";
+import { FAUX_ENV, GATEWAY_KEY_ENV } from "../model.js";
 import { SAVED_GATEWAY_ENV, savedGatewayIn } from "../model-gateway.js";
 import { FAUX_VENDOR_API_ENV } from "../tools.js";
 import { withinCarried } from "../paid-calls.js";
@@ -52,7 +53,7 @@ import type { Workspace } from "../workspace/workspace.js";
 import { keptKeyOf } from "../workspace/computer-kept.js";
 import { waitEndedKey } from "../browser-wait-ended.js";
 import { browserHoldKey } from "../browser-hold.js";
-import { claimModelKey, claimSecrets, claimSpendOff, hostDecisionKeys, learnedDecisionKeys, openRunModelKey, savedModelKeys, serverKeyless, tierModelKeys, withoutModelKeys } from "./claim-secrets.js";
+import { claimModelKey, claimSecrets, claimSpendOff, hostDecisionKeys, learnedDecisionKeys, openRunModelKey, savedModelKeys, sendsNoModelKey, serverKeyless, tierModelKeys, withoutModelKeys } from "./claim-secrets.js";
 import { type GithubAppAccessAt, githubAppAccess } from "./github-app.js";
 import { githubPullOf, githubTargetOf } from "../github.js";
 import { isObject } from "../validate.js";
@@ -84,6 +85,7 @@ import { registerRunErrors } from "./run-errors.js";
 import { exposeSaveSlots } from "./save-slots.js";
 import { type RunBigWrites, runBigWrites } from "./big-writes.js";
 import { type SaveSlots, SERVER_SLOTS } from "../web-save.js";
+import { holdsEnv, noteHold } from "../web-holds.js";
 import { launchOnItsDisk, readLaunchBody, type RunLaunch } from "../run-launch.js";
 import { routedSubagentTiers, SUBAGENT_TOOL } from "./subagent.js";
 import type { AlsoRow, JournalReads, Store } from "../store/store.js";
@@ -450,8 +452,24 @@ const ownSettings = (bound: Bound): ReadonlySet<string> => new Set([
 /** Whether a run's process may read setting `key`. */
 export const settingReadable = (key: unknown, bound: Bound): boolean => typeof key === "string" && (SHARED_SETTINGS.has(key) || ownSettings(bound).has(key));
 const readableSetting: Check = (args, bound) => settingReadable(args[0], bound);
-/** Whether a run's process may remove setting `key`: only its own run's browser rows (ownWrittenSettings). */
+/** Whether a run's process may remove setting `key`: only its own run's browser rows (ownWrittenSettings), and only one no
+ *  later claim wrote (removeOwnRow, which reads the row). */
 const removableSetting: Check = (args, bound) => typeof args[0] === "string" && ownWrittenSettings(bound).has(args[0]);
+
+/** The remove of one of the claim's own browser rows (removableSetting): a row a later claim of the run wrote stays, as
+ *  a write takes only the claim's own epoch (writableSetting), so a claim still closing never clears the take or the
+ *  ended wait of the claim that holds the run now. The row goes only while it is the one read (Settings.removeIf), so a
+ *  later claim's write that lands between the read and the remove stays too. A key with no row is left as it is. */
+async function removeOwnRow(settings: Pick<Store["settings"], "get" | "removeIf">, key: string, bound: Bound, log: (line: string) => void): Promise<void> {
+  const row = await settings.get(key);
+  if (row === undefined) return;
+  const epoch = typeof row === "object" && row !== null ? (row as { epoch?: unknown }).epoch : undefined;
+  if (typeof epoch === "number" && epoch > bound.claim.epoch) {
+    log(`run ${bound.claim.runId}: its process asked the store for settings.remove of ${key}, which a later claim (epoch ${epoch}) wrote and a run's process may not remove`);
+    throw new ClaimRefused("a run's process may not call the store's settings.remove of a row a later claim wrote");
+  }
+  await settings.removeIf(key, row);
+}
 /** Whether a run's process may write `value` to setting `key`: one of its own run's browser rows, with that row's fields
  *  alone, each a string, the claim's own epoch, and at most OWN_ROW_MAX_BYTES. A row with a later epoch would be kept by
  *  every clear of this claim (browser-hold.ts), so a later claim would read a take nobody holds. */
@@ -517,6 +535,7 @@ export async function storeCall(store: object, method: string, args: unknown[], 
     throw new ClaimRefused(`a run's process may not call the store's ${method}${check ? " of another run or agent" : ""}`);
   }
   if (method === "readJournal") return journalRead(store as Store, args);
+  if (method === "settings.remove") return removeOwnRow((store as Store).settings, args[0] as string, bound, log);
   const path = method.split(".");
   let target: unknown = store;
   for (const part of path.slice(0, -1)) target = (target as Record<string, unknown>)[part];
@@ -708,10 +727,14 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
    *  handed none of the server's (claim-secrets.ts keyedAtClaim, held here for the runner's answers). */
   const runKeyed = async () => (await openRunModelKey(keys, claim.runId)) !== undefined;
   /** Whether the claim's run is held, its model kept from running at its create (hold.refused): it routes no model, so
-   *  whatever its process asks, the runner hands it no model key, answers it keyless, opens it no harness key and no MCP,
-   *  and refuses it a learning step (its learned workflows and its end-of-run step), as its spec asks for none of them
-   *  (adapter-run-spec.ts, cli-run-spec.ts). */
+   *  whatever its process asks, the runner hands it no model key (keyless, below), answers it keyless, opens it no harness
+   *  key and no MCP, and refuses it a learning step (its learned workflows and its end-of-run step), as its spec asks for
+   *  none of them (adapter-run-spec.ts, cli-run-spec.ts). */
   const modelRefused = launch.hold?.refused !== undefined;
+  /** Whether the claim's run sends no model key (claim-secrets.ts sendsNoModelKey: a held run as above, any run on a --faux
+   *  runner, a faux-pinned one; `deps.env` is the claim's environment): the runner answers its process no tier's model key.
+   *  A faux run still runs its learned steps on the faux model: only modelRefused refuses them. */
+  const keyless = sendsNoModelKey(launch, deps.env ?? {});
   const refusedSpend = (): ClaimRefused => new ClaimRefused("a held run its model kept from running asks its runner for no model spend: it routes no model and takes no learning step");
   /** What a learned workflow must never hold, as this runner sees it: every secret it holds (learning-seed.ts). */
   const shown = async () => secretsShown(runnerSecrets(deps.env, await storeSecrets(store, sealKey, deps.data)), { local: true });
@@ -782,7 +805,10 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     // else of the claim is read again. A run with a model key of its own, and a login other than AgentRun's own folder,
     // were each decided at the claim (staysInRunner: no login read for the one, LOGIN_MACHINE_NEEDS_SERVER_USER for the
     // other), so neither reaches here on a login. The process reads no setting or machine id.
+    // None for a run that sends no model key (keyless: a held run, any run on a --faux runner, a faux-pinned one), whatever
+    // its claim read: the login is a model credential like any key.
     claudeLogin: async () => {
+      if (keyless) return undefined;
       const at = reads.login;
       if (!at) return undefined;
       const now = await loginForRun(store.settings, deps.data, deps.env ?? {}, harnessOfBody(launch), launch.place);
@@ -862,10 +888,10 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       // that tier's model's key alone (through a gateway, the gateway's), none when the revision names agree_on (no
       // grader). A learning run's grade and an SDK run's compile turn stay in the runner (runsInRunner): their process
       // never asks, and gets none. And never for a run that holds a key of its own (its launch's, read now): the server's
-      // keys are not its to spend, whatever its process asks; nor for a held run its model kept from running, which routes
-      // no model and grades nothing.
-      const subagent = !modelRefused && revision.kind === "agentic" && granted.includes(SUBAGENT_TOOL);
-      const grades = !modelRefused && (launch.replay !== undefined || launch.audit !== undefined) && !agreeOnOf((revision.body as { readonly learning?: unknown }).learning)?.length;
+      // keys are not its to spend, whatever its process asks; nor for a run that sends no model key (keyless: a held run,
+      // which routes no model and grades nothing, or a faux one, whose model sends none).
+      const subagent = !keyless && revision.kind === "agentic" && granted.includes(SUBAGENT_TOOL);
+      const grades = !keyless && (launch.replay !== undefined || launch.audit !== undefined) && !agreeOnOf((revision.body as { readonly learning?: unknown }).learning)?.length;
       if (!subagent && !grades) return {};
       const { tiers, refs } = routedSubagentTiers(revision.body, keys.env ?? {});
       const keyed = await runKeyed();
@@ -874,9 +900,10 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     tierModelKeys: async (tiers) => {
       // The tiers the claim's learned workflows name (learnedTiers), as this runner chose them (learnedFirst below): a
       // tier the process names beyond them gets no key, and none before the choice (a held run its model kept from running
-      // makes none: its learnedFirst is refused).
+      // makes none: its learnedFirst is refused), nor to a run that sends no model key (keyless: a faux one's tiers run on
+      // the faux model).
       const asked = new Set((tiers as readonly unknown[]).filter((tier): tier is Tier => typeof tier === "string"));
-      const named = !modelRefused && learnsWorkflows(revision.kind, learnedFlows) ? learnedTiers(learnedFlows).filter((tier) => asked.has(tier)) : [];
+      const named = !keyless && learnsWorkflows(revision.kind, learnedFlows) ? learnedTiers(learnedFlows).filter((tier) => asked.has(tier)) : [];
       const keyed = await runKeyed();
       const got = keyed ? {} : await tierModelKeys(keys, named);
       const plan = planOf(got);
@@ -1289,24 +1316,22 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
         const savedGateway = savedGatewayIn(claimEnv);
         // The run's own keys: those its claim opens (claim-secrets.ts), the one list its loop in this process read. Its model
         // keys are its pinned model's (claimSecrets scopes them by the launch's model), the one its route sends: never the
-        // host's default's now, where its revision names no model and a key saved since moved that default.
+        // host's default's now, where its revision names no model and a key saved since moved that default. On a --faux
+        // runner, or pinned to the faux model, a run sends no model key (claim-secrets.ts sendsNoModelKey): its process is
+        // handed none, not even its revision's model's.
         const claimed = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: claimEnv, redact: loopDeps.redact }, revisionRow as never, launch, claim.runId);
-        // A --faux start alone is pinned to the faux model (model.ts chooseModel), which stands in for its revision's and
-        // sends no key: its process is handed its revision's model's key with them, as a run of that model is handed it.
-        // Only on a runner in faux mode too: a faux launch claimed where FAUX_ENV is unset gets no second claim. A held run its
-        // model kept from running at its create (hold.refused) is laid no model key here either: its model runs nowhere.
-        const ofRevision: NodeJS.ProcessEnv = launch.model?.provider === FAUX_PROVIDER && claimEnv[FAUX_ENV] ? await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: claimEnv, redact: loopDeps.redact }, revisionRow as never, { ...(launch.plane ? { plane: launch.plane } : {}), ...(launch.hold ? { hold: launch.hold } : {}) }) : {};
         // A run that holds a model key of its own (model_key, its launch's) spends that key alone: its process is handed
         // none of the server's model keys, as its spec drops them from its tools' (claim-secrets.ts withoutModelKeys).
         // Copies: the runner's own reads (heldFor's `claimed`: what the run's learning must never keep) stay whole.
         const keyed = (await openRunModelKey({ store: deps.store, sealKey: deps.sealKey }, claim.runId)) !== undefined;
-        const toProcess = keyed ? [withoutModelKeys({ ...claimed }), withoutModelKeys({ ...ofRevision })] : [claimed, ofRevision];
+        const toProcess = keyed ? withoutModelKeys({ ...claimed }) : claimed;
         // The saved gateway's key, kept off the claim's tool keys (claimSecrets), is handed for the run's model routes alone,
         // read as the server's model keys are (savedModelKeys, over the claim's environment the gateway was laid over), as a
         // run in this process reads it from its environment by name; none to a run that brings its own key, and none to a
-        // held run its model kept from running, which routes no model.
-        const gatewayKey = savedGateway && !launch.hold?.refused ? (keyed ? {} : await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: claimEnv }))[GATEWAY_KEY_ENV] || undefined : undefined;
-        const handed = (name: string): string | undefined => (name === GATEWAY_KEY_ENV && savedGateway ? gatewayKey : toProcess.map((from) => from[name]).find((value): value is string => typeof value === "string" && value !== ""));
+        // run whose model sends no key (sendsNoModelKey: a held run its model kept from running, any run on a --faux runner,
+        // a faux-pinned one).
+        const gatewayKey = savedGateway && !sendsNoModelKey(launch, claimEnv) ? (keyed ? {} : await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: claimEnv }))[GATEWAY_KEY_ENV] || undefined : undefined;
+        const handed = (name: string): string | undefined => (name === GATEWAY_KEY_ENV && savedGateway ? gatewayKey : toProcess[name] || undefined);
         const keys = encode(SECRET_NAMES.flatMap((name) => {
           const value = handed(name);
           return value === undefined ? [] : [[name, value] as const];
@@ -1334,10 +1359,14 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
         const heldSide = heldFor({ ...deps, env: claimEnv }, { claim, run: runRow, launch, revision, claimed: gatewayKey ? withGatewayKey(claimed, gatewayKey) : claimed, signal: loopDeps.signal, login, ...(loopDeps.incarnation ? { incarnation: loopDeps.incarnation } : {}) }, cut, log, bigs);
         // The run's trace: its process posts each call of it (tracer.ts postedTracing), and this runner's tracing makes the
         // spans and exports them in the background. No exporter, flush or OTLP setting is ever the process's, so neither
-        // its exit nor this claim's release waits on a collector.
-        const tracing = await (options.tracing ?? genAiTracing()).catch(() => undefined);
-        const traced = tracing ? tracePosts(tracing, claim.runId, cut) : undefined;
+        // its exit nor this claim's release waits on a collector. Made inside the claim's cleanup, so nothing it waits on
+        // can keep the slot.
+        let traced: ReturnType<typeof tracePosts> | undefined;
         try {
+          const tracing = await (options.tracing ?? genAiTracing()).catch(() => undefined);
+          // Its agent is the one this runner reads from the store, never one the process posts; a read that fails is the
+          // agent's id alone (agentOfRun).
+          traced = tracing ? tracePosts(tracing, claim.runId, cut, await agentOfRun(deps.store.agents, runRow.agentId)) : undefined;
           let extra: Record<string, string> = {};
           let argv = [...(options.argv ?? childArgv())];
           // A claim that resumes a run whose last runner ended before giving its folders back finds them its last slot's,
@@ -1355,7 +1384,8 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
             argv = [isolation.helper, "run", String(slot), "--keep-fd", "3", "--keep-fd", "4", "--", ...argv];
           }
           // The saved gateway's address and models go as plain variables (childEnv), and its mark says they are the saved one.
-          const env = childEnv(claimEnv, keys, savedGateway ? { ...extra, [SAVED_GATEWAY_ENV]: "1" } : extra);
+          // The server's keyless holds now (web-holds.ts), so the run's Web starts with them: hold data alone.
+          const env = childEnv(claimEnv, keys, { ...extra, ...holdsEnv(), ...(savedGateway ? { [SAVED_GATEWAY_ENV]: "1" } : {}) });
           const [program, ...rest] = argv;
           child = spawn(program!, rest, { stdio: ["ignore", "inherit", "inherit", "pipe", "pipe"], env, detached: true });
           exited = new Promise((resolve) => {
@@ -1375,7 +1405,8 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
           const bound: Bound = { claim, agentId: runRow.agentId, revisionId: runRow.revisionId };
           channel.expose("store", (method, args) => storeCall(deps.store, method, args, bound, log));
           channel.expose("journal", journalTarget(loopDeps.journal(claim), cut));
-          if (traced) channel.expose("trace", (method, args) => traced.post(method, args));
+          const posts = traced;
+          if (posts) channel.expose("trace", (method, args) => posts.post(method, args));
           channel.expose("held", (method, args) => {
             // Its own members alone: a name of Object's prototype (constructor, toString) is no call of Held.
             const fn = Object.hasOwn(heldSide.held, method) ? (heldSide.held as unknown as Record<string, (...a: unknown[]) => unknown>)[method] : undefined;
@@ -1396,6 +1427,8 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
                 return undefined;
               case "log":
                 return void log(String(args[0]));
+              case "webHold":
+                return void noteHold(args[0]);
               default:
                 throw new ClaimRefused(`the runner has no ${method} for a run`);
             }

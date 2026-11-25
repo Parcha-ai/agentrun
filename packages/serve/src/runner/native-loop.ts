@@ -22,7 +22,7 @@ import { outputContract, outputMiss, outputRetryWords } from '../answer-json.js'
 import { cutStrings, redactedOutput } from '../key-refusal.js';
 import type { Store, RunPatch } from '../store/store.js';
 import { learningEndOfRun } from './learning-end.js';
-import { pathMetrics } from './workflow-first.js';
+import { runPathMetricsOverStore } from '../store-reads/learning.js';
 import { reflectRequestId } from './end-of-run.js';
 import { journalEntries } from './journal-reader.js';
 import { HOST_PHASE } from '../timeline/index.js';
@@ -136,7 +136,9 @@ export function createNativeLoop(launch:RunLaunch,host:AdapterSpecDeps):LoopFact
      // Only reads race the deadline. A late result never writes a patch or changes the chosen end.
      const read=async()=>{
       const entries=await journalEntries(journal,ctx);const spend=bookedSpend(entries as never,'model');
-      return {costUsd:spend.usd,metrics:{...nativeMetrics(launch,entries,spend,model,turn,runtime),native_session_id:nativeSessionId,...(usage?{native_usage:usage}:{})}};
+      // Its path by the one writer every harness's end calls: a native task never calls a learned workflow, so `agent`.
+      const path=await runPathMetricsOverStore(host.store,claim.runId,launch);
+      return {costUsd:spend.usd,metrics:{...nativeMetrics(entries,spend,model,turn,path,runtime),native_session_id:nativeSessionId,...(usage?{native_usage:usage}:{})}};
      };
      endPatch=await Promise.race([read(),late]);
     }catch{endPatch=END_PATCH_UNKNOWN;}finally{bound.clearTimeout(timer);}
@@ -238,11 +240,10 @@ function nativeInput(usage:NativeUsage,runtime?:string):number|null{
  return usage.input_tokens===null||usage.cache_read_tokens===null||usage.cache_write_tokens===null?null:Math.max(0,usage.input_tokens-usage.cache_read_tokens-usage.cache_write_tokens);
 }
 
-function nativeMetrics(launch:RunLaunch,entries:readonly {kind:string;data?:unknown}[],spend:ReturnType<typeof bookedSpend>,model:string,turns:number,runtime?:string){
+function nativeMetrics(entries:readonly {kind:string;data?:unknown}[],spend:ReturnType<typeof bookedSpend>,model:string,turns:number,path:Awaited<ReturnType<typeof runPathMetricsOverStore>>,runtime?:string){
  const counted=cliRunMetrics(entries as never,spend,{model});
  const usage=entries.filter(e=>e.kind===`${MARK}.usage`).map(e=>(e.data as {usage:NativeUsage}).usage);
  const count=(native:keyof NativeUsage,key:'input'|'output'|'cacheRead'|'cacheWrite')=>usage.length<turns||usage.some(u=>u[native]===null)?null:counted[key];
- // Native tasks always run their agent: this lane never serves or calls an AgentRun learned workflow.
- return {...counted,...pathMetrics(launch,{path:'agent',workflow:null},entries as never),input:usage.some(u=>nativeInput(u,runtime)===null)?null:count('input_tokens','input'),output:count('output_tokens','output'),cacheRead:count('cache_read_tokens','cacheRead'),cacheWrite:count('cache_write_tokens','cacheWrite'),requests:null,unmetered:null,models:{},native_model_requests:null,native_turns:turns};
+ return {...counted,...path,input:usage.some(u=>nativeInput(u,runtime)===null)?null:count('input_tokens','input'),output:count('output_tokens','output'),cacheRead:count('cache_read_tokens','cacheRead'),cacheWrite:count('cache_write_tokens','cacheWrite'),requests:null,unmetered:null,models:{},native_model_requests:null,native_turns:turns};
 }
 

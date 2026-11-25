@@ -1,7 +1,8 @@
 // A serving learned workflow this release's workflow DSL refuses is held, never read as `serving` (runner/promotion.ts
 // holdRefused): a promotion whose workflow.json the DSL's own validation refuses (validateWorkflow, no tool list: never
 // a host setting) is held at the claim that serves it, once per digest, its reason the DSL's code and path. The run
-// still hands back as before, and the agent answers. The hold follows compile once as a check's hold does: the agent's
+// still hands back to the agent, which answers; its call was refused before any node ran, so the run's path is the
+// agent's and names no workflow. The hold follows compile once as a check's hold does: the agent's
 // next due run asks the one recompile with the refusal in its ask, and a recompile that fails stops. And a shadow audit
 // draws only a run the workflow answered (path `workflow`): a handed-back run is never drawn, nor counted as served.
 //   (a) a promotion whose workflow.json carries a key the DSL refuses: the first run hands back and writes one hold with
@@ -161,8 +162,10 @@ test("(a) a promoted workflow the DSL refuses: the run hands back, one hold with
   const w = await world(t, { flow: REFUSED, revise: "refuse" });
   const digest = digestOf(REFUSED);
   const first = await w.start("run-1", "What is six times seven");
-  // The run still hands back as before, and the agent answers it.
-  assert.deepEqual([first.state, first.metrics?.path, first.metrics?.workflow_digest], ["ended", "handed_back", digest], JSON.stringify(first.metrics));
+  // The run hands back to the agent, which answers it. The platform's call ran nothing (refused before any node ran):
+  // charged to no workflow, and the run's path is the agent's, naming none.
+  assert.deepEqual([first.state, first.metrics?.path, first.metrics?.workflow ?? null, first.metrics?.workflow_digest], ["ended", "agent", null, undefined], JSON.stringify(first.metrics));
+  assert.deepEqual(first.metrics.workflow_calls.map(({ digest: at, caller, outcome }) => [at, caller, outcome]), [[digest, "platform", "refused"]]);
   assert.deepEqual(await decisions(w.server), [[digest, "promote"], [digest, "hold"]]);
   const held = (await promotionsOf(w.server.learning, "agent-1")).at(-1);
   assert.match(held.reason, REFUSAL, held.reason);
@@ -201,7 +204,7 @@ test("(b) the next due run asks the one recompile with the DSL's refusal in its 
   const w = await world(t, { flow: REFUSED });
   const digest = digestOf(REFUSED);
   const first = await w.start("run-1", "What is six times seven");
-  assert.equal(first.metrics?.path, "handed_back", JSON.stringify(first.metrics));
+  assert.equal(first.metrics?.path, "agent", JSON.stringify(first.metrics));
   const [ask, ...more] = w.asks.get("run-1");
   assert.deepEqual(more, [], "one compile ask");
   assert.ok(ask?.startsWith("One more turn: revise your learned workflow `answer`"), ask?.slice(0, 300));

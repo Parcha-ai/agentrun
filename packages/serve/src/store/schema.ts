@@ -329,7 +329,9 @@ export const RUN_ATTEMPTS = `CREATE TABLE IF NOT EXISTS run_attempts (
  *  revision that ran it, why it was not served alone, the job's own $ and its rounds' look-back, and whether its cost is
  *  known (`cost`). Gone with the run's purge or delete (its cost stays on the run's tombstone). Figures only, no run
  *  text. In STORE_DDL, and made at a server open on a store an earlier build of this version made, which drops the
- *  `epoch` an earlier build kept on it (LEARNING_LEDGER_EPOCH). */
+ *  `epoch` an earlier build kept on it (LEARNING_LEDGER_EPOCH). `workflow_calls`: its learned workflow calls
+ *  (LedgerRow.workflowCalls) as JSON, `[]` for none; added where missing at a server open (LEARNING_LEDGER_ADDED), before
+ *  the open's backfill records rows (run-patch.ts backfillLedger). */
 export const LEARNING_LEDGER = `CREATE TABLE IF NOT EXISTS learning_ledger (
     run_id TEXT PRIMARY KEY,
     agent_id TEXT NOT NULL,
@@ -340,8 +342,14 @@ export const LEARNING_LEDGER = `CREATE TABLE IF NOT EXISTS learning_ledger (
     not_served TEXT CHECK (not_served IS NULL OR not_served IN ('cost_stop', 'cut')),
     job_usd REAL,
     look_back_usd REAL,
-    cost TEXT NOT NULL CHECK (cost IN ('known', 'unknown', 'at_most'))
+    cost TEXT NOT NULL CHECK (cost IN ('known', 'unknown', 'at_most')),
+    workflow_calls TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(workflow_calls))
   ) STRICT`;
+/** The columns a learning_ledger an earlier build of this version made lacks, each added at a server open where missing:
+ *  its rows' calls none (`[]`) until their run's next end writes them. */
+export const LEARNING_LEDGER_ADDED: Readonly<Record<string, string>> = {
+  workflow_calls: "ALTER TABLE learning_ledger ADD COLUMN workflow_calls TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(workflow_calls))",
+};
 export const LEARNING_LEDGER_AGENT = "CREATE INDEX IF NOT EXISTS learning_ledger_agent ON learning_ledger (agent_id)";
 /** The agent's rows by path, newest first: what the read before the money rule's window walks (run-patch.ts
  *  BY_HAND_BEFORE), a few rows whatever the agent's history. In STORE_DDL, and made at every server open. */
