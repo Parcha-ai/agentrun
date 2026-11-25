@@ -763,7 +763,8 @@ test("an OTLP header value's credential pair is read anywhere in the value, a UR
 
 // A credential with a raw ; in it, as an OTLP endpoint's query parameter or inside a header value. A query or a pair list
 // read split at & alone keeps the whole value, a %2C in it too, and read split at an & or a space written %26 or %20 too,
-// it keeps that value as written before one; read split at & and %2C, it keeps the value of a pair in
+// it keeps that value as written before one, and read split at a %26 alone, one with a %20 in it; a value in quotes
+// written %22 or %27 is kept out of them as written too; read split at & and %2C, it keeps the value of a pair in
 // a list joined by %2C; read split at ; too, it keeps each pair after a ;. Every reading is held. A value whose part
 // before its first ; is empty is held after it; a value of only ; is not held.
 // Each row: [what, the env, the credentials held and cut alone, what is on no held list, a line quoting the variable and
@@ -856,6 +857,27 @@ const SEMI_ROWS = [
     [SEMI_SPACED, SEMI_PREFIX],
     ["us-east-1"],
     [`401 from relay: key ${SEMI_SPACED} refused`, "401 from relay: key [redacted] refused"],
+  ],
+  [
+    "a header value's credential pair with a ;, a %2C and a %20 in its value, before an & written %26",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=api_key=${SEMI_SPACED}%26region=us-east-1` },
+    [SEMI_SPACED, decodeURIComponent(SEMI_SPACED), SEMI_PREFIX],
+    ["us-east-1"],
+    [`401 from relay: key ${decodeURIComponent(SEMI_SPACED)} refused`, "401 from relay: key [redacted] refused"],
+  ],
+  [
+    "a header value's credential pair with a ; and a %2C in its value, in quotes written %22",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=api_key=%22${SEMI_COMMA}%22&region=us-east-1` },
+    [SEMI_COMMA, decodeURIComponent(SEMI_COMMA)],
+    ["us-east-1"],
+    [`401 from relay: key ${SEMI_COMMA} refused`, "401 from relay: key [redacted] refused"],
+  ],
+  [
+    "a header value's credential pair with a ; and a %2C in its value, in quotes written %27, before an & written %26",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=api_key=%27${SEMI_COMMA}%27%26region=us-east-1` },
+    [SEMI_COMMA, decodeURIComponent(SEMI_COMMA)],
+    ["us-east-1"],
+    [`401 from relay: key ${SEMI_COMMA} refused`, "401 from relay: key [redacted] refused"],
   ],
   [
     "a header value's credential pair whose value starts with a ;",
