@@ -30,7 +30,9 @@ function sources(dir) {
 /**
  * Each SDK a source file loads at run time, read from its parse tree: `vendorSdk(vendor, "<package>")` (loads), and
  * every `import(NAME)` of an identifier outside src/vendor-sdk.ts (direct), NAME resolved where the file binds it with a
- * top-level `const NAME = "<package>"`. An import of any other expression (a file's URL) loads a file, not a package.
+ * top-level `const NAME = "<package>"`, and every `import("<package>")` of a bare package literal (direct). A literal
+ * that is relative, absolute or `node:` loads a file of this package or a builtin; an import of any other expression (a
+ * file's URL) loads a file, not a package.
  */
 function scan(files = sources(SRC).sort().map((file) => [file, readFileSync(join(PACKAGE, file), "utf8")])) {
 	const loads = [];
@@ -52,6 +54,8 @@ function scan(files = sources(SRC).sort().map((file) => [file, readFileSync(join
 					loads.push({ file, name: second.text });
 				} else if (node.expression.kind === ts.SyntaxKind.ImportKeyword && first && ts.isIdentifier(first) && file !== "src/vendor-sdk.ts") {
 					direct.push({ file, name: consts.get(first.text) ?? `(${first.text})` });
+				} else if (node.expression.kind === ts.SyntaxKind.ImportKeyword && first && ts.isStringLiteralLike(first) && !/^(\.{1,2}\/|\/|node:)/.test(first.text)) {
+					direct.push({ file, name: first.text });
 				}
 			}
 			ts.forEachChild(node, visit);
