@@ -36,11 +36,51 @@ const piResultOf = (entry: EntryLike): string | undefined => {
   return typeof id === "string" ? id : undefined;
 };
 
+/** On pi, the toolCalls that hold conversation `conversation`: the subagent call whose result names it
+ *  (`details.conversationId`), and the one that holds that call's conversation, up to the root. */
+function piHoldersOf(entries: readonly EntryLike[], conversation: unknown): Set<string> {
+  const parents = new Map<string, { conversation: string; call: string }>();
+  for (const entry of entries) {
+    const call = piResultOf(entry);
+    const child = (entry.model?.[0] as { details?: { conversationId?: unknown } } | undefined)?.details?.conversationId;
+    if (call !== undefined && child !== undefined && child !== null) parents.set(String(child), { conversation: String(entry.conversationId), call });
+  }
+  const holders = new Set<string>();
+  const seen = new Set<string>();
+  for (let at = String(conversation); parents.has(at) && !seen.has(at); at = parents.get(at)!.conversation) {
+    seen.add(at);
+    holders.add(parents.get(at)!.call);
+  }
+  return holders;
+}
+
+/** On pi, whether call `callId`'s window (`from`, the answer that asked for it, to `to`) is another conversation's too:
+ *  a toolCall still open at its start that does not hold its conversation (piHoldersOf: a sibling subagent, or a tool its
+ *  parent runs beside the subagent), or another conversation asking a tool or taking a result inside it. The host work
+ *  of such a tool lands in the window under a host label, as the call's own nodes do, so the window can't be told apart. */
+function piShared(entries: readonly EntryLike[], from: number, to: number): boolean {
+  const own = String(entries[from]!.conversationId);
+  const holders = piHoldersOf(entries, own);
+  const open = new Set<string>();
+  for (let at = 0; at < from; at++) {
+    for (const id of piCallsOf(entries[at]!)) open.add(id);
+    const done = piResultOf(entries[at]!);
+    if (done !== undefined) open.delete(done);
+  }
+  if ([...open].some((id) => !holders.has(id))) return true;
+  for (let at = from + 1; at <= to; at++) {
+    const entry = entries[at]!;
+    if (String(entry.conversationId) !== own && (piCallsOf(entry).length > 0 || piResultOf(entry) !== undefined)) return true;
+  }
+  return false;
+}
+
 /** What call `callId` booked (runner/metrics.ts callCostOf), over the window from its start (its call start entry, or on
  *  pi the answer that asked for it) to the later of its end (its call end, or pi's tool result) and its record
- *  (`recordAt`); null when the window is not its alone: no start, a pi answer that asked for another call beside it, or
- *  another call (none of its own) started within it or still open at its start (a nesting tool's, or the call it runs
- *  inside, is its own). Never a guess: a cost that can't be told apart is unknown. */
+ *  (`recordAt`); null when the window is not its alone: no start, a pi answer that asked for another call beside it,
+ *  another conversation's tool at work in it on pi (piShared: a sibling subagent's), or another call (none of its own)
+ *  started within it or still open at its start (a nesting tool's, or the call it runs inside, is its own). Never a
+ *  guess: a cost that can't be told apart is unknown. */
 function callUsdOf(entries: readonly EntryLike[], callId: string, recordAt: number): number | null {
   const started = entries.findIndex((entry) => entry.kind === KINDS.callStart && callIdOf(entry) === callId);
   const asked = started < 0 ? entries.findIndex((entry) => piCallsOf(entry).includes(callId)) : -1;
@@ -49,6 +89,7 @@ function callUsdOf(entries: readonly EntryLike[], callId: string, recordAt: numb
   if (asked >= 0 && piCallsOf(entries[asked]!).length > 1) return null;
   const start = (started >= 0 ? entries[from]!.data : {}) as CallStartData;
   const to = Math.max(recordAt, entries.findLastIndex((entry) => (entry.kind === KINDS.callEnd && callIdOf(entry) === callId) || piResultOf(entry) === callId));
+  if (asked >= 0 && piShared(entries, from, to)) return null;
   // A call that holds this one (a nesting tool's: its id a prefix of this one's, or the harness's own call it runs in).
   const holds = (id: string) => callId.startsWith(`${id}/`) || start.parent === id || start.parentCallId === id;
   const open = new Set<string>();
