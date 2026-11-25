@@ -4,6 +4,7 @@
 // name it. No Docker is needed.
 import assert from "node:assert/strict";
 import test from "node:test";
+import { DockerProvider } from "../dist/docker.js";
 import { releaseOlder, runLabels } from "../dist/index.js";
 import { computerNameFor } from "../dist/provider.js";
 import { allowed, container, fakeDocker, idOf } from "./fake-docker.mjs";
@@ -83,6 +84,15 @@ test("a removal already under way that never ends fails release(delete) once the
 	assert.equal(released.error.message, `docker rm ${A} failed: docker answered that the removal of ${A} was already in progress, and it was still there 0.3 s later`);
 	assert.ok(Date.now() - started >= 300, "it waited out the bound");
 	assert.deepEqual(names(), [A]);
+});
+
+test("the bounds a test may set (settleMs, settleQuietMs) are whole milliseconds above 0 that a timer can hold; anything else is refused when the provider is made", () => {
+	for (const bad of [0, -1, 1.5, 2 ** 31, Number.NaN, "300"]) {
+		for (const name of ["settleMs", "settleQuietMs"]) {
+			assert.throws(() => new DockerProvider({ daemonPath: "/nonexistent", [name]: bad }), new RegExp(`^Error: the provider's ${name} must be a whole number of milliseconds above 0`), `${name}: ${String(bad)}`);
+		}
+	}
+	assert.doesNotThrow(() => new DockerProvider({ daemonPath: "/nonexistent", settleMs: 300, settleQuietMs: 100 }));
 });
 
 test("sweepLeftovers aborted while a proxy's removal is under way ends aborted, naming the proxy", async () => {
