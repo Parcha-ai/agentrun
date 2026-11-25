@@ -15,14 +15,15 @@
 import { createHash } from "node:crypto";
 import { packageSha256 } from "./agent-package.js";
 import { ApiError } from "./errors.js";
-import { SHARE_RUN_FIELDS } from "./scrub-command.js";
 import { type Cut, SCRUB_RULES, scrub, type ScrubOptions, type ScrubResult } from "./secret-cut.js";
 import { type CallContext, callContexts, effectContext, rowOutput } from "./share-context.js";
 import { WITHHELD_SIGN_IN } from "./run-view.js";
 import { cutFileText } from "./run-file-cut.js";
 import { stable } from "./validate.js";
 
-export { SHARE_RUN_FIELDS };
+/** The run view's fields a share carries (share-design §1, the `run` allowlist, store-view.ts viewOfRun); every other
+ *  field is dropped. `imported_from` carries its `source` alone. */
+export const SHARE_RUN_FIELDS = ["kind", "status", "state", "title", "created_at", "ended_at", "result", "error", "review", "cost", "stopped_for", "budget_refused_calls", "effort", "approvals"] as const;
 
 export const SHARE_FORMAT = "agentrun.share/1";
 /** The scrubber's version as the bundle names it: its interface (tl-share's CONTRACT-scrub-beta1.md). */

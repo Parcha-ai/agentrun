@@ -1,13 +1,13 @@
 // `agentrun-serve scrub RUN [--data DIR] [--json]`: what a share of one run would cut, counted, read from the local store.
-// It gathers the text a share carries (share-design §1: the run view's allowlisted fields, its served Timeline rows, a
-// workflow's graph, its agent's name), each string as the server serves it (the run's one cut applied, run-cut.ts), and
-// runs the scrubber over each in count mode with the run's cut set as its held values (secret-cut.ts scrub). It prints
-// counts by rule and by kind, and how many of the cuts the person could restore. Never a value, a piece of one, a shape
-// or an offset: counts only. It reads and changes nothing (the store opened as a runner opens it; no seal key made).
+// It makes the bundle a share's export makes (run-export.ts runExport, over the same store reads as the export route:
+// run-export-store.ts), its files read from the run's folder under the data directory, and counts that bundle's cuts by
+// rule and by kind, with how many the person could restore. The count is the export's own: what it names is what a
+// share would cut. Never a value, a piece of one, a shape or an offset: counts only. It reads and changes nothing (the
+// store opened as a runner opens it; no seal key made).
 //
-// Exit 0 once counted, 1 when the run is withheld (its cut can't be read here: a sign-in pointer or a sealed launch that
-// doesn't open, or no seal key for a store that keeps secrets; it never counts without the held values), 2 for bad arguments or a run the
-// store does not hold.
+// Exit 0 once counted (a share that would fail closed is counted as blocked), 1 when the run is withheld (its cut can't
+// be read here: a sign-in pointer or a sealed launch that doesn't open, or no seal key for a store that keeps secrets; it
+// never counts without the held values) or has not ended, 2 for bad arguments or a run the store does not hold.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
@@ -16,142 +16,37 @@ import { ApiError } from "./errors.js";
 import { defaultData } from "./server-fs.js";
 import { logLine } from "./print.js";
 import { runCutValues } from "./run-cut.js";
-import { runGraphView } from "./run-reads-over-store.js";
-import { servedTimelineRows } from "./run-timeline-served.js";
+import { ExportFailed, type ExportReads, runExport } from "./run-export.js";
+import { exportReadsOverStore } from "./run-export-store.js";
+import type { RunReadsDeps } from "./run-reads-over-store.js";
 import type { SignInReader } from "./run-view.js";
 import { scrub } from "./secret-cut.js";
-import { type CallContext, callContexts, effectContext, rowOutput } from "./share-context.js";
 import { hostSecrets, handedSecret, type StoredKeys, withSecrets } from "./secrets.js";
 import { bootSealKey, SealKeyRefused, withSealKey } from "./seal-key.js";
 import { signInReads } from "./sign-ins-store.js";
-import { factsOverStore, viewOverStore, type ViewDeps } from "./store-view.js";
+import { factsOverStore, type ViewDeps, withheldOverStore } from "./store-view.js";
 import { openStore, SchemaVersionUnknown, type Store, storeTarget } from "./store/index.js";
 import { STORE_FILE } from "./store/sqlite/store.js";
 import { SEAL_KEY_ENV } from "./tool-keys.js";
 import { toolKeysOverStore } from "./tool-keys-store.js";
+import { serverRunWorkspace } from "./workspace/index.js";
 
 /** The kinds of cut, in the order they are printed (secret-rules.ts CutKind). */
 export const CUT_KINDS = ["format", "held", "dump", "label", "personal", "jev"] as const;
 type Kind = (typeof CUT_KINDS)[number];
 
-/** The run view's fields a share carries (share-design §1, the `run` allowlist, store-view.ts viewOfRun); every other
- *  field is dropped. `imported_from` carries its `source` alone. */
-export const SHARE_RUN_FIELDS = ["kind", "status", "state", "title", "created_at", "ended_at", "result", "error", "review", "cost", "stopped_for", "budget_refused_calls", "effort", "approvals"] as const;
 
-/** The reads a share's text is gathered by: the run's one cut (run-cut.ts runCutValues) and what serves under it. */
+/** The reads a share's count is made by: the run's one cut (run-cut.ts runCutValues) and what serves under it, and the
+ *  data directory its run folders are under (its files are read there, as the server reads them). */
 export interface ShareTextDeps {
   readonly serverSecrets: () => string[];
   readonly signIns?: SignInReader;
   /** The store's seal key, undefined when it has none: the run's sealed launch values are read under it (run-cut.ts). */
   readonly sealKey: Buffer | undefined;
   readonly keyEnv: () => NodeJS.ProcessEnv;
-}
-
-/** Every string in a JSON value, its object keys included (a key can hold a value: a header's name a tool printed, a
- *  map keyed by a command line). */
-export function stringsOf(value: unknown): string[] {
-  const out: string[] = [];
-  const add = (each: unknown): void => {
-    if (typeof each === "string") out.push(each);
-    else if (Array.isArray(each)) for (const item of each) add(item);
-    else if (each !== null && typeof each === "object") {
-      for (const [key, item] of Object.entries(each)) {
-        out.push(key);
-        add(item);
-      }
-    }
-  };
-  add(value);
-  return out;
-}
-
-/** A tool's output with its call's context (ruling LVI, share-context.ts CallContext): the file the call read whole
- *  (`path`) or the shell command it ran (`command`). A share's export reads the same (run-export.ts). */
-export interface ShareText extends CallContext {
-  readonly text: string;
-}
-
-/** A served Timeline row's strings, those that hold a call's output (share-context.ts rowOutput: a result's preview and
- *  summary, an approval outcome's text) with that call's context. */
-function rowTexts(row: unknown, contexts: ReadonlyMap<string, CallContext>): (string | ShareText)[] {
-  const output = rowOutput(row, contexts);
-  if (output === undefined) return stringsOf(row);
-  const fields = row as Record<string, unknown>;
-  const rest = { ...fields };
-  for (const field of output.fields) rest[field] = null;
-  return [...stringsOf(rest), ...output.fields.map((field) => ({ text: fields[field] as string, ...output.context }))];
-}
-
-/** A workflow graph's strings, each call's output (`effects[i].output`, every string in it) with that call's own context
- *  (share-context.ts effectContext). */
-function graphTexts(graph: unknown): (string | ShareText)[] {
-  if (graph === null || typeof graph !== "object" || !Array.isArray((graph as { effects?: unknown }).effects)) return stringsOf(graph);
-  const texts: (string | ShareText)[] = stringsOf({ ...graph, effects: null });
-  for (const effect of (graph as { effects: unknown[] }).effects) {
-    const context = effectContext(effect);
-    if (context === undefined) {
-      texts.push(...stringsOf(effect));
-      continue;
-    }
-    const { output, ...rest } = effect as Record<string, unknown>;
-    texts.push(...stringsOf({ ...rest, output: null }), ...stringsOf(output).map((text) => ({ text, ...context })));
-  }
-  return texts;
-}
-
-/** What a share of a run carries as the count reads it, from what shareTexts read: the run view's allowlisted fields, the
- *  agent's name, the served rows (each call's output with its context, from the rows read with their calls' arguments,
- *  `calls`, which are read for that alone) and a workflow's graph (null for none). */
-export function shareTextsOf(read: { view: Readonly<Record<string, unknown>>; agentName: unknown; rows: readonly unknown[]; calls: readonly unknown[]; graph: unknown }): (string | ShareText)[] {
-  const texts: (string | ShareText)[] = [];
-  const add = (value: unknown): void => void texts.push(...stringsOf(value));
-  for (const field of SHARE_RUN_FIELDS) add(read.view[field]);
-  add((read.view.imported_from as { source?: unknown } | undefined)?.source);
-  add(read.agentName);
-  const contexts = callContexts(read.calls);
-  for (const row of read.rows) texts.push(...rowTexts(row, contexts));
-  if (read.graph !== null) texts.push(...graphTexts(read.graph));
-  return texts;
-}
-
-/** What a share of run `runId` would carry, as strings (object keys included: stringsOf), a tool's output with its
- *  call's context (ShareText), with the run's cut set read after them (the cut only grows, so the last read holds every
- *  value an earlier read cut); `unknown` for a run the store does not hold, `withheld` when its cut can't be read here. */
-export async function shareTexts(store: Store, runId: string, deps: ShareTextDeps): Promise<{ kind: string; texts: (string | ShareText)[]; held: string[] } | "unknown" | "withheld"> {
-  const row = await store.runs.get(runId).catch(() => undefined);
-  if (!row) return "unknown";
-  if ((await runCutValues(deps, store, runId)) === "unreadable") return "withheld";
-  // The origin names the console's link, which the allowlist drops: none of it is read. A reserved .invalid name, so the
-  // package scan finds no service endpoint.
-  const viewDeps: ViewDeps = { origin: "http://scrub.invalid", serverSecrets: deps.serverSecrets, keyEnv: deps.keyEnv, sealKey: deps.sealKey, ...(deps.signIns ? { signIns: deps.signIns } : {}) };
-  const view = await viewOverStore(store, runId, viewDeps);
-  if (!view) return "unknown";
-  const agentName = (await store.agents.get(row.agentId))?.name;
-  // A result's output is scrubbed with its call's context (ruling LVI): the rows read with their calls' arguments name it.
-  const calls = await servedTimelineRows(deps, store, runId, ctx, true);
-  const rows = await servedTimelineRows(deps, store, runId, ctx, false);
-  let graph: Record<string, unknown> | null = null;
-  if (view.kind === "workflow") {
-    try {
-      graph = await runGraphView(store, runId, {
-        runWorkspace: async () => null,
-        recordings: async () => null,
-        env: deps.keyEnv(),
-        sealKey: deps.sealKey,
-        runFacts: (_store, id) => factsOverStore(store, id, viewDeps),
-        withheld: async () => false,
-        cutValues: (_store, id) => runCutValues(deps, store, id),
-        context: ctx,
-      });
-    } catch (error) {
-      if (error instanceof ApiError && error.code === "forbidden") return "withheld";
-      throw error;
-    }
-  }
-  const texts = shareTextsOf({ view, agentName, rows, calls, graph });
-  const cut = await runCutValues(deps, store, runId);
-  if (cut === "unreadable") return "withheld";
-  return { kind: String(view.kind), texts, held: cut.values };
+  /** The server's data directory: a run's files are read from its folder there. Without it no file is read, and the count
+   *  says so (`files_read: false`). */
+  readonly data?: string;
 }
 
 /** One rule's line of the count. */
@@ -162,9 +57,10 @@ export interface RuleCount {
   readonly count: number;
 }
 
-/** The count `scrub` prints: by rule, by kind, the cuts a share would make and how many of them could be restored, and
- *  how many `[redacted]` marks the served text holds already (known key formats and held values the server's own cut takes
- *  out where it serves the run, run-view.ts shownOf, or keys an import took out before). */
+/** The count `scrub` prints, of the bundle a share's export makes (run-export.ts runExport): by rule, by kind, the cuts it
+ *  holds and how many of them could be restored, the strings and files it carries, and how many `[redacted]` marks its
+ *  text holds already (key formats and held values the server's own cut takes out where it serves the run, or keys an
+ *  import took out before). */
 export interface ShareCount {
   readonly run_id: string;
   readonly kind: string;
@@ -174,35 +70,101 @@ export interface ShareCount {
   readonly cuts: number;
   readonly restorable: number;
   readonly already_redacted: number;
-  /** Whether a share would be refused: cut mode fails closed on one of the strings (its final check finds a held value or
-   *  a format left once cut), so no share of this run is made until a rule cuts it. */
+  /** The files the bundle carries, and those it names as left out (by path, or the whole list as uncounted). */
+  readonly files: number;
+  readonly files_omitted: number;
+  /** Whether the run's files were read: false when the count had no data directory to read them from. */
+  readonly files_read: boolean;
+  /** Whether a share would be refused: the export fails closed (a scrub's final check finds a held value or a format left
+   *  once cut, or the read-back finds a value), so no share of this run is made. Nothing else is counted then. */
   readonly blocked: boolean;
 }
 
-/** The scrubber's count over `texts` with `held` as its held values, a ShareText with its call's context: each cut's
- *  rule, kind and whether it can be restored, never its value, shape or offsets. */
-export async function countCuts(runId: string, kind: string, texts: readonly (string | ShareText)[], held: readonly string[]): Promise<ShareCount> {
+const zeroKinds = (): Record<Kind, number> => Object.fromEntries(CUT_KINDS.map((k) => [k, 0])) as Record<Kind, number>;
+
+/** The count of the bundle `make` exports (run-export.ts exportBundle or runExport) for run `runId` of `kind`: each cut's
+ *  rule, kind and whether it can be restored, never its value, shape or offsets. An export that failed closed
+ *  (ExportFailed) is `blocked`, with nothing counted. */
+export async function countExport(runId: string, kind: string, make: () => Promise<{ body: string }>, filesRead = true): Promise<ShareCount> {
+  let body: string;
+  try {
+    body = (await make()).body;
+  } catch (error) {
+    if (!(error instanceof ExportFailed)) throw error;
+    return { run_id: runId, kind, strings: 0, rules: [], by_kind: zeroKinds(), cuts: 0, restorable: 0, already_redacted: 0, files: 0, files_omitted: 0, files_read: filesRead, blocked: true };
+  }
+  const doc = JSON.parse(body) as { cuts: { rule: string; kind: string; restorable: boolean }[]; files: unknown[]; omitted: { what: string }[] } & Record<string, unknown>;
   const rules = new Map<string, { kind: string; restorable: boolean; count: number }>();
-  let already = 0;
-  let blocked = false;
-  for (const each of texts) {
-    const { text, path, command }: ShareText = typeof each === "string" ? { text: each } : each;
-    already += text.split("[redacted]").length - 1;
-    const counted = await scrub(text, { mode: "count", held, ...(path !== undefined ? { path } : {}), ...(command !== undefined ? { command } : {}) });
-    blocked ||= counted.blocked;
-    for (const cut of counted.cuts) {
-      const line = rules.get(cut.rule) ?? { kind: cut.kind, restorable: cut.restorable, count: 0 };
-      line.count += 1;
-      rules.set(cut.rule, line);
-    }
+  for (const cut of doc.cuts) {
+    const line = rules.get(cut.rule) ?? { kind: cut.kind, restorable: cut.restorable, count: 0 };
+    line.count += 1;
+    rules.set(cut.rule, line);
   }
   const lines = [...rules].map(([rule, line]) => ({ rule, ...line }));
   lines.sort((a, b) => kindOrder(a.kind) - kindOrder(b.kind) || a.rule.localeCompare(b.rule));
-  const byKind = Object.fromEntries(CUT_KINDS.map((k) => [k, 0])) as Record<Kind, number>;
+  const byKind = zeroKinds();
   for (const line of lines) byKind[line.kind as Kind] = (byKind[line.kind as Kind] ?? 0) + line.count;
-  const cuts = lines.reduce((n, line) => n + line.count, 0);
-  const restorable = lines.filter((line) => line.restorable).reduce((n, line) => n + line.count, 0);
-  return { run_id: runId, kind, strings: texts.length, rules: lines, by_kind: byKind, cuts, restorable, already_redacted: already, blocked };
+  // The strings the bundle carries of the run: every part but its own record of the export (source, cuts, restored, sha).
+  let strings = 0;
+  let already = 0;
+  const walk = (value: unknown): void => {
+    if (typeof value === "string") {
+      strings += 1;
+      already += value.split("[redacted]").length - 1;
+    } else if (Array.isArray(value)) for (const item of value) walk(item);
+    else if (value !== null && typeof value === "object") for (const item of Object.values(value)) walk(item);
+  };
+  for (const part of ["run", "agent", "rows", "graph", "files", "omitted"]) walk(doc[part]);
+  return {
+    run_id: runId,
+    kind,
+    strings,
+    rules: lines,
+    by_kind: byKind,
+    cuts: doc.cuts.length,
+    restorable: doc.cuts.filter((cut) => cut.restorable).length,
+    already_redacted: already,
+    files: doc.files.length,
+    files_omitted: doc.omitted.filter((one) => one.what === "file" || one.what === "files").length,
+    files_read: filesRead,
+    blocked: false,
+  };
+}
+
+/** The count of what a share of run `runId` would carry: the bundle runExport makes from the store's reads, as the export
+ *  route makes it (run-export-store.ts). `unknown` for a run the store does not hold, `withheld` when its cut can't be
+ *  read here, `not_ended` for a run a share can't be made of yet. */
+export async function shareCount(store: Store, runId: string, deps: ShareTextDeps): Promise<ShareCount | "unknown" | "withheld" | "not_ended"> {
+  const row = await store.runs.get(runId).catch(() => undefined);
+  if (!row) return "unknown";
+  // The origin names the console's link, which the allowlist drops: none of it is read. A reserved .invalid name, so the
+  // package scan finds no service endpoint.
+  const viewDeps: ViewDeps = { origin: "http://scrub.invalid", serverSecrets: deps.serverSecrets, keyEnv: deps.keyEnv, sealKey: deps.sealKey, ...(deps.signIns ? { signIns: deps.signIns } : {}) };
+  const cutDeps = { serverSecrets: deps.serverSecrets, ...(deps.signIns ? { signIns: deps.signIns } : {}), sealKey: deps.sealKey };
+  const runReads: RunReadsDeps = {
+    // The run's folder read as the server reads it (serverRunWorkspace: read-only, no runner claim).
+    runWorkspace: async (_store, id) => (deps.data === undefined ? null : serverRunWorkspace(store, id, { data: deps.data, sealKey: deps.sealKey, env: deps.keyEnv() })),
+    recordings: async () => null,
+    env: deps.keyEnv(),
+    sealKey: deps.sealKey,
+    runFacts: (_store, id) => factsOverStore(store, id, viewDeps),
+    withheld: (_store, id) => withheldOverStore(store, id, viewDeps),
+    cutValues: (_store, id) => runCutValues(cutDeps, store, id),
+    context: ctx,
+  };
+  const reads = exportReadsOverStore(store, runId, { view: viewDeps, timeline: deps, runReads, cut: cutDeps }, ctx);
+  let kind = "";
+  const read: ExportReads = { ...reads, view: async () => { const view = await reads.view(); kind = String(view?.kind ?? ""); return view; } };
+  try {
+    // The version names this server in the bundle's source, which the count does not read.
+    const count = await countExport(runId, "", () => runExport(runId, read, { restore: [], version: "count" }), deps.data !== undefined);
+    return { ...count, kind };
+  } catch (error) {
+    if (error instanceof ApiError && error.code === "not_found") return "unknown";
+    if (error instanceof ApiError && error.code === "forbidden") return "withheld";
+    if (error instanceof ApiError && error.code === "run_not_final") return "not_ended";
+    throw error;
+  }
 }
 
 const kindOrder = (kind: string): number => {
@@ -212,7 +174,8 @@ const kindOrder = (kind: string): number => {
 
 /** The count as a table: one line per rule, totals by kind, and the line that says what a share would cut. */
 export function countTable(count: ShareCount): string {
-  const out: string[] = [`Run ${count.run_id} (${count.kind}): ${count.strings} strings a share would carry, counted.`, ""];
+  const files = !count.files_read ? "its files not read here" : `${count.files} file${count.files === 1 ? "" : "s"} carried, ${count.files_omitted} left out`;
+  const out: string[] = [`Run ${count.run_id} (${count.kind}): ${count.strings} strings a share would carry (${files}), counted.`, ""];
   const table = (head: string[], rows: string[][], right: number[]): void => {
     const widths = head.map((cell, i) => Math.max(cell.length, ...rows.map((row) => row[i]!.length)));
     const line = (row: string[]) => row.map((cell, i) => (right.includes(i) ? cell.padStart(widths[i]!) : cell.padEnd(widths[i]!))).join("  ").trimEnd();
@@ -226,7 +189,7 @@ export function countTable(count: ShareCount): string {
   }
   if (count.already_redacted > 0) out.push(`Already cut before this count: ${count.already_redacted} ([redacted] in the served text: known key formats and held values the server cuts where it serves the run, or keys an import took out).`);
   out.push(`A share would make ${count.cuts} cut${count.cuts === 1 ? "" : "s"}; you could restore ${count.restorable} of them.`);
-  if (count.blocked) out.push("But a share of this run would be refused: once cut, one of its strings still holds a held value or a known key format no rule cut in place.");
+  if (count.blocked) out.push("A share of this run would be refused: once cut, it still holds a held value or a known key format no rule cut in place (or an object key holding a value), so nothing was counted.");
   return out.join("\n");
 }
 
@@ -308,15 +271,17 @@ export async function scrubMain(argv: readonly string[], usage: string, io: { ou
       sealKey: seal?.key,
       keyEnv: () => withSecrets(env, "all", stored),
     };
-    const gathered = await shareTexts(store, runId, deps);
+    const count = await shareCount(store, runId, { ...deps, data: dir });
     for (const line of warnings.splice(0)) io.err(line);
-    if (gathered === "unknown") return unknown();
-    if (gathered === "withheld") {
+    if (count === "unknown") return unknown();
+    if (count === "not_ended") {
+      io.err(`agentrun-serve scrub: run ${runId} has not ended: a share is made of an ended run, so nothing was counted.`);
+      return 1;
+    }
+    if (count === "withheld") {
       io.err(`agentrun-serve scrub: run ${runId} is withheld: this server can't read back what it was handed, a browser sign-in or the keys sealed with its launch (its seal key changed or is missing, or the record is damaged), so its held values are unknown and nothing was counted.`);
       return 1;
     }
-    held.push(...gathered.held);
-    const count = await countCuts(runId, gathered.kind, gathered.texts, gathered.held);
     io.out(values.json ? JSON.stringify(count, null, 2) : countTable(count));
     return 0;
   } catch (error) {

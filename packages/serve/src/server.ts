@@ -114,6 +114,7 @@ import { agentPointers, cutHanded, handedSecretValues, launchValuesOf, RETIRED_M
 import { runCutValues } from "./run-cut.js";
 import { type HeldRefusal, readLaunchBody } from "./run-launch.js";
 import { modelKeyMisfit, modelKeyOf, modelKeyRequired, noServerKeyFor, runModelOrigin, serverKeyMissing } from "./run-model-key.js";
+import { exportReadsOverStore } from "./run-export-store.js";
 import { listRunFiles as listRunFilesOverStore, readRunFile as readRunFileOverStore, runGraphView, type RunReadsDeps, runTimelines } from "./run-reads-over-store.js";
 import { type CutScrub, ExportFailed, restoreIdsOf, runExport } from "./run-export.js";
 import { triggerTargets, type TriggerTargetDeps } from "./trigger-targets.js";
@@ -5862,24 +5863,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const viewDeps = viewDepsFor(ownOriginOf());
         let bundle: { body: string };
         try {
-          bundle = await runExport(id, {
-            view: () => viewOverStore(store, id, viewDeps),
-            withheld: () => withheldOverStore(store, id, viewDeps),
-            // The rows as GET /runs/{id}/timeline serves them, under the run's one cut; a workflow's graph as its route.
-            rows: () => servedTimelineRows(servedTimelineDeps, store, id, ctx, false),
-            // The same rows with their calls' arguments, read for each call's context alone (ruling LVI): never carried.
-            calls: () => servedTimelineRows(servedTimelineDeps, store, id, ctx, true),
-            graph: () => runGraphView(store, id, runReadsDeps),
-            files: async () => {
-              const listed = await listRunFilesOverStore(store, id, runReadsDeps);
-              const workspace = listed.files.length ? await runReadsDeps.runWorkspace(store, id) : null;
-              const files = workspace ? listed.files.map((file) => ({ path: file.path, size: file.size_bytes, ...(file.unreadable ? { unreadable: true } : {}), read: (limit: number) => workspace.read(file.path, { offset: 0, length: limit }) })) : [];
-              return { files, truncated: listed.truncated };
-            },
-            agentName: async (agentId) => (await getAgent(store, agentId))?.agent.name,
-            // Read last, after everything above was served under it: the cut only grows.
-            cut: () => runCutValues({ serverSecrets, signIns, sealKey }, store, id),
-          }, { restore, version: VERSION, ...(options.shareScrub ? { scrub: options.shareScrub } : {}) });
+          bundle = await runExport(id, exportReadsOverStore(store, id, { view: viewDeps, timeline: servedTimelineDeps, runReads: runReadsDeps, cut: { serverSecrets, signIns, sealKey } }, ctx), { restore, version: VERSION, ...(options.shareScrub ? { scrub: options.shareScrub } : {}) });
         } catch (error) {
           if (error instanceof ApiError) throw error;
           // Fails closed: a scrub that failed, a read-back that found a value, or anything else that threw while the
