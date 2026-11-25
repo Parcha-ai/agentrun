@@ -111,11 +111,14 @@ test("sealedKeys.putIfAbsent writes a row only where none is, in one statement: 
   assert.deepEqual([...(await store.sealedKeys.get("x"))], [1, 2, 3]);
 });
 
-/** `store` whose sealed keys are read after a pause, as a database across a network answers: SQLite in this process
- *  answers at once, so first uses that start together would otherwise never overlap. */
-function slowReads(store) {
+/** `store` whose sealed keys answer after a pause, as a database across a network does: a read in 20 ms, and the nth
+ *  write 40n ms after it is asked, so of first uses that start together one writes and reads back before the next
+ *  writes. SQLite in this process answers at once, so they would otherwise never overlap. */
+function slowReads(store, writes = { n: 0 }) {
   const keys = store.sealedKeys;
-  return Object.create(store, { sealedKeys: { value: { ...keys, get: async (name) => (await new Promise((resolve) => setTimeout(resolve, 20)), keys.get(name)) } } });
+  const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const later = (write) => async (name, sealed) => (await pause(40 * ++writes.n), write(name, sealed));
+  return Object.create(store, { sealedKeys: { value: { ...keys, get: async (name) => (await pause(20), keys.get(name)), put: later(keys.put), putIfAbsent: later(keys.putIfAbsent) } } });
 }
 
 /** Each of `providers` makes an instance and runs `true` on it, all at once: their exit codes. */
@@ -144,7 +147,8 @@ test("two servers on one database at their first use together keep one key: the 
   t.after(() => fake.sshd.close());
   const sealKey = randomBytes(32);
   const { reopen } = await storeFile(t);
-  const stores = [slowReads(await reopen()), slowReads(await reopen())];
+  const writes = { n: 0 };
+  const stores = [slowReads(await reopen(), writes), slowReads(await reopen(), writes)];
   const providers = await Promise.all(
     stores.flatMap((store) => {
       const { computerDeps } = computerDepsFrom({ env: {}, store, sealKey, load: (id, options) => providerFor(id, options), daemon: async () => ({ up: true }) });
