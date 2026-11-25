@@ -13,6 +13,8 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { openSqliteStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
+import { END_PATCH_MS } from "../dist/runner/loop.js";
+import { fakeClock } from "./runner-support.mjs";
 import { closeOpenSessions, openSessions, piAdapterSpec, scriptedOrigin } from "./conformance-pi-adapter.mjs";
 
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
@@ -220,9 +222,12 @@ test("pi through the adapter: a fenced end writes neither the end nor its patch"
 
 test("pi through the adapter: an end patch whose reader stalls cannot hold a person's stop: the run still ends stopped, its cost and metrics unknown", async (t) => {
   const { server, start, until } = await setup(t);
-  const endPatch = () => new Promise(() => {});
+  // The end's bound is armed on this clock, which the stalled reader itself moves past it: it runs out while the reader
+  // waits, never after a real wait.
+  const clock = fakeClock();
+  const endPatch = () => (clock.advance(END_PATCH_MS), new Promise(() => {}));
   const { tool, running } = heldTool();
-  await start(loopWith(piAdapterSpec({ script: [{ call: "slow" }, { say: "done" }], tools: { slow: tool }, hooks: quiet }), { endPatch, endPatchMs: 500 }), "runner-a");
+  await start(loopWith(piAdapterSpec({ script: [{ call: "slow" }, { say: "done" }], tools: { slow: tool }, hooks: quiet }), { endPatch, endPatchTimer: clock }), "runner-a");
   await running;
   await server.command("run-1", { kind: "stop" });
   const row = await until((row) => row.state === "stopped" && row.runner === null, "the run did not stop");

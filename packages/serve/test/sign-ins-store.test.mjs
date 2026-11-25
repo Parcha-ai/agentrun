@@ -10,6 +10,7 @@ import {
   forgetSignIn, forgottenPointers, handedTo, openSavedPointer, pointerHash, savedSignIns, saveSignIn, signInsOverStore, SignInHandedTo, SignInMissing,
 } from "../dist/sign-ins-store.js";
 import { ApiError } from "../dist/errors.js";
+import { providerFor } from "@parcha/agentrun-computer";
 import { agentWithRevision, storeOn, T0 } from "./store-helpers.mjs";
 
 const KEY = randomBytes(32);
@@ -213,8 +214,29 @@ test("signInsOverStore.view: the old SignInView shape and the secret metadata; r
   // Browserbase keeps its save lease the settle window past the run's end (the context is still being written back): the
   // view matches, staying held and named by that run until the window passes, then ready.
   assert.deepEqual(await bridge.view("alpha"), [{ key: "default", provider: "browserbase", state: "held", held_by: runId, verified_at: new Date(verifiedAt).toISOString(), ...META }]);
-  clock.now += 10_000 + 1; // past BROWSERBASE_SETTLE_MS
+  clock.now += 10_000 + 1; // past Browserbase's settle window (its descriptor's profiles.settleMs)
   assert.deepEqual(await bridge.view("alpha"), [{ key: "default", provider: "browserbase", state: "ready", held_by: null, verified_at: new Date(verifiedAt).toISOString(), ...META }]);
+});
+
+// The settle window is one number, the Browserbase provider's own (capabilities().browser.profiles.settleMs): the one a
+// process's next saver waits out (browser-computer.ts) is the one the store's save lease and the owner's view hold a
+// sign-in for past its saving run's end. Two numbers let a saver open on a context still being written back while the
+// store still holds it for the run that wrote it.
+test("a Browserbase sign-in is held past its saving run's end for exactly its provider's settle window, the one the browser's own saver waits", async (t) => {
+  const provider = await providerFor("browserbase", { apiKey: "fake-test-key" });
+  const settleMs = provider.capabilities().browser.profiles.settleMs;
+  assert.ok(settleMs > 0, "Browserbase writes a saved context back after its session ends");
+  const { store, clock } = await storeOn(t);
+  await agentWithRevision(store, "alpha", "alpha-rev");
+  await saveSignIn(store, KEY, { agentId: "alpha", provider: "browserbase", pointer: "ctx-1" });
+  const bridge = signInsOverStore(store, KEY, fakeVendors());
+  const { claim } = await runningRun(store, { hashes: [pointerHash("ctx-1")] });
+  await store.runs.update(claim, { state: "ended" });
+  const state = async () => (await bridge.view("alpha"))[0].state;
+  clock.now += settleMs - 1;
+  assert.equal(await state(), "held", "within the provider's window");
+  clock.now += 2;
+  assert.equal(await state(), "ready", "past the provider's window");
 });
 
 test("signInsOverStore.view: an unreadable sign-in reads unreadable with held_by null; peek and forgotten carry the old shapes", async (t) => {
@@ -321,10 +343,10 @@ test("a verify guarded by the save it checked: a re-save between a run's check a
 });
 
 // P2-4 Browserbase settle hold (main parity): Browserbase writes a saved context back after its session ends, so the
-// saver's save lease must outlast the run leaving 'running' (ended OR parked) by BROWSERBASE_SETTLE_MS, or the next run
+// saver's save lease must outlast the run leaving 'running' (ended OR parked) by its settle window, or the next run
 // saves over a write-back in flight. Other vendors free the lease the instant the run leaves running. The settle window is
-// the serve layer's policy, passed to the store as signInSettleMs; the store stays vendor-agnostic.
-const SETTLE_MS = 10_000; // = sign-ins-store.ts's BROWSERBASE_SETTLE_MS (main's value)
+// the provider's descriptor's (profiles.settleMs), passed to the store as signInSettleMs; the store stays vendor-agnostic.
+const SETTLE_MS = 10_000; // = Browserbase's descriptor's profiles.settleMs
 
 /** A fresh store where "holder" binds the sign-in then leaves running (ends or parks); `offset` ms later on the store clock
  *  "next" binds the same sign-in under `settleMs`. Answers next's save. */

@@ -13,7 +13,9 @@
 //     default context is small, so every request names it: options.num_ctx, the model's trained context up to 64k
 //     (OLLAMA_NUM_CTX), and the model's window here is that same number.
 // Listing never stalls a caller: one short deadline for the whole listing, no redirects, and a down, hung or refused Ollama
-// lists no models and throws nothing. Each address's answer is kept (OLLAMA_TTL_MS) and refreshed behind the caller.
+// throws nothing. Each address's answer is kept (OLLAMA_TTL_MS) and refreshed behind the caller; a failed ask is no
+// answer: the models kept before it stay (none for a refused one: that Ollama is down), and are asked again at the next
+// call (listOllama).
 import { AsyncLocalStorage } from "node:async_hooks";
 import { calculateCost, collapseSystemMessages, createAssistantMessageEventStream, getCurrentSystemPrompt, getCurrentTools, type AssistantMessage, type AssistantMessageEventStream, type Model, type SimpleStreamOptions, type StreamOptions, type TranscriptContext } from "@earendil-works/pi-ai";
 import { transformMessages } from "@earendil-works/pi-ai/api/transform-messages";
@@ -27,12 +29,14 @@ export const OLLAMA_PROVIDER = "ollama";
 export const OLLAMA_API = "ollama-chat";
 /** The most context a request asks Ollama for (options.num_ctx), and so the most window a model has here: 64k. */
 export const OLLAMA_NUM_CTX = 65_536;
-/** How long a listing may take, all of it: a stuck Ollama costs a caller this once per OLLAMA_TTL_MS at most. */
+/** How long a listing may take, all of it: a stuck Ollama costs a caller this only where nothing is kept for its address
+ *  (ollamaModels); after that it is asked behind its callers. */
 export const OLLAMA_LIST_TIMEOUT_MS = 2_000;
-/** How long an address's listing is kept before it is asked again (behind the caller, which takes the kept one). */
+/** How long an address's listing is kept before it is asked again (behind the caller, which takes the kept one). A
+ *  failed ask is never kept fresh (listOllama). */
 export const OLLAMA_TTL_MS = 30_000;
 /** Ollama's port, where OLLAMA_HOST names none and no scheme. */
-const OLLAMA_PORT = "11434";
+export const OLLAMA_PORT = "11434";
 const ZERO = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } as const;
 
 /** A model as Ollama lists it: its tag, its capabilities, and the context it was trained on (undefined: /api/show says none). */
@@ -75,7 +79,8 @@ function splitHostPort(hostport: string): [string, string | undefined] {
   return [hostport, undefined];
 }
 
-/** Each address's last listing, by base URL, and the listing under way for it. */
+/** Each address's last listing, by base URL (`at` -Infinity: a failed ask's, stale at once), and the listing under way
+ *  for it. */
 const kept = new Map<string, { at: number; models: readonly OllamaListed[] }>();
 const asking = new Map<string, Promise<readonly OllamaListed[]>>();
 /** The clock a listing is kept by: Date.now, or a test's (ollamaClock). */
@@ -173,25 +178,44 @@ async function shownOf(ask: ReturnType<typeof askerOf>, name: string): Promise<O
 
 /**
  * The models the Ollama `env` names has, asked now: its tags (/api/tags), each one's capabilities and trained context
- * (/api/show), in the order Ollama lists them. All of it within `timeoutMs`, with no redirect followed; a refused
- * OLLAMA_HOST, a down or hung Ollama, or an answer of the wrong shape lists none, and nothing is thrown. A model /api/show
- * does not answer for, before the deadline included, is left out and the others kept; so is a cloud model (remote_host or
- * remote_model, in either answer). The answer is kept for its address (ollamaModels, ollamaKept). `fetch`: a test's.
+ * (/api/show), in the order Ollama lists them. All of it within `timeoutMs`, with no redirect followed; nothing is thrown.
+ * A model /api/show refuses is left out and the others kept; so is a cloud model (remote_host or remote_model, in either
+ * answer). The answer is kept for its address (ollamaModels, ollamaKept), fresh for OLLAMA_TTL_MS. A failed ask (a
+ * hung Ollama, an /api/tags of the wrong shape, or the deadline passing before every /api/show answered) is no listing:
+ * the address keeps the models it had (none kept, what this ask got), stale at once, so the next caller takes them and
+ * asks again behind it. A refused connection is an Ollama that is down: its address keeps none, stale too. `fetch`: a
+ * test's.
  */
 export async function listOllama(env: NodeJS.ProcessEnv, { fetch: send = globalThis.fetch, timeoutMs = OLLAMA_LIST_TIMEOUT_MS }: { fetch?: typeof fetch; timeoutMs?: number } = {}): Promise<readonly OllamaListed[]> {
   const base = baseOf(env);
   if (base === undefined) return [];
-  const ask = askerOf(base, send, AbortSignal.timeout(timeoutMs));
+  const deadline = AbortSignal.timeout(timeoutMs);
+  const ask = askerOf(base, send, deadline);
   let models: readonly OllamaListed[] = [];
+  let whole = false;
+  let down = false;
   try {
     const tags = (await ask("/api/tags")) as { models?: ({ name?: unknown; model?: unknown } & Remote)[] } | null;
-    const names = (Array.isArray(tags?.models) ? tags.models : []).filter((tag) => !remote(tag)).map((tag) => tag?.name ?? tag?.model).filter((name): name is string => typeof name === "string" && name.length > 0);
+    if (!Array.isArray(tags?.models)) throw new Error("/api/tags: no models list");
+    const names = tags.models.filter((tag) => !remote(tag)).map((tag) => tag?.name ?? tag?.model).filter((name): name is string => typeof name === "string" && name.length > 0);
     models = (await Promise.all(names.map((name) => shownOf(ask, name)))).filter((model): model is OllamaListed => model !== undefined);
-  } catch {
-    models = [];
+    whole = !deadline.aborted;
+  } catch (error) {
+    down = refused(error);
   }
-  kept.set(base, { at: now(), models });
-  return models;
+  const before = kept.get(base)?.models;
+  const listing = whole ? { at: now(), models } : { at: -Infinity, models: !down && before?.length ? before : models };
+  kept.set(base, listing);
+  return listing.models;
+}
+
+/** Whether `error` is a refused connection (ECONNREFUSED anywhere in its causes): nothing listens at the address. */
+function refused(error: unknown): boolean {
+  for (let at = error; at instanceof Error; at = at.cause) {
+    if ((at as NodeJS.ErrnoException).code === "ECONNREFUSED") return true;
+    if (at instanceof AggregateError && at.errors.some(refused)) return true;
+  }
+  return false;
 }
 
 /** How long a run gives the /api/show of the one Ollama model it names (ollamaShown): longer than a listing's, since the
@@ -236,8 +260,9 @@ export async function ollamaRelisted(env: NodeJS.ProcessEnv): Promise<readonly O
   kept.delete(base);
   return ollamaModels(env);
 }
-/** The models the Ollama `env` names had when last asked (ollamaModels): none where it was never asked. Synchronous, for
- *  the host's default model (model.ts hostModel), which a listing primes before it is read. */
+/** The models the Ollama `env` names had when last listed (ollamaModels; a failed ask keeps the ones before it, a refused
+ *  one none): none where it was never asked. Synchronous, for the host's default model (model.ts hostModel), which a
+ *  listing primes before it is read. */
 export function ollamaKept(env: NodeJS.ProcessEnv): readonly OllamaListed[] {
   const base = baseOf(env);
   return base === undefined ? [] : (kept.get(base)?.models ?? []);

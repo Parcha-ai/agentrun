@@ -352,7 +352,7 @@ describe("Build agent page, the Tools step", () => {
     expect(posts.map((p) => p.path)).toEqual(["/v2/agents"]);
     expect(posts[0].body.definition.tools, "the created agent's tools").toEqual(["mcp:gmail/GMAIL_SEND_EMAIL", "web_fetch"]);
     await act(async () => button("Build an agent").click());
-    expect(copied.mock.calls.at(-1)![0], "the coding agent is told the picked tools").toContain("mcp:gmail/GMAIL_SEND_EMAIL");
+    expect(copied.mock.calls.at(-1)![0], "the coding agent gets the draft that was picked, tools and place in it").toBe(buildAgentPrompt(origin, "Answer my email.", parseAgentDraft(draft)!));
   });
 
   it("puts where it runs, picked in the same step, on the created agent's request body", async () => {

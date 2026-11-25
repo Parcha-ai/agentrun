@@ -207,9 +207,10 @@ export function egressVolume({ computer, deadline = new Date(Date.now() + 600_00
  * networks there from the start, besides Docker's own ({ Name, ... } as `network inspect` reports one): none by default,
  * so create makes the egress bridge, and a docker run on a network that is not there fails as Docker's does. One with
  * `Late: true` is made by another create between this create's inspect and its own: inspect does not find it, and
- * create finds it there. `networkNames()` reads the networks there besides Docker's own.
+ * create finds it there. `networkNames()` reads the networks there besides Docker's own. `settleMs` and `settleQuietMs`
+ * are the provider's options of those names: a test of a removal that never ends sets the bound it waits out.
  */
-export function fakeDocker({ running = true, gone = false, containers = [], patch = {}, hello = {}, arch = "x86_64", info = {}, vanish = [], noDaemon = false, user, hold = [], desktop, display = "up", binds = {}, daemonMode = 0o755, daemonCache, volumes = [], egress = "ready", proxyPatch = {}, proxyLocal, egressOptions, endpoint = "unix:///var/run/docker.sock", images, pull = "ok", volume, volumeRoots = {}, lateRun = null, sticky = [], removing = {}, runFails = false, computerd = false, networks = [], inspectFails = [], env } = {}) {
+export function fakeDocker({ running = true, gone = false, containers = [], patch = {}, hello = {}, arch = "x86_64", info = {}, vanish = [], noDaemon = false, user, hold = [], desktop, display = "up", binds = {}, daemonMode = 0o755, daemonCache, volumes = [], egress = "ready", proxyPatch = {}, proxyLocal, egressOptions, endpoint = "unix:///var/run/docker.sock", images, pull = "ok", volume, volumeRoots = {}, lateRun = null, sticky = [], removing = {}, runFails = false, computerd = false, networks = [], inspectFails = [], env, settleMs, settleQuietMs } = {}) {
 	const dir = mkdtempSync(join(tmpdir(), "computer-fake-docker-"));
 	dirs.push(dir);
 	const log = join(dir, "calls.jsonl");
@@ -645,7 +646,7 @@ switch (args[0]) {
 	// container; egressOptions.hostRoot replaces it.
 	const hostRoot = join(dir, "host-root");
 	mkdirSync(hostRoot);
-	const options = { daemonPath, daemonCache: cache, docker: program, ...(user === undefined ? {} : { user }), ...(desktop === undefined ? {} : { desktop }), egress: { hostRoot, ...egressOptions }, ...(volume === undefined ? {} : { volume }), ...(env === undefined ? {} : { env }) };
+	const options = { daemonPath, daemonCache: cache, docker: program, ...(user === undefined ? {} : { user }), ...(desktop === undefined ? {} : { desktop }), egress: { hostRoot, ...egressOptions }, ...(volume === undefined ? {} : { volume }), ...(env === undefined ? {} : { env }), ...(settleMs === undefined ? {} : { settleMs }), ...(settleQuietMs === undefined ? {} : { settleQuietMs }) };
 	// `options` makes a fresh provider over the same Docker: another process's.
 	/** lateRun's marks: whether the daemon's late create has begun, and the container it made (its name), if it did. */
 	const late = () => ({ started: existsSync(join(dir, "late-started")), committed: existsSync(join(dir, "late-committed")) ? readFileSync(join(dir, "late-committed"), "utf8").replace(/^\//, "") : undefined });

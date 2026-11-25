@@ -30,6 +30,11 @@ export type RunWorkspaceOptions = {
     /** The run's mount credential, minted per run from the account key when a computer's mount asks for it: by default
      *  the claim's own (its token(), minted once and removed by its revoke()). No disk token is kept. */
     readonly mountToken?: () => Promise<string>;
+    /** Whether the open and the end sweep the run's exec spill folder (default true). False for a Workspace that only
+     *  writes files, opened beside the run's own: it runs no command, so it has no spill of its own, and a sweep would
+     *  delete the spill files of a command another Workspace of the run is still running (its output then reads back as
+     *  empty). */
+    readonly sweep?: boolean;
   }
 );
 
@@ -39,7 +44,36 @@ export interface RunWorkspace {
   end(): Promise<void>;
 }
 
-/** The Workspace of run `runId` of agent `agentId` for this claim: Mode 2's spill folder swept first. */
+/** A run's Workspace opened at its first use, by `open`, once for every use, and let go by `end`, which a claim
+ *  registers when it makes this, so an open still running at its release is ended too. After `end` a use is refused
+ *  (UNAVAILABLE) and opens nothing, and a use whose open finishes after it gets nothing to write to. An open that failed
+ *  fails the uses waiting on it, is tried again at the next use, and leaves nothing to end. `end` runs once. */
+export function openedAtUse(open: () => Promise<RunWorkspace>): { workspace(): Promise<Workspace>; end(): Promise<void> } {
+  let closed = false;
+  let opened: Promise<RunWorkspace> | undefined;
+  let ended: Promise<void> | undefined;
+  const refused = () => new WorkspaceError("UNAVAILABLE", "The run's claim has let its Workspace go.");
+  return {
+    workspace: () => {
+      if (closed) return Promise.reject(refused());
+      const opening = (opened ??= open().catch((error: unknown) => {
+        if (opened === opening) opened = undefined;
+        throw error;
+      }));
+      return opening.then((ws) => {
+        if (closed) throw refused();
+        return ws.workspace;
+      });
+    },
+    end: () => (ended ??= (async () => {
+      closed = true;
+      const ws = await opened?.catch(() => undefined);
+      await ws?.end();
+    })()),
+  };
+}
+
+/** The Workspace of run `runId` of agent `agentId` for this claim: Mode 2's spill folder swept first, unless `sweep` is false. */
 export async function openRunWorkspace(options: RunWorkspaceOptions): Promise<RunWorkspace> {
   const { agentId, runId, log } = options;
   if (options.mode === 1) {
@@ -78,6 +112,7 @@ export async function openRunWorkspace(options: RunWorkspaceOptions): Promise<Ru
   await workspace.ensureRoot().catch((error: WorkspaceError) => {
     throw new WorkspaceError(error.code, `the run's folder on its Archil disk could not be made: ${error.message}`, { cause: error });
   });
+  if (options.sweep === false) return { workspace, end: async () => {} };
   await sweep("start");
   let ended: Promise<void> | undefined;
   return { workspace, end: () => (ended ??= sweep("end")) };

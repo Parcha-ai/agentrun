@@ -9,7 +9,7 @@ import { fakeOllama, SYNTH_MODELS } from "./fixtures/fake-ollama.mjs";
 import { freePort } from "./fixtures/ports.mjs";
 import { agent, serve, withEnv } from "./support.mjs";
 
-const { ollamaAsking, ollamaClock, OLLAMA_TTL_MS } = await import("../dist/ollama-provider.js");
+const { ollamaAsking, ollamaClock } = await import("../dist/ollama-provider.js");
 
 // The suites turn every Ollama off (support.mjs); this file asks its own fakes alone.
 delete process.env.AGENTRUN_SERVE_FAUX_NO_OLLAMA;
@@ -68,18 +68,18 @@ test("an Ollama with a tools model: pi is available, that model its default", { 
   assert.equal(body.models.ready, true);
 });
 
-test("an Ollama started after the server, with a tools model: pi turns available once the kept listing goes stale, with no restart", { timeout: 120_000 }, async (t) => {
+test("an Ollama started after the server, with a tools model: pi turns available with no wait for a TTL (the down answer is never kept fresh) and no restart", { timeout: 120_000 }, async (t) => {
   withEnv(t, {}, KEYS);
-  let clock = 1_000_000;
-  ollamaClock(() => clock);
+  // Held still: nothing here waits for the kept listing to age.
+  ollamaClock(() => 1_000_000);
   t.after(() => ollamaClock());
   const port = await freePort();
   const env = { OLLAMA_HOST: `127.0.0.1:${port}` };
   withEnv(t, env);
   const { api } = await serve(t, { faux: undefined });
   assert.equal(piOf(await caps(api)).available, false, "Ollama down: no model");
+  await ollamaAsking(env);
   await fakeOllama(t, { port, models: [TOOLS] });
-  clock += OLLAMA_TTL_MS;
   await api("GET", "/capabilities");
   await ollamaAsking(env);
   const pi = piOf(await caps(api));

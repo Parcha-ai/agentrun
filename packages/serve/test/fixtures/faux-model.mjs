@@ -190,7 +190,7 @@ function replyTo(context, faux) {
   // Searches the web once for what follows "Search the web for ", then answers with the search's answer.
   if (first.includes("Search the web for ")) {
     const query = first.slice(first.indexOf("Search the web for ") + "Search the web for ".length).replace(/\.$/, "");
-    return results === 0 ? faux.message(faux.toolCall("web_search", { query, n: 2 }), { stopReason: "toolUse" }) : faux.message(`Found: ${textOf(context.messages.at(-1))}`);
+    return results === 0 ? faux.message(faux.toolCall("web_search", { objective: query, n: 2 }), { stopReason: "toolUse" }) : faux.message(`Found: ${textOf(context.messages.at(-1))}`);
   }
   // Quotes a key read from a file the test names (so the prompt never holds it): in its thinking, in its text (base64),
   // in a tool call's arguments, then in its answer (timeline-redact-all.test.mjs holds that value as a key).
@@ -284,14 +284,14 @@ function replyTo(context, faux) {
   const topic = /^Research (.+) on the web and write report\.md\.$/s.exec(first)?.[1];
   if (topic) {
     const found = (index) => JSON.parse(textOf(context.messages.filter((m) => m.role === "toolResult")[index]));
-    if (results === 0) return faux.message(faux.toolCall("web_search", { query: topic, n: 2 }), { stopReason: "toolUse" });
+    if (results === 0) return faux.message(faux.toolCall("web_search", { objective: topic, n: 2 }), { stopReason: "toolUse" });
     if (results === 1) return faux.message(faux.toolCall("web_fetch", { url: "http://public.example/" }), { stopReason: "toolUse" });
     if (results === 2) return faux.message(faux.toolCall("write", { path: "report.md", content: `# ${topic}\n\n${found(1).text?.includes("forty-two") ? "The answer is forty-two" : "No answer"} (${found(1).title}, ${found(1).url}).\n` }), { stopReason: "toolUse" });
     return faux.message("Wrote report.md.");
   }
   // Searches the web once for what its first message says, with web_search, then says so.
   const query = /^Search the web for (.+)$/s.exec(first)?.[1];
-  if (query) return results === 0 ? faux.message(faux.toolCall("web_search", { query, n: 3 }), { stopReason: "toolUse" }) : faux.message("Searched.");
+  if (query) return results === 0 ? faux.message(faux.toolCall("web_search", { objective: query, n: 3 }), { stopReason: "toolUse" }) : faux.message("Searched.");
   // A follow-up that browses once more: a snapshot, then what it saw.
   if (browse && users.length > 1 && last === "Browse the example page again.") return answered ? faux.message(`Seen again: ${textOf(context.messages.at(-1))}`) : faux.message(faux.toolCall("snapshot", {}), { stopReason: "toolUse" });
   // "Browse the example page, then ask me once <file> exists.": a snapshot, then, once the test has made that file, an

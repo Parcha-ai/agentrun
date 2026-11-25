@@ -1,5 +1,6 @@
 #!/bin/sh
-# A run of the image holds its own model's key and nothing else, and reaches none of what its server keeps.
+# A run of the image holds its tool's key and nothing else (no model key: the faux model sends none), and reaches none of
+# what its server keeps.
 #
 # A container of <image> is started with every secret the launcher names set to a canary (the seal key a base64 key of 32
 # bytes, AGENTRUN_TOKENS an id and a 32-character secret), its server on the faux model of image-custody-faux.mjs (this
@@ -9,8 +10,9 @@
 # user the Docker socket's. It fails, one line for each, when:
 #   - the capabilities do not say run_isolation "uid";
 #   - the server's user is in more than 4 groups, or in any slot's group;
-#   - the run's process holds any secret but its model's (OpenAI's: the agent is on an OpenAI model), as its own secrets
-#     module answers secret(name), or has one in its environment;
+#   - the run's process holds any secret but its tool's (Parallel's: the agent, on an OpenAI model, is granted web_search;
+#     the faux model sends no key, so no model provider's), as its own secrets module answers secret(name), or has one in
+#     its environment;
 #   - the run's process, or a program it starts, runs as the uid that owns the data directory (the server's) or one
 #     outside the helper's range, holds a group but its slot's, a capability in any set, or no no_new_privs; lists that
 #     directory or reads a file of it (seal/seal.key, the store), or opens the memory of a process of that uid;
