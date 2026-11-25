@@ -646,8 +646,10 @@ async function renewUnderLock(dir: string, file: string, seen: string, refresh: 
         if (before === "own") {
           const answer = await postRefresh(held.oauth, refresh, options);
           const after = await locks.owned();
+          // Written back (or held) before the line is said: a log that throws never loses the pair the post rotated.
+          const renewed = await writeBack(file, refresh, answer, options);
           if (after !== "own") say({ claude_login: lockWord(after), at: "after_post" });
-          return await writeBack(file, refresh, answer, options);
+          return renewed;
         }
         say({ claude_login: lockWord(before), at: "before_post" });
       } finally {
