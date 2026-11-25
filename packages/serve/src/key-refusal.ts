@@ -283,7 +283,6 @@ function visible(text: string, from: number, count: number, to: number, fold: bo
   const parts: string[] = [];
   let span = 0;
   let found = 0;
-  let escape: { char: string; end: number } | undefined;
   for (let at = from; at < to && found < count && span <= ANSWER_PIECE; ) {
     SPACES.lastIndex = at;
     let end = SPACES.test(text) ? SPACES.lastIndex : at;
@@ -293,12 +292,20 @@ function visible(text: string, from: number, count: number, to: number, fold: bo
     } else {
       while (end - at <= ANSWER_PIECE && end + 3 <= to && text[end] === "%" && HEX_PAIR.test(text.slice(end + 1, end + 3))) end += 3;
       if (end > at) found += kept(Buffer.from(text.slice(at, end).replaceAll("%", ""), "hex").toString("utf8"), fold);
-      else if ((text[at] === "\\" && (escape = jsonEscapeAt(text, at)) !== undefined) || (text[at] === "&" && (escape = entityAt(text, at)) !== undefined)) {
-        end = escape.end;
-        found += kept(escape.char, fold);
-      } else {
-        end = at + 1;
-        if (text[at] !== "+") found += kept(text[at]!, fold);
+      else {
+        // A character past U+FFFF is read whole, its two UTF-16 units as they are or as two escapes, as the views gather
+        // it before they squeeze it: a combining mark past U+FFFF is then dropped as the views drop it, where each of
+        // its halves alone would count as one.
+        let read = charAt(text, at);
+        end = read.end;
+        if (end < to && HIGH(read.char)) {
+          const low = charAt(text, end);
+          if (LOW(low.char)) {
+            read = { char: read.char + low.char, end: low.end, raw: false };
+            end = low.end;
+          }
+        }
+        if (!(read.raw && read.char === "+")) found += kept(read.char, fold);
       }
       parts.push(text.slice(at, end));
       span += end - at;
@@ -309,6 +316,16 @@ function visible(text: string, from: number, count: number, to: number, fold: bo
   }
   return { parts, found, span };
 }
+/** The character text[at] starts, as the views read it: a JSON escape's (jsonEscapeAt) or a character reference's
+ *  (entityAt), else the UTF-16 unit itself (`raw`), and where it ends. */
+function charAt(text: string, at: number): { char: string; end: number; raw: boolean } {
+  let escape: { char: string; end: number } | undefined;
+  if ((text[at] === "\\" && (escape = jsonEscapeAt(text, at)) !== undefined) || (text[at] === "&" && (escape = entityAt(text, at)) !== undefined))
+    return { ...escape, raw: false };
+  return { char: text[at]!, end: at + 1, raw: true };
+}
+const HIGH = (char: string): boolean => char.length === 1 && char.charCodeAt(0) >= 0xd800 && char.charCodeAt(0) <= 0xdbff;
+const LOW = (char: string): boolean => char.length === 1 && char.charCodeAt(0) >= 0xdc00 && char.charCodeAt(0) <= 0xdfff;
 const SPACES = /\s+/y;
 const HEX_PAIR = /^[0-9A-Fa-f]{2}$/;
 /** What every view drops between a text's strings: a quote and JSON's punctuation (the join view). */
