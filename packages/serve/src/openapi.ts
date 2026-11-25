@@ -307,10 +307,19 @@ const RUN_GRAPH = {
     read_at: { type: "string", format: "date-time", description: "When the view shown was read: the run process's last live view while it goes, else the read itself." },
     run: {
       type: "object", additionalProperties: false, required: ["id", "agent", "revision", "status", "paused", "startedAt", "endedAt"],
-      properties: { id: { type: "string" }, agent: { type: "string" }, revision: { type: "string" }, status: ref("schemas/RunStatus"), paused: { type: "boolean" }, startedAt: { type: "string", format: "date-time" }, endedAt: { type: ["string", "null"], format: "date-time" } },
+      properties: {
+        id: { type: "string" }, agent: { type: "string" }, revision: { type: "string" }, status: ref("schemas/RunStatus"), paused: { type: "boolean" }, startedAt: { type: "string", format: "date-time" }, endedAt: { type: ["string", "null"], format: "date-time" },
+        withheld: { const: true, description: "Present when the run's facts hold a saved secret split across two of them (its agent and its revision): `agent` and `revision` are then \"[redacted]\", and the rest is served as it is." },
+      },
     },
     workflow: { type: "object", description: "The revision's workflow definition." },
-    graph: { type: "object", required: ["nodes", "edges"], description: "The DSL's workflowGraph of the definition: nodes { path, kind, label, via?, changeCheck } and edges { from, to, kind }." },
+    graph: {
+      type: "object", additionalProperties: true, required: ["nodes", "edges"], description: "The DSL's workflowGraph of the definition: nodes { path, kind, label, via?, changeCheck } and edges { from, to, kind }.",
+      properties: {
+        nodes: { type: "array", items: { type: "object" } }, edges: { type: "array", items: { type: "object" } },
+        withheld: { const: true, description: "Present when the graph's words hold a saved secret split across two of them: the graph is then served with no nodes and no edges." },
+      },
+    },
     nodes: {
       type: "object", description: "Each graph node's state, by its path.",
       additionalProperties: {
@@ -2278,6 +2287,34 @@ const AGENT_PACKAGE_FILE = closed({ path: { type: "string", description: "Its pa
 /** One thing an export does not carry as it is here: what it is, which one, and why. */
 const EXPORT_NOTE = closed({ kind: { type: "string", enum: [...EXPORT_NOTE_KINDS], description: "What the note is about." }, name: { type: "string", description: "Which one: a server, a trigger, a tool's key. A credential in the clear is named by its field (`<trigger>: source.urls.0`, `<server>: pin.<tool>.api_key`), never its value." }, reason: { type: "string" } });
 
+/** A cut in a share bundle (GET /runs/{run_id}/export): where it is and what kind, never its value. */
+const SHARE_CUT = closed({
+  id: { type: "string", pattern: "^c_[0-9a-f]{16}$", description: "Stable across exports of the run: made of the run, `at`, the rule and the rule's ordinal in that string, never of the value." },
+  at: { type: "string", description: "An RFC 6901 pointer to the string in this document." },
+  start: { type: "integer", minimum: 0, description: "Where the cut's marker starts in that string, as it is here." },
+  end: { type: "integer", minimum: 0 },
+  rule: { type: "string" },
+  kind: { enum: ["format", "held", "dump", "label", "personal", "jev"] },
+  restorable: { type: "boolean", description: "label, personal and jev cuts may be restored; format, held and dump cuts never." },
+  shape: { type: "string", description: "A public prefix or a character class, and the length: never the value." },
+});
+/** A restored cut in a share bundle: its value is in place at `start`-`end` of the string at `at`. */
+const SHARE_RESTORED = closed({ id: { type: "string", pattern: "^c_[0-9a-f]{16}$" }, at: { type: "string" }, start: { type: "integer", minimum: 0 }, end: { type: "integer", minimum: 0 }, rule: { type: "string" }, kind: { enum: ["label", "personal", "jev"] } });
+/** A run's share bundle (run-export.ts): one JSON document, written canonically (keys sorted, no space). */
+const SHARE_BUNDLE = closed({
+  format: { const: "agentrun.share/1" },
+  sha256: { type: "string", pattern: "^[0-9a-f]{64}$", description: "Hex sha256 of the document without `sha256`, written as this answer is: keys sorted, no whitespace." },
+  source: closed({ agentrun: { type: "string" }, scrubber: closed({ version: { type: "integer" }, rules: { type: "string", pattern: "^[0-9a-f]{64}$", description: "sha256 of the scrubber's rules, each `id:kind`, one a line." } }) }),
+  agent: closed({ name: { type: "string" }, kind: { enum: ["agentic", "workflow"] } }),
+  run: { type: "object", description: "The run as `GET /runs/{run_id}` serves it, these fields alone: kind, status, state, title, created_at, ended_at, result, error, review, cost, stopped_for, budget_refused_calls, effort, approvals, and imported_from with its source alone." },
+  rows: { type: "array", items: { type: "object" }, description: "Its Timeline rows as `GET /runs/{run_id}/timeline` serves them." },
+  graph: { type: ["object", "null"], description: "A workflow run's graph as `GET /runs/{run_id}/graph` serves it, but for `read_at` and the run's ids (`run` carries status, paused, startedAt and endedAt); null for an agentic run." },
+  files: { type: "array", items: closed({ path: { type: "string" }, bytes: { type: "integer", minimum: 0 }, sha256: { type: "string", pattern: "^[0-9a-f]{64}$", description: "As a template package's: path, a NUL byte, the content's bytes, a NUL byte." }, encoding: { const: "utf8" }, content: { type: "string" } }), description: "The run's UTF-8 text files, sorted by path: 256 KiB each, 4 MiB and 200 files in all." },
+  omitted: { type: "array", items: { type: "object", additionalProperties: false, required: ["what", "why"], properties: { what: { enum: ["file", "files", "recordings"] }, path: { type: "string" }, why: { enum: ["binary", "too_large", "over_total", "over_count", "unreadable", "list_truncated", "uncounted", "never"] } } }, description: "What the bundle leaves out, and why. Recordings and screenshots are never carried." },
+  cuts: { type: "array", items: SHARE_CUT },
+  restored: { type: "array", items: SHARE_RESTORED },
+});
+
 const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/agents/{agent_id}": {
     delete: {
@@ -2488,6 +2525,15 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       parameters: [ref("parameters/RunId")],
       responses: { "200": json(RUN_USAGE, "The run's usage lines, or why it has none."), ...errors(401, 403, 404, 429, 500) },
       "x-agentrun-serve": "runusage/1",
+    },
+  },
+  "/runs/{run_id}/export": {
+    get: {
+      operationId: "getRunExport", tags: ["runs"], summary: "An ended run as a share bundle, every string cut",
+      description: "The run as one `agentrun.share/1` document, the one a share page renders: its view's allowlisted fields, its Timeline rows, a workflow's graph, its UTF-8 text files within the caps, what is left out (`omitted`), and its sha256. Every string in it from the run is cut by the scrubber, with the values this server holds and the sign-ins the run was handed as its held values: a known key format, a held value and a dump (env output, a .env file, ~/.ssh) are cut for good; a value beside a label (`PGPASSWORD=`, `Authorization:`, `--password`) and a personal detail (a home path's user, an email, a private address) are cut and may be restored. Each cut is a record in `cuts`: where it is, its rule and kind, whether it may be restored, and its shape, never its value. The document is the same bytes on every export of the run, and is read back before it is answered: a value the cut left, or a scrub that failed, answers `500` with an empty body. `restore` re-exports with those cuts' values in place, each record moved to `restored`; an id of a cut that may not be restored, or of no cut, is `400`, and nothing is restored. `409 run_not_final` until the run has ended; `403 forbidden` while this server can't read the browser sign-in the run was handed; `413 export_too_large` over 8 MiB, never cut short.",
+      parameters: [ref("parameters/RunId"), { name: "restore", in: "query", required: false, description: "Cut ids to restore, comma-separated (the parameter may repeat): each a label, personal or jev cut of this run's bundle.", schema: { type: "string" } }],
+      responses: { "200": json(SHARE_BUNDLE, "The run's share bundle."), "500": { description: "The export failed closed: a scrub failed, or the bundle read back held a value. No body." }, ...errors(400, 401, 403, 404, 409, 413, 429) },
+      "x-agentrun-serve": "share/1",
     },
   },
   "/runs/{run_id}/browser": {
@@ -4219,7 +4265,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     tool_input: {
       type: "object", additionalProperties: true,
-      description: `On a \`tool_use\` row of a timeline read with \`calls=whole\` alone: the call's arguments as the agent sent them, each string through the run's redaction (a value this server holds, or text shaped like a key, reads \`[redacted]\`). Its names, values and brackets together are cut at ${CALL_RESULT_CHARS} characters, the bound \`tool_result_text\` has, in order, each name and value at least one character and each array or object its two brackets: the name or string that reaches it is cut there, a number, boolean or null that would pass it shows as \`...\`, an array or object then ends with one \`...\` (an item, or a \`...\` name), and a value past it shows as \`...\`. Its URLs keep their query values, as an approval's arguments do. Absent otherwise.`,
+      description: `On a \`tool_use\` row of a timeline read with \`calls=whole\` alone: the call's arguments as the agent sent them, each string through the run's redaction (a value this server holds, or text shaped like a key, reads \`[redacted]\`). Its names, values and brackets together are cut at ${CALL_RESULT_CHARS} characters, the bound \`tool_result_text\` has, in order, each name and value at least one character and each array or object its two brackets: the name or string that reaches it is cut there, a number, boolean or null that would pass it shows as \`...\`, an array or object then ends with one \`...\` (an item, or a \`...\` name), and a value past it shows as \`...\`. Its URLs keep their query values, as an approval's arguments do. Absent when the call's arguments are withheld whole, as they are when a held value is split across two of their strings, or across a property name and its value (the row's \`tool_input_preview\` then reads \`[redacted]\`), and absent otherwise.`,
       "x-agentrun-serve": "callswhole/1",
     },
     tool_result_text: {

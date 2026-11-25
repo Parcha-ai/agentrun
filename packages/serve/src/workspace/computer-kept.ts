@@ -6,13 +6,14 @@
 // the kept computer is ended, and a later resume makes a new one, said as any replaced computer is, and why.
 //
 // One server setting per run holds it (`computer_kept:<run id>`): its provider, its kind, its ref, the claim epoch its
-// labels carry, and the time it is kept until. The claim that parks writes it; the claim that resumes in time takes it
-// off and attaches the computer. At its time it is ended by the parking runner's own timer and, whatever became of
+// labels carry, the Archil disk its mount credential is on (where it holds the run's folder there), and the time it is
+// kept until. The claim that parks writes it; the claim that resumes in time takes it off and attaches the computer. At its time it is ended by the parking runner's own timer and, whatever became of
 // that process (a server's restart), by the janitor (computer-janitor.ts), which reads every row at each sweep and wakes
-// at the earliest time still ahead. Ending one marks its row ending (no claim takes it after), deletes the computer, then
-// marks the row ended, so the resume says why its computer is new; a row left ending (its process died, or its delete
-// failed or hung mid-way) is deleted again at the janitor's next pass. A row whose run is final is removed, its computer
-// deleted first.
+// at the earliest time still ahead. Ending one marks its row ending (no claim takes it after), deletes the computer and
+// removes the mount credential of a run folder it held on Archil, then marks the row ended, so the resume says why its
+// computer is new; a row left ending (its process died, or its delete or remove failed or hung mid-way) is ended again at
+// the janitor's next pass, with no remove once the credential's ttl is past its time. A row whose run is final is
+// removed, its computer deleted first.
 //
 // A sandbox's run folder is the run's either way (bound from this machine, or on Archil, as before); what the keep adds is
 // the rest of the machine (its other files, its processes). A synced folder's delta lands on the disk at the park; what
@@ -119,6 +120,10 @@ export type Kept = {
   /** The kind of the run's folder it holds (a bind, an Archil mount or a synced folder); none: it holds none. A claim
    *  takes it back only to hold the folder the same way (computer-for-claim.ts reattach). */
   readonly folder?: MountKind;
+  /** The Archil disk the run's mount credential is on, where `folder` is archil: the janitor that ends the row removes
+   *  the credential there, whatever became of the run's row or its agent's disk since. Absent: none is removed, and the
+   *  credential ends at its ttl. */
+  readonly disk?: string;
   /** The runner that kept it and that runner's process (its presence incarnation), where only that runner can reach it
    *  again (pinnedOf): both or neither. Absent: any runner takes it back. */
   readonly runner?: string;
@@ -188,15 +193,16 @@ export type KeptSettings = Pick<Settings, "get" | "put" | "putIfAbsent" | "repla
 /** A row's value as a Kept, or undefined for anything else. */
 export function keptOf(value: unknown): Kept | undefined {
   if (!value || typeof value !== "object") return undefined;
-  const { provider, kind, id, name, epoch, until, folder, runner, incarnation, taking, ending, ended } = value as Record<string, unknown>;
+  const { provider, kind, id, name, epoch, until, folder, disk, runner, incarnation, taking, ending, ended } = value as Record<string, unknown>;
   if (typeof provider !== "string" || (kind !== "desktop" && kind !== "phone" && kind !== "sandbox") || typeof id !== "string" || typeof name !== "string") return undefined;
   if (typeof epoch !== "number" || !Number.isSafeInteger(epoch) || typeof until !== "number" || !Number.isFinite(until)) return undefined;
   if (folder !== undefined && folder !== "bind" && folder !== "archil" && folder !== "sync") return undefined;
+  if (disk !== undefined && typeof disk !== "string") return undefined;
   // Its runner and incarnation together, or neither.
   if ((runner === undefined) !== (incarnation === undefined)) return undefined;
   if (runner !== undefined && (typeof runner !== "string" || typeof incarnation !== "string")) return undefined;
   if (taking !== undefined && (typeof taking !== "number" || !Number.isSafeInteger(taking))) return undefined;
-  const held = { ...(folder === undefined ? {} : { folder: folder as MountKind }), ...(typeof runner === "string" && typeof incarnation === "string" ? { runner, incarnation } : {}) };
+  const held = { ...(folder === undefined ? {} : { folder: folder as MountKind }), ...(typeof disk === "string" ? { disk } : {}), ...(typeof runner === "string" && typeof incarnation === "string" ? { runner, incarnation } : {}) };
   if (ended === true) return { provider, kind, id, name, epoch, until, ...held, ended: true };
   if (ending === true) return { provider, kind, id, name, epoch, until, ...held, ending: true };
   return { provider, kind, id, name, epoch, until, ...held, ...(typeof taking === "number" ? { taking } : {}) };
@@ -207,6 +213,7 @@ export function keptOf(value: unknown): Kept | undefined {
 const rowOf = (kept: Kept, state?: "ending" | "ended"): Kept => ({
   provider: kept.provider, kind: kept.kind, id: kept.id, name: kept.name, epoch: kept.epoch, until: kept.until,
   ...(kept.folder === undefined ? {} : { folder: kept.folder }),
+  ...(kept.disk === undefined ? {} : { disk: kept.disk }),
   ...(kept.runner === undefined || kept.incarnation === undefined ? {} : { runner: kept.runner, incarnation: kept.incarnation }),
   ...(state === undefined && kept.taking !== undefined ? { taking: kept.taking } : {}),
   ...(state === "ending" ? { ending: true as const } : state === "ended" ? { ended: true as const } : {}),
@@ -431,7 +438,8 @@ export type KeptSweep = { readonly ended: readonly string[]; readonly failed: re
 /**
  * The janitor's pass over every kept row: one whose run is final in the store, or no longer there, has its computer
  * deleted (unless its time already ended it) and the row removed; one past its time, or left ending, is ended (endKept),
- * each delete bounded by `deleteMs` (KEPT_DELETE_MS). The rest are left, the earliest of their times answered as `next`.
+ * each delete bounded by `deleteMs` (KEPT_DELETE_MS), and one on Archil has its mount credentials removed (`revokeMount`).
+ * The rest are left, the earliest of their times answered as `next`.
  * `providerOf`: the provider a row names, made with this server's keys, or undefined when this server can't make it (its
  * keys gone): that row is left and said. A row pinned to a runner other than this one (`self`) that is still there under
  * the row's incarnation (`runners`, seen within RUNNER_STALE_MS) is left whatever its time or its run: only that
@@ -453,6 +461,11 @@ export async function sweepKept(deps: {
   readonly runners?: Pick<Runners, "live">;
   /** The runner this sweep runs in (its name and presence incarnation): the rows pinned to it are its own to end. */
   readonly self?: KeptHolder;
+  /** Removes run `runId`'s Archil mount credentials of the row's claim epoch and earlier, by their names: asked after
+   *  the delete of a row whose computer held the run's folder on Archil, within the same bound. No claim removes that
+   *  credential once the janitor ends the row (a stop takes no row; a resume that starts no computer never reads it).
+   *  One that throws leaves the row ending, for the next pass. */
+  readonly revokeMount?: (runId: string, kept: Kept) => Promise<void>;
 }): Promise<KeptSweep> {
   const ended: string[] = [];
   const failed: string[] = [];
@@ -493,9 +506,10 @@ export async function sweepKept(deps: {
         failed.push(`${kept.name} of run ${runId}: this server can't reach ${kept.provider} to end it`);
         continue;
       }
-      const proven = () => deleteKept(provider, kept).then(async (ok) => {
-        if (ok) await deps.deleted?.(kept.provider, kept.id);
-      });
+      const proven = async (): Promise<void> => {
+        if (await deleteKept(provider, kept)) await deps.deleted?.(kept.provider, kept.id);
+        if (kept.folder === "archil") await deps.revokeMount?.(runId, kept);
+      };
       const deleted = await endKept(deps.settings, runId, kept, () => bounded(deps.deleteMs ?? KEPT_DELETE_MS, proven()));
       if (deleted) ended.push(kept.name);
       if (deleted && over) await deps.settings.removeIf(row.key, rowOf(kept, "ended"));

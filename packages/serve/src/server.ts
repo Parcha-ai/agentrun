@@ -115,6 +115,7 @@ import { runCutValues } from "./run-cut.js";
 import { type HeldRefusal, readLaunchBody } from "./run-launch.js";
 import { modelKeyMisfit, modelKeyOf, modelKeyRequired, noServerKeyFor, runModelOrigin, serverKeyMissing } from "./run-model-key.js";
 import { listRunFiles as listRunFilesOverStore, readRunFile as readRunFileOverStore, runGraphView, type RunReadsDeps, runTimelines } from "./run-reads-over-store.js";
+import { type CutScrub, ExportFailed, restoreIdsOf, runExport } from "./run-export.js";
 import { triggerTargets, type TriggerTargetDeps } from "./trigger-targets.js";
 import { labelFilter, labelsIssues } from "./run-labels.js";
 import { listRuns as listRunsOverStore, readRun as readRunOverStore, runOfOrigin as runOfOriginOverStore } from "./store-reads/runs.js";
@@ -535,6 +536,8 @@ export type ServeOptions = {
    *  command row is written, with the run's id and the message's text, so a test can hold a message at the run's door while
    *  the run's state changes under it (runs-over-store.ts message). */
   beforeSubmit?: (runId: string, content: string) => Promise<void> | void;
+  /** A test's seam: the scrubber GET /runs/{id}/export cuts with (run-export.ts), in place of secret-cut.ts scrub. */
+  shareScrub?: CutScrub;
   /** A test's seam: step 2 of DELETE /agents/{id} (agent-delete.ts) in place of the learning module's deleteLearning over
    *  the agent's learning folder (learn/delete.ts), the server's own. */
   deleteLearning?: DeleteLearning;
@@ -753,6 +756,8 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/runs\/([^/]+)\/trace$/, name: "getRunTrace" },
   // A run's usage lines (run-usage.ts): by meter, model, charger and provider, each with its quantity and its cost.
   { method: "GET", pattern: /^\/runs\/([^/]+)\/usage$/, name: "getRunUsage" },
+  // A run's share bundle (run-export.ts): an ended run as one agentrun.share/1 document, every string cut by the scrubber.
+  { method: "GET", pattern: /^\/runs\/([^/]+)\/export$/, name: "getRunExport" },
   { method: "POST", pattern: /^\/workflows\/validate$/, name: "validateWorkflow" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/pause$/, name: "pauseRun" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/resume$/, name: "resumeRun" },
@@ -5851,6 +5856,41 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // or where its figure is not its booking's.
         // Names through the run's cut, and a withheld run refused (403), as its trace is.
         return send(res, 200, await servedRunUsage({ serverSecrets, signIns, sealKey }, store, id));
+      case "getRunExport": {
+        await needRun(id);
+        const restore = restoreIdsOf(url);
+        const viewDeps = viewDepsFor(ownOriginOf());
+        let bundle: { body: string };
+        try {
+          bundle = await runExport(id, {
+            view: () => viewOverStore(store, id, viewDeps),
+            withheld: () => withheldOverStore(store, id, viewDeps),
+            // The rows as GET /runs/{id}/timeline serves them, under the run's one cut; a workflow's graph as its route.
+            rows: () => servedTimelineRows(servedTimelineDeps, store, id, ctx, false),
+            // The same rows with their calls' arguments, read for each call's context alone (ruling LVI): never carried.
+            calls: () => servedTimelineRows(servedTimelineDeps, store, id, ctx, true),
+            graph: () => runGraphView(store, id, runReadsDeps),
+            files: async () => {
+              const listed = await listRunFilesOverStore(store, id, runReadsDeps);
+              const workspace = listed.files.length ? await runReadsDeps.runWorkspace(store, id) : null;
+              const files = workspace ? listed.files.map((file) => ({ path: file.path, size: file.size_bytes, ...(file.unreadable ? { unreadable: true } : {}), read: (limit: number) => workspace.read(file.path, { offset: 0, length: limit }) })) : [];
+              return { files, truncated: listed.truncated };
+            },
+            agentName: async (agentId) => (await getAgent(store, agentId))?.agent.name,
+            // Read last, after everything above was served under it: the cut only grows.
+            cut: () => runCutValues({ serverSecrets, signIns, sealKey }, store, id),
+          }, { restore, version: VERSION, ...(options.shareScrub ? { scrub: options.shareScrub } : {}) });
+        } catch (error) {
+          if (error instanceof ApiError) throw error;
+          // Fails closed: a scrub that failed, a read-back that found a value, or anything else that threw while the
+          // bundle was made. Not one byte of it: a 500 with an empty body. The log names why, never a word of the run.
+          log?.(logLine("export_failed", { run: id, why: error instanceof ExportFailed ? error.message : (error as Error)?.name ?? "error" }));
+          res.writeHead(500, { "cache-control": "no-store", "content-length": "0" });
+          return void res.end();
+        }
+        res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store", "x-content-type-options": "nosniff", "content-length": String(Buffer.byteLength(bundle.body)) });
+        return void res.end(bundle.body);
+      }
       case "getRunTrace":
         await needRun(id);
         // The run's spans over its served Timeline rows and its journal (run-trace.ts): cut by the run's one cut, as its

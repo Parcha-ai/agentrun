@@ -58,7 +58,7 @@ import { type AgentComputerHold, agentComputerOf, forgetAgentComputer, holdAgent
 import type { MountCheck } from "./attach.js";
 import { type AttachedComputers, pairedProvider, withPaired } from "./attached-computers.js";
 import { computerHold, type HeldComputer, heldHands } from "./computer-hold.js";
-import { endingDeletes, figuresOf, type IntervalWrites, intervalWrites } from "./computer-intervals.js";
+import { endingDeletes, figuresOf, type IntervalWrites, intervalWrites, stderrLog } from "./computer-intervals.js";
 import { type ComputeLedger, type ComputeMeter, computeMeter, type ComputeMeterOptions } from "../compute-cost.js";
 import { bounded, deleteKept, dropKept, endKept, heldElsewhere, keepKept, KEEP_MS, KEPT_DELETE_MS, type Kept, keptBy, type KeptHolder, keptTaken, type ParkCause, type ParkedEnd, pinnedOf, readKept, restoreKept, takeKept } from "./computer-kept.js";
 import { type ProviderLedger, storeLedger } from "./computer-ledger.js";
@@ -169,6 +169,11 @@ export interface ComputerForClaimDeps {
   /** Removes the run's Archil mount credential (the Archil claim's revoke): called once the computer is released, and
    *  when a start fails after a mount was minted. Absent: nothing was minted (Mode 1). */
   readonly revokeMount?: () => Promise<void>;
+  /** The Archil disk this claim's mount credential is on (the Archil claim's disk id), asked only at a park: written into
+   *  the row of a computer kept holding the run's folder on Archil, so the janitor that ends the row removes the credential
+   *  there with no run lookup (computer-kept.ts Kept.disk). A computer taken back keeps the disk its row named. Absent:
+   *  nothing was minted (Mode 1). */
+  readonly mountDisk?: () => string;
   /** The live view's registration for a desktop or a phone (proxy-only). Absent: no view is opened. */
   readonly openComputerView?: OpenComputerView;
   /** Where the agent's setting asks for a video of its computer's screen (computer.record): the run's
@@ -960,8 +965,9 @@ export async function computerForClaim(
   let refused: string | undefined;
   /** What a park of this claim keeps (ClaimComputer.park): a desktop, a phone or a sandbox it made through its provider, or took
    *  back, with its provider, its connection's close and the claim epoch its labels carry; `pinned`: only this runner can
-   *  reach it again (computer-kept.ts pinnedOf), so the park names this claim's holder on its row. */
-  let keepable: { readonly provider: ComputerProvider; readonly entry: string; readonly kind: KeptKind; readonly computer: ProviderComputer; readonly pinned: boolean; epoch: number } | undefined;
+   *  reach it again (computer-kept.ts pinnedOf), so the park names this claim's holder on its row. `disk`: the Archil disk
+   *  of the mount credential a computer taken back carries (its row's); absent, this claim's (mountDisk). */
+  let keepable: { readonly provider: ComputerProvider; readonly entry: string; readonly kind: KeptKind; readonly computer: ProviderComputer; readonly pinned: boolean; epoch: number; disk: string | undefined } | undefined;
   /** Whether a computer of `entry` made with `configuration` is reachable again only by this runner: its options as
    *  vendorProvider makes it (the settings' options under the configuration's). */
   const pinnedHere = (entry: ProviderEntry, configuration: { readonly options?: Readonly<Record<string, unknown>> }): boolean =>
@@ -1050,9 +1056,12 @@ export async function computerForClaim(
       return again;
     },
     started: (name) => {
-      // A park after this keeps the new one, whose labels and mount are this claim's epoch's (a kept one taken back
-      // carried its park's).
-      if (keepable) keepable.epoch = launch.epoch;
+      // A park after this keeps the new one, whose labels and mount are this claim's epoch's and disk's (a kept one taken
+      // back carried its park's).
+      if (keepable) {
+        keepable.epoch = launch.epoch;
+        keepable.disk = undefined;
+      }
       deps.onComputerNote?.(lostRecreatedWords(name));
     },
     stop: (words) => (deps.stopRun ?? stopRun)(words),
@@ -1143,7 +1152,7 @@ export async function computerForClaim(
         // A sandbox taken back is started again when it is lost as one this claim made (lostAware): the new one is this
         // claim's, made from this claim's spec, its folder mounted.
         const again = record.kind === "sandbox" ? lostAware(taken, renewalOf(provider, entry, () => specOf(entry, provider, kind, configuration, deps.signal, gpu), folder)) : taken;
-        keepable = { provider, entry: entry.id, kind: record.kind, computer: again, pinned: pinnedHere(entry, configuration), epoch: record.epoch };
+        keepable = { provider, entry: entry.id, kind: record.kind, computer: again, pinned: pinnedHere(entry, configuration), epoch: record.epoch, disk: record.disk };
         ownKind = record.kind;
         const screen = record.kind === "sandbox" ? undefined : record.kind;
         made = { id: again.id, machine: again.machine, ...(again.watch && screen ? { watch: again.watch, gone: goneOf(provider, again.id, runLabels(launch.runId, record.epoch), screen) } : {}) };
@@ -1219,7 +1228,7 @@ export async function computerForClaim(
         const held = kind === "sandbox" && !pairedRow ? lostAware(fresh, renewalOf(provider, entry, async () => spec, mount?.kind)) : fresh;
         launched = held;
         if (!pairedRow) ownKind = kind as MadeKind;
-        if (!pairedRow && (kind === "desktop" || kind === "phone" || kind === "sandbox")) keepable = { provider, entry: entry.id, kind, computer: held, pinned: pinnedHere(entry, configuration), epoch: launch.epoch };
+        if (!pairedRow && (kind === "desktop" || kind === "phone" || kind === "sandbox")) keepable = { provider, entry: entry.id, kind, computer: held, pinned: pinnedHere(entry, configuration), epoch: launch.epoch, disk: undefined };
         if (!pairedRow && (releasedOlder || journalSays || lost || heldThere || refused !== undefined)) replaced = { kind: kind as MadeKind, folderKept: deps.mode === 2 && mount !== undefined, ...(lost ? { lost: true as const } : heldThere ? { elsewhere: true as const } : lapsed ? { lapsed: true as const } : {}), ...(refused !== undefined ? { refused } : {}) };
       }
       made = { id: launched.id, machine: launched.machine, ...(launched.watch ? { watch: launched.watch, ...(kind === "desktop" || kind === "phone" ? { gone: goneOf(provider, launched.id, listedUnder, kind) } : {}) } : {}) };
@@ -1231,25 +1240,17 @@ export async function computerForClaim(
   };
 
   /** The computer an earlier claim kept at the run's park, ended now by a claim that starts none (the run's computer is
-   *  off): deleted, its interval ended, and its mount credential, the parking claim's, taken on and removed
-   *  (archil-claim.ts revoke removes only one its claim minted or took on), so the run's folder is its own again before
-   *  its tools touch it. The credential is taken on only once this claim's end holds the row (endKept's compare-and-set):
-   *  a later claim that took the computer back first holds its mount, which this claim's revoke (at its loss, its end)
-   *  then never removes. Once taken on, a revoke this claim does not finish here is the run's end's. The delete and the
-   *  revoke together are bounded (KEPT_DELETE_MS) and end at the run's stop: one that fails or does not answer leaves the
-   *  row ending, for the janitor's next pass. A row already ended by the janitor (the claim that won it died before its
-   *  revoke, and the janitor holds no claim's credential) leaves the parking claim's credential held by no computer, as no
-   *  claim takes an ended row back: on Archil it is taken on and revoked here, not left for its ttl. Never throws. */
+   *  off): deleted, its interval ended, and the parking claim's mount credential taken on and removed (archil-claim.ts
+   *  revoke removes only one its claim minted or took on), so the run's folder is its own again before its tools touch
+   *  it. It is taken on only once this claim's end holds the row (endKept's compare-and-set): a later claim that took the
+   *  computer back first holds its mount. The delete and the revoke are bounded (KEPT_DELETE_MS) and end at the run's
+   *  stop; one that fails or does not answer leaves the row ending, said, for the janitor, which removes the credential
+   *  too. Never throws. */
   const endKeptNow = async (): Promise<void> => {
     const record = kept;
     kept = undefined;
     const settings = store.settings;
     const entry = record && kinds.PROVIDERS.find((one) => one.id === record.provider);
-    if (record?.ended && record.folder === "archil") {
-      deps.inheritMount?.();
-      await bounded(KEPT_DELETE_MS, deps.revokeMount?.() ?? Promise.resolve(), deps.signal).catch(() => undefined);
-      return;
-    }
     if (!record || record.ended || !settings || !entry) return;
     try {
       await endKept(settings, launch.runId, record, () => {
@@ -1259,12 +1260,12 @@ export async function computerForClaim(
             const provider = await vendorProvider(entry, await side.keysOf(entry.id), {});
             if (await deleteKept(provider, record)) await writes.ended(entry.id, record.id);
           } finally {
-            await deps.revokeMount?.().catch(() => undefined);
+            await deps.revokeMount?.();
           }
         })(), deps.signal);
       });
-    } catch {
-      // Left ending for the janitor.
+    } catch (error) {
+      (deps.log ?? stderrLog)(`the ${record.kind} kept for run ${launch.runId} was left for the janitor's next pass: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
   // The run's computer turned off by an earlier claim's deny: none is started, and the one a park kept goes now.
@@ -1408,7 +1409,8 @@ export async function computerForClaim(
         const stamped = now();
         const ref = keeps.computer.ref;
         const fence = (launch.claim ?? { runId: launch.runId, epoch: launch.epoch }) as Claim;
-        const row = await keepKept(settings, launch.runId, { provider: keeps.entry, kind: keeps.kind, id: ref.id, name: ref.name, epoch: keeps.epoch, until: at + KEEP_MS, ...(resolved.folder ? { folder: resolved.folder } : {}), ...(keeps.pinned && launch.holder ? { runner: launch.holder.runner, incarnation: launch.holder.incarnation } : {}) }, { ...(store.runners ? { runners: store.runners } : {}), ...(launch.holder ? { self: launch.holder } : {}) }, fence);
+        const disk = resolved.folder === "archil" ? keeps.disk ?? deps.mountDisk?.() : undefined;
+        const row = await keepKept(settings, launch.runId, { provider: keeps.entry, kind: keeps.kind, id: ref.id, name: ref.name, epoch: keeps.epoch, until: at + KEEP_MS, ...(resolved.folder ? { folder: resolved.folder } : {}), ...(disk ? { disk } : {}), ...(keeps.pinned && launch.holder ? { runner: launch.holder.runner, incarnation: launch.holder.incarnation } : {}) }, { ...(store.runners ? { runners: store.runners } : {}), ...(launch.holder ? { self: launch.holder } : {}) }, fence);
         return row ? { row, stamped } : undefined;
       } catch {
         return undefined;
@@ -1471,12 +1473,13 @@ export async function computerForClaim(
       await released;
       // Its end at its time, by this process (KEEP_MS after the stamp, counted on its own clock, so the store's clock
       // being off from it changes nothing); the janitor's (computer-kept.ts sweepKept) whatever becomes of it. Either
-      // deletes it, a synced folder with no read-back.
+      // deletes it, a synced folder with no read-back. A delete or a mount revoke that fails leaves the row ending, said
+      // here: the janitor's next pass ends it again, the credential's remove with it.
       const timer = setTimeout(() => {
         void endKept(settings, launch.runId, row, async () => {
           if (await deleteKept(keeps.provider, ref)) await writes.ended(keeps.entry, ref.id);
-          await revoke().catch(() => undefined);
-        }).catch(() => undefined);
+          await revoke();
+        }).catch((error: unknown) => (deps.log ?? stderrLog)(`the ${keeps.kind} kept for run ${launch.runId} was left for the janitor's next pass: ${error instanceof Error ? error.message : String(error)}`));
       }, Math.max(0, localUntil - now()));
       timer.unref?.();
       return true;

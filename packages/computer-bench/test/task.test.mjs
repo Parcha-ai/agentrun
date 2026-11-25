@@ -51,7 +51,7 @@ test("every suite in the package loads; mac-dev and linux-desktop are half dev a
 	assert.deepEqual(counts["android-dev"], { all: 37, dev: 18 });
 	assert.deepEqual(counts["linux-desktop"], { all: 10, dev: 5 });
 	assert.equal(counts.macosworld.all + counts.mobileworld.all, 16);
-	assert.deepEqual(counts["osworld-pilot"], { all: 20, dev: 0 });
+	assert.deepEqual(counts["osworld-pilot"], { all: 15, dev: 0 });
 });
 
 test("the ported tasks name their source, its revision and licence", () => {
@@ -89,7 +89,7 @@ test("osworld-pilot: OSWorld-Verified at one revision, Apache-2.0 with its notic
 			if (/exec (mousepad|xfce4-terminal)\b/.test(script)) assert.match(script, /echo \$\$ > \/tmp\/computer-bench-\{\{nonce\}\}-[a-z]+\.pid && exec /, spec.id);
 		}
 	}
-	assert.deepEqual(domains, { chrome: 6, multi_apps: 1, os: 10, vs_code: 3 });
+	assert.deepEqual(domains, { chrome: 2, multi_apps: 1, os: 10, vs_code: 2 });
 	const arms = JSON.parse(readFileSync(join(SUITES, "osworld-pilot", "arms.json"), "utf8"));
 	assert.deepEqual(
 		arms.map((arm) => [arm.id, arm.harness, arm.surface, arm.model, arm.options.provider]),

@@ -237,27 +237,27 @@ const labelOf = (account: Json): string | undefined =>
   accountLabel(account.alias) ?? (isObject(account.state) && isObject(account.state.val) ? accountLabel(account.state.val.displayName) : undefined) ?? accountLabel(account.word_id);
 
 /** The connected accounts of `of.user` for `of.toolkit` under `of.auth_config` (under every config where none is named;
- *  ACTIVE ones alone with `active`), as Composio lists them now: never one it names as another user's. One with no
- *  user_id (a field Composio's docs say it will stop answering) is kept: Composio was asked for this user's alone. None,
- *  unasked, for a user that is no Composio user id (COMPOSIO_USER_ID): a blank one Composio may read as every user. */
+ *  ACTIVE ones alone with `active`), as Composio lists them now: only those Composio names as that user's. One with no
+ *  user_id (a field Composio's docs say it will stop answering) is never kept, though Composio was asked for this user's
+ *  alone: nothing says whose it is, so the user connects one again. None, unasked, for a user that is no Composio user id
+ *  (COMPOSIO_USER_ID): a blank one Composio may read as every user. */
 export async function accountsUnder(ask: Ask, of: { user: string; toolkit: string; auth_config?: string }, active = false): Promise<Json[]> {
   if (!COMPOSIO_USER_ID.test(of.user)) return [];
   const enc = encodeURIComponent;
   const listed = await ask("checking the connected account", "GET", `/api/v3/connected_accounts?user_ids=${enc(of.user)}&toolkit_slugs=${enc(of.toolkit)}${of.auth_config ? `&auth_config_ids=${enc(of.auth_config)}` : ""}${active ? "&statuses=ACTIVE" : ""}`);
   return (Array.isArray(listed.items) ? listed.items : []).filter((a): a is Json =>
-    isObject(a) && (!a.user_id || a.user_id === of.user) && (!of.auth_config || (isObject(a.auth_config) && a.auth_config.id === of.auth_config)) && (!active || a.status === "ACTIVE"));
+    isObject(a) && a.user_id === of.user && (!of.auth_config || (isObject(a.auth_config) && a.auth_config.id === of.auth_config)) && (!active || a.status === "ACTIVE"));
 }
 
 /** The account of a saved Composio server's user for its toolkit, under its auth config (accountsUnder), as Composio
- *  lists it now. Labels come only from an account Composio names as that user's: one with no user_id connects the server
- *  but says nothing of whose it is. `unknown`, unasked, for a user that is no one Composio user (empty, which Composio
+ *  lists it now: one Composio names as that user's (accountsUnder), which gives its labels too. `unknown`, unasked, for a user that is no one Composio user (empty, which Composio
  *  reads as every user). */
 export async function composioAccount(ask: Ask, of: { user: string; toolkit: string; auth_config: string }): Promise<ComposioAccount> {
   if (!COMPOSIO_USER_ID.test(of.user)) return { state: "unknown" };
   const mine = await accountsUnder(ask, of);
   const active = mine.filter((a) => a.status === "ACTIVE");
   if (active.length) {
-    const labels = [...new Set(active.filter((a) => a.user_id === of.user).map(labelOf).filter((label): label is string => !!label))].slice(0, MAX_LABELS);
+    const labels = [...new Set(active.map(labelOf).filter((label): label is string => !!label))].slice(0, MAX_LABELS);
     return { state: "connected", ...(labels.length ? { labels } : {}) };
   }
   if (mine.some((a) => a.status === "INITIATED" || a.status === "INITIALIZING")) return { state: "pending" };

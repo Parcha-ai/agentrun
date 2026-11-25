@@ -178,6 +178,28 @@ test("a run's own model_key is cut from its files by a cut read while it runs, a
   assert.deepEqual(await cutRead(run, "clean.txt"), [200, "nothing held here\n"], "the same bytes again read as counted");
 });
 
+test("an ended run's export carries none of its files once its end erased what its caller handed it: its census says where those sat in a file, never in a name", { timeout: 180_000 }, async (t) => {
+  const run = await liveRun(t, { start: { model_key: KEY } });
+  // Prose with no label a pattern reads, and a file named by the key: only the census knows either holds it.
+  await writeFile(join(run.work, "notes.txt"), `seen ${KEY} here\n`);
+  await writeFile(join(run.work, `cache-${KEY}.txt`), "cached\n");
+  await writeFile(join(run.work, "clean.txt"), "nothing held here\n");
+  await run.ended();
+  const res = await until(async () => {
+    const answer = await get(run.baseUrl, run.token, `/runs/${run.runId}/export`);
+    return answer.status === 409 ? (await answer.body?.cancel(), undefined) : answer;
+  }, "the run settled for its export");
+  assert.equal(res.status, 200);
+  const body = await res.text();
+  for (const [form, value] of [["raw", KEY], ["JSON", JSON.stringify(KEY).slice(1, -1)], ["URL", encodeURIComponent(KEY)], ["base64", Buffer.from(KEY).toString("base64")], ["its middle", "handed-cut-model-key"]]) {
+    assert.equal(body.includes(value), false, `the handed key (${form}) is not in the bundle`);
+  }
+  const doc = JSON.parse(body);
+  assert.deepEqual(doc.files, [], "no file carried, its content or its name");
+  assert.deepEqual(doc.omitted.filter((one) => one.what === "file"), [], "no file named in what was left out");
+  assert.ok(doc.omitted.some((one) => one.what === "files" && one.why === "uncounted"), `the files left out as uncounted: ${JSON.stringify(doc.omitted)}`);
+});
+
 test("an ended run whose end erased its secrets with no census (the marker, or a pending an earlier build left) withholds its files", { timeout: 180_000 }, async (t) => {
   const handed = await liveRun(t, { start: { model_key: KEY } });
   await writeFile(join(handed.work, "notes.txt"), "plain words\n");
