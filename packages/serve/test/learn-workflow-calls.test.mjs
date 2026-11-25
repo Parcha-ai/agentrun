@@ -102,6 +102,18 @@ test("on pi a subagent's call is its own only while no other conversation works:
   assert.equal(workflowCallsOf(busy)[0].usd, null, "another conversation worked within its window");
 });
 
+test("on pi a toolCall that never got its result (its turn aborted) closes at its conversation's next answer: it holds no later call's window open", () => {
+  const CHILD = 3;
+  const asked = (conversationId, ...calls) => ({ kind: "pi.assistant", conversationId, model: [{ role: "assistant", content: calls.map(([id, name]) => ({ type: "toolCall", id, name, arguments: {} })) }] });
+  const result = (conversationId, id) => ({ kind: "pi.tool-result", conversationId, model: [{ role: "toolResult", toolCallId: id }] });
+  // The root's web_search was cut with its turn: the root's next answer asks for the workflow, which is its call alone.
+  const aborted = [asked(ROOT, ["w1", "web_search"]), ...booked(1, 1), asked(ROOT, ["c1", "learned_workflow"]), ...node(2, 0.25), kept("c1", { ended: "complete" }), result(ROOT, "c1")];
+  assert.equal(workflowCallsOf(aborted)[0].usd, 0.25);
+  // Another conversation's call with no result yet is still open: it may be at work in the window.
+  const other = [asked(CHILD, ["w1", "web_search"]), asked(ROOT, ["c1", "learned_workflow"]), ...node(2, 0.25), kept("c1", { ended: "complete" }), result(ROOT, "c1")];
+  assert.equal(workflowCallsOf(other)[0].usd, null);
+});
+
 test("a call refused before any node ran is `refused`: it ran nothing, and the money rule counts it on no side", () => {
   assert.deepEqual(workflowCallsOf([start("c1"), kept("c1", { ended: "failed", refused: true }), end("c1")]).map((call) => call.outcome), ["refused"]);
   assert.deepEqual(workflowCallsOf([start("c1"), kept("c1", { ended: "failed" }), end("c1")]).map((call) => call.outcome), ["failed"], "one that ran and failed is failed");

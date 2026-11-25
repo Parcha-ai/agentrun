@@ -38,7 +38,7 @@ const { promotionsOf, recordPromotion, servingOf } = await import("../dist/learn
 const { replayView } = await import("../dist/runner/promotion.js");
 const { learningWorkspace } = await import("../dist/workspace/index.js");
 const { learningCommit } = await import("../dist/learn/commit.js");
-const { workflowDigest } = await import("../dist/runner/workflow-first.js");
+const { PAST_RUNS, workflowDigest } = await import("../dist/runner/workflow-first.js");
 const { seedOf } = await import("../dist/learning.js");
 
 const SEAL_KEY = Buffer.alloc(32, 7);
@@ -138,12 +138,20 @@ async function holdingProxy(t, origin, held) {
  *  `says`, before `flows` landed in its learning folder, and a runner claiming every run from its stored launch. The
  *  node submits `submit(requestText)` ({answer: 42, sure: true} by default). `hold`: a model request whose body it
  *  matches is held until its run is cancelled or `proxy.release()`. */
-async function world(t, { prior = 6, learning = true, says = AGENT_SAYS, flows = FLOWS, submit, hold, env = {}, runsCreate } = {}) {
+async function world(t, { prior = 6, learning = true, says = AGENT_SAYS, flows = FLOWS, submit, hold, env = {}, runsCreate, pastUnread = false } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-promote-replay-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const opened = await openSqliteStore({ dataDir: dir, role: "runner" });
   // `runsCreate(create, run, launch)`: the runner's runs.create, in its place (a test's interleave before a create).
-  const runs = runsCreate && { ...opened.runs, create: (run, launch) => runsCreate(opened.runs.create, run, launch) };
+  // `pastUnread`: the money rule's read of the agent's past runs fails on the runner (it fails closed).
+  const runs = (runsCreate || pastUnread) && new Proxy(opened.runs, { get: (target, key) => {
+    if (key === "create" && runsCreate) return (run, launch) => runsCreate(opened.runs.create, run, launch);
+    if (key === "list" && pastUnread) return async (filter) => {
+      if (filter?.limit === PAST_RUNS) throw new Error("the past runs could not be read");
+      return target.list(filter);
+    };
+    return typeof target[key] === "function" ? target[key].bind(target) : target[key];
+  } });
   const store = runs ? new Proxy(opened, { get: (target, key) => (key === "runs" ? runs : typeof target[key] === "function" ? target[key].bind(target) : target[key]) }) : opened;
   const gw = await startFauxGateway({
     call: ({ body }) => (offers(body, "submit") && !hasResult(body) ? { name: "submit", input: { value: submit ? submit(JSON.stringify(body)) : { answer: 42, sure: true } } } : undefined),
@@ -242,6 +250,18 @@ test("a new digest is checked before it serves: the agent takes the run meanwhil
   assert.ok(check.cost_usd > 0, "what the check cost is on its record");
   assert.deepEqual(Object.entries(fields).map(([name, one]) => [name, one.n, one.workflow_right, one.known, one.pass]), [["answer", 6, 6, "agent", true]], "the whole answer, judged against the agent's own");
   assert.equal(records[1].digest, DIGEST);
+});
+
+// The money rule takes a workflow off a learning run's own tool (workflow-first.ts toolStopsOf), failing closed when the
+// agent's past runs can't be read; a replay runs its revision whatever that read says (it serves no one, and is checked).
+test("a replay runs its revision whatever the money rule can read: with the agent's past runs unreadable, each replay answers alone", { timeout: 180_000 }, async (t) => {
+  const { start, replaysEnded } = await world(t, { pastUnread: true });
+  const first = await start("run-1", "What is six times seven");
+  assert.equal(first.metrics?.path, "agent", JSON.stringify(first.metrics));
+  for (const row of await replaysEnded(6)) {
+    assert.equal(row.state, "ended", JSON.stringify(row));
+    assert.deepEqual([row.metrics?.path, row.metrics?.replay?.outcome], ["replay", "answered"], JSON.stringify(row.metrics));
+  }
 });
 
 test("a check the workflow hands back on every input is held (it would never answer alone); its escalate on a draft stays hard in the replay, and no agent turn ran in it", { timeout: 180_000 }, async (t) => {

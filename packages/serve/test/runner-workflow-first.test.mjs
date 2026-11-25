@@ -46,7 +46,7 @@ const { said } = await import("../dist/learning-words.js");
 const { agentCostOverStore, pastRunsOverStore } = await import("../dist/store-reads/learning.js");
 const { viewOverStore } = await import("../dist/store-view.js");
 const { LEARNED_CLIP } = await import("../dist/learned-workflow.js");
-const { COST_WINDOW, costLineOf, overLine, workflowCostsOf, fits, workflowDigest, workflowFirstOf, pathMetrics, servedOf, WORKFLOW_FIRST } = await import("../dist/runner/workflow-first.js");
+const { COST_WINDOW, costLineOf, overLine, workflowCostsOf, fits, workflowDigest, workflowFirstOf, pathMetrics, servedOf, PAST_RUNS, WORKFLOW_FIRST } = await import("../dist/runner/workflow-first.js");
 const { resolveSchemaForWorkflow } = await import("@parcha/agentrun-dsl");
 const { recordPromotion } = await import("../dist/learn/promote.js");
 const { putSealedKey } = await import("../dist/server-keys.js");
@@ -112,7 +112,7 @@ const until = async (done, what, ms = 40_000) => {
  *  the run's cap; `settleOn`: the run states it is read at once its runner lets it go (a park for a raise is "parked").
  *  `crashInCall`: the first runner is lost while the workflow's node request is out (nothing more it writes lands), and a
  *  second runner takes the run. */
-async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION }, sure = true, learned = true, workflowFirst, toolSettings, approve = false, past = [], promotions, keptBefore: earlier = [], followUp, flows = FLOWS, saved = {}, answer, submitted, outputSchema, crashOnHandback = false, pastFromSecondClaim = false, agentCall, holdNode: givenHold, agentText, beforeRun, crashBeforeEnd, crashInCall = false, onCompileAsk, maxCostUsd, settleOn = ["ended", "failed", "stopped"] } = {}) {
+async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION }, sure = true, learned = true, workflowFirst, toolSettings, approve = false, past = [], promotions, keptBefore: earlier = [], followUp, flows = FLOWS, saved = {}, answer, submitted, outputSchema, crashOnHandback = false, pastFromSecondClaim = false, pastUnreadFromSecondClaim = false, agentCall, holdNode: givenHold, agentText, beforeRun, crashBeforeEnd, crashInCall = false, onCompileAsk, maxCostUsd, settleOn = ["ended", "failed", "stopped"] } = {}) {
   const holdNode = givenHold ?? (crashInCall ? async () => crash() : undefined);
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-workflow-first-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
@@ -206,8 +206,12 @@ async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION 
   // `past`: earlier runs of the agent, newest first, as its store lists them (the money rule's read): laid before the
   // store's own rows, every other read the store's.
   // `pastFromSecondClaim`: the money rule reads them only once a first claim has built its spec (a claim after a crash).
+  // `pastUnreadFromSecondClaim`: from then on its read fails (the money rule fails closed).
   let claims = 0;
-  const runsOf = { ...store.runs, list: async (filter) => [...(pastFromSecondClaim && claims < 1 ? [] : past), ...(await store.runs.list(filter))] };
+  const runsOf = { ...store.runs, list: async (filter) => {
+    if (pastUnreadFromSecondClaim && claims >= 1 && filter?.limit === PAST_RUNS) throw new Error("the past runs could not be read");
+    return [...(pastFromSecondClaim && claims < 1 ? [] : past), ...(await store.runs.list(filter))];
+  } };
   for (const key of Object.getOwnPropertyNames(Object.getPrototypeOf(store.runs) ?? {})) if (typeof store.runs[key] === "function" && key !== "list" && key !== "constructor") runsOf[key] = store.runs[key].bind(store.runs);
   // `keptBefore`: earlier runs' kept learning, newest first (learning_proposals), laid before the store's own the same way.
   const learningOf = {
@@ -218,7 +222,7 @@ async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION 
       return { ...own, proposals: [...earlier.filter((one) => one.agentId === agentId), ...own.proposals] };
     },
   };
-  const depStore = past.length || earlier.length ? new Proxy(store, { get: (target, key) => (key === "runs" ? runsOf : key === "learning" ? new Proxy(target.learning, { get: (l, k) => (k in learningOf ? learningOf[k] : typeof l[k] === "function" ? l[k].bind(l) : l[k]) }) : typeof target[key] === "function" ? target[key].bind(target) : target[key]) }) : store;
+  const depStore = past.length || earlier.length || pastUnreadFromSecondClaim ? new Proxy(store, { get: (target, key) => (key === "runs" ? runsOf : key === "learning" ? new Proxy(target.learning, { get: (l, k) => (k in learningOf ? learningOf[k] : typeof l[k] === "function" ? l[k].bind(l) : l[k]) }) : typeof target[key] === "function" ? target[key].bind(target) : target[key]) }) : store;
   const deps = { env: {}, data: dir, journal: (claim) => store.journal(claim), store: depStore, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }), log: (line) => logs.push(line) };
   // `approve: "stop-at-gate"`: the person's stop lands while the first claim is at the step's gate (the run's own gate,
   // asked before the ask is), so the claim that parks on the ask holds the stop. `claims`: the specs built, one per claim.
@@ -260,7 +264,7 @@ async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION 
       return entries.find((entry) => entry.kind === "agentrun.ask")?.data?.callId;
     }, "the step's ask", 10_000);
     parked = { ...parked, callId, requestsWhileParked: gw.requests.length };
-    await sendCommand(server, RUN, approve === "stop" ? { kind: "stop" } : { kind: "approve", body: { approval: callId } });
+    await sendCommand(server, RUN, approve === "stop" ? { kind: "stop" } : approve === "deny" ? { kind: "deny", body: { approval: callId, note: "Not now." } } : { kind: "approve", body: { approval: callId } });
   }
   let row = await settled(settleOn);
   const first = followUp === undefined ? undefined : row;
@@ -560,6 +564,9 @@ test("learning.repick's marker key is the host's: an input holding repick_next i
   assert.notDeepEqual(run.entries.filter((entry) => entry.kind === WORKFLOW_FIRST).map((entry) => entry.data.outcome), ["answered"]);
   assert.ok(!run.gateway.requests.some((request) => /untrusted data fetched from the web/.test(textOf(request.body))), "the input picked no pass");
   assert.ok(!run.gateway.requests.some((request) => isNode(request) && textOf(request.body).includes("hand-made wallets")), "no node read the page");
+  // Refused before any node ran: the platform's call is refused, and the run names no workflow.
+  assert.deepEqual(run.row.metrics?.workflow_calls?.map((call) => [call.caller, call.outcome]), [["platform", "refused"]], JSON.stringify(run.row.metrics));
+  assert.deepEqual([run.row.metrics.workflow ?? null, run.row.metrics.workflow_digest], [null, undefined], JSON.stringify(run.row.metrics));
 });
 
 // f4: the run's one cap holds each node request at its worst case (its whole input uncached, one token a byte, and its
@@ -787,6 +794,22 @@ test("learned_workflow set to ask: a stop while the step waits ends the run stop
   assert.equal(parked.state, "parked", `the run parked on the ask: ${JSON.stringify(parked)}`);
   assert.equal(row.state, "stopped", `the stop is taken, not parked again: ${JSON.stringify(row)}`);
   assert.equal(gateway.requests.length, 0, "no model request: the workflow never ran, the agent never asked");
+});
+
+// A platform call refused at its gate (its ask declined here; the cap's wrap-up alike) ran nothing: its call is
+// `refused` on the run's record, charged to no workflow by the money rule, and the run names no workflow.
+test("learned_workflow set to ask: declined, the step ran nothing: the agent takes the run, its call refused, charged to no workflow and named nowhere", async (t) => {
+  const { row, parked, gateway, entries } = await piRun(t, { toolSettings: { [LEARNED_WORKFLOW_TOOL]: { permission: "ask" } }, approve: "deny" });
+  assert.equal(parked.state, "parked", `the run parked on the ask: ${JSON.stringify(parked)}`);
+  assert.equal(row.state, "ended", JSON.stringify(row));
+  assert.ok(gateway.requests.length > 0 && !gateway.requests.some(isNode), "no node ran; the agent took the run");
+  const digest = entries.findLast((entry) => entry.kind === WORKFLOW_FIRST)?.data?.digest;
+  assert.deepEqual(row.metrics?.workflow_calls?.map(({ usd: _usd, ...call }) => call), [{ workflow: "answer", digest, caller: "platform", outcome: "refused" }], JSON.stringify(row.metrics));
+  assert.deepEqual([row.metrics.path, row.metrics.workflow ?? null, row.metrics.workflow_digest], ["agent", null, undefined], JSON.stringify(row.metrics));
+  // Ten such runs, at the agent's all-in: none on the workflow's served side, so they never stop it.
+  const past = { runs: Array.from({ length: 10 }, (_, i) => ({ metrics: row.metrics, allInUsd: 2, startedAt: i })), by_hand: { runs: 10, mean_usd: 1 }, by_hand_unknown: 0 };
+  assert.deepEqual(costLineOf(past, "answer", digest).served, { runs: 0, mean_usd: null });
+  assert.deepEqual(workflowCostsOf(past), []);
 });
 
 test("learned_workflow set to ask: a stop that lands while the step is asked is taken by that claim, never parked on", async (t) => {
@@ -1192,6 +1215,21 @@ test("a claim that dies after the workflow handed the job back: the next claim s
   assert.equal(gateway.requests.filter(isNode).length > 0, true, "the workflow ran once, on the first claim");
   const firstAgent = gateway.requests.find((request) => !isNode(request));
   assert.match(textOf(firstAgent.body), /Your learned workflow `answer` ran first on this job and handed it back to you/, "the agent's first input is the handback, not the bare job");
+});
+
+test("a claim that dies after the workflow served first, then a claim whose money rule can't read the past: what the workflow did is recovered, never lost to the fail-closed agent", async (t) => {
+  for (const [label, sure] of [["handed back", false], ["answered", true]]) {
+    const { row, gateway, entries, claims } = await piRun(t, { sure, crashOnHandback: true, pastUnreadFromSecondClaim: true });
+    assert.equal(row.state, "ended", `${label}: ${JSON.stringify(row)}`);
+    assert.ok(claims >= 2, `${label}: a second claim took the run: ${claims}`);
+    assert.deepEqual(entries.filter((entry) => entry.kind === WORKFLOW_FIRST).map((entry) => entry.data.outcome), [sure ? "answered" : "handed_back"], label);
+    assert.equal(gateway.requests.filter(isNode).length > 0, true, `${label}: the workflow ran once, on the first claim`);
+    const firstAgent = gateway.requests.find((request) => !isNode(request));
+    if (sure) {
+      assert.equal(firstAgent, undefined, `${label}: the workflow's answer stands; the agent is never asked`);
+      assert.equal(row.metrics?.path, "workflow", `${label}: ${JSON.stringify(row.metrics)}`);
+    } else assert.match(textOf(firstAgent.body), /Your learned workflow `answer` ran first on this job and handed it back to you/, `${label}: the agent's first input is the handback, not the bare job`);
+  }
 });
 
 test("the cost page and the launch's money rule read one window: the newest runs since the reset, both sides over the same runs", async (t) => {
