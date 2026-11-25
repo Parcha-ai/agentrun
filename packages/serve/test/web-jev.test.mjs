@@ -340,7 +340,7 @@ for (const [status, code] of [["401", "auth"], ["402", "payment_required"]]) {
 
     const read = await onLedger(async () => (await webFetchTool(env).execute({ url: "http://public.example/notes.txt", objective: "where widgets are incorporated" }, {}, {})).details);
     assert.equal(calls().length, asked, "nor does its next fetch with an objective");
-    assert.match(read.got.sift ?? "", /^not run \(held\)/, `the fetch's sift says Jev is held: ${JSON.stringify(read.got.sift)}`);
+    assert.equal(read.got.sift, "objective not applied (held); this part is in page order", "the fetch's sift says Jev is held, in a fetch's words");
     assert.deepEqual(read.rows.filter((row) => row.charged_by === "jev"), [], "nothing held or booked for Jev");
   });
 }
