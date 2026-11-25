@@ -533,10 +533,14 @@ export async function runPathOverStore(store: Store, runId: string, started: Run
     return { path: alone ? "workflow" : "handed_back", workflow: served.workflow, ...(served.digest ? { digest: served.digest } : {}), ...(served.promotion !== undefined ? { promotion: served.promotion } : {}), ...(served.cut ? { cut: true as const } : {}) };
   }
   const path = runPathOf(rows);
+  if (path === "agent") return { path, workflow: null };
   // The workflow its agent called last that ran (its call's record), and only a name the launch offered (offeredName),
   // as every view of the run names it; none for a call that ran no workflow (a name it does not have, a gate's refusal).
-  const called = workflowCallsOf(entries).filter((call) => call.caller === "agent").at(-1);
-  return { path, workflow: path === "agent" || !called ? null : offeredName(called.workflow, started?.workflows) };
+  // A run that keeps no call record at all (a connected agent's: its SDK runs the workflow, the server keeps its events)
+  // names the one its last learned_workflow call asked for by name (callArgsOf).
+  const calls = workflowCallsOf(entries);
+  const called = calls.length ? calls.filter((call) => call.caller === "agent").at(-1)?.workflow : [...callArgsOf(entries).values()].findLast((call) => WORKFLOW_CALLS.has(call.tool) && typeof call.args.name === "string")?.args.name;
+  return { path, workflow: offeredName(typeof called === "string" ? called : null, started?.workflows) };
 }
 
 /** The run-record fields run `runId`'s end writes for its path (runner/workflow-first.ts pathMetrics), the one writer
