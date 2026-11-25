@@ -163,6 +163,24 @@ test("on a Workspace with no writeNew (an Archil run disk) web_save still saves,
   assert.deepEqual([...readFileSync(join(work, "media", "a.png"))], [...BODY.png], "the first save kept");
 });
 
+test("on a Workspace with no writeNew web_save still checks again after the download: a file made at the path while it ran is kept", async (t) => {
+  const { work, ws } = await folders(t);
+  const bare = new Proxy(ws, { get: (target, key) => {
+    if (key === "writeNew") return undefined;
+    const value = Reflect.get(target, key);
+    return typeof value === "function" ? value.bind(target) : value;
+  } });
+  const net = network({ answers: { "https://cdn.example/race.png": () => {
+    mkdirSync(join(work, "media"), { recursive: true });
+    writeFileSync(join(work, "media", "race.png"), "theirs");
+    return new Response(BODY.png, { status: 200, headers: { "content-type": "image/png" } });
+  } } });
+  const saved = await webSave({ url: "https://cdn.example/race.png", path: "media/race.png" }, bare, net);
+  assert.deepEqual([saved.ok, net.dialled.length], [false, 1]);
+  assert.match(saved.refused ?? "", /already holds/);
+  assert.equal(readFileSync(join(work, "media", "race.png"), "utf8"), "theirs");
+});
+
 test("the cap is 200 MiB; a body past the cap mid-stream, or one whose stream breaks mid-way, leaves nothing at the path", async (t) => {
   assert.equal(SAVE_MAX_BYTES, 200 * MiB);
   assert.ok(SAVE_TIMEOUT_MS >= 60_000, `a large file has more than a page's 30 s: ${SAVE_TIMEOUT_MS}`);
