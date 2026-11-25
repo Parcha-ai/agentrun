@@ -98,7 +98,8 @@ export interface JournalSessionStoreOptions {
  *   asked for it is in the log. The SDK mirrors a message's lines only once
  *   the message ends, while the CLI runs each call as its block ends, so the
  *   wait's clock restarts on each stream event of the message that made the
- *   call (`heard`): it runs out `timeoutMs` after that message's last event.
+ *   call, up to its `message_stop` (`heard`): it runs out `timeoutMs` after
+ *   that message's last event.
  */
 export class JournalSessionStore {
   private readonly loaded = new Map<string, TranscriptLine[]>();
@@ -108,7 +109,8 @@ export class JournalSessionStore {
   private readonly waiters = new Map<string, (() => void)[]>();
   private readonly results = new Set<string>();
   private readonly resultWaiters = new Map<string, (() => void)[]>();
-  /** The message stream each call was made in (its `parent_tool_use_id`, `''` for the main thread), from the SDK's live blocks. */
+  /** The message stream each call was made in (its `parent_tool_use_id`, `''` for the main thread), from the SDK's live
+   *  blocks, until its message's `message_stop`. */
   private readonly callScopes = new Map<string, string>();
   /** The clocks of the waits on each call, by its id: each one restarts its wait. */
   private readonly clocks = new Map<string, Set<() => void>>();
@@ -246,14 +248,17 @@ export class JournalSessionStore {
   /**
    * One message `query()` yielded. An `assistant` message names the calls its block made, in its stream (the main
    * thread's, or a subagent's by its `parent_tool_use_id`); it and each `stream_event` of that stream restart the clock
-   * of every wait on a call made in it. A message's last event is its `message_stop`, so a call whose line never lands
-   * is refused `timeoutMs` after its message ended, and a stream that stalls, `timeoutMs` after its last event.
+   * of every wait on a call made in it. A message's last event is its `message_stop`: it restarts those clocks one last
+   * time and unties the message's calls from the stream, whose next message reuses its `parent_tool_use_id`. So a call
+   * whose line never lands is refused `timeoutMs` after its message ended, whatever streams after it, and a stream that
+   * stalls, `timeoutMs` after its last event.
    */
-  heard(m: { type: string; parent_tool_use_id?: string | null; message?: unknown }): void {
+  heard(m: { type: string; parent_tool_use_id?: string | null; message?: unknown; event?: unknown }): void {
     const scope = m.parent_tool_use_id ?? '';
     if (m.type === 'assistant') for (const id of toolUseIds(m as TranscriptLine)) this.callScopes.set(id, scope);
     else if (m.type !== 'stream_event') return;
     for (const [id, restarts] of this.clocks) if (this.callScopes.get(id) === scope) for (const restart of [...restarts]) restart();
+    if ((m.event as { type?: unknown } | undefined)?.type === 'message_stop') for (const [id, of] of this.callScopes) if (of === scope) this.callScopes.delete(id);
   }
 
   /** Wait for `note` to wake a waiter on `id` in `waiters`; reject with `error()` once the clock runs out (`heard` restarts it). */
