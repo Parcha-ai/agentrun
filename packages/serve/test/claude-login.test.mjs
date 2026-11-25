@@ -36,18 +36,20 @@ const SIGNED_IN = { loggedIn: true, authMethod: "claude.ai", apiProvider: "first
 const UP = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "claude-login-person-"));
 after(() => rmSync(UP, { recursive: true, force: true }));
 
-// The system's account files (/etc/passwd, /etc/group) as the server reads them, to tell whether a folder's group is its
-// user's private one (claude-login.ts privateGroup). Through this whole file they read as empty, so no group is anyone's
-// private one and a folder its group may write in is refused whatever this machine's groups are; accountsAs gives one
-// test its own. node:fs's readFileSync is a live binding in the server this process runs (syncBuiltinESMExports moves
-// it to the stub), and every other file reads as it is.
-const ACCOUNTS_NONE = Object.freeze({ "/etc/passwd": "", "/etc/group": "" });
+// The system's account files (/etc/passwd, /etc/group) and its name service switch (/etc/nsswitch.conf) as the server
+// reads them, to tell whether a folder's group is its user's private one (claude-login.ts privateGroup). Through this
+// whole file they read as empty, so no group is anyone's private one and a folder its group may write in is refused
+// whatever this machine's groups and switch are; accountsAs gives one test its own, where null is a file that is not
+// there. node:fs's readFileSync is a live binding in the server this process runs (syncBuiltinESMExports moves it to the
+// stub), and every other file reads as it is.
+const ACCOUNTS_NONE = Object.freeze({ "/etc/passwd": "", "/etc/group": "", "/etc/nsswitch.conf": "" });
 let accounts = ACCOUNTS_NONE;
 {
   const fs = createRequire(import.meta.url)("node:fs");
   const real = fs.readFileSync;
   fs.readFileSync = function accountsRead(path, options, ...rest) {
     if (typeof path !== "string" || !Object.hasOwn(accounts, path)) return real.call(this, path, options, ...rest);
+    if (accounts[path] === null) throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: "ENOENT", errno: -2, syscall: "open", path });
     const encoding = typeof options === "string" ? options : options?.encoding;
     return encoding ? accounts[path] : Buffer.from(accounts[path]);
   };
@@ -57,7 +59,8 @@ let accounts = ACCOUNTS_NONE;
     syncBuiltinESMExports();
   });
 }
-/** The account files read as `files` (by path; any not given, empty) for the rest of test `t`. */
+/** The account files and the switch read as `files` (by path; any not given, empty; null, not there) for the rest of
+ *  test `t`. */
 function accountsAs(t, files) {
   accounts = { ...ACCOUNTS_NONE, ...files };
   t.after(() => {
@@ -1777,9 +1780,16 @@ test("a folder its group or anyone may write in, on the way to this machine's lo
 // them. A folder whose group is that one, and which its group (not anyone) may write in, is the user's alone: on the way
 // to the login's folder, as that folder itself, as the one it is to be made in, and as the home. A group another user is
 // in (the group file lists them, or it is their primary group), or one that is not the user's primary group, still
-// refuses it, in the same words; so does a folder anyone may write in. The account files are stand-ins (accountsAs).
+// refuses it, in the same words; so does a folder anyone may write in. The account files and the name service switch are
+// stand-ins (accountsAs); the switch takes users and groups from the files alone (NSS_FILES) unless a test says else.
 const PRIVATE_WHY = "a folder its group may write in, whose group is the user's private one, refused the login";
-test("a folder its group may write in, where that group is the user's private one (its primary group, which no other user is in), keeps this machine's login on the way to its folder, as that folder, as the one it is made in and as the home; a group another user is in, listed or as their primary group, or not the user's primary, still refuses it in the same words, as does a folder anyone may write in", { skip: process.platform === "win32" ? "no uid" : process.geteuid() === 0 ? "root may write anywhere" : false, timeout: 60_000 }, async (t) => {
+const NSS_FILES = "passwd: files\ngroup: files\n";
+const PRIVATE_SKIP = { skip: process.platform === "win32" ? "no uid" : process.geteuid() === 0 ? "root may write anywhere" : false, timeout: 60_000 };
+/** For test `t`, a folder `open` of the test user's, with a login folder `claude` in it, and stand-in account files in
+ *  which `open`'s group is the user's private one (`passwd()`, `groups()`; `more` users, `members` of that group).
+ *  `kept(what)` asserts the login is kept with `open` on the way to its folder, as that folder, as the one it is made in
+ *  and as the home; `refused(what, mode)` that each refuses it in the open-folder words, `open` at `mode`. */
+async function privateGroupRig(t) {
   const uid = process.geteuid();
   const name = userInfo().username;
   const who = `uid ${uid} (${name})`;
@@ -1817,12 +1827,17 @@ test("a folder its group may write in, where that group is the user's private on
     }
     assert.notEqual(homeOf({ HOME: open }).home, realpathSync(open), `${what}: not the home`);
   };
-  accountsAs(t, { "/etc/passwd": passwd(), "/etc/group": groups() });
+  return { name, uid, gid, other, user, passwd, groups, open, kept, refused };
+}
+
+test("a folder its group may write in, where that group is the user's private one (its primary group, which no other user is in), keeps this machine's login on the way to its folder, as that folder, as the one it is made in and as the home; a group another user is in, listed or as their primary group, or not the user's primary, still refuses it in the same words, as does a folder anyone may write in", PRIVATE_SKIP, async (t) => {
+  const { name, uid, gid, other, user, passwd, groups, open, kept, refused } = await privateGroupRig(t);
+  accountsAs(t, { "/etc/passwd": passwd(), "/etc/group": groups(), "/etc/nsswitch.conf": NSS_FILES });
   for (const mode of [0o775, 0o770, 0o2775, 0o2770]) {
     chmodSync(open, mode);
     await kept(`the group of its own, no member listed, ${mode.toString(8)}`);
   }
-  accountsAs(t, { "/etc/passwd": passwd(), "/etc/group": groups(name) });
+  accountsAs(t, { "/etc/passwd": passwd(), "/etc/group": groups(name), "/etc/nsswitch.conf": NSS_FILES });
   chmodSync(open, 0o775);
   await kept("the group of its own, which lists the user alone");
   for (const mode of [0o777, 0o757]) {
@@ -1830,15 +1845,47 @@ test("a folder its group may write in, where that group is the user's private on
     await refused(`a folder anyone may write in, its group the user's own, ${mode.toString(8)}`, mode);
   }
   chmodSync(open, 0o775);
-  accountsAs(t, { "/etc/passwd": passwd(), "/etc/group": groups(`${name},other`) });
+  accountsAs(t, { "/etc/passwd": passwd(), "/etc/group": groups(`${name},other`), "/etc/nsswitch.conf": NSS_FILES });
   await refused("a group the group file lists another user in", 0o775);
-  accountsAs(t, { "/etc/passwd": passwd(user("another", other.uid + 1, gid)), "/etc/group": groups() });
+  accountsAs(t, { "/etc/passwd": passwd(user("another", other.uid + 1, gid)), "/etc/group": groups(), "/etc/nsswitch.conf": NSS_FILES });
   await refused("a group that is another user's primary group", 0o775);
-  accountsAs(t, { "/etc/passwd": passwd().replace(user(name, uid, gid), user(name, uid, other.gid)), "/etc/group": groups() });
+  accountsAs(t, { "/etc/passwd": passwd().replace(user(name, uid, gid), user(name, uid, other.gid)), "/etc/group": groups(), "/etc/nsswitch.conf": NSS_FILES });
   await refused("a group that is not the user's primary group", 0o775);
-  accountsAs(t, { "/etc/passwd": `${passwd()}+::::::\n`, "/etc/group": groups() });
+  accountsAs(t, { "/etc/passwd": `${passwd()}+::::::\n`, "/etc/group": groups(), "/etc/nsswitch.conf": NSS_FILES });
   await refused("account files that defer to a directory service (a + line)", 0o775);
-  chmodSync(open, 0o700);
+});
+
+// The account files show only the users and groups they hold. Where the name service switch also asks another source
+// for users or groups (sssd, LDAP, NIS, winbind, systemd's user records), or the system's own default where it says
+// nothing, a group the files show as the user's private one may have members they do not show, so a folder its group may
+// write in is refused, in the same words. `files` and `compat` (with no `+` or `-` line, blanks before it or not) are the
+// files alone, whatever bracketed actions, comments or other databases the switch has. Each row has the account files
+// of the case above that keeps the login (the group of its own, no member listed) and the folder at 0775.
+const NSS_ROWS = [
+  ["a switch that asks sssd for groups too (group: files sss)", "passwd: files\ngroup: files sss\n", "refused"],
+  ["a switch that asks LDAP for groups too (group: files ldap)", "passwd: files\ngroup: files ldap\n", "refused"],
+  ["a switch that asks sssd for users too (passwd: files sss)", "passwd: files sss\ngroup: files\n", "refused"],
+  ["a switch that asks systemd's user records too (files systemd, as recent Ubuntu, Debian and Fedora have it)", "passwd: files systemd\ngroup: files systemd\n", "refused"],
+  ["a switch that asks NIS for each user's other groups (initgroups: nis)", "passwd: files\ngroup: files\ninitgroups: nis\n", "refused"],
+  ["a switch that asks winbind after a bracketed action (group: files [NOTFOUND=return] winbind)", "passwd: files\ngroup: files [NOTFOUND=return] winbind\n", "refused"],
+  ["no switch file", null, "refused"],
+  ["a switch with no group line", "passwd: files\n", "refused"],
+  ["a switch with no passwd line", "group: files\n", "refused"],
+  ["a switch whose group line names no source", "passwd: files\ngroup: [NOTFOUND=return]\n", "refused"],
+  ["a switch in compat, the files holding a + line after blanks", "passwd: compat\ngroup: compat\n", "refused", (passwd) => `${passwd}  +@staff::::::\n`],
+  ["a switch in compat, no + or - line", "passwd: compat\ngroup: compat\n", "kept"],
+  ["a switch of the files alone, with comments, bracketed actions and other databases", "# local accounts\npasswd:  files [NOTFOUND=return] # sss was here\ngroup:\tfiles [NOTFOUND=return UNAVAIL=continue]\ninitgroups: files\nhosts: files dns\nnetgroup: nis\n", "kept"],
+];
+test("a folder its group may write in, whose group the account files show as the user's private one, still refuses this machine's login, in the same words, where the name service switch may take users or groups from elsewhere or says nothing; files and compat alone keep it", { ...PRIVATE_SKIP, timeout: 120_000 }, async (t) => {
+  const { passwd, groups, open, kept, refused } = await privateGroupRig(t);
+  chmodSync(open, 0o775);
+  for (const [what, nsswitch, verdict, users = (text) => text] of NSS_ROWS) {
+    await t.test(what, async (row) => {
+      accountsAs(row, { "/etc/passwd": users(passwd()), "/etc/group": groups(), "/etc/nsswitch.conf": nsswitch });
+      if (verdict === "kept") await kept(what);
+      else await refused(what, 0o775);
+    });
+  }
 });
 
 /** Whether the test's user owns its own home as the system has it, held as the login's home must be. */
