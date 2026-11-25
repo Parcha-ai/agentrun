@@ -390,14 +390,18 @@ ${cjs ? "async function" : "export async function"} ${fn}(input${t(`: ${input}`)
   if (url.username || url.password || /[?#]/.test(address)) throw new Error(\`AGENTRUN_BASE_URL takes no user, password, query or fragment, like https://agentrun.example.com/v2: \${url.origin}\`);
   const base = url.pathname.split("/").includes("v2") ? address : \`\${address}/v2\`;
   const headers = { authorization: \`Bearer \${key}\`, "content-type": "application/json" };
-  const started = await fetch(\`\${base}/agents/\${encodeURIComponent(agent)}/runs\`, { method: "POST", headers, body: JSON.stringify({ input }), signal: options.signal });
+  // No redirect is followed, as AgentRun's SDK follows none that leaves the base: a fetch other than Node's may carry the
+  // key's header to wherever one points.
+  const started = await fetch(\`\${base}/agents/\${encodeURIComponent(agent)}/runs\`, { method: "POST", headers, body: JSON.stringify({ input }), signal: options.signal, redirect: "manual" });
+  if (started.status >= 300 && started.status < 400) throw new Error(\`AgentRun answered POST with a redirect (HTTP \${started.status}); not followed, so the API key stays with AGENTRUN_BASE_URL.\`);
   if (!started.ok) throw new Error(\`AgentRun did not start the ${s.key} agent (HTTP \${started.status}): \${await started.text()}\`);
   let run = (await started.json())${t(" as Run")};
   const until = Date.now() + (options.timeoutMs ?? 300_000);
   while (!ENDED.includes(run.status)) {
     if (Date.now() > until) throw new Error(\`The ${s.key} agent's run \${run.run_id} did not end in time.\`);
     await new Promise((resolve) => setTimeout(resolve, 1_500));
-    const read = await fetch(\`\${base}/runs/\${encodeURIComponent(run.run_id)}\`, { headers, signal: options.signal });
+    const read = await fetch(\`\${base}/runs/\${encodeURIComponent(run.run_id)}\`, { headers, signal: options.signal, redirect: "manual" });
+    if (read.status >= 300 && read.status < 400) throw new Error(\`AgentRun answered GET with a redirect (HTTP \${read.status}); not followed, so the API key stays with AGENTRUN_BASE_URL.\`);
     if (!read.ok) throw new Error(\`AgentRun did not read the run \${run.run_id} (HTTP \${read.status}).\`);
     run = (await read.json())${t(" as Run")};
   }
