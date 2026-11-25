@@ -15,6 +15,7 @@
 // holds for its model nodes.
 import { closeSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import { httpsBase } from "@parcha/agentrun-computer";
 import type { DecisionProvider } from "@parcha/agentrun-dsl";
 import { openRouterApp } from "@parcha/agentrun-kernel/host";
 import { FAUX_ENV } from "./model.js";
@@ -242,7 +243,10 @@ export async function decisionProvidersIn(env: NodeJS.ProcessEnv): Promise<{ pro
  *  (the runner's store), so both routes build the same providers. */
 async function decisionProvidersFrom(handed: Record<string, string>, env: NodeJS.ProcessEnv): Promise<{ providers: Record<string, DecisionProvider>; default: string } | undefined> {
   const providers: Record<string, DecisionProvider> = {};
-  const jev = handed[JEV_KEY_ENV] !== undefined ? { apiKey: handed[JEV_KEY_ENV] } : handed[JEV_OPENROUTER_KEY_ENV] !== undefined ? { provider: "openrouter" as const, apiKey: handed[JEV_OPENROUTER_KEY_ENV] } : undefined;
+  // TypeSafe's SDK reads TYPESAFE_BASE_URL itself when given no base, and sends the key there: on TypeSafe's route the
+  // base is given, by the rule of a URL a key goes to (httpsBase), as a saved key's check takes it (key-check.ts).
+  const typesafeBase = env.TYPESAFE_BASE_URL?.trim();
+  const jev = handed[JEV_KEY_ENV] !== undefined ? { apiKey: handed[JEV_KEY_ENV], ...(typesafeBase ? { baseURL: httpsBase(typesafeBase, "TYPESAFE_BASE_URL") } : {}) } : handed[JEV_OPENROUTER_KEY_ENV] !== undefined ? { provider: "openrouter" as const, apiKey: handed[JEV_OPENROUTER_KEY_ENV] } : undefined;
   if (jev) {
     const [{ jevProvider }, faux] = await Promise.all([import("@parcha/agentrun-jev"), fauxFetch(env, FAUX_JEV_ENV)]);
     providers.jev = jevProvider({ ...jev, ...(faux ? { fetch: faux } : {}) });
