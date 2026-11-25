@@ -1311,9 +1311,9 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
         const savedGateway = savedGatewayIn(claimEnv);
         // The run's own keys: those its claim opens (claim-secrets.ts), the one list its loop in this process read. Its model
         // keys are its pinned model's (claimSecrets scopes them by the launch's model), the one its route sends: never the
-        // host's default's now, where its revision names no model and a key saved since moved that default. A --faux start
-        // is pinned to the faux model (model.ts chooseModel), which sends no key: its process is handed no model key, not
-        // even its revision's model's.
+        // host's default's now, where its revision names no model and a key saved since moved that default. On a --faux
+        // runner, or pinned to the faux model, a run sends no model key (claim-secrets.ts sendsNoModelKey): its process is
+        // handed none, not even its revision's model's.
         const claimed = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: claimEnv, redact: loopDeps.redact }, revisionRow as never, launch, claim.runId);
         // A run that holds a model key of its own (model_key, its launch's) spends that key alone: its process is handed
         // none of the server's model keys, as its spec drops them from its tools' (claim-secrets.ts withoutModelKeys).
@@ -1323,8 +1323,9 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
         // The saved gateway's key, kept off the claim's tool keys (claimSecrets), is handed for the run's model routes alone,
         // read as the server's model keys are (savedModelKeys, over the claim's environment the gateway was laid over), as a
         // run in this process reads it from its environment by name; none to a run that brings its own key, and none to a
-        // run whose model sends no key (sendsNoModelKey: a held run its model kept from running, a --faux start's).
-        const gatewayKey = savedGateway && !sendsNoModelKey(launch) ? (keyed ? {} : await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: claimEnv }))[GATEWAY_KEY_ENV] || undefined : undefined;
+        // run whose model sends no key (sendsNoModelKey: a held run its model kept from running, any run on a --faux runner,
+        // a faux-pinned one).
+        const gatewayKey = savedGateway && !sendsNoModelKey(launch, claimEnv) ? (keyed ? {} : await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: claimEnv }))[GATEWAY_KEY_ENV] || undefined : undefined;
         const handed = (name: string): string | undefined => (name === GATEWAY_KEY_ENV && savedGateway ? gatewayKey : toProcess[name] || undefined);
         const keys = encode(SECRET_NAMES.flatMap((name) => {
           const value = handed(name);
