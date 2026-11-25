@@ -16,7 +16,7 @@
 // the same way at each run (defaultPlaceOf): with a shell tool, this server's default_place, so where docker is there
 // now it runs in the Docker box, and where it is not its run is refused in the same words. A workflow, a revision whose
 // tools need no shell, and one with a tool the box refuses run on the runner.
-import { BOX_IDS, BOXES_ENV, type BoxOffer } from "./place-offers.js";
+import { BOX_IDS, BOXES_ENV, type BoxOffer, DEFAULT_BOX } from "./place-offers.js";
 import { type InputIssue, sentence } from "./errors.js";
 
 export const PLACE_MODES = ["runner", "sandbox"] as const;
@@ -32,9 +32,9 @@ export function boxAvailability(registry: readonly BoxOffer[]): BoxOffer[] {
   });
 }
 
-/** The box a new agent is given, by its id: Docker's, never another box that answers in its place. */
-const DEFAULT_BOX = "docker";
-const defaultBox = (registry: readonly BoxOffer[]): BoxOffer => boxAvailability(registry).find((box) => box.id === DEFAULT_BOX)!;
+/** The box a new agent is given: the one whose provider's descriptor says so (`defaultBox`: Docker's), never another box
+ *  that answers in its place. */
+const defaultBox = (registry: readonly BoxOffer[]): BoxOffer | undefined => boxAvailability(registry).find((box) => box.id === DEFAULT_BOX);
 /** Why Docker's box is not here when its probe gave no reason (the words this server always used). */
 const NO_REASON = "no provider runs computers on this machine";
 
@@ -53,8 +53,8 @@ export const nameABox = (registry: readonly BoxOffer[]): string => `name a box: 
  *  own words. A workflow is never given one. */
 export function newAgentPlace(registry: readonly BoxOffer[]): { place: Place } | { reason: string; why: string } {
   const box = defaultBox(registry);
-  if (box.available) return { place: { mode: "sandbox", box: box.id } };
-  return { reason: nameABox(registry), why: box.reason ?? NO_REASON };
+  if (box?.available) return { place: { mode: "sandbox", box: box.id } };
+  return { reason: nameABox(registry), why: box?.reason ?? NO_REASON };
 }
 
 /** The place a revision that names none resolves to, at its create and at each run alike: this server's default place
@@ -136,7 +136,7 @@ export function boxesLine(registry: readonly BoxOffer[], listed: ReadonlySet<str
     box.network === "allowlist" ? sentence(`${box.id} boxes reach only ${hosts}`) : sentence(`${box.id} boxes have no network${box.network_reason ? `: ${box.network_reason}` : ""}`));
   if (byDefault) {
     const box = defaultBox(registry);
-    if (!box.available) return `Boxes: none, so ${runnerShell ? "new agents run on the runner" : "a new agent must name its place: a box, or the runner"}. ${sentence(box.reason ?? NO_REASON)}`;
+    if (!box?.available) return `Boxes: none, so ${runnerShell ? "new agents run on the runner" : "a new agent must name its place: a box, or the runner"}. ${sentence(box?.reason ?? NO_REASON)}`;
     return [`Boxes: ${box.id} (on by default; set ${BOXES_ENV} to change).`, ...reach].join(" ");
   }
   return ["Boxes:", ...(none ? ["none is ready, so sandbox agents do not run here."] : said), ...reach, ...why.map((box) => sentence(`${box.id}: ${box.reason ?? "not available"}`)), ...(rest ? [sentence(rest)] : [])].join(" ");
