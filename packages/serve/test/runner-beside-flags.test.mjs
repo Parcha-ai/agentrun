@@ -9,6 +9,10 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { maxRunsOf } from "../dist/host.js";
 import { readFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import { besideRunnerOptions, besideStopping, DRAIN_TIMEOUT } from "../dist/runner/beside.js";
 import { durationMs } from "../dist/print.js";
@@ -134,22 +138,89 @@ test("a runner of its own stops inside the stop grace of compose, the Helm chart
   }
 });
 
-test("every shipped deploy gives each AgentRun process at least a signed-in server's stop bound (the ChatGPT sign-in's close and a renewal's drain) before it kills: the quickstart, the --no-runner server, its runners, the chart and the templates", async () => {
+/** A tracked file of the repo, by its path from the root. */
+const repoFile = (path) => readFile(new URL(`../../../${path}`, import.meta.url), "utf8");
+/** The compose file `install.sh --vps` writes (/opt/agentrun/compose.yaml): its heredoc. */
+const installerCompose = async () => {
+  const script = await repoFile("packages/agentrun/install.sh");
+  const body = /cat > "\$work\/compose\.yaml" << 'EOF'\n([\s\S]*?)\nEOF\n/.exec(script);
+  assert.ok(body, "install.sh writes its compose file from a heredoc");
+  return body[1];
+};
+/** What Render waits after SIGTERM (render.com/docs/deploys#zero-downtime-deploys): 30 s, fixed for a service with a
+ *  persistent disk, which takes no maxShutdownDelaySeconds. */
+const RENDER_GRACE_S = 30;
+
+test("every shipped deploy gives each AgentRun process at least a signed-in server's stop bound (the ChatGPT sign-in's close and a renewal's drain) before it kills: the quickstart, the --no-runner server, its runners, the --vps installer's compose, the chart and the templates", async () => {
   const { PLAN_STOP_BOUND_MS } = await import("../dist/server.js");
   assert.equal(PLAN_STOP_BOUND_MS, 27_000, "2 s close + 15 s refresh + 10 s store write");
-  const values = await readFile(new URL("../../../deploy/helm/agentrun/values.yaml", import.meta.url), "utf8");
-  const pod = /^terminationGracePeriodSeconds: (\d+)$/m.exec(values);
-  assert.ok(pod && Number(pod[1]) * 1_000 >= PLAN_STOP_BOUND_MS, `the chart's ${pod?.[1]} s`);
-  for (const path of ["compose.yaml", "deploy/compose.yaml", "deploy/coolify/agentrun.yaml", "deploy/dokploy/agentrun/docker-compose.yml"]) {
-    const { services } = parseYaml(await readFile(new URL(`../../../${path}`, import.meta.url), "utf8"), { merge: true });
+  const composes = [["compose.yaml", await repoFile("compose.yaml")], ["deploy/compose.yaml", await repoFile("deploy/compose.yaml")], ["deploy/coolify/agentrun.yaml", await repoFile("deploy/coolify/agentrun.yaml")], ["deploy/dokploy/agentrun/docker-compose.yml", await repoFile("deploy/dokploy/agentrun/docker-compose.yml")], ["install.sh --vps (/opt/agentrun/compose.yaml)", await installerCompose()]];
+  for (const [path, text] of composes) {
+    const { services } = parseYaml(text, { merge: true });
     // AgentRun's own processes: its image or a build of it, never a service it runs beside (the "pg" profile's Postgres).
-    const ours = Object.entries(services).filter(([, service]) => service.build !== undefined || /agentrun/.test(String(service.image ?? "")));
+    const ours = Object.entries(services).filter(([, service]) => service.build !== undefined || /agentrun/i.test(String(service.image ?? "")));
     assert.ok(ours.length > 0, `${path} runs AgentRun`);
     for (const [name, service] of ours) {
       const grace = /^(\d+)s$/.exec(String(service.stop_grace_period ?? ""));
       assert.ok(grace && Number(grace[1]) * 1_000 >= PLAN_STOP_BOUND_MS, `${path}'s ${name}: stop_grace_period ${service.stop_grace_period ?? "(Docker's 10 s)"} is under ${PLAN_STOP_BOUND_MS / 1_000} s, so a stop is killed inside a renewal's drain`);
     }
   }
+});
+
+test("every stop grace the repo ships, found by a scan of its files and not a list, is at least a signed-in server's stop bound, and every deploy target sets one: Compose, the chart, Fly, launchd, Railway (Render's is the platform's fixed 30 s)", async () => {
+  const { PLAN_STOP_BOUND_MS } = await import("../dist/server.js");
+  const { renderValue } = await import(new URL("../../../deploy/railway/template.mjs", import.meta.url));
+  const root = fileURLToPath(new URL("../../../", import.meta.url));
+  // Each way a shipped file sets how long a stop may take before the kill, and its value in seconds.
+  const seconds = (given) => {
+    const m = /^"?(\d+)(s|m)?"?$/.exec(given.trim());
+    return m ? Number(m[1]) * (m[2] === "m" ? 60 : 1) : NaN;
+  };
+  const settings = [
+    ["stop_grace_period", /stop_grace_period:\s*(\S+)/g, seconds],
+    ["terminationGracePeriodSeconds", /terminationGracePeriodSeconds:\s*(\S+)/g, (v) => (v.startsWith("{{") ? undefined : seconds(v))],
+    ["kill_timeout", /kill_timeout\s*=\s*(\S+)/g, seconds],
+    ["ExitTimeOut", /<key>ExitTimeOut<\/key>\s*<integer>(\d+)<\/integer>/g, seconds],
+    ["TimeoutStopSec", /TimeoutStopSec=(\S+)/g, seconds],
+    ["maxShutdownDelaySeconds", /maxShutdownDelaySeconds:\s*(\S+)/g, seconds],
+    ["RAILWAY_DEPLOYMENT_DRAINING_SECONDS", /"RAILWAY_DEPLOYMENT_DRAINING_SECONDS"\s*:\s*\{\s*"defaultValue"\s*:\s*("(?:[^"\\]|\\.)*")/g, (v) => seconds(renderValue(JSON.parse(v), { domain: "x" }))],
+  ];
+  const files = execFileSync("git", ["ls-files", "-z"], { cwd: root, encoding: "utf8" }).split("\0").filter((path) => path && !/(^|\/)test\//.test(path) && !path.endsWith(".md") && !path.startsWith("changes/"));
+  const found = new Map();
+  for (const path of files) {
+    let text;
+    try {
+      text = readFileSync(join(root, path), "utf8");
+    } catch {
+      continue;
+    }
+    if (text.includes("\0")) continue;
+    for (const [what, pattern, parse] of settings) {
+      for (const m of text.matchAll(pattern)) {
+        const s = parse(m[1]);
+        if (s === undefined) continue;
+        const line = text.slice(0, m.index).split("\n").length;
+        found.set(path, [...(found.get(path) ?? []), what]);
+        assert.ok(s * 1_000 >= PLAN_STOP_BOUND_MS, `${path}:${line}: ${what} ${m[1]} is under ${PLAN_STOP_BOUND_MS / 1_000} s, so a stop is killed inside a renewal's drain`);
+      }
+    }
+  }
+  // Each deploy target the repo ships, and what it must set: one without it gets its platform's default (Docker's 10 s,
+  // launchd's 20 s, Railway's 0 s).
+  for (const [path, what] of [
+    ["compose.yaml", "stop_grace_period"],
+    ["deploy/compose.yaml", "stop_grace_period"],
+    ["deploy/coolify/agentrun.yaml", "stop_grace_period"],
+    ["deploy/dokploy/agentrun/docker-compose.yml", "stop_grace_period"],
+    ["packages/agentrun/install.sh", "stop_grace_period"],
+    ["deploy/helm/agentrun/values.yaml", "terminationGracePeriodSeconds"],
+    ["deploy/fly/fly.toml", "kill_timeout"],
+    ["packages/agentrun/lib/service.mjs", "ExitTimeOut"],
+    ["deploy/railway/template.json", "RAILWAY_DEPLOYMENT_DRAINING_SECONDS"],
+  ]) assert.ok(found.get(path)?.includes(what), `${path} sets no ${what}`);
+  // Render: no setting of its own (it takes no maxShutdownDelaySeconds with a persistent disk); its fixed wait holds.
+  assert.equal(found.get("render.yaml"), undefined, "render.yaml sets no grace Render would refuse");
+  assert.ok(RENDER_GRACE_S * 1_000 >= PLAN_STOP_BOUND_MS, `Render's ${RENDER_GRACE_S} s`);
 });
 
 test("--max-runs 2 with 4 runs queued: the runner holds 2 at once, the other 2 wait queued, then run as places free", async (t) => {

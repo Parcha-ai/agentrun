@@ -1921,8 +1921,10 @@ test("a renewal's write-back that faults: refused unsent by a closed store, its 
     { what: "its commit unanswered, then the write again refused unsent", fault: () => new Unanswered("its commit", 10_000), again: () => new StoreClosed(), saved: false, revoked: 0, unknown: "Unanswered" },
     // The first refused for sure (busy: nothing written), the write again refused unsent: no row holds the pair, revoked.
     { what: "refused unsent, the store busy, then the write again refused unsent", fault: () => new StoreBusy("database is locked"), again: () => new StoreClosed(), saved: false, revoked: 1 },
+    // The write again loses, and the read once more faults: what the row holds is not known, so the pair is kept.
+    { what: "its commit unanswered, the write again lost, and the read once more faults", fault: () => new Unanswered("its commit", 10_000), againLoses: true, rereadFaults: () => new StoreBusy("canceling statement due to lock timeout"), saved: false, revoked: 0, unknown: "StoreBusy" },
   ];
-  for (const { what, fault, lands = false, late = false, again, readFaults = false, saved, revoked, unknown } of cases) {
+  for (const { what, fault, lands = false, late = false, again, againLoses = false, readFaults = false, rereadFaults, saved, revoked, unknown } of cases) {
     const store = mapStore();
     const sealKey = randomBytes(32);
     const stale = await seatRow(store, sealKey, -1_000);
@@ -1934,6 +1936,7 @@ test("a renewal's write-back that faults: refused unsent by a closed store, its 
     store.sealedKeys.replaceIf = async (...args) => {
       writes += 1;
       if (writes === 3 && again) throw again();
+      if (writes === 3 && againLoses) return false;
       if (writes !== 2) return replaceIf(...args);
       if (lands) await replaceIf(...args);
       if (late) landing = args;
@@ -1941,6 +1944,7 @@ test("a renewal's write-back that faults: refused unsent by a closed store, its 
     };
     store.sealedKeys.get = async (...args) => {
       if (readFaults && writes >= 2) throw fault();
+      if (rereadFaults && writes >= 3) throw rereadFaults();
       const bytes = await get(...args);
       if (landing) {
         const commit = landing;
