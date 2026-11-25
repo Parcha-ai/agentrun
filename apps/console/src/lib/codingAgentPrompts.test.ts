@@ -5,6 +5,7 @@ import { observedAgentPrompt } from "./codingAgentPrompts";
 import type { ObservedSession } from "./observations";
 
 const template: TemplateView = {
+  workflow: null,
   id: "review/kit", bundled: true, source: null, sha: null, publisher: null, category: null, tags: [],
   name: "review/kit", display_name: "Review kit", version: "1.2.0", description: "Review changes using the package's skills.",
   license: null, author: null, repository: null, output: null, input_schema: null, harness: ["pi"], model: null, effort: null, tools: null, tool_policy: null,

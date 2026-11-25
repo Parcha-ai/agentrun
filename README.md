@@ -329,8 +329,8 @@ step is never run again; a write a crash cut off mid-call is marked interrupted 
 
 ## Templates
 
-Six ready-made agents. Apply one in one screen, make it yours, and measure it with its own eval cases. Each template is
-one folder: the agent's instructions, its skills, its rules and its eval cases. **Templates → Apply** grants nothing
+Seven ready-made agents. Apply one in one screen, make it yours, and measure it with its own eval cases. Each template is
+one folder: the agent's instructions, its skills, its rules and its eval cases, or a workflow the agent runs. **Templates → Apply** grants nothing
 until you tick each MCP tool yourself.
 
 | Template | What it does |
@@ -341,6 +341,7 @@ until you tick each MCP tool yourself.
 | `market-monitor` | Every Monday, a digest of what changed at the companies you watch, each item dated and linked |
 | `inbound-lead` | Researches each lead a webhook sends and scores it 0 to 100 against your ideal customer profile |
 | `release-notes` | Turns the pull requests merged since the last release into release notes, left as a draft issue for a person |
+| `stream-router` | A workflow for a Sandbar Stream voice ring: one Jev decision on each note wakes your assistant (by the name you start the note with), a researcher or a coder, or no agent at all |
 
 `npx @parcha/agentrun template eval DIR` runs a template's eval cases as real runs on a throwaway server and grades
 them. [Template packages](packages/serve/templates/README.md) has the folder format.

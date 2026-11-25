@@ -19,6 +19,12 @@ Stream ring ─▶ iPhone ─▶ POST /v2/hooks/{trigger}   webhook trigger, sig
    no model           budget 0.25    budget 0.50    budget 0.25
 ```
 
+To run it on your own server, apply the bundled [`stream-router` template](../../packages/serve/templates/README.md#workflow-packages)
+(the console's Templates page, or `POST /v2/templates/stream-router/apply`): its workflow is this one with the
+assistant's name as a parameter (`assistant`, Arun by default, so its branch is `assistant`), and its apply makes the
+stream trigger. Then give the trigger Stream's secret (Set secret) and paste its hook URL into Stream. This folder keeps
+the router's offline test and the setup script below.
+
 | File | What it is |
 | --- | --- |
 | `router.workflow.json` | The router: one Jev `route` over the note as delivered, and a specialist `agent` step per route. No code nodes, so a server runs it without `--allow-code-nodes`. |

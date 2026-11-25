@@ -9,6 +9,7 @@ import type { TemplateView } from "@/lib/v2";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: Root | undefined;
 const template: TemplateView = {
+  workflow: null,
   id: "review/kit", bundled: true, source: null, sha: null, publisher: null, category: null, tags: [],
   name: "review/kit", display_name: "Review kit", version: "2.4.0", description: "Review a pull request.",
   license: null, author: null, repository: null, output: null, input_schema: null, harness: ["pi"], model: null, effort: null, tools: null, tool_policy: null,

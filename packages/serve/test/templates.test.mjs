@@ -247,13 +247,18 @@ test("code-review through the API: listed, applied with a repo it makes the agen
   const listed = await api("GET", "/templates");
   assert.equal(listed.status, 200);
   meets("/templates", "get", "200", listed.body);
-  assert.deepEqual(listed.body.templates.map((x) => x.name), ["agent-scout", "code-review", "inbound-lead", "kyb", "market-monitor", "release-notes"]);
+  assert.deepEqual(listed.body.templates.map((x) => x.name), ["agent-scout", "code-review", "inbound-lead", "kyb", "market-monitor", "release-notes", "stream-router"]);
   for (const view of listed.body.templates) {
     assert.deepEqual(view.author, { name: "Parcha Labs" }, `${view.name} names its author`);
+    // A workflow package's answer is its workflow's output (the read answers the workflow whole): it names that file.
+    if (view.workflow !== null) {
+      assert.deepEqual([typeof view.workflow, view.output], ["string", null], `${view.name} names its workflow's file, and no answer schema of its own`);
+      continue;
+    }
     assert.equal(typeof view.output?.schema, "string", `${view.name} names its answer's schema file`);
     assert.equal(view.output.json_schema.type, "object", `${view.name} shows the schema itself, for the console`);
   }
-  assert.deepEqual(Object.fromEntries(listed.body.templates.map((x) => [x.name, x.approvals_default])), { "agent-scout": "never", "code-review": "never", "inbound-lead": "never", kyb: "ask", "market-monitor": "never", "release-notes": "never" }, "a template whose job runs on triggers runs unattended by default, and so does agent-scout, which the server starts for a scan and which writes nothing");
+  assert.deepEqual(Object.fromEntries(listed.body.templates.map((x) => [x.name, x.approvals_default])), { "agent-scout": "never", "code-review": "never", "inbound-lead": "never", kyb: "ask", "market-monitor": "never", "release-notes": "never", "stream-router": "never" }, "a template whose job runs on triggers runs unattended by default, and so does agent-scout, which the server starts for a scan and which writes nothing");
   const review = listed.body.templates.find((x) => x.name === "code-review");
   assert.deepEqual([review.version, review.secrets, review.skills, review.evals, review.parameters.required],["0.4.0", [], ["review"], ["clean-refactor", "injection", "mentions-defused", "never-flag", "null-name", "off-by-one", "other-repo", "pasted-by-reference", "re-review", "re-review-open", "repo-rule", "two-defects"], ["owner", "repo"]]);
 
@@ -607,6 +612,7 @@ test("every package this server ships applies on a server with nothing saved: no
     kyb: { risk_appetite: "medium" },
     "market-monitor": { competitors: "Acme (acme.example)" },
     "release-notes": AGENTRUN,
+    "stream-router": {},
   };
   const listed = (await api("GET", "/templates")).body.templates;
   assert.deepEqual(listed.map((x) => x.name), Object.keys(parameters), "a new package gets its parameters here");
@@ -676,7 +682,7 @@ test("a package's writes are bounded: each MCP tool it lists is a known read or 
   // URL it fetches. A package that fetches reads nothing through MCP.
   const fetches = new Set(packages.filter((p) => p.tools?.includes("web_fetch")).map((p) => p.name));
   assert.deepEqual(listed.filter((x) => fetches.has(x.p) && !WRITES.has(x.id)).map((x) => `${x.p}: ${x.id}`), [], "a package that holds web_fetch and reads through MCP");
-  assert.deepEqual(packages.filter((p) => p.approvals === "never").map((p) => p.name), ["agent-scout", "code-review", "inbound-lead", "market-monitor", "release-notes"], "the packages whose job runs on triggers run unattended, and agent-scout, which the server starts for a scan and which writes nothing");
+  assert.deepEqual(packages.filter((p) => p.approvals === "never").map((p) => p.name), ["agent-scout", "code-review", "inbound-lead", "market-monitor", "release-notes", "stream-router"], "the packages whose job runs on triggers run unattended, and agent-scout, which the server starts for a scan and which writes nothing");
   assert.ok(listed.some((x) => WRITES.has(x.id) && x.pinned) && listed.some((x) => x.allowed), "the check sees pinned writes and allowed tools");
 });
 

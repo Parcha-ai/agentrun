@@ -188,7 +188,7 @@ import { LOOPBACK, MCP_SETTINGS_PAGE, signInCookie, startedHere } from "./mcp-oa
 import { type RunNotice, WEBHOOK_EVENTS, WEBHOOK_FILE, waitMarkerOf, Webhooks } from "./webhooks.js";
 import { SLACK_EVENTS, SlackPosts } from "./slack.js";
 import { appPermissionWarnings } from "./template-github-permissions.js";
-import { templateApplied, templateTriggerSecret, templateWebhookSecrets, triggerMade, triggerRotated, webhookRotated, webhookSaved, withTriggerSecret } from "./trigger-secrets-shown.js";
+import { templateApplied, templateTriggerGivenSecret, templateTriggerSecret, templateWebhookSecrets, triggerMade, triggerRotated, webhookRotated, webhookSaved, withTriggerSecret } from "./trigger-secrets-shown.js";
 import { type SealedSettingsOverStore } from "./sealed-settings-store.js";
 import { type ServerSecrets } from "./server-secrets.js";
 import { openServerSecretsOverStore } from "./server-secrets-store.js";
@@ -210,7 +210,7 @@ import { mcpNameOf as mcpToolOf, mcpToolName } from "./tool-names.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, RELEASE_WORDS_MAX, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
 import type { LaunchHook } from "./trigger-launch-hook.js";
 import { PAYLOAD_KEPT_BYTES } from "./trigger-adapter.js";
-import { applyBodyOf, choiceUnrunnable, COMPOSIO_TRIGGER_FIX, composioTriggerSkipped, COMPUTER_FIX, compiled, feedLeftEmpty, feedTriggerEmpty, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, mcpSetUp, type McpServed, onServerName, onServers, type Package, packageDetail, packageModel, packageTiers, packageView, pickComputer, readPackages, notSetUpYet, serversFor, type ShellHere, TemplateRegistry, type TemplatesDeps } from "./templates.js";
+import { applyBodyOf, checkWorkflowPackage, choiceUnrunnable, COMPOSIO_TRIGGER_FIX, composioTriggerSkipped, COMPUTER_FIX, compiled, feedLeftEmpty, feedTriggerEmpty, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, mcpSetUp, type McpServed, onServerName, onServers, type Package, packageDetail, packageModel, packageTiers, packageView, pickComputer, readPackages, notSetUpYet, serversFor, type ShellHere, TEMPLATES_DIR, TemplateRegistry, type TemplatesDeps, workflowTriggerInputIssues } from "./templates.js";
 import { applyImported, deleteTemplate, dropRemovedUploads, importTemplate, loadImported, type TemplateImportDeps, UPLOAD_PREFIX } from "./template-import.js";
 import { hereOf, Marketplace, marketplaceUrlOf } from "./marketplace.js";
 import { templateInstallLink, templateLink, templatesLink } from "./console-links.js";
@@ -1327,8 +1327,10 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const minFreeMib = minFreeMibOf(process.env);
   if (minFreeMib === undefined) throw new Error("AGENTRUN_MIN_FREE_MB is a number of MiB, 0 or more");
   const minFreeBytes = options.minFreeBytes ?? minFreeMib * 2 ** 20;
-  // The template packages, each checked whole (templates.ts readPackage): a broken one stops the start.
+  // The template packages, each checked whole (templates.ts readPackage, and a workflow package's workflow:
+  // checkWorkflowPackage): a broken one stops the start.
   const templates = readPackages(options.templates);
+  for (const pkg of templates) await checkWorkflowPackage(pkg, join(options.templates ?? TEMPLATES_DIR, pkg.name));
   // One server per data root: the store's owner lock (StoreOwned), then the data root's own (server-lock.ts), both taken
   // when startHolding opens the store; a data directory an earlier version wrote is refused there too
   // (StoreFromEarlierVersion), in words, to start fresh. No oldHomes/oldLayout checks, no migration.
@@ -3837,7 +3839,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       return [[i, keptOn ? { ...skip, message: `${skip.message} The agent's trigger ${keptOn.id} of that name is kept as it was, and still fires: ${off}.` } : skip] as const];
     }));
     const unmade = (i: number) => emptyFeeds.has(i) || hostless.has(i);
-    const refusedTriggers = madeTriggerIssues(made.triggers, options.triggerClock?.now() ?? Date.now(), pkg.inputSchema).filter((issue) => !unmade(Number(/^triggers\.(\d+)\./.exec(issue.field)?.[1])));
+    // A workflow package's triggers start its workflow's runs, so each input is checked against the workflow's own input,
+    // filled as the apply fills it.
+    const flowInputs = pkg.workflow ? await workflowTriggerInputIssues((made.agent.definition as Json).workflow as Json, made.triggers) : [];
+    const refusedTriggers = [...madeTriggerIssues(made.triggers, options.triggerClock?.now() ?? Date.now(), pkg.inputSchema, Boolean(pkg.workflow)), ...flowInputs].filter((issue) => !unmade(Number(/^triggers\.(\d+)\./.exec(issue.field)?.[1])));
     if (refusedTriggers.length) throw invalid(refusedTriggers);
     // POST /agents' and POST /triggers' own body limit: parameters filled in more than once can grow a package past it.
     for (const one of [made.agent, ...made.triggers]) if (Buffer.byteLength(JSON.stringify(one)) > MAX_BODY) throw new ApiError("payload_too_large", `the ${pkg.name} template, its parameters filled in, makes a body over ${MAX_BODY} bytes`, { details: { limit: "max_body_bytes" } });
@@ -4010,8 +4015,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // not the agent's, so nothing is said of it.
     const ticked = saved.map((need) => ({ ...need, tools: need.tools.filter((tool) => grants.includes(mcpToolName(need.server, tool))) }));
     const appShort = await appPermissionWarnings({ name: pkg.name, mcp: ticked }, (server) => mcpMeta.get(server)?.auth === "github_app", () => githubConnect.installationPermissions(stopping.signal));
-    // A webhook trigger's secret is in no apply answer: each one's warning sends the person to the console for it.
-    const hooks = made.triggers.flatMap((trigger, i) => (!hostless.has(i) && isObject(trigger.source) && trigger.source.kind === "webhook" ? [templateTriggerSecret(i)] : []));
+    // A webhook trigger's secret is in no apply answer: each one's warning sends the person to the console for it. One
+    // whose sender makes its secret (Stream's) has none yet: its warning says to give it, and until then its hook refuses.
+    const hooks = made.triggers.flatMap((trigger, i) => {
+      if (hostless.has(i) || !isObject(trigger.source) || trigger.source.kind !== "webhook") return [];
+      const given = adapters.find((one) => one.id === "webhook")?.givenSecret?.(trigger.source as Source);
+      return [given ? templateTriggerGivenSecret(i, given) : templateTriggerSecret(i)];
+    });
     // Each github trigger: what it runs on, when made (a note, never a lack); skipped, what to do about it.
     const githubTriggers: InputIssue[] = made.triggers.flatMap((trigger, i) => (!hostless.has(i) && isObject(trigger.source) && trigger.source.kind === "github"
       ? [unconnected.has(i) ? { field: `triggers.${i}`, reason: NOT_SET_UP, message: githubTriggerUnconnected(pkg.name, trigger.source) } : { field: `triggers.${i}`, reason: "not_an_option", message: githubTriggerWords(pkg.name, trigger.source) }]
@@ -5363,7 +5373,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const body = (revision?.body ?? {}) as Json;
         const elsewhere = ownedElsewhere(agent) ? "another system's agent, which that system defines" : body.native ? "a native agent, which its project on its own machine defines" : body.cli_learning ? "a CLI learning agent, which its CLI's sessions define" : body.sdk ? "an SDK agent, which its application's code defines" : undefined;
         if (elsewhere) throw new ApiError("not_exportable", `The agent ${id} is ${elsewhere}: export it from there.`);
-        if (!revision || revision.kind !== "agentic") throw new ApiError("not_exportable", `The agent ${id} ${revision ? "is a workflow, and a template package holds an agent" : "has no revision to export"}.`);
+        if (!revision || revision.kind !== "agentic") throw new ApiError("not_exportable", `The agent ${id} ${revision ? "is a workflow, and an export writes an agentic package only: a workflow template's agent is its template, applied again" : "has no revision to export"}.`);
         // Its triggers: those that start its runs and those that message one of them (each row names the agent it runs as).
         const own = new Set((await store.triggers.list(id)).map((row) => row.id));
         const views = (await triggers.list()).triggers.filter((view) => own.has(view.id)) as unknown as Json[];

@@ -1,0 +1,11 @@
+---
+packages: @parcha/agentrun-serve, @parcha/agentrun-client
+kind: feature
+---
+A template package can now make a workflow agent: `workflow: <file>.json` in agent.md names a JSON file in the package holding an agentrun-dsl workflow, and apply makes a workflow revision of it, each `${parameters.<name>}` in its text filled. The bundled `stream-router` template is the first: one Jev route on each note said into a Sandbar Stream ring picks the owner's assistant (by the name the note starts with, the `assistant` parameter), a researcher, a coder or no agent at all, behind a `signature: "stream"` webhook trigger.
+- A workflow package has no body, `skills/`, `rules/` or `evals/`, and none of `harness`, `model`, `effort`, `tools`, `mcp`, `tool_policy`, `computer`, `needs`, `checkout`, `inputs`, `output` or `learning`: each is refused in words, since a workflow revision's nodes carry their own.
+- Its workflow is checked as a save checks one (the DSL's checks and the durable runner's refusal), with each trigger's input against the workflow's input, at the server's start (a broken one stops it), at an import or upload, and by `agentrun template validate`, which also prints the file as `workflow`. Apply checks the triggers' inputs again with the parameters given.
+- Its apply makes the agent with no model and takes no `overrides.model` (`422`): its model nodes run on this server's model for their tiers.
+- `GET /v2/templates` lists each package's `workflow` file (null for an agentic one), and a read answers the workflow whole as `workflow`. The console's install page shows it where an agentic package's instructions go, and a template's summary says it runs a workflow.
+- An apply that makes a stream trigger warns that Stream makes its secret and how to give it (`triggers.<i>.secret`, `not_set_up_here`); no secret is shown for it.
+- An export (`GET /v2/agents/{id}/package`) still writes an agentic package only: a workflow agent's is `409 not_exportable`, in words that now say so.

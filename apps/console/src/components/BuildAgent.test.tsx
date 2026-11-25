@@ -18,6 +18,7 @@ let root: Root | undefined;
 let host: HTMLDivElement;
 const copied = vi.fn(async (_text: string) => {});
 const packageTemplate = (name: string): TemplateView => ({
+  workflow: null,
   id: name, bundled: true, source: null, sha: null, publisher: null, category: null, tags: [],
   name, display_name: name, version: "2.1.0", description: `A complete ${name} agent package.`,
   license: "Apache-2.0", author: null, repository: null, output: null, input_schema: null,

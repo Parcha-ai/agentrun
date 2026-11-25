@@ -3,7 +3,7 @@ import { readTemplateDraft, templatePlaygroundHref } from "./templatePackages";
 import { fieldValues, schemaFields } from "./inputForm";
 import type { TemplateApply, TemplateView } from "./v2";
 
-const template: TemplateView = { id: "github:acme/review-kit", bundled: false, source: "github:acme/review-kit@main", sha: "a".repeat(40), publisher: "acme", category: null, tags: [], name: "review-kit", display_name: "Review kit", version: "2.0.0", description: "Review changes.",
+const template: TemplateView = { workflow: null, id: "github:acme/review-kit", bundled: false, source: "github:acme/review-kit@main", sha: "a".repeat(40), publisher: "acme", category: null, tags: [], name: "review-kit", display_name: "Review kit", version: "2.0.0", description: "Review changes.",
   license: null, author: null, repository: null, output: null, input_schema: null, harness: ["pi"], model: null, effort: null, tools: null, tool_policy: null,
   computer: null, needs: null, computer_here: null, checkout: null, secrets: [], budget: null, learning: false, approvals_default: "ask", triggers: [], skills: [], evals: [],
   parameters: { type: "object", additionalProperties: false, required: ["repo", "names", "counts", "flags"], properties: {

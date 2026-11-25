@@ -4,6 +4,7 @@ import { readTemplateDraft, templatePlaygroundHref } from "./templatePackages";
 import type { TemplateApply, TemplateView } from "./v2";
 
 const bundled: TemplateView = {
+  workflow: null,
   id: "kyb", name: "kyb", display_name: "KYB", bundled: true, source: null, sha: null, publisher: null, category: null, tags: [],
   version: "1.0.0", description: "Checks a business.", license: "MIT", author: null, repository: null, output: null,
   harness: ["pi"], model: { tier: "balanced" }, effort: null, tools: null, tool_policy: null, computer: null, needs: null, computer_here: null, checkout: null,

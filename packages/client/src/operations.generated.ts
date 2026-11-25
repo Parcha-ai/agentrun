@@ -5602,6 +5602,7 @@ export type GetTemplateResponse = {
       schema: string;
       json_schema: Record<string, unknown> | null;
     } | null;
+    workflow: string | null;
     harness: Array<string> | null;
     model: {
       tier: "fast" | "balanced" | "strong";
@@ -5668,6 +5669,7 @@ export type GetTemplateResponse = {
   };
   instructions: string;
   skill_files: Record<string, string>;
+  workflow: Record<string, unknown> | null;
   console_url: string;
 };
 
@@ -5704,6 +5706,7 @@ export type ImportTemplateResponse = {
       schema: string;
       json_schema: Record<string, unknown> | null;
     } | null;
+    workflow: string | null;
     harness: Array<string> | null;
     model: {
       tier: "fast" | "balanced" | "strong";
@@ -5770,6 +5773,7 @@ export type ImportTemplateResponse = {
   };
   instructions: string;
   skill_files: Record<string, string>;
+  workflow: Record<string, unknown> | null;
   publisher_trusted: boolean;
   stored: boolean;
   replaced: string | null;
@@ -5799,6 +5803,7 @@ export type ListTemplatesResponse = {
       schema: string;
       json_schema: Record<string, unknown> | null;
     } | null;
+    workflow: string | null;
     harness: Array<string> | null;
     model: {
       tier: "fast" | "balanced" | "strong";

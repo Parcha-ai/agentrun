@@ -47,6 +47,11 @@ export const triggerRotated = (id: string, minted: string | undefined, at: strin
  *  record would keep it), so the person gets it from the console. */
 export const templateTriggerSecret = (i: number) => ({ field: `triggers.${i}.secret`, reason: "not_allowed" as const, message: `This webhook trigger's signing secret is not in an apply answer. ${TRIGGER_SECRET_WORDS}` });
 
+/** The warning an apply says of a webhook trigger whose sender makes its secret (Stream's, trigger-signatures.ts
+ *  givenSecret): it was made with none, so it refuses every request until the owner gives it. Not set up here, never a
+ *  secret not shown, so the first answer that shows every minted secret keeps it (templateApplied). */
+export const templateTriggerGivenSecret = (i: number, given: { sender: string; prefix: string }) => ({ field: `triggers.${i}.secret`, reason: "not_set_up_here" as const, message: `${given.sender} makes this trigger's secret: give it on the trigger's page (Set secret), or with POST /v2/triggers/{id}/secret and the body {"secret": "${given.prefix}..."}. Until then every request to its hook is refused (401).` });
+
 /** The outbound webhook's secret's metadata, named webhook:outbound: set or not, made by this server at a save (source
  *  console), and when. */
 export const webhookSecretMeta = (set: boolean, changedAt: string | null): SecretMeta => secretMeta(secretName("webhook", "outbound"), { set, source: "console", changedAt });
@@ -102,6 +107,6 @@ export function templateApplied(body: Record<string, unknown>, minted: ReadonlyM
   // The answer that shows every secret drops the warnings saying it is not shown (templateTriggerSecret's): they would
   // sit right above the secret they say is missing. A token's answer or a replay keeps them.
   const showsAll = shown === "first" && made.every((one) => minted.has(one.trigger_id));
-  const warnings = showsAll && Array.isArray(body.warnings) ? { warnings: (body.warnings as { field?: unknown }[]).filter((w) => !/^triggers\.\d+\.secret$/.test(String(w.field))) } : {};
+  const warnings = showsAll && Array.isArray(body.warnings) ? { warnings: (body.warnings as { field?: unknown; reason?: unknown }[]).filter((w) => !(/^triggers\.\d+\.secret$/.test(String(w.field)) && w.reason === "not_allowed")) } : {};
   return { ...body, ...warnings, webhook_secrets: made.map(said) };
 }
