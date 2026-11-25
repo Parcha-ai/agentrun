@@ -242,8 +242,12 @@ test("each provider's check is one documented call that costs nothing, on the ke
 test("a base URL a key may not go to is never sent the key: one with a user or password, a query, a fragment or plain http keeps the key not checked, in words that hold neither the password nor the query", async () => {
   const { checkKey } = await import("../dist/key-check.js");
   const key = fake();
+  // The credentialed URL is made at run time, so no source line holds a URL with a password in it.
+  const credentialed = new URL("https://gateway.example");
+  credentialed.username = "agent";
+  credentialed.password = "not-a-secret";
   for (const [id, variable] of [["browserbase", "BROWSERBASE_BASE_URL"], ["kernel", "KERNEL_BASE_URL"], ["typesafe", "TYPESAFE_BASE_URL"], ["anthropic", "ANTHROPIC_BASE_URL"]]) {
-    for (const url of ["https://agent:not-a-secret@gateway.example", "https://gateway.example/?key=not-a-secret", "https://gateway.example/#not-a-secret", "http://gateway.example"]) {
+    for (const url of [credentialed.href, "https://gateway.example/?key=not-a-secret", "https://gateway.example/#not-a-secret", "http://gateway.example"]) {
       const fetcher = recorder(json(200, {}));
       const { at, ...outcome } = await checkKey({ id, label: ROWS[id] }, key, { [variable]: url }, fetcher);
       assert.equal(fetcher.sent.length, 0, `${id} at ${url}: the key was sent`);
