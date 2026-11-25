@@ -14,7 +14,7 @@ import { homedir, hostname, tmpdir, userInfo } from "node:os";
 import { delimiter, dirname, join, relative } from "node:path";
 import { after, test } from "node:test";
 import * as claude from "@parcha/agentrun-harness-claude";
-import { CLAUDE_LOGIN_ENV, CLAUDE_LOGIN_SETTING, claudeLoginOf, claudeLoginSwitchedOff, claudeLoginView, envAtPlace, LOGIN_ANSWERS_DIR, LOGIN_SIGNED_OUT, LOGIN_UNKNOWN, loginAt as checkedLoginAt, loginBeforeRun, loginForRun, loginOnRunnerOnly, loginServes, settingFor, startLoginHere, turnOffClaudeLogin, turnOnBody, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
+import { CLAUDE_LOGIN_ENV, CLAUDE_LOGIN_SETTING, claudeLoginOf, claudeLoginSwitchedOff, claudeLoginView, dropRefusedLogin, envAtPlace, LOGIN_ANSWERS_DIR, LOGIN_SIGNED_OUT, LOGIN_UNKNOWN, loginAt as checkedLoginAt, loginBeforeRun, loginForRun, loginOnRunnerOnly, loginServes, settingFor, startLoginHere, turnOffClaudeLogin, turnOnBody, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
 import { ClaudeSignIns } from "../dist/claude-sign-in.js";
 import { MODEL_KEYS, hostModel } from "../dist/model.js";
 import { providerFor } from "../dist/provider.js";
@@ -1656,10 +1656,12 @@ test("a server whose env's HOME is another user's shows a sign-in line that carr
   }
 });
 
-// A login saved before is turned off at the start of a server that refuses it, so no runner, in this process or another,
-// runs on it: here, one saved on this machine's CLAUDE_CONFIG_DIR, and a later start whose CLAUDE_CONFIG_DIR is another
-// user's folder ("/", as above).
-test("a login saved on this machine's folders is turned off at the start of a server whose env gives it a folder its user does not own, and the reason is logged; a start with the folder its own again finds it off", { skip: process.platform === "win32" ? "no uid" : process.geteuid() === 0 ? "root owns /" : false, timeout: 120_000 }, async (t) => {
+// A login saved before is kept at the start of a server that refuses its folders: refused in words while they are, so no
+// runner, in this process or another, runs on it, and the reason is logged. The person mends the folders (a chmod, or
+// the server started as the right user with that user's variables) and has the login back; deleting the setting would
+// have turned off a login that ran before, for a reason a chmod mends. Here, one saved on this machine's
+// CLAUDE_CONFIG_DIR, and a later start whose CLAUDE_CONFIG_DIR is another user's folder ("/", as above).
+test("a login saved on this machine's folders is kept at the start of a server whose env gives it a folder its user does not own: refused in words there, no run on it, and the reason logged; a start with the folder its own again has the login", { skip: process.platform === "win32" ? "no uid" : process.geteuid() === 0 ? "root owns /" : false, timeout: 120_000 }, async (t) => {
   const folder = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-config-dir-"));
   t.after(() => rmSync(folder, { recursive: true, force: true }));
   const first = await signInServer(t, "sign", {}, { CLAUDE_CONFIG_DIR: folder });
@@ -1672,8 +1674,12 @@ test("a login saved on this machine's folders is turned off at the start of a se
   const lines = [];
   const second = await serve(t, { faux: undefined, harnesses: false, runner: false, data: first.data, log: (line) => lines.push(line) });
   const why = notOwnFolder(`uid ${process.geteuid()} (${userInfo().username})`, "CLAUDE_CONFIG_DIR", "/");
-  assert.ok(lines.some((line) => /turned off: Claude Code's login on this machine needs its folders/.test(line)), `the start logs why it turned the login off: ${lines.join("\n")}`);
-  assert.equal((await second.api("GET", "/settings/claude-login")).body.state, "off");
+  assert.ok(lines.some((line) => /kept, and not used while it is refused: Claude Code's login on this machine needs its folders/.test(line)), `the start logs why it does not use the login: ${lines.join("\n")}`);
+  assert.ok(!lines.some((line) => /turned off/.test(line)), `the start turns nothing off: ${lines.join("\n")}`);
+  const refused = (await second.api("GET", "/settings/claude-login")).body;
+  assert.equal(refused.state, "off", JSON.stringify(refused));
+  assert.match(refused.refused ?? "", why);
+  assert.equal(await loginForRun(second.store.settings, first.data, process.env, "claude-agent", RUNNER), undefined, "no run goes on it");
   const again = await second.api("PUT", "/settings/claude-login", { only_me: true, place: "machine" });
   assert.equal(again.status, 403);
   assert.match(again.body.error.message, why);
@@ -1682,8 +1688,36 @@ test("a login saved on this machine's folders is turned off at the start of a se
   process.env.CLAUDE_CONFIG_DIR = folder;
   const third = await serve(t, { faux: undefined, harnesses: false, runner: false, data: first.data });
   const view = (await third.api("GET", "/settings/claude-login")).body;
-  assert.equal(view.state, "off", `turned off, not set aside: ${JSON.stringify(view)}`);
+  assert.equal(view.place, "machine", `kept: ${JSON.stringify(view)}`);
+  assert.notEqual(view.state, "off", `kept, and the login again: ${JSON.stringify(view)}`);
   assert.equal(view.refused, undefined);
+  assert.equal(view.folder, realpathSync(folder));
+});
+
+// A folder its group may write in (a home or a folder on a volume whose group is set for a pod, 2775, or one made under
+// a umask of 002, 0775) is refused, and a chmod mends it: a start keeps the setting, logs why, and turns nothing off.
+// One refused for the switch or for more than one owner is still turned off, as before.
+test("a start keeps a login saved on a folder its group may write in, and logs why it does not use it; one refused for the switch is turned off", { skip: process.platform === "win32" ? "no uid" : process.geteuid() === 0 ? "root may write anywhere" : false }, async (t) => {
+  const mine = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-kept-"));
+  t.after(() => rmSync(mine, { recursive: true, force: true }));
+  const open = join(mine, "open");
+  mkdirSync(open, { mode: 0o700 });
+  const signIns = new ClaudeSignIns();
+  t.after(() => signIns.close());
+  for (const mode of [0o775, 0o2775]) {
+    chmodSync(open, mode);
+    const data = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-data-"));
+    t.after(() => rmSync(data, { recursive: true, force: true }));
+    const rows = new Map([[CLAUDE_LOGIN_SETTING, settingFor("machine", data)]]);
+    const settings = { get: async (key) => rows.get(key) ?? null, remove: async (key) => void rows.delete(key) };
+    const lines = [];
+    await dropRefusedLogin(signIns, settings, undefined, { HOME: UP, CLAUDE_CONFIG_DIR: open }, (line) => lines.push(line));
+    assert.ok(rows.has(CLAUDE_LOGIN_SETTING), `${mode.toString(8)}: the setting is kept`);
+    assert.equal(lines.length, 1, lines.join("\n"));
+    assert.match(lines[0], /^Claude Code's login on this machine is kept, and not used while it is refused: Claude Code's login on this machine needs its folders/, lines[0]);
+    await dropRefusedLogin(signIns, settings, `${CLAUDE_LOGIN_ENV}=off`, { HOME: UP, CLAUDE_CONFIG_DIR: open }, () => {});
+    assert.equal(rows.has(CLAUDE_LOGIN_SETTING), false, `${mode.toString(8)}: the switch's refusal turns it off`);
+  }
 });
 
 // A status check copies the account file into a folder of its own in the temporary folder and removes it when it ends;
