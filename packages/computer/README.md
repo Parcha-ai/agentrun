@@ -3316,7 +3316,7 @@ it with nothing more: the module's settings and keys by name, its image, the run
 the list that shows nothing is left.
 
 ```sh
-npm run conformance -w @parcha/agentrun-computer -- --provider daytona --tti 100 --burst 100 [--image <image>] [--json]
+pnpm --filter @parcha/agentrun-computer run conformance --provider daytona --tti 100 --burst 100 [--image <image>] [--json]
 ```
 
 ```text
@@ -3488,7 +3488,7 @@ cd packages/computer/daemon && go vet ./... && go test ./...
 AGENTRUN_COMPUTER_LIVE_DOCKER=1 pnpm --filter @parcha/agentrun-computer run test:docker
 AGENTRUN_COMPUTER_LIVE_DAYTONA=1 COMPUTER_DAYTONA_API_KEY=... [COMPUTER_DAYTONA_SNAPSHOT=<snapshot>] pnpm --filter @parcha/agentrun-computer run test:daytona
 AGENTRUN_COMPUTER_LIVE_MODAL=1 pnpm --filter @parcha/agentrun-computer run test:modal   # also needs COMPUTER_MODAL_TOKEN_ID/SECRET, for an account you can bill
-AGENTRUN_COMPUTER_LIVE_E2B=1 npm run test:e2b -w @parcha/agentrun-computer       # also needs COMPUTER_E2B_API_KEY, for an account you can bill, and the e2b package
+AGENTRUN_COMPUTER_LIVE_E2B=1 pnpm --filter @parcha/agentrun-computer run test:e2b # also needs COMPUTER_E2B_API_KEY, for an account you can bill, and the e2b package
 AGENTRUN_COMPUTER_LIVE_BOXD=1 pnpm --filter @parcha/agentrun-computer run test:boxd     # also needs COMPUTER_BOXD_API_KEY, for an account you can bill, and the @boxd-sh/sdk package
 AGENTRUN_COMPUTER_LIVE_GROUNDBOX=1 pnpm --filter @parcha/agentrun-computer run test:groundbox   # also needs COMPUTER_GROUNDBOX_API_KEY, for a team you can bill
 ```
