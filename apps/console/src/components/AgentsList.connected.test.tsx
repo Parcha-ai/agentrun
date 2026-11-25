@@ -144,7 +144,7 @@ describe("Connected agents is one inventory", () => {
     const t = render({ agents: [registered, profile], observations });
     expect(t.count()).toBe("4 agents");
     expect(t.cards()).toHaveLength(4);
-    expect(t.cards()[0].querySelector('[aria-label="Archive Release reports"]')).not.toBeNull();
+    expect(t.cards()[0].querySelector('[aria-label="Settings for Release reports"]')).not.toBeNull();
   });
 
   it.each(["review", " SHOP ", "coding-model", "12345678", "source-project-a", "connector-machine-a"])("filters both sources and counts the matching agent for %s", (query) => {
@@ -211,7 +211,7 @@ describe("Connected agents is one inventory", () => {
     t.update({ agents: [{ ...registered, archived_at: "2026-11-18T11:00:00Z" }], archived: true, observations: read() });
     expect(t.count()).toBe("1 agent");
     expect(t.cards()).toHaveLength(1);
-    expect(t.cards()[0].querySelector('[aria-label="Unarchive Release reports"]')).not.toBeNull();
+    expect(t.cards()[0].querySelector('[aria-label="Settings for Release reports"]')).not.toBeNull();
   });
 
   it("keeps distinct retained sessions, including ended and offline agents, with their real states", () => {

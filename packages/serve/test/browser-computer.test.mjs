@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-const { claimBrowserProvider, planeBrowser, releaseOlderBrowsers, resetBrowserComputerHoldings, rewriteConnectUrl } = await import("../dist/browser-computer.js");
+const { claimBrowserProvider, planeBrowser, releaseOlderBrowsers, resetBrowserComputerHoldings } = await import("../dist/browser-computer.js");
 
 /** The label a session's custody tag rides on (workspace/computer-for-claim.ts). */
 const TAG_LABEL = "agentrun.session";
@@ -214,12 +214,6 @@ test("after it ends a dead claim's session, the plane waits out the provider's s
   await claimBrowserProvider(planeBrowser(s.provider, { runId: "run-1", epoch: 2 })).create(SPEC, signal());
   await releaseOlderBrowsers(s.provider, RUN, { sleep: async (ms) => void slept.push(ms) });
   assert.deepEqual(slept, [5_000]);
-});
-
-test("a Browserbase connect URL moves onto the credential proxy, its signing query kept; another host's is left alone", () => {
-  assert.equal(rewriteConnectUrl("wss://connect.browserbase.com/?sessionId=s&signingKey=k", "https://proxy.example/ws/"), "https://proxy.example/ws/?sessionId=s&signingKey=k");
-  assert.equal(rewriteConnectUrl("ws://127.0.0.1:9/devtools/b1", "https://proxy.example"), "ws://127.0.0.1:9/devtools/b1");
-  assert.equal(rewriteConnectUrl("wss://connect.browserbase.com/?x=1", undefined), "wss://connect.browserbase.com/?x=1");
 });
 
 test("a provider that is no browser, or a browser that declares no features, is refused in browser_unavailable's words", () => {

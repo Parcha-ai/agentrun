@@ -679,7 +679,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // and a call reaches it only through the session this spec returns, after `tools` is made.
   let filedIn: Workspace | undefined;
   const hold = (values: string[]) => cut.hold(values);
-  const mcp = heldRefusal !== undefined ? undefined : await mcpWhereHeld({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => (mode === 2 ? filedIn ?? ws.workspace : ws.workspace), launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, say: (words) => run.phase?.(words), ...claimMetering(deps, fakes?.web, launch) });
+  const mcp = heldRefusal !== undefined ? undefined : await mcpWhereHeld({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, toolSettings: body.toolSettings, work: () => (mode === 2 ? filedIn ?? ws.workspace : ws.workspace), launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, say: (words) => run.phase?.(words), ...claimMetering(deps, fakes?.web, launch) });
   // The claim's MCP goes to the loop, which lets it go; a build that throws lets it go itself.
   holds.hold({ passed: mcp });
 
@@ -1450,10 +1450,10 @@ async function bindNonHandTools(host: ToolHost, kind: string, granted: readonly 
 
   // The browser (tl-browser), on pi's native route: tools.ts's own binding on this run's ToolHost (its store, claim and seal
   // key, its live viewers through the store, its sign-in read under the claim, its money on host.ledger), its vendor the
-  // launch's plane checked again against the keys this claim read from the store, as main's launch hands its process the
-  // plane (runs.ts relaunchPlane). Its durable extension goes to piAdapter (`native`), never wrapped as a HostTool and never
-  // installed here too (piAdapter installs it once); its lifecycle (the Config per conversation, reconcile, the release
-  // drain) through the host's hooks into the spec's lifecycle.
+  // launch's plane (resolved when the run was created, runs-over-store.ts planeFor) checked again against the keys this
+  // claim read from the store (recheckPlane, which keeps the plane's Jev off). Its durable extension goes to piAdapter
+  // (`native`), never wrapped as a HostTool and never installed here too (piAdapter installs it once); its lifecycle (the
+  // Config per conversation, reconcile, the release drain) through the host's hooks into the spec's lifecycle.
   if (browser) {
     const checked = plane ? recheckPlane(plane, host.env) : {};
     const env = { ...host.env };

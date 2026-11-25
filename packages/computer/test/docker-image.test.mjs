@@ -4,6 +4,7 @@
 // Concurrent callers in one process share one build; a failure is never kept, so the next call tries again. The words
 // say what happened and the next step, and hold none of Docker's output.
 import assert from "node:assert/strict";
+import { ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
 import * as index from "../dist/index.js";
@@ -232,12 +233,27 @@ test("an onWait that aborts its own caller's signal settles that caller as abort
 	const other = "FROM alpine:3.20\nRUN echo seven > /seven\n";
 	fake.mark("build-hold");
 	const alone = new AbortController();
-	const stopped = ensureImage({ recipe: other }, { docker: fake.docker, signal: alone.signal, onWait: () => alone.abort() });
-	assert.deepEqual(await within(stopped), { ok: false, error: { code: "aborted", message: `the wait for ${recipeTag(other)} was aborted, and the build, which no other caller waited on, was stopped` } });
-	await new Promise((resolve) => setTimeout(resolve, 300));
-	assert.equal(fake.calls().filter(([command]) => command === "build").length, 1, "no docker build was started for it");
-	fake.clear("build-hold");
-	assert.deepEqual(await ensureImage({ recipe: other }, { docker: fake.docker }), { ok: true, value: recipeTag(other) }, "the next call builds it");
+	// Each docker this process starts, recorded as it is started: a build started and killed at once may never get to
+	// write its line to the fake's log, so the log alone cannot say that none was. The record runs until the flight is
+	// provably over: the next call of this recipe, with the build let go, starts a flight of its own and must start
+	// exactly one build, so a build recorded beyond that one, even one started after the stopped caller settled, is the
+	// stopped flight's.
+	const asked = [];
+	const spawn = ChildProcess.prototype.spawn;
+	ChildProcess.prototype.spawn = function (options) {
+		if (options.file === fake.docker) asked.push(options.args.slice(1));
+		return spawn.call(this, options);
+	};
+	try {
+		const stopped = ensureImage({ recipe: other }, { docker: fake.docker, signal: alone.signal, onWait: () => alone.abort() });
+		assert.deepEqual(await within(stopped), { ok: false, error: { code: "aborted", message: `the wait for ${recipeTag(other)} was aborted, and the build, which no other caller waited on, was stopped` } });
+		fake.clear("build-hold");
+		assert.deepEqual(await ensureImage({ recipe: other }, { docker: fake.docker }), { ok: true, value: recipeTag(other) }, "the next call builds it");
+	} finally {
+		ChildProcess.prototype.spawn = spawn;
+	}
+	const inspect = [...INSPECT, recipeTag(other)];
+	assert.deepEqual(asked, [inspect, inspect, BUILD(recipeTag(other), recipeHash(other))], "the stopped flight started its inspect alone; the next call, its inspect and its one build");
 });
 
 test("onWait is told once, before a caller waits on a build or pull, its own or one it joined; never when Docker has the image; a throw from it changes nothing", async () => {
@@ -316,6 +332,8 @@ test("a pull that fails, or passes its bound, says why and the next step, with n
 		message: "the pull of nosuch/box:1 did not finish within 1 s, so it was stopped: run docker pull nosuch/box:1 on this machine, or call again",
 	});
 	assert.ok(Date.now() - started < 10_000);
+	// The stopped pull was recorded as it started, and its docker ends: waited on as such, before its line is counted.
+	await until(() => fake.pulls().length === 5 && !alive(fake.pulls()[4].pid), "the stopped pull's docker to end", 10_000);
 	assert.equal(fake.pulls().length, 5, "a pull past its bound is not tried again within the call");
 });
 

@@ -35,6 +35,7 @@ import { registryListing } from "../mcp-pin-first.js";
 import type { GithubAppAccess, GithubTimer } from "./mcp-github.js";
 import { type HeldMcp, type HeldMcpTool, heldOrThrow } from "./held.js";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import { filedBy } from "../filed-tool.js";
 
 /** The GitHub App access for a claim (runner/github-app.ts githubAppAccess, tl-triggers'): the server's App, read from
  *  the store with the runner's seal key, bound to the repository the run's launch input names. */
@@ -89,6 +90,10 @@ export interface McpForClaimOptions {
   readonly media?: { readonly env: NodeJS.ProcessEnv; readonly web?: WebFake; readonly slots?: SaveSlots };
   /** Each credential value the claim opens, refreshes or mints, for the run's redactors (mcp-claim.ts `hold`). */
   readonly hold?: (values: string[]) => void;
+  /** The run's revision's own tool settings (body.toolSettings), where a tool's file setting is read (filed-tool.ts
+   *  filedBy): each answer of such a tool is filed whole in the run's files and the tool's result is its summary. A run's
+   *  own process passes none: its runner reads them from the revision it reads itself (run-child-host.ts). */
+  readonly toolSettings?: unknown;
 }
 
 /** What a spec builder gives a claim's MCP for its metered jobs (`capped` and `media`), the same for every builder:
@@ -198,6 +203,7 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
     ...(options.fetch ? { fetch: options.fetch } : {}),
     ...(options.callBounds ? { bounds: options.callBounds } : {}),
     capped: options.capped !== false,
+    ...(options.toolSettings !== undefined ? { filed: filedBy(options.toolSettings) } : {}),
     ...(media ? { media: publicMedia(async () => (media.web ? fakeSaveOptions(media.web) : fetchOptions(media.env, FAUX_ENV)), media.slots) } : {}),
   });
   const catalog = new Map<string, string>();
