@@ -136,7 +136,7 @@ test("scan, list, discard, rescan, create: the agent is made from the files its 
   assert.equal(opened.title, "Add the Triage support tickets agent");
   assert.deepEqual([opened.head, opened.base], [branch, "main"]);
   assert.match(opened.body, new RegExp(`\\| \`AGENTRUN_AGENT_TICKET_TRIAGE\` \\| \`${agentId}\` \\|`), "the pull request names the agent's id");
-  assert.match(opened.body, /\| `AGENTRUN_URL` \| `https:\/\/agents\.example\.test` \|/);
+  assert.match(opened.body, /\| `AGENTRUN_BASE_URL` \| `https:\/\/agents\.example\.test` \|/);
 
   // The agent here is the package's, applied as an imported template at the pushed commit.
   const agent = await api("GET", `/agents/${agentId}`);

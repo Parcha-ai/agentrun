@@ -161,6 +161,9 @@ describe("Suggested agents", () => {
     expect(dialog().textContent).toContain("Triage support tickets: created");
     expect(dialog().querySelector(`a[href="https://github.com/${REPO}/pull/12"]`)?.textContent).toContain("Open pull request #12");
     expect(dialog().textContent).toMatch(/AGENTRUN_AGENT_TICKET_TRIAGEagent_77/);
+    // The address goes by the name AgentRun's clients read, and its value is where this console is open.
+    expect([...dialog().querySelectorAll("dt")].map((dt) => dt.textContent)).toEqual(["AGENTRUN_BASE_URL", "AGENTRUN_API_KEY", "AGENTRUN_AGENT_TICKET_TRIAGE"]);
+    expect(dialog().querySelector("dd")?.textContent).toBe(location.origin);
   });
 
   describe("what was created", () => {

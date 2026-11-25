@@ -545,7 +545,7 @@ function CreateDialog({ v2, suggestion, onClose, onCreated, go }: { v2: Client; 
           <div>
             <h3 className="caps mb-1.5 text-small font-semibold">Set in your app's environment</h3>
             <dl className="divide-y border font-mono text-small">
-              {[["AGENTRUN_URL", location.origin], ["AGENTRUN_API_KEY", "an API key of this server: keep it in your secrets"], [agentVariable(done.key), done.created!.agent_id]].map(([k, v]) => (
+              {[["AGENTRUN_BASE_URL", location.origin], ["AGENTRUN_API_KEY", "an API key of this server: keep it in your secrets"], [agentVariable(done.key), done.created!.agent_id]].map(([k, v]) => (
                 <div key={k} className="flex flex-wrap gap-x-3 px-3 py-1.5"><dt className="font-semibold">{k}</dt><dd className="min-w-0 break-all text-muted-foreground">{v}</dd></div>
               ))}
             </dl>

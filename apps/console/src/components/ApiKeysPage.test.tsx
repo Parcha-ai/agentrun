@@ -103,7 +103,7 @@ describe("Settings → AgentRun API keys", () => {
     expect(shown.querySelector("code")?.textContent).toBe(MADE);
     expect(shown.textContent).toContain("shown this once");
     expect(shown.querySelector('[aria-label="Environment variables"]')?.textContent).toBe(envLines(ORIGIN, MADE));
-    expect(envLines(ORIGIN, MADE)).toBe(`AGENTRUN_URL=${ORIGIN}\nAGENTRUN_API_KEY=${MADE}`);
+    expect(envLines(ORIGIN, MADE)).toBe(`AGENTRUN_BASE_URL=${ORIGIN}\nAGENTRUN_API_KEY=${MADE}`);
     expect(document.activeElement).toBe(shown);
     expect(page.input().value).toBe("");
     expect(page.rows().map((row) => row.textContent)).toEqual([expect.stringContaining("billing app")]);
