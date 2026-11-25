@@ -11,7 +11,8 @@
 //   Bun's userInfo reads `$USER` as well, and says "unknown" without it (Node's reads the user database): so a CLI
 //   started with no USER saves and reads its tokens under the account "unknown", where a terminal's `claude`, which has
 //   USER, never looks. A name outside [A-Za-z0-9._-] is "claude-code-user".
-// `security` notes the command and account of every call beside itself (asked.jsonl).
+// `security` notes the command and account of every read and write beside itself (asked.jsonl), and of every delete
+// apart (deleted.jsonl). A delete with no account takes the service's first item of any account, as macOS's does.
 // The stand-ins lead every PATH here and every home is a temporary one, so no real Keychain or login is touched.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -32,8 +33,9 @@ const SECURITY = `#!${process.execPath}
 const fs = require('node:fs'), path = require('node:path');
 const file = path.join(process.env.HOME ?? '', 'Library', 'Keychains', 'login.keychain-db');
 const [command, ...args] = process.argv.slice(2);
-const flag = (name) => args[args.indexOf(name) + 1];
-fs.appendFileSync(path.join(path.dirname(process.argv[1]), 'asked.jsonl'), JSON.stringify([command, flag('-a')]) + '\\n');
+const flag = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
+const deleting = command === 'delete-generic-password';
+fs.appendFileSync(path.join(path.dirname(process.argv[1]), deleting ? 'deleted.jsonl' : 'asked.jsonl'), JSON.stringify([command, flag('-a')]) + '\\n');
 if (!fs.existsSync(file)) process.exit(command === 'add-generic-password' ? 50 : 44);
 const items = JSON.parse(fs.readFileSync(file, 'utf8'));
 const key = JSON.stringify([flag('-a'), flag('-s')]);
@@ -42,6 +44,12 @@ if (command === 'find-generic-password') {
   console.log(items[key]);
 } else if (command === 'add-generic-password') {
   items[key] = Buffer.from(flag('-X'), 'hex').toString('utf8');
+  fs.writeFileSync(file, JSON.stringify(items));
+} else if (deleting) {
+  // The first item of the service, of the account when -a names one, of any account when it names none.
+  const found = Object.keys(items).find((each) => { const [account, service] = JSON.parse(each); return service === flag('-s') && (flag('-a') === undefined || account === flag('-a')); });
+  if (found === undefined) process.exit(44);
+  delete items[found];
   fs.writeFileSync(file, JSON.stringify(items));
 } else process.exit(2);
 `;
@@ -135,7 +143,7 @@ async function asServerOf(m, fn) {
 
 /** The logins serve makes (its loginAt), on that Mac: each carries the person's home as `userHome`, as serve's do. */
 const PLACES = {
-  "AgentRun's own folder": (m) => ({ dir: join(m.home, '.agentrun', 'claude-login'), profiles: join(m.home, '.agentrun', 'claude-login', 'anthropic'), userHome: m.home }),
+  "AgentRun's own folder": (m) => ({ dir: join(m.home, '.agentrun', 'claude-login'), profiles: join(m.home, '.agentrun', 'claude-login', 'anthropic'), userHome: m.home, own: true }),
   "this machine's login on the CLI's default folder": (m) => ({ dir: join(m.home, '.claude'), profiles: join(m.home, '.config', 'anthropic'), home: m.home, userHome: m.home }),
   "this machine's login in a CLAUDE_CONFIG_DIR folder": (m) => ({ dir: join(m.home, 'work-claude'), profiles: join(m.home, '.config', 'anthropic'), userHome: m.home }),
 };
@@ -252,6 +260,50 @@ test("on macOS the sign-in this host starts saves its Keychain item under the ac
       }));
       assert.equal(plainStatus(m, claude.claudeSignInEnv(login)), true, `${where}: the person's own \`claude auth status\` in their terminal (USER ${ACCOUNT}) read signed out after the sign-in`);
       assert.deepEqual([...new Set(m.asked().map(([, account]) => account))], [ACCOUNT], `${where}: every Keychain write and read named the account ${ACCOUNT}`);
+    }
+  }
+});
+
+// A console sign-in made before the CLI got USER saved its item under the account "unknown", which nothing reads now.
+// On AgentRun's own folder, which no CLI of the person's uses, that item goes once the folder's item under the person's
+// account is there: after the sign-in this host starts, or at the first status check that finds the item. Never at a
+// place of the person's own CLI (its default folder, a CLAUDE_CONFIG_DIR folder), whose "unknown" item may be theirs,
+// and never an item of any other account.
+const STALE_WHEN = {
+  'the sign-in this host starts': async (m, login) => {
+    await asServerOf(m, async () => assert.deepEqual(await claude.startClaudeLogin(m.cli, login, { path: m.path, display: {}, platform: 'darwin' }).ended, { end: 'exited', code: 0, signal: null }));
+  },
+  'the first status check that finds the item': async (m, login) => {
+    assert.equal((await status(m, login)).signedIn, false, 'the status check before the person signed in');
+    assert.ok(keychain(m).some(([account]) => account === 'unknown'), 'a status check that reads signed out leaves the "unknown" item');
+    WAYS['the shown line, run in their terminal'](m, login);
+    assert.equal((await status(m, login)).signedIn, true, 'the status check after the person signed in from their terminal');
+  },
+};
+/** Each item of the person's login keychain, as [account, service]. */
+const keychain = (m) => Object.keys(JSON.parse(readFileSync(join(m.home, 'Library', 'Keychains', 'login.keychain-db'), 'utf8'))).map((key) => JSON.parse(key));
+test('on macOS the Keychain item a sign-in left under the account "unknown" goes at AgentRun\'s own folder alone, once its item under the person\'s account is there, and no item of another account goes', { skip }, async () => {
+  for (const [place, at] of Object.entries(PLACES)) {
+    for (const [when, act] of Object.entries(STALE_WHEN)) {
+      const m = mac();
+      const login = at(m);
+      const where = `${place}, ${when}`;
+      // What a sign-in left there before: under another account first, then under "unknown" (a CLI started with no
+      // USER), and the person's own CLI's default item under "unknown" too.
+      const leave = (user, vars) => assert.equal(spawnSync(m.cli, ['auth', 'login'], { env: { PATH: m.path, HOME: m.home, ...vars, ...(user ? { USER: user } : {}) } }).status, 0);
+      leave('someone-else', claude.claudeSignInEnv(login));
+      const [[, service]] = keychain(m);
+      leave(undefined, claude.claudeSignInEnv(login));
+      leave(undefined, claude.claudeSignInEnv(PLACES["this machine's login on the CLI's default folder"](m)));
+      const bare = 'Claude Code-credentials';
+      await act(m, login);
+      const items = keychain(m).map((item) => JSON.stringify(item));
+      const has = (account, of) => items.includes(JSON.stringify([account, of]));
+      assert.equal(has('unknown', service), login.own !== true, `${where}: the item under "unknown" for ${service} ${login.own ? 'stayed' : 'went'}, items ${JSON.stringify(items)}`);
+      assert.equal(has('someone-else', service), true, `${where}: the item under another account stayed, items ${JSON.stringify(items)}`);
+      if (service !== bare) assert.equal(has('unknown', bare), true, `${where}: the person's own CLI's default item under "unknown" stayed, items ${JSON.stringify(items)}`);
+      assert.equal(keychain(m).filter(([account, of]) => of === service && account !== 'unknown' && account !== 'someone-else').length, 1, `${where}: the item under the person's account is there`);
+      assert.equal(plainStatus(m, claude.claudeSignInEnv(login)), true, `${where}: the person's own \`claude auth status\` reads signed in`);
     }
   }
 });
