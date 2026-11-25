@@ -2,7 +2,8 @@
 // declares, built by its providerFor from the options its saved keys fill (computer-keys.ts providerOptions, by its
 // descriptor's key names), and nothing else. A provider whose descriptor declares a ledger (its sessions carry no labels
 // of their own) is given the store's computer ledger, as the option its descriptor names. No key reaches a provider any
-// other way, and nothing here reads the environment or names a vendor.
+// other way, and nothing here reads the environment or names a vendor: a provider whose descriptor names the host
+// variables it reads (hostEnv) is given the caller's values of those names alone.
 import { type ComputerProvider, PROVIDERS, type ProviderEntry, providerFor } from "@parcha/agentrun-computer";
 import type { ProviderFactories } from "../computer-keys.js";
 import type { ProviderExtras, ProviderMakers } from "./computer-for-claim.js";
@@ -18,14 +19,20 @@ export function computerProviderFactories(makers: ProviderMakers, ledgerOf: (id:
   return Object.fromEntries(Object.entries(makers).map(([id, make]) => [id, (options: Record<string, string>) => make!(options, { ledger: ledgerOf(id) as never })])) as ProviderFactories;
 }
 
+/** `env`'s values of `names` (a descriptor's hostEnv), and no other variable of it. */
+export function hostEnvOf(env: NodeJS.ProcessEnv, names: readonly string[]): Record<string, string> {
+  return Object.fromEntries(names.flatMap((name) => (env[name] === undefined ? [] : [[name, String(env[name])]])));
+}
+
 /** Every provider in `entries` (the computer package's PROVIDERS, each from its descriptor), made through `load`
- *  (providerFor) from its options, plus the server's ledger as the option its descriptor names, when it declares one. */
-export function computerProviderMakers({ load = providerFor as unknown as ProviderLoad, entries = PROVIDERS }: { readonly load?: ProviderLoad; readonly entries?: readonly Pick<ProviderEntry, "id" | "ledger">[] } = {}): ProviderMakers {
+ *  (providerFor) from its options, plus the server's ledger as the option its descriptor names, when it declares one, and
+ *  `env`'s values of the host variables it declares (hostEnv) as its `env`. Without `env`, such a provider gets none. */
+export function computerProviderMakers({ load = providerFor as unknown as ProviderLoad, entries = PROVIDERS, env = {} }: { readonly load?: ProviderLoad; readonly entries?: readonly Pick<ProviderEntry, "id" | "ledger" | "hostEnv">[]; readonly env?: NodeJS.ProcessEnv } = {}): ProviderMakers {
   return Object.fromEntries(
-    entries.map(({ id, ledger }) => [
+    entries.map(({ id, ledger, hostEnv }) => [
       id,
       (options: Readonly<Record<string, unknown>>, extras: ProviderExtras) =>
-        load(id, { ...options, ...(ledger === undefined ? {} : { [ledger.option]: extras.ledger }) }, extras.boxAllow === undefined ? {} : { boxAllow: extras.boxAllow }),
+        load(id, { ...options, ...(ledger === undefined ? {} : { [ledger.option]: extras.ledger }), ...(hostEnv ? { env: hostEnvOf(env, hostEnv) } : {}) }, extras.boxAllow === undefined ? {} : { boxAllow: extras.boxAllow }),
     ]),
   ) as ProviderMakers;
 }

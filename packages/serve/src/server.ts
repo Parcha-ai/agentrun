@@ -1810,8 +1810,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       : {
         hostWhy,
         kinds: { SETTING_KINDS, PROVIDERS: COMPUTER_PROVIDERS, servingRefusals },
-        // The one place serve builds a provider (workspace/computer-providers.ts), the claim's makers' own.
-        factories: computerProviderFactories(computerProviderMakers(), (id) => storeLedger(store.computerLedger, id)),
+        // The one place serve builds a provider (workspace/computer-providers.ts), the claim's makers' own, each given the
+        // server's values of the host variables its descriptor reads (Docker's PATH, HOME and DOCKER_HOST, for its test and
+        // an agent computer's release).
+        factories: computerProviderFactories(computerProviderMakers({ env: process.env }), (id) => storeLedger(store.computerLedger, id)),
         answers: dockerAnswers,
       }),
   }));

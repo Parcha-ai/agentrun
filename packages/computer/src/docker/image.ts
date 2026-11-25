@@ -149,12 +149,15 @@ export async function ensureImage(source: ImageSource, { docker = "docker", env,
 		return fail("invalid", `timeoutMs must be a whole number of milliseconds above 0 and at most ${MAX_TIMER_MS}, not ${JSON.stringify(timeoutMs) ?? String(timeoutMs)}`);
 	}
 	if (signal?.aborted) return fail("aborted", `the wait for ${checked.tag} was aborted before it began`);
-	const key = JSON.stringify([docker, checked.kind, checked.kind === "recipe" ? checked.hash : checked.tag]);
+	// The environment docker is started with is part of the flight: two Docker hosts (DOCKER_HOST, DOCKER_CONTEXT) never
+	// share one pull or build. Its names are sorted, so the same environment is the same flight.
+	const childEnvOf = dockerEnv(env);
+	const key = JSON.stringify([docker, Object.entries(childEnvOf).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)), checked.kind, checked.kind === "recipe" ? checked.hash : checked.tag]);
 	let flight = flights.get(key);
 	// A flight every caller left is stopping: a new caller starts its own.
 	if (flight === undefined || flight.controller.signal.aborted) {
 		const crew = { controller: new AbortController(), waiting: 0, toTell: new Set<() => void>() };
-		const started: Flight = Object.assign(crew, { result: fly(docker, dockerEnv(env), checked, timeoutMs, crew) });
+		const started: Flight = Object.assign(crew, { result: fly(docker, childEnvOf, checked, timeoutMs, crew) });
 		flight = started;
 		flights.set(key, started);
 		void started.result.finally(() => {
