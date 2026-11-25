@@ -102,6 +102,29 @@ describe("Settings → Model keys, Claude Code's login on this machine: Sign out
     expect(page.row()!.textContent).toContain(UNCONFIRMED);
   });
 
+  it("the sign-out's words go for good once the row changes again: Sign out, Turn on, sign in, Turn off reads off with no old sign-out words", async () => {
+    let view: ClaudeLoginView = SIGNED_IN;
+    const { v2 } = server(() => view, (call) => {
+      if (call.path === "/v2/settings/claude-login/sign-out") return { confirmed: false, message: UNCONFIRMED, login: (view = OFF) };
+      if (call.path === "/v2/settings/claude-login/login") return (view = SIGNED_IN);
+      if (call.method === "DELETE") return (view = OFF);
+      return (view = { ...OFF, state: "signed_out" });
+    });
+    const page = await open(v2);
+    await page.click(page.buttons(/^Sign out$/)[0]);
+    await page.click(page.buttons(/^Sign out$/).at(-1));
+    expect(page.row()!.textContent).toContain(UNCONFIRMED);
+    await act(async () => { page.row()!.querySelector<HTMLInputElement>('input[name="only_me"]')!.click(); });
+    await page.click(page.buttons(/^Turn on$/)[0]);
+    await page.click(page.buttons(/Open the CLI's sign-in here/)[0]);
+    expect(page.row()!.textContent).toContain("Signed in as person@example.com");
+    await page.click(page.buttons(/^Turn off$/)[0]);
+    const text = page.row()!.textContent ?? "";
+    expect(page.buttons(/^Turn on$/), "Turn off left the row off").toHaveLength(1);
+    expect(text, "Turn off after a later sign-in brings back no old sign-out words").not.toContain(UNCONFIRMED);
+    expect(text).not.toContain(SIGNED_OUT_HERE);
+  });
+
   it("a sign-out the server refuses keeps the row as it was and says why", async () => {
     const why = "This is your own Claude Code login on this machine (/u/p/.claude), which AgentRun only uses: it never signs it out.";
     const { v2 } = server(() => SIGNED_IN, () => json(403, { error: { code: "forbidden", message: why } }));
