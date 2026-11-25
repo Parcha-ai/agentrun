@@ -663,13 +663,15 @@ const LEARNS = { seed: "0".repeat(40), section: "" };
 /** A model gateway with no key for it: claimSpendOff's check (claim-secrets.ts serverKeyless) reads the saved keys. */
 const GATEWAY_ENV = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9" };
 
-/** A spy on a store's saved-key reads (server-keys.ts getSealedKey): `names` gets each one asked under claimSpendOff. */
+/** A spy on a store's saved-key reads (server-keys.ts getSealedKey): `names` gets each model key's name the claim asks
+ *  for. A held claim asks none, claimSpendOff's gateway check (serverKeyless) the same as claimSecrets'; a claim not held
+ *  asks the gateway's (GATEWAY_KEY_ENV) there. */
 function spendOffReads() {
   const names = [];
   const watch = (store) => {
     const get = store.sealedKeys.get.bind(store.sealedKeys);
     store.sealedKeys.get = (name) => {
-      if (new Error().stack?.includes("claimSpendOff")) names.push(name);
+      if (MODEL_KEY_NAMES.includes(name)) names.push(name);
       return get(name);
     };
   };
@@ -685,12 +687,12 @@ test("pi (adapter-run-spec), end of run: a held refused run that learns carries 
   const control = spendOffReads();
   const { spec: unheld } = await specFor(t, { body, env: GATEWAY_ENV, launch: { model: undefined, learning: LEARNS }, computer: phoneOn(root), watch: control.watch });
   assert.equal(typeof unheld.endOfRun, "function", "the run not held, learning, carries its end-of-run step, as before");
-  assert.ok(control.names.length > 0, "the run not held reads the saved keys for spend beside it (claimSpendOff), as before");
+  assert.ok(control.names.includes(GATEWAY_KEY_ENV), `the run not held reads the gateway's saved key, for spend beside it (claimSpendOff) among others, as before: ${JSON.stringify(control.names)}`);
   const reads = spendOffReads();
   const { spec } = await specFor(t, { body, env: GATEWAY_ENV, launch: { model: undefined, hold: { minutes: 5, refused: REFUSAL }, learning: LEARNS }, computer: phoneOn(root), watch: reads.watch })
     .catch((error) => assert.fail(`a held learning run opens its claim: ${error.message}`));
   assert.equal(spec.endOfRun, undefined, "a held run carries no end-of-run step, though it learns: nothing is compiled and no audit starts");
-  assert.deepEqual(reads.names, [], "a held run reads no saved key for spend beside it (claimSpendOff is not called)");
+  assert.deepEqual(reads.names, [], "a held run reads no saved model key, for spend beside it (claimSpendOff) or any other");
 });
 
 test("CLI (cli-run-spec), end of run: a held refused opencode run that learns carries no end-of-run step and reads no saved key for spend beside it; the same run not held does both", async (t) => {
@@ -699,11 +701,11 @@ test("CLI (cli-run-spec), end of run: a held refused opencode run that learns ca
   const control = spendOffReads();
   const unheld = await cliClaim(t, undefined, { learning: LEARNS }, { env: { OPENAI_API_KEY: HOST_MODEL_KEY, ...GATEWAY_ENV }, watch: control.watch });
   assert.equal(typeof unheld.endOfRun, "function", "the run not held, learning, carries its end-of-run step, as before");
-  assert.ok(control.names.length > 0, "the run not held reads the saved keys for spend beside it (claimSpendOff), as before");
+  assert.ok(control.names.includes(GATEWAY_KEY_ENV), `the run not held reads the gateway's saved key, for spend beside it (claimSpendOff) among others, as before: ${JSON.stringify(control.names)}`);
   const reads = spendOffReads();
   const spec = await cliClaim(t, { minutes: 5, refused: REFUSAL }, { learning: LEARNS }, { env: GATEWAY_ENV, watch: reads.watch }).catch((error) => assert.fail(`a held learning opencode run opens its claim: ${error.message}`));
   assert.equal(spec.endOfRun, undefined, "a held run carries no end-of-run step, though it learns");
-  assert.deepEqual(reads.names, [], "a held run reads no saved key for spend beside it (claimSpendOff is not called)");
+  assert.deepEqual(reads.names, [], "a held run reads no saved model key, for spend beside it (claimSpendOff) or any other");
 });
 
 /** fal's hosted MCP server, saved with its key (a test's: never a real one), and the pin a save of a revision granted its
