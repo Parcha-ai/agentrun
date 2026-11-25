@@ -92,6 +92,20 @@ describe("route", () => {
     expect(runsHash({ runsOf: "calc", source: "codex" })).toBe("#/runs?agent=calc");
     expect(route(runsHash({ source: "pi", archived: true }))).toEqual({ section: "runs", archived: true, source: "pi" });
   });
+  it("keeps the runs list's window and model in the address, as GET /v2/runs takes them: a date or a zoneless time is this browser's local time, made an instant; an agent's list has none", () => {
+    const from = "2026-11-01T00:00:00.000Z", to = "2026-11-02T00:00:00.000Z";
+    expect(route(`#/runs?from=${from}&to=${to}&model=anthropic%2Fclaude-sonnet-5`)).toEqual({ section: "runs", from, to, model: "anthropic/claude-sonnet-5" });
+    expect(route(`#/runs?from=${encodeURIComponent("2026-11-01T01:00:00+01:00")}`)).toEqual({ section: "runs", from });
+    expect(route("#/runs?from=2026-11-01&to=2026-11-02T09:30")).toEqual({ section: "runs", from: new Date(2026, 10, 1).toISOString(), to: new Date(2026, 10, 2, 9, 30).toISOString() });
+    expect(route("#/runs?from=yesterday&to=2026-13-01&model=")).toEqual({ section: "runs" });
+    expect(route(`#/runs?agent=calc&from=${from}&model=openai%2Fgpt-5`)).toEqual({ section: "runs", runsOf: "calc" });
+    expect(runsHash({ status: "failed", source: "codex", from, to, model: "openai/gpt-5" })).toBe(`#/runs?status=failed&source=codex&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&model=openai%2Fgpt-5`);
+    expect(runsHash({ runsOf: "calc", from, model: "openai/gpt-5" })).toBe("#/runs?agent=calc");
+    expect(route(runsHash({ from, model: "openai/gpt-5", archived: true }))).toEqual({ section: "runs", archived: true, from, model: "openai/gpt-5" });
+    expect(queryPlaygroundHref(undefined, { from, model: "openai/gpt-5" })).toBe(`#/playground?operation=list-runs&from=${encodeURIComponent(from)}&model=openai%2Fgpt-5`);
+    expect(route(queryPlaygroundHref(undefined, { to, model: "openai/gpt-5" }))).toEqual({ section: "playground", operation: "list-runs", to, model: "openai/gpt-5" });
+    expect(route(`#/playground?operation=list-runs&agent=calc&to=${to}`)).toEqual({ section: "playground", operation: "list-runs", playgroundAgent: "calc" });
+  });
   it("opens an agent's page at its address, and its editor under /edit; a new agent and the archived list are unchanged", () => {
     expect(route("#/agents/x")).toEqual({ section: "agents", agent: "x" });
     expect(route("#/agents/x/workflow")).toEqual({ section: "agents", agent: "x", tab: "workflow" });

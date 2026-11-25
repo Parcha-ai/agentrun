@@ -52,16 +52,21 @@ type NoOffer = { offer: false };
 
 /** A runs list's filter (GET /v2/runs's `status`, `archived` and `label`): runs in one status, the archived runs in place
  *  of the others, and runs holding one `<key>:<value>` label (one per request, as the route takes it). */
-/** `source`: the runs imported from one source (`claude-code`, ...), or `live` for the runs made here (GET /v2/runs only). */
-export type RunsFilter = { status?: RunStatus; archived?: boolean; label?: string; source?: string };
+/** `source`: the runs imported from one source (`claude-code`, ...), or `live` for the runs made here (GET /v2/runs only).
+ *  `from` and `to`: the runs started in [from, to), each an instant with its zone (the console's own dates made instants);
+ *  `model`: the runs that used one model, `provider/model` (GET /v2/runs only). */
+export type RunsFilter = { status?: RunStatus; archived?: boolean; label?: string; source?: string; from?: string; to?: string; model?: string };
 
-const runsQuery = (limit: number, cursor: string | null | undefined, { status, archived, label, source }: RunsFilter = {}) => {
+const runsQuery = (limit: number, cursor: string | null | undefined, { status, archived, label, source, from, to, model }: RunsFilter = {}) => {
   const q = new URLSearchParams({ limit: String(limit) });
   if (cursor) q.set("cursor", cursor);
   if (status) q.set("status", status);
   if (archived) q.set("archived", "true");
   if (label) q.set("label", label);
   if (source) q.set("source", source);
+  if (from) q.set("from", from);
+  if (to) q.set("to", to);
+  if (model) q.set("model", model);
   return `?${q}`;
 };
 
