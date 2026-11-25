@@ -1,5 +1,6 @@
-// web_search asks an objective (a goal in a sentence) and a few short keyword queries; query alone is deprecated and
-// still searched, as the objective and its one query. Parallel is told the run's model as client_model, a bare id, only
+// web_search asks an objective (a goal in a sentence) and a few short keyword queries; query is deprecated: a model's
+// call must give the objective (pi checks it against the schema), and a call node's query alone is still searched, as the
+// objective and its one query. Parallel is told the run's model as client_model, a bare id, only
 // where the run names one, and no session id (no tool call carries the run's). web_fetch takes an objective, passed to
 // the run's Web. Parallel is the tests' fake (fixtures/faux-parallel-bodies.mjs, which keeps each request's body): no
 // socket leaves this machine and no real key is used.
@@ -49,13 +50,13 @@ test("web_fetch's schema takes an objective beside the url", () => {
   assert.equal(properties.objective?.type, "string", "an objective may be given");
 });
 
-test("an agent's search sends Parallel the objective and the queries; a query alone is still searched, as the objective and its one query", async () => {
+test("an agent's search sends Parallel the objective and the queries; a call node's query alone is still searched, as the objective and its one query", async () => {
   searches();
   const both = await asked(envOf(), { objective: OBJECTIVE, queries: ["widgets inc delaware", "widgets file number"], n: 3 });
   assert.deepEqual(searches().map((body) => [body.objective, body.search_queries]), [[OBJECTIVE, ["widgets inc delaware", "widgets file number"]]], "the objective and the queries, each in its own field");
   assert.deepEqual([both.objective, both.queries, "query" in both], [OBJECTIVE, ["widgets inc delaware", "widgets file number"], false], "the answer carries them, and no query");
-  const alone = await asked(envOf(), { query: "widgets delaware" });
-  assert.deepEqual(searches().map((body) => [body.objective, body.search_queries]), [["widgets delaware", ["widgets delaware"]]], "a query alone is the objective and the one query");
+  const alone = await TOOLS.web_search.effect({ query: "widgets delaware" }, { env: envOf(), ledger: { call: "node-0", paid: await toolLedger() } });
+  assert.deepEqual(searches().map((body) => [body.objective, body.search_queries]), [["widgets delaware", ["widgets delaware"]]], "a call node's query alone is the objective and the one query");
   assert.deepEqual([alone.objective, alone.queries], ["widgets delaware", ["widgets delaware"]], "and the answer says so");
   const node = await TOOLS.web_search.effect({ objective: OBJECTIVE, queries: ["widgets delaware"] }, { env: envOf(), ledger: { call: "node-1", paid: await toolLedger() } });
   assert.deepEqual([node.objective, node.queries], [OBJECTIVE, ["widgets delaware"]], "a call node's search takes the same shape");
@@ -93,4 +94,16 @@ test("serve builds web_search and web_fetch from @parcha/agentrun-web's export: 
     assert.equal(fetchTool.description, web.WEB_FETCH_DESCRIPTION, `web_fetch's description on ${fetch} is the export's`);
     assert.deepEqual(fetchTool.parameters, web.WEB_FETCH_PARAMETERS, `web_fetch's parameters on ${fetch} are the export's`);
   }
+});
+
+test("pi checks a model's web_search call against the exported schema: {query} alone is refused before execute, naming objective; {objective, queries} passes; the query's words say the objective is required", async () => {
+  const { validateToolArguments } = await import("@earendil-works/pi-ai");
+  const web = await import("@parcha/agentrun-web");
+  const tool = { name: "web_search", description: web.WEB_SEARCH_DESCRIPTION, parameters: web.WEB_SEARCH_PARAMETERS };
+  const call = (args) => ({ type: "toolCall", id: "call-1", name: "web_search", arguments: args });
+  assert.throws(() => validateToolArguments(tool, call({ query: "acme anvils" })), /objective/, "a model's query alone is refused, naming objective");
+  assert.deepEqual(validateToolArguments(tool, call({ objective: OBJECTIVE, queries: ["acme anvils"] })), { objective: OBJECTIVE, queries: ["acme anvils"] }, "an objective and its queries pass");
+  const said = web.WEB_SEARCH_PARAMETERS.properties.query.description;
+  assert.match(said, /the objective is required/i, "the query's words say a call must give the objective");
+  assert.doesNotMatch(said, /query alone is searched/i, "and do not promise a model's query alone is searched");
 });

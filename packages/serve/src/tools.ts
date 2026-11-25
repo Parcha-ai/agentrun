@@ -737,7 +737,7 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
   },
   [WEB_FETCH_TOOL]: webFetchEntry(WEB_FETCH_TOOL),
   [WEB_SEARCH_TOOL]: {
-    summary: "Search the web: Parallel's Search API where the server holds its key, else Firecrawl's keyless search with Exa's behind it; or the provider picked, the harness's own search (claude-agent's, codex's) or on pi the model provider's hosted search (Anthropic, OpenAI) only where native is picked: { objective, queries?, n? } ({ query } alone, deprecated, is the objective and its one query) -> { provider, objective, queries, results: [{ url, title, snippet, published? }], text? }, provider naming the one that served it, 1 to 25 results, each snippet at most 3,000 characters; { error } when the search gives no answer.",
+    summary: "Search the web: Parallel's Search API where the server holds its key, else Firecrawl's keyless search with Exa's behind it; or the provider picked, the harness's own search (claude-agent's, codex's) or on pi the model provider's hosted search (Anthropic, OpenAI) only where native is picked: { objective, queries?, n? } (query is deprecated: a model's call gives objective, which the schema requires; a call node's { query } alone is the objective and its one query) -> { provider, objective, queries, results: [{ url, title, snippet, published? }], text? }, provider naming the one that served it, 1 to 25 results, each snippet at most 3,000 characters; { error } when the search gives no answer.",
     needs: [],
     nodes: true,
     // On the runner its hosted search goes through the run's own route (host.search, run.search), labelled web_search.

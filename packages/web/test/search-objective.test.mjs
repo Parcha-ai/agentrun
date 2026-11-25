@@ -114,6 +114,25 @@ test("keyed Firecrawl's failures: some requests failing answers the merged rest 
   assert.deepEqual([failing.answer, failing.receipt.tries[0]?.failure?.code], [{ error: "Firecrawl's search answered 500" }, "HTTP_500"], "every request failing: the first failure in query order, typed");
 });
 
+test("Firecrawl, keyed and keyless: two queries answering and one rate-limited past 15 minutes answers the two's hits, and the next search is held", async () => {
+  const LONG = 1_800;
+  const hits = { [QUERIES[0]]: [row("a")], [QUERIES[1]]: [row("b")] };
+  const paid = keyed((_path, body) => (hits[body.query] ? firecrawlRows(hits[body.query]) : json({ error: "slow" }, 429, { "retry-after": String(LONG) })));
+  const free = mcp((_name, args) => (hits[args.query] ? toolText({ success: true, data: { web: hits[args.query] } }) : { isError: true, content: [{ type: "text", text: "rate limited" }], structuredContent: { code: "KEYLESS_LIMIT_REACHED", retry_after_seconds: LONG } }));
+  // Keyed Firecrawl's wait is its retry-after header's words; keyless Firecrawl's, its payload's number.
+  const runs = [
+    ["firecrawl", web.createWeb({ order: { search: ["firecrawl"], fetch: [] }, keys: { firecrawl: KEY }, send: { firecrawl: paid.send } }), () => paid.sent.length, String(LONG)],
+    ["firecrawl-keyless", web.createWeb({ order: { search: ["firecrawl-keyless"], fetch: [] }, send: { "firecrawl-keyless": free.send } }), () => free.calls.length, LONG],
+  ];
+  for (const [provider, w, asked, wait] of runs) {
+    const first = await w.search({ objective: OBJECTIVE, queries: QUERIES.slice(0, 3) }, { n: 3 });
+    assert.deepEqual([first.answer.provider, (first.answer.results ?? []).map((hit) => hit.url)], [provider, ["https://a.example/", "https://b.example/"]], `${provider}: the two queries' hits are answered, not dropped for the third's long rate limit`);
+    assert.deepEqual([asked(), first.receipt.tries[0]?.limit], [3, { kind: "rate", retryAfter: wait }], `${provider}: three requests sent, the long rate limit on the receipt`);
+    const again = await w.search({ objective: OBJECTIVE, queries: QUERIES.slice(0, 3) }, { n: 3 });
+    assert.deepEqual([again.answer, asked()], [{ error: SEARCH_UNAVAILABLE }, 3], `${provider}: the long rate limit still holds the next search: it is not sent`);
+  }
+});
+
 test("keyless Firecrawl's wire bodies: each query with the objective and the same scrapeOptions, merged as keyed Firecrawl's", async () => {
   const answers = { [QUERIES[0]]: [row("a"), row("b")], [QUERIES[1]]: [row("b"), row("c")], [QUERIES[2]]: [row("d")] };
   const free = mcp((_name, args) => toolText({ success: true, data: { web: answers[args.query] } }));
@@ -191,4 +210,13 @@ test("a search's own session (SearchOptions.session) is Parallel's session_id, o
   await bare.search({ objective: OBJECTIVE }, { n: 1, session: "task-3-seed-2" });
   await bare.search({ objective: OBJECTIVE }, { n: 1 });
   assert.deepEqual(fake.sent.map(({ body }) => [body.session_id, body.client_model]), [["task-3-seed-1", "claude-opus-4-7"], ["task-3-seed-2", undefined], [undefined, undefined]], "the call's session wins, the Web's model kept; nothing made up");
+});
+
+test("Parallel's session_id is cut at its 1,000-character cap: a 1,500-character session, the call's or the Web's, is sent as its first 1,000", async () => {
+  const long = "s".repeat(1_000) + "t".repeat(500);
+  const fake = keyed(() => json({ results: [{ url: "https://a.example/", title: "A", excerpts: ["An excerpt."] }] }));
+  const told = web.createWeb({ order: { search: ["parallel"], fetch: [] }, keys: { parallel: KEY }, send: { parallel: fake.send }, client: { session: long } });
+  await told.search({ objective: OBJECTIVE }, { n: 1 });
+  await told.search({ objective: OBJECTIVE }, { n: 1, session: long });
+  assert.deepEqual(fake.sent.map(({ body }) => body.session_id), ["s".repeat(1_000), "s".repeat(1_000)], "each session_id is the session's first 1,000 characters");
 });

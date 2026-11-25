@@ -10,6 +10,8 @@ import { type Check, domains, matching, oneOf, settingsProblems, wholeIn } from 
 export const PARALLEL_SEARCH_URL = "https://api.parallel.ai/v1/search";
 export const PARALLEL_EXTRACT_URL = "https://api.parallel.ai/v1/extract";
 const PARALLEL_TIMEOUT_MS = 60_000;
+/** Parallel's cap on a search's session_id, in characters: a longer session is sent as its first SESSION_MAX. */
+const SESSION_MAX = 1_000;
 
 /** How Parallel searches and reads, each setting optional (PARALLEL_DEFAULTS); with none, each request is the one the web
  *  tools have always sent:
@@ -110,7 +112,8 @@ const parallelLimit = (response: Response): Limit | undefined => {
 
 /** The /v1/search request for `ask` (searchArgs), under `settings`, as Parallel's guidance for agents asks: the
  *  objective, a goal in plain words, as its objective; the keyword queries as search_queries; and the model and
- *  session of `client` where the run knows them. Excerpts are Parallel's own length (max_chars_total where set). */
+ *  session of `client` (cut at SESSION_MAX) where the run knows them. Excerpts are Parallel's own length
+ *  (max_chars_total where set). */
 export function parallelSearchBody({ objective, queries, n }: SearchAsk, settings: ParallelSettings = {}, client: WebClient = {}): Record<string, unknown> {
   const source = {
     ...(settings.includeDomains ? { include_domains: settings.includeDomains } : {}),
@@ -124,7 +127,7 @@ export function parallelSearchBody({ objective, queries, n }: SearchAsk, setting
     ...(settings.maxCharsTotal === undefined ? {} : { max_chars_total: settings.maxCharsTotal }),
     advanced_settings: { max_results: n, ...(Object.keys(source).length ? { source_policy: source } : {}), ...fetchPolicy(settings) },
     ...(client.model ? { client_model: client.model } : {}),
-    ...(client.session ? { session_id: client.session } : {}),
+    ...(client.session ? { session_id: client.session.slice(0, SESSION_MAX) } : {}),
   };
 }
 

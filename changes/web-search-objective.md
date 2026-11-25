@@ -3,7 +3,7 @@ packages: @parcha/agentrun-serve, @parcha/agentrun-web
 kind: feature
 ---
 `web_search` asks for an `objective` and a few keyword `queries`. The objective is what the agent wants to find out, in a sentence, at most 1,000 characters. There are up to 5 queries, and each is cut at 200 characters. The tool's description asks for a goal-style objective and 1 to 3 short queries.
-`query` is deprecated. It is now optional in the schema and marked deprecated. A `query` given alone is still searched, as the objective and its only query. Each provider is sent what it takes:
+`query` is deprecated. It is now optional in the schema and marked deprecated, and the schema requires `objective`, so a model's call that gives `query` alone is refused before it runs. A workflow's call node, and `Web.search` in `@parcha/agentrun-web`, still take a `query` alone, as the objective and its only query. Each provider is sent what it takes:
 - Parallel gets the objective as `objective` and the queries as `search_queries`. Where the run names a model, Parallel also gets that model's bare id as `client_model`. `excerpt_settings` is no longer sent.
 - Exa, keyed and keyless, gets the objective as its query.
 - Firecrawl, keyed and keyless, is sent up to 3 of the queries at once. Each request asks for its share of the results and a markdown scrape of each one. The results are merged by URL, and each snippet is the page's markdown. Keyless Firecrawl is also sent the objective, because its tool requires one. Keyed Firecrawl now costs 1 more credit for each result it scrapes.
