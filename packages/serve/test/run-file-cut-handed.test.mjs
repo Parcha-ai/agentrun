@@ -186,6 +186,25 @@ test("an ended run's export carries none of its files once its end erased what i
   assert.ok(doc.omitted.some((one) => one.what === "files" && one.why === "uncounted"), `the files left out as uncounted: ${JSON.stringify(doc.omitted)}`);
 });
 
+test("an ended run's export carries no key its caller handed it in the run's own text: its input words in the title, the answer that names it", { timeout: 180_000 }, async (t) => {
+  // The caller names the key it hands in the input (a run's title is made from its input's words), and the model says it
+  // back. Its end erased the key from what its launch holds; the run's text was stored cut of it, and the export carries it so.
+  const run = await liveRun(t, { start: { model_key: KEY, input: { content: `Use ${KEY} for the call.` } }, text: `Called with ${KEY} as asked.` });
+  await run.ended();
+  const res = await until(async () => {
+    const answer = await get(run.baseUrl, run.token, `/runs/${run.runId}/export`);
+    return answer.status === 409 ? (await answer.body?.cancel(), undefined) : answer;
+  }, "the run settled for its export");
+  assert.equal(res.status, 200);
+  const body = await res.text();
+  for (const [form, value] of [["raw", KEY], ["JSON", JSON.stringify(KEY).slice(1, -1)], ["URL", encodeURIComponent(KEY)], ["base64", Buffer.from(KEY).toString("base64")], ["its middle", "handed-cut-model-key"]]) {
+    assert.equal(body.includes(value), false, `the handed key (${form}) is not in the bundle: ${body.slice(0, 600)}`);
+  }
+  const doc = JSON.parse(body);
+  assert.equal(doc.run.title, "Use [redacted] for the call.", "its title, made of its input's words, carried cut");
+  assert.equal(doc.run.result?.final_answer, "Called with [redacted] as asked.", "its answer carried cut");
+});
+
 test("an ended run whose end erased its secrets with no census (the marker, or a pending an earlier build left) withholds its files", { timeout: 180_000 }, async (t) => {
   const handed = await liveRun(t, { start: { model_key: KEY } });
   await writeFile(join(handed.work, "notes.txt"), "plain words\n");
