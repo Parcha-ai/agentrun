@@ -49,10 +49,12 @@ export interface HeldMcpAsk {
   readonly appendRoot: (entry: unknown) => Promise<void>;
 }
 
-/** What the run's process gives the runner's computerForClaim (workspace/computer-for-claim.ts): its callbacks only. The
- *  run, its epoch, its folder, its mode and its revision are the runner's own reads of the claim. */
+/** What the run's process gives the runner's computerForClaim (workspace/computer-for-claim.ts): its callbacks, and the
+ *  kind its journal says an earlier claim's deny turned off (ComputerForClaimDeps.turnedOff), read there as hadComputer
+ *  is. The run, its epoch, its folder, its mode and its revision are the runner's own reads of the claim. */
 export interface HeldComputerAsk {
   readonly hadComputer: () => Promise<boolean>;
+  readonly turnedOff?: string;
   readonly signal?: AbortSignal;
   readonly say?: (words: string) => void;
   readonly onImageWait?: (making: boolean, image: string) => void;
@@ -79,8 +81,11 @@ export interface Held {
    *  out and its launch's payload names the pull request. Its mint makes a token of that repository alone, contents
    *  read, whatever the process names; its MCP mints on the runner (mcp). */
   githubAppAccess(): Promise<GithubAppAccessAt | undefined>;
-  /** Every saved model key, for a run whose routes have no revision to scope them by (a subagent's tiers, a grade). */
-  savedModelKeys(): Promise<Record<string, string>>;
+  /** The saved model keys of the models of the claim's subagent tiers (claim-secrets.ts subagentTierKeys asks): an agentic
+   *  run granted the subagent tool gets its routed tiers' keys; a replay's or an audit's grader, its fast tier's key alone
+   *  (none when its revision names agree_on or routes no fast tier). None to any other run, to one that holds a model key
+   *  of its own, or to a held run its model kept from running. */
+  subagentTierKeys(): Promise<Record<string, string>>;
   /** The model keys the host's models of `tiers` need (claim-secrets.ts tierModelKeys), the plan's reader with them: of
    *  the tiers the claim's learned workflows name, as the runner chose them (learnedFirst), alone. */
   tierModelKeys(tiers: readonly Tier[]): Promise<{ readonly keys: Record<string, string>; readonly plan?: PlanReader }>;
@@ -94,8 +99,10 @@ export interface Held {
    *  claim's own launch, else the server's. A zone's name, never the trigger's row. */
   runZone(): Promise<string>;
   /** The keys saved for the claim's own harness alone (harness-keys.ts openHarnessKeys), by name, opened by the runner:
-   *  none unless that harness is a plan-billed recipe. The process lays them on its adapter's environment alone. */
-  harnessKeys(): Promise<Record<string, string>>;
+   *  none unless that harness is a plan-billed recipe, and none unless they are bound to `digest`, the sha256 of the
+   *  recipe file the process loaded itself (a file swapped since the runner read its table never takes the first's).
+   *  The process lays them on its adapter's environment alone. */
+  harnessKeys(digest: string): Promise<Record<string, string>>;
   /** The host's keys of the decision providers `providers` (claim-secrets.ts hostDecisionKeys): of the providers the
    *  claim's learned workflows' questions name, as the runner chose them (learnedFirst), alone. */
   decisionKeys(providers: readonly string[]): Promise<Record<string, string>>;

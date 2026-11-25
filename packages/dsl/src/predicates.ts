@@ -1,3 +1,4 @@
+import { isRecord } from "./record.js";
 import { MECHANICAL_PREDICATES, type FieldType } from "./vocabulary.js";
 
 export type StopPredicate =
@@ -26,10 +27,6 @@ export type NotPredicate = { predicate: "not"; of: AcceptPredicate };
 
 
 export const MECHANICAL_PREDICATE_NAMES: ReadonlySet<string> = new Set(MECHANICAL_PREDICATES);
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 /** Resolve a dotted state path the one way every reader does: a record by key, an array by a
  *  non-negative integer index, anything else (a string, a number, a missing value) to undefined.
@@ -69,7 +66,7 @@ export const QUOTE_MIN_CHARS = 8;
 const QUOTE_MARKS: Readonly<Record<string, string>> = { "‘": "'", "’": "'", "“": "\"", "”": "\"", "–": "-", "—": "-" };
 /** A quote or a page as quote_missing compares them: lowercase, curly quotes straight, en and em dashes "-", each run of
  *  whitespace one space, trimmed. */
-export const quoteText = (text: string): string =>
+const quoteText = (text: string): string =>
   text.toLowerCase().replace(/[‘’“”–—]/g, (mark) => QUOTE_MARKS[mark]!).replace(/\s+/g, " ").trim();
 /** The looser reading: the letters and digits of `text` alone, each run joined by one space. */
 const quoteTokens = (text: string): string => (text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).join(" ");

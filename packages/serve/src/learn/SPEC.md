@@ -182,7 +182,7 @@ naming the run it audits; a shadow whose line could not be written is never crea
 list, sends no webhook, is no run of the stats, GET /runs/{id} reads it with `audit_of` and `path` `audit`, and its cost
 is the served run's learning (its `cost.learning_usd` and its learning cost in the cost series; `cost.usd` stays the
 served run's own spend). While the shadow is queued or running the served run's all-in is unknown, never $0
-(`store-reads/learning.ts` shadowSpendOf): its `cost.learning_usd`, `cost.all_in_usd` and learning cost read null until
+(`learn/ledger.ts` shadowCostOf): its `cost.learning_usd`, `cost.all_in_usd` and learning cost read null until
 the shadow ends. Each claim of a run that learns first settles the open audits (started lines with no row yet), reading
 each one's two runs by id, never a window of newest runs: once both ended it writes the row `{run, shadow_run, workflow,
 digest, promoted_at, source: "shadow", agreed, served_cost, shadow_cost, turn, at}`, `agreed` by compareAnswers of the
