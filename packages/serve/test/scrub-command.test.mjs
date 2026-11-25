@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -15,8 +15,12 @@ import { commitWrites } from "@earendil-works/pi-durable/testing";
 
 const { openSqliteStore } = await import("../dist/store/index.js");
 const scrubCommand = await import("../dist/scrub-command.js");
-const { countCuts, countTable, couldNotCount, shareTexts, stringsOf } = scrubCommand;
+const { countExport, countTable, couldNotCount, shareCount } = scrubCommand;
+const { exportBundle } = await import("../dist/run-export.js");
+const { callContexts } = await import("../dist/share-context.js");
+const { runFolder } = await import("../dist/workspace/index.js");
 const { sealRunLaunch } = await import("../dist/store/seal.js");
+const { runCutValues } = await import("../dist/run-cut.js");
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 
 /** Fresh synthetic secrets: an sk- key (a known format), a PGPASSWORD= value (a label), an email (personal) and a value
@@ -191,12 +195,18 @@ test("no run id, or two, exits 2 with the command's usage", async (t) => {
   }
 });
 
-test("P2 14 (ruling F): a share's strings include object keys, so a key holding a secret is counted", async () => {
+/** The count of the bundle exportBundle makes of these parts (a synthetic agentic run unless `view` says otherwise). */
+const bundleCount = (parts, held = []) =>
+  countExport("r", String(parts.view?.kind ?? "agentic"), () => exportBundle({ runId: "r", agent: { name: "Synthetic agent" }, view: { kind: "agentic", status: "completed", title: "Look" }, rows: [], graph: null, files: [], filesTruncated: false, held, restore: [], version: "0.0.0-count", ...parts }));
+
+test("P2 14 (ruling F): an object key holding a value fails a share closed, and the count says the share is blocked", async () => {
   const s = planted();
-  const strings = stringsOf({ [`PGPASSWORD=${s.pg}`]: 1, list: ["x", { inner: "y" }], n: 3, none: null });
-  for (const each of [`PGPASSWORD=${s.pg}`, "list", "x", "inner", "y", "n", "none"]) assert.ok(strings.includes(each), each);
-  const count = await countCuts("r", "agentic", strings, []);
-  assert.equal(count.rules.find((rule) => rule.rule === "secret-assign")?.count, 1, JSON.stringify(count));
+  const count = await bundleCount({ rows: [{ id: "row_1", kind: "text_block", text: "Sent.", by: { [s.email]: "sent" } }] });
+  assert.equal(count.blocked, true, JSON.stringify(count));
+  assertNoValue(countTable(count) + JSON.stringify(count), s, "keyed count");
+  const plain = await bundleCount({ rows: [{ id: "row_1", kind: "text_block", text: `Connect with PGPASSWORD=${s.pg} psql`, by: { team: "sent" } }] });
+  assert.equal(plain.blocked, false);
+  assert.equal(plain.rules.find((rule) => rule.rule === "secret-assign")?.count, 1, JSON.stringify(plain));
 });
 
 test("ruling F: count mode reports blocked when a share would fail closed, and the table says the share would be refused", async () => {
@@ -204,11 +214,11 @@ test("ruling F: count mode reports blocked when a share would fail closed, and t
   // One character mid-value percent-encoded: no held form (nor its hex run) stands in place, the final check's decoded
   // view sees it.
   const split = `token ${s.held.slice(0, 20)}%${s.held.charCodeAt(20).toString(16).toUpperCase()}${s.held.slice(21)}`;
-  const count = await countCuts("r", "agentic", ["fine", split], [s.held]);
+  const count = await bundleCount({ rows: [{ id: "row_1", kind: "text_block", text: "fine" }, { id: "row_2", kind: "text_block", text: split }] }, [s.held]);
   assert.equal(count.blocked, true);
-  assert.match(countTable(count), /a share of this run would be refused/);
+  assert.match(countTable(count), /a share of this run would be refused/i);
   assertNoValue(countTable(count) + JSON.stringify(count), s, "blocked count");
-  const fine = await countCuts("r", "agentic", ["fine"], [s.held]);
+  const fine = await bundleCount({ rows: [{ id: "row_1", kind: "text_block", text: "fine" }] }, [s.held]);
   assert.equal(fine.blocked, false);
   assert.doesNotMatch(countTable(fine), /refused/);
 });
@@ -243,10 +253,7 @@ test("LVI: a tool's output is scrubbed with its call's context, so a read of a c
   const pw = `Cu${randomBytes(9).toString("hex")}`;
   const pgpass = `db:5432:app:svc:${pw}`;
   const deps = { serverSecrets: () => [], keyEnv: () => ({}) };
-  const counted = async (id) => {
-    const gathered = await shareTexts(store, id, deps);
-    return countCuts(id, gathered.kind, gathered.texts, gathered.held);
-  };
+  const counted = (id) => shareCount(store, id, deps);
   // Each output stands alone in its result field: only the call that printed it says what it is.
   const cases = [
     ["read-pgpass", "Read", { file_path: "~/.pgpass" }, pgpass, "credential-file"],
@@ -283,15 +290,13 @@ test("LXIV: Gemini CLI's read_file (`absolute_path` in v0.1.18, `file_path` now)
   const deps = { serverSecrets: () => [], keyEnv: () => ({}) };
   for (const [id, input] of [["gemini-read", { absolute_path: "~/.pgpass" }], ["gemini-read-now", { file_path: "~/.pgpass" }], ["cursor-read", { target_file: "~/.pgpass" }]]) {
     await oneCallRun(store, id, "read_file", input, `db:5432:app:svc:${pw}`);
-    const gathered = await shareTexts(store, id, deps);
-    const count = await countCuts(id, gathered.kind, gathered.texts, gathered.held);
+    const count = await shareCount(store, id, deps);
     assert.equal(count.by_kind.dump, 1, `${id}: ${JSON.stringify(count.rules)}`);
     assert.equal(count.rules.find((line) => line.kind === "dump")?.rule, "credential-file", id);
   }
   // The same read of an unrelated file: no cut.
   await oneCallRun(store, "cursor-notes", "read_file", { target_file: "notes.txt" }, `db:5432:app:svc:${pw}`);
-  const gathered = await shareTexts(store, "cursor-notes", deps);
-  assert.equal((await countCuts("cursor-notes", gathered.kind, gathered.texts, gathered.held)).cuts, 0);
+  assert.equal((await shareCount(store, "cursor-notes", deps)).cuts, 0);
 });
 
 test("LXXVII: a shell call naming a credential file through quotes, $PGPASSFILE or a newly listed file (~/.aws/credentials) is one dump", async (t) => {
@@ -299,10 +304,7 @@ test("LXXVII: a shell call naming a credential file through quotes, $PGPASSFILE 
   const pw = `Cu${randomBytes(9).toString("hex")}`;
   const pgpass = `db:5432:app:svc:${pw}`;
   const deps = { serverSecrets: () => [], keyEnv: () => ({}) };
-  const counted = async (id) => {
-    const gathered = await shareTexts(store, id, deps);
-    return countCuts(id, gathered.kind, gathered.texts, gathered.held);
-  };
+  const counted = (id) => shareCount(store, id, deps);
   for (const [id, command, output] of [["quoted-pgpass", "cat ~/'.pgpass'", pgpass], ["pgpassfile", "cat $PGPASSFILE", pgpass], ["aws-credentials", "cat ~/.aws/credentials", `[default]\naws_secret_access_key = ${pw}`]]) {
     await oneCallRun(store, id, "Bash", { command }, output);
     const count = await counted(id);
@@ -315,12 +317,10 @@ test("LXXVII: a shell call naming a credential file through quotes, $PGPASSFILE 
 });
 
 test("LVI: the count gives an approval outcome's text and a workflow call's output their call's context, as the export does: each is one dump", async () => {
-  // The gathered reads (shareTexts) as plain data: what the count reads of them is shareTextsOf's.
-  assert.equal(typeof scrubCommand.shareTextsOf, "function", "the count's texts are made from its reads by shareTextsOf");
-  const { shareTextsOf } = scrubCommand;
+  // The export's reads as plain data: the count is the bundle's (countExport over exportBundle).
   const pw = `Cu${randomBytes(9).toString("hex")}`;
   const pgpass = `db:5432:app:svc:${pw}`;
-  const counted = (read) => countCuts("r", String(read.view.kind), shareTextsOf(read), []);
+  const counted = (read) => bundleCount({ view: read.view, agent: { name: read.agentName }, rows: read.rows, contexts: callContexts(read.calls), graph: read.graph });
   // A .pgpass read a person allowed: its result's preview is out of the served rows here, so only its outcome row's text
   // (run-view.ts withApprovalRows, the call's output shown again under the outcome's head line) holds the output.
   for (const outcome of ["approval:toolu_01:after:outcome", "approval:toolu_01:outcome"]) {
@@ -344,23 +344,57 @@ test("LVI: the count gives an approval outcome's text and a workflow call's outp
   assertNoValue(countTable(count) + JSON.stringify(count), { pw }, "count");
 });
 
-test("a run whose launch holds keys sealed is counted under the store's seal key, its keys held; without that key it is withheld", async (t) => {
+test("the count reads the run's files as the export carries them: a secret in a file of the run's folder is counted, and the count is the export's", async (t) => {
+  const s = planted();
+  const { dir, store } = await dataDir(t);
+  const id = await importedRun(store, s, "with-files");
+  const folder = runFolder(dir, "a1", id);
+  mkdirSync(join(folder, "out"), { recursive: true });
+  writeFileSync(join(folder, "out", "notes.txt"), `The notes: connect with MYSQL_PWD=${s.pg} mysql -h db\n`);
+  writeFileSync(join(folder, "out", "shot.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff]));
+  await store.close();
+  const ran = scrubCli(dir, s, id, "--json");
+  assert.equal(ran.status, 0, ran.stderr);
+  assertNoValue(ran.stdout + ran.stderr, s, "files json");
+  const count = JSON.parse(ran.stdout);
+  assert.equal(count.files, 1, JSON.stringify(count));
+  assert.equal(count.files_omitted, 1, "the binary file is named as left out");
+  assert.equal(count.files_read, true);
+  // The input's PGPASSWORD= and the file's MYSQL_PWD= are each a label cut.
+  assert.ok((count.rules.find((rule) => rule.rule === "secret-assign")?.count ?? 0) >= 2, JSON.stringify(count.rules));
+  const table = scrubCli(dir, s, id);
+  assert.match(table.stdout, /1 file carried, 1 left out/);
+});
+
+test("a run that has not ended exits 1 and counts nothing: a share is made of an ended run", async (t) => {
+  const s = planted();
+  const { dir, store } = await dataDir(t);
+  await store.runs.create({ id: "live-1", agentId: "a1", revisionId: "r1" }, { body: { input: { content: "Wait." }, title: "Wait", place: { mode: "runner" } } });
+  await store.close();
+  const ran = scrubCli(dir, s, "live-1");
+  assert.equal(ran.status, 1, ran.stdout + ran.stderr);
+  assert.match(ran.stderr, /has not ended/);
+  assert.equal(ran.stdout, "");
+});
+
+test("a run whose launch holds keys sealed: the count's cut reads its keys under the store's seal key, and without that key the command refuses", async (t) => {
   const s = planted();
   const { dir, store } = await dataDir(t);
   const key = randomBytes(32);
   const handed = `hk${randomBytes(16).toString("hex")}`;
   const id = "sealed-1";
+  // Not ended: its launch still holds the keys sealed (an end erases them).
   await store.runs.create({ id, agentId: "a1", revisionId: "r1" }, { body: { input: { content: `Use ${handed} for the call.` }, title: "Call the API", place: { mode: "runner" } }, sealed: sealRunLaunch(key, id, { keys: { CALL_API_KEY: handed } }) });
-  const base = { serverSecrets: () => [], keyEnv: () => ({}) };
-  const gathered = await shareTexts(store, id, { ...base, sealKey: key });
-  assert.ok(typeof gathered === "object", String(gathered));
-  assert.ok(gathered.held.includes(handed), "the key sealed with its launch is a held value");
-  assert.equal(await shareTexts(store, id, { ...base, sealKey: undefined }), "withheld", "no seal key: what it was handed can't be read");
+  const cut = await runCutValues({ serverSecrets: () => [], sealKey: key }, store, id);
+  assert.ok(typeof cut === "object" && cut.values.includes(handed), "the key sealed with its launch is a held value under the seal key");
+  assert.equal(await runCutValues({ serverSecrets: () => [], sealKey: undefined }, store, id), "unreadable", "no seal key: what it was handed can't be read");
+  assert.equal(await shareCount(store, id, { serverSecrets: () => [], keyEnv: () => ({}), sealKey: key }), "not_ended");
   await store.close();
-  // The command reads the store's seal key as the import boots it (handed here) and counts the run: without the key it would be withheld (exit 1).
+  // The command boots the store's seal key as the import does: handed here, it gets as far as the run (not ended, exit 1);
+  // without it, the store's secrets can't be read and the run is withheld (exit 1), and nothing is counted either way.
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !["AGENTRUN_STORE_URL", "AGENTRUN_SEAL_KEY"].includes(name)));
   const ran = spawnSync(process.execPath, [CLI, "scrub", "--data", dir, id, "--json"], { env: { ...env, SCRUBTEST_SECRET: s.held, AGENTRUN_SEAL_KEY: key.toString("base64"), AGENTRUN_TELEMETRY: "0" }, encoding: "utf8", timeout: 120_000 });
-  assert.equal(ran.status, 0, ran.stderr);
-  assert.equal(JSON.parse(ran.stdout).run_id, id, "counted, not withheld: its sealed launch opened under the key");
+  assert.equal(ran.status, 1, ran.stderr);
+  assert.match(ran.stderr, /has not ended/);
   assertNoValue(ran.stdout + ran.stderr, { ...s, handed }, "sealed");
 });
