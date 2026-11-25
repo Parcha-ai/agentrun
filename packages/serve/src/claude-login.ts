@@ -176,42 +176,68 @@ function localAccounts(): boolean {
 /** A whole decimal id from an account file's field, else undefined (an empty field is no id). */
 const idOf = (field: string | undefined): number | undefined => (field !== undefined && /^\d+$/.test(field) ? Number(field) : undefined);
 
+/** A group file's password fields that are no password: `x` (it is in the shadow file, which only root reads), `!` and
+ *  `*` (locked), and none. Any other is one, and newgrp lets anyone who knows it into the group. */
+const NO_GROUP_PASSWORD: ReadonlySet<string> = new Set(["x", "!", "*", ""]);
+
+/** The words a group-writable folder's refusal ends in where its group would be the user's private one but for a password
+ *  the group file gives it: which group, and why. */
+const groupPasswordWords = (group: string, gid: number): string =>
+  ` Its group ${group} (gid ${gid}) would be the server's user's private group, but /etc/group gives it a password, which lets anyone who knows it join the group (newgrp); removing the password (gpasswd -r ${group}) mends that too.`;
+
 /** Whether group `gid` is user `uid`'s private group, so a folder only its group and its owner may write in is still the
  *  user's alone (the umask ruling: a umask of 002, under a group of the user's own, makes folders 0775). Only where the
- *  name service switch takes users and groups from the account files alone (localAccounts), and as those files say:
- *  `uid` has one entry, and `gid` is its primary group; no other user has `gid` as theirs; and the group file has `gid`,
- *  listing no member but that user. False where it cannot say: a switch that also asks another source (a directory
- *  service, systemd's user records), or that it cannot read, a file it cannot read, a `+` or `-` line, blanks before it
- *  or not (the rest is a directory service's, whose members these files do not show), no entry for `uid`, or `gid`
- *  missing from the group file. */
-function privateGroup(uid: number, gid: number): boolean {
+ *  name service switch takes users and groups from the account files alone (localAccounts), and as those files say,
+ *  read as the system reads them (blanks before an entry skipped): `uid` has one entry, and no other entry has its name
+ *  (a group's members are named, so a second account so named is in it too; a second entry with `uid`, an alias, is the
+ *  user under a name the group may list); `gid` is its primary group; no other user has `gid` as theirs; the group file
+ *  has `gid`, listing no member but that user, and gives it no password (NO_GROUP_PASSWORD). True where it is; else
+ *  false, or, where only the password stands in the way, the words that say so (groupPasswordWords). False where it
+ *  cannot say: a switch that also asks another source (a directory service, systemd's user records), or that it cannot
+ *  read, a file it cannot read, a `+` or `-` line (the rest is a directory service's, whose members these files do not
+ *  show), an id that is not a plain number (the system reads ` 1000` as 1000, which would hide an alias or a member),
+ *  no entry for `uid`, or `gid` missing from the group file. */
+function privateGroup(uid: number, gid: number): boolean | string {
   try {
     if (!localAccounts()) return false;
-    const entries = (file: string) => readFileSync(file, "utf8").split("\n").filter((line) => line.trim() !== "" && !line.startsWith("#"));
+    const entries = (file: string) =>
+      readFileSync(file, "utf8")
+        .split("\n")
+        .map((line) => line.trimStart())
+        .filter((line) => line !== "" && !line.startsWith("#"))
+        .map((line) => line.split(":"));
     const users = entries(PASSWD_FILE);
     const groups = entries(GROUP_FILE);
-    if ([...users, ...groups].some((line) => /^\s*[+-]/.test(line))) return false;
-    const userFields = users.map((line) => line.split(":"));
-    const own = userFields.filter((fields) => idOf(fields[2]) === uid);
+    if ([...users, ...groups].some((fields) => /^[+-]/.test(fields[0]!))) return false;
+    if (users.some((fields) => idOf(fields[2]) === undefined || idOf(fields[3]) === undefined) || groups.some((fields) => idOf(fields[2]) === undefined)) return false;
+    const own = users.filter((fields) => idOf(fields[2]) === uid);
     const name = own.length === 1 ? own[0]![0] : undefined;
     if (!name || idOf(own[0]![3]) !== gid) return false;
-    if (userFields.some((fields) => fields !== own[0] && idOf(fields[3]) === gid)) return false;
-    const its = groups.map((line) => line.split(":")).filter((fields) => idOf(fields[2]) === gid);
-    return its.length > 0 && its.every((fields) => (fields[3] ?? "").split(",").map((member) => member.trim()).every((member) => member === "" || member === name));
+    if (users.some((fields) => fields !== own[0] && fields[0] === name)) return false;
+    if (users.some((fields) => fields !== own[0] && idOf(fields[3]) === gid)) return false;
+    const its = groups.filter((fields) => idOf(fields[2]) === gid);
+    if (its.length === 0 || !its.every((fields) => (fields[3] ?? "").split(",").map((member) => member.trim()).every((member) => member === "" || member === name))) return false;
+    const withPassword = its.find((fields) => !NO_GROUP_PASSWORD.has(fields[1] ?? ""));
+    return withPassword ? groupPasswordWords(withPassword[0]!, gid) : true;
   } catch {
     return false;
   }
 }
 
-/** Whether a folder with `mode` and group `gid` lets someone other than user `uid` write in it: anyone may, or its group
- *  may and that group is not the user's private one (privateGroup, asked once per group by `mine`). */
-const openToOthers = (folder: { mode: number; gid: number }, mine: (gid: number) => boolean): boolean =>
-  (folder.mode & OTHER_WRITE) !== 0 || ((folder.mode & GROUP_WRITE) !== 0 && !mine(folder.gid));
+/** Where a folder with `mode` and group `gid` lets someone other than user `uid` write in it (anyone may, or its group
+ *  may and that group is not the user's private one: privateGroup, asked once per group by `mine`), the words its
+ *  refusal ends in, about its group (privateGroup's, else none: ""). Undefined where no one else may write in it. */
+const openToOthers = (folder: { mode: number; gid: number }, mine: (gid: number) => boolean | string): string | undefined => {
+  if ((folder.mode & OTHER_WRITE) !== 0) return "";
+  if ((folder.mode & GROUP_WRITE) === 0) return undefined;
+  const group = mine(folder.gid);
+  return group === true ? undefined : group || "";
+};
 
 /** privateGroup for user `uid`, each group asked once: one walk (ownedFolder) reads the account files only where a folder
  *  its group may write in is met, and once per group. */
-function privateGroupsOf(uid: number): (gid: number) => boolean {
-  const known = new Map<number, boolean>();
+function privateGroupsOf(uid: number): (gid: number) => boolean | string {
+  const known = new Map<number, boolean | string>();
   return (gid) => {
     let mine = known.get(gid);
     if (mine === undefined) known.set(gid, (mine = privateGroup(uid, gid)));
@@ -261,23 +287,24 @@ function followLinks(uid: number, dir: string): { real: string; missing: string[
 /** Why a folder is not the login's (ownedFolder): `owned`, it is not the user's own (another user's, through another
  *  user's link or folder, or no way to look); `open`, `at` (a folder on its way, the folder itself, or the one it is to
  *  be made in) has `mode`, which anyone may write in, or its group, where that group is not the user's private one
- *  (openToOthers), so a chmod of `at` mends it. Only the mode bits are
- *  read: an ACL that grants another user writes and leaves them alone (macOS's `chmod +a`) is not seen, and a FUSE
- *  mount another user may let others into (`allow_other`) says what owner and mode it likes. */
-type NotHeld = { not: "owned" } | { not: "open"; at: string; mode: number };
+ *  (openToOthers), so a chmod of `at` mends it; `more`, the words that say more of its group (openToOthers'). Only the
+ *  mode bits are read: an ACL that grants another user writes and leaves them alone (macOS's `chmod +a`) is not seen,
+ *  and a FUSE mount another user may let others into (`allow_other`) says what owner and mode it likes. */
+type NotHeld = { not: "owned" } | { not: "open"; at: string; mode: number; more: string };
 
 /** Undefined where no user but `uid` and root can change what `real` (a real path, followLinks') leads to: each folder
  *  above it, from the root down, is a folder (no link) of that user's or root's that no one else may write in (anyone,
  *  or its group where that is not the user's private one: openToOthers, with `mine`), unless the sticky bit keeps each
  *  entry there its maker's. Else why not: a folder not theirs first, as a chmod mends no such folder, else the nearest
  *  open one. */
-function wayHeld(uid: number, real: string, mine: (gid: number) => boolean): NotHeld | undefined {
+function wayHeld(uid: number, real: string, mine: (gid: number) => boolean | string): NotHeld | undefined {
   try {
     let open: NotHeld | undefined;
     for (let at = dirname(real), last = real; at !== last; last = at, at = dirname(at)) {
       const folder = lstatSync(at);
       if (!folder.isDirectory() || (folder.uid !== uid && folder.uid !== 0)) return { not: "owned" };
-      if ((folder.mode & STICKY) === 0 && openToOthers(folder, mine)) open ??= { not: "open", at, mode: folder.mode };
+      const more = (folder.mode & STICKY) === 0 ? openToOthers(folder, mine) : undefined;
+      if (more !== undefined) open ??= { not: "open", at, mode: folder.mode, more };
     }
     return open;
   } catch {
@@ -288,20 +315,21 @@ function wayHeld(uid: number, real: string, mine: (gid: number) => boolean): Not
 /** Undefined where `real` is a folder (no link) of user `uid`'s that no one else may write in (openToOthers, with
  *  `mine`), sticky or not: they could put files of theirs in it, or, where the CLI makes a folder in it, make that
  *  folder first. Else why not. */
-function heldFolder(uid: number, real: string, mine: (gid: number) => boolean): NotHeld | undefined {
+function heldFolder(uid: number, real: string, mine: (gid: number) => boolean | string): NotHeld | undefined {
   try {
     const folder = lstatSync(real);
     if (!folder.isDirectory() || folder.uid !== uid) return { not: "owned" };
-    return openToOthers(folder, mine) ? { not: "open", at: real, mode: folder.mode } : undefined;
+    const more = openToOthers(folder, mine);
+    return more === undefined ? undefined : { not: "open", at: real, mode: folder.mode, more };
   } catch {
     return { not: "owned" };
   }
 }
 
 /** The end of the words a folder open to others' writes (NotHeld's `open`) is refused in: which folder, its mode, and
- *  the chmod that closes it. */
-const openWords = (open: { at: string; mode: number }): string =>
-  `is open to writes by others than its owner: ${open.at} has mode ${(open.mode & 0o7777).toString(8).padStart(4, "0")}, which its group or anyone may write in. Make it writable by its owner alone (chmod g-w,o-w ${open.at}): a umask of 002 makes new folders so.`;
+ *  the chmod that closes it, then what more it says of its group (`more`). */
+const openWords = (open: { at: string; mode: number; more: string }): string =>
+  `is open to writes by others than its owner: ${open.at} has mode ${(open.mode & 0o7777).toString(8).padStart(4, "0")}, which its group or anyone may write in. Make it writable by its owner alone (chmod g-w,o-w ${open.at}): a umask of 002 makes new folders so.${open.more}`;
 
 /** The folder `dir` names, as the CLI is to get it, where it is one user `uid` owns; else why not. `dir` is walked as
  *  the system walks it, one name at a time (followLinks: a trailing slash or `.` names nothing, and a `..` goes up from
