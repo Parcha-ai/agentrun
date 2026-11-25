@@ -546,6 +546,27 @@ test("a share host fires nothing a reused data folder holds: its triggers never 
   assert.deepEqual(asked, [], "no schedule or feed runs on a share host");
 });
 
+test("a share host publishes no agent's local sources: the 30 s source sweep a plain server arms is never set", async (t) => {
+  // A reused folder can hold an agent with local source sync on; the sweep would write that agent's new revisions,
+  // which a share host neither runs nor shows. Its timer is read where it is set: a callback naming the sweep.
+  const armed = async (options) => {
+    const real = globalThis.setInterval;
+    const sweeps = [];
+    globalThis.setInterval = (fn, ms, ...rest) => {
+      if (String(fn).includes("sweepLocalSources")) sweeps.push(ms);
+      return real(fn, ms, ...rest);
+    };
+    try {
+      await options();
+    } finally {
+      globalThis.setInterval = real;
+    }
+    return sweeps;
+  };
+  assert.deepEqual(await armed(() => serve(t, { runner: false })), [30_000], "a plain server arms the sweep (the probe sees it)");
+  assert.deepEqual(await armed(() => shareHost(t)), [], "a share host arms no source sweep");
+});
+
 test("a share host sends nothing a reused data folder left queued, but still holds its saved secrets: no delivery resumes, no run's change is followed, and an upload carrying the webhook's key is refused", async (t) => {
   const hook = await receiver(t);
   // A server that sent webhooks, on the folder the host reuses: its webhook set, and a message it left queued.
