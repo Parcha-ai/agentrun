@@ -461,47 +461,84 @@ export function forgetServedAnswers(store: Store, runId: string): string[] {
   const kept = answersServed.get(store.origin);
   const dropped = [...(kept?.keys() ?? [])].filter((key) => key.startsWith(`${runId}\0`));
   for (const key of dropped) kept!.delete(key);
-  const cut = cutsKept.get(store.origin);
-  for (const set of [...(cut?.keys() ?? [])]) if (set.startsWith(`${runId}\0`)) cut!.delete(set);
+  forgetCuts(store.origin, runId);
   return dropped;
 }
 
-/** What each store's readers last cut of a run's texts, by run and the digest of the values they were cut of: by each
- *  text's digest, what the row's redactor made of it (key-refusal.ts redacted) or whether it is withheld whole
- *  (withheldWhole). A reader that follows a run (a console's live Timeline, its view polled) reads its rows once per
- *  change, each read renders every row from the journal again, and an entry's words never change: so each text is cut
- *  once per held value set, not once per read, and a run of n turns costs the redactor n turns of work, not n². The
- *  newest CUT_SETS run and value set pairs of each store, at most CUT_TEXTS texts each, the oldest dropped first. Kept
- *  by digest: no text the run wrote is kept, only what a reader is shown of it. */
-const cutsKept = new WeakMap<Store, Map<string, Map<string, string | boolean>>>();
+/** What each store's readers last cut of a run's texts, by run and the digest of the values they were cut of, in the
+ *  order the reader was handed them (redacted takes them in that order, so a set read in another order is cut again,
+ *  never served a cut made of another order): by each text's digest, what the row's redactor made of it (key-refusal.ts
+ *  redacted) or whether it is withheld whole (withheldWhole). A reader that follows a run (a console's live Timeline,
+ *  its view polled) reads its rows once per change, each read renders every row from the journal again, and an entry's
+ *  words never change: so each text is cut once per held value set, not once per read, and a run of n turns costs the
+ *  redactor n turns of work, not n². Kept by digest: no text the run wrote is kept, only what a reader is shown of it.
+ *
+ *  Bounded in bytes, per store: each kept text costs CUT_ENTRY plus 2 bytes per UTF-16 unit of its slot and of what was
+ *  made of it, and once a store's texts cost more than CUT_BYTES the oldest go first (the least recently written run and
+ *  value set's, its oldest text first). A text that alone costs more than CUT_BYTES is not kept. At most CUT_SETS run
+ *  and value set pairs a store. So the worst case is CUT_BYTES (32 MiB) of kept cuts per open store, whatever a run
+ *  wrote: a made text is at most redacted's head (SHOWN plus 6 times the longest held value, and 16), most rows far
+ *  less, and a 62-search run keeps about 1.5 MB. */
+type CutsOf = { readonly sets: Map<string, { readonly texts: Map<string, string | boolean>; bytes: number }>; bytes: number };
+const cutsKept = new WeakMap<Store, CutsOf>();
 const CUT_SETS = 16;
-const CUT_TEXTS = 8192;
+const CUT_BYTES = 32 * 1024 * 1024;
+/** The bound in force (CUT_BYTES): a test sets a smaller one to see the oldest go. */
+export const cutBudget = { bytes: CUT_BYTES };
+/** What one kept text costs beyond its characters: the Map entry and the boolean or string header, as counted. */
+const CUT_ENTRY = 64;
+const cutCost = (slot: string, made: string | boolean): number => CUT_ENTRY + 2 * (slot.length + (typeof made === "string" ? made.length : 0));
+
+/** Run `runId`'s value sets dropped from what the readers of store `origin` last cut (cutsKept). */
+function forgetCuts(origin: Store, runId: string): void {
+  const cuts = cutsKept.get(origin);
+  if (!cuts) return;
+  for (const [set, kept] of [...cuts.sets]) {
+    if (!set.startsWith(`${runId}\0`)) continue;
+    cuts.sets.delete(set);
+    cuts.bytes -= kept.bytes;
+  }
+}
 
 /** The row redactor (`redact`) and the whole-text check (`holds`) of run `runId`'s rows under the held `values` (run-cut.ts
- *  runCutValues), as a reader's TimelineOptions takes them: each text cut once per held value set (cutsKept), what was
- *  cut kept only while no run's text was forgotten since `since` (servedSince, taken before the read began). */
+ *  runCutValues), as a reader's TimelineOptions takes them: each text cut once per held value set, in its order
+ *  (cutsKept), what was cut kept only while no run's text was forgotten since `since` (servedSince, taken before the
+ *  read began). */
 export function rowCutsOnce(store: Store, runId: string, values: readonly string[], since: number): { redact: (text: string) => string; holds: (text: string) => boolean } {
   const origin = store.origin;
-  const set = `${runId}\0${wholeAnswerFor(values).key}`;
+  const set = `${runId}\0${createHash("sha256").update(JSON.stringify(values)).digest("hex")}`;
   const once = <T extends string | boolean>(how: string, text: string, cut: () => T): T => {
     const slot = `${how}\0${createHash("sha256").update(text).digest("base64")}`;
-    const kept = cutsKept.get(origin)?.get(set)?.get(slot);
+    const kept = cutsKept.get(origin)?.sets.get(set)?.texts.get(slot);
     if (kept !== undefined) return kept as T;
     const made = cut();
-    if (servedSince(store) !== since) return made;
-    let sets = cutsKept.get(origin);
-    if (!sets) cutsKept.set(origin, (sets = new Map()));
-    const texts = sets.get(set) ?? new Map<string, string | boolean>();
-    sets.delete(set);
-    sets.set(set, texts);
-    texts.set(slot, made);
-    for (const oldest of texts.keys()) {
-      if (texts.size <= CUT_TEXTS) break;
-      texts.delete(oldest);
-    }
-    for (const oldest of sets.keys()) {
-      if (sets.size <= CUT_SETS) break;
-      sets.delete(oldest);
+    const cost = cutCost(slot, made);
+    if (servedSince(store) !== since || cost > cutBudget.bytes) return made;
+    let cuts = cutsKept.get(origin);
+    if (!cuts) cutsKept.set(origin, (cuts = { sets: new Map(), bytes: 0 }));
+    const texts = cuts.sets.get(set) ?? { texts: new Map<string, string | boolean>(), bytes: 0 };
+    cuts.sets.delete(set);
+    cuts.sets.set(set, texts);
+    texts.texts.set(slot, made);
+    texts.bytes += cost;
+    cuts.bytes += cost;
+    // The oldest go first: the least recently written set's oldest texts (this set is the newest), a set left empty
+    // with them, and a set past CUT_SETS whole.
+    for (const [oldSet, old] of cuts.sets) {
+      if (cuts.bytes <= cutBudget.bytes && cuts.sets.size <= CUT_SETS) break;
+      if (cuts.sets.size > CUT_SETS) {
+        cuts.sets.delete(oldSet);
+        cuts.bytes -= old.bytes;
+        continue;
+      }
+      for (const [oldSlot, oldMade] of old.texts) {
+        if (cuts.bytes <= cutBudget.bytes) break;
+        const freed = cutCost(oldSlot, oldMade);
+        old.texts.delete(oldSlot);
+        old.bytes -= freed;
+        cuts.bytes -= freed;
+      }
+      if (old.texts.size === 0) cuts.sets.delete(oldSet);
     }
     return made;
   };
@@ -509,6 +546,12 @@ export function rowCutsOnce(store: Store, runId: string, values: readonly string
     redact: (text) => once("redact", text, () => redacted(text, values)),
     holds: (text) => once("holds", text, () => withheldWhole(text, values)),
   };
+}
+
+/** What the readers of `store` keep of their cuts now: the bytes counted (cutBudget bounds it), the texts and the sets. */
+export function cutsKeptOf(store: Store): { bytes: number; texts: number; sets: number } {
+  const cuts = cutsKept.get(store.origin);
+  return { bytes: cuts?.bytes ?? 0, texts: [...(cuts?.sets.values() ?? [])].reduce((n, kept) => n + kept.texts.size, 0), sets: cuts?.sets.size ?? 0 };
 }
 
 /** `rows` (runTimeline's, rendered with `options`) with each final answer whole, as main served a run's answer: the renderer
