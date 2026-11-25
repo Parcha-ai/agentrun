@@ -14,7 +14,7 @@ import { homedir, hostname, tmpdir, userInfo } from "node:os";
 import { delimiter, dirname, join, relative } from "node:path";
 import { after, test } from "node:test";
 import * as claude from "@parcha/agentrun-harness-claude";
-import { CLAUDE_LOGIN_ENV, CLAUDE_LOGIN_SETTING, claudeLoginOf, claudeLoginSwitchedOff, claudeLoginView, dropRefusedLogin, envAtPlace, LOGIN_ANSWERS_DIR, LOGIN_SIGNED_OUT, LOGIN_UNKNOWN, loginAt as checkedLoginAt, loginBeforeRun, loginForRun, loginOnRunnerOnly, loginServes, settingFor, startLoginHere, turnOffClaudeLogin, turnOnBody, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
+import { CLAUDE_LOGIN_ENV, CLAUDE_LOGIN_SETTING, claudeLoginOf, claudeLoginSwitchedOff, claudeLoginView, dropRefusedLogin, envAtPlace, LOGIN_ANSWERS_DIR, LOGIN_REFUSES_API_KEYS, LOGIN_SIGNED_OUT, LOGIN_UNKNOWN, loginAt as checkedLoginAt, loginBeforeRun, loginForRun, loginOnRunnerOnly, loginServes, settingFor, startLoginHere, turnOffClaudeLogin, turnOnBody, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
 import { ClaudeSignIns } from "../dist/claude-sign-in.js";
 import { MODEL_KEYS, hostModel } from "../dist/model.js";
 import { providerFor } from "../dist/provider.js";
@@ -23,6 +23,8 @@ import { agent, FAUX, follow, secretWritePath, serve, withEnv } from "./support.
 secretWritePath(["GET", "PUT", "DELETE"], /^\/settings\/claude-login$/);
 secretWritePath(["POST"], /^\/settings\/claude-login\/login$/);
 secretWritePath(["PUT", "DELETE"], /^\/settings\/harness-keys\/[^/]+\/[^/]+$/);
+secretWritePath(["POST"], /^\/settings\/api-keys$/);
+secretWritePath(["DELETE"], /^\/settings\/api-keys\/[^/]+$/);
 
 const MODEL_VARS = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "AGENT_MODEL_API_KEY", "AGENT_MODEL_GATEWAY_IDS", "AGENTRUN_SERVE_DEFAULT_MODEL", "ANTHROPIC_BASE_URL", "OPENAI_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN", CLAUDE_LOGIN_ENV, ...MODEL_KEYS.map((row) => row.field)];
 const OPERATIONS = [["GET", "/settings/claude-login", "getClaudeLogin"], ["PUT", "/settings/claude-login", "turnOnClaudeLogin"], ["DELETE", "/settings/claude-login", "turnOffClaudeLogin"], ["POST", "/settings/claude-login/login", "startClaudeLogin"]];
@@ -1762,7 +1764,7 @@ test("a login saved on this machine's folders is kept at the start of a server w
   assert.ok(lines.some((line) => /kept, and not used while it is refused: Claude Code's login on this machine needs its folders/.test(line)), `the start logs why it does not use the login: ${lines.join("\n")}`);
   assert.ok(!lines.some((line) => /turned off/.test(line)), `the start turns nothing off: ${lines.join("\n")}`);
   const refused = (await second.api("GET", "/settings/claude-login")).body;
-  assert.equal(refused.state, "off", JSON.stringify(refused));
+  assert.equal(refused.state, "refused", JSON.stringify(refused));
   assert.match(refused.refused ?? "", why);
   assert.equal(await loginForRun(second.store.settings, first.data, process.env, "claude-agent", RUNNER), undefined, "no run goes on it");
   const again = await second.api("PUT", "/settings/claude-login", { only_me: true, place: "machine" });
@@ -1777,6 +1779,43 @@ test("a login saved on this machine's folders is kept at the start of a server w
   assert.notEqual(view.state, "off", `kept, and the login again: ${JSON.stringify(view)}`);
   assert.equal(view.refused, undefined);
   assert.equal(view.folder, realpathSync(folder));
+});
+
+// A login kept while its folders are refused is still turned on: the view says so (`refused`, with why), not `off`, so
+// the console offers its Turn off. Turn off removes the setting as it does for a login in use, and the owner can then
+// turn on AgentRun's own login. API keys stay refused while it is kept, since a mended folder brings it back with no
+// turn-on: the turn-off is the way out, and a key is made after it.
+test("a login saved on folders its server's user may not use reads `refused` in the view, with why, not `off`; Turn off removes the setting, after which an API key is made and AgentRun's own login turns on", { skip: process.platform === "win32" ? "no uid" : process.geteuid() === 0 ? "root owns /" : false, timeout: 120_000 }, async (t) => {
+  const folder = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-config-dir-"));
+  t.after(() => rmSync(folder, { recursive: true, force: true }));
+  const first = await signInServer(t, "sign", {}, { CLAUDE_CONFIG_DIR: folder });
+  const on = await first.api("PUT", "/settings/claude-login", { only_me: true, place: "machine" });
+  assert.equal(on.status, 200, JSON.stringify(on.body));
+  await first.stop();
+
+  process.env.CLAUDE_CONFIG_DIR = "/";
+  const second = await serve(t, { faux: undefined, harnesses: false, runner: false, data: first.data });
+  const why = notOwnFolder(`uid ${process.geteuid()} (${userInfo().username})`, "CLAUDE_CONFIG_DIR", "/");
+  const kept = (await second.api("GET", "/settings/claude-login")).body;
+  assert.deepEqual([kept.state, kept.place, kept.command, kept.can_start], ["refused", "machine", "", false], `kept and refused, not off: ${JSON.stringify(kept)}`);
+  assert.match(kept.refused ?? "", why);
+  const key = await second.api("POST", "/settings/api-keys", { name: "an app" });
+  assert.equal(key.status, 403, `no API key while it is kept: ${JSON.stringify(key.body)}`);
+  assert.equal(key.body.error.message, LOGIN_REFUSES_API_KEYS);
+
+  const off = await second.api("DELETE", "/settings/claude-login");
+  assert.equal(off.status, 200, JSON.stringify(off.body));
+  assert.equal(off.body.state, "off", JSON.stringify(off.body));
+  assert.equal(off.body.refused, undefined, `AgentRun's own login is not refused here: ${JSON.stringify(off.body)}`);
+  assert.equal(await second.store.settings.get(CLAUDE_LOGIN_SETTING), undefined, "the turn-off removed the setting");
+  const made = await second.api("POST", "/settings/api-keys", { name: "an app" });
+  assert.equal(made.status, 201, `a key once it is off: ${JSON.stringify(made.body)}`);
+  assert.equal((await second.api("DELETE", `/settings/api-keys/${made.body.id}`)).status, 204);
+  const own = await second.api("PUT", "/settings/claude-login", { only_me: true, place: "agentrun" });
+  assert.equal(own.status, 200, JSON.stringify(own.body));
+  assert.equal(own.body.place, "agentrun");
+  assert.notEqual(own.body.state, "refused", JSON.stringify(own.body));
+  assert.equal(own.body.refused, undefined, JSON.stringify(own.body));
 });
 
 // A folder its group may write in (a home or a folder on a volume whose group is set for a pod, 2775, or one made under
