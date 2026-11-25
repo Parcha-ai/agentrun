@@ -735,6 +735,24 @@ test("a park never writes over a kept row pinned to another runner still there: 
   await gone.resumed.release();
 });
 
+test("a park never writes over a kept row marked ending, though the runner it names is gone: it keeps nothing, its own machine goes as at the run's end, and the row stays for that runner's next process or any janitor to end", async () => {
+  const key = keptKeyOf("run-1");
+  const one = await server(SANDBOX);
+  await (await one.claim(3, {}, { holder: RUNNER_A })).park("approval");
+  const atPark = await readKept(one.store.settings, "run-1");
+  const written = await one.store.settings.get(key);
+  // runner-a's container is on its own engine: runner-b's lists none of it, and runner-a is gone.
+  one.account.computers.delete("c1");
+  one.clock.now = T0 + 60_000;
+  const resumed = await one.claim(5, { hadComputer: async () => true }, { holder: RUNNER_B }, { live: async () => [] });
+  assert.deepEqual(resumed.replaced, { kind: "sandbox", folderKept: false, lost: true });
+  assert.equal(JSON.stringify(await one.store.settings.get(key)), JSON.stringify({ ...written, ending: true }), "runner-a's row back, marked ending");
+  assert.equal(await resumed.park("approval"), false, "runner-b's park keeps nothing over the ending row");
+  assert.equal(JSON.stringify(await one.store.settings.get(key)), JSON.stringify({ ...written, ending: true }), "the ending row stands: the only record of runner-a's machine");
+  assert.deepEqual(deletes(one.account), ["c2"], "runner-b's own sandbox went as at the run's end: nothing left with no row");
+  assert.equal(await endKept(one.store.settings, "run-1", atPark, async () => {}), true, "runner-a's next process ends it at its time");
+});
+
 // A claim that took a kept row pinned to another runner and could not reach its machine puts the row back marked ending
 // whatever its read of who is there says: that read can say gone for a runner still running (its word late), whose own
 // end at its time must still find its row.
