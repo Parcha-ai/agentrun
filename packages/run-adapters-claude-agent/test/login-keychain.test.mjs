@@ -106,11 +106,14 @@ function mac() {
   writeFileSync(join(home, 'Library', 'Keychains', 'login.keychain-db'), '{}');
   const path = `${bin}:/usr/bin:/bin`;
   const asked = join(bin, 'asked.jsonl');
+  const deleted = join(bin, 'deleted.jsonl');
   return {
     bin, cli: join(bin, 'claude'), home, path, terminal: { PATH: path, HOME: home, USER: ACCOUNT, LOGNAME: ACCOUNT },
     items: () => Object.keys(JSON.parse(readFileSync(join(home, 'Library', 'Keychains', 'login.keychain-db'), 'utf8'))).length,
-    /** Each `security` call so far, as [command, account]. */
+    /** Each `security` read and write so far, as [command, account]. */
     asked: () => (existsSync(asked) ? readFileSync(asked, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)) : []),
+    /** Each `security` delete so far, as [command, account]. */
+    deleted: () => (existsSync(deleted) ? readFileSync(deleted, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)) : []),
   };
 }
 
@@ -307,6 +310,30 @@ test("on macOS the sign-in this host starts saves its Keychain item under the ac
       }));
       assert.equal(plainStatus(m, claude.claudeSignInEnv(login)), true, `${where}: the person's own \`claude auth status\` in their terminal (USER ${ACCOUNT}) read signed out after the sign-in`);
       assert.deepEqual([...new Set(m.asked().map(([, account]) => account))], [KEYCHAIN_ACCOUNT], `${where}: every Keychain write and read named the account ${KEYCHAIN_ACCOUNT}`);
+    }
+  }
+});
+
+// The CLI's own sign-out (claudeLogout) names the user the sign-in named (loginUser), so it deletes the item under the
+// account the sign-in saved it under, whatever USER the server was started with: with the server's USER it would ask
+// for the account "unknown" (none set) or another user's, find nothing, and leave the login in the Keychain.
+test("on macOS the CLI's own sign-out deletes the Keychain item under the account the sign-in saved it under, whatever USER the server was started with: no item is left, and the status check reads signed out", { skip }, async () => {
+  for (const [place, at] of Object.entries(PLACES)) {
+    for (const [how, user] of Object.entries(SERVER_USER)) {
+      const m = mac();
+      const login = at(m);
+      const where = `${place}, the server's USER ${how}`;
+      await withServerUser(user, () => asServerOf(m, async () => {
+        await WAYS['the sign-in this host starts'](m, login);
+        assert.deepEqual(m.asked().filter(([command]) => command === 'add-generic-password'), [['add-generic-password', KEYCHAIN_ACCOUNT]], `${where}: the sign-in saved its item under the account ${KEYCHAIN_ACCOUNT}`);
+        // On a Mac the sign-in's own drop of an "unknown" item may come first; only the sign-out's deletes count here.
+        const before = m.deleted().length;
+        assert.equal(await claude.claudeLogout(m.cli, login, { path: m.path, platform: 'darwin' }), true, `${where}: the CLI confirmed its sign-out`);
+        assert.deepEqual(m.deleted().slice(before), [['delete-generic-password', KEYCHAIN_ACCOUNT]], `${where}: the sign-out deleted under the account ${KEYCHAIN_ACCOUNT}`);
+        assert.equal(m.items(), 0, `${where}: no Keychain item is left after the sign-out`);
+        assert.deepEqual(await status(m, login), { signedIn: false, method: 'none' }, `${where}: the status check after the sign-out`);
+      }));
+      assert.equal(plainStatus(m, claude.claudeSignInEnv(login)), false, `${where}: the person's own \`claude auth status\` in their terminal (USER ${ACCOUNT}) after the sign-out`);
     }
   }
 });
