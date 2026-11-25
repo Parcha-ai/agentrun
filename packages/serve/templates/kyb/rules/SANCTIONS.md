@@ -1,7 +1,8 @@
 # Sanctions screening
 
 You screen against the lists themselves: the list owner's file or the list owner's record of an entry, never a news
-article about a designation. Every URL below was checked on 2026-11-08.
+article about a designation. Every URL below was checked on 2026-11-08, and the type each
+list's file is sent as (which sets where web_save may save it) on 2026-11-25.
 
 ## The lists
 
@@ -36,7 +37,8 @@ You will meet these when rows of a list are in the message, or when you read a r
   `Type of entity`, `Parent company`, `Business registration number (s)`, ...
 - **UN XML**: `INDIVIDUAL` and `ENTITY` elements with `REFERENCE_NUMBER`, `UN_LIST_TYPE`, `LISTED_ON`, a person's
   `FIRST_NAME` to `FOURTH_NAME` (an entity's name is its `FIRST_NAME`), `COMMENTS1`, aliases (`INDIVIDUAL_ALIAS`,
-  `ENTITY_ALIAS`) each with a `QUALITY` (`Good`, `Low`), dates and places of birth, nationality, documents, addresses.
+  `ENTITY_ALIAS`) each with a `QUALITY` (`Good` or `Low` for a person's, `a.k.a.` or `f.k.a.` for an entity's; some
+  are empty), dates and places of birth, nationality, documents, addresses.
 
 ## How you screen, in order
 
@@ -45,12 +47,45 @@ Use the first method that reaches a list; record it as `method`.
 1. **`list_rows_in_input`.** The message carries rows of a list (the day's cached extract, a compliance team's export).
    Match against them with the rules below and cite them as an `input:` source with the file and date the message
    gives. They cover only what they hold: when the message says the rows are the list's candidates for the names you
-   screen, a name with no matching row is `no_hit`; otherwise, also run method 3 for that list.
+   screen, a name with no matching row is `no_hit`; otherwise, also run method 3 (method 4 with no shell) for that list.
 2. **`screening_tool`.** You have a tool that screens names against the lists (an MCP server's or a paid data
    endpoint's): use it, and record the list versions it reports. Its answer still goes through the match rules: a tool's
    score is a lead, the identifiers decide.
-3. **`index_then_source_record`.** You can't read a whole list here (the largest is 50 MB, and a page you read is paid
-   for on every later turn), so find candidates in an index and confirm each one at the list owner's record:
+3. **`full_list_grep`.** You have `bash` and `web_save`: save the list owner's own file once and search all of it with
+   `grep`, reading only the rows that match. A whole list never goes into your context: the largest is 50 MB, and
+   what you read is paid for on every later turn.
+   - **Save** each file once per run, at these paths (web_save never overwrites; the type each owner sends decides the
+     extension, and any other extension is refused):
+
+     | List | URL | Save as |
+     |---|---|---|
+     | `OFAC SDN` | `.../exports/SDN.CSV` and `.../exports/ALT.CSV` | `lists/ofac-sdn.csv`, `lists/ofac-alt.csv` |
+     | `OFAC Consolidated (non-SDN)` | `.../exports/CONS_PRIM.CSV` and `.../exports/CONS_ALT.CSV` | `lists/ofac-cons.csv`, `lists/ofac-cons-alt.csv` |
+     | `UN Security Council Consolidated` | the consolidated XML | `lists/un.txt` (XML saves as plain text only) |
+     | `EU Consolidated Financial Sanctions` | the CSV 1.1 | `lists/eu.txt` (the EU sends it as `text/plain`) |
+     | `UK Sanctions List` | `UK-Sanctions-List.csv` | `lists/uk.csv` |
+
+     A save that fails or is refused leaves that list to the next method; say why in `limitations`.
+   - **Version**, from the file you saved: UK `sed -n '1,1p' lists/uk.csv` (`Report Date: ...`); UN
+     `grep -m 1 -o 'dateGenerated="[^"]*"' lists/un.txt`; EU `sed -n '2,2p' lists/eu.txt | cut -c1-10` (the
+     `fileGenerationDate`); OFAC the date in the final URL web_save answers (`.../2026-11-05/...`). Record it as the
+     list's `version`, and cite the file's URL as the list's `source`.
+   - **Search** each subject's most distinctive word of 4 or more letters (never a legal form or a generic word such as
+     Group, Holding, Trading, International), with an `-e` for each written form the match rules allow: the word with
+     its accents and in plain ASCII, each transliteration you would accept. Always cap what comes back:
+     `grep -n -i -F -e 'WORD' -e 'FORM' lists/uk.csv | cut -c1-500 | head -n 20`. When 20 lines come back, the word is
+     too common: narrow it with a second word, `grep -i -F -e 'WORD' lists/uk.csv | grep -i -F -e 'SECOND' | cut -c1-500 | head -n 20`.
+     A pattern holds no `'` and starts with none of `/`, `~` or `..` (the shell refuses those).
+   - **Read the candidate's record** in the same file: OFAC `grep -n -F -e '<ent_num>,' lists/ofac-alt.csv` (its
+     aliases), the SDN row holds the remarks; UK every row with its `Unique ID`; EU every row with its
+     `Entity_LogicalId` (`grep -n -F -e ';<id>;' lists/eu.txt | cut -c1-500 | head -n 20`); UN the lines of its
+     `INDIVIDUAL` or `ENTITY` element, `sed -n 'N,Mp' lists/un.txt` from the match's line number, at most 80 lines.
+     The row is the list owner's own record: cite the file as the source, and the entry's own id.
+   - **No candidate** in the whole file under the match rules: `no_hit`, with the words and forms you searched in
+     `note`. This read the whole list, so it needs no line in `limitations` about an index missing an entry.
+4. **`index_then_source_record`.** With no shell you can't read a whole list here (the largest is 50 MB, and a page you
+   read is paid for on every later turn), so find candidates in an index and confirm each one at the list owner's
+   record:
    - **Index:** the list owners themselves, never a third-party aggregator except OpenSanctions when the agent's
      settings turn it on (below); an owner may also add a screening tool (method 2). Run one `web_search` per subject for the name with "sanctions" or "designated", limited to the owners' sites
      (`site:ofac.treasury.gov`, `site:home.treasury.gov`, `site:sanctionssearch.ofac.treas.gov`, `site:gov.uk`,
@@ -63,15 +98,15 @@ Use the first method that reaches a list; record it as `method`.
      is `index_only` and the result says so.
    - **No candidate** under the match rules in the owners' sites: `no_hit`, citing each search as a source with
      `found: false`, and one line in `limitations`: a search of the owners' sites is not a read of the list itself, so
-     a recent or a transliterated entry can be missed; rows of the list in the input (method 1) or a screening tool
-     (method 2) close that gap.
-4. **`full_list_read`.** Only for a file small enough to read whole in a few parts, and only when nothing above
+     a recent or a transliterated entry can be missed; rows of the list in the input (method 1), a screening tool
+     (method 2) or the list's own file (method 3) close that gap.
+5. **`full_list_read`.** Only for a file small enough to read whole in a few parts, and only when nothing above
    reached that list. In practice that is OFAC's `CONS_PRIM.CSV` (about 270 KB, around 70,000 tokens): read it only for
    a subject the index could not settle.
-5. **`not_checked`.** Nothing above reached the list. Say why. Never write `no_hit` for a list you did not reach.
+6. **`not_checked`.** Nothing above reached the list. Say why. Never write `no_hit` for a list you did not reach.
 
 **Optional: OpenSanctions, only when the agent's settings say `OpenSanctions index: true`.** OpenSanctions indexes
-all five lists (and others) in one search, each entry with the list owner's own id. When it is on, in method 3 also
+all five lists (and others) in one search, each entry with the list owner's own id. When it is on, in method 3 or 4 also
 fetch `https://www.opensanctions.org/search/?q=<name>` once per subject, and an entity page
 (`https://www.opensanctions.org/entities/<id>/`) for each candidate. It is an index, never the evidence: a candidate
 still needs the list owner's own id and record (`index_then_source_record`), or it is `index_only` and says so. Cite
@@ -79,7 +114,8 @@ each OpenSanctions page as a source of kind `aggregator`, and add one line to `l
 used under CC BY-NC 4.0 (non-commercial use; commercial use needs a paid OpenSanctions licence)." When the setting is
 false, never fetch or search opensanctions.org, even if a page or the message links to it.
 
-Never fetch the same file or record twice in a run: a page fetched once stays readable in parts.
+Never fetch or save the same file or record twice in a run: a page fetched once stays readable in parts, and a file
+saved once stays in `lists/` for every later grep.
 
 ## Names to screen
 
@@ -99,7 +135,7 @@ Holding, Group, International, Trading, Bank: they are compared, but they don't 
 **Match types:**
 - `exact`: the normalised name equals the entry's normalised primary name.
 - `alias`: it equals one of the entry's strong aliases (OFAC `ALT.CSV` aka, fka, nka; a UK alias that is not `Low
-  quality`; a UN alias of `Good` quality; an EU alias). A weak alias (OFAC's single-quoted `a.k.a.` in the remarks, a UK
+  quality`; a UN alias of any quality but `Low`; an EU alias). A weak alias (OFAC's single-quoted `a.k.a.` in the remarks, a UK
   `Low quality` alias, a UN `Low` alias) never makes a hit on the name alone: it needs an identifier that agrees.
 - `fuzzy`: the names differ only by word order, transliteration (Mohammed, Muhammad, Mohamed; Aleksandr, Alexander;
   Zhang Wei, Wei Zhang), one or two characters in a long name, a missing or extra non-distinctive word (Group, Holding,
