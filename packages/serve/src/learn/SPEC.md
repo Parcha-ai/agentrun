@@ -227,13 +227,17 @@ served run's own spend). While the shadow is queued or running the served run's 
 (`learn/ledger.ts` shadowCostOf): its `cost.learning_usd`, `cost.all_in_usd` and learning cost read null until
 the shadow ends. Each claim of a run that learns first settles the open audits (started lines with no row yet), reading
 each one's two runs by id, never a window of newest runs: once both ended it writes the row `{run, shadow_run, workflow,
-digest, promoted_at, source: "shadow", agreed, served_cost, shadow_cost, turn, at}`, `agreed` by compareAnswers of the
-shadow's answer and the served run's answer row `turn`, compared as its check compares (its revision's
-`learning.agree_on`; else the grader's verdict, which the shadow asked at its own end on its own cap, so its request is
-the served run's learning cost, kept in its metrics as `audit.compared`; else whole), read from the run by that id (null when either answer is
-missing or a run is gone, never counted): a follow-up's answer since is never the one compared, for the verdict or a
-hold's disagreement. An owner's grade of a run the workflow answered alone is a row too (`source: "grade"`, `agreed` the
-grade, `turn` the answer graded). `promoted_at` names the promotion the line counts for: the `at` of the
+digest, promoted_at, source: "shadow", agreed, served_cost, shadow_cost, turn, at}`, `agreed` by judging the served
+run's answer row `turn` against the shadow's answer as its check judges a draft against the agent's
+(`runner/promotion.ts` answerJudged: its revision's `learning.agree_on`; else the grader's verdict, which the shadow
+asked at its own end on its own cap, so its request is the served run's learning cost, kept in its metrics as
+`audit.compared`; else whole), read from the run by that id (null when either answer is missing or a run is gone, never
+counted): a follow-up's answer since is never the one compared, for the verdict or a hold's disagreement. An owner's
+grade of a run the workflow answered alone is a row too (`source: "grade"`, `turn` the answer graded): `agreed` the
+grade's `correct`, or where it gave an `expected` answer, that answer judged against it as the check judges a draft
+against a grade's known answer (null for a grade that contradicts itself). The check and the audit read one ground
+truth: a served run with a grade's row is counted by that row alone, never by its shadow's (the agent's answer again,
+which the grade may have corrected). `promoted_at` names the promotion the line counts for: the `at` of the
 promote record that began the digest's newest run of promote records (`learn/promote.ts` promotionStartOf) when the
 shadow started or the grade was given. The host alone appends to the ledger, one commit a write with a `host:` subject
 and no trailer (no change a person or a run made), and keeps its newest 2,000 rows with their started lines and every
@@ -243,11 +247,12 @@ after its rows were committed is made at the next claim. The hold rule (`applyHo
 `learning.hold_window` (10) rows with a verdict of the serving revision's current promotion (so a revision its owner's
 replay promotes again after a hold starts on none): `learning.hold_disagree` (3) disagreements or more hold it (a hold
 record carrying `audit`, keeping the bar, the rows read and each disagreement's served run, shadow run, input, the
-agent's answer and the workflow's, each text cut of the host's secrets whole before it is shortened to 1,200 characters,
-`learn/secrets.ts` excerptShown, as a check's are). The agent takes the runs, and its next run it fits asks one recompile with those
-disagreements as data; S3a's check decides it on its usual inputs plus the disagreeing ones. A second audit hold within
-`learning.stop_window` (100) served runs of the first stops it instead (`audit.stopped`, reason "stopped: the workflow
-disagreed with the agent twice"): no compile is asked. The graded hold is gone: a grade is one more row. The money rule
+agent's answer and the workflow's, and a grade's right answer (`expected`) where it gave one, each text cut of the host's
+secrets whole before it is shortened to 1,200 characters, `learn/secrets.ts` excerptShown, as a check's are). The agent
+takes the runs, and its next run it fits asks one recompile with those disagreements as data, asking for the known
+answer (a grade's where one was given, else the agent's); S3a's check decides it on its usual inputs plus the
+disagreeing shadows' ones. A second audit hold within `learning.stop_window` (100) served runs of the first stops it
+instead (`audit.stopped`, reason "stopped: the workflow disagreed with the known answer twice"): no compile is asked. The graded hold is gone: a grade is one more row. The money rule
 still stops a workflow that costs more than the agent by hand.
 
 ## The caps

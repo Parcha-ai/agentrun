@@ -1884,6 +1884,7 @@ export type ListLearningPromotionsResponse = {
         agent: string | null;
         draft: string | null;
         graded?: true;
+        expected?: string;
       }>;
       stopped?: true;
     };

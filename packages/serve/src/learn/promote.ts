@@ -113,8 +113,9 @@ export interface PromotionRecord {
 
 /** One audit row a hold was decided on that disagreed: the served run (`served`) and its input, the run whose answer is
  *  the agent's (`run`: the shadow run, else the served run for a grade), the agent's answer (`agent`: the shadow's, null
- *  for a grade, which says only that the served answer was wrong) and the served answer (`draft`); `graded`, a row an
- *  owner's grade wrote. Each text cut to CHECK_TEXT_MAX: what the one recompile reads as data. */
+ *  for a grade) and the served answer (`draft`); `graded`, a row an owner's grade wrote, with the right answer it gave
+ *  (`expected`, its JSON: the known answer the served one missed; absent where it gave none). Each text cut to
+ *  CHECK_TEXT_MAX: what the one recompile reads as data. */
 export interface AuditDisagreement {
   readonly run: string;
   readonly served: string;
@@ -122,6 +123,7 @@ export interface AuditDisagreement {
   readonly agent: string | null;
   readonly draft: string | null;
   readonly graded?: true;
+  readonly expected?: string;
 }
 
 /** An audit hold (runner/audit.ts): the definition's `hold_window` and `hold_disagree` it was decided at, how many rows
@@ -353,8 +355,8 @@ const blankCheck = (one: CheckDisagreement): CheckDisagreement => ({
   ...(one.expected ? { expected: one.expected.map(({ field, known, value }) => ({ field, known, ...(value !== undefined ? { value: "" } : {}) })) } : {}),
 });
 
-/** An audit's disagreement blanked the same way: its run ids and whether a grade wrote it kept. */
-const blankAudit = (one: AuditDisagreement): AuditDisagreement => ({ run: one.run, served: one.served, input: "", agent: null, draft: null, ...(one.graded ? { graded: true as const } : {}) });
+/** An audit's disagreement blanked the same way: its run ids and whether a grade wrote it kept, its known answer empty. */
+const blankAudit = (one: AuditDisagreement): AuditDisagreement => ({ run: one.run, served: one.served, input: "", agent: null, draft: null, ...(one.graded ? { graded: true as const } : {}), ...(one.expected !== undefined ? { expected: "" } : {}) });
 
 /** `record` with what it copied from run `runId` blanked: each disagreement naming it (a check's agent run, a connected
  *  agent's collected turn too; an audit's served run or shadow run), and the grader's words its reason quotes from one

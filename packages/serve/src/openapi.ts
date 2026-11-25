@@ -1973,7 +1973,10 @@ const PROMOTION = closedWith({
       input: { type: "string", description: "The served run's input, as text or JSON, cut at 1200 characters." },
       agent: { ...NULL_STRING, description: "The agent's answer (the shadow run's), cut at 1200 characters; null for a grade's row." },
       draft: { ...NULL_STRING, description: "The served answer, cut at 1200 characters; null when it could not be read." },
-    }, { graded: { const: true, description: "An owner's grade wrote this row: the served answer was graded wrong." } }), description: "Its disagreeing rows: the data its one recompile reads." },
+    }, {
+      graded: { const: true, description: "An owner's grade wrote this row: the served answer was graded wrong, or missed the right answer the grade gave." },
+      expected: { type: "string", description: "The right answer the grade gave (its `expected`, as JSON), cut at 1200 characters: the known answer the served one missed. Absent for a shadow's row and a grade that gave none; empty once its run was purged." },
+    }), description: "Its disagreeing rows: the data its one recompile reads." },
   }, { stopped: { const: true, description: "A second audit hold within the definition's `learning.stop_window` served runs of the first: it stopped, no compile is asked, nothing serves again until a new revision lands." } }),
 });
 const AUDIT_LINE = closed({

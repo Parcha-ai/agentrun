@@ -61,7 +61,7 @@ import { listed } from "../learning-words.js";
 import { isObject, type Json } from "../validate.js";
 import { agentRun, lastOwnRuns, newCompileAttempt, sinceReset } from "../learn/compile.js";
 import { answerAt, answerValue, type CheckBar, type CheckDisagreement, type CheckKnown, type CheckRecord, type CheckTurns, checkShares, CHECK_TEXT_MAX, championOf, compareAnswers, type Compared, comparedGrade, comparedOf, gradesOf, knownAnswerText, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, type Refused, type ReplayLaunch, type ReplayOutcomes, type ReplayScore, replayingOf, sameAnswer, type SkippedTool, skippedToolsOf, valueAtPath } from "../learn/promote.js";
-import { check as checkFields, type CheckInput, type CheckTally, type FieldAnswers } from "../learn/field-check.js";
+import { check as checkFields, type CheckInput, type CheckTally, type FieldAnswers, KNOWN, tallyOf } from "../learn/field-check.js";
 import { refusedIn } from "../purged-workflow.js";
 import { sendCommand } from "./commands.js";
 import { ClaimRefused } from "./loop-contract.js";
@@ -529,6 +529,18 @@ function checkInputOf(row: CheckRow, on: readonly string[] | undefined, compared
   const graded = contradicts ? { no_known: true as const } : row.expected ? { grade: row.expected, ...(row.correct !== undefined ? { agent_correct: row.correct } : {}) } : row.correct === false ? { agent_correct: false } : {};
   // The answers as sameAnswer reads them, so a draft that says the agent's answer in another dress repeats it.
   return { input_id: row.of, outcome, fields: { [WHOLE_ANSWER]: { workflow: answerValue(row.answer), agent: answerValue(row.agent), agrees: compared.same, ...graded } } };
+}
+
+/** One answer judged as the check judges an input it answered alone (checkInputOf, learn/field-check.ts): `answer`
+ *  against its known answer, a grade's expected answer (`expected`, written over `agent`'s, whose rightness `correct`
+ *  says) where one exists, else `agent`'s. True: right on every field. False: wrong on one. Null: a field had no known
+ *  answer and none was wrong (a grade that contradicts itself). The audit's one verdict (runner/audit.ts). */
+export function answerJudged(row: Pick<CheckRow, "agent" | "answer" | "compared" | "expected" | "correct">, on: readonly string[] | undefined): boolean | null {
+  const one: CheckRow = { of: "", input: "", outcome: "answered", ...row };
+  const compared = on?.length ? { same: false } : compareAnswers(one.answer, one.expected ? knownAnswerText(one.agent, one.expected) : one.agent, undefined, one.compared);
+  const { agreed, fields } = tallyOf([checkInputOf(one, on, compared)]);
+  if (agreed) return true;
+  return Object.values(fields).some((by) => KNOWN.some((known) => (by[known]?.workflow_right ?? 0) < (by[known]?.n ?? 0))) ? false : null;
 }
 
 /** Decides `ahead`, the check at work for a revision older than the laid (newest) one, as a claim laying it would

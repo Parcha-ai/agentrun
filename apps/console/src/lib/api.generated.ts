@@ -4952,6 +4952,7 @@ export interface operations {
             agent: string | null;
             draft: string | null;
             graded?: true;
+            expected?: string;
           }[];
           stopped?: true;
         };

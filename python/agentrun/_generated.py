@@ -2936,6 +2936,7 @@ class _ListLearningPromotionsResponsePromotionsItemAuditDisagreementsItemRequire
 
 class ListLearningPromotionsResponsePromotionsItemAuditDisagreementsItem(_ListLearningPromotionsResponsePromotionsItemAuditDisagreementsItemRequired, total=False):
     graded: Literal[True]
+    expected: str
 
 
 class ListLearningPromotionsResponseServingItem(TypedDict):

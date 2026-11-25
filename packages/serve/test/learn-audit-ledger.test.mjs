@@ -292,7 +292,7 @@ test("(d, e) 3 disagreements in the last 10 rows hold the workflow and ask exact
   assert.equal(w.asks.get("run-11").length, 1, "exactly one recompile");
   const [ask] = w.asks.get("run-11");
   assert.ok(ask.startsWith("One more turn: revise your learned workflow `answer`"), ask.slice(0, 200));
-  assert.match(ask, /disagreed with your own answer on 3 of its last 10 audited runs/);
+  assert.match(ask, /disagreed with the known answer \(a grade's where a person gave one, else yours\) on 3 of its last 10 audited runs/);
   const fence = fenceOf(ask);
   assert.ok(fence, ask.slice(0, 3000));
   for (const question of wrong) assert.ok(fence.includes(`${question}?`), question);
@@ -318,7 +318,7 @@ test("(d, e) 3 disagreements in the last 10 rows hold the workflow and ask exact
   const after = await w.start("run-40", "Question 40");
   assert.equal(after.metrics?.path, "agent", JSON.stringify(after.metrics));
   const stopped = (await promotionsOf(w.server.settings, "agent-1")).at(-1);
-  assert.deepEqual([stopped.digest, stopped.decided, stopped.audit.stopped, stopped.reason], [DIGEST_2, "hold", true, "stopped: the workflow disagreed with the agent twice"], JSON.stringify(stopped));
+  assert.deepEqual([stopped.digest, stopped.decided, stopped.audit.stopped, stopped.reason], [DIGEST_2, "hold", true, "stopped: the workflow disagreed with the known answer twice"], JSON.stringify(stopped));
   assert.deepEqual(w.asks.get("run-40"), [], "no compile: it stopped");
   const later = await w.start("run-41", "Question 41");
   assert.equal(later.metrics?.path, "agent");
