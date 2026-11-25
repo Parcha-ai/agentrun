@@ -279,6 +279,29 @@ test("tool_used's at_most passes on at least one and at most that many matching 
   });
 });
 
+test("tool_used's args_file is read from a grader's front matter: a path in the run's work folder, never beside expect: not_called, at_least or at_most", async (t) => {
+  const dir = await webPackage(t, "graded", "unavailable", [["web_search", { query: "x" }]]);
+  const grader = (name, front) => writeFileSync(join(dir, "evals", "graded", "graders", name), `---\ntype: tool_used\ntool: web_search\n${front}\n---\n`);
+  grader("listed.md", "args_file: media/searches.json");
+  grader("counted.md", "args_file: media/searches.json\ncount: 2\nargs: {query: x}");
+  const read = readCases(dir, ["graded"]).cases[0].graders;
+  assert.deepEqual(read.find((g) => g.file === "listed.md"), { file: "listed.md", type: "tool_used", tools: ["web_search"], expect: "called", argsFile: "media/searches.json" });
+  assert.deepEqual(read.find((g) => g.file === "counted.md"), { file: "counted.md", type: "tool_used", tools: ["web_search"], expect: "called", count: 2, args: { query: "x" }, argsFile: "media/searches.json" });
+  grader("none.md", "expect: not_called\nargs_file: media/searches.json");
+  grader("bounded.md", "at_least: 2\nargs_file: media/searches.json");
+  grader("outside.md", "args_file: ../secrets.json");
+  grader("absolute.md", "args_file: /etc/hosts");
+  assert.throws(() => readCases(dir, ["graded"]), (e) => {
+    for (const said of [
+      /graders\/none\.md: args_file lists the calls the run sends, and expect not_called says it sends none/,
+      /graders\/bounded\.md: args_file's calls number its list's length \(or count\): at_least and at_most don't apply/,
+      /graders\/outside\.md: args_file names a path in the run's work folder/,
+      /graders\/absolute\.md: args_file names a path in the run's work folder/,
+    ]) assert.match(e.message, said);
+    return true;
+  });
+});
+
 /** A copy of the fixture package whose agent is also granted `grants` (monid endpoints), with one case `monid` whose
  *  agent calls monid's /person/enrich by its wire name and whose graders are `graders` ({file: front matter}). */
 async function monidPackage(t, grants, graders) {
