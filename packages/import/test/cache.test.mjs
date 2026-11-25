@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { appendFile, utimes } from "node:fs/promises";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { analyzeCache, CACHE_CAUSES, cacheTotals, catalogOf, READERS, readSession } from "../dist/index.js";
+import { analyzeCache, CACHE_CAUSES, CACHE_SOURCES, cacheHome, cacheTotals, catalogOf, READERS, readSession } from "../dist/index.js";
 import { anthropicUsage, at, claudeAnswer, jsonl, claudeFile, claudeUser, codexAnswer, codexFile, codexMeta, codexUser, openaiUsage, piFile, piMeta, SESSION, subagentFile, tempHome, writeJsonl } from "./fixtures.mjs";
 
 const PROMPT = "Fixture words the analyzer must never hand back.";
@@ -275,6 +275,18 @@ test("--cache and --known-answer are one output each: both, or neither, is a usa
   const empty = run(home, "--cache");
   assert.equal(empty.status, 0, empty.stderr);
   assert.deepEqual(JSON.parse(empty.stdout), { totals: { sessions: 0, breaks: { model: 0, idle: 0, compaction: 0, edited: 0, sidechain: 0, unknown: 0 }, extraCost: { model: 0, idle: 0, compaction: 0, edited: 0, sidechain: 0, unknown: 0 }, unpriced: 0 } });
+});
+
+test("the analyzer reads the sources that write a chain, and refuses another before reading a file", async (t) => {
+  const home = await tempHome(t);
+  assert.deepEqual(CACHE_SOURCES, ["claude-code", "codex", "pi"]);
+  // OpenCode's claude-agent requests mirror a Claude Code session's: analyzed, their breaks would count twice.
+  await assert.rejects(cacheHome(home, { sources: ["claude-code", "opencode"], catalog: false }), (error) => error instanceof RangeError && /not opencode$/.test(error.message));
+  const cli = run(home, "--cache", "--sources", "opencode");
+  assert.equal(cli.status, 2);
+  assert.match(cli.stderr, /^unknown source: opencode\n/);
+  // With no --sources, --cache reads CACHE_SOURCES alone: a refused source would exit 2.
+  assert.equal(run(home, "--cache").status, 0);
 });
 
 test("a cursor read with a chain goes on with it; one read without is no place to go on from", async (t) => {

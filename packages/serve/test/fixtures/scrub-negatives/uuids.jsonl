@@ -1,0 +1,48 @@
+{"id":"v4-bare-0","text":"05aac7bd-1b80-455d-864c-650cdb8c3a58"}
+{"id":"v4-bare-1","text":"83c44369-8acb-4d93-b30c-a9473ead1b34"}
+{"id":"v4-bare-2","text":"48aaa57a-9c06-4989-8567-964a716bf2be"}
+{"id":"v4-bare-3","text":"e7cc7d44-ee61-4629-9d71-08a852a3438c"}
+{"id":"v7-bare-0","text":"01960776-cda3-7868-b3f6-dada2b834f51"}
+{"id":"v7-bare-1","text":"01949504-527b-71dc-b4fb-cf7ac7f7e040"}
+{"id":"v7-bare-2","text":"01961999-fd16-79f1-9f2b-8209e216234c"}
+{"id":"v7-bare-3","text":"019aa7d6-2289-72e3-ae40-c25ade02df04"}
+{"id":"upper-0","text":"801C06A6-9FE4-4B70-84F8-05589AE93646"}
+{"id":"upper-1","text":"40B909EF-4F56-4318-8690-283063BE1E65"}
+{"id":"upper-2","text":"C98AB430-13A1-424C-A71A-3B5A699658C7"}
+{"id":"braced-0","text":"{ECFF9528-88C6-42F7-A626-BB0B0DE84C93}"}
+{"id":"braced-1","text":"{4AE1C1D8-E54E-425D-94AF-144E83AF7D83}"}
+{"id":"no-dashes-0","text":"5f27be963e884fc395277ed8665e960f"}
+{"id":"no-dashes-1","text":"a255cae54a4441e3a3503988668d8218"}
+{"id":"urn-0","text":"urn:uuid:d229c455-5567-4ddd-b1e1-2601c27eff3e"}
+{"id":"urn-1","text":"urn:uuid:a8b7912f-de5c-408e-8d26-b3d811f80cb6"}
+{"id":"url-0","text":"http://localhost:4318/v2/agents/80c5b7a5-bbff-47d5-a6b5-bedf6a770c5d/runs/0195c12b-9b09-7bac-a777-359a049f62de?view=timeline"}
+{"id":"url-1","text":"https://console.example.com/share/0194e8c0-9769-7c74-bd4a-1b9ef2464e57#step-36"}
+{"id":"url-2","text":"http://localhost:4318/v2/agents/eae3022e-5834-4cb2-b70a-6c0b300f5f21/runs/0198c6df-3c21-7e2e-aa87-b6508271a618?view=timeline"}
+{"id":"url-3","text":"https://console.example.com/share/0195b9b4-a06f-772d-8808-453b961fd097#step-8"}
+{"id":"url-4","text":"http://localhost:4318/v2/agents/29633a95-3fc6-4319-83cc-004720874fe0/runs/0199bb20-feae-7f65-ab30-97c18ad1d865?view=timeline"}
+{"id":"json-0","text":"{\"id\":\"01955046-164c-715e-9e6d-ce52466cd4ee\",\"runId\":\"019823a2-53fe-79c8-8d24-2eb5d2e25d1c\",\"agent_id\":\"f471578b-cca2-4e06-bb23-d3e0352fed0c\",\"parentUuid\":\"7ddac07d-a11c-4182-b180-7f52fd99c047\",\"requestId\":\"0e783228-e94d-4e20-9420-4d1547af09f8\",\"type\":\"assistant\"}"}
+{"id":"json-1","text":"{\"id\":\"019b1327-ba89-7e82-80b3-8bb738a0f1ea\",\"runId\":\"01986c1e-7fec-742b-8c54-afc307ac68ba\",\"agent_id\":\"529a7630-9e9e-437c-b715-07f872f29e1e\",\"parentUuid\":\"b06eb69b-a5fd-4a70-a4fe-2221534cad73\",\"requestId\":\"481221e1-65a9-4fad-b209-558d30715710\",\"type\":\"assistant\"}"}
+{"id":"json-2","text":"{\"id\":\"0199041b-6d99-7b30-84c2-89e4a1901ac4\",\"runId\":\"019922fd-0ba3-7768-8d81-baf9b0fb59b9\",\"agent_id\":\"315f882b-f2c6-4e1d-b8ba-fa27a0971bc1\",\"parentUuid\":\"59fc8973-596a-4f7e-8693-e2467181f708\",\"requestId\":\"b92b6b15-fcf5-4f5c-9083-08bb18090ba0\",\"type\":\"assistant\"}"}
+{"id":"json-3","text":"{\"id\":\"019665fb-5c07-716c-8c36-e8db8027b2db\",\"runId\":\"019aaef5-3653-7ca7-8a37-e7b544eee887\",\"agent_id\":\"9b98f29c-9ed7-4add-bf70-30447ba689fe\",\"parentUuid\":\"e748ea0d-905e-4a19-a015-8891be864219\",\"requestId\":\"352fa899-b3f2-4bad-a8ce-e46f5740bc6b\",\"type\":\"assistant\"}"}
+{"id":"json-4","text":"{\"id\":\"01988975-369d-7ecb-b29b-3f230d2e10ee\",\"runId\":\"01992e70-19d2-71de-93dc-335653790cde\",\"agent_id\":\"1114f155-5849-42ce-bddd-759281d7fb74\",\"parentUuid\":\"09277729-0b55-4cc5-bf16-6b8deb89241e\",\"requestId\":\"51be407c-3ccb-4626-ad3f-2c4f79affbbd\",\"type\":\"assistant\"}"}
+{"id":"header-0","text":"X-Request-Id: 091b72d1-e48c-4c58-aea4-9224c114c6ad\ntraceparent: 00-fa07e8b7b56bfa166da2bc7708495511-291dbcad75ad04df-01\nx-amzn-RequestId: c559dae7-9b43-40e4-b122-99265eb27c94"}
+{"id":"header-1","text":"X-Request-Id: d9ca775c-6afa-4bf7-9bff-11c014dada2d\ntraceparent: 00-d313408b191cf63c60eec2ea352486df-11193cda37e1d299-01\nx-amzn-RequestId: 5026839c-70d5-438d-a124-298292009dae"}
+{"id":"header-2","text":"X-Request-Id: 6d30dd3d-c84d-42e9-98cf-a416a8f29619\ntraceparent: 00-eb4f8504bbfad9abc833ce8fd68c5246-c199fc0985b28276-01\nx-amzn-RequestId: bd903a8d-99bc-4111-b2b6-54e3efd3c22b"}
+{"id":"log-line-0","text":"2026-11-23T14:02:16.510Z INFO run 01982821-4031-7bbd-bdcb-6a8900b9c063 step 2 finished in 8158ms (session 9efc6dee-572d-41ef-8247-689a573f0783)"}
+{"id":"log-line-1","text":"2026-11-23T14:02:33.313Z INFO run 01963d5f-bb54-78ff-b445-ff7910734584 step 2 finished in 2669ms (session 893e4754-1446-4ba1-87e1-08350d21724c)"}
+{"id":"log-line-2","text":"2026-11-23T14:02:53.109Z INFO run 01943fbc-9c31-7360-868d-8aa24b9c21fb step 15 finished in 4341ms (session 9f1a35a5-e315-4ec5-9a48-fdb868aaff68)"}
+{"id":"sql-0","text":"SELECT * FROM runs WHERE id = '01982db3-ecb3-7d85-986e-12e3d30055c2' AND agent_id = '93de53e6-c526-4c97-bc08-6aa34feb5700';"}
+{"id":"sql-1","text":"SELECT * FROM runs WHERE id = '0199ff9e-9bcf-7f38-81e8-62eeb3f00cf3' AND agent_id = 'c8aaf4c5-9f44-44b3-af02-8b9dc9f1b6f7';"}
+{"id":"nil-max-0","text":"00000000-0000-0000-0000-000000000000"}
+{"id":"nil-max-1","text":"ffffffff-ffff-ffff-ffff-ffffffffffff"}
+{"id":"k8s-0","text":"  uid: 49879206-c382-4a3e-bfbe-e5c5206601c6\n  resourceVersion: \"97003\"\n  creationTimestamp: \"2026-11-23T14:02:11Z\""}
+{"id":"k8s-1","text":"  uid: ae81247a-360a-4f7b-a8da-a572557166c7\n  resourceVersion: \"86116\"\n  creationTimestamp: \"2026-11-23T14:02:11Z\""}
+{"id":"env-like-0","text":"RUN_ID=0198b20d-b45d-76ba-b43c-463a194b9d19\nTRACE_ID=60043ea9420b454a0de9b6ff91fc6e65\nSPAN_ID=f9948993f67f5ead"}
+{"id":"env-like-1","text":"RUN_ID=0197dda7-7d6e-7c97-aacc-0c49c9f0790f\nTRACE_ID=7408cb94babb570c50ef4298906789f3\nSPAN_ID=9c79e0f8e1c208f6"}
+{"id":"v5-0","text":"uuid5(NAMESPACE_URL, \"https://example.com/0\") -> 85e2f80c-bd30-5e58-8fce-6c939df44309"}
+{"id":"v5-1","text":"uuid5(NAMESPACE_URL, \"https://example.com/1\") -> 7c29938c-1975-56f8-9cd4-80ca0ee6f17c"}
+{"id":"span-ids-0","text":"{\"traceId\":\"c40c91cc55cf0a1525bc263a941ade14\",\"spanId\":\"71c81ff5ae632cb0\",\"parentSpanId\":\"e7b29f5db5fb9ff9\",\"name\":\"POST /v2/runs\",\"durationMs\":179}"}
+{"id":"span-ids-1","text":"{\"traceId\":\"a45e0dfb9e75d00fcc9dc949e2d137bb\",\"spanId\":\"1aec8280c90446a2\",\"parentSpanId\":\"40a21e312580ad81\",\"name\":\"POST /v2/runs\",\"durationMs\":381}"}
+{"id":"span-ids-2","text":"{\"traceId\":\"315737aa63dcded06407c08b8b570fa1\",\"spanId\":\"cea0376bcb261ae7\",\"parentSpanId\":\"b45ffcb20070b156\",\"name\":\"POST /v2/runs\",\"durationMs\":233}"}
+{"id":"file-name-0","text":"~/.claude/projects/-srv-example/6b0638da-5c50-4ac7-9925-fff06a6f35cc.jsonl"}
+{"id":"file-name-1","text":"~/.claude/projects/-srv-example/f3ee1be3-d9d7-434c-ad57-62608b4049fa.jsonl"}

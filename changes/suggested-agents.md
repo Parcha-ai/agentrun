@@ -1,9 +1,0 @@
----
-packages: @parcha/agentrun-serve
-kind: feature
----
-Suggested agents: connect a GitHub repository, and AgentRun finds where its app needs an AI agent. The console's new Suggested agents page (Agents → Suggested) scans a repository with the bundled `agent-scout` template, on a read-only checkout, and shows each suggestion with the lines of code behind it, the typed input and answer, and where the app would call it. Discard hides a suggestion for good (with an undo). Create pushes the agent's template package and a dependency-free client to a new branch `agentrun/<key>`, makes the agent on this server from those same files, and opens a pull request that only adds files. New routes: `GET /v2/suggestions`, `POST /v2/suggestions/scans`, `GET /v2/suggestions/{id}`, `POST /v2/suggestions/{id}/discard`, `.../restore` and `.../create`, and `GET /v2/integrations/github/repositories`.
-
-- GitHub permissions: a scan needs only what every App holds (metadata and contents read, a token for that one repository, revoked after). Opening a pull request needs Contents write, which Connect GitHub now asks for only when the owner ticks it (`POST /v2/integrations/github/connect` takes `contents: "write"`); an App made before is not widened, and Create says what is missing and links the App's permissions page and the installation's. Each create mints one token for the one repository with contents and pull requests write, and revokes it.
-- An agent definition, and a template's manifest, take `checkout: repository`: the server checks out the head of the default branch of the repository the run names, one commit deep, in `repo/`, and lists its files in `repo/.git/agentrun-files`.
-- New error codes, all 409: `github_not_installed`, `github_permission_missing`, `github_file_exists`, `suggestion_decided`.

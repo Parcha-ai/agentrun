@@ -1,5 +1,21 @@
+import { Globe, Monitor, Smartphone, Terminal } from "lucide-react";
 import type { Place } from "./place";
-import type { Computer, ComputerKindView } from "./v2";
+import type { Computer, ComputerHold, ComputerKindView, ComputerProvider, RunMachine } from "./v2";
+
+/** Each kind's name and what it gives a run, in the console's words. A kind the console doesn't know yet reads as its id. */
+const KIND_WORDS = {
+  none: { label: "None", gives: "The run's folder only." },
+  sandbox: { label: "Sandbox", gives: "A Linux container." },
+  desktop: { label: "Desktop", gives: "A screen, with a pointer and keys." },
+  phone: { label: "Phone", gives: "A phone's screen and its apps." },
+  browser: { label: "Browser", gives: "A browser the agent drives." },
+} satisfies Record<RunMachine["kind"] | "none", { label: string; gives: string }>;
+export const wordsOf = (kind: string): { label: string; gives: string } => (KIND_WORDS as Record<string, { label: string; gives: string }>)[kind] ?? { label: kind, gives: "" };
+/** A provider of a kind, as GET /v2/computers lists it. */
+export const providerOf = (kinds: readonly ComputerKindView[], kind: string, id: string): ComputerProvider | undefined =>
+  kinds.find((k) => k.kind === kind)?.providers.find((p) => p.id === id);
+export const KIND_ICONS = { browser: Globe, desktop: Monitor, phone: Smartphone, sandbox: Terminal } as const satisfies Record<RunMachine["kind"], unknown>;
+export const DRIVES: Record<ComputerHold, string> = { agent: "The agent drives", pending: "Yours after the agent's step", person: "You drive" };
 
 /** Whether a kind can be picked here: offered, and (but none, which needs no provider) a provider of it is ready. */
 export const pickable = (kind: ComputerKindView): boolean => kind.offered && (kind.kind === "none" || kind.providers.some((p) => p.ready));
@@ -79,6 +95,18 @@ export function recorded(computer: Computer, on: boolean): Computer {
 /** The place a computer is, as the server keeps place as its view: a sandbox is that provider's box; any other computer
  *  leaves the run's folder on the runner. */
 export const placeOfComputer = (computer: Computer): Place => (computer.kind === "sandbox" && computer.provider ? { mode: "sandbox", box: computer.provider } : { mode: "runner" });
+
+/** What an edit sets to put an agent on `computer`: the computer, the place it is, and, on the runner, the agent's `tools`
+ *  without those that run only in a box (`sandbox_only` in the server's `offered` tools: bash and its background tools).
+ *  The agent's Computer step and the Playground's move to the runner both make this edit. With no tools offered (the
+ *  capabilities not read yet, or their read failed) which tools run only in a box is unknown, so an edit to the runner
+ *  of an agent with tools is null: the caller changes nothing and says why. */
+export function computerFields(computer: Computer, tools: readonly string[], offered: readonly { name: string; sandbox_only?: true }[]): { computer: Computer; place: Place; tools?: string[] } | null {
+  const place = placeOfComputer(computer);
+  if (place.mode === "runner" && tools.length && !offered.length) return null;
+  const sandboxOnly = new Set(offered.filter((tool) => tool.sandbox_only).map((tool) => tool.name));
+  return { computer, place, ...(place.mode === "runner" ? { tools: tools.filter((tool) => !sandboxOnly.has(tool)) } : {}) };
+}
 
 /** Said on a metered provider of a kind that bills by the minute: its minutes are the vendor's, outside the run's cap. */
 export const METERED = "This provider bills by the minute through your own vendor account, and those minutes aren't counted in a run's spending cap.";

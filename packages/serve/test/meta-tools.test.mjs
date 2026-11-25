@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { cap, capRun } from "./adapter-pi-cap-support.mjs";
+import { facts as claudeFacts } from "@parcha/agentrun-harness-claude/facts";
 import { claudeAgentSpec, closeOpenSessions as closeClaude } from "./conformance-claude-agent.mjs";
 import { closeOpenSessions as closeCodex, codexSpec } from "./conformance-codex.mjs";
 import { closeOpenSessions as closeOpenCode, openCodeSpec } from "./conformance-opencode.mjs";
@@ -23,7 +24,8 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { openSqliteStore } = await import("../dist/store/index.js");
 const { fillerTools, MAX_RESTARTS, suiteTools } = await import("../dist/runner/conformance/harness.js");
 const { deniedText } = await import("../dist/refusal-words.js");
-const { paidRequest, parallelSearchFee } = await import("../dist/paid-calls.js");
+const { paidRequest } = await import("../dist/paid-calls.js");
+const { parallelSearchFee } = await import("@parcha/agentrun-web");
 const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30 };
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 after(async () => {
@@ -359,7 +361,7 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwA
 
 /** A `harness` run of `script` over `tools` (each `{name, replaySafe, run, structured?, images?}`), uncapped, ended: what
  *  the model said, in order, and the requests pi's provider got (pi only, `requests`). `native`: pi-native tools. */
-async function metaRun(t, harness, script, own, { native } = {}) {
+async function metaRun(t, harness, script, own, { native, gate } = {}) {
   const tools = { ...own, ...fillerTools() };
   const { BACKGROUND_CONTEXT: ctx } = await import("@earendil-works/chord/context");
   const { journalRecords, messagesOf } = await import("../dist/runner/journal-reader.js");
@@ -368,7 +370,8 @@ async function metaRun(t, harness, script, own, { native } = {}) {
   await queue(server, "run-1");
   const requests = [];
   const spec = harness.name === "pi" ? piAdapterSpec({ script, tools, hooks: quiet }, { requests, ...(native ? { native } : {}) }) : harness.specOf({ script, tools, hooks: quiet });
-  const runner = startRunner({ store, createLoop: createAdapterLoop(spec, { restartLimit: MAX_RESTARTS }), name: "runner-a", ...TIMING });
+  const gated = gate ? async (claim, run) => ({ ...(await spec(claim, run)), gate }) : spec;
+  const runner = startRunner({ store, createLoop: createAdapterLoop(gated, { restartLimit: MAX_RESTARTS }), name: "runner-a", ...TIMING });
   t.after(async () => {
     try { await runner.close(); } finally { await release(opened); }
   });
@@ -378,6 +381,30 @@ async function metaRun(t, harness, script, own, { native } = {}) {
   }, "the run ended", 30_000);
   const { entries } = await journalRecords(server.journal({ runId: "run-1", runner: "test-reader", epoch: row.epoch, until: 0, from: row.state }), ctx);
   return { row, said: messagesOf(entries).filter((message) => message.role === "model").map((message) => message.text), requests, server };
+}
+
+for (const harness of HARNESSES.filter((one) => one.codemode)) {
+  test(`${harness.name}: a codemode script that stops at a call set to deny reads Refused on the timeline, as that call does, never as a script that ran and failed`, async (t) => {
+    const { BACKGROUND_CONTEXT: ctx } = await import("@earendil-works/chord/context");
+    const { runTimeline } = await import("../dist/store-reads/journal.js");
+    const ran = { add: 0, block: 0 };
+    const add = { name: "add", replaySafe: false, run: async () => (ran.add++, "5") };
+    const block = { name: "block", replaySafe: false, run: async () => (ran.block++, "blocked ran") };
+    const gate = (call) => (call.tool === "block" ? "deny" : "allow");
+    const script = "await tools.add({}); await tools.block({}); await tools.add({}); return 'all done';";
+    const { row, server } = await metaRun(t, harness, [{ call: CODEMODE, args: { script } }, { say: "done" }], { add, block }, { gate });
+    assert.equal(row.state, "ended", JSON.stringify(row));
+    assert.deepEqual(ran, { add: 1, block: 0 }, "add ran once, block never");
+    const rows = (await runTimeline(server, "run-1", ctx)).filter((one) => one.kind === "tool_result");
+    const shown = JSON.stringify(rows.map((one) => [one.tool_name, one.tool_status, one.refused ?? null, one.summary]));
+    const script_ = rows.find((one) => one.tool_name === CODEMODE);
+    const blocked = rows.find((one) => one.tool_name === "block");
+    assert.ok(script_ && blocked, `the script and its refused call each have a result row: ${shown}`);
+    assert.equal(blocked.refused, true, `the refused call reads refused: ${shown}`);
+    assert.equal(script_.refused, true, `the script that stopped at it reads refused too: ${shown}`);
+    assert.match(script_.summary, /^Refused/, `its summary says refused, never "failed": ${shown}`);
+    assert.equal(rows.find((one) => one.tool_name === "add")?.refused, undefined, `the call that ran before it is no refusal: ${shown}`);
+  });
 }
 
 for (const harness of HARNESSES) {
@@ -556,15 +583,17 @@ for (const harness of HARNESSES.filter((one) => one.discovery)) {
 
 // ---- the follow-ups of a live walk: one verdict on every harness, the three in the server's tool list, one name a script may call ----
 
-/** What claude-agent's adapter was opened with, for `tools` under `gate`: the host's verdict on deferring the catalog. */
-async function claudeVerdict(t, tools, gate) {
+/** What claude-agent's adapter was opened with, for `tools` under `gate`: the host's verdict on deferring the catalog.
+ *  `facts`: the spec's in place of claude-agent's own (cli-run-spec.ts hands one with no tool search of its own for a
+ *  run on a model the route translates). `offered`, given, gets the names of the tools the session was handed unmarked (not `deferred`). */
+async function claudeVerdict(t, tools, gate, { facts: given, offered } = {}) {
   const { server, runners: [store] } = await stores({ runners: 1 });
   await queue(server, "run-1");
   const seen = [];
   const base = claudeAgentSpec({ script: [{ call: "read", args: {} }, { say: "done" }], tools, hooks: quiet });
   const loop = createAdapterLoop(async (claim, run) => {
     const spec = await base(claim, run);
-    return { ...spec, gate, adapter: { ...spec.adapter, open: (session, io) => (seen.push(session.deferCatalog), spec.adapter.open(session, io)) } };
+    return { ...spec, ...(given ? { facts: given } : {}), gate, adapter: { ...spec.adapter, open: (session, io) => (seen.push(session.deferCatalog), offered?.push(...session.tools.filter((tool) => !tool.deferred).map((tool) => tool.name)), spec.adapter.open(session, io)) } };
   }, { restartLimit: MAX_RESTARTS });
   const runner = startRunner({ store, createLoop: loop, name: "runner-a", ...TIMING });
   t.after(() => runner.close());
@@ -582,6 +611,17 @@ test("claude-agent: its own tool search follows the one verdict (over the thresh
   assert.deepEqual(await claudeVerdict(t, tools, settingOf(TOOLS_SEARCH)), [false], "tools_search set to deny: every tool listed, its own search off");
   assert.deepEqual(await claudeVerdict(t, tools, settingOf(TOOLS_CALL)), [false], "tools_call set to deny: the same");
   assert.deepEqual(await claudeVerdict(t, { read: tools.read, ...catalog(3) }, settingOf(undefined)), [false], "a few catalog tools: nothing deferred");
+});
+
+test("claude-agent on a model the route translates (facts with no tool search of its own): its own search stays off and the host's tools_search and tools_call are offered, over the threshold as under it", async (t) => {
+  const { ownToolSearch: _own, ...routedFacts } = claudeFacts;
+  const tools = { read: { name: "read", replaySafe: true, run: async () => "r" }, ...catalog(21) };
+  const allow = Object.assign(() => "allow", { permission: async () => "allow" });
+  const offered = [];
+  assert.deepEqual(await claudeVerdict(t, tools, allow, { facts: routedFacts, offered }), [false], "21 catalog tools: deferred by the host, never by the CLI's own search");
+  assert.ok(offered.includes(TOOLS_SEARCH) && offered.includes(TOOLS_CALL), `the host's helpers are offered: ${offered.join(", ")}`);
+  assert.ok(!offered.some((name) => name.startsWith("mcp__") && name !== "read"), `the host marks the catalog's tools deferred: ${offered.join(", ")}`);
+  assert.deepEqual(await claudeVerdict(t, tools, allow), [true], "with its own facts, its own search, as before");
 });
 
 test("capabilities.tools lists tools_search, tools_call and codemode: each with a line for people, allow or deny, allow by default, and no grant", async () => {

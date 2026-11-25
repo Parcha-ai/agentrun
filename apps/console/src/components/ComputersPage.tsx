@@ -1,28 +1,19 @@
 import { SettingsSection, settingsBodyClass, settingsIntroClass, settingsPageClass } from "@/components/Settings";
 import { pasteFromClipboard } from "@/lib/paste";
-import { Monitor, Smartphone } from "lucide-react";
+import { ArrowUpRight, Monitor, Smartphone } from "lucide-react";
 import { type FormEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { SecretRow } from "@/components/SecretRow";
+import { StatusBadge } from "@/components/StatusBadge";
 import { ListSkeleton } from "@/components/Skeleton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/field";
 import { Chip } from "@/components/ui/chip";
 import { Picker } from "@/components/ui/picker";
 import { type Client, ClientError, problemOf } from "@/lib/client";
-import { BY_THE_MINUTE, METERED } from "@/lib/computers";
-import { clock, runLabel, when } from "@/lib/format";
+import { BY_THE_MINUTE, DRIVES, KIND_ICONS, METERED, providerOf, wordsOf } from "@/lib/computers";
+import { clock, runLabel, runTitle, when } from "@/lib/format";
 import { type SecretsWhyNot, WHY_NOT_WORDS } from "@/lib/secrets";
-import type { ApiError, ComputerChoices, ComputerKeyChoices, ComputerKindView, ComputerProvider, Computers, PairedComputer, Pairing } from "@/lib/v2";
-
-/** Each kind's name and what it gives a run, in the console's words. A kind the console doesn't know yet reads as its id. */
-const KIND_WORDS: Record<string, { label: string; gives: string }> = {
-  none: { label: "None", gives: "The run's folder only." },
-  sandbox: { label: "Sandbox", gives: "A Linux container." },
-  desktop: { label: "Desktop", gives: "A screen, with a pointer and keys." },
-  phone: { label: "Phone", gives: "A phone's screen and its apps." },
-  browser: { label: "Browser", gives: "A browser the agent drives." },
-};
-const wordsOf = (kind: string) => KIND_WORDS[kind] ?? { label: kind, gives: "" };
+import type { ApiError, ComputerChoices, ComputerKeyChoices, ComputerKindView, ComputerProvider, Computers, PairedComputer, Pairing, RunningRun } from "@/lib/v2";
 
 const apiError = (e: unknown): ApiError => (e instanceof ClientError ? e.toApiError() : { code: "network", message: e instanceof Error ? e.message : String(e), retryable: false });
 
@@ -42,10 +33,12 @@ export const testable = (p: ComputerProvider): boolean =>
 
 /** How often the page reads the computers again while a pairing code is up, so the computer that uses it shows. */
 export const PAIRING_POLL_MS = 2_000;
+/** How often the page reads the runs that have a computer again, so one that starts or ends shows without a reload. */
+export const RUNNING_POLL_MS = 10_000;
 
-/** Settings → Computers: first, the person's own computers paired with this server (Pair a computer: a code to type into
+/** Settings → Computers: first, the computers up now (RunningSection: each run still going that has a computer). Then the person's own computers paired with this server (Pair a computer: a code to type into
  *  the computer's driver with this server's address, one page for every OS; each paired computer as its hello says it,
- *  online or offline, the run that holds it and until when, and Remove). Each is
+ *  online or offline, the run that holds it, on which runner, and until when, the server's note of a refused relay, and Remove). Each is
  *  also a provider of its kind in GET /v2/computers, and shows here once, in its own section. Then every kind of computer
  *  an agent can be given, as GET /v2/computers answers it. A kind this
  *  server doesn't offer says the server's why. Each provider shows under every kind it serves, with its secrets as
@@ -127,6 +120,7 @@ export function ComputersPage({ v2, writable, whyNot = "sign_in" }: {
           <p className="mt-2 text-lead text-muted-foreground">The computers an agent can be given, and who provides them. An agent can have a kind once one of its providers is ready. Keys are kept sealed on this server and never shown again.</p>
         </div>
         <div className={settingsBodyClass}>
+          <RunningSection v2={v2} kinds={view.kinds} />
           <PairedSection v2={v2} paired={view.paired} reload={load} />
           {!writable && <p role="status" className="border bg-card p-4 text-body">{WHY_NOT_WORDS[whyNot]}</p>}
           {view.kinds.map((k) => (
@@ -147,6 +141,67 @@ export function ComputersPage({ v2, writable, whyNot = "sign_in" }: {
         </div>
       </div>
     </div>
+  );
+}
+
+/** Running now: each run still going whose agent has a computer (GET /v2/computers/running), newest first, read when
+ *  the page opens and every RUNNING_POLL_MS after while the page is shown (and again when it is shown), one read at a time. A row is the run as the agent page's Live jobs list shows one (its
+ *  status, its title) with its computer: kind, provider by the name this page lists it under, when it started, You
+ *  drive while its owner has it, and a held run's hold; the row opens the run, whose Screen tab is the live view. A
+ *  read that fails keeps the last list and says so. */
+function RunningSection({ v2, kinds }: { v2: Client; kinds: ComputerKindView[] }) {
+  const [runs, setRuns] = useState<RunningRun[] | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+  useEffect(() => {
+    // One read at a time: each costs the server a run read for every run listed.
+    let alive = true;
+    let reading = false;
+    const read = () => {
+      if (reading) return;
+      reading = true;
+      v2.runningComputers()
+        .then((answer) => { if (alive) { setRuns(answer.runs); setProblem(null); } }, (e) => { if (alive) setProblem(problemOf(e)); })
+        .finally(() => { reading = false; });
+    };
+    const readVisible = () => { if (!document.hidden) read(); };
+    read();
+    window.addEventListener("focus", readVisible);
+    document.addEventListener("visibilitychange", readVisible);
+    const timer = window.setInterval(readVisible, RUNNING_POLL_MS);
+    return () => { alive = false; window.clearInterval(timer); window.removeEventListener("focus", readVisible); document.removeEventListener("visibilitychange", readVisible); };
+  }, [v2]);
+  return (
+    <SettingsSection label="Running now" title="Running now"
+      note={<p>Each run still going that has a computer. Open one, then its Screen tab, to watch it or take it over.</p>}>
+      {problem && <p role="alert" className="border border-destructive/50 px-4 py-2.5 font-mono text-small text-destructive-text">The running computers could not be read: {problem}</p>}
+      {runs === null ? (!problem && <ListSkeleton label="Loading the running computers" rows={1} />)
+        : runs.length === 0 ? <p className="border bg-card p-4 text-body text-muted-foreground">No run with a computer is going now.</p>
+        : (
+          <ul className="divide-y border bg-card">
+            {runs.map((run) => {
+              const { kind, provider, state, held } = run.computer;
+              const Icon = KIND_ICONS[kind];
+              return (
+                <li key={run.run_id} data-running={run.run_id}>
+                  <a href={`#/runs/${encodeURIComponent(run.run_id)}`} className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 hover:bg-accent">
+                    <Icon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+                    <span className="min-w-0 flex-1 basis-56">
+                      <span className="block truncate text-body font-semibold">{runTitle(run)}</span>
+                      <span className="mt-0.5 block truncate font-mono text-small text-muted-foreground">{run.agent_id} · {wordsOf(kind).label} · {providerOf(kinds, kind, provider)?.name ?? provider} · started {when(run.created_at)}</span>
+                      {held && held.state !== "released" && <span className="mt-0.5 block text-small text-muted-foreground">Held for you{held.until ? ` until ${clock(held.until)}` : ""}.</span>}
+                    </span>
+                    <span className="flex flex-wrap items-center gap-2">
+                      <StatusBadge run={run} />
+                      {state === "taken_over" && <Chip tone="active">{DRIVES.person}</Chip>}
+                    </span>
+                    <ArrowUpRight className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+                  </a>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+    </SettingsSection>
   );
 }
 
@@ -253,14 +308,15 @@ function PairedSection({ v2, paired, reload }: { v2: Client; paired: PairedCompu
                     <p className="flex flex-wrap items-center gap-2">
                       <span data-provider className="font-mono text-prose font-semibold">{computer.name}</span>
                       {computer.online ? <Chip tone="success">Online</Chip> : <Chip tone="muted">Offline</Chip>}
-                      {computer.held_by_run && <Chip tone="active">In use by run {runLabel(computer.held_by_run)}</Chip>}
+                      {computer.held_by_run && <Chip tone="active">In use by run {runLabel(computer.held_by_run)}{computer.held_on ? ` on ${computer.held_on}` : ""}</Chip>}
                       {computer.unserved && <Chip tone="warning">No agent can use it</Chip>}
                       {computer.runs_refused && <Chip tone="warning">No run here can use it</Chip>}
                     </p>
                     {computer.unserved && <p data-unserved role="status" className="mt-1.5 text-small text-warning-text">{computer.unserved}</p>}
                     {computer.runs_refused && <p data-runs-refused role="status" className="mt-1.5 text-small text-warning-text">{computer.runs_refused}</p>}
+                    {computer.hold_note && <p data-hold-note role="status" className="mt-1.5 text-small text-warning-text">{computer.hold_note}</p>}
                     {computer.held_by_run && computer.held_until && <p data-held-until className="mt-1.5 text-small text-muted-foreground">The run's hold ends by {when(computer.held_until)}, released or not.</p>}
-                    {!computer.online && <p className="mt-1.5 font-mono text-small text-muted-foreground">Open its driver on that computer: it dials this server.</p>}
+                    {!computer.online && !computer.hold_note && <p className="mt-1.5 font-mono text-small text-muted-foreground">Open its driver on that computer: it dials this server.</p>}
                     <p data-machine className="mt-2 text-small text-muted-foreground">{machineOf(computer)}</p>
                     {computer.groups.length > 0 && <p data-offers className="mt-1 text-small text-muted-foreground">{offersOf(computer)}</p>}
                     <p className="mt-1 text-small text-muted-foreground">{`Driver ${computer.driver} · paired ${when(computer.created_at)}${computer.seen_at ? ` · last attached ${when(computer.seen_at)}` : ""}`}</p>

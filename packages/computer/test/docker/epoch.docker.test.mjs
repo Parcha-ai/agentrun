@@ -38,7 +38,7 @@ describe("run and epoch labels on Docker", { skip: LIVE ? false : "set AGENTRUN_
 		const arch = docker("version", "--format", "{{.Server.Arch}}").trim();
 		const daemonPath = fileURLToPath(new URL(`../../dist/computerd-linux-${arch}`, import.meta.url));
 		assert.ok(existsSync(daemonPath), `no daemon for Docker's arch at ${daemonPath}: run npm run build:daemon`);
-		provider = new DockerProvider({ daemonPath });
+		provider = new DockerProvider({ env: process.env, daemonPath });
 		const make = async (key, labels) => {
 			const created = await provider.create({ image: "alpine:3.20", lifetimeMs: 10 * 60_000, network: "none", labels: { ...labels, [TEST_LABEL]: test, key } }, newRequest(`epoch-${key}`));
 			assert.equal(created.ok, true, `${key}: ${JSON.stringify(created)}`);

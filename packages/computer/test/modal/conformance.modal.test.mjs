@@ -4,8 +4,8 @@
 // those names. It also needs COMPUTER_MODAL_APP, the modal package installed where Node finds it, `npm run build` and
 // `npm run build:daemon` (the daemon is uploaded into each sandbox), and Go on PATH (the drift case builds a daemon of
 // another version). Every computer lives at most 30 minutes. The runner deletes every computer it made and sweeps the
-// run's label at its end; the after hook deletes any computer still made by this run, pass or fail; wrap the run in
-// dist/conformance/sweep.js --provider modal --before and --after for the rest.
+// run's label at its end; the after hook deletes any computer still made by this run, pass or fail. A run under the live
+// sweep (dist/conformance/sweep.js) is the conformance CLI's, given --run: this one mints its own id.
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
 import { conformanceCases, formatReport, runConformance } from "../../dist/index.js";

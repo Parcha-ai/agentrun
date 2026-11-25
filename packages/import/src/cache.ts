@@ -1,10 +1,10 @@
 // The cache analyzer: a session's cache hit rate, and each turn whose cache read dropped more than 80% against the turn
 // before it (a break), with the tokens it paid for again, what that cost, and the cause its transcript shows. It reads
 // the session's chain (ChainRecord: ids, parents and hashes, never text), so it hands back numbers and cause names only.
-import { groupsOf, keyOf, ReadFailures, readSource, type ParseOptions } from "./home.js";
+import { groupsOf, keyOf, type ParseOptions, type Pricer, ReadFailures, readSource, requestsIn, requestsOf } from "./home.js";
 import { type CalculateCost, type Catalog, builtinCatalog, priceRequests } from "./price.js";
 import { locatorKey, type SessionRead } from "./reader.js";
-import { READERS, SOURCES } from "./readers/index.js";
+import { READERS, type Source } from "./readers/index.js";
 import type { Answer, ChainRecord, SessionOf, Usage } from "./types.js";
 
 /** The causes of a break, in the order they are tried: the first the transcript shows evidence of is the break's. */
@@ -171,10 +171,20 @@ async function extraCostOf(model: string | undefined, usage: Usage, rewritten: n
  *  number among the session's, from 1; `turn` counted in it). */
 export type SessionCache = { key: string; file: string; source: string; id: string; hitRate: number | null; breaks: (CacheBreak & { subagent?: number })[] };
 
+/** The sources whose sessions cacheHome analyzes: those that write each request's chain (ChainRecord). OpenCode's
+ *  claude-agent requests mirror a Claude Code session's, so its breaks would count twice in cacheTotals. */
+export const CACHE_SOURCES: readonly Source[] = ["claude-code", "codex", "pi"];
+
+/** readSource's prices for a whole read: none, its parts kept with each request's usage (the hit rate's), unpriced. */
+const UNPRICED: Pricer = { ready: true, load: async () => {} };
+
 /** Every session of `sources` under `home` with its cache (SessionCache), sorted by key: the sessions parseHome totals,
  *  each file read with its chain, and analyzed as it is read (one at a time: a whole home's turns would not fit). Its
- *  options are parseHome's but `state`: each call reads every file from its start. */
-export async function cacheHome(home: string, { sources = SOURCES, readers = READERS, catalog, calculateCost, env, failures }: Omit<ParseOptions, "state"> = {}): Promise<SessionCache[]> {
+ *  options are parseHome's but `state`: each call reads every file from its start. A source not in CACHE_SOURCES is
+ *  refused (RangeError) before any file is read. */
+export async function cacheHome(home: string, { sources = CACHE_SOURCES, readers = READERS, catalog, calculateCost, env, failures }: Omit<ParseOptions, "state"> = {}): Promise<SessionCache[]> {
+  const refused = sources.filter((source) => !(CACHE_SOURCES as readonly string[]).includes(source));
+  if (refused.length) throw new RangeError(`cacheHome reads ${CACHE_SOURCES.join(", ")}, not ${refused.join(", ")}`);
   const prices = catalog === false ? false : (catalog ?? (await builtinCatalog()) ?? false);
   const priced: CacheOptions = { catalog: prices, ...(calculateCost ? { calculateCost } : {}) };
   const out: SessionCache[] = [];
@@ -184,7 +194,7 @@ export async function cacheHome(home: string, { sources = SOURCES, readers = REA
     // with the last turn of the session's file before it once the files are joined (a Codex thread goes on in a new
     // rollout).
     const reports = new Map<string, { alone: CacheReport; head?: Pick<SessionOf, "turns" | "chain" | "model">; skipped: number }>();
-    const { tops, children, unread } = await readSource(home, source, readers, env, undefined, async (read): Promise<SessionRead> => {
+    const { tops, children, unread } = await readSource(home, source, readers, env, undefined, UNPRICED, true, undefined, async (read): Promise<SessionRead> => {
       reports.set(locatorKey(read.locator), { alone: await analyzeCache(read.session, priced), ...headOf(read.session) });
       const { turns: _turns, chain: _chain, firstPrompt: _prompt, titleText: _title, sourceTitle: _source, cwd: _cwd, ...session } = read.session;
       return { locator: read.locator, session: { ...session, turns: [] }, requests: read.requests.map(({ at, usage }): Answer => ({ role: "assistant", text: "", calls: [], at, ...(usage ? { usage } : {}) })) };
@@ -193,7 +203,7 @@ export async function cacheHome(home: string, { sources = SOURCES, readers = REA
     for (const { parts, children: subagents } of groupsOf(tops, children)) {
       let read = 0;
       let prompt = 0;
-      for (const { usage } of [...parts, ...subagents].flatMap((part) => part.read.requests)) {
+      for (const { usage } of [...parts, ...subagents].flatMap((part) => [...requestsIn(part.read)])) {
         if (!usage) continue;
         read += usage.cacheRead;
         prompt += promptOf(usage);
@@ -213,7 +223,7 @@ export async function cacheHome(home: string, { sources = SOURCES, readers = REA
         for (const found of report.alone.breaks) breaks.push({ ...found, turn: found.turn + counted });
         // A file with no turn compared passes the carry on, with any compaction of its own.
         carry = report.alone.last ?? (carry && { ...carry, compacted: carry.compacted === true || report.alone.compacted });
-        counted += part.read.requests.length;
+        counted += requestsOf(part.read);
       }
       subagents.forEach((part, n) => {
         for (const found of reports.get(locatorKey(part.locator))?.alone.breaks ?? []) breaks.push({ ...found, subagent: n + 1 });
