@@ -1699,6 +1699,29 @@ test("LVI: an env command among others on its line is the output's context, and 
   }
 });
 
+test("LVI: a line that runs an env command among others is one dump of its whole output: which line is whose can't be told", async () => {
+  const seed = "Tallow4quarry62";
+  const region = "basin-orchard-41";
+  // Two printenv commands, a second naming a variable the first doesn't: the output's third line is the second's last.
+  // Lines printed before the dump command (echo a; echo b) move its output down past what one line's retry reads.
+  for (const [command, text] of [
+    ["printenv APP_REGION; printenv APP_REGION APP_SEED", `${region}\n${region}\n${seed}`],
+    ["echo a; echo b; printenv APP_SEED", `a\nb\n${seed}`],
+    ["env; printenv APP_SEED", `APP_REGION=${region}\n${seed}`],
+    ["printenv APP_REGION && printenv APP_SEED", `${region}\n${seed}`],
+  ]) {
+    const out = await gone(text, [seed, region], { command });
+    assert.deepEqual(out.cuts.map((cut) => [cut.rule, cut.kind, cut.restorable]), [["env-dump", "dump", false]], `${command}: ${JSON.stringify(out.cuts)}`);
+    assert.equal(out.text, `[redacted:env-dump ${text.split("\n").length} lines]`, command);
+  }
+  // A failed call's one-line summary under such a line: what follows its head is cut, the head kept.
+  const out = await gone(`Bash failed: ${seed}`, [seed], { command: "printenv APP_REGION; printenv APP_SEED" });
+  assert.equal(out.text, "Bash failed: [redacted:env-dump 1 lines]");
+  // A lone command keeps its exact cut: printenv's one line, not what follows it.
+  const lone = await scrub(`${seed}\nnext step`, { mode: "cut", command: "printenv APP_SEED" });
+  assert.equal(lone.text, "[redacted:env-dump 1 lines]\nnext step");
+});
+
 test("LIX: a dotted name is no code evidence alone; a self./this./cls. root, a trailing `;` or an environment root is", async () => {
   const wrappers = [
     (s) => s,
