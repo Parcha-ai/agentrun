@@ -58,9 +58,22 @@ export function toolResultIds(entry: TranscriptLine | undefined): string[] {
   return content.filter((c) => c?.type === 'tool_result' && typeof c.tool_use_id === 'string').map((c) => c.tool_use_id as string);
 }
 
+/** The timers a barrier's wait runs on (the system's by default; a test passes a fake clock). */
+export interface BarrierTimers {
+  setTimeout(fn: () => void, ms: number): unknown;
+  clearTimeout(timer: unknown): void;
+}
+
+const SYSTEM_TIMERS: BarrierTimers = {
+  setTimeout: (fn, ms) => setTimeout(fn, ms),
+  clearTimeout: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
+};
+
 export interface JournalSessionStoreOptions {
   /** The journal's records as of the drive's start, blobs resolved (`journal.read()`). */
   records: JournalRecord[];
+  /** The timers `barrier` and `resultBarrier` wait on. Default the system's. */
+  timers?: BarrierTimers;
   /**
    * Hold appended entries this long before they go to the journal, so the
    * SDK's frames (one `append` per line with eager flushing) ride in fewer
@@ -95,6 +108,7 @@ export class JournalSessionStore {
   private held: ({ stream: string; entry: TranscriptLine } | { message: TranscriptEntry })[] = [];
   private timer: ReturnType<typeof setTimeout> | undefined;
   private readonly coalesceMs: number;
+  private readonly timers: BarrierTimers;
   /** Entries this drive appended (for tests and diagnostics). */
   appended = 0;
 
@@ -103,6 +117,7 @@ export class JournalSessionStore {
     options: JournalSessionStoreOptions
   ) {
     this.coalesceMs = options.coalesceMs ?? 0;
+    this.timers = options.timers ?? SYSTEM_TIMERS;
     for (const r of options.records) {
       if (r.stream !== CLAUDE_STREAM && !r.stream.startsWith(`${CLAUDE_STREAM}/`)) continue;
       const entry = r.data as TranscriptLine | undefined;
@@ -217,14 +232,14 @@ export class JournalSessionStore {
   async barrier(toolUseId: string, timeoutMs: number): Promise<void> {
     if (!this.calls.has(toolUseId)) {
       await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => {
+        const timer = this.timers.setTimeout(() => {
           const list = this.waiters.get(toolUseId)?.filter((w) => w !== done) ?? [];
           if (list.length) this.waiters.set(toolUseId, list);
           else this.waiters.delete(toolUseId);
           reject(new Error(`the transcript entry for tool call ${toolUseId} did not reach the log within ${timeoutMs} ms`));
         }, timeoutMs);
         const done = () => {
-          clearTimeout(timer);
+          this.timers.clearTimeout(timer);
           resolve();
         };
         this.waiters.set(toolUseId, [...(this.waiters.get(toolUseId) ?? []), done]);
@@ -262,14 +277,14 @@ export class JournalSessionStore {
   async resultBarrier(toolUseId: string, timeoutMs: number): Promise<void> {
     if (!this.results.has(toolUseId)) {
       await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => {
+        const timer = this.timers.setTimeout(() => {
           const list = this.resultWaiters.get(toolUseId)?.filter((w) => w !== done) ?? [];
           if (list.length) this.resultWaiters.set(toolUseId, list);
           else this.resultWaiters.delete(toolUseId);
           reject(new Error(`the transcript entry answering tool call ${toolUseId} did not reach the log within ${timeoutMs} ms`));
         }, timeoutMs);
         const done = () => {
-          clearTimeout(timer);
+          this.timers.clearTimeout(timer);
           resolve();
         };
         this.resultWaiters.set(toolUseId, [...(this.resultWaiters.get(toolUseId) ?? []), done]);
