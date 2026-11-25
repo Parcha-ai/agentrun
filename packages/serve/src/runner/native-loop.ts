@@ -132,7 +132,7 @@ export function createNativeLoop(launch:RunLaunch,host:AdapterSpecDeps):LoopFact
    const readEndPatch=async(model:string,runtime?:string,usage?:NativeUsage)=>{
     if(endPatch!==undefined)return endPatch;
     let timer:NodeJS.Timeout|undefined;
-    const late=new Promise<typeof END_PATCH_UNKNOWN>(resolve=>{timer=setTimeout(()=>resolve(END_PATCH_UNKNOWN),END_PATCH_MS);});
+    const late=new Promise<typeof END_PATCH_UNKNOWN>(resolve=>{timer=setTimeout(()=>resolve(END_PATCH_UNKNOWN),host.endPatchMs??END_PATCH_MS);});
     try{
      // Only reads race the deadline. A late result never writes a patch or changes the chosen end.
      const read=async()=>{

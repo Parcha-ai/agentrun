@@ -472,6 +472,9 @@ export type ServeOptions = {
   /** How often the runs' listings' builder looks again when it found nothing to build (run-listing.ts; default
    *  LISTER_IDLE_MS). `Infinity`: it builds only when Serve.listingSettled asks, so a test reads what a list builds alone. */
   listerIdleMs?: number;
+  /** How often a timeline page that waits (`wait_ms`) reads the store again while nothing changed (default 1000 ms,
+   *  run-reads-over-store.ts). A test's server reads sooner, so a change is served without the rest of a second's wait. */
+  timelinePollMs?: number;
   /** No runner beside this server in its process (the CLI's --no-runner, the image's server-and-runner): a paired
    *  computer's socket is held here while no run holds it, and relayed to the runner that holds a run of it
    *  (workspace/paired-route.ts); while no runner relays, a pairing code, the pair answer and each paired computer say no
@@ -2368,6 +2371,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const servedTimelineDeps: ServedTimelineDeps = { serverSecrets, signIns, sealKey, keyEnv: () => withSavedGateway(own(withSecrets(process.env, "all", storedKeys)), savedGateway), statuses };
   const timelines = runTimelines({
     context: ctx,
+    ...(options.timelinePollMs !== undefined ? { pollMs: options.timelinePollMs } : {}),
     // The run's rows as served (run-timeline-served.ts), by its one cut (run-cut.ts, read for each page: a secret rotated
     // or saved since is cut at once), the set its view's words, title and error are cut of: each secret this server never
     // shows and each browser sign-in pointer the run was handed; its decision rows among them, its error rows in the
