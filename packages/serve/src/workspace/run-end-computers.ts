@@ -25,13 +25,19 @@
 // whose machine this list never showed (another runner's engine) stays ending for that runner's end. A
 // row a later claim wrote or is taking back (a follow-up that queued the run again while this end
 // waited on the store) is that claim's: the mark leaves it as it stands, and the delete leaves its machine.
+// A machine kept on Archil has its park's mount credential removed before its row is marked ended
+// (computer-janitor.ts keptMountRevoke, as the janitor's kept pass removes it): an ended row is one no janitor pass
+// removes a credential for, so one marked ended first would leave it valid for its ttl with no machine. A remove that
+// fails, or an end composed without the runs' environment, leaves the row ending, and the janitor's kept pass removes the
+// credential and ends it.
 import { type ComputerProvider, epochOf, ok, releaseOlder } from "@parcha/agentrun-computer";
 import { KEY_TABLE, providerOptions } from "../computer-keys.js";
 import { readLaunchBody } from "../run-launch.js";
 import type { Store } from "../store/index.js";
 import { settingOf } from "./computer-for-claim.js";
 import type { ComputerDeps } from "./computer-deps.js";
-import { endingKept, finishedKept } from "./computer-kept.js";
+import { keptMountRevoke } from "./computer-janitor.js";
+import { endingKept, finishedKept, type KeptMountRevoke } from "./computer-kept.js";
 import { storeLedger } from "./computer-ledger.js";
 import { type ComputerSetting, providerKeys } from "./resolve-computer.js";
 import { endingDeletes, intervalWrites } from "./computer-intervals.js";
@@ -118,7 +124,14 @@ const pause = (ms: number, signal: AbortSignal): Promise<boolean> =>
 export interface RunEndComputersDeps {
   /** The run's row and launch (its revision and place) and the agent's revision, where its computer setting is; the
    *  computer ledger, for a provider that keeps one. */
-  readonly store: Pick<Store, "agents" | "computerLedger" | "settings"> & { readonly runs: Pick<Store["runs"], "get" | "launch">; readonly computerIntervals?: Store["computerIntervals"] };
+  readonly store: Pick<Store, "agents" | "computerLedger" | "settings" | "sealedKeys"> & { readonly runs: Pick<Store["runs"], "get" | "launch">; readonly computerIntervals?: Store["computerIntervals"] };
+  /** The runs' environment and the server's seal key, as the janitor is handed them: with them, a machine kept on Archil
+   *  that this end deletes has its park's mount credential removed (computer-janitor.ts keptMountRevoke) before its row
+   *  is marked ended. Absent `env`: that row is left ending, for the janitor's kept pass. */
+  readonly env?: NodeJS.ProcessEnv;
+  readonly sealKey?: Buffer | undefined;
+  /** Archil's control plane for that remove: a test's fake. Absent: the region's own. */
+  readonly mountControl?: { readonly baseUrl?: string; readonly fetch?: typeof fetch };
   /** The run's computers as the runner composed them (computer-deps.ts computerDepsFrom): the registry, the provider
    *  makers, the key reader, and --faux's launch with the providers it takes. */
   readonly computers: Pick<ComputerDeps, "kinds" | "providers" | "keyOf" | "keyTable" | "settings" | "launch" | "launches">;
@@ -137,6 +150,8 @@ export function runEndComputers(deps: RunEndComputersDeps): (claim: { readonly r
   const { store, computers, log } = deps;
   /** Each computer let go here ends its interval (computer-intervals.ts), on its provider's ok alone. */
   const writes = intervalWrites(store, log);
+  /** The remove of a kept row's Archil mount credential, its ttl judged on the store's clock. */
+  const revokeMount = deps.env !== undefined ? keptMountRevoke({ settings: store.settings, sealedKeys: store.sealedKeys, env: deps.env, sealKey: deps.sealKey, ...(deps.mountControl ? { mountControl: deps.mountControl } : {}) }, () => store.sealedKeys.clock()) : undefined;
   /** The provider the run's computers are on, by the agent's setting; undefined where none of them is this end's to let
    *  go (none, the agent's own, a paired computer, --faux's). */
   const providerOf = async (runId: string, epoch: number) => {
@@ -180,14 +195,23 @@ export function runEndComputers(deps: RunEndComputersDeps): (claim: { readonly r
     /** The kept machine this end leaves: a later claim's, or one whose row no try marked. */
     const spared = marked.kind === "marked" ? undefined : marked.id;
     /** The kept row this end marked ending: ended as soon as its own machine is gone (finishing), so a follow-up's park
-     *  writes its own keep, though another machine's delete failed and this end asks again or gives up. */
+     *  writes its own keep, though another machine's delete failed and this end asks again or gives up. On Archil, its
+     *  park's mount credential is removed first (finishedKept); one that fails leaves the row ending, said. */
     const kept = marked.kind === "marked" ? marked.kept : undefined;
     const seen = { listed: false };
     let finished = false;
+    const revoked: KeptMountRevoke | undefined = revokeMount && (async (id, row) => {
+      try {
+        await revokeMount(id, row);
+      } catch (error) {
+        log(`run ${runId} is over and its kept ${row.kind} ${row.id} is gone, but its mount credential could not be removed (${error instanceof Error ? error.message : String(error)}): its row is left ending, and the computer janitor's next pass removes it`);
+        throw error;
+      }
+    });
     const gone = async () => {
       if (finished || !kept) return;
       finished = true;
-      await finishedKept(store.settings, runId, kept);
+      await finishedKept(store.settings, runId, kept, revoked);
     };
     /** The last try's failure, for the line said at the bound. */
     let why = `its provider did not answer within ${bound / 1000} s`;

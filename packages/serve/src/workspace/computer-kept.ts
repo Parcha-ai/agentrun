@@ -426,10 +426,27 @@ export async function endKept(settings: Pick<KeptSettings, "get" | "replaceIf">,
  *  since is left. A row left ending refuses every later park of the run (keepKept) until a janitor's pass ends it, so a
  *  follow-up to a stopped run would keep nothing; ended, the next park writes over it. The delete's caller says only
  *  where its provider answered ok for that very machine, so a machine its list never showed (another runner's engine)
- *  keeps its row ending for its keeper to end. Never throws: a row left ending is still ended at its time. */
-export async function finishedKept(settings: Pick<KeptSettings, "replaceIf">, runId: string, kept: Kept): Promise<boolean> {
+ *  keeps its row ending for its keeper to end. A row whose machine held the run's folder on Archil, its credential's
+ *  disk named (Kept.disk), is marked ended only once `revokeMount` removed that credential: an ended row is one no
+ *  janitor pass removes a credential for, so one marked ended first would leave it valid for its ttl with no machine.
+ *  Without `revokeMount`, or with one that throws, the row is left ending, and the janitor's kept pass (sweepKept)
+ *  removes the credential and ends it. Never throws: a row left ending is still ended at its time. */
+export async function finishedKept(settings: Pick<KeptSettings, "replaceIf">, runId: string, kept: Kept, revokeMount?: KeptMountRevoke): Promise<boolean> {
+  if (kept.folder === "archil" && kept.disk !== undefined) {
+    if (!revokeMount) return false;
+    try {
+      await revokeMount(runId, kept);
+    } catch {
+      return false;
+    }
+  }
   return settings.replaceIf(keptKeyOf(runId), rowOf(kept, "ending"), rowOf(kept, "ended")).catch(() => false);
 }
+
+/** Removes run `runId`'s Archil mount credentials of `kept`'s claim epoch and earlier, by their names, on the disk its
+ *  row names (computer-janitor.ts keptMountRevoke): what every end of a row kept on Archil asks before it marks the row
+ *  ended (sweepKept, finishedKept). Throws where the remove failed. */
+export type KeptMountRevoke = (runId: string, kept: Kept) => Promise<void>;
 
 /** What the janitor's pass over the kept computers did: the names it ended, the failures in words, and the earliest
  *  time still ahead (its next wake), if any. */
@@ -465,7 +482,7 @@ export async function sweepKept(deps: {
    *  the delete of a row whose computer held the run's folder on Archil, within the same bound. No claim removes that
    *  credential once the janitor ends the row (a stop takes no row; a resume that starts no computer never reads it).
    *  One that throws leaves the row ending, for the next pass. */
-  readonly revokeMount?: (runId: string, kept: Kept) => Promise<void>;
+  readonly revokeMount?: KeptMountRevoke;
 }): Promise<KeptSweep> {
   const ended: string[] = [];
   const failed: string[] = [];
