@@ -245,6 +245,22 @@ describe("Suggested agents", () => {
 });
 
 describe("Suggested agents' repositories", () => {
+  // A long list scrolls under the bar, which keeps its title and Refresh in view. jsdom lays nothing out, so this holds
+  // the structure the scrolling comes from: a page as tall as the shell's main, the bar outside the one scrolling box,
+  // every repository inside it.
+  it("keeps the bar with Refresh outside the one box that scrolls the repositories", async () => {
+    const { v2 } = server({ connected: true, suggestions: [structuredClone(SUGGESTION)], readiness: READY });
+    const { host, button } = await page(v2);
+    const scroll = host.querySelector<HTMLElement>("[data-suggestions-body]")!;
+    const classes = (el: Element) => el.className.split(" ");
+    for (const c of ["min-h-0", "flex-1", "overflow-auto"]) expect(classes(scroll)).toContain(c);
+    for (const c of ["h-full", "min-h-0", "flex", "flex-col"]) expect(classes(scroll.parentElement!)).toContain(c);
+    const bar = host.querySelector("header")!;
+    expect(scroll.contains(bar)).toBe(false);
+    expect(bar.contains(button(/^Read the suggestions and repositories again$/)!)).toBe(true);
+    expect(scroll.querySelector("article[aria-label='Triage support tickets']")).toBeTruthy();
+  });
+
   it("says what the app is across the whole width the suggestions take, both columns, not a reading column's", async () => {
     const { v2 } = server({ connected: true, suggestions: [structuredClone(SUGGESTION)], readiness: READY });
     const { host } = await page(v2);
