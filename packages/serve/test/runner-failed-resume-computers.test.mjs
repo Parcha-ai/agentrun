@@ -507,6 +507,74 @@ test("a stopped run's end that comes after a follow-up's claim took the kept mac
   assert.deepEqual(logged, [`run ${RUN}'s end at claim ${stop.epoch} lets no computer go: a later claim took the run again and may hold one of them, so they are that claim's to let go`]);
 });
 
+// The end reads the run twice, before its mark and after it, and only those reads tell it a later claim has the run: the
+// machine a follow-up took back still carries its maker's label, at or below the ending claim's. A read that fails, or
+// finds no run, tells it nothing, so the end lets nothing go. Rows: which read fails ("throws", or "none": no run found),
+// and when the follow-up comes: "between" the two reads (it claims the run and takes the kept machine back, the row
+// gone), or "claimed" before the end, taking the machine back only after it.
+test("a stopped run's end whose read of the run fails, or finds no run, lets nothing go: a follow-up's claim that took the kept machine back between its two reads, or that claimed the run before it and takes the machine after, keeps it", { timeout: 60_000 }, async (t) => {
+  const bound = (target) => (name) => (typeof target[name] === "function" ? target[name].bind(target) : target[name]);
+  const rows = [
+    { reads: ["real", "throws"], follow: "between", why: "the store did not answer" },
+    { reads: ["real", "none"], follow: "between", why: "no such run" },
+    { reads: ["throws", "real"], follow: "claimed", why: "the store did not answer" },
+  ];
+  for (const { reads, follow, why } of rows) {
+    const words = `reads ${reads.join(", ")}, follow-up ${follow}`;
+    const run = await opened(t);
+    const computers = { kinds: KINDS, providers: { docker: () => run.docker.provider() } };
+    const docker = run.docker.provider();
+    const { first, machine, kept } = await parkedWithKept(t, run, docker);
+    // A person's stop: a claim ends the run stopped. Its end has not run yet.
+    const stop = await run.server.claim(RUN, "runner-b", { leaseMs: 60_000 });
+    await run.server.runs.update(stop, { state: "stopped", outcome: "stopped" });
+    /** The follow-up: the run queued again, and claimed past the stop's end's own move. */
+    const claimed = async () => {
+      await run.server.runs.reopen(RUN, { kind: "steer", body: { text: "One more thing." } });
+      const later = await run.server.claim(RUN, "runner-a", { leaseMs: 60_000 });
+      assert.ok(later && later.epoch > stop.epoch + 1, `${words}: a later claim: ${JSON.stringify(later)}`);
+      return later;
+    };
+    /** The follow-up's claim takes the kept machine back: whether it holds it now (its row gone). */
+    const takes = async (later) => {
+      const taking = await takeKept(run.server.settings, RUN, kept, later.epoch, later);
+      return Boolean(taking && (await keptTaken(run.server.settings, RUN, taking)));
+    };
+    let later = follow === "claimed" ? await claimed() : undefined;
+    let tookBetween = false;
+    /** The end's reads of the run so far: its two, then its provider's. */
+    let asked = 0;
+    const runs = new Proxy(run.server.runs, {
+      get: (target, name) => (name === "get" ? async (...args) => {
+        const answer = reads[asked] ?? "real";
+        asked += 1;
+        if (answer === "throws") throw new Error("the store did not answer");
+        const row = answer === "none" ? undefined : await target.get(...args);
+        if (asked === 1 && follow === "between") {
+          later = await claimed();
+          tookBetween = await takes(later);
+        }
+        return row;
+      } : bound(target)(name)),
+    });
+    const store = new Proxy(run.server, { get: (target, name) => (name === "runs" ? runs : bound(target)(name)) });
+    const logged = [];
+    await runEndComputers({ store, computers, log: (line) => logged.push(line), retryMs: 50 })({ runId: RUN, epoch: stop.epoch });
+    if (follow === "between") {
+      assert.equal(tookBetween, true, `${words}: the follow-up's claim took the kept machine back between the end's two reads`);
+    } else {
+      assert.deepEqual(await readKept(run.server.settings, RUN), kept, `${words}: the end left the kept row as its park wrote it`);
+      assert.equal(await takes(later), true, `${words}: so the follow-up's claim still takes the kept machine back`);
+    }
+    assert.deepEqual(run.docker.left(), [`${machine.id}@${first.epoch}`], `${words}: the machine the follow-up's claim holds survives the stop's end`);
+    const reached = await docker.connect(machine);
+    assert.equal(reached.ok, true, `${words}: the follow-up's turn still reaches it`);
+    assert.equal((await reached.value.client.call("files.write", { path: "/workspace/still.txt", data: Buffer.from("here").toString("base64") })).ok, true, `${words}: and works on it`);
+    assert.equal(await readKept(run.server.settings, RUN), undefined, `${words}: no row of the end's is left where the follow-up took its machine`);
+    assert.deepEqual(logged, [`run ${RUN}'s end at claim ${stop.epoch} lets no computer go: the run could not be read (${why}) to tell whether a later claim holds one of them, so they are left for that claim, the run's next end or the computer janitor's sweep`], `${words}: said once`);
+  }
+});
+
 // A keep that lapsed while the run was parked: its keeper's end deleted the machine at its time and marked the row
 // ended, so the resume says why its computer is new. That row is that resume's to read and no later claim's: the run's
 // end removes it, so a follow-up's claim reads no keep and never says again that the desktop wasn't kept. Nothing
