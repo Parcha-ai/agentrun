@@ -2283,7 +2283,7 @@ test("a run whose refresh finds a later hand-over each time it has waited for on
   const run = await running;
   for (const turn of await Promise.all(turns)) assert.equal(turn.status, 200, JSON.stringify(turn.body));
   assert.equal(run.status, 503, `${ROUNDS_WHY}: ${JSON.stringify(run.body)}`);
-  assert.match(run.body.error.message, /Claude Code's login on this machine was handed over again each time this request waited for the offers made from it, 3 times: ask again/);
+  assert.match(run.body.error.message, /Claude Code's login on this machine was handed over again, or the offers made from it failed, each time this request waited for them, 3 times: ask again/);
   assert.equal(waited, LOGIN_ROUNDS, `the run waited once per look: ${JSON.stringify(whys)}`);
   assert.deepEqual(whys, ["turn", "turn", "turn"], "each wait was logged as one for a turn's making of the offers");
 });
