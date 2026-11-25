@@ -134,6 +134,22 @@ test("args_file passes when each entry the run wrote is carried by its own call,
   assert.equal(verdict([{ prompt: CLIPS[0].prompt }, { prompt: CLIPS[1].prompt }, { prompt: CLIPS[2].prompt }], sent(CLIPS)).pass, true, "entries naming one field each");
 });
 
+test("args_file reads its list cut and the fake's calls whole: an entry's [redacted] stands for the value a call sent, and nothing else", () => {
+  // A synthetic held value (fake-test-key shaped): the call sent it whole, the cut file names it [redacted].
+  const held = "fake-test-key-0001";
+  const calls = [{ tool: "mcp:fal/submit_job", arguments: { endpoint_id: "e", input: { prompt: "clip one", image_url: `https://img.example.com/a.png?token=${held}`, key: held } } }];
+  const of = (input) => argsFileVerdict("media/clips.json", { text: JSON.stringify([{ input }]) }, calls, "1 call of mcp:fal/submit_job");
+  assert.equal(of({ prompt: "clip one", image_url: "https://img.example.com/a.png?token=[redacted]", key: "[redacted]" }).pass, true, "a span and a whole value cut");
+  assert.equal(of({ prompt: "clip one", image_url: "https://img.example.com/b.png?token=[redacted]" }).pass, false, "the text around a mark still has to match");
+  assert.equal(of({ prompt: "[redacted]", key: "[redacted]" }).pass, true);
+  assert.equal(of({ prompt: "clip one", missing: "[redacted]" }).pass, false, "a mark stands for a value, never for a key the call lacks");
+  assert.equal(of({ prompt: "clip one", image_url: "https://img.example.com/a.png?token=[redacted]x" }).pass, false);
+  assert.doesNotMatch(of({ prompt: "clip two", key: "[redacted]" }).reason, new RegExp(held), "the call's value is never said");
+  // A timeline call is cut too: its [redacted] carries the entry's.
+  const cut = [{ tool: "mcp:fal/submit_job", arguments: { input: { key: "[redacted]" } } }];
+  assert.equal(argsFileVerdict("media/clips.json", { text: '[{"input":{"key":"[redacted]"}}]' }, cut, "1 call").pass, true);
+});
+
 test("args_file fails a call sent with other arguments, a call missing, one call standing for two entries, and an extra call", () => {
   const changed = [CLIPS[0], CLIPS[1], { ...CLIPS[2], negative_prompt: "blur" }];
   const off = verdict(CLIPS, sent(changed));
@@ -167,6 +183,7 @@ test("argsFilesOf reads each list whole under the run's cut, and says why one ha
     "media/raw.json": { status: 200, cut: false, body: "[]" },
     "media/big.json": { status: 200, cut: true, body: "x".repeat(ARGS_FILE_MAX + 1) },
     "media/gone.json": { status: 404, cut: false, body: "" },
+    "media/huge.json": { status: 413, cut: false, body: "" },
   };
   const asked = [];
   const api = async (_method, path) => {
@@ -181,6 +198,8 @@ test("argsFilesOf reads each list whole under the run's cut, and says why one ha
     "media/raw.json": { why: "the server did not read it under the run's cut" },
     "media/big.json": { why: `it is past ${ARGS_FILE_MAX} bytes` },
     "media/gone.json": { why: "its work folder has no such file" },
+    "media/huge.json": { why: `it is past ${ARGS_FILE_MAX} bytes` },
   });
-  assert.equal(asked.length, 4, "each path read once");
+  assert.equal(asked.length, 5, "each path read once");
+  assert.equal(ARGS_FILE_MAX, 256 * 1024, "the most a cut read answers: no list the server refuses is promised");
 });

@@ -50,6 +50,7 @@ import { instantOf } from "./trigger-adapter.js";
 import { applyBodyOf, compiled, filledPins, filledSource, onServerName, onServers, type Package, packageView, readPackage } from "./templates.js";
 import { INPUTS_DIR } from "./uploads.js";
 import { inputIssues, inputSchemaOf, isObject, type Json, MODEL_REF } from "./validate.js";
+import { RUN_FILE_CUT_MAX } from "./run-files.js";
 
 /** What a grader run is told, whatever the rubric: blind, strict, and its verdict as one JSON block. */
 export const GRADER_INSTRUCTIONS = `You grade one run of an AI agent against one rubric. You see the rubric, the task the agent was given, its answer, and the tool calls it made; nothing else, and nothing else matters.
@@ -660,6 +661,22 @@ const canonical = (value: unknown): unknown => (Array.isArray(value) ? value.map
 /** Whether `call` carries `args`: each key's value equal, an object's compared as a subset in turn. */
 const carries = (call: unknown, args: unknown): boolean => (isObject(args) ? isObject(call) && Object.entries(args).every(([key, value]) => Object.hasOwn(call, key) && carries(call[key], value)) : same(call, args));
 
+/** What the run's cut writes in place of a secret's span in a file it serves (handed-values.ts). */
+const CUT_MARK = "[redacted]";
+/** carries for an args_file entry, which is read under the run's cut while a fake's calls are whole: a string of the
+ *  entry holding CUT_MARK carries a call's string where each mark stands for one character or more, so a call that
+ *  sent a held secret still carries the entry that names it cut. Nothing of the call's value is said. */
+const carriesCut = (call: unknown, entry: unknown): boolean => {
+  if (isObject(entry)) return isObject(call) && Object.entries(entry).every(([key, value]) => Object.hasOwn(call, key) && carriesCut(call[key], value));
+  if (Array.isArray(entry)) return Array.isArray(call) && call.length === entry.length && entry.every((value, i) => carriesCut(call[i], value));
+  if (typeof entry === "string" && entry.includes(CUT_MARK)) {
+    if (typeof call !== "string") return false;
+    const pattern = entry.split(CUT_MARK).map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("[\\s\\S]+");
+    return new RegExp(`^${pattern}$`).test(call);
+  }
+  return same(call, entry);
+};
+
 /** Whether `fixture`'s tool answers `args` with one of its answers (the first whose `when` matches), else its default. */
 export function fakeAnswer(fixture: McpFixture, tool: string, args: Json): Json {
   const spec = fixture.tools[tool];
@@ -794,7 +811,7 @@ export function argsFileVerdict(path: string, file: { text: string } | { why: st
   const odd = entries.findIndex((entry) => !isObject(entry));
   if (odd >= 0) return { pass: false, reason: `entry ${odd + 1} of the run's ${path} is not an argument object` };
   // Kuhn's augmenting paths: owner[c] is the entry call c stands for.
-  const carriers = entries.map((entry) => calls.flatMap((call, c) => (carries(call.arguments, entry) ? [c] : [])));
+  const carriers = entries.map((entry) => calls.flatMap((call, c) => (carriesCut(call.arguments, entry) ? [c] : [])));
   const owner = new Array<number>(calls.length).fill(-1);
   const give = (e: number, seen: Set<number>): boolean => carriers[e]!.some((c) => {
     if (seen.has(c)) return false;
@@ -1444,8 +1461,8 @@ export async function finalFilesOf(api: Api, runId: string, listed: readonly Lis
   return listed.map((file) => ({ ...(file.name !== undefined ? { name: file.name } : {}), bytes: file.bytes, ...(texts.has(file.path) ? { text: texts.get(file.path)! } : {}) }));
 }
 
-/** The most bytes of an args_file a tool_used grader reads. */
-export const ARGS_FILE_MAX = 1_000_000;
+/** The most bytes of an args_file a tool_used grader reads: the most a cut read answers (run-files.ts). */
+export const ARGS_FILE_MAX = RUN_FILE_CUT_MAX;
 
 /** Each file a tool_used grader's args_file names, read whole under the run's cut (as finalFilesOf reads a file: an
  *  answer without the cut's mark is refused), by its path: its text, or why there is none (absent, refused, past
@@ -1461,6 +1478,7 @@ export async function argsFilesOf(api: Api, runId: string, paths: readonly strin
     });
     if ("error" in read) out[path] = { why: `the read failed (${read.error})` };
     else if (read.status === 404) out[path] = { why: "its work folder has no such file" };
+    else if (read.status === 413) out[path] = { why: `it is past ${ARGS_FILE_MAX} bytes` };
     else if (read.status !== 200 || typeof read.body !== "string") out[path] = { why: `the server answered ${read.status}` };
     else if (read.headers?.get("x-agentrun-cut") !== "run") out[path] = { why: "the server did not read it under the run's cut" };
     else if (Buffer.byteLength(read.body) > ARGS_FILE_MAX) out[path] = { why: `it is past ${ARGS_FILE_MAX} bytes` };

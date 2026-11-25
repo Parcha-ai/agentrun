@@ -365,9 +365,11 @@ answer when it is one JSON object and nothing else. The report lists it as the g
   tool's calls: the eval reads the timeline with `calls=whole`, which carries each call's arguments through the run's
   redaction (a held value or a key-shaped string reads `[redacted]`, and so never matches), each string cut at 2,000
   characters. With `args_file`, the eval reads that file from the run's work folder after the run (under the run's
-  cut, at most 1,000,000 bytes) and matches its entries to the calls one to one, so two entries never pass on one
-  call: a run that wrote a list of the twelve clips it meant to make, and sent them, passes only when each clip's
-  call carries what its entry says. A file that is missing, not JSON or not a list of objects fails the grader, saying which.
+  cut, at most 262,144 bytes, the most a cut read answers) and matches its entries to the calls one to one, so two
+  entries never pass on one call: a run that wrote a list of the twelve clips it meant to make, and sent them, passes
+  only when each clip's call carries what its entry says. Since the file is read cut, an entry's `[redacted]` stands
+  for one character or more of the call's string, so a call that sent a held value still carries the entry that names
+  it. A file that is missing, not JSON or not a list of objects fails the grader, saying which.
 - `file_exists`: `path`, relative to the run's work folder, among its files.
 - `llm`: a run of a grader agent on the same server, with no tools, a fixed instruction and the `--grader-model`. It is
   given the rubric, the run's input, its answer, its tool calls and the calls each fake received, and with `target`
