@@ -31,7 +31,7 @@ const fs = require('node:fs'), path = require('node:path');
 const file = path.join(process.env.HOME ?? '', 'Library', 'Keychains', 'login.keychain-db');
 const [command, ...args] = process.argv.slice(2);
 const flag = (name) => args[args.indexOf(name) + 1];
-fs.appendFileSync(path.join(path.dirname(process.argv[1]), 'asked.jsonl'), JSON.stringify([command, flag('-a')]) + '\\n');
+fs.appendFileSync(path.join(__dirname, 'asked.jsonl'), JSON.stringify([command, flag('-a')]) + '\\n');
 if (!fs.existsSync(file)) process.exit(command === 'add-generic-password' ? 50 : 44);
 const items = JSON.parse(fs.readFileSync(file, 'utf8'));
 const key = JSON.stringify([flag('-a'), flag('-s')]);
@@ -48,7 +48,7 @@ const CLI = `#!${process.execPath}
 const fs = require('node:fs'), path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const env = process.env, args = process.argv.slice(2);
-fs.appendFileSync(path.join(path.dirname(process.argv[1]), 'started.jsonl'), JSON.stringify({ args, USER: env.USER ?? null, LOGNAME: env.LOGNAME ?? null }) + '\\n');
+fs.appendFileSync(path.join(__dirname, 'started.jsonl'), JSON.stringify({ args, USER: env.USER ?? null, LOGNAME: env.LOGNAME ?? null }) + '\\n');
 const bunUsername = env.USER ?? 'unknown';
 const named = env.USER || bunUsername;
 const user = /^[a-zA-Z0-9._-]+$/.test(named) ? named : 'claude-code-user';
