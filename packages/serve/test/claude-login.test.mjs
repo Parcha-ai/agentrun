@@ -256,7 +256,12 @@ test("a pi agent in a box on an OpenRouter model, OpenRouter's key saved and the
   const { api, fake } = await withDockerBox(t);
   fake.status(SIGNED_IN);
   assert.equal((await api("PUT", "/settings/claude-login", { only_me: true })).body.state, "signed_in");
-  assert.equal((await api("PUT", "/settings/tool-keys/openrouter", { values: { OPENROUTER_API_KEY: "fake-test-key" } })).status, 204);
+  // The save's check of the key (key-check.ts) asks OpenRouter: here a stand-in that accepts it, never the network.
+  const real = globalThis.fetch;
+  globalThis.fetch = async (input, init) => (String(input?.url ?? input) === "https://openrouter.ai/api/v1/key" ? new Response("{}", { status: 200 }) : real(input, init));
+  t.after(() => void (globalThis.fetch = real));
+  const key = await api("PUT", "/settings/tool-keys/openrouter", { values: { OPENROUTER_API_KEY: "fake-test-key" } });
+  assert.equal(key.status, 204, JSON.stringify(key.body));
   const saved = await api("POST", "/agents", agent("piboxed", { harness: "pi", model: "openrouter/anthropic/claude-sonnet-5.5", place: { mode: "sandbox", box: "docker" } }));
   assert.equal(saved.status, 201, JSON.stringify(saved.body));
   assert.deepEqual(saved.body.warnings.filter((w) => w.field === "definition.model"), [], `the save of a box agent whose OpenRouter key is saved warned of its model: ${JSON.stringify(saved.body.warnings)}`);
