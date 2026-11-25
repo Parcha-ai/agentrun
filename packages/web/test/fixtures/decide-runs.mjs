@@ -4,12 +4,15 @@
 // zeroed (each try's ms, the record's latency). decide-runs.golden.json was written by this sequence at 36408cca68,
 // before the decider gave scores and the step chose what to show, so the drop policy is held to it byte for byte.
 // decide-runs-pre-guard.golden.json holds the sha256 of each answer, model text and receipt `policySteps` gave at
-// 489a989503, before the page guard, so a web with the guard off is held to it under every policy. Both have moved three
+// 489a989503, before the page guard, so a web with the guard off is held to it under every policy. Both have moved four
 // times since: for web_search's objective, each search answer's `query` became `objective` and `queries`, each search
 // receipt gained `queries`, an empty search's error and a fetch's sift line name the objective; at step 6 (a fetch with
 // no task), whose part comes back with no sift field, so its answer, text and receipt's out size moved with it; and in
 // each receipt with a decision request, whose line is now what it was charged (the cost the fake gave, $0.0001, under
-// its $0.0002 hold), so those receipts' cost moved, and nothing else in them.
+// its $0.0002 hold), so those receipts' cost moved, and nothing else in them; and at step 7 (a refused fetch), whose
+// fallback line now says "Parallel gave no page" where it said "Parallel was picked for web_fetch and gave no page", so
+// its text, the receipt's copy of it and the receipt's out size (29 fewer characters) moved, and nothing else. web-runs'
+// fetch of the same refused page (its step 5) moved the same way.
 import { deciderFrom, searchText, webFetchText } from "../../dist/index.js";
 import fakeParallel from "./faux-parallel.mjs";
 import { fakeWeb, PUBLIC } from "./web-runs.mjs";

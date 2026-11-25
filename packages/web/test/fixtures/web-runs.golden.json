@@ -225,8 +225,8 @@
    },
    "injection": "unjudged",
    "out": {
-    "bytes": 360,
-    "chars": 360
+    "bytes": 331,
+    "chars": 331
    },
    "cost": {
     "usd": 0,
