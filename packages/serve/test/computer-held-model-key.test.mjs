@@ -36,7 +36,7 @@ import { fakeComputer } from "./workspace-fake-computer.mjs";
 const { message, prepareLaunch } = await import("../dist/runs-over-store.js");
 const { openFeedbackRound } = await import("../dist/runner/feedback-round.js");
 const { journalHeld } = await import("../dist/runner/held-run.js");
-const { heldIn } = await import("../dist/computer-held.js");
+const { heldIn, HOLD_MINUTES } = await import("../dist/computer-held.js");
 const { CALL_KIND } = await import("../dist/computer-channel.js");
 const { ApiError } = await import("../dist/errors.js");
 const { routeOf } = await import("../dist/runner/model-route.js");
@@ -426,6 +426,27 @@ test("a launch row whose hold.refused can't be read (corrupt, or written by anot
     assert.ok(!read.hold.refused.message.includes(RAW) && !JSON.stringify(read.hold.refused).includes(RAW), `and never what it holds: ${what}`);
     const store = { runners: { live: async () => [] }, runs: { launch: async () => ({ body }) } };
     const notRunnable = (error) => error instanceof ApiError && error.code === "agent_not_runnable" && !error.message.includes(RAW);
+    await assert.rejects(heldRoute("startRun", "run-1", {}, store), notRunnable, `its start is refused: ${what}`);
+    const moment = { id: "run-1", agentId: "agent-1", kind: "agentic", harness: "pi", cancelled: false, terminal: false, working: false, awaitingAnswer: false, steers: true, paused: false };
+    await assert.rejects(message(store, moment, "Go on."), notRunnable, `and a message is: ${what}`);
+    const deps = { store: { sealedKeys: { get: async () => undefined }, settings: { get: async () => undefined } }, env: { OPENROUTER_API_KEY: HOST_MODEL_KEY } };
+    const claimed = await claimSecrets(deps, { kind: "agentic", body: { model: MODEL, tools: [] } }, read);
+    assert.equal(claimed.OPENROUTER_API_KEY, undefined, `its claim is laid no model key: ${what}`);
+  }
+});
+
+test("a launch row whose hold.minutes isn't a number keeps its hold and its refused: its start and messages are refused, and its claim is laid no model key", async () => {
+  // A corrupt row's minutes (a string, null, none at all) is no reason to drop the hold: read as not held, the run would
+  // start and its claim open the keys its model was refused for. It waits the default minutes instead.
+  for (const minutesRow of [{ minutes: "5" }, { minutes: null }, {}]) {
+    const body = { input: { content: "Do the task." }, title: "t", place: { mode: "runner" }, hold: { ...minutesRow, refused: REFUSAL } };
+    const what = JSON.stringify(minutesRow);
+    const read = readLaunchBody(body);
+    assert.ok(read?.hold, `a hold whose minutes can't be read is a hold still: ${what}`);
+    assert.equal(read.hold.minutes, HOLD_MINUTES, `it waits the default minutes: ${what}`);
+    assert.deepEqual(read.hold.refused, REFUSAL, `and keeps its refused: ${what}`);
+    const store = { runners: { live: async () => [] }, runs: { launch: async () => ({ body }) } };
+    const notRunnable = (error) => error instanceof ApiError && error.code === "agent_not_runnable";
     await assert.rejects(heldRoute("startRun", "run-1", {}, store), notRunnable, `its start is refused: ${what}`);
     const moment = { id: "run-1", agentId: "agent-1", kind: "agentic", harness: "pi", cancelled: false, terminal: false, working: false, awaitingAnswer: false, steers: true, paused: false };
     await assert.rejects(message(store, moment, "Go on."), notRunnable, `and a message is: ${what}`);
