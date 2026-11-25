@@ -11,6 +11,7 @@ import type { LearnedWorkflow } from "../learning.js";
 import { GATEWAY_KEY_ENV, hostModel, modelKeys, PROVIDER_KEYS, type Tier, tierModelOf, TIERS, workflowNodes } from "../model.js";
 import type { RunLaunch } from "../run-launch.js";
 import { keysFor, needsOf, RUN_SECRETS, type RunNeeds } from "../run-secrets.js";
+import { BUILTIN_OWN_KEYS } from "../harness-table.js";
 import { DECISION_KEYS, withoutSecrets } from "../secrets.js";
 import { getSealedKey } from "../server-keys.js";
 import { PLAN_PROVIDER, planOf, planReaderOf, withPlan } from "../chatgpt-plan.js";
@@ -53,8 +54,9 @@ type RunLaunchReader = { launch(runId: string): Promise<{ readonly sealed: Uint8
  *  object per claim, so no run's keys reach another's. `redact`: the runner's one
  *  redactor, which the run's own tool keys are carried into before they are laid, so its journal is cut of them as it is
  *  written (no one holds them after the turn); a plain JS caller that passes none lays no run key, and throws. A held run
- *  its model kept from running at its create (hold.refused) is laid no model key and no plan sign-in: its model runs
- *  nowhere. Its tools' keys, its decision keys and its own tool keys are laid as any run's. The one tool key row that names
+ *  its model kept from running at its create (hold.refused) is laid no model key, no built-in harness's own key
+ *  (harness-table.ts BUILTIN_OWN_KEYS: Cursor's) and no plan sign-in: its model runs nowhere and its agent never starts.
+ *  Its tools' keys, its decision keys and its own tool keys are laid as any run's. The one tool key row that names
  *  a model key's name, TypeSafe's (key-words.ts; model.ts PROVIDER_KEYS typesafe), is a decision key (secrets.ts
  *  DECISION_KEYS): keysFor never names one, so the model key filter below never sees it, and decisionKeysFor lays it
  *  apart, as it lays OpenRouter's for a decision node that runs on it. */
@@ -62,9 +64,11 @@ export async function claimSecrets(deps: ClaimSecretsDeps & { readonly redact: H
   const base = withoutSecrets(deps.env ?? {});
   const needs = await needsOf(revision);
   const modelRefused = launch.hold?.refused !== undefined;
-  // A held run its model kept from running lays no model key, so its claim opens none: a key it never lays is never
-  // decrypted. OpenRouter's is read still for a run whose decision nodes may run on it (decisionKeysFor), as a decision key.
-  const unread = modelRefused ? MODEL_KEY_NAMES.filter((name) => !(name === JEV_OPENROUTER_KEY_ENV && needs.decisionProviders.length > 0)) : [];
+  // A held run its model kept from running lays no model key and no built-in harness's own key (its agent never starts),
+  // so its claim opens none: a key it never lays is never decrypted. OpenRouter's is read still for a run whose decision
+  // nodes may run on it (decisionKeysFor), as a decision key.
+  const unread = modelRefused ? [...MODEL_KEY_NAMES.filter((name) => !(name === JEV_OPENROUTER_KEY_ENV && needs.decisionProviders.length > 0)), ...BUILTIN_OWN_KEYS] : [];
+  const heldOff = (name: string): boolean => modelRefused && (MODEL_KEY_NAMES.includes(name) || BUILTIN_OWN_KEYS.includes(name));
   const working = await workingEnv(deps, unread);
   // An agentic run's model keys are its PINNED model's (the launch's, chosen at its start), the one its route sends, never
   // the host's default now: a key saved since the run started (another provider's, now first) would otherwise be opened
@@ -76,7 +80,7 @@ export async function claimSecrets(deps: ClaimSecretsDeps & { readonly redact: H
   const savedGateway = savedGatewayIn(deps.env ?? {});
   // A model key is never enumerable, as withModelKeys lays a route's, but unlike a route's it stays writable and deletable
   // (withoutModelKeys drops it); a tool key is a plain value, which its tools read and hand on.
-  for (const name of keysFor(scoped, working)) if (working[name] !== undefined && !(savedGateway && name === GATEWAY_KEY_ENV) && !(modelRefused && MODEL_KEY_NAMES.includes(name))) Object.defineProperty(env, name, { value: working[name], enumerable: !MODEL_KEY_NAMES.includes(name), writable: true, configurable: true });
+  for (const name of keysFor(scoped, working)) if (working[name] !== undefined && !(savedGateway && name === GATEWAY_KEY_ENV) && !heldOff(name)) Object.defineProperty(env, name, { value: working[name], enumerable: !MODEL_KEY_NAMES.includes(name), writable: true, configurable: true });
   const decision = decisionKeysFor(working, { providers: needs.decisionProviders, parallelWeb: launch.plane ? handsParallel(launch.plane) : false });
   // A decision key is a plain value, as before, under a model key's name too (OpenRouter's, which Jev's nodes use).
   for (const [name, value] of Object.entries(decision)) Object.defineProperty(env, name, { value, enumerable: true, writable: true, configurable: true });

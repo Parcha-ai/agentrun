@@ -525,7 +525,9 @@ export function cursorOptions(facts: AdapterFacts): AcpPlanEntryOptions {
     card: cursorCardOf,
     missing: async (env) => void (await launcher(env)),
     recipe: async (launch) => {
-      if (!launch.env[CURSOR_KEY]) throw new HarnessUnavailable(`${facts.label} runs on your Cursor API key, and ${CURSOR_KEY} is not set where AgentRun starts: set it there (it is handed to Cursor's runs alone), then restart AgentRun.`);
+      // A held run its model kept from running is laid no key (claim-secrets.ts) and never starts Cursor (acpPlanEntryOf),
+      // so it is never refused for the key: its claim holds its computer.
+      if (!launch.held && !launch.env[CURSOR_KEY]) throw new HarnessUnavailable(`${facts.label} runs on your Cursor API key, and ${CURSOR_KEY} is not set where AgentRun starts: set it there (it is handed to Cursor's runs alone), then restart AgentRun.`);
       const acp = acpPackage()!;
       let limits: { maxTurns: number; maxToolCalls: number };
       try {
