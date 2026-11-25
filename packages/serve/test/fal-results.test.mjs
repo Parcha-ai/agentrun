@@ -1,10 +1,10 @@
 // A completed fal job's result, filed in the run's files at evidence/fal/<request_id>.json as fal answered it, so an
 // agent reads it from the file instead of retyping it out of the answer. fal names the file (its request_id), so the
-// name is checked as a boundary: a request_id that isn't one plain name (a slash, "..", a NUL byte, an absolute path, a
-// name past the limit) files nothing, and nothing is written through a link at evidence/ or evidence/fal/ or in place
+// name is checked as a boundary: only fal's UUID shape names a file, so a request_id that isn't one (a slash, "..", a
+// NUL byte, an absolute path, a long name, a plain name that is path-safe but not a UUID) files nothing, and nothing is written through a link at evidence/ or evidence/fal/ or in place
 // of a file already there. The answer the model reads is fal's text byte for byte in every case, and the call itself
 // works: filing is never a failed call. wait_for_jobs bills nothing, so filing its result books nothing either.
-// Each refusal case has a control that files something in the same run (a sibling job with a plain id, or the same
+// Each refusal case has a control that files something in the same run (a sibling job with a UUID, or the same
 // answer once the link is gone), so a gateway that files nothing at all fails here too.
 import assert from "node:assert/strict";
 import { lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
@@ -132,15 +132,18 @@ for (const [name, bad] of [
   ["an absolute path", "/ABSOLUTE"],
   ["a name past the limit (129 plain characters)", "a".repeat(129)],
   ["a name longer than a filename (300 characters)", "b".repeat(300)],
+  // Path-safe, but not fal's: fal's request ids are UUIDs, and only a UUID names a file.
+  ["a plain name that is not a UUID", "req-probe-1"],
+  ["a UUID with a suffix", "01a1fae4-8bd3-74a0-a095-67c75220bb80.x"],
 ]) {
-  test(`a request_id with ${name} files nothing, the call works and its sibling with a plain id is filed`, async (t) => {
+  test(`a request_id with ${name} files nothing, the call works and its sibling with a UUID is filed`, async (t) => {
     const outside = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "fal-results-outside-"));
     t.after(() => rm(outside, { recursive: true, force: true }));
     const id = bad === "/ABSOLUTE" ? join(outside, "abs") : bad;
     const good = "01a1fb16-9efc-7bb0-9c97-321095a32f8f";
     const run = await runOn(t, () => ({ all_terminal: true, jobs: [completed(0, id, voiceResult(2)), completed(1, good, voiceResult(3))] }));
     await run.wait();
-    assert.deepEqual(await filed(run.work, good), voiceResult(3), "the plain id's result is filed");
+    assert.deepEqual(await filed(run.work, good), voiceResult(3), "the UUID sibling's result is filed");
     assert.deepEqual(await tree(run.work), ["evidence", "evidence/fal", `evidence/fal/${good}.json`], "and nothing else in the run's files");
     assert.deepEqual(await tree(outside), [], "nothing outside them");
   });
