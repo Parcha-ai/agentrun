@@ -712,8 +712,9 @@ export const signOutLeft = (left: readonly string[], keychain: boolean): string 
 export const machineSignOutRefused = (folder: string): string =>
   `This is your own Claude Code login on this machine (${folder}), which AgentRun only uses: it never signs it out. Run \`claude auth logout\` in a terminal there to sign it out, or turn the mode off here.`;
 
-/** POST /settings/claude-login/sign-out's answer: whether the CLI confirmed its own sign-out (true, too, where no login was
- *  kept here), its words when it didn't, and the view after it (`off`). */
+/** POST /settings/claude-login/sign-out's answer: whether all of the login is gone (the CLI confirmed its own sign-out and
+ *  every removal landed; true, too, where no login was kept here), else words saying what may remain
+ *  (LOGIN_SIGN_OUT_UNCONFIRMED, signOutLeft), and the view after it (`off`). */
 export type ClaudeLoginSignOut = { confirmed: boolean; message?: string; login: ClaudeLoginView };
 
 /** POST /settings/claude-login/sign-out: AgentRun's own login (`<data>/claude-login`) signed out and removed, so the next
@@ -726,8 +727,8 @@ export type ClaudeLoginSignOut = { confirmed: boolean; message?: string; login: 
  *  (claude-login-token.ts forgetLoginTokens). Each removal stands alone: one that fails is named in the answer
  *  (signOutLeft, `confirmed` false), and the others, the reader's drop and the server's reread of the keys still happen.
  *  Where the folder is a link (put there after the turn-on, which refuses one), the link alone is removed: no CLI runs
- *  through it, nothing it leads to is touched, and the answer names it.
- *  Runs already going are left as a turn-off leaves them: each keeps the token its CLI holds, and fails in
+ *  through it, nothing it leads to is touched, and the answer names it. Runs already going are left as a turn-off
+ *  leaves them: each keeps the token its CLI holds, and fails in
  *  LOGIN_SIGNED_OUT's words at its next read of the login; one claimed on it and started while the mode is off is refused
  *  at its start (claude-login-token.ts LOGIN_CHANGED_SINCE_CLAIM). That check is of the folder, not the account, so one
  *  started after a turn-on and a new sign-in runs on that sign-in. A run whose CLI reads the folder itself (in the
