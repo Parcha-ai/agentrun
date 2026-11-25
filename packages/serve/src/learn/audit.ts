@@ -19,6 +19,10 @@ import { type CostStop, type PromotionRecord, promotionStartOf, servingOf, type 
 /** What every shadow run's id starts with: its served run's id follows (shadowRunId). No server-minted id starts so. */
 export const SHADOW_PREFIX = "audit.";
 
+/** The newest rows the ledger keeps: twice the widest window a definition may set (AUDIT_MAX); with them, the started
+ *  lines of theirs, and every open one (addAuditLines trims it in the write that adds). */
+export const AUDITS_KEPT = 2_000;
+
 /** One finished audit. `run`: the served run; `shadow_run`: its shadow (null for a grade's row, or one never started);
  *  `workflow` at `digest` served it, under the promotion begun at `promoted_at` (learn/promote.ts promotionStartOf: the
  *  one serving when its shadow started, or at the grade; null: none); `agreed`: whether the two answers say the same (a
@@ -142,7 +146,7 @@ function lineOf(value: unknown): LedgerLine | undefined {
 /** The store's learning records, as the ledger is read and written. */
 export type AuditRecords = Pick<Store["learning"], "records" | "changeRecords">;
 
-const linesOf = (records: readonly LearningRecord[]): LedgerLine[] => records.flatMap((one) => { const line = lineOf(one.data); return line ? [line] : []; });
+const linesOf = (records: readonly Pick<LearningRecord, "data">[]): LedgerLine[] => records.flatMap((one) => { const line = lineOf(one.data); return line ? [line] : []; });
 /** A line's record: its served run, so the run's purge deletes it. */
 const lineWrite = (line: LedgerLine): LearningRecordWrite => ({ runId: line.run, workflow: line.workflow, digest: line.digest, data: line });
 
@@ -170,10 +174,20 @@ export function addAuditLines(rows: AuditRecords, agentId: string, lines: readon
       known.add(lineKey(line));
       added.push(line);
     }
-    const result = { all: [...before, ...added], added };
-    if (!added.length && kept.length === records.length) return { result };
-    return { records: [...kept.map((one) => ({ seq: one.seq, runId: one.runId, workflow: one.workflow, digest: one.digest, data: one.data })), ...added.map(lineWrite)], result };
+    if (!added.length && kept.length === records.length) return { result: { all: before, added } };
+    const writes = trimmed([...kept.map((one) => ({ seq: one.seq, runId: one.runId, workflow: one.workflow, digest: one.digest, data: one.data })), ...added.map(lineWrite)]);
+    return { records: writes, result: { all: linesOf(writes), added } };
   });
+}
+
+/** The ledger's records from the AUDITS_KEPT-th newest row on, and every open started line before it (main's folder
+ *  ledger kept the same): so it never grows past its cap. */
+function trimmed(writes: readonly LearningRecordWrite[]): LearningRecordWrite[] {
+  const lines = writes.map((one) => lineOf(one.data));
+  const rows = lines.flatMap((line, i) => (line && line.source !== "started" ? [i] : []));
+  const from = rows.length > AUDITS_KEPT ? rows[rows.length - AUDITS_KEPT]! : 0;
+  const open = new Set<LedgerLine>(openAudits(lines.filter((line): line is LedgerLine => line !== undefined)));
+  return writes.filter((_, i) => i >= from || (lines[i] !== undefined && open.has(lines[i]!)));
 }
 
 /** The rows the hold rule counts for `workflow` at `digest` under the promotion begun at `promotedAt` (learn/promote.ts
