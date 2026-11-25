@@ -17,7 +17,7 @@ import { holdSecret } from "./secrets.js";
 import { registerSecretPage, registerSecretWrite } from "./secret-writes.js";
 import { putSealedKey } from "./server-keys.js";
 import { held } from "./runner/held.js";
-import { type SealedKeys, sealColumn, sealedAt, type Settings, StoreClosed, STORE_WRITE_DEADLINE_MS, unsealColumn } from "./store/index.js";
+import { type SealedKeys, sealColumn, sealedAt, type Settings, StoreBusy, StoreClosed, StoreDeadline, STORE_WRITE_DEADLINE_MS, unsealColumn } from "./store/index.js";
 
 // Every operation of the sign-in is the owner's session's alone (secret-writes.ts), the token in none of them: its view
 // holds no token, but a pending sign-in's link is the owner's to open.
@@ -212,11 +212,15 @@ export function stopRenewals(store: ChatGPTPlanDeps["store"], ms = RENEWAL_DRAIN
   return Promise.race([ended, new Promise<void>((done) => (timer = setTimeout(done, ms)))]).finally(() => clearTimeout(timer));
 }
 
-/** A store fault's class for the log (one of the store's own, else "other"), never its words. */
+/** A store fault's class for the log (one of the store's own, or Postgres's Unanswered, else "other"), never its words. */
 const faultClass = (error: unknown): string => {
   const name = (error as Error | undefined)?.name;
-  return typeof name === "string" && /^Store[A-Za-z]+$/.test(name) ? name : "other";
+  return typeof name === "string" && (/^Store[A-Za-z]+$/.test(name) || name === "Unanswered") ? name : "other";
 };
+
+/** A write that faulted with `error` and surely wrote nothing: the store refused it (busy) or rolled it back (past its
+ *  deadline). Any other fault, Postgres's commit Unanswered first, may still land after it was told. */
+const rolledBack = (error: unknown): boolean => error instanceof StoreBusy || error instanceof StoreDeadline;
 
 /** `answered`: OpenAI answered the code with a credential, which is being kept: past the wait, so its end is no timeout. */
 type Pending = { abort: AbortController; state: string; authorizeUrl: string; expiresAt: number; paste: (url: string) => void; result: Promise<void>; timer: NodeJS.Timeout; answered?: boolean };
@@ -789,10 +793,13 @@ export class ChatGPTPlan implements PlanReader {
   }
 
   /** A write back of `renewed` over this holder's lease (sealed as `leased`) that faulted with `fault`, not StoreClosed:
-   *  the row read back says how it ended. It holds the new pair: saved (its bytes). It is still the lease: nothing landed,
-   *  so it is written again. Anything else: the lease lost (none), as a compare-and-set that lost. Only a read back (or a
-   *  write again) that faults too leaves the outcome unknown: the row may hold the pair, so it is kept, never revoked,
-   *  and the log says so with the fault's class (never its words). */
+   *  the row read back says how it ended. It holds the new pair: saved (its bytes). It is still the lease: nothing has
+   *  landed yet, so it is written again. Anything else: the lease lost (none), as a compare-and-set that lost. A write
+   *  again that loses: the first may have landed late (a Postgres commit unanswered, finishing after the read; the write
+   *  again waited on its row lock, so it has ended now), and the row read once more says which. A write again refused
+   *  unsent (the store closed): revoked only when the first surely wrote nothing (rolledBack). Only a read back or a write
+   *  again that faults otherwise, or a first that may still land, leaves the outcome unknown: the row may hold the pair,
+   *  so it is kept, never revoked, and the log says so with the fault's class (never its words). */
   private async readBack(leased: Uint8Array, renewed: Row, fault: unknown): Promise<Uint8Array | undefined> {
     const unknown = (error: unknown): never => {
       this.#deps.log?.({ chatgpt: "renewed_pair_unsaved", write: "unknown", reason: faultClass(error) });
@@ -806,13 +813,23 @@ export class ChatGPTPlan implements PlanReader {
     }
     if (now?.row.credential.refresh === renewed.credential.refresh) return now.bytes;
     if (!now || !Buffer.from(now.bytes).equals(Buffer.from(leased))) return undefined;
+    let again: Uint8Array | undefined;
     try {
-      return await this.swap(leased, renewed);
+      again = await this.swap(leased, renewed);
     } catch (error) {
       if (!(error instanceof StoreClosed)) return unknown(error);
+      if (!rolledBack(fault)) return unknown(fault);
       await this.revoke(renewed.credential);
       throw new PlanUnavailable(RENEW_LATER);
     }
+    if (again) return again;
+    let last: { row: Row; bytes: Uint8Array } | undefined;
+    try {
+      last = await this.readSealed();
+    } catch (error) {
+      return unknown(error);
+    }
+    return last?.row.credential.refresh === renewed.credential.refresh ? last.bytes : undefined;
   }
 
   /** A pair this holder got and could not save (a renewal whose write back lost: renewUnder), whose revocation OpenAI
@@ -828,7 +845,7 @@ export class ChatGPTPlan implements PlanReader {
       if (now.row.lease && now.row.lease.until > (await this.storeNow())) {
         // Past the bound, or its store stopping (a wait here would outlast the stop's drain).
         if (this.now() > giveUp || this.stopping()) {
-          this.#deps.log?.({ chatgpt: "renewed_pair_unsaved" });
+          this.#deps.log?.({ chatgpt: "renewed_pair_unsaved", carry: this.stopping() ? "stopping" : "lease_held" });
           return;
         }
         await sleep(LEASE_WAIT_MS);
