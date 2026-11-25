@@ -555,8 +555,9 @@ test("a kept desktop whose folder is not on Archil: the janitor ends it with no 
   assert.deepEqual(archil.requests, []);
 });
 
-/** A claim's own Archil step, as archil-claim.ts makes it, for `one`'s run-1 at `epoch`, over the fake `archil`. */
-const archilStepOf = (one, archil, epoch) =>
+/** A claim's own Archil step, as archil-claim.ts makes it, for `one`'s run-1 at `epoch`, over the fake `archil`, with
+ *  `extra` options (its log). */
+const archilStepOf = (one, archil, epoch, extra = {}) =>
   archilClaim({
     settings: { region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" },
     keys: one.store.sealedKeys,
@@ -566,6 +567,7 @@ const archilStepOf = (one, archil, epoch) =>
     control: { baseUrl: archil.baseUrl, fetch: archil.fetch },
     run: { agentId: "agent-1", store: one.store },
     makeDisk: (options) => ({ id: options.disk }),
+    ...extra,
   });
 
 test("Mode 2, the parking runner's own timer deletes the kept desktop and Archil refuses its mount credential's remove: the row is left ending and said, and the janitor's next pass removes the credential", async (t) => {
@@ -1335,6 +1337,36 @@ test("Mode 2, a run's process whose credential remove failed, its runner's relea
   refuse = false;
   const swept = await one.janitor();
   assert.deepEqual(swept.failed, []);
+  assert.deepEqual(nicknames(archil), [], "removed by the janitor's pass");
+});
+
+test("Mode 2, a claim's release whose leave the store fails: it is said on the log, and a later leave writes the row, not the failed write again", async () => {
+  let refuse = true;
+  const archil = archilControlFetch({ answer: ({ method }) => (refuse && method === "DELETE" ? { status: 500, body: { error: "Archil is down" } } : undefined) });
+  const one = await server({ mode: 2, archil });
+  const logged = [];
+  const step = await archilStepOf(one, archil, 3, { log: (line) => void logged.push(line) });
+  await step.token();
+  await assert.rejects(step.revoke(), /Archil is down/);
+  // The store fails the leave's first write, as a store blip does.
+  const settings = one.store.settings;
+  const putIfAbsent = settings.putIfAbsent;
+  let failing = 1;
+  settings.putIfAbsent = async (key, ...rest) => {
+    if (key === "archil_revoke:run-1" && failing > 0) {
+      failing -= 1;
+      throw new Error("the store dropped the write");
+    }
+    return putIfAbsent(key, ...rest);
+  };
+  step.release();
+  for (let turn = 0; turn < 10; turn += 1) await new Promise((done) => setImmediate(done));
+  assert.equal(failing, 0, "the release's leave asked the store");
+  assert.ok(logged.some((line) => /run run-1's Archil mount credential remove could not be left for the janitor, so it lapses at its ttl: .*the store dropped the write/.test(line)), logged.join("\n"));
+  await step.leave();
+  assert.equal((await settings.get("archil_revoke:run-1"))?.epoch, 3, "a later leave writes the row");
+  refuse = false;
+  assert.deepEqual((await one.janitor()).failed, []);
   assert.deepEqual(nicknames(archil), [], "removed by the janitor's pass");
 });
 
