@@ -1635,6 +1635,61 @@ test("an ask that reads the old pair while the renewal that rotated its refresh 
   assert.deepEqual(listing(login.dir), [".credentials.json"], "no temp file or lock left");
 });
 
+test("an ask whose read of the file starts before a renewal that rotated its refresh token holds the new pair unsaved, and ends after that renewal settled, is handed the held pair's token, never refused in LOGIN_RUNNING_OUT's words for the refresh token that renewal spent", { timeout: 20_000 }, async (t) => {
+  assert.equal(typeof tokens.renewLogin, "function", "the runner's renewal (renewLogin)");
+  const { login, write } = loginFolder(t);
+  const now = 1_900_000_000_000;
+  const file = join(login.dir, ".credentials.json");
+  const old = { access: fake("access-old"), refresh: fake("refresh-old") };
+  const next = { access: fake("access-new"), refresh: fake("refresh-new") };
+  write(oauthOf(old.access, now + 60_000, old.refresh));
+  const endpoint = await rotatingEndpoint(t, new Map([[old.refresh, next]]));
+  // Anthropic has answered the post of the old refresh token with a new one (the old one is spent). The renewal's save
+  // reads the file next: that read waits until the test lets it go, then fails (EIO), so the new pair is held unsaved.
+  // The other ask's read of the file, the next one, starts while the save waits, and is let go only once the renewal has
+  // settled (its flight gone), the file still holding the old pair.
+  let posted = false;
+  let saving = false;
+  let otherReading = false;
+  let letSaveGo;
+  let letOtherGo;
+  const saveHeld = new Promise((resolve) => (letSaveGo = resolve));
+  const otherHeld = new Promise((resolve) => (letOtherGo = resolve));
+  const fetch = async (url, init) => {
+    const answer = await endpoint.fetch(url, init);
+    if (JSON.parse(init.body).refresh_token === old.refresh) posted = true;
+    return answer;
+  };
+  const readFile = async (path) => {
+    if (posted && !saving) {
+      saving = true;
+      await saveHeld;
+      throw Object.assign(new Error(`EIO: i/o error, read '${path}'`), { code: "EIO" });
+    }
+    if (saving && !otherReading) {
+      otherReading = true;
+      await otherHeld;
+    }
+    return fsp.readFile(path, "utf8");
+  };
+  const renew = tokens.renewLogin({ fetch, now: () => now, readFile });
+  const first = new tokens.LoginTokens({ login, now: () => now, renew });
+  const other = new tokens.LoginTokens({ login, now: () => now, renew });
+  const renewing = first.token();
+  renewing.catch(() => undefined);
+  await until(() => saving, "the save's read of the file, after the post");
+  const asked = other.token().catch((error) => error.message);
+  await until(() => otherReading, "the other ask's read of the file, before the renewal holds its pair");
+  letSaveGo();
+  assert.equal(await renewing, next.access, "the renewal's own ask is handed the new token, its save failed");
+  letOtherGo();
+  assert.equal(await asked, next.access, "an ask that read the old pair while the renewal that spent its refresh token settled, its pair held unsaved, is handed the held pair's token, never refused in LOGIN_RUNNING_OUT's words");
+  assert.equal(JSON.parse(readFileSync(file, "utf8")).claudeAiOauth.refreshToken, next.refresh, "that ask saved the held pair");
+  assert.equal(await new tokens.LoginTokens({ login, now: () => now, renew }).token(), next.access, "the file hands the new token");
+  assert.deepEqual(endpoint.posts.map((post) => post.body.refresh_token), [old.refresh], "one post for both asks: the spent refresh token is never posted again");
+  assert.deepEqual(listing(login.dir), [".credentials.json"], "no temp file or lock left");
+});
+
 /** The refresh locks' file operations for `login`, its older lock beside the folder never made (the CLI goes on without
  *  it), each read of its lock in the folder counted (`reads.n`) and failed (EIO) while `fails(n)` holds. */
 function lockReads(login, fails) {
