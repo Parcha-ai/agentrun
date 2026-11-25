@@ -178,7 +178,10 @@ each on its own, as if each were the entry's name. The same holds for a name in 
   and the identifier that agrees, in `evidence`.
 - `possible_match`: the name matches and there is no identifier to compare either way. It is not cleared: it is RF02
   (the company, a parent, an owner or a controller) or RF04 (a director or officer).
-  Say which identifier would settle it ("date of birth of the director, which Companies House gives as March 1968").
+  Say which identifier would settle it, in that result's own `evidence`, for each entry: the subject's identifier to get
+  and what the entry gives to compare it with ("date of birth of the director, which Companies House gives as March
+  1968, against the entry's 1962"; "the company's registration number and registered address, against the entry's
+  address in Dubai; the entry gives no number"). Documents asked for in the verdict don't take its place.
 - `false_positive`: the name matches and a reliable identifier conflicts: a different registration number or country of
   incorporation, a date of birth years apart, an individual against an entity, a different nationality and place of
   birth together. Say which identifier rules it out, and cite where each side comes from. A single soft difference (a
