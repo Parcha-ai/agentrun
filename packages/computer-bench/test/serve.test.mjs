@@ -327,7 +327,10 @@ test("serve: a step's time is on serve's clock at both ends, so a serve clock an
 			assert.equal(steps.length, 8, "the search, the script's six calls, and the script's own row");
 			// The fake agent runs in milliseconds: every step falls within a minute of its start, whichever way the clock is off.
 			assert.ok(steps.every((step) => step.t_ms < 60_000), `skew ${skewMs}: ${steps.map((step) => step.t_ms).join(", ")}`);
-			for (let i = 1; i < steps.length; i += 1) assert.ok(steps[i].t_ms >= steps[i - 1].t_ms, `skew ${skewMs}: steps in order`);
+			// The script's computer calls in the order it made them. Its own row is reported at its end and timed at its start,
+			// so it is left out of the order.
+			const calls = steps.filter((step) => step.phase === "agent");
+			for (let i = 1; i < calls.length; i += 1) assert.ok(calls[i].t_ms >= calls[i - 1].t_ms, `skew ${skewMs}: calls in order`);
 		} finally {
 			await serve.close();
 		}
