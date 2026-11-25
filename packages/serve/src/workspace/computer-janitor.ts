@@ -19,8 +19,9 @@
 // A desktop or a phone kept at a run's park (computer-kept.ts) goes by its own row, on any provider: each sweep ends one
 // past its time or whose run ended, and the janitor wakes again at the earliest time still ahead. One pinned to another
 // runner still there is that runner's (computer-kept.ts heldElsewhere): the kept pass leaves its row. The provider sweep
-// needs no such rule: it ends only a machine past its deadline or whose run is final, which no one uses, and the row's
-// runner then reads it gone and marks its row ended.
+// ends only a machine past its deadline or whose run is final, which no one uses, and the row's runner then reads it gone
+// and marks its row ended. Its row is marked ending before that delete (endingKeptMachine), so a follow-up never takes
+// the machine back mid-delete; a row a claim is taking back is left, and the machine with it, said as a failed delete.
 //
 // A provider whose sweep fails is logged, once per distinct failure, and the others are swept. It runs only where its
 // start asks for it (the CLI's runner and the runner subcommand), never under --faux, and never two sweeps at once. Its
@@ -30,13 +31,13 @@
 // An agent's own computer (a persistent setting, agent-computer.ts) is this server's when its owner names this server's
 // id, never by its run: it goes only when its agent no longer wants it (ownerGoneOf: gone, archived, or no longer
 // persistent on that provider), never by a deadline. Without the store's settings and agents, none is this server's.
-import { type ComputerInfo, type ComputerProvider, epochOf, ok, ownerOf, RUN_HASH_LABEL, RUN_LABEL, type Result, runHash, sweep, type Swept } from "@parcha/agentrun-computer";
+import { type ComputerInfo, type ComputerProvider, epochOf, fail, ok, ownerOf, RUN_HASH_LABEL, RUN_LABEL, type Result, runHash, sweep, type Swept } from "@parcha/agentrun-computer";
 import { KEY_TABLE, type KeyTable, type ProviderSettings, providerOptions } from "../computer-keys.js";
 import { FAUX_ENV } from "../model.js";
 import { FINAL_STATES, type Store } from "../store/index.js";
 import { deleteUnderHold, ownerGoneOf, serverIdOf, wantsOn } from "./agent-computer.js";
 import type { ComputerDeps } from "./computer-deps.js";
-import { type KeptHolder, type KeptSweep, sweepKept } from "./computer-kept.js";
+import { endingKeptMachine, type KeptHolder, type KeptSweep, readKept, sweepKept } from "./computer-kept.js";
 import { storeLedger } from "./computer-ledger.js";
 import { providerKeys } from "./resolve-computer.js";
 import { intervalWrites } from "./computer-intervals.js";
@@ -88,6 +89,13 @@ const runsByHash = (store: JanitorDeps["store"]): RunsByHash => {
   return () => (read ??= store.runs.list({}).then((rows) => new Map(rows.map((row) => [runHash(row.id), row.id]))));
 };
 
+/** The run a computer's labels name: by its run label, or its hash's (runsByHash); undefined for none of this store's. */
+async function runOf(labels: ComputerInfo["labels"], byHash: RunsByHash): Promise<string | undefined> {
+  const named = labels[RUN_LABEL];
+  const hash = labels[RUN_HASH_LABEL];
+  return typeof named === "string" && named !== "" ? named : typeof hash === "string" && hash !== "" ? (await byHash()).get(hash) : undefined;
+}
+
 /** Whether a listed computer is this server's and no claim holds it: its run (by its label, or its hash's) is in this
  *  store, and no claim holds the run now (by the store's clock), or one holds it at a later epoch than the computer's.
  *  "over" for one of these whose run is over (final in the store): no claim of the run will use it again. An agent's own
@@ -98,9 +106,7 @@ async function sweepable(store: JanitorDeps["store"], info: ComputerInfo, byHash
   const label = ownerOf(labels);
   const owner = info.owner ?? (label.ok ? label.value : undefined);
   if (info.owned === true || owner !== undefined || !label.ok) return serverId !== undefined && owner?.server === serverId;
-  const named = labels[RUN_LABEL];
-  const hash = labels[RUN_HASH_LABEL];
-  const runId = typeof named === "string" && named !== "" ? named : typeof hash === "string" && hash !== "" ? (await byHash()).get(hash) : undefined;
+  const runId = await runOf(labels, byHash);
   if (runId === undefined) return false;
   const run = await store.runs.get(runId);
   // No such run here: another server's computer.
@@ -112,15 +118,27 @@ async function sweepable(store: JanitorDeps["store"], info: ComputerInfo, byHash
   return FINAL_STATES.includes(run.state) ? "over" : true;
 }
 
+/** What the provider sweep marks a kept machine's row by: the store's settings, and the provider's registry id, the one
+ *  a row names. */
+type KeptMarks = {
+  readonly settings: NonNullable<JanitorDeps["store"]["settings"]>;
+  readonly entry: string;
+};
+
 /** `provider` as the sweep sees it: its list cut to this server's computers that no claim holds, and no leftovers pass.
  *  A computer of a run that is over is listed past its deadline (the run's end is its deadline), so the sweep ends it
  *  now: a server that stopped before its run's end let go of an earlier claim's computer (run-end-computers.ts) leaves
  *  it for this sweep, never for its day-long deadline. Each call goes to the provider itself, so its own state is used
  *  as it is. */
-function thisServers(provider: ComputerProvider, store: JanitorDeps["store"], byHash: RunsByHash, serverId: string | undefined, at: number, ended: (id: string) => Promise<void>): ComputerProvider {
+function thisServers(provider: ComputerProvider, store: JanitorDeps["store"], byHash: RunsByHash, serverId: string | undefined, at: number, ended: (id: string) => Promise<void>, keeps?: KeptMarks): ComputerProvider {
   // The agents' own computers the list kept, by id: their delete goes under the agent's hold (deleteUnderHold), which
   // also clears the agent's record of it, so its view no longer shows it deleting.
   const ownedBy = new Map<string, string>();
+  // The machines the list kept that their run's park row keeps, by id, each that run: the row is marked ending before
+  // the delete (endingKeptMachine), and a row a claim has is left with its machine. A machine whose run's row could not
+  // be read is left too, in the store's words: it may be kept, and a delete unmarked could go under a claim's attach.
+  const keptRun = new Map<string, string>();
+  const unread = new Map<string, string>();
   const { settings, agents } = store;
   return {
     id: provider.id,
@@ -132,6 +150,14 @@ function thisServers(provider: ComputerProvider, store: JanitorDeps["store"], by
     network: (ref, policy, context) => provider.network(ref, policy, context),
     connect: (ref) => provider.connect(ref),
     async release(ref, how, context) {
+      const why = how === "delete" ? unread.get(ref.id) : undefined;
+      if (why !== undefined) return fail("refused", `its run's kept row could not be read (${why}), so it was left`);
+      const run = how === "delete" ? keptRun.get(ref.id) : undefined;
+      if (run !== undefined && keeps) {
+        const marked = await endingKeptMachine(keeps.settings, run, { provider: keeps.entry, id: ref.id });
+        if (marked.kind === "left") return fail("refused", `it is kept at run ${run}'s park and a claim is taking it back or has it, so it was left`);
+        if (marked.kind === "unmarked") return fail("refused", `it is kept at run ${run}'s park and its row could not be marked ending (${marked.why}), so it was left for the row's time`);
+      }
       const agent = ownedBy.get(ref.id);
       if (how !== "delete" || agent === undefined || settings === undefined) {
         const released = await provider.release(ref, how, context);
@@ -151,6 +177,16 @@ function thisServers(provider: ComputerProvider, store: JanitorDeps["store"], by
       for (const info of listed.value) {
         const mine = await sweepable(store, info, byHash, serverId);
         if (!mine) continue;
+        // Its run's kept row, read before any delete: whether it keeps this machine.
+        const runId = keeps ? await runOf(info.labels, byHash) : undefined;
+        if (keeps && runId !== undefined) {
+          try {
+            const row = await readKept(keeps.settings, runId);
+            if (row && !row.ended && row.provider === keeps.entry && row.id === info.ref.id) keptRun.set(info.ref.id, runId);
+          } catch (error) {
+            unread.set(info.ref.id, error instanceof Error ? error.message : String(error));
+          }
+        }
         const label = ownerOf(info.labels);
         const owner = info.owner ?? (label.ok ? label.value : undefined);
         if (owner !== undefined) ownedBy.set(info.ref.id, owner.agent);
@@ -204,7 +240,7 @@ export async function sweepServerComputers(deps: Pick<JanitorDeps, "store" | "co
       // A vendor that ends its own computers needs no janitor.
       if (provider.capabilities().lifetime !== "janitor") continue;
       const ownerGone = serverId !== undefined && settings && agents ? ownerGoneOf({ agents, settings, runs: store.runs }, serverId, entry.id) : undefined;
-      out.push({ provider: entry.id, swept: await bounded(deps.providerMs ?? JANITOR_PROVIDER_MS, signal, (cut) => sweep(thisServers(provider, store, byHash, serverId, at, (id) => writes.ended(entry.id, id)), { now: new Date(at), signal: cut, ...(ownerGone ? { ownerGone } : {}) })) });
+      out.push({ provider: entry.id, swept: await bounded(deps.providerMs ?? JANITOR_PROVIDER_MS, signal, (cut) => sweep(thisServers(provider, store, byHash, serverId, at, (id) => writes.ended(entry.id, id), settings ? { settings, entry: entry.id } : undefined), { now: new Date(at), signal: cut, ...(ownerGone ? { ownerGone } : {}) })) });
     } catch (error) {
       out.push({ provider: entry.id, swept: { ok: false, error: { code: "refused", message: error instanceof Error ? error.message : String(error) } } });
     }

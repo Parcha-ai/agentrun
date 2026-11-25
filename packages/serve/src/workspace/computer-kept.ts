@@ -320,6 +320,20 @@ export async function endingKept(settings: Pick<KeptSettings, "get" | "replaceIf
   });
 }
 
+/** Marks `runId`'s kept row ending before a janitor's provider sweep deletes `machine`, the one the row kept when the
+ *  sweep listed it (computer-janitor.ts thisServers). The sweep ends only a machine past its deadline or whose run is final, but the row's
+ *  runner may still be there and its row unmarked (that runner died before its run's end ran, or the end could not mark
+ *  it): marked first, no claim takes the machine back mid-delete. A row a claim is taking back, or one gone since the
+ *  read (a claim took it), is a claim's: `left`, and the sweep leaves the machine. A row that keeps another machine
+ *  now, or already reads ending or ended, needs no mark. */
+export async function endingKeptMachine(settings: Pick<KeptSettings, "get" | "replaceIf">, runId: string, machine: { readonly provider: string; readonly id: string }): Promise<KeptEnding> {
+  return markEnding(settings, runId, (kept) => {
+    if (!kept) return "leave";
+    if (kept.provider !== machine.provider || kept.id !== machine.id || kept.ending || kept.ended) return "go";
+    return kept.taking === undefined ? "mark" : "leave";
+  });
+}
+
 /** Takes `row` off `runId`'s row, only while it still reads so: a keep written for a park that never followed. */
 export async function dropKept(settings: Pick<KeptSettings, "removeIf">, runId: string, row: Kept): Promise<boolean> {
   return settings.removeIf(keptKeyOf(runId), row);
