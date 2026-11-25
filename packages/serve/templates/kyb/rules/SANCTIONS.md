@@ -78,16 +78,30 @@ Use the first method that reaches a list; record it as `method`.
    - **Search** each subject's most distinctive word of 4 or more letters (never a legal form or a generic word such as
      Group, Holding, Trading, International), with an `-e` for each written form the match rules allow: the word with
      its accents and in plain ASCII, each transliteration you would accept. Always cap what comes back:
-     `grep -n -i -F -e 'WORD' -e 'FORM' lists/uk.csv | cut -c1-500 | head -n 20`. When 20 lines come back, the word is
-     too common: narrow it with a second word, `grep -i -F -e 'WORD' lists/uk.csv | grep -i -F -e 'SECOND' | cut -c1-500 | head -n 20`.
+     `grep -n -i -F -e 'WORD' -e 'FORM' lists/uk.csv | cut -c1-500 | head -n 20`.
      A pattern holds no `'` and starts with none of `/`, `~` or `..` (the shell refuses those).
+     - **A short name**, one left with no such word once its legal form is dropped (an acronym or short words, such as
+       `ADF Ltd`): search the whole normalised name as a word, with `-w` so it is not found inside a longer word,
+       `grep -n -i -w -F -e 'ADF' lists/uk.csv | cut -c1-500 | head -n 20`.
+     - **Identifiers:** search each one you hold for the subject (a registration or company number, a tax id, an IMO
+       number, a passport number), as written and without its spaces, in every file: a row that holds one is a
+       candidate whatever name it gives. `grep -n -F -e '03503060' lists/uk.csv | cut -c1-500 | head -n 20`.
+     - **Too many lines.** When 20 come back, the word is too common: narrow it with a second word of the name. An
+       OFAC, EU or UK row holds a whole name, so narrow the rows:
+       `grep -i -F -e 'WORD' lists/uk.csv | grep -i -F -e 'SECOND' | cut -c1-500 | head -n 20`. The UN file puts each
+       part of a person's name on a line of its own (`FIRST_NAME`, `SECOND_NAME`, `THIRD_NAME`), so a line holding
+       both words is rare: narrow whole records, never lines, and read the record of each reference number it gives:
+       `cat lists/un.txt | tr -d '\n' | grep -o -P '<INDIVIDUAL>.*?</INDIVIDUAL>' | grep -i -F -e 'WORD' | grep -i -F -e 'SECOND' | grep -o -E '<REFERENCE_NUMBER>[^<]*' | head -n 20`
+       (`ENTITY` for an entity). A grep without `-P` takes the lines near each match instead, where a person's other
+       names are: `grep -n -i -F -B 3 -A 3 -e 'WORD' lists/un.txt | grep -i -F -e 'SECOND' | cut -c1-500 | head -n 20`.
    - **Read the candidate's record** in the same file: OFAC `grep -n -F -e '<ent_num>,' lists/ofac-alt.csv` (its
      aliases), the SDN row holds the remarks; UK every row with its `Unique ID`; EU every row with its
      `Entity_LogicalId` (`grep -n -F -e ';<id>;' lists/eu.txt | cut -c1-500 | head -n 20`); UN the lines of its
      `INDIVIDUAL` or `ENTITY` element, `sed -n 'N,Mp' lists/un.txt` from the match's line number, at most 80 lines.
      The row is the list owner's own record: cite the file as the source, and the entry's own id.
-   - **No candidate** in the whole file under the match rules: `no_hit`, with the words and forms you searched in
-     `note`. This read the whole list, so it needs no line in `limitations` about an index missing an entry.
+   - **No candidate** in the whole file under the match rules, after the name searches above (the short-name search
+     for a short name, records narrowed in the UN file) and a search of each identifier you hold: `no_hit`, with the
+     words, forms and identifiers you searched in `note`. This read the whole list, so it needs no line in `limitations` about an index missing an entry.
 4. **`index_then_source_record`.** With no shell you can't read a whole list here (the largest is 50 MB, and a page you
    read is paid for on every later turn), so find candidates in an index and confirm each one at the list owner's
    record:
