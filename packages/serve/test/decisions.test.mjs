@@ -10,6 +10,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { DECISION_KEY_FD_ENV, decisionsOf, FAUX_JEV_ENV, jevRoute } from "../dist/decisions.js";
 import { FAUX_ENV } from "../dist/model.js";
 import { FAUX, flowAgent, follow, scratch, serve, storeRun, withEnv, startServe } from "./support.mjs";
@@ -17,7 +18,7 @@ import { schemaProblems } from "./schema-support.mjs";
 import { CANARY } from "./fixtures/faux-jev.mjs";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
 
-const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
+const FAUX_JEV = fileURLToPath(new URL("./fixtures/faux-jev.mjs", import.meta.url));
 const FAUX_PARALLEL = new URL("./fixtures/faux-parallel.mjs", import.meta.url).pathname;
 const FAUX_WEB = new URL("./fixtures/faux-web.mjs", import.meta.url).pathname;
 const KEYS = ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "AGENTRUN_TEST_FAUX_JEV_CALLS", "AGENTRUN_TEST_FAUX_JEV_STATUS", "AGENTRUN_TEST_FAUX_JEV_HANG", "AGENTRUN_TEST_FAUX_JEV_COST", "PARALLEL_API_KEY", "AGENTRUN_TEST_FAUX_PARALLEL_CALLS", "AGENTRUN_TEST_FAUX_JEV_NO_USAGE"];
@@ -306,6 +307,29 @@ test("a decision whose cost the provider reports is on its row, and the run's to
   assert.equal(byLine.reason, null);
   assert.deepEqual(byLine.lines.map((line) => [line.meter, line.model, line.provider, line.requests, line.usd, line.basis]), [["tokens", "faux-1", "faux", 1, 0, "estimate"], ["tokens", "jev-1.14.0", "jev", 1, 0.00003, "reported"]]);
   assert.deepEqual(byLine.total, { usd: run.cost.usd });
+});
+
+test("judge receipts count as requests in workflow metrics and /v2/stats, including unmetered receipts", async (t) => {
+  await withCanary(t);
+  const faux = fileURLToPath(new URL("./fixtures/faux-model.mjs", import.meta.url));
+  const { api, store } = await serve(t, { faux, fauxJev: FAUX_JEV });
+  const metered = await startFlow(api, [judge], { schemaId: "Coi", path: "coi" });
+  assert.equal((await follow(api, metered, ["completed", "failed"])).last.status, "completed");
+  const before = (await api("GET", "/stats")).body.analytics.totals;
+  assert.deepEqual([before.runs_with_metrics, before.input, before.tokens, before.requests, before.unmetered], [1, 120, 120, 1, 0]);
+  const { metrics } = await store.runs.get(metered);
+  assert.deepEqual(metrics, {
+    input: 120, cacheRead: 0, cacheWrite: 0, output: 0,
+    requests: 1, unmetered: 0, model: "jev/jev-1.14.0", models: { "jev/jev-1.14.0": 1 }, tools: {},
+  });
+  process.env.AGENTRUN_TEST_FAUX_JEV_NO_USAGE = "1";
+  const next = await api("POST", "/agents/coi/runs", { input: { question: QUESTION } });
+  assert.equal(next.status, 202, JSON.stringify(next.body));
+  assert.equal((await follow(api, next.body.run_id, ["completed", "failed"])).last.status, "completed");
+  const { metrics: bare } = await store.runs.get(next.body.run_id);
+  assert.deepEqual(bare, { ...metrics, input: 0, unmetered: 1 });
+  const after = (await api("GET", "/stats")).body.analytics.totals;
+  assert.deepEqual([after.runs_with_metrics, after.input, after.tokens, after.requests, after.unmetered], [2, 120, 120, 2, 1]);
 });
 
 test("with no Parallel key, a node naming parallel saves with a warning, and its run is 409 not_set_up_here naming PARALLEL_API_KEY", async (t) => {

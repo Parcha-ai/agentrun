@@ -9,9 +9,10 @@ import { decisionKey } from "../workflow/decisions.js";
 import type { JournalReads, Store } from "../store/store.js";
 
 type Address = Parameters<JournalReads["findDocument"]>[0];
+type DecisionReads = Pick<JournalReads, "findDocument" | "document">;
 
 /** A session-scoped document's current value, by kind and (for a family) key: findDocument, then its stored value. */
-async function sessionDocValue(reads: JournalReads, kind: string, key: string | undefined, context: Context): Promise<Record<string, unknown> | undefined> {
+async function sessionDocValue(reads: DecisionReads, kind: string, key: string | undefined, context: Context): Promise<Record<string, unknown> | undefined> {
   const record = await reads.findDocument({ kind, scope: { kind: "session" }, ...(key !== undefined ? { key } : {}) } as Address, "current", context);
   if (!record) return undefined;
   const stored = await reads.document(record.id, "current", context);
@@ -43,18 +44,22 @@ export function parallelChargedDecisions(receipts: Iterable<Record<string, unkno
 export const booksDecisions = (entries: readonly { readonly kind: string; readonly data?: unknown }[]): boolean =>
   entries.some((e) => e.kind === RUNNER_RECORDS.request && String((e.data as { model?: unknown } | undefined)?.model ?? "").startsWith("decision:"));
 
-/** A run's decision receipts: the keyed `.count` and family rows in order, read through
- *  the one store's journal. */
+/** A run's decision receipts in commit order. */
+export async function decisionsInJournal(reads: DecisionReads, context: Context): Promise<Array<Record<string, unknown>>> {
+  const count = ((await sessionDocValue(reads, "agentrun.decisions.count", undefined, context)) as { count?: unknown } | undefined)?.count;
+  const rows: Array<Record<string, unknown>> = [];
+  if (typeof count === "number") for (let place = 0; place < count; place += 1) {
+    const row = await sessionDocValue(reads, "agentrun.decisions", decisionKey(place), context);
+    if (row) rows.push(row);
+  }
+  return rows;
+}
+
+/** A run's decision receipts through the store's read-only journal. */
 export async function decisionsOverStore(store: Store, runId: string, context: Context): Promise<Array<Record<string, unknown>>> {
   const reads = store.readJournal(runId);
   try {
-    const count = ((await sessionDocValue(reads, "agentrun.decisions.count", undefined, context)) as { count?: unknown } | undefined)?.count;
-    const rows: Array<Record<string, unknown>> = [];
-    if (typeof count === "number") for (let place = 0; place < count; place += 1) {
-      const row = await sessionDocValue(reads, "agentrun.decisions", decisionKey(place), context);
-      if (row) rows.push(row);
-    }
-    return rows;
+    return await decisionsInJournal(reads, context);
   } finally {
     await reads.close(context);
   }

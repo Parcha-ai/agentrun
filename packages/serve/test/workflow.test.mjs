@@ -2,6 +2,7 @@
 // run's model, and the run is read from its store once its process has exited.
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { answerFlow, client, FAUX, flowAgent, follow, journalOf, runDir, serve, storeRun, withEnv, startServe } from "./support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 
@@ -25,6 +26,32 @@ test("a workflow run executes its model node and completes with the workflow's o
   const row = storeRun(data, started.run_id);
   assert.deepEqual([row.state, row.kind, row.summary], ["completed", "workflow", "answer"]);
   assert.deepEqual((await api("GET", "/runs?agent=flow")).body.runs.map((r) => [r.kind, r.status]), [["workflow", "completed"]]);
+});
+
+test("workflow metrics count the requests and tools from every model node in /v2/stats", async (t) => {
+  const faux = fileURLToPath(new URL("./fixtures/faux-workflow-over-bound.mjs", import.meta.url));
+  const { api, store } = await serve(t, { faux });
+  const workflow = answerFlow();
+  workflow.root.steps.unshift({ ...workflow.root.steps[0], label: "draft", as: "draft" });
+  const started = await start(api, "two-model-nodes", { question: "What is six times seven?" }, workflow);
+  const { last } = await follow(api, started.run_id, ["completed", "failed"]);
+  assert.equal(last.status, "completed");
+
+  const row = await store.runs.get(started.run_id);
+  assert.equal(row.costUsd, 0.08);
+  const stats = await api("GET", "/stats");
+  assert.equal(stats.status, 200);
+  const { totals, tools } = stats.body.analytics;
+  assert.deepEqual([totals.runs_with_metrics, totals.input, totals.output, totals.tokens, totals.requests], [1, 2_000_000, 800, 2_000_800, 2]);
+  const { model, models, ...metrics } = row.metrics;
+  assert.match(model, /\/faux-1$/);
+  assert.deepEqual(models, { [model]: 2 });
+  assert.deepEqual(metrics, {
+    input: 2_000_000, cacheRead: 0, cacheWrite: 0, output: 800,
+    requests: 2, unmetered: 0,
+    tools: { submit: { calls: 2, errors: 0 } },
+  });
+  assert.deepEqual(tools.map(({ tool, calls, errors }) => ({ tool, calls, errors })), [{ tool: "submit", calls: 2, errors: 0 }]);
 });
 
 test("a workflow run's input is checked against the workflow's input schema (422), and a workflow run takes a max_cost_usd, as an agentic run does", async (t) => {

@@ -54,6 +54,8 @@ import { holdStored } from "./store-secrets.js";
 import { type DecisionDriver, type NodeToolBinding, type PollDriver, type WorkflowCap, workflowHost, type WorkflowHostDeps } from "./workflow-host.js";
 import type { Journal, Store } from "../store/store.js";
 import type { WorkflowBody } from "../store/agent-body.js";
+import { decisionsInJournal } from "../store-reads/decisions.js";
+import { type EntryLike, runMetricsWithDecisions } from "../timeline/index.js";
 import { SUBMIT_TOOL } from "../workflow/host-tools.js";
 import { endCostOf, runCostOf } from "./metrics.js";
 import { journalEntries } from "./journal-reader.js";
@@ -868,12 +870,15 @@ function runEffectOf(claimed: Claimed, complete: ReturnType<typeof completer>, e
  *  pi and CLI specs store it): every model request of its sessions, its call nodes' paid requests and its decisions, each
  *  at what it was booked at, never the cap's figure for it (an answer with no price of its own is unknown, never its
  *  hold). Unknown once any one is, written as null, never left out (an end that says nothing leaves the $0 the run read
- *  before a response). With no journal to read, unknown. */
+ *  before a response). The end also counts usage and tools from every conversation, plus the decision receipts.
+ *  With no journal to read, cost is unknown. */
 async function endPatchOf(booking: Awaited<ReturnType<typeof modelPortFor>> | undefined, journalOf: (() => Journal) | undefined): Promise<Pick<EndData, "costUsd" | "costUpperBound" | "metrics">> {
   if (!booking) return {};
   if (!journalOf) return { costUsd: null };
-  // With whether the figure is the most it can have cost (a request cut at its hold counted in it), stored beside it.
-  return endCostOf(runCostOf((await journalEntries(journalOf(), BACKGROUND_CONTEXT)) as never));
+  const journal = journalOf();
+  const entries = await journalEntries(journal, BACKGROUND_CONTEXT) as unknown as EntryLike[];
+  const decisions = await decisionsInJournal(journal, BACKGROUND_CONTEXT);
+  return { ...endCostOf(runCostOf(entries)), metrics: runMetricsWithDecisions(entries, decisions) };
 }
 
 /** The run's one cap as a WorkflowCap: model nodes and call nodes pass through (their money is on the proxy), and a
