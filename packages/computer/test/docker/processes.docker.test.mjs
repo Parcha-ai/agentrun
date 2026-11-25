@@ -54,7 +54,7 @@ describe("a Docker computer's init and its processes", { skip: LIVE ? false : "s
 		const arch = docker("version", "--format", "{{.Server.Arch}}").trim();
 		const daemonPath = fileURLToPath(new URL(`../../dist/computerd-linux-${arch}`, import.meta.url));
 		assert.ok(existsSync(daemonPath), `no daemon for Docker's arch at ${daemonPath}: run npm run build:daemon`);
-		provider = new DockerProvider({ daemonPath });
+		provider = new DockerProvider({ env: process.env, daemonPath });
 		const created = await provider.create({ image: IMAGE, lifetimeMs: 10 * 60_000, network: "none", labels: { "agentrun.test": "processes" } }, newRequest("processes"));
 		assert.equal(created.ok, true, JSON.stringify(created));
 		ref = created.value;

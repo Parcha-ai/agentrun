@@ -108,7 +108,7 @@
     "sufficient": {
       "type": "boolean",
       "default": true,
-      "description": "The checks decide alone. false: the agentic grader decides, with the checks as evidence (a task whose success is partly a judgement)."
+      "description": "The checks decide alone. false: the agentic grader decides a run whose checks pass, with the checks as evidence (a task whose success is partly a judgement); a failing check still fails the run."
     },
     "rubric": {
       "type": "string",

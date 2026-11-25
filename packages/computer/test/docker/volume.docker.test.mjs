@@ -47,7 +47,7 @@ describe("a Docker computer whose daemon and run folder are a named volume's sub
 		chmodSync(work, 0o700);
 		// A local volume whose files are this directory: what the server's container sees at its root, Docker has here.
 		docker("volume", "create", "--driver", "local", "--opt", "type=none", "--opt", `device=${root}`, "--opt", "o=bind", name);
-		provider = new DockerProvider({ daemonPath, daemonCache: join(root, "cache"), volume: { name, root } });
+		provider = new DockerProvider({ env: process.env, daemonPath, daemonCache: join(root, "cache"), volume: { name, root } });
 	});
 
 	after(() => {

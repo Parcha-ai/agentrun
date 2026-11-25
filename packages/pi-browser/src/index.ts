@@ -14,7 +14,7 @@ export * from "./core/host.js";
 export * from "./core/images.js";
 export * from "./core/lease.js";
 export * from "./core/page-classifier.js";
-export { isPrivateAddress, pinnedLookup, PUBLIC_MAX_BYTES, publicDownload, publicFetch, type PublicAnswer, type PublicFetchOptions, type PublicFile } from "./core/public-fetch.js";
+export { isPrivateAddress, pinnedLookup, PUBLIC_MAX_BYTES, publicCheck, publicDownload, publicFetch, type PublicAnswer, type PublicFetchOptions, type PublicFile } from "./core/public-fetch.js";
 export { READ_DEADLINE_MS, READ_MAX_CHARS, readPage, type PageRead, type ReadPageOptions } from "./core/read-page.js";
 export * from "./core/receipts.js";
 export * from "./core/redact.js";

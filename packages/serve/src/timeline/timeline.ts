@@ -54,7 +54,8 @@ export type TimelineEvent = {
   paused?: true;
   /** `true` on the `tool_result` row of a call refused before it ran (its host's mark, CALL_REFUSED: a gate's deny, a
    *  person's, a call held for an approval the run ended or stopped without): it never ran, so it never failed, though
-   *  `tool_status` stays `failed` (it did not do its work). A client shows it apart from a call that ran and failed. */
+   *  `tool_status` stays `failed` (it did not do its work). A client shows it apart from a call that ran and failed. Also
+   *  on a script's (codemode) or a tools_call's row that stopped at such a call (its host tool answered `refused`). */
   refused?: true;
   /** On the usage row, the run's cost. On a paid tool's charge row (a `phase` naming the tool), that charge alone. On a
    *  browser call's `tool_use` row, every browser charge booked under that call (BROWSER_CHARGE): its session's time
@@ -860,8 +861,8 @@ function createProjector(options: TimelineOptions) {
     // ok, and never the detail as it came.
     const worded = shown.text === view.text ? outcome : outcomeOf(tool.name, { ...view, text: shown.text });
     // A call refused before it ran is named refused already (refusedLabel), and a computer step's label says it could not
-    // (saysFailure): its row says why, never that it failed.
-    const failedSummary = refused(view) || saysFailure(tool.name) ? `${named}: ${failure(shown.text)}` : `${named} failed: ${failure(shown.text)}`;
+    // (saysFailure, asked of an error alone, with the text its label read): its row says why, never that it failed.
+    const failedSummary = refused(view) || (view.isError && saysFailure(tool.name, { text: shown.text, details: view.details, isError: true })) ? `${named}: ${failure(shown.text)}` : `${named} failed: ${failure(shown.text)}`;
     // One the run's end closed has no outcome: interrupted, as a call cut off reads (interrupt), with no status.
     const unended = endedWithRun(view);
     return make("tool_result", conv, rowId, {

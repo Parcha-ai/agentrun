@@ -13,7 +13,9 @@
 // stalled() gives the held call's signal once one is held; with AGENTRUN_TEST_FAUX_MONID_CHARGE, a run its maxCost lets
 // through completes charged that many dollars, whatever its estimate (monid re-priced it between the read and the run);
 // with AGENTRUN_TEST_FAUX_MONID_DELAY_MS, a run it lets through answers that many milliseconds later (sooner at its
-// signal), as a real fetch takes a while, so a burst's calls are out at once.
+// signal), as a real fetch takes a while, so a burst's calls are out at once; with AGENTRUN_TEST_FAUX_MONID_RATE, it
+// answers that many calls in each second of the clock, and every other one in that second 429 with Retry-After 1, as
+// monid's rate limit does (the call's line says `limited`).
 import { createHash } from "node:crypto";
 import { appendFileSync } from "node:fs";
 
@@ -53,6 +55,16 @@ export const LISTING = [
 /** tagger /tag's input: a body of tags by any name, as patternProperties (a shape Codex refuses, schema.ts). */
 const TAGGED_INPUT = { body: { type: "object", patternProperties: { "^[a-z]+$": { type: "string" } } } };
 const PAGE = 2;
+/** The second of the clock AGENTRUN_TEST_FAUX_MONID_RATE counts calls in, and how many it has answered. */
+const rate = { second: -1, answered: 0 };
+/** Whether the rate limit (AGENTRUN_TEST_FAUX_MONID_RATE) refuses a call sent now. */
+const limited = () => {
+  const most = Number(process.env.AGENTRUN_TEST_FAUX_MONID_RATE ?? 0);
+  if (!(most > 0)) return false;
+  const second = Math.floor(Date.now() / 1000);
+  if (second !== rate.second) Object.assign(rate, { second, answered: 0 });
+  return rate.answered >= most || (rate.answered++, false);
+};
 
 export default async function fakeMonid(url, init = {}) {
   const path = new URL(String(url)).pathname;
@@ -63,8 +75,10 @@ export default async function fakeMonid(url, init = {}) {
   const accepts = process.env.AGENTRUN_TEST_FAUX_MONID_ACCEPTS;
   const authorized = bearer === `Bearer ${KEY}` || (Boolean(accepts) && bearer.startsWith("Bearer ") && createHash("sha256").update(given).digest("hex") === accepts);
   const key = createHash("sha256").update(bearer.replace(/^Bearer /, "")).digest("hex").slice(0, 16);
+  const refused = limited();
   calls.push({ method, path, body, authorized });
-  if (process.env.AGENTRUN_TEST_FAUX_MONID_CALLS) appendFileSync(process.env.AGENTRUN_TEST_FAUX_MONID_CALLS, `${JSON.stringify({ pid: process.pid, method, path, authorized, key, ...(body?.endpoint ? { endpoint: body.endpoint } : {}), ...(body?.maxCost !== undefined ? { maxCost: body.maxCost } : {}) })}\n`);
+  if (process.env.AGENTRUN_TEST_FAUX_MONID_CALLS) appendFileSync(process.env.AGENTRUN_TEST_FAUX_MONID_CALLS, `${JSON.stringify({ pid: process.pid, method, path, authorized, key, ...(body?.endpoint ? { endpoint: body.endpoint } : {}), ...(body?.maxCost !== undefined ? { maxCost: body.maxCost } : {}), ...(refused ? { limited: true } : {}) })}\n`);
+  if (refused) return new Response(JSON.stringify({ message: "Rate limited. Retry after 1s." }), { status: 429, headers: { "content-type": "application/json", "retry-after": "1" } });
   if (process.env.AGENTRUN_TEST_FAUX_MONID_STALL) await new Promise((go) => { held.push({ go, signal: init.signal }); for (const reached of waiting.splice(0)) reached(init.signal); });
   // A vendor that echoes the key it was sent in an error (the secrets harness's planted stored key): on the one path
   // AGENTRUN_TEST_FAUX_MONID_ECHO names, a 400 whose message holds the key whole.

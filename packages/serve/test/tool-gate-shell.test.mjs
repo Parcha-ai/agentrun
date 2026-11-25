@@ -225,7 +225,13 @@ const groupAlive = (group) => {
   }
 };
 
-// SKIP (follow-up #2078): the run's background-process watchers do not see the run's process on the runner
+// SKIP (#3551): waits on a rewrite onto the runner. It waits for run A's pid file in the server's run directory
+// (<run>/work/background/1/pid) and reads run B's tool answers from <run>/store/run.sqlite, both from before the one
+// store: on the runner the kernel's bash_background writes output.log and answers the pid, with no pid file, the process
+// lives in run A's computer, and the answers are in the one store. So it fails at "run A's process started" before run B
+// makes a call. The rewrite waits for run A's start through its recorded answer, reads run B's answers from its timeline,
+// and checks run A's process through its computer (its own bash_list and log), never process.kill on this host; it needs
+// Docker and the computer daemon, so it is checked in CI.
 test.skip("the watchers reach only this run's own processes: another run's id, live in its own box, is the tool's own no-such answer, and nothing of it is read or signalled", { timeout: 150_000 }, async (t) => {
   const server = await serve(t, { faux: PROBE, fauxDocker: true });
   const { api } = server;

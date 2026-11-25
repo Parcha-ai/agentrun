@@ -32,6 +32,8 @@ export type AcpPackage = {
   cursorRootOf(binary: string, cmd: string): string | undefined;
   /** The form a model id an ACP agent lists takes (Cursor's `gpt-5.4-nano[reasoning=medium]` among them). */
   readonly MODEL_ID: RegExp;
+  /** The form a sign-in method's id an ACP agent lists takes (`gemini-api-key`): a recipe's keyMethod is checked by it. */
+  readonly AUTH_METHOD: RegExp;
   acpPlatform(): string | undefined;
   /** `pin`'s release for `platform` (default this host's) with its binary's digest, and its tree's when `tree`; undefined
    *  where none is pinned so. */

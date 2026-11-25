@@ -118,10 +118,13 @@ AGENTRUN_TELEMETRY=0 (or DO_NOT_TRACK=1) turns off the anonymous usage counts (d
 version, the platform and how many runs as a range, never prompts, files or keys. Off in CI, under a test runner and under --faux too;
 AGENTRUN_TELEMETRY=debug prints each event on stderr and sends none.
 
+AGENTRUN_MARKETPLACE=off stops the console listing marketplace.agentrun.ai's templates beside this server's own (the list
+is read only when a page asks for it, kept 5 minutes); an https address reads that site's list instead. Under --faux it
+is off unless set to an address.
+
 AGENTRUN_API_ONLY=1 serves the run API alone, for a server behind its caller's backend (the routes in api-only.ts; every
-other address is a 404, and there are no accounts). With it, AGENTRUN_API_ONLY_MCP_ORIGINS (comma-separated origins, such
-as https://mcp.example.com) lets the token save a per_run MCP server at one of those origins (PUT
-/v2/settings/mcp-servers/NAME); unset, that save is a 404. A loopback origin also needs AGENTRUN_MCP_ALLOW_LOOPBACK=1.
+other address is a 404, and there are no accounts). AGENTRUN_API_ONLY_MCP_ORIGINS: the MCP origins the token may save a
+per_run MCP server at (README, API only).
 
 AGENTRUN_LAUNCH_HOOK_URL with AGENTRUN_LAUNCH_HOOK_SECRET (a whsec_ secret): each trigger firing that would start a run
 is POSTed to that URL, signed as Standard Webhooks, and the host starts the run through the API; this server starts
@@ -247,12 +250,12 @@ if (process.argv[2] === "install-harness") {
     const data = resolve(values.data ?? defaultData());
     try {
       const { recipe, file } = loadRecipe(values.recipe);
-      const said = { downloaded: "the archive is downloaded and its sha256 matches the recipe", unpacked: "unpacked", verified: "the binary's sha256 is checked" } as const;
+      const said = { downloaded: "the archive is downloaded and its sha256 matches the recipe", unpacked: "unpacked", verified: "its files are checked" } as const;
       const { version, installed, binary, pinnedBy } = await installRecipe(recipe, file, data, { onStep: (step) => console.error(`${recipe.label}: ${said[step]}`) });
-      const held = { recipe: "the recipe's pin", "first-seen": "the first sha256 an earlier install recorded", recorded: "its sha256 recorded now, as the first one; a later binary that differs is refused" }[pinnedBy];
+      const held = { recipe: "the recipe's tree pin", "first-seen": "the tree an earlier install recorded", recorded: "their tree recorded now, as the first one; a later binary or file beside it that differs is refused" }[pinnedBy];
       console.log(installed === "already"
-        ? `${recipe.label} ${version} is installed in ${dirname(binary)} (already: the pinned binary is there, so nothing was downloaded; held to ${held}).`
-        : `${recipe.label} ${version} is installed in ${dirname(binary)} (now; the binary held to ${held}). Check it with: ${recipeCheckLine(file, data)} --model PROVIDER/MODEL`);
+        ? `${recipe.label} ${version} is installed in ${dirname(binary)} (already: the pinned files are there, so nothing was downloaded; held to ${held}).`
+        : `${recipe.label} ${version} is installed in ${dirname(binary)} (now; the binary and every file beside it held to ${held}). Check it with: ${recipeCheckLine(file, data)} --model PROVIDER/MODEL`);
       process.exit(0);
     } catch (error) {
       if (!(error instanceof ArchiveInstallFailed) && !(error instanceof RecipeRefused)) throw error;
@@ -633,11 +636,12 @@ if (!values["no-runner"] && askedAt === undefined) {
     // its shell is taken out first, as the server's own environment drops it (runner/main.ts besideRunEnv).
     const { besideRunEnv } = await import("./runner/main.js");
     // With the computer janitor: what a crashed runner of this server left is ended (never under --faux). With the
-    // server's AttachHub: a paired computer's socket is in this process, so only this runner takes one (--no-runner's
-    // separate runners refuse it in words). Its runs reach an MCP server on loopback only when this server is a local
-    // install (Serve.localInstall).
+    // server's AttachHub and the name and incarnation the server gave it (Serve.beside): a paired computer's socket is in
+    // this process, and this runner's run holds it under a route that names it, so a runner apart (its own process,
+    // relaying through this server) takes it for no other run meanwhile. Its runs reach an MCP server on loopback only
+    // when this server is a local install (Serve.localInstall).
     // Each run a process of its own, as a user of its own where the image's helper can switch (run-child-host.ts).
-    runnerProc = await runnerBeside(data, { loops, loopsTold, drainMs, env: besideRunEnv(process.env, fauxEnvOf(serveOptions)), janitor: true, ownProcesses: true, hub: serve.attachHub, dial: serve.dial, mcpLoopback: serve.localInstall, mcpOwn: serve.own, ollamaHost: serve.ollamaHost, onRunEnded: telemetry.runEnded });
+    runnerProc = await runnerBeside(data, { loops, loopsTold, drainMs, env: besideRunEnv(process.env, fauxEnvOf(serveOptions)), janitor: true, ownProcesses: true, hub: serve.attachHub, beside: serve.beside, dial: serve.dial, mcpLoopback: serve.localInstall, mcpOwn: serve.own, ollamaHost: serve.ollamaHost, onRunEnded: telemetry.runEnded });
   } catch (error) {
     // A run isolation the runner cannot give (run-child-host.ts runIsolationOf) is said, and the server serves on with no
     // runner, as the runner subcommand stays up claiming nothing (runner/main.ts): a platform that restarts a stopped

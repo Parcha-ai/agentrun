@@ -17,7 +17,7 @@ import { COMMANDS, SECRET_ROUTES } from "./commands.generated.mjs";
 import { ALL, FLAGS, MAX_PAGES, REQUEST_MS, WAIT, followTimeline, timerMs, waitRun } from "./follow.mjs";
 import { guarded, refusalExit } from "./login.mjs";
 import { LOCAL } from "./local.mjs";
-import { apiBase } from "./target.mjs";
+import { apiBase, checkedBase } from "./target.mjs";
 
 export const NOUNS = new Set(["api", "help", ...[...COMMANDS, ...LOCAL].map((entry) => entry.command[0])]);
 const DEFAULT_BASE_URL = "http://127.0.0.1:7340/v2"; // key-gate: loopback-rule the default address of the server started on this machine
@@ -155,28 +155,31 @@ const alive = (pid) => {
   }
 };
 
-/** A base URL as every command takes it: http or https, with no query, fragment, user or password, which would carry
- *  the token elsewhere or swallow the path appended to it; then its API base (target.mjs apiBase: /v2 added when its
- *  path holds no v2 segment, the origin unchanged). `where` names it in the refusal; the URL itself is never echoed, as
- *  it may hold a password. */
+/** A base URL as every command takes it (target.mjs checkedBase): its API base, or a refusal `where` names; the URL
+ *  itself is never echoed, as it may hold a password. */
 function baseOf(given, where) {
-  const url = URL.canParse(given) ? new URL(given) : undefined;
-  if (!url || !/^https?:$/.test(url.protocol) || /[?#]/.test(given) || url.username || url.password) {
-    throw usageError(`${where} must be an http or https URL with no query, fragment, user or password: the server's address, or its API's base ending /v2.`);
-  }
-  return apiBase(given);
+  const base = checkedBase(given);
+  if (base === undefined) throw usageError(`${where} must be an http or https URL with no query, fragment, user or password: the server's address, or its API's base ending /v2.`);
+  return base;
 }
 
-const isBase = (url) => {
-  try {
-    return baseOf(url, ""), true;
-  } catch {
-    return false;
+const isBase = (url) => checkedBase(url) !== undefined;
+
+/** The token of the server on this machine whose data directory is `data` and whose record is `record`: one started with
+ *  its token in AGENTRUN_TOKEN (its record names no token file) takes AGENTRUN_API_KEY, else AGENTRUN_TOKEN, and is
+ *  refused (exit 4) when neither is set; else the directory's private .token. Undefined when that file is not there.
+ *  Every command (targetOf) and the doctor read it so. */
+function localToken({ data, record, env }) {
+  if (record && !record.token_file) {
+    const token = env.AGENTRUN_API_KEY || env.AGENTRUN_TOKEN;
+    if (!token) throw new Exit(4, `The server recorded in ${join(data, ".server.json")} was started with its token in AGENTRUN_TOKEN; set AGENTRUN_API_KEY (or AGENTRUN_TOKEN) to it.`);
+    return token;
   }
-};
+  return privateFile(join(data, ".token"))?.trim() || undefined;
+}
 
 /** Where the request goes and the token it carries. A token goes only with the address it came with: the local
- *  server's own token is never sent to another server. The local token is DIR/.token, whatever the record says. */
+ *  server's own token is never sent to another server. The local token is localToken's. */
 function targetOf(values, env) {
   const data = resolve(values.data ?? join(homedir(), ".agentrun"));
   const configFile = join(env.XDG_CONFIG_HOME || join(homedir(), ".config"), "agentrun", "config.json");
@@ -201,14 +204,9 @@ function targetOf(values, env) {
   let token = env.AGENTRUN_API_KEY || (config.base_url && base === apiBase(config.base_url) ? config.api_key : undefined);
   const isLocal = base === local;
   if (isLocal && record && !alive(record.pid)) throw new Exit(3, stale);
-  if (!token && isLocal) {
-    // A server started with its token in AGENTRUN_TOKEN (no .token file): the variable is that server's token, and only
-    // here, on its own address, is it sent; another address takes AGENTRUN_API_KEY or the token kept for it.
-    if (record && !record.token_file) {
-      token = env.AGENTRUN_TOKEN;
-      if (!token) throw new Exit(4, `The server recorded in ${recordFile} was started with its token in AGENTRUN_TOKEN; set AGENTRUN_API_KEY (or AGENTRUN_TOKEN) to it.`);
-    } else token = privateFile(join(data, ".token"))?.trim();
-  }
+  // Only here, on the local server's own address, is AGENTRUN_TOKEN sent; another address takes AGENTRUN_API_KEY or the
+  // token kept for it.
+  if (!token && isLocal) token = localToken({ data, record, env });
   if (!token) {
     throw new Exit(4, isLocal
       ? `No token: AGENTRUN_API_KEY is not set and ${join(data, ".token")} does not exist; ${START}.`
@@ -531,7 +529,7 @@ async function local(entry, argv, env, io) {
   const count = entry.pathParams.length;
   // An entry whose arguments a flag can stand in for (`harness install --recipe FILE`) takes none too; its run checks.
   if (args.length !== count && !(entry.argsOptional && args.length === 0)) throw usageError(`${helpOf(entry, entry.help)}\n\n${usageOf(entry)} takes ${count || "no"} argument${count === 1 ? "" : "s"}, given ${args.length}.`);
-  const cli = { fail: (code, message) => new Exit(code, message), baseOf, targetOf, clientOf, request, privateFile, alive, BAD_HEADER };
+  const cli = { fail: (code, message) => new Exit(code, message), baseOf, targetOf, localToken, clientOf, request, privateFile, alive, BAD_HEADER };
   return entry.run({ values, args, env, io, cli });
 }
 

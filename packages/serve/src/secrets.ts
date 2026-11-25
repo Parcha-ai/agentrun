@@ -43,6 +43,11 @@ let handed: { fd: number; closed: boolean } | undefined;
  *  the secrets, so it is no tool's environment and no key a scan looks for by name. */
 const SIGN_IN_PAIR = "AGENTRUN_SIGN_IN";
 let signIn: string | undefined;
+/** The runner's OpenTelemetry settings (its OTEL_* variables, JSON), handed to a run's process on the same pipe so the
+ *  run's trace is exported as the runner's would be: never in any environment (an OTLP header is a backend's key), held
+ *  apart from the secrets, so no tool's environment has them. Read by otel/tracer.ts (handedOtel). */
+export const OTEL_PAIR = "AGENTRUN_OTEL";
+let otel: string | undefined;
 
 /** NAME=VALUE pairs, each ended by a NUL: what a pipe of secrets carries. A runner writes a run's own process its pairs
  *  with it (run-child-host.ts), as a launcher writes its server's. */
@@ -52,6 +57,7 @@ function decode(bytes: Buffer): void {
     const at = pair.indexOf("=");
     if (at > 0 && (SECRET_NAMES.includes(pair.slice(0, at)) || pair.slice(0, at) === MCP_AUTH)) held.set(pair.slice(0, at), pair.slice(at + 1));
     else if (pair.slice(0, at) === SIGN_IN_PAIR) signIn = pair.slice(at + 1);
+    else if (pair.slice(0, at) === OTEL_PAIR) otel = pair.slice(at + 1);
   }
 }
 
@@ -209,6 +215,18 @@ export function handover(names: readonly string[], stored?: StoredKeys): Buffer 
     const value = secret(name, stored);
     return value === undefined ? [] : [[name, value] as const];
   }));
+}
+
+/** The OpenTelemetry settings this process was handed (OTEL_PAIR), each an OTEL_* name's value; none when it was handed
+ *  none. */
+export function handedOtel(): Record<string, string> {
+  try {
+    const parsed: unknown = JSON.parse(otel ?? "{}");
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(Object.entries(parsed).filter((pair): pair is [string, string] => pair[0].startsWith("OTEL_") && typeof pair[1] === "string"));
+  } catch {
+    return {};
+  }
 }
 
 /** The MCP credentials this process was handed (MCP_AUTH), by server; none when it was handed none. */
