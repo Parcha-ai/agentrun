@@ -629,7 +629,7 @@ test("every package this server ships applies on a server with nothing saved: no
   };
   const listed = (await api("GET", "/templates")).body.templates;
   assert.deepEqual(listed.map((x) => x.name), Object.keys(parameters), "a new package gets its parameters here");
-  assert.deepEqual(listed.filter((x) => x.tools?.includes("bash")).map((x) => x.name), ["agent-scout", "code-review"], "the packages with a shell");
+  assert.deepEqual(listed.filter((x) => x.tools?.includes("bash")).map((x) => x.name), ["agent-scout", "code-review", "kyb"], "the packages with a shell");
   for (const { name, mcp, tools } of listed) {
     const before = (await api("GET", "/agents")).body.agents.length;
     const applied = await api("POST", `/templates/${name}/apply`, { parameters: parameters[name] });
