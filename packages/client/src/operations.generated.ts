@@ -1764,27 +1764,19 @@ export type ListLearningPromotionsResponse = {
         n: number;
         workflow_right: number;
         agent_right: number;
-        known: "label" | "grade" | "agent";
+        known: "grade" | "agent";
         pass: boolean;
         reason: string;
         by: {
-          label?: {
-            n: number;
-            workflow_right: number;
-            agent_right: number;
-            pass: boolean;
-          };
           grade?: {
             n: number;
             workflow_right: number;
             agent_right: number;
-            pass: boolean;
           };
           agent?: {
             n: number;
             workflow_right: number;
             agent_right: number;
-            pass: boolean;
           };
         };
         unjudged?: number;
@@ -1814,7 +1806,7 @@ export type ListLearningPromotionsResponse = {
         fields?: Array<string>;
         expected?: Array<{
           field: string;
-          known: "label" | "grade" | "unknown";
+          known: "grade" | "unknown";
           value?: string;
         }>;
       }>;
@@ -1843,17 +1835,12 @@ export type ListLearningPromotionsResponse = {
           fields?: Array<string>;
           expected?: Array<{
             field: string;
-            known: "label" | "grade" | "unknown";
+            known: "grade" | "unknown";
             value?: string;
           }>;
         }>;
         agent_agreed?: number;
         fields?: Record<string, {
-          label?: {
-            n: number;
-            workflow_right: number;
-            agent_right: number;
-          };
           grade?: {
             n: number;
             workflow_right: number;
@@ -1938,27 +1925,19 @@ export type ListLearningPromotionsResponse = {
           n: number;
           workflow_right: number;
           agent_right: number;
-          known: "label" | "grade" | "agent";
+          known: "grade" | "agent";
           pass: boolean;
           reason: string;
           by: {
-            label?: {
-              n: number;
-              workflow_right: number;
-              agent_right: number;
-              pass: boolean;
-            };
             grade?: {
               n: number;
               workflow_right: number;
               agent_right: number;
-              pass: boolean;
             };
             agent?: {
               n: number;
               workflow_right: number;
               agent_right: number;
-              pass: boolean;
             };
           };
           unjudged?: number;
@@ -1988,7 +1967,7 @@ export type ListLearningPromotionsResponse = {
           fields?: Array<string>;
           expected?: Array<{
             field: string;
-            known: "label" | "grade" | "unknown";
+            known: "grade" | "unknown";
             value?: string;
           }>;
         }>;
@@ -2017,17 +1996,12 @@ export type ListLearningPromotionsResponse = {
             fields?: Array<string>;
             expected?: Array<{
               field: string;
-              known: "label" | "grade" | "unknown";
+              known: "grade" | "unknown";
               value?: string;
             }>;
           }>;
           agent_agreed?: number;
           fields?: Record<string, {
-            label?: {
-              n: number;
-              workflow_right: number;
-              agent_right: number;
-            };
             grade?: {
               n: number;
               workflow_right: number;

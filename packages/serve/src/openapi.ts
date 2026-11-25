@@ -1825,7 +1825,7 @@ const LEARNING_COST = closed({
     withheld: { oneOf: [closed({ unknown: { ...COUNT, description: "Runs whose cost is unknown." }, at_most: { ...COUNT, description: "Runs whose cost is known only as at most (`cost_upper_bound`)." } }), { type: "null" }], description: "After a takeover, the runs `before` and `after` would read whose cost is not known exactly: while any is, `times_cheaper` is null, so the ratio is never over a partial set. Null when every one is known, and before a takeover." },
     replay: { oneOf: [closed({
       n: { ...COUNT, description: "The inputs its check ran on." },
-      workflow_pct: { type: "number", minimum: 0, maximum: 100, description: "`agreed` over `alone`: the share of the inputs it answered alone that were right on every field against each field's known answer (a label, a grade's expected answer, else the agent's own), in percent to a tenth." },
+      workflow_pct: { type: "number", minimum: 0, maximum: 100, description: "`agreed` over `alone`: the share of the inputs it answered alone that were right on every field against each field's known answer (a grade's expected answer, else the agent's own), in percent to a tenth." },
       agent_pct: { type: "number", minimum: 0, maximum: 100, description: "The agent's share on the same inputs against the same known answers (the check's `agent_agreed` over `alone`; an answer graded wrong is the agent's miss), in percent to a tenth: 100 on a check kept before it was counted, which judged against the agent's own answers only." },
       cleared: { type: "boolean", description: "The check's joint floor (its `joint`): `agreed` over `alone` reached `agree_min`, as every promotion it decides needs." },
       agreed: { ...COUNT, description: "Of the inputs it answered alone (`alone`), how many were right on every field against each field's known answer." },
@@ -1872,7 +1872,7 @@ const LEARNING_COST = closed({
 const GRADE = closedWith(GRADE_FIELDS, { expected: { type: "object", description: "The fields a right answer's JSON holds, when the grade gave them." } });
 const REPLAY_SCORE = {
   n: { ...COUNT, description: "The inputs it was decided on (a replay stopped at a write is none)." },
-  agree: { ...COUNT, description: "How many of them the workflow answered alone right on every field against each field's known answer (a label, a grade's expected answer, else the agent's own): the check's `agreed`." },
+  agree: { ...COUNT, description: "How many of them the workflow answered alone right on every field against each field's known answer (a grade's expected answer, else the agent's own): the check's `agreed`." },
   agent_acc: { type: "number", minimum: 0, maximum: 1, description: "The agent's accuracy on them against the same known answers: its misses are counted where the workflow's are, on the inputs it answered alone (the check's `alone` - `agent_agreed`; an answer graded wrong is the agent's miss), over `n`. 1 on a check kept before `agent_agreed` was counted." },
   wf_acc: { type: "number", minimum: 0, maximum: 1, description: "The workflow's accuracy on them: the share it answered alone as the agent did, plus the ones it handed back (a hand-back is the agent's answer), over `n`." },
   delta: { type: "number", description: "`wf_acc` - `agent_acc`." },
@@ -1893,7 +1893,7 @@ const CHECK_DISAGREEMENT = closedWith({ run: { type: "string" }, input: { type: 
   failed: { const: true, description: "A step failed on it, or its run was still at work past the check's deadline, or never created by then." },
   differs_on: { type: "string", description: "When `grader` compared it: the decision the two answers differ on, in the fast model's words, or why its verdict could not be had (\"the comparison could not be read\", \"the cap held the comparison\", or \"the comparison read an earlier answer\" when the agent's run answered again after it was compared). Cut at 1200 characters." },
   fields: { type: "array", items: { type: "string" }, description: "The fields it answered wrong, against each one's known answer (`check.fields`): `agree_on`'s paths, else `answer`, the whole answer." },
-  expected: { type: "array", items: closedWith({ field: { type: "string", description: "One of `fields`." }, known: { enum: ["label", "grade", "unknown"], description: "Where its known answer came from; `unknown` where a grade marked the agent's answer wrong without giving the right one." } }, { value: { type: "string", description: "The known answer, as text or JSON: a label's, or the expected answer a grade gave (with no `agree_on`, the check judges against it written over the agent's answer when both are JSON objects), cut at 1200 characters; empty once the run it is of was deleted. Left out for `unknown`." } }), description: "Of `fields`, each one known from a label or a grade (never the agent's own answer, `agent`), or marked wrong with no right answer: what the recompile is asked to say there." },
+  expected: { type: "array", items: closedWith({ field: { type: "string", description: "One of `fields`." }, known: { enum: ["grade", "unknown"], description: "Where its known answer came from; `unknown` where a grade marked the agent's answer wrong without giving the right one." } }, { value: { type: "string", description: "The known answer, as text or JSON: the expected answer a grade gave (with no `agree_on`, the check judges against it written over the agent's answer when both are JSON objects), cut at 1200 characters; empty once the run it is of was deleted. Left out for `unknown`." } }), description: "Of `fields`, each one known from a grade (never the agent's own answer, `agent`), or marked wrong with no right answer: what the recompile is asked to say there." },
 });
 /** A field's counts on the inputs a check judged it on (learn/field-check.ts FieldCount). */
 const FIELD_COUNT = {
@@ -1902,29 +1902,31 @@ const FIELD_COUNT = {
   agent_right: { ...COUNT, description: "How many of them the agent's own answer had right." },
 };
 const UNJUDGED = { type: "integer", minimum: 1, description: "The inputs that carried it with no known answer (the agent's answer graded wrong with none given, and the workflow said another): never right, and the field must be judged on at least `alone_min` of the inputs that carried it. Left out when none." };
-const KNOWN_SOURCES = ["label", "grade", "agent"] as const;
-/** A field's counts by where its known answer came from, as a connected agent's check keeps them between turns. */
-const FIELD_TALLY = { type: "object", additionalProperties: false, properties: { ...Object.fromEntries(KNOWN_SOURCES.map((known) => [known, closed(FIELD_COUNT, `Its inputs known from ${known === "agent" ? "the agent's own answer" : `a ${known}`}.`)])), unjudged: UNJUDGED } };
+const KNOWN_SOURCES = ["grade", "agent"] as const;
+/** A field's counts by where its known answer came from: its inputs known from a grade, and from the agent's own answer. */
+const FIELD_BY = { grade: closed(FIELD_COUNT, "Its inputs known from a grade."), agent: closed(FIELD_COUNT, "Its inputs known from the agent's own answer.") };
+/** A field's counts by source, as a connected agent's check keeps them between turns. */
+const FIELD_TALLY = { type: "object", additionalProperties: false, properties: { ...FIELD_BY, unjudged: UNJUDGED } };
 /** One field's verdict (learn/field-check.ts FieldVerdict). */
 const FIELD_VERDICT = closedWith({
   ...FIELD_COUNT,
-  agent_right: { ...COUNT, description: "How many of them the agent's own answer had right, on the inputs known from a label or a grade only." },
+  agent_right: { ...COUNT, description: "How many of them the agent's own answer had right, on the inputs known from a grade only." },
   known: { enum: [...KNOWN_SOURCES], description: "The strongest source it was known from." },
-  pass: { type: "boolean", description: "Whether it passed: over all its known inputs pooled, at least `agree_min` right; on those with a known answer (from labels and grades together), at least `agree_min` right and at most 2 points under the agent, one miss always allowed in each; and judged on enough of its inputs (`unjudged`)." },
+  pass: { type: "boolean", description: "Whether it passed: over all its known inputs pooled, at least `agree_min` right; on those known from a grade, at least `agree_min` right and at most 2 points under the agent, one miss always allowed in each; and judged on enough of its inputs (`unjudged`)." },
   reason: { type: "string", description: "Why, in words, with the numbers." },
-  by: { type: "object", additionalProperties: false, properties: Object.fromEntries(KNOWN_SOURCES.map((known) => [known, closed({ ...FIELD_COUNT, pass: { type: "boolean", description: "Whether this source alone would pass: from a label or a grade, `agree_min` and the margin with one miss allowed in each; from the agent, `agree_min`. The field's `pass` pools them." } })])), description: "Its counts per source, each with whether it would pass alone." },
+  by: { type: "object", additionalProperties: false, properties: FIELD_BY, description: "Its counts per source." },
 }, { unjudged: UNJUDGED });
 /** A compiled draft's one check (learn/promote.ts CheckRecord): its bar while it replays, its numbers once decided. */
 const PROMOTION_CHECK = closedWith({
   compile_after: { type: "integer", minimum: 1, description: "The agent definition's `learning.compile_after` when the check began: how many of the agent's newest completed runs it read inputs from." },
-  agree_min: { type: "number", minimum: 0, maximum: 1, description: "The bar on being right: of the inputs it answered alone, the least share right on every field at once (the joint floor, `agreed`), and of each field's inputs, the least share right against its known answer (a label, a grade's expected answer, else the agent's own recorded answer)." },
+  agree_min: { type: "number", minimum: 0, maximum: 1, description: "The bar on being right: of the inputs it answered alone, the least share right on every field at once (the joint floor, `agreed`), and of each field's inputs, the least share right against its known answer (a grade's expected answer, else the agent's own recorded answer)." },
   alone_min: { type: "number", minimum: 0, maximum: 1, description: "The bar on answering alone: the least share of the inputs it ran on that it must answer with no escalate and no failed step." },
   attempt: { enum: [1, 2], description: "1: the compile's first check. 2: the check of its one recompile, after the first held it; held again, it stops (`stopped`)." },
 }, {
   agree_on: { type: "array", items: { type: "string" }, minItems: 1, description: "The definition's `learning.agree_on` it compared the draft's answer and the agent's on: dotted paths into the answer's JSON object, each resolving in both answers to equal values. Left out when it compared the whole answer." },
   grader: { type: "string", description: "With no `agree_on`: the agent's fast model that compared the two answers where they were not equal, asked whether they reach the same decision (one request per input, booked as the check's spend; a reply it could not read, a failed request or one the cap refused counts as differing). Left out when no fast model compared them: with `agree_on`, or with no fast model (the whole answer)." },
   n: { ...COUNT, description: "The inputs it ran on (a replay stopped at a write is none; one never created, or not ended, by the check's deadline counts, as failed). 0 with nothing to run on: never promoted, it stops (`stopped`) and `reason` says why." },
-  agreed: { ...COUNT, description: "How many of them it answered alone right on every field at once, each against its known answer: a label, a grade's expected answer, else the agent's recorded answer (compared on `agree_on` when set; else equal answers, or the same decision by `grader`'s verdict). An input a field has no known answer on is not right." },
+  agreed: { ...COUNT, description: "How many of them it answered alone right on every field at once, each against its known answer: a grade's expected answer, else the agent's recorded answer (compared on `agree_on` when set; else equal answers, or the same decision by `grader`'s verdict). An input a field has no known answer on is not right." },
   alone: { ...COUNT, description: "How many of them it answered alone. Promoted when `alone`/`n` >= `alone_min`, `agreed`/`alone` >= `agree_min`, and every field of `fields` passes." },
   agent_agreed: { ...COUNT, description: "Of `alone`, how many the agent's own answers were right on every field against the same known answers (an answer graded wrong is its miss): the agent's side of `agreed`. Left out on a check kept before it was counted." },
   joint: { type: "boolean", description: "The joint floor's verdict, as the check decided it: of `alone`, at least `agree_min` right on every field at once (`agreed`). A promotion needs it." },

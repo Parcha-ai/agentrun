@@ -336,7 +336,7 @@ test("(9) a graded source run: its replay asks the fast model about the draft an
   const same = { answer: 42, sure: true, why: "checked by hand" };
   const promoted = await graded("expected-same", same);
   assert.equal(promoted.record.decided, "promote", promoted.record.reason);
-  assert.deepEqual(promoted.record.check.fields.answer.by, { grade: { n: 3, workflow_right: 3, agent_right: 0, pass: true } });
+  assert.deepEqual(promoted.record.check.fields.answer.by, { grade: { n: 3, workflow_right: 3, agent_right: 0 } });
   assert.equal(promoted.users.length, 3, "one grader request per replay");
   assert.ok(promoted.users.every((one) => one.includes("checked by hand") && !one.includes("six times seven is forty-two")), "each compares the draft with the expected answer, never the agent's");
 
@@ -352,7 +352,7 @@ test("(10) a partial grade ({answer: 42} of the agent's {answer, sure, why}): ea
   for (let i = 0; i < 3; i++) await putGrade(w.server.settings, "agent-1", { run: `prior-${i}`, correct: true, expected: { answer: 42 }, source: "eval", at: new Date().toISOString(), path: "agent" });
   const { record } = await checked(w, undrawn("expected-partial"));
   assert.equal(record.decided, "promote", record.reason);
-  assert.deepEqual(record.check.fields.answer.by, { grade: { n: 3, workflow_right: 3, agent_right: 3, pass: true } });
+  assert.deepEqual(record.check.fields.answer.by, { grade: { n: 3, workflow_right: 3, agent_right: 3 } });
   const corrected = JSON.stringify({ answer: 42, sure: true, why: "six times seven is forty-two" });
   const users = w.graderRequests().map((request) => JSON.stringify(request.body));
   assert.equal(users.length, 3, "one grader request per replay");
@@ -371,7 +371,7 @@ test("(11) a grade given between the replays' end and the check's settle: each i
   const record = (await promotionsOf(w.server.settings, "agent-1")).findLast((one) => one.digest === DIGEST_2 && one.decided !== "replaying");
   assert.ok(record, "the revision's check decided");
   assert.equal(record.decided, "promote", record.reason);
-  assert.deepEqual(record.check.fields.answer.by, { agent: { n: 3, workflow_right: 3, agent_right: 3, pass: true } });
+  assert.deepEqual(record.check.fields.answer.by, { agent: { n: 3, workflow_right: 3, agent_right: 3 } });
   assert.ok(!record.reason.includes(COMPARE_STALE), record.reason);
 });
 
@@ -388,7 +388,7 @@ test("(12) a draft equal to the agent's answer, no grade when its replays ended,
   const record = (await promotionsOf(w.server.settings, "agent-1")).findLast((one) => one.digest === DIGEST_2 && one.decided !== "replaying");
   assert.ok(record, "the revision's check decided");
   assert.equal(record.decided, "promote", record.reason);
-  assert.deepEqual(record.check.fields.answer.by, { agent: { n: 3, workflow_right: 3, agent_right: 3, pass: true } });
+  assert.deepEqual(record.check.fields.answer.by, { agent: { n: 3, workflow_right: 3, agent_right: 3 } });
 });
 
 test("the grader's verdict: one JSON object, bare or the whole of one fence; anything else is none", () => {

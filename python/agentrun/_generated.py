@@ -733,7 +733,6 @@ __all__ = [
     "ListLearningPromotionsResponsePromotionsItemCheckFieldsValueBy",
     "ListLearningPromotionsResponsePromotionsItemCheckFieldsValueByAgent",
     "ListLearningPromotionsResponsePromotionsItemCheckFieldsValueByGrade",
-    "ListLearningPromotionsResponsePromotionsItemCheckFieldsValueByLabel",
     "ListLearningPromotionsResponsePromotionsItemCheckOutcomes",
     "ListLearningPromotionsResponsePromotionsItemCheckSkippedToolsItem",
     "ListLearningPromotionsResponsePromotionsItemCheckTurns",
@@ -742,7 +741,6 @@ __all__ = [
     "ListLearningPromotionsResponsePromotionsItemCheckTurnsFieldsValue",
     "ListLearningPromotionsResponsePromotionsItemCheckTurnsFieldsValueAgent",
     "ListLearningPromotionsResponsePromotionsItemCheckTurnsFieldsValueGrade",
-    "ListLearningPromotionsResponsePromotionsItemCheckTurnsFieldsValueLabel",
     "ListLearningPromotionsResponsePromotionsItemCheckTurnsOutcomes",
     "ListLearningPromotionsResponseServingItem",
     "ListLearningPromotionsResponseServingItemAudit",
@@ -754,7 +752,6 @@ __all__ = [
     "ListLearningPromotionsResponseServingItemChampionCheckFieldsValueBy",
     "ListLearningPromotionsResponseServingItemChampionCheckFieldsValueByAgent",
     "ListLearningPromotionsResponseServingItemChampionCheckFieldsValueByGrade",
-    "ListLearningPromotionsResponseServingItemChampionCheckFieldsValueByLabel",
     "ListLearningPromotionsResponseServingItemChampionCheckOutcomes",
     "ListLearningPromotionsResponseServingItemChampionCheckSkippedToolsItem",
     "ListLearningPromotionsResponseServingItemChampionCheckTurns",
@@ -763,7 +760,6 @@ __all__ = [
     "ListLearningPromotionsResponseServingItemChampionCheckTurnsFieldsValue",
     "ListLearningPromotionsResponseServingItemChampionCheckTurnsFieldsValueAgent",
     "ListLearningPromotionsResponseServingItemChampionCheckTurnsFieldsValueGrade",
-    "ListLearningPromotionsResponseServingItemChampionCheckTurnsFieldsValueLabel",
     "ListLearningPromotionsResponseServingItemChampionCheckTurnsOutcomes",
     "ListLearningPromotionsResponseServingItemChampionNodesItem",
     "ListLearningPromotionsResponseServingItemChampionNodesItemChecksItem",
@@ -2785,7 +2781,7 @@ class ListLearningPromotionsResponsePromotionsItemCheck(_ListLearningPromotionsR
     turns: ListLearningPromotionsResponsePromotionsItemCheckTurns
 
 
-_ListLearningPromotionsResponsePromotionsItemCheckFieldsValueRequired = TypedDict("_ListLearningPromotionsResponsePromotionsItemCheckFieldsValueRequired", {"n": "int", "workflow_right": "int", "agent_right": "int", "known": "Literal[\"label\", \"grade\", \"agent\"]", "pass": "bool", "reason": "str", "by": "ListLearningPromotionsResponsePromotionsItemCheckFieldsValueBy"})
+_ListLearningPromotionsResponsePromotionsItemCheckFieldsValueRequired = TypedDict("_ListLearningPromotionsResponsePromotionsItemCheckFieldsValueRequired", {"n": "int", "workflow_right": "int", "agent_right": "int", "known": "Literal[\"grade\", \"agent\"]", "pass": "bool", "reason": "str", "by": "ListLearningPromotionsResponsePromotionsItemCheckFieldsValueBy"})
 _ListLearningPromotionsResponsePromotionsItemCheckFieldsValueOptional = TypedDict("_ListLearningPromotionsResponsePromotionsItemCheckFieldsValueOptional", {"unjudged": "int"}, total=False)
 
 
@@ -2794,18 +2790,20 @@ class ListLearningPromotionsResponsePromotionsItemCheckFieldsValue(_ListLearning
 
 
 class ListLearningPromotionsResponsePromotionsItemCheckFieldsValueBy(TypedDict, total=False):
-    label: ListLearningPromotionsResponsePromotionsItemCheckFieldsValueByLabel
     grade: ListLearningPromotionsResponsePromotionsItemCheckFieldsValueByGrade
     agent: ListLearningPromotionsResponsePromotionsItemCheckFieldsValueByAgent
 
 
-ListLearningPromotionsResponsePromotionsItemCheckFieldsValueByLabel = TypedDict("ListLearningPromotionsResponsePromotionsItemCheckFieldsValueByLabel", {"n": "int", "workflow_right": "int", "agent_right": "int", "pass": "bool"})
+class ListLearningPromotionsResponsePromotionsItemCheckFieldsValueByGrade(TypedDict):
+    n: int
+    workflow_right: int
+    agent_right: int
 
 
-ListLearningPromotionsResponsePromotionsItemCheckFieldsValueByGrade = TypedDict("ListLearningPromotionsResponsePromotionsItemCheckFieldsValueByGrade", {"n": "int", "workflow_right": "int", "agent_right": "int", "pass": "bool"})
-
-
-ListLearningPromotionsResponsePromotionsItemCheckFieldsValueByAgent = TypedDict("ListLearningPromotionsResponsePromotionsItemCheckFieldsValueByAgent", {"n": "int", "workflow_right": "int", "agent_right": "int", "pass": "bool"})
+class ListLearningPromotionsResponsePromotionsItemCheckFieldsValueByAgent(TypedDict):
+    n: int
+    workflow_right: int
+    agent_right: int
 
 
 class ListLearningPromotionsResponsePromotionsItemCheckOutcomes(TypedDict):
@@ -2838,7 +2836,7 @@ class ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItem(_ListLe
 
 class _ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItemExpectedItemRequired(TypedDict):
     field: str
-    known: Literal["label", "grade", "unknown"]
+    known: Literal["grade", "unknown"]
 
 
 class ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItemExpectedItem(_ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItemExpectedItemRequired, total=False):
@@ -2884,7 +2882,7 @@ class ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItem(_L
 
 class _ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItemExpectedItemRequired(TypedDict):
     field: str
-    known: Literal["label", "grade", "unknown"]
+    known: Literal["grade", "unknown"]
 
 
 class ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItemExpectedItem(_ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItemExpectedItemRequired, total=False):
@@ -2892,16 +2890,9 @@ class ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItemExp
 
 
 class ListLearningPromotionsResponsePromotionsItemCheckTurnsFieldsValue(TypedDict, total=False):
-    label: ListLearningPromotionsResponsePromotionsItemCheckTurnsFieldsValueLabel
     grade: ListLearningPromotionsResponsePromotionsItemCheckTurnsFieldsValueGrade
     agent: ListLearningPromotionsResponsePromotionsItemCheckTurnsFieldsValueAgent
     unjudged: int
-
-
-class ListLearningPromotionsResponsePromotionsItemCheckTurnsFieldsValueLabel(TypedDict):
-    n: int
-    workflow_right: int
-    agent_right: int
 
 
 class ListLearningPromotionsResponsePromotionsItemCheckTurnsFieldsValueGrade(TypedDict):
@@ -3014,7 +3005,7 @@ class ListLearningPromotionsResponseServingItemChampionCheck(_ListLearningPromot
     turns: ListLearningPromotionsResponseServingItemChampionCheckTurns
 
 
-_ListLearningPromotionsResponseServingItemChampionCheckFieldsValueRequired = TypedDict("_ListLearningPromotionsResponseServingItemChampionCheckFieldsValueRequired", {"n": "int", "workflow_right": "int", "agent_right": "int", "known": "Literal[\"label\", \"grade\", \"agent\"]", "pass": "bool", "reason": "str", "by": "ListLearningPromotionsResponseServingItemChampionCheckFieldsValueBy"})
+_ListLearningPromotionsResponseServingItemChampionCheckFieldsValueRequired = TypedDict("_ListLearningPromotionsResponseServingItemChampionCheckFieldsValueRequired", {"n": "int", "workflow_right": "int", "agent_right": "int", "known": "Literal[\"grade\", \"agent\"]", "pass": "bool", "reason": "str", "by": "ListLearningPromotionsResponseServingItemChampionCheckFieldsValueBy"})
 _ListLearningPromotionsResponseServingItemChampionCheckFieldsValueOptional = TypedDict("_ListLearningPromotionsResponseServingItemChampionCheckFieldsValueOptional", {"unjudged": "int"}, total=False)
 
 
@@ -3023,18 +3014,20 @@ class ListLearningPromotionsResponseServingItemChampionCheckFieldsValue(_ListLea
 
 
 class ListLearningPromotionsResponseServingItemChampionCheckFieldsValueBy(TypedDict, total=False):
-    label: ListLearningPromotionsResponseServingItemChampionCheckFieldsValueByLabel
     grade: ListLearningPromotionsResponseServingItemChampionCheckFieldsValueByGrade
     agent: ListLearningPromotionsResponseServingItemChampionCheckFieldsValueByAgent
 
 
-ListLearningPromotionsResponseServingItemChampionCheckFieldsValueByLabel = TypedDict("ListLearningPromotionsResponseServingItemChampionCheckFieldsValueByLabel", {"n": "int", "workflow_right": "int", "agent_right": "int", "pass": "bool"})
+class ListLearningPromotionsResponseServingItemChampionCheckFieldsValueByGrade(TypedDict):
+    n: int
+    workflow_right: int
+    agent_right: int
 
 
-ListLearningPromotionsResponseServingItemChampionCheckFieldsValueByGrade = TypedDict("ListLearningPromotionsResponseServingItemChampionCheckFieldsValueByGrade", {"n": "int", "workflow_right": "int", "agent_right": "int", "pass": "bool"})
-
-
-ListLearningPromotionsResponseServingItemChampionCheckFieldsValueByAgent = TypedDict("ListLearningPromotionsResponseServingItemChampionCheckFieldsValueByAgent", {"n": "int", "workflow_right": "int", "agent_right": "int", "pass": "bool"})
+class ListLearningPromotionsResponseServingItemChampionCheckFieldsValueByAgent(TypedDict):
+    n: int
+    workflow_right: int
+    agent_right: int
 
 
 class ListLearningPromotionsResponseServingItemChampionCheckOutcomes(TypedDict):
@@ -3067,7 +3060,7 @@ class ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItem(_L
 
 class _ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItemExpectedItemRequired(TypedDict):
     field: str
-    known: Literal["label", "grade", "unknown"]
+    known: Literal["grade", "unknown"]
 
 
 class ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItemExpectedItem(_ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItemExpectedItemRequired, total=False):
@@ -3113,7 +3106,7 @@ class ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsIt
 
 class _ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsItemExpectedItemRequired(TypedDict):
     field: str
-    known: Literal["label", "grade", "unknown"]
+    known: Literal["grade", "unknown"]
 
 
 class ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsItemExpectedItem(_ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsItemExpectedItemRequired, total=False):
@@ -3121,16 +3114,9 @@ class ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsIt
 
 
 class ListLearningPromotionsResponseServingItemChampionCheckTurnsFieldsValue(TypedDict, total=False):
-    label: ListLearningPromotionsResponseServingItemChampionCheckTurnsFieldsValueLabel
     grade: ListLearningPromotionsResponseServingItemChampionCheckTurnsFieldsValueGrade
     agent: ListLearningPromotionsResponseServingItemChampionCheckTurnsFieldsValueAgent
     unjudged: int
-
-
-class ListLearningPromotionsResponseServingItemChampionCheckTurnsFieldsValueLabel(TypedDict):
-    n: int
-    workflow_right: int
-    agent_right: int
 
 
 class ListLearningPromotionsResponseServingItemChampionCheckTurnsFieldsValueGrade(TypedDict):

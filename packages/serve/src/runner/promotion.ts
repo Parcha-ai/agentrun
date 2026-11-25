@@ -649,7 +649,7 @@ async function judgeRows(deps: Pick<DecideDeps, "shown">, bar: CheckBar, rows: r
   const grader = [...judged.values()].find((one) => one.compared?.grader !== undefined)?.compared?.grader;
   const shown = await deps.shown();
   const cut = (text: string) => excerptShown(text, shown, CHECK_TEXT_MAX);
-  // The known answers (a label's, a grade's) each input's draft missed, for the recompile: never the agent's own (shown);
+  // The known answers (a grade's) each input's draft missed, for the recompile: never the agent's own (shown);
   // where a grade marked the agent's answer wrong without the right one, that it did ("unknown"), no value made up.
   const known = new Map<string, CheckKnown[]>();
   for (const miss of verdict.misses) {

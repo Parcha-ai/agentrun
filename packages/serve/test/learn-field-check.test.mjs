@@ -1,13 +1,12 @@
 // The field-by-field check (learn/field-check.ts check): a learned workflow's answers judged per field against each
-// field's best known answer (a label, else a grade's expected answer, else the agent's own), and every field together
-// (right on all of them on the same input) at agree_min. A field known only from the agent needs its measured
-// self-agreement less the margin, or agree_min where none is measured (the shipped bar: nothing measures it yet); one
-// known from a label or grade needs agree_min of its inputs right and at most the margin under the agent's accuracy.
+// field's best known answer (a grade's expected answer, else the agent's own), and every field together (right on all
+// of them on the same input) at agree_min. A field needs agree_min of its inputs right; its graded inputs also need
+// agree_min right and at most 2 points under the agent's accuracy there, one miss allowed in each.
 // Table tests: rows and a bar in, a verdict out, no store and no run. Synthetic data only.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-const { check, DEFAULT_MARGIN, tallyOf } = await import("../dist/learn/field-check.js");
+const { check, tallyOf } = await import("../dist/learn/field-check.js");
 
 const BAR = { alone_min: 0.7, agree_min: 0.8 };
 const ids = (n, from = 0) => Array.from({ length: n }, (_, i) => `in-${from + i}`);
@@ -19,7 +18,7 @@ const twoFields = (off) => ids(20).map((id, i) => answered(id, {
   riskTier: { workflow: i < off ? "low" : "high", agent: "high" },
 }));
 
-test("on the shipped bar (agree_min 0.8, no self-agreement measured): riskTier wrong on 3 of 20 serves (85%, and 16 of 20 right on both fields); wrong on 5 holds and names riskTier and its inputs", () => {
+test("on the shipped bar (agree_min 0.8): riskTier wrong on 3 of 20 serves (85%, and 16 of 20 right on both fields); wrong on 5 holds and names riskTier and its inputs", () => {
   const served = check(twoFields(3), BAR);
   assert.deepEqual([served.verdict, served.failing, served.joint], ["serve", [], { agreed: 16, alone: 20, pass: true }]);
   assert.deepEqual(counts(served), { mcc: ["agent", 20, 19, 0, true], riskTier: ["agent", 20, 17, 0, true] }, "agent_right counts only inputs with a label or grade");
@@ -27,20 +26,6 @@ test("on the shipped bar (agree_min 0.8, no self-agreement measured): riskTier w
   assert.deepEqual([held.verdict, held.failing], ["hold", ["riskTier"]]);
   assert.deepEqual(held.misses.filter((miss) => miss.field === "riskTier").map((miss) => miss.input_id), ids(5));
   assert.match(held.fields.riskTier.reason, /^riskTier: 15 of 20 said what the agent said \(75\.0%, the bar 80\.0%\)$/);
-});
-
-test("with a measured self-agreement (none is measured yet): mcc within one answer passes, riskTier 3 to 8 of 20 off holds; the verdict names riskTier and its inputs", () => {
-  const bar = { ...BAR, self_agreement: { mcc: 0.92, riskTier: 0.97 } };
-  for (const off of [3, 5, 8]) {
-    const verdict = check(twoFields(off), bar);
-    assert.equal(verdict.verdict, "hold", `riskTier ${off} of 20 off`);
-    assert.deepEqual(verdict.failing, ["riskTier"]);
-    assert.deepEqual(counts(verdict), { mcc: ["agent", 20, 19, 0, true], riskTier: ["agent", 20, 20 - off, 0, false] });
-    assert.deepEqual(verdict.misses.filter((miss) => miss.field === "riskTier").map((miss) => miss.input_id), ids(off));
-    assert.deepEqual(verdict.misses.filter((miss) => miss.field === "mcc"), [{ field: "mcc", input_id: "in-19", workflow: "5999", expected: "5411", known: "agent" }]);
-    assert.match(verdict.fields.riskTier.reason, /^riskTier: \d+ of 20 said what the agent said \(\d+\.0%, the floor 95\.0%: the agent agrees with itself on it 97\.0%, less 2\.0%\)$/);
-    assert.equal(verdict.tally.agreed, 20 - off - 1, "agreed: right on every field");
-  }
 });
 
 test("every field together: two fields each right on 16 of 20, wrong on different inputs (12 of 20 right on both), holds on the joint floor", () => {
@@ -54,22 +39,10 @@ test("every field together: two fields each right on 16 of 20, wrong on differen
   assert.equal(check(rows, { ...BAR, agree_min: 0.6 }).verdict, "serve", "at agree_min 0.6, 12 of 20 is enough");
 });
 
-test("a field known only from the agent: its floor is the self-agreement less the margin, else agree_min", () => {
+test("a field known only from the agent: its floor is agree_min, never off by float noise", () => {
   const rows = (right) => ids(20).map((id, i) => answered(id, { x: { workflow: i < right ? "a" : "b", agent: "a" } }));
-  const cases = [
-    // [self agreement, right of 20, the field passes]
-    [0.92, 18, true], // floor 0.90 of 20 = 18, never 19 by float noise
-    [0.92, 17, false],
-    [0.5, 10, true],
-    [0.01, 0, true], // floor max(0, -0.01)
-    [undefined, 16, true], // agree_min 0.8 of 20 = 16
-    [undefined, 15, false],
-  ];
-  for (const [self, right, pass] of cases) {
-    const verdict = check(rows(right), { ...BAR, ...(self === undefined ? {} : { self_agreement: { x: self } }) });
-    assert.equal(verdict.fields.x.pass, pass, `self ${self}, ${right} of 20 right`);
-    assert.equal(verdict.verdict, pass && right >= 16 ? "serve" : "hold", "and every field together at agree_min");
-  }
+  for (const [right, pass] of [[16, true], [15, false]]) assert.equal(check(rows(right), BAR).fields.x.pass, pass, `${right} of 20 right`);
+  assert.equal(check(rows(18), { ...BAR, agree_min: 0.9 }).fields.x.pass, true, "0.9 of 20 needs 18, never 19");
   assert.match(check(rows(16), BAR).fields.x.reason, /^x: 16 of 20 said what the agent said \(80\.0%, the bar 80\.0%\)$/);
 });
 
@@ -89,8 +62,6 @@ test("a field known from grades: at least agree_min of its inputs right, and at 
     const verdict = check(rows(workflowRight, agentRight), BAR);
     assert.deepEqual(counts(verdict).x, ["grade", 50, workflowRight, agentRight, pass], `${workflowRight} vs ${agentRight}`);
   }
-  assert.equal(check(rows(43, 45), { ...BAR, margin: 0.04 }).fields.x.pass, true, "a wider margin");
-  assert.equal(DEFAULT_MARGIN, 0.02);
   assert.match(check(rows(44, 45), BAR).fields.x.reason, /^x: 44 of 50 right against the grades' expected answers \(88\.0%, the bar 80\.0%\), the agent 45 \(90\.0%; at most 2\.0% under it\), one miss allowed in each$/);
 });
 
@@ -113,8 +84,8 @@ test("a grade with no expected answer: graded right, the agent's answer is known
     answered("in-2", { x: { workflow: "c", agent: "c" } }),
   ], BAR);
   assert.deepEqual(refuted.fields.x.by, {
-    grade: { n: 1, workflow_right: 0, agent_right: 0, pass: true },
-    agent: { n: 1, workflow_right: 1, agent_right: 1, pass: true },
+    grade: { n: 1, workflow_right: 0, agent_right: 0 },
+    agent: { n: 1, workflow_right: 1, agent_right: 1 },
   }, "in-0 repeats an answer graded wrong (its one miss, allowed there alone); in-1 differs from it, which no known answer judges");
   assert.equal(refuted.fields.x.pass, false, "1 of 2 right in all: under agree_min");
   assert.equal(refuted.fields.x.unjudged, 1, "in-1 is counted as unjudged");
@@ -131,7 +102,7 @@ test("a grade's known answer on a whole answer: `agrees` (the fast model's verdi
     answered("in-1", { answer: { workflow: "w1", agent: "a1", grade: { k: 1 }, agrees: false, agent_correct: true } }),
   ];
   const verdict = check(rows, BAR);
-  assert.deepEqual(verdict.fields.answer.by, { grade: { n: 2, workflow_right: 1, agent_right: 1, pass: true } }, "one miss, allowed on the graded inputs alone");
+  assert.deepEqual(verdict.fields.answer.by, { grade: { n: 2, workflow_right: 1, agent_right: 1 } });
   assert.equal(verdict.fields.answer.pass, false, "1 of 2 right: under agree_min");
   assert.deepEqual(verdict.misses, [{ field: "answer", input_id: "in-1", workflow: "w1", expected: { k: 1 }, known: "grade" }]);
 });
@@ -163,28 +134,22 @@ test("the agent right on every field at once (agent_agreed), counted on the same
   assert.equal(refuted.tally.agent_agreed, 1, "an answer graded wrong is the agent's miss, judged or not");
 });
 
-test("a label beats a grade, which beats the agent's answer", () => {
+test("a grade beats the agent's answer: the field is known from the grade, and the agent measured there", () => {
   const verdict = check([
-    answered("in-0", { x: { workflow: "L", agent: "A", grade: "G", label: "L" } }),
-    answered("in-1", { x: { workflow: "G", agent: "G", grade: "G" } }),
-    answered("in-2", { x: { workflow: "A", agent: "A" } }),
+    answered("in-0", { x: { workflow: "G", agent: "A", grade: "G" } }),
+    answered("in-1", { x: { workflow: "A", agent: "A" } }),
   ], { ...BAR, agree_min: 1 });
-  assert.deepEqual(verdict.fields.x.by, {
-    label: { n: 1, workflow_right: 1, agent_right: 0, pass: true },
-    grade: { n: 1, workflow_right: 1, agent_right: 1, pass: true },
-    agent: { n: 1, workflow_right: 1, agent_right: 1, pass: true },
-  });
-  assert.deepEqual([verdict.fields.x.known, verdict.fields.x.agent_right], ["label", 1], "the strongest source it was known from; the agent right on 1 of the 2 labelled or graded");
-  const wrong = check([answered("in-0", { x: { workflow: "G", agent: "G", grade: "G", label: "L" } })], BAR);
-  assert.deepEqual(wrong.misses, [{ field: "x", input_id: "in-0", workflow: "G", expected: "L", known: "label" }], "the label decides, not the grade");
-  assert.equal(wrong.fields.x.pass, false, "wrong against the label: held, though the agent was wrong too");
+  assert.deepEqual(verdict.fields.x.by, { grade: { n: 1, workflow_right: 1, agent_right: 0 }, agent: { n: 1, workflow_right: 1, agent_right: 1 } });
+  assert.deepEqual([verdict.fields.x.known, verdict.fields.x.agent_right], ["grade", 0], "the strongest source it was known from; the agent wrong on its graded input");
+  const wrong = check([answered("in-0", { x: { workflow: "A", agent: "A", grade: "G" } })], BAR);
+  assert.deepEqual(wrong.misses, [{ field: "x", input_id: "in-0", workflow: "A", expected: "G", known: "grade" }], "the grade decides, not the agent");
 });
 
-test("a field known from more than one source must pass each", () => {
+test("a field known from a grade and from the agent is pooled: 10 graded right and 5 of 10 agent-known hold at 15 of 20", () => {
   const graded = ids(10).map((id) => answered(id, { x: { workflow: "yes", agent: "yes", grade: "yes" } }));
   const ungraded = ids(10, 10).map((id, i) => answered(id, { x: { workflow: i < 5 ? "yes" : "no", agent: "yes" } }));
   const verdict = check([...graded, ...ungraded], BAR);
-  assert.deepEqual([verdict.fields.x.by.grade.pass, verdict.fields.x.by.agent.pass, verdict.fields.x.pass], [true, false, false], "15 of 20 overall, yet 5 of 10 against the agent");
+  assert.deepEqual([verdict.fields.x.n, verdict.fields.x.workflow_right, verdict.fields.x.pass], [20, 15, false]);
   assert.deepEqual(verdict.failing, ["x"]);
 });
 
@@ -197,8 +162,8 @@ test("a missing value is never right: not the workflow's, and not against a miss
   ], BAR);
   assert.deepEqual(verdict.misses.map((miss) => miss.input_id), ["in-0", "in-1", "in-3"]);
   assert.deepEqual(verdict.fields.x.by, {
-    grade: { n: 2, workflow_right: 1, agent_right: 1, pass: true },
-    agent: { n: 2, workflow_right: 0, agent_right: 1, pass: false },
+    grade: { n: 2, workflow_right: 1, agent_right: 1 },
+    agent: { n: 2, workflow_right: 0, agent_right: 1 },
   }, "in-1's agent gave no value: it is not counted as the agent's right answer there");
 });
 
@@ -265,7 +230,7 @@ test("a value equal to the agent's, where a grade marked the agent's answer wron
   assert.equal(other.fields.answer.workflow_right, 1, "another answer the verdict calls the known one's decision stays right");
 });
 
-test("agree_min is the field's, over all its known inputs pooled across sources: 19 agent-known inputs right and 1 graded one missed (the agent wrong there too) serve at 19 of 20; the margin stays on the graded inputs alone", () => {
+test("agree_min is the field's, over all its known inputs pooled across sources: 19 agent-known inputs right and 1 graded one missed (the agent wrong there too) serve at 19 of 20; the 2-point margin stays on the graded inputs alone", () => {
   const agentKnown = ids(19).map((id) => answered(id, { x: { workflow: "a", agent: "a" } }));
   const pooled = check([...agentKnown, answered("in-19", { x: { workflow: "b", agent: "c", grade: "d" } })], BAR);
   assert.deepEqual([pooled.verdict, pooled.fields.x.pass, pooled.failing], ["serve", true, []], pooled.fields.x.reason);
@@ -284,17 +249,16 @@ test("an agent-known field the agent's answer lacks is not the agent's right ans
   assert.deepEqual([tally.agent_agreed, tally.fields.x.agent.agent_right], [1, 1]);
 });
 
-test("the inputs with a known answer (labels and grades) keep their own floor and the margin, one miss always allowed: 80 agent-known right and 20 graded wrong, the draft repeating the agent there, hold; 97 agent-known and 3 labels, the agent 3 of 3 and the draft 2, serve; one correct-graded input missed among 19 serves", () => {
+test("the graded inputs keep their own floor and the margin, one miss always allowed: 80 agent-known right and 20 graded wrong, the draft repeating the agent there, hold; 97 agent-known and 3 graded, the agent 3 of 3 and the draft 2, serve; one correct-graded input missed among 19 serves", () => {
   const agentKnown = (n) => ids(n).map((id) => answered(id, { x: { workflow: "a", agent: "a" } }));
   const repeats = ids(20, 80).map((id) => answered(id, { x: { workflow: "w", agent: "w", grade: "d", agent_correct: false } }));
   const repeated = check([...agentKnown(80), ...repeats], BAR);
-  assert.deepEqual([repeated.verdict, repeated.fields.x.n, repeated.fields.x.workflow_right, repeated.failing], ["hold", 100, 80, ["x"]], repeated.fields.x.reason);
-  assert.equal(repeated.fields.x.by.grade.pass, false, "0 of 20 graded right: far past one miss, and under agree_min there");
-  const labels = ids(3, 97).map((id, i) => answered(id, { x: { workflow: i < 2 ? "L" : "z", agent: "L", label: "L" } }));
-  const labelled = check([...agentKnown(97), ...labels], BAR);
-  assert.deepEqual([labelled.verdict, labelled.fields.x.by.label], ["serve", { n: 3, workflow_right: 2, agent_right: 3, pass: true }], labelled.fields.x.reason);
+  assert.deepEqual([repeated.verdict, repeated.fields.x.n, repeated.fields.x.workflow_right, repeated.failing], ["hold", 100, 80, ["x"]], "0 of 20 graded right: far past one miss, and under agree_min there");
+  const grades = ids(3, 97).map((id, i) => answered(id, { x: { workflow: i < 2 ? "G" : "z", agent: "G", grade: "G" } }));
+  const graded = check([...agentKnown(97), ...grades], BAR);
+  assert.deepEqual([graded.verdict, graded.fields.x.by.grade], ["serve", { n: 3, workflow_right: 2, agent_right: 3 }], graded.fields.x.reason);
   const thumbsUp = check([...agentKnown(19), answered("in-19", { x: { workflow: "b", agent: "d", grade: "d", agent_correct: true } })], BAR);
-  assert.deepEqual([thumbsUp.verdict, thumbsUp.fields.x.by.grade], ["serve", { n: 1, workflow_right: 0, agent_right: 1, pass: true }], thumbsUp.fields.x.reason);
+  assert.deepEqual([thumbsUp.verdict, thumbsUp.fields.x.by.grade], ["serve", { n: 1, workflow_right: 0, agent_right: 1 }], thumbsUp.fields.x.reason);
   // Past the one miss, the floor and the margin hold as they did.
   const twoMissed = check([...agentKnown(18), ...ids(2, 18).map((id) => answered(id, { x: { workflow: "b", agent: "d", grade: "d" } }))], BAR);
   assert.deepEqual([twoMissed.verdict, twoMissed.failing], ["hold", ["x"]], "2 of 2 graded missed: past one miss, and under agree_min there");

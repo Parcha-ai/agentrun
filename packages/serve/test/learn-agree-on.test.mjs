@@ -90,14 +90,14 @@ test("graded inputs with no agree_on: one field, the whole answer, judged agains
   const held = await decide({}, gradedRead(readOf(() => draftSays(partly)), expected, { same: false, differs_on: "riskTier" }));
   assert.equal(held.record.decided, "hold", held.record.reason);
   assert.deepEqual(Object.keys(held.stored.check.fields), ["answer"], "no field is made from a grade's keys");
-  assert.deepEqual(held.stored.check.fields.answer.by, { grade: { n: 5, workflow_right: 0, agent_right: 0, pass: false } });
+  assert.deepEqual(held.stored.check.fields.answer.by, { grade: { n: 5, workflow_right: 0, agent_right: 0 } });
   assert.deepEqual(held.stored.check.disagreements[0].fields, ["answer"]);
   assert.deepEqual(held.stored.check.disagreements[0].expected, [{ field: "answer", known: "grade", value: known }], "the known answer the draft missed, whole, for the recompile");
   assert.equal(held.stored.check.grader, "fast-model");
 
   const same = await decide({}, gradedRead(readOf(() => draftSays(DRAFT)), expected, { same: true }));
   assert.equal(same.record.decided, "promote", `the same decisions as the expected answer by the fast model's verdict: ${same.record.reason}`);
-  assert.deepEqual(same.stored.check.fields.answer.by, { grade: { n: 5, workflow_right: 5, agent_right: 0, pass: true } });
+  assert.deepEqual(same.stored.check.fields.answer.by, { grade: { n: 5, workflow_right: 5, agent_right: 0 } });
 
   const equal = await decide({}, gradedRead(readOf(() => draftSays({ ...AGENT, ...expected })), expected));
   assert.equal(equal.record.decided, "promote", `equal to the corrected answer, no model asked: ${equal.record.reason}`);
@@ -128,7 +128,7 @@ test("a partial grade (the agent said 42 with a note, the grade expects 41): a d
   const corrected = '{"answer":41,"note":"checked"}';
   const right = await decide({}, partialRead(agentSaid, expected, corrected));
   assert.equal(right.record.decided, "promote", right.record.reason);
-  assert.deepEqual(right.stored.check.fields.answer.by, { grade: { n: 5, workflow_right: 5, agent_right: 0, pass: true } });
+  assert.deepEqual(right.stored.check.fields.answer.by, { grade: { n: 5, workflow_right: 5, agent_right: 0 } });
 
   const dropped = await decide({}, partialRead(agentSaid, expected, '{"answer":41}'));
   assert.equal(dropped.record.decided, "hold", dropped.record.reason);
@@ -172,10 +172,10 @@ test("a grade with no expected answer: graded wrong, a draft that repeats the ag
   const rows = read.rows.map((row) => ({ ...row, correct: false }));
   const held = await decide({}, { ...read, rows });
   assert.equal(held.record.decided, "hold", held.record.reason);
-  assert.deepEqual(held.stored.check.fields.answer.by, { grade: { n: 5, workflow_right: 0, agent_right: 0, pass: false } });
+  assert.deepEqual(held.stored.check.fields.answer.by, { grade: { n: 5, workflow_right: 0, agent_right: 0 } });
   assert.deepEqual(held.stored.check.disagreements.map((one) => one.expected), Array.from({ length: 5 }, () => [{ field: "answer", known: "unknown" }]));
   const confirmed = await decide({}, { ...read, rows: read.rows.map((row) => ({ ...row, correct: true })) });
-  assert.deepEqual([confirmed.record.decided, confirmed.stored.check.fields.answer.by], ["promote", { agent: { n: 5, workflow_right: 5, agent_right: 5, pass: true } }]);
+  assert.deepEqual([confirmed.record.decided, confirmed.stored.check.fields.answer.by], ["promote", { agent: { n: 5, workflow_right: 5, agent_right: 5 } }]);
 });
 
 test("19 inputs graded wrong with no correction, where the draft answers anything else, and 1 it matches: held (main held it at 1 of 20), and the 19 are shown for the recompile", async () => {

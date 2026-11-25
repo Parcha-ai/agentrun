@@ -163,7 +163,7 @@ export interface CheckDisagreement {
   /** The fields the draft's answer had wrong on it, against each field's known answer (CheckRecord.fields): agree_on's
    *  paths (the definition's names), else `answer`, the whole answer. Never a name taken from a grade. */
   readonly fields?: readonly string[];
-  /** Of those, each one known from a label or a grade (never the agent's own answer, `agent` above): the known answer
+  /** Of those, each one known from a grade (never the agent's own answer, `agent` above): the known answer
    *  (its text or JSON, cut to CHECK_TEXT_MAX) and where it came from, which the recompile is asked to say; or
    *  "unknown", no value, where a grade marked the agent's answer wrong without giving the right one. */
   readonly expected?: readonly CheckKnown[];
@@ -171,7 +171,7 @@ export interface CheckDisagreement {
 
 /** A known answer a draft missed on one field of one input: the field, its source, and the value as text; none when the
  *  grade gave no right answer ("unknown"). */
-export type CheckKnown = { readonly field: string; readonly known: "label" | "grade" | "unknown"; readonly value?: string };
+export type CheckKnown = { readonly field: string; readonly known: "grade" | "unknown"; readonly value?: string };
 
 /** A check's numbers, once decided: `n` inputs it ran on (a skipped write is none), `agreed` of them answered alone right
  *  on every field, `alone` answered alone (no escalate, no failed step), each field's verdict (`fields`,

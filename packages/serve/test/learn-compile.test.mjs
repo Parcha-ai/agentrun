@@ -244,13 +244,13 @@ test("held by its check: the revise ask says the check's numbers and offers no '
   assert.match(plain, /Your learned workflow `answer` does not run first: it was held \(the check could not run\)\. It stays held until a new revision of it\./);
 });
 
-// A miss against a grade or a label: the revise ask shows the known answer the draft missed and where it came from, as
+// A miss against a grade: the revise ask shows the known answer the draft missed and where it came from, as
 // data, and asks for the known answer there (never the agent's, which the grade corrected). An input the owner graded
 // wrong without giving the right answer is shown too, saying so, with no answer made up for it.
 test("held by its check on a known answer: each disagreement shows the known answer it missed and its source, or that the owner marked the agent's answer wrong without the right one; the ask is for the known answer", () => {
   const one = { run: "r1", input: "Question 1", agent: JSON.stringify({ answer: 42 }), draft: JSON.stringify({ answer: 7 }), fields: ["answer"], expected: [{ field: "answer", known: "grade", value: "{\"answer\":41}" }] };
   const unknown = { run: "r2", input: "Question 2", agent: JSON.stringify({ answer: 43 }), draft: JSON.stringify({ answer: 9 }), fields: ["answer"], expected: [{ field: "answer", known: "unknown" }] };
-  const field = { n: 4, workflow_right: 0, agent_right: 0, unjudged: 1, known: "grade", pass: false, reason: "answer: 0 of 4", by: { grade: { n: 4, workflow_right: 0, agent_right: 0, pass: false } } };
+  const field = { n: 4, workflow_right: 0, agent_right: 0, unjudged: 1, known: "grade", pass: false, reason: "answer: 0 of 4", by: { grade: { n: 4, workflow_right: 0, agent_right: 0 } } };
   const check = { n: 5, compile_after: 5, alone: 5, agreed: 0, alone_min: 0.7, agree_min: 0.8, attempt: 1, of: ["r1", "r2"], disagreements: [one, unknown], fields: { answer: field } };
   const prompt = compile.compilePrompt(ASK({ mode: "revise", workflow: "answer", current: "{\"v\":2}", held: { workflow: "answer", digest: "0123456789abcdef", reason: "held", check } }));
   assert.match(prompt, /Input 1: Question 1\nYour answer: \{"answer":42\}\nThe draft's answer: \{"answer":7\}\nThe fields it had wrong: answer\nThe known answer of answer \(from a grade\): \{"answer":41\}/);
@@ -263,7 +263,7 @@ test("held by its check on a known answer: each disagreement shows the known ans
 // The joint floor with one field: inputs with no known answer are not right on it, so a field that passes alone can
 // still fall short together; the hold names that, never nothing.
 test("held on the joint floor with one field that passes: the revise ask says right on every field at once and that it fell short there", () => {
-  const check = { n: 20, compile_after: 20, alone: 20, agreed: 13, alone_min: 0.7, agree_min: 0.8, attempt: 1, of: [], joint: false, fields: { answer: { n: 16, workflow_right: 13, agent_right: 0, unjudged: 4, known: "agent", pass: true, reason: "answer: 13 of 16", by: { agent: { n: 16, workflow_right: 13, agent_right: 16, pass: true } } } } };
+  const check = { n: 20, compile_after: 20, alone: 20, agreed: 13, alone_min: 0.7, agree_min: 0.8, attempt: 1, of: [], joint: false, fields: { answer: { n: 16, workflow_right: 13, agent_right: 0, unjudged: 4, known: "agent", pass: true, reason: "answer: 13 of 16", by: { agent: { n: 16, workflow_right: 13, agent_right: 16 } } } } };
   const prompt = compile.compilePrompt(ASK({ mode: "revise", workflow: "answer", current: "{\"v\":2}", held: { workflow: "answer", digest: "0123456789abcdef", reason: "held", check } }));
   assert.match(prompt, /field by field: answer: 13 of 16; right on every field at once: 13 of 20 \(65\.0%, at least 80\.0% needed\)\. It fell short on its fields together\./);
   // The verdict is the check's own (`joint`), never worked out again from the shares: a passed one is no shortfall.
