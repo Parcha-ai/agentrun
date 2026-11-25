@@ -233,6 +233,15 @@ test("restore: a label cut's id puts its value back and moves its record to rest
   assertNoPlanted(body.replace(`PGPASSWORD=${PLANTED.pg} psql`, ""), PLANTED);
 });
 
+test("restore reads back only what it named: a value the cut pass never cuts (an object key) fails the export closed, a restore of another cut or not", async () => {
+  const { doc } = await build();
+  const label = doc.cuts.find((cut) => cut.kind === "label" && cut.at === "/run/title");
+  // A workflow output keyed by a person's email: keys are carried as they are, so the read-back is what refuses it.
+  const keyed = [...rowsOf(PLANTED), { seq: 9, kind: "text_block", text: "Sent.", by: { [PLANTED.email]: "sent" } }];
+  await assert.rejects(build({ rows: keyed }), ExportFailed, "no restore");
+  await assert.rejects(build({ rows: keyed, restore: [label.id] }), ExportFailed, "a restore of the title's label cut does not let the key through");
+});
+
 test("restore of a format, held or dump cut's id, or of an id the bundle has no cut of, is a 400 and restores nothing", async () => {
   const { doc } = await build();
   for (const kind of ["format", "held", "dump"]) {
