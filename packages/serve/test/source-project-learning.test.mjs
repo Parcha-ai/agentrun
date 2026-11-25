@@ -33,7 +33,8 @@ test('a read-only moved agent starts an audit through fresh auxiliary admission,
   }, { name: check.workflow, digest: check.digest });
   assert.equal(calls.length, 1, logs.join('\n'));
   assert.equal(calls[0].revisionId, 'revision'); assert.equal(calls[0].launch.sourceProject, undefined);
-  assert.deepEqual(calls[0].launch.audit, check);
+  assert.deepEqual(calls[0].launch.audit, { ...check, deadlineAt: calls[0].launch.audit.deadlineAt });
+  assert.ok(Number.isFinite(calls[0].launch.audit.deadlineAt), 'a learning child carries its deadline');
   assert.equal(calls[0].launch.learning, undefined, 'the shadow does not compile or change learning');
   assert.deepEqual((await store.agents.revision('revision')).body.learning, { audit_every: 1 });
 });

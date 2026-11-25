@@ -324,10 +324,11 @@ test("reserved replay runs not created yet are pending until their launch grace:
 // another claim created at once is left to it.
 test("an interrupted launch is recovered: a later claim creates the reserved runs still missing, under their ids", async () => {
   const { REPLAY_LAUNCH_GRACE_MS } = await import("../dist/runner/promotion.js");
+  const { LEARNING_CHILD_MS } = await import("../dist/learning-work.js");
   const { text, digest, ids, settings, created, logs, gateOf, launches } = await reservedOf({ made: 2, raced: ["replay-3"] });
   assert.equal(await gateOf(() => REPLAY_LAUNCH_GRACE_MS + 1_000)({ name: "answer", workflow: text }, digest), undefined, logs.join("\n"));
   assert.deepEqual(created, [ids[2], ids[4], ids[5]], "the missing ones, the raced one left to the claim that made it");
-  for (const id of created) assert.deepEqual(launches.get(id).replay, { of: `graded-${id.at(-1)}`, workflow: "answer", digest }, "on the input the record names for it");
+  for (const id of created) assert.deepEqual(launches.get(id).replay, { of: `graded-${id.at(-1)}`, workflow: "answer", digest, deadlineAt: REPLAY_LAUNCH_GRACE_MS + 1_000 + LEARNING_CHILD_MS }, "on the input the record names for it, its deadline from its start");
   assert.equal((await promotionsOf(settings, "a")).at(-1).decided, "replaying");
   assert.ok(!logs.some((line) => line.includes("could not be read")), logs.join("\n"));
 });
