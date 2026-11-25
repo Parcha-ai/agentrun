@@ -4326,6 +4326,11 @@ export interface operations {
         };
         unpriced_breaks: number;
       } | null;
+      secrets: {
+        runs: number;
+        runs_holding: number;
+        removed: number;
+      } | null;
     };
   };
   gitHubCallback: {

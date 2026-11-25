@@ -213,6 +213,17 @@ const WRAPPED: Json = closed({
     ],
     description: "The cache of the runs imported here in the year, from what the import kept of each (numbers only); null when none was analyzed.",
   },
+  secrets: {
+    oneOf: [
+      closed({
+        runs: { ...COUNT, description: "The year's imported runs whose keys the import counted. A session left out of the import, or imported before it counted keys, is not among them." },
+        runs_holding: { ...COUNT, description: "Of `runs`, those that held at least one key or token." },
+        removed: { ...COUNT, description: "Keys and tokens the import cut out of those runs (an environment's key-shaped values, the keys saved on the server, and keys of a format secretlint finds), each once a run: a key met in two runs counts in each." },
+      }),
+      { type: "null" },
+    ],
+    description: "The keys and tokens the import cut from the runs imported here in the year, as counts only (no key, shape or place); null when none was counted.",
+  },
 }, "A year of the work under this machine's home, bucketed by each request's time in the server's local zone.");
 /** Runs counted together (AgentStoreReader.analytics's AnalyticsGroup). */
 const GROUP = {

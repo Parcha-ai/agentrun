@@ -14,7 +14,7 @@ afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.in
 
 const YEAR: Wrapped = {
   year: 2025, sessions: 12, turns: 40, requests: 300, tokens: { input: 1_000_000, output: 200_000, cache_read: 5_000_000, cache_write: 100_000 },
-  cost_usd: 42.5, unpriced_requests: 3, unread_files: 0, cache: null,
+  cost_usd: 42.5, unpriced_requests: 3, unread_files: 0, cache: null, secrets: null,
   days: [{ day: "2025-03-02", requests: 100, tokens: 4_000_000 }, { day: "2025-03-03", requests: 200, tokens: 2_300_000 }],
   hours: Array.from({ length: 24 }, (_, h) => (h === 14 ? 120 : 4)), weekdays: [0, 200, 100, 0, 0, 0, 0], active_ms: 7_200_000,
   harnesses: [{ harness: "claude-agent", sessions: 10, requests: 250, tokens: 6_000_000, sources: ["claude-code"] }],
@@ -31,7 +31,7 @@ describe("wrappedCards", () => {
   it("draws a card as an img of its rendered SVG, at the card's size, its words as the alt", () => {
     const cover = WRAPPED_CARDS.find((c) => c.id === "cover")!;
     const image = renderCard(toBody(cover, YEAR)!);
-    mount(createElement("div", null, wrappedCards(cover, YEAR)));
+    mount(createElement("div", null, wrappedCards(cover, YEAR, false)));
     const img = document.querySelector("img")!;
     expect(img.getAttribute("src")).toBe(image.dataUrl);
     expect(img.getAttribute("src")!.startsWith("data:image/svg+xml;charset=utf-8,")).toBe(true);
@@ -41,9 +41,14 @@ describe("wrappedCards", () => {
   });
 
   it("draws the cards whose waits are met and nothing for the rest, or for an empty year", () => {
-    const drawn = WRAPPED_CARDS.filter((c) => wrappedCards(c, YEAR) !== null).map((c) => c.id);
+    const drawn = WRAPPED_CARDS.filter((c) => wrappedCards(c, YEAR, false) !== null).map((c) => c.id);
     expect(drawn).toEqual(["cover", "split", "hours", "summary"]);
-    for (const c of WRAPPED_CARDS) expect(wrappedCards(c, { ...YEAR, sessions: 0 }), c.id).toBeNull();
+    for (const c of WRAPPED_CARDS) expect(wrappedCards(c, { ...YEAR, sessions: 0 }, true), c.id).toBeNull();
+    // The leak receipt only once the person turned the opt-in cards on, and only for a year whose keys were counted.
+    const counted = { ...YEAR, secrets: { runs: 4, runs_holding: 1, removed: 2 } };
+    expect(WRAPPED_CARDS.filter((c) => wrappedCards(c, counted, false) !== null).map((c) => c.id)).toEqual(["cover", "split", "hours", "summary"]);
+    expect(WRAPPED_CARDS.filter((c) => wrappedCards(c, counted, true) !== null).map((c) => c.id)).toEqual(["cover", "split", "hours", "leak", "summary"]);
+    expect(WRAPPED_CARDS.filter((c) => wrappedCards(c, YEAR, true) !== null).map((c) => c.id)).toEqual(["cover", "split", "hours", "summary"]);
   });
 
   it("CardPicture shows any body's image with its alt", () => {

@@ -7477,6 +7477,11 @@ export type GetWrappedResponse = {
     };
     unpriced_breaks: number;
   } | null;
+  secrets: {
+    runs: number;
+    runs_holding: number;
+    removed: number;
+  } | null;
 };
 
 /** Each operation as the runtime sends it, by operationId. */

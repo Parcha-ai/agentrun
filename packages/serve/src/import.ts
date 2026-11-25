@@ -1436,6 +1436,9 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
     // A file of it changed since the scan above (a session still being written): what it holds now, read through
     // secretlint again before any of it is cut.
     if (changed) add(await keysInSessions(parts));
+    // The keys and tokens cut out of what it keeps, each once (its id, transcript, subagents, prompt, title and answer):
+    // the run's leak count, a number alone (GET /v2/wrapped's `secrets`).
+    const tallied = cut.tally();
     // Its id as the plan keeps it (a key in it is one secretlint finds in what was read, the id among it); one
     // holding a key counts among the keys removed.
     const keptAs = text(session.id) === session.id ? session.id : redactedId(session.id);
@@ -1444,14 +1447,14 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
       if (!(error instanceof RunTooLarge)) throw error;
       report.skipped.push(tooLarge(listed));
     });
-    if (!subagents) return;
+    if (!subagents) return void tallied();
     for (const child of subagents) settled(child, mirrored);
     const moved = await Promise.all(subagents.map(async (child) => scannedAs.get(locatorKey(locatorOf(child))) !== stampOf((await sizeOf(child)) ?? { bytes: -1, mtimeMs: -1 })));
     if (moved.some(Boolean)) add(await keysInSessions(subagents));
     // The transcript as the store's own write batches, each string cut; its subagents' requests marked after its turns,
     // so its timeline's usage row counts what its metrics do, one number for the run.
     const { batches, entries } = transcriptOf(session, json, subagents);
-    const metrics: RunMetrics & { activeMs: number; effort?: string; costUsdEst?: number; costBasis?: string } = { ...withChildren(runMetricsOf(entries), subagents.map((child) => runMetricsOf(entriesOf(child)))), activeMs: session.activeMs, ...(session.effort ? { effort: session.effort } : {}) };
+    const metrics: RunMetrics & { activeMs: number; effort?: string; costUsdEst?: number; costBasis?: string; secrets?: number } = { ...withChildren(runMetricsOf(entries), subagents.map((child) => runMetricsOf(entriesOf(child)))), activeMs: session.activeMs, ...(session.effort ? { effort: session.effort } : {}) };
     // Its cost with its subagents' where the source writes theirs apart (withSubagentCosts): unknown when one is.
     const costUsd = withSubagentCosts(session.source, session.costUsd, subagents.map((child) => child.costUsd));
     // A session its source did not price: the catalog's estimate, beside its cost (unknown), never written as it.
@@ -1463,16 +1466,19 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
     // Cut, then put on one line and clipped: a key the clip cut short, or a passphrase whose spaces were changed, would
     // match no cut.
     const title = clip(text(runTitleOf(session, text)).replace(/\s+/g, " ").trim(), 120);
+    const firstPrompt = text(session.firstPrompt ?? "");
+    const summary = (answer ?? session.titleText) ? text(answer ?? session.titleText!) : undefined;
+    metrics.secrets = tallied();
     await store.importRun({
       id: randomUUID(),
       agentId: project.agentId,
       revisionId: revisions.get(session.source)!,
       importedFrom: { source: session.source, session: session.id, file: read },
-      launch: { body: launchBody({ input: { content: text(session.firstPrompt ?? "") }, title, place: { mode: "runner" } }) },
+      launch: { body: launchBody({ input: { content: firstPrompt }, title, place: { mode: "runner" } }) },
       // An imported session is ended as it ended: a plain completion reads as 'ended', a stop or a failure as its own.
       state: session.state === "completed" ? "ended" : session.state,
       ...(costUsd !== undefined ? { costUsd } : {}),
-      ...((answer ?? session.titleText) ? { summary: text(answer ?? session.titleText!) } : {}),
+      ...(summary !== undefined ? { summary } : {}),
       metrics,
       startedAt: Date.parse(session.startedAt ?? epoch0),
       endedAt: Date.parse(session.endedAt ?? session.startedAt ?? epoch0),

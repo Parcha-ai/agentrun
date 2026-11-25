@@ -634,6 +634,7 @@ __all__ = [
     "GetWrappedResponseHarnessesItem",
     "GetWrappedResponseImportedItem",
     "GetWrappedResponseModelsItem",
+    "GetWrappedResponseSecrets",
     "GetWrappedResponseSourcesItem",
     "GetWrappedResponseTokens",
     "GradeRunBody",
@@ -11828,6 +11829,7 @@ class GetWrappedResponse(TypedDict):
     imported: list[GetWrappedResponseImportedItem]
     unread_files: int
     cache: GetWrappedResponseCache | None
+    secrets: GetWrappedResponseSecrets | None
 
 
 class GetWrappedResponseTokens(TypedDict):
@@ -11894,6 +11896,12 @@ class GetWrappedResponseCacheExtraCostUsd(TypedDict):
     edited: float
     sidechain: float
     unknown: float
+
+
+class GetWrappedResponseSecrets(TypedDict):
+    runs: int
+    runs_holding: int
+    removed: int
 
 
 # Each operation as the runtime sends it, by operationId.
