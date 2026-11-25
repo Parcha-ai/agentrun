@@ -1679,7 +1679,7 @@ test("LVI: an env command among others on its line is the output's context, and 
   const pw = "Copper8lumen80";
   const env = `APP_REGION=north\nAPP_SEED=${pw}`;
   // The env command is one of the line's commands (`;`, `&&`, `||`, `&`): its output is still a dump.
-  for (const command of ["env; sleep 5", "env && exit 1", "cd /srv/app && env | sort", "false || printenv", "env & wait", "printenv APP_SEED; false"]) {
+  for (const command of ["env; sleep 5", "env && exit 1", "cd /opt/app && env | sort", "false || printenv", "env & wait", "printenv APP_SEED; false"]) {
     const text = command.startsWith("printenv APP_SEED") ? pw : env;
     const out = await gone(text, [pw], { command });
     assert.deepEqual(out.cuts.map((cut) => [cut.rule, cut.kind, cut.restorable]), [["env-dump", "dump", false]], `${command}: ${JSON.stringify(out.cuts)}`);
