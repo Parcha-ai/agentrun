@@ -1824,7 +1824,7 @@ test("LVI (11-25 r2): a line where any word prints the environment is a dump, at
     const out = await gone(text, [seed, region], { command });
     assert.equal(out.text, "[redacted:env-dump 2 lines]", command.slice(0, 80));
   }
-  for (const command of ["set -e; make", "set -o pipefail; make", "echo ok", "make 2>&1 | tee build.log", "export APP_REGION=north && npm test", "make; ls", "ls src/env.ts", "cat README.md", "ps aux"]) {
+  for (const command of ["set -e; make", "set -o pipefail; make", "echo ok", "make 2>&1 | tee build.log", "export APP_REGION=north && npm test", "make; ls", "cat README.md", "ps aux"]) {
     const out = await scrub(text.replace(seed, "gold"), { mode: "count", command });
     assert.deepEqual(out.cuts, [], `${command}: ${JSON.stringify(out.cuts)}`);
   }
@@ -1843,6 +1843,46 @@ test("LVI (11-25 r2): in a transcript, the output under a prompt line that print
   assert.equal(wrapped.text, "$ sudo -n env\n[redacted:env-dump 2 lines]");
   const value = await gone(`$ printenv APP_SEED\nl1\n${seed}`, [seed]);
   assert.equal(value.text, "$ printenv APP_SEED\n[redacted:env-dump 2 lines]");
+});
+
+test("LVI (11-25 r3): an env name inside a word, after a redirection, or an indirect expansion is read; xtrace is a dump", async () => {
+  const seed = "Tallow4quarry62";
+  const region = "basin-orchard-41";
+  const text = `APP_REGION=${region}\nAPP_SEED ${seed}`;
+  for (const command of [
+    // A redirection written against the path.
+    "tr '\\0' '\\n' </proc/1/environ", "cat</proc/self/environ", "xargs -0 -n1 </proc/self/environ", "sort -z </proc/1/environ | tr '\\0' '\\n'",
+    // An env name joined to other characters.
+    "jq -rn 'env.APP_SEED'", "jq -n '{token: env.API_TOKEN}'", `node -p 'process["env"]["APP_SEED"]'`, `python -c "import os as o; print(o.environ)"`,
+    `python -c "print(__import__('os').environ)"`, "bun -e 'console.log(Bun.env)'", `awk 'BEGIN{s=ENVIRON["APP_SEED"]; print s}'`,
+    `awk -v s="$APP_SEED" 'BEGIN{print s}'`, "node -p 'process.en''v'", "ruby -e 'p E''NV'",
+    // Indirect expansion.
+    "for v in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do echo ${!v}; done", "v=APP_SEED; printf '%s\\n' \"${!v}\"",
+    // xtrace prints every command with its variables expanded.
+    "set -x; curl -H \"Authorization: Bearer $API_TOKEN\" https://api.example", "set -ex; make deploy", "set -o xtrace; make deploy", "bash -x deploy.sh", "sh -xc 'make deploy'",
+    // Over-cut, pinned so: an env token in a file name.
+    "ls src/env.ts", "cp .env.example .env",
+  ]) {
+    const out = await gone(text, [seed, region], { command });
+    assert.equal(out.text, "[redacted:env-dump 2 lines]", command.slice(0, 80));
+  }
+  // An output with no secret label and no NAME= shape at all is still the dump.
+  const bare = await gone(seed, [seed], { command: `node -p 'process["env"]["APP_SEED"]'` });
+  assert.equal(bare.text, "[redacted:env-dump 1 lines]");
+  for (const command of ["set -e; make", "set +x; make", "bash deploy.sh", "make 2>&1 | tee build.log", "echo ok", "ps aux", "cat README.md"]) {
+    const out = await scrub(text.replace(seed, "gold"), { mode: "count", command });
+    assert.deepEqual(out.cuts, [], `${command}: ${JSON.stringify(out.cuts)}`);
+  }
+});
+
+test("LVI (11-25 r3): a transcript's cut runs on past `#` and `>` lines, to the next `$`, `%` or `❯` prompt or a marker", async () => {
+  const seed = "Tallow4quarry62";
+  const yaml = await gone(`$ printenv APP_CONFIG\nregion: north\n# seed below\nseed ${seed}`, [seed]);
+  assert.equal(yaml.text, "$ printenv APP_CONFIG\n[redacted:env-dump 3 lines]");
+  const quoted = await gone(`$ env\nA=1\nB=l1\n> quoted\nC=${seed}\n$ ls\nREADME.md`, [seed]);
+  assert.equal(quoted.text, "$ env\n[redacted:env-dump 4 lines]\n$ ls\nREADME.md");
+  const continued = await gone(`$ printenv \\\n> APP_SEED\n${seed}`, [seed]);
+  assert.equal(continued.text, "$ printenv \\\n[redacted:env-dump 2 lines]");
 });
 
 test("LIX: a dotted name is no code evidence alone; a self./this./cls. root, a trailing `;` or an environment root is", async () => {
