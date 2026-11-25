@@ -10,6 +10,7 @@ import { sourceSnapshotDigest } from "../dist/native/source-snapshot-types.js";
 import { commitSourceSnapshot, seedSourceSnapshot } from "../dist/source-sync/snapshots.js";
 import { openRunPlacement, sourceWorkspace } from "../dist/source-sync/workspace.js";
 import { runFolder } from "../dist/workspace/paths.js";
+import { runnerSecrets } from "../dist/runner/redact.js";
 import { FakeArchilDisk } from "./fixtures/archil-fake.mjs";
 
 const digest = bytes => createHash("sha256").update(bytes).digest("hex");
@@ -95,6 +96,19 @@ test("a held credential in a directory name is withheld without echoing its valu
   const { work } = await fixture(t, "local"), held = "fixture-private-value"; await current(work);
   await work.mkdir(`cache-${held}`);
   await assert.rejects(captureProject({ workspace: work, baseline: baseline(), exclude, secretValues: [held] }), error => error.code === "prerequisite" && !error.message.includes(held));
+});
+
+test("a short OTLP header value (x-honeycomb-dataset=prod) never makes a local capture refuse a project holding prod; one of 8 or more still does", async t => {
+  const { work } = await fixture(t, "local"); await current(work);
+  await work.write("deploy/prod.txt", "Ship the prod build.\n");
+  const long = `honeycomb-${"dummy"}-team-3310`;
+  // The values a local source capture is handed (source-sync/local.ts): the runner's held list over the server's env.
+  const secretValues = runnerSecrets({ OTEL_EXPORTER_OTLP_HEADERS: `x-honeycomb-dataset=prod,x-honeycomb-team=${long}` });
+  const after = await captureProject({ workspace: work, baseline: baseline(), exclude, secretValues }).catch(error => error);
+  assert.ok(!(after instanceof Error), `a project holding "prod" is captured: ${after?.message}`);
+  assert.equal(bytesOf(after, "project/deploy/prod.txt").toString(), "Ship the prod build.\n");
+  await work.write("notes.txt", `team ${long}\n`);
+  await assert.rejects(captureProject({ workspace: work, baseline: baseline(), exclude, secretValues }), error => error.code === "prerequisite" && !error.message.includes(long));
 });
 
 test("literal host filenames cannot glob-match and omit another project directory", async t => {

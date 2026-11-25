@@ -21,6 +21,7 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { genAiTracing, otelOn, traceIdOf, tracePosts } = await import("../dist/otel/tracer.js");
 const { chatAttributes, routeTrace, toolAttributes, tracedModel, USAGE_ATTRIBUTES, WRITTEN_MAX } = await import("../dist/otel/genai.js");
 const { runnerSecrets, secretRedactor } = await import("../dist/runner/redact.js");
+const { hostSecrets, otlpHeaderCut } = await import("../dist/secrets.js");
 const { piAdapter } = await import("../dist/runner/adapters/pi.js");
 const { exporterConfig } = await import("../dist/otel/tracer.js");
 const { runEnv } = await import("../dist/runner/main.js");
@@ -329,13 +330,17 @@ test("a runner error line holds no OTLP header value: each one is a held secret,
   assert.match(lines[0], /^\[otel\] a trace export failed; its spans were dropped: 401: Authorization: (Bearer )?\[redacted\]$/);
 });
 
-test("every OTLP header value is held but a standard one's: an unknown name's at any length, and Content-Type's application/json is not", () => {
+test("an OTLP header value of 8 or more is held but a standard one's, under any name; a shorter one is on no held list, and the tracer's cut still takes it", () => {
   const short = `hc${"7"}x1`;
   const long = `honeycomb-${"dummy"}-team-3310`;
   const env = { ...ON, OTEL_EXPORTER_OTLP_HEADERS: `x-honeycomb-team=${short},Content-Type=application/json`, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Honeycomb-Team=${long},accept=application/x-protobuf,User-Agent=agentrun-otel,content-encoding=gzip` };
-  const values = runnerSecrets(env);
-  for (const value of [short, long]) assert.ok(values.includes(value), `${value} (under x-honeycomb-team) is held`);
-  for (const value of ["application/json", "application/x-protobuf", "agentrun-otel", "gzip"]) assert.equal(values.includes(value), false, `${value} (a standard header's) is not held`);
+  for (const [list, values] of [["runnerSecrets", runnerSecrets(env)], ["hostSecrets", hostSecrets(env)]]) {
+    assert.ok(values.includes(long), `${long} (under X-Honeycomb-Team) is held (${list})`);
+    // A held list's every reader is not floored at 8 (a number's equality, a source capture's substring match).
+    assert.equal(values.includes(short), false, `${short} (under 8 characters) is on no held list (${list})`);
+    for (const value of ["application/json", "application/x-protobuf", "agentrun-otel", "gzip"]) assert.equal(values.includes(value), false, `${value} (a standard header's) is not held (${list})`);
+  }
+  assert.equal(otlpHeaderCut(env)(`401 for x-honeycomb-team: ${short}`), "401 for x-honeycomb-team: [redacted]", "the tracer's cut takes a short value");
 });
 
 test("a short OTLP header value is cut from the tracer's own error text, at any length; a standard header's value is left as it is", async (t) => {
