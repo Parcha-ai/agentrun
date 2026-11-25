@@ -389,3 +389,8 @@ test('child workflows stay subject to rubric and question-contract policy', () =
     assert.match(seen.messages[0], messages[i]);
   }
 }));
+
+test('the candidate policy reads only nodes: a step that is a list is left to the validator', () => {
+  const errors = candidatePolicyErrors(doc({ node: 'chain', steps: [extract(), []] }), { host });
+  assert.deepEqual(errors, [], `a list step is not read as a node of no kind: ${errors.join(' | ')}`);
+});

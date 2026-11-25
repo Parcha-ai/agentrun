@@ -1,0 +1,72 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "osworld.2c9fc0de",
+  "version": 1,
+  "title": "Commit the project as \"daily update\" and push it to origin main",
+  "split": "heldout",
+  "source": {
+    "suite": "OSWorld-Verified",
+    "id": "multi_apps/2c9fc0de-3ee7-45e1-a5df-c86206ad78b5",
+    "revision": "0ad41bee56565efe7bb3c3a5ebc67590a1b8276f",
+    "licence": "Apache-2.0 (Copyright 2024 XLANG NLP Lab); the instruction is copied word for word, setup.sh gathers OSWorld's setup commands with the changes its header names, and the check runs OSWorld's command",
+    "changes": "OSWorld's /home/user is the run's folder, /tmp/computer-bench-<nonce>, and HOME in setup and the terminal, so the global git config is the run's. The box has no unzip, so the project is three small files of ours instead of OSWorld's binder.zip; like OSWorld's, it is a fresh repository with nothing committed and origin set to a local remote_project. OSWorld opened GNOME Terminal maximized in the project; setup here opens Xfce's terminal there and makes it fill the screen. OSWorld's check wanted 'daily update' and 'repo is synchronous' anywhere in the output; here they must be its two lines, which rules out 'daily update' found in a later line."
+  },
+  "tags": ["osworld", "multi-apps", "terminal", "git"],
+  "needs": {
+    "os": "linux",
+    "kind": "desktop",
+    "capabilities": [
+      { "id": "xfce4-terminal", "kind": "exec", "why": "Xfce's terminal, xdotool, which setup places its window with, and git and bash, which setup and the check run.", "argv": ["sh", "-c", "command -v xfce4-terminal && command -v xdotool && command -v git && command -v bash"] }
+    ]
+  },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "OSWorld's setup: a global git identity, an empty remote_project that accepts pushes to its checked-out main, and binder, a fresh repository of three files with origin set to remote_project.",
+      "params": { "argv": ["bash", "-c", "{{file:setup.sh}}"], "timeoutMs": 30000 }
+    },
+    {
+      "method": "process.start",
+      "why": "Open Xfce's terminal in the project, with HOME set to the run's folder.",
+      "params": { "argv": ["sh", "-c", "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); export HOME=/tmp/computer-bench-{{nonce}}; cd /tmp/computer-bench-{{nonce}}/projects/binder && echo $$ > /tmp/computer-bench-{{nonce}}-terminal.pid && exec xfce4-terminal --disable-server --working-directory=/tmp/computer-bench-{{nonce}}/projects/binder"] }
+    },
+    {
+      "method": "exec.run",
+      "why": "Wait for the terminal's window (20 s at most), make it fill the screen, put the pointer on it and activate it: a window manager gives the keys to the window activated, and with none they go to the window under the pointer.",
+      "params": { "argv": ["sh", "-c", "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); w=$(timeout 20 xdotool search --sync --onlyvisible --class xfce4-terminal | head -n1); [ -n \"$w\" ] || { echo no terminal window in 20 s >&2; exit 1; }; eval $(xdotool getdisplaygeometry --shell); xdotool windowmove $w 0 0 windowsize $w $WIDTH $HEIGHT; xdotool mousemove $((WIDTH / 2)) $((HEIGHT / 2)); xdotool windowactivate $w 2>/dev/null; sleep 1"], "timeoutMs": 30000 }
+    }
+  ],
+  "exec": "deny",
+  "instruction": "Could you help me push the changes from commandline in current project to origin main, with the commit message \"daily update\"?",
+  "budget": { "steps": 100, "usd": 3, "wall_s": 900 },
+  "checks": [
+    {
+      "id": "pushed",
+      "kind": "exec",
+      "why": "OSWorld's command: remote_project's newest commit is titled 'daily update', and it is binder's newest commit too. Setup committed nothing anywhere, so an agent that does nothing fails.",
+      "argv": ["bash", "-c", "cd /tmp/computer-bench-{{nonce}}/projects/remote_project; git log --oneline | head -n 1 | awk '{for (i=2; i<=NF; i++) {printf \"%s%s\", $i, (i==NF ? \"\" : \" \")}; print \"\"}'; remote_id=$(git log --oneline | head -n 1 | awk '{print $1}'); cd /tmp/computer-bench-{{nonce}}/projects/binder; local_id=$(git log --oneline | head -n 1 | awk '{print $1}'); if [ \"${local_id}\" = \"${remote_id}\" ]; then echo \"repo is synchronous\"; else echo \"repo is not synchronous\"; fi"],
+      "timeoutMs": 20000,
+      "stdout": { "matches": "^daily update\\nrepo is synchronous$" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Close the run's apps by the pids setup kept beside the folder (a desktop may have others open), and delete the run's folder and its siblings.",
+      "params": { "argv": ["sh", "-c", "for f in /tmp/computer-bench-{{nonce}}-*.pid; do [ -f \"$f\" ] && kill -9 \"$(cat \"$f\")\" 2>/dev/null; done; rm -rf /tmp/computer-bench-{{nonce}} /tmp/computer-bench-{{nonce}}-*; true"], "timeoutMs": 20000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "input.actions",
+      "why": "Type an add of everything, a commit titled 'daily update' and a push to origin main, and run it.",
+      "params": {
+        "actions": [
+          { "type": "type", "text": "git add -A && git commit -q -m \"daily update\" && git push -q origin main" },
+          { "type": "key", "keys": ["enter"] },
+          { "type": "wait", "ms": 3000 }
+        ]
+      }
+    }
+  ]
+}

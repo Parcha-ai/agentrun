@@ -1,0 +1,99 @@
+### loopback-listen
+Listening on http://127.0.0.1:4318
+Console: http://localhost:3000/console
+### loopback-any
+server bound to 0.0.0.0:8080 (all interfaces)
+### loopback-ipv6
+postgres is listening on [::1]:5432 and 127.0.0.1:5432
+### loopback-curl
+curl -s http://127.0.0.1:9222/json/version
+### loopback-hosts
+127.0.0.1	localhost
+::1	localhost ip6-localhost ip6-loopback
+### loopback-cidr
+allow 127.0.0.0/8; allow ::1/128; deny 0.0.0.0/0;
+### public-dns
+nameserver 8.8.8.8
+nameserver 1.1.1.1
+dig @8.8.4.4 example.com +short
+### doc-ranges
+Use the documentation ranges in examples: 192.0.2.10, 198.51.100.7 and 203.0.113.42 (RFC 5737), and 2001:db8::1 (RFC 3849).
+### version-four-part
+widgets 1.2.3.4
+### version-chrome
+Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.85 Safari/537.36
+### version-windows
+Microsoft Windows [Version 10.0.19045.3803]
+OS Build 10.0.22631.4460
+### version-semver-ten
+Bumped to 10.0.1 (was 10.0.0); 10.2 is next.
+### version-runtimes
+node v24.22.3, npm 11.21.0, Python 3.12.7, go1.23.4, OpenSSL 3.0.13 30 Jan 2024, macOS 15.1.1
+### version-package
+"version": "0.1.0-beta.53"
+### git-remote-ssh
+origin	git@github.com:example-org/widgets.git (fetch)
+origin	git@github.com:example-org/widgets.git (push)
+### git-remote-variants
+git clone ssh://git@github.com/example-org/widgets.git
+git clone https://github.com/example-org/widgets.git
+git remote add upstream git@gitlab.com:group/project.git
+### trailer-anthropic
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+### trailer-bots
+Co-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>
+Co-authored-by: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>
+### noreply-github
+From: GitHub <noreply@github.com>
+### npm-scoped-versions
+npm install @types/node@24.10.1 @example/widgets@1.2.3
+npx -y @modelcontextprotocol/server-everything@2.4.0
+### action-refs
+uses: actions/checkout@v4
+uses: actions/setup-node@v4.1.0
+### asset-at-names
+logo@2x.png icon@3x.webp sprite@1.5x.svg
+### docker-image-refs
+node:24-bookworm-slim ghcr.io/example-org/widgets:1.4.0 docker.io/library/postgres:17
+### paths-system
+/usr/local/bin/node
+/usr/local/lib/node_modules/npm/bin/npm-cli.js
+/usr/bin/env bash
+/etc/ssl/certs/ca-certificates.crt
+/var/log/nginx/access.log
+/opt/homebrew/bin/gh
+/proc/pressure/io
+### paths-tmp
+/tmp/build-4f2a/out.log
+/tmp/claude-1000/tasks/b7c2e9.output
+/tmp/tmp.Xy3kP9QwZr/package.tgz
+### paths-home-alone
+User directories are mounted at /home; run `ls -la /home/` to see them.
+### paths-tilde
+~/.config/widgets/config.toml
+~/.bashrc
+$HOME/.npmrc
+${XDG_CONFIG_HOME:-$HOME/.config}/widgets
+### paths-container
+/app/dist/index.js
+/workspace/src/index.ts
+/srv/data/uploads
+/run/secrets/db_password
+### paths-windows-system
+C:\Program Files\nodejs\node.exe
+C:\Windows\System32\drivers\etc\hosts
+### urls-public
+https://example.com/reset-password?step=2
+https://api.github.com/repos/example-org/widgets/pulls?state=open&per_page=100&page=2
+https://docs.example.com/auth/tokens#rotating-a-token
+### url-page-token
+GET https://www.googleapis.com/drive/v3/files?pageSize=100&page_token=CiAKGjBpNDd2Nmp2Zml2cXRvAhIRCKqA
+### hostnames
+host.docker.internal localhost.localdomain api.example.com widgets.example.test
+### ports-and-cidrs
+EXPOSE 443
+ingress: 0.0.0.0/0 tcp/443; ::/0 tcp/443
+### ipv6-public-docs
+2001:db8:85a3::8a2e:370:7334
+### dotted-numbers-not-ips
+Section 3.2.1.4 of the spec; table 12.4.0.1; OID 1.3.6.1.4.1.311

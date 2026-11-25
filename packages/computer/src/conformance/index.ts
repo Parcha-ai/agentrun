@@ -1,6 +1,7 @@
 export * from "./types.js";
 export { runConformance } from "./runner.js";
 export { formatReport } from "./report.js";
+export { formatTti, measureTti, type TtiOptions, type TtiReport, type TtiShape, type TtiStats, ttiScore, ttiStats } from "./tti.js";
 export { browserCases, browserOnlyCases, casesFor, conformanceCases } from "./cases/index.js";
 export { kindCases, kindRunProblem, kindVerdict, type KindVerdict } from "./kind.js";
 export { type CdpDialer, type CdpSocket, dialCdp } from "./cdp.js";

@@ -129,10 +129,11 @@ test("a markdown link's target in angle brackets (`](<url>)`) is the URL they ho
 });
 
 test("a tool other than the web's whose result the read cut is named on a cited link that matches nothing, as a page whose links were cut is", async () => {
-  const { cut, CALL_RESULT_CHARS } = await import("../dist/timeline/index.js");
+  const { cut } = await import("../dist/timeline/index.js");
+  const room = 8000; // a cut at any room: the events between the two links pass it
   const [first, later] = ["https://www.google.com/calendar/event?eid=Zmlyc3Q", "https://www.google.com/calendar/event?eid=bGF0ZXI"];
   const events = [{ summary: "Standup", htmlLink: first }, ...Array.from({ length: 200 }, (_, i) => ({ summary: `Event ${i}`, description: "words ".repeat(10) })), { summary: "Retro", htmlLink: later }];
-  const result = cut(JSON.stringify({ events }), CALL_RESULT_CHARS);
+  const result = cut(JSON.stringify({ events }), room);
   assert.ok(result.includes(first) && !result.includes(later));
   const calendar = { tool: "calendar_list_events", name: "calendar_list_events", arguments: {}, status: "success", result };
   assert.deepEqual(checked(graderInput(grader, "task", run(`Standup: ${first}\nRetro: ${later}`, calendar))), [

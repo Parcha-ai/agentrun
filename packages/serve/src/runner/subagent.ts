@@ -14,7 +14,9 @@
 import type { Context } from "@earendil-works/chord/context";
 import { configure, defineTool, type ModelRef, ROOT_CONVERSATION_ID, type ToolRegistration } from "@earendil-works/pi-durable";
 import { HOST_RESULT_MAX_CHARS } from "@parcha/agentrun-kernel";
+import { tierModelOf } from "../model.js";
 import { ASK_TOOL } from "../tools.js";
+import { slots } from "../slots.js";
 import { durableWait } from "../workflow/pi-versions.js";
 import { HOST_TOOL_OUTPUT } from "./adapters/pi.js";
 import { cutAtLimit } from "./loop-contract.js";
@@ -25,6 +27,17 @@ export const SUBAGENT_TOOL = "subagent";
  *  none runs its child on the agent's own model. */
 export const SUBAGENT_TIERS = ["fast", "strong"] as const;
 export type SubagentTier = (typeof SUBAGENT_TIERS)[number];
+/** The subagent tiers a run routes a model on, with the model its revision names for each: a tier its revision's
+ *  modelTiers names (a string), else one `env`'s tier variable names (AGENT_MODEL_FAST, AGENT_MODEL_STRONG: tierModelOf),
+ *  and no other. The one answer for the runner that hands a run's process its tiers' saved model keys (run-child-host.ts
+ *  heldFor), for the run that routes the tiers (adapter-run-spec.ts) and for a replay's grader on the fast tier, so a
+ *  tier is never routed with no key handed for it, nor a key handed for a tier no route reads. */
+export function routedSubagentTiers(body: { readonly modelTiers?: unknown }, env: NodeJS.ProcessEnv): { readonly tiers: SubagentTier[]; readonly refs: Partial<Record<SubagentTier, string>> } {
+  const named = (body.modelTiers ?? {}) as Record<string, unknown>;
+  const refs: Partial<Record<SubagentTier, string>> = {};
+  for (const tier of SUBAGENT_TIERS) if (typeof named[tier] === "string") refs[tier] = named[tier];
+  return { tiers: SUBAGENT_TIERS.filter((tier) => refs[tier] !== undefined || tierModelOf(env, tier) !== undefined), refs };
+}
 /** How many of a run's children work at once; a call past it waits for a slot. */
 export const SUBAGENT_PARALLEL = 4;
 /** Tools no child is given: a subagent of its own (depth 1), and the person, whom only the run's own conversation asks. */
@@ -50,40 +63,6 @@ export type SubagentOptions = {
 };
 
 type Args = { prompt: string; tools?: string[]; model?: SubagentTier; effort?: (typeof SUBAGENT_EFFORTS)[number] };
-
-/** One counter of free slots for the run's children (SUBAGENT_PARALLEL), handed out in call order. */
-function slots(count: number) {
-  let free = count;
-  const waiting: (() => void)[] = [];
-  return {
-    async take(signal?: AbortSignal): Promise<() => void> {
-      if (free > 0) free -= 1;
-      else {
-        await new Promise<void>((resolve, reject) => {
-          const go = () => {
-            signal?.removeEventListener("abort", stop);
-            resolve();
-          };
-          const stop = () => {
-            const at = waiting.indexOf(go);
-            if (at >= 0) waiting.splice(at, 1);
-            reject(signal?.reason ?? new Error("aborted"));
-          };
-          waiting.push(go);
-          signal?.addEventListener("abort", stop, { once: true });
-        });
-      }
-      let given = false;
-      return () => {
-        if (given) return;
-        given = true;
-        const next = waiting.shift();
-        if (next) next();
-        else free += 1;
-      };
-    },
-  };
-}
 
 /** The text of an assistant message: its text parts, joined. */
 const textOf = (message: { content?: unknown } | undefined): string =>
@@ -115,6 +94,7 @@ export function chosenTools(asked: readonly string[], options: Pick<SubagentOpti
 
 /** The subagent tool: one of the session's own tools (adapters/pi.ts `tools`), so it needs no extension of its own. */
 export function subagentTool(options: SubagentOptions): ToolRegistration {
+  // The run's children's slots (SUBAGENT_PARALLEL), handed out in call order.
   const free = slots(SUBAGENT_PARALLEL);
   return defineTool({
     name: SUBAGENT_TOOL,

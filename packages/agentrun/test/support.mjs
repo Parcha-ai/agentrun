@@ -12,6 +12,9 @@ const BIN = new URL("../bin/agentrun.mjs", import.meta.url).pathname;
 const SERVE = new URL("../../serve/dist/cli.js", import.meta.url).pathname;
 /** What a test's CLI never takes from the environment the tests run in: an address, a key, a model or boxes. */
 const DROPPED = ["AGENTRUN_BASE_URL", "AGENTRUN_API_KEY", "AGENTRUN_TOKEN", "AGENTRUN_CLOUD_URL", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "PARALLEL_API_KEY", "AGENT_MODEL", "AGENTRUN_BOXES"];
+// No test asks an Ollama this machine may run: serve's switch (ollama-provider.ts OLLAMA_OFF_ENV), read from the process's
+// own environment, which every server and command a test starts with process.env inherits.
+process.env.AGENTRUN_SERVE_FAUX_NO_OLLAMA = "1";
 
 /** An address where no server answers: a listener of the test's own, open until the test ends, that reads each request
  *  and closes the connection without a response, so Node's fetch fails with the cause UND_ERR_SOCKET ("other side
@@ -67,9 +70,9 @@ export function scratch(name) {
 }
 
 /** The CLI in a child process, `input` on its stdin (no terminal): `{code, signal, out, err, json()}`. Killed after
- *  `timeout` ms, its code then null: a guard for a command that hangs, never a wait. */
-export const cli = (env, args, { input = "", timeout = 60_000, cwd } = {}) => new Promise((resolve) => {
-  const child = spawn(process.execPath, [BIN, ...args], { env, cwd, stdio: ["pipe", "pipe", "pipe"] });
+ *  `timeout` ms, its code then null: a guard for a command that hangs, never a wait. `bin` runs another script so. */
+export const cli = (env, args, { input = "", timeout = 60_000, cwd, bin = BIN } = {}) => new Promise((resolve) => {
+  const child = spawn(process.execPath, [bin, ...args], { env, cwd, stdio: ["pipe", "pipe", "pipe"] });
   const timer = setTimeout(() => child.kill("SIGKILL"), timeout);
   let out = "";
   let err = "";
