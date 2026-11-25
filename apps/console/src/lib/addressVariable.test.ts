@@ -2,9 +2,8 @@ import { describe, expect, it } from "vitest";
 
 // A server's address has one name in an environment, AGENTRUN_BASE_URL: the one AgentRun's client and CLI read. Every
 // file the server writes into someone's repository reads that name, and every page and guide that tells a person what
-// to set says it. Two readers of the older AGENTRUN_URL stay, and neither tells anyone to set it: the native CLI reads
-// it after AGENTRUN_BASE_URL, and `npm run dev` here takes it as its proxy's target (lib/devProxy.ts), a setting of the
-// dev server's own that travels with AGENTRUN_TOKEN.
+// to set says it. Two places still say the older AGENTRUN_URL, and neither tells anyone to set it: the native CLI reads
+// it after AGENTRUN_BASE_URL, and `npm run dev` here (lib/devProxy.ts) refuses it by name, pointing at the new one.
 const SOURCES: Record<string, string> = {
   ...import.meta.glob("../../../../packages/serve/{src,skills,templates}/**/*.{ts,mts,mjs,txt,md}", { query: "?raw", import: "default", eager: true }),
   // One pattern each, never a brace that holds a path: such a brace makes the search read every directory of the checkout.
@@ -16,9 +15,9 @@ const SOURCES: Record<string, string> = {
   ...import.meta.glob("../../e2e/**/*.mjs", { query: "?raw", import: "default", eager: true }),
 };
 const CLIENT: Record<string, string> = import.meta.glob("../../../../packages/client/src/client.ts", { query: "?raw", import: "default", eager: true });
-// The two readers, by how many of their lines say the older name: one more line there is a new use, and fails. The dev
+// Those two, by how many of their lines say the older name: one more line there is a new use, and fails. The dev
 // proxy's tests say it as often as they need, and so does this file.
-const OLDER_NAME_LINES: Record<string, number> = { "/packages/serve/src/native/cli.ts": 1, "/devProxy.ts": 3 };
+const OLDER_NAME_LINES: Record<string, number> = { "/packages/serve/src/native/cli.ts": 1, "/devProxy.ts": 4 };
 const OLDER_NAME_TESTS = ["/devProxy.test.ts", "/devProxy.http.test.ts", "/addressVariable.test.ts"];
 
 describe("the name of a server's address", () => {
