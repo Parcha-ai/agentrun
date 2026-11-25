@@ -43,14 +43,13 @@ import { stranger } from "./fixtures/stranger.mjs";
   process.on("exit", () => rmSync(config, { recursive: true, force: true }));
 }
 
-// Every test's server reads session files from an empty home of its own, never the runner's HOME (GET /v2/wrapped and
-// setup's import read `sessionsHome`): a long history there would make a sweep of every GET route read it all. A test
-// of those reads passes its own `sessionsHome`.
-const SESSIONS_HOME = { home: mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-home-")) };
-process.on("exit", () => rmSync(SESSIONS_HOME.home, { recursive: true, force: true }));
-// The same empty home is HOME, as the config home above: a CLI a test starts with the test's environment ({ ...process.env })
-// starts a server that reads sessions under HOME, and must not read the runner's.
-process.env.HOME = SESSIONS_HOME.home;
+// HOME is an empty home of the test process's own, as the config home above, never the runner's: a server reads session
+// files under it (GET /v2/wrapped and setup's import, through homedir(), unless a test passes its own `sessionsHome`), and
+// so does a CLI a test starts with the test's environment ({ ...process.env }). A long history there would make a sweep of
+// every GET route read it all.
+const EMPTY_HOME = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-home-"));
+process.on("exit", () => rmSync(EMPTY_HOME, { recursive: true, force: true }));
+process.env.HOME = EMPTY_HOME;
 
 // No test asks an Ollama this machine may run (ollama-provider.ts lists its models, and with no key one is the default),
 // whatever env it passes: the process's own switch (OLLAMA_OFF_ENV) turns every Ollama off. A test of Ollama clears it
@@ -504,7 +503,7 @@ export async function serve(t, { harnesses: asked, runner: wantRunner = true, co
   // a case that wants the hosted rule passes mcpLoopback: false.
   // probeContainer: Docker's start probe takes a test's server to be on a host, so a suite run in a container reads the
   // host's words; a case about a container passes its own facts, or undefined for the server's own marks.
-  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", mcpLoopback: true, sessionsHome: SESSIONS_HOME, probeContainer: { where: "host" }, ...options });
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", mcpLoopback: true, probeContainer: { where: "host" }, ...options });
   // A runner beside the server on the same data (the CLI start's server-and-runner): it claims and runs what the server
   // starts, so a test reads a run that runs, not one that queues forever. `runner: false` leaves it off for a test that
   // wants the server alone. Its loop is the switch's dispatch (learning wired; pi/workflow the server's own, E2r).

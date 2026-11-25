@@ -35,7 +35,7 @@ export {
   type ClaimSide, computerReadiness, type ComputerSetting, type KindRegistry, type LaunchedComputer, type Port, resolveComputer,
   type ResolvedComputer, runShellOf, type ShellPlace, shellPlaceOf, type StartedComputer,
 } from "./resolve-computer.js";
-export { computerProviderFactories, computerProviderMakers, type ProviderLoad } from "./computer-providers.js";
+export { computerProviderFactories, computerProviderMakers, hostEnvOf, type ProviderLoad } from "./computer-providers.js";
 export {
   claimComputer, claimKinds, type ComputerDeps, computerDepsFrom, type ComputerDepsOptions, computerSpecOf, DAEMON_CACHE_IN_VOLUME, DOCKER_HOST_ADDRESSES_ENV,
   type DockerComputerOptions, dockerHostAddressesOf, dockerVolumeOf,

@@ -5,14 +5,14 @@
 // alone (harness-install.ts); opencode's pinned CLI that is missing says so with the one line that installs it: an npm
 // install beside serve, or, when serve runs from npx, the npx line that runs it with the missing package.
 import { accessSync, constants, existsSync, readFileSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterFacts, AgentAdapter, HarnessWire, SessionSpec } from "@parcha/agentrun-kernel";
 import { facts as claudeFacts } from "@parcha/agentrun-harness-claude/facts";
 import { facts as codexFacts } from "@parcha/agentrun-harness-codex/facts";
 import { facts as openCodeFacts } from "./harness-opencode/facts.js";
-import { CLAUDE_SDK, codexBinaryIn, type HarnessPins, HarnessNotInstalled, installDirOf, installLine, loadSdk, type LoadedSdk } from "./harness-install.js";
+import { CLAUDE_SDK, codexBinaryIn, type HarnessPins, HarnessNotInstalled, installDirOf, installLine, loadSdk, type LoadedSdk, shellWord } from "./harness-install.js";
+import { commandData } from "./harness-owned.js";
 import { DATA_ENV, defaultData } from "./files.js";
 import { type HarnessEntry, harnessOf, onAdapter } from "./harness-table.js";
 import type { ModelRef } from "./model.js";
@@ -54,7 +54,20 @@ export function installedHere(name: string, from: string = fileURLToPath(import.
   }
 }
 
-const shellWord = (word: string): string => (/^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replaceAll("'", "'\\''")}'`);
+/**
+ * How the person started this server, for a command that starts it the same way again: the agentrun launcher's package
+ * when it made the start (NPX_PACKAGE_ENV, `@parcha/agentrun@<version>`), npx's `-y ` as they ran it, and the flags after
+ * any --data (startedWith): the port they named, and the browser as they had it (`npx @parcha/agentrun` opens it unless
+ * --no-open, agentrun-serve only with --open).
+ */
+function startedAs(env: NodeJS.ProcessEnv): { launcher: string | undefined; yes: string; flags: string } {
+  const door = env[NPX_PACKAGE_ENV];
+  const launcher = door !== undefined && /^@parcha\/agentrun@\d[\w.+-]*$/.test(door) ? door : undefined;
+  const port = env[STARTED_PORT_ENV];
+  const open = env[STARTED_OPEN_ENV];
+  const flags = [...(port && /^\d{1,5}$/.test(port) ? [`--port ${port}`] : []), ...(launcher ? (open === "0" ? ["--no-open"] : []) : open === "1" ? ["--open"] : [])];
+  return { launcher, yes: env.npm_config_yes === "true" ? "-y " : "", flags: flags.map((flag) => ` ${flag}`).join("") };
+}
 
 /**
  * The one command that starts this same AgentRun again with `spec` beside it: the command the person ran
@@ -64,8 +77,7 @@ const shellWord = (word: string): string => (/^[\w@%+=:,./-]+$/.test(word) ? wor
  * (~/.agentrun) is not the server's default, and after the server's own command when the store is not its default.
  */
 export function npxLine(spec: string, env: NodeJS.ProcessEnv = {}, installed: (name: string) => string | undefined = installedHere): string {
-  const door = env[NPX_PACKAGE_ENV];
-  const command = door !== undefined && /^@parcha\/agentrun@\d[\w.+-]*$/.test(door) ? door : undefined;
+  const { launcher: command, yes, flags } = startedAs(env);
   const own = spec.slice(0, spec.lastIndexOf("@"));
   const kept = HARNESS_PACKAGES.filter((name) => name !== own).flatMap((name) => {
     const version = installed(name);
@@ -75,12 +87,7 @@ export function npxLine(spec: string, env: NodeJS.ProcessEnv = {}, installed: (n
   const packages = [...(command ? [command] : []), `@parcha/agentrun-serve@${SERVE_VERSION}`, ...kept, spec];
   const data = env[DATA_ENV];
   const named = data && (command || resolve(data) !== resolve(defaultData(env))) ? ` --data ${shellWord(resolve(data))}` : "";
-  // And how the person started it (startedWith): npx's -y, the port they named, and the browser as they had it:
-  // `npx @parcha/agentrun` opens it unless --no-open, agentrun-serve only with --open.
-  const yes = env.npm_config_yes === "true" ? "-y " : "";
-  const port = env[STARTED_PORT_ENV];
-  const flags = [...(port && /^\d{1,5}$/.test(port) ? [`--port ${port}`] : []), ...(command && env[STARTED_OPEN_ENV] === "0" ? ["--no-open"] : []), ...(!command && env[STARTED_OPEN_ENV] === "1" ? ["--open"] : [])];
-  return `npx ${yes}${packages.map((name) => `-p ${name}`).join(" ")} ${command ? "agentrun" : "agentrun-serve"}${named}${flags.map((flag) => ` ${flag}`).join("")}`;
+  return `npx ${yes}${packages.map((name) => `-p ${name}`).join(" ")} ${command ? "agentrun" : "agentrun-serve"}${named}${flags}`;
 }
 
 /** The first of `base`, `base-2`, `base-3`… that is not there. */
@@ -97,37 +104,44 @@ const freeName = (base: string, exists: (path: string) => boolean): string => {
  * then the two ways on as commands to paste. That command keeps its data in ~/.agentrun wherever it is run, so a new
  * folder alone is not a new AgentRun. First, the old folder moved aside whole, so the same command starts this version
  * where it was, and the earlier version still opens what it holds; then this version on a new, empty folder: the same
- * command with --data. Nothing is deleted either way. Any other error, or a start the launcher did not
- * make, is undefined: the refusal's own words stand.
+ * command with --data. Nothing is deleted either way.
+ *
+ * The installer keeps its Node, its packages and the command in the folder beside the data (install.sh: node/, lib/,
+ * bin/agentrun), and that command or its service may be what started this: there may be no npx, the moved command points
+ * at the paths it left, and the service starts on the refused folder whatever another command says. So there the one
+ * way on is the folder moved aside, then the installer run again. Any other error, or a start the launcher did not make,
+ * is undefined: the refusal's own words stand.
  */
 export function earlierDataRefusal(error: unknown, data: string, env: NodeJS.ProcessEnv = {}, exists: (path: string) => boolean = existsSync): string | undefined {
   const refused = error as { name?: unknown; message?: unknown; found?: unknown; known?: unknown } | undefined;
   const earlier = refused?.name === "StoreFromEarlierVersion" || (refused?.name === "SchemaVersionUnknown" && typeof refused.found === "number" && typeof refused.known === "number" && refused.found < refused.known);
-  const door = env[NPX_PACKAGE_ENV];
-  if (!earlier || typeof refused?.message !== "string" || door === undefined || !/^@parcha\/agentrun@\d[\w.+-]*$/.test(door)) return undefined;
+  const { launcher, yes, flags } = startedAs(env);
+  if (!earlier || typeof refused?.message !== "string" || launcher === undefined) return undefined;
   const dir = resolve(data);
-  const yes = env.npm_config_yes === "true" ? "-y " : "";
-  const port = env[STARTED_PORT_ENV];
-  const flags = `${port && /^\d{1,5}$/.test(port) ? ` --port ${port}` : ""}${env[STARTED_OPEN_ENV] === "0" ? " --no-open" : ""}`;
-  const command = `npx ${yes}${door}`;
+  const command = `npx ${yes}${launcher}`;
   // The launcher's own folder when --data names none (agentrun start.mjs): this same command opens `dir` again with no
   // --data only when `dir` is it.
-  const launcherData = resolve(env.HOME || homedir(), ".agentrun");
-  const again = `${command}${dir === launcherData ? "" : ` --data ${shellWord(dir)}`}${flags}`;
-  const fresh = freeName(`${dir}-new`, exists);
+  const launcherData = resolve(commandData(env));
   const aside = freeName(`${dir}-earlier`, exists);
-  // install.sh keeps its Node, its packages and the command in the folder beside the data (node/, lib/, bin/agentrun):
-  // that command, or the service that runs it, may be what started this. Moved, they go too, whichever version they are.
-  const installed = exists(join(dir, "bin", "agentrun")) ? " That takes the agentrun the installer put there with it (its Node in node/, lib/ and bin/agentrun): run the installer again to put this version's back." : "";
+  const mv = `mv ${shellWord(dir)} ${shellWord(aside)}`;
+  // The store's own refusal already says to add them again; an earlier release's schema says it only in the lines cut here.
+  const again = refused.name === "SchemaVersionUnknown" ? " Add your agents, MCP servers, keys and sign-ins again in this version." : "";
+  if (exists(join(dir, "bin", "agentrun"))) {
+    return [
+      refused.message.split("\n")[0],
+      `To keep all of it and start this version in ${dir}: ${mv}, then run the installer again. Moving the folder takes the installer's Node, packages and command with it (node/, lib/, bin/agentrun); the installer puts this version's back.`,
+      `Nothing is deleted.${again}`,
+    ].join("\n");
+  }
+  const fresh = freeName(`${dir}-new`, exists);
   return [
     refused.message.split("\n")[0],
-    // Moved aside first: every later command (doctor, the harness commands, the service) then finds this version where it
-    // looks with nothing more to remember; a new folder means the same --data on each of them.
-    `To keep all of it where the earlier version still opens it and start this version in ${dir}: mv ${shellWord(dir)} ${shellWord(aside)}, then ${again}. The earlier version opens the old data with --data ${shellWord(aside)}.${installed}`,
+    // Moved aside first: every later command (doctor, the harness commands) then finds this version where it looks with
+    // nothing more to remember; a new folder means the same --data on each of them.
+    `To keep all of it where the earlier version still opens it and start this version in ${dir}: ${mv}, then ${command}${dir === launcherData ? "" : ` --data ${shellWord(dir)}`}${flags}. The earlier version opens the old data with --data ${shellWord(aside)}.`,
     `Or start this version on a new, empty folder: ${command} --data ${shellWord(fresh)}${flags}`,
     `  (every later agentrun command then takes the same --data: without it, they open ${launcherData})`,
-    // The store's own refusal already says to add them again; an earlier release's schema says it only in the lines cut here.
-    `Either way, nothing is deleted.${refused.name === "SchemaVersionUnknown" ? " Add your agents, MCP servers, keys and sign-ins again in this version." : ""}`,
+    `Either way, nothing is deleted.${again}`,
   ].join("\n");
 }
 
@@ -234,7 +248,20 @@ export type ConfineChild = (child: Readonly<{ command: string; args: string[] }>
  *  which its own check took: skills.ts), and the run's clock when a template eval case sets one (claude-agent's turn date
  *  reads it; absent, the real clock). `heldRefusal`: the words a held run's model was refused in at its create
  *  (run-launch.ts hold.refused): its provider is the stand-in that refuses every request in them (providerOf). */
-export type AdapterNeeds = { model: ModelRef; models: { getModel(provider: string, id: string): { cost?: Partial<ModelCost> } | undefined }; confine?: ConfineChild; skills?: readonly SkillFiles[]; unpriced?: ReadonlySet<string>; now?: () => Date; zone?: string; heldRefusal?: string };
+export type AdapterNeeds = { model: ModelRef; models: { getModel(provider: string, id: string): { cost?: Partial<ModelCost>; contextWindow?: number; maxTokens?: number } | undefined }; confine?: ConfineChild; skills?: readonly SkillFiles[]; unpriced?: ReadonlySet<string>; now?: () => Date; zone?: string; heldRefusal?: string };
+
+/** The limits of a model the route translates onto a harness's wire (`provider.fetch`: provider.ts routedProvider), for
+ *  an adapter that takes them: its window and its most output tokens, from the model's pi-ai entry in the run's models
+ *  (`needs.models`), the entry the route's own model is. Its window is what every request asks Ollama for
+ *  (options.num_ctx: ollama-provider.ts contextOf, at most 64k), and its output ceiling half that, at most 16,384. None
+ *  for a model not routed, or one with no entry: its adapter's own defaults. */
+export function routedLimits(provider: Pick<Provider, "fetch">, needs: AdapterNeeds): { contextWindow?: number; maxOutputTokens?: number } {
+  if (!provider.fetch) return {};
+  const entry = needs.models.getModel(needs.model.provider, needs.model.modelId);
+  const whole = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+  const [window, ceiling] = [entry?.contextWindow, entry?.maxTokens];
+  return { ...(whole(window) ? { contextWindow: window } : {}), ...(whole(ceiling) ? { maxOutputTokens: ceiling } : {}) };
+}
 
 /** Where a run's adapter sends its model's requests (providerFor), or, for a held run its model kept from running at its
  *  create, the stand-in (heldRefusedProvider): no key is read, and its proxy refuses every request in the create's words,
@@ -441,7 +468,9 @@ export async function codexOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load:
   // On a ChatGPT plan: the plan's rules on its route (no output limit, no input count), billed to it, never priced here.
   const provider = providerOf(codexFacts.wire, env, needs, codexFacts.id);
   const plan = provider.billing === "plan";
-  return codex.codexAdapter({ model: provider.modelId, provider: { origin: provider.origin, credential: provider.credential, ...(plan ? { plan } : {}), ...(provider.refused ? { refused: provider.refused } : {}) }, price: plan ? () => null : priceOf({ ...needs, model: provider.priceModel }), log: harnessLog(codexFacts.id, env), ...(nativeOptions(codexFacts, env).webSearch === "live" ? { webSearch: "live" as const } : {}), ...(needs.confine ? { confine: needs.confine } : {}), ...(needs.skills?.length ? { skills: needs.skills } : {}), ...(standIn ? { standIn } : binary ? { binary } : {}) });
+  // A model the route translates onto the wire (an Ollama model): both of its proxies forward with the route's own fetch,
+  // Codex's live web search, which the translation cannot run, is not offered, and its window and output ceiling are the route's (routedLimits).
+  return codex.codexAdapter({ model: provider.modelId, provider: { origin: provider.origin, credential: provider.credential, ...(plan ? { plan } : {}), ...(provider.refused ? { refused: provider.refused } : {}) }, price: plan ? () => null : priceOf({ ...needs, model: provider.priceModel }), log: harnessLog(codexFacts.id, env), ...routedLimits(provider, needs), ...(provider.fetch ? { fetch: provider.fetch } : nativeOptions(codexFacts, env).webSearch === "live" ? { webSearch: "live" as const } : {}), ...(needs.confine ? { confine: needs.confine } : {}), ...(needs.skills?.length ? { skills: needs.skills } : {}), ...(standIn ? { standIn } : binary ? { binary } : {}) });
 }
 
 /** opencode's adapter, from `load` (this server's own, src/harness-opencode; a test gives its own). Its model goes where
@@ -468,7 +497,9 @@ export async function opencodeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, lo
   // adapter reads: each SKILL.md goes as servedSkill writes it (its name and description, as a prompt reads them, on one
   // line each), so a CRLF file or a folded description is listed by its own words.
   const skills = needs.skills && servedSkills(needs.skills);
-  return opencode.openCodeAdapter({ model: provider.modelId, provider: { origin: provider.origin, credential: provider.credential }, price: priceOf({ ...needs, model: provider.priceModel }), log: harnessLog(openCodeFacts.id, env), ...(needs.confine ? { confine: needs.confine } : {}), ...(skills?.length ? { skills } : {}), ...(standIn ? { standIn } : {}) });
+  // A model the route translates onto the wire (an Ollama model): its proxies forward with the route's own fetch, and its
+  // window and output ceiling are the route's (routedLimits).
+  return opencode.openCodeAdapter({ model: provider.modelId, provider: { origin: provider.origin, credential: provider.credential }, price: priceOf({ ...needs, model: provider.priceModel }), log: harnessLog(openCodeFacts.id, env), ...routedLimits(provider, needs), ...(provider.fetch ? { fetch: provider.fetch } : {}), ...(needs.confine ? { confine: needs.confine } : {}), ...(skills?.length ? { skills } : {}), ...(standIn ? { standIn } : {}) });
 }
 
 /** Why `harness` cannot run here, or undefined when it can (its entry's refusal): its package and pins, its provider, and
