@@ -140,10 +140,57 @@ const absolute = (env: Readonly<Record<string, string | undefined>>, name: strin
 
 /** The most links one path may pass through, as Linux's own limit (past it, ELOOP). */
 const MAX_LINKS = 40;
-/** A folder's mode bits that let its group or anyone write in it, and the sticky bit, which keeps each entry in such a
+/** A folder's mode bits that let its group write in it, and anyone, and the sticky bit, which keeps each entry in such a
  *  folder its maker's (/tmp, say). */
-const GROUP_OR_OTHER_WRITE = 0o022;
+const GROUP_WRITE = 0o020;
+const OTHER_WRITE = 0o002;
 const STICKY = 0o1000;
+/** The system's account files: its users (name:password:uid:gid:…) and its groups (name:password:gid:members). */
+const PASSWD_FILE = "/etc/passwd";
+const GROUP_FILE = "/etc/group";
+
+/** A whole decimal id from an account file's field, else undefined (an empty field is no id). */
+const idOf = (field: string | undefined): number | undefined => (field !== undefined && /^\d+$/.test(field) ? Number(field) : undefined);
+
+/** Whether group `gid` is user `uid`'s private group, so a folder only its group and its owner may write in is still the
+ *  user's alone (the umask ruling: a umask of 002, under a group of the user's own, makes folders 0775). As the account
+ *  files say: `uid` has one entry, and `gid` is its primary group; no other user has `gid` as theirs; and the group file
+ *  has `gid`, listing no member but that user. False where it cannot say: a file it cannot read, a `+` or `-` line (the
+ *  rest is a directory service's, whose members these files do not show), no entry for `uid`, or `gid` missing from the
+ *  group file (a directory service's group). */
+function privateGroup(uid: number, gid: number): boolean {
+  try {
+    const entries = (file: string) => readFileSync(file, "utf8").split("\n").filter((line) => line.trim() !== "" && !line.startsWith("#"));
+    const users = entries(PASSWD_FILE);
+    const groups = entries(GROUP_FILE);
+    if ([...users, ...groups].some((line) => line.startsWith("+") || line.startsWith("-"))) return false;
+    const userFields = users.map((line) => line.split(":"));
+    const own = userFields.filter((fields) => idOf(fields[2]) === uid);
+    const name = own.length === 1 ? own[0]![0] : undefined;
+    if (!name || idOf(own[0]![3]) !== gid) return false;
+    if (userFields.some((fields) => fields !== own[0] && idOf(fields[3]) === gid)) return false;
+    const its = groups.map((line) => line.split(":")).filter((fields) => idOf(fields[2]) === gid);
+    return its.length > 0 && its.every((fields) => (fields[3] ?? "").split(",").map((member) => member.trim()).every((member) => member === "" || member === name));
+  } catch {
+    return false;
+  }
+}
+
+/** Whether a folder with `mode` and group `gid` lets someone other than user `uid` write in it: anyone may, or its group
+ *  may and that group is not the user's private one (privateGroup, asked once per group by `mine`). */
+const openToOthers = (folder: { mode: number; gid: number }, mine: (gid: number) => boolean): boolean =>
+  (folder.mode & OTHER_WRITE) !== 0 || ((folder.mode & GROUP_WRITE) !== 0 && !mine(folder.gid));
+
+/** privateGroup for user `uid`, each group asked once: one walk (ownedFolder) reads the account files only where a folder
+ *  its group may write in is met, and once per group. */
+function privateGroupsOf(uid: number): (gid: number) => boolean {
+  const known = new Map<number, boolean>();
+  return (gid) => {
+    let mine = known.get(gid);
+    if (mine === undefined) known.set(gid, (mine = privateGroup(uid, gid)));
+    return mine;
+  };
+}
 
 /** `dir` (absolute) walked one name at a time from the root, as the system walks it: an empty name (a trailing or
  *  doubled slash) and `.` name nothing, `..` goes to the folder above the real one reached so far, and each link is followed where it is met, and must be one user `uid` or root made, as must each
@@ -186,22 +233,24 @@ function followLinks(uid: number, dir: string): { real: string; missing: string[
 
 /** Why a folder is not the login's (ownedFolder): `owned`, it is not the user's own (another user's, through another
  *  user's link or folder, or no way to look); `open`, `at` (a folder on its way, the folder itself, or the one it is to
- *  be made in) has `mode`, which its group or anyone may write in, so a chmod of `at` mends it. Only the mode bits are
+ *  be made in) has `mode`, which anyone may write in, or its group, where that group is not the user's private one
+ *  (openToOthers), so a chmod of `at` mends it. Only the mode bits are
  *  read: an ACL that grants another user writes and leaves them alone (macOS's `chmod +a`) is not seen, and a FUSE
  *  mount another user may let others into (`allow_other`) says what owner and mode it likes. */
 type NotHeld = { not: "owned" } | { not: "open"; at: string; mode: number };
 
 /** Undefined where no user but `uid` and root can change what `real` (a real path, followLinks') leads to: each folder
- *  above it, from the root down, is a folder (no link) of that user's or root's that neither its group nor anyone else
- *  may write in, unless the sticky bit keeps each entry there its maker's. Else why not: a folder not theirs first, as
- *  a chmod mends no such folder, else the nearest open one. */
-function wayHeld(uid: number, real: string): NotHeld | undefined {
+ *  above it, from the root down, is a folder (no link) of that user's or root's that no one else may write in (anyone,
+ *  or its group where that is not the user's private one: openToOthers, with `mine`), unless the sticky bit keeps each
+ *  entry there its maker's. Else why not: a folder not theirs first, as a chmod mends no such folder, else the nearest
+ *  open one. */
+function wayHeld(uid: number, real: string, mine: (gid: number) => boolean): NotHeld | undefined {
   try {
     let open: NotHeld | undefined;
     for (let at = dirname(real), last = real; at !== last; last = at, at = dirname(at)) {
       const folder = lstatSync(at);
       if (!folder.isDirectory() || (folder.uid !== uid && folder.uid !== 0)) return { not: "owned" };
-      if ((folder.mode & GROUP_OR_OTHER_WRITE) !== 0 && (folder.mode & STICKY) === 0) open ??= { not: "open", at, mode: folder.mode };
+      if ((folder.mode & STICKY) === 0 && openToOthers(folder, mine)) open ??= { not: "open", at, mode: folder.mode };
     }
     return open;
   } catch {
@@ -209,14 +258,14 @@ function wayHeld(uid: number, real: string): NotHeld | undefined {
   }
 }
 
-/** Undefined where `real` is a folder (no link) of user `uid`'s that neither its group nor anyone else may write in,
- *  sticky or not: they could put files of theirs in it, or, where the CLI makes a folder in it, make that folder first.
- *  Else why not. */
-function heldFolder(uid: number, real: string): NotHeld | undefined {
+/** Undefined where `real` is a folder (no link) of user `uid`'s that no one else may write in (openToOthers, with
+ *  `mine`), sticky or not: they could put files of theirs in it, or, where the CLI makes a folder in it, make that
+ *  folder first. Else why not. */
+function heldFolder(uid: number, real: string, mine: (gid: number) => boolean): NotHeld | undefined {
   try {
     const folder = lstatSync(real);
     if (!folder.isDirectory() || folder.uid !== uid) return { not: "owned" };
-    return (folder.mode & GROUP_OR_OTHER_WRITE) === 0 ? undefined : { not: "open", at: real, mode: folder.mode };
+    return openToOthers(folder, mine) ? { not: "open", at: real, mode: folder.mode } : undefined;
   } catch {
     return { not: "owned" };
   }
@@ -242,8 +291,9 @@ function ownedFolder(uid: number, dir: string, make: boolean): { real: string; m
   const walked = followLinks(uid, dir);
   if (walked === undefined || (walked.missing.length > 0 && !make)) return { not: "owned" };
   // A folder that is not the user's first, as a chmod mends no such folder; else the open one.
-  const way = wayHeld(uid, walked.real);
-  const folder = heldFolder(uid, walked.real);
+  const mine = privateGroupsOf(uid);
+  const way = wayHeld(uid, walked.real, mine);
+  const folder = heldFolder(uid, walked.real, mine);
   const notHeld = way?.not === "owned" ? way : folder?.not === "owned" ? folder : (way ?? folder);
   if (notHeld) return notHeld;
   return walked.missing.length > 0 ? { real: join(walked.real, ...walked.missing), missing: true } : { real: walked.real, missing: false };
