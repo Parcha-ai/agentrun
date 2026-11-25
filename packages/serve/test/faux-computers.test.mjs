@@ -77,7 +77,7 @@ test("faux-sandbox and faux-broken start no computer, in words", async () => {
 test("faux-dial's machines dial the server: its descriptor says so, its test answers, and with no dial (a runner apart with no relay) or no public address its launch refuses in the computer package's words", async (t) => {
   assert.equal(entryOf("faux-dial").connect, "dial");
   assert.deepEqual(await (await routes(t)).test("faux-dial"), { ok: true, detail: "Faux dial: the faux account answered (no computer was made)" });
-  await assert.rejects(FAUX.launch(entryOf("faux-dial"), { kind: "desktop", keys: {} }), { message: "Faux dial machines dial in to this server, and this runner runs in a process of its own, with no attach hub to take their socket: start the image with the server options alone, without server-and-runner (outside the image: agentrun-serve without --no-runner)" });
+  await assert.rejects(FAUX.launch(entryOf("faux-dial"), { kind: "desktop", keys: {} }), { message: "Faux dial machines dial in to this server, and this runner runs in a process of its own and relays no machine's socket: give the runner AGENTRUN_PUBLIC_URL (this server's public address), or start the image with the server options alone, without server-and-runner (outside the image: agentrun-serve without --no-runner)" });
   const nowhere = { tokens: { mint: async () => assert.fail("no token is minted"), revoke: async () => undefined }, hub: { online: () => false, connection: () => undefined, revoke: () => undefined } };
   await assert.rejects(FAUX.launch(entryOf("faux-dial"), { kind: "desktop", keys: {} }, { dial: nowhere }), /which has no public address: set AGENTRUN_PUBLIC_URL/);
 });

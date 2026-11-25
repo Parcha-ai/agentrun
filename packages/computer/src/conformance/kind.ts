@@ -16,11 +16,6 @@ export interface KindVerdict {
 
 const groupsOf = (c: Case): Group[] => c.needs.filter((need): need is Group => (GROUPS as readonly string[]).includes(need));
 
-/** A hosted provider module's kind from its env variable `name` (COMPUTER_<VENDOR>_KIND), as create() options: none
- *  when it is unset or empty (the provider's default), else what it says, which create() refuses in words unless it is
- *  desktop or linux. */
-export const kindFrom = (env: Record<string, string | undefined>, name: string): { kind?: "desktop" | "linux" } => (env[name] ? { kind: env[name] as "desktop" | "linux" } : {});
-
 /** Why a run cannot be by this kind, in words; undefined when it can. Kind none is no computer. */
 export function kindRunProblem(kind: ComputerSettingKind): string | undefined {
 	const spec = Object.hasOwn(SETTING_KINDS, kind) ? SETTING_KINDS[kind] : undefined;

@@ -12,9 +12,10 @@ export type Unreadable = (typeof UNREADABLE)[number];
 /** A sealed row opened now, or why not. */
 export type Opened = { value: string } | { unreadable: Unreadable };
 /** Why a saved harness key (harness-keys.ts) is not one its recipe's runs get, so it is entered again: saved for another
- *  recipe file of its id (`recipe_changed`; or bound to none), or one of UNREADABLE. Here, beside UNREADABLE, so the API
- *  document reads it without loading the keys layer. */
-export const HARNESS_KEY_REENTER = ["recipe_changed", ...UNREADABLE] as const;
+ *  recipe file of its id (`recipe_changed`), bound to none (`not_bound`: saved before keys were bound, or its binding
+ *  write was cut off), or one of UNREADABLE. Here, beside UNREADABLE, so the API document reads it without loading the
+ *  keys layer. */
+export const HARNESS_KEY_REENTER = ["recipe_changed", "not_bound", ...UNREADABLE] as const;
 
 /** The fingerprint of a seal key: an HMAC of a fixed label under it, stable across restarts, so a value whose fingerprint
  *  no longer matches was sealed under another key (seal_key_changed), told apart from one that is simply damaged. No

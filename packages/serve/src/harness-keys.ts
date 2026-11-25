@@ -272,7 +272,7 @@ export class HarnessKeysOverStore {
       const row = harnessKeyRow(recipe.id, name);
       const entry = this.current.get(row);
       if (!entry || this.bound(recipe, name)) return [];
-      const why: HarnessKeyWhy = "unreadable" in entry.opened ? entry.opened.unreadable : "recipe_changed";
+      const why: HarnessKeyWhy = "unreadable" in entry.opened ? entry.opened.unreadable : entry.recipe === undefined ? "not_bound" : "recipe_changed";
       return [{ name: row, why }];
     });
     return { id: recipe.id, label: recipe.label, named: true, keys, kept: this.kept(recipe.id, recipe.keys), ready: this.saved(recipe), reenter };
@@ -339,7 +339,7 @@ export class HarnessKeysOverStore {
   /** DELETE: `key`'s value for `held`'s harness gone from its runs, kept as a retired row for the cut. A row that does not
    *  open under this server's seal key is removed too, so no claim counts it saved. */
   async remove(held: HarnessKeysHeld, key: string): Promise<void> {
-    known(held, key);
+    known(held, key, true);
     const row = harnessKeyRow(held.id, key);
     await this.serial(async () => {
       const was = this.current.get(row);
@@ -370,9 +370,12 @@ export class HarnessKeysOverStore {
   }
 }
 
-/** 422 unless `key` is one `recipe` runs on (or, for a DELETE, one kept for it): a key no recipe names is never saved. */
-function known(recipe: Pick<PlanRecipe, "label" | "keys">, key: string): void {
-  if (!recipe.keys.includes(key)) throw invalid([{ field: "key", reason: "not_an_option", message: `${recipe.label} runs on ${recipe.keys.join(", ")}.` }]);
+/** 422 unless `key` is one `recipe` runs on (or, for a DELETE, one it holds): a key no recipe names is never saved. A
+ *  DELETE's refusal names the keys held, which for an id no recipe names are kept keys, never ones it runs on. */
+function known(recipe: Pick<PlanRecipe, "label" | "keys">, key: string, remove = false): void {
+  if (recipe.keys.includes(key)) return;
+  const keys = recipe.keys.join(", ");
+  throw invalid([{ field: "key", reason: "not_an_option", message: remove ? `${recipe.label}'s keys are ${keys}.` : `${recipe.label} runs on ${keys}.` }]);
 }
 
 /** What a PUT may save: `body.value`, text of 8 to 1024 bytes with no whitespace or control character, for a key the

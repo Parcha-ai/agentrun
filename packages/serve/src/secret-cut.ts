@@ -83,9 +83,15 @@ export function secretCut(envs: NodeJS.ProcessEnv | readonly NodeJS.ProcessEnv[]
 }
 
 /** The recommended preset's rules, but its comment filter: a `secretlint-disable` line in what an import reads (a
- *  repository's own config a tool printed, a web page) would switch every rule off for the rest of it. */
+ *  repository's own config a tool printed, a web page) would switch every rule off for the rest of it. The rule ids are
+ *  pinned by test (secretlint-deps.test.mjs), so a bump that empties or changes the set is read before it ships. There is
+ *  no load-time check of its own: the exact @secretlint/core pin and that test stand for it. A consumer that forces
+ *  another core through npm overrides is outside both, and could load no rules and cut nothing. */
 const FILTER_COMMENTS = "@secretlint/secretlint-rule-filter-comments";
 const SECRETLINT = { rules: recommended.filter((rule) => rule.meta.id !== FILTER_COMMENTS).map((rule) => ({ id: rule.meta.id, rule })) };
+/** The ids of the rules the scan runs, in order. Only the ids are exported: the rules' own types come from a secretlint
+ *  types package that serve doesn't depend on. */
+export const SECRETLINT_RULE_IDS: readonly string[] = SECRETLINT.rules.map((rule) => rule.id);
 /** How many passes `secretsIn` has made in this process: for a test that a path makes none. */
 export const secretlintCalls = { count: 0 };
 

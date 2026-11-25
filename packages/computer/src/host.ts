@@ -1,6 +1,7 @@
 // The machine host: what a vendor writes to put computers on its machines. A host has eleven members: its descriptor
 // and its facts, five calls about its own machines (create, get, list, delete, exec), and four optional hooks (upload,
-// errorCode, extend, check). A host whose machines dial the server (facts.connect "dial") has no exec and no upload.
+// errorCode, extend, check). An exec host whose exec output is slow may also have download, a file's way out. A host
+// whose machines dial the server (facts.connect "dial") has no exec, no upload and no download.
 // HostedProvider (./hosted/provider.ts) owns everything else a ComputerProvider does: the spec's check, the daemon's
 // upload, install and start, the stdio bridge, the read-back and the probe, labels (packed where the host declares it),
 // list and attach, the deadline and extend, the wait after a delete, the sweep of a lost create, the Archil mount, and
@@ -91,12 +92,35 @@ export interface MachineHost {
 	 */
 	upload?(id: string, path: string, bytes: Uint8Array, ctx: HostCall): Promise<void>;
 	/**
+	 * The bytes of the file at path in the machine, whole, read as root. Optional, on an exec host alone: one whose exec
+	 * output is slow has it (Daytona's: its toolbox's files/download, where exec's stdout is a log read at about 0.3 MB/s).
+	 * A files.read past one chunk then takes its first chunk from the daemon and the rest from one copy of the file the
+	 * adapter makes as the daemon's user (./hosted/download.ts), so root's read never shows what that user cannot read. A
+	 * path that is not there throws.
+	 */
+	download?(id: string, path: string, ctx: HostCall): Promise<Uint8Array>;
+	/**
 	 * What agentrun-dial wrote in a dial machine, for a create whose machine never dialed: the adapter adds its last lines
 	 * to the timeout's words. undefined when agentrun-dial never started there. A host that started agentrun-dial itself
 	 * and can read its output has it (Daytona's: its session command's log). A read that fails throws, and the timeout's
 	 * words stay as they were.
 	 */
 	dialLog?(id: string, ctx: HostCall): Promise<string | undefined>;
+	/**
+	 * agentrun-dial's exit code in a dial machine once it has exited; undefined while it runs, or where it never started.
+	 * A host that started agentrun-dial itself and can read its exit has it (Daytona's: its session command's). The
+	 * adapter reads it while it waits for the machine to dial: one that exited never dials, so create stops then, in
+	 * dialLog's words, instead of at createMs, and while it runs and writes, the wait may go past createMs. A read that
+	 * fails throws, and the wait goes on.
+	 */
+	dialExit?(id: string, ctx: HostCall): Promise<number | undefined>;
+	/**
+	 * Starts agentrun-dial once more in a dial machine whose agentrun-dial exited, as create started it: the same env and
+	 * token, so the same machine dials. The adapter calls it at most once per machine, for an exit that leaves nothing of
+	 * agentrun-dial running (its fetch failed, 3, or its init never listened and was ended, 5); after the start, dialLog
+	 * and dialExit read the new one. A start the vendor refuses throws, and create fails in the first exit's words.
+	 */
+	redial?(id: string, ctx: HostCall): Promise<void>;
 	/**
 	 * The code of an error the vendor's client threw: one of ComputerErrorCode. Optional: the adapter reads a HostError's
 	 * own code, an AbortError as "aborted" and a TimeoutError as "timeout" itself, and anything else a host does not map

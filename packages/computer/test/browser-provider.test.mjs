@@ -30,7 +30,7 @@ const VENDORS = {
 			groups: ["cdp", "stream"],
 			maxLifetimeMs: 6 * HOUR,
 			release: ["delete"],
-			browser: { timeout: "wall-clock", stealth: true, profiles: { settleMs: 5_000 }, downloads: { path: "downloads" } },
+			browser: { timeout: "wall-clock", stealth: true, profiles: { settleMs: 10_000 }, downloads: { path: "downloads" } },
 		},
 		/** The labels as the vendor holds them, on the session it made. */
 		held: (fake, id) => fake.sessions.get(id).userMetadata,
@@ -468,6 +468,44 @@ test("browserbase: a label's dots ride as underscores in userMetadata, which Bro
 	const asked = fake.only("GET", "/v1/sessions").map((call) => call.query.q);
 	assert.ok(asked.every((q) => q === "user_metadata['agentrun_conformance']:'abc123'"), `the query names the metadata key: ${asked.join(", ")}`);
 	assert.deepEqual({ ...value(await provider.attach({ labels: { "agentrun.conformance.case": "labels" } }), "attach by a dotted label") }.id, created.id);
+});
+
+test("browserbase: behind a gateway that fronts the sessions' sockets (BROWSERBASE_CONNECT_BASE_URL), connect hands over the session's URL on the gateway, its path and signing query kept; with none, Browserbase's own", async () => {
+	const fake = fakeBrowserbase();
+	const behind = await VENDORS.browserbase.make(fake, { env: { BROWSERBASE_CONNECT_BASE_URL: "https://proxy.example/ws/" } });
+	const ref = value(await behind.create(spec()), "create");
+	assert.equal(value(await behind.connect(ref), "connect").cdp.url, `https://proxy.example/ws/${ref.id}?signingKey=SECRET-${ref.id}`);
+	const direct = await VENDORS.browserbase.make(fake);
+	assert.equal(value(await direct.connect(ref), "connect").cdp.url, `wss://connect.browserbase.com/${ref.id}?signingKey=SECRET-${ref.id}`);
+	const { throughGateway } = await import("../dist/browserbase.js");
+	assert.equal(throughGateway("ws://127.0.0.1:9/devtools/b1", "https://proxy.example"), "ws://127.0.0.1:9/devtools/b1", "only a URL on Browserbase's own domain moves");
+	assert.equal(throughGateway("wss://connect.browserbase.com/?x=1", "not a url"), "wss://connect.browserbase.com/?x=1", "a gateway that is no URL moves none");
+});
+
+test("browserbase: a sessions' gateway (BROWSERBASE_CONNECT_BASE_URL) is wss or https, as the session's signed URL rides it: another, loopback included, is refused in words, and one that is no URL is refused without echoing it", async () => {
+	const fake = fakeBrowserbase();
+	const wss = await VENDORS.browserbase.make(fake, { env: { BROWSERBASE_CONNECT_BASE_URL: "wss://proxy.example/ws" } });
+	const ref = value(await wss.create(spec()), "create");
+	assert.equal(value(await wss.connect(ref), "connect").cdp.url, `wss://proxy.example/ws/${ref.id}?signingKey=SECRET-${ref.id}`);
+	for (const [base, scheme] of [["ws://proxy.example/ws", "ws:"], ["http://proxy.example/ws", "http:"], ["http://127.0.0.1:9/ws", "http:"]]) {
+		await assert.rejects(VENDORS.browserbase.make(fake, { env: { BROWSERBASE_CONNECT_BASE_URL: base } }), { message: `BROWSERBASE_CONNECT_BASE_URL must be wss or https, so a session's signed URL never crosses in the clear: ${scheme}` }, base);
+	}
+	await assert.rejects(VENDORS.browserbase.make(fake, { env: { BROWSERBASE_CONNECT_BASE_URL: "proxy.internal/ws?token=gw-secret" } }), { message: "BROWSERBASE_CONNECT_BASE_URL is not a URL" });
+});
+
+test("a browser provider's descriptor declares its profiles exactly where its built provider keeps them, with the settle window the provider declares", async () => {
+	const { DESCRIPTORS } = await import("../dist/descriptors/index.js");
+	const browsers = DESCRIPTORS.filter((descriptor) => descriptor.capabilities.some((one) => one.kind === "browser") && descriptor.keys.some((key) => key.required));
+	assert.ok(browsers.length > 0);
+	for (const descriptor of browsers) {
+		const provider = await providerFor(descriptor.id, { apiKey: "fake-test-key" });
+		assert.equal(typeof provider.profiles?.create === "function", descriptor.profiles !== undefined, `${descriptor.id}: profiles kept where declared`);
+		assert.deepEqual(provider.capabilities().browser.profiles, descriptor.profiles, `${descriptor.id}: the settle window is the descriptor's`);
+	}
+	const { descriptorProblems } = await import("../dist/descriptor.js");
+	const [browserbase] = browsers;
+	assert.deepEqual(descriptorProblems({ ...browserbase, profiles: { settleMs: -1 } }), ["profiles is { settleMs }, a whole number of milliseconds, 0 or more"]);
+	assert.deepEqual(descriptorProblems({ ...DESCRIPTORS.find((one) => one.id === "docker"), profiles: { settleMs: 0 } }), ["profiles is a browser's: no configuration is of kind browser"]);
 });
 
 test("browserbase: check() refuses, by name, a label key an underscore or another character would make ambiguous, and a value that would break the query's quotes", async () => {

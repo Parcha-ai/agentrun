@@ -1,18 +1,19 @@
 // Promote once (runner/promotion.ts startCheck/settleCheck, learn/compile.ts compileDue, learning-setting.ts): an agent
 // whose definition says `learning: { compile_after, agree_min, alone_min }` (each optional; true is every default)
 // compiles its job once, at compile_after completed agent runs, and checks the draft once: a replay of it on the inputs
-// of the agent's last compile_after completed runs, each scored against the agent's own recorded answer (sameAnswer; no
-// grade, no teacher). It is promoted when, of those inputs, it answered at least alone_min alone and at
-// least agree_min of those said what the agent said; else held, and the agent's next run recompiles it once with the
+// of the agent's last compile_after completed runs, each judged against its best known answer: a grade's expected answer
+// where the input's run has one, else the agent's own recorded answer (learn/field-check.ts; no teacher). It is promoted
+// when, of those inputs, it answered at least alone_min alone and every field passes (against the agent's answers: at
+// least agree_min of those said what the agent said); else held, and the agent's next run recompiles it once with the
 // inputs it did not agree on as data; that revision is checked the same way, then promoted or stopped: nothing compiles
-// again. A check's promotion is never moved by grades, a refit or a second replay.
+// again. A check's promotion is never moved by its served runs' grades, a refit or a second replay.
 //   (a) no compile before compile_after completed runs, exactly one at it (a definition's 5);
 //   (b) a passing draft promotes and serves workflow-first on the next fitting run;
 //   (c) under a bar: held, the next run's compile asks for one revision with the disagreements, and that revision's check
 //       promotes it;
 //   (d) the revision's check holds it too: stopped, and no run after compiles anything;
 //   (e) the definition's numbers stand in for the defaults: at agree_min 0.9, 4 of 5 is held (the default 0.8 passes it);
-//   (f) the check reads the agent's recorded answers, never its grades, even when those disagree;
+//   (f) on graded inputs, the grade's expected answer is the known answer of each key it holds, not the agent's;
 //   and a check's promotion never queues a rival, never refits on its served runs' grades, never replays again.
 // The agent's earlier runs are real runs of the store (its list, launches and journals), on a pi run of the faux gateway.
 import assert from "node:assert/strict";
@@ -234,12 +235,12 @@ test("(b) a draft that says what the agent said on its last runs, alone, is prom
   assert.deepEqual([second.metrics?.path, second.metrics?.workflow_digest], ["workflow", DIGEST], `served first: ${JSON.stringify(second.metrics)}`);
   const records = await promotionsOf(w.server.settings, "agent-1");
   assert.deepEqual(records.map(({ decided }) => [decided]), [["replaying"], ["promote"]]);
-  const { check, reason } = records[1];
+  const { fields, ...check } = records[1].check;
   assert.deepEqual({ ...check, of: [...check.of].sort(), cost_usd: typeof check.cost_usd }, {
-    compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 5, agreed: 5, alone: 5,
+    compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 5, agreed: 5, alone: 5, agent_agreed: 5, joint: true,
     of: ["prior-0", "prior-1", "prior-2", "prior-3", "prior-4"], cost_usd: "number", outcomes: { answered: 5, handed_back: 0, failed: 0, skipped_write: 0 },
   });
-  assert.match(reason, /^checked on 5 of the agent's inputs: answered 5 alone \(100\.0%, the bar 70\.0%\), and 5 of those said what the agent said \(100\.0%, the bar 80\.0%\): promoted$/);
+  assert.deepEqual(Object.entries(fields).map(([name, one]) => [name, one.workflow_right, one.n, one.known, one.pass]), [["answer", 5, 5, "agent", true]]);
   // Its served runs graded wrong, 20 of them: a graded check would hold or refit it. A check's promotion stands.
   for (let i = 0; i < 20; i++) await putGrade(w.server.settings, "agent-1", { run: `served-${i}`, correct: false, expected: { answer: 41 }, source: "eval", at: new Date().toISOString(), path: "workflow", workflow: "answer", digest: DIGEST });
   const third = await w.start("run-3", "What is two times twenty-one");
@@ -286,15 +287,18 @@ test("(b) a store holding a saved `queued` record of the revision and a `skipped
   assert.deepEqual(shown.serving, [{ workflow: "answer", digest: DIGEST, replaying: null }]);
 });
 
-test("(f) the check scores the agent's recorded answers, never its grades: graded wrong, the agent's answers still promote the draft that says them", { timeout: 180_000 }, async (t) => {
-  const w = await world(t, { learning: { compile_after: 5 }, prior: 5 });
-  for (let i = 0; i < 5; i++) await putGrade(w.server.settings, "agent-1", { run: `prior-${i}`, correct: false, expected: { answer: 41 }, source: "eval", at: new Date().toISOString(), path: "agent" });
+test("(f) graded inputs: the check judges the whole answer against each grade's expected answer, not the agent's: a draft that says the expected answer where the agent said 42 is promoted", { timeout: 180_000 }, async (t) => {
+  const w = await world(t, { learning: { compile_after: 5 }, prior: 5, submit: () => ({ answer: 41, sure: true }) });
+  for (let i = 0; i < 5; i++) await putGrade(w.server.settings, "agent-1", { run: `prior-${i}`, correct: false, expected: { answer: 41, sure: true }, source: "eval", at: new Date().toISOString(), path: "agent" });
   await w.start("run-1", "What is six times seven");
   await w.replaysEnded(5);
   const second = await w.start("run-2", "What is seven times six");
   assert.equal(second.metrics?.path, "workflow", JSON.stringify(second.metrics));
   const decided = (await promotionsOf(w.server.settings, "agent-1")).at(-1);
-  assert.deepEqual([decided.decided, decided.check.n, decided.check.agreed, "replay" in decided], ["promote", 5, 5, false]);
+  assert.deepEqual([decided.decided, decided.check.n, decided.check.agreed], ["promote", 5, 5], decided.reason);
+  assert.deepEqual(Object.fromEntries(Object.entries(decided.check.fields).map(([name, one]) => [name, one.by])), {
+    answer: { grade: { n: 5, workflow_right: 5, agent_right: 0 } },
+  }, "one field, the whole answer: right on all 5 against the grades, where the agent was right on none");
 });
 
 test("(e) agree_min 0.9 on the definition: 4 of 5 saying what the agent said is held (the default 0.8 would pass it)", { timeout: 180_000 }, async (t) => {
@@ -307,11 +311,25 @@ test("(e) agree_min 0.9 on the definition: 4 of 5 saying what the agent said is 
   const records = await promotionsOf(w.server.settings, "agent-1");
   const held = records.findLast(({ digest }) => digest === DIGEST);
   assert.deepEqual([held.decided, held.check.agree_min, held.check.alone_min, held.check.n, held.check.agreed, held.check.alone], ["hold", 0.9, 0.7, 5, 4, 5], JSON.stringify(held.check));
-  assert.deepEqual(held.check.disagreements, [{ run: "prior-0", input: JSON.stringify({ content: "Question 0?", question: "Question 0" }), agent: AGENT_SAYS, draft: JSON.stringify({ answer: 41, sure: true }) }]);
+  assert.deepEqual(held.check.disagreements, [{ run: "prior-0", input: JSON.stringify({ content: "Question 0?", question: "Question 0" }), agent: AGENT_SAYS, draft: JSON.stringify({ answer: 41, sure: true }), fields: ["answer"] }]);
   // Run-2's end asked the one revision; the faux model's draft of it failed its checks: the recompile's attempt, so it stops.
   const failed = records.at(-1);
   assert.deepEqual([failed.workflow, failed.decided, failed.check.attempt, failed.check.n, failed.check.stopped, failed.check.agree_min], ["answer", "hold", 2, 0, true, 0.9], JSON.stringify(failed));
   assert.match(failed.reason, /^its draft failed its checks: .+It was the recompile, so it stops/);
+});
+
+test("(f) graded inputs: a draft that says neither the expected 41 nor the agent's 42 is held, though the agent was wrong on every one", { timeout: 180_000 }, async (t) => {
+  const w = await world(t, { learning: { compile_after: 5 }, prior: 5, submit: () => ({ answer: 7, sure: true }) });
+  for (let i = 0; i < 5; i++) await putGrade(w.server.settings, "agent-1", { run: `prior-${i}`, correct: false, expected: { answer: 41, sure: true }, source: "eval", at: new Date().toISOString(), path: "agent" });
+  await w.start("run-1", "What is six times seven");
+  await w.replaysEnded(5);
+  const second = await w.start("run-2", "What is seven times six");
+  assert.equal(second.metrics?.path, "agent", JSON.stringify(second.metrics));
+  const held = (await promotionsOf(w.server.settings, "agent-1")).find((one) => one.decided === "hold" && one.check?.n);
+  assert.ok(held, "the check held it");
+  assert.deepEqual(Object.keys(held.check.fields), ["answer"], "no field is made from a grade's keys");
+  assert.deepEqual(held.check.fields.answer.by, { grade: { n: 5, workflow_right: 0, agent_right: 0 } }, held.reason);
+  assert.deepEqual(held.check.disagreements.map((one) => one.expected), Array.from({ length: 5 }, () => [{ field: "answer", known: "grade", value: JSON.stringify({ answer: 41, sure: true }) }]), "each disagreement carries the known answer it missed, whole");
 });
 
 /** Odd questions: the first revision answers 41 (the agent said 42) or hands back; the revision says 42 when `fixed`. */
@@ -332,7 +350,8 @@ test("(c) under the bar: held, the next run is asked one revision with the input
   assert.match(held.check.disagreements.find(({ run }) => run === "prior-2").escalated, /not sure of 42/, "the escalate's reason, as its learned_workflow result said it");
   const [ask] = w.asks.get("run-2");
   assert.ok(ask?.startsWith("One more turn: revise your learned workflow `answer`"), ask?.slice(0, 200));
-  assert.match(ask, /checked on 5 inputs of your last 5 completed runs, it answered 4 alone \(80\.0%, at least 70\.0% needed\), and 2 of those said what you said \(50\.0%, at least 80\.0% needed\)/);
+  assert.match(ask, /checked on 5 inputs of your last 5 completed runs, it answered 4 alone \(80\.0%, at least 70\.0% needed\); field by field: answer: 2 of 4 said what the agent said \(50\.0%, the bar 80\.0%\)\. It fell short on answer\./);
+  assert.match(ask, /The fields it had wrong: answer/, "each disagreement names the field it had wrong");
   // The disagreements' fence alone (the ask's traces of the agent's last runs name other inputs too).
   const fence = /----- begin (\w+): the disagreements -----\n([\s\S]*?)\n----- end \1 -----/.exec(ask)?.[2] ?? "";
   assert.ok(fence, ask.slice(0, 2000));
@@ -367,7 +386,7 @@ test("(c, d) the revision's check holds it too: stopped, its numbers on the reco
   // On the newest 5: run-2 and run-1 (42), prior-4 (42), prior-3 (41), prior-2 (handed back): 4 alone, 3 agree (75%).
   assert.deepEqual([stopped.check.attempt, stopped.check.stopped, stopped.check.n, stopped.check.alone, stopped.check.agreed], [2, true, 5, 4, 3]);
   assert.deepEqual(stopped.check.of, ["run-2", "run-1", "prior-4", "prior-3", "prior-2"]);
-  assert.match(stopped.reason, /held, and this was the recompile's check, so it stops: nothing compiles again until a hold or its owner acts$/);
+  assert.match(stopped.reason, /held on answer, and this was the recompile's check, so it stops: nothing compiles again until a hold or its owner acts$/);
   // Every run after the stop is still the agent's and asks no compile.
   for (let i = 5; i <= 8; i++) {
     const row = await w.start(`run-${i}`, `Question ${10 + i}`);
@@ -375,6 +394,19 @@ test("(c, d) the revision's check holds it too: stopped, its numbers on the reco
     assert.deepEqual(w.asks.get(`run-${i}`), [], `run-${i} compiles nothing`);
   }
   assert.equal((await w.replays()).length, 10, "no third check");
+});
+
+// Once per hold, on the agent's own runs: the revise the run after the hold was asked is on its kept learning as that
+// hold's (its compile record names the held digest), so with nothing landed the run after it asks none.
+test("(c) once per hold: the run after the hold is asked the revise; nothing lands, and the run after it asks none", { timeout: 240_000 }, async (t) => {
+  const w = await world(t, { learning: { compile_after: 5 }, prior: 5, submit: twice(true), landsRevision: true });
+  await w.start("run-1", "Question 10");
+  await w.replaysEnded(5);
+  await w.start("run-2", "Question 11");
+  assert.ok(w.asks.get("run-2")[0]?.startsWith("One more turn: revise your learned workflow `answer`"), w.asks.get("run-2")[0]?.slice(0, 200));
+  const third = await w.start("run-3", "Question 12");
+  assert.equal(third.metrics?.path, "agent", JSON.stringify(third.metrics));
+  assert.deepEqual(w.asks.get("run-3"), [], "the hold's one revise was asked: none again");
 });
 
 /** Two learned workflows of an agent: `answer` stopped (its one recompile's check held it too) and `second` held (its

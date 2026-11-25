@@ -6,8 +6,9 @@
 // (the harness its owner installs: goose) is harness.mjs's, and service
 // (AgentRun as a launchd or systemd user service) and stop (the AgentRun the installer started in the background) are
 // service.mjs's, doctor (how this AgentRun is set up, read-only) is doctor.mjs's, export (an agent written as a template
-// package folder) is export.mjs's, and deploy (an agent's package sent to another AgentRun, with its lock, rollback and
-// delete) is deploy.mjs's. Any other word runs agentrun-WORD from PATH, as git runs git-WORD (externalOf, below).
+// package folder) is export.mjs's, share (what sharing a run would send, shown with --dry-run) is share.mjs's, and
+// deploy (an agent's package sent to another AgentRun, with its lock, rollback and delete) is deploy.mjs's. Any other
+// word runs agentrun-WORD from PATH, as git runs git-WORD (externalOf, below).
 import { spawn } from "node:child_process";
 import { accessSync, closeSync, constants, fstatSync, openSync, readFileSync, statSync } from "node:fs";
 import { homedir, constants as osConstants } from "node:os";
@@ -503,7 +504,13 @@ async function command(entry, argv, env, io) {
   const req = { method: entry.method, path: `${path}${search}`, headers, body, type, raw: entry.raw };
   if (values.follow) return followTimeline(client, req.path, headers);
   if (values.all) return listAll(client, req, entry);
-  if (!values.wait) return send(client, req);
+  if (!values.wait) {
+    const code = await send(client, req);
+    // Whoever reads the answer (a person, or a coding agent running this) is told whose text it holds, on a pipe too.
+    const notice = FLAGS[entry.operationId]?.notice;
+    if (code === 0 && notice) io.stderr.write(`${notice}\n`);
+    return code;
+  }
   // The start is bounded as the wait is: by --timeout, which the wait then has what is left of, else as one of the
   // wait's requests is.
   const began = Date.now();
@@ -635,6 +642,18 @@ async function run(argv, env, io) {
   if (entry) return command(entry, argv, env, io);
   if (verb === undefined) return io.stdout.write(`${nounHelp(noun, listed)}\n`), 0;
   throw usageError(`agentrun ${noun} has no verb ${verb}.\n\n${nounHelp(noun, listed)}`);
+}
+
+/** `entry`, a hand-written command, run as main runs one of LOCAL: for a test whose entry is bound to what it injects
+ *  (share.mjs shareOf's opener). Its exit code, a refusal's message on stderr. */
+export async function runLocal(entry, argv, env, io) {
+  try {
+    return await local(entry, argv, env, io);
+  } catch (error) {
+    if (!(error instanceof Exit)) throw error;
+    io.stderr.write(`${error.message}\n`);
+    return error.code;
+  }
 }
 
 export async function main(argv, env = process.env, io = process) {

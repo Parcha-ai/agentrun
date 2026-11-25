@@ -18,7 +18,7 @@ import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 import { test } from "node:test";
 import { asOwner, scratch, SECRET_WRITE_PATHS, serve, withEnv } from "./support.mjs";
-import { DOCKER_NO_SOCKET } from "../dist/place-offers.js";
+import { NO_DOCKER_HERE } from "../dist/place-offers.js";
 
 const { blockersOf } = await import("../dist/runnable.js");
 const { computerDepsFrom, resolveComputer } = await import("../dist/workspace/index.js");
@@ -299,21 +299,30 @@ test("Mode 1: where Docker answers, GET /v2/computers shows Docker ready for a s
   }
 });
 
-test("Mode 1: a daemon that answers only after the server started is not taken: Docker stays not ready, in the start probe's words (a host's, or a container's with no socket), until a restart", async (t) => {
+test("Mode 1: a daemon that answers only after the server started is not taken: Docker stays not ready, in the start probe's words on a host, and as no daemon in a container with no socket", async (t) => {
   // The start made no Docker box, so its checks of Docker (a daemon elsewhere, this server's paths, host addresses, the
   // box network) never ran; a daemon that answers now can't stand in for them. The probe's facts are pinned, so the words
-  // do not depend on where the suite runs (place-offers.ts containerReason).
+  // do not depend on where the suite runs (place-offers.ts containerReason). A container with no socket at the start had
+  // no daemon there: this page words that as none (noDockerWords, which names the vendors that fit each kind), never the
+  // start's words, which point at this very page.
   const HOST_WORDS = "Docker isn't running on this machine, or this user may not use it (docker version failed: exit 1): start Docker, or add this user to the docker group, then restart AgentRun";
-  for (const [probeContainer, words] of [[{ inside: false }, HOST_WORDS], [{ inside: true, image: true, exists: () => false }, DOCKER_NO_SOCKET]]) {
+  for (const probeContainer of [{ where: "host" }, { where: "image", exists: () => false }]) {
     const api = await server(t, { archil: false, docker: false, probeContainer });
     const bin = process.env.PATH.split(":")[0];
     await writeFile(join(bin, "docker"), "#!/bin/sh\nif [ \"$1\" = version ]; then echo 27.0.0-fake; exit 0; fi\nexit 0\n", { mode: 0o755 });
     const view = await api("GET", "/computers");
+    const whys = {};
     for (const kind of ["sandbox", "desktop"]) {
       const docker = view.body.kinds.find((one) => one.kind === kind).providers.find((one) => one.id === "docker");
       assert.equal(docker.ready, false, `${kind}: ${JSON.stringify(docker)}`);
-      assert.equal(docker.why, words, `${kind}, inside ${probeContainer.inside}: ${JSON.stringify(docker)}`);
+      whys[kind] = docker.why;
+      if (probeContainer.where === "host") assert.equal(docker.why, HOST_WORDS, `${kind}, on a host: ${JSON.stringify(docker)}`);
+      else {
+        assert.ok(docker.why.startsWith(`${NO_DOCKER_HERE} `), `${kind}, in the image: ${docker.why}`);
+        assert.ok(!docker.why.includes("Settings → Computers)"), `${kind}: never a pointer at this page: ${docker.why}`);
+      }
     }
+    if (probeContainer.where === "image") assert.notEqual(whys.sandbox, whys.desktop, "each kind its own words");
   }
 });
 

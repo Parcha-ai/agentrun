@@ -41,10 +41,9 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { dirname, join } from "node:path";
 import type { ClaudeAgentLogin, ClaudeLoginToken } from "@parcha/agentrun-harness-claude";
 import { loginRefresh } from "@parcha/agentrun-harness-claude/facts";
-import { LOGIN_SIGNED_OUT, loginAt } from "./claude-login.js";
-import { PRESENCE_STALE_MS } from "./runner/presence.js";
+import { agentRunLoginDir, LOGIN_SIGNED_OUT } from "./claude-login.js";
 import { holdSecret } from "./secrets.js";
-import type { Runners } from "./store/index.js";
+import { RUNNER_STALE_MS, type Runners } from "./store/index.js";
 
 /** The pinned CLI's credentials file in its credentials directory (CLAUDE_SECURESTORAGE_CONFIG_DIR). */
 export const LOGIN_FILE = ".credentials.json";
@@ -101,27 +100,6 @@ export interface LoginTokensOptions {
 type Read = { readonly access: string; readonly expiresAt: number } | { readonly refused: string };
 
 const strings = (values: unknown[]): string[] => values.filter((value): value is string => typeof value === "string");
-
-/** The access token in a credentials file's text, in the pinned CLI's shape (`claudeAiOauth.{accessToken, expiresAt}`),
- *  every value in it held for redaction. No `claudeAiOauth`, or one the CLI cleared (an empty token), is signed out;
- *  anything else is a form this runner does not read. */
-function readLogin(text: string): Read {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    return { refused: LOGIN_SEALED };
-  }
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return { refused: LOGIN_SEALED };
-  const oauth = (parsed as { claudeAiOauth?: unknown }).claudeAiOauth;
-  if (oauth === undefined || oauth === null) return { refused: LOGIN_SIGNED_OUT };
-  if (typeof oauth !== "object" || Array.isArray(oauth)) return { refused: LOGIN_SEALED };
-  const { accessToken, refreshToken, expiresAt } = oauth as { accessToken?: unknown; refreshToken?: unknown; expiresAt?: unknown };
-  holdSecret(...strings([accessToken, refreshToken]));
-  if (accessToken === "") return { refused: LOGIN_SIGNED_OUT };
-  if (typeof accessToken !== "string" || typeof expiresAt !== "number" || !Number.isFinite(expiresAt)) return { refused: LOGIN_SEALED };
-  return { access: accessToken, expiresAt };
-}
 
 /** The runner's reader of one login's access token, and its renewer. */
 export class LoginTokens {
@@ -188,15 +166,17 @@ export class LoginTokens {
     if (!("refused" in read) && (read.access === sent || heldPairs.get(this.#file)?.renewed.access === sent)) this.#refusedAccess = sent;
   }
 
+  /** The login's access token and its end, as its file holds them now (credentialsRead). No file, no `claudeAiOauth`, or
+   *  one the CLI cleared (an empty token), is signed out; anything else, a file the runner may not open included, is a
+   *  form this runner does not read. */
   async #read(): Promise<Read> {
-    let text: string;
-    try {
-      text = await readFile(this.#file, "utf8");
-    } catch (error) {
-      // No file: signed out. One the runner may not open is not the pinned CLI's file as the runner knows it.
-      return { refused: (error as NodeJS.ErrnoException)?.code === "ENOENT" ? LOGIN_SIGNED_OUT : LOGIN_SEALED };
-    }
-    return readLogin(text);
+    const read = await credentialsRead(this.#file);
+    if (read === "gone") return { refused: LOGIN_SIGNED_OUT };
+    if (typeof read === "string") return { refused: LOGIN_SEALED };
+    const { accessToken, expiresAt } = read.oauth;
+    if (accessToken === "") return { refused: LOGIN_SIGNED_OUT };
+    if (typeof accessToken !== "string" || typeof expiresAt !== "number" || !Number.isFinite(expiresAt)) return { refused: LOGIN_SEALED };
+    return { access: accessToken, expiresAt };
   }
 }
 
@@ -210,12 +190,11 @@ export interface RenewLoginOptions {
   readonly callMs?: number;
   /** Default LOCK_WAIT_MS. */
   readonly lockWaitMs?: number;
-  /** The refresh locks' file operations. Default: fs/promises' own. */
-  readonly lockFs?: LockFs;
+  /** The renewal's file operations: its refresh locks', and its reads of the login's file. Each one not given is
+   *  fs/promises' own (a test's watches, pauses or fails one on cue). */
+  readonly lockFs?: Partial<LockFs>;
   /** How often a held lock is read and touched (its heartbeat). Default: the pinned CLI's (`update:5000`). */
   readonly lockUpdateMs?: number;
-  /** The renewal's reads of the login's file, as text. Default: fs/promises' readFile (a test's fails one on cue). */
-  readonly readFile?: (path: string) => Promise<string>;
 }
 
 /** Refresh tokens this process never posts again: one Anthropic refused for good (`invalid_grant`), and one it took (a
@@ -233,15 +212,15 @@ const heldPairs = new Map<string, HeldPair>();
 
 /** `held` written into `file` as the pinned CLI writes a renewal back (login-refresh.ts): only while the file still holds
  *  the refresh token it spent (or one the CLI cleared), the fields it gives over the file's, the rest kept as they are.
- *  "saved" once written, "held" while the write or the read before it fails (kept in heldPairs), and "dropped" when the
- *  file holds another holder's pair (or is gone, or holds no login the runner reads): the file wins, as the CLI's own
- *  check lets it. */
+ *  "saved" once written (or found written: another ask saved it), "held" while the write or the read before it fails
+ *  (kept in heldPairs), and "dropped" when the file holds another holder's pair (or is gone, or holds no login the
+ *  runner reads): the file wins, as the CLI's own check lets it. */
 async function saveHeld(file: string, held: HeldPair, options: RenewLoginOptions, owned?: () => Promise<LockRead>): Promise<"saved" | "held" | "dropped"> {
   const say = options.log ?? (() => undefined);
   const forget = () => {
     if (heldPairs.get(file) === held) heldPairs.delete(file);
   };
-  const current = await credentialsRead(file, options);
+  const current = await credentialsRead(file, fsOf(options).readFile);
   // A read that failed says nothing of which pair the file holds, and the held pair's refresh token may be the only one
   // left that renews the login (Anthropic rotated it): the pair stays held, and a later ask reads the file again. It is
   // dropped only once a read shows the file gone or holding another pair.
@@ -250,7 +229,14 @@ async function saveHeld(file: string, held: HeldPair, options: RenewLoginOptions
     say({ claude_login: "renewed", saved: "no", reason: "file_unread" });
     return "held";
   }
-  if (current === "gone" || (current.oauth.refreshToken !== held.posted && current.oauth.refreshToken !== "")) {
+  // The file holds this very pair: another ask of this process saved it since this one took it from heldPairs. Saved,
+  // and said so, never as a newer pair, which reads as another holder's takeover.
+  if (typeof current !== "string" && current.oauth.accessToken === held.fields.accessToken && current.oauth.refreshToken === held.fields.refreshToken) {
+    forget();
+    say({ claude_login: "renewed", saved: "yes", reason: "already_saved" });
+    return "saved";
+  }
+  if (typeof current === "string" || (current.oauth.refreshToken !== held.posted && current.oauth.refreshToken !== "")) {
     forget();
     say({ claude_login: "renewed", saved: "no", reason: "newer" });
     return "dropped";
@@ -284,7 +270,7 @@ async function saveHeld(file: string, held: HeldPair, options: RenewLoginOptions
  *  made at all (a full disk refuses a mkdir too). */
 async function saveHeldUnderLock(dir: string, file: string, held: HeldPair, options: RenewLoginOptions): Promise<"saved" | "held" | "dropped"> {
   const say = options.log ?? (() => undefined);
-  const fs = options.lockFs ?? LOCK_FS;
+  const fs = fsOf(options);
   const updateMs = options.lockUpdateMs ?? loginRefresh.lockUpdateMs;
   const giveUp = Date.now() + (options.lockWaitMs ?? LOCK_WAIT_MS);
   for (;;) {
@@ -316,33 +302,31 @@ const readText = (path: string): Promise<string> => readFile(path, "utf8");
 type Credentials = { json: Record<string, unknown>; oauth: Record<string, unknown> };
 
 /** The login's credentials file as it is now, in the pinned CLI's shape: its parsed object and its `claudeAiOauth`,
- *  every token in it held for redaction. "gone" when it is not there, or holds no login in that shape; "unread" when
- *  the read fails another way (an I/O error) or its text is not JSON, which says nothing of which pair it holds. */
-async function credentialsRead(file: string, options: RenewLoginOptions): Promise<Credentials | "gone" | "unread"> {
+ *  every token in it held for redaction; the one reader of the file, the runner's asks' (LoginTokens) and its
+ *  renewals' (read with LockFs.readFile). Else a word, never a value of the file: "gone" when it is not there or holds
+ *  no `claudeAiOauth` (signed out); "unread" when the read fails another way (an I/O error) or its text is not JSON,
+ *  which says nothing of which pair it holds; "sealed" when it is JSON in another shape, a form this runner does not
+ *  read. A renewal takes any word as no pair to renew from. */
+async function credentialsRead(file: string, read: (path: string) => Promise<string> = readText): Promise<Credentials | "gone" | "unread" | "sealed"> {
   let json: unknown;
   try {
-    json = JSON.parse(await (options.readFile ?? readText)(file));
+    json = JSON.parse(await read(file));
   } catch (error) {
     return (error as NodeJS.ErrnoException)?.code === "ENOENT" ? "gone" : "unread";
   }
-  if (json === null || typeof json !== "object" || Array.isArray(json)) return "gone";
+  if (json === null || typeof json !== "object" || Array.isArray(json)) return "sealed";
   const oauth = (json as { claudeAiOauth?: unknown }).claudeAiOauth;
-  if (oauth === null || typeof oauth !== "object" || Array.isArray(oauth)) return "gone";
+  if (oauth === undefined || oauth === null) return "gone";
+  if (typeof oauth !== "object" || Array.isArray(oauth)) return "sealed";
   const fields = oauth as Record<string, unknown>;
   holdSecret(...strings([fields.accessToken, fields.refreshToken]));
   return { json: json as Record<string, unknown>, oauth: fields };
 }
 
-/** credentialsRead's credentials, none when it read none: the caller reads the file again later. */
-async function credentialsNow(file: string, options: RenewLoginOptions): Promise<Credentials | undefined> {
-  const read = await credentialsRead(file, options);
-  return typeof read === "string" ? undefined : read;
-}
-
 /** The pinned CLI's renewal of a login (the adapter's login-refresh.ts), as the runner does it in the CLI's place. */
 export function renewLogin(options: RenewLoginOptions = {}): Renew {
   const now = options.now ?? Date.now;
-  return async (login, seen, refusedAccess) => {
+  const renew: Renew = async (login, seen, refusedAccess) => {
     const file = join(login.dir, LOGIN_FILE);
     // A pair renewed here and not saved yet: its token is handed and its write tried again (under the refresh locks, read
     // again there: saveHeldUnderLock), and nothing is posted, for the file's refresh token is spent. Once saved, a token
@@ -360,9 +344,9 @@ export function renewLogin(options: RenewLoginOptions = {}): Renew {
       }
       seen = held.renewed.access;
     }
-    const read = await credentialsNow(file, options);
-    // Another holder renewed it since it was read, or it changed: the caller reads it again.
-    if (read?.oauth.accessToken !== seen) return undefined;
+    const read = await credentialsRead(file, fsOf(options).readFile);
+    // Another holder renewed it since it was read, or it changed (no pair read: the caller reads it again too).
+    if (typeof read === "string" || read.oauth.accessToken !== seen) return undefined;
     const refresh = read.oauth.refreshToken;
     if (typeof refresh !== "string" || refresh === "") throw new Error("the login holds no refresh token");
     // A renewal in flight on this refresh token is joined first: one Anthropic answered with a new refresh token has
@@ -370,23 +354,32 @@ export function renewLogin(options: RenewLoginOptions = {}): Renew {
     // is handed that pair. The spent check stops only a new request.
     let flight = flights.get(refresh);
     if (!flight) {
-      if (dead.has(refresh)) throw new Error("the login's refresh token is spent or was refused for good");
+      if (dead.has(refresh)) {
+        // The renewal that spent it may have held its pair unsaved and settled while this read was out, after the check
+        // of heldPairs above: that pair is this ask's, through the held branch, never a refusal.
+        if (heldPairs.get(file)?.posted === refresh) return renew(login, seen, refusedAccess);
+        throw new Error("the login's refresh token is spent or was refused for good");
+      }
       flight = renewUnderLock(login.dir, file, seen, refresh, options).finally(() => flights.delete(refresh));
       flights.set(refresh, flight);
     }
     return flight;
   };
+  return renew;
 }
 
-/** The file operations a refresh lock is taken, touched and released with: fs/promises' own, or a test's that watches
- *  or pauses them (RenewLoginOptions.lockFs). */
+/** The file operations a renewal makes: a refresh lock taken, touched and released, and the login's file read as text.
+ *  fs/promises' own, or a test's that watches, pauses or fails them (RenewLoginOptions.lockFs). */
 export interface LockFs {
   mkdir(path: string): Promise<unknown>;
   stat(path: string): Promise<LockIdentity>;
   utimes(path: string, atime: Date, mtime: Date): Promise<void>;
   rm(path: string, options: { readonly recursive: boolean; readonly force: boolean }): Promise<void>;
+  readFile(path: string): Promise<string>;
 }
-const LOCK_FS: LockFs = { mkdir: (path) => mkdir(path), stat: (path) => stat(path), utimes: (path, atime, mtime) => utimes(path, atime, mtime), rm: (path, options) => rm(path, options) };
+const LOCK_FS: LockFs = { mkdir: (path) => mkdir(path), stat: (path) => stat(path), utimes: (path, atime, mtime) => utimes(path, atime, mtime), rm: (path, options) => rm(path, options), readFile: (path) => readText(path) };
+/** A renewal's file operations: those `options` gives, fs/promises' own for the rest. */
+const fsOf = (options: RenewLoginOptions): LockFs => ({ ...LOCK_FS, ...options.lockFs });
 
 /** A lock directory as read: which directory it is (its device and inode) and its mtime. */
 type LockIdentity = { readonly dev: number; readonly ino: number; readonly mtimeMs: number };
@@ -624,7 +617,7 @@ async function takeRefreshLocks(dir: string, fs: LockFs, updateMs: number): Prom
  *  (`tengu_oauth_refresh_compromised_cas_saved`), and held in memory if that write fails (saveHeld). */
 async function renewUnderLock(dir: string, file: string, seen: string, refresh: string, options: RenewLoginOptions): Promise<Renewed | undefined> {
   const say = options.log ?? (() => undefined);
-  const fs = options.lockFs ?? LOCK_FS;
+  const fs = fsOf(options);
   const updateMs = options.lockUpdateMs ?? loginRefresh.lockUpdateMs;
   const giveUp = Date.now() + (options.lockWaitMs ?? LOCK_WAIT_MS);
   for (;;) {
@@ -632,16 +625,18 @@ async function renewUnderLock(dir: string, file: string, seen: string, refresh: 
     if (locks) {
       try {
         // Read again under the lock: a holder that renewed before it was taken has written its pair, which is taken.
-        const held = await credentialsNow(file, options);
-        if (!held || held.oauth.accessToken !== seen || held.oauth.refreshToken !== refresh) return undefined;
+        const held = await credentialsRead(file, fs.readFile);
+        if (typeof held === "string" || held.oauth.accessToken !== seen || held.oauth.refreshToken !== refresh) return undefined;
         // A lock read as another's is said as lost; one whose read failed, as unread: no takeover is said that did not
         // happen. Either way nothing is posted under it, and the next try reads it again.
         const before = await locks.owned();
         if (before === "own") {
           const answer = await postRefresh(held.oauth, refresh, options);
           const after = await locks.owned();
+          // Written back (or held) before the line is said: a log that throws never loses the pair the post rotated.
+          const renewed = await writeBack(file, refresh, answer, options);
           if (after !== "own") say({ claude_login: lockWord(after), at: "after_post" });
-          return await writeBack(file, refresh, answer, options);
+          return renewed;
         }
         say({ claude_login: lockWord(before), at: "before_post" });
       } finally {
@@ -649,7 +644,8 @@ async function renewUnderLock(dir: string, file: string, seen: string, refresh: 
       }
     }
     // Another holder renews it now: its write is taken when it lands, never a second post of the same refresh token.
-    if ((await credentialsNow(file, options))?.oauth.accessToken !== seen) return undefined;
+    const now = await credentialsRead(file, fs.readFile);
+    if (typeof now === "string" || now.oauth.accessToken !== seen) return undefined;
     if (Date.now() > giveUp) {
       say({ claude_login: "renew_failed", reason: "locked" });
       throw new Error("another holder kept the login's refresh lock");
@@ -766,13 +762,15 @@ async function replaceFile(file: string, text: string): Promise<void> {
   }
 }
 
-/** Whether `login` is AgentRun's own login folder in `data` (claude-login.ts loginAt "agentrun"), the one login a run
+/** Whether `login` is AgentRun's own login folder in `data` (claude-login.ts agentRunLoginDir), the one login a run
  *  under a user of its own is handed a token of; this machine's own Claude Code login is not. */
-export const agentRunLogin = (login: ClaudeAgentLogin, data: string): boolean => login.dir === loginAt("agentrun", data).dir;
+export const agentRunLogin = (login: ClaudeAgentLogin, data: string): boolean => login.dir === agentRunLoginDir(data);
 
 /** One reader per login folder in this process, so every claim on it holds the same watchers' tokens and the same
  *  refused token; each renews with the pinned CLI's own request (renewLogin), and says each renewal's outcome to `log`
- *  in fields that hold no token (the runner's log, given by the claim that first asks for the folder's reader). */
+ *  in fields that hold no token. The reader keeps the `log` of the claim that first asks for its folder, for as long as
+ *  the process runs: a later claim's `log` is not used. Every claim in a runner hands the same one (the runner's own log),
+ *  so a renewal is said once, on that log, whichever claim's ask set it off. */
 const readers = new Map<string, LoginTokens>();
 export function loginTokensFor(login: ClaudeAgentLogin, log: (fields: Record<string, string>) => void): LoginTokens {
   let reader = readers.get(login.dir);
@@ -780,9 +778,19 @@ export function loginTokensFor(login: ClaudeAgentLogin, log: (fields: Record<str
   return reader;
 }
 
-/** The words a run's claim is refused in by its runner (held.ts claudeLogin) when the claim goes on a login the runner
- *  hands no reader of to a run's own process: one not on AgentRun's own login folder. */
-export const LOGIN_NOT_HANDED = "This run's runner handed it no Claude Code login: it runs each run as a user of its own and hands such a run only AgentRun's own login folder's token. Switch to that folder under Settings → Model keys, set AGENTRUN_RUN_USER=same, or give the run a model_key.";
+/** What this process keeps of the login in folder `dir`, dropped at its sign-out (claude-login.ts signOutClaudeLogin):
+ *  its reader (with the token Anthropic refused) and a renewed pair still held unsaved, so nothing of the old login is
+ *  handed or written back over a fresh sign-in. A runner in another process keeps its own until its next read finds
+ *  the file gone, and then refuses as signed out. */
+export function forgetLoginTokens(dir: string): void {
+  readers.delete(dir);
+  heldPairs.delete(join(dir, LOGIN_FILE));
+}
+
+/** The words a run's start is refused in by its runner (held.ts claudeLogin) when its claim read Claude Code's login and
+ *  the runner's second read of the setting, at the start, names none or another folder: the run is put on no login its
+ *  start did not read, and never falls to a model key it was not claimed on. They name no folder. */
+export const LOGIN_CHANGED_SINCE_CLAIM = "This run's runner handed it no Claude Code login: the login was turned off or moved to another folder since this run's claim, and a run claimed on the login does not fall back to the model keys. Start the run again to run it as the login is now, or give it a model_key.";
 
 /** A run's own process's login (held.ts claudeLogin's reader): each token it reads held by `hold` (the run's redactors)
  *  and this process's own (secrets.ts holdSecret) before the run's CLI is handed it, and a token Anthropic refused told
@@ -837,5 +845,5 @@ export async function loginRunnerInProcess(data: string, runners: Pick<Runners, 
     }
   }));
   if (said.size === 0) return undefined;
-  return (await runners.live(PRESENCE_STALE_MS)).find((row) => said.has(row.runner))?.runner;
+  return (await runners.live(RUNNER_STALE_MS)).find((row) => said.has(row.runner))?.runner;
 }

@@ -27,6 +27,7 @@ import {
 	serves,
 	servingRefusals,
 } from "../dist/index.js";
+import * as computer from "../dist/index.js";
 import { Agent37Provider } from "../dist/agent37.js";
 import { MorphProvider } from "../dist/morph.js";
 import { BoxdProvider } from "../dist/boxd.js";
@@ -111,49 +112,45 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	// How E2B's, Modal's and Daytona's machines are reached: the provider's exec unless a server's settings say dial.
 	assert.deepEqual(extra.e2b.settings, [{ name: "e2bConnect", option: "connect" }]);
 	assert.deepEqual(extra.daytona.settings, [{ name: "daytonaConnect", option: "connect" }]);
-	assert.deepEqual([extra.docker.prepareImage, extra.docker.local], [true, true]);
-	// Agent37 registers the published box image in the key's workspace before the first create; its computers are remote.
-	assert.deepEqual([extra.agent37.prepareImage, extra.agent37.local], [true, undefined]);
-	// Modal starts from the published box image's registry tag, which it pulls at the first create; its computers are remote.
-	assert.deepEqual([extra.modal.prepareImage, extra.modal.local], [true, undefined]);
-	// E2B starts its sandboxes and desktops from the box image's public template; its computers are remote.
-	assert.deepEqual([extra.e2b.prepareImage, extra.e2b.local], [true, undefined]);
-	// boxd builds its desktop snapshot in the key's org before the first create; its computers are remote.
-	assert.deepEqual([extra.boxd.prepareImage, extra.boxd.local], [true, undefined]);
-	// Morph starts its instances from the box image as a snapshot it builds in the key's account; its computers are remote.
-	assert.deepEqual([extra.morph.prepareImage, extra.morph.local], [true, undefined]);
 	// Daytona's image is the operator's snapshot when the server names one (an Archil mount needs box/Dockerfile's); no
 	// other provider declares one.
 	assert.deepEqual(Object.entries(extra).filter(([, one]) => one.imageEnv !== undefined).map(([id, one]) => [id, one.imageEnv]), [["daytona", "AGENTRUN_DAYTONA_SNAPSHOT"]]);
 	assert.deepEqual(extra["phone-harness"].ledger, { option: "ledger" });
 	assert.deepEqual(extra.orgo.ledger, { option: "ledger" });
-	// Local Chrome reads where Chrome is from the server's own environment: the names its findChrome reads, then PATH.
-	assert.deepEqual(extra["local-chrome"].hostEnv, [...CHROME_ENV, "PATH"]);
+	// Local Chrome reads where Chrome is from the server's own environment: the names its findChrome reads, then what
+	// Chrome itself reads (PATH first), which its supervisor and Chrome hold and nothing else.
+	// By the namespace, so a package without the lists fails here, in words, and not at the import.
+	const { ADB_ENV_NAMES, CHROME_ENV_NAMES, DOCKER_ENV_NAMES } = computer;
+	assert.ok(Array.isArray(ADB_ENV_NAMES) && Array.isArray(CHROME_ENV_NAMES) && Array.isArray(DOCKER_ENV_NAMES), "the package exports the names adb, Chrome and docker read (ADB_ENV_NAMES, CHROME_ENV_NAMES, DOCKER_ENV_NAMES)");
+	assert.deepEqual(extra["local-chrome"].hostEnv, [...CHROME_ENV, ...CHROME_ENV_NAMES]);
+	assert.equal(CHROME_ENV_NAMES[0], "PATH");
+	// Docker's CLI is handed what it reads of the server's environment, and nothing else.
+	assert.deepEqual(extra.docker.hostEnv, DOCKER_ENV_NAMES);
 	// The cloud browsers read the gateway a server reaches them through.
 	assert.deepEqual(extra.browserbase.hostEnv, ["BROWSERBASE_BASE_URL", "BROWSERBASE_CONNECT_BASE_URL"]);
 	assert.deepEqual(extra.kernel.hostEnv, ["KERNEL_BASE_URL"]);
 	// The phone harness reads the APKs every phone installs, each pinned by its sha256: the operator's setting.
-	assert.deepEqual(extra["phone-harness"].hostEnv, ["PHONE_HARNESS_APKS"]);
+	assert.deepEqual(extra["phone-harness"].hostEnv, ["PHONE_HARNESS_APKS", ...ADB_ENV_NAMES]);
 	// Orgo offers its Linux desktop; its Windows and macOS desktops are parked, each with why, and offered by no
 	// configuration.
 	assert.deepEqual(extra.orgo.parked.map((one) => one.image), ["windows", "macos"]);
 	assert.ok(extra.orgo.parked.every((one) => /parked/.test(one.why)));
 	assert.deepEqual(PROVIDERS.find((one) => one.id === "orgo").capabilities.map((one) => one.image), ["linux"]);
-	// Cloudflare's containers start from the box image its relay was deployed FROM, which the relay's health names.
-	assert.deepEqual([extra.cloudflare.prepareImage, extra.cloudflare.local], [true, undefined]);
-	// Fly Machines start from the box image's registry tag, which Fly pulls at each create.
-	assert.deepEqual([extra.fly.prepareImage, extra.fly.local], [true, undefined]);
-	// smol cloud machines start from the same tag, which smol cloud pulls at each create.
-	assert.deepEqual([extra.smolcloud.prepareImage, extra.smolcloud.local], [true, undefined]);
-	// Groundbox sandboxes start from the same tag, which Groundbox turns into a disk at the first create.
-	assert.deepEqual([extra.groundbox.prepareImage, extra.groundbox.local], [true, undefined]);
-	for (const [id, fields] of Object.entries(extra)) {
-		if (!["modal", "e2b", "daytona"].includes(id)) assert.equal(fields.settings, undefined, id);
-		if (!["docker", "agent37", "modal", "e2b", "boxd", "morph", "cloudflare", "fly", "smolcloud", "groundbox"].includes(id)) assert.deepEqual([fields.prepareImage, fields.local], [undefined, undefined], id);
-		if (id !== "phone-harness" && id !== "orgo") assert.equal(fields.ledger, undefined, id);
-		if (!["local-chrome", "browserbase", "kernel", "phone-harness"].includes(id)) assert.equal(fields.hostEnv, undefined, id);
-		if (id !== "orgo") assert.equal(fields.parked, undefined, id);
-	}
+	// Who declares each of these, pinned once per field, in the registry's order: no other provider does.
+	const declaring = (field) => PROVIDERS.filter((entry) => entry[field] !== undefined).map((entry) => entry.id);
+	assert.deepEqual(declaring("settings"), ["daytona", "modal", "e2b"]);
+	// The image made ready before the first create: Docker's built on this host; the box image registered, pulled or
+	// built as a snapshot in the key's account by the hosted ones (Cloudflare's is the one its relay was deployed FROM).
+	assert.deepEqual(declaring("prepareImage"), ["docker", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "boxd", "smolcloud", "groundbox"]);
+	assert.ok(declaring("prepareImage").every((id) => extra[id].prepareImage === true));
+	// Docker's computers run on this machine's engine; every other provider's are remote.
+	assert.deepEqual(declaring("local"), ["docker"]);
+	assert.equal(extra.docker.local, true);
+	assert.deepEqual(declaring("ledger"), ["orgo", "phone-harness"]);
+	assert.deepEqual(declaring("hostEnv"), ["docker", "phone-harness", "browserbase", "kernel", "local-chrome"]);
+	assert.deepEqual(declaring("parked"), ["orgo"]);
+	// The browsers that keep profiles (a server's saved sign-ins), with the settle window each declares.
+	assert.deepEqual(PROVIDERS.filter((entry) => entry.profiles).map((entry) => [entry.id, entry.profiles.settleMs]), [["browserbase", 10_000], ["kernel", 0]]);
 	// Kinds are derived by serves() (the test below); every kind but none has a provider that serves it.
 	for (const kind of SETTINGS.filter((kind) => kind !== "none")) {
 		assert.ok(PROVIDERS.some((entry) => entry.kinds.includes(kind)), `some provider serves ${kind}`);
@@ -177,7 +174,8 @@ test("PROVIDERS' default images: each kind is one of the entry's own, and each v
 		}
 	}
 	// The values serve uses when a computer setting names no image are the descriptors' exported constants, for the built-in
-	// providers that export them; a new provider is checked by the loop above alone.
+	// providers that export them; a new provider is checked by the loop above alone. Docker's sandbox has none: serve builds
+	// its own image (DOCKER_RECIPE). Agent37, Modal, E2B, Morph and Groundbox have none: each prepares the box image.
 	const expected = {
 		docker: undefined,
 		daytona: { sandbox: daytona.DAYTONA_DEFAULT_SNAPSHOT },
@@ -204,9 +202,6 @@ test("PROVIDERS' default images: each kind is one of the entry's own, and each v
 	);
 	assert.equal(all.BOXD_DEFAULT_IMAGE, "default");
 	assert.equal(all.GROUNDBOX_OWN_IMAGE, "default");
-	// Docker's sandbox has none: serve builds its own image (DOCKER_RECIPE). Agent37, Modal, E2B, Morph and Groundbox have
-	// none: each prepares the box image (prepareImage).
-	for (const id of ["docker", "agent37", "modal", "e2b", "morph", "groundbox"]) assert.equal(PROVIDERS.find((entry) => entry.id === id).defaultImage, undefined, id);
 	assert.equal("MODAL_DEFAULT_IMAGE" in all, false, "no Modal default image: its prepareImage() answers the box image");
 	for (const name of ["E2B_BASE_TEMPLATE", "E2B_DESKTOP_TEMPLATE"]) assert.equal(name in all, false, `no ${name}: E2B's prepareImage() answers the box template`);
 });

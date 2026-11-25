@@ -10,17 +10,18 @@ import { appendFileSync, chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { runMetricsOf, timelineOf } from "../dist/timeline/index.js";
-import { agentIdOf, candidatesOf, importCommand, importedInstructions, MAX_RUN_BYTES, MAX_SESSION_BYTES, planImport, runImport } from "../dist/import.js";
+import { agentIdOf, candidatesOf, importCommand, importedInstructions, leftOutOf, MAX_RUN_BYTES, MAX_SESSION_BYTES, planImport, runImport } from "../dist/import.js";
 import { ACTIVE_GAP_MS, readSession } from "@parcha/agentrun-import";
 import { summaryLines } from "../dist/import-summary.js";
 import { openSqliteStore } from "../dist/store/index.js";
 import { costOfRun, listRuns } from "../dist/store-reads/runs.js";
 import { runEntries } from "../dist/store-reads/journal.js";
 import { toolKeysOverStore } from "../dist/tool-keys-store.js";
-import { at as minute, claudeSession, claudeSubagent, codexSession, piSession, sessionId, writeSession } from "./fixtures/import-sessions.mjs";
+import { at as minute, claudeSession, claudeSubagent, codexSession, copilotSession, openCodeDb, openCodeV1Db, piSession, sessionId, writeSession } from "./fixtures/import-sessions.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, client, FAUX, scratch, startServe, triggerStore } from "./support.mjs";
 
@@ -61,6 +62,9 @@ const ENV = { OPENAI_API_KEY: CANARY, PATH: "/usr/bin" };
 // data directory. A scratch config home for this suite all the same, never the real ~/.config.
 process.env.XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), "import-config-"));
 after(() => rmSync(process.env.XDG_CONFIG_HOME, { recursive: true, force: true }));
+// The import finds each source's folders where the environment puts them: none of this machine's, for a test that hands
+// the CLI this process's environment, so its scratch home is all it reads.
+for (const name of ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "XDG_DATA_HOME", "OPENCODE_DB"]) delete process.env[name];
 
 /** A scratch home with three projects (one used by Claude Code and Codex, one by pi, one by Codex alone), a project
  *  that is gone, one under the temp directory, a session still being written, and two children. */
@@ -861,22 +865,6 @@ test("an import's plan reads no subagent file through secretlint: a subagent of 
   assert.equal(secretlintCalls.count, before, "no subagent file read through secretlint");
 });
 
-
-test("a secretlint-disable line in what an import reads turns no rule off: a key after it in the same run is cut", async (t) => {
-  const root = await scratch(t);
-  const at = join(root, "home");
-  const site = join(at, "code", "lint");
-  mkdirSync(site, { recursive: true });
-  const token = `${["gh", "p"].join("")}_${Array.from(randomBytes(36), (b) => "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"[b % 62]).join("")}`;
-  // A repository's own secretlint config printed in one turn, a token in the next.
-  claudeSession(at, site, 1, { prompt: `$ cat .secretlintrc.js\n// ${"secretlint"}-disable`, output: `GITHUB_TOKEN=${token}` });
-  const data = join(root, "agents");
-  const lines = [];
-  assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin" }, out: (line) => lines.push(line) }), 0);
-  for (const [file, bytes] of keptUnder(data)) assert.ok(!bytes.includes(token), `${file.slice(data.length + 1)} holds the token`);
-  assert.ok(lines.includes("1 secret removed"), lines.filter((l) => /removed/.test(l)).join(" "));
-});
-
 test("reading text through secretlint leaves no performance marks behind in the process", async () => {
   const { secretsIn } = await import("../dist/secret-cut.js");
   const before = performance.getEntriesByType("mark").length;
@@ -1247,6 +1235,68 @@ test("a pi import keeps each request's usage as pi wrote it, its model, its thin
   });
   assert.deepEqual(answers.map(tokensIn), [["claude-sonnet-5", 100, 400, 30, 20], ["claude-opus-5", 100, 400, 30, 20]]);
   assert.ok(Math.abs(runs[0].costUsd - 0.005) < 1e-12, "its cost as before");
+});
+
+test("a Copilot CLI session imports as a run from copilot: its shutdown's tokens on its model's last request, the request before it folded into it (known, priced with it); with no shutdown, each request unmetered", async (t) => {
+  const { store, runs } = await importedOne(t, (home, project) => {
+    copilotSession(home, project, 40);
+    copilotSession(home, project, 41, { shutdown: false });
+  });
+  assert.deepEqual(runs.map((r) => [r.importedFrom.source, r.importedFrom.session, r.state]), [["copilot", sessionId(40), "completed"], ["copilot", sessionId(41), "completed"]]);
+  const { metrics, answers, kinds } = await metricsOf(store, runs[0].id);
+  assert.deepEqual(kinds, ["pi.user", "pi.assistant", "pi.tool-result", "pi.assistant"]);
+  assert.deepEqual([metrics.requests, metrics.unmetered, metrics.input, metrics.cacheRead, metrics.cacheWrite, metrics.output, metrics.model, metrics.tools], [2, 0, 300, 1000, 200, 60, "github-copilot/claude-sonnet-5", { bash: { calls: 1, errors: 0 } }]);
+  assert.deepEqual(answers.map(tokensIn), [["claude-sonnet-5", 0, 0, 0, 0], ["claude-sonnet-5", 300, 1000, 200, 60]]);
+  // The estimate is the carrier's alone at the catalog's github-copilot/claude-sonnet-5 rates (2, 10, 0.2, 2.5 per
+  // million): 300 * 2 + 60 * 10 + 1000 * 0.2 + 200 * 2.5 = 1900 millionths.
+  const stored = await store.runs.get(runs[0].id);
+  assert.ok(Math.abs(stored.metrics.costUsdEst - 0.0019) < 1e-12, `estimate ${stored.metrics.costUsdEst}`);
+  assert.equal(stored.costUsd, null, "Copilot records no cost: the estimate is read as one");
+  // No shutdown (a killed or still-open process): each request unmetered, never 0 tokens, and no estimate.
+  const none = await metricsOf(store, runs[1].id);
+  assert.deepEqual([none.metrics.requests, none.metrics.unmetered, none.metrics.input, none.metrics.output], [2, 2, 0, 0]);
+  assert.equal((await storedMetrics(store, runs[1].id)).costUsdEst, undefined);
+});
+
+/** Session `n` copied from the Copilot session at `file` (a fork, or a session resumed into a file of its own): a start of
+ *  its own, every other event of the first under its own id, its last message again under a new event id, then a process
+ *  of its own: a prompt, an answer and the shutdown of that process alone (50 in, 6 out). */
+function copilotCopied(file, n) {
+  const [start, ...rest] = readFileSync(file, "utf8").trimEnd().split("\n").map((line) => JSON.parse(line));
+  const id = sessionId(n);
+  const model = start.data.selectedModel;
+  const ev = (i, type, data) => ({ type, data, id: `${id}-e${i}`, parentId: `${id}-e${i - 1}`, timestamp: minute(i) });
+  const last = rest.findLast((r) => r.type === "assistant.message");
+  return writeSession(join(dirname(dirname(file)), id, "events.jsonl"), [
+    { ...start, id: `${id}-e0`, data: { ...start.data, sessionId: id } },
+    ...rest,
+    { ...last, id: `${id}-again` },
+    ev(20, "session.resume", { resumeTime: minute(20), eventCount: rest.length + 2 }),
+    ev(21, "user.message", { content: "And the tests?" }),
+    ev(22, "assistant.message", { messageId: `${id}-m1`, model, content: "They pass." }),
+    ev(23, "session.shutdown", { shutdownType: "routine", totalApiDurationMs: 1000, modelMetrics: { [model]: { requests: { count: 1, cost: 1 }, usage: { inputTokens: 50, outputTokens: 6, cacheReadTokens: 0, cacheWriteTokens: 0 } } } }),
+  ]);
+}
+
+test("a Copilot session a later file copies (a fork's, a resumed session's) counts once when a later import finds the copy: the run held already keeps its events', its chunks' and its shutdown's ids", async (t) => {
+  const root = await scratch(t);
+  const home = join(root, "home");
+  const project = join(home, "code", "metered");
+  mkdirSync(project, { recursive: true });
+  const original = copilotSession(home, project, 47, { chunked: true });
+  const data = join(root, "agents");
+  const store = await openData(data);
+  t.after(async () => await store.close());
+  const opts = { home, env: ENV, temp: join(root, "tmp") };
+  await runImport(store, await planImport(opts, store), opts);
+  const first = (await rowsOf(store)).find((run) => run.importedFrom.session === sessionId(47));
+  assert.deepEqual((({ requests, input, output }) => [requests, input, output])(await storedMetrics(store, first.id)), [2, 300, 60], "the first run's own");
+  copilotCopied(original, 48);
+  await runImport(store, await planImport({ ...opts, all: true }, store), { ...opts, all: true });
+  const later = (await rowsOf(store)).find((run) => run.importedFrom.session === sessionId(48));
+  const counted = await storedMetrics(store, later.id);
+  assert.deepEqual([counted.requests, counted.input, counted.cacheRead, counted.cacheWrite, counted.output, counted.tools], [1, 50, 0, 0, 6, {}], "its own request and its own process's tokens: none of the copy's");
+  assert.deepEqual((await entriesOf(store, later.id)).map((e) => e.kind), ["pi.user", "pi.assistant"], "no copied prompt, chunk or result in its transcript");
 });
 
 test("a session whose source gives no counts imports its requests as unmetered, never as 0 tokens; a Codex request still ends at its call's result", async (t) => {
@@ -2323,7 +2373,8 @@ test("a session with one subagent file over the cap is left out whole and said, 
   t.after(async () => await store.close());
   const report = await runImport(store, await planImport(options(h)), options(h));
   assert.deepEqual(report.skipped.map((s) => [s.kind, s.session]), [["large", `claude-code:${sessionId(1)}`]], "counted among those left out");
-  assert.deepEqual(report.agents.map((a) => [a.name, a.runs]).sort(), [["big", 0], ["small", 1]]);
+  // Held back by the plan, as a run with a live subagent is: no project of it to write until it can come in whole.
+  assert.deepEqual(report.agents.map((a) => [a.name, a.runs]).sort(), [["small", 1]]);
   assert.deepEqual((await rowsOf(store)).map((r) => r.importedFrom.session), [sessionId(2)], "no run of it without its subagent's usage");
 });
 
@@ -2350,4 +2401,659 @@ test("a session whose subagents are over the run's cap together is left out whol
   assert.match(large[0].why, new RegExp(`over ${MAX_RUN_BYTES} bytes together`));
   assert.deepEqual(report.agents.map((a) => [a.name, a.runs]).sort(), [["big", 1], ["small", 1]], "every other session, its own project's too");
   assert.deepEqual((await rowsOf(store)).map((r) => r.importedFrom.session).sort(), [sessionId(2), sessionId(3)], "no run of the session left out, whole or cut short");
+});
+
+test("an OpenCode session updated in the last 10 minutes is left as still running, and an old one in the same database imports: each session's own last write, not its database's", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "notes");
+  mkdirSync(project, { recursive: true });
+  // The database file was written just now, as one live session writes it.
+  const db = openCodeDb(h.at, [{ id: "ses_old", cwd: project }, { id: "ses_new", cwd: project, updated: Date.now() }]);
+  const plan = await planImport(options(h));
+  assert.deepEqual(plan.skipped.map((s) => [s.kind, s.what]), [["live", `${db}#ses_new`]], "only the session updated lately");
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  await runImport(store, plan, options(h));
+  assert.deepEqual((await rowsOf(store)).map((r) => [r.importedFrom.source, r.importedFrom.session]), [["opencode", "ses_old"]]);
+});
+
+test("an OpenCode database over the run's cap whose sessions each fit imports every session: a session's size is its own rows', not its database's", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "notes");
+  mkdirSync(project, { recursive: true });
+  const db = openCodeDb(h.at, [{ id: "ses_a", cwd: project }, { id: "ses_b", cwd: project, prompt: "Sort the notes." }]);
+  // Past the cap on disk: a hole after the database's last page, which SQLite never reads (its header holds its size).
+  truncateSync(db, MAX_RUN_BYTES + 1);
+  utimesSync(db, new Date(Date.now() - 60 * 60_000), new Date(Date.now() - 60 * 60_000));
+  const dry = await planImport(options(h, { measure: true }));
+  assert.deepEqual(dry.skipped, [], "none left out as large");
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  const report = await runImport(store, await planImport(options(h)), options(h));
+  assert.deepEqual(report.skipped, []);
+  assert.deepEqual((await rowsOf(store)).map((r) => r.importedFrom.session).sort(), ["ses_a", "ses_b"]);
+});
+
+test("an OpenCode request run through Claude Code counts once when that Claude Code session is imported too: its usage and cost are the Claude Code run's, its turn still shown in the OpenCode run", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "notes");
+  mkdirSync(project, { recursive: true });
+  claudeSession(h.at, project, 1);
+  openCodeDb(h.at, [
+    {
+      id: "ses_K",
+      cwd: project,
+      answers: [
+        // Claude Code's session 1 holds these two requests: its own run counts them.
+        { input: 3, output: 2, cost: 0.5, mirrors: sessionId(1), text: "On it." },
+        { input: 4, output: 1, cost: 0.25, mirrors: sessionId(1), text: "Still on it." },
+        // A Claude Code session this import does not hold: OpenCode's copy is the only count of it.
+        { input: 5, output: 1, cost: 0.125, mirrors: sessionId(2), text: "Elsewhere." },
+        { input: 6, output: 1, cost: 0.0625, text: "Back on Sonnet." },
+      ],
+    },
+  ]);
+  const dry = await planImport(options(h, { measure: true }));
+  const measured = dry.found.find((f) => f.source === "opencode");
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  await runImport(store, await planImport(options(h)), options(h));
+  const runs = await rowsOf(store);
+  const run = runs.find((r) => r.importedFrom.source === "opencode");
+  assert.ok(run && runs.some((r) => r.importedFrom.source === "claude-code"), "both sessions are runs");
+  const { metrics, answers } = await metricsOf(store, run.id);
+  assert.deepEqual([metrics.requests, metrics.input, metrics.output], [2, 11, 2], "the two requests no Claude Code run holds");
+  assert.equal((await store.runs.get(run.id)).costUsd, 0.1875);
+  assert.deepEqual(answers.length, 4, "every turn still in the transcript");
+  const texts = (await entriesOf(store, run.id)).filter((e) => e.kind === "pi.assistant").map((e) => e.model[0].content.map((c) => c.text).join(""));
+  assert.deepEqual(texts, ["On it.", "Still on it.", "Elsewhere.", "Back on Sonnet."]);
+  assert.deepEqual([measured.metrics.requests, measured.metrics.input, measured.metrics.output], [2, 11, 2], "the dry run counts the same");
+});
+
+test("an OpenCode request run through a Claude Code session whose id is kept as a hash (it holds a key) still counts once, in the Claude Code run", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "notes");
+  mkdirSync(project, { recursive: true });
+  claudeSession(h.at, project, 1);
+  openCodeDb(h.at, [{ id: "ses_K", cwd: project, answers: [{ input: 3, output: 2, cost: 0.5, mirrors: sessionId(1) }, { input: 6, output: 1, cost: 0.0625 }] }]);
+  // The session's id is one of this server's own secrets: the import keeps it as `redacted-` and a hash.
+  const keyed = (extra = {}) => options(h, { own: [sessionId(1)], ...extra });
+  const measured = (await planImport(keyed({ measure: true }))).found.find((f) => f.source === "opencode");
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  await runImport(store, await planImport(keyed()), keyed());
+  const runs = await rowsOf(store);
+  assert.match(runs.find((r) => r.importedFrom.source === "claude-code").importedFrom.session, /^redacted-[0-9a-f]{16}$/);
+  const run = runs.find((r) => r.importedFrom.source === "opencode");
+  const { metrics } = await metricsOf(store, run.id);
+  assert.deepEqual([metrics.requests, metrics.input, metrics.output], [1, 6, 1], "the mirrored request is the Claude Code run's alone");
+  assert.equal((await store.runs.get(run.id)).costUsd, 0.0625);
+  assert.deepEqual([measured.metrics.requests, measured.metrics.input, measured.metrics.output], [1, 6, 1], "the dry run counts the same");
+});
+
+test("an OpenCode request run through Claude Code counts nothing when the store holds that Claude Code session from an import before", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "notes");
+  mkdirSync(project, { recursive: true });
+  claudeSession(h.at, project, 1);
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  await runImport(store, await planImport(options(h, { sources: ["claude-code"] })), options(h, { sources: ["claude-code"] }));
+  openCodeDb(h.at, [{ id: "ses_K", cwd: project, answers: [{ input: 3, output: 2, cost: 0.5, mirrors: sessionId(1) }, { input: 6, output: 1, cost: 0.0625 }] }]);
+  // This import reads OpenCode alone: the Claude Code session is the store's only.
+  const only = options(h, { sources: ["opencode"] });
+  await runImport(store, await planImport(only, store), only);
+  const run = (await rowsOf(store)).find((r) => r.importedFrom.source === "opencode");
+  const { metrics, answers } = await metricsOf(store, run.id);
+  assert.deepEqual([metrics.requests, metrics.input, metrics.output, answers.length], [1, 6, 1, 2]);
+  assert.equal((await store.runs.get(run.id)).costUsd, 0.0625);
+});
+
+test("an OpenCode project's own skills, in .opencode/skills and .opencode/skill as OpenCode reads them, are imported with its revision", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "notes");
+  for (const dir of [join(project, ".opencode", "skills", "tidy"), join(project, ".opencode", "skill", "sort")]) mkdirSync(dir, { recursive: true });
+  writeFileSync(join(project, ".opencode", "skills", "tidy", "SKILL.md"), "---\nname: tidy\n---\nTidy the notes.\n");
+  writeFileSync(join(project, ".opencode", "skill", "sort", "SKILL.md"), "---\nname: sort\n---\nSort the notes.\n");
+  openCodeDb(h.at, [{ id: "ses_a", cwd: project }]);
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  await runImport(store, await planImport(options(h)), options(h));
+  const { revisions } = await agentOf(store, agentIdOf(project));
+  const opencode = revisions.find((r) => r.note === "imported from opencode");
+  assert.deepEqual(Object.keys(opencode.body.skills).sort(), ["sort/SKILL.md", "tidy/SKILL.md"]);
+});
+
+test("serve finds OpenCode's history where the environment puts it: XDG_DATA_HOME's data folder and the database OPENCODE_DB names", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "notes");
+  mkdirSync(project, { recursive: true });
+  const data = join(root, "xdg-data");
+  openCodeDb(h.at, [{ id: "ses_xdg", cwd: project }], { file: join(data, "opencode", "opencode.db") });
+  const named = openCodeDb(h.at, [{ id: "ses_named", cwd: project }], { file: join(root, "elsewhere", "history.db") });
+  const env = { ...ENV, XDG_DATA_HOME: data, OPENCODE_DB: named };
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  await runImport(store, await planImport(options(h, { env })), options(h, { env }));
+  assert.deepEqual((await rowsOf(store)).map((r) => r.importedFrom.session).sort(), ["ses_named", "ses_xdg"]);
+});
+
+test("an OpenCode run's cost holds its subagents' own, which OpenCode writes on the subagent's session; one unknown makes the run's unknown", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "notes");
+  mkdirSync(project, { recursive: true });
+  openCodeDb(h.at, [
+    { id: "ses_a", cwd: project, answers: [{ input: 3, output: 2, cost: 0.5 }, { input: 4, output: 1, cost: 0.25 }, { input: 5, output: 1, cost: 0.125 }] },
+    { id: "ses_a_child", parent: "ses_a", cwd: project, prompt: "Find the notes.", answers: [{ input: 6, output: 1, cost: 0.0625 }] },
+    { id: "ses_b", cwd: project, prompt: "Sort the notes.", answers: [{ input: 3, output: 2, cost: 0.5 }] },
+    // OpenCode wrote no cost for this subagent's request.
+    { id: "ses_b_child", parent: "ses_b", cwd: project, prompt: "Count the notes.", answers: [{ input: 6, output: 1 }] },
+  ]);
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  await runImport(store, await planImport(options(h)), options(h));
+  const saved = {};
+  for (const run of await rowsOf(store)) saved[run.importedFrom.session] = (await store.runs.get(run.id)).costUsd ?? null;
+  assert.deepEqual(saved, { ses_a: 0.9375, ses_b: null }, "the parent's 0.875 and its subagent's 0.0625; an unknown subagent cost is no 0");
+});
+
+test("an OpenCode session whose subagent is still being written is left out as live, said, until the subagent can be read with it", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "notes");
+  mkdirSync(project, { recursive: true });
+  const sessions = [
+    { id: "ses_p", cwd: project, answers: [{ input: 3, output: 2, cost: 0.5 }] },
+    { id: "ses_p_child", parent: "ses_p", cwd: project, prompt: "Find the notes.", answers: [{ input: 6, output: 1, cost: 0.0625 }], updated: Date.now() },
+    { id: "ses_q", cwd: project, prompt: "Sort the notes.", answers: [{ input: 3, output: 2, cost: 0.25 }] },
+  ];
+  const db = openCodeDb(h.at, sessions);
+  const plan = await planImport(options(h));
+  assert.deepEqual(
+    plan.skipped.map((s) => [s.kind, s.what, s.session ?? null]),
+    [["live", `${db}#ses_p_child`, null], ["live", `${db}#ses_p`, "opencode:ses_p"]],
+    "the subagent, and the session it ran under",
+  );
+  assert.match(plan.skipped[1].why, /subagent/);
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  await runImport(store, plan, options(h));
+  assert.deepEqual((await rowsOf(store)).map((r) => r.importedFrom.session), ["ses_q"], "no run of it without its subagent's usage");
+  // Once the subagent is done, the next import takes the session whole, the subagent's cost with it.
+  rmSync(db);
+  openCodeDb(h.at, sessions.map(({ updated: _, ...session }) => session));
+  await runImport(store, await planImport(options(h), store), options(h));
+  const run = (await rowsOf(store)).find((r) => r.importedFrom.session === "ses_p");
+  assert.equal((await store.runs.get(run.id)).costUsd, 0.5625);
+});
+
+test("an OpenCode session whose subagent is over the cap is left out as large, said, never imported without the subagent's usage", { timeout: 120_000 }, async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "notes");
+  mkdirSync(project, { recursive: true });
+  const db = openCodeDb(h.at, [
+    { id: "ses_p", cwd: project, answers: [{ input: 3, output: 2, cost: 0.5 }] },
+    // Its own rows over the cap, though the database it is in holds the others too.
+    { id: "ses_p_child", parent: "ses_p", cwd: project, prompt: "Find the notes.", pad: MAX_SESSION_BYTES + 1 },
+    { id: "ses_q", cwd: project, prompt: "Sort the notes." },
+  ]);
+  t.after(() => rmSync(db, { force: true }));
+  const plan = await planImport(options(h));
+  assert.deepEqual(plan.skipped.map((s) => [s.kind, s.what, s.session ?? null]), [["large", `${db}#ses_p_child`, null], ["large", `${db}#ses_p`, "opencode:ses_p"]]);
+  assert.match(plan.skipped[1].why, /subagent/);
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  await runImport(store, plan, options(h));
+  assert.deepEqual((await rowsOf(store)).map((r) => r.importedFrom.session), ["ses_q"]);
+});
+
+test("a run waits while any subagent of it is still being written, whatever its source: a Claude Code session's subagent file, a Codex thread's child thread", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "notes");
+  mkdirSync(project, { recursive: true });
+  claudeSession(h.at, project, 1);
+  const subagent = claudeSubagent(h.at, project, 1, 1);
+  claudeSession(h.at, project, 2, { prompt: "Fix the header." });
+  codexSession(h.at, project, 3);
+  const thread = codexSession(h.at, project, 4, { subagent: true, parent: sessionId(3) });
+  codexSession(h.at, project, 5, { prompt: "Run the linter." });
+  // A thread whose child thread is done, and whose child's own child is not.
+  codexSession(h.at, project, 6, { prompt: "Bump the version." });
+  codexSession(h.at, project, 7, { subagent: true, parent: sessionId(6) });
+  const grandchild = codexSession(h.at, project, 8, { subagent: true, parent: sessionId(7) });
+  // Written just now: still running.
+  for (const file of [subagent, thread, grandchild]) utimesSync(file, new Date(), new Date());
+  const plan = await planImport(options(h));
+  assert.deepEqual(
+    plan.skipped.filter((s) => s.session).map((s) => [s.kind, s.session]).sort(),
+    [["live", `claude-code:${sessionId(1)}`], ["live", `codex:${sessionId(3)}`], ["live", `codex:${sessionId(6)}`]],
+    "each run with a live subagent, at any depth, said",
+  );
+  for (const s of plan.skipped.filter((s) => s.session)) assert.match(s.why, /subagent/);
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  await runImport(store, plan, options(h));
+  assert.deepEqual((await rowsOf(store)).map((r) => r.importedFrom.session).sort(), [sessionId(2), sessionId(5)], "the runs with no live subagent");
+});
+
+test("a Codex thread whose child thread is over the cap is left out as large, said, the child tied to it by its first line alone", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "notes");
+  mkdirSync(project, { recursive: true });
+  const run = codexSession(h.at, project, 1);
+  // Its session_meta line, then a hole to past the cap, which no read may touch.
+  const thread = codexSession(h.at, project, 2, { subagent: true, parent: sessionId(1) });
+  truncateSync(thread, MAX_SESSION_BYTES + 1);
+  const hourAgo = new Date(Date.now() - 60 * 60_000);
+  utimesSync(thread, hourAgo, hourAgo);
+  codexSession(h.at, project, 3, { prompt: "Run the linter." });
+  const plan = await planImport(options(h));
+  assert.deepEqual(plan.skipped.map((s) => [s.kind, s.what, s.session ?? null]), [["large", thread, null], ["large", run, `codex:${sessionId(1)}`]]);
+  assert.match(plan.skipped[1].why, /subagent/);
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  await runImport(store, plan, options(h));
+  assert.deepEqual((await rowsOf(store)).map((r) => r.importedFrom.session), [sessionId(3)], "no run of it without its child's usage");
+});
+
+test("an OpenCode request run through Claude Code keeps its usage and cost when that Claude Code session, planned, is not saved: it could not be read", { skip: process.getuid?.() === 0 && "root reads any file" }, async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "notes");
+  mkdirSync(project, { recursive: true });
+  const target = claudeSession(h.at, project, 1);
+  openCodeDb(h.at, [{ id: "ses_K", cwd: project, answers: [{ input: 3, output: 2, cost: 0.5, mirrors: sessionId(1) }, { input: 6, output: 1, cost: 0.0625 }] }]);
+  const plan = await planImport(options(h));
+  assert.equal(plan.projects[0].sessions.length, 2, "both planned");
+  // Unreadable once planned: the Claude Code run is never saved.
+  chmodSync(target, 0);
+  t.after(() => chmodSync(target, 0o644));
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  const report = await runImport(store, plan, options(h));
+  assert.deepEqual(report.skipped.filter((s) => s.kind === "unread").map((s) => s.what), [target]);
+  const runs = await rowsOf(store);
+  assert.deepEqual(runs.map((r) => r.importedFrom.source), ["opencode"]);
+  const { metrics } = await metricsOf(store, runs[0].id);
+  assert.deepEqual([metrics.requests, metrics.input, metrics.output], [2, 9, 3], "the request counts in the OpenCode run, the only one holding it");
+  assert.equal((await store.runs.get(runs[0].id)).costUsd, 0.5625);
+});
+
+test("an OpenCode request run through Claude Code counts once when the Claude Code session's project is written after the OpenCode one's", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  // Projects are written in path order: a before b.
+  const [first, second] = [join(h.at, "code", "a"), join(h.at, "code", "b")];
+  for (const dir of [first, second]) mkdirSync(dir, { recursive: true });
+  claudeSession(h.at, second, 1);
+  openCodeDb(h.at, [{ id: "ses_K", cwd: first, answers: [{ input: 3, output: 2, cost: 0.5, mirrors: sessionId(1) }, { input: 6, output: 1, cost: 0.0625 }] }]);
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  await runImport(store, await planImport(options(h)), options(h));
+  const runs = await rowsOf(store);
+  assert.deepEqual(runs.map((r) => r.importedFrom.source).sort(), ["claude-code", "opencode"]);
+  const run = runs.find((r) => r.importedFrom.source === "opencode");
+  const { metrics } = await metricsOf(store, run.id);
+  assert.deepEqual([metrics.requests, metrics.input, metrics.output], [1, 6, 1], "the Claude Code run's request counts there alone");
+  assert.equal((await store.runs.get(run.id)).costUsd, 0.0625);
+});
+
+test("an OpenCode session whose size cannot be queried is left out as unreadable, said, never passed over unsaid", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "notes");
+  mkdirSync(project, { recursive: true });
+  const file = join(h.at, ".local", "share", "opencode", "opencode.db");
+  mkdirSync(dirname(file), { recursive: true });
+  // Its sessions list, but its messages have no data column: neither its size nor its read can be had.
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(file);
+  db.exec("CREATE TABLE session_v2 (id text PRIMARY KEY, parent_id text, directory text, title text, time_created integer, time_updated integer); CREATE TABLE session_message (id text PRIMARY KEY, session_id text, seq integer, time_created integer, time_updated integer);");
+  db.prepare("INSERT INTO session_v2 VALUES ('ses_x', NULL, ?, 'Tidy', 1, 1)").run(project);
+  db.close();
+  const plan = await planImport(options(h));
+  assert.deepEqual(plan.skipped.map((s) => [s.kind, s.what]), [["unread", `${file}#ses_x`]]);
+});
+
+test("an OpenCode subagent's request run through Claude Code counts once when the Claude Code session's project is written after its parent's", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const [first, second] = [join(h.at, "code", "a"), join(h.at, "code", "b")];
+  for (const dir of [first, second]) mkdirSync(dir, { recursive: true });
+  claudeSession(h.at, second, 1);
+  openCodeDb(h.at, [
+    // The parent mirrors nothing itself: its subagent does.
+    { id: "ses_P", cwd: first, answers: [{ input: 3, output: 2, cost: 0.5 }] },
+    { id: "ses_C", parent: "ses_P", cwd: first, prompt: "Find the notes.", answers: [{ input: 4, output: 1, cost: 0.25, mirrors: sessionId(1) }, { input: 5, output: 1, cost: 0.125 }] },
+  ]);
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  await runImport(store, await planImport(options(h)), options(h));
+  const runs = await rowsOf(store);
+  assert.deepEqual(runs.map((r) => r.importedFrom.source).sort(), ["claude-code", "opencode"]);
+  const run = runs.find((r) => r.importedFrom.source === "opencode");
+  // A run with a subagent: its metrics hold the subagent's models too, which its transcript's marks do not (metricsOf).
+  const metrics = await storedMetrics(store, run.id);
+  assert.deepEqual([metrics.requests, metrics.input, metrics.output], [2, 8, 3], "the subagent's mirrored request counts in the Claude Code run alone");
+  assert.equal(timelineOf(await entriesOf(store, run.id), { settled: true }).findLast((r) => r.kind === "usage")?.usage.requests, 2, "the timeline's usage row counts the same");
+  assert.equal((await store.runs.get(run.id)).costUsd, 0.625);
+});
+
+test("an OpenCode subagent's own subagent's request run through Claude Code counts once when the Claude Code session's project is written after the run's", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const [first, second] = [join(h.at, "code", "a"), join(h.at, "code", "b")];
+  for (const dir of [first, second]) mkdirSync(dir, { recursive: true });
+  claudeSession(h.at, second, 1);
+  openCodeDb(h.at, [
+    // Neither the parent nor its subagent mirrors anything: the subagent's own subagent does.
+    { id: "ses_P", cwd: first, answers: [{ input: 3, output: 2, cost: 0.5 }] },
+    { id: "ses_C", parent: "ses_P", cwd: first, prompt: "Find the notes.", answers: [{ input: 2, output: 1, cost: 0.0625 }] },
+    { id: "ses_G", parent: "ses_C", cwd: first, prompt: "Open the notes.", answers: [{ input: 4, output: 1, cost: 0.25, mirrors: sessionId(1) }, { input: 5, output: 1, cost: 0.125 }] },
+  ]);
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  await runImport(store, await planImport(options(h)), options(h));
+  const runs = await rowsOf(store);
+  assert.deepEqual(runs.map((r) => r.importedFrom.source).sort(), ["claude-code", "opencode"]);
+  const run = runs.find((r) => r.importedFrom.source === "opencode");
+  const metrics = await storedMetrics(store, run.id);
+  assert.deepEqual([metrics.requests, metrics.input, metrics.output], [3, 10, 4], "the mirrored request counts in the Claude Code run alone");
+  assert.equal((await store.runs.get(run.id)).costUsd, 0.6875);
+});
+
+test("an OpenCode run in the store seeds nothing into Claude Code's records: a later Claude Code import keeps a request whose message id an OpenCode answer's key shares", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "notes");
+  mkdirSync(project, { recursive: true });
+  // Its answer's key is the bare message id Claude Code's first request has: a store's bare id (l:) is only a Claude
+  // Code run's.
+  openCodeDb(h.at, [{ id: "ses_K", cwd: project, answers: [{ input: 3, output: 2, cost: 0.5, key: "msg_1_1" }] }]);
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  const opencode = options(h, { sources: ["opencode"] });
+  await runImport(store, await planImport(opencode, store), opencode);
+  const alone = await openData(join(root, "alone"));
+  t.after(async () => await alone.close());
+  claudeSession(h.at, project, 1);
+  const claude = options(h, { sources: ["claude-code"] });
+  await runImport(alone, await planImport(claude, alone), claude);
+  await runImport(store, await planImport(claude, store), claude);
+  const requestsOf = async (s) => {
+    const run = (await rowsOf(s)).find((r) => r.importedFrom.source === "claude-code");
+    return (await storedMetrics(s, run.id)).requests;
+  };
+  assert.ok((await requestsOf(alone)) > 0);
+  assert.equal(await requestsOf(store), await requestsOf(alone), "the Claude Code run counts what it counts in a store with no OpenCode run");
+});
+
+/** An OpenCode 1.x session, and the fork 1.x's Session.fork made of it after its third answer: its prompt and those
+ *  answers under new ids, their times, tokens and cost kept, then a prompt and an answer of its own. OpenCode's session
+ *  ids descend, so the fork's sorts first. The source: 4 requests, 100 in, 10 out, 0.25. The fork's own: 1, 500, 7, 0.25. */
+function v1Fork(cwd) {
+  const t0 = Date.now() - 3 * 60 * 60_000;
+  const source = {
+    id: "ses_1src",
+    cwd,
+    created: t0,
+    messages: [{ id: "msg_s0", role: "user", text: "Sort the notes.", at: t0 }, ...[1, 2, 3, 4].map((n) => ({ id: `msg_s${n}`, role: "assistant", input: n * 10, output: n, cost: 0.0625, at: t0 + n * 1000, text: `Step ${n}.` }))],
+  };
+  const fork = {
+    id: "ses_0fork",
+    cwd,
+    created: t0 + 60_000,
+    title: "Sort the notes (fork #1)",
+    version: "1.4.0",
+    messages: [...source.messages.slice(0, 4).map((m, i) => ({ ...m, id: `msg_f${i}` })), { id: "msg_f8", role: "user", text: "Now tag them.", at: t0 + 61_000 }, { id: "msg_f9", role: "assistant", input: 500, output: 7, cost: 0.25, at: t0 + 62_000, text: "Tagged." }],
+  };
+  return { source, fork };
+}
+const runOf = async (store, id) => (await rowsOf(store)).find((r) => r.importedFrom.session === id);
+
+test("an OpenCode 1.x fork's copied requests count in its source's run alone: imported with it, the fork's run counts its own", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "notes");
+  mkdirSync(project, { recursive: true });
+  const { source, fork } = v1Fork(project);
+  openCodeV1Db(h.at, [source, fork]);
+  const dry = await planImport(options(h, { measure: true }));
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  await runImport(store, await planImport(options(h)), options(h));
+  const counts = async (id) => {
+    const run = await runOf(store, id);
+    const { metrics } = await metricsOf(store, run.id);
+    return [metrics.requests, metrics.input, metrics.output, (await store.runs.get(run.id)).costUsd];
+  };
+  assert.deepEqual(await counts("ses_1src"), [4, 100, 10, 0.25]);
+  assert.deepEqual(await counts("ses_0fork"), [1, 500, 7, 0.25], "the three copied requests are the source's");
+  assert.deepEqual(dry.found.map((f) => f.metrics.requests).sort(), [1, 4], "the dry run counts the same");
+});
+
+test("an OpenCode 1.x fork imported after its source counts its own requests alone: the store's run keys its source's", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "notes");
+  mkdirSync(project, { recursive: true });
+  const { source, fork } = v1Fork(project);
+  openCodeV1Db(h.at, [source]);
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  await runImport(store, await planImport(options(h), store), options(h));
+  // The fork, made since, in a channel's database beside it.
+  openCodeV1Db(h.at, [fork], { file: join(h.at, ".local", "share", "opencode", "opencode-beta.db") });
+  const second = await planImport(options(h, { measure: true }), store);
+  assert.deepEqual(second.found.filter((f) => !f.held).map((f) => f.metrics.requests), [1], "the dry run counts the fork's own");
+  await runImport(store, await planImport(options(h), store), options(h));
+  const run = await runOf(store, "ses_0fork");
+  const { metrics } = await metricsOf(store, run.id);
+  assert.deepEqual([metrics.requests, metrics.input, metrics.output, (await store.runs.get(run.id)).costUsd], [1, 500, 7, 0.25]);
+});
+
+test("an OpenCode 1.x fork imported after its source holds its own prompt alone: the store's run keys its source's prompts too", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "notes");
+  mkdirSync(project, { recursive: true });
+  const { source, fork } = v1Fork(project);
+  openCodeV1Db(h.at, [source]);
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  await runImport(store, await planImport(options(h), store), options(h));
+  openCodeV1Db(h.at, [fork], { file: join(h.at, ".local", "share", "opencode", "opencode-beta.db") });
+  await runImport(store, await planImport(options(h), store), options(h));
+  const prompts = async (id) => (await entriesOf(store, (await runOf(store, id)).id)).filter((e) => e.kind === "pi.user").map((e) => JSON.stringify(e.model[0].content));
+  const [own] = await prompts("ses_1src");
+  assert.match(own, /Sort the notes\./);
+  const forked = await prompts("ses_0fork");
+  assert.equal(forked.length, 1, "the copied prompt is the source's");
+  assert.match(forked[0], /Now tag them\./);
+});
+
+test("an OpenCode session's later fork, copying all of it, does not take its requests: the Claude Code session its subagent's request ran through is saved first, then OpenCode's oldest first, so its subagent is read", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "notes");
+  mkdirSync(project, { recursive: true });
+  claudeSession(h.at, project, 1);
+  const updated = Date.now() - 60 * 60_000;
+  const own = { cwd: project, updated, answers: [{ input: 10, output: 5, cost: 0.25 }] };
+  openCodeDb(h.at, [
+    { id: "ses_S", ...own },
+    // Its subagent: one request through Claude Code session 1, one of its own.
+    { id: "ses_C", parent: "ses_S", cwd: project, updated: updated + 5_000, prompt: "Check the tags.", answers: [{ input: 3, output: 2, cost: 0.5, mirrors: sessionId(1) }, { input: 6, output: 1, cost: 0.0625 }] },
+    // A fork made an hour on that marks nothing (a 1.x one moved to 2.x): every row of it a copy, with its time.
+    { id: "ses_F", ...own, created: updated + 60 * 60_000 },
+  ]);
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  await runImport(store, await planImport(options(h), store), options(h));
+  const run = await runOf(store, "ses_S");
+  assert.ok(run, "the source has its run");
+  // Its metrics hold its subagent's, which its own transcript does not: read as stored.
+  const metrics = await storedMetrics(store, run.id);
+  assert.deepEqual([metrics.requests, metrics.input, metrics.output, (await store.runs.get(run.id)).costUsd], [2, 16, 6, 0.3125], "its own request and its subagent's own; the mirrored one is Claude Code's");
+  assert.equal(await runOf(store, "ses_F"), undefined, "the fork holds only copies");
+});
+
+test("an OpenCode session a clock set ahead wrote, in a database untouched for longer than the live window, is not live: it imports", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "notes");
+  mkdirSync(project, { recursive: true });
+  const ahead = Date.now() + 365 * 24 * 60 * 60_000;
+  const { source } = v1Fork(project);
+  const file = openCodeV1Db(h.at, [{ ...source, created: ahead, messages: source.messages.map((m, i) => ({ ...m, at: ahead + i * 1000 })) }]);
+  const written = new Date(Date.now() - 20 * 60_000);
+  utimesSync(file, written, written);
+  for (const look of [1, 2]) {
+    const plan = await planImport(options(h));
+    assert.deepEqual(plan.skipped.map((s) => s.kind), [], `look ${look}: nothing left out as live`);
+    assert.deepEqual(plan.projects.flatMap((p) => p.sessions.map((s) => s.id)), ["ses_1src"], `look ${look}`);
+  }
+});
+
+test("an OpenCode run whose request ran through a Claude Code session waits, said, while that session is on disk and not imported: --from opencode, then claude-code, then opencode counts the request once", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "notes");
+  mkdirSync(project, { recursive: true });
+  claudeSession(h.at, project, 1);
+  openCodeDb(h.at, [{ id: "ses_K", cwd: project, answers: [{ input: 3, output: 2, cost: 0.5, mirrors: sessionId(1) }, { input: 6, output: 1, cost: 0.0625 }] }]);
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  const opencode = options(h, { sources: ["opencode"] });
+  const plan = await planImport(opencode, store);
+  assert.deepEqual(plan.projects, [], "no OpenCode run yet");
+  assert.deepEqual(plan.skipped.filter((s) => s.kind === "mirror").map((s) => s.session), ["opencode:ses_K"]);
+  assert.match(leftOutOf(plan.skipped).find((g) => g.kind === "mirror").label, /Claude Code/);
+  await runImport(store, plan, opencode);
+  assert.deepEqual(await rowsOf(store), []);
+  const claude = options(h, { sources: ["claude-code"] });
+  await runImport(store, await planImport(claude, store), claude);
+  await runImport(store, await planImport(opencode, store), opencode);
+  const run = (await rowsOf(store)).find((r) => r.importedFrom.source === "opencode");
+  const { metrics } = await metricsOf(store, run.id);
+  assert.deepEqual([metrics.requests, metrics.input, metrics.output, (await store.runs.get(run.id)).costUsd], [1, 6, 1, 0.0625], "the Claude Code run counts the request");
+});
+
+test("an OpenCode run whose request ran through a Claude Code session still being written, or held back with a live subagent, waits with it", async (t) => {
+  for (const held of ["live", "subagent"]) {
+    const root = await scratch(t);
+    const h = { at: join(root, "home"), temp: join(root, "tmp") };
+    const project = join(h.at, "code", "notes");
+    mkdirSync(project, { recursive: true });
+    const target = claudeSession(h.at, project, 1);
+    if (held === "live") utimesSync(target, new Date(), new Date());
+    else utimesSync(claudeSubagent(h.at, project, 1, 1), new Date(), new Date());
+    openCodeDb(h.at, [{ id: "ses_K", cwd: project, answers: [{ input: 3, output: 2, cost: 0.5, mirrors: sessionId(1) }] }]);
+    const plan = await planImport(options(h));
+    assert.deepEqual(plan.projects.flatMap((p) => p.sessions), [], held);
+    assert.deepEqual(plan.skipped.filter((s) => s.kind === "mirror").map((s) => s.session), ["opencode:ses_K"], held);
+  }
+});
+
+test("an OpenCode run whose request ran through a Claude Code session no import brings in as it is (a temp folder's) imports now, the request its own", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "notes");
+  const temp = join(h.temp, "scratch");
+  for (const dir of [project, temp]) mkdirSync(dir, { recursive: true });
+  claudeSession(h.at, temp, 1);
+  openCodeDb(h.at, [{ id: "ses_K", cwd: project, answers: [{ input: 3, output: 2, cost: 0.5, mirrors: sessionId(1) }, { input: 6, output: 1, cost: 0.0625 }] }]);
+  const plan = await planImport(options(h));
+  assert.deepEqual(plan.skipped.filter((s) => s.kind === "mirror"), []);
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  await runImport(store, plan, options(h));
+  const run = (await rowsOf(store)).find((r) => r.importedFrom.source === "opencode");
+  const { metrics } = await metricsOf(store, run.id);
+  assert.deepEqual([metrics.requests, metrics.input, metrics.output], [2, 9, 3]);
+});
+
+test("--from opencode: a run whose request ran through a Claude Code session no import brings in (a temp folder's) imports now, though this import reads no Claude Code", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "notes");
+  const temp = join(h.temp, "scratch");
+  for (const dir of [project, temp]) mkdirSync(dir, { recursive: true });
+  claudeSession(h.at, temp, 1);
+  openCodeDb(h.at, [{ id: "ses_K", cwd: project, answers: [{ input: 3, output: 2, cost: 0.5, mirrors: sessionId(1) }, { input: 6, output: 1, cost: 0.0625 }] }]);
+  const opencode = options(h, { sources: ["opencode"] });
+  const plan = await planImport(opencode);
+  assert.deepEqual(plan.skipped.filter((s) => s.kind === "mirror"), [], "no wait for a session every import leaves out");
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  await runImport(store, plan, opencode);
+  const run = (await rowsOf(store)).find((r) => r.importedFrom.source === "opencode");
+  const { metrics } = await metricsOf(store, run.id);
+  assert.deepEqual([metrics.requests, metrics.input, metrics.output], [2, 9, 3], "the request counts in OpenCode");
+});
+
+
+test("a plan and its import list the Codex sessions tree for a missing parent once, however many forks look for it", async (t) => {
+  // Session 10 is a subagent whose parent (session 1010) is in no sessions directory, and its id is no UUIDv7, so the
+  // reader looks for it across the whole tree. Every read of the plan shares one listing of it: three forks of that
+  // parent cost what one does, one listing more than none.
+  const h = home(await scratch(t));
+  const sessions = join(h.at, ".codex", "sessions");
+  const fork = readdirSync(join(sessions, "2026", "10", "20")).find((name) => name.endsWith(`-${sessionId(10)}.jsonl`));
+  const forkFile = join(sessions, "2026", "10", "20", fork);
+  const forkBody = readFileSync(forkFile);
+  const { atime, mtime } = statSync(forkFile);
+  const fs = createRequire(import.meta.url)("node:fs/promises");
+  let runs = 0;
+  const listings = async () => {
+    // Each count into a store of its own, so every fork is imported again: runImport reads them through the plan's lookups.
+    const store = await openData(mkdtempSync(join(h.temp, "agents-")));
+    const readdir = t.mock.method(fs, "readdir");
+    syncBuiltinESMExports();
+    try {
+      runs = (await runImport(store, await planImport(options(h)), options(h))).agents.reduce((n, agent) => n + agent.runs, 0);
+      return readdir.mock.calls.filter((call) => call.arguments[0] === sessions).length;
+    } finally {
+      readdir.mock.restore();
+      syncBuiltinESMExports();
+      await store.close();
+    }
+  };
+  rmSync(forkFile);
+  const none = await listings();
+  // Back as it was, dated as written: a file written in the last minutes is left out as live, and not read.
+  writeFileSync(forkFile, forkBody);
+  utimesSync(forkFile, atime, mtime);
+  const one = await listings();
+  codexSession(h.at, h.site, 11, { subagent: true, parent: sessionId(1010) });
+  codexSession(h.at, h.site, 12, { subagent: true, parent: sessionId(1010) });
+  const three = await listings();
+  const before = runs;
+  // Two user forks of it, each imported as a run of its own: runImport reads them again, through the plan's lookups.
+  codexSession(h.at, h.site, 13, { forkedFrom: sessionId(1010) });
+  codexSession(h.at, h.site, 14, { forkedFrom: sessionId(1010) });
+  const five = await listings();
+  assert.equal(runs, before + 2, "each user fork is a run");
+  // A subagent of one of those runs, read with it (readChildren), and a fork of the missing parent still being written,
+  // read for its parent alone (its run held back): both through the plan's lookups.
+  codexSession(h.at, h.site, 16, { subagent: true, parent: sessionId(13) });
+  const live = codexSession(h.at, h.site, 15, { subagent: true, parent: sessionId(1010) });
+  utimesSync(live, new Date(), new Date());
+  const seven = await listings();
+  assert.equal(runs, before + 2, "the subagent is its run's, and the live fork is no run");
+  assert.equal(one, none + 1, "one fork of a missing parent: one listing of the tree for the whole plan and its import");
+  assert.equal(three, one, "two more forks of the same parent: no more listings");
+  assert.equal(five, one, "two user forks of it, read again by the import: no more listings");
+  assert.equal(seven, one, "a subagent of a fork, and a fork still being written: no more listings");
 });

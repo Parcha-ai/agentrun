@@ -23,6 +23,15 @@ after(() => rmSync(scratch, { recursive: true, force: true }));
 const CHROME = join(scratch, "chrome");
 writeFileSync(CHROME, `#!/bin/sh\nexec "${process.execPath}" "${FAKE}" "$@"\n`);
 chmodSync(CHROME, 0o755);
+let modes = 0;
+/** The fake with its own settings (FAKE_CHROME_MODE, FAKE_CHROME_LIST_PROBES) set by its program, not inherited: the
+ *  supervisor and Chrome get only the names Chrome reads of the environment the host passes. */
+const chromeWith = (setting) => {
+	const program = join(scratch, `chrome-${++modes}`);
+	writeFileSync(program, `#!/bin/sh\nexport ${setting}\nexec "${process.execPath}" "${FAKE}" "$@"\n`);
+	chmodSync(program, 0o755);
+	return program;
+};
 let roots = 0;
 /** This process's own user: the root it makes is its own, as the provider checks (a CI runner is not uid 1000). */
 const UID = process.getuid();
@@ -170,9 +179,7 @@ test("create starts Chrome headless with a fresh profile, a loopback debugging p
 test("a browser made with an allowlist: its proxy reaches only the listed hosts, the public-address fence holds for them too, and its network reads back as the list", async (t) => {
 	// The fake asks for a host off the list and for loopback on 443 too: both refused before any lookup, so no DNS. That a
 	// listed name passes the list is the egress proxy's own test (egress-proxy.test.mjs, over a fake lookup).
-	process.env.FAKE_CHROME_LIST_PROBES = "1";
-	t.after(() => delete process.env.FAKE_CHROME_LIST_PROBES);
-	const p = provider();
+	const p = provider({ executablePath: chromeWith("FAKE_CHROME_LIST_PROBES=1") });
 	const allow = ["listed.example", "8.8.8.0/24"];
 	const made = await p.create({ ...SPEC, network: { allow } });
 	assert.ok(made.ok, made.ok ? "" : made.error.message);
@@ -213,9 +220,7 @@ process.exit(0);`;
 });
 
 test("a supervisor killed while Chrome starts leaves Chrome's pid: the release ends that Chrome and removes its files", async (t) => {
-	process.env.FAKE_CHROME_MODE = "hang";
-	t.after(() => delete process.env.FAKE_CHROME_MODE);
-	const p = provider();
+	const p = provider({ executablePath: chromeWith("FAKE_CHROME_MODE=hang") });
 	const making = p.create(SPEC);
 	let id;
 	await until("the supervisor spawned Chrome and wrote its pid", () => {
@@ -234,9 +239,7 @@ test("a supervisor killed while Chrome starts leaves Chrome's pid: the release e
 });
 
 test("a Chrome that cannot start its sandbox is refused in words that never offer to turn it off, and leaves nothing", async (t) => {
-	process.env.FAKE_CHROME_MODE = "sandbox";
-	t.after(() => delete process.env.FAKE_CHROME_MODE);
-	const p = provider();
+	const p = provider({ executablePath: chromeWith("FAKE_CHROME_MODE=sandbox") });
 	const made = await p.create(SPEC);
 	assert.equal(made.ok, false);
 	assert.equal(made.error.code, "refused");

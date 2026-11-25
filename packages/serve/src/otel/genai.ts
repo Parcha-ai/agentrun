@@ -3,14 +3,16 @@
 // tracing off; tracer.ts makes spans of what it says.
 //
 // A run is one trace:
-//   invoke_agent {harness}       INTERNAL  the claim's run of its agent; no usage, so a backend's sum never counts twice
+//   invoke_agent {agent name}    INTERNAL  the claim's run of its agent; no usage, so a backend's sum never counts twice
 //   ├─ chat {request.model}      CLIENT    one per model request through the session's proxy, with its usage
 //   └─ execute_tool {tool.name}  INTERNAL  one per tool call (a nested call under the call that made it)
 // A plan-billed harness (its wire `plan`: its requests never reach the host) has a chat span per turn, with no usage
 // attributes at all and agentrun.billing=plan, never zeros; so does a request a plan billed (ModelUsage.billing).
-// Content (messages, prompts, tool arguments and results) is never on a span here: no attribute below carries any.
+// Content (messages, prompts, tool arguments and results) is never on a span here: no attribute below carries any. Nor
+// is a name the model wrote, as written: a refused call is unnamed, and any other name is cut (tracedEvent, tracedModel).
 import { normalizeUsage, otelUsage, type OtelUsage } from "@parcha/agentrun-import";
-import type { Ended, ModelUsage } from "@parcha/agentrun-kernel";
+import type { AdapterEvent, Ended, ModelUsage } from "@parcha/agentrun-kernel";
+import { redactSecrets } from "../learn/secrets.js";
 
 /** The GenAI semantic conventions this mapping follows, stamped on every span until the spec has a schema URL. */
 export const SEMCONV_VERSION = "genai-0.1.0";
@@ -33,10 +35,19 @@ export const USAGE_ATTRIBUTES: Readonly<Record<keyof OtelUsage, readonly string[
 const PROVIDER_NAMES: Readonly<Record<string, string>> = Object.freeze({ chatgpt: "openai", "claude-login": "anthropic" });
 export const providerName = (provider: string): string => PROVIDER_NAMES[provider] ?? provider;
 
-/** What a run's spans say of it, known once its spec is: its id, its harness, and the model route its requests take
- *  (AdapterRunSpec.trace), each where known. */
+/** The agent a run is of, as its spans name it (gen_ai.agent.id, gen_ai.agent.name): its id, and its name as the person
+ *  named it where it has one. Each already cut (tracedAgent). */
+export interface TracedAgent {
+  readonly id: string;
+  readonly name?: string;
+}
+
+/** What a run's spans say of it, known once its spec is: its id, its agent, its harness, and the model route its
+ *  requests take (AdapterRunSpec.trace), each where known. */
 export interface TracedRun {
   readonly runId: string;
+  /** The agent it is a run of: absent, its spans name none (never the harness in its place). */
+  readonly agent?: TracedAgent;
   readonly harness: string;
   /** The harness's model is billed to a plan (its wire `plan`): its turns are its chat spans, with no usage. */
   readonly plan?: boolean;
@@ -67,19 +78,103 @@ export function routeTrace(route: { readonly named?: string; readonly origin?: s
   return { ...(slash > 0 ? { provider: route.named!.slice(0, slash) } : {}), ...(host ? { serverAddress: host } : {}), ...(route.model ? { model: route.model } : {}) };
 }
 
-/** Span names: low-cardinality, never an id, a command or an argument. */
+/** What a run's trace hears of its session's events: a tool call's start, by the name its span carries (none: unnamed),
+ *  whether it is an MCP server's, and whether its harness refused it (a tool the session does not have: never named); a
+ *  call's end; a turn's end; any other event, only as the fact that one came. No content: no text, no argument, no
+ *  result, and no name the model wrote that the session does not have. A call's `callId` matches its end and its
+ *  children (`parent`); `shownId`, where given, is the id its span carries in its place (a run's process's post: its
+ *  id cut, the raw one kept only to match). */
+export type TraceEvent =
+  | { readonly type: "tool_start"; readonly callId: string; readonly shownId?: string; readonly name?: string; readonly mcp?: boolean; readonly refused?: boolean; readonly parent?: string }
+  | { readonly type: "tool_end"; readonly callId: string; readonly isError: boolean }
+  | { readonly type: "turn_end"; readonly status: string }
+  | { readonly type: "other" };
+
+/** The longest name the model wrote that a span carries (a tool's, a model's): cut past it. */
+export const WRITTEN_MAX = 64;
+
+/** A name the model wrote, as a span may carry it: through the runner's redactor (every secret it holds cut), then cut at
+ *  WRITTEN_MAX. */
+export function written(name: string, redact?: (text: string) => string): string {
+  const cut = redact ? redact(name) : name;
+  return cut.length > WRITTEN_MAX ? cut.slice(0, WRITTEN_MAX) : cut;
+}
+
+/** The agent a run is of, as its runner reads it from the store: its id (the run row's) and its name (the agent row's;
+ *  none when the row is gone). Not yet cut: tracedAgent cuts it. */
+export interface AgentOfRun {
+  readonly id: string;
+  readonly name?: string | null;
+}
+
+/** The agent of a run whose row names agent `agentId`, read from `agents` (a store's Agents). Every run has one: an
+ *  inline run (POST /runs) writes its agent's row, with its name, before the run. A read that fails is the id alone: a
+ *  trace's name never fails a run, nor keeps a claim from its cleanup. */
+export async function agentOfRun(agents: { get(id: string): Promise<{ readonly name: string } | undefined> }, agentId: string): Promise<AgentOfRun> {
+  let row: { readonly name: string } | undefined;
+  try {
+    row = await agents.get(agentId);
+  } catch {
+    // The store could not be read: the run's row still holds the id.
+  }
+  return { id: agentId, ...(row ? { name: row.name } : {}) };
+}
+
+/** A run's agent as its spans carry it: its id and its name, each through the runner's redactor, then with every
+ *  secret-shaped run cut (redactSecrets over no value: a name written like a key is cut whatever the runner holds), then
+ *  cut at WRITTEN_MAX. A blank name (a purged agent's) is none: the spans then name no agent, as the conventions ask of a
+ *  run with no meaningful name, and never the harness in its place. */
+export function tracedAgent(agent: AgentOfRun, redact?: (text: string) => string): TracedAgent {
+  const cut = (text: string) => written(redactSecrets(redact ? redact(text) : text, []));
+  const name = agent.name?.trim() ? cut(agent.name) : undefined;
+  return { id: cut(agent.id), ...(name ? { name } : {}) };
+}
+
+/** How a trace names what its session's events name: `mcp`, whether a tool of that name is an MCP server's; `redact`, the
+ *  runner's redactor. */
+export interface EventNaming {
+  readonly mcp: (name: string) => boolean;
+  readonly redact?: (text: string) => string;
+}
+
+/** A session's event as its trace hears it (TraceEvent). A call its harness refused (a tool the session does not have)
+ *  is never named: the name is the model's own words. Any other is named through the runner's redactor (written). */
+export function tracedEvent(event: AdapterEvent, naming: EventNaming): TraceEvent {
+  if (event.type === "tool_start") {
+    const parent = event.parent === undefined ? {} : { parent: event.parent };
+    if (event.refused) return { type: "tool_start", callId: event.callId, refused: true, ...parent };
+    return { type: "tool_start", callId: event.callId, name: written(event.name, naming.redact), ...(naming.mcp(event.name) ? { mcp: true } : {}), ...parent };
+  }
+  if (event.type === "tool_end") return { type: "tool_end", callId: event.callId, isError: event.isError };
+  if (event.type === "turn_end") return { type: "turn_end", status: event.status };
+  return { type: "other" };
+}
+
+/** The model a request's span names: the one asked when the run knows it (`known`: a route's model, or one its price
+ *  table names by that same id); else the model of the route it came by (`routed`); failing that, the one asked. Whichever
+ *  it is goes through the runner's redactor and the cut (written): a model a request body names is the client's (the
+ *  model's) words, and a run in the runner's own process has no other boundary that cleans it. */
+export function tracedModel(asked: string | undefined, rule: { readonly known: (model: string) => boolean; readonly routed?: string; readonly redact?: (text: string) => string }): string | undefined {
+  if (asked === undefined) return undefined;
+  return written(rule.known(asked) ? asked : (rule.routed ?? asked), rule.redact);
+}
+
+/** Span names: low-cardinality, never an id, a command or an argument. The run's span is named by its agent's name, else
+ *  `invoke_agent` alone (the conventions' span name). */
 export const spanName = {
-  agent: (run: TracedRun) => `invoke_agent ${run.harness}`,
+  agent: (run: TracedRun) => (run.agent?.name ? `invoke_agent ${run.agent.name}` : "invoke_agent"),
   chat: (model: string | undefined) => (model ? `chat ${model}` : "chat"),
-  tool: (name: string) => `execute_tool ${name}`,
+  tool: (name: string | undefined) => (name ? `execute_tool ${name}` : "execute_tool"),
 };
 
-/** What every span of the run carries. */
+/** What every span of the run carries: the agent as the conventions name it (gen_ai.agent.name, the person's name for
+ *  it; gen_ai.agent.id, its id), and the harness that ran it on agentrun.harness, which no GenAI attribute names. */
 function common(run: TracedRun, operation: "invoke_agent" | "chat" | "execute_tool"): Attributes {
   return {
     "gen_ai.operation.name": operation,
     "gen_ai.conversation.id": run.runId,
-    "gen_ai.agent.name": run.harness,
+    ...(run.agent ? { "gen_ai.agent.id": run.agent.id } : {}),
+    ...(run.agent?.name ? { "gen_ai.agent.name": run.agent.name } : {}),
     "agentrun.harness": run.harness,
     "agentrun.run.id": run.runId,
     "session.id": run.runId,
@@ -132,11 +227,12 @@ export function chatAttributes(run: TracedRun, request: { readonly model?: strin
   };
 }
 
-/** A tool call's span: its name, its id, and whether it is an MCP server's (an extension, called with tools/call). */
-export function toolAttributes(run: TracedRun, call: { readonly name: string; readonly callId: string; readonly mcp?: boolean }): Attributes {
+/** A tool call's span: its name (where it has one), its id, and whether it is an MCP server's (an extension, called with
+ *  tools/call). */
+export function toolAttributes(run: TracedRun, call: { readonly name?: string; readonly callId: string; readonly mcp?: boolean }): Attributes {
   return {
     ...common(run, "execute_tool"),
-    "gen_ai.tool.name": call.name,
+    ...(call.name ? { "gen_ai.tool.name": call.name } : {}),
     "gen_ai.tool.call.id": call.callId,
     "gen_ai.tool.type": call.mcp ? "extension" : "function",
     ...(call.mcp ? { "mcp.method.name": "tools/call" } : {}),

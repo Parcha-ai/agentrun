@@ -9,7 +9,7 @@ import { ListSkeleton } from "@/components/Skeleton";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { formColumnsClass, Input } from "@/components/ui/field";
-import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
+import { pageBodyClass, pageClass, pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
 import { CodingAgentAction } from "@/components/CodingAgentAction";
 import { ListFilter } from "@/components/ListFilter";
 import { matchesFilter } from "@/lib/filter";
@@ -70,13 +70,13 @@ export function TemplatesPage({ v2, name, install, go, playground = false, draft
   // Its own page has the sections' top bar: the list names the section; a template, or a package being read, leads back to it.
   const listing = install === undefined && name === undefined;
   return (
-    <section className="flex min-h-full flex-col">
+    <section className={pageClass}>
       <header className={cn(pageToolbarClass, "flex-wrap gap-2 px-5 md:px-6")}>
         {listing
           ? <h1 className={pageTitleClass}><LayoutTemplate className="size-4" aria-hidden />Templates</h1>
           : <nav aria-label="Breadcrumb"><a href="#/templates" className={cn(pageTitleClass, "text-muted-foreground hover:text-foreground")}><ArrowLeft className="size-4" aria-hidden />Templates</a></nav>}
       </header>
-      <div className="p-5 md:p-6">{body}</div>
+      <div data-page-body className={cn(pageBodyClass, "p-5 md:p-6")}>{body}</div>
     </section>
   );
 }
@@ -670,7 +670,11 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
       <div className="mt-1 flex flex-wrap items-center gap-3">
         {applies ? <>
           <Button size="sm" variant="primary" onClick={() => void apply()} disabled={applying || blocked || waiting.length > 0} title={unread ? (serversError ? "The saved MCP servers couldn't be read: try again first" : "Reading the saved MCP servers…") : unpicked.length ? `Pick the server for ${unpicked.join(", ")} first` : reading ? `Reading ${reading.what}…` : undefined}>{applying ? "Applying…" : "Apply"}</Button>
-          {mine.map((a) => <Button key={a.id} size="sm" variant="outline" onClick={() => void apply(a.id)} disabled={applying || blocked || waiting.length > 0} title={`Apply this template onto ${a.name}: a new revision of it, its runs, notes and triggers kept`}>{`Update ${a.name}`}</Button>)}
+          {mine.map((a) => {
+            // Agents this template made keep its name unless renamed: two or more of one name each say their id too.
+            const named = mine.filter((b) => b.name === a.name).length > 1 ? `${a.name} (${a.id})` : a.name;
+            return <Button key={a.id} size="sm" variant="outline" onClick={() => void apply(a.id)} disabled={applying || blocked || waiting.length > 0} title={`Apply this template onto ${named}: a new revision of it, its runs, notes and triggers kept`}>{`Update ${named}`}</Button>;
+          })}
           {!playground && <CodingAgentAction variant="outline" label="Set it up with an agent" disabled={blocked} prompt={runTemplatePrompt(location.origin, t, body)} playgroundHref={templatePlaygroundHref(t, body)} />}
           {waiting.map((r) => held[r.id] === "unmet"
             ? <p key={r.id} role="status" data-requirement={r.id} className="min-w-0 text-body text-warning-text">{r.unmet.before}<a href={r.unmet.href} className="font-mono text-primary-text underline-offset-2 hover:underline">{r.unmet.link}</a>{r.unmet.after}</p>

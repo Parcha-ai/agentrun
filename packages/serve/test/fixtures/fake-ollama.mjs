@@ -4,6 +4,7 @@
 // never counted. No imports but node's, so a walk with no built serve takes it too (packages/agentrun/test/walk-model.mjs).
 // Its models are synthetic: a name, its capabilities, its family and its context length, as /api/show reports them.
 import { createServer } from "node:http";
+import { freePort } from "./ports.mjs";
 
 /** The models a fake lists by default: one that does not take tools (tools as text) trained on a 40,960-token context,
  *  one that takes tools and thinks trained on 131,072, one that only embeds. A model with no `context_length` has none in
@@ -23,7 +24,8 @@ const json = (res, status, value) => res.writeHead(status, { "content-type": "ap
 /**
  * The request handler: `models` as the fake lists them; `hang`, a fake that takes each request to its paths and never
  * answers (an Ollama stuck loading); `reply(body, n)` the answer to the n-th chat (from 1), as
- * `{ text?, thinking?, calls?: [{ name, arguments }], usage?: { input, output } }`, or `{ status, error }` for a refusal;
+ * `{ text?, thinking?, calls?: [{ name, arguments }], usage?: { input, output }, doneReason? }` (doneReason: the last line's
+ * done_reason, "stop" when absent; "length" for an answer cut at its output limit), or `{ status, error }` for a refusal;
  * `got`, where each counted request is kept: `tags` (a count), `show` (each model asked), `chat` (each body).
  * `hangOn(route, body)`: true for a request it takes, counts and never answers (`tags`, `show` or `chat`), the rest
  * answered (an Ollama whose listing is stuck, or one model's /api/show).
@@ -81,10 +83,10 @@ export function ollamaHandler({ models: given = SYNTH_MODELS, reply = () => ({ t
       const cut = Math.ceil(text.length / 2);
       for (const part of [text.slice(0, cut), text.slice(cut)]) if (part) lines.push({ ...base, message: { role: "assistant", content: part }, done: false });
       if (answer.calls?.length) lines.push({ ...base, message: { role: "assistant", content: "", tool_calls: answer.calls.map((call) => ({ function: { name: call.name, arguments: call.arguments } })) }, done: false });
-      lines.push({ ...base, message: { role: "assistant", content: "" }, done: true, done_reason: "stop", total_duration: 1, prompt_eval_count: usage.input, eval_count: usage.output });
+      lines.push({ ...base, message: { role: "assistant", content: "" }, done: true, done_reason: answer.doneReason ?? "stop", total_duration: 1, prompt_eval_count: usage.input, eval_count: usage.output });
       if (body?.stream === false) {
         const message = { role: "assistant", content: text, ...(answer.thinking ? { thinking: answer.thinking } : {}), ...(answer.calls?.length ? { tool_calls: answer.calls.map((call) => ({ function: { name: call.name, arguments: call.arguments } })) } : {}) };
-        return json(res, 200, { ...base, message, done: true, done_reason: "stop", prompt_eval_count: usage.input, eval_count: usage.output });
+        return json(res, 200, { ...base, message, done: true, done_reason: answer.doneReason ?? "stop", prompt_eval_count: usage.input, eval_count: usage.output });
       }
       res.writeHead(200, { "content-type": "application/x-ndjson" });
       res.end(lines.map((line) => `${JSON.stringify(line)}\n`).join(""));
@@ -104,25 +106,32 @@ export function ollamaHandler({ models: given = SYNTH_MODELS, reply = () => ({ t
 
 /** A fake Ollama on 127.0.0.1, closed at the test's end: `url` (http://127.0.0.1:<port>), `host` (127.0.0.1:<port>, the
  *  form OLLAMA_HOST usually takes), `got`, `remove(tag)` and `slowTags(ms)` (ollamaHandler's). `port`: one to listen on (an Ollama started late, on the
- *  address closedPort gave), else any. */
-export async function fakeOllama(t, { port: asked = 0, ...options } = {}) {
+ *  address freePort gave, fixtures/ports.mjs), else a new one from freePort, never port 0: serve keeps each address's
+ *  good listing fresh for OLLAMA_TTL_MS, so a fake handed the port of one closed earlier in its file would be answered
+ *  for by that fake's listing and never asked. A port another listener holds rejects with its error (EADDRINUSE), never an
+ *  uncaught one. `down`: its switch, off: every connection is reset as it comes, so it answers nothing, as an Ollama
+ *  that is not running, on a port the test still holds (no other listener can take it, as one can take a port freePort
+ *  gave and nothing holds); `setDown(false)` turns it on. */
+export async function fakeOllama(t, { port: given, down = false, ...options } = {}) {
+  const asked = given ?? (await freePort());
   const got = { tags: 0, show: [], chat: [] };
   const handle = ollamaHandler({ ...options, got });
   const server = createServer(handle);
-  await new Promise((resolve) => server.listen(asked, "127.0.0.1", resolve));
+  let off = down;
+  server.on("connection", (socket) => {
+    if (off) socket.destroy();
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(asked, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
   t.after(() => new Promise((resolve) => {
     server.closeAllConnections();
     server.close(() => resolve());
   }));
   const { port } = server.address();
-  return { url: `http://127.0.0.1:${port}`, host: `127.0.0.1:${port}`, got, remove: handle.remove, slowTags: handle.slowTags };
-}
-
-/** A loopback port nothing listens on: one a server held, then closed. */
-export async function closedPort() {
-  const server = createServer();
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const { port } = server.address();
-  await new Promise((resolve) => server.close(resolve));
-  return port;
+  return { url: `http://127.0.0.1:${port}`, host: `127.0.0.1:${port}`, got, remove: handle.remove, slowTags: handle.slowTags, setDown: (value) => void (off = value) };
 }

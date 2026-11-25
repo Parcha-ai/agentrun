@@ -199,6 +199,33 @@ export function attachedWorkspace(base: Workspace, computer: AttachableComputer,
     }
   };
 
+  /** `bytes` in a temporary file beside the file at `segments`, durable, its path in the computer; removed on a
+   *  failure. computerd replaces a file in place: the bytes go to a temporary file beside it, which a move puts in its
+   *  place. Replacing a file (`mode` its kept mode), the temporary file is its owner's alone (0600), readable and
+   *  writable, while every chunk goes in and while a bind syncs its bytes on the host: a private file's new bytes are
+   *  never readable by others on the way, a read-only file takes every chunk, and a write-only one can still be synced.
+   *  Then a write of no bytes at its end sets the target's mode (computerd opens, sets the mode, then writes), and the
+   *  move puts it in place, so the name never points at bytes a crash could lose. */
+  const tempOf = async (segments: readonly string[], rel: string, bytes: Uint8Array, mode: number | undefined): Promise<string> => {
+    const tempRel = [...segments.slice(0, -1), `.workspace-${randomBytes(8).toString("hex")}.tmp`].join("/");
+    const temp = `${MOUNT_AT}/${tempRel}`;
+    try {
+      let written = 0;
+      for (const [i, part] of chunks(bytes).entries()) {
+        await value(i === 0
+          ? call("files.write", { path: temp, data: base64(part), parents: true, ...(mode === undefined ? {} : { mode: 0o600 }) })
+          : call("files.write", { path: temp, data: base64(part), append: true }), rel);
+        written += part.length;
+      }
+      await synced(tempRel, "file");
+      if (mode !== undefined && mode !== 0o600) await value(call("files.write", { path: temp, data: "", offset: written, mode }), rel);
+    } catch (error) {
+      await call("files.remove", { path: temp }).catch(() => undefined);
+      throw error;
+    }
+    return temp;
+  };
+
   const processes: Processes = {
     start: async (params) => {
       const log = params.log === undefined ? {} : { log: below(params.log, "a log file").abs };
@@ -261,31 +288,36 @@ export function attachedWorkspace(base: Workspace, computer: AttachableComputer,
       const existing = await statOf(abs, rel);
       noLink(existing, rel);
       if (existing !== undefined && existing.type !== "file") throw new WorkspaceError("REFUSED", `${JSON.stringify(rel)} is not a file`, { path: rel });
-      // computerd replaces a file in place: the bytes go to a temporary file beside it, which a move puts in its place.
-      // Replacing a file, the temporary file is its owner's alone (0600), readable and writable, while every chunk goes
-      // in and while a bind syncs its bytes on the host: a private file's new bytes are never readable by others on the
-      // way, a read-only file takes every chunk, and a write-only one can still be synced. Then a write of no bytes at
-      // its end sets the target's mode (computerd opens, sets the mode, then writes), and the move puts it in place, so
-      // the name never points at bytes a crash could lose.
-      const tempRel = [...segments.slice(0, -1), `.workspace-${randomBytes(8).toString("hex")}.tmp`].join("/");
-      const temp = `${MOUNT_AT}/${tempRel}`;
-      const mode = existing === undefined ? undefined : existing.mode & 0o777;
+      const temp = await tempOf(segments, rel, bytes, existing === undefined ? undefined : existing.mode & 0o777);
       try {
-        let written = 0;
-        for (const [i, part] of chunks(bytes).entries()) {
-          await value(i === 0
-            ? call("files.write", { path: temp, data: base64(part), parents: true, ...(mode === undefined ? {} : { mode: 0o600 }) })
-            : call("files.write", { path: temp, data: base64(part), append: true }), rel);
-          written += part.length;
-        }
-        await synced(tempRel, "file");
-        if (mode !== undefined && mode !== 0o600) await value(call("files.write", { path: temp, data: "", offset: written, mode }), rel);
         await value(call("files.move", { from: temp, to: abs, overwrite: true }), rel);
       } catch (error) {
         await call("files.remove", { path: temp }).catch(() => undefined);
         throw error;
       }
       await synced(rel);
+    },
+
+    async writeNew(path, data) {
+      const { rel, abs, segments } = below(path, "a file");
+      const bytes = bytesOf(data);
+      await noLinkOnTheWay(segments, segments.length - 1, rel);
+      // Whatever is at the path (a file, a folder, a link) is kept, and a link there is never followed.
+      if ((await statOf(abs, rel)) !== undefined) return false;
+      const temp = await tempOf(segments, rel, bytes, undefined);
+      // A move without overwrite never replaces (computerd renames with RENAME_NOREPLACE, or links a file where it
+      // cannot): a file that lands at the path after the check answers "exists", and is kept.
+      const moved = await call("files.move", { from: temp, to: abs }).catch(async (error: unknown) => {
+        await call("files.remove", { path: temp }).catch(() => undefined);
+        throw error;
+      });
+      if (!moved.ok) {
+        await call("files.remove", { path: temp }).catch(() => undefined);
+        if (moved.error.code === "exists") return false;
+        await value(Promise.resolve(moved), rel);
+      }
+      await synced(rel);
+      return true;
     },
 
     async append(path, data) {

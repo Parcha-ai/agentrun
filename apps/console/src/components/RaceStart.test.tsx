@@ -7,6 +7,7 @@ import { createClient } from "@/lib/client";
 import type { Places } from "@/lib/place";
 import { laneStart } from "@/lib/race";
 import { pick, picker } from "@/test/picker";
+import { expectPinnedBar } from "@/test/pageFrame";
 
 // #/races/new: the task, and 2 to 4 lanes (a harness and a model each, from the harnesses this server runs). Start sends
 // one inline run per lane (POST /v2/runs), each under its own Idempotency-Key, then opens the race. A lane the server
@@ -39,8 +40,8 @@ type Made = Record<string, unknown> & { id: string };
 /** A fake server: every POST /v2/agents recorded in `made` (an id it has already is 409 agent_exists, as the server
  *  answers), and every POST /v2/agents/{id}/runs in `sent`, answered by `answer` (202 with a run, or a refusal).
  *  `places`: the server's (capabilities `places`), none by default. `agent`: a POST /v2/agents answer of the test's
- *  own (a refusal or a lost answer), else the server's. */
-function mount(answer: (sent: Sent) => Response | Promise<Response>, places: Places | null = null, agent?: (made: Made) => Response | Promise<Response> | undefined) {
+ *  own (a refusal or a lost answer), else the server's. `harnesses`: capabilities' harnesses, HARNESSES by default. */
+function mount(answer: (sent: Sent) => Response | Promise<Response>, places: Places | null = null, agent?: (made: Made) => Response | Promise<Response> | undefined, harnesses: typeof HARNESSES = HARNESSES) {
   const sent: Sent[] = [];
   const made: Made[] = [];
   const archived: string[] = [];
@@ -75,7 +76,7 @@ function mount(answer: (sent: Sent) => Response | Promise<Response>, places: Pla
   }) as typeof globalThis.fetch;
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  act(() => root!.render(createElement(RaceStart, { v2: createClient({ fetch }), harnesses: HARNESSES, tools: TOOLS, places, go: (to: string) => void went.push(to), label: LABEL })));
+  act(() => root!.render(createElement(RaceStart, { v2: createClient({ fetch }), harnesses, tools: TOOLS, places, go: (to: string) => void went.push(to), label: LABEL })));
   return { host, sent, made, archived, went };
 }
 const started = (sent: Sent) => json(202, { run_id: `run-${sent.lane}`, agent_id: sent.agentId, status: "queued", state: "working", labels: sent.body.labels });
@@ -89,6 +90,13 @@ async function type(host: Element, task: string) {
 }
 
 describe("RaceStart", () => {
+  it("keeps the New race bar in view, with lanes to race or none: the form scrolls in the one box under it", () => {
+    const { host } = mount(started);
+    expect(expectPinnedBar(host).querySelectorAll("[data-race-lane]")).toHaveLength(2);
+    act(() => root!.unmount());
+    const none = mount(started, null, undefined, HARNESSES.map((h) => ({ ...h, available: false })));
+    expect(expectPinnedBar(none.host).textContent).toContain("nothing to race");
+  });
   it("offers the harnesses this server runs, and makes each lane an agent of the console's own and starts a run of it, each under its own key, then opens the race", async () => {
     const { host, sent, made, went } = mount(started);
     const lanes = [...host.querySelectorAll("[data-race-lane]")];
@@ -108,6 +116,20 @@ describe("RaceStart", () => {
     expect(sent.map((s) => [s.agentId, s.body])).toEqual([[one.agent.id, { ...one.run, revision: `rev-${one.agent.id}` }], [two.agent.id, { ...two.run, revision: `rev-${two.agent.id}` }]]);
     expect(new Set(sent.map((s) => s.key)).size).toBe(2);
     expect(went).toEqual([`#/races/${LABEL}`]);
+  });
+
+  it("offers a plan-billed harness that lists no models (Cursor on its sign-in) on its default model, and its lane runs on it", async () => {
+    const cursor = { id: "cursor", available: true, default_model: "cursor/default", models: [] as string[] };
+    const { host, made, sent } = mount(started, null, undefined, [HARNESSES[0], cursor, HARNESSES[2]]);
+    const lanes = [...host.querySelectorAll("[data-race-lane]")];
+    expect(lanes.map((l) => [l.querySelector('[data-lane-harness]')?.getAttribute("data-value"), l.querySelector('[data-lane-model]')?.getAttribute("data-value")])).toEqual([["pi", "anthropic/claude-sonnet-5-5"], ["cursor", "cursor/default"]]);
+    // A harness that does not run here stays out, whatever its default.
+    expect(host.textContent).not.toContain("opencode");
+    await type(host, TASK);
+    await act(async () => { button(host, "Start the race")!.click(); });
+    await settle();
+    expect(made.map((m) => [m.harness, m.model])).toEqual([["pi", "anthropic/claude-sonnet-5-5"], ["cursor", "cursor/default"]]);
+    expect(sent.map((s) => (s.body.labels as Record<string, string>).model)).toEqual(["anthropic/claude-sonnet-5-5", "cursor/default"]);
   });
 
   it("on a server with a box by default, pi's lane gets the shell a new pi agent gets there, and no lane names a place: the server puts each where it puts that agent", async () => {

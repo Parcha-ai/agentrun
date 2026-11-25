@@ -9,11 +9,12 @@ import test, { after } from "node:test";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { fakeCommands, recorder } from "./fake-groundbox.mjs";
+import { refusesHttp } from "./https-refusal.mjs";
 
 const { GroundboxProvider, create } = await import("../dist/groundbox.js");
 const { GROUNDBOX, GROUNDBOX_OWN_IMAGE } = await import("../dist/descriptors/index.js");
 const { checkExecStream, formatExecStream } = await import("../dist/conformance/exec-stream.js");
-const { GROUNDBOX_ENV: ENV, settingsFromEnv, createProvider, createHost, conformanceImage, sweepScope } = await import("../dist/conformance/groundbox.js");
+const { GROUNDBOX_ENV: ENV, settingsFromEnv, createProvider, createDriftedProvider, createHost, conformanceImage, sweepScope } = await import("../dist/conformance/groundbox.js");
 
 const KEY = "gbx_fake_key_0123456789";
 const API = "https://api.example.test/v1";
@@ -340,7 +341,7 @@ test("a stream that cannot be read on because the sandbox is gone fails at once,
 	await assert.rejects(proc.wait(), /no longer keeps 10 bytes of the command's output/);
 });
 
-test("a stream that does not start says why: the sandbox read for a refused upgrade, the stream's own error by its code, the call's bound for one that never opens", async () => {
+test("a stream that does not start says why: the sandbox read for a refused upgrade, the stream's own error by its code, the call's bound for one that never opens", async (t) => {
 	const refused = (route) => {
 		const streams = fakeCommands();
 		streams.refuse(true);
@@ -360,13 +361,13 @@ test("a stream that does not start says why: the sandbox read for a refused upgr
 	const saying = stub((listeners) => listeners.message({ data: JSON.stringify({ type: "error", message: "Sandbox sbx_0123456789ab is paused", code: "conflict" }) }));
 	await assert.rejects(hostOf(() => undefined, saying).host.exec(ID, ["true"], CTX), (error) => error.code === "refused" && /Groundbox ended the command: Sandbox sbx_0123456789ab is paused/.test(error.message));
 	// No `started` within the call's bound (an image with no Node runs no resumable command): the call's timeout. The
-	// bound's timer is unref'd, as a caller's would be, so the test holds the event loop open while it waits.
-	const alive = setInterval(() => {}, 1_000);
-	try {
-		await assert.rejects(hostOf(() => undefined, stub()).host.exec(ID, ["true"], { timeoutMs: 50 }), (error) => error.name === "TimeoutError");
-	} finally {
-		clearInterval(alive);
-	}
+	// bound is 10 minutes, past the test's own timeout, so only the mocked clock can reach it.
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	clockedTimeouts(t);
+	const refusedAtBound = assert.rejects(hostOf(() => undefined, stub()).host.exec(ID, ["true"], { timeoutMs: 600_000 }), (error) => error.name === "TimeoutError");
+	await turn();
+	t.mock.timers.tick(600_000);
+	await firedOnMockedClock(refusedAtBound);
 });
 
 test("kill is the shared pid kill of the sh's recorded pid, as root: the command and every process under it end, wait answers, and its directory goes", async (t) => {
@@ -462,6 +463,33 @@ const markOf = (dir) => `agentrun-ready:${dir.slice(dir.lastIndexOf("-") + 1)}\n
 const marked = (dir, text = "", seq = Buffer.byteLength(markOf(dir) + text)) => err(markOf(dir) + text, seq);
 /** One turn of the event loop: what a promise or a stream moves on to next has run. No clock. */
 const turn = () => new Promise(setImmediate);
+/**
+ * AbortSignal.timeout on the test's clock. Node's mock timers leave it on the real one, so a call's bound (made with it)
+ * would wait real time; this one fires at the mocked setTimeout's tick. Enable the mock timers first.
+ */
+const clockedTimeouts = (t) =>
+	t.mock.method(AbortSignal, "timeout", (ms) => {
+		const controller = new AbortController();
+		setTimeout(() => controller.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError")), ms);
+		return controller.signal;
+	});
+/** The words a bound left on the real clock fails with. */
+const MOCKED_CLOCK = "the stream bound fired on the mocked clock, not real time";
+/**
+ * Waits on `settled` (the refusal at a bound just ticked past) for at most 5 s of real time. A bound still on the real
+ * clock fails here in words, not at the test's timeout. The deadline is a setInterval, which stays real while only
+ * setTimeout is mocked.
+ */
+const firedOnMockedClock = async (settled) => {
+	const started = performance.now();
+	let deadline;
+	try {
+		await Promise.race([settled, new Promise((_, fail) => (deadline = setInterval(() => fail(new Error(`${MOCKED_CLOCK}: no refusal within 5 s of real time`)), 5_000)))]);
+	} finally {
+		clearInterval(deadline);
+	}
+	assert.ok(performance.now() - started < 5_000, MOCKED_CLOCK);
+};
 
 /** What `promise` gives, or a failure naming `what` once `ms` have passed: a process that never ends fails its test. */
 const within = async (promise, what, ms = 10_000) => {
@@ -875,6 +903,17 @@ test("the scripts, run by sh against paths of the test's: the start refuses a pa
 	assert.equal(sh(killScript, [fresh(), pidKill]).status, 0);
 });
 
+test("a start whose fifo cannot be opened refuses with exit 126, like its other refusals, and leaves no directory behind", async (t) => {
+	const { startScript } = await sentScripts();
+	const { root, bin } = scratch(t);
+	// A mkfifo that makes a directory where the fifo goes: the open of it for reading and writing fails.
+	const broken = bin("broken-mkfifo", { mkfifo: 'mkdir "$3"' });
+	const dir = join(root, "c1");
+	const ran = spawnSync("sh", ["-c", startScript, "sh", dir, "sh", "-c", "echo ran"], { encoding: "utf8", timeout: 20_000, env: { ...process.env, PATH: `${broken}:${process.env.PATH}` } });
+	assert.deepEqual([ran.status, ran.stdout], [126, ""]);
+	assert.equal(existsSync(dir), false, "the refused start removed its directory");
+});
+
 test("a write whose bytes went in went through, however soon the command ends after: an end after `cat` answers 0; a fifo gone before the write's open answers 3 and leaves nothing; a directory gone before it, or a `cat` that failed, answers 3", async (t) => {
 	if (!HAS_PROC) return t.skip("needs /proc");
 	const { writeScript } = await sentScripts();
@@ -987,15 +1026,18 @@ test("a write is made once its bytes are in the command's fifo, though the comma
 test("a start that does not hear `started` within its bound ends the command: its socket closes with 1000, so a late `started` leaves nothing running", async (t) => {
 	const streams = fakeCommands();
 	t.after(streams.stopAll);
-	streams.startedAfter(300);
+	streams.holdStarted();
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	clockedTimeouts(t);
 	const { host } = hostOf(() => undefined, streams);
-	// The bound's timer is unref'd, as a caller's would be: the test holds the event loop open while it waits.
-	const alive = setInterval(() => {}, 1_000);
-	try {
-		await assert.rejects(host.exec(ID, ["sleep", "600"], { timeoutMs: 100 }), (error) => error.name === "TimeoutError");
-	} finally {
-		clearInterval(alive);
-	}
+	// A 10-minute bound, past the test's own timeout: only the mocked clock reaches it.
+	const starting = host.exec(ID, ["sleep", "600"], { timeoutMs: 600_000 });
+	const refused = assert.rejects(starting, (error) => error.name === "TimeoutError");
+	await turn();
+	t.mock.timers.tick(600_000);
+	await firedOnMockedClock(refused);
+	// The sandbox's late `started`, said after the bound: the socket is closed, so it reaches nothing.
+	streams.releaseStarted();
 	const [opened] = streams.opened;
 	assert.equal(opened.closed, 1000, "a close that is not 1000 leaves the command running");
 	const [command] = streams.commands.values();
@@ -1005,7 +1047,7 @@ test("a start that does not hear `started` within its bound ends the command: it
 
 test("the API URL is https alone, loopback included, so the key never crosses in the clear", () => {
 	for (const apiUrl of ["http://api.groundbox.dev/v1", "http://10.0.0.5:8080/v1", "http://127.0.0.1:8080/v1", "http://[::1]:8080/v1", "http://localhost:8080/v1", "ws://api.groundbox.dev/v1"]) {
-		assert.throws(() => new GroundboxProvider({ apiKey: KEY, apiUrl, daemonPath: "/nonexistent/computerd" }), (error) => /^the Groundbox API URL must be https, so the key never crosses in the clear/.test(error.message) && !error.message.includes(KEY), apiUrl);
+		assert.throws(() => new GroundboxProvider({ apiKey: KEY, apiUrl, daemonPath: "/nonexistent/computerd" }), refusesHttp("the Groundbox API URL", apiUrl, KEY));
 	}
 	assert.doesNotThrow(() => new GroundboxProvider({ apiKey: KEY, apiUrl: "https://api.groundbox.dev/v1", daemonPath: "/nonexistent/computerd" }));
 });
@@ -1027,4 +1069,48 @@ test("a peer that takes every attach and then says nothing fails wait() in words
 	assert.ok(outcome instanceof Error, `wait() is ${outcome}`);
 	assert.match(outcome.message, /could not be read on again within 0\.5 s: the command stream said nothing for 0\.1 s after its attach/);
 	assert.equal(streams.opened.length, 2, "no try that would start past the bound");
+});
+
+test("the conformance module hands the caller's onNote to the provider: a release whose run folder was not let go cleanly is said through it", async () => {
+	// A running Archil computer: release lets go of its folder first, through an exec that cannot start here.
+	const labels = { ...LABELS, "agentrun.run": "r1", "agentrun.mount": JSON.stringify({ kind: "archil", disk: "dsk-00000000000baf76", region: "aws-us-east-1", agent: "a1" }) };
+	let deleted = false;
+	const { fetch } = recorder((method, path) => {
+		if (path !== `/v1/sandboxes/${ID}`) return undefined;
+		if (method === "DELETE") {
+			deleted = true;
+			return [200, sandbox({ status: "stopped", stop_reason: "deleted", metadata: labels })];
+		}
+		if (method === "GET") return deleted ? [404, refusal("not_found", `No sandbox ${ID}`)] : [200, sandbox({ metadata: labels })];
+		return undefined;
+	});
+	const notes = [];
+	const provider = await createProvider({
+		env: { [ENV.key]: KEY, [ENV.apiUrl]: API, [ENV.live]: "1" },
+		fetch,
+		webSocket: () => {
+			throw new Error("no command stream here");
+		},
+		timeouts: { pollMs: 1 },
+		onNote: (note) => notes.push(note),
+	});
+	const released = await provider.release({ id: ID, name: NAME }, "delete");
+	assert.equal(released.ok, true, JSON.stringify(released));
+	assert.equal(deleted, true);
+	assert.equal(notes.length, 1, JSON.stringify(notes));
+	assert.equal(notes[0].computer, NAME);
+	assert.match(notes[0].note, /was deleted, and the run's folder was not let go cleanly/);
+});
+
+test("the conformance module's daemon: an option's path over COMPUTER_GROUNDBOX_DAEMON, and the drifted twin uploads the one it built", async () => {
+	const { fetch } = recorder((method, path) => (method === "GET" && path.startsWith("/v1/sandboxes?") ? [200, { data: [], next_cursor: null }] : undefined));
+	const env = { [ENV.key]: KEY, [ENV.apiUrl]: API, [ENV.live]: "1", [ENV.daemon]: "/nonexistent/untangle-env/computerd" };
+	const spec = { image: "alpine:3.20", lifetimeMs: 600_000, network: "none" };
+	const options = { env, fetch, daemonPath: "/nonexistent/untangle-option/computerd", buildDaemon: async () => "/nonexistent/untangle-drift/computerd" };
+	const made = await (await createProvider(options)).create(spec, { requestId: "req-untangle-groundbox-1" });
+	assert.equal(made.ok, false);
+	assert.match(made.error.message, /no daemon binary at \/nonexistent\/untangle-option\/computerd/);
+	const drifted = await (await createDriftedProvider(options)).create(spec, { requestId: "req-untangle-groundbox-2" });
+	assert.equal(drifted.ok, false);
+	assert.match(drifted.error.message, /no daemon binary at \/nonexistent\/untangle-drift\/computerd/);
 });

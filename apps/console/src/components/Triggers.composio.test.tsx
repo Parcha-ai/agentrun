@@ -6,6 +6,7 @@ import { route } from "@/App";
 import { createClient } from "@/lib/client";
 import type { Firing, Trigger } from "@/lib/v2";
 import { optionsOf, pick, picker } from "@/test/picker";
+import { searchPick, searchPicker, shownIn } from "@/test/search-picker";
 
 // A trigger from an app (serve's composio source): it names a saved Composio server, one of its toolkit's events
 // (GET /v2/settings/mcp-servers/{name}/composio/events) and that event's config, drawn from the event's schema with the
@@ -101,7 +102,8 @@ async function open(v2: ReturnType<typeof createClient>, view: Parameters<typeof
     const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
     await act(async () => { Object.getOwnPropertyDescriptor(proto, "value")!.set!.call(el, value); el.dispatchEvent(new Event("input", { bubbles: true })); });
   };
-  const choose = async (label: string, value: string) => { await pick(picker(host, label)!, value); await settle(); };
+  // The Event field is a search picker; every other one a Picker.
+  const choose = async (label: string, value: string) => { const search = searchPicker(host, label); await (search ? searchPick(search, value) : pick(picker(host, label)!, value)); await settle(); };
   /** The form filled for GitHub's new-issue event on many-drop/agentrun-scratch. */
   const fill = async () => {
     await choose("Composio server", "gh");
@@ -175,7 +177,7 @@ describe("Triggers: from an app (Composio)", () => {
     expect((await optionsOf(picker(t.host, "Composio server")!)).filter((o) => o.value).map((o) => o.value)).toEqual(["gh"]);
     await t.choose("Composio server", "gh");
     expect(s.calls.some((c) => c.path === "/v2/settings/mcp-servers/gh/composio/events")).toBe(true);
-    expect((await optionsOf(picker(t.host, "Event")!)).filter((o) => o.value).map((o) => [o.value, o.text])).toEqual([["GITHUB_ISSUE_ADDED_EVENT", "Issue Added Event"], ["GITHUB_STAR_ADDED_EVENT", "Star Added"]]);
+    expect((await shownIn(searchPicker(t.host, "Event")!)).options.map((o) => [o.value, o.text])).toEqual([["GITHUB_ISSUE_ADDED_EVENT", "Issue Added Event"], ["GITHUB_STAR_ADDED_EVENT", "Star Added"]]);
     await t.choose("Event", "GITHUB_ISSUE_ADDED_EVENT");
     expect(t.text()).toContain("Triggered when a new issue is added to the repository.");
     const owner = t.host.querySelector('[data-config-field="owner"]')!;
@@ -189,7 +191,7 @@ describe("Triggers: from an app (Composio)", () => {
     expect(t.host.querySelector('[name="config-interval"]')).toBeNull();
   });
 
-  it("lists the events A to Z with a filter box over them, and renders an event's Markdown description, never its marks", async () => {
+  it("lists the events A to Z in one Event field that is its own search: typing filters its open list by name, slug or description (QA #162), and an event's Markdown description renders, never its marks", async () => {
     const BRANCH = {
       ...ISSUE_ADDED, slug: "GITHUB_BRANCH_CHANGED_TRIGGER", name: "Branch Changed",
       description: "Triggers when a GitHub branch changes.\n\n**Payload details:**\n- ``head_sha`` -- the new head commit\n- ``protected`` -- whether the branch is protected",
@@ -199,16 +201,25 @@ describe("Triggers: from an app (Composio)", () => {
     const s = server({ events: [STAR_ADDED, ZEN, ISSUE_ADDED, BRANCH] });
     const t = await open(s.v2, { trigger: null, kind: "composio" });
     await t.choose("Composio server", "gh");
-    const listed = async () => (await optionsOf(picker(t.host, "Event")!)).filter((o) => o.value).map((o) => o.text);
+    // No filter box of its own outside the field: the field is the search.
+    expect(t.host.querySelector('input[aria-label="Filter events"]')).toBeNull();
+    const field = searchPicker(t.host, "Event")!;
+    expect(field, "the Event field is a search box").not.toBeNull();
+    expect(t.host.querySelector(`label[for="${field.id}"]`)?.textContent, "the Event label names the search").toMatch(/^Event/);
+    expect(t.host.querySelectorAll('input[placeholder="Filter by name, slug or description"]').length, "no second box").toBe(0);
+    const listed = async (query?: string) => (await shownIn(field, query)).options.map((o) => o.text);
     expect(await listed(), "A to Z, case aside").toEqual(["Branch Changed", "Issue Added Event", "Star Added", "zen Event"]);
-    const filter = () => t.host.querySelector('input[aria-label="Filter events"]') as HTMLInputElement;
-    const typeFilter = async (value: string) => { await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(filter(), value); filter().dispatchEvent(new Event("input", { bubbles: true })); }); await t.settle(); };
-    await typeFilter("added");
-    expect(await listed()).toEqual(["Issue Added Event", "Star Added"]);
-    expect(filter().closest("div")!.querySelector('[role="status"]')!.textContent).toBe("2 of 4 shown");
-    await typeFilter("head_sha");
-    expect(await listed(), "by description").toEqual(["Branch Changed"]);
-    await t.choose("Event", "GITHUB_BRANCH_CHANGED_TRIGGER");
+    expect(await listed("added")).toEqual(["Issue Added Event", "Star Added"]);
+    expect(await listed("star_added"), "by slug").toEqual(["Star Added"]);
+    expect(await listed("head_sha"), "by description").toEqual(["Branch Changed"]);
+    expect((await shownIn(field, "nothing-like-it")).nothing).toBe("No event matches “nothing-like-it”");
+    // Enter in the search never sends the form.
+    const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+    await act(async () => { field.dispatchEvent(enter); });
+    expect(enter.defaultPrevented).toBe(true);
+    expect(s.posts()).toEqual([]);
+    await searchPick(field, "GITHUB_BRANCH_CHANGED_TRIGGER", "branch");
+    expect([field.value, field.getAttribute("data-value")], "the picked event's words fill the field").toEqual(["Branch Changed", "GITHUB_BRANCH_CHANGED_TRIGGER"]);
     const said = t.host.querySelector("[data-event-description]")!;
     expect(said.querySelector("strong")?.textContent).toBe("Payload details:");
     expect([...said.querySelectorAll("li code")].map((c) => c.textContent)).toEqual(["head_sha", "protected"]);
@@ -217,18 +228,6 @@ describe("Triggers: from an app (Composio)", () => {
     const told = t.host.querySelector("[data-event-instructions]");
     expect([...(told?.querySelectorAll("li strong") ?? [])].map((b) => b.textContent), "instructions rendered").toEqual(["New commits pushed", "Protection status toggled"]);
     expect(t.text()).not.toContain("**New commits pushed**");
-    await typeFilter("star");
-    expect(await listed(), "the picked event stays listed while a query hides it").toEqual(["Branch Changed", "Star Added"]);
-    await typeFilter("nothing-like-it");
-    expect((await optionsOf(picker(t.host, "Event")!))[0].text).toBe("No event matches “nothing-like-it”");
-    const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
-    await act(async () => { filter().dispatchEvent(enter); });
-    expect(enter.defaultPrevented).toBe(true);
-    expect(s.posts()).toEqual([]);
-    // Another server starts the filter afresh.
-    await t.choose("Composio server", "");
-    await t.choose("Composio server", "gh");
-    expect(filter().value).toBe("");
   });
 
   it("marks the run's fields its save refuses empty (Agent, Each run is asked, and the cap with no agent default) with *, on every new trigger form", async () => {

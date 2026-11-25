@@ -14,5 +14,7 @@ export const KERNEL = defineProvider({
 	hostEnv: ["KERNEL_BASE_URL"],
 	capabilities: [{ kind: "browser", groups: ["cdp", "stream"] }],
 	defaultImage: { browser: BROWSER_IMAGE },
+	// A profile Kernel has written back once the browser that saved to it is deleted: nothing to wait out.
+	profiles: { settleMs: 0 },
 	load: () => import("../kernel.js"),
 });
