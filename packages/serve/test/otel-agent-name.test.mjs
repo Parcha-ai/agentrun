@@ -10,7 +10,11 @@
 //   REGISTRY     https://github.com/open-telemetry/semantic-conventions-genai/blob/d0e74ba6c48bcc4ded473b1828a8212f06b23753/docs/registry/attributes/gen-ai.md#L11-L12
 //                gen_ai.agent.id: the agent resource's unique and stable id; gen_ai.agent.name: its human-readable name.
 import assert from "node:assert/strict";
+import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { InMemorySpanExporter } from "@opentelemetry/sdk-trace";
 import { until } from "./runner-support.mjs";
@@ -18,6 +22,7 @@ import { agent, follow, serve, whenFree, withEnv } from "./support.mjs";
 
 const { flushTraces, genAiTracing, tracePosts } = await import("../dist/otel/tracer.js");
 const { secretRedactor } = await import("../dist/runner/redact.js");
+const { agentOfRun } = await import("../dist/otel/genai.js");
 
 // An endpoint with a user, a password and a key parameter, all dummies: none of them may reach a log line.
 // The user and password are joined apart (USERINFO), so the source holds no URL with a credential in it.
@@ -219,4 +224,53 @@ test("a trace with no agent known names none: no gen_ai.agent.name (never the ha
   assert.equal(root.attributes["gen_ai.agent.name"], undefined, "a framework default is no agent's name (AGENT_SPANS)");
   assert.equal(root.attributes["gen_ai.agent.id"], undefined);
   assert.equal(root.attributes["agentrun.harness"], "pi");
+});
+
+test("a trace's agent read that fails is the agent's id alone, never a thrown run", async () => {
+  const unreadable = { get: async () => { throw new Error("the store can't be read (a test's fault)"); } };
+  assert.deepEqual(await agentOfRun(unreadable, "agt-unread-3"), { id: "agt-unread-3" });
+  assert.deepEqual(await agentOfRun({ get: async () => ({ name: "billing-helper" }) }, "agt-billing-7"), { id: "agt-billing-7", name: "billing-helper" });
+  assert.deepEqual(await agentOfRun({ get: async () => undefined }, "agt-gone-1"), { id: "agt-gone-1" });
+});
+
+test("where runs have users of their own and tracing is on, a run whose agent the runner can't read still runs and gives its slot back: its trace carries the agent's id alone, and the next run claims the runner's one slot", { timeout: 180_000 }, async (t) => {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runas-agent-read-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  // The image's helper, stood in for: `run` becomes the run's process as this user, the rest succeed.
+  const helper = join(dir, "agentrun-runas");
+  writeFileSync(helper, `#!/bin/sh\ncase "$1" in\nrun) shift 2; while [ "$1" != -- ]; do shift; done; shift; exec "$@" ;;\nesac\nexit 0\n`);
+  chmodSync(helper, 0o755);
+  const exporter = new InMemorySpanExporter();
+  const unread = "agt-unread-3";
+  let faults = 0;
+  const lines = [];
+  // The runner's store fails every read of the one agent's row (support.mjs failAgentsGet); the server's reads it.
+  const server = await serve(t, {
+    failAgentsGet: (id) => id === unread && ++faults > 0,
+    childRuns: { isolation: { kind: "uid", helper, first: 0, slots: 1 }, log: (line) => void lines.push(line), tracing: genAiTracing({ OTEL_EXPORTER_OTLP_ENDPOINT: "http://otlp.invalid:4318" }, { exporter, log: () => {} }) },
+  });
+  const start = async (id, name) => {
+    const made = await whenFree(() => server.api("POST", "/agents", agent(id, { name })));
+    assert.equal(made.status, 201, JSON.stringify(made.body));
+    const run = await whenFree(() => server.api("POST", `/agents/${id}/runs`, { input: { content: "Hello." } }));
+    assert.equal(run.status, 202, JSON.stringify(run.body));
+    return run.body.run_id;
+  };
+  const ended = (runId, deadlineMs) => follow(server.api, runId, ["completed", "failed"], { deadlineMs }).then(({ last }) => last.status, (error) => `never ended: ${error.message}`);
+  const first = await start(unread, "unread-helper");
+  const firstEnd = await ended(first, 60_000);
+  // A second run once the first ended: the runner has one slot, so it runs only if the first gave it back.
+  const second = await start("agt-read-4", "read-helper");
+  const secondEnd = await ended(second, 45_000);
+  const why = async (runId) => JSON.stringify((await server.api("GET", `/runs/${runId}`)).body.error ?? null);
+  assert.deepEqual({ first: firstEnd, second: secondEnd }, { first: "completed", second: "completed" }, `the first's error ${await why(first)}; the second's ${await why(second)}\n${lines.join("\n")}`);
+  assert.ok(faults > 0, "the runner's read of the agent failed");
+  await flushTraces();
+  const rootOf = (runId) => until(() => exporter.getFinishedSpans().find((span) => span.attributes["gen_ai.operation.name"] === "invoke_agent" && span.attributes["agentrun.run.id"] === runId), `the invoke_agent span of ${runId}`, 20_000);
+  const unreadRoot = await rootOf(first);
+  assert.equal(unreadRoot.attributes["gen_ai.agent.id"], unread, "the agent's id, which the run's row holds");
+  assert.equal(unreadRoot.attributes["gen_ai.agent.name"], undefined, "no name: the agent's row could not be read");
+  assert.equal(unreadRoot.name, "invoke_agent");
+  const readRoot = await rootOf(second);
+  assert.equal(readRoot.attributes["gen_ai.agent.name"], "read-helper", "the next run's agent is named");
 });

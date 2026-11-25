@@ -373,7 +373,7 @@ const FAST_MODEL_RETRY = { retry: { enabled: true, maxRetries: 8, baseDelayMs: 1
  *  disk's file API (`makeDisk`, AdapterSpecDeps.makeArchilDisk) and the control plane (`control`,
  *  AdapterSpecDeps.mountControl). `ownData`: a data directory of the runner's own, apart from the server's, for its
  *  scratch and everything a run's claim reads or writes on this machine (the store and the seal key stay the server's). */
-export async function startInProcessRunner(data, { faux, githubApi, githubWeb, githubMcpOrigin, composioMcpOrigin, gradeTimeoutMs, computerForClaim, computers: own, mcpOwn, harnessLocks, runnerTiming, modelRetry = FAST_MODEL_RETRY, log, failRunsUpdate, fauxVendorApi, evalFakes, childRuns, archil, ownData, ...switches } = {}) {
+export async function startInProcessRunner(data, { faux, githubApi, githubWeb, githubMcpOrigin, composioMcpOrigin, gradeTimeoutMs, computerForClaim, computers: own, mcpOwn, harnessLocks, runnerTiming, modelRetry = FAST_MODEL_RETRY, log, failRunsUpdate, failAgentsGet, fauxVendorApi, evalFakes, childRuns, archil, ownData, ...switches } = {}) {
   const opened = await openStore({ dataDir: data, role: "runner" });
   // The runner's store, as a crash would leave its writes: once kill() has run, a journal commit of its loops never
   // lands while the test runs (a dead process writes nothing more), and fails when the runner's handle is closed.
@@ -398,10 +398,23 @@ export async function startInProcessRunner(data, { faux, githubApi, githubWeb, g
       };
     },
   });
+  // A store-read fault (`failAgentsGet(id)`, a test's): an agents.get it answers true for throws, as a store that cannot
+  // be read does. The test's predicate counts its own hits to prove the fault fired.
+  const agentsOf = (agents) => new Proxy(agents, {
+    get(target, prop) {
+      const value = Reflect.get(target, prop, target);
+      if (prop !== "get") return typeof value === "function" ? value.bind(target) : value;
+      return async (id, ...rest) => {
+        if (failAgentsGet(id)) throw new Error("the store can't be read (a test's fault)");
+        return value.call(target, id, ...rest);
+      };
+    },
+  });
   const store = new Proxy(opened, {
     get(target, prop) {
       const value = Reflect.get(target, prop, target);
       if (prop === "runs" && failRunsUpdate) return runsOf(value);
+      if (prop === "agents" && failAgentsGet) return agentsOf(value);
       if (prop === "journal") return (...args) => journalOf(value.apply(target, args));
       return typeof value === "function" ? value.bind(target) : value;
     },
