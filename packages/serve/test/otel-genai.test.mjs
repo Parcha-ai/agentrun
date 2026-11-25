@@ -756,6 +756,70 @@ test("an OTLP header value's credential pair is read anywhere in the value, a UR
   assert.deepEqual(missed, [], "every credential is held and cut alone; the hostname, a comma after a key and the ordinary words are not");
 });
 
+// A credential with a raw ; in it, as an OTLP endpoint's query parameter or inside a header value. A query or a pair list
+// read split at & alone keeps the whole value; read split at ; too, it keeps each pair after a ;. Both readings are held.
+// Each row: [what, the env, the credentials held and cut alone, what is on no held list, a line quoting the variable and
+// its cut].
+const SEMI_PREFIX = `prefix-${"dummy"}`;
+const SEMI_WHOLE = `${SEMI_PREFIX};suffix-${"dummy"}`;
+const SEMI_ROWS = [
+  [
+    "an endpoint's credential parameter with a ; in its value",
+    { OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: `https://collector.invalid/v1/traces?api_key=${SEMI_WHOLE}` },
+    [SEMI_WHOLE, SEMI_PREFIX],
+    [],
+    [`POST https://collector.invalid/v1/traces?api_key=${SEMI_WHOLE} failed`, "POST https://collector.invalid/v1/traces?api_key=[redacted] failed"],
+  ],
+  [
+    "an endpoint's credential pair after a ; in its query",
+    { OTEL_EXPORTER_OTLP_ENDPOINT: `https://collector.invalid?region=us-east-1;session=${innerToken(1301)}` },
+    [innerToken(1301)],
+    ["us-east-1", `us-east-1;session=${innerToken(1301)}`],
+    [`POST https://collector.invalid?region=us-east-1;session=${innerToken(1301)} failed`, "POST https://collector.invalid?region=us-east-1;session=[redacted] failed"],
+  ],
+  [
+    "a credential-named header's value with a ;",
+    { ...ON, OTEL_EXPORTER_OTLP_HEADERS: `api-key=${SEMI_WHOLE}` },
+    [SEMI_WHOLE, SEMI_PREFIX],
+    [],
+    [`401 for api-key: ${SEMI_WHOLE}`, "401 for api-key: [redacted]"],
+  ],
+  [
+    "a header value's URL's credential parameter with a ; in its value",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Upstream=https://relay.invalid/v1?api_key=${SEMI_WHOLE}` },
+    [SEMI_WHOLE, SEMI_PREFIX],
+    [],
+    [`401 from relay: api_key=${SEMI_WHOLE} refused`, "401 from relay: api_key=[redacted] refused"],
+  ],
+  [
+    "a header value's credential pair with a ; in its value, before an & pair",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=api_key=${SEMI_WHOLE}&region=us-east-1` },
+    [SEMI_WHOLE, SEMI_PREFIX],
+    ["us-east-1"],
+    [`401 for X-Relay: api_key=${SEMI_WHOLE}&region=us-east-1; region us-east-1`, "401 for X-Relay: [redacted]; region us-east-1"],
+  ],
+];
+
+test("an OTLP endpoint's or header value's credential with a raw ; in it is held whole and as each pair after a ;, and a line quoting it is cut to [redacted] with no piece after the ; left", () => {
+  const words = "2 spans passed, contact ops, region us-east-1";
+  const missed = [];
+  for (const [what, env, held, unheld, [said, saidCut]] of SEMI_ROWS) {
+    for (const [list, values] of [["runnerSecrets", runnerSecrets(env)], ["hostSecrets", hostSecrets(env)]]) {
+      for (const value of held) if (!values.includes(value)) missed.push(`${what}: ${value} not held (${list})`);
+      for (const value of unheld) if (values.includes(value)) missed.push(`${what}: ${value} held (${list})`);
+    }
+    const line = `401 from collector: ${held.map((value) => `got ${value}`).join(", ")}; ${words}`;
+    const cut = `401 from collector: ${held.map(() => "got [redacted]").join(", ")}; ${words}`;
+    for (const [redactor, redact] of [["the [otel] cut", otlpHeaderCut(env)], ["the runner's redactor", secretRedactor(runnerSecrets(env))]]) {
+      for (const [text, want] of [[line, cut], [said, saidCut]]) {
+        const shown = redact(text);
+        if (shown !== want) missed.push(`${what}: ${redactor} shows ${shown}`);
+      }
+    }
+  }
+  assert.deepEqual(missed, [], "every credential with a ; is held whole and by its pairs, and cut with nothing after the ; left; region and the ordinary words are not");
+});
+
 test("an OTLP header value of 16 KB holding 8,000 @, or 4,000 URL starts, starts the tracer and cuts an [otel] line in well under a second, and still holds its URL's user as RFC 3986 reads it (before the last @)", () => {
   const user = `${"a@".repeat(7999)}a`;
   const header = `X-Upstream=https://${user}@relay.invalid`;
