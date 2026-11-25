@@ -444,11 +444,13 @@ export async function finishedKept(settings: Pick<KeptSettings, "replaceIf">, ru
   return settings.replaceIf(keptKeyOf(runId), rowOf(kept, "ending"), rowOf(kept, "ended")).catch(() => false);
 }
 
-/** Removes `runId`'s kept row at the end of the run (run-end-computers.ts) once it reads ended, for the claim at `epoch`
- *  that ended the run: its machine is gone and its end finished, and the resume it was ended for (to say why its computer
- *  is new) has come and gone, so a follow-up that queues the run again never reads it and never says that lapse again.
- *  Only a row kept at or before `epoch` (a later claim's keep is that claim's), and only while it still reads as read.
- *  A row left ending is left for its end at its time. True when removed. Never throws. */
+/** Removes `runId`'s kept row at the run's end (run-end-computers.ts: the claim at `epoch` ended the run), after its
+ *  deletes answered or its bound passed: one read of the row, then a remove only while it still reads as read. Removed
+ *  only where it reads ended (its machine gone: this end's delete marked it so, finishedKept, or its keeper's end at its
+ *  time or a janitor's pass did before) and was kept at or before `epoch`. Whoever ended it, the run is final, so no
+ *  resume of this run is left to read it and say why its computer is new; removed, a follow-up that queues the run again
+ *  reads no keep and never says that lapse. A row that reads ending (a delete not done or not proven), none, and a later
+ *  claim's keep are left. True when removed; false when left, or when the read or the remove failed. Never throws. */
 export async function forgetEnded(settings: Pick<KeptSettings, "get" | "removeIf">, runId: string, epoch: number): Promise<boolean> {
   try {
     const was = await settings.get(keptKeyOf(runId));
