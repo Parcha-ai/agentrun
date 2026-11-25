@@ -2,7 +2,7 @@
 // the tool and the arguments, never to another call's announcement. And which titles name our tool (ourTool).
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { announcedInput, CallIds, mcpServerName, ourTool } from '../dist/calls.js';
+import { announcedInput, CallIds, declaresToolSummary, mcpServerName, ourTool } from '../dist/calls.js';
 
 const TOOLS = new Set(['look_up', 'check_echo', 'lookup']);
 
@@ -88,8 +88,30 @@ test("agy joins server and tool with one _: under agy's recipe only our server's
 
 test("a toolSummary our tool's schema declares is its argument, never agy's own line: kept", () => {
   const agy = { name: 'mcp_agentrun_look_up', title: 'Run mcp_agentrun_look_up' };
-  assert.deepEqual(announcedInput(agy, { q: 'x', toolSummary: 'mine' }, 'agy', 'agentrun', new Set(['q', 'toolSummary'])), { q: 'x', toolSummary: 'mine' });
-  assert.deepEqual(announcedInput(agy, { q: 'x', toolSummary: 'Look x up' }, 'agy', 'agentrun', new Set(['q'])), { q: 'x' });
+  assert.deepEqual(announcedInput(agy, { q: 'x', toolSummary: 'mine' }, 'agy', 'agentrun', true), { q: 'x', toolSummary: 'mine' });
+  assert.deepEqual(announcedInput(agy, { q: 'x', toolSummary: 'Look x up' }, 'agy', 'agentrun', false), { q: 'x' });
+});
+
+test("a schema declares toolSummary at its top, in allOf, anyOf or oneOf at any depth, or behind a $ref to its own $defs; a $ref it cannot read may", () => {
+  const summary = { toolSummary: { type: 'string' } };
+  for (const schema of [
+    { type: 'object', properties: summary },
+    { type: 'object', allOf: [{ properties: { q: {} } }, { properties: summary }] },
+    { type: 'object', anyOf: [{ properties: { q: {} } }, { properties: summary }] },
+    { type: 'object', oneOf: [{ allOf: [{ properties: summary }] }] },
+    { type: 'object', $ref: '#/$defs/args', $defs: { args: { properties: summary } } },
+    { type: 'object', allOf: [{ $ref: '#/definitions/args' }], definitions: { args: { allOf: [{ properties: summary }] } } },
+    { type: 'object', allOf: [{ $ref: 'https://example.com/args.json' }] },
+    { type: 'object', $ref: '#/$defs/missing', $defs: {} },
+  ]) assert.equal(declaresToolSummary(schema), true, JSON.stringify(schema));
+  for (const schema of [
+    { type: 'object', properties: { q: {} } },
+    { type: 'object', allOf: [{ properties: { q: {} } }], anyOf: [{ properties: { r: {} } }] },
+    { type: 'object', $ref: '#/$defs/args', $defs: { args: { properties: { q: {} } } } },
+    { type: 'object', properties: { nested: { type: 'object', properties: summary } } },
+    { type: 'object', $ref: '#/$defs/a', $defs: { a: { $ref: '#/$defs/a' } } },
+    {}, null, undefined, 'object',
+  ]) assert.equal(declaresToolSummary(schema), false, JSON.stringify(schema));
 });
 
 test("an agy call's input is matched without agy's own toolSummary, under agy's recipe alone; any other input is as reported", () => {

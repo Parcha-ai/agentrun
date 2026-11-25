@@ -77,10 +77,12 @@ test("under agy's recipe the agent is given our MCP server under a name of its s
   assert.deepEqual(given[2], [['agentrun']]);
 });
 
-test("our tool's own toolSummary argument (agy), which its schema declares, is kept: the MCP call takes the announced id at once", async (t) => {
+for (const [how, declares] of [
+  ['at its top', { type: 'object', properties: { q: { type: 'string' }, toolSummary: { type: 'string' } } }],
+  ['in allOf', { type: 'object', allOf: [{ properties: { q: { type: 'string' } } }, { properties: { toolSummary: { type: 'string' } } }] }],
+]) test(`our tool's own toolSummary argument (agy), which its schema declares ${how}, is kept: the MCP call takes the announced id at once`, async (t) => {
   const recipe = fakeRecipe(scratch(), { script: [{ call: 'look_up', args: { q: 'x', toolSummary: 'mine' } }, { sayLastResult: true }], style: 'antigravity', askMcp: true }, formOf('antigravity'));
   const asked = [];
-  const declares = { type: 'object', properties: { q: { type: 'string' }, toolSummary: { type: 'string' } } };
   const { session, events } = await openSession(t, recipe, {
     tools: [{ ...tool('look_up', (args) => `found ${args.toolSummary}`), inputSchema: declares }],
     gate: async (call) => (asked.push(call), 'allow'),

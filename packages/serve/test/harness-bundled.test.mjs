@@ -87,5 +87,10 @@ test("agentrun-serve install-harness antigravity installs the shipped recipe's r
   const shadowed = run(["--recipe", "antigravity"]);
   assert.equal(shadowed.status, 1);
   assert.match(shadowed.stderr, /^RECIPE_INVALID: antigravity names both the recipe AgentRun ships/m);
+  // By its name alone too: the shipped recipe is never installed over a same-name file in the directory.
+  const shadowedByName = run(["antigravity"]);
+  assert.equal(shadowedByName.status, 1);
+  assert.match(shadowedByName.stderr, /^RECIPE_INVALID: antigravity names both the recipe AgentRun ships/m);
+  assert.doesNotMatch(shadowedByName.stderr, /^Google Antigravity: /m, "nothing resolved, nothing downloaded");
   assert.match(run(["--recipe", "./antigravity"]).stderr, /^Google Antigravity: the recipe file .*\/antigravity$/m);
 });
