@@ -252,8 +252,8 @@ export async function sweepServerComputers(deps: Pick<JanitorDeps, "store" | "co
  *  hours away); one pinned to another runner still there (the store's runners) is left to that runner. One that held the
  *  run's folder on Archil has the run's mount credentials up to its epoch removed, by name, on the disk its row names
  *  (the park's), with this server's Archil key read as the claims read it (archil-key.ts): no run lookup, so a run
- *  deleted since, or an agent whose disk changed, still has it removed. A row that names no disk has none removed, and
- *  its credential ends at its ttl. Past its keep's time plus MOUNT_TTL_MS no remove is asked: the credential was minted
+ *  deleted since, or an agent whose disk changed, still has it removed. A row that names no disk has none removed, said
+ *  on the log, and its credential ends at its ttl. Past its keep's time plus MOUNT_TTL_MS no remove is asked: the credential was minted
  *  before the park, so it has ended at its ttl, and a remove that can never succeed (Archil turned off, its key gone, a
  *  refusal for good) no longer keeps the row ending and said at every pass. Undefined without the store's settings,
  *  where none is kept. Never throws. */
@@ -272,7 +272,11 @@ export async function sweepKeptComputers(deps: Pick<JanitorDeps, "store" | "comp
   }
   const revokeMount = async (runId: string, kept: Pick<Kept, "epoch" | "until" | "disk">): Promise<void> => {
     const { disk } = kept;
-    if (disk === undefined || now >= kept.until + MOUNT_TTL_MS) return;
+    if (disk === undefined) {
+      deps.log?.(`the computer janitor removed no mount credential of run ${runId}: its kept computer held the run's folder on Archil, but its row names no disk, so the credential lapses at its ttl`);
+      return;
+    }
+    if (now >= kept.until + MOUNT_TTL_MS) return;
     const archil = await loadArchilSettings({ settings }, deps.env);
     if (!archil) throw new Error("its mount credential was not removed: this server's Archil settings are gone");
     const { value } = await archilApiKey({ env: deps.env, keys: store.sealedKeys, sealKey: deps.sealKey });
