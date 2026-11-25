@@ -28,11 +28,12 @@ export function canonical(value: unknown): string {
  *  our tools, whatever its title says. */
 export const NATIVE_EFFECT_KINDS: ReadonlySet<string> = new Set(["execute", "edit", "delete", "move", "fetch"]);
 
-/** The host tool a permission request's title names, by a name for our MCP server's tools (`agentrun__<tool>`) or by
- *  Cursor's own title for one (`agentrun-<tool>: <tool>`), when it is one of `tools` and its kind is not one with effects
- *  of its own. Read for Cursor's tie alone (quirks.permissionTie), and only beside the call's announcement: the title is
- *  the agent's text, so a request is tied only when it is for a call the recipe's announces field named as the same tool
- *  (CallIds.announced). Nothing else reads a title. */
+/** The host tool a permission request's title or name gives, by a name for our MCP server's tools (`agentrun__<tool>`),
+ *  Cursor's own title for one (`agentrun-<tool>: <tool>`), or agy's (Antigravity's) name and title for one
+ *  (`mcp_agentrun_<tool>`, titled `Run mcp_agentrun_<tool>`, the whole text), when it is one of `tools` and its kind is
+ *  not one with effects of its own. Read for the title tie alone (quirks.permissionTie: Cursor's and agy's), and only
+ *  beside the call's announcement: the title is the agent's text, so a request is tied only when it is for a call the
+ *  recipe's announces field named as the same tool (CallIds.announced). Nothing else reads a title. */
 export function ourTool(update: { title?: string | null; name?: string | null; kind?: string | null }, tools: ReadonlySet<string>): string | undefined {
   if (typeof update.kind === "string" && NATIVE_EFFECT_KINDS.has(update.kind)) return undefined;
   const candidates: string[] = [];
@@ -42,21 +43,40 @@ export function ourTool(update: { title?: string | null; name?: string | null; k
     if (named) candidates.push(named[1]!);
     const cursor = new RegExp(`^${MCP_SERVER}-[^:]*: (.+)$`).exec(said);
     if (cursor) candidates.push(cursor[1]!.trim());
+    const agy = AGY_NAME.exec(said);
+    if (agy) candidates.push(agy[1]!);
   }
   return candidates.find((name) => tools.has(name));
 }
 
+/** agy's (Antigravity's) name or title for a call of our MCP server's tool `<tool>`: `mcp_agentrun_<tool>`, titled
+ *  `Run mcp_agentrun_<tool>`, the whole text (agy 1.5.14 writes no summary after either). */
+const AGY_NAME = new RegExp(`^(?:Run )?mcp_${MCP_SERVER}_(.+)$`);
+
 /** Where in an agent's tool_call (or the update that names it later) a recipe finds which tool it calls, each a dotted
- *  path of field names into the update (`_meta.goose.toolCall.toolName`, `rawInput.toolName`).
- *  - `tool`: the tool's name. With `server`, our tool's own name; without, the name as the model calls it,
- *    `agentrun__<tool>` (our server's prefix, stripped).
+ *  path of field names into the update (`_meta.goose.toolCall.toolName`, `rawInput.toolName`, `name`).
+ *  - `tool`: the tool's name. With `server`, our tool's own name; without, the name as the model calls it, our server's
+ *    prefix and the tool's (`prefix`, stripped).
  *  - `server`: the MCP server's name, which must be ours (`agentrun`).
- *  - `args`: the call's arguments (default `rawInput`). */
+ *  - `prefix`: without `server`, what comes before our tool's name in `tool` (default `agentrun__`; agy's
+ *    `mcp_agentrun_`). It names our server (ANNOUNCES_PREFIX), so a name without it is never ours.
+ *  - `args`: the call's arguments (default `rawInput`).
+ *  - `extras`: fields the agent writes beside the call's arguments that the MCP call never carries (agy's
+ *    `toolSummary`, its model's line about the call), left out before the arguments are matched when they hold text. */
 export interface AcpAnnounces {
   readonly tool: string;
   readonly server?: string;
+  readonly prefix?: string;
   readonly args?: string;
+  readonly extras?: readonly string[];
 }
+
+/** The prefix a recipe's announces.prefix may be: our server's name, with at most one word and a `_` or `-` before it,
+ *  and one or two `_` or `-` after it (`agentrun__`, `mcp_agentrun_`). */
+export const ANNOUNCES_PREFIX = new RegExp(`^(?:[A-Za-z0-9]+[_-])?${MCP_SERVER}[_-]{1,2}$`);
+
+/** A field name announces.extras may list. */
+export const ANNOUNCES_EXTRA = /^[A-Za-z_$][\w$-]*$/;
 
 /** A path an AcpAnnounces field may hold: field names joined by dots, never starting at the update's title,
  *  toolCallId, kind, status, rawOutput, content, locations or sessionUpdate: a path through the title would let the
@@ -95,15 +115,20 @@ export function announcedTool(update: unknown, announces: AcpAnnounces | undefin
   if (announces.server !== undefined) {
     if (at(update, announces.server) !== MCP_SERVER) return null;
   } else {
-    if (!said.startsWith(`${MCP_SERVER}__`)) return null;
-    tool = said.slice(`${MCP_SERVER}__`.length);
+    const prefix = announces.prefix ?? `${MCP_SERVER}__`;
+    if (!said.startsWith(prefix)) return null;
+    tool = said.slice(prefix.length);
   }
   return tools.has(tool) ? tool : null;
 }
 
-/** The arguments an update reports for its call: at the recipe's `announces.args`, or its rawInput. */
+/** The arguments an update reports for its call: at the recipe's `announces.args`, or its rawInput, without the
+ *  recipe's `extras` that hold text (agy's toolSummary). */
 function announcedArgs(update: { rawInput?: unknown }, announces: AcpAnnounces | undefined): unknown {
-  return announces?.args !== undefined ? at(update, announces.args) : update.rawInput;
+  const args = announces?.args !== undefined ? at(update, announces.args) : update.rawInput;
+  const extras = announces?.extras ?? [];
+  if (!isPlain(args) || !extras.some((name) => typeof args[name] === "string")) return args;
+  return Object.fromEntries(Object.entries(args).filter(([name, value]) => !(extras.includes(name) && typeof value === "string")));
 }
 
 /** An agent's update about one of its calls, as the adapter reads it. */

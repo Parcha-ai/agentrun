@@ -3,7 +3,7 @@
 // these are the checks the adapter itself needs before it starts anything. Written for AgentRun.
 import { isAbsolute, normalize, sep } from "node:path";
 import { KEY_NAME, launchEnv } from "@parcha/agentrun-kernel";
-import { type AcpAnnounces, ANNOUNCES_PATH, MCP_SERVER } from "./calls.js";
+import { type AcpAnnounces, ANNOUNCES_EXTRA, ANNOUNCES_PATH, ANNOUNCES_PREFIX, MCP_SERVER } from "./calls.js";
 
 /** Who pays for the agent's model requests. `plan`: the vendor bills the owner's plan (Cursor), no request reaches us, so
  *  the adapter itself stops the run at these limits. `proxy`: the agent's model goes through the host's proxy, which the
@@ -18,8 +18,9 @@ export type AcpRefusal = { readonly says: string; readonly code: string; readonl
 export const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:/=,[\]-]{0,199}$/;
 /** A refusal's code: capitals, digits and `_`. */
 const CODE = /^[A-Z][A-Z0-9_]{1,63}$/;
-/** A sign-in method's id as an agent lists one in authMethods (`gemini-api-key`). */
-const AUTH_METHOD = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+/** A sign-in method's id as an agent lists one in authMethods (`gemini-api-key`): the one definition, a serve recipe's
+ *  keyMethod included. */
+export const AUTH_METHOD = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 /** The forms an allowFile is written in, by the agent that reads it: each makes the file's text from the names of the
  *  tools a start lists. A second agent with another format adds a form here. */
@@ -137,8 +138,10 @@ export function announcesProblems(announces: unknown, permissionTie: unknown): s
   if (announces !== undefined) {
     const said = typeof announces === "object" && announces !== null && !Array.isArray(announces) ? (announces as Record<string, unknown>) : undefined;
     const path = (value: unknown) => typeof value === "string" && ANNOUNCES_PATH.test(value);
-    const shaped = said !== undefined && Object.keys(said).every((key) => key === "tool" || key === "server" || key === "args");
-    if (!said || !shaped || !path(said.tool) || (said.server !== undefined && !path(said.server)) || (said.args !== undefined && !path(said.args))) problems.push('announces is { "tool": a dotted path into the agent\'s tool_call (`_meta.goose.toolCall.toolName`) that does not start at its title, toolCallId, kind or status, "server"?: one, "args"?: one }');
+    const shaped = said !== undefined && Object.keys(said).every((key) => ["tool", "server", "prefix", "args", "extras"].includes(key));
+    const prefixed = said?.prefix === undefined || (said.server === undefined && typeof said.prefix === "string" && ANNOUNCES_PREFIX.test(said.prefix));
+    const extras = said?.extras === undefined || (Array.isArray(said.extras) && said.extras.length > 0 && said.extras.every((name) => typeof name === "string" && ANNOUNCES_EXTRA.test(name)));
+    if (!said || !shaped || !path(said.tool) || (said.server !== undefined && !path(said.server)) || (said.args !== undefined && !path(said.args)) || !prefixed || !extras) problems.push('announces is { "tool": a dotted path into the agent\'s tool_call (`_meta.goose.toolCall.toolName`) that does not start at its title, toolCallId, kind or status, "server"?: one, "prefix"?: our server\'s name as the agent writes it before a tool\'s (`mcp_agentrun_`; the default `agentrun__`, never with "server"), "args"?: one, "extras"?: field names beside the arguments, left out before they are matched }');
   }
   if (permissionTie === "title" && announces === undefined) problems.push("the title tie (quirks.permissionTie) needs announces: it answers only a request for a call that field named");
   return problems;

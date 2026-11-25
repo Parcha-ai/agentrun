@@ -36,6 +36,8 @@ export type AcpPackage = {
   readonly ALLOW_FILE_FORMS: readonly string[];
   /** What is wrong with a recipe's announces field, and with a title tie without it, each in words. */
   announcesProblems(announces: unknown, permissionTie: unknown): string[];
+  /** The form a sign-in method's id an ACP agent lists takes (`gemini-api-key`): a recipe's keyMethod is checked by it. */
+  readonly AUTH_METHOD: RegExp;
   acpPlatform(): string | undefined;
   /** `pin`'s release for `platform` (default this host's) with its binary's digest, and its tree's when `tree`; undefined
    *  where none is pinned so. */

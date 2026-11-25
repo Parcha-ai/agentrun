@@ -120,9 +120,15 @@ switch (args[0]) {
     break;
   }
   case "version":
-    // The probe's `{{.Server.Version}}`; `{{.Server.APIVersion}}` as Docker Engine 27 gives it, or as `docker-api` there says.
+    // The probe's `{{.Server.Version}}`, and `{{.Server.Arch}}` where its format names it and `docker-arch` there says
+    // one (with none, the version alone, as before: a server then checks no computerd build for it);
+    // `{{.Server.APIVersion}}` as Docker Engine 27 gives it, or as `docker-api` there says.
     if (args.some((arg) => arg.includes("APIVersion"))) done(existsSync(join(state, "docker-api")) ? readFileSync(join(state, "docker-api"), "utf8") : "1.47\n");
-    done("27.0.0-fake\n");
+    {
+      const arch = existsSync(join(state, "docker-arch")) ? readFileSync(join(state, "docker-arch"), "utf8").trim() : undefined;
+      const format = args.includes("--format") ? args[args.indexOf("--format") + 1] : "";
+      done(`${arch !== undefined && format.includes("{{.Server.Arch}}") ? format.replaceAll("{{.Server.Version}}", "27.0.0-fake").replaceAll("{{.Server.Arch}}", arch) : "27.0.0-fake"}\n`);
+    }
     break;
   case "info": {
     // `docker info --format {{.OSType}}|{{.KernelVersion}}|{{.DockerRootDir}}|{{.OperatingSystem}}`: a daemon of this
@@ -209,11 +215,13 @@ switch (args[0]) {
     container.Config.Env = container.env;
     // The server's read of the Docker host's addresses (docker-host-addresses.ts): its answer is `host-addresses.json` in
     // the state directory (the host's interfaces and host.docker.internal's), else none; `host-addresses-fail` fails it;
-    // `host-addresses-hold` stalls it, its container made and running, the client never answering.
+    // `host-addresses-hold` stalls it, its container made and running, the client never answering; a fifo
+    // `host-addresses-held` there is told the stalled client's pid (a test's, to kill it as an outside signal would).
     if (container.Config.Labels["agentrun.read"] === "host-addresses") {
       note("host-reads.jsonl", args);
       if (existsSync(join(state, "host-addresses-hold"))) {
         save(container);
+        if (existsSync(join(state, "host-addresses-held"))) writeFileSync(join(state, "host-addresses-held"), `${process.pid}\n`);
         setInterval(() => {}, 60_000);
         break;
       }
@@ -282,8 +290,10 @@ switch (args[0]) {
     break;
   }
   case "inspect": {
-    // `inspect-fail` in the state: the daemon doesn't answer an inspect, in its words.
+    // `inspect-fail` in the state: the daemon doesn't answer an inspect, in its words; `inspect-fail-reads`: only one of
+    // a host-address read's container (docker-host-addresses.ts), so the server's inspect of its own still answers.
     if (existsSync(join(state, "inspect-fail"))) fail(readFileSync(join(state, "inspect-fail"), "utf8").trim());
+    if (existsSync(join(state, "inspect-fail-reads")) && args.at(-1).startsWith("agentrun-host-read-")) fail(readFileSync(join(state, "inspect-fail-reads"), "utf8").trim());
     const container = read(args.at(-1));
     if (!container) fail(`Error: No such object: ${args.at(-1)}`);
     // `--format {{.State.Running}}` gives that; `--format {{json .}}` the object, `{{json .Mounts}}` its mounts; without it
@@ -294,6 +304,12 @@ switch (args[0]) {
     break;
   }
   case "rm": {
+    // A fifo `rm-gate` in the state: this removal waits until a test writes it, once, and the gate goes.
+    const gate = join(state, "rm-gate");
+    if (existsSync(gate)) {
+      readFileSync(gate);
+      rmSync(gate);
+    }
     const id = args.at(-1);
     const container = read(id);
     if (!container) fail(`Error response from daemon: No such container: ${id}`);

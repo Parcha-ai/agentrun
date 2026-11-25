@@ -4,6 +4,7 @@ import {
 } from "./workflow.js";
 import { isDeepStrictEqual, types as utilTypes } from "node:util";
 import { assertZodJsonContract } from "./zod-json-contract.js";
+import { isRecord } from "./record.js";
 
 /** Structural Standard JSON Schema v1 interface. Compatible schema libraries need no
  * AgentRun adapter or runtime dependency. See https://standardschema.dev/json-schema. */
@@ -80,7 +81,7 @@ export function defineWorkflow<
           }
         }
       }
-      if (!schema || typeof schema !== "object" || Array.isArray(schema)) throw new Error("expected a JSON Schema object");
+      if (!isRecord(schema)) throw new Error("expected a JSON Schema object");
       Object.defineProperty(schemas, id, { value: cloneJson(schema), enumerable: true, writable: true, configurable: true });
     } catch (error) {
       throw new WorkflowSchemaConversionError(id, error);
@@ -106,8 +107,8 @@ export function defineWorkflow<
 }
 
 function objectContract(value: unknown): boolean {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const schema = value as Record<string, unknown>;
+  if (!isRecord(value)) return false;
+  const schema = value;
   if (schema.type === "object" || Array.isArray(schema.type) && schema.type.length === 1 && schema.type[0] === "object") return true;
   for (const key of ["anyOf", "oneOf"]) {
     if (Array.isArray(schema[key]) && schema[key].length > 0 && schema[key].every(objectContract)) return true;

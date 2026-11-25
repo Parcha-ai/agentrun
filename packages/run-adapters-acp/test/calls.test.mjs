@@ -11,6 +11,9 @@ const TOOLS = new Set(['look_up', 'check_echo', 'lookup', 'write']);
 /** goose.json's and cursor.json's announces fields. */
 const GOOSE = Object.freeze({ tool: '_meta.goose.toolCall.toolName' });
 const CURSOR = Object.freeze({ tool: 'rawInput.toolName', server: 'rawInput.providerIdentifier', args: 'rawInput.args' });
+/** The Antigravity example recipe's (agy 1.5.14): its `name` field, our server's prefix as agy writes it, and its own
+ *  toolSummary beside the arguments. */
+const AGY = Object.freeze({ tool: 'name', prefix: 'mcp_agentrun_', extras: Object.freeze(['toolSummary']) });
 /** A tool_call as Goose 1.59.2 sends it: titled for people, named in `_meta.goose.toolCall`, whose shape is copied from
  *  goose-acp's goose_tool_call_meta (conversion.rs:65-91 at v1.59.2): `toolName` is the name the model called
  *  (`agentrun__look_up`), `extensionName` the part before `__`, left out when the name has none. Only the first
@@ -35,6 +38,49 @@ test("ourTool no longer reads Goose 1.59.2's titles (`agentrun: <tool with space
   for (const title of ['agentrun: look up', 'agentrun: check echo', 'agentrun: lookup', 'agentrun: look up · proof.txt', 'agentrun: check echo · a · b', 'agentrun__look_up · proof.txt']) {
     assert.equal(ourTool({ title, kind: 'other' }, TOOLS), undefined, title);
   }
+});
+
+test("ourTool ties agy 1.5.14's name for our tool, `mcp_agentrun_<tool>`, and its title `Run mcp_agentrun_<tool>`, and nothing like them", () => {
+  assert.equal(ourTool({ name: 'mcp_agentrun_look_up', title: 'Run mcp_agentrun_look_up', kind: 'other' }, TOOLS), 'look_up');
+  assert.equal(ourTool({ title: 'Run mcp_agentrun_check_echo', kind: 'other' }, TOOLS), 'check_echo');
+  assert.equal(ourTool({ name: 'mcp_agentrun_lookup' }, TOOLS), 'lookup');
+  for (const title of ['Run mcp_github_look_up', 'mcp_agentrunx_look_up', 'Run mcp_agentrun_look_up now', 'run mcp_agentrun_look_up', 'Run  mcp_agentrun_look_up', 'Run mcp_agentrun_drop_tables', 'xmcp_agentrun_look_up', 'Run mcp_agentrun_', 'Run mcp_agentrun_look_up · x']) {
+    assert.equal(ourTool({ title, kind: 'other' }, TOOLS), undefined, title);
+    assert.equal(ourTool({ name: title, kind: 'other' }, TOOLS), undefined, `name ${title}`);
+  }
+  assert.equal(ourTool({ name: 'mcp_agentrun_look_up', title: 'Run mcp_agentrun_look_up', kind: 'execute' }, TOOLS), undefined, 'a kind with effects of its own');
+});
+
+test("an agy call is named by its recipe's field (`name`, prefix `mcp_agentrun_`) and matched without agy's own toolSummary; any other recipe's input is as reported", async () => {
+  // #3755's case (announcedInput, by agy's name) on the announces field: the recipe says which fields are agy's own.
+  const { announcedTool, announceCall } = calls;
+  const agy = (toolCallId, name, rawInput, kind = 'other') => ({ toolCallId, name, title: `Run ${name}`, kind, rawInput });
+  assert.equal(announcedTool(agy('c', 'mcp_agentrun_look_up', {}), AGY, TOOLS), 'look_up');
+  for (const name of ['mcp_github_look_up', 'mcp_agentrunx_look_up', 'agentrun__look_up', 'mcp_agentrun_drop_tables', 'xmcp_agentrun_look_up']) assert.equal(announcedTool(agy('c', name, {}), AGY, TOOLS), null, name);
+  assert.equal(announcedTool({ toolCallId: 'c', title: 'Run mcp_agentrun_look_up', rawInput: {} }, AGY, TOOLS), undefined, 'the title names nothing');
+  // Two calls of one tool in flight: each MCP call takes its own by its arguments, agy's toolSummary left out. (One whose
+  // arguments match no call falls back to the oldest call of its tool once the wait is over: take's loose match.)
+  const signal = new AbortController().signal;
+  const ids = new calls.CallIds();
+  announceCall(ids, agy('call_a', 'mcp_agentrun_look_up', { q: 'a', toolSummary: 'Look a up' }), AGY, TOOLS);
+  announceCall(ids, agy('call_b', 'mcp_agentrun_look_up', { q: 'b', toolSummary: 'Look b up' }), AGY, TOOLS);
+  assert.equal(await ids.take('look_up', { q: 'b' }, signal, 50), 'call_b', "its own call, never the oldest of the tool");
+  assert.equal(await ids.take('look_up', { q: 'a' }, signal, 50), 'call_a');
+  // Without extras the summary is an argument, so neither matches and the first MCP call takes the oldest: the wrong id.
+  const plain = new calls.CallIds();
+  const noExtras = Object.freeze({ tool: 'name', prefix: 'mcp_agentrun_' });
+  announceCall(plain, agy('call_a', 'mcp_agentrun_look_up', { q: 'a', toolSummary: 'Look a up' }), noExtras, TOOLS);
+  announceCall(plain, agy('call_b', 'mcp_agentrun_look_up', { q: 'b', toolSummary: 'Look b up' }), noExtras, TOOLS);
+  assert.equal(await plain.take('look_up', { q: 'b' }, signal, 50), 'call_a', 'the control: without extras the ids swap');
+  // An extra that holds no text is an argument, and a recipe without extras (Goose's) keeps every field.
+  announceCall(ids, agy('call_c', 'mcp_agentrun_look_up', { q: 'c', toolSummary: 3 }), AGY, TOOLS);
+  announceCall(ids, agy('call_d', 'mcp_agentrun_look_up', { q: 'd', toolSummary: 3 }), AGY, TOOLS);
+  assert.equal(await ids.take('look_up', { q: 'd', toolSummary: 3 }, signal, 50), 'call_d');
+  announceCall(ids, gooseCall('call_e', 'agentrun__look_up', { q: 'e', toolSummary: 'kept' }), GOOSE, TOOLS);
+  announceCall(ids, gooseCall('call_f', 'agentrun__look_up', { q: 'f', toolSummary: 'kept' }), GOOSE, TOOLS);
+  assert.equal(await ids.take('look_up', { q: 'f', toolSummary: 'kept' }, signal, 50), 'call_f');
+  announceCall(ids, agy('call_x', 'mcp_agentrun_look_up', { q: 'x', toolSummary: 'Look' }, 'execute'), AGY, TOOLS);
+  assert.equal(ids.has('call_x'), false, 'a kind with effects of its own is never ours');
 });
 
 test("ourTool leaves another server's tool named like ours, and a call with effects of its own, as the agent's own", () => {

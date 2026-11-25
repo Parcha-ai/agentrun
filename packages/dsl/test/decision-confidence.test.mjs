@@ -40,6 +40,7 @@ test('missing or invalid probabilities derive nothing', () => {
   assert.equal(deriveConfidence(choiceOf({ a: 'high', b: 0.1 }, 'a')), null);
   assert.equal(deriveConfidence(choiceOf({ a: 0.6, b: 0.4 }, 'c')), null);
   assert.equal(deriveConfidence({ type: 'score', score: 1, probabilities: {} }), null);
+  assert.equal(deriveConfidence(choiceOf([0.6, 0.4], '0')), null, 'probabilities given as a list derive nothing');
 });
 
 const questions = {

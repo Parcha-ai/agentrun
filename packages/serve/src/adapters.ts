@@ -8,7 +8,7 @@ import { accessSync, constants, existsSync, readFileSync, statSync } from "node:
 import { homedir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AdapterFacts, AgentAdapter, SessionSpec } from "@parcha/agentrun-kernel";
+import type { AdapterFacts, AgentAdapter, HarnessWire, SessionSpec } from "@parcha/agentrun-kernel";
 import { facts as claudeFacts } from "@parcha/agentrun-harness-claude/facts";
 import { facts as codexFacts } from "@parcha/agentrun-harness-codex/facts";
 import { facts as openCodeFacts } from "./harness-opencode/facts.js";
@@ -16,7 +16,7 @@ import { CLAUDE_SDK, codexBinaryIn, type HarnessPins, HarnessNotInstalled, insta
 import { DATA_ENV, defaultData } from "./files.js";
 import { type HarnessEntry, harnessOf, onAdapter } from "./harness-table.js";
 import type { ModelRef } from "./model.js";
-import { HarnessUnavailable, type InstallFix, type Provider, providerFor } from "./provider.js";
+import { HarnessUnavailable, heldRefusedProvider, type InstallFix, type Provider, providerFor } from "./provider.js";
 import { keyShaped } from "./secret-cut.js";
 import { servedSkills } from "./learn/workflow-draft.js";
 import { runKeyOf } from "./key-refusal.js";
@@ -232,8 +232,9 @@ export type ConfineChild = (child: Readonly<{ command: string; args: string[] }>
 /** What a run's adapter needs of serve: its model, the catalog that prices it as it prices pi's runs, the run's
  *  confinement for the harness's own process, and the skills it loads itself (claude-agent's, codex's and opencode's,
  *  which its own check took: skills.ts), and the run's clock when a template eval case sets one (claude-agent's turn date
- *  reads it; absent, the real clock). */
-export type AdapterNeeds = { model: ModelRef; models: { getModel(provider: string, id: string): { cost?: Partial<ModelCost>; contextWindow?: number; maxTokens?: number } | undefined }; confine?: ConfineChild; skills?: readonly SkillFiles[]; unpriced?: ReadonlySet<string>; now?: () => Date; zone?: string };
+ *  reads it; absent, the real clock). `heldRefusal`: the words a held run's model was refused in at its create
+ *  (run-launch.ts hold.refused): its provider is the stand-in that refuses every request in them (providerOf). */
+export type AdapterNeeds = { model: ModelRef; models: { getModel(provider: string, id: string): { cost?: Partial<ModelCost>; contextWindow?: number; maxTokens?: number } | undefined }; confine?: ConfineChild; skills?: readonly SkillFiles[]; unpriced?: ReadonlySet<string>; now?: () => Date; zone?: string; heldRefusal?: string };
 
 /** The limits of a model the route translates onto a harness's wire (`provider.fetch`: provider.ts routedProvider), for
  *  an adapter that takes them: its window and its most output tokens, from the model's pi-ai entry in the run's models
@@ -247,6 +248,12 @@ export function routedLimits(provider: Pick<Provider, "fetch">, needs: AdapterNe
   const [window, ceiling] = [entry?.contextWindow, entry?.maxTokens];
   return { ...(whole(window) ? { contextWindow: window } : {}), ...(whole(ceiling) ? { maxOutputTokens: ceiling } : {}) };
 }
+
+/** Where a run's adapter sends its model's requests (providerFor), or, for a held run its model kept from running at its
+ *  create, the stand-in (heldRefusedProvider): no key is read, and its proxy refuses every request in the create's words,
+ *  sending none. */
+export const providerOf = (wire: HarnessWire, env: NodeJS.ProcessEnv, needs: Pick<AdapterNeeds, "model" | "heldRefusal">, who: string): Provider =>
+  needs.heldRefusal !== undefined ? heldRefusedProvider(needs.model, needs.heldRefusal) : providerFor(wire, env, needs.model, who);
 
 /** The ConfineChild that starts a child under `prefix` (the argv pi's commands start under, ending in "--"); none when
  *  the run confines nothing (macOS), since an adapter refuses a confinement that adds nothing. */
@@ -348,12 +355,18 @@ export async function packageSkillCheck(load: () => Promise<unknown>): Promise<S
   return typeof pkg?.skillProblems === "function" ? (pkg.skillProblems as SkillCheck) : undefined;
 }
 
+/** Whether a run's web_search is its harness's own search: the run's plane resolves it native and the harness has a search
+ *  of its own (its facts' webSearch: claude-agent's, codex's). Its adapter then searches (nativeOptions), and the run is
+ *  not also handed the host's web_search (cli-run-spec.ts), which would sit beside it. */
+export const ownSearchRuns = (facts: Pick<AdapterFacts, "webSearch"> | undefined, plane: { readonly web_search?: unknown } | undefined): boolean =>
+  plane?.web_search === "native" && Boolean(facts?.webSearch);
+
 /** What a harness's adapter takes from the run's plane (tool-plane.ts) where web_search resolves native, by its own search
  *  (its facts' webSearch): `native`, the provider's search through its proxy, with the input a search request may read in
  *  beyond its body (cap.ts), which its proxy adds to that request's bound; `live`, its own live search (its adapter books
  *  each search); nothing for a harness with none. */
 export function nativeOptions(facts: AdapterFacts, env: NodeJS.ProcessEnv): { webSearch?: true | "live"; webSearchAllowance?: number } {
-  if (planeOf(env).web_search !== "native" || !facts.webSearch) return {};
+  if (!ownSearchRuns(facts, planeOf(env))) return {};
   return facts.webSearch === "native" ? { webSearch: true, webSearchAllowance: NATIVE_SEARCH_ALLOWANCE_TOKENS } : { webSearch: "live" };
 }
 
@@ -374,7 +387,7 @@ export async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load
   let provider: ReturnType<typeof providerFor> | undefined;
   let refused: unknown;
   try {
-    provider = providerFor(claudeFacts.wire, env, needs.model, claudeFacts.id);
+    provider = providerOf(claudeFacts.wire, env, needs, claudeFacts.id);
   } catch (error) {
     refused = error;
   }
@@ -439,7 +452,7 @@ export async function codexOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load:
   // whole (AGENT_MODEL_GATEWAY_IDS says whether it is provider-qualified), OpenAI's model id, which chooseModel has
   // already taken out of "openai/<id>", or OpenRouter's whole slug.
   // On a ChatGPT plan: the plan's rules on its route (no output limit, no input count), billed to it, never priced here.
-  const provider = providerFor(codexFacts.wire, env, needs.model, codexFacts.id);
+  const provider = providerOf(codexFacts.wire, env, needs, codexFacts.id);
   const plan = provider.billing === "plan";
   // A model the route translates onto the wire (an Ollama model): both of its proxies forward with the route's own fetch,
   // Codex's live web search, which the translation cannot run, is not offered, and its window and output ceiling are the route's (routedLimits).
@@ -465,7 +478,7 @@ export async function opencodeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, lo
   // The shared date line (environment.ts) reaches OpenCode in the session's system prompt (app.ts), as it reaches every
   // harness.
   // The id as the provider's endpoint names it (providerFor, as codexOf takes it): OpenRouter's is the whole slug.
-  const provider = providerFor(openCodeFacts.wire, env, needs.model, openCodeFacts.id);
+  const provider = providerOf(openCodeFacts.wire, env, needs, openCodeFacts.id);
   // Its instructions list each skill by the description its SKILL.md's front matter gives on one LF line, which is all the
   // adapter reads: each SKILL.md goes as servedSkill writes it (its name and description, as a prompt reads them, on one
   // line each), so a CRLF file or a folded description is listed by its own words.

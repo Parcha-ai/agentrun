@@ -277,7 +277,7 @@ test("the trust rules are the route's, unchanged on Responses: a shared server w
   const none = await modelOn(RESPONSES, shared, `ollama/${TOOLS}`, "codex");
   assert.equal("model" in none, false, JSON.stringify(none));
   assert.doesNotMatch((await modelOn(RESPONSES, shared, undefined, "codex")).why, /Ollama/, "no Ollama here: its words name a key");
-  const remote = { OLLAMA_HOST: "http://10.20.30.40:11434", AGENTRUN_SERVE_DATA: await scratch(t) };
+  const remote = { OLLAMA_HOST: "http://ollama.invalid:11434", AGENTRUN_SERVE_DATA: await scratch(t) };
   const refused = await modelOn(RESPONSES, remote, `ollama/${TOOLS}`, "opencode");
   assert.equal("model" in refused, false, JSON.stringify(refused));
   // With no Ollama answering on the machine's own address, codex is told to start one, as pi is.

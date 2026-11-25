@@ -14,7 +14,7 @@ import { fakeEvents, fakeRecipe, openSession, scratch, streamRecords, tool } fro
 const test = (name, fn) => nodeTest(name, { timeout: 60_000 }, fn);
 const texts = (events) => events.filter((e) => e.type === 'text').map((e) => e.delta).join('');
 
-for (const [style, kind, title] of [['cursor', 'execute', 'agentrun: lookup'], ['goose', 'edit', 'agentrun__lookup'], ['goose-1.59', 'other', 'github: look up'], ['goose-1.59', 'edit', 'agentrun: look up · proof.txt'], ['goose-1.59', 'execute', 'agentrun: lookup · ls']]) {
+for (const [style, kind, title] of [['cursor', 'execute', 'agentrun: lookup'], ['goose', 'edit', 'agentrun__lookup'], ['goose-1.59', 'other', 'github: look up'], ['goose-1.59', 'edit', 'agentrun: look up · proof.txt'], ['goose-1.59', 'execute', 'agentrun: lookup · ls'], ['antigravity', 'execute', 'Run mcp_agentrun_lookup'], ['antigravity', 'other', 'Run mcp_github_lookup']]) {
   test(`a native ${kind} titled ${JSON.stringify(title)} (${style}) asks the host's gate; a deny answers reject_once, journaled`, async (t) => {
     const dir = scratch();
     const nativeLog = join(dir, 'native.log');
@@ -65,6 +65,24 @@ test("our real tool's permission request, on a recipe that declares the title ti
   assert.deepEqual(await streamRecords(store, 'acp.permission'), [], 'no native permission record');
 });
 
+test("agy's request for our real tool, on its recipe's title tie, is answered allow_once, the call matched without agy's toolSummary and its gate asked at the MCP call", async (t) => {
+  // #3755's case on the announces field: agy names the call `mcp_agentrun_<tool>` in its `name` (announces.prefix) and
+  // reports its own toolSummary beside the arguments (announces.extras), which the MCP call never carries.
+  const recipe = fakeRecipe(scratch(), { script: [{ call: 'look_up', args: { q: 'x' } }, { sayLastResult: true }], style: 'antigravity', askMcp: true });
+  assert.deepEqual(recipe.quirks, { permissionTie: 'title' });
+  const asked = [];
+  const { session, events, store } = await openSession(t, recipe, {
+    tools: [tool('look_up', () => 'found it')],
+    gate: async (call) => (asked.push(call), call.tool.startsWith('acp_') ? { deny: 'not through the tie' } : 'allow'),
+  });
+  await session.send('go');
+  assert.equal((await session.turnEnd()).status, 'completed');
+  assert.deepEqual(fakeEvents(recipe).filter((e) => e.type === 'permission').map((e) => e.kind), ['allow_once']);
+  assert.deepEqual(asked.map((c) => [c.tool, c.callId]), [['look_up', 'call_0']], 'the gate is asked once, by the bridge, about the call itself, under agy\'s id');
+  assert.equal(texts(events), 'found it');
+  assert.deepEqual(await streamRecords(store, 'acp.permission'), [], 'no native permission record');
+});
+
 test("Cursor's late update names our call by its rawInput (providerIdentifier, toolName), whatever its title says: the tie holds and the MCP call runs under the agent's id", async (t) => {
   // Before: the update's title was read (`agentrun: <tool>`); one worded otherwise left the call unnamed, so the
   // permission request went to the host's gate and the MCP call got an id of the adapter's.
@@ -106,6 +124,7 @@ for (const [style, title, recipeOver] of [
   ['goose-1.59', 'agentrun: write · proof.txt', { allowFile: undefined }],
   ['goose', 'agentrun__write', { allowFile: undefined }],
   ['cursor', 'agentrun-write: write', { quirks: undefined }],
+  ['antigravity', 'Run mcp_agentrun_write', { quirks: undefined }],
 ]) {
   test(`a recipe without the title tie never answers allow_once on the title: ${JSON.stringify(title)} (${style}) asks the host's gate, journaled; a deny answers reject_once`, async (t) => {
     // Before: each was answered allow_once, the gate asked only at the MCP call. Now Goose asks nothing for our tools

@@ -110,7 +110,8 @@ export type Glance = {
   serves: boolean;
   /** The server's ratio (summary.times_cheaper) and the two levels it is of. */
   cost: { before: number | null; after: number | null; served: number; ratio: number | null };
-  /** The runs a learned workflow ran first and finished alone, of those it ran first (summary.hand_backs). */
+  /** The runs a learned workflow ran first and finished alone, of those it ran first (summary.hand_backs): neither
+   *  handed back by it nor cut by a restart. */
   alone: Share | null;
   /** The bill's break-even run, or how far over the agent the bill stands (bill.gap_usd); null where the cost read has no bill. */
   even: { n: number } | { gap_usd: number | null } | null;
@@ -124,7 +125,7 @@ export function glanceOf(cost: LearningCost, revisions: readonly RevisionPoint[]
     // The money rule can stop the champion running first with no promotion record of it (the cost read's needs_revision).
     revision, serves: revision?.state === "serving" && stoppedOf(cost, revision.workflow) !== revision.digest,
     cost: { before: s.before?.mean_usd ?? null, after: s.after?.mean_usd ?? null, served: s.after?.runs ?? 0, ratio: s.times_cheaper },
-    alone: back ? shareOf(back.ran - back.back, back.ran) : null,
+    alone: back ? shareOf(back.ran - back.back - back.cut, back.ran) : null,
     even: !cost.bill ? null : cost.bill.break_even ? { n: cost.bill.break_even.n } : { gap_usd: cost.bill.gap_usd },
   };
 }

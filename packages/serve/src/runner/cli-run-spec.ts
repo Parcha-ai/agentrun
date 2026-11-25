@@ -22,7 +22,7 @@ import { type CapModel, type CapRefused, checkRaise, followUpOf, freeRequestLimi
 import { type AdapterFacts, type HarnessWire, type HostTool, PLAN_LIMIT_WORDS, type Refusal, type SessionSpec } from "@parcha/agentrun-kernel";
 import { modelWire, routed } from "../wires.js";
 import type { AdapterNeeds } from "../adapters.js";
-import { confineOf, noNewPrivsPrefix, standsIn, thinkingFor } from "../adapters.js";
+import { confineOf, noNewPrivsPrefix, ownSearchRuns, standsIn, thinkingFor } from "../adapters.js";
 import { claimSettled, claudeCliIn, installDirOf, installForClaim, installingWords } from "../harness-install.js";
 import { HarnessUnavailable } from "../provider.js";
 import type { Approvals } from "../approvals.js";
@@ -30,7 +30,7 @@ import { effortGuidance } from "../effort-guidance.js";
 import { outputContract } from "../answer-json.js";
 import { wireName } from "../catalog.js";
 import { environmentLine, runZone } from "../environment.js";
-import { factsOf, type HarnessEntry, harnessOf, recipeKeysOf } from "../harness-table.js";
+import { factsOf, type HarnessEntry, harnessOf, planRecipeOf } from "../harness-table.js";
 import { layHarnessKeys, openHarnessKeys, RECIPE_SIGN_IN_PERSON_ONLY, RECIPE_TURN_PERSON_ONLY } from "../harness-keys.js";
 import { laidLearned, learningFolderOf, secretsShown } from "../learning.js";
 import { laidOf, layLearningSeed } from "./learning-seed.js";
@@ -45,15 +45,16 @@ import { DATA_ENV } from "../server-fs.js";
 import { filesToCopy, placeRunInputs } from "../uploads.js";
 import { recordingsFolder, runFolder, scratchFolder } from "../workspace/paths.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
+import { withoutKindSkill } from "../workspace/kind-skills.js";
 import { layOwnSkills } from "../workspace/revision-skills.js";
 import { runTools, type ToolResults, withKindTools } from "../workspace/run-tools.js";
 import { archilWhereHeld, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { loadArchilSettings } from "../archil-settings.js";
 import { settingOfDefinition } from "../computer-setting.js";
 import { computerKeptWords, computerReadyWords, computerReplacedNote, computerStartingWords, imageWaitWords } from "../workspace/computer-deps.js";
-import { hadComputer } from "./computer-journal.js";
+import { computerTurnedOff, hadComputer, recordComputerOff } from "./computer-journal.js";
 import { type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
-import { adapterRunGate, type AdapterSpecDeps, answersCut, buildToolHost, capModelOf as capModelOfRoute, claimLiveAt, graderRouteOf, hostToolCtxOf, type LearnedTier, learnedTierRoutes, learnedTiers, learnedWorkflowHostTool, learnsWorkflows, mcpReachOf, modelAskOf, PI_WIRES, webHostTools } from "./adapter-run-spec.js";
+import { adapterRunGate, type AdapterSpecDeps, answersCut, buildToolHost, capModelOf as capModelOfRoute, claimLiveAt, graderRouteOf, heldModelOf, hostToolCtxOf, type LearnedTier, learnedTierRoutes, learnedTiers, learnedWorkflowHostTool, learnsWorkflows, mcpReachOf, modelAskOf, PI_WIRES, seedEvalFiles, webHostTools } from "./adapter-run-spec.js";
 import { openTierProxies, type TierProxies } from "./adapters/pi.js";
 import type { ModelRoute } from "./model-route.js";
 import { signInReads } from "../sign-ins-store.js";
@@ -62,7 +63,7 @@ import { hostToolOf } from "../host-tools.js";
 import { ASK_TOOL, askPerson } from "../tools.js";
 import { fakedPlane } from "../web-fake.js";
 import { type ClaimModelKey, claimModelEnv, claimModelKey, claimSecrets, claimSpendOff, holdRunKey, keyedAtClaim, hostDecisionKeys, learnedDecisionKeys, tierModelKeys, underClaimed, withoutModelKeys } from "./claim-secrets.js";
-import { mcpWhereHeld } from "./mcp-run.js";
+import { claimMetering, mcpWhereHeld } from "./mcp-run.js";
 import { held as runnerSeam, heldSignInReads } from "./held.js";
 import { DECISION_PROVIDER_KEYS, TOOL_PLANE_ENV } from "../tool-plane.js";
 import { decisionProvidersIn } from "../decisions.js";
@@ -73,7 +74,7 @@ import { bookedSpend, cliModelWorked, cliRunMetrics, costBasisOf, endCostOf, run
 import { journalEntries } from "./journal-reader.js";
 import { hashedMcpOf, piShaped } from "../store-reads/journal.js";
 import { replayCallsOver } from "./promotion.js";
-import { learnedFirstWhereHeld } from "./learned-first.js";
+import { type LearnedFirst, learnedFirstWhereHeld } from "./learned-first.js";
 import { pathMetrics } from "./workflow-first.js";
 import { AUDIT_PARKED, withAudit } from "./audit.js";
 import { compareEndOfRun, GRADER, withGrader } from "./compare-end.js";
@@ -81,7 +82,8 @@ import { runPathOverStore } from "../store-reads/learning.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
 import { heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
 import { planBeforeRun, PLAN_PROVIDER } from "../chatgpt-plan.js";
-import { CLAUDE_LOGIN_PROVIDER, loginBeforeRun, loginCli, loginForRun, withClaudeLogin } from "../claude-login.js";
+import { CLAUDE_LOGIN_PROVIDER, loginBeforeRun, loginByToken, loginCli, loginForRun, type RunLogin, withClaudeLogin } from "../claude-login.js";
+import { heldTokenLogin } from "../claude-login-token.js";
 import { heldSpecOf } from "./held-run.js";
 import { loopComputerOf } from "./computer-channel.js";
 import { githubAppAccess } from "./github-app.js";
@@ -93,6 +95,7 @@ import { monidForClaim, withMonid } from "./monid-run.js";
 import { verifyPlacedProject, movedSkillFiles } from "../source-sync/claim.js";
 import { projectCheckpointForRun } from "./project-checkpoint.js";
 import { sourceAuxiliaryAdmitter } from "../source-sync/auxiliary.js";
+import { routeTrace } from "../otel/genai.js";
 
 /** The shared claim-time computer types live on the base spec (adapter-run-spec.ts), re-exported for this module's API. */
 export type { ClaimComputer, ClaimDeps, ClaimLaunch, ComputerForClaim } from "./adapter-run-spec.js";
@@ -121,6 +124,13 @@ async function modelsOf(entry: HarnessEntry, env: NodeJS.ProcessEnv, ref: string
   const chosen = await runModels(env, ref, ["default"], entry.id);
   if (!chosen.model) throw new Error(`${entry.id} has no model here.`);
   return { model: chosen.model, models: chosen.models as unknown as AdapterNeeds["models"], unpriced: chosen.unpriced };
+}
+
+/** A held run's model, its model refused at its create (hold.refused): named as its revision names it (heldModelOf),
+ *  chosen by nothing, in no catalog, unpriced. */
+function heldChoice(ref: string | undefined): Awaited<ReturnType<typeof modelsOf>> {
+  const model = heldModelOf(ref);
+  return { model, models: { getModel: () => undefined }, unpriced: new Set([model.modelId]) };
 }
 
 /** A harness's facts for a run on `model`: on a model the route translates onto its wire (an Ollama model), its own tool
@@ -186,7 +196,7 @@ export async function cliCapModel(entry: HarnessEntry & { facts: AdapterFacts },
 export function cliRunEnv(env: NodeJS.ProcessEnv | undefined, data: string, claimed: NodeJS.ProcessEnv = {}, plane?: RunLaunch["plane"], runKey?: ClaimModelKey, claim?: Pick<Claim, "runId" | "turn" | "attempt">): NodeJS.ProcessEnv {
   // A run with its own model key: that key alone, in the variables its route sends (claimModelEnv, never enumerable), and
   // the claim's request metadata beside it (request-metadata.ts, never enumerable either).
-  const out = claimModelEnv(env ?? {}, claimed, runKey, claim);
+  const out = claimModelEnv(env ?? {}, [claimed], runKey, claim);
   Object.defineProperty(out, DATA_ENV, { value: data, enumerable: true, writable: true, configurable: true });
   delete out[TOOL_PLANE_ENV];
   if (plane && Object.keys(plane).length) Object.defineProperty(out, TOOL_PLANE_ENV, { value: JSON.stringify(plane), enumerable: true, writable: true, configurable: true });
@@ -254,6 +264,25 @@ async function rmEmptyParents(parents: readonly string[]): Promise<void> {
       if (code !== "ENOENT") throw error;
     }
   }
+}
+
+/** The login a run starts on: Claude Code's login on this machine, where the owner turned it on for claude-agent here
+ *  (claude-login.ts), the run carrying only where it is, its CLI saying it is signed in before the run starts. A run that
+ *  brought its own key (`keyed`) runs on that key, and a run in a sandbox place on the model keys. A run's own process (no
+ *  seal key: a user of its own, which cannot open the login's folder) goes on its runner's reader of the login's access
+ *  token alone (held.ts claudeLogin), each token it hands held by `hold` (the redactors) and this process's own; its CLI
+ *  then never gets a refresh token. Such a process never reads the login's setting itself: whether its run is on the
+ *  login is its claim's one read (run-child-host.ts staysInRunner), which its runner hands down, so a turn-on after the
+ *  claim never moves it onto a login the claim did not check (a user of its own, a process runner on the same folder).
+ *  Nor could it: the setting names the machine by the id in the server's data folder (claude-login.ts machineId), which
+ *  the run's user can neither read nor make there. The runner's answer is the one decision (none: not on the login; a
+ *  login other than AgentRun's own folder is refused there, in LOGIN_NOT_HANDED's words). A run in the runner itself (a
+ *  seal key) reads the setting here. */
+export async function runLoginOf(deps: Pick<CliSpecDeps, "store" | "data" | "env" | "sealKey">, keyed: boolean, name: string | undefined, place: { readonly mode: string }, hold: (values: string[]) => void): Promise<RunLogin | undefined> {
+  if (keyed) return undefined;
+  if (deps.sealKey) return loginForRun(deps.store.settings, deps.data, deps.env ?? {}, name, place);
+  const handed = await runnerSeam()?.claudeLogin();
+  return handed && heldTokenLogin(handed, hold);
 }
 
 /**
@@ -357,7 +386,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // Before the session opens: a refusal (a granted tool its pin does not hold, a pinned meta tool) ends the run in its words.
   // A credential the claim opens mid-run (a GitHub App token, a saved or per_run server's) joins the run's redactors.
   const hold = (values: string[]) => { for (const redact of [...(run.redact ? [heldRedactor(run.redact)] : []), cut]) redact.hold(values); };
-  const mcp = await mcpWhereHeld({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => runFolder(deps.data, runRow.agentId, claim.runId), launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, capped: launch.maxCostUsd !== undefined, media: { env: deps.env, web, slots: deps.saveSlots } });
+  const mcp = await mcpWhereHeld({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => runFolder(deps.data, runRow.agentId, claim.runId), launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, ...claimMetering(deps, web, launch) });
   // The claim's MCP goes to the loop, which lets it go; a build that throws lets it go itself.
   holds.hold({ passed: mcp });
 
@@ -389,6 +418,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   holds.hold({ checkout });
   // A run's own process copies nothing: its runner placed them before the process started (run-child-host.ts).
   if (!(deps.sealKey === undefined && runnerSeam())) await placeRunInputs(deps.data, claim.runId, ws.workspace, filesToCopy(launch), messageText(launch.input));
+  await seedEvalFiles(ws.workspace, fakes?.files);
   // The run's skills and its learning seed laid before its computer exists, as the pi spec lays them (adapter-run-spec.ts):
   // on Archil the computer's mount takes the disk's write delegation, and a lay over the disk's file API after it is
   // refused (409) while the mount holds it.
@@ -408,6 +438,9 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // The run's computer, from the one shared claim-time function (the pi spec takes the same): none for a runner place.
   // It throws computer_unavailable (nothing made) when the computer cannot be had: the run fails in its words.
   const claimSignal = run.stopped ?? run.signal;
+  // An earlier claim's deny turned the run's computer off for the run (computerTurnedOff): this claim starts none, and
+  // ends the one a park kept (turnedOff).
+  const offAlready = await computerTurnedOff(deps.journal(claim), context);
   const computer = await deps.computerForClaim(
     // The runner holding the claim, as the pi spec hands it: a computer kept that only it can reach again is pinned to it.
     { runId: claim.runId, epoch: claim.epoch, claim, agentId: runRow.agentId, revisionId: runRow.revisionId, place: launch.place, ...(run.incarnation ? { holder: { runner: claim.runner, incarnation: run.incarnation } } : {}) },
@@ -421,7 +454,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     // Whether an earlier claim made the run a computer of its own is the run's journal's to say (hadComputer), as the pi
     // spec asks it. The computer a park kept, attached again, brings its mount credential with it (inheritMount). Its
     // screen's recording (computer.record) goes in the run's recordings folder, as the pi spec's does.
-    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, refuseKind: cliRefusesKind, recordings: { folder: recordingsFolder(deps.data, runRow.agentId, claim.runId), say: (words) => run.phase?.(words) }, hadComputer: () => hadComputer(deps.journal(claim), context), stopRun: stopRunWith((refusal) => run.ledger.pause(refusal)), ...(run.ledger ? { compute: { ledger: { paid: run.ledger.paid, pause: (refusal: Refusal) => run.ledger.pause(refusal), judges: () => run.ledger.judges?.() ?? true }, env: deps.env } } : {}), ...(claimSignal ? { signal: claimSignal } : {}), ...(archil ? { revokeMount: () => archil.revoke(), inheritMount: () => archil.inherit() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onStarting: (said) => run.phase?.(computerStartingWords(said)), onConnected: (said) => run.phase?.(computerReadyWords(said)), onComputerNote: (words) => run.phase?.(words) } : {}) },
+    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, refuseKind: cliRefusesKind, ...(offAlready ? { turnedOff: offAlready } : {}), recordings: { folder: recordingsFolder(deps.data, runRow.agentId, claim.runId), say: (words) => run.phase?.(words) }, hadComputer: () => hadComputer(deps.journal(claim), context), stopRun: stopRunWith((refusal) => run.ledger.pause(refusal)), ...(run.ledger ? { compute: { ledger: { paid: run.ledger.paid, pause: (refusal: Refusal) => run.ledger.pause(refusal), judges: () => run.ledger.judges?.() ?? true }, env: deps.env } } : {}), ...(claimSignal ? { signal: claimSignal } : {}), ...(archil ? { revokeMount: () => archil.revoke(), inheritMount: () => archil.inherit() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onStarting: (said) => run.phase?.(computerStartingWords(said)), onConnected: (said) => run.phase?.(computerReadyWords(said)), onComputerNote: (words) => run.phase?.(words) } : {}) },
   );
   holds.hold({ computer });
   const loopComputer = loopComputerOf(computer.computer, computer.held, computer.made);
@@ -459,7 +492,9 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // A start whose seed failed tells the run nothing: it is never asked what to keep (learning-end.ts drops it).
   const laid = start && !seedFailed(start) ? laidLearned(body.instructions ?? "", start.section) : (body.instructions ?? "");
   const check = movedProject ? undefined : await entry.skillCheck?.();
-  const { system: instructions, native } = await systemOf(laid, currentSkills, ws.workspace, check, { onDemand: movedProject || readsFiles(granted) });
+  // A computer the claim did not start (every tool of it set to deny: ClaimComputer.off) has its kind's skill named to no one.
+  const skills = computer.off ? withoutKindSkill(currentSkills, body.skills ?? {}, settingOfDefinition(body)?.computer.kind) : currentSkills;
+  const { system: instructions, native } = await systemOf(laid, skills, ws.workspace, check, { onDemand: movedProject || readsFiles(granted) });
   const guidance = effortGuidance(launch.effort);
 
   // The run's model (the launch's, pinned at start, else the revision's) and its adapter, as main builds them, on the
@@ -480,10 +515,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     holdClaimed(redact, claimed);
     if (runKey) holdRunKey(redact, runKey);
   }
-  // Claude Code's login on this machine, where the owner turned it on for claude-agent here (claude-login.ts): the run
-  // carries only where it is, and its CLI says it is signed in before the run starts. A run that brought its own key
-  // runs on that key, and a run in a sandbox place on the model keys.
-  const login = keyed ? undefined : await loginForRun(deps.store.settings, deps.data, deps.env ?? {}, name, launch.place);
+  const login = await runLoginOf(deps, keyed, name, launch.place, hold);
   const env = withClaudeLogin(cliRunEnv(deps.env, deps.data, claimed, launch.plane, runKey, claim), login);
   // A plan-billed recipe's keys saved for its harness alone (harness-keys.ts), opened at each claim for this run's harness
   // and no other (a run's own process asks its runner, which opens its claim's own: held.ts harnessKeys), held by the
@@ -497,21 +529,35 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // is chosen, so it never falls to its owner's sign-in (a row counted at its claim may be gone, or not open, by now).
   // A person's claim that laid none keeps its session on the sign-in (or on nothing) for good: a trigger's message the
   // claim takes later is refused in it (personOnly), keys saved since or not, as no new claim opens them.
-  const recipeKeys = name === undefined ? undefined : recipeKeysOf(deps.env ?? {}, name);
+  const recipe = name === undefined ? undefined : planRecipeOf(deps.env ?? {}, name);
+  const recipeKeys = recipe?.keys;
   let personOnly: string | undefined;
-  if (name !== undefined && recipeKeys?.length) {
+  if (recipe !== undefined && recipeKeys?.length) {
     for (const key of recipeKeys) delete env[key];
-    const opened = deps.sealKey ? await openHarnessKeys(deps.store, deps.sealKey, name, recipeKeys) : ((await runnerSeam()?.harnessKeys()) ?? {});
+    const opened = deps.sealKey ? await openHarnessKeys(deps.store, deps.sealKey, recipe) : ((await runnerSeam()?.harnessKeys(recipe.digest)) ?? {});
     hold(Object.values(opened));
     if (recipeKeys.every((key) => typeof opened[key] === "string" && opened[key] !== "")) layHarnessKeys(env, opened);
     else if (!personStarted(launch)) throw new ClaimRefused(RECIPE_SIGN_IN_PERSON_ONLY);
     else personOnly = RECIPE_TURN_PERSON_ONLY;
   }
-  const chosen = await modelsOf(entry, env, modelAskOf(launch.model, body.model));
-  await planBeforeRun(env, chosen.model);
-  if (login && entry.priceModel(env, chosen.model).provider === CLAUDE_LOGIN_PROVIDER) {
-    const claude = await import("@parcha/agentrun-harness-claude");
-    await loginBeforeRun(login, loginCli(claudeCliIn(installDirOf(deps.data, name!), claude.claudeAgentPlatform()), env), (cli, at) => claude.claudeLoginStatus(cli, at, env.PATH ? { path: env.PATH } : {}));
+  // A held run its model kept from running at its create (hold.refused) chooses no model here, and no plan or login is
+  // asked before it: its model's route chooses no model and reads no key, its adapter's provider being the stand-in that
+  // refuses every request in the create's words (adapters.ts providerOf), never a key or the Claude login. Its claim lays
+  // only the keys any claim of the run lays (its tools', a key handed with it: claimSecrets lays it no model key) and
+  // takes no learning step (below), so it holds the computer on a host with no key for its model, and a key saved since
+  // runs a new run, never this one.
+  const heldRefusal = launch.hold?.refused?.message;
+  const chosen = heldRefusal !== undefined ? heldChoice(body.model) : await modelsOf(entry, env, modelAskOf(launch.model, body.model));
+  if (heldRefusal === undefined) {
+    await planBeforeRun(env, chosen.model);
+    if (login && entry.priceModel(env, chosen.model).provider === CLAUDE_LOGIN_PROVIDER) {
+      // On a token: one read before the run, refused in its words (signed out, near its end) as the CLI's own check is.
+      if (loginByToken(login)) await login.token();
+      else {
+        const claude = await import("@parcha/agentrun-harness-claude");
+        await loginBeforeRun(login, loginCli(claudeCliIn(installDirOf(deps.data, name!), claude.claudeAgentPlatform()), env), (cli, at) => claude.claudeLoginStatus(cli, at, env.PATH ? { path: env.PATH } : {}), { data: deps.data });
+      }
+    }
   }
   // The CLI's own process (the Claude CLI, Codex, OpenCode) starts under the no_new_privs pi's commands start under
   // (adapters.ts' noNewPrivsPrefix): on Linux, setpriv --no-new-privs, so a setuid program or file capability it
@@ -523,7 +569,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // A run's own process reads no trigger's row: its runner answers the zone (held.ts runZone).
   const seam = deps.sealKey ? undefined : runnerSeam();
   const zone = seam ? await seam.runZone() : await runZone(deps.store, launch.inputOrigin);
-  const built =await entry.adapter(env, { zone, model: chosen.model, models: chosen.models, unpriced: chosen.unpriced, ...(confine ? { confine } : {}), ...(native.length ? { skills: native } : {}), ...(now ? { now: () => now } : {}) });
+  const built =await entry.adapter(env, { zone, model: chosen.model, models: chosen.models, unpriced: chosen.unpriced, ...(heldRefusal !== undefined ? { heldRefusal } : {}), ...(confine ? { confine } : {}), ...(native.length ? { skills: native } : {}), ...(now ? { now: () => now } : {}) });
   // The harness's own session options, its private directory and its working directory (SessionIO's dir and cwd, which
   // every CLI adapter reads), set on its open here, so the loop lends the session nothing of its own. A turn that ends on
   // the CLI's own error names the harness first, as main words it (harness-app.ts: `<harness>: <error>`), so the run's
@@ -607,7 +653,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // A pinned MCP tool is held to the arguments its listing in the run's pin declares (mcp.argumentsOf). The harness's
   // native tools are named by its facts on the owner's table (factsOf: a module's harness's too).
   const ownerFacts = factsOf(deps.env, name);
-  const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace, tools.shell, { ...(mcp ? { effectOf: (name: string) => mcp.effectOf(name), argumentsOf: (name: string) => mcp.argumentsOf(name) } : {}), facts: ownerFacts });
+  const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace, tools.shell, { ...(mcp ? { effectOf: (name: string) => mcp.effectOf(name), argumentsOf: (name: string) => mcp.argumentsOf(name) } : {}), facts: ownerFacts, turnedOff: offAlready !== undefined, onComputerOff: (kind) => recordComputerOff(run.harness, kind) });
 
   // The run's tools: the kernel registry's hands on its Workspace (and computer); the web host tools it is granted
   // (web_fetch, web_search, monid), bound by the binding the pi spec uses (webHostTools) on the ToolHost the pi spec builds
@@ -627,7 +673,10 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // its MCP tools in the loop's one catalog seam; their answers pass the redactors as the web tools' do.
   const monid = monidForClaim(revisionRow.monidPin ?? undefined, { ...claimed }, () => ws.workspace, claim.runId, () => launch.maxCostUsd !== undefined, fakes?.monid);
   const catalog = withMonid(mcp, monid && { ...monid, tools: monid.tools.map((tool) => answersCut(tool, held)) });
-  const webNames = granted.filter(isWebHostTool);
+  // A run whose web_search is the harness's own search (ownSearchRuns: native on its plane, Claude's WebSearch, Codex's
+  // live search) is not handed the host's web_search beside it.
+  const webGranted = ownSearchRuns(ownerFacts, launch.plane) ? granted.filter((name) => name !== "web_search") : granted;
+  const webNames = webGranted.filter(isWebHostTool);
   let learnedTool: Awaited<ReturnType<typeof learnedWorkflowHostTool>>;
   let webTools: HostTool[] = [];
   let life: ReturnType<typeof hostLifecycle> | undefined;
@@ -647,18 +696,19 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // five); while the folder's revision replays or is held, the champion (the digest promoted last) serves in its place
   // (laidFor). Or the one the money rule stopped, over the agent's past runs (costLineOf): the agent takes the run.
   // The audits that finished since are written first (runner/audit.ts settleAudits): a hold they make decides this claim.
-  // Model spend beside the run that its caller's key does not pay for (claimSpendOff): a shadow audit and a replay check
-  // are skipped, in words, where the run brought its own key or the server holds none.
-  const spendOff = await claimSpendOff({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, runKey);
   const admitAuxiliary = runnerSeam() ? undefined : sourceAuxiliaryAdmitter(deps.store, { data: deps.data, sealKey: deps.sealKey, env: deps.env, control: { ...deps.mountControl, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) } });
-  const audits = { store: deps.store, agentId: runRow.agentId, revisionId: runRow.revisionId, context, log, folder: learningFolder, shown, sealKey: deps.sealKey, spendOff, admitAuxiliary };
+  // None for a held run, so its claim reads no saved key for spend beside it (claimSpendOff).
+  const audits = heldRefusal === undefined ? { store: deps.store, agentId: runRow.agentId, revisionId: runRow.revisionId, context, log, folder: learningFolder, shown, sealKey: deps.sealKey, spendOff: await claimSpendOff({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, runKey), admitAuxiliary } : undefined;
   // A replay run's or a shadow's grader (runner/compare-end.ts), on a proxy of its own beside the CLI session's, as pi's
   // is (adapter-run-spec.ts graderRouteOf), reached through the session's port while it is up. None: compared whole.
-  const graderRoute = launch.replay || launch.audit ? await graderRouteOf(body as { learning?: unknown }, keyed, runKey, claimed, cut, log, deps, [held, cut], claim) : undefined;
+  // None for a held run its model kept from running, whose model runs nowhere.
+  const graderRoute = (launch.replay || launch.audit) && heldRefusal === undefined ? await graderRouteOf(body as { learning?: unknown }, keyed, runKey, claimed, cut, log, deps, [held, cut], claim) : undefined;
   if (graderRoute) tierRoutes.set(GRADER as Tier, graderRoute);
   // Each step writes the store or reads another run (runner/learned-first.ts): in a run's own process its runner takes
-  // them (held.ts learnedFirst), over the workflows it reads at the claim's seed itself.
-  const learned = await learnedFirstWhereHeld(deps, { agentId: runRow.agentId, runId: claim.runId, revisionId: runRow.revisionId, kind: revision.kind, outputSchema: (revision.body as { outputSchema?: unknown }).outputSchema, launch, context, log, folder: learningFolder, shown, spendOff, admitAuxiliary }, seedLaid?.workflows ?? []);
+  // them (held.ts learnedFirst), over the workflows it reads at the claim's seed itself. A held run its model kept from
+  // running takes none of them, as on pi: it settles no audit and starts no replay run, starts on no workflow, and its
+  // tool runs none (so no learned tier is routed, below).
+  const learned: LearnedFirst = audits ? await learnedFirstWhereHeld(deps, { agentId: runRow.agentId, runId: claim.runId, revisionId: runRow.revisionId, kind: revision.kind, outputSchema: (revision.body as { outputSchema?: unknown }).outputSchema, launch, context, log, folder: learningFolder, shown, spendOff: audits.spendOff, admitAuxiliary }, seedLaid?.workflows ?? []) : { choice: {}, workflows: [] };
   const firstChoice = learned.choice;
   // A replay run's call nodes: reads live through a cache seeded from the graded run's recorded calls, writes only ever
   // answered from that recording (runner/promotion.ts replayCallsOver, learn/replay-calls.ts).
@@ -668,7 +718,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   const workflows = learned.workflows;
   const learns = learnsWorkflows(revision.kind, workflows);
   if (webNames.length || learns) {
-    // The claim's keys (above, already held by the redactors), a copy of its own for the tools' plane below.
+    // The claim's keys (above, already held by the redactors), a copy of its own for the tools' plane below: its tool and
+    // decision keys alone, since its model keys are not enumerable (claimSecrets), so no spread or spawn of it carries one.
     const toolEnv: NodeJS.ProcessEnv = { ...claimed };
     // The decision keys its learned workflows' typed questions need, as the pi spec reads them (claim-secrets.ts
     // learnedDecisionKeys): onto this copy alone, never the CLI's own environment or its model's (cliRunEnv, above), and
@@ -678,7 +729,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       for (const redact of new Set([held, cut])) holdClaimed(redact, learnedKeys);
       underClaimed(toolEnv, learnedKeys);
     }
-    handedKeys = runnerSecrets(toolEnv);
+    // The model keys the claim opened among them, read by name from `claimed`: the run never learns those either.
+    handedKeys = runnerSecrets(toolEnv, runnerSecrets(claimed));
     // The run's resolved tool plane (its web tools' providers), as the pi spec hands it its web tools.
     delete toolEnv[TOOL_PLANE_ENV];
     if (launch.plane && Object.keys(launch.plane).length) toolEnv[TOOL_PLANE_ENV] = JSON.stringify(launch.plane);
@@ -687,7 +739,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       const liveAt = await claimLiveAt(deps, claim.runId);
       const host = buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: held, launch, toolSettings: body.toolSettings, ...(fakes ? { fakes } : {}), ...reach, ...(liveAt ? { liveAt } : {}), ...(deps.saveSlots ? { saveSlots: deps.saveSlots } : {}) });
       gate.askedOn(host);
-      webTools = await webHostTools(host, granted, ctx);
+      webTools = await webHostTools(host, webGranted, ctx);
     }
     if (learns) {
       // A tier the learned workflows name that the host has a model of, routed as pi's are (learnedTierRoutes: the run's
@@ -697,7 +749,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       // A run with its own model key: these tiers carry that key too, and no saved key is read.
       const tierKeys = keyed ? {} : await tierModelKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, learnedTiers(workflows));
       for (const redact of new Set([held, cut])) holdClaimed(redact, tierKeys);
-      const modelEnv = claimModelEnv(deps.env, { ...claimed, ...tierKeys }, runKey, claim);
+      const modelEnv = claimModelEnv(deps.env, [tierKeys, claimed], runKey, claim);
       const tiers = new Map<string, LearnedTier>();
       for (const [tier, routed] of await learnedTierRoutes(workflows, modelEnv, (tier) => deps.routeOf(undefined, modelEnv, tier, PI_WIRES, undefined, cut))) {
         if ("why" in routed) tiers.set(tier, { why: routed.why });
@@ -737,7 +789,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // from. With a grader it compares its answer with the other one (runner/compare-end.ts), on its own cap.
   // A run the promoted workflow answered (path `workflow`) starts its shadow audit after the step, drawn at 1 in k (runner/audit.ts
   // withAudit): at its end, so the shadow's cap is what the run's own left.
-  const endOfRun = launch.replay || launch.audit ? withGrader(compareEndOfRun(launch, { store: deps.store, folder: learningFolder, log, ...(run.redact ? { redact: run.redact } : {}) }), graderRoute ? { model: graderRoute.model, models: () => run.ledger.models(GRADER, GRADER) } : undefined) : withAudit(learningEndOfRun(launch, {
+  // A held run (no audits) takes none, as on pi.
+  const endOfRun = audits === undefined ? undefined : launch.replay || launch.audit ? withGrader(compareEndOfRun(launch, { store: deps.store, folder: learningFolder, log, ...(run.redact ? { redact: run.redact } : {}) }), graderRoute ? { model: graderRoute.model, models: () => run.ledger.models(GRADER, GRADER) } : undefined) : withAudit(learningEndOfRun(launch, {
     store: deps.store,
     data: deps.data,
     ...(deps.env ? { env: deps.env } : {}),
@@ -768,6 +821,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     // The answer's schema: a miss is asked again once (adapter-loop.ts, the output contract's retry), as on pi.
     ...(body.outputSchema !== undefined ? { outputSchema: body.outputSchema } : {}),
     ...(cap ? { cap } : {}),
+    // Its model, as its GenAI trace names it (otel/genai.ts); its requests' host is its CLI's own to choose.
+    trace: routeTrace({ named: `${chosen.model.provider}/${chosen.model.modelId}`, model: chosen.model.modelId }),
     // The run's MCP for a harness with its own client (mcp-run.ts), with its monid endpoints beside it (monid-run.ts):
     // the catalog tools the session mounts; absent when none.
     ...(catalog ? { mcp: catalog } : {}),

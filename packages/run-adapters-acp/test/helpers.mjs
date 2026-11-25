@@ -50,7 +50,8 @@ export const scratch = () => mkdtempSync(join(ROOT, `t${n++}-`));
 export const GOOSE_ALLOW_FILE = Object.freeze({ path: '.config/goose/permission.yaml', form: 'goose-permission' });
 export const GOOSE_ANNOUNCES = Object.freeze({ tool: '_meta.goose.toolCall.toolName' });
 export const CURSOR_ANNOUNCES = Object.freeze({ tool: 'rawInput.toolName', server: 'rawInput.providerIdentifier', args: 'rawInput.args' });
-const shipped = (style) => (style === 'cursor' ? { announces: CURSOR_ANNOUNCES, quirks: { permissionTie: 'title' } } : { announces: GOOSE_ANNOUNCES, allowFile: GOOSE_ALLOW_FILE });
+export const AGY_ANNOUNCES = Object.freeze({ tool: 'name', prefix: 'mcp_agentrun_', extras: Object.freeze(['toolSummary']) });
+const shipped = (style) => (style === 'cursor' ? { announces: CURSOR_ANNOUNCES, quirks: { permissionTie: 'title' } } : style === 'antigravity' ? { announces: AGY_ANNOUNCES, quirks: { permissionTie: 'title' } } : { announces: GOOSE_ANNOUNCES, allowFile: GOOSE_ALLOW_FILE });
 
 /** The fake agent as a recipe: its config written to `dir`. `fake`: the fake's config (fake-acp-agent.mjs). */
 export function fakeRecipe(dir, fake, recipe = {}) {

@@ -78,8 +78,7 @@ async function installed(t, data, built, recipe) {
   const fetch = async (url) => (String(url) === URL_OF ? new Response(built.bytes, { status: 200 }) : new Response("no", { status: 404 }));
   await recipes.installRecipe(recipes.loadRecipe(file).recipe, file, data, { fetch });
   const { recipe: loaded, sha256: recipeSha } = recipes.loadRecipe(file);
-  const at = recipes.releaseFor(loaded, PLATFORM);
-  recipes.writeChecked(data, loaded.id, { recipe: recipeSha, binary: recipes.pinnedDigest(data, loaded, at, PLATFORM).sha256, tree: recipes.pinnedTree(data, loaded, at, PLATFORM).sha256, version: loaded.release.version, platform: PLATFORM });
+  recipes.writeChecked(data, loaded.id, { recipe: recipeSha, tree: recipes.recipeInstall(data, loaded, file, process.env, PLATFORM).tree.sha256, platform: PLATFORM });
   return file;
 }
 

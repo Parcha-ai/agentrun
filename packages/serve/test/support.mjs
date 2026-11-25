@@ -22,6 +22,7 @@ import { FAUX_VENDOR_API_ENV } from "../dist/tools.js";
 import { resolve } from "node:path";
 import { openSqliteStore, openStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
+import { runCensus } from "../dist/run-census.js";
 import { maxRunsOf } from "../dist/host.js";
 import { claimInstallsStopped } from "../dist/harness-install.js";
 import { runnerMemory } from "../dist/runner/memory-claim.js";
@@ -41,6 +42,15 @@ import { stranger } from "./fixtures/stranger.mjs";
   process.env.XDG_CONFIG_HOME = config;
   process.on("exit", () => rmSync(config, { recursive: true, force: true }));
 }
+
+// Every test's server reads session files from an empty home of its own, never the runner's HOME (GET /v2/wrapped and
+// setup's import read `sessionsHome`): a long history there would make a sweep of every GET route read it all. A test
+// of those reads passes its own `sessionsHome`.
+const SESSIONS_HOME = { home: mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-home-")) };
+process.on("exit", () => rmSync(SESSIONS_HOME.home, { recursive: true, force: true }));
+// The same empty home is HOME, as the config home above: a CLI a test starts with the test's environment ({ ...process.env })
+// starts a server that reads sessions under HOME, and must not read the runner's.
+process.env.HOME = SESSIONS_HOME.home;
 
 // No test asks an Ollama this machine may run (ollama-provider.ts lists its models, and with no key one is the default),
 // whatever env it passes: the process's own switch (OLLAMA_OFF_ENV) turns every Ollama off. A test of Ollama clears it
@@ -436,6 +446,8 @@ export async function startInProcessRunner(data, { faux, githubApi, githubWeb, g
     runner = startRunner({
       ...(runnerTiming ?? {}),
       store,
+      // Each end's census of what its caller handed the run, as the CLI's runner beside it makes it (runner/beside.ts).
+      census: runCensus(store, { data: deps.data, sealKey, env }),
       loops: maxRunsOf(process.env, switches.maxRuns),
       // And by memory, as the CLI's runners claim (memory-claim.ts): each waiting run weighed by its harness against this
       // host's memory, read now (a test's process.constrainedMemory stand-in, set before serve(), is its container limit).
@@ -490,7 +502,7 @@ export async function serve(t, { harnesses: asked, runner: wantRunner = true, co
   if (harnesses) await linkHarnesses(data, harnesses === true ? {} : harnesses);
   // mcpLoopback: a test's server is a local install, as its operator would say (its fake MCP servers are on loopback);
   // a case that wants the hosted rule passes mcpLoopback: false.
-  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", mcpLoopback: true, ...options });
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", mcpLoopback: true, sessionsHome: SESSIONS_HOME, ...options });
   // A runner beside the server on the same data (the CLI start's server-and-runner): it claims and runs what the server
   // starts, so a test reads a run that runs, not one that queues forever. `runner: false` leaves it off for a test that
   // wants the server alone. Its loop is the switch's dispatch (learning wired; pi/workflow the server's own, E2r).
