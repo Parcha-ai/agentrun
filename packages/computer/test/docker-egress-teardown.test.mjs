@@ -15,6 +15,11 @@ const SPEC = { image: "debian:bookworm-slim", lifetimeMs: 600_000, network: { al
 const ref = (name) => ({ id: idOf(name), name });
 const proxyOf = (name) => `${name}-egress`;
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+/** Waits until `check` holds, inside the 60 s the fake holds a step for: each docker call is a process of its own, slow
+ *  on a loaded host. */
+const until = async (check) => {
+	for (const end = Date.now() + 50_000; Date.now() < end && !check(); ) await wait(20);
+};
 
 test("release(delete) removes the egress proxy even when the computer's own removal never ends, and fails naming the computer", async () => {
 	const { provider, names } = fakeDocker({ ...allowed({ name: A, allow: ALLOW }), removing: { [A]: null } });
@@ -29,7 +34,7 @@ test("a release that stops between its docker calls (the process that ran it end
 	try {
 		const pending = provider.release(ref(A), "delete");
 		// The release's first look for the proxy, held: this is as far as a release that ended here got.
-		for (let i = 0; i < 500 && !calls().some((args) => args[0] === "ps"); i++) await wait(20);
+		await until(() => calls().some((args) => args[0] === "ps"));
 		assert.ok(calls().some((args) => args[0] === "ps"), "the release looked for the proxy");
 		const there = names();
 		assert.ok(!there.includes(proxyOf(A)) || there.includes(A), `a release cut here leaves the proxy with no computer: ${there.join(", ")}`);
@@ -49,7 +54,7 @@ test("create() cut off by its caller after the computer ran removes the proxy ev
 	try {
 		const pending = provider.create(SPEC, { requestId, signal: controller.signal });
 		// The computer ran, and create waits on its daemon's hello: the run is cut there.
-		for (let i = 0; i < 500 && !calls().some((args) => args[0] === "exec"); i++) await wait(20);
+		await until(() => calls().some((args) => args[0] === "exec"));
 		assert.ok(names().includes(name) && names().includes(proxyOf(name)), `the computer and its proxy ran: ${names().join(", ")}`);
 		controller.abort();
 		const made = await pending;

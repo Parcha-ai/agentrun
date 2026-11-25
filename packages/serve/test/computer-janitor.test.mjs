@@ -289,7 +289,7 @@ test("the runner's start removes the egress proxies and volumes this server's ru
   const said = [];
   const runner = await startRunnerProcess({ dataDir: dir, name: "runner-docker", janitor: true, warn: (line) => said.push(line) });
   t.after(() => runner.close());
-  await until(async () => said.some((line) => line.includes("past their deadline: computer-0000000000ee")), "the start's sweep of docker").catch((error) => assert.fail(`${error.message}; said: ${said.join(" | ")}`));
+  await until(async () => said.some((line) => line.includes("past their deadline: computer-0000000000ee")), "the start's sweep of docker", 30_000).catch((error) => assert.fail(`${error.message}; said: ${said.join(" | ")}`));
   assert.deepEqual(fake.names().sort(), ["computer-0000000000cc-egress", "computer-0000000000dd", "computer-0000000000dd-egress"]);
   assert.deepEqual(fake.volumeNames().sort(), ["computer-0000000000cc-egress", "computer-0000000000dd-egress"]);
 });
