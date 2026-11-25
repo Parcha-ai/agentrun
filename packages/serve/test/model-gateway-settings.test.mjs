@@ -215,7 +215,7 @@ test("a claimed run's tools never get the saved gateway's key: its model routes 
   const runEnv = withSavedGateway({ PATH: "/bin" }, { v: 1, base_url: "https://gateway.example", ids: "as_named", models: { default: "m-1" }, key: CANARY });
   const tools = await claimSecrets({ store, sealKey: randomBytes(32), env: runEnv }, { kind: "agentic", body: { tools: [] } }, { model: { provider: "agent-model", modelId: "m-1" } });
   assert.equal(JSON.stringify(Object.getOwnPropertyNames(tools).map((name) => tools[name])).includes(CANARY), false, "not on the tools' environment");
-  assert.equal(claimModelEnv(runEnv, tools, undefined).AGENT_MODEL_API_KEY, CANARY, "the model routes read it");
+  assert.equal(claimModelEnv(runEnv, [tools], undefined).AGENT_MODEL_API_KEY, CANARY, "the model routes read it");
 });
 
 test("the saved key is sealed with its origin: read beside an address of another origin, between a change's two writes or after the second failed, it is not handed on", async (t) => {

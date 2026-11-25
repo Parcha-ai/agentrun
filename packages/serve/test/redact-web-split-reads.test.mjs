@@ -9,7 +9,8 @@ import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { redacted, redactedAnswer, redactedCall, withheldWhole } from "../dist/key-refusal.js";
 import { answersCut } from "../dist/runner/adapter-run-spec.js";
 import { secretRedactor } from "../dist/runner/redact.js";
-import { CALL_RESULT_CHARS, scrubUrls, timelineOf, webCut } from "../dist/timeline/index.js";
+import { CALL_RESULT_CHARS, scrubUrls, timelineOf, webCut, webShownOf } from "../dist/timeline/index.js";
+import { namesTried } from "../dist/timeline/web-calls.js";
 import { assistant, call, result, user } from "./timeline-lib-support.mjs";
 import { storeOn, T0 } from "./store-helpers.mjs";
 
@@ -125,6 +126,18 @@ test("a web call's property names that cut to one are all kept, the later ones n
   assert.equal(names.length, 3001);
   assert.equal(new Set(names).size, 3001);
   assert.equal(names.at(-1), "[redacted] (3000)");
+});
+
+test("a fetched page's names that read as one once their URLs' query values are elided cost one try each, not one per earlier name", () => {
+  // Any page can write these: no held value is needed, the timeline's read elides each name's query value (scrubUrls).
+  const names = 3000;
+  const page = JSON.stringify({ url: URL_A, title: "t", text: "x", ...Object.fromEntries(Array.from({ length: names }, (_, i) => [`https://pages.invalid/a?q=${i}`, i])) });
+  namesTried.count = 0;
+  const shown = webShownOf("web_fetch", page, scrubUrls);
+  assert.ok(shown);
+  assert.equal(Object.keys(JSON.parse(shown(100))).filter((name) => name.startsWith("https://pages.invalid/")).length, names);
+  // Counted from 2 for each name, the n-th tries n names: about names²/2 in all.
+  assert.ok(namesTried.count <= 3 * (names + 3), `${namesTried.count} names tried for ${names + 3} names, over ${3 * (names + 3)}`);
 });
 
 /** A store holding run-1, whose journal is one web_search call answered `text`, then a final answer. */

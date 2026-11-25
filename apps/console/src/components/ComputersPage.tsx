@@ -38,7 +38,7 @@ export const RUNNING_POLL_MS = 10_000;
 
 /** Settings → Computers: first, the computers up now (RunningSection: each run still going that has a computer). Then the person's own computers paired with this server (Pair a computer: a code to type into
  *  the computer's driver with this server's address, one page for every OS; each paired computer as its hello says it,
- *  online or offline, the run that holds it and until when, and Remove). Each is
+ *  online or offline, the run that holds it, on which runner, and until when, the server's note of a refused relay, and Remove). Each is
  *  also a provider of its kind in GET /v2/computers, and shows here once, in its own section. Then every kind of computer
  *  an agent can be given, as GET /v2/computers answers it. A kind this
  *  server doesn't offer says the server's why. Each provider shows under every kind it serves, with its secrets as
@@ -308,14 +308,15 @@ function PairedSection({ v2, paired, reload }: { v2: Client; paired: PairedCompu
                     <p className="flex flex-wrap items-center gap-2">
                       <span data-provider className="font-mono text-prose font-semibold">{computer.name}</span>
                       {computer.online ? <Chip tone="success">Online</Chip> : <Chip tone="muted">Offline</Chip>}
-                      {computer.held_by_run && <Chip tone="active">In use by run {runLabel(computer.held_by_run)}</Chip>}
+                      {computer.held_by_run && <Chip tone="active">In use by run {runLabel(computer.held_by_run)}{computer.held_on ? ` on ${computer.held_on}` : ""}</Chip>}
                       {computer.unserved && <Chip tone="warning">No agent can use it</Chip>}
                       {computer.runs_refused && <Chip tone="warning">No run here can use it</Chip>}
                     </p>
                     {computer.unserved && <p data-unserved role="status" className="mt-1.5 text-small text-warning-text">{computer.unserved}</p>}
                     {computer.runs_refused && <p data-runs-refused role="status" className="mt-1.5 text-small text-warning-text">{computer.runs_refused}</p>}
+                    {computer.hold_note && <p data-hold-note role="status" className="mt-1.5 text-small text-warning-text">{computer.hold_note}</p>}
                     {computer.held_by_run && computer.held_until && <p data-held-until className="mt-1.5 text-small text-muted-foreground">The run's hold ends by {when(computer.held_until)}, released or not.</p>}
-                    {!computer.online && <p className="mt-1.5 font-mono text-small text-muted-foreground">Open its driver on that computer: it dials this server.</p>}
+                    {!computer.online && !computer.hold_note && <p className="mt-1.5 font-mono text-small text-muted-foreground">Open its driver on that computer: it dials this server.</p>}
                     <p data-machine className="mt-2 text-small text-muted-foreground">{machineOf(computer)}</p>
                     {computer.groups.length > 0 && <p data-offers className="mt-1 text-small text-muted-foreground">{offersOf(computer)}</p>}
                     <p className="mt-1 text-small text-muted-foreground">{`Driver ${computer.driver} · paired ${when(computer.created_at)}${computer.seen_at ? ` · last attached ${when(computer.seen_at)}` : ""}`}</p>

@@ -1,13 +1,13 @@
 // A race: 2 to 4 runs of one task, each on its own harness and model, grouped by one `race:<label>` label and watched side
 // by side (#/races/<label>). The label is the race's only record: no table, no server change. A lane's own label
 // (`lane:<n>`) orders the lanes, never their start times, so the order says nothing about who started first.
-import { defaultTools, type ToolOffer } from "./agentForm";
+import { type Definition, defaultTools, type ToolOffer } from "./agentForm";
 import type { Client } from "./client";
 import { tokensWords } from "./format";
 import { uuid } from "./idempotency";
 import { newAgentPlace, type Places } from "./place";
 import { steps } from "./timeline";
-import type { Run, RunCreateInline, TimelineRow } from "./v2";
+import type { Run, TimelineRow } from "./v2";
 
 /** The label key that names a race, and the one that numbers its lanes. */
 export const RACE_KEY = "race";
@@ -64,25 +64,25 @@ export type LaneChoice = { harness: string; model: string };
 export type LaneKit = { tools: string[] };
 
 /** A lane's kit, a new agent's on this server: every tool its harness runs here (agentForm.ts defaultTools), with the
- *  shell where the server's default place is a box. The inline route grants a definition no tools of its own, so the
- *  lane names them, or it has nothing to do its task with. It names no place: the server puts the run where it puts a
- *  new agent with these tools (its defaultPlaceOf, mirrored in agentForm.ts): the box only with a shell tool, so an
- *  adapter harness's lane (no shell) runs on the runner, where Claude Code's login works and no box starts. */
+ *  shell where the server's default place is a box. It names no place: the server puts the agent where it puts a new
+ *  agent with these tools (its defaultPlaceOf, mirrored in agentForm.ts): the box only with a shell tool, so an adapter
+ *  harness's lane (no shell) runs on the runner, where Claude Code's login works and no box starts. */
 export function laneKit(harness: string, offers: ToolOffer[], places: Places | null | undefined): LaneKit {
   return { tools: defaultTools(harness, offers, newAgentPlace(places)) };
 }
 
-/** The inline run (POST /v2/runs) lane `n` of race `label` starts: an agent of its own (external `race-<label>-<n>`),
- *  one revision per harness and model (the external version), so a lane changed after a refusal is a new revision, never
- *  a conflict with the one refused. Every lane gets the race's task (its input) and cap, the same short instructions (a
- *  definition needs instructions or a workflow), its kit (laneKit), and the labels the race view reads. */
-export function laneStart(label: string, n: number, lane: LaneChoice, task: string, maxCostUsd: number, kit: LaneKit): RunCreateInline {
+/** What a lane sends: its agent (POST /agents) and a run of it (POST /agents/{id}/runs). */
+export type LaneStart = { agent: Definition & { id: string }; run: { input: { content: string }; max_cost_usd: number; labels: Record<string, string> } };
+
+/** What lane `n` of race `label` sends. The agent is the console's own, as any it makes, so it is edited, archived and
+ *  deleted as one. Its id is the lane's and its `pick` (the form's number for this lane's harness, model and tools), so
+ *  the same lane sent again after a lost answer names the agent that answer made (409 agent_exists), and a lane picked
+ *  again after a refusal makes a new one. Every lane gets the race's task (the run's input) and cap, the same short
+ *  instructions (a definition needs instructions or a workflow), its kit (laneKit), and the labels the race view reads. */
+export function laneStart(label: string, n: number, lane: LaneChoice, task: string, maxCostUsd: number, kit: LaneKit, pick: number): LaneStart {
   return {
-    external: { source: "console", kind: "race", id: `race-${label}-${n}`, version: `${lane.harness} ${lane.model}` },
-    definition: { name: `Race ${label}, lane ${n}`, instructions: LANE_INSTRUCTIONS, harness: lane.harness, model: lane.model, tools: kit.tools },
-    input: { content: task },
-    max_cost_usd: maxCostUsd,
-    labels: { [RACE_KEY]: label, [LANE_KEY]: String(n), harness: lane.harness, model: lane.model },
+    agent: { id: `race-${label}-${n}-${pick}`, version: 1, name: `Race ${label}, lane ${n}`, instructions: LANE_INSTRUCTIONS, harness: lane.harness, model: lane.model, tools: kit.tools, skills: [] },
+    run: { input: { content: task }, max_cost_usd: maxCostUsd, labels: { [RACE_KEY]: label, [LANE_KEY]: String(n), harness: lane.harness, model: lane.model } },
   };
 }
 

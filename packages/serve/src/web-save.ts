@@ -11,6 +11,7 @@ import { mediaSeconds } from "./media-duration.js";
 import { clip, URL_MAX } from "@parcha/agentrun-web";
 import { forModel } from "./result.js";
 import { isWorkspaceError, type Workspace, workspaceErrorWords } from "./workspace/index.js";
+import { type Slots as SaveSlots, slots as saveSlots } from "./slots.js";
 
 export const WEB_SAVE_TOOL = "web_save";
 /** The most bytes a saved file may have. */
@@ -41,48 +42,9 @@ export type SaveOptions = Omit<PublicFetchOptions, "maxBytes"> & { maxBytes?: nu
  *  that at the peak when it does not (publicDownload). So a runner's downloads hold at most 800 MiB at 200 MiB a file,
  *  about 1.6 GiB when no host states a length; Mode 2's pieced writes (runner/big-writes.ts) can add 800 MiB more. */
 export const SAVE_CONCURRENCY = 4;
-/** Slots for downloads, handed out first come first served. `take` answers the slot's release (once), or rejects with
- *  the signal's reason if it aborts first, leaving the queue. */
-export type SaveSlots = { readonly size: number; readonly busy: number; readonly waiting: number; take(signal: AbortSignal): Promise<() => void> };
-export function saveSlots(size: number): SaveSlots {
-  let busy = 0;
-  const queue: Array<() => void> = [];
-  const releaser = () => {
-    let done = false;
-    return () => {
-      if (done) return;
-      done = true;
-      // The slot goes straight to the next waiter, so busy only drops when no one waits.
-      const next = queue.shift();
-      if (next) next();
-      else busy--;
-    };
-  };
-  return {
-    size,
-    get busy() { return busy; },
-    get waiting() { return queue.length; },
-    take(signal) {
-      if (signal.aborted) return Promise.reject(signal.reason);
-      if (busy < size) {
-        busy++;
-        return Promise.resolve(releaser());
-      }
-      return new Promise((resolve, reject) => {
-        const leave = () => {
-          queue.splice(queue.indexOf(grant), 1);
-          reject(signal.reason);
-        };
-        const grant = () => {
-          signal.removeEventListener("abort", leave);
-          resolve(releaser());
-        };
-        queue.push(grant);
-        signal.addEventListener("abort", leave, { once: true });
-      });
-    },
-  };
-}
+/** Slots for downloads (slots.ts): `take` answers the slot's release, or rejects with the signal's reason if it aborts
+ *  first. Re-exported here under web_save's names for its callers. */
+export { type Slots as SaveSlots, slots as saveSlots } from "./slots.js";
 /** The runner's one gate: at most SAVE_CONCURRENCY downloads at once per runner, across its runs. A run in the runner's
  *  own process takes it here; a run in a process of its own takes it over its channel (runner/save-slots.ts). */
 export const SERVER_SLOTS = saveSlots(SAVE_CONCURRENCY);

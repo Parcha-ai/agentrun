@@ -14,26 +14,40 @@
 // the machine's name, and it fetches this server's computerd build with the same token (GET /v2/computers/daemon,
 // DAEMON_FETCHES_PER_MINUTE a minute per machine).
 //
-// One process: the hub is this process's memory, so a run takes a paired computer only from a runner in the process
-// that holds its socket (the CLI's start, with its runner beside the server). A runner of its own process refuses one in
-// words (workspace/attached-computers.ts ONE_PROCESS_WORDS); a second server on the same store is refused at its start.
+// One process: the hub is this process's memory, so a run takes a paired computer from a runner in the process that
+// holds its socket (the CLI's start, with its runner beside the server), or from a runner in a process of its own that
+// relays (below). A runner of its own process with no relay refuses one in words (workspace/attached-computers.ts
+// ONE_PROCESS_WORDS); a second server on the same store is refused at its start.
 //
 // A hosted machine a runner in a process of its own made (dial-relay.ts) dials this server the same way, and its token's
 // row names that runner: the server relays its socket to the runner's attach listener (`relay`), where these same routes
 // (`owner`, the runner's) take it into the runner's hub. The relay is two sockets, each with this module's limits (a frame
 // over MAX_LINE_BYTES, a binary frame, ATTACH_IDLE_MS of silence), joined frame by frame: a close of either closes the
 // other with its code.
+//
+// A paired computer goes the same way while a run holds it (workspace/paired-route.ts): its route, a server setting the
+// run's claim takes, names the runner whose hub holds the box for the run. The server's upgrade reads the route: none
+// keeps the socket in this hub; a live one relays it to that runner's listener, whose routes take it only while the route
+// still names that runner and incarnation; a stale one (its runner gone or restarted) is 503 in words, the route dropped
+// and its words kept on the row. The server's tick (every PAIRED_ROUTE_MS) compares each route with where the box's
+// socket is, and closes a socket that is in the wrong place with 1001: the box's own redial lands where its route says.
 import { createHash, randomBytes, randomInt } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { ATTACH_CLOSE, ATTACH_HEARTBEAT_MS, ATTACH_IDLE_MS, ATTACH_PATH, ATTACH_SUBPROTOCOL, type AttachHub, type AttachSocket, type ComputerKind, type ComputerOs, type HelloResult, hostedDaemonPath, MAX_LINE_BYTES, type MachineTokens, mintedComputer, newMachineToken, type PairedComputer, PAIRING_CODE_PATTERN, PAIRING_CODE_TTL_MS, PROTOCOL_VERSION, RUN_LABEL } from "@parcha/agentrun-computer";
 import { WebSocket, WebSocketServer } from "ws";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
-import { dialHost, LIVE_PROOF_HEADER, type LiveReach, relayProof } from "./live-reach.js";
+import { dialHost, LIVE_PROOF_HEADER, type LiveReach, RELAY_CONNECT_MS, relayProof } from "./live-reach.js";
 import { peerKey } from "./owner.js";
 import { registerNotSecretWrite } from "./secret-writes.js";
-import { type MintedTokenRow, type MintedTokens, type PairedComputerRow, type PairedComputers, RUNNER_STALE_MS, type RunnerRow, type Runners } from "./store/index.js";
+import { liveRelays } from "./runner/presence.js";
+import { type MintedTokenRow, type MintedTokens, type PairedComputerRow, type PairedComputers, RUNNER_STALE_MS, type Runners } from "./store/index.js";
 import { pairedOf, PAIRED_ID_PREFIX, RUNNER_APART_WORDS, servesNoKind } from "./workspace/attached-computers.js";
+import { allRoutes, EMPTY_ROUTE, notAttachedWords, PAIRED_BRING_MS, replaceRoute, ROUTE_COMES_BACK, type Route, type RouteSettings, routeKeyOf, routeRestartedWords, seeRoute } from "./workspace/paired-route.js";
+
+// Where they were first defined, for the readers that import them from here.
+export { liveRelays, type RelayRow } from "./runner/presence.js";
+export { RELAY_CONNECT_MS } from "./live-reach.js";
 
 // Routes under /computers, where a provider's keys are a secret write (computers.ts): these three write none of the
 // owner's secrets, so the API token may call them as the console's session does.
@@ -183,8 +197,8 @@ export type PairedView = {
   serves: string[];
   /** When it serves no kind, why, naming what its driver lacks (servesNoKind); null when it serves one. */
   unserved: string | null;
-  /** On a server whose runner runs in a process of its own, why no run here can use it and how to start the server
-   *  instead (RUNNER_APART_WORDS); null where its runs can. */
+  /** On a server whose runner runs in a process of its own and relays no computer's socket, why no run here can use it
+   *  and what to do instead (RUNNER_APART_WORDS); null where its runs can. */
   runs_refused: string | null;
   os: string;
   os_version: string | null;
@@ -194,9 +208,15 @@ export type PairedView = {
   groups: string[];
   features: Record<string, true | { off: string }>;
   driver: string;
+  /** Its socket is up: in this server's hub, or relayed to the runner that holds its run. */
   online: boolean;
   held_by_run: string | null;
   held_until: string | null;
+  /** The runner whose hub holds it for the run (its route, workspace/paired-route.ts); null while this server's hub does. */
+  held_on: string | null;
+  /** Why a run's route of it was refused or dropped, in words (its runner gone or restarted, it did not reach the runner
+   *  in time), until it next attaches here; null when there is nothing to say. */
+  hold_note: string | null;
   /** The pairing (createPairing's id) whose code paired it. */
   pairing: string;
   created_at: string;
@@ -211,12 +231,17 @@ function featuresOf(features: unknown): Record<string, true | { off: string }> {
   return Object.fromEntries(Object.entries(features).flatMap(([name, value]): [string, true | { off: string }][] => (value === true ? [[name, true]] : isObject(value) && typeof value.off === "string" ? [[name, { off: value.off }]] : [])));
 }
 
-export function pairedView(row: PairedComputerRow, hub: Pick<AttachHub, "online" | "since" | "hello" | "claimed" | "deadline">, serves: readonly string[], runnerApart = false): PairedView {
+/** `row` as GET /v2/computers lists it. `runsRefused`: why no run here can use it (RUNNER_APART_WORDS), or null. `route`:
+ *  its route (workspace/paired-route.ts), which names the run that holds it and the runner whose hub does while a run's
+ *  claim routed it there; `relayed`: its socket is relayed to that runner now (createAttachRoutes relayedPaired). */
+export function pairedView(row: PairedComputerRow, hub: Pick<AttachHub, "online" | "since" | "hello" | "claimed" | "deadline">, serves: readonly string[], runsRefused: string | null = null, route: Route = EMPTY_ROUTE, relayed = false): PairedView {
   const paired = row.hello as Partial<HelloResult>;
   // Kind and os stay what it paired as (another is refused at hello); the rest follows its driver's live hello.
   const hello: Partial<HelloResult> = hub.hello(row.id) ?? paired;
-  const holder = hub.claimed(row.id)?.[RUN_LABEL] ?? null;
-  const until = holder === null ? undefined : hub.deadline(row.id);
+  // A run's hold on a runner's hub is the route's; on this server's hub, the hub's own.
+  const routed = route.runner !== null;
+  const holder = routed ? route.run : (hub.claimed(row.id)?.[RUN_LABEL] ?? null);
+  const until = routed ? (route.until === null ? undefined : new Date(route.until)) : holder === null ? undefined : hub.deadline(row.id);
   // The hub has the socket live before the store keeps its hello (attach's accept, then seen), so a list between the
   // two reads the hub's time: an online computer is never listed as never seen.
   const seen = hub.since(row.id)?.getTime() ?? row.seenAt;
@@ -226,7 +251,7 @@ export function pairedView(row: PairedComputerRow, hub: Pick<AttachHub, "online"
     kind: String(paired.kind ?? ""),
     serves: [...serves],
     unserved: serves.length === 0 ? (servesNoKind(row.name, paired) ?? null) : null,
-    runs_refused: runnerApart ? RUNNER_APART_WORDS : null,
+    runs_refused: runsRefused,
     os: String(paired.os ?? ""),
     os_version: typeof hello.osVersion === "string" ? hello.osVersion : null,
     device: hello.device && typeof hello.device.maker === "string" && typeof hello.device.model === "string" ? { maker: hello.device.maker, model: hello.device.model } : null,
@@ -235,9 +260,11 @@ export function pairedView(row: PairedComputerRow, hub: Pick<AttachHub, "online"
     groups: Array.isArray(hello.groups) ? hello.groups.map(String) : [],
     features: featuresOf(hello.features),
     driver: hub.hello(row.id)?.version ?? row.driver,
-    online: hub.online(row.id),
+    online: hub.online(row.id) || relayed,
     held_by_run: holder,
     held_until: until === undefined ? null : until.toISOString(),
+    held_on: route.runner,
+    hold_note: route.refused,
     pairing: row.pairingId,
     created_at: new Date(row.createdAt).toISOString(),
     seen_at: seen === null ? null : new Date(seen).toISOString(),
@@ -300,7 +327,9 @@ export function attachSocketOf(ws: WebSocket, timing: AttachTiming = { heartbeat
 }
 
 export interface AttachRoutesOptions {
-  readonly store: { readonly pairedComputers: PairedComputers; readonly mintedTokens: MintedTokens };
+  /** `settings`: where the paired computers' routes are (workspace/paired-route.ts); absent, no paired computer is
+   *  routed (every one is this hub's on the server, and none is taken on a runner's listener). */
+  readonly store: { readonly pairedComputers: PairedComputers; readonly mintedTokens: MintedTokens; readonly settings?: RouteSettings };
   readonly hub: AttachHub;
   /** Told each event worth a line: a computer paired, attached, refused at its hello, removed; a machine's token minted
    *  or revoked. Never a code or a token, nor a token's hash. */
@@ -308,9 +337,13 @@ export interface AttachRoutesOptions {
   /** An API-only server's (api-only.ts): the socket takes a hosted machine's minted token alone, and a paired computer's
    *  (the console's) is 401 as one it does not know. */
   readonly machinesOnly?: boolean;
-  /** No runner in this server's process (ServeOptions.runnerApart): a pairing code and the pair answer say no run here
-   *  can use a paired computer, and how to start the server so one can (RUNNER_APART_WORDS). */
+  /** No runner in this server's process (ServeOptions.runnerApart): while no runner relays (`relayed`), a pairing code
+   *  and the pair answer say no run here can use a paired computer, and what to do so one can (RUNNER_APART_WORDS).
+   *  Not runnerApart, the route tick stops at its read while no route row is there and no box is relayed. */
   readonly runnerApart?: boolean;
+  /** Whether a runner in a process of its own relays now (server.ts relayed), read at each pairing code and pair answer;
+   *  absent: none does. */
+  readonly relayed?: () => Promise<boolean>;
   /** The socket's liveness timing: the protocol's unless a test gives its own. */
   readonly timing?: AttachTiming;
   readonly now?: () => number;
@@ -323,23 +356,14 @@ export interface AttachRoutesOptions {
   /** The server's relay of a dial whose token another runner minted: where each runner's attach listener answers, and
    *  the hosts it may dial with the proxy's proof (live-reach.ts). Without it such a dial is refused 503. */
   readonly relay?: { readonly runners: Pick<Runners, "live">; readonly reach: LiveReach };
+  /** On the server: the runner beside it in its process (Serve.beside, runner/beside.ts), whose run's route keeps a
+   *  paired box in this hub. A route that names it and its incarnation is this hub's: the upgrade takes the box here,
+   *  and the tick moves it here (from a runner apart that still has it) and never away. */
+  readonly beside?: { readonly runner: string; readonly incarnation: string };
 }
 
 /** A request's Bearer token, or undefined. */
 export const bearerOf = (authorization: string | undefined): string | undefined => /^Bearer (\S+)$/.exec(String(authorization ?? ""))?.[1];
-
-/** A runner's row that says where its relay answers. */
-export type RelayRow = RunnerRow & { readonly host: string; readonly port: number };
-
-/** The runners whose relay takes dials now: their rows seen within RUNNER_STALE_MS on the store's clock (Runners.live,
- *  the database's on Postgres), never one process's, that say where their relay answers. The server relays a dial only
- *  to one of these, and says a dial provider is served while one answers at a host it dials (server.ts relayed). */
-export async function liveRelays(runners: Pick<Runners, "live">): Promise<RelayRow[]> {
-  return (await runners.live(RUNNER_STALE_MS)).filter((row): row is RelayRow => row.host !== null && row.port !== null);
-}
-
-/** How long the server waits for a runner's attach listener to take a relayed dial. */
-export const RELAY_CONNECT_MS = 10_000;
 
 /** A close code one side of a relay may send the other: its own, or 1001 for one a peer may not send (1005, 1006). */
 const sendable = (code: number): number => ((code >= 1000 && code <= 1014 && code !== 1004 && code !== 1005 && code !== 1006) || (code >= 3000 && code <= 4999) ? code : ATTACH_CLOSE.going);
@@ -373,14 +397,68 @@ const machineGone = (machine: string): string => `${machine} was deleted: its to
  *  provider mints. */
 export function createAttachRoutes(options: AttachRoutesOptions) {
   const { store, hub, log = () => {}, now = Date.now } = options;
-  const runsRefused = options.runnerApart === true ? RUNNER_APART_WORDS : null;
+  /** Why no run here can use a paired computer, read at each answer: on a server whose runner runs apart, while no
+   *  runner relays. */
+  const runsRefused = async (): Promise<string | null> => (options.runnerApart !== true || (await options.relayed?.()) === true ? null : RUNNER_APART_WORDS);
   const paired = store.pairedComputers;
   const minted = store.mintedTokens;
+  const settings = store.settings;
   const tries = pairTries(now);
   const fetches = new MinuteLimit(DAEMON_FETCHES_PER_MINUTE, undefined, now);
   const sockets = new Set<WebSocket>();
   let closing = false;
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_LINE_BYTES, clientTracking: false, handleProtocols: () => ATTACH_SUBPROTOCOL });
+
+  // The server's side of the paired computers' routes (no owner: this is the server, not a runner's listener).
+  /** Each paired computer whose socket is in this hub, by its id: the socket the tick closes for a move. */
+  const home = new Map<string, WebSocket>();
+  /** Each paired computer whose socket this server relays, by its id: the box's socket and the runner it goes to. */
+  const relayedPaired = new Map<string, { readonly ws: WebSocket; readonly runner: string; readonly incarnation: string }>();
+  /** Each paired computer the tick closed for a move, and when: mid-redial until PAIRED_BRING_MS after, never refused
+   *  as not attached meanwhile. */
+  const moving = new Map<string, number>();
+  /** Each paired computer whose relayed dial is opening now. */
+  const dialing = new Set<string>();
+  /** The paired computers (not removed) by id, with their names: read once at the first tick, then kept by this
+   *  server's own pair and remove answers (only the server writes paired rows). */
+  let known: Map<string, string> | undefined;
+  /** The pair (its name) and remove (null) answers given while that first read is pending, by computer id: its snapshot
+   *  may predate them (on Postgres a read and a write are separate connections), so they go over it before it is
+   *  `known`. A read that starts after an answer's commit sees it, so an answer given while no read is pending needs no
+   *  keeping, and a read that fails leaves the answers to the next one. */
+  let early: Map<string, string | null> | undefined;
+  /** Whether a tick is running: the interval does not wait on one, and a tick then does nothing. */
+  let ticking = false;
+
+  /** A pair (`name`) or a remove (null) answered: told to `known`, or kept for the first read while it is pending. */
+  function note(id: string, name: string | null): void {
+    if (known === undefined) return void early?.set(id, name);
+    if (name === null) known.delete(id);
+    else known.set(id, name);
+  }
+
+  /** The paired computers by id: `known`, or the first read, with the answers given meanwhile over its snapshot. */
+  async function knownNow(): Promise<Map<string, string>> {
+    if (known !== undefined) return known;
+    early = new Map();
+    try {
+      const read = new Map<string, string>((await paired.list()).map((row) => [row.id, row.name]));
+      for (const [id, name] of early) {
+        if (name === null) read.delete(id);
+        else read.set(id, name);
+      }
+      // In the same step as the answers' merge, so none given after it misses `known`.
+      known = read;
+      return read;
+    } finally {
+      early = undefined;
+    }
+  }
+
+  /** Whether `route` is a run's of the runner beside this server, in this process (`beside`): the box's place is this
+   *  hub. A route of an earlier server's runner beside it names another runner (a new name and incarnation at each
+   *  start), so it is stale as any runner's that is gone. */
+  const besideRoute = (route: Route): boolean => options.beside !== undefined && route.runner === options.beside.runner && route.incarnation === options.beside.incarnation;
 
   /** POST /v2/computers/pairings: a new code, good once until it expires. The store keeps its hash. */
   async function createPairing(): Promise<{ id: string; code: string; expires_at: string; runs_refused: string | null }> {
@@ -388,7 +466,7 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
     const id = `pairing-${randomBytes(9).toString("base64url")}`;
     const expiresAt = now() + PAIRING_CODE_TTL_MS;
     await paired.addCode(id, sha256Hex(code), expiresAt);
-    return { id, code, expires_at: new Date(expiresAt).toISOString(), runs_refused: runsRefused };
+    return { id, code, expires_at: new Date(expiresAt).toISOString(), runs_refused: await runsRefused() };
   }
 
   /** POST /v2/computers/pair: the code traded for the computer's id and token, once; `address` the try's source. */
@@ -406,14 +484,22 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
     const made = await paired.pair(sha256Hex(code), { id, name, hello: hello as unknown as Record<string, unknown>, labels: {}, tokenSha256: sha256Hex(token) });
     if (!made) throw new ApiError("not_found", "no such pairing code: make a new one on the console's Computers page");
     log("computer_paired", { computer: id, kind: hello.kind, os: hello.os, driver: hello.version });
-    return { computer: id, token, runs_refused: runsRefused };
+    note(id, name);
+    return { computer: id, token, runs_refused: await runsRefused() };
   }
 
-  /** DELETE /v2/computers/{id}: its token revoked, a run's hold on it ended, its socket closed with 4401. */
+  /** DELETE /v2/computers/{id}: its token revoked, a run's hold on it ended, its socket closed with 4401 (a relayed one
+   *  too, which the relay carries to the runner's hub), and its route gone. */
   async function remove(id: string): Promise<void> {
     const row = await paired.get(id);
     if (row === undefined || row.revokedAt !== null || !(await paired.revoke(id))) throw new ApiError("not_found", `no paired computer ${id}: GET /v2/computers lists them under paired`);
-    hub.revoke(id, `${row.name} was removed from this server's console: pair it again to use it`);
+    const gone = `${row.name} was removed from this server's console: pair it again to use it`;
+    hub.revoke(id, gone);
+    relayedPaired.get(id)?.ws.close(ATTACH_CLOSE.unauthorized, closeReason(gone));
+    note(id, null);
+    // Not in the revoke's transaction: a route left by a crash between the two names a revoked computer, whose token
+    // the upgrade refuses anyway, and the tick removes it.
+    await settings?.remove(routeKeyOf(id)).catch((error: unknown) => log("computer_route_unremoved", { computer: id, error: error instanceof Error ? error.message : String(error) }));
     log("computer_removed", { computer: id });
   }
 
@@ -442,23 +528,38 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
   };
 
   /** Who dials the attach socket, as the hub takes it: a paired computer by its id, or a minted machine by its name (its
-   *  hello must say the kind, os and arch it was minted for). `good` reads its row again once the hub has the socket;
-   *  `seen` keeps a paired computer's hello. Its log lines are `<event>_attached` and `<event>_refused`. */
-  type Dialer = { computer: PairedComputer; field: string; event: string; gone: string; good: () => Promise<boolean>; seen: (hello: HelloResult) => Promise<void> };
+   *  hello must say the kind, os and arch it was minted for). `standing` reads its row again once the hub has the socket:
+   *  `revoked` (its token is gone: closed with 4401 in `gone`, pair again) or, for a paired computer on a runner's
+   *  listener, `moved` (its route no longer names this runner and incarnation: closed with 1001 in `moved`, its redial
+   *  routed, its pairing kept). `seen` keeps a paired computer's hello. Its log lines are `<event>_attached` and
+   *  `<event>_refused`. */
+  type Dialer = { computer: PairedComputer; field: string; event: string; gone: string; moved: string; standing: () => Promise<"good" | "revoked" | "moved">; seen: (hello: HelloResult) => Promise<void> };
   const pairedDialer = (row: PairedComputerRow): Dialer => ({
     computer: pairedOf(row),
     field: "computer",
     event: "computer",
     gone: `${row.name} was removed from this server's console: pair it again to use it`,
-    good: async () => (await paired.get(row.id))?.revokedAt === null,
+    moved: `${row.name} moved while it said hello: its route left this runner, and its redial goes where the route says`,
+    // Revoked first: a removal drops the route too. On a runner's listener the route must still name this runner and
+    // incarnation; one that left it (a cancelled bring, a run moved) is a move, never a revoke.
+    standing: async () => ((await paired.get(row.id))?.revokedAt !== null ? "revoked" : options.owner !== undefined && !(await routedHere(row.id)) ? "moved" : "good"),
     seen: (hello) => paired.seen(row.id, hello as unknown as Record<string, unknown>),
   });
+
+  /** Whether paired computer `id`'s route names this runner's listener (`owner`) and its incarnation. */
+  async function routedHere(id: string): Promise<boolean> {
+    if (options.owner === undefined || settings === undefined) return false;
+    const { route } = await seeRoute(settings, id);
+    return route.runner === options.owner.runner && route.incarnation === options.owner.incarnation;
+  }
   const machineDialer = (row: MintedTokenRow): Dialer => ({
     computer: mintedComputer(row.machine, { kind: row.kind as ComputerKind, os: row.os as ComputerOs, arch: row.arch }),
     field: "machine",
     event: "machine",
     gone: machineGone(row.machine),
-    good: async () => (await minted.get(row.machine))?.revokedAt === null,
+    // A minted machine has no route, so it never moves: good or revoked.
+    moved: machineGone(row.machine),
+    standing: async () => ((await minted.get(row.machine))?.revokedAt === null ? "good" : "revoked"),
     seen: async () => undefined,
   });
 
@@ -472,27 +573,91 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
    *  this incarnation; on the server, one its own process minted (another runner's is relayed, `relayDial`). */
   const takes = (row: MintedTokenRow): boolean => (options.owner ? row.runner === options.owner.runner && row.incarnation === options.owner.incarnation : row.runner === null);
 
-  /** The server's relay of machine `row`'s dial (its token `bearer`) to the runner that minted it: refused 503 in words
-   *  that name its run, then the machine (dialOf), never its token, where that runner keeps no fresh listener, restarted
-   *  since, answers at a host this server does not dial, or does not take it; else the machine's socket is joined to one
-   *  opened to the runner's listener with the proxy's proof for this token, runner and incarnation, each with this
-   *  module's limits. */
-  async function relayDial(row: MintedTokenRow, bearer: string, req: IncomingMessage, socket: Duplex, head: Buffer, deny: (status: string, words?: string) => void): Promise<void> {
+  /** A dial the server relays to a runner's listener, as relayDial takes it: the runner and incarnation its row names,
+   *  the dial in words (never its token), how that runner stands to it ("made it", "holds it"), the tails of the words
+   *  for a runner gone and one restarted, its log event's prefix and fields, `keep` (where its refusal is kept: `stale`
+   *  when the runner is gone or restarted), and `joined`, told the box's socket once the relay is up. */
+  type RelayTarget = {
+    readonly runner: string;
+    readonly incarnation: string | null;
+    readonly subject: string;
+    readonly whose: string;
+    readonly gone: string;
+    readonly restarted: string;
+    readonly event: "machine" | "computer";
+    readonly named: Record<string, string>;
+    readonly keep: (words: string, stale: boolean) => Promise<unknown>;
+    readonly joined?: (ws: WebSocket) => void;
+  };
+
+  /** A minted machine's dial to the runner that minted it, as relayDial takes it. */
+  const machineTarget = (row: MintedTokenRow, bearer: string): RelayTarget => {
     const runner = row.runner!;
-    const named = { ...(row.run !== null ? { run: row.run } : {}), machine: row.machine, runner };
-    const refuse = (why: string) => {
-      const words = `${dialOf(row)}: ${why}`;
-      log("machine_relay_refused", { ...named, why: words });
+    return {
+      runner, incarnation: row.incarnation, subject: dialOf(row), whose: "made it",
+      gone: "its run makes a new machine at its next claim",
+      restarted: `runner ${runner}, which made it, restarted since, and the machine was its earlier process's: its run makes a new machine at its next claim`,
+      event: "machine", named: { ...(row.run !== null ? { run: row.run } : {}), machine: row.machine, runner },
       // Kept on the token's row, where the runner's create waiting for this machine reads it (MachineTokens refused).
-      void minted.refuse(sha256Hex(bearer), words).catch((error: unknown) => log("machine_relay_refusal_unkept", { ...named, error: error instanceof Error ? error.message : String(error) }));
+      keep: (words) => minted.refuse(sha256Hex(bearer), words),
+    };
+  };
+
+  /** A paired computer's dial to the runner its route names (`seen`: the route's row as read), as relayDial takes it. A
+   *  stale route's refusal drops the route and keeps its words on the row, in one compare-and-set on the row as read: the
+   *  box's next dial lands in this hub. Any other refusal is noted on the route, so the claim waiting for the box ends at
+   *  once in its words. */
+  const pairedTarget = (row: PairedComputerRow, route: Route, seen: unknown): RelayTarget => {
+    const runner = route.runner!;
+    return {
+      runner, incarnation: route.incarnation, subject: `${row.name} (${row.id}) for run ${route.run}`, whose: "holds it",
+      gone: ROUTE_COMES_BACK,
+      restarted: routeRestartedWords(runner),
+      event: "computer", named: { run: route.run!, computer: row.id, runner },
+      // Read again and tried again while the row still holds this route (the tick may have noted it meanwhile).
+      keep: async (words, stale) => {
+        let was = seen;
+        let current = route;
+        for (let tried = 0; tried < 5; tried++) {
+          if (await replaceRoute(settings!, row.id, was, stale ? { ...EMPTY_ROUTE, refused: words } : { ...current, refused: words })) return true;
+          const again = await seeRoute(settings!, row.id);
+          if (again.route.runner !== route.runner || again.route.incarnation !== route.incarnation || again.route.run !== route.run) return false;
+          ({ seen: was, route: current } = again);
+        }
+        return false;
+      },
+      joined: (ws) => {
+        dialing.delete(row.id);
+        relayedPaired.set(row.id, { ws, runner, incarnation: route.incarnation! });
+        ws.once("close", () => {
+          if (relayedPaired.get(row.id)?.ws === ws) relayedPaired.delete(row.id);
+        });
+        // A note an earlier dial left on the route (not attached now) goes, now that the box is there.
+        if (route.refused !== null) void replaceRoute(settings!, row.id, seen, { ...route, refused: null }).catch(() => undefined);
+      },
+    };
+  };
+
+  /** The server's relay of a dial (its token `bearer`) to the runner its row names (`target`): refused 503 in words that
+   *  name the dial (its run, then the machine or the computer), never its token, where that runner keeps no fresh
+   *  listener, restarted since, answers at a host this server does not dial, or does not take it; else the box's socket
+   *  is joined to one opened to the runner's listener with the proxy's proof for this token, runner and incarnation, each
+   *  with this module's limits. */
+  async function relayDial(target: RelayTarget, bearer: string, req: IncomingMessage, socket: Duplex, head: Buffer, deny: (status: string, words?: string) => void): Promise<void> {
+    const { runner, named, event } = target;
+    // Kept before the answer, so whoever reads the row after the 503 (the waiting create, the box's next dial) reads it.
+    const refuse = async (why: string, stale = false): Promise<void> => {
+      const words = `${target.subject}: ${why}`;
+      log(`${event}_relay_refused`, { ...named, why: words });
+      await target.keep(words, stale).catch((error: unknown) => log(`${event}_relay_refusal_unkept`, { ...named, error: error instanceof Error ? error.message : String(error) }));
       deny("503 Service Unavailable", words);
     };
-    if (options.relay === undefined) return refuse(`runner ${runner} made it, and this server relays no dial to a runner`);
+    if (options.relay === undefined) return refuse(`runner ${runner} ${target.whose}, and this server relays no dial to a runner`);
     const at = (await liveRelays(options.relay.runners)).find((row) => row.runner === runner);
-    if (at === undefined) return refuse(`runner ${runner}, which made it, is not running now (no attach listener of its has said it is there for ${RUNNER_STALE_MS / 1000} s): its run makes a new machine at its next claim`);
-    if (at.incarnation !== row.incarnation) return refuse(`runner ${runner}, which made it, restarted since, and the machine was its earlier process's: its run makes a new machine at its next claim`);
+    if (at === undefined) return refuse(`runner ${runner}, which ${target.whose}, is not running now (no attach listener of its has said it is there for ${RUNNER_STALE_MS / 1000} s): ${target.gone}`, true);
+    if (at.incarnation !== target.incarnation) return refuse(target.restarted, true);
     const host = dialHost(at.host, options.relay.reach);
-    if (host === undefined) return refuse(`runner ${runner}, which made it, answers at ${at.host}, which is not one of this server's runners' hosts (AGENTRUN_RUNNER_HOSTS)`);
+    if (host === undefined) return refuse(`runner ${runner}, which ${target.whose}, answers at ${at.host}, which is not one of this server's runners' hosts (AGENTRUN_RUNNER_HOSTS)`);
     const proof = relayProof(options.relay.reach, { tokenSha256: sha256Hex(bearer), runner, incarnation: at.incarnation });
     const upstream = new WebSocket(`ws://${host}:${at.port}${ATTACH_PATH}`, ATTACH_SUBPROTOCOL, {
       headers: { authorization: `Bearer ${bearer}`, [LIVE_PROOF_HEADER]: proof },
@@ -503,13 +668,13 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
       settled = true;
       res.resume();
       upstream.terminate();
-      refuse(`runner ${runner}, which made it, did not take it (HTTP ${res.statusCode})`);
+      void refuse(`runner ${runner}, which ${target.whose}, did not take it (HTTP ${res.statusCode})`);
     });
     upstream.on("error", (error) => {
       if (settled) return;
       settled = true;
       // The library's words name the address and the step, never a header.
-      refuse(`runner ${runner}, which made it, did not answer at ${host}:${at.port} (${error.message})`);
+      void refuse(`runner ${runner}, which ${target.whose}, did not answer at ${host}:${at.port} (${error.message})`);
     });
     upstream.once("open", () => {
       settled = true;
@@ -523,9 +688,24 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
           one.once("close", () => sockets.delete(one));
         }
         joinSockets(ws, upstream, options.timing);
-        log("machine_relayed", named);
+        target.joined?.(ws);
+        log(`${event}_relayed`, named);
       });
     });
+  }
+
+  /** A paired computer's dial on the server, its route read (`seen`, `route`): relayed to the runner the route names,
+   *  marked as dialing (the tick refuses no box mid-dial) until the relay is up or refused. */
+  async function relayPaired(row: PairedComputerRow, route: Route, seen: unknown, bearer: string, req: IncomingMessage, socket: Duplex, head: Buffer, deny: (status: string, words?: string) => void): Promise<void> {
+    dialing.add(row.id);
+    const done = () => void dialing.delete(row.id);
+    socket.once("close", done);
+    try {
+      await relayDial(pairedTarget(row, route, seen), bearer, req, socket, head, (status, words) => (done(), deny(status, words)));
+    } catch (error) {
+      done();
+      throw error;
+    }
   }
 
   /** GET /v2/computers/daemon?arch=: the path of this server's computerd build for `arch`, for the minted machine whose
@@ -547,8 +727,11 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
     void (async () => {
       if (closing) return deny("503 Service Unavailable", "this server is stopping");
       const bearer = bearerOf(req.headers.authorization);
-      const row = !options.machinesOnly && bearer?.startsWith(ATTACH_TOKEN_PREFIX) ? await paired.byToken(sha256Hex(bearer)) : undefined;
-      const machine = row === undefined ? await machineBy(req.headers.authorization) : undefined;
+      const found = !options.machinesOnly && bearer?.startsWith(ATTACH_TOKEN_PREFIX) ? await paired.byToken(sha256Hex(bearer)) : undefined;
+      // On a runner's listener, a paired computer's token is taken only while its route names this runner and incarnation:
+      // any other is one it does not know.
+      const row = found !== undefined && options.owner !== undefined && !(await routedHere(found.id)) ? undefined : found;
+      const machine = found === undefined ? await machineBy(req.headers.authorization) : undefined;
       // Another runner's machine, on the server: relayed to that runner's listener below. On a runner's listener, a token
       // of any other's (another runner's, another incarnation's, the server's) is one it does not know.
       const relayed = machine !== undefined && !options.owner && machine.runner !== null;
@@ -558,24 +741,44 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
       if (!asked.includes(ATTACH_SUBPROTOCOL)) {
         return deny("426 Upgrade Required", `this server speaks ${ATTACH_SUBPROTOCOL}, and the driver asked for ${asked.join(", ") || "no subprotocol"}: update whichever is older`, { "sec-websocket-protocol": ATTACH_SUBPROTOCOL });
       }
+      // A paired computer on the server: its route says where its socket goes (no route, or a run's of the runner beside
+      // this server: this hub).
+      const routed = row !== undefined && !options.owner && settings !== undefined ? await seeRoute(settings, row.id) : undefined;
       if (socket.destroyed || closing) return void socket.destroy();
-      if (relayed) return relayDial(machine, bearer!, req, socket, head, deny);
+      if (relayed) return relayDial(machineTarget(machine, bearer!), bearer!, req, socket, head, deny);
+      if (row !== undefined && routed !== undefined && routed.route.runner !== null && !besideRoute(routed.route)) return relayPaired(row, routed.route, routed.seen, bearer!, req, socket, head, deny);
       wss.handleUpgrade(req, socket, head, (ws) => {
         sockets.add(ws);
         ws.once("close", () => sockets.delete(ws));
         const attach = attachSocketOf(ws, options.timing);
         const { computer, field, event } = dialer;
         options.onSocket?.(computer.id, ws);
+        if (routed !== undefined) {
+          home.set(computer.id, ws);
+          ws.once("close", () => {
+            if (home.get(computer.id) === ws) home.delete(computer.id);
+          });
+        }
         void hub.accept(computer, attach).then(async (said) => {
           if (!said.ok) return log(`${event}_refused`, { [field]: computer.id, code: said.error.code, why: said.error.message });
           // The row read for the token may be older than a removal that committed, and its hub.revoke, while this socket
           // was still being accepted (a Postgres read and write are separate connections): read the row again, now that the
           // socket is the hub's. A removal committing after this read revokes the hub's socket after this accept, closing it.
-          if (!(await dialer.good())) {
+          // A route that left this runner meanwhile (only a runner's listener reads one here) is a move, as the server's
+          // tick closes one: this socket alone closes with 1001 and its driver redials; the pairing is untouched.
+          const standing = await dialer.standing();
+          if (standing === "revoked") {
             hub.revoke(computer.id, dialer.gone);
             return log(`${event}_refused`, { [field]: computer.id, why: "removed while it attached" });
           }
+          if (standing === "moved") {
+            ws.close(ATTACH_CLOSE.going, closeReason(dialer.moved));
+            return log(`${event}_refused`, { [field]: computer.id, why: "its route left this runner while it attached" });
+          }
           await dialer.seen(said.value);
+          // The note a refused or dropped route left (routed.route.refused) goes, now that the box is here; a route of the
+          // runner beside this server stays, its note alone gone.
+          if (routed !== undefined && routed.route.refused !== null) await replaceRoute(settings!, computer.id, routed.seen, { ...routed.route, refused: null }).catch(() => undefined);
           log(`${event}_attached`, { [field]: computer.id, driver: said.value.version });
         }).catch((error: unknown) => {
           log(`${event}_refused`, { [field]: computer.id, why: error instanceof Error ? error.message : String(error) });
@@ -583,6 +786,71 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
         });
       });
     })().catch(() => deny("500 Internal Server Error"));
+  }
+
+  /** The runner paired computer `id`'s socket is relayed to now, or undefined (in this hub, or attached nowhere). */
+  const relayedTo = (id: string): string | undefined => relayedPaired.get(id)?.runner;
+
+  /** Closes a paired computer's socket with 1001 for a move, saying why, and notes it as moving: its driver redials, and
+   *  the upgrade sends it where its route says. */
+  const move = (id: string, ws: WebSocket, why: string): void => {
+    moving.set(id, now());
+    ws.close(ATTACH_CLOSE.going, closeReason(why));
+  };
+
+  /** The server's route tick (every PAIRED_ROUTE_MS, server.ts, its runner apart or beside it): one read of every route
+   *  row, compared with where each box's socket is now (this hub, or the runner it is relayed to, in this process's
+   *  memory). A route of the runner beside this server (besideRoute) says this hub. A socket in the wrong place (here
+   *  with a runner apart's route, relayed to a runner its route no longer names, relayed with no route or with the
+   *  runner beside's) is closed with 1001, its redial routed; a box routed and attached nowhere, neither moving nor
+   *  mid-dial, gets its route noted "not attached now", which ends its claim's wait at once. An empty row, and a row of a
+   *  computer that is no longer paired, goes. Nothing while no computer is paired; with this server's runner beside it
+   *  (not runnerApart), nothing past that one read while no route row is there and no box is relayed. It judges no
+   *  runner's liveness: a stale route is dropped at the box's next upgrade. One tick runs at a time: one called while
+   *  another runs does nothing. */
+  async function tick(): Promise<void> {
+    if (ticking) return;
+    ticking = true;
+    try {
+      await judgeRoutes();
+    } finally {
+      ticking = false;
+    }
+  }
+
+  /** One tick's work (tick). */
+  async function judgeRoutes(): Promise<void> {
+    if (options.owner !== undefined || settings === undefined || closing) return;
+    const known = await knownNow();
+    if (known.size === 0 && relayedPaired.size === 0) return;
+    const rows = await allRoutes(settings);
+    // With its runner beside it, only a runner apart on another host takes a route: the read says whether one did. A
+    // box still relayed counts too, since the drop that ended its route (with no note) removed the row.
+    if (options.runnerApart !== true && rows.length === 0 && relayedPaired.size === 0) return;
+    const at = now();
+    for (const [id, since] of moving) if (at - since > PAIRED_BRING_MS) moving.delete(id);
+    const routes = new Map(rows.map((row) => [row.id, row.route]));
+    for (const [id, relayed] of relayedPaired) {
+      const route = routes.get(id);
+      if (route === undefined || route.runner === null) move(id, relayed.ws, `${known.get(id) ?? id} came back to this server: no run holds it now`);
+      else if (besideRoute(route)) move(id, relayed.ws, `${known.get(id) ?? id} came back to this server: run ${route.run} holds it here`);
+      else if (route.runner !== relayed.runner || route.incarnation !== relayed.incarnation) move(id, relayed.ws, `${known.get(id) ?? id} moved to the runner that holds run ${route.run}`);
+    }
+    for (const { id, seen, route } of rows) {
+      const name = known.get(id);
+      if (name === undefined || (route.runner === null && route.refused === null)) {
+        await replaceRoute(settings, id, seen, EMPTY_ROUTE).catch(() => undefined);
+        continue;
+      }
+      if (route.runner === null) continue;
+      const here = home.get(id);
+      // A box in this hub under a run of the runner beside this server is where its route says: it stays.
+      if (here !== undefined && besideRoute(route)) continue;
+      if (here !== undefined) move(id, here, `${name} moved to the runner that holds run ${route.run}`);
+      else if (!relayedPaired.has(id) && !moving.has(id) && !dialing.has(id) && route.refused === null) {
+        await replaceRoute(settings, id, seen, { ...route, refused: notAttachedWords(name) }).catch(() => undefined);
+      }
+    }
   }
 
   /** Every attach socket closed with 1001 (the server is going), and no new one taken; resolves once each has ended. A
@@ -596,7 +864,7 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
     clearTimeout(cut);
   }
 
-  return { createPairing, pair, remove, upgrade, close, machineTokens, daemon };
+  return { createPairing, pair, remove, upgrade, close, machineTokens, daemon, tick, relayedTo, runsRefused };
 }
 
 export type AttachRoutes = ReturnType<typeof createAttachRoutes>;
