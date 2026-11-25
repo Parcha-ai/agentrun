@@ -86,7 +86,7 @@ import type { ModelRoute, RouteCost } from "./model-route.js";
 import { archilClaim, archilWhereHeld, type ArchilClaimOptions, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { loadArchilSettings } from "../archil-settings.js";
 import { settingOfDefinition } from "../computer-setting.js";
-import { type claimComputer, type ComputerDeps, computerKeptWords, computerReadyWords, computerReplacedNote, computerStartingWords, imageWaitWords } from "../workspace/computer-deps.js";
+import { type claimComputer, type ComputerDeps, computerFilesNote, computerKeptWords, computerReadyWords, computerReplacedNote, computerStartingWords, imageWaitWords } from "../workspace/computer-deps.js";
 import type { RunComputer } from "../workspace/run-tools.js";
 import { computerTurnedOff, hadComputer, recordComputerOff, type RunComputerHold } from "./computer-journal.js";
 import type { KeptKind, MadeKind, Replaced } from "../workspace/computer-for-claim.js";
@@ -184,6 +184,9 @@ export interface AdapterSpecDeps {
   readonly log?: (message: string) => void;
   /** For tests: a learning run's grade bound, as a signal (learning-dispatch.ts gradeBound). Default: GRADE_TIMEOUT_MS. */
   readonly gradeBound?: () => AbortSignal;
+  /** For tests: the most a native or SDK run's end waits on its cost and metrics read before it is written without them.
+   *  Default: END_PATCH_MS (loop.ts), as the adapter loop's spec.endPatchMs. */
+  readonly endPatchMs?: number;
   /** The one shared claim-time computer (computer-for-claim.ts), for both the pi and the CLI spec: none for a runner place.
    *  The runner gives it; a test gives its own. */
   readonly computerForClaim: ComputerForClaim;
@@ -651,8 +654,15 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // anything the spec would have to let go: a refusal (a granted tool its pin does not hold, a pinned meta tool) ends the run in its
   // words before the session opens. The seal key is the runner's own (deps.sealKey), not re-read from the environment.
   // A credential the claim opens mid-run (a GitHub App token, a saved or per_run server's) joins the run's redactor.
+  // What its gateway files (a long answer, a server's results) goes in the run's own files. In Mode 1 that is the run's
+  // folder on this machine (ws.workspace below, the folder a box bind-mounts). In Mode 2 it is the run's Archil disk:
+  // through the run's computer once it mounts the folder (filedIn, set at runTools), since the mount holds the disk's
+  // write delegation and a write over the disk's file API is refused (409) while it does; over that file API (ws.workspace)
+  // when no computer mounts it. The gateway reads work() only when a call is answered (mcp-gateway.ts textOf, fileResults),
+  // and a call reaches it only through the session this spec returns, after `tools` is made.
+  let filedIn: Workspace | undefined;
   const hold = (values: string[]) => cut.hold(values);
-  const mcp = await mcpWhereHeld({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => ws.workspace, launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, ...claimMetering(deps, fakes?.web, launch) });
+  const mcp = await mcpWhereHeld({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => (mode === 2 ? filedIn ?? ws.workspace : ws.workspace), launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, ...claimMetering(deps, fakes?.web, launch) });
   // The claim's MCP goes to the loop, which lets it go; a build that throws lets it go itself.
   holds.hold({ passed: mcp });
 
@@ -674,9 +684,11 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // A person's stop ends the claim's waits at once: a first image pull or registration (Agent37's runs minutes) among them.
     // Whether an earlier claim made the run a computer of its own is the run's journal's to say (hadComputer): a later
     // claim's is a new one whatever ended the earlier claim (a lost runner, a server's stop, a park past its keep). The
-    // computer a park kept, attached again, brings its mount credential with it (inheritMount): none is minted. A
-    // recording of its screen (computer.record) goes in the run's recordings folder, beside its folder, said on its timeline.
-    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, ...(offAlready ? { turnedOff: offAlready } : {}), recordings: { folder: recordingsFolder(deps.data, runRow.agentId, claim.runId), say: (words) => run.phase?.(words) }, hadComputer: () => hadComputer(deps.journal(claim), context), stopRun: stopRunWith((refusal) => run.ledger.pause(refusal)), ...(run.ledger ? { compute: { ledger: { paid: run.ledger.paid, pause: (refusal: Refusal) => run.ledger.pause(refusal), judges: () => run.ledger.judges?.() ?? true }, env: deps.env } } : {}), ...(claimSignal ? { signal: claimSignal } : {}), ...(archil ? { revokeMount: () => archil.revoke(), inheritMount: () => archil.inherit() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onStarting: (said) => run.phase?.(computerStartingWords(said)), onConnected: (said) => run.phase?.(computerReadyWords(said)), onComputerNote: (words) => run.phase?.(words) } : {}) },
+    // computer a park kept, attached again, brings its mount credential with it (inheritMount): none is minted. A park's
+    // row names the disk that credential is on (mountDisk), asked only at the park: a run's own process hands its claim to
+    // its runner, whose computerForClaim asks its own Archil claim. A recording of its screen (computer.record) goes in
+    // the run's recordings folder, beside its folder, said on its timeline.
+    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, ...(offAlready ? { turnedOff: offAlready } : {}), recordings: { folder: recordingsFolder(deps.data, runRow.agentId, claim.runId), say: (words) => run.phase?.(words) }, hadComputer: () => hadComputer(deps.journal(claim), context), stopRun: stopRunWith((refusal) => run.ledger.pause(refusal)), ...(run.ledger ? { compute: { ledger: { paid: run.ledger.paid, pause: (refusal: Refusal) => run.ledger.pause(refusal), judges: () => run.ledger.judges?.() ?? true }, env: deps.env } } : {}), ...(claimSignal ? { signal: claimSignal } : {}), ...(archil ? { revokeMount: () => archil.revoke(), inheritMount: () => archil.inherit(), mountDisk: () => archil.disk.id } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onStarting: (said) => run.phase?.(computerStartingWords(said)), onConnected: (said) => run.phase?.(computerReadyWords(said)), onComputerNote: (words) => run.phase?.(words) } : {}) },
   );
 
   // The run's shell is its computer's (600 s) where one mounts its folder; with none, Archil's serverless exec in Mode 2
@@ -692,6 +704,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // as `tools.<name>`, each a nested call, gated and recorded as the model's own call is. A computer that replaced an
   // earlier claim's holds its acts to what it showed.
   const tools = await runTools(ws.workspace, computer.computer, { mode, context, ...(computer.hold ? { hold: computer.hold } : {}), ...(bashPolicy === undefined ? {} : { bashPolicy }), ...(computer.replaced ? { replaced: true } : {}) });
+  filedIn = tools.workspace;
   let remoteProjectCapture = false;
   holds.hold({ tools: { end: () => remoteProjectCapture ? Promise.resolve() : tools.end() } });
 
@@ -1056,6 +1069,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     ...(tools.computer ? { scriptComputer: tools.computer } : {}),
     // A computer that replaced an earlier claim's: the model is told once, on its next request (the loop's computer note).
     ...(computer.replaced ? { computerNote: computerReplacedNote(computer.replaced) } : {}),
+    // A desktop or a phone that holds none of the run's files: the model is told once in the run where they are.
+    ...(tools.apart ? { computerFilesNote: computerFilesNote(tools.apart) } : {}),
     workRoot: root,
     // The end's cost: its booking's, by the one rule every reader of an ended run's cost takes (metrics.ts runCostOf):
     // every model request its session's proxy booked (pi's own answers and its side calls: a learned workflow's nodes,

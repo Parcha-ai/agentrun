@@ -1,8 +1,9 @@
 # OSWorld-Verified pilot port
 
-Twenty tasks from OSWorld-Verified, ported to run on our Linux desktop (the box image every desktop provider starts
-from), all on the held-out split. A pass rate on this suite is a number for these 20 tasks under our checks, not an
-OSWorld score: say "OSWorld-Verified port, 20 of 360 tasks, our checks".
+Fifteen tasks from OSWorld-Verified, ported to run on our Linux desktop (the box image every desktop provider starts
+from), all on the held-out split. A pass rate on this suite is a number for these 15 tasks under our checks, not an
+OSWorld score: say "OSWorld-Verified port, 15 of 360 tasks, our checks". Twenty were ported; five were dropped after
+a live verify (see "Dropped after live verify").
 
 ## Source
 
@@ -23,8 +24,8 @@ notice, and mark what we changed (§4(b)). So:
 - Each task's `source.licence` repeats the notice, and `source.changes` says what the port changed.
 - Each script copied from OSWorld (`setup.sh`, `eval.sh`, `eval.py`) opens with a header naming its origin, its licence
   and its changes.
-- Three documents are OSWorld's own, copied byte for byte with no header, since one would change what the agent edits:
-  `vscode-0ed39f63/vscode_replace_text.txt`, `vscode-0ed39f63/vscode_replace_text_gold.txt` and `vscode-ec71221e/test.py`.
+- Two documents are OSWorld's own, copied byte for byte with no header, since one would change what the agent edits:
+  `vscode-0ed39f63/vscode_replace_text.txt` and `vscode-0ed39f63/vscode_replace_text_gold.txt`.
 
 OSWorld's README asks those who use it to cite it:
 
@@ -89,8 +90,8 @@ database by hand for live sites), and the clipboard task (no xsel or xclip).
 | domain and uuid | `source.id` (`os/5c1075ca-...`); the folder is `<domain>-<first 8 of the uuid>`, the id `osworld.<first 8>` |
 | `instruction` | `instruction`: word for word, with `/home/user` (or `/tmp/test_files`) made the run's folder where the instruction names a path, Chrome made Firefox and VS Code made Mousepad where it names the app, and a "Save the file" sentence for the VS Code tasks |
 | `config` (download, execute, launch, activate_window) | `setup`: `exec.run` steps that build the state in `/tmp/computer-bench-<nonce>`, the run's folder, which stands in for `/home/user`, then `process.start` of the app and an `exec.run` that places its window |
-| `evaluator` (postconfig, func, result, expected) | `checks`: `exec` checks running OSWorld's eval script or our Python port of its getter and metric, `file` checks, and an `answer` check for the infeasible task |
-| `func: infeasible` | `sufficient: false`, an `answer` check for the refusal, an `exec` check that nothing was faked, and `rubric.md` |
+| `evaluator` (postconfig, func, result, expected) | `checks`: `exec` checks running OSWorld's eval script or our Python port of its getter and metric, `file` checks, and for the infeasible task an `answer` check that there is an answer at all |
+| `func: infeasible` | `sufficient: false`, an `answer` check that the answer is not empty (an answer check matches a value, never prose), an `exec` check that nothing was faked, and `rubric.md`, with which the grader judges the refusal |
 | none | `oracle` (the solved state, for `verify`), `teardown`, `budget` |
 
 Each run's folder is HOME for the terminal it opens, so Trash, `~/.gitconfig` and `~/.local` are the run's own. Setup
@@ -111,17 +112,12 @@ Terminal with Ctrl+Alt+T too. Firefox runs on a fresh profile in the run's folde
 | os-4d117223 | os/4d117223-a354-47fb-8b45-62ab1390a95f | terminal | chmod 644 every regular file | OSWorld's eval.sh, and all three files kept |
 | os-6f56bf42 | os/6f56bf42-85b8-4fbb-8e06-6c44960184ba | terminal | copy file1 into dir1, dir2, dir3 | OSWorld's eval.sh |
 | os-5ea617a3 | os/5ea617a3-0e86-4ba6-aab2-dac9aa2e8d57 | terminal | restore a poster from the Trash | OSWorld's test, and the bytes match |
-| os-c288e301 | os/c288e301-e626-4b98-a1ab-159dcb162af5 | terminal | make Python4 the default (infeasible) | refusal in the answer, no fake python4; graded with rubric.md |
+| os-c288e301 | os/c288e301-e626-4b98-a1ab-159dcb162af5 | terminal | make Python4 the default (infeasible) | an answer is given, no fake python4; the grader reads the refusal in the answer with rubric.md |
 | multi-2c9fc0de | multi_apps/2c9fc0de-3ee7-45e1-a5df-c86206ad78b5 | terminal, git | commit "daily update" and push to origin main | OSWorld's command, its two lines exactly |
 | vscode-0ed39f63 | vs_code/0ed39f63-6049-43d4-ba4d-5fa2fe04a951 | Mousepad | replace "text" with "test" | the file equals OSWorld's gold copy |
-| vscode-ec71221e | vs_code/ec71221e-ac43-46f9-89b8-ee7d80f7e1c5 | Mousepad | indent lines 2 to 10 by one tab | the original with a tab (or four spaces) before lines 2 to 10 |
 | vscode-57242fad | vs_code/57242fad-77ca-454f-b71b-f187181a9f23 | Mousepad | create test.py and save it on the Desktop | the file exists, and Mousepad's window is titled test.py |
 | chrome-bb5e4c0d | chrome/bb5e4c0d-f964-439c-97b6-bdb9747de3f4 | Firefox | make Bing the default search engine | the default engine in search.json.mozlz4 |
 | chrome-af630914 | chrome/af630914-714e-4a24-a7bb-f9af687d3b91 | Firefox | default font size to the largest | font.size.variable.x-western above 16 |
-| chrome-7a5a7856 | chrome/7a5a7856-f1b6-42a4-ade9-1ca81ca0f263 | Firefox | bookmark the page in view on the bookmarks bar | the toolbar's links in places.sqlite are exactly that page |
-| chrome-3299584d | chrome/3299584d-8f11-4457-bf4c-ce98f7600250 | Firefox | stop opening funbrain.com at launch | startup page and homepage in prefs.js |
-| chrome-99146c54 | chrome/99146c54-4f37-4ab8-9327-5f3291665e1e | Firefox | delete browsing data on every close | sanitizeOnShutdown (or never remember history) |
-| chrome-9656a811 | chrome/9656a811-9b5b-4ddf-99c7-5117bcef0626 | Firefox | turn the harmful-site warning back on | malware and phishing protection both on |
 
 Every check fails the state setup leaves: proven at $0 for the terminal and Mousepad tasks by running their setup's
 shell steps, the checks, the oracle's commands and the checks again on a Linux machine (no X), and for the Firefox
@@ -133,17 +129,32 @@ The fake backend is a fake Mac, so `verify` can't run these tasks at $0; `test/t
 holds its rules. On a live desktop, `verify` (null and oracle, no model) decides each task, and `run --verified` runs
 only the task and seed pairs it proved right. Written without a live desktop, so verify decides:
 
-- The five Firefox settings oracles (bb5e4c0d, af630914, 3299584d, 99146c54, 9656a811): about:preferences, Ctrl+F to
-  its search, then a number of Tabs to reach the control. The Tab counts are read from Firefox's settings layout, not
-  tried.
-- chrome-7a5a7856: Ctrl+9 selecting the last of two command-line tabs, and Ctrl+D's panel filing the bookmark on the
-  toolbar under `browser.bookmarks.defaultLocation`.
-- vscode-ec71221e: Mousepad indenting a selection of lines on Tab.
+- The two Firefox settings oracles (bb5e4c0d, af630914): about:preferences, Ctrl+F to its search, then a number of
+  Tabs to reach the control. The Tab counts are read from Firefox's settings layout, not tried.
 - os-4127319a: xfce4-terminal running its shell under `script -q -f`.
 - Every terminal task: xfce4-terminal started with HOME set to the run's folder (linux-desktop starts it with HOME as
   it is).
 
-A task verify can't prove right drops out of the run, so the pilot may score fewer than 20.
+A task verify can't prove right drops out of the run, so the pilot may score fewer than 15.
+
+## Dropped after live verify
+
+A live verify on E2B (seeds 1, 2 and 3, null and oracle passes) found five tasks whose oracle never reached the solved
+state: on every seed the untouched state failed, as it should, and the oracle's state failed too. In each one the check
+read the state correctly; the oracle's keystrokes did not produce the state. The bench lets an exec-deny task's oracle
+take only the agent's path (ui, input, screen, apps), so the fix is a new keystroke script tried on a live desktop.
+These five come back when theirs is proven:
+
+- chrome-3299584d (stop opening funbrain.com at launch): the about:preferences search, Tab and Alt+Down left the
+  homepage at http://funbrain.com/ (check: "page 1, homepage http://funbrain.com/").
+- chrome-9656a811 (turn the harmful-site warning back on): the search, Tab and Space left both safe-browsing prefs
+  false.
+- chrome-99146c54 (delete browsing data on every close): the search and Tabs never set sanitizeOnShutdown.
+- chrome-7a5a7856 (bookmark the page in view on the toolbar): setup's Ctrl+9 did not leave the transformer tab in
+  view, so Ctrl+D bookmarked the other tab, blog.eleuther.ai. Setup shows the agent the wrong page too, so this is a
+  setup fix as well as an oracle one.
+- vscode-ec71221e (indent lines 2 to 10 in Mousepad): after Tab over the selected lines and the save, test.py was not the original with
+  lines 2 to 10 indented.
 
 ## Running the pilot
 
@@ -175,12 +186,12 @@ node $B/dist/cli.js report $OUT/run --split heldout
 Budget per task: 100 computer steps (OSWorld's longest setting), $3 of model, 900 s. Cost, from an earlier linux-desktop
 run on E2B (Sonnet about $0.04 an episode, at most $0.19 for 28 steps; Terra about $0.016; E2B under $2 for about
 120 desktops of 1 to 2 minutes) scaled for OSWorld tasks being several times longer: Sonnet $0.10 to $0.30 an
-episode, Terra $0.03 to $0.08. Three seeds, two arms, 20 tasks: 120 episodes, about $8 to $23 of model; $3 to $6 of judge
-(`--grade auto` grades the infeasible task and every failed episode, say 60 at $0.05 to $0.10 each); and about $4 to
-$8 of E2B for 240 desktops before retries: verify opens one for its null pass and one for its oracle pass on each of
-the 60 task-seed pairs (120), and the run opens 120. $15 to $37 in all.
+episode, Terra $0.03 to $0.08. Three seeds, two arms, 15 tasks: 90 episodes, about $6 to $17 of model; $2 to $5 of judge
+(`--grade auto` grades the infeasible task and every failed episode, say 45 at $0.05 to $0.10 each); and about $3 to
+$6 of E2B for 180 desktops before retries: verify opens one for its null pass and one for its oracle pass on each of
+the 45 task-seed pairs (90), and the run opens 90. $11 to $28 in all.
 
 Worst case: serve's $3 hold caps each attempt, not each episode. With `--retries 2`, an attempt that ends infra after
-its agent ran gets a fresh serve run and a fresh $3, so the bound is about 3 × 120 × $3 = $1,080 of model, plus the
+its agent ran gets a fresh serve run and a fresh $3, so the bound is about 3 × 90 × $3 = $810 of model, plus the
 judge (up to 2 requests a grade). computer-bench has no whole-run cap: a run-wide cap has to come from outside, such
 as a watcher that sends the bench a SIGINT, which stops the run before its next episode.

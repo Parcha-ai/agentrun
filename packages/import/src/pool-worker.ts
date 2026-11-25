@@ -15,6 +15,10 @@ export type PoolAsk = { id: number; source: string; locator: Locator };
 /** The longest line this worker decodes (pool.ts sets it from the heap cap): a file with a longer one is handed back. */
 const { maxLine } = workerData as { maxLine: number };
 
+/** What readers look up once, shared by this worker's reads (ReadOptions.lookups): a pool lives for one parseHome, so
+ *  this is one import's, and each worker looks up at most once what the import's own thread looks up once. */
+const lookups = new Map<string, unknown>();
+
 /** The index's arrays, moved with the reply rather than copied (its tags too: a copy is made on this thread and again on
  *  parseHome's, which every read passes through). */
 const buffers = (index: ReturnType<typeof recordIndex>): ArrayBuffer[] => indexArrays(index).map((a) => a.buffer as ArrayBuffer);
@@ -39,7 +43,7 @@ parentPort!.on("message", async ({ id, source, locator }: PoolAsk) => {
   try {
     // The cursor is never sent back: the read makes no copy for it. No read ahead (NO_READ_AHEAD): the pool's workers take
     // every core it was given.
-    const options: InternalReadOptions = { turns: false, totals: true, seen, maxLine, [DROPS_CURSOR]: true, [NO_READ_AHEAD]: true };
+    const options: InternalReadOptions = { turns: false, totals: true, seen, maxLine, lookups, [DROPS_CURSOR]: true, [NO_READ_AHEAD]: true };
     const result = await reader.read(locator, undefined, options);
     const missed = notIn(asked, mine);
     const counts = result.sessions.flatMap(({ counts }) => (counts ? [counts.model.buffer, counts.values.buffer, counts.has.buffer] : [])) as ArrayBuffer[];

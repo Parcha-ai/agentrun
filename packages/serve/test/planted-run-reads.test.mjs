@@ -41,6 +41,8 @@ const RUN_READS = {
   getRunGraph: (run) => [`/runs/${run.id}/graph`],
   getRunTrace: (run) => [`/runs/${run.id}/trace`],
   getRunUsage: (run) => [`/runs/${run.id}/usage`],
+  // The share bundle (run-export.ts): every string cut by the scrubber, a file's content among them. A run not ended is 409.
+  getRunExport: (run) => [`/runs/${run.id}/export`],
   getRunBrowser: (run) => [`/runs/${run.id}/browser`],
   getRunComputer: (run) => [`/runs/${run.id}/computer`],
   getRunLearning: (run) => [`/runs/${run.id}/learning`],

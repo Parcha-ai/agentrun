@@ -317,8 +317,7 @@ export class OrgoProvider implements ComputerProvider {
 	constructor({ apiKey, workspaceId, apiUrl = ORGO_API_URL, fetch, webSocket, channel, daemonPath = DEFAULT_DAEMON_PATH, maxLifetimeMs = MAX_LIFETIME_MS, user = "2510:2510", start = "bash", display = ":99", timeouts = {}, probeTargets = DEFAULT_PROBE_TARGETS, ledger = orgoMemoryLedger() }: OrgoProviderOptions) {
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, an Orgo API key, is required");
 		if (workspaceId !== undefined && (typeof workspaceId !== "string" || !WORKSPACE_ID.test(workspaceId))) throw new Error("options.workspaceId, the Orgo workspace this deployment's computers live in, is an Orgo workspace id when given");
-		const url = new URL(httpsBase(apiUrl, "the Orgo API URL"));
-		if (url.username !== "" || url.password !== "") throw new Error("the Orgo API URL holds no credentials: the key goes to it");
+		const base = httpsBase(apiUrl, "the Orgo API URL");
 		if (!Number.isSafeInteger(maxLifetimeMs) || maxLifetimeMs <= 0 || maxLifetimeMs > MAX_LIFETIME_MS) throw new Error(`maxLifetimeMs must be a whole number of ms above 0 and at most Orgo's 720 h (${MAX_LIFETIME_MS} ms)`);
 		const ids = USER.exec(user);
 		if (ids === null) throw new Error(`the user ${JSON.stringify(user)} must be uid:gid in numbers, such as 2510:2510`);
@@ -332,7 +331,7 @@ export class OrgoProvider implements ComputerProvider {
 		if (!Array.isArray(probeTargets) || probeTargets.length === 0 || probeTargets.some((target) => typeof target !== "string" || !TARGET.test(target))) {
 			throw new Error("probeTargets must name at least one address for the probe, each host:port or host:port/udp");
 		}
-		this.#rest = orgoRest({ apiKey, apiUrl: url.href, ...(fetch ? { fetch } : {}) });
+		this.#rest = orgoRest({ apiKey, apiUrl: base, ...(fetch ? { fetch } : {}) });
 		this.#workspace = workspaceHolder(workspaceId, this.#rest, merged.requestMs);
 		this.#channel = channel ?? orgoTerminalChannel({ rest: this.#rest, workspace: (signal) => this.#workspace.read(signal), ...(webSocket ? { webSocket } : {}) });
 		this.#daemonPath = daemonPath;

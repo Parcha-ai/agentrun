@@ -6,8 +6,7 @@
 //
 // Without the pinned binary this skips; with AGENTRUN_OPENCODE_REQUIRE_BINARY=1 (CI) it fails.
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { createServer } from "node:net";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -18,6 +17,7 @@ import { OPENCODE_BASE_INPUT_TOKENS, openCodeAdapter } from "../dist/harness-ope
 import { findOpenCode } from "../dist/harness-opencode/binary.js";
 import { BODY_KEYS } from "../dist/harness-opencode/host/policy.js";
 import { verifyOpenCodeBinary } from "../dist/harness-opencode/verify.js";
+import { freePort } from "./fixtures/ports.mjs";
 
 const pinned = verifyOpenCodeBinary(findOpenCode());
 const skip = pinned instanceof Error && process.env.AGENTRUN_OPENCODE_REQUIRE_BINARY !== "1" ? pinned.message : false;
@@ -150,41 +150,6 @@ test("twenty follow-ups on the pinned OpenCode, each a new process that took the
   assert.equal(events.filter((e) => e.type === "text").map((e) => e.delta).join(" "), Array.from({ length: 20 }, (_, i) => `Answer ${i + 1}.`).join(" "));
 });
 
-/** Whether `port` is free on 127.0.0.1 now. */
-const isFree = (port) => new Promise((resolve) => {
-  const probe = createServer();
-  probe.once("error", () => resolve(false));
-  probe.listen(port, "127.0.0.1", () => probe.close(() => resolve(true)));
-});
-
-/** A port free on 127.0.0.1 now, BELOW the kernel's ephemeral range (Linux's ip_local_port_range, 32768 to 60999 by
- *  default): no listen(0) and no outbound connection on this machine is ever handed it, so between two drives nothing
- *  else takes it unless it binds that port by name, as with 4096, the port OpenCode takes when it is free. A port from
- *  listen(0) is in that range: on a busy machine (CI's test runs side by side) another test's listen(0) or connection
- *  could be handed it in the moment between one drive's OpenCode and the next, and the next would fail to bind it
- *  ("OpenCode exited before it listened", ServeError: F36, twice on CI). */
-async function freePort(low = ephemeralLow()) {
-  // Every candidate is strictly below `low` (and below Linux's default start): from 20000, or from 1,000 below `low` when
-  // the range starts lower, never into the privileged ports. A host whose range leaves none fails, never takes one in it.
-  const to = Math.min(low, 32768);
-  const from = Math.max(1024, Math.min(20000, to - 1000));
-  if (to <= from) throw new Error(`no port below the ephemeral range: it starts at ${low}`);
-  for (let tries = 0; tries < 200; tries++) {
-    const port = from + Math.floor(Math.random() * (to - from));
-    if (await isFree(port)) return port;
-  }
-  throw new Error(`no free port below the ephemeral range: none in ${from}-${to - 1} (it starts at ${low})`);
-}
-
-/** The first port of this host's ephemeral range: Linux's ip_local_port_range, read now, or its default off Linux. */
-function ephemeralLow() {
-  try {
-    return Number(readFileSync("/proc/sys/net/ipv4/ip_local_port_range", "utf8").trim().split(/\s+/)[0]) || 32768;
-  } catch {
-    return 32768;
-  }
-}
-
 // The pinned OpenCode's own input before the agent's prompt (versions.ts OPENCODE_BASE_INPUT_TOKENS, what a save under a
 // cap prices a least step on): its first request's system text, the agent's prompt and its working directory's path left
 // out, counted with o200k_base, with no tool of its own offered. The stated figure is at or under it, and within 16 tokens.
@@ -211,21 +176,13 @@ test("on the pinned OpenCode, the stated base input is at or under what its firs
   assert.ok(OPENCODE_BASE_INPUT_TOKENS <= measured && measured - OPENCODE_BASE_INPUT_TOKENS <= 16, `stated ${OPENCODE_BASE_INPUT_TOKENS}, measured ${measured}`);
 });
 
-test("the drives' port is below the host's ephemeral range wherever it starts: under a range from 20000 every pick is below 20000, and a range that leaves no port below it fails by name", async () => {
-  for (let i = 0; i < 20; i++) {
-    const port = await freePort(20000);
-    assert.ok(port >= 1024 && port < 20000, `below a range from 20000: ${port}`);
-  }
-  const low = ephemeralLow();
-  assert.ok((await freePort()) < low, `below this host's range, from ${low}`);
-  await assert.rejects(freePort(1024), /^Error: no port below the ephemeral range: it starts at 1024$/);
-});
-
 test("twenty follow-ups on the pinned OpenCode, every drive's process on the SAME port (as where 4096 is free: OpenCode takes it each time): every event stream opens at the first try", { skip, timeout: 600_000 }, async (t) => {
   // The pinned binary, started by the adapter's stand-in hook on one port for every drive: each new process listens where
   // the killed one before it did. A connection kept from an earlier drive is then a connection to a dead process.
   process.env.AGENTRUN_OPENCODE_STANDIN = "1";
   t.after(() => delete process.env.AGENTRUN_OPENCODE_STANDIN);
+  // Below the ephemeral range, so nothing else is handed it between two drives. A listen(0) port was, on a busy machine,
+  // and the next drive failed to bind it ("OpenCode exited before it listened", ServeError: F36, twice on CI).
   const port = await freePort();
   const standIn = { command: "/bin/sh", args: ["-c", `exec "$0" serve --hostname 127.0.0.1 --port ${port}`, findOpenCode().path] };
   const seen = [];

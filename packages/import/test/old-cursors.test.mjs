@@ -1,7 +1,8 @@
 // A cursor an earlier release saved (0.1.0-beta.58's reader state, made by fixtures/old-cursors/make.mjs from that
 // release's build), resumed by this one over lines appended since: the same requests as that release's own resume. A
 // source whose cursor this release can go on from resumes it; one whose state changed shape (Codex: its open and unpaid
-// requests held as Answers, now by their index) reads the file from its start instead of misreading the state.
+// requests held as Answers, now by their index, and a fork's copy of its parent's history kept beside them) reads
+// the file from its start instead of misreading the state.
 import assert from "node:assert/strict";
 import { appendFile, stat } from "node:fs/promises";
 import { join } from "node:path";

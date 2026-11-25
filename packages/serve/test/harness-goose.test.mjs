@@ -18,7 +18,9 @@ const [{ harnessIds, harnessOf }, { harnessOffers }, { DATA_ENV }, { HarnessUnav
 const GOOSE = process.env.AGENTRUN_TEST_GOOSE;
 const needsGoose = GOOSE ? false : "AGENTRUN_TEST_GOOSE is not set: it names the Goose 1.59.2 binary this test runs";
 const BUILTINS = ["pi", "claude-agent", "codex", "opencode"];
-const PROMISES = { resume: "load", tool_gate: "permission", billing: "proxy" };
+// tool_gate "config": Goose asks nothing for a call of ours (its recipe's allowFile, Goose's permission file), so its tool calls
+// are gated by that config and the host's gate at the MCP call, not by a permission ask.
+const PROMISES = { resume: "load", tool_gate: "config", billing: "proxy" };
 const MODEL = "claude-sonnet-5-5";
 
 /** A data directory, with Goose's binary at `<data>/harnesses/goose/goose` when `binary` names one (linked to it). */

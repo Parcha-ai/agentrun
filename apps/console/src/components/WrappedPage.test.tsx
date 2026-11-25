@@ -2,7 +2,7 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WrappedPage } from "./WrappedPage";
-import { WRAPPED_CARDS, type CardRenderer } from "@/lib/wrappedCards";
+import { noCards, WRAPPED_CARDS, type CardRenderer } from "@/lib/wrappedCards";
 import { route } from "@/App";
 import { ClientError, type Client } from "@/lib/client";
 import type { Wrapped } from "@/lib/v2";
@@ -42,7 +42,9 @@ describe("WrappedPage", () => {
     expect(text).toContain("12 sessions · 40 prompts · 300 model requests · $42.50 + 3 requests with no known price");
     expect(text).toContain("Busiest day: 2025-03-02");
     for (const name of ["Your year in tokens", "Harnesses and models", "When you work", "Imported"]) expect(text).toContain(name);
-    expect(text).toContain("claude-agent");
+    // A harness by the name the console gives it, not its id.
+    expect(text).toContain("Claude");
+    expect(text).not.toContain("claude-agent");
     expect(text).toContain("anthropic/claude-sonnet");
     expect(text).toContain("2.0 h at work");
     expect(document.querySelectorAll('[aria-label="Requests by hour of the day"] > li')).toHaveLength(24);
@@ -104,12 +106,12 @@ describe("WrappedPage", () => {
     await mount(async () => YEAR);
     const row = (harness: string) => [...document.querySelectorAll('[aria-label="Harnesses"] > li')].find((li) => li.textContent?.includes(harness))!;
     const hrefs = (harness: string) => [...row(harness).querySelectorAll("a")].map((a) => a.getAttribute("href"));
-    expect(hrefs("claude-agent")).toEqual(["#/runs?source=claude-code"]);
-    expect(row("claude-agent").textContent).toContain("claude-code: 7 runs");
-    expect(hrefs("pi")).toEqual(["#/runs?source=gemini"]);
-    expect(row("pi").textContent).toContain("gemini: 4 runs");
-    expect(row("pi").textContent).toContain("pi: not imported yet");
-    expect(row("pi").textContent).toContain("agentrun-serve import");
+    expect(hrefs("Claude")).toEqual(["#/runs?source=claude-code"]);
+    expect(row("Claude").textContent).toContain("claude-code: 7 runs");
+    expect(hrefs("Pi")).toEqual(["#/runs?source=gemini"]);
+    expect(row("Pi").textContent).toContain("gemini: 4 runs");
+    expect(row("Pi").textContent).toContain("pi: not imported yet");
+    expect(row("Pi").textContent).toContain("agentrun-serve import");
   });
 
   it("keeps the totals, models, days and hours as plain numbers: no link to a filter that does not exist", async () => {
@@ -133,10 +135,21 @@ describe("WrappedPage", () => {
     for (const c of WRAPPED_CARDS) for (const f of c.reads) expect(known).toContain(f);
   });
 
-  it("shows no cards section, and no empty box, with the default renderer", async () => {
-    await mount(async () => YEAR);
+  it("draws the cover, split, hours and summary cards as images by default, and none of the cards that wait on more", async () => {
+    await mount(async () => YEAR, vi.fn(), 2025);
+    const alts = [...document.querySelectorAll("[data-cards] img")].map((img) => img.getAttribute("alt") ?? "");
+    expect(alts.map((alt) => alt.split(". ")[1])).toEqual(["Your 2025 in agents", "Where your tokens went", "When your agents work", "2025 in agents"]);
+    for (const img of document.querySelectorAll("[data-cards] img")) expect(img.getAttribute("src")?.startsWith("data:image/svg+xml;")).toBe(true);
+  });
+
+  it("shows no cards section, and no empty box, when the renderer draws none or the year has no sessions", async () => {
+    await mount(async () => YEAR, vi.fn(), 2025, noCards);
     expect(document.querySelector("[data-cards]")).toBeNull();
     expect(document.body.textContent).not.toContain("Cards");
+    document.body.innerHTML = "";
+    await mount(async () => ({ ...YEAR, sessions: 0 }), vi.fn(), 2025);
+    expect(document.body.textContent).toContain("6.3M tokens");
+    expect(document.querySelector("[data-cards]")).toBeNull();
   });
 
   it("calls an injected renderer for each of the nine cards, in order, with the body, and shows what it returns", async () => {

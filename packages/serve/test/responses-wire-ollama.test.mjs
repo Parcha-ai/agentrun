@@ -13,7 +13,8 @@ import { test } from "node:test";
 import { ROUTE_ORIGIN } from "@parcha/agentrun-kernel/host";
 import { codexPolicy } from "@parcha/agentrun-harness-codex";
 import { readFile } from "node:fs/promises";
-import { closedPort, fakeOllama } from "./fixtures/fake-ollama.mjs";
+import { fakeOllama } from "./fixtures/fake-ollama.mjs";
+import { freePort } from "./fixtures/ports.mjs";
 import { harnessData, scratch, withEnv } from "./support.mjs";
 
 const { routeOf } = await import("../dist/runner/model-route.js");
@@ -281,7 +282,7 @@ test("the trust rules are the route's, unchanged on Responses: a shared server w
   const refused = await modelOn(RESPONSES, remote, `ollama/${TOOLS}`, "opencode");
   assert.equal("model" in refused, false, JSON.stringify(refused));
   // With no Ollama answering on the machine's own address, codex is told to start one, as pi is.
-  const down = { OLLAMA_HOST: `127.0.0.1:${await closedPort()}`, AGENTRUN_SERVE_DATA: await scratch(t) };
+  const down = { OLLAMA_HOST: `127.0.0.1:${await freePort()}`, AGENTRUN_SERVE_DATA: await scratch(t) };
   assert.match((await modelOn(RESPONSES, down, undefined, "codex")).why, /start Ollama and pull a model with tools/);
 });
 
