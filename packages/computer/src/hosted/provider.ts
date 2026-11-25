@@ -71,7 +71,7 @@ import { type ComputerError, failFor, ok, type Result } from "../result.js";
 import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "../screen-watch.js";
 import { countTested } from "../test-connection.js";
 import { waitUntil } from "../wait.js";
-import { bounded, CALL_SLACK_MS, hostCall, type Opened, openBridge, pause, rootOf, runToExit, seconds, uploadThroughExec, words } from "./process.js";
+import { bounded, CALL_SLACK_MS, hostCall, type Opened, openBridge, pause, rootOf, runToExit, seconds, untilAborted, uploadThroughExec, words } from "./process.js";
 import { downloadingClient } from "./download.js";
 import { isWhole, PACKED_NAME, packLabels, unpackLabels } from "./values.js";
 import { EGRESS_POLICY, EGRESS_PROXY_USER, EGRESS_RELAY, HOSTED_ALLOW, NETWORK_LABEL, networkFormOf, networkOfForm, networkRefusal, throughProxy } from "./network.js";
@@ -1855,22 +1855,6 @@ async function readMachine(host: MachineHost, id: string, ms: number, signal?: A
 	const read = await hostCall(host, `the read of ${id}`, (ctx) => host.get(id, ctx), ms, signal);
 	if (!read.ok) return read.error.code === "not_found" ? ok(undefined) : read;
 	return ok(read.value === undefined ? undefined : unpacked(host, read.value));
-}
-
-/** What reading answers, or undefined once a signal aborts first: a caller that stopped waiting never waits on a read. */
-function untilAborted<T>(reading: Promise<T>, signals: readonly (AbortSignal | undefined)[]): Promise<T | undefined> {
-	const given = signals.filter((signal): signal is AbortSignal => signal !== undefined);
-	if (given.length === 0) return reading;
-	const signal = AbortSignal.any(given);
-	if (signal.aborted) return Promise.resolve(undefined);
-	return new Promise((settle) => {
-		const onAbort = () => settle(undefined);
-		signal.addEventListener("abort", onAbort, { once: true });
-		reading.then((value) => {
-			signal.removeEventListener("abort", onAbort);
-			settle(value);
-		});
-	});
 }
 
 /**

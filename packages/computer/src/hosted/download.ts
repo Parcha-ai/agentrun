@@ -7,7 +7,7 @@ import { randomBytes } from "node:crypto";
 import type { MachineHost } from "../host.js";
 import { type ComputerClient, type DaemonMethod, type DaemonMethods, type FilesReadParams, MAX_CHUNK_BYTES } from "../protocol.js";
 import { ok, type Result } from "../result.js";
-import { hostCall, runToExit } from "./process.js";
+import { hostCall, runToExit, untilAborted } from "./process.js";
 import { READ_COPIES, readStage, readUnstage } from "./scripts.js";
 
 export interface DownloadBounds {
@@ -19,9 +19,6 @@ export interface DownloadBounds {
 
 /** A read the daemon may answer from a copy: an absolute path outside /proc (whose self is the reader's), a whole chunk. */
 const copyable = ({ path, length }: FilesReadParams) => path.startsWith("/") && !path.startsWith("/proc/") && (length === undefined || length === MAX_CHUNK_BYTES);
-
-/** Resolves undefined once signal aborts. */
-const abortedOf = (signal: AbortSignal) => new Promise<undefined>((done) => (signal.aborted ? done(undefined) : signal.addEventListener("abort", () => done(undefined), { once: true })));
 
 /**
  * client, with every files.read past one chunk read from one downloaded copy after its first chunk. A first chunk (offset
@@ -85,7 +82,7 @@ export function downloadingClient(host: MachineHost, download: NonNullable<Machi
 			const copying = copies.get(read.path);
 			const length = read.length ?? MAX_CHUNK_BYTES;
 			if (copying === undefined || !Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 1 || length > MAX_CHUNK_BYTES) return client.call(method, params, options);
-			const bytes = await (options?.signal ? Promise.race([copying, abortedOf(options.signal)]) : copying);
+			const bytes = await untilAborted(copying, [options?.signal]);
 			if (bytes === undefined) {
 				if (!options?.signal?.aborted) copies.delete(read.path);
 				return client.call(method, params, options);
