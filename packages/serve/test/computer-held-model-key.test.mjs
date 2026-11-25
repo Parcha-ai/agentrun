@@ -719,8 +719,10 @@ test("per-run process (run-child-host heldFor), Claude login: the runner hands a
 
 test("CLI (cli-run-spec), Claude login: a held run its model kept from running, in a run's own process, never asks its runner for the login; the same run not held asks", async (t) => {
   withEnv(t, {}, KEYLESS);
-  // The runner's answers (held.ts), each ask counted by name: none answers anything.
-  const runner = (asked) => new Proxy({}, { get: (_target, name) => (name === "then" || typeof name !== "string" ? undefined : async () => void asked.push(name)) });
+  // The runner's answers (held.ts), each ask counted by name: learnedFirst's lays no learned workflow, and no other answers
+  // anything.
+  const answers = { learnedFirst: async () => ({ choice: {}, workflows: [] }) };
+  const runner = (asked) => new Proxy(answers, { get: (target, name) => (name === "then" || typeof name !== "string" ? undefined : async (...args) => (asked.push(name), target[name]?.(...args))) });
   const unheldAsked = [];
   await cliClaim(t, undefined, {}, { env: { OPENAI_API_KEY: HOST_MODEL_KEY }, runner: runner(unheldAsked) });
   assert.ok(unheldAsked.includes("claudeLogin"), `a run not held asks its runner whether it goes on the login, as before: ${JSON.stringify(unheldAsked)}`);
