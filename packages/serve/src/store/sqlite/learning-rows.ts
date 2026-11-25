@@ -139,15 +139,32 @@ export async function dropRunLearning(tx: Tx, agentId: string, runId: string): P
   const persons = new Set((await tx.all<{ version: number | string }>(`SELECT DISTINCT i.version FROM learning_items i JOIN learning_saves s ON s.agent_id = i.agent_id AND s.version = i.version
     WHERE i.agent_id = ? AND s.kind = 'person' AND ((i.kind = 'note' AND i.by_run = ?) OR (i.kind = 'workflow' AND i.name IN (SELECT j.name FROM learning_items j JOIN learning_saves r ON r.agent_id = j.agent_id AND r.version = j.version WHERE j.agent_id = ? AND j.kind = 'workflow' AND (r.by_run = ? OR j.by_run = ?))))`,
   agentId, runId, agentId, runId, runId)).map((row) => Number(row.version)));
+  const gone: string[] = [];
   for (const name of names) {
-    const { lost } = await rewriteWorkflow(tx, agentId, runId, name);
-    for (const digest of lost) await tx.run("DELETE FROM learning_records WHERE agent_id = ? AND kind IN ('promotion', 'audit') AND workflow = ? AND digest = ?", agentId, name, digest);
+    const rewritten = await rewriteWorkflow(tx, agentId, runId, name);
+    for (const digest of rewritten.lost) await tx.run("DELETE FROM learning_records WHERE agent_id = ? AND kind IN ('promotion', 'audit') AND workflow = ? AND digest = ?", agentId, name, digest);
+    if (rewritten.gone) gone.push(name);
   }
   await tx.run("DELETE FROM learning_items WHERE agent_id = ? AND kind = 'note' AND by_run = ?", agentId, runId);
   await tx.run("DELETE FROM learning_records WHERE agent_id = ? AND run_id = ?", agentId, runId);
+  // A workflow only the run wrote is gone, and its name is the run's words: a person's save that kept other items names
+  // none of its files (its `file` and the reason that names it blanked).
+  const theirs = (path: string) => gone.some((name) => path.startsWith(`${WORKFLOWS_DIR}/${name}/`));
   for (const version of persons) {
-    if (await tx.get("SELECT 1 AS one FROM learning_items WHERE agent_id = ? AND version = ?", agentId, version)) continue;
-    await tx.run("UPDATE learning_saves SET kind = 'purged', by_run = NULL, change = '{}' WHERE agent_id = ? AND version = ? AND kind = 'person'", agentId, version);
+    if (!(await tx.get("SELECT 1 AS one FROM learning_items WHERE agent_id = ? AND version = ?", agentId, version))) {
+      await tx.run("UPDATE learning_saves SET kind = 'purged', by_run = NULL, change = '{}' WHERE agent_id = ? AND version = ? AND kind = 'person'", agentId, version);
+      continue;
+    }
+    const row = await tx.get<{ change: string }>("SELECT change FROM learning_saves WHERE agent_id = ? AND version = ? AND kind = 'person'", agentId, version);
+    if (!row || !gone.length) continue;
+    const change = JSON.parse(row.change) as SaveChange;
+    const by = change.by && "person" in change.by ? change.by : undefined;
+    if (!change.files?.some(theirs) && !(by && theirs(by.file))) continue;
+    const kept: SaveChange = {
+      ...change, files: (change.files ?? []).filter((path) => !theirs(path)),
+      ...(by && theirs(by.file) ? { by: { ...by, file: "" }, reason: `${by.person} by a person` } : {}),
+    };
+    await tx.run("UPDATE learning_saves SET change = ? WHERE agent_id = ? AND version = ?", JSON.stringify(kept), agentId, version);
   }
   await tx.run("UPDATE learning_saves SET kind = 'purged', by_run = NULL, change = '{}' WHERE agent_id = ? AND by_run = ?", agentId, runId);
 }
