@@ -143,8 +143,9 @@ export async function runnerBeside(dataDir: string, { loops, loopsTold, drainMs,
   // runner's, on stderr (a stderr whose reader closed loses them, never the process: cli.ts).
   const { startJanitor } = await import("../workspace/computer-janitor.js");
   // As the runner beside it (its name and its presence's incarnation): a kept computer pinned to another runner still
-  // there is that runner's to end (computer-kept.ts sweepKept).
-  const swept = janitor ? startJanitor({ store, computers: computers.computerDeps, env: runs, log: (line) => console.error(`agentrun-serve runner: ${line}`), ...(runner.incarnation ? { self: { runner: name, incarnation: runner.incarnation } } : {}) }) : undefined;
+  // there is that runner's to end (computer-kept.ts sweepKept). The seal key is the claims' too: it opens the Archil key a
+  // kept computer's mount credential is removed with.
+  const swept = janitor ? startJanitor({ store, computers: computers.computerDeps, env: runs, sealKey: seal.key, log: (line) => console.error(`agentrun-serve runner: ${line}`), ...(runner.incarnation ? { self: { runner: name, incarnation: runner.incarnation } } : {}) }) : undefined;
   // Its close waits for any first-use install its claims let go of to stop (its npm ended) before it lets go of the data.
   const { claimInstallsStopped } = await import("../harness-install.js");
   // The janitor's sweep is cut and waited for on a bound of its own, beside the runner's close, never before it.

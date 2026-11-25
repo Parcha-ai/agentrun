@@ -9,10 +9,10 @@
 // labels carry, and the time it is kept until. The claim that parks writes it; the claim that resumes in time takes it
 // off and attaches the computer. At its time it is ended by the parking runner's own timer and, whatever became of
 // that process (a server's restart), by the janitor (computer-janitor.ts), which reads every row at each sweep and wakes
-// at the earliest time still ahead. Ending one marks its row ending (no claim takes it after), deletes the computer, then
-// marks the row ended, so the resume says why its computer is new; a row left ending (its process died, or its delete
-// failed or hung mid-way) is deleted again at the janitor's next pass. A row whose run is final is removed, its computer
-// deleted first.
+// at the earliest time still ahead. Ending one marks its row ending (no claim takes it after), deletes the computer and
+// removes the mount credential of a run folder it held on Archil, then marks the row ended, so the resume says why its
+// computer is new; a row left ending (its process died, or its delete or remove failed or hung mid-way) is ended again at
+// the janitor's next pass. A row whose run is final is removed, its computer deleted first.
 //
 // A sandbox's run folder is the run's either way (bound from this machine, or on Archil, as before); what the keep adds is
 // the rest of the machine (its other files, its processes). A synced folder's delta lands on the disk at the park; what
@@ -228,7 +228,8 @@ export type KeptSweep = { readonly ended: readonly string[]; readonly failed: re
 /**
  * The janitor's pass over every kept row: one whose run is final in the store, or no longer there, has its computer
  * deleted (unless its time already ended it) and the row removed; one past its time, or left ending, is ended (endKept),
- * each delete bounded by `deleteMs` (KEPT_DELETE_MS). The rest are left, the earliest of their times answered as `next`.
+ * each delete bounded by `deleteMs` (KEPT_DELETE_MS), and one on Archil has its mount credentials removed (`revokeMount`).
+ * The rest are left, the earliest of their times answered as `next`.
  * `providerOf`: the provider a row names, made with this server's keys, or undefined when this server can't make it (its
  * keys gone): that row is left and said. A row pinned to a runner other than this one (`self`) that is still there under
  * the row's incarnation (`runners`, seen within PRESENCE_STALE_MS) is left whatever its time or its run: only that
@@ -249,6 +250,11 @@ export async function sweepKept(deps: {
   readonly runners?: Pick<Runners, "live">;
   /** The runner this sweep runs in (its name and presence incarnation): the rows pinned to it are its own to end. */
   readonly self?: KeptHolder;
+  /** Removes run `runId`'s Archil mount credentials of claim epoch `epoch` and earlier, by their names: asked after the
+   *  delete of a row whose computer held the run's folder on Archil, within the same bound. No claim removes that
+   *  credential once the janitor ends the row (a stop takes no row; a resume that starts no computer never reads it).
+   *  One that throws leaves the row ending, for the next pass. */
+  readonly revokeMount?: (runId: string, epoch: number) => Promise<void>;
 }): Promise<KeptSweep> {
   const ended: string[] = [];
   const failed: string[] = [];
@@ -290,9 +296,10 @@ export async function sweepKept(deps: {
         failed.push(`${kept.name} of run ${runId}: this server can't reach ${kept.provider} to end it`);
         continue;
       }
-      const proven = () => deleteKept(provider, kept).then(async (ok) => {
-        if (ok) await deps.deleted?.(kept.provider, kept.id);
-      });
+      const proven = async (): Promise<void> => {
+        if (await deleteKept(provider, kept)) await deps.deleted?.(kept.provider, kept.id);
+        if (kept.folder === "archil") await deps.revokeMount?.(runId, kept.epoch);
+      };
       const deleted = await endKept(deps.settings, runId, kept, () => bounded(deps.deleteMs ?? KEPT_DELETE_MS, proven()));
       if (deleted) ended.push(kept.name);
       if (deleted && over) await deps.settings.removeIf(row.key, rowOf(kept, "ended"));
