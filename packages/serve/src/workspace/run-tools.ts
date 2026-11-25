@@ -43,7 +43,7 @@
 // follow-up the commit reopens may be claimed at once, and its scratch is the same folder's.
 import type { Context } from "@earendil-works/chord/context";
 import type { HostTool } from "@parcha/agentrun-kernel";
-import { type CapabilityKind, COMPUTER_OP_TOOL, COMPUTER_TOOLS, createRegistry, endBackground, HANDOFF_TOOL, type Registry } from "@parcha/agentrun-kernel/kernel";
+import { type CapabilityKind, COMPUTER_OP_TOOL, COMPUTER_TOOLS, createRegistry, endBackground, HANDOFF_TOOL, type Registry, unsavedScreenshot } from "@parcha/agentrun-kernel/kernel";
 import type { ComputerClient, HelloResult } from "@parcha/agentrun-computer";
 import { type Card, createSurface } from "@parcha/agentrun-computer/surface";
 import type { AttachableComputer, MountCheck } from "./attach.js";
@@ -257,15 +257,18 @@ const SAYS_PATH: ReadonlySet<string> = new Set(["write", "edit"]);
  * diagnostics; in a failure, a write's or an edit's answer a path in the run's folder is named relative to it. A
  * failure the registry throws is the answer's text. `results` keeps each answer by its call id. computer_op, and under
  * the agent's surface "code" a desktop's or a phone's step tools, are deferred: bound for a script's nested calls
- * (codemode's `computer` and `tools.<name>`), never listed to the model (scriptsOnly).
+ * (codemode's `computer` and `tools.<name>`), never listed to the model (scriptsOnly). With no write among `names`,
+ * computer_screenshot offers no save_as: the agent was not given write, and the run's gate refuses a save_as.
  */
 export function bindTools(run: RunHands, registry: RunRegistry, names: readonly string[], options: { readonly results?: ToolResults } = {}): HostTool[] {
   const defs = new Map(registry.list().map((def) => [def.name, def] as const));
   const works = [...new Set(run.names.flatMap((name) => [name, realOf(name)]))];
   const brought: ReadonlySet<string> = new Set(COMPUTER_TOOLS);
+  const writes = names.includes("write");
   return names.flatMap((name): HostTool[] => {
-    const def = defs.get(name);
-    if (!def) return [];
+    const listed = defs.get(name);
+    if (!listed) return [];
+    const def = name === "computer_screenshot" && !writes ? unsavedScreenshot(listed) : listed;
     return [{
       name: def.name,
       description: def.description,
