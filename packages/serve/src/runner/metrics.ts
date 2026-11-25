@@ -90,7 +90,7 @@ function sessionConversations(entries: readonly EntryLike[]): Map<string, number
  *  a workflow's model nodes (pi-ai's $0 for a model it has no price for): their model requests' cost is this, the
  *  booking's. `side`: of the model requests, those booked as side calls (another model than the session's, or the host's
  *  own, as a learned workflow's node is: the proxy's `side`/`host`), which no answer of a pi run carries. */
-export function bookedSpend(entries: readonly EntryLike[], which: "model" | "paid" | "decisions" | "side", names?: ReadonlyMap<string, string>): BookedSpend {
+export function bookedSpend(entries: readonly EntryLike[], which: "model" | "paid" | "decisions" | "side"): BookedSpend {
   const keyed = sessionConversations(entries);
   const paidConv = keyed.get(TOOL_SESSION);
   const decisionsConv = keyed.get(DECISION_SESSION);
@@ -100,12 +100,15 @@ export function bookedSpend(entries: readonly EntryLike[], which: "model" | "pai
   const sides = new Set(entries.filter((e) => e.kind === RUNNER_RECORDS.request && model(e) && ((e.data as { side?: unknown; host?: unknown } | undefined)?.side === true || typeof (e.data as { host?: unknown } | undefined)?.host === "string")).map(turnOf));
   const chosen = (e: EntryLike) => (which === "paid" ? conv(e) === paidConv : which === "decisions" ? conv(e) === decisionsConv : which === "side" ? model(e) && sides.has(turnOf(e)) : model(e));
   const answered = new Set(entries.filter((e) => e.kind === RUNNER_RECORDS.turn && chosen(e)).map(turnOf));
-  // The model each request was sent on, by its turn (its runner.request's `model`).
-  const sentOn = new Map(entries.filter((e) => e.kind === RUNNER_RECORDS.request && chosen(e)).map((e) => [turnOf(e), (e.data as { model?: unknown } | undefined)?.model]));
+  // The provider-qualified name when recorded, or the model ID from an older booking.
+  const sentOn = new Map(entries.filter((e) => e.kind === RUNNER_RECORDS.request && chosen(e)).map((e) => {
+    const data = e.data as { model?: unknown; modelName?: unknown } | undefined;
+    return [turnOf(e), data?.modelName ?? data?.model];
+  }));
   const models = new Map<string, number>();
   const count = (e: EntryLike) => {
     const model = sentOn.get(turnOf(e));
-    const name = typeof model === "string" ? names?.get(model) ?? model : "";
+    const name = typeof model === "string" ? model : "";
     models.set(name, (models.get(name) ?? 0) + 1);
   };
   let known = 0;

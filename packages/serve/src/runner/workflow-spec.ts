@@ -278,13 +278,14 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string;
     // tool definition it is not given, so it admits this whole set by name (as pi's admits its session's tools); main's
     // nodes send their requests straight to the provider (app.ts:117), unfiltered.
     const offered = nodeOffer(claimed.workflow);
-    const modelNames = new Map<string, string>();
+    const routeNames = new Map<string, string>();
     for (const [tier, provider] of providers) {
-      if (!modelNames.has(provider.modelId)) modelNames.set(provider.modelId, provider.named ?? `${providerId(tier)}/${provider.modelId}`);
+      const route = providerId(tier);
+      routeNames.set(route, provider.named ?? `${route}/${provider.modelId}`);
       const proxy = await startModelProxy({
         // Each request names its tier's route (ModelRequest.route), so the cap prices it as that tier books it: two tiers
         // on one model id (a plan's and a paid one) are held apart, never at the other's price (capModelOf).
-        route: providerId(tier),
+        route,
         policy: await policyFor({ api: provider.api, origin: provider.origin, credential: provider.credential, ...(provider.headers ? { headers: provider.headers } : {}), ...(provider.plan ? { plan: true } : {}) }, provider.modelId, offered),
         hooks: hooks.port,
         model: provider.modelId,
@@ -380,7 +381,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string;
       agentId: claimed.agentId,
       revisionId: claimed.revisionId,
       ...(claimed.capUsd !== undefined ? { cap: capRuleOf(() => effectiveCapUsd ?? claimed.capUsd!) } : {}),
-      endPatch: async (_, keepCost) => booking ? endPatchOf(run?.journal, { hasDecisions, modelNames, keepCost }) : {},
+      endPatch: async (_, keepCost) => booking ? endPatchOf(run?.journal, hasDecisions, keepCost) : {},
       build: (loopHooks: WorkflowHostHooks) => {
         hooks.setPark(loopHooks);
         const hostDeps: WorkflowHostDeps = {
@@ -432,6 +433,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string;
         booking = await modelPortFor(writer, {
           key: SESSION,
           label: SESSION,
+          modelNamesByRoute: routeNames,
           // The model booking is the run's rule itself (no second booking); a refusal parks the run through the loop's hook.
           beforeRequest: parkOnRefusal(run.before, hooks, flight, steps),
           // A model node's request billed past the bound its hold was priced on: the cap's warn line (print.ts warnHoldShort).
@@ -876,11 +878,11 @@ function runEffectOf(claimed: Claimed, complete: ReturnType<typeof completer>, e
  *  hold). Unknown once any one is, written as null, never left out (an end that says nothing leaves the $0 the run read
  *  before a response). Usage comes from those model bookings and decision receipts, tools from their conversations.
  *  With no journal to read, cost is unknown. */
-async function endPatchOf(journalOf: (() => Journal) | undefined, { hasDecisions, modelNames, keepCost }: { hasDecisions: boolean; modelNames: ReadonlyMap<string, string>; keepCost: ((cost: EndCost) => void) | undefined }): Promise<Pick<EndData, "costUsd" | "costUpperBound" | "metrics">> {
+async function endPatchOf(journalOf: (() => Journal) | undefined, hasDecisions: boolean, keepCost?: (cost: EndCost) => void): Promise<Pick<EndData, "costUsd" | "costUpperBound" | "metrics">> {
   if (!journalOf) return { costUsd: null };
   const journal = journalOf();
   const entries = await journalEntries(journal, BACKGROUND_CONTEXT) as unknown as EntryLike[];
-  const bookedModel = bookedSpend(entries, "model", modelNames);
+  const bookedModel = bookedSpend(entries, "model");
   const cost = endCostOf(runCostOf(entries, { bookedModel }));
   keepCost?.(cost);
   const decisions = hasDecisions ? await decisionsInJournal(journal, BACKGROUND_CONTEXT) : [];
