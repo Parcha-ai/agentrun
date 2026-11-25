@@ -28,6 +28,7 @@ const { sealColumn, sealedAt } = await import("../dist/store/seal.js");
 const { FakeArchilDisk } = await import("./fixtures/archil-fake.mjs");
 const { archilControlFetch } = await import("./archil-control-fake.mjs");
 const { toolLedger } = await import("./support.mjs");
+const { spillFolderOf } = await import("../dist/workspace/archil.js");
 
 const SEAL_KEY = Buffer.alloc(32, 7);
 const TOKEN = `not-a-secret-${"mode2-mcp-evidence-bearer"}`;
@@ -42,13 +43,9 @@ const LONG = Array.from({ length: 2_000 }, (_, i) => `line ${i} of a long fal an
 
 /** A fake fal MCP whose wait_for_jobs answers `answers` in turn: the first a completed job as text, the next past the
  *  gateway's clip (which it files whole at evidence/mcp/fal/). */
-async function fakeFal(t) {
+async function fakeFal(t, answers = [{ content: [{ type: "text", text: JSON.stringify(JOB) }] }, { content: [{ type: "text", text: LONG }] }]) {
   const fake = await startFakeMcp({ token: TOKEN });
   t.after(() => fake.close());
-  const answers = [
-    { content: [{ type: "text", text: JSON.stringify(JOB) }] },
-    { content: [{ type: "text", text: LONG }] },
-  ];
   fake.tools.wait_for_jobs = { description: WAIT.description, input: WAIT.inputSchema, run: () => answers.shift() };
   const register = (server) => server.mcp.put({ name: "fal", url: fake.url, auth: "bearer", tools: [{ name: WAIT.name, description: WAIT.description, input_schema: WAIT.inputSchema }], sealed: sealMcpCredential(SEAL_KEY, "fal", { type: "headers", headers: { authorization: `Bearer ${TOKEN}` } }, fake.url) });
   return { fake, register };
@@ -245,4 +242,92 @@ test("Mode 2, a run's own process, no computer: its MCP opens the run's disk Wor
   const [first, second] = await callTwice(tool);
   assert.equal(opens(disk), 1, "the run's disk Workspace is opened once for both answers");
   assertFiledOverTheDisk({ data, agentId: "agent-own", runId: "run-own", disk, key, first, second });
+});
+
+/** A Mode 2 run's own process with no computer, over a fresh store whose fal MCP answers `answers`: `claimOn(disk)` makes
+ *  its runner's side (heldFor) over the Archil fake `disk`. */
+async function ownMode2(t, answers) {
+  const { fake, register } = await fakeFal(t, answers);
+  const { store } = await storeOn(t);
+  const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "mode2-mcp-release-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  const DISK = { diskId: "dsk-0000000000000001", region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" };
+  await saveArchilSettings(store, DISK);
+  await storeAgentDisk(store, "agent-own", { diskId: DISK.diskId });
+  await store.sealedKeys.put(ARCHIL_API_KEY_ROW, sealColumn(SEAL_KEY, sealedAt.sealedKey(ARCHIL_API_KEY_ROW), "fake-test-key-api-0001"));
+  await register(store);
+  const revision = { kind: "agentic", body: { instructions: "Answer.", tools: GRANTS }, mcpPin: PIN(fake.url) };
+  await store.agents.create({ id: "agent-own", name: "Own" }, { id: "rev-own", ...revision });
+  await store.runs.create({ id: "run-own", agentId: "agent-own", revisionId: "rev-own" });
+  strayFolder(data, "agent-own", "run-own");
+  const control = archilControlFetch();
+  const claimOn = (disk) => host.heldFor(
+    { store, sealKey: SEAL_KEY, env: {}, data, mcpLoopback: true, makeArchilDisk: () => disk, mountControl: { baseUrl: control.baseUrl, fetch: control.fetch } },
+    { claim: { runId: "run-own", epoch: 1 }, run: { agentId: "agent-own", revisionId: "rev-own", signInHanded: null }, launch: { input: { content: "Hello." } }, revision, claimed: {} },
+    (text) => text,
+    () => {},
+  );
+  return { claimOn, key: runKey("agent-own", "run-own"), data };
+}
+
+/** A disk whose first listing of `key` (the open's root check) waits until `open()`; `reached` settles when it is asked. */
+function gatedDisk(key) {
+  const disk = new FakeArchilDisk();
+  let open;
+  const gate = new Promise((resolve) => (open = resolve));
+  let reach;
+  const reached = new Promise((resolve) => (reach = resolve));
+  const list = disk.listPage.bind(disk);
+  let held = false;
+  disk.listPage = async (prefix, options = {}) => {
+    if (!held && prefix === key && !options.recursive) {
+      held = true;
+      reach();
+      await gate;
+    }
+    return list(prefix, options);
+  };
+  return { disk, open: () => open(), reached };
+}
+
+/** The run's disk Workspace's spill sweeps: one at its open, one at its end. */
+const sweepsOf = (disk, key) => disk.calls.filter((call) => call.op === "listPage" && call.recursive === true && call.prefix === `${spillFolderOf(key)}/`).length;
+/** What was put under the run's evidence folder. */
+const evidencePuts = (disk, key) => disk.calls.filter((call) => call.op === "putObject" && call.key.startsWith(`${key}/evidence/`)).map((call) => call.key);
+const LONG_ONLY = [{ content: [{ type: "text", text: LONG }] }];
+
+test("Mode 2, a run's own process: a disk Workspace whose open is still running when the claim lets go is ended once, and the filing that opened it writes nothing", { timeout: 120_000 }, async (t) => {
+  const { claimOn, key } = await ownMode2(t, LONG_ONLY);
+  const { disk, open, reached } = gatedDisk(key);
+  const side = claimOn(disk);
+  const mcp = await side.held.mcp({ appendRoot: async () => {} });
+  const tool = mcp?.tools.find((one) => one.catalog === "mcp:fal/wait_for_jobs");
+  assert.ok(tool, "the run's wait_for_jobs");
+  const paid = await toolLedger(5);
+  const call = bookedIn({ call: "c1", paid }, () => tool.call({}, { callId: "c1", signal: new AbortController().signal, attempt: 0 })).catch((error) => ({ error }));
+  await reached;
+  const released = side.release();
+  open();
+  await released;
+  const answer = await call;
+  assert.equal(sweepsOf(disk, key), 2, `the Workspace opened is ended at the claim's release, once: ${JSON.stringify(disk.calls.map((c) => [c.op, c.prefix ?? c.key]))}`);
+  assert.deepEqual(evidencePuts(disk, key), [], "the filing whose open outlived the claim writes nothing on the run's disk");
+  if (!answer.error) assert.doesNotMatch(answer.text, /the whole answer is in the run's files/, "and says nothing was saved");
+});
+
+// The claim's release lets its MCP go first, which stops a call that comes after it, so this pins the whole path; the
+// Workspace's own refusal after its release is pinned in run-workspace-on-use.test.mjs, where the open is held by hand.
+test("Mode 2, a run's own process: once the claim has let go, its MCP's call opens no disk Workspace", { timeout: 120_000 }, async (t) => {
+  const { claimOn, key } = await ownMode2(t, LONG_ONLY);
+  const disk = new FakeArchilDisk();
+  const side = claimOn(disk);
+  const mcp = await side.held.mcp({ appendRoot: async () => {} });
+  const tool = mcp?.tools.find((one) => one.catalog === "mcp:fal/wait_for_jobs");
+  assert.ok(tool, "the run's wait_for_jobs");
+  await side.release();
+  const paid = await toolLedger(5);
+  const answer = await bookedIn({ call: "c1", paid }, () => tool.call({}, { callId: "c1", signal: new AbortController().signal, attempt: 0 })).catch((error) => ({ error }));
+  assert.ok(answer.error || !/the whole answer is in the run's files/.test(answer.text), "and nothing is said to be saved");
+  assert.equal(disk.calls.filter((call) => call.op === "listPage" && call.prefix === key).length, 0, `nothing is opened on the run's disk after the claim let go: ${JSON.stringify(disk.calls.map((c) => [c.op, c.prefix ?? c.key]))}`);
+  assert.deepEqual(evidencePuts(disk, key), [], "nothing is written there");
 });
