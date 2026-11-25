@@ -2,6 +2,7 @@
 // kept only when no record it asked about and did not hold is one an earlier file holds; any other is made again in
 // order, so a copy counts once, in the file the import's order first read it.
 import assert from "node:assert/strict";
+import { once } from "node:events";
 import { appendFile, utimes } from "node:fs/promises";
 import { test } from "node:test";
 import { availableParallelism, freemem } from "node:os";
@@ -260,10 +261,10 @@ async function sameShape(t) {
   return items;
 }
 
-/** Waits until no worker reads: no read is in flight, and none is sent until one is taken or dropped. */
+/** Waits until no worker reads: no read is in flight, and none is sent until one is taken or dropped. A worker's read
+ *  is handled (and the next one sent) before this sees its message. */
 async function settled(pool) {
-  for (let i = 0; i < 2_000 && pool.reading; i += 1) await new Promise((done) => setTimeout(done, 5));
-  assert.equal(pool.reading, 0, "the pool settles");
+  while (pool.running.size) await Promise.all([...pool.running.keys()].map((worker) => once(worker, "message")));
 }
 
 /** A pool of `threads` and read-ahead `ahead` over `items`, nothing taken, once it settles: the reads its workers sent

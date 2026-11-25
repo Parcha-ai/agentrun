@@ -132,11 +132,6 @@ export class ReadPool {
     }
   }
 
-  /** The reads in flight now. At none, no read is sent until one is taken or dropped. */
-  get reading(): number {
-    return this.running.size;
-  }
-
   /** Queues each locator; a job's id is its place in the import's order, so `items` come in that order. The ids, for take. */
   readAll(items: readonly { source: string; locator: Locator; size: number }[]): number[] {
     const ids = items.map(({ source, locator, size }) => {
