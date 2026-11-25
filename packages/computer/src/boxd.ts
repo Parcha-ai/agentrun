@@ -1,4 +1,4 @@
-// The boxd host: boxd machines (KVM microVMs, Ubuntu 24.04) as a MachineHost, through the host's own @boxd-sh/sdk, of
+// The boxd host: boxd machines (KVM microVMs, Ubuntu 24.04) as a MachineHost, through @boxd-sh/sdk (an optional dependency), of
 // which this file names only the slice it calls (every fact from 0.3.1's dist/*.d.ts) and imports nothing at load.
 // boxd's agent runs every command in a machine, so computerd is a child. The daemon, the bridge, the probe, idempotent
 // create, extend and delete-then-wait-gone are the shared adapter's (./hosted/provider.ts). A desktop starts from a
@@ -14,6 +14,7 @@ import { shellLine } from "./hosted/scripts.js";
 import { dateOf } from "./hosted/values.js";
 import type { CallContext, ComputerSpec, Refusal } from "./provider.js";
 import { type ComputerErrorCode, failFor, ok, type Result } from "./result.js";
+import { vendorSdk } from "./vendor-sdk.js";
 
 /** A machine as the SDK reports it (Machine, models.d.ts), as far as this host reads it. */
 export interface BoxdMachine {
@@ -86,14 +87,11 @@ export interface BoxdProviderOptions extends HostedOptions {
 
 export type BoxdOptions = Omit<BoxdProviderOptions, "Boxd"> & { Boxd?: BoxdClientClass };
 
-/** Not a literal, so no type checker or bundler resolves the SDK from this package. */
-const BOXD_PACKAGE: string = "@boxd-sh/sdk";
-
 /** A BoxdProvider from its options alone; throws in words when the key is missing, never echoing one. */
 export async function create(options: BoxdOptions): Promise<BoxdProvider> {
 	const { apiKey, Boxd: given, ...rest } = options ?? ({} as BoxdOptions);
 	if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, the boxd API key, is required: the provider reads no environment, so the caller passes it");
-	const Boxd = given ?? ((await import(BOXD_PACKAGE)) as { Boxd: BoxdClientClass }).Boxd;
+	const Boxd = given ?? (await vendorSdk<{ Boxd: BoxdClientClass }>(BOXD.label, "@boxd-sh/sdk")).Boxd;
 	return new BoxdProvider({ ...rest, apiKey, Boxd });
 }
 

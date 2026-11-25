@@ -950,12 +950,12 @@ export function RunTrace({ run, read, readUsage, version, live, panel, now: fixe
           // A run whose record keeps no request (a CLI harness's) and called no tool has no span, yet its booking may
           // still have its cost by line.
           <>
-            {/* A run can stop short for its budget with no span to show: a CLI harness's record keeps no request, and it may
-                answer the wrap-up with no call. Why it stopped is said all the same. */}
+            {/* A run can wind down for its budget with no span to show: a CLI harness's record keeps no request, and it may
+                answer the wrap-up with no call. What its cap did is said all the same, as bad only where a call was refused. */}
             {stopped && (
               <section aria-label="What stands out">
                 <Heading level="h2">What stands out</Heading>
-                <ul className="grid border-l border-t"><li className="border-b border-r bg-card p-3"><span className="block text-body font-semibold text-destructive-text">{stopped.title}</span><span className="mt-0.5 block text-small text-muted-foreground">{stopped.detail}</span></li></ul>
+                <ul className="grid border-l border-t"><li className="border-b border-r bg-card p-3"><span className={cn("block text-body font-semibold", stopped.bad && "text-destructive-text")}>{stopped.title}</span><span className="mt-0.5 block text-small text-muted-foreground">{stopped.detail}</span></li></ul>
               </section>
             )}
             {usage?.lines?.length ? <section aria-label="Where the cost went" className="border bg-card p-4"><CostByLine usage={usage} lines={usage.lines} /></section>

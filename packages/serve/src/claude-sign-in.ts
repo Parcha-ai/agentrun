@@ -36,10 +36,17 @@ function endedView(started: Omit<SignInView, "state">, end: ClaudeSignInEnd, at:
     case "failed":
       return { ...ended, state: "not_started", error: end.message };
     case "stopped":
-      // Only this server stops one, and it forgets it as it does (stop), so this view is never kept.
+      // Only this server stops one, and it forgets it as it does (a turn's stop), so this view is never kept.
       return { ...ended, state: "failed" };
   }
 }
+
+/** What a turn on the sign-ins' queue (ClaudeSignIns.serial) does to the sign-in, at once, as the turn holds the queue:
+ *  end the one that waits and start another (`start`), or end it and forget it (`stop`). */
+export type SignInTurn = {
+  start(begin: (limitMs: number) => ClaudeSignIn): Promise<SignInView>;
+  stop(): Promise<void>;
+};
 
 /** The one sign-in this server started, and its start and stop. `limitMs`: how long a sign-in waits for its browser
  *  (SIGN_IN_LIMIT_MS by default; a test's is short). `now`: the clock its times are read from. */
@@ -47,9 +54,10 @@ export class ClaudeSignIns {
   readonly limitMs: number;
   readonly #now: () => number;
   #current: { view: SignInView; handle?: ClaudeSignIn } | undefined;
-  // Each start or stop is a turn of its own: an end that arrives after a later turn began is not kept.
-  #turn = 0;
-  // Starts and stops, one after another, so two presses at once never leave two CLIs waiting on one port.
+  // Each start or stop counts one: an end that arrives after a later start or stop is not kept.
+  #epoch = 0;
+  // The turns (serial), one after another, so two presses at once never leave two CLIs waiting on one port, and a change
+  // of the login's setting never lands between a sign-in's read of it and its start.
   #queue: Promise<unknown> = Promise.resolve();
   // Set at the server's stop (close): no start after it spawns a CLI.
   #closed = false;
@@ -64,50 +72,52 @@ export class ClaudeSignIns {
     return this.#current ? { ...this.#current.view } : undefined;
   }
 
-  /** Start a sign-in with `begin` (the harness's startClaudeLogin, given the limit), after ending one that waits. */
-  start(begin: (limitMs: number) => ClaudeSignIn): Promise<SignInView> {
-    const next = this.#queue.then(async () => {
-      await this.#end();
-      const turn = ++this.#turn;
-      const started = { started_at: new Date(this.#now()).toISOString(), limit_ms: this.limitMs };
-      if (this.#closed) {
-        this.#current = { view: { ...started, state: "not_started", ended_at: started.started_at, error: "this server is stopping" } };
-        return this.view()!;
-      }
-      let handle: ClaudeSignIn;
-      try {
-        handle = begin(this.limitMs);
-      } catch (error) {
-        this.#current = { view: { ...started, state: "not_started", ended_at: started.started_at, error: words(error) } };
-        return this.view()!;
-      }
-      this.#current = { view: { ...started, state: "waiting" }, handle };
-      void handle.ended.then((end) => {
-        if (turn === this.#turn) this.#current = { view: endedView(started, end, new Date(this.#now()).toISOString()) };
-      });
-      return this.view()!;
-    });
+  /** One turn on the queue: `work` runs alone, after every turn asked before it and before every one asked after, and
+   *  starts or ends the sign-in through its `turn`. Every change of the login's setting and every start of a sign-in is a
+   *  turn (claude-login.ts: the turn-on, the turn-off, the sign-in's start and the drop at the server's start), each
+   *  reading the setting inside it, so none lands between another's read and its start or save. A turn lasts while it
+   *  decides and starts: a sign-in's wait for its browser is no turn's. A turn that throws rejects its own answer alone;
+   *  the next turn runs as if it had ended. A sign-in starts and ends only through a turn's `start` and `stop`: there is no
+   *  start or stop beside them, since one called inside a turn would wait for that turn to end, for ever. */
+  serial<T>(work: (turn: SignInTurn) => Promise<T>): Promise<T> {
+    const next = this.#queue.then(() => work({ start: (begin) => this.#start(begin), stop: () => this.#end() }));
     this.#queue = next.catch(() => {});
     return next;
   }
 
-  /** End a sign-in that waits, and forget the one there is (a turn-off). */
-  stop(): Promise<void> {
-    const next = this.#queue.then(() => this.#end());
-    this.#queue = next.catch(() => {});
-    return next;
-  }
-
-  /** The server's stop: as stop(), resolving once a CLI that waited is gone, and a start asked after it (a request still
-   *  in flight) spawns nothing. A CLI left waiting would keep the browser's callback port from the next server's sign-in. */
+  /** The server's stop: a turn that ends a sign-in that waits and forgets it, resolving once its CLI is gone; a start
+   *  asked after it (a request still in flight) spawns nothing. A CLI left waiting would keep the browser's callback port
+   *  from the next server's sign-in. */
   close(): Promise<void> {
     this.#closed = true;
-    return this.stop();
+    return this.serial((turn) => turn.stop());
+  }
+
+  async #start(begin: (limitMs: number) => ClaudeSignIn): Promise<SignInView> {
+    await this.#end();
+    const epoch = ++this.#epoch;
+    const started = { started_at: new Date(this.#now()).toISOString(), limit_ms: this.limitMs };
+    if (this.#closed) {
+      this.#current = { view: { ...started, state: "not_started", ended_at: started.started_at, error: "this server is stopping" } };
+      return this.view()!;
+    }
+    let handle: ClaudeSignIn;
+    try {
+      handle = begin(this.limitMs);
+    } catch (error) {
+      this.#current = { view: { ...started, state: "not_started", ended_at: started.started_at, error: words(error) } };
+      return this.view()!;
+    }
+    this.#current = { view: { ...started, state: "waiting" }, handle };
+    void handle.ended.then((end) => {
+      if (epoch === this.#epoch) this.#current = { view: endedView(started, end, new Date(this.#now()).toISOString()) };
+    });
+    return this.view()!;
   }
 
   async #end(): Promise<void> {
     const current = this.#current;
-    this.#turn++;
+    this.#epoch++;
     this.#current = undefined;
     if (current?.view.state !== "waiting" || !current.handle) return;
     current.handle.stop();

@@ -38,7 +38,7 @@ test('captures of one workflow written at once are each whole JSON, name their s
     const directory = join(scratch, `capture-${round}`);
     mkdirSync(directory);
     await Promise.all(Array.from({ length: 12 }, (_, i) => record(i % 2 ? long : short, directory)));
-    const files = readdirSync(directory);
+    const files = readdirSync(directory).filter((file) => file !== 'reached');
     assert.ok(files.length > 0, `round ${round}: something was captured`);
     for (const file of files) {
       assert.match(file, /^[0-9a-f]{24}\.json$/, `round ${round}: ${file} is a finished capture`);
@@ -47,6 +47,19 @@ test('captures of one workflow written at once are each whole JSON, name their s
       assert.ok(scripts.has(entry.source), `round ${round}: ${entry.source} is one of the scripts, relative to the repository`);
     }
   }
+});
+
+test('a process the hook reaches leaves its marker, reached, even when it validates no workflow', async () => {
+  // A shard can run only files that validate nothing (lean-1 running dsl's decision-provider-mutants.test.mjs alone): the
+  // marker is what shows the lean job that the hook reached that shard.
+  const nothing = join(scratch, 'validates-nothing.mjs');
+  writeFileSync(nothing, 'export {};\n');
+  const directory = join(scratch, 'reached-only');
+  await record(nothing, directory);
+  assert.deepEqual(readdirSync(directory), ['reached']);
+  const both = join(scratch, 'reached-and-capture');
+  await record(short, both);
+  assert.deepEqual(readdirSync(both).filter((file) => !/^[0-9a-f]{24}\.json$/.test(file)), ['reached'], 'beside the capture, the marker and nothing else');
 });
 
 // The race above needs a fast disk to show; this does not. A spy preload records every path the capture writes and every
@@ -155,6 +168,18 @@ test('--captures fails, naming it, on a directory that is missing or holds no fi
   assert.match(done.stderr, new RegExp(`${missing}: no captures`));
   assert.throws(() => readFileSync(out), { code: 'ENOENT' });
   assert.deepEqual(done.suites, []);
+});
+
+test('--captures takes a directory holding only the hook\'s marker: its shard ran under the hook and validated no workflow', () => {
+  const core = shard('core-with-marked', ['packages/dsl/test/a.test.mjs', 'packages/serve/test/durable-b.test.mjs', 'examples/d.test.mjs']);
+  const marked = join(scratch, 'marked');
+  mkdirSync(marked);
+  writeFileSync(join(marked, 'reached'), '');
+  writeFileSync(join(marked, 'dead.1.tmp'), '{');
+  const out = join(scratch, 'corpus-marked.json');
+  const done = collector(['--captures', core, '--captures', marked, out]);
+  assert.equal(done.status, 0, done.stderr);
+  assert.equal(JSON.parse(readFileSync(out, 'utf8')).filter((entry) => entry.source.startsWith('packages/dsl/test/')).length >= 1, true);
 });
 
 test('--captures fails, naming it, when no capture came from one of the suites', () => {

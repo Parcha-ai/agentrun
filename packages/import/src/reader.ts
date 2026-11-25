@@ -4,6 +4,7 @@
 // implements discover and read itself.
 import type { Dirent } from "node:fs";
 import { readdir } from "node:fs/promises";
+import type { Counts } from "./counts.js";
 import { personsWords } from "./text.js";
 import type { Answer, SessionOf, Turn } from "./types.js";
 
@@ -17,8 +18,8 @@ export type Locator = { file: string; id?: string };
 export const locatorKey = ({ file, id }: Locator): string => (id === undefined ? file : `${file}#${id}`);
 
 /** One session a read found: where it is, what it is, and every request read (each counted once), whether turns are kept
- *  or not: what a total counts. */
-export type SessionRead<S extends string = string> = { locator: Locator; session: SessionOf<S>; requests: Answer[] };
+ *  or not: what a total counts. A totals read (ReadOptions.totals) has them as `counts` alone, `requests` empty. */
+export type SessionRead<S extends string = string> = { locator: Locator; session: SessionOf<S>; requests: Answer[]; counts?: Counts };
 
 export type ReadResult<S extends string = string, C = unknown> = {
   /** The locator's sessions: one for a file of one session; each in the file, or the one its id names, for a file of
@@ -35,6 +36,10 @@ export type ReadResult<S extends string = string, C = unknown> = {
 export type ReadOptions = {
   /** false keeps only what a listing shows: no turns, nor a request's text or call arguments. */
   turns?: boolean;
+  /** With turns false, true keeps only what parseHome totals: each request's model, usage and time, as `counts`
+   *  (no calls, ids or keys), and no title. A reader that has no such read gives its requests as ever: a lineReader's has one when
+   *  its LineSource says `totals: true` (Claude Code's, Codex's and pi's do). */
+  totals?: boolean;
   /** The records and requests an import has read already, across its files: a record in it (a copy a resumed session's
    *  file carries) adds nothing, and this read's are added to it. A cursor read with one is resumed with the same one. */
   seen?: Set<string>;
@@ -42,6 +47,10 @@ export type ReadOptions = {
    *  `seen` like any other, as no later read takes it again. Default true: it is left out of `seen` until a read from
    *  the cursor takes it whole. */
   keepsCursor?: boolean;
+  /** The longest line, in bytes, the read takes: a longer one ends it with a LineTooLong error, before the line is
+   *  decoded. The read pool's workers set it to an eighth of their heap (pool.ts), so that no one line can end the
+   *  process; parseHome then reads the file on its own thread, with no such bound. Default: none. */
+  maxLine?: number;
 };
 
 export type Reader<S extends string = string, C = unknown> = {

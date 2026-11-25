@@ -6,7 +6,7 @@
 // sets equal, and each value equal, except that a call's value read as "…" (a timeline read elides query values,
 // scrubUrls) matches any value for its key. Structural only: whether a cited item is in scope stays the rubric's call.
 import { lastJsonBlock } from "./answer-json.js";
-import { linksOf, linksWritten, TRAILING, trimmed, wholeUrl } from "./text-urls.js";
+import { linksOf, linksWritten, TRAILING, trimmed, wholeUrl } from "@parcha/agentrun-web";
 import { scrubUrl } from "./timeline/index.js";
 import { WEB_FETCH_TOOL } from "./web-fetch.js";
 import { WEB_SEARCH_TOOL } from "./web-search.js";

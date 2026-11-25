@@ -3,7 +3,7 @@ import { RowTitle, rowLabel } from "@/components/Timeline";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { clock } from "@/lib/format";
-import { stepAt, stepCall, videoClock, type VideoStep } from "@/lib/runVideo";
+import { stepAt, stepAtClock, stepCall, videoClock, type VideoStep } from "@/lib/runVideo";
 import { rowFailed, steps as stepsOf } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
 import type { TimelineRow } from "@/lib/v2";
@@ -57,7 +57,7 @@ export function RunVideoSteps({ video, steps, onOpenCall }: { video: HTMLVideoEl
   const list = useRef<HTMLOListElement | null>(null);
   useEffect(() => {
     if (!video) return;
-    const read = () => setNow(stepAt(steps, video.currentTime));
+    const read = () => setNow(stepAtClock(steps, video.currentTime));
     read();
     video.addEventListener("timeupdate", read);
     video.addEventListener("seeked", read);

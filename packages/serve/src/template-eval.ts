@@ -3,7 +3,8 @@
 // Everything goes through the v2 API alone, on an in-process server over a temp data directory by default (an eval never
 // touches the owner's server) or on one named by its address and token. Per case: a fake MCP server per `mcp` fixture,
 // saved under its name with no credential and recording every call; the package applied with the case's parameters and
-// grants, a fresh agent per run, its learning seeded from the case's corrections; one run per `runs` with the prompt's body as
+// grants, a fresh agent per run, its learning seeded from the case's corrections and its work folder from the case's
+// files; one run per `runs` with the prompt's body as
 // its input and the case's cap, on the case's clock when it sets one (`now`), waited for; then its answer, its tool calls (its timeline read with calls=whole, each
 // call's arguments and its output whole, to CALL_RESULT_CHARS, through the run's redaction, and the fakes' own logs) and its files, graded, and held to the package's output schema when it declares one (outputVerdict,
 // the server's own verdict). Every grader is deterministic but `llm`, which is itself a run on the same
@@ -47,6 +48,7 @@ import { WEB_SEARCH_TOOL } from "./web-search.js";
 import { dayIn, serverZone } from "./environment.js";
 import { instantOf } from "./trigger-adapter.js";
 import { applyBodyOf, compiled, filledPins, filledSource, onServerName, onServers, type Package, packageView, readPackage } from "./templates.js";
+import { INPUTS_DIR } from "./uploads.js";
 import { inputIssues, inputSchemaOf, isObject, type Json, MODEL_REF } from "./validate.js";
 
 /** What a grader run is told, whatever the rubric: blind, strict, and its verdict as one JSON block. */
@@ -68,9 +70,9 @@ export const GRADER_CAP_USD = 0.5;
 export const GRADER_PROMPT_MAX = 120_000;
 /** How long one run may take before the eval cancels it and fails it. */
 export const RUN_TIMEOUT_MS = 30 * 60_000;
-/** How long a run may stay queued, no runner having taken it, before the eval stops waiting on it: it fails by that
- *  name, its state when the wait gave up, never by the run's whole timeout. */
-export const QUEUE_TIMEOUT_MS = 2 * 60_000;
+/** How long a run may stay queued, no runner holding it, before the eval stops waiting on it: it fails by that name,
+ *  never by the run's whole timeout. 5 minutes: a busy machine's runner can be slow to make its first claim. */
+export const QUEUE_TIMEOUT_MS = 5 * 60_000;
 export const GRADER_NAME = "Template eval grader";
 /** The folder under TMPDIR where local evals keep the one install of each harness's pin they all share. */
 export const EVAL_HARNESSES = "agentrun-eval-harnesses";
@@ -78,7 +80,7 @@ export const EVAL_HARNESSES = "agentrun-eval-harnesses";
 export const ON_DATA_WITH_SERVER = "--on-data is the data folder of the eval's own server, and --server names another server: give one of them";
 
 const PROMPT_FIELDS = ["description", "runs", "max_cost_usd", "input"];
-const CASE_FIELDS = ["parameters", "grants", "mcp", "web", "monid", "learning", "now", "email", "calendar", "feed", "previous"];
+const CASE_FIELDS = ["parameters", "grants", "mcp", "web", "monid", "learning", "now", "email", "calendar", "feed", "previous", "files"];
 const GRADER_FIELDS: Record<string, string[]> = {
   llm: ["type", "target"],
   regex: ["type", "pattern", "flags", "expect", "target"],
@@ -96,7 +98,7 @@ const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule each fake MCP server li
 const LOOPBACK_HOST = /^(?:127\.\d+\.\d+\.\d+|localhost|\[::1\])$/; // key-gate: loopback-rule a server on this machine reaches the fakes
 
 /** A case's fields that the eval's own runner alone binds (EvalFakes), each with what it does: a named server refuses them. */
-const OWN_SERVER_FAKES: readonly (readonly ["web" | "now" | "monid" | "email" | "calendar" | "feed" | "previous", string])[] = [["web", "web fakes the web tools"], ["now", "now sets its runs' clock"], ["monid", "monid fakes the package's monid endpoints"], ["email", "email fakes the server's email account"], ["calendar", "calendar fakes the server's calendar"], ["feed", "feed fakes the package's feeds"], ["previous", "previous seeds the case's earlier runs in the server's store"]];
+const OWN_SERVER_FAKES: readonly (readonly ["web" | "now" | "monid" | "email" | "calendar" | "feed" | "previous" | "files", string])[] = [["web", "web fakes the web tools"], ["now", "now sets its runs' clock"], ["monid", "monid fakes the package's monid endpoints"], ["email", "email fakes the server's email account"], ["calendar", "calendar fakes the server's calendar"], ["feed", "feed fakes the package's feeds"], ["previous", "previous seeds the case's earlier runs in the server's store"], ["files", "files seeds its runs' work folders"]];
 
 /** A case's run input: its prompt's body as content (none when empty), then its typed fields. */
 export const runInput = (content: string, fields?: Json): Json => ({ ...(content ? { content } : {}), ...fields });
@@ -112,9 +114,13 @@ export type Grader = (
   /** An email case's layouts this grader grades the runs of; absent, every run. */
   layouts?: Layout[];
 };
-/** One answer of a fake tool: taken when every argument `when` lists equals the call's; `when` a list, when any one of
- *  its entries does (one answer for each spelling of a call: a file by `sha` or by `ref`, say). */
+/** One answer of a fake tool: taken when every argument `when` lists equals the call's, or, listed as `{"$pattern":
+ *  <regex>}`, is a string the regex matches whole; `when` a list, when any one of its entries does (one answer for each
+ *  spelling of a call: a file by `sha` or by `ref`, say). */
 type Answer = { when: Json | Json[]; result: Json };
+/** The regex a `when` value matches by, when it is `{"$pattern": <regex>}` and nothing else: anchored here, so a key
+ *  made of a run's random stem (ns-k7m2p9qa-voice-cold-open) matches whole, never by a prefix the author left open. */
+const patternOf = (value: unknown): RegExp | undefined => (isObject(value) && Object.keys(value).length === 1 && typeof value.$pattern === "string" ? new RegExp(`^(?:${value.$pattern})$`) : undefined);
 /** A fake code search: the call's `query` argument searched over `files` (GitHub's code search syntax, read loosely: bare
  *  and quoted terms every one of which a file holds, /.../ terms read as literal text (a backslash before punctuation
  *  dropped), never as a regular expression, so no query can stall the eval, NOT before a term or a qualifier, and the
@@ -160,6 +166,9 @@ export type EvalCase = {
   /** The case's previous runs (eval-previous.ts): each run's agent gets them seeded as completed runs of the package's
    *  schedule trigger, which then starts the run as it would, handing it the last one's result. */
   previous?: PreviousFixture;
+  /** The files each run's work folder holds before its first turn (`files:`, a path in the folder to its text): the eval's
+   *  own runner writes them at the claim (EvalFakes.files), so a case can start where an earlier run left off. */
+  files?: Record<string, string>;
 };
 
 /** Cases that do not check: every problem, each naming its file. */
@@ -221,6 +230,27 @@ function fixtureOf(text: string, name: string, at: string, bad: (message: string
     if (!ok || !MCP_TOOL_NAME.test(tool)) {
       bad(`${at}: tools.${tool} is {description, input: an object's JSON Schema, answers: [{when: {...} or [{...}, ...], result: an MCP tool result}], default?: a result, search?: {query: the argument's name, files: [{path, text}], limit?, note?}}`);
       continue;
+    }
+    // A `when` value that names $pattern is a regex over the call's argument: one that is no string, does not compile, or
+    // sits beside another key would be compared by equality and match nothing, so it fails here, not as a silent miss.
+    for (const [i, answer] of (answers as Answer[]).entries()) {
+      const whens = Array.isArray(answer.when) ? answer.when.map((when, j) => [`[${j}]`, when] as const) : [["", answer.when] as const];
+      for (const [j, when] of whens) {
+        for (const [key, value] of Object.entries(when as Json)) {
+          if (!isObject(value) || !Object.hasOwn(value, "$pattern")) continue;
+          const where = `${at}: tools.${tool}.answers[${i}].when${j}.${key}`;
+          const others = Object.keys(value).filter((name) => name !== "$pattern");
+          if (others.length) bad(`${where}: a {"$pattern": ...} value holds no other key, and this one holds ${others.join(", ")}`);
+          else if (typeof value.$pattern !== "string") bad(`${where}: $pattern is a regular expression's source, a string`);
+          else {
+            try {
+              new RegExp(value.$pattern);
+            } catch (error) {
+              bad(`${where}: its $pattern does not compile: ${(error as Error).message}`);
+            }
+          }
+        }
+      }
     }
     tools[tool] = { description: spec.description as string, input: spec.input as Json, answers: answers as Answer[], ...(isObject(spec.default) ? { default: spec.default } : {}), ...(isObject(spec.search) ? { search: spec.search as FakeSearch } : {}) };
   }
@@ -506,6 +536,24 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
       // Its run is the trigger's, on the trigger's input and cap: the prompt gives neither.
       if (body || fields || f.max_cost_usd !== undefined) bad(`${at}/prompt.md: a previous case's run is started by the package's schedule trigger, on the trigger's input and cap: its prompt.md holds description and runs alone`);
     }
+    // The case's files: each run's work folder holds them before its first turn, as a run that resumes finds what the run
+    // before it left (a keys file, say). Text only, each path in the folder and outside inputs/, which the server fills
+    // with the run's uploads and its message.
+    let files: Record<string, string> | undefined;
+    if (c.files !== undefined) {
+      if (!isObject(c.files)) bad(`${at}/case.yaml: files is a mapping of a path in the run's work folder to the text that file starts with`);
+      else {
+        files = {};
+        for (const [path, text] of Object.entries(c.files)) {
+          const shown = JSON.stringify(path);
+          if (!path || path.startsWith("/") || /[\\\0]/.test(path) || path.split("/").some((part) => part === "" || part === "." || part === "..")) bad(`${at}/case.yaml: files: ${shown} is not a path in the run's work folder (relative, with no empty, . or .. segment)`);
+          else if (path.split("/")[0] === INPUTS_DIR) bad(`${at}/case.yaml: files: ${shown} is under ${INPUTS_DIR}/, where the server puts the run's uploads and its message`);
+          else if (typeof text !== "string") bad(`${at}/case.yaml: files: ${shown} is the file's text, a string`);
+          // An own property, so a path such as __proto__ is a file, never the object's prototype.
+          else Object.defineProperty(files, path, { value: text, writable: true, enumerable: true, configurable: true });
+        }
+      }
+    }
     let learning: string | undefined;
     if (c.learning !== undefined) {
       const file = inside(root, c.learning, "file");
@@ -532,7 +580,7 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
     cases.push({
       name, description: typeof f.description === "string" ? f.description : "", runs: typeof f.runs === "number" ? f.runs : 1,
       ...(typeof f.max_cost_usd === "number" ? { maxCostUsd: f.max_cost_usd } : {}), input: body, ...(fields ? { fields } : {}),
-      parameters, grants, mcp, ...(web ? { web } : {}), ...(monid ? { monid } : {}), ...(learning !== undefined ? { learning } : {}), graders, ...(typeof c.now === "string" ? { now: c.now } : {}), ...(email ? { email } : {}), ...(calendar ? { calendar } : {}), ...(feed ? { feed } : {}), ...(previous ? { previous } : {}),
+      parameters, grants, mcp, ...(web ? { web } : {}), ...(monid ? { monid } : {}), ...(learning !== undefined ? { learning } : {}), graders, ...(typeof c.now === "string" ? { now: c.now } : {}), ...(email ? { email } : {}), ...(calendar ? { calendar } : {}), ...(feed ? { feed } : {}), ...(previous ? { previous } : {}), ...(files ? { files } : {}),
     });
   }
   if (problems.length) throw new CaseError(dir, problems);
@@ -598,7 +646,11 @@ const carries = (call: unknown, args: unknown): boolean => (isObject(args) ? isO
 export function fakeAnswer(fixture: McpFixture, tool: string, args: Json): Json {
   const spec = fixture.tools[tool];
   if (!spec) return { isError: true, content: [{ type: "text", text: `The fake ${fixture.server} has no tool ${tool}.` }] };
-  const matches = (when: Json) => Object.entries(when).every(([key, value]) => Object.hasOwn(args, key) && same(args[key], value));
+  const matches = (when: Json) => Object.entries(when).every(([key, value]) => {
+    if (!Object.hasOwn(args, key)) return false;
+    const pattern = patternOf(value);
+    return pattern ? typeof args[key] === "string" && pattern.test(args[key]) : same(args[key], value);
+  });
   const hit = spec.answers.find((answer) => (Array.isArray(answer.when) ? answer.when.some(matches) : matches(answer.when)));
   if (hit) return hit.result;
   if (spec.search && typeof args[spec.search.query] === "string") return { content: [{ type: "text", text: searched(spec.search, args[spec.search.query] as string) }] };
@@ -1046,59 +1098,121 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** How long the run read that asks whether a runner holds a queued run may take. */
 export const CLAIM_READ_TIMEOUT_MS = 10_000;
-/** Whether a runner holds the run now (the run read's `claim`); undefined when the read fails, takes over
- *  CLAIM_READ_TIMEOUT_MS or is stopped by `signal` (the eval's stop): not known, so never a reason to cancel the run. */
-async function heldNow(api: Api, runId: string, signal?: AbortSignal): Promise<boolean | undefined> {
-  const timeout = AbortSignal.timeout(CLAIM_READ_TIMEOUT_MS);
-  const read = await api("GET", `/runs/${runId}`, undefined, {}, { signal: signal ? AbortSignal.any([signal, timeout]) : timeout }).catch(() => undefined);
-  return read?.status === 200 && isObject(read.body) ? isObject(read.body.claim) : undefined;
+/** The least time between two of those reads of one run. */
+export const CLAIM_READ_EVERY_MS = 5_000;
+/** How long a timeline page read asks the server to wait for a new row (its wait_ms). */
+const PAGE_WAIT_MS = 5_000;
+/** How long that read may take: its wait, and 10 s for the answer to arrive. */
+export const PAGE_READ_TIMEOUT_MS = PAGE_WAIT_MS + 10_000;
+
+/** The bound of a read in waitRun made at `now`: `capMs`, or the time left to `deadline` when that is less (`ms`, whole
+ *  milliseconds and never below 0, as AbortSignal.timeout takes them), and whether the time left is what bounds it
+ *  (`atDeadline`). */
+export function readBound(deadline: number, capMs: number, now: number): { ms: number; atDeadline: boolean } {
+  const left = deadline - now;
+  return left < capMs ? { ms: Math.max(0, Math.ceil(left)), atDeadline: true } : { ms: capMs, atDeadline: false };
+}
+
+/** A read in waitRun, bounded as readBound says and by the eval's stop (`stop`): the `signal` its request takes, whether
+ *  to `send` it at all (not with no time left), and `byDeadline()`, true once the deadline ended it. The wait takes that
+ *  as its end, with no second read of the clock: the timer runs on a monotonic clock in whole milliseconds, and
+ *  Date.now() can still read a millisecond short of the deadline when it fires. */
+function bounded(deadline: number, capMs: number, stop?: AbortSignal): { signal: AbortSignal; send: boolean; byDeadline: () => boolean } {
+  const { ms, atDeadline } = readBound(deadline, capMs, Date.now());
+  const timeout = AbortSignal.timeout(ms);
+  return { signal: stop ? AbortSignal.any([stop, timeout]) : timeout, send: ms > 0, byDeadline: () => atDeadline && (ms === 0 || timeout.aborted) };
+}
+
+/** Whether a runner holds the run now (the run read's `claim`): "deadline" when the read ran to the run's `deadline`, or
+ *  there was no time left to send it; undefined when it fails, takes over CLAIM_READ_TIMEOUT_MS or is stopped by
+ *  `signal` (the eval's stop): not known, so never a reason to cancel the run as unheld. */
+async function heldNow(api: Api, runId: string, deadline: number, signal?: AbortSignal): Promise<boolean | "deadline" | undefined> {
+  const read = bounded(deadline, CLAIM_READ_TIMEOUT_MS, signal);
+  const answered = read.send ? await api("GET", `/runs/${runId}`, undefined, {}, { signal: read.signal }).catch(() => undefined) : undefined;
+  if (read.byDeadline()) return "deadline";
+  return answered?.status === 200 && isObject(answered.body) ? isObject(answered.body.claim) : undefined;
 }
 
 /** A run waited for: its rows until it ends (completed, failed, cancelled) or waits on a person (input_required), or
- *  `deadline` passes (then it is cancelled). A stop of the eval (`signal`) cancels it too, and throws. */
-async function waitRun(api: Api, runId: string, deadline: number, signal?: AbortSignal, queueTimeoutMs = QUEUE_TIMEOUT_MS): Promise<{ status: string; rows: Json[]; waiting?: string; why?: string }> {
+ *  `deadline` passes (then it is cancelled). A stop of the eval (`signal`) cancels it too, and throws. Each of its reads
+ *  ends at the deadline and at the stop (bounded), so a server that stalls one never holds the wait past either.
+ *  Exported for its tests. */
+export async function waitRun(api: Api, runId: string, deadline: number, signal?: AbortSignal, queueTimeoutMs = QUEUE_TIMEOUT_MS): Promise<{ status: string; rows: Json[]; waiting?: string; why?: string }> {
   const view = new Map<string, Json>();
   let after = 0;
   const started = Date.now();
   // A run nobody takes stays queued: given up on once it has gone queueTimeoutMs with no runner holding it, by name, never
   // left to the whole deadline. A run's view reads queued until its first rows show, held or not (a slow start on a busy
-  // machine), so a queued page past the bound asks the run read whether a runner holds it now: one does, and the bound
-  // starts again from now, so a run a runner keeps holding is waited for to its own deadline. A read that doesn't answer
-  // (failed, stalled past its bound, or stopped) says neither: it is asked again at the next page, and the stop and the
-  // deadline still end the wait.
-  let queuedUntil = started + queueTimeoutMs;
+  // machine), so a queued page past the bound asks the run read whether a runner holds it now. Once one has, every queued
+  // page asks (at most one read in CLAIM_READ_EVERY_MS): a claim can lapse for a moment on a stalled machine (not renewed
+  // in time, then claimed again), so one read that finds none never ends the wait. The run is cancelled only when reads
+  // found no runner holding it from the first such read to one queueTimeoutMs later, none between them finding one. A read
+  // that doesn't answer (failed, stalled past its bound, or stopped) says neither.
+  let unheldSince: number | undefined = started;
+  let everHeld = false;
+  let askedAt = -Infinity;
+  let rows: Json[] = [];
+  let state: unknown;
   for (;;) {
     if (signal?.aborted) {
       await api("POST", `/runs/${runId}/cancel`, {}).catch(() => undefined);
       signal.throwIfAborted();
     }
     // calls=whole: each call's arguments and its output, whole to CALL_RESULT_CHARS (tool_input, tool_result_text), which its graders read.
-    // CALLS_PAGE_ROWS rows a page, the most a calls=whole page holds (an older server's default is 500).
-    const page = expectOk(`reading run ${runId}'s timeline`, await api("GET", `/runs/${runId}/timeline?after=${after}&wait_ms=5000&calls=whole&limit=${CALLS_PAGE_ROWS}`));
-    if (page.reset) view.clear();
-    for (const id of (page.drop as string[] | undefined) ?? []) view.delete(id);
-    for (const row of (page.rows as Json[] | undefined) ?? []) view.set(String(row.id), row);
-    after = Number(page.next_after ?? after);
-    const rows = [...view.values()].sort((a, b) => Number(a.seq ?? 0) - Number(b.seq ?? 0));
-    const status = String(page.status);
-    if (ENDED.includes(status) && page.final && !page.has_more) return { status, rows };
-    if (status === "input_required" && !page.has_more) {
-      const waiting = rows.findLast((row) => row.kind === "waiting");
-      return { status, rows, waiting: typeof waiting?.summary === "string" ? waiting.summary : "it waits on a person" };
-    }
-    if (status === "queued" && Date.now() > queuedUntil) {
-      const held = await heldNow(api, runId, signal);
-      if (held === true) queuedUntil = Date.now() + queueTimeoutMs;
-      else if (held === false) {
-        await api("POST", `/runs/${runId}/cancel`, {}).catch(() => undefined);
-        return { status: "timed_out", rows, why: `the run stayed queued for ${Math.round(queueTimeoutMs / 1000)} s with no runner holding it, and it was cancelled` };
+    // CALLS_PAGE_ROWS rows a page, the most a calls=whole page holds (an older server's default is 500). A page its bound
+    // cut (stalled past PAGE_READ_TIMEOUT_MS, run to the deadline, or stopped) is no page: it is asked again, unless the
+    // stop or the deadline below ends the wait.
+    const read = bounded(deadline, PAGE_READ_TIMEOUT_MS, signal);
+    const answered = read.send
+      ? await api("GET", `/runs/${runId}/timeline?after=${after}&wait_ms=${PAGE_WAIT_MS}&calls=whole&limit=${CALLS_PAGE_ROWS}`, undefined, {}, { signal: read.signal }).catch((error: unknown) => {
+          if (read.signal.aborted) return undefined;
+          throw error;
+        })
+      : undefined;
+    let timedOut = read.byDeadline();
+    const page = answered === undefined ? undefined : expectOk(`reading run ${runId}'s timeline`, answered);
+    if (page) {
+      if (page.reset) view.clear();
+      for (const id of (page.drop as string[] | undefined) ?? []) view.delete(id);
+      for (const row of (page.rows as Json[] | undefined) ?? []) view.set(String(row.id), row);
+      after = Number(page.next_after ?? after);
+      rows = [...view.values()].sort((a, b) => Number(a.seq ?? 0) - Number(b.seq ?? 0));
+      state = page.state;
+      const status = String(page.status);
+      if (ENDED.includes(status) && page.final && !page.has_more) return { status, rows };
+      if (status === "input_required" && !page.has_more) {
+        const waiting = rows.findLast((row) => row.kind === "waiting");
+        return { status, rows, waiting: typeof waiting?.summary === "string" ? waiting.summary : "it waits on a person" };
+      }
+      // A page that isn't queued shows a runner took the run: a later queued page starts no lapse from before it.
+      if (status !== "queued") {
+        everHeld = true;
+        unheldSince = undefined;
+      }
+      if (status === "queued" && (everHeld || Date.now() - started > queueTimeoutMs) && Date.now() - askedAt >= CLAIM_READ_EVERY_MS) {
+        askedAt = Date.now();
+        const held = await heldNow(api, runId, deadline, signal);
+        if (held === "deadline") timedOut = true;
+        else if (held === true) {
+          everHeld = true;
+          unheldSince = undefined;
+        } else if (held === false) {
+          unheldSince ??= askedAt;
+          if (Date.now() - unheldSince >= queueTimeoutMs) {
+            await api("POST", `/runs/${runId}/cancel`, {}).catch(() => undefined);
+            return { status: "timed_out", rows, why: `the run stayed queued for ${Math.round(queueTimeoutMs / 1000)} s with no runner holding it, and it was cancelled` };
+          }
+        }
       }
     }
-    if (Date.now() > deadline) {
-      await api("POST", `/runs/${runId}/cancel`, {});
-      return { status: "timed_out", rows, why: `the run took longer than ${Math.round((deadline - started) / 1000)} s (state ${String(page.state)} when the wait gave up) and was cancelled` };
+    if (signal?.aborted) continue;
+    // A read the deadline ended, or the clock at the deadline, not only past it. A cancel that fails is sent again once the
+    // wait's answer is settled (settle cancels a run not ended): the wait still ends timed out.
+    if (timedOut || Date.now() >= deadline) {
+      await api("POST", `/runs/${runId}/cancel`, {}).catch(() => undefined);
+      return { status: "timed_out", rows, why: `the run took longer than ${Math.round((deadline - started) / 1000)} s (state ${String(state ?? "unknown")} when the wait gave up) and was cancelled` };
     }
-    if (page.has_more !== true && page.unchanged === true) await sleep(250);
+    if (page?.has_more !== true && page?.unchanged === true) await sleep(250);
   }
 }
 
@@ -1311,6 +1425,10 @@ export function v2Base(url: string): string {
 export async function evalTemplate(options: EvalOptions): Promise<Report> {
   const log = options.log ?? (() => undefined);
   if (options.data !== undefined && options.server) throw new Error(ON_DATA_WITH_SERVER);
+  // A NaN bound would never end a wait (no clock reads past it); a fraction of a millisecond is rounded up (readBound).
+  for (const [name, ms] of [["runTimeoutMs", options.runTimeoutMs], ["queueTimeoutMs", options.queueTimeoutMs]] as const) {
+    if (ms !== undefined && !(Number.isFinite(ms) && ms > 0)) throw new RangeError(`${name} is a time in milliseconds over 0, not ${ms}`);
+  }
   const { pkg, cases } = readCases(options.dir, options.cases);
   if (options.graderModel !== undefined && !MODEL_REF.test(options.graderModel)) throw new CaseError(options.dir, [`--grader-model is "provider/model-id", not ${options.graderModel}`]);
   // A case's fakes are bound by the eval's own runner, in this process: a named server's runs would search the real web,
@@ -1696,7 +1814,7 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   }
   stopped();
   // The case's fakes, for this run's agent alone, before its run can be claimed.
-  ctx.fakes.set(agentId, { ...(one.web !== undefined ? { web: one.web } : {}), ...(one.now !== undefined ? { now: new Date(instantOf(one.now)!) } : {}), ...(one.monid !== undefined ? { monid: one.monid } : {}), ...(mail ? { email: { imap: mail.faux.imap, smtp: mail.faux.smtp, kind: mail.layout } } : {}) });
+  ctx.fakes.set(agentId, { ...(one.web !== undefined ? { web: one.web } : {}), ...(one.now !== undefined ? { now: new Date(instantOf(one.now)!) } : {}), ...(one.monid !== undefined ? { monid: one.monid } : {}), ...(mail ? { email: { imap: mail.faux.imap, smtp: mail.faux.smtp, kind: mail.layout } } : {}), ...(one.files ? { files: one.files } : {}) });
   let runId: string;
   let fired: Fired | undefined;
   if (via !== undefined && kept) {
