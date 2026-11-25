@@ -265,6 +265,7 @@ export function lineReader<S extends string, O>(spec: LineSource<S, O>): Reader<
     harness,
     ...(order ? { order } : {}),
     discover: async (home, env) => (await spec.files(home, env)).map((file): Locator => ({ file })),
+    idOf: ({ file }) => spec.idOf(file),
     read: (locator, cursor, options) => readLines(spec, locator.file, cursor, options),
     ...(children ? { children: async (home: string, env?: Env) => (await children(home, env)).map(({ file, of }) => ({ locator: { file }, of: { file: of } })) } : {}),
   };
