@@ -10,7 +10,8 @@ import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { wireName } from "../catalog.js";
 import { TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { Hearing } from "../heard.js";
-import { redactedAnswer } from "../key-refusal.js";
+import { PartCache } from "../graph-served.js";
+import { redactedAnswer, withheldWhole } from "../key-refusal.js";
 import { LEARNED_NODES_MAX, learnedCallEntries } from "../learned-nodes.js";
 import { type ComputerCallRecord, computerCallsOf, shownName } from "../computer-calls.js";
 import { labelled, type Reflect, reflects } from "../reflect-range.js";
@@ -438,8 +439,31 @@ export type WholeAnswer = { readonly serve: (text: string) => string; readonly k
 /** The WholeAnswer of a run whose served words are cut of `values` (run-cut.ts runCutValues). */
 export const wholeAnswerFor = (values: readonly string[]): WholeAnswer => ({
   serve: (text) => redactedAnswer(text, values),
-  key: createHash("sha256").update(JSON.stringify([...values].sort())).digest("hex"),
+  key: heldKey(values),
 });
+/** The digest of a held value set, whatever its order. */
+const heldKey = (values: readonly string[]): string => createHash("sha256").update(JSON.stringify([...values].sort())).digest("hex");
+
+/** What heldWholeFor keeps, across every run and store: a verdict per held set and text, each counted as its key's
+ *  length. */
+export const HELD_CACHE_BYTES = 2 * 1024 * 1024;
+const heldVerdicts = new PartCache(HELD_CACHE_BYTES);
+/** Whether a text holds a held value no cut in place takes (key-refusal.ts withheldWhole over `values`), read once per
+ *  text and held set: a console polls a run's view and its Timeline, and each read checks every call's arguments whole
+ *  (TimelineOptions.holds). Kept as the verdict alone, by the digests of the set and the text (never the text), in one
+ *  LRU bounded by bytes, as the graph keeps its parts (graph-served.ts PartCache). A value saved since makes a new set,
+ *  read anew. */
+export function heldWholeFor(values: readonly string[]): (text: string) => boolean {
+  const set = heldKey(values);
+  return (text) => {
+    const key = `${set}:${createHash("sha256").update(text).digest("hex")}`;
+    const kept = heldVerdicts.get(key);
+    if (kept !== undefined) return kept as boolean;
+    const held = withheldWhole(text, values);
+    heldVerdicts.set(key, held, key.length);
+    return held;
+  };
+}
 
 /** What each store's readers last served of a cut answer row, by run, row and held value set: a console polls a run's
  *  view and its Timeline, and an answer a run was made to write can be large (main's runs.ts servedOnce). A row is an

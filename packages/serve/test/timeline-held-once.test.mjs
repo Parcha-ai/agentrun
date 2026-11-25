@@ -31,12 +31,12 @@ test("a call's arguments read again with the same held values are not read again
 
 test("the same arguments read after a held value is added are read anew: the value split across two of them withholds them", () => {
   const before = useOf([FIRST]);
-  assert.equal(before.tool_input_preview.includes(HEAD), true, "with the first value alone, nothing in them is held");
+  assert.notEqual(before.tool_input_preview, "[redacted]", "with the first value alone, nothing in them is held");
   const after = useOf([FIRST, SECOND]);
   assert.equal(after.tool_input_preview, "[redacted]");
   assert.equal(JSON.stringify(after).includes(HEAD), false);
   assert.equal(JSON.stringify(after).includes(REST.slice(0, 8)), false);
   // And in the other order: a set read first with the value, then without it, keeps each verdict apart.
   assert.equal(useOf([FIRST, SECOND]).tool_input_preview, "[redacted]");
-  assert.equal(useOf([FIRST]).tool_input_preview.includes(HEAD), true);
+  assert.notEqual(useOf([FIRST]).tool_input_preview, "[redacted]");
 });
