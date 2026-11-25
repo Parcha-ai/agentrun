@@ -75,14 +75,15 @@ import { type Command, FINAL_STATES, type KeptListing, type RunListing, type Run
 import { LISTING_HELD, LISTING_KEYED } from "./store/schema.js";
 import { createHash } from "node:crypto";
 import type { RecordingView } from "./run-recordings.js";
-import { factoryChildren, factoryGithub, factoryLastActivity, factoryObservation, type FactoryActivity } from "./factory-activity.js";
+import { factoryChildren, factoryGithub, factoryLastActivity, factoryObservation, factoryObserved, type FactoryActivity, type FactoryObserved } from "./factory-activity.js";
 
 /** What the store-backed view needs beside the store: where its console lives, every secret it never shows (read now, so
  *  one rotated is cut at once), and the agents' saved sign-ins (for the handed-pointer cut). The server passes the same it
  *  passes the file path. */
 export interface ViewDeps {
-  /** Scoped factory lists ask for source/provenance metadata. Ordinary run reads keep their existing shape and cost. */
-  readonly factory?: boolean;
+  /** Scoped factory lists ask for source/provenance metadata. Ordinary run reads keep their existing shape and cost.
+   *  "kept": all of it but who observes the run now, for a listing (KeptFactory): that is read when it is listed. */
+  readonly factory?: boolean | "kept";
   readonly origin: string;
   readonly serverSecrets: () => string[];
   readonly signIns?: SignInReader;
@@ -219,7 +220,7 @@ function pausedOf(runRow: RunRow, entries: readonly { kind?: string; id?: unknow
 /** The run read from the store: the row, its launch, its timeline, its agent's revision count for the version, its
  *  learning end, and the sign-in cut it serves through. Undefined for an unknown run. */
 interface StoreRun {
-  readonly factory?: Omit<FactoryActivity, "controls">;
+  readonly factory?: Omit<FactoryActivity, "controls" | "observation"> & { readonly observation?: FactoryActivity["observation"] };
   readonly native?: Record<string, unknown>;
   readonly sdk?: Record<string, unknown>;
   readonly cli_learning?: Record<string,unknown>;
@@ -294,7 +295,7 @@ interface StoreRun {
 /** A runner holds the run's claim now: it is not in a final state, a runner is named on its row, and its lease has not run
  *  out (claimed_until >= now, the predicate the claimable query's `claimed_until < ?` is the negation of). `now` is the
  *  server's clock, so a test on a moved clock reads a fresh claim as live. */
-function liveOf(runRow: RunRow, now: number): boolean {
+export function liveOf(runRow: RunRow, now: number): boolean {
   return !FINAL_STATES.includes(runRow.state) && runRow.runner !== null && runRow.claimedUntil !== null && runRow.claimedUntil >= now;
 }
 
@@ -573,7 +574,7 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
     lifecycle_version: await store.runs.changesHead(),
     source, runtime: launch?.sdk?.runtime ?? launch?.native?.runtime ?? harness,
     control: source === "sdk" ? "observed" : "managed",
-    observation: await factoryObservation(store, launch, live, liveRow?.updatedAt, deps.now ?? Date.now),
+    ...(deps.factory === "kept" ? {} : { observation: await factoryObservation(store, launch, live, liveRow?.updatedAt, deps.now ?? Date.now) }),
     last_activity_at: factoryLastActivity(records),
     github: unshown ? null : factoryGithub(launch, (text) => withoutLoopback(redacted(text, values))),
     children: terminal || FINAL_STATES.includes(runRow.state) || unshown ? [] : await factoryChildren(store, runId, records, (text) => withoutLoopback(redacted(text, values))),
@@ -807,7 +808,7 @@ async function viewOfRun(store: Store, runId: string, deps: ViewDeps, run: Store
       stop: run.factory.control === "managed" && row.kind === "agentic" && status === "working" && state === "working",
       cancel: run.factory.control === "managed" && !terminal && !FINAL_STATES.includes(runRow.state),
       approve: run.factory.control === "managed" && !FINAL_STATES.includes(runRow.state) && pending?.kind === "approval",
-    } } } satisfies { factory: FactoryActivity } : {}),
+    } } } satisfies { factory: Omit<FactoryActivity, "observation"> } : {}),
     ...(run.sdk && !unshown ? {sdk:redactedOutput(run.sdk,values)}:{}),
     ...(run.native && !unshown ? {native:redactedOutput(run.native,values)}:{}),
     run_id: row.id,
@@ -904,10 +905,11 @@ export function summaryOfView(view: Record<string, unknown>): Record<string, unk
  *  and what outside the run it read (LISTING_HELD, LISTING_KEYED). Undefined for an unknown run. */
 export async function listingOverStore(store: Store, runId: string, deps: ViewDeps): Promise<RunListing | undefined> {
   const cut = secretsDigest(deps.serverSecrets());
-  const run = await storeRunOf(store, runId, deps);
+  // The same read gives what a scoped list shows beside the item (KeptFactory), so that list reads rows alone too.
+  const run = await storeRunOf(store, runId, { ...deps, factory: "kept" });
   if (!run) return undefined;
   const read = { withheld: false };
-  const summary = summaryOfView(await viewOfRun(store, runId, deps, run, read));
+  const { factory: activity, computer: _computer, ...summary } = summaryOfView(await viewOfRun(store, runId, deps, run, read));
   const status = String(summary.status);
   const terminal = TERMINAL.has(status as Status);
   const asks = terminal ? [] : [run.browserAsk?.expires_at, run.computerAsk?.expires_at].map((at) => (typeof at === "string" ? Date.parse(at) : Number.NaN)).filter((at) => Number.isFinite(at));
@@ -920,7 +922,23 @@ export async function listingOverStore(store: Store, runId: string, deps: ViewDe
     live: run.live,
     until: expiries.length ? Math.min(...expiries) : null,
     flags,
+    factory: { activity, observed: factoryObserved(run.launch) } satisfies Record<keyof KeptFactory, unknown>,
   };
+}
+
+/** What a listing keeps for the Agent Factory (RunListing.factory): the run's factory projection as the build's view gave
+ *  it (`activity`: its watermark of that build's snapshot, its source, controls, last activity, GitHub work and children,
+ *  all of which move only with a write that moves the run's mark), and who the run is observed through (`observed`), which
+ *  a scoped list reads at each request (factory-activity.ts observationOf): a lease renewed writes nothing to the run. */
+export type KeptFactory = { readonly activity: Omit<FactoryActivity, "observation">; readonly observed: FactoryObserved };
+
+/** What `listing` keeps for the Agent Factory, cut again of the server's secrets as `listedItem` cuts its item when they
+ *  moved since its build; undefined for a listing built before one was kept, which a scoped list builds again, once. */
+export function keptFactory(listing: KeptListing, serverSecrets: readonly string[]): KeptFactory | undefined {
+  const kept = listing.factory;
+  if (!isObject(kept) || !isObject(kept.activity) || !isObject(kept.observed)) return undefined;
+  const { activity, observed } = kept as unknown as KeptFactory;
+  return listing.cut === secretsDigest(serverSecrets) ? { activity, observed } : { activity: redactedOutput(activity, [...serverSecrets]) as KeptFactory["activity"], observed };
 }
 
 /** Whether `listing` is cut of the server's secrets as they are now. A list builds any other again before it shows it

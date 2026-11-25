@@ -3783,7 +3783,7 @@ export const DEFINITION_INPUT_OPTIONAL = ["instructions", "version", "skills", "
 export const DEFINITION_OPTIONAL = ["instructions"];
 const FACTORY_ACTIVITY: Json = {
   ...closed({
-    lifecycle_version: { type: "string", pattern: "^[0-9]+$", description: "Committed lifecycle watermark captured in the same store snapshot as this run. Compare as an integer when reconciling scoped pages; a later watermark supersedes an earlier projection of the same run." },
+    lifecycle_version: { type: "string", pattern: "^[0-9]+$", description: "Committed lifecycle watermark captured in the same store snapshot as this run's projection. The projection is built once per change of the run and kept until the next, so a run that has not changed keeps its watermark from one read to the next. Compare as an integer when reconciling scoped pages; a later watermark supersedes an earlier projection of the same run." },
     source: { enum: ["managed", "native", "sdk"] }, runtime: { type: "string" }, control: { enum: ["managed", "observed"] },
     controls: closed({ stop: { type: "boolean" }, cancel: { type: "boolean" }, approve: { type: "boolean" } }),
     observation: closed({

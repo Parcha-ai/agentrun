@@ -217,10 +217,13 @@ export interface ListedRun {
   /** The listing is behind now (Runs.behind's three ways): a list builds it before it shows it. */
   readonly behind: boolean;
 }
-/** A run's listing as its row keeps it (Runs.putListing's item and cut). */
+/** A run's listing as its row keeps it (Runs.putListing's item and cut, and what it kept for the Agent Factory). */
 export interface KeptListing {
   readonly item: Record<string, unknown>;
   readonly cut: string;
+  /** What the build kept for the Agent Factory beside the list item (RunListing.factory), or none for a listing an
+   *  earlier server built. */
+  readonly factory?: unknown;
 }
 /** Whether `run`, of a revision of `kind`, was stopped by a person and waits for them (state 'stopped', outcome 'stopped',
  *  an agentic run started here): its turn is over, the run is not. A workflow's stop, a cancel and an imported run's stop
@@ -235,6 +238,9 @@ export interface RunListing {
   readonly live: boolean;
   readonly until: number | null;
   readonly flags: number;
+  /** What a scoped list (the Agent Factory's) shows of the run beside its list item, as the same build read it (JSON, the
+   *  server's own: store-view.ts KeptFactory). Kept with the item and cut of the same secrets; no runs list shows it. */
+  readonly factory?: unknown;
 }
 
 export function stoppedByPerson(run: Pick<RunRow, "state" | "outcome" | "importedFrom">, kind: string): boolean {
@@ -1054,6 +1060,11 @@ export interface Runs {
    *  another's from its listing); `going` keeps only runs still going whose listing is behind. A built-in learning run and
    *  an audit's shadow run are never listed. */
   listed(filter: ListedFilter): Promise<{ readonly rows: readonly ListedRun[]; readonly more: boolean }>;
+  /** The listings of the runs `runIds`, in one read: each run there is that is not purged, with its listing as its row
+   *  keeps it, its mark, whether it is behind and its agent's archive time, as `listed` gives them. Whatever the run
+   *  otherwise: a built-in learning run and an audit's shadow run too, which the Agent Factory's active scope shows
+   *  (`list`'s `scope`). In no order. */
+  listings(runIds: readonly string[]): Promise<readonly (Pick<ListedRun, "agentArchivedAt" | "listing" | "listMark" | "behind"> & { readonly id: string })[]>;
   /** Agent `agentId`'s runs counted in one read (an agent's view): every run it has (`count`), and those still going
    *  (`live`: queued, running or parked, or an agentic run a person stopped, which a message continues). A built-in learning
    *  run and an audit's shadow run are none of them. */

@@ -98,7 +98,7 @@ import { durationMs, logLine } from "./print.js";
 import { type RunMoment, type State, type Status } from "./run-view.js";
 import { keepPresence, type Presence, refusedEnd, runnersRefused } from "./runner/presence.js";
 import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, prepareLaunch, raiseCap, resume as resumeRunOverStore, type StartDeps, startInline, type StartOptions, startRun, stop as stopRunOverStore } from "./runs-over-store.js";
-import { builtOfNow, factsOverStore, listedItem, lookingBackEnd, momentOverStore, summaryOverStore, timelineOverStore, toolsUsdOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
+import { builtOfNow, factsOverStore, keptFactory, listedItem, liveOf, lookingBackEnd, momentOverStore, summaryOverStore, timelineOverStore, toolsUsdOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
 import { healEndedCosts } from "./cost-heal.js";
 import { reconcileProjectCheckpoints } from "./source-sync/checkpoints.js";
 import { acknowledgeProjects } from "./source-sync/checkpoint-gate.js";
@@ -118,6 +118,7 @@ import { listRunFiles as listRunFilesOverStore, readRunFile as readRunFileOverSt
 import { triggerTargets, type TriggerTargetDeps } from "./trigger-targets.js";
 import { labelFilter, labelsIssues } from "./run-labels.js";
 import { listRuns as listRunsOverStore, readRun as readRunOverStore, runOfOrigin as runOfOriginOverStore } from "./store-reads/runs.js";
+import { observationOf } from "./factory-activity.js";
 import { factoryRunsPage } from "./factory-runs.js";
 import { runEntries } from "./store-reads/journal.js";
 import { metersOverStore, spendOverStore } from "./store-reads/cap.js";
@@ -4416,9 +4417,36 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   }
 
   async function runsPage(url: URL, filter: { agent?: string; revision?: string }, origin: string, only: Pick<ListedFilter, "source" | "startedFrom" | "startedBefore" | "model"> = {}) {
-    if (url.searchParams.has("scope")) return factoryRunsPage(store, url, filter, async (id) => {
-      const summary = await summaryOverStore(store, id, { ...viewDepsFor(origin), factory: true });
-      return summary ? { ...summary, ...(await runComputerRead(store, id, summary, { context: ctx })) } : undefined;
+    const vd = viewDepsFor(origin);
+    // The Agent Factory's page, from the rows too: each run's list item and what its listing keeps for the factory
+    // (store-view.ts KeptFactory), built once per change of the run as the list below builds them, so a refresh builds no
+    // view of a run that has not moved, however many runs the board holds and however long they ran. Two reads for the
+    // page (the listings, the runners' ticks), then per run only what is read as it stands now: who observes it
+    // (observationOf) and its computer (runComputerRead, which reads a journal only for a desktop or phone that is up,
+    // or a computer held for its owner). A listing behind, cut of other secrets, or built before listings kept the
+    // factory's part is built first, once: the page shows that build whether or not its write landed (a run that moved
+    // again meanwhile stays behind, for the lister or the next page), so a busy run costs one build a page, never the
+    // several a status filter makes below (listNow), which this page has no need of.
+    if (url.searchParams.has("scope")) return factoryRunsPage(store, url, filter, async (rows) => {
+      const secrets = serverSecrets();
+      const now = vd.now ?? Date.now;
+      const ids = rows.map((row) => row.id);
+      const kept = new Map((await store.runs.listings(ids)).map((read) => [read.id, read]));
+      const ticks = new Map((await store.live.read(ids)).map((tick) => [tick.runId, tick.updatedAt]));
+      const runs: Record<string, unknown>[] = [];
+      for (const row of rows) {
+        const read = kept.get(row.id);
+        // A run purged since the page's rows were read has no listing to show (Runs.listings).
+        if (!read) continue;
+        const held = read.listing !== null && !read.behind && builtOfNow(read.listing, secrets) && keptFactory(read.listing, secrets) ? read.listing : undefined;
+        const listing = held ?? (await lister.build(row.id, read.listMark, vd)).listing;
+        const factory = listing && keptFactory(listing, secrets);
+        if (!listing || !factory) continue;
+        const observation = await observationOf(store, factory.observed, liveOf(row, now()), ticks.get(row.id), now);
+        const summary = { ...listedItem(listing, origin, row.archivedAt ?? read.agentArchivedAt, secrets), factory: { ...factory.activity, observation } };
+        runs.push({ ...summary, ...(await runComputerRead(store, row.id, summary, { context: ctx })) });
+      }
+      return runs;
     });
     const limit = limitOf(url.searchParams.get("limit"));
     const offset = cursorOf(url.searchParams.get("cursor"));
@@ -4428,7 +4456,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const archived = archivedParam(url);
     // `label=<key>:<value>`, once: only the runs holding it (run-labels.ts), filtered in the store.
     const labels = labelFilter(url.searchParams.getAll("label"));
-    const vd = viewDepsFor(origin);
     // The page from the runs' rows alone (store/schema.ts RUN_LISTING_COLUMNS): filtered (`status` on the listing's status),
     // ordered and cut to the page in one query, so a list costs the same at ten runs and at thousands, however long their
     // journals. An audit's shadow run is no row of the list (learn/audit.ts): it is read by id, and its cost is its served

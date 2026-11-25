@@ -1526,6 +1526,22 @@ class SqliteStore implements Store {
           more: rows.length > limit,
         };
       },
+      // The same columns `listed` reads beside a row, for the runs named: one read, whatever their journals. A purged run
+      // is a tombstone, as it is to `listed`: it keeps no listing, and none is built for it.
+      listings: async (runIds) => {
+        if (runIds.length === 0) return [];
+        const n = clock();
+        const behind = listingBehind(n.sql);
+        const rows = await db.all<{ id: string; agent_archived_at: number | null; listing: string | null; list_mark: number; behind: number }>(
+          `SELECT runs.id, agents.archived_at AS agent_archived_at, runs.listing, runs.list_mark, ${behind.sql} AS behind
+             FROM runs JOIN agents ON agents.id = runs.agent_id WHERE runs.purged_at IS NULL AND runs.id IN (${runIds.map(() => "?").join(", ")})`,
+          ...behind.params(n.params), ...runIds,
+        );
+        return rows.map((row) => ({
+          id: row.id, agentArchivedAt: row.agent_archived_at, listMark: Number(row.list_mark), behind: Boolean(Number(row.behind)),
+          listing: row.listing === null ? null : (JSON.parse(row.listing) as KeptListing),
+        }));
+      },
       counts: async (agentId) => {
         const [row] = await db.all<{ count: number; live: number | null }>(
           `SELECT COUNT(*) AS count, SUM(CASE WHEN runs.state IN ('queued', 'running', 'parked')
@@ -1550,10 +1566,10 @@ class SqliteStore implements Store {
         );
         return rows.map((row) => ({ id: row.id, mark: Number(row.mark), held: Boolean(Number(row.held)) }));
       },
-      putListing: async (runId, mark, { item, cut, status, live, until, flags }) => {
+      putListing: async (runId, mark, { item, cut, status, live, until, flags, factory }) => {
         const [result] = await db.write([{
           sql: "UPDATE runs SET listing = ?, list_status = ?, listing_mark = ?, listing_live = ?, listing_until = ?, listing_flags = ? WHERE id = ? AND list_mark = ? RETURNING id",
-          params: [json({ item, cut }), status, mark, live ? 1 : 0, until, flags, runId, mark],
+          params: [json({ item, cut, ...(factory !== undefined ? { factory } : {}) }), status, mark, live ? 1 : 0, until, flags, runId, mark],
         }]);
         return (result?.rows.length ?? 0) > 0;
       },

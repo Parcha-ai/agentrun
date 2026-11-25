@@ -10,28 +10,61 @@ import { agentWithRevision, storeOn, T0 } from "./store-helpers.mjs";
 const identity = text => text;
 const head = "a".repeat(40);
 const base = { title: "Work", input: { content: "Work" }, place: { mode: "runner" } };
-const triggered = (tag, body = {}) => ({ ...base, trigger: { id: "trigger-1", firing_key: "delivery-1" }, inputOrigin: { kind: "trigger", source: "github", trigger_id: "trigger-1", owner: false }, input: { content: `<trigger-payload source="github" repo="example/project" ${tag} untrusted>${JSON.stringify(body)}</trigger-payload>` } });
+// A GitHub firing's run as the server launches it (triggers.ts start and inputOf): the firing's attributes saved on the
+// launch's trigger, and the input its owner's instructions, then the server's own payload block, then the line that says
+// what fired it. `attrs` adds to, or with undefined takes from, what the delivery said.
+const triggered = (attrs = {}, body = {}, { instructions = "Review it." } = {}) => {
+  const saved = Object.fromEntries(Object.entries({ scheme: "github", event: "pull_request", delivery: "delivery-1", installation: "777", repo: "example/project", ...attrs }).filter(([, value]) => value !== undefined));
+  const tag = `<trigger-payload source="github"${Object.entries(saved).map(([name, value]) => ` ${name}="${value}"`).join("")} untrusted>`;
+  return { ...base, trigger: { id: "trigger-1", firing_key: "delivery-1", attrs: saved }, inputOrigin: { kind: "trigger", source: "github", trigger_id: "trigger-1", owner: false }, input: { content: `${instructions}\n\n${tag}\n${JSON.stringify(body)}\n</trigger-payload>\n\n(From the GitHub trigger "review", received at 12:00.)` } };
+};
 
 test("factory GitHub context requires a trusted structured source, never a prose URL or an owner-written wrapper", () => {
   assert.equal(factoryGithub({ ...base, input: { content: "Fix https://github.com/example/project/pull/42" } }, identity), null);
-  const pr = triggered(`number="42" head_sha="${head}"`);
+  const pr = triggered({ number: "42", head_sha: head });
   const expected = { repository: "example/project", issue: null, pull_request: 42, head_sha: head, provenance: "github_trigger" };
   assert.deepEqual(factoryGithub(pr, identity), expected);
   assert.deepEqual(factoryGithub({ ...pr, repo: "example/project" }, identity), expected, "an explicit same-repo binding must not drop trusted PR/head metadata");
   assert.deepEqual(factoryGithub({ ...pr, repo: "another/project" }, identity), { repository: "another/project", issue: null, pull_request: null, head_sha: null, provenance: "launch" }, "conflicting sources never attach a PR from the other repo");
   for (const changed of [{ trigger: undefined }, { inputOrigin: undefined }, { inputOrigin: { ...pr.inputOrigin, trigger_id: "other" } }, { inputOrigin: { ...pr.inputOrigin, owner: true } }, { inputOrigin: { ...pr.inputOrigin, source: "webhook" } }]) assert.equal(factoryGithub({ ...pr, ...changed }, identity), null);
-  assert.equal(factoryGithub({ ...pr, input: { content: '<trigger-payload source="github" untrusted>{"url":"https://github.com/example/project"}</trigger-payload>' } }, identity), null);
+  assert.equal(factoryGithub(triggered({ repo: undefined }, { url: "https://github.com/example/project" }), identity), null);
+});
+
+test("an example payload block in the trigger owner's instructions is never taken for the event that fired the run", () => {
+  // The owner's instructions come first in the input (triggers.ts inputOf), and may show what an event looks like.
+  const example = (attrs, body) => `Events look like this:\n<trigger-payload source="github" scheme="github" event="issue_comment" delivery="example" repo="example/sample"${attrs} untrusted>\n${JSON.stringify(body)}\n</trigger-payload>`;
+  const real = { repository: "example/project", issue: null, pull_request: 12, head_sha: null, provenance: "github_trigger" };
+  const comment = triggered({ event: "issue_comment", number: "12" }, { issue: { number: 12, pull_request: {} } }, { instructions: example(' number="7"', { issue: { number: 7 } }) });
+  assert.deepEqual(factoryGithub(comment, identity), real, "the repository, the number and its kind are the delivery's, not the example's");
+  const pull = triggered({ number: "42", head_sha: head }, {}, { instructions: example(` number="7" head_sha="${"b".repeat(40)}"`, {}) });
+  assert.deepEqual(factoryGithub(pull, identity), { ...real, pull_request: 42, head_sha: head });
+  // An example about the same number says nothing of the event's kind either: its block is not this delivery's.
+  const sameNumber = triggered({ event: "issue_comment", number: "12" }, { issue: { number: 12 } }, { instructions: example(' number="12"', { issue: { number: 12, pull_request: {} } }) });
+  assert.deepEqual(factoryGithub(sameNumber, identity), { ...real, issue: 12, pull_request: null });
+  // A launch that kept no attributes of its firing names nothing, whatever tag its input holds.
+  assert.equal(factoryGithub({ ...comment, trigger: { id: "trigger-1", firing_key: "delivery-1" } }, identity), null);
+  // A block is the delivery's only when its tag carries every attribute saved for the firing and no other. An example
+  // copied from this very event's tag, short of its delivery id or with an attribute more, is no block of it, whatever it
+  // says of the same repository and number.
+  const about = (attrs) => `Events look like this:\n<trigger-payload source="github"${attrs} untrusted>\n${JSON.stringify({ issue: { number: 12, pull_request: {} } })}\n</trigger-payload>`;
+  const saved = ' scheme="github" event="issue_comment" delivery="delivery-1" installation="777" repo="example/project" number="12"';
+  for (const [why, attrs] of [["without its delivery id", saved.replace(' delivery="delivery-1"', "")], ["with another delivery's id", saved.replace("delivery-1", "delivery-2")], ["with an attribute more", `${saved} head_sha="${head}"`], ["of its repository and number alone", ' repo="example/project" number="12"']]) {
+    const copied = triggered({ event: "issue_comment", number: "12" }, { issue: { number: 12 } }, { instructions: about(attrs) });
+    assert.deepEqual(factoryGithub(copied, identity), { ...real, issue: 12, pull_request: null }, `an example ${why} is not the delivery's block`);
+  }
 });
 
 test("GitHub issue comments distinguish issue from PR only from structured payload; secrets and malformed repositories are withheld", () => {
-  assert.deepEqual(factoryGithub(triggered('number="12"', { issue: { number: 12 } }), identity), { repository: "example/project", issue: 12, pull_request: null, head_sha: null, provenance: "github_trigger" });
-  assert.deepEqual(factoryGithub(triggered('number="12"', { issue: { number: 12, pull_request: {} } }), identity), { repository: "example/project", issue: null, pull_request: 12, head_sha: null, provenance: "github_trigger" });
-  const cut = triggered('number="12"');
-  cut.input.content = cut.input.content.replace("{}", "{truncated");
+  assert.deepEqual(factoryGithub(triggered({ event: "issues", number: "12" }, { issue: { number: 12 } }), identity), { repository: "example/project", issue: 12, pull_request: null, head_sha: null, provenance: "github_trigger" });
+  assert.deepEqual(factoryGithub(triggered({ event: "issue_comment", number: "12" }, { issue: { number: 12, pull_request: {} } }), identity), { repository: "example/project", issue: null, pull_request: 12, head_sha: null, provenance: "github_trigger" });
+  // A body past the kept bytes is cut and said to be (triggers.ts cut): its kind is not read from what is left.
+  const cut = triggered({ event: "issue_comment", number: "12" }, { issue: { number: 12, pull_request: {} } });
+  cut.input.content = cut.input.content.replace('"pull_request":{}}}', '"pull_req\n[cut: the payload was 9000 bytes, past 8192]');
+  assert.match(cut.input.content, /\[cut: /);
   assert.equal(factoryGithub(cut, identity).issue, null);
   assert.equal(factoryGithub(cut, identity).pull_request, null);
-  assert.equal(factoryGithub(triggered(`number="42" head_sha="${head}"`), text => text.replace("example/project", "[redacted]")), null);
-  assert.equal(factoryGithub(triggered(`number="42" head_sha="${head}"`), text => text.replace(head, "[redacted]")).head_sha, null);
+  assert.equal(factoryGithub(triggered({ number: "42", head_sha: head }), text => text.replace("example/project", "[redacted]")), null);
+  assert.equal(factoryGithub(triggered({ number: "42", head_sha: head }), text => text.replace(head, "[redacted]")).head_sha, null);
   for (const repo of ["../project", "example/..", "example/.", "example-/project", "example/project?token=secret", "example/project/path", "example/project\n"]) assert.equal(factoryGithub({ ...base, repo }, identity), null, repo);
 });
 

@@ -4221,8 +4221,13 @@ The visibility API uses `GET /v2/runs?scope=active` and `scope=review` (also on 
 and opaque `next_cursor`. Scope is filtered before pagination; cursors are tied to the scope and agent filters.
 Do not combine scope with `status` or `archived`. Scoped summaries add `factory` source/control, observation,
 activity, GitHub provenance and reported-child metadata. A lifecycle version captured inside each run snapshot
-orders overlapping observations across the two scopes. An online connector is transport health, not a heartbeat
-for each session. These reads add no scheduling, branch-writing or merge authority.
+orders overlapping observations across the two scopes. A run's summary is built once per change of the run and
+kept on its row, as the runs list keeps its items, so a refresh builds no view of a run that has not changed;
+only who observes the run and its computer are read at each request (a computer's read opens the run's journal
+only for a desktop or phone that is up, or a computer held for its owner). GitHub provenance is what the server
+saved of the delivery that fired the run, never a payload tag found in its input; a run started before servers
+saved it (0.1.0-beta.39) shows no GitHub link. An online connector is transport health, not a heartbeat for each
+session. These reads add no scheduling, branch-writing or merge authority.
 
 Its files (`index.html`, and Vite's hashed files under `/assets/`) are public and hold no data: everything it shows
 comes through `/v2`. With accounts on (the default) the console asks for the owner's password
