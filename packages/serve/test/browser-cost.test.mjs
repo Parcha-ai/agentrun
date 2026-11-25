@@ -571,6 +571,60 @@ test("capped, a new session's reserve the cap refused is asked again at the sess
   assert.equal(paused.length, 1, "the reserve held after the raise pauses nothing");
 });
 
+test("capped, a refused reserve asked again at a charge that lands while a call runs is asked once the call's hold is given back, and the call returns with it held", async (t) => {
+  // As above, but the session's next charge comes under a running call (c1) after the raise: the call holds two
+  // stretches, one of them room for this reserve, so the reserve asked again waits for that hold to be given back, never
+  // judged beside it, and the call returns only once it is held.
+  t.mock.timers.enable({ apis: ["Date"], now: T0 });
+  let cap = 0.1;
+  const inner = await toolLedger(() => cap);
+  await inner.spend(0.095);
+  const events = [];
+  const paid = {
+    admit: (request) => (events.push(["asked", request.id]), inner.admit(request)),
+    settle: async (id, usd, options) => {
+      const out = await inner.settle(id, usd, options);
+      events.push(["landed", id, options?.givenBack === true]);
+      return out;
+    },
+  };
+  const paused = [];
+  const spend = browserSpend("browserbase", BROWSERBASE, 180, async () => {}, () => {}, { paid, pause: async (refusal) => void paused.push(refusal) });
+  let listener;
+  spend.watch({ observeCommits: (observer) => ((listener = (publication) => observer.advance(publication)), { detach: () => {} }) });
+  const charge = async (at, call) => {
+    const entries = [];
+    await spend.onCharge({ conversationId: 1, tag: "ar-new", provider: "browserbase", at: new Date(at).toISOString(), seconds: 3, usd: 3 * 0.12 / 3600, final: false, state: "priced" }, { appendEntry: async (_, entry) => void entries.push(entry) }, call);
+    listener({ seq: 1, changes: entries.map((value) => ({ type: "entry", value })) });
+  };
+  await charge(T0);
+  await spend.ledgerIdle();
+  assert.equal(paused.length, 1, `the refused reserve pauses the run: ${JSON.stringify(paused)}`);
+  assert.equal(inner.heldUsd(), 0, "the refused reserve holds nothing");
+  cap = 1;
+  const reserveAsks = () => events.filter(([what, id]) => what === "asked" && id.startsWith("browser:this browser session's reserve#")).length;
+  let during;
+  const tool = spend.capped({ name: "snapshot", execute: async () => {
+    t.mock.timers.tick(3_000);
+    await charge(Date.now(), { callId: "c1" });
+    during = reserveAsks();
+    return { content: [{ type: "text", text: "seen" }] };
+  } });
+  const out = await tool.execute({}, { conversationId: 1, callId: "c1", commit: async () => undefined }, undefined);
+  assert.ok(!JSON.stringify(out).includes("spend_cap_reached"), JSON.stringify(out));
+  // The moment the call returns is the run's next chance to spend: the session's next stretch is held by then.
+  assert.ok(Math.abs(inner.heldUsd() - 0.009) < 1e-9, `once the call returns its session's next stretch is held, one stretch: ${inner.heldUsd()} (${JSON.stringify(events)})`);
+  await spend.ledgerIdle();
+  assert.equal(during, 1, `while the call runs the reserve is not asked again beside its hold: ${JSON.stringify(events)}`);
+  const reserves = events.filter(([what, id]) => what === "asked" && id.startsWith("browser:this browser session's reserve#")).map(([, id]) => id);
+  assert.equal(reserves.length, 2, `the refused reserve, then the one asked again: ${JSON.stringify(events)}`);
+  const givenBack = events.findIndex(([what, id, back]) => what === "landed" && id.startsWith("c1#") && back);
+  const askedAgain = events.findIndex(([what, id]) => what === "asked" && id === reserves[1]);
+  assert.ok(givenBack >= 0 && givenBack < askedAgain, `the reserve is asked again once the call's hold is given back: ${JSON.stringify(events)}`);
+  assert.ok(Math.abs(inner.heldUsd() - 0.009) < 1e-9, `the ledger holds the reserve at one stretch: ${inner.heldUsd()}`);
+  assert.equal(paused.length, 1, "the reserve held after the raise pauses nothing");
+});
+
 test("capped with room, a new session's reserve is held, and nothing is said or paused", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: T0 });
   const paid = await toolLedger(5);
