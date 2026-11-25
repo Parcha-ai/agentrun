@@ -6,6 +6,7 @@ import { type FileHandle, open } from "node:fs/promises";
 import { addRequest, type Counts, counts, trimmed } from "./counts.js";
 import { DROPS_CURSOR, type InternalReadOptions } from "./internal.js";
 import { type Env, type Locator, type Reader, type ReadOptions, type ReadResult, rememberUser } from "./reader.js";
+import { type Fields, fieldsOf, type Shape, scan } from "./scan.js";
 import { isObject, mostEffortOf, timeOf } from "./text.js";
 import { ACTIVE_GAP_MS, type Answer, type SessionOf, type Turn } from "./types.js";
 
@@ -64,6 +65,12 @@ export type LineSource<S extends string, O> = Pick<Reader<S>, "source" | "name" 
    *  added: the source sets no turn's model, usage or time after adding it, or keeps its requests in `counts` itself. Without it a totals
    *  read is a turns: false read, its requests whole. */
   totals?: true;
+  /** What `record` reads of a record in a totals read: a line is then read for these fields alone, from its bytes (scan),
+   *  every other value checked as JSON but not decoded, and parsed whole only when the scan leaves it to JSON.parse. It
+   *  names every field whose value can change what a totals read gives (a field whose value goes only into a turn or
+   *  text a totals read drops may be left out); the read itself takes the record's `timestamp`. Without it, or in any
+   *  other read, each line is parsed whole. */
+  fields?: Shape;
 };
 
 /** The bytes a read takes from its file at once. */
@@ -125,9 +132,10 @@ const overlay = (base: Set<string>): Set<string> => {
 };
 
 /** One session file of `spec`'s source, read from its start or from `cursor`. */
-async function readLines<S extends string, O>(spec: LineSource<S, O>, file: string, cursor: FileCursor | undefined, { turns: keep = true, totals: asked = false, seen, keepsCursor = true, [DROPS_CURSOR]: dropsCursor = false, maxLine = Infinity }: InternalReadOptions = {}): Promise<ReadResult<S, FileCursor>> {
+async function readLines<S extends string, O>(spec: LineSource<S, O>, shape: Fields | undefined, file: string, cursor: FileCursor | undefined, { turns: keep = true, totals: asked = false, seen, keepsCursor = true, [DROPS_CURSOR]: dropsCursor = false, maxLine = Infinity }: InternalReadOptions = {}): Promise<ReadResult<S, FileCursor>> {
   const { source } = spec;
   const totals = asked && !keep && spec.totals === true;
+  const fields = totals ? shape : undefined;
   const handle = await open(file, "r");
   try {
     const stats = await handle.stat();
@@ -149,13 +157,7 @@ async function readLines<S extends string, O>(spec: LineSource<S, O>, file: stri
         else state.answers.push(turn);
       },
     };
-    const line = (text: string) => {
-      let value: unknown;
-      try {
-        value = JSON.parse(text);
-      } catch {
-        return;
-      }
+    const line = (value: unknown) => {
       if (!isObject(value)) return;
       const at = timeOf(value.timestamp);
       // A copy of a record read already moves no time: its time was counted where it was first read.
@@ -169,6 +171,20 @@ async function readLines<S extends string, O>(spec: LineSource<S, O>, file: stri
           state.last = at;
         }
       }
+    };
+    // A line's bytes b[from, to): its fields alone where the source names them and the scan is sure of the line, else
+    // the line decoded and parsed whole; a line that is not JSON is passed over.
+    const take = (b: Buffer, from: number, to: number) => {
+      let value = fields ? scan(b, from, to, fields) : undefined;
+      if (value === undefined) {
+        const text = b.toString("utf8", from, to);
+        try {
+          value = JSON.parse(text);
+        } catch {
+          return;
+        }
+      }
+      line(value);
     };
     const start = resumed ? cursor.offset : 0;
     let offset = start;
@@ -197,11 +213,19 @@ async function readLines<S extends string, O>(spec: LineSource<S, O>, file: stri
         let from = 0;
         for (let nl = chunk.indexOf(10); nl !== -1; nl = chunk.indexOf(10, from)) {
           tooLong(restBytes + nl - from);
-          const whole = rest.length ? Buffer.concat([...rest, chunk.subarray(from, nl)]) : chunk.subarray(from, nl);
-          rest = [];
-          restBytes = 0;
-          line(whole.toString("utf8", 0, whole.length && whole[whole.length - 1] === 13 ? whole.length - 1 : whole.length));
-          offset += whole.length + 1;
+          // The line in the chunk where it starts there, else its start's copies and the chunk's part as one.
+          let b = chunk;
+          let s = from;
+          let n = nl;
+          if (rest.length) {
+            b = Buffer.concat([...rest, chunk.subarray(from, nl)]);
+            s = 0;
+            n = b.length;
+            rest = [];
+            restBytes = 0;
+          }
+          take(b, s, n > s && b[n - 1] === 13 ? n - 1 : n);
+          offset += n - s + 1;
           from = nl + 1;
         }
         // The buffer is read into again: a line's start is kept as a copy.
@@ -221,7 +245,8 @@ async function readLines<S extends string, O>(spec: LineSource<S, O>, file: stri
     if (rest.length) {
       if (!dropsCursor) kept = structuredClone(state);
       if (keepsCursor) context.seen = overlay(context.seen);
-      line(Buffer.concat(rest).toString("utf8"));
+      const last = Buffer.concat(rest);
+      take(last, 0, last.length);
     }
     const mark = await markOf(handle, offset);
     let session = finish(spec, file, state, context);
@@ -252,13 +277,14 @@ function finish<S extends string, O>(spec: LineSource<S, O>, file: string, state
 /** The Reader of a JSONL source: each file one locator, its cursor a FileCursor. */
 export function lineReader<S extends string, O>(spec: LineSource<S, O>): Reader<S, FileCursor> {
   const { source, name, harness, order, children } = spec;
+  const fields = spec.fields ? fieldsOf({ ...spec.fields, timestamp: true }) : undefined;
   return {
     source,
     name,
     harness,
     ...(order ? { order } : {}),
     discover: async (home, env) => (await spec.files(home, env)).map((file): Locator => ({ file })),
-    read: (locator, cursor, options) => readLines(spec, locator.file, cursor, options),
+    read: (locator, cursor, options) => readLines(spec, fields, locator.file, cursor, options),
     ...(children ? { children: async (home: string, env?: Env) => (await children(home, env)).map(({ file, of }) => ({ locator: { file }, of: { file: of } })) } : {}),
   };
 }

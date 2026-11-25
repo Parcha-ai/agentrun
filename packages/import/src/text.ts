@@ -3,9 +3,12 @@ import type { Turn } from "./types.js";
 
 export const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 export const str = (value: unknown): string | undefined => (typeof value === "string" && value !== "" ? value : undefined);
+/** The latest (and, negated, earliest) time a Date holds, in ms from the epoch: a number past it is no time. */
+const DATE_RANGE = 8.64e15;
+/** A record's time in ms: a number as it is, a string as Date.parse reads it; undefined for none a Date holds. */
 export const timeOf = (value: unknown): number | undefined => {
   const at = typeof value === "number" ? value : typeof value === "string" ? (isoTime(value) ?? Date.parse(value)) : Number.NaN;
-  return Number.isFinite(at) ? at : undefined;
+  return Number.isFinite(at) && Math.abs(at) <= DATE_RANGE ? at : undefined;
 };
 
 /** The digits of `s` from `from` to `to` as a number, -1 when one is not a digit. */
