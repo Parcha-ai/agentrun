@@ -1801,6 +1801,28 @@ has the row **Use Claude Code's login on this machine**, over these routes:
   The CLI dies with the server, as a session's CLI does, so a server that is killed outright (SIGKILL, the OOM killer)
   leaves no sign-in waiting on the browser's port.
 - `DELETE /v2/settings/claude-login` turns it off. The login stays as the CLI keeps it.
+- `POST /v2/settings/claude-login/sign-out` signs out of AgentRun's own login, for a fresh sign-in or another account: it
+  ends a sign-in that waits, turns the mode off, runs the pinned CLI's own `claude auth logout` on
+  `<data>/claude-login` (which removes its credentials file and, on macOS, its Keychain item for that folder), then
+  removes that folder, the login's signed-in note in `claude-login-answers/` and the runner's token reader, whatever the
+  CLI said. Each removal stands alone: one that fails is named in the answer and the rest still happen. It answers
+  `{ "confirmed": true, "login": <the view, off> }`; `confirmed` false adds a `message` saying what may remain: the
+  CLI didn't confirm its own sign-out, or its step failed, named (on macOS its Keychain item may remain), or a file it
+  could not remove, by path. The CLI's sign-out runs where the folder is already gone too, so a retry after an
+  unconfirmed sign-out confirms only where the CLI does. The next turn-on reads `signed_out` and the sign-in starts as
+  before. `<data>/claude-login`
+  is a folder AgentRun keeps itself: a turn-on where it is a link is refused, and a sign-out that finds a link there
+  removes the link alone (and the login's signed-in note), runs no CLI through it, and names what it led to. Runs already going are left as a turn-off leaves them, and fail saying the
+  login is signed out at their next read of it. Where each run is a user of its own, a run claimed on the login and
+  started while the mode is off is refused at its start, as after a turn-off; the claim checks the login's folder, not
+  its account, so a run claimed before Sign out and started after a new sign-in may run on the new account. What Sign
+  out does not guarantee for a run still going: where runs stay in the runner's process, the run's CLI holds the login's
+  refresh token itself and may write a renewed token pair back into `<data>/claude-login` after the folder is removed
+  (nothing removes it again when that run ends), so once such runs end, a turn-on that reads `signed_in` again means
+  Sign out again. The runner's own renewal, for
+  runs that are users of their own, never writes back to a removed login. This machine's own login (`place` `machine`)
+  is the person's: the sign-out is refused (403) with nothing touched, and the words say to run `claude auth logout` in
+  a terminal there. The console's Claude login row offers Sign out only while AgentRun's own login is signed in.
 
 While it is on, a claude-agent run on an `anthropic/<model>` model goes on the login: its CLI gets no
 `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` or key, no model proxy runs, and the CLI's sandbox denies its commands

@@ -3068,7 +3068,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     put: {
       operationId: "turnOnClaudeLogin", tags: ["local"], summary: "Turn on Claude Code's login on this machine for claude-agent's runs",
-      description: "Runs claude-agent on the login at `place` (default `agentrun`), on this machine's runner only. 403 forbidden in one line where more than one person can start runs (more than one API token, the API-only profile); 422 input_invalid without `only_me` true. A model a revision names on a gateway or OpenRouter still runs on its key. 404 not_found, naming the operation, when AGENTRUN_CLAUDE_CODE_LOGIN is `off`. A secret write: the owner's signed-in session alone (ownerSession).",
+      description: "Runs claude-agent on the login at `place` (default `agentrun`), on this machine's runner only. 403 forbidden in one line where more than one person can start runs (more than one API token, the API-only profile); 422 input_invalid without `only_me` true. 403 forbidden, too, at `agentrun` when AgentRun's own login folder (`<data>/claude-login`) is a link, in words naming it and where it leads: the login a sign-out removes is always a folder of AgentRun's own. A model a revision names on a gateway or OpenRouter still runs on its key. 404 not_found, naming the operation, when AGENTRUN_CLAUDE_CODE_LOGIN is `off`. A secret write: the owner's signed-in session alone (ownerSession).",
       "x-agentrun-secret": true,
       security: [{ ownerSession: [] }],
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["only_me"], properties: { place: { enum: ["agentrun", "machine"], description: "Where the login is (see the answer's `place`)." }, only_me: { const: true, description: "The owner's word that they alone run agents on this server, since its runs would use their Claude plan." } } } } } },
@@ -3091,6 +3091,19 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-secret": true,
       security: [{ ownerSession: [] }],
       responses: { "200": json(CLAUDE_LOGIN, "The sign-in started."), ...errors(401, 403, 404, 409, 429, 500) },
+      "x-agentrun-serve": "claudelogin/1",
+    },
+  },
+  "/settings/claude-login/sign-out": {
+    post: {
+      operationId: "signOutClaudeLogin", tags: ["local"], summary: "Sign out of Claude Code's login on this machine: AgentRun's own login removed, the mode off",
+      description: "For a person to sign in fresh, or as another account: a turn-off leaves the login as the CLI keeps it, so the next turn-on reads it again. Ends a sign-in that waits, turns the mode off, runs the pinned CLI's own `claude auth logout` on AgentRun's own login folder (`<data>/claude-login`), which removes its credentials file and, on macOS, its Keychain item for that folder, then removes the folder (credentials, account, profiles, refresh locks), the login's signed-in note and the runner's token reader, whatever the CLI said. The next turn-on finds no login (`signed_out`) and the sign-in starts as before. Runs already going on the login are left as a turn-off leaves them: each keeps the token its CLI holds, and fails saying the login is signed out at its next read of it. `confirmed` false: signed out here and the mode off, and `message` says what may remain: the CLI didn't confirm its own sign-out, or its step failed, named (on macOS its Keychain item may remain); a removal failed, each named with its path (the others still happen); or the folder had become a link, which alone is removed, with no CLI run through it and nothing it leads to touched. 403 forbidden, with nothing touched, when the login is this machine's own (`place` `machine`: the person's `~/.claude` or CLAUDE_CONFIG_DIR): AgentRun never signs it out, and the words say to run `claude auth logout` in a terminal there. 404 not_found, naming the operation, when AGENTRUN_CLAUDE_CODE_LOGIN is `off`. A secret write: the owner's signed-in session alone (ownerSession).",
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      responses: {
+        "200": json({ type: "object", additionalProperties: false, required: ["confirmed", "login"], properties: { confirmed: { type: "boolean", description: "Whether all of the login is gone: the CLI confirmed its own sign-out and every removal landed. The CLI's sign-out runs where the folder is already gone too, so a retry after an unconfirmed sign-out is true only where the CLI confirms." }, message: { type: "string", description: "With `confirmed` false: what may remain, in words (the CLI's step unconfirmed or failed, a removal that failed, a link left in place of the folder)." }, login: CLAUDE_LOGIN } }, "Signed out here."),
+        ...errors(401, 403, 404, 429, 500),
+      },
       "x-agentrun-serve": "claudelogin/1",
     },
   },

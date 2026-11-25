@@ -4219,6 +4219,40 @@ export type SignOutChatGPTResponse = {
   message?: string;
 };
 
+/** Sign out of Claude Code's login on this machine: AgentRun's own login removed, the mode off (POST /settings/claude-login/sign-out). */
+export type SignOutClaudeLoginResponse = {
+  confirmed: boolean;
+  message?: string;
+  login: {
+    state: "off" | "other_machine" | "refused" | "signed_in" | "signed_out" | "no_cli" | "unknown";
+    place: "agentrun" | "machine";
+    command: string;
+    can_start: boolean;
+    refused?: string;
+    account?: {
+      method?: string;
+      email?: string;
+      organization?: string;
+      plan?: string;
+    };
+    folder: string;
+    machine: {
+      folder: string;
+      source: "CLAUDE_CONFIG_DIR" | "default";
+      credentials?: string;
+    };
+    sign_in?: {
+      state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
+      started_at: string;
+      ended_at?: string;
+      limit_ms: number;
+      exit_code?: number;
+      signal?: string;
+      error?: string;
+    };
+  };
+};
+
 /** Start signing in with ChatGPT: the link to open (POST /settings/chatgpt/sign-in). */
 export type StartChatGPTSignInResponse = {
   authorize_url: string;
@@ -7581,6 +7615,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   saveModelGateway: {"method":"PUT","path":"/settings/model-gateway","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":true,"publicFields":["base_url","ids","models.default","models.fast","models.strong"],"tagged":false},
   scanForSuggestions: {"method":"POST","path":"/suggestions/scans","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   signOutChatGPT: {"method":"DELETE","path":"/settings/chatgpt","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  signOutClaudeLogin: {"method":"POST","path":"/settings/claude-login/sign-out","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   startChatGPTSignIn: {"method":"POST","path":"/settings/chatgpt/sign-in","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   startClaudeLogin: {"method":"POST","path":"/settings/claude-login/login","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   startMcpOAuth: {"method":"POST","path":"/settings/mcp-servers/{name}/oauth/start","pathParams":["name"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":true,"publicFields":["url","scopes.[]","client_id"],"tagged":false},
@@ -7924,6 +7959,8 @@ export function resources(call: Call) {
       scanForSuggestions: (body: ScanForSuggestionsBody, options?: RequestOptions): Promise<ScanForSuggestionsResponse> => call("scanForSuggestions", [], body, undefined, options),
       /** Sign out of ChatGPT: the session revoked at OpenAI, then forgotten here (DELETE /settings/chatgpt). */
       signOutChatGpt: (options?: RequestOptions): Promise<SignOutChatGPTResponse> => call("signOutChatGPT", [], undefined, undefined, options),
+      /** Sign out of Claude Code's login on this machine: AgentRun's own login removed, the mode off (POST /settings/claude-login/sign-out). */
+      signOutClaudeLogin: (options?: RequestOptions): Promise<SignOutClaudeLoginResponse> => call("signOutClaudeLogin", [], undefined, undefined, options),
       /** Start signing in with ChatGPT: the link to open (POST /settings/chatgpt/sign-in). */
       startChatGptsignIn: (options?: RequestOptions): Promise<StartChatGPTSignInResponse> => call("startChatGPTSignIn", [], undefined, undefined, options),
       /** Start the Claude Code CLI's own sign-in on this machine (POST /settings/claude-login/login). */

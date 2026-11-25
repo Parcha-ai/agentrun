@@ -155,7 +155,7 @@ import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from 
 import { isSecretWriteOperation, type SecretRequest, secretPageFor, secretsWritableFields, secretWriteRefusal, secretWriterFacts, writesSecretFor, writesSecretsAllowed } from "./secret-writes.js";
 import { ChatGPTPlan, planOf, PlanSignInRefused, SIGN_OUT_UNCONFIRMED, withPlan } from "./chatgpt-plan.js";
 import { modelGatewayRoute, readSavedGateway, type SavedGateway, withSavedGateway } from "./model-gateway.js";
-import { CLAUDE_LOGIN_ROUTES, LOGIN_REFUSES_API_KEYS, oneOwnerDeps, ClaudeLoginRefused, claudeLoginOf, claudeLoginRouteOff, claudeLoginServed, claudeLoginSwitchedOff, claudeLoginSetting, claudeLoginView, type ClaudeLoginDeps, dropRefusedLogin, envAtPlace, LOGIN_HARNESS, loginOf, loginOnRunnerOnly, loopback, startLoginHere, turnOffClaudeLogin, turnOnClaudeLogin, withClaudeLogin } from "./claude-login.js";
+import { CLAUDE_LOGIN_ROUTES, LOGIN_REFUSES_API_KEYS, oneOwnerDeps, ClaudeLoginRefused, claudeLoginOf, claudeLoginRouteOff, claudeLoginServed, claudeLoginSwitchedOff, claudeLoginSetting, claudeLoginView, type ClaudeLoginDeps, dropRefusedLogin, envAtPlace, LOGIN_HARNESS, loginOf, loginOnRunnerOnly, loopback, signOutClaudeLogin, startLoginHere, turnOffClaudeLogin, turnOnClaudeLogin, withClaudeLogin } from "./claude-login.js";
 import { ClaudeSignIns } from "./claude-sign-in.js";
 import { bootSealKey, parametersDigest, withSealKey } from "./seal-key.js";
 import { ServerLockHeldError, takeServerLock } from "./server-lock.js";
@@ -839,6 +839,7 @@ export const ROUTES: readonly Route[] = [
   { method: "PUT", pattern: /^\/settings\/claude-login$/, name: "turnOnClaudeLogin" },
   { method: "DELETE", pattern: /^\/settings\/claude-login$/, name: "turnOffClaudeLogin" },
   { method: "POST", pattern: /^\/settings\/claude-login\/login$/, name: "startClaudeLogin" },
+  { method: "POST", pattern: /^\/settings\/claude-login\/sign-out$/, name: "signOutClaudeLogin" },
   // The model gateway saved in the console (model-gateway.ts): its save, removal and test the owner's session's alone.
   { method: "GET", pattern: /^\/settings\/model-gateway$/, name: "getModelGateway" },
   { method: "PUT", pattern: /^\/settings\/model-gateway$/, name: "saveModelGateway" },
@@ -6184,6 +6185,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const { revoked } = await plan.signOut();
         return send(res, 200, revoked ? { revoked } : { revoked, message: SIGN_OUT_UNCONFIRMED });
       }
+      // Its sign-out (claude-login.ts signOutClaudeLogin): AgentRun's own login removed, the mode off; this machine's own
+      // login refused in words.
+      case "signOutClaudeLogin":
+        try {
+          return send(res, 200, await signOutClaudeLogin(loginDeps()), { "cache-control": "no-store" });
+        } catch (error) {
+          if (error instanceof ClaudeLoginRefused) throw new ApiError(error.code, error.message);
+          throw error;
+        }
       // Claude Code's login on this machine (claude-login.ts): only its status is read, by asking the CLI.
       case "getClaudeLogin":
       case "turnOnClaudeLogin":
