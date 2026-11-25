@@ -4,6 +4,7 @@
 // GET /runs/{id}'s cost and the money rule (runner/workflow-first.ts costLineOf, over RunFigures) all take. Pure: no
 // store, no clock.
 import { amortize, type Bill, billOf, costSummary, type CostRun, type CostSummary, JOB_PATHS, NOT_SERVED, type NotServed, noiseOff, type RevisionSpend, RUN_PATHS, type RunPath, SERVED_PATHS, tookOverOf } from "../learning-cost.js";
+import { FINAL_STATES, type RunRow } from "../store/store.js";
 
 /** A run's own cost as its row stores it: `known`, an exact figure; `unknown`, none; `at_most`, only a bound (a request
  *  cut at its cap hold), never shown as a cost. */
@@ -217,13 +218,24 @@ export function spendByRun(spend: readonly SpendRow[]): { compile: Map<string, n
   return { compile, audit };
 }
 
-/** A run's shadow cost: 0 with none; unknown while it is at work, or once it ended with no spend row; its spend row's
- *  once it has one. */
+/** An audit's shadow run as its cost reads: `ended` once it is final (FINAL_STATES), `usd` its cost (null while unknown
+ *  or only a bound). */
+export type ShadowCost = { readonly ended: boolean; readonly usd: number | null };
+
+/** A shadow run's row as a ShadowCost. */
+export const shadowOfRun = (run: Pick<RunRow, "state" | "costUsd" | "costAtMostUsd">): ShadowCost =>
+  ({ ended: FINAL_STATES.includes(run.state), usd: typeof run.costAtMostUsd === "number" ? null : run.costUsd });
+
+/** A run's shadow cost, the one rule the ledger, GET /stats and analytics read: 0 with no shadow (undefined); unknown
+ *  (null) while it is queued or running, or once it ended at an unknown cost, never $0; its cost once known. */
+export const shadowUsdOf = (shadow: ShadowCost | undefined): number | null => (shadow === undefined ? 0 : shadow.ended ? shadow.usd : null);
+
+/** A run's shadow cost (shadowUsdOf) from the reader's shadows and the audit spend rows: an ended shadow costs its
+ *  spend row's, unknown with none. */
 export function shadowCostOf(runId: string, audit: ReadonlyMap<string, number | null>, shadows: ReadonlyMap<string, Shadow>): number | null {
   const state = shadows.get(runId);
-  if (state === "open") return null;
-  if (audit.has(runId)) return audit.get(runId)!;
-  return state === "ended" ? null : 0;
+  if (state === undefined && !audit.has(runId)) return 0;
+  return shadowUsdOf({ ended: state !== "open", usd: audit.has(runId) ? audit.get(runId)! : null });
 }
 
 /** A revision of a learned workflow as its records say it now (store-reads/learning.ts revisionsOf): the served runs its
