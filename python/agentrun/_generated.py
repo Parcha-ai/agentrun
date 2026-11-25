@@ -3645,7 +3645,7 @@ class RunSummaryNativeUsageReflectionItem(TypedDict):
 
 class RunSummaryFactory(TypedDict):
     lifecycle_version: str
-    source: Literal["managed", "native", "sdk"]
+    source: Literal["managed", "native", "sdk", "cli"]
     runtime: str
     control: Literal["managed", "observed"]
     controls: RunSummaryFactoryControls
@@ -5953,7 +5953,7 @@ class RunNativeUsageReflectionItem(TypedDict):
 
 class RunFactory(TypedDict):
     lifecycle_version: str
-    source: Literal["managed", "native", "sdk"]
+    source: Literal["managed", "native", "sdk", "cli"]
     runtime: str
     control: Literal["managed", "observed"]
     controls: RunFactoryControls

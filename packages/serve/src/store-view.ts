@@ -75,7 +75,7 @@ import { type Command, FINAL_STATES, type KeptListing, type RunListing, type Run
 import { LISTING_HELD, LISTING_KEYED } from "./store/schema.js";
 import { createHash } from "node:crypto";
 import type { RecordingView } from "./run-recordings.js";
-import { factoryChildren, factoryGithub, factoryLastActivity, factoryObservation, factoryObserved, type FactoryActivity, type FactoryObserved } from "./factory-activity.js";
+import { factoryChildren, factoryGithub, factoryLastActivity, factoryObservation, factoryObserved, factorySource, type FactoryActivity, type FactoryObserved } from "./factory-activity.js";
 
 /** What the store-backed view needs beside the store: where its console lives, every secret it never shows (read now, so
  *  one rotated is cut at once), and the agents' saved sign-ins (for the handed-pointer cut). The server passes the same it
@@ -571,11 +571,9 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   const endSaidCost = endCost && !lookingBack ? endSaid !== undefined : false;
   const endUnread = !lookingBack && bookedCost !== undefined && !endCost && endSaid === null;
   const heal = lookingBack ? undefined : healOf(endCost, runRow);
-  const source = launch?.sdk ? "sdk" : launch?.native ? "native" : "managed";
   const factory: StoreRun["factory"] = deps.factory ? {
     lifecycle_version: await store.runs.changesHead(),
-    source, runtime: launch?.sdk?.runtime ?? launch?.native?.runtime ?? harness,
-    control: source === "sdk" ? "observed" : "managed",
+    ...factorySource(launch, harness),
     ...(deps.factory === "kept" ? {} : { observation: await factoryObservation(store, launch, live, liveRow?.updatedAt, deps.now ?? Date.now) }),
     last_activity_at: factoryLastActivity(records),
     github: unshown ? null : factoryGithub(launch, (text) => withoutLoopback(redacted(text, values))),

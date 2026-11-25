@@ -64,6 +64,16 @@ describe("factory session projection", () => {
     expect(card.costLabel).not.toContain("$0");
   });
 
+  it("shows a connected CLI session as observed, under the name the console gives that CLI, with no freshness claimed", () => {
+    const cli = (runtime: string) => run(runtime, { factory: { ...FACTORY, source: "cli", runtime, control: "observed", controls: { stop: false, cancel: false, approve: false }, observation: { basis: "unreported", status: "unreported", last_seen_at: null } } });
+    const cards = factoryCards([cli("codex-cli"), cli("claude-code-cli"), cli("another-cli")], name);
+    expect(cards.map((card) => card.sourceLabel)).toEqual(["Codex CLI", "Claude Code", "CLI · another-cli"]);
+    for (const card of cards) {
+      expect(card).toMatchObject({ lane: "working", controlLabel: "Observed" });
+      expect(card.reason).toContain("freshness is not reported");
+    }
+  });
+
   it("uses only structured GitHub provenance, never task URLs or a successful result as delivery evidence", () => {
     const plain = run("plain", { title: "Merge https://github.com/elsewhere/repo/pull/99" });
     const linked = run("linked", { factory: { ...FACTORY, github: { repository: "acme/console", issue: 4, pull_request: 8, head_sha: "a".repeat(40), provenance: "github_trigger" } } });

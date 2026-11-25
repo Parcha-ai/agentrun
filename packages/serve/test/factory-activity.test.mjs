@@ -3,11 +3,13 @@ import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { factoryChildren, factoryGithub, factoryLastActivity, factoryObservation } from "../dist/factory-activity.js";
-import { summaryOverStore } from "../dist/store-view.js";
+import { listingOverStore, summaryOverStore } from "../dist/store-view.js";
+import { cancel, stop } from "../dist/runs-over-store.js";
 import { launchBody } from "../dist/run-launch.js";
 import { agentWithRevision, storeOn, T0 } from "./store-helpers.mjs";
 
 const identity = text => text;
+const TERMINAL_STATUSES = ["completed", "failed", "cancelled"];
 const head = "a".repeat(40);
 const base = { title: "Work", input: { content: "Work" }, place: { mode: "runner" } };
 // A GitHub firing's run as the server launches it (triggers.ts start and inputOf): the firing's attributes saved on the
@@ -114,6 +116,25 @@ test("scoped summaries retain SDK observer semantics and snapshot lifecycle vers
   assert.ok(BigInt(ended.factory.lifecycle_version) > BigInt(active.factory.lifecycle_version));
   assert.deepEqual(ended.factory.children, []);
   assert.equal("factory" in await summaryOverStore(store, "sdk-run", { ...deps, factory: false }), false);
+});
+
+test("a connected CLI session is observed, under the runtime it recorded, with none of the controls stop and cancel refuse it", async t => {
+  const { store, clock } = await storeOn(t);
+  await agentWithRevision(store);
+  const cli_learning = { runtime: "codex-cli", connection_id: "connection-1", connection_generation: "1", session_id: "session-1", turn_id: "turn-1", instructions: "Work.", policy_complete: true };
+  await store.runs.create({ id: "cli-run", agentId: "agent-1", revisionId: "rev-1" }, { body: launchBody({ ...base, cli_learning }) });
+  const deps = { origin: "https://run.test", serverSecrets: () => [], factory: true, now: () => clock.now };
+  const active = await summaryOverStore(store, "cli-run", deps);
+  assert.equal(TERMINAL_STATUSES.includes(active.status), false, "the session is still going");
+  assert.deepEqual([active.factory.source, active.factory.runtime, active.factory.control], ["cli", "codex-cli", "observed"]);
+  assert.deepEqual(active.factory.controls, { stop: false, cancel: false, approve: false });
+  assert.deepEqual(active.factory.observation, { basis: "unreported", status: "unreported", last_seen_at: null }, "no runner holds it and nothing reports its liveness");
+  // What the board offers is what the server does: it refuses to stop or cancel a session its own CLI runs.
+  const moment = { id: "cli-run", terminal: false, cancelled: false };
+  await assert.rejects(stop(store, moment), { code: "not_continuable" });
+  await assert.rejects(cancel(store, moment), { code: "not_continuable" });
+  const kept = (await listingOverStore(store, "cli-run", deps)).factory;
+  assert.deepEqual([kept.activity.source, kept.activity.control, kept.observed], ["cli", "observed", { basis: "unreported" }], "and its listing keeps the same");
 });
 
 test("factory lifecycle watermark and run status share one snapshot across a concurrent end", async t => {

@@ -951,7 +951,7 @@ export interface components {
     };
     factory?: {
       lifecycle_version: string;
-      source: "managed" | "native" | "sdk";
+      source: "managed" | "native" | "sdk" | "cli";
       runtime: string;
       control: "managed" | "observed";
       controls: {
@@ -1289,7 +1289,7 @@ export interface components {
     };
     factory?: {
       lifecycle_version: string;
-      source: "managed" | "native" | "sdk";
+      source: "managed" | "native" | "sdk" | "cli";
       runtime: string;
       control: "managed" | "observed";
       controls: {

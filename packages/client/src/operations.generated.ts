@@ -456,7 +456,7 @@ export type RunSummary = {
   };
   factory?: {
     lifecycle_version: string;
-    source: "managed" | "native" | "sdk";
+    source: "managed" | "native" | "sdk" | "cli";
     runtime: string;
     control: "managed" | "observed";
     controls: {
@@ -764,7 +764,7 @@ export type Run = {
   };
   factory?: {
     lifecycle_version: string;
-    source: "managed" | "native" | "sdk";
+    source: "managed" | "native" | "sdk" | "cli";
     runtime: string;
     control: "managed" | "observed";
     controls: {

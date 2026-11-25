@@ -14,7 +14,7 @@ export type FactoryGithub = {
 export type FactoryChild = { id: string; conversation_id: number; parent_call_id: string; status: "active" | "completed"; label: string | null };
 export type FactoryActivity = {
   lifecycle_version: string;
-  source: "managed" | "native" | "sdk"; runtime: string; control: "managed" | "observed";
+  source: "managed" | "native" | "sdk" | "cli"; runtime: string; control: "managed" | "observed";
   controls: { stop: boolean; cancel: boolean; approve: boolean };
   observation: { basis: "runner" | "connector" | "unreported"; status: "current" | "offline" | "revoked" | "unreported"; last_seen_at: string | null };
   last_activity_at: string | null;
@@ -124,11 +124,23 @@ export async function factoryChildren(store: Store, runId: string, records: Jour
   });
 }
 
-/** Who a run is observed through, from its launch: nothing reports an SDK run, a remote native run is seen through its
- *  paired connector, and any other through the runner that holds it. It never changes for a run, so a listing keeps it. */
+/** What runs a run, from its launch: its source, the runtime it recorded (else `harness`, the run's own), and whether
+ *  AgentRun controls its execution. An SDK run and a connected CLI session are run by their own application, which reports
+ *  them here: AgentRun observes them and refuses to stop or cancel them (runs-over-store.ts refuseSdkStop), so neither is
+ *  managed and no control of theirs is offered. A native run and every other are run through AgentRun. */
+export function factorySource(launch: RunLaunch | undefined, harness: string): Pick<FactoryActivity, "source" | "runtime" | "control"> {
+  if (launch?.sdk) return { source: "sdk", runtime: launch.sdk.runtime, control: "observed" };
+  if (launch?.cli_learning) return { source: "cli", runtime: launch.cli_learning.runtime, control: "observed" };
+  if (launch?.native) return { source: "native", runtime: launch.native.runtime, control: "managed" };
+  return { source: "managed", runtime: harness, control: "managed" };
+}
+
+/** Who a run is observed through, from its launch: nothing reports the liveness of an SDK run or a connected CLI session
+ *  (no runner holds either), a remote native run is seen through its paired connector, and any other through the runner
+ *  that holds it. It never changes for a run, so a listing keeps it. */
 export type FactoryObserved = { readonly basis: "unreported" } | { readonly basis: "connector"; readonly connector: string } | { readonly basis: "runner" };
 export const factoryObserved = (launch: RunLaunch | undefined): FactoryObserved =>
-  launch?.sdk ? { basis: "unreported" } : launch?.native?.remote ? { basis: "connector", connector: launch.native.remote.connector_id } : { basis: "runner" };
+  launch?.sdk || launch?.cli_learning ? { basis: "unreported" } : launch?.native?.remote ? { basis: "connector", connector: launch.native.remote.connector_id } : { basis: "runner" };
 
 /** A run's observation now: its connector's health, or whether a runner holds it (`live`) and that runner's last tick.
  *  Read at each request, never kept: a lease renewed or a connector lost writes nothing to the run. */

@@ -3874,7 +3874,7 @@ export const DEFINITION_OPTIONAL = ["instructions"];
 const FACTORY_ACTIVITY: Json = {
   ...closed({
     lifecycle_version: { type: "string", pattern: "^[0-9]+$", description: "Committed lifecycle watermark captured in the same store snapshot as this run's projection. The projection is built once per change of the run and kept until the next, so a run that has not changed keeps its watermark from one read to the next. Compare as an integer when reconciling scoped pages; a later watermark supersedes an earlier projection of the same run." },
-    source: { enum: ["managed", "native", "sdk"] }, runtime: { type: "string" }, control: { enum: ["managed", "observed"] },
+    source: { enum: ["managed", "native", "sdk", "cli"], description: "What runs the session: `managed` and `native`, AgentRun's own runner (a native run through the harness on its machine); `sdk`, a backend's SDK wrapper; `cli`, an existing CLI session connected for learning. An `sdk` or `cli` session is run by its own application, which reports it here." }, runtime: { type: "string", description: "The runtime the session recorded (`codex-sdk`, `codex-cli`, `claude-code-cli`, a native harness), else the run's harness." }, control: { enum: ["managed", "observed"], description: "`observed` for an `sdk` or `cli` session: AgentRun refuses to stop or cancel it, so every one of its `controls` is false." },
     controls: closed({ stop: { type: "boolean" }, cancel: { type: "boolean" }, approve: { type: "boolean" } }),
     observation: closed({
       basis: { enum: ["runner", "connector", "unreported"] }, status: { enum: ["current", "offline", "revoked", "unreported"] },
@@ -3887,7 +3887,7 @@ const FACTORY_ACTIVITY: Json = {
     })] },
     children: { type: "array", items: closed({ id: { type: "string" }, conversation_id: { type: "integer", minimum: 0 }, parent_call_id: { type: "string" }, status: { enum: ["active", "completed"] }, label: { type: ["string", "null"], maxLength: 160 } }) },
   }),
-  description: "Present on scoped factory lists. Source reporting and supported controls, not an execution authorization. Connector health does not prove session liveness; SDK heartbeat is unreported. GitHub links come only from explicit launch binding or a trusted GitHub trigger, never prose. Children are active durable subagent conversations with recorded ownership, not standalone runs; an empty list makes no claim about unreported native/SDK children.",
+  description: "Present on scoped factory lists. Source reporting and supported controls, not an execution authorization. Connector health does not prove session liveness; an SDK's or a connected CLI session's heartbeat is unreported. GitHub links come only from explicit launch binding or a trusted GitHub trigger, never prose. Children are active durable subagent conversations with recorded ownership, not standalone runs; an empty list makes no claim about unreported native/SDK children.",
   "x-agentrun-serve": "factory/1",
 };
 const RUN_FIELDS: Record<string, Json> = {

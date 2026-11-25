@@ -1,4 +1,5 @@
 import type { FactoryCard, FactoryView } from "@/components/AgentFactoryBoard";
+import { cliRunLabel } from "./cliLearning";
 import type { Client } from "./client";
 import { cost, runEnded, runLabel, runTitle } from "./format";
 import { isEscalated, NO_MESSAGES, runState } from "./runState";
@@ -113,7 +114,11 @@ export function factoryCards(runs: readonly FactoryRun[], agentName: (id: string
       : run.status === "working" && run.state === "idle" ? "Between turns"
       : run.status === "working" && run.state === "waiting" ? "Waiting"
       : state.label;
-    const source = factory.source === "native" ? `Native · ${factory.runtime}` : factory.source === "sdk" ? `SDK · ${factory.runtime}` : factory.runtime;
+    // A connected CLI session is named as the rest of the console names it (cliRunLabel): "Codex CLI", "Claude Code".
+    const source = factory.source === "native" ? `Native · ${factory.runtime}`
+      : factory.source === "sdk" ? `SDK · ${factory.runtime}`
+      : factory.source === "cli" ? (factory.runtime === "codex-cli" || factory.runtime === "claude-code-cli" ? cliRunLabel(factory.runtime) : `CLI · ${factory.runtime}`)
+      : factory.runtime;
     // A run no runner holds (queued, or waiting for its person) has no connection to report on, so its card says nothing
     // of one. Only a source that could report its freshness and does not (an SDK's, a connector the server does not
     // know) says so.
