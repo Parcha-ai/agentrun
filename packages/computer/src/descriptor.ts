@@ -150,6 +150,14 @@ export interface ProviderDescriptor<Module extends ProviderModule = ProviderModu
 	 * image. No setting kind lists one, and Settings never offers one.
 	 */
 	readonly parked?: readonly ParkedConfiguration[];
+	/**
+	 * Its browsers open a profile the vendor keeps (a Browserbase context, a Kernel profile), which its built providers
+	 * make and delete (profiles.create, profiles.remove) and declare (capabilities().browser.profiles, this same value). A
+	 * server keeps an agent's saved sign-in only at a provider that declares this. settleMs: how long after a saving
+	 * session ends the vendor may still be writing the profile back, which a server waits out before another session saves
+	 * to it. Absent: its browsers keep no profile.
+	 */
+	readonly profiles?: { readonly settleMs: number };
 	/** The provider module, loaded on demand: its create(), its conformance module. */
 	load(): Promise<Module>;
 }
@@ -234,6 +242,11 @@ export function descriptorProblems(value: unknown): string[] {
 	if (d.parked !== undefined) {
 		if (!Array.isArray(d.parked) || d.parked.some((one) => typeof one?.image !== "string" || one.image === "" || typeof one.why !== "string" || one.why === "" || typeof one.kind !== "string" || !Array.isArray(one.groups))) problems.push("parked is a list of configurations, each with its image and why it is parked");
 		else if (Array.isArray(d.capabilities) && d.parked.some((one) => d.capabilities!.some((offered) => offered?.image === one.image))) problems.push("a parked image is also offered");
+	}
+	if (d.profiles !== undefined) {
+		const settleMs = (d.profiles as { settleMs?: unknown } | null)?.settleMs;
+		if (typeof settleMs !== "number" || !Number.isInteger(settleMs) || settleMs < 0) problems.push("profiles is { settleMs }, a whole number of milliseconds, 0 or more");
+		else if (!Array.isArray(d.capabilities) || !d.capabilities.some((one) => one?.kind === "browser")) problems.push("profiles is a browser's: no configuration is of kind browser");
 	}
 	return problems;
 }

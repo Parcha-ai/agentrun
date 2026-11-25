@@ -243,7 +243,8 @@ test("a codex run on auto is handed agentrun's own web_search in its session's t
   const { spec: built } = await specOn(t, "codex", { body: { tools: ["read", "write", "web_search"] }, launch: { plane }, prepare: (data) => linkHarnesses(data) });
   const search = built.session.tools.filter((tool) => tool.name === "web_search");
   assert.equal(search.length, 1, `one web_search in the session's tools: ${built.session.tools.map((tool) => tool.name).join(", ")}`);
-  assert.match(search[0].description, /^Search the web through Firecrawl, with Exa behind it\./, "agentrun's keyless search, not the model provider's own");
+  const { WEB_SEARCH_DESCRIPTION } = await import("@parcha/agentrun-web");
+  assert.equal(search[0].description, WEB_SEARCH_DESCRIPTION, "agentrun's own web_search, its description the web package's, not the model provider's search");
 });
 
 test("a claude-agent run whose answer misses its output schema is asked once more in the same session, in the server's words, and ends on the corrected answer", { timeout: 180_000 }, async (t) => {

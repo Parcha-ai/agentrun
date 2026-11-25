@@ -25,7 +25,7 @@ test("a browser provider declares its sessions' features in capabilities().brows
 	const bb = await browserbase(fakeBrowserbase());
 	const kn = await kernel(fakeKernel());
 	const local = new (await import("../dist/local-chrome.js")).LocalBrowserProvider({ executablePath: "/bin/true", root: "/tmp/agentrun-browser-session-test" });
-	assert.deepEqual(bb.capabilities().browser, { timeout: "wall-clock", stealth: true, profiles: { settleMs: 5_000 }, downloads: { path: "downloads" } });
+	assert.deepEqual(bb.capabilities().browser, { timeout: "wall-clock", stealth: true, profiles: { settleMs: 10_000 }, downloads: { path: "downloads" } });
 	assert.deepEqual(kn.capabilities().browser, { timeout: "inactivity", minLifetimeMs: 10_000, profiles: { settleMs: 0 }, headless: true }, "Kernel's shortest idle timeout is 10 s");
 	assert.deepEqual(local.capabilities().browser, { timeout: "wall-clock" }, "Local Chrome's sessions end at their deadline and take a viewport alone");
 	assert.ok(isBrowserProvider(bb) && isBrowserProvider(kn) && isBrowserProvider(local));

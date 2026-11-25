@@ -48,16 +48,18 @@ const CASE_REF = { id: "phone-0123abcd", name: "computer-0123456789ab" };
 const ANDROID = { kind: "android", os: "android", daemon: "none", groups: ["screen", "input.touch", "input.keys", "apps", "ui"], network: ["open"] };
 const HELLO = { protocol: PROTOCOL_VERSION, version: "1", os: "android", kind: "android", arch: "amd64", groups: ANDROID.groups };
 
-test("health.declared: hello carries this protocol's version, and capabilities() is one of the configurations declared", async () => {
+test("health.declared: hello carries exactly the suite's protocol version, and capabilities() is one of the configurations declared", async () => {
 	const declared = caseOf("health.declared");
 	assert.equal(declared.level, "core");
 	const agree = context({ hello: HELLO, capabilities: ANDROID, declared: [{ kind: "android", groups: [...ANDROID.groups].reverse() }] });
 	await declared.run(agree.t);
 
-	const old = context({ hello: { ...HELLO, protocol: undefined }, capabilities: ANDROID, declared: [{ kind: "android", groups: ANDROID.groups }] });
-	await assert.rejects(declared.run(old.t), /hello carries the protocol version this suite speaks, 0\.2: undefined/);
-	const other = context({ hello: { ...HELLO, protocol: "9.0" }, capabilities: ANDROID, declared: [{ kind: "android", groups: ANDROID.groups }] });
-	await assert.rejects(declared.run(other.t), /protocol version.*"9\.0"/);
+	// A provider is certified by the suite of its own version, so one a minor step ahead fails here too: the tolerance of
+	// a later minor is the wire's, between a server and a driver built apart.
+	for (const [protocol, said] of [[undefined, "none"], ["0.1", "0\\.1"], ["0.3", "0\\.3"], ["1.0", "1\\.0"], ["9.0", "9\\.0"]]) {
+		const other = context({ hello: { ...HELLO, protocol }, capabilities: ANDROID, declared: [{ kind: "android", groups: ANDROID.groups }] });
+		await assert.rejects(declared.run(other.t), new RegExp(`^Error: hello: the computer speaks protocol ${said}, and this suite 0\\.2$`), String(protocol));
+	}
 
 	const drifted = context({ hello: HELLO, capabilities: ANDROID, declared: [{ kind: "android", groups: ["screen", "input.touch", "apps"] }] });
 	await assert.rejects(declared.run(drifted.t), /capabilities\(\), kind android \[.*\], is one of the configurations the provider declares: android \[screen, input\.touch, apps\]/);
@@ -135,17 +137,19 @@ test("the phone harness passes both contract cases through the runner: its PROVI
 	assert.deepEqual(bare.results.find((r) => r.id === "health.no-key-in-errors").undeclared, ["secrets"]);
 });
 
-test("helloDrift: the protocol and the daemon version match the provider's exactly, older or newer, and a hello with no protocol is refused", async () => {
+test("helloDrift: the protocol is 0.2 or a later 0.x (helloProblem), the daemon version the provider's exactly, older or newer, and a hello with no protocol is refused", async () => {
 	const { helloDrift } = await import("../dist/drift.js");
 	assert.equal(PROTOCOL_VERSION, "0.2", "the cases below are a 0.2 provider; move them with the version");
 	const expected = { version: "1.2.3", kind: "linux", groups: ["exec", "files", "processes"] };
 	const hello = { protocol: PROTOCOL_VERSION, version: "1.2.3", os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] };
 	assert.deepEqual(helloDrift(hello, expected), []);
-	// A 0.3 daemon against a 0.2 provider: a minor step ahead is still another wire.
-	assert.deepEqual(helloDrift({ ...hello, protocol: "0.3" }, expected), ["hello: the daemon speaks protocol 0.3, expected exactly 0.2"]);
-	assert.deepEqual(helloDrift({ ...hello, protocol: "0.1" }, expected), ["hello: the daemon speaks protocol 0.1, expected exactly 0.2"]);
+	// A daemon a minor step ahead speaks the same wire, with more of it: its version still pins the build.
+	assert.deepEqual(helloDrift({ ...hello, protocol: "0.3" }, expected), []);
+	// 0.1 is before 0.2 replaced apps.ui_tree with ui: another wire, as another major is.
+	assert.deepEqual(helloDrift({ ...hello, protocol: "0.1" }, expected), ["hello: the daemon speaks protocol 0.1, and this provider 0.2"]);
+	assert.deepEqual(helloDrift({ ...hello, protocol: "1.0" }, expected), ["hello: the daemon speaks protocol 1.0, and this provider 0.2"]);
 	const { protocol: _protocol, ...unversioned } = hello;
-	assert.deepEqual(helloDrift(unversioned, expected), ["hello: the daemon speaks protocol nothing, expected exactly 0.2"]);
+	assert.deepEqual(helloDrift(unversioned, expected), ["hello: the daemon speaks protocol none, and this provider 0.2"]);
 	// The daemon's own version: a patch either way is refused, as is a prerelease tag.
 	for (const version of ["1.2.4", "1.2.2", "1.2.3-drift"]) {
 		assert.deepEqual(helloDrift({ ...hello, version }, expected), [`hello: the daemon reports version ${version}, expected 1.2.3`], version);
