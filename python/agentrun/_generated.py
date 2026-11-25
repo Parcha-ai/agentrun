@@ -8542,6 +8542,7 @@ class CapabilitiesToolsItem(_CapabilitiesToolsItemRequired, total=False):
     call_only: bool
     meta: bool
     sandbox_only: bool
+    runner_only: bool
     reason: str
     missing: list[str]
     providers: list[str]

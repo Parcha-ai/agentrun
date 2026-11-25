@@ -1140,6 +1140,7 @@ export type Capabilities = {
     call_only?: boolean;
     meta?: boolean;
     sandbox_only?: boolean;
+    runner_only?: boolean;
     available: boolean;
     reason?: string;
     missing?: Array<string>;
