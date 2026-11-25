@@ -773,6 +773,15 @@ test("an OTLP endpoint with a user, password, query or fragment is refused by na
   assert.equal(exporterConfig({ OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "http://collector.example:4318/v1/traces" }).url, "http://collector.example:4318/v1/traces");
 });
 
+test("the exporter's URL is the endpoint as the rule normalized it: an empty query or fragment never puts /v1/traces in one", () => {
+  for (const [env, url] of [
+    [{ OTEL_EXPORTER_OTLP_ENDPOINT: "https://collector.example/?" }, "https://collector.example/v1/traces"],
+    [{ OTEL_EXPORTER_OTLP_ENDPOINT: "https://collector.example/otlp/#" }, "https://collector.example/otlp/v1/traces"],
+    [{ OTEL_EXPORTER_OTLP_ENDPOINT: "HTTPS://Collector.Example:443/" }, "https://collector.example/v1/traces"],
+    [{ OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "https://collector.example/v1/traces?" }, "https://collector.example/v1/traces"],
+  ]) assert.equal(exporterConfig(env).url, url, JSON.stringify(env));
+});
+
 test("pi: a native extension's tool and a session's native tool each have one execute_tool span, as a host tool has, none twice", { timeout: 90_000 }, async (t) => {
   const opened = await stores({ runners: 1 });
   await queue(opened.server, "run-1");
