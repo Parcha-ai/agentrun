@@ -22,9 +22,9 @@
 //     it is shortened, learn/secrets.ts excerptShown): the agent's next run asks one recompile with them as data
 //     (runner/learning-end.ts compileAskOf), which S3a's check decides on its inputs plus the disagreeing ones. A second
 //     hold within stop_window served runs of the first stops it: no compile, the stop said on the record.
-//   gradeRow: an owner's grade on a run the workflow answered alone is a row too (source grade): agreed = the grade, or,
-//     when it gave an expected answer, the served answer judged against that known answer as the check judges one (a
-//     grade that contradicts itself: no verdict). A graded run is counted by its grade row alone (learn/audit.ts
+//   gradeRow: an owner's grade on a run the workflow answered alone is a row too (source grade): agreed = the grade's
+//     verdict on the served answer, except a wrong one under agree_on with an expected answer, judged on those fields
+//     against it (answerJudged). A graded run is counted by its grade row alone (learn/audit.ts
 //     windowOf): the check and the audit read one ground truth, a grade's answer where a person gave one, else the agent's.
 // Every number is the agent definition's (learning-setting.ts auditLoopOf). Nothing here fails a claim: a failure is logged.
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
@@ -305,10 +305,11 @@ export async function settleAudits(deps: AuditDeps): Promise<void> {
 }
 
 /** The row an owner's grade of served run `run` writes (source grade, counted for the digest's promotion now), then the
- *  hold rule: only for a run the workflow answered alone (its answer is the workflow's). Its verdict: the grade's
- *  `correct`, or, where it gave an `expected` answer (an empty one is none), the served answer judged against that
- *  known answer as the check judges a draft (runner/promotion.ts answerJudged, on the revision's agree_on): null for a
- *  grade that contradicts itself. Nothing else: no round, no compile by itself. A run before the agent's learning reset (sinceReset) adds no row: its
+ *  hold rule: only for a run the workflow answered alone (its answer is the workflow's). Its verdict is the owner's on
+ *  the served answer itself: graded right, it agrees, however an `expected` answer words it. Graded wrong, it disagrees,
+ *  except under the revision's agree_on with an `expected` answer (an empty one is none): then only those fields judge
+ *  it, each against the expected answer's value where it gives one (runner/promotion.ts answerJudged), so a grade
+ *  that corrects only what no agree_on field says is no disagreement. Nothing else: no round, no compile by itself. A run before the agent's learning reset (sinceReset) adds no row: its
  *  grade is kept, but a promotion of the same digest after the reset is never held by what came before it. A run on a
  *  named disk adds none either (learn/learning-of.ts): the hold rule would copy its answers into the promotion's
  *  disagreements, and the agent's compile reads those. */
@@ -322,9 +323,11 @@ export async function gradeRow(deps: AuditDeps, run: RunRow, correct: boolean, e
   const row: AuditRow = { run: run.id, shadow_run: null, workflow: m.workflow, digest: m.workflow_digest, promoted_at: promoted?.at ?? null, source: "grade", agreed: correct, served_cost: run.costUsd, shadow_cost: null, ...turn, at: iso((deps.now ?? Date.now)()) };
   const known = expected && Object.keys(expected).length ? expected : undefined;
   const { all } = await addLines(deps, [row], async (one) => {
-    if (!known) return correct;
+    if (correct) return true;
+    const on = known ? await agreeOnOfRevision(deps.store, run.revisionId) : undefined;
+    if (!on?.length) return false;
     const said = await auditedAnswer(deps, one);
-    return said === null ? null : answerJudged({ agent: said, answer: said, expected: known, correct }, await agreeOnOfRevision(deps.store, run.revisionId));
+    return said === null ? null : answerJudged({ agent: said, answer: said, expected: known }, on);
   }, true);
   await holdByLedger(deps, rowsOf(all));
 }

@@ -232,8 +232,10 @@ asked at its own end on its own cap, so its request is the served run's learning
 `audit.compared`; else whole), read from the run by that id (null when either answer is missing or a run is gone, never
 counted): a follow-up's answer since is never the one compared, for the verdict or a hold's disagreement. An owner's
 grade of a run the workflow answered alone is a row too (`source: "grade"`, `turn` the answer graded): `agreed` the
-grade's `correct`, or where it gave an `expected` answer, that answer judged against it as the check judges a draft
-against a grade's known answer (null for a grade that contradicts itself). The check and the audit read one ground
+grade's `correct`, the owner's verdict on the served answer itself, however an `expected` answer words it; but a
+grade that marks it wrong under the revision's `agree_on`, with an `expected` answer, is judged on those fields alone,
+each against the expected answer's value where it gives one, so a correction of what no `agree_on` field says is no
+disagreement. The check and the audit read one ground
 truth: a served run with a grade's row is counted by that row alone, never by its shadow's (the agent's answer again,
 which the grade may have corrected). `promoted_at` names the promotion the line counts for: the `at` of the
 promote record that began the digest's newest run of promote records (`learn/promote.ts` promotionStartOf) when the
