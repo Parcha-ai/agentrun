@@ -90,7 +90,7 @@ const MODEL_CHECK_MS = 10_000;
 /** `agent`: an agent's page (at `tab`), or with `edit` its editor; null is a new agent's editor. `runsOf`, `status` and
  *  `archived` (for runs): the runs list's filters. `race`: a race's label (lib/race.ts); `newRace`: the form that starts
  *  one. `compare`: the runs a comparison names (lib/traceCompare.ts). `settings`: a settings page. */
-type Where = { year?: number; repo?: string; observation?: string; nativeConnect?: boolean; connectionSource?: "server" | "remote" | "observe"; section: Section; template?: string; install?: string; playgroundAgent?: string; operation?: AgentOperation | "list-runs" | "apply-template"; draft?: string; run?: string; race?: string; newRace?: boolean; compare?: string[]; trigger?: string | null; kind?: "schedule" | "webhook" | "github" | "composio" | "feed" | "email"; agent?: string | null; edit?: boolean; tool?: string; tab?: string; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: SettingsPage; signIn?: ReturnType<typeof signInOf>; add?: ReturnType<typeof addOf>; github?: ReturnType<typeof githubReturnOf> };
+type Where = { year?: number; repo?: string; observation?: string; nativeConnect?: boolean; connectionSource?: "server" | "remote" | "observe"; section: Section; template?: string; install?: string; playgroundAgent?: string; operation?: AgentOperation | "list-runs" | "apply-template"; draft?: string; run?: string; race?: string; newRace?: boolean; compare?: string[]; trigger?: string | null; kind?: "schedule" | "webhook" | "github" | "composio" | "feed" | "email"; agent?: string | null; edit?: boolean; tool?: string; tab?: string; runsOf?: string; archived?: boolean; status?: RunStatus; source?: string; from?: string; to?: string; model?: string; settings?: SettingsPage; signIn?: ReturnType<typeof signInOf>; add?: ReturnType<typeof addOf>; github?: ReturnType<typeof githubReturnOf> };
 /** The page an address opens. Exported for its test. */
 export function route(h: string = location.hash): Where {
   if (h === "#/dojo") return { section: "dojo" };
@@ -130,7 +130,9 @@ export function route(h: string = location.hash): Where {
     return { section: "playground", ...(agent ? { playgroundAgent: agent } : {}),
       ...(operation === "create-agent" || operation === "edit-agent" || operation === "list-runs" ? { operation } : {}), ...(draft !== null ? { draft } : {}),
       ...(operation === "list-runs" && RUN_STATUSES.includes(params.get("status") as RunStatus) ? { status: params.get("status") as RunStatus } : {}),
-      ...(operation === "list-runs" && params.get("archived") === "true" ? { archived: true } : {}) };
+      ...(operation === "list-runs" && params.get("archived") === "true" ? { archived: true } : {}),
+      ...(operation === "list-runs" && !agent && SOURCE_NAME.test(params.get("source") ?? "") ? { source: params.get("source")! } : {}),
+      ...(operation === "list-runs" && !agent ? runsWindowOf(params) : {}) };
   }
   // Suggested agents: every scanned repository, or one first (`?repo=owner/name`).
   m = h.match(/^#\/suggestions(?:\?(.*))?$/);
@@ -169,15 +171,51 @@ export function route(h: string = location.hash): Where {
   // The runs list's filters live in the address, so a reload keeps them: one agent, one state, the archived runs.
   const q = new URLSearchParams(h.slice("#/runs?".length));
   const agent = q.get("agent"), status = q.get("status") as RunStatus | null;
-  return { section: "runs", ...(agent ? { runsOf: agent } : {}), ...(status && RUN_STATUSES.includes(status) ? { status } : {}), ...(q.get("archived") === "true" ? { archived: true } : {}) };
+  return { section: "runs", ...(agent ? { runsOf: agent } : {}), ...(status && RUN_STATUSES.includes(status) ? { status } : {}), ...(q.get("archived") === "true" ? { archived: true } : {}), ...(!agent && SOURCE_NAME.test(q.get("source") ?? "") ? { source: q.get("source")! } : {}), ...(!agent ? runsWindowOf(q) : {}) };
 }
 
+/** A source's name as GET /v2/runs' `source` takes it (the server's own pattern). */
+const SOURCE_NAME = /^[a-z][a-z0-9-]{0,31}$/;
+/** A model's name as GET /v2/runs' `model` takes it (the server's own pattern): `provider/model`, as a run's metrics name it. */
+const MODEL_NAME = /^[^\u0000-\u001f\u007f]{1,256}$/;
+
+/** GET /v2/runs' window and model from an address: `from` and `to` as instants, `model` as given. A value that is no time
+ *  is left out. */
+function runsWindowOf(q: URLSearchParams): Pick<Where, "from" | "to" | "model"> {
+  const from = runsInstant(q.get("from")), to = runsInstant(q.get("to")), model = q.get("model");
+  return { ...(from ? { from } : {}), ...(to ? { to } : {}), ...(model !== null && MODEL_NAME.test(model) ? { model } : {}) };
+}
+
+/** An address's time as the instant GET /v2/runs takes (an RFC 3339 date-time with its zone). The server reads no time
+ *  zone, so this browser's own stands in where the address names none: a date is its midnight here, a time without a zone
+ *  is a time here. A day or an hour that does not exist (Feb 30, 24:00) is no time. */
+function runsInstant(text: string | null): string | undefined {
+  const m = text?.match(/^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?(Z|[+-]\d{2}:\d{2})?)?$/i);
+  if (!m) return undefined;
+  const [y, mo, d, h = 0, mi = 0, s = 0] = m.slice(1, 7).map((n) => (n === undefined ? undefined : Number(n)));
+  const ms = Number((m[7] ?? "").padEnd(3, "0")), zone = m[8];
+  const at = zone ? new Date(Date.UTC(y!, mo! - 1, d!, h, mi, s, ms)) : new Date(y!, mo! - 1, d!, h, mi, s, ms);
+  const parts = zone ? [at.getUTCFullYear(), at.getUTCMonth() + 1, at.getUTCDate(), at.getUTCHours(), at.getUTCMinutes(), at.getUTCSeconds()] : [at.getFullYear(), at.getMonth() + 1, at.getDate(), at.getHours(), at.getMinutes(), at.getSeconds()];
+  if (Number.isNaN(at.getTime()) || parts.join() !== [y, mo, d, h, mi, s].join()) return undefined;
+  if (!zone || zone.toUpperCase() === "Z") return at.toISOString();
+  const [zh, zm] = zone.slice(1).split(":").map(Number);
+  if (zh > 23 || zm > 59) return undefined;
+  return new Date(at.getTime() - (zone[0] === "-" ? -1 : 1) * (zh * 60 + zm) * 60_000).toISOString();
+}
+
+/** The runs list is narrowed past its state and archive: to one source, a window or a model. */
+const runsNarrowed = (f: RunsFilter): boolean => !!(f.source || f.from || f.to || f.model);
+
 /** The runs list's address for these filters. Exported for its test. */
-export function runsHash({ runsOf, status, archived }: { runsOf?: string } & RunsFilter): string {
+export function runsHash({ runsOf, status, archived, source, from, to, model }: { runsOf?: string } & RunsFilter): string {
   const q = new URLSearchParams();
   if (runsOf) q.set("agent", runsOf);
   if (status) q.set("status", status);
   if (archived) q.set("archived", "true");
+  if (source && !runsOf) q.set("source", source);
+  if (from && !runsOf) q.set("from", from);
+  if (to && !runsOf) q.set("to", to);
+  if (model && !runsOf) q.set("model", model);
   return `#/runs${q.size ? `?${q}` : ""}`;
 }
 
@@ -403,7 +441,7 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
   const [statsRange, setStatsRange] = useState<StatsRange>("30d");
   const observedDays = statsRange === "7d" ? 7 : 30;
   // A race's page (where.race) is under Runs too, but shows no runs list: nothing there reads observations.
-  const observations = useObservations(v2, { active: where.section === "mission" || (where.section === "runs" && !where.run && !where.race && !where.compare && !where.runsOf && !where.archived && !where.status), days: observedDays });
+  const observations = useObservations(v2, { active: where.section === "mission" || (where.section === "runs" && !where.run && !where.race && !where.compare && !where.runsOf && !where.archived && !where.status && !runsNarrowed(where)), days: observedDays });
   const [statsAgent, setStatsAgent] = useState<string | null>(null);
   // Keep the selected identity through refreshes that temporarily clear the connection list.
   const [sessionSelected, setSessionSelected] = useState(false);
@@ -515,7 +553,7 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
       setNamesRead(whole);
     });
   }, [v2, where, refreshed]);
-  const runsFilter: RunsFilter = { status: where.status, archived: where.archived };
+  const runsFilter: RunsFilter = { status: where.status, archived: where.archived, source: where.source, from: where.from, to: where.to, model: where.model };
   useEffect(() => {
     // A race's page reads its own runs (lib/race.ts), and its lanes keep their reads few: no runs list behind it.
     if (where.section !== "runs" || where.run || where.race || where.compare) return;
@@ -880,7 +918,7 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
               : where.settings === "webhook" ? <WebhookPage v2={v2} />
               : where.settings === "slack" ? <SlackPage v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} />
               : <KeysPage v2={v2} onChange={readCaps} writable={secretsWritable} whyNot={secretsWhyNot} harnesses={editorCaps.harnesses}
-                  plan={<><ChatGPTRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} onChange={() => void readCaps()} /><ClaudeLoginRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} available={caps ? caps.features?.claude_login !== false : capsFailed} onChange={() => void readCaps()} /><ModelGatewayRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} onChange={() => void readCaps()} /></>} />}
+                  plan={<><ChatGPTRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} source={caps?.models?.source} defaultModel={caps?.models?.default} routePrefix={caps?.models?.route_prefix} onChange={() => void readCaps()} /><ClaudeLoginRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} available={caps ? caps.features?.claude_login !== false : capsFailed} onChange={() => void readCaps()} /><ModelGatewayRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} onChange={() => void readCaps()} /></>} />}
           </Settings>
         : where.section === "dojo"
         ? <AgentDojo key={refreshed} v2={v2} server={learningCap} modelAccess={caps?.learning_model} />
@@ -897,7 +935,7 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
                 needsYou={needs && <NeedsYouStrip asking={needs.asking} failed={needs.failed} failedAll={mission?.runs.failed} live={needs.live} learning={learningWaits} problem={needsProblem} agentName={agentName} onAnswer={answer} onApprove={approve} onHandBack={handBack} onRunAgain={runAgain} onStop={stop} />}
                 startHere={ownRun === false && !observations.data?.sessions.length ? <StartHere harnesses={editorCaps.harnesses} tools={editorCaps.tools} onTry={tryIt} imported={importedRuns}
                   keySettings={caps?.features?.tool_keys?.routes === true && caps.features.tool_keys.at_rest === "sealed"}
-                  modelSetup={caps && (caps.models.ready === false || planShown) ? <ModelKeyCard v2={v2} needs={caps.models.needs} model={caps.models.default} onSaved={readCaps} writable={secretsWritable} whyNot={secretsWhyNot}
+                  modelSetup={caps && (caps.models.ready === false || planShown) ? <ModelKeyCard v2={v2} needs={caps.models.needs} model={caps.models.default} source={caps.models.source} routePrefix={caps.models.route_prefix} capsRead={caps.models} onSaved={readCaps} writable={secretsWritable} whyNot={secretsWhyNot}
                     plan={plan} harnesses={editorCaps.harnesses} onPlan={onPlan} onDone={() => setPlanShown(false)} /> : undefined} /> : undefined} />
             </div>
           </div>
@@ -917,7 +955,7 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
               {operationPicker}
               <span className="min-w-0 break-all font-mono text-small text-muted-foreground">{where.operation === "apply-template" ? `/v2/templates/${where.template ? encodeURIComponent(where.template) : "{template}"}/apply` : where.operation === "list-runs" ? (where.playgroundAgent ? `/v2/agents/${where.playgroundAgent}/runs` : "/v2/runs") : where.operation === "create-agent" ? "/v2/agents" : where.operation === "edit-agent" ? `/v2/agents/${where.playgroundAgent ?? "{agent_id}"}/definition` : "/v2/agents/{agent_id}/runs"}</span>
             </div>}
-            {where.operation === "apply-template" ? <div className="min-h-0 flex-1 overflow-auto"><TemplatesPage key={where.template ?? ""} v2={v2} name={where.template} go={go} playground draft={where.draft} /></div> : where.operation === "list-runs" ? <RunsRequest key={`list:${where.playgroundAgent ?? ""}:${where.status ?? ""}:${where.archived ?? false}`} v2={v2} origin={location.origin} agentId={where.playgroundAgent} filter={{ status: where.status, archived: where.archived }} /> : where.operation ? <AgentRequest key={`${where.operation}:${where.playgroundAgent ?? ""}:${where.draft ?? ""}`} v2={v2} operation={where.operation} origin={location.origin} agentId={where.playgroundAgent} draft={where.draft} harnesses={editorCaps.harnesses} routePrefix={c?.models?.route_prefix} /> : <>
+            {where.operation === "apply-template" ? <div className="min-h-0 flex-1 overflow-auto"><TemplatesPage key={where.template ?? ""} v2={v2} name={where.template} go={go} playground draft={where.draft} /></div> : where.operation === "list-runs" ? <RunsRequest key={`list:${where.playgroundAgent ?? ""}:${where.status ?? ""}:${where.archived ?? false}:${where.source ?? ""}:${where.from ?? ""}:${where.to ?? ""}:${where.model ?? ""}`} v2={v2} origin={location.origin} agentId={where.playgroundAgent} filter={{ status: where.status, archived: where.archived, source: where.source, from: where.from, to: where.to, model: where.model }} /> : where.operation ? <AgentRequest key={`${where.operation}:${where.playgroundAgent ?? ""}:${where.draft ?? ""}`} v2={v2} operation={where.operation} origin={location.origin} agentId={where.playgroundAgent} draft={where.draft} harnesses={editorCaps.harnesses} routePrefix={c?.models?.route_prefix} /> : <>
               {!agents && noModel}
               {startError && <div className="m-8 border p-4" role="alert"><p className="text-lead text-destructive-text">The agents could not be read: {startError}</p><Button size="sm" className="mt-3" type="button" onClick={() => setRetry((n) => n + 1)}>Try again</Button></div>}
               {agents && <Playground lead={operationPicker} notice={noModel} agents={agents.filter((a) => !a.archived_at)} revisions={revs} efforts={efforts} origin={location.origin} agentId={pick ?? undefined} onAgent={setPick} onRevision={(revision, definition) => setPlaygroundRevision({ revision, definition })} onSend={send} limits={caps?.limits} {...(demo ? { upload: demoUpload } : {})} removeUpload={v2.deleteUpload} onMoveToRunner={moveToRunner} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)}
@@ -938,7 +976,7 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
         : where.race ? <Race key={where.race} v2={v2} label={where.race} />
         : where.compare ? <TraceCompare key={where.compare.join(",")} v2={v2} ids={where.compare} />
         : where.run ? <LiveRun key={where.run} v2={v2} runId={where.run} caps={caps} agentName={agentName} />
-        : <RunsList observations={!where.runsOf && !where.archived && !where.status ? observations : undefined} runs={runs} agentName={agentName} agentId={where.runsOf} error={error} onRetry={() => setRunsTry((n) => n + 1)} onOpen={(id) => go(`#/runs/${encodeURIComponent(id)}`)} loadingMore={more}
+        : <RunsList observations={!where.runsOf && !where.archived && !where.status && !runsNarrowed(where) ? observations : undefined} runs={runs} agentName={agentName} agentId={where.runsOf} error={error} onRetry={() => setRunsTry((n) => n + 1)} onOpen={(id) => go(`#/runs/${encodeURIComponent(id)}`)} loadingMore={more}
             filter={runsFilter} onFilter={(f) => go(runsHash({ runsOf: where.runsOf, ...f }))}
             onMore={cursor ? () => { const n = asked.current; setMore(true); (where.runsOf ? v2.listAgentRuns(where.runsOf, 50, cursor, runsFilter) : v2.listRuns(50, cursor, runsFilter)).then((r) => { if (n === asked.current) { setRuns((x) => appendRuns(x ?? [], r.runs)); setCursor(r.next_cursor); setError(null); } }).catch((e) => setError(problem(e, "more runs"))).finally(() => setMore(false)); } : undefined} />}
     </Shell>

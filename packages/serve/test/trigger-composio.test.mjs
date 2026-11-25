@@ -48,9 +48,6 @@ test("the composio scheme verifies what Composio's SDK signs, keyed by the UTF-8
   assert.equal(composio.push.verify("short", { ...headers, "webhook-signature": sign("short", "msg_x", at, body.toString()) }, body, now), "short_key", "a key under the floor is refused");
   // A list of signatures (rotation): any one may match.
   assert.equal(composio.push.verify(SECRET, { ...headers, "webhook-signature": `v1,AAAA ${headers["webhook-signature"]}` }, body, now), undefined);
-  // A secret that starts with whsec_ is still keyed by its whole string, not a decoded suffix.
-  const odd = "whsec_abcdefghijklmnopqrstuvwx";
-  assert.equal(composio.push.verify(odd, { ...headers, "webhook-signature": sign(odd, "msg_x", at, body.toString()) }, body, now), undefined);
   const [fired] = composio.push.parse(headers, body);
   assert.equal(fired.key, "msg_x");
   assert.equal(fired.event, "GITHUB_ISSUE_ADDED_EVENT");

@@ -1238,7 +1238,7 @@ vendor's types: the shared adapter's release, a create that deletes its machine,
 ## Modal
 
 ```ts
-import { ModalClient } from "modal"; // the host's own client: this package imports nothing from the SDK
+import { ModalClient } from "modal"; // this package's optional dependency; it imports nothing from the SDK at load
 import { ModalProvider } from "@parcha/agentrun-computer/modal";
 
 const modal = new ModalProvider({
@@ -1871,7 +1871,7 @@ repository's main; the docs were read on 2026-11-05.
 ```ts
 import { providerFor } from "@parcha/agentrun-computer";
 
-// The key is the caller's to pass (serve's E2B_API_KEY), and the e2b package is the host's own (npm e2b 2.63.0).
+// The key is the caller's to pass (serve's E2B_API_KEY); the e2b package (2.63.0) is an optional dependency.
 const e2b = await providerFor("e2b", { apiKey });
 const made = await e2b.create({ image: "desktop", lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
 ```
@@ -1892,8 +1892,10 @@ and its X11 shim drives it. With `kind: "linux"` it is kind `linux` on any templ
 provider, minus the X server, so it costs nothing to offer. A caller that names a template (`create({ image })`) gets
 that one: E2B Desktop's own, `desktop`, still works for kind `desktop`, since computerd needs only Xvfb and xfwm4 from
 it. Every call goes through the host's E2B JS SDK, the `e2b` package's `Sandbox` class, whose types `src/e2b.ts` imports
-as types only (held as `typeof Sandbox` inside, `object` in the published types), so nothing loads from it at import; the package is the host's to install, as
-Modal's is. `@e2b/desktop` is not used: it starts Xvfb and Xfce with `commands.run`, outside computerd's process table
+as types only (held as `typeof Sandbox` inside, `object` in the published types), so nothing loads from it at import. The
+package is one of this package's `optionalDependencies`, pinned exactly, as Modal's, boxd's, ssh2 and Archil's `disk`
+are: a plain `npm install` brings it, and after `npm install --omit=optional` `create` refuses with `E2B needs the e2b
+package: npm install e2b@2.63.0`. `@e2b/desktop` is not used: it starts Xvfb and Xfce with `commands.run`, outside computerd's process table
 and with no bound or abort (`@e2b/desktop@2.5.0` `dist/index.mjs:387-415`), and the provider needs none of its other
 calls.
 
@@ -2158,7 +2160,7 @@ A live run must show:
 ```ts
 import { providerFor } from "@parcha/agentrun-computer";
 
-// Both keys are the caller's to pass (serve's AGENT37_API_KEY and AGENT37_SSH_KEY), and ssh2 is the host's own (npm ssh2 1.17.0).
+// Both keys are the caller's to pass (serve's AGENT37_API_KEY and AGENT37_SSH_KEY); ssh2 (1.17.0) is an optional dependency.
 const agent37 = await providerFor("agent37", { apiKey, sshKey });
 const made = await agent37.create({ image: "agent37-base", lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
 ```
@@ -2312,7 +2314,7 @@ the live runs above.
 ```ts
 import { providerFor } from "@parcha/agentrun-computer";
 
-// The key is the caller's to pass (serve's MORPH_API_KEY), and ssh2 is the host's own.
+// The key is the caller's to pass (serve's MORPH_API_KEY); ssh2 is an optional dependency.
 const morph = await providerFor("morph", { apiKey });
 const box = await morph.prepareImage(); // the box image as a snapshot in the key's account
 const made = await morph.create({ image: box.value, lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
@@ -2758,7 +2760,7 @@ through `ui.observe` (`src/conformance/cases/settings.ts`):
 ```ts
 import { providerFor } from "@parcha/agentrun-computer";
 
-// The key is the caller's to pass (serve's BOXD_API_KEY), and the @boxd-sh/sdk package is the host's own (npm 0.3.1).
+// The key is the caller's to pass (serve's BOXD_API_KEY); the @boxd-sh/sdk package (0.3.1) is an optional dependency.
 const boxd = await providerFor("boxd", { apiKey, org: "my-org", region: "fra" });
 const made = await boxd.create({ image: "default", lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
 ```
@@ -2771,7 +2773,7 @@ to a machine, and `src/hosted/provider.ts` does everything that is not boxd's ow
 create, the upload, the install, init's start, the stdio bridge, the probe, the janitor's extend, delete-then-wait-gone,
 the sweep of a create that lands late). Every call goes through the host's boxd TypeScript SDK, the `@boxd-sh/sdk`
 package's `Boxd` class, of which `src/boxd.ts` names only the slice it calls and imports nothing at load. The package is
-the host's to install, as E2B's and Modal's are; this repository pins it as a root devDependency for the live tests.
+an optional dependency, pinned exactly, as E2B's and Modal's are.
 
 ### The desktop snapshot
 

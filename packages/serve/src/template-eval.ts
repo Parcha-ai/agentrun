@@ -1030,18 +1030,44 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 export const CLAIM_READ_TIMEOUT_MS = 10_000;
 /** The least time between two of those reads of one run. */
 export const CLAIM_READ_EVERY_MS = 5_000;
-/** Whether a runner holds the run now (the run read's `claim`); undefined when the read fails, takes over
- *  CLAIM_READ_TIMEOUT_MS, runs past the run's `deadline` or is stopped by `signal` (the eval's stop): not known, so never
- *  a reason to cancel the run. Its bound ends at the deadline, so a read that stalls never puts the cancel past it. */
-async function heldNow(api: Api, runId: string, deadline: number, signal?: AbortSignal): Promise<boolean | undefined> {
-  const timeout = AbortSignal.timeout(Math.max(0, Math.min(CLAIM_READ_TIMEOUT_MS, deadline - Date.now())));
-  const read = await api("GET", `/runs/${runId}`, undefined, {}, { signal: signal ? AbortSignal.any([signal, timeout]) : timeout }).catch(() => undefined);
-  return read?.status === 200 && isObject(read.body) ? isObject(read.body.claim) : undefined;
+/** How long a timeline page read asks the server to wait for a new row (its wait_ms). */
+const PAGE_WAIT_MS = 5_000;
+/** How long that read may take: its wait, and 10 s for the answer to arrive. */
+export const PAGE_READ_TIMEOUT_MS = PAGE_WAIT_MS + 10_000;
+
+/** The bound of a read in waitRun made at `now`: `capMs`, or the time left to `deadline` when that is less (`ms`, whole
+ *  milliseconds and never below 0, as AbortSignal.timeout takes them), and whether the time left is what bounds it
+ *  (`atDeadline`). */
+export function readBound(deadline: number, capMs: number, now: number): { ms: number; atDeadline: boolean } {
+  const left = deadline - now;
+  return left < capMs ? { ms: Math.max(0, Math.ceil(left)), atDeadline: true } : { ms: capMs, atDeadline: false };
+}
+
+/** A read in waitRun, bounded as readBound says and by the eval's stop (`stop`): the `signal` its request takes, whether
+ *  to `send` it at all (not with no time left), and `byDeadline()`, true once the deadline ended it. The wait takes that
+ *  as its end, with no second read of the clock: the timer runs on a monotonic clock in whole milliseconds, and
+ *  Date.now() can still read a millisecond short of the deadline when it fires. */
+function bounded(deadline: number, capMs: number, stop?: AbortSignal): { signal: AbortSignal; send: boolean; byDeadline: () => boolean } {
+  const { ms, atDeadline } = readBound(deadline, capMs, Date.now());
+  const timeout = AbortSignal.timeout(ms);
+  return { signal: stop ? AbortSignal.any([stop, timeout]) : timeout, send: ms > 0, byDeadline: () => atDeadline && (ms === 0 || timeout.aborted) };
+}
+
+/** Whether a runner holds the run now (the run read's `claim`): "deadline" when the read ran to the run's `deadline`, or
+ *  there was no time left to send it; undefined when it fails, takes over CLAIM_READ_TIMEOUT_MS or is stopped by
+ *  `signal` (the eval's stop): not known, so never a reason to cancel the run as unheld. */
+async function heldNow(api: Api, runId: string, deadline: number, signal?: AbortSignal): Promise<boolean | "deadline" | undefined> {
+  const read = bounded(deadline, CLAIM_READ_TIMEOUT_MS, signal);
+  const answered = read.send ? await api("GET", `/runs/${runId}`, undefined, {}, { signal: read.signal }).catch(() => undefined) : undefined;
+  if (read.byDeadline()) return "deadline";
+  return answered?.status === 200 && isObject(answered.body) ? isObject(answered.body.claim) : undefined;
 }
 
 /** A run waited for: its rows until it ends (completed, failed, cancelled) or waits on a person (input_required), or
- *  `deadline` passes (then it is cancelled). A stop of the eval (`signal`) cancels it too, and throws. */
-async function waitRun(api: Api, runId: string, deadline: number, signal?: AbortSignal, queueTimeoutMs = QUEUE_TIMEOUT_MS): Promise<{ status: string; rows: Json[]; waiting?: string; why?: string }> {
+ *  `deadline` passes (then it is cancelled). A stop of the eval (`signal`) cancels it too, and throws. Each of its reads
+ *  ends at the deadline and at the stop (bounded), so a server that stalls one never holds the wait past either.
+ *  Exported for its tests. */
+export async function waitRun(api: Api, runId: string, deadline: number, signal?: AbortSignal, queueTimeoutMs = QUEUE_TIMEOUT_MS): Promise<{ status: string; rows: Json[]; waiting?: string; why?: string }> {
   const view = new Map<string, Json>();
   let after = 0;
   const started = Date.now();
@@ -1051,50 +1077,72 @@ async function waitRun(api: Api, runId: string, deadline: number, signal?: Abort
   // page asks (at most one read in CLAIM_READ_EVERY_MS): a claim can lapse for a moment on a stalled machine (not renewed
   // in time, then claimed again), so one read that finds none never ends the wait. The run is cancelled only when reads
   // found no runner holding it from the first such read to one queueTimeoutMs later, none between them finding one. A read
-  // that doesn't answer (failed, stalled past its bound or the deadline, or stopped) says neither, and the stop and the
-  // deadline still end the wait.
+  // that doesn't answer (failed, stalled past its bound, or stopped) says neither.
   let unheldSince: number | undefined = started;
   let everHeld = false;
   let askedAt = -Infinity;
+  let rows: Json[] = [];
+  let state: unknown;
   for (;;) {
     if (signal?.aborted) {
       await api("POST", `/runs/${runId}/cancel`, {}).catch(() => undefined);
       signal.throwIfAborted();
     }
     // calls=whole: each call's arguments and its output, whole to CALL_RESULT_CHARS (tool_input, tool_result_text), which its graders read.
-    // CALLS_PAGE_ROWS rows a page, the most a calls=whole page holds (an older server's default is 500).
-    const page = expectOk(`reading run ${runId}'s timeline`, await api("GET", `/runs/${runId}/timeline?after=${after}&wait_ms=5000&calls=whole&limit=${CALLS_PAGE_ROWS}`));
-    if (page.reset) view.clear();
-    for (const id of (page.drop as string[] | undefined) ?? []) view.delete(id);
-    for (const row of (page.rows as Json[] | undefined) ?? []) view.set(String(row.id), row);
-    after = Number(page.next_after ?? after);
-    const rows = [...view.values()].sort((a, b) => Number(a.seq ?? 0) - Number(b.seq ?? 0));
-    const status = String(page.status);
-    if (ENDED.includes(status) && page.final && !page.has_more) return { status, rows };
-    if (status === "input_required" && !page.has_more) {
-      const waiting = rows.findLast((row) => row.kind === "waiting");
-      return { status, rows, waiting: typeof waiting?.summary === "string" ? waiting.summary : "it waits on a person" };
-    }
-    if (status === "queued" && (everHeld || Date.now() - started > queueTimeoutMs) && Date.now() - askedAt >= CLAIM_READ_EVERY_MS) {
-      askedAt = Date.now();
-      const held = await heldNow(api, runId, deadline, signal);
-      if (held === true) {
+    // CALLS_PAGE_ROWS rows a page, the most a calls=whole page holds (an older server's default is 500). A page its bound
+    // cut (stalled past PAGE_READ_TIMEOUT_MS, run to the deadline, or stopped) is no page: it is asked again, unless the
+    // stop or the deadline below ends the wait.
+    const read = bounded(deadline, PAGE_READ_TIMEOUT_MS, signal);
+    const answered = read.send
+      ? await api("GET", `/runs/${runId}/timeline?after=${after}&wait_ms=${PAGE_WAIT_MS}&calls=whole&limit=${CALLS_PAGE_ROWS}`, undefined, {}, { signal: read.signal }).catch((error: unknown) => {
+          if (read.signal.aborted) return undefined;
+          throw error;
+        })
+      : undefined;
+    let timedOut = read.byDeadline();
+    const page = answered === undefined ? undefined : expectOk(`reading run ${runId}'s timeline`, answered);
+    if (page) {
+      if (page.reset) view.clear();
+      for (const id of (page.drop as string[] | undefined) ?? []) view.delete(id);
+      for (const row of (page.rows as Json[] | undefined) ?? []) view.set(String(row.id), row);
+      after = Number(page.next_after ?? after);
+      rows = [...view.values()].sort((a, b) => Number(a.seq ?? 0) - Number(b.seq ?? 0));
+      state = page.state;
+      const status = String(page.status);
+      if (ENDED.includes(status) && page.final && !page.has_more) return { status, rows };
+      if (status === "input_required" && !page.has_more) {
+        const waiting = rows.findLast((row) => row.kind === "waiting");
+        return { status, rows, waiting: typeof waiting?.summary === "string" ? waiting.summary : "it waits on a person" };
+      }
+      // A page that isn't queued shows a runner took the run: a later queued page starts no lapse from before it.
+      if (status !== "queued") {
         everHeld = true;
         unheldSince = undefined;
-      } else if (held === false) {
-        unheldSince ??= askedAt;
-        if (Date.now() - unheldSince >= queueTimeoutMs) {
-          await api("POST", `/runs/${runId}/cancel`, {}).catch(() => undefined);
-          return { status: "timed_out", rows, why: `the run stayed queued for ${Math.round(queueTimeoutMs / 1000)} s with no runner holding it, and it was cancelled` };
+      }
+      if (status === "queued" && (everHeld || Date.now() - started > queueTimeoutMs) && Date.now() - askedAt >= CLAIM_READ_EVERY_MS) {
+        askedAt = Date.now();
+        const held = await heldNow(api, runId, deadline, signal);
+        if (held === "deadline") timedOut = true;
+        else if (held === true) {
+          everHeld = true;
+          unheldSince = undefined;
+        } else if (held === false) {
+          unheldSince ??= askedAt;
+          if (Date.now() - unheldSince >= queueTimeoutMs) {
+            await api("POST", `/runs/${runId}/cancel`, {}).catch(() => undefined);
+            return { status: "timed_out", rows, why: `the run stayed queued for ${Math.round(queueTimeoutMs / 1000)} s with no runner holding it, and it was cancelled` };
+          }
         }
       }
     }
-    // At the deadline, not only past it: the claim read's bound ends at the deadline, and may end in its very millisecond.
-    if (Date.now() >= deadline) {
-      await api("POST", `/runs/${runId}/cancel`, {});
-      return { status: "timed_out", rows, why: `the run took longer than ${Math.round((deadline - started) / 1000)} s (state ${String(page.state)} when the wait gave up) and was cancelled` };
+    if (signal?.aborted) continue;
+    // A read the deadline ended, or the clock at the deadline, not only past it. A cancel that fails is sent again once the
+    // wait's answer is settled (settle cancels a run not ended): the wait still ends timed out.
+    if (timedOut || Date.now() >= deadline) {
+      await api("POST", `/runs/${runId}/cancel`, {}).catch(() => undefined);
+      return { status: "timed_out", rows, why: `the run took longer than ${Math.round((deadline - started) / 1000)} s (state ${String(state ?? "unknown")} when the wait gave up) and was cancelled` };
     }
-    if (page.has_more !== true && page.unchanged === true) await sleep(250);
+    if (page?.has_more !== true && page?.unchanged === true) await sleep(250);
   }
 }
 
@@ -1289,6 +1337,10 @@ export function v2Base(url: string): string {
 export async function evalTemplate(options: EvalOptions): Promise<Report> {
   const log = options.log ?? (() => undefined);
   if (options.data !== undefined && options.server) throw new Error(ON_DATA_WITH_SERVER);
+  // A NaN bound would never end a wait (no clock reads past it); a fraction of a millisecond is rounded up (readBound).
+  for (const [name, ms] of [["runTimeoutMs", options.runTimeoutMs], ["queueTimeoutMs", options.queueTimeoutMs]] as const) {
+    if (ms !== undefined && !(Number.isFinite(ms) && ms > 0)) throw new RangeError(`${name} is a time in milliseconds over 0, not ${ms}`);
+  }
   const { pkg, cases } = readCases(options.dir, options.cases);
   if (options.graderModel !== undefined && !MODEL_REF.test(options.graderModel)) throw new CaseError(options.dir, [`--grader-model is "provider/model-id", not ${options.graderModel}`]);
   // A case's fakes are bound by the eval's own runner, in this process: a named server's runs would search the real web,

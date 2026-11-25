@@ -29,7 +29,8 @@ export type Wrapped = {
   activeMs: number;
   /** By reader's harness, the way serve runs it, and by model ("provider/model", "unknown" for a request naming none). */
   harnesses: { harness: string; sessions: number; requests: number; tokens: number }[];
-  models: { model: string; requests: number; tokens: Tokens; cost: number }[];
+  /** `unpricedRequests` per model: of its requests, those its `cost` leaves out (all of them: no price was known). */
+  models: { model: string; requests: number; tokens: Tokens; cost: number; unpricedRequests: number }[];
   sources: { source: string; sessions: number; requests: number }[];
 };
 
@@ -43,7 +44,7 @@ export async function wrappedHome(home: string, year: number, options: Omit<Pars
   const out: Wrapped = { year, sessions: 0, turns: 0, requests: 0, tokens: noTokens(), cost: 0, unpricedRequests: 0, days: [], hours: new Array<number>(24).fill(0), weekdays: new Array<number>(7).fill(0), activeMs: 0, harnesses: [], models: [], sources: [] };
   const days = new Map<string, { requests: number; tokens: number }>();
   const harnesses = new Map<string, { sessions: number; requests: number; tokens: number }>();
-  const models = new Map<string, { requests: number; tokens: Tokens; cost: number }>();
+  const models = new Map<string, { requests: number; tokens: Tokens; cost: number; unpricedRequests: number }>();
   const sources = new Map<string, { sessions: number; requests: number }>();
   // The usage of each model's requests of the year, priced once the read is over (a rejection of the price then rejects
   // this call, with no promise left floating), and each request that carries none, which no price can cover.
@@ -75,13 +76,16 @@ export async function wrappedHome(home: string, year: number, options: Omit<Pars
         const h = by(harnesses, harnessOf(totals.source), () => ({ sessions: 0, requests: 0, tokens: 0 }));
         h.requests += 1;
         h.tokens += held;
-        const m = by(models, r.model ?? "unknown", () => ({ requests: 0, tokens: noTokens(), cost: 0 }));
+        const m = by(models, r.model ?? "unknown", () => ({ requests: 0, tokens: noTokens(), cost: 0, unpricedRequests: 0 }));
         m.requests += 1;
         if (r.usage) addTokens(m.tokens, r.usage);
         if (i > 0 && r.at - mine[i - 1]!.at < ACTIVE_GAP_MS) out.activeMs += r.at - mine[i - 1]!.at;
         // A request with no usage (pi leaves it off an aborted request) is unpriced; known zero usage is free and priced.
         if (r.usage) by(usages, r.model ?? "unknown", () => []).push(r.usage);
-        else out.unpricedRequests += 1;
+        else {
+          out.unpricedRequests += 1;
+          m.unpricedRequests += 1;
+        }
       }
     },
   });
@@ -99,13 +103,17 @@ export async function wrappedHome(home: string, year: number, options: Omit<Pars
       // The caller's price answers per request: one it cannot price is left out alone.
       for (const usage of paid) {
         const one = await options.price(known, usage);
-        if (one === undefined) out.unpricedRequests += 1;
-        else usd = (usd ?? 0) + one;
+        if (one === undefined) {
+          out.unpricedRequests += 1;
+          models.get(model)!.unpricedRequests += 1;
+        } else usd = (usd ?? 0) + one;
       }
       if (usd === undefined) continue;
     } else if (prices) usd = await priceRequests(paid.map((usage) => ({ ...(known ? { model: known } : {}), usage })), prices);
-    if (usd === undefined) out.unpricedRequests += paid.length;
-    else {
+    if (usd === undefined) {
+      out.unpricedRequests += paid.length;
+      models.get(model)!.unpricedRequests += paid.length;
+    } else {
       out.cost += usd;
       models.get(model)!.cost = usd;
     }

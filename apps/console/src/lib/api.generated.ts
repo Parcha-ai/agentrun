@@ -4212,6 +4212,7 @@ export interface operations {
         requests: number;
         tokens: number;
         cost_usd: number;
+        unpriced_requests: number;
       }[];
       sources: {
         source: string;

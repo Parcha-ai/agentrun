@@ -143,7 +143,7 @@ test("the base URL is the server's address with or without /v2, as the CLI takes
   assert.equal(thrownSync(() => new AgentRun()).reason, "no_token", "an empty AGENTRUN_TOKEN is no key");
 });
 
-test("AGENTRUN_TOKEN goes only to a server on this machine (localhost, 127.0.0.1, [::1], the CLI's hosts): any other base, a lookalike host or a loopback name behind a user part among them, takes AGENTRUN_API_KEY or apiKey, and with neither is refused before any request, in words that name AGENTRUN_API_KEY and never the token", async (t) => {
+test("AGENTRUN_TOKEN goes only to a loopback host", async (t) => {
   const names = ["AGENTRUN_BASE_URL", "AGENTRUN_API_KEY", "AGENTRUN_TOKEN"];
   const saved = names.map((name) => process.env[name]);
   t.after(() => names.forEach((name, i) => (saved[i] === undefined ? delete process.env[name] : (process.env[name] = saved[i]))));
