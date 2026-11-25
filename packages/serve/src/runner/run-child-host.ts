@@ -781,24 +781,23 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       return { state: plan.state, models: [...plan.models], token: () => plan.token(), refused: (sent: string) => plan.refused(sent), watch: (listener: (tokens: string[]) => void) => plan.watch(listener) };
     },
     // The claim's own login, as this runner reads the claim (its harness, its place, no model key of its own), whatever
-    // the process names: its access token alone, read again at each ask and renewed here when it must be (near its end,
-    // or refused); never its folder or its refresh token. Each token is carried into the runner's redactor for this run
-    // (redact.ts carry) before it is handed, a renewed one too: model text that repeats it is cut from the run's journal
-    // as the runner writes it (runner.ts fenced), from what it stages and from its rows, as the run's own tool keys are.
-    // This answer is the one decision whether the run goes on the login: none, it does not. Its claim read the setting
-    // (staysInRunner); a claim that read it off is never put on it, whatever the setting says now. A claim that read it on
-    // has it read again here, at the start, with the claim's settings, data folder, harness and place. Its environment is
-    // the claim's (the process's, when the runner was given none) with a saved gateway laid over it (withSavedGatewayDeps),
-    // not always the very one the claim read with; that
-    // difference can only refuse the start, never hand another folder, since the login is handed only when both reads name
-    // the same folder: a turn-off, or a move to another folder,
-    // between the claim and the start refuses the start in LOGIN_CHANGED_SINCE_CLAIM's fixed words (no folder in them),
-    // never a start on a login the setting no longer names nor a fall to a model key the run was not claimed on. Nothing
-    // else of the claim is read again. A run with a model key of its own, and a login other than AgentRun's own folder,
-    // were each decided at the claim (staysInRunner: no login read for the one, LOGIN_MACHINE_NEEDS_SERVER_USER for the
-    // other), so neither reaches here on a login. The process reads no setting or machine id.
-    // None for a run that sends no model key (keyless: a held run, any run on a --faux runner, a faux-pinned one), whatever
-    // its claim read: the login is a model credential like any key.
+    // the process names: its access token alone, read again at each ask and renewed here when it must be (near its end, or
+    // refused); never its folder or its refresh token. Each token is carried into the runner's redactor for this run
+    // (redact.ts carry) before it is handed, a renewed one too: model text that repeats it is cut from the run's journal as
+    // the runner writes it (runner.ts fenced), from what it stages and from its rows, as the run's own tool keys are.
+    // This answer is the one decision whether the run goes on the login: none, it does not. A run that sends no model key
+    // (keyless: a held run, any run on a --faux runner, a faux-pinned one) gets none, whatever its claim read: the login is
+    // a model credential like any key. Any other claim read the setting (staysInRunner): one that read it off is never put
+    // on it, whatever the setting says now; one that read it on has it read again here, at the start, with the claim's
+    // settings, data folder, harness and place. That read's environment is the claim's (the process's, when the runner was
+    // given none) with a saved gateway laid over it (withSavedGatewayDeps), not always the very one the claim read with;
+    // the difference can only refuse the start, never hand another folder, since the login is handed only when both reads
+    // name the same folder. A turn-off, or a move to another folder, between the claim and the start refuses the start in
+    // LOGIN_CHANGED_SINCE_CLAIM's fixed words (no folder in them), never a start on a login the setting no longer names nor
+    // a fall to a model key the run was not claimed on. Nothing else of the claim is read again. A keyless run, a run with
+    // a model key of its own and a login other than AgentRun's own folder were each decided at the claim (staysInRunner:
+    // no login read for the first two, LOGIN_MACHINE_NEEDS_SERVER_USER for the last), so none reaches here on a login. The
+    // process reads no setting or machine id.
     claudeLogin: async () => {
       if (keyless) return undefined;
       const at = reads.login;
