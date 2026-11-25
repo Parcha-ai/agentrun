@@ -306,6 +306,41 @@ test("a run's process writes its own browser rows only as its claim's: the claim
   assert.deepEqual(written, [[HOLD, hold], [ENDED, ended], [HOLD]], "the claim's own rows, of their shape, are written and removed");
 });
 
+test("a run's process removes its own browser rows only as its claim's: a row a later claim wrote stays, its own or an earlier claim's goes", async () => {
+  const at = "2026-11-25T00:00:00.000Z";
+  const HOLD = "browser_hold:run-own";
+  const ENDED = "browser_wait_ended:run-own";
+  const rows = new Map();
+  const removed = [];
+  const settings = {
+    get: async (key) => rows.get(key),
+    remove: async (key) => void (removed.push(key), rows.delete(key)),
+    removeIf: async (key, was) => {
+      if (JSON.stringify(rows.get(key)) !== JSON.stringify(was)) return false;
+      removed.push(key);
+      return rows.delete(key);
+    },
+  };
+  const bound = { claim: { runId: "run-own", epoch: 3 }, agentId: "agent-own", revisionId: "rev-own" };
+  const lines = [];
+  const call = (method, args) => storeCall({ settings }, method, args, bound, (line) => void lines.push(line));
+  // A later claim (epoch 4) of the same run wrote both rows: the claim at epoch 3, still closing, may not clear them.
+  rows.set(HOLD, { session: "s2", at, epoch: 4 });
+  rows.set(ENDED, { at, why: "gone", epoch: 4 });
+  for (const key of [HOLD, ENDED]) await assert.rejects(call("settings.remove", [key]), /may not call the store's settings\.remove/, key);
+  assert.deepEqual(removed, [], "a later claim's row was removed");
+  assert.deepEqual(rows.get(HOLD), { session: "s2", at, epoch: 4 });
+  assert.ok(lines.some((line) => /asked the store for settings\.remove/.test(line)), lines.join("\n"));
+  // Its own claim's row, and one an earlier claim left behind, go; a key with no row is left as it is.
+  rows.set(HOLD, { session: "s1", at, epoch: 3 });
+  rows.set(ENDED, { at, why: "gone", epoch: 2 });
+  await call("settings.remove", [HOLD]);
+  await call("settings.remove", [ENDED]);
+  await call("settings.remove", [HOLD]);
+  assert.deepEqual(removed.slice(0, 2), [HOLD, ENDED]);
+  assert.equal(rows.size, 0);
+});
+
 test("a capped run's process reads what was spent beside it, its own learning grades and its own audit's shadow run, and no other run's", async () => {
   const called = [];
   const store = {
