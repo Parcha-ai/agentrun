@@ -2364,9 +2364,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     inFlight: async (forStore, runId, context) => modelsInFlight(await runEntries(forStore, runId, context)),
   });
   /** `text`, a person's words written into run `runId`, cut of `handed` and of what the run holds now, read inside runWrite:
-   *  a message (sendMessage, and a trigger's message_run), an approval's note (answerApproval) and a grade's words
-   *  (gradeRun). A seal that doesn't open here refuses the words (409 not_continuable, reason withheld,
-   *  WITHHELD_MESSAGE) and nothing is written: unread values can't be cut. */
+   *  a message (sendMessage, and a trigger's message_run) and an approval's note (answerApproval). A seal that doesn't
+   *  open here refuses the words (409 not_continuable, reason withheld, WITHHELD_MESSAGE) and nothing is written: unread
+   *  values can't be cut. */
   async function cutHeld(runId: string, text: string, handed: readonly string[] = []): Promise<string> {
     const held = launchValuesOf(sealKey, runId, (await store.runs.launch(runId)).sealed);
     if (held === "unreadable") throw new ApiError("not_continuable", WITHHELD_MESSAGE, { details: { reason: "withheld" } });
@@ -5541,9 +5541,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const kept = await runWrite(row.agentId, row.id, async () => {
           // Kept with what it asks of the run's learning (runner/feedback-round.ts): nothing, or a look-back.
           // Its feedback round is a turn with no caller's model key: on the server's key for the run's route, else not opened.
-          // Its words are cut as a message is (cutHeld): the feedback round writes them into the run as a steer.
-          const label = typeof body.label === "string" ? await cutHeld(row.id, body.label) : undefined;
-          const graded = gradeView(await keepGrade(store, row.agentId, grade, label, (launch) => !serverKeyMissing(env, { kind: "agentic", model: launch.model, native: Boolean(launch.native) })));
+          const graded = gradeView(await keepGrade(store, row.agentId, grade, typeof body.label === "string" ? body.label : undefined, (launch) => !serverKeyMissing(env, { kind: "agentic", model: launch.model, native: Boolean(launch.native) })));
           // A grade of a run its learned workflow answered alone is an audit row too (runner/audit.ts gradeRow): the hold rule
           // reads it with the shadows'. A row not written now is logged, never the grade refused.
           const said = (line: string) => log?.(logLine("audit", { run: row.id, said: line }));

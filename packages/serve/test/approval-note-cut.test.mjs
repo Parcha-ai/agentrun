@@ -1,9 +1,8 @@
-// A person's words the server writes into a run's command rows besides a message's: the note of an approval's answer
-// (POST /runs/{id}/approvals/{id}) and a grade's words (PUT /runs/{id}/grade, the feedback round's steer). Each is cut of
+// An approval's note (POST /runs/{id}/approvals/{id}), which the server writes into the run's deny command, is cut of
 // what the run holds, read in the turn that writes it (server.ts cutHeld), as a message is: the run's end erases those
-// values, and a read after it could no longer cut them. A run whose launch's sealed part doesn't open here takes neither:
-// 409 not_continuable, reason withheld, and nothing is written. The run holds a key through its launch's sealed part,
-// written here as a launch that was handed one seals it (store/seal.ts sealRunLaunch). No key, no network.
+// values, and a read after it could no longer cut them. A run whose launch's sealed part doesn't open here takes no
+// note: 409 not_continuable, reason withheld, and nothing is written. The run holds a key through its launch's sealed
+// part, written here as a launch that was handed one seals it (store/seal.ts sealRunLaunch). No key, no network.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
@@ -11,7 +10,6 @@ import { test } from "node:test";
 import * as handedValues from "../dist/handed-values.js";
 import { sealRunLaunch } from "../dist/store/seal.js";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { ended, LEARN, learner, made, started as startedLearner } from "./learn-support.mjs";
 import { raw } from "./store-target.mjs";
 import { agent, call, clientOwnerSession, follow, serve, whenFree, withEnv } from "./support.mjs";
 
@@ -87,34 +85,4 @@ test("a deny note to a run whose launch's sealed part doesn't open here is refus
   assert.equal(refused.json.error.message, handedValues.WITHHELD_MESSAGE);
   assert.equal(await commandsOf(server, runId), before, "no command row written");
   assert.equal((await answer({ decision: "deny" })).status, 204, "a deny with no note hands no words to cut: taken");
-});
-
-test("a grade's words that repeat a key its run holds are cut of it in the feedback round's steer", { timeout: 180_000 }, async (t) => {
-  const server = await sealed(t, { learning: "on", faux: LEARN });
-  const { api } = server;
-  await made(api, learner("words-cut"));
-  const runId = await startedLearner(api, "words-cut", "What is 6 times 7?");
-  await ended(api, runId);
-  // An ended run's launch whose sealed part its end kept (an end from before ends erased it): what the run still holds.
-  await holdKey(server, runId);
-  const graded = await api("PUT", `/runs/${runId}/grade`, { correct: false, label: `Review: use ${KEY} next time.` });
-  assert.deepEqual([graded.status, graded.body.feedback], [200, "correction"], JSON.stringify(graded.body));
-  const commands = await commandsOf(server, runId);
-  assert.equal(commands.includes(KEY), false, `in no command row: ${commands}`);
-  assert.match(commands, /Review: use \[redacted\] next time\./, `the words are kept, cut in place: ${commands}`);
-  await ended(api, runId);
-});
-
-test("a grade with words of a run whose launch's sealed part doesn't open here is refused (409 not_continuable, reason withheld): no grade kept, no round opened", { timeout: 180_000 }, async (t) => {
-  const server = await sealed(t, { learning: "on", faux: LEARN });
-  const { api } = server;
-  await made(api, learner("words-withheld"));
-  const runId = await startedLearner(api, "words-withheld", "What is 6 times 7?");
-  await ended(api, runId);
-  await damageSeal(server, runId);
-  const before = await commandsOf(server, runId);
-  const refused = await api("PUT", `/runs/${runId}/grade`, { correct: false, label: `Review: use ${KEY} next time.` });
-  assert.deepEqual(withheld(refused), [409, "not_continuable", "withheld"], JSON.stringify(refused.body));
-  assert.equal(await commandsOf(server, runId), before, "no command row written");
-  assert.equal((await api("GET", `/runs/${runId}/learning`)).body.graded, undefined, "no grade kept");
 });
