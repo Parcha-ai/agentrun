@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-web
+kind: feature
+---
+A provider's failure is typed on the receipt: each turn that failed or was held carries `failure: {class, code, message}`. `class` is one of `infra` (no answer: a timeout, a connection or the endpoint failing, a 5xx), `quota` (credit or a daily limit spent), `rate` (a rate limit), `refused` (not sent or not served: no key, the key refused, the cap's refusal, the public-host guard), `not_text` (the provider read the page and gave no text) and `error` (any other answer that is no result). `code` is the provider's own where it names one (Exa's tag, Firecrawl's code), else ours (`HTTP_402`, `DAILY_LIMIT`, `NO_KEY`, `KEY_REFUSED`, `GUARD`, `HELD`, ...). `message` is the failure in our words. Each provider types its failures where it meets them (`failed` in search.ts); `Reader.held` and `ProviderRun.unready` answer a `Failure`, and `Breaker.holding` says what holds a breaker and until when. What the model reads is unchanged: no page or search error carries `failure`, and `firecrawlScrape`, `firecrawlSearch`, `exaSearch`, `readDirect` and `parallelExtract().read` answer as before (`bare`).

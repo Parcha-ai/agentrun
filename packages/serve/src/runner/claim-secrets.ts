@@ -8,7 +8,7 @@
 // other per-claim secret; they come through mcp-claim.ts, which already opens them from the store under the claim.)
 import { decisionKeysFor, JEV_KEY_ENV, JEV_OPENROUTER_KEY_ENV, PARALLEL_KEY_ENV, providersNamed } from "../decisions.js";
 import type { LearnedWorkflow } from "../learning.js";
-import { GATEWAY_KEY_ENV, hostModel, modelKeys, PROVIDER_KEYS, type Tier, tierModelOf, TIERS, workflowNodes } from "../model.js";
+import { FAUX_ENV, FAUX_PROVIDER, GATEWAY_KEY_ENV, hostModel, modelKeys, PROVIDER_KEYS, type Tier, tierModelOf, TIERS, workflowNodes } from "../model.js";
 import type { RunLaunch } from "../run-launch.js";
 import { keysFor, needsOf, RUN_SECRETS, type RunNeeds } from "../run-secrets.js";
 import { DECISION_KEYS, withoutSecrets } from "../secrets.js";
@@ -52,9 +52,9 @@ type RunLaunchReader = { launch(runId: string): Promise<{ readonly sealed: Uint8
  *  routes read them by name (claimModelEnv), and a spread or a spawn of the tools' environment carries none. A fresh
  *  object per claim, so no run's keys reach another's. `redact`: the runner's one
  *  redactor, which the run's own tool keys are carried into before they are laid, so its journal is cut of them as it is
- *  written (no one holds them after the turn); a plain JS caller that passes none lays no run key, and throws. A held run
- *  its model kept from running at its create (hold.refused) is laid no model key and no plan sign-in: its model runs
- *  nowhere. Its tools' keys, its decision keys and its own tool keys are laid as any run's. The one tool key row that names
+ *  written (no one holds them after the turn); a plain JS caller that passes none lays no run key, and throws. A run whose
+ *  model sends no key (sendsNoModelKey: a held run its model kept from running, any run on a --faux runner, a faux-pinned
+ *  one) is laid no model key and no plan sign-in. Its tools' keys, its decision keys and its own tool keys are laid as any run's. The one tool key row that names
  *  a model key's name, TypeSafe's (key-words.ts; model.ts PROVIDER_KEYS typesafe), is a decision key (secrets.ts
  *  DECISION_KEYS): keysFor never names one, so the model key filter below never sees it, and decisionKeysFor lays it
  *  apart, as it lays OpenRouter's for a decision node that runs on it. */
@@ -70,13 +70,14 @@ export async function claimSecrets(deps: ClaimSecretsDeps & { readonly redact: H
   // the host's default now: a key saved since the run started (another provider's, now first) would otherwise be opened
   // in its place, and the run would hold a key its model never sends and lack the one it does.
   const scoped = launch.model && !needs.tiers ? { ...needs, model: `${launch.model.provider}/${launch.model.modelId}` } : needs;
+  const keyless = sendsNoModelKey(launch, deps.env ?? {});
   const env: NodeJS.ProcessEnv = { ...base };
   // The key of a gateway saved in the console (model-gateway.ts) stays on the run environment its model routes read, never
   // on the tools': it is read there by name alone (claimModelEnv), as a run's own model key is.
   const savedGateway = savedGatewayIn(deps.env ?? {});
   // A model key is never enumerable, as withModelKeys lays a route's, but unlike a route's it stays writable and deletable
   // (withoutModelKeys drops it); a tool key is a plain value, which its tools read and hand on.
-  for (const name of keysFor(scoped, working)) if (working[name] !== undefined && !(savedGateway && name === GATEWAY_KEY_ENV) && !(modelRefused && MODEL_KEY_NAMES.includes(name))) Object.defineProperty(env, name, { value: working[name], enumerable: !MODEL_KEY_NAMES.includes(name), writable: true, configurable: true });
+  for (const name of keysFor(scoped, working)) if (working[name] !== undefined && !(savedGateway && name === GATEWAY_KEY_ENV) && !(keyless && MODEL_KEY_NAMES.includes(name))) Object.defineProperty(env, name, { value: working[name], enumerable: !MODEL_KEY_NAMES.includes(name), writable: true, configurable: true });
   const decision = decisionKeysFor(working, { providers: needs.decisionProviders, parallelWeb: launch.plane ? handsParallel(launch.plane) : false });
   // A decision key is a plain value, as before, under a model key's name too (OpenRouter's, which Jev's nodes use).
   for (const [name, value] of Object.entries(decision)) Object.defineProperty(env, name, { value, enumerable: true, writable: true, configurable: true });
@@ -96,9 +97,17 @@ export async function claimSecrets(deps: ClaimSecretsDeps & { readonly redact: H
   // proxy sends (chatgpt-plan.ts), never put on the environment its tools run under (a symbol no spawn copies). Only for
   // a run that can reach a plan model: one pinned to a key's model (and its tiers on keys) never holds the sign-in, which
   // renews and spends the person's plan for any process that holds it.
-  const plan = modelRefused ? undefined : await planReaderOf(deps.store, deps.sealKey);
+  const plan = keyless ? undefined : await planReaderOf(deps.store, deps.sealKey);
   return plan && reachesPlan(withPlan({ ...working }, plan), scoped, revision) ? withPlan(env, plan) : env;
 }
+
+/** Whether a run of `launch`, claimed by a runner of `env`, sends no model key: a held run its model kept from running at
+ *  its create (hold.refused) runs its model nowhere; on a --faux runner (FAUX_ENV) every model is the faux model (model.ts
+ *  chooseModel), which sends none, for a workflow's nodes and an agent's turns alike, pinned or not; and a launch pinned to
+ *  the faux model (a --faux start's) sends none on any runner: one claimed by a runner on the same store without FAUX_ENV
+ *  has no model of its own to send a key for. Such a run is laid no model key (claimSecrets), and its own process is
+ *  handed none, a saved gateway's neither (run-child-host.ts). */
+export const sendsNoModelKey = (launch: Pick<RunLaunch, "model" | "hold">, env: NodeJS.ProcessEnv): boolean => launch.hold?.refused !== undefined || Boolean(env[FAUX_ENV]) || launch.model?.provider === FAUX_PROVIDER;
 
 const onPlan = (model: string | undefined): boolean => model?.startsWith(`${PLAN_PROVIDER}/`) === true;
 

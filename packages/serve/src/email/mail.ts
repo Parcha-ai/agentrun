@@ -33,6 +33,10 @@ export const READ_BYTES = 2 * 1024 * 1024;
 export const SENT_HEADER = "X-AgentRun-Sent";
 /** A snippet's characters. */
 const SNIPPET_CHARS = 200;
+/** The most of Sent's messages that the search for one address takes whose headers a send's check reads (newest first,
+ *  SENT_HITS_BATCH at a time): past them, with no exact match among those read, the check can't say (fail closed). */
+export const SENT_HITS_MAX = 200;
+const SENT_HITS_BATCH = 50;
 
 /** Why a mail server did not do what was asked: `unreachable`, it could not be reached; `refused`, it refused the
  *  sign-in; `missing`, a mailbox or message is not there; `failed`, anything else. Its message is fit to show. */
@@ -60,6 +64,10 @@ export function mailError(error: unknown, endpoint: Endpoint, protocol: "IMAP" |
   return new MailError("failed", `${endpoint.host} (${protocol}) answered: ${clip(words, 300)}`);
 }
 
+/** An address as two are compared: trimmed, its ASCII letters lowercased and nothing else. JS toLowerCase folds U+212A
+ *  KELVIN SIGN to "k" and U+212B ANGSTROM SIGN to "å", so two addresses SMTP keeps apart would compare equal. */
+export const addressKey = (address: string): string => address.trim().replace(/[A-Z]+/g, (letters) => letters.toLowerCase());
+
 const clip = (text: string, n: number) => (text.length <= n ? text : `${text.slice(0, n - 1)}…`);
 /** `text` with every copy of `password` taken out. */
 const scrub = (text: string, password: string) => (password ? text.split(password).join("[password]") : text);
@@ -82,6 +90,10 @@ export type MailMessage = {
   attachments: { name: string; size: number; type: string }[];
   /** The X-AgentRun-Sent header's value, when it has one: this server sent it. */
   sent_here?: string;
+  /** What the receiving server's DMARC verdict is read from (authentication.ts dmarcPassed): the values of its
+   *  Authentication-Results headers, topmost first, unfolded, and every address of its From (none when the message has
+   *  no From header or more than one). Never in a payload or an answer. */
+  authentication: { results: string[]; from: string[] };
 };
 
 /** The first `<...>` id of a header's value, or null. */
@@ -124,6 +136,7 @@ function headersOf(parsed: ParsedMail, internalDate: FetchMessageObject["interna
 export async function messageOf(row: Pick<FetchMessageObject, "uid" | "flags" | "source" | "internalDate">, mailbox: string): Promise<MailMessage> {
   const parsed = await simpleParser(row.source ?? Buffer.alloc(0), { skipImageLinks: true, skipTextLinks: true });
   const sentHere = parsed.headers.get(SENT_HEADER.toLowerCase());
+  const lines = (key: string) => parsed.headerLines.filter((line) => line.key === key).map((line) => line.line.slice(line.line.indexOf(":") + 1).replace(/\r?\n[ \t]+/g, " ").trim());
   return {
     uid: row.uid,
     mailbox,
@@ -133,6 +146,7 @@ export async function messageOf(row: Pick<FetchMessageObject, "uid" | "flags" | 
     text: (parsed.text ?? "").replace(/\s+$/, ""),
     attachments: parsed.attachments.map((a) => ({ name: a.filename ?? "attachment", size: a.size, type: a.contentType })),
     ...(typeof sentHere === "string" && sentHere.trim() ? { sent_here: sentHere.trim() } : {}),
+    authentication: { results: lines("authentication-results"), from: lines("from").length === 1 ? addresses(parsed.from).map((a) => a.address) : [] },
   };
 }
 
@@ -146,10 +160,32 @@ async function headOf(row: Pick<FetchMessageObject, "uid" | "internalDate" | "si
   return { uid: row.uid, mailbox, size: typeof row.size === "number" ? row.size : 0, ...head };
 }
 
+/** The bare addresses, as compared (addressKey), of the From and of the To, Cc and Bcc of a message's header fields (`headers`, as
+ *  fetched), parsed as every address header is: display names, groups and encoded words read. */
+async function addressesOf(headers: Buffer | undefined): Promise<{ from: string[]; recipients: Set<string> }> {
+  const parsed = await simpleParser(Buffer.concat([headers ?? Buffer.alloc(0), Buffer.from("\r\n")]), { skipImageLinks: true, skipTextLinks: true });
+  const bare = (one: AddressObject | AddressObject[] | undefined) => addresses(one).map((a) => addressKey(a.address));
+  return { from: bare(parsed.from), recipients: new Set([parsed.to, parsed.cc, parsed.bcc].flatMap(bare)) };
+}
+
+/** Of `addresses` (bare), those the account `own` (its address) has never sent to: no message of its Sent folder (the
+ *  special-use \Sent, Gmail's Sent Mail) from `own`, not a draft, is to them in its To, Cc or Bcc. Mail received from
+ *  them counts for nothing, and so does a draft or another's message that ended up in Sent. Sent is opened read-only
+ *  (EXAMINE) and only the From, To, Cc and Bcc headers and the flags of the messages its search takes are read
+ *  (ImapSession.holdsTo). No Sent folder: MailError `missing`. */
+export async function neverSentTo(session: ImapSession, addresses: readonly string[], own: string): Promise<string[]> {
+  if (!addresses.length) return [];
+  const sent = await session.resolve("Sent");
+  await session.open(sent);
+  const never: string[] = [];
+  for (const address of addresses) if (!(await session.holdsTo(sent, address, own))) never.push(address);
+  return never;
+}
+
 /** Whether `address` (bare, any case) is one of `m`'s From, To or Cc. */
 export const involves = (m: Pick<MailMessage, "from" | "to" | "cc">, address: string): boolean => {
-  const wanted = address.trim().toLowerCase();
-  return wanted !== "" && [m.from, ...m.to, ...m.cc].some((one) => one.trim().toLowerCase() === wanted);
+  const wanted = addressKey(address);
+  return wanted !== "" && [m.from, ...m.to, ...m.cc].some((one) => addressKey(one) === wanted);
 };
 
 /** The payload's fields (a trigger's firing, a read's message). */
@@ -233,6 +269,28 @@ export class ImapSession {
     if (!uids.length) return [];
     const rows = await this.client.fetchAll(uids.join(","), { uid: true, internalDate: true, size: true, headers: ["message-id", "in-reply-to", "references", "date", "from", "to", "cc"] }, { uid: true });
     return (await Promise.all(rows.map((row) => headOf(row, path)))).sort((a, b) => a.uid - b.uid);
+  }
+
+  /** Whether the open mailbox `path` holds a message from `own` to `address`: the exact address, case-blind, in its To,
+   *  Cc or Bcc, its From `own` alone, and no \Draft flag (a draft, or another's message, put in Sent is no send). The
+   *  server's search only finds the candidates, since TO, CC and BCC take a substring (RFC 3501: "a@b.co" takes
+   *  data@b.com); each candidate's From, To, Cc and Bcc (BODY.PEEK of those fields, never a body) and flags are then read
+   *  and parsed, newest first, SENT_HITS_MAX at most. Past those with no match: MailError `failed`, saying how many. */
+  async holdsTo(path: string, address: string, own: string): Promise<boolean> {
+    const wanted = addressKey(address);
+    const self = addressKey(own);
+    const hits = (await this.uids({ or: [{ to: wanted }, { cc: wanted }, { bcc: wanted }] })).reverse();
+    const read = hits.slice(0, SENT_HITS_MAX);
+    for (let at = 0; at < read.length; at += SENT_HITS_BATCH) {
+      const rows = await this.client.fetchAll(read.slice(at, at + SENT_HITS_BATCH).join(","), { uid: true, flags: true, headers: ["from", "to", "cc", "bcc"] }, { uid: true });
+      for (const row of rows) {
+        if (row.flags?.has("\\Draft")) continue;
+        const { from, recipients } = await addressesOf(row.headers);
+        if (from.length === 1 && from[0] === self && recipients.has(wanted)) return true;
+      }
+    }
+    if (hits.length > read.length) throw new MailError("failed", `${path} has ${hits.length} messages whose To, Cc or Bcc holds ${wanted}; the newest ${read.length} were read and none is to that exact address, and no more are read, so a send's check stays short`);
+    return false;
   }
 
   /** The clause that takes the thread of `ids` on this server. Gmail (X-GM-EXT-1) indexes Message-ID and References but

@@ -168,6 +168,15 @@ export function provenFor(req: Pick<IncomingMessage, "headers">, live: Pick<Runn
 /** How far a relay's proof's time may be from the runner's clock: the one hop's time, and no more. */
 export const RELAY_PROOF_MS = 10_000;
 
+/** The header the server's relay hop names a paired computer's token in, by its SHA-256 (lower-case hex) alone: the
+ *  runner's listener needs no more (the proof binds that hash, and the box's row is found by it), and a paired token
+ *  never expires, so it never leaves the server. A minted machine's token, of one run and ending with it, goes as its
+ *  bearer. */
+export const RELAY_TOKEN_HEADER = "x-agentrun-relay-token";
+
+/** A SHA-256 as RELAY_TOKEN_HEADER carries it. */
+export const isTokenSha256 = (value: unknown): value is string => typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+
 /** How long the server waits for a runner's attach listener to take a relayed dial. */
 export const RELAY_CONNECT_MS = 10_000;
 

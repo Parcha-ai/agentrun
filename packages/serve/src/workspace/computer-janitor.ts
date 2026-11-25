@@ -22,9 +22,13 @@
 // A desktop or a phone kept at a run's park (computer-kept.ts) goes by its own row, on any provider: each sweep ends one
 // past its time or whose run ended, with the mount credential of a run folder it held on Archil, and the janitor wakes
 // again at the earliest time still ahead. One pinned to another runner still there is that runner's (computer-kept.ts
-// heldElsewhere): the kept pass leaves its row, its credential with it. The provider sweep needs no such rule: it ends
-// only a machine past its deadline or whose run is final, which no one uses, and the row's runner then reads it gone and
-// marks its row ended.
+// heldElsewhere): the kept pass leaves its row, its credential with it. The provider sweep ends only a machine past its
+// deadline or whose run is final, which no one uses. Its row is marked ending before that delete (endingKeptMachine), so
+// a follow-up never takes the machine back mid-delete, and ended once the delete took it (finishedKept), so the run's
+// next park writes its own keep; a row a claim is taking back is left, and the machine with it, said as a failed delete.
+// A machine kept on Archil has its park's mount credential removed before its row is marked ended, as the kept pass
+// removes it: no pass removes a credential for an ended row. A remove that fails leaves the row ending, and the kept pass
+// that then ends it removes the credential.
 //
 // A provider whose sweep fails is logged, once per distinct failure, and the others are swept. It runs only where its
 // start asks for it (the CLI's runner and the runner subcommand), never under --faux, and never two sweeps at once. Its
@@ -34,7 +38,7 @@
 // An agent's own computer (a persistent setting, agent-computer.ts) is this server's when its owner names this server's
 // id, never by its run: it goes only when its agent no longer wants it (ownerGoneOf: gone, archived, or no longer
 // persistent on that provider), never by a deadline. Without the store's settings and agents, none is this server's.
-import { type ComputerInfo, type ComputerProvider, epochOf, ok, ownerOf, RUN_HASH_LABEL, RUN_LABEL, type Result, runHash, sweep, type Swept } from "@parcha/agentrun-computer";
+import { type ComputerInfo, type ComputerProvider, epochOf, fail, ok, ownerOf, RUN_HASH_LABEL, RUN_LABEL, type Result, runHash, sweep, type Swept } from "@parcha/agentrun-computer";
 import { loadArchilSettings } from "../archil-settings.js";
 import { KEY_TABLE, type KeyTable, type ProviderSettings, providerOptions } from "../computer-keys.js";
 import { FAUX_ENV } from "../model.js";
@@ -43,7 +47,7 @@ import { deleteUnderHold, ownerGoneOf, serverIdOf, wantsOn } from "./agent-compu
 import { archilApiKey } from "./archil-key.js";
 import { removeRunMountTokens } from "./archil-mount-credential.js";
 import type { ComputerDeps } from "./computer-deps.js";
-import { type Kept, type KeptHolder, type KeptSweep, sweepKept } from "./computer-kept.js";
+import { endingKeptMachine, finishedKept, type Kept, type KeptHolder, type KeptMountRevoke, type KeptSweep, readKept, sweepKept } from "./computer-kept.js";
 import { MOUNT_TTL_MS } from "./archil-claim.js";
 import { storeLedger } from "./computer-ledger.js";
 import { providerKeys } from "./resolve-computer.js";
@@ -102,6 +106,13 @@ const runsByHash = (store: JanitorDeps["store"]): RunsByHash => {
   return () => (read ??= store.runs.list({}).then((rows) => new Map(rows.map((row) => [runHash(row.id), row.id]))));
 };
 
+/** The run a computer's labels name: by its run label, or its hash's (runsByHash); undefined for none of this store's. */
+async function runOf(labels: ComputerInfo["labels"], byHash: RunsByHash): Promise<string | undefined> {
+  const named = labels[RUN_LABEL];
+  const hash = labels[RUN_HASH_LABEL];
+  return typeof named === "string" && named !== "" ? named : typeof hash === "string" && hash !== "" ? (await byHash()).get(hash) : undefined;
+}
+
 /** Whether a listed computer is this server's and no claim holds it: its run (by its label, or its hash's) is in this
  *  store, and no claim holds the run now (by the store's clock), or one holds it at a later epoch than the computer's.
  *  "over" for one of these whose run is over (final in the store): no claim of the run will use it again. An agent's own
@@ -112,9 +123,7 @@ async function sweepable(store: JanitorDeps["store"], info: ComputerInfo, byHash
   const label = ownerOf(labels);
   const owner = info.owner ?? (label.ok ? label.value : undefined);
   if (info.owned === true || owner !== undefined || !label.ok) return serverId !== undefined && owner?.server === serverId;
-  const named = labels[RUN_LABEL];
-  const hash = labels[RUN_HASH_LABEL];
-  const runId = typeof named === "string" && named !== "" ? named : typeof hash === "string" && hash !== "" ? (await byHash()).get(hash) : undefined;
+  const runId = await runOf(labels, byHash);
   if (runId === undefined) return false;
   const run = await store.runs.get(runId);
   // No such run here: another server's computer.
@@ -125,6 +134,15 @@ async function sweepable(store: JanitorDeps["store"], info: ComputerInfo, byHash
   if (held !== undefined && !(epoch.ok && epoch.value < held)) return false;
   return FINAL_STATES.includes(run.state) ? "over" : true;
 }
+
+/** What the provider sweep marks a kept machine's row by: the store's settings, the provider's registry id, the one a
+ *  row names, and the remove of a row's Archil mount credential (keptMountRevoke), asked before a row kept on Archil is
+ *  marked ended (computer-kept.ts finishedKept). Absent: such a row is left ending, for the kept pass. */
+type KeptMarks = {
+  readonly settings: NonNullable<JanitorDeps["store"]["settings"]>;
+  readonly entry: string;
+  readonly revokeMount?: KeptMountRevoke;
+};
 
 type LeftoverContext = Parameters<NonNullable<ComputerProvider["sweepLeftovers"]>>[0];
 
@@ -150,10 +168,15 @@ async function leftoverMine(store: JanitorDeps["store"], labels: Record<string, 
  *  now: a server that stopped before its run's end let go of an earlier claim's computer (run-end-computers.ts) leaves
  *  it for this sweep, never for its day-long deadline. Each call goes to the provider itself, so its own state is used
  *  as it is. */
-function thisServers(provider: ComputerProvider, store: JanitorDeps["store"], byHash: RunsByHash, serverId: string | undefined, at: number, ended: (id: string) => Promise<void>): ComputerProvider {
+function thisServers(provider: ComputerProvider, store: JanitorDeps["store"], byHash: RunsByHash, serverId: string | undefined, at: number, ended: (id: string) => Promise<void>, keeps?: KeptMarks): ComputerProvider {
   // The agents' own computers the list kept, by id: their delete goes under the agent's hold (deleteUnderHold), which
   // also clears the agent's record of it, so its view no longer shows it deleting.
   const ownedBy = new Map<string, string>();
+  // The machines the list kept that their run's park row keeps, by id, each that run: the row is marked ending before
+  // the delete (endingKeptMachine), and a row a claim has is left with its machine. A machine whose run's row could not
+  // be read is left too, in the store's words: it may be kept, and a delete unmarked could go under a claim's attach.
+  const keptRun = new Map<string, string>();
+  const unread = new Map<string, string>();
   const { settings, agents } = store;
   const leftovers = provider.sweepLeftovers?.bind(provider);
   return {
@@ -167,11 +190,27 @@ function thisServers(provider: ComputerProvider, store: JanitorDeps["store"], by
     connect: (ref) => provider.connect(ref),
     ...(leftovers === undefined ? {} : { sweepLeftovers: (context: LeftoverContext) => leftovers({ ...context, mine: (labels) => leftoverMine(store, labels, byHash, serverId) }) }),
     async release(ref, how, context) {
+      const why = how === "delete" ? unread.get(ref.id) : undefined;
+      if (why !== undefined) return fail("refused", `its run's kept row could not be read (${why}), so it was left`);
+      const run = how === "delete" ? keptRun.get(ref.id) : undefined;
+      /** The machine's row as marked ending here: ended once the delete took it, a credential on Archil removed first
+       *  (finishedKept). */
+      let finished: (() => Promise<unknown>) | undefined;
+      if (run !== undefined && keeps) {
+        const marked = await endingKeptMachine(keeps.settings, run, { provider: keeps.entry, id: ref.id });
+        if (marked.kind === "left") return fail("refused", `it is kept at run ${run}'s park and a claim is taking it back or has it, so it was left`);
+        if (marked.kind === "unmarked") return fail("refused", `it is kept at run ${run}'s park and its row could not be marked ending (${marked.why}), so it was left for the row's time`);
+        const kept = marked.kept;
+        if (kept && kept.provider === keeps.entry && kept.id === ref.id) finished = () => finishedKept(keeps.settings, run, kept, keeps.revokeMount);
+      }
       const agent = ownedBy.get(ref.id);
       if (how !== "delete" || agent === undefined || settings === undefined) {
         const released = await provider.release(ref, how, context);
         // A run's computer the sweep deleted: its interval ends (computer-intervals.ts), on the provider's ok alone.
-        if (released.ok && how === "delete") await ended(ref.id);
+        if (released.ok && how === "delete") {
+          await ended(ref.id);
+          await finished?.();
+        }
         return released;
       }
       // Asked again under the hold: the agent may want it back since ownerGone was read (this server's owners carry no
@@ -186,6 +225,16 @@ function thisServers(provider: ComputerProvider, store: JanitorDeps["store"], by
       for (const info of listed.value) {
         const mine = await sweepable(store, info, byHash, serverId);
         if (!mine) continue;
+        // Its run's kept row, read before any delete: whether it keeps this machine.
+        const runId = keeps ? await runOf(info.labels, byHash) : undefined;
+        if (keeps && runId !== undefined) {
+          try {
+            const row = await readKept(keeps.settings, runId);
+            if (row && !row.ended && row.provider === keeps.entry && row.id === info.ref.id) keptRun.set(info.ref.id, runId);
+          } catch (error) {
+            unread.set(info.ref.id, error instanceof Error ? error.message : String(error));
+          }
+        }
         const label = ownerOf(info.labels);
         const owner = info.owner ?? (label.ok ? label.value : undefined);
         if (owner !== undefined) ownedBy.set(info.ref.id, owner.agent);
@@ -216,7 +265,7 @@ async function bounded(ms: number, signal: AbortSignal | undefined, work: (cut: 
 /** One sweep of every provider this server can list: each provider whose keys it has and whose computers the janitor
  *  ends, its computers past their deadline that are this server's and unheld ended. A provider that fails is answered
  *  in its words; nothing throws. */
-export async function sweepServerComputers(deps: Pick<JanitorDeps, "store" | "computers" | "now" | "providerMs"> & { readonly log?: (line: string) => void }, signal?: AbortSignal): Promise<ProviderSweep[]> {
+export async function sweepServerComputers(deps: Pick<JanitorDeps, "store" | "computers" | "now" | "providerMs"> & Partial<Pick<JanitorDeps, "env" | "sealKey" | "mountControl">> & { readonly log?: (line: string) => void }, signal?: AbortSignal): Promise<ProviderSweep[]> {
   const { store, computers } = deps;
   const writes = intervalWrites(store, deps.log, deps.now);
   const at = (deps.now ?? Date.now)();
@@ -224,6 +273,10 @@ export async function sweepServerComputers(deps: Pick<JanitorDeps, "store" | "co
   const byHash = runsByHash(store);
   // This server's id and its agents: its agents' own computers are swept by their owner (ownerGoneOf).
   const { settings, agents } = store;
+  // A kept machine on Archil this sweep deletes has its park's mount credential removed before its row is marked ended,
+  // its ttl judged on the store's clock, as the kept pass judges it. Without the runs' environment, its row is left
+  // ending for the kept pass.
+  const revokeMount = settings && deps.env ? keptMountRevoke({ settings, sealedKeys: store.sealedKeys, env: deps.env, sealKey: deps.sealKey, ...(deps.mountControl ? { mountControl: deps.mountControl } : {}) }, () => store.sealedKeys.clock()) : undefined;
   const serverId = settings && agents ? await serverIdOf({ settings }) : undefined;
   const out: ProviderSweep[] = [];
   for (const entry of computers.kinds.PROVIDERS) {
@@ -239,7 +292,7 @@ export async function sweepServerComputers(deps: Pick<JanitorDeps, "store" | "co
       // A vendor that ends its own computers needs no janitor.
       if (provider.capabilities().lifetime !== "janitor") continue;
       const ownerGone = serverId !== undefined && settings && agents ? ownerGoneOf({ agents, settings, runs: store.runs }, serverId, entry.id) : undefined;
-      out.push({ provider: entry.id, swept: await bounded(deps.providerMs ?? JANITOR_PROVIDER_MS, signal, (cut) => sweep(thisServers(provider, store, byHash, serverId, at, (id) => writes.ended(entry.id, id)), { now: new Date(at), signal: cut, ...(ownerGone ? { ownerGone } : {}) })) });
+      out.push({ provider: entry.id, swept: await bounded(deps.providerMs ?? JANITOR_PROVIDER_MS, signal, (cut) => sweep(thisServers(provider, store, byHash, serverId, at, (id) => writes.ended(entry.id, id), settings ? { settings, entry: entry.id, ...(revokeMount ? { revokeMount } : {}) } : undefined), { now: new Date(at), signal: cut, ...(ownerGone ? { ownerGone } : {}) })) });
     } catch (error) {
       out.push({ provider: entry.id, swept: { ok: false, error: { code: "refused", message: error instanceof Error ? error.message : String(error) } } });
     }
@@ -247,16 +300,37 @@ export async function sweepServerComputers(deps: Pick<JanitorDeps, "store" | "co
   return out;
 }
 
+/** The remove of a kept row's Archil mount credential (computer-kept.ts KeptMountRevoke), as every end of a row kept on
+ *  Archil asks it (the kept pass, the provider sweep, a run's end): the run's credentials up to the row's epoch removed,
+ *  by name, on the disk its row names (the park's), with this server's Archil key read as the claims read it
+ *  (archil-key.ts): no run lookup, so a run deleted since, or an agent whose disk changed, still has it removed. A row
+ *  that names no disk has none removed, and its credential ends at its ttl. Past its keep's time plus MOUNT_TTL_MS, by
+ *  `now` (the store's clock, the one `until` was stamped on), no remove is asked: the credential was minted before the
+ *  park, so it has ended at its ttl. Throws where the remove failed, or this server's Archil settings are gone. */
+export function keptMountRevoke(deps: {
+  readonly settings: NonNullable<JanitorDeps["store"]["settings"]>;
+  readonly sealedKeys: Pick<Store["sealedKeys"], "get">;
+  readonly env: NodeJS.ProcessEnv;
+  readonly sealKey: Buffer | undefined;
+  readonly mountControl?: JanitorDeps["mountControl"];
+}, now: () => Promise<number>): (runId: string, kept: Pick<Kept, "epoch" | "until" | "disk">) => Promise<void> {
+  return async (runId, kept) => {
+    const { disk } = kept;
+    if (disk === undefined || (await now()) >= kept.until + MOUNT_TTL_MS) return;
+    const archil = await loadArchilSettings({ settings: deps.settings }, deps.env);
+    if (!archil) throw new Error("its mount credential was not removed: this server's Archil settings are gone");
+    const { value } = await archilApiKey({ env: deps.env, keys: deps.sealedKeys, sealKey: deps.sealKey });
+    await removeRunMountTokens({ region: archil.region, key: () => value, disk, ...deps.mountControl }, runId, kept.epoch);
+  };
+}
+
 /** The pass over the desktops and phones kept at a run's park (computer-kept.ts sweepKept): one past its time, or whose
  *  run ended, is ended through its provider, made with this server's keys, whatever its lifetime (a vendor's own end is
  *  hours away); one pinned to another runner still there (the store's runners) is left to that runner. One that held the
- *  run's folder on Archil has the run's mount credentials up to its epoch removed, by name, on the disk its row names
- *  (the park's), with this server's Archil key read as the claims read it (archil-key.ts): no run lookup, so a run
- *  deleted since, or an agent whose disk changed, still has it removed. A row that names no disk has none removed, and
- *  its credential ends at its ttl. Past its keep's time plus MOUNT_TTL_MS no remove is asked: the credential was minted
- *  before the park, so it has ended at its ttl, and a remove that can never succeed (Archil turned off, its key gone, a
- *  refusal for good) no longer keeps the row ending and said at every pass. Undefined without the store's settings,
- *  where none is kept. Never throws. */
+ *  run's folder on Archil has the run's mount credentials up to its epoch removed (keptMountRevoke). Past its keep's time
+ *  plus MOUNT_TTL_MS no remove is asked, so a remove that can never succeed (Archil turned off, its key gone, a refusal
+ *  for good) no longer keeps the row ending and said at every pass. Undefined without the store's settings, where none
+ *  is kept. Never throws. */
 export async function sweepKeptComputers(deps: Pick<JanitorDeps, "store" | "computers" | "env" | "sealKey" | "mountControl" | "now" | "self"> & { readonly log?: (line: string) => void }): Promise<KeptSweep | undefined> {
   const { store, computers } = deps;
   const writes = intervalWrites(store, deps.log, deps.now);
@@ -270,14 +344,7 @@ export async function sweepKeptComputers(deps: Pick<JanitorDeps, "store" | "comp
   } catch (error) {
     return { ended: [], failed: [`the store's clock could not be read, so no kept computer's time could be judged this pass: ${error instanceof Error ? error.message : String(error)}`] };
   }
-  const revokeMount = async (runId: string, kept: Pick<Kept, "epoch" | "until" | "disk">): Promise<void> => {
-    const { disk } = kept;
-    if (disk === undefined || now >= kept.until + MOUNT_TTL_MS) return;
-    const archil = await loadArchilSettings({ settings }, deps.env);
-    if (!archil) throw new Error("its mount credential was not removed: this server's Archil settings are gone");
-    const { value } = await archilApiKey({ env: deps.env, keys: store.sealedKeys, sealKey: deps.sealKey });
-    await removeRunMountTokens({ region: archil.region, key: () => value, disk, ...deps.mountControl }, runId, kept.epoch);
-  };
+  const revokeMount = keptMountRevoke({ settings, sealedKeys: store.sealedKeys, env: deps.env, sealKey: deps.sealKey, ...(deps.mountControl ? { mountControl: deps.mountControl } : {}) }, async () => now);
   const keysOf = providerKeys(computers.kinds, computers.keyOf ?? (async () => undefined));
   const providerOf = async (id: string): Promise<ComputerProvider | undefined> => {
     const make = Object.hasOwn(computers.providers, id) ? computers.providers[id] : undefined;
