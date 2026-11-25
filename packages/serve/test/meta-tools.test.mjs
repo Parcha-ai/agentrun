@@ -361,7 +361,7 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwA
 
 /** A `harness` run of `script` over `tools` (each `{name, replaySafe, run, structured?, images?}`), uncapped, ended: what
  *  the model said, in order, and the requests pi's provider got (pi only, `requests`). `native`: pi-native tools. */
-async function metaRun(t, harness, script, own, { native } = {}) {
+async function metaRun(t, harness, script, own, { native, gate } = {}) {
   const tools = { ...own, ...fillerTools() };
   const { BACKGROUND_CONTEXT: ctx } = await import("@earendil-works/chord/context");
   const { journalRecords, messagesOf } = await import("../dist/runner/journal-reader.js");
@@ -370,7 +370,8 @@ async function metaRun(t, harness, script, own, { native } = {}) {
   await queue(server, "run-1");
   const requests = [];
   const spec = harness.name === "pi" ? piAdapterSpec({ script, tools, hooks: quiet }, { requests, ...(native ? { native } : {}) }) : harness.specOf({ script, tools, hooks: quiet });
-  const runner = startRunner({ store, createLoop: createAdapterLoop(spec, { restartLimit: MAX_RESTARTS }), name: "runner-a", ...TIMING });
+  const gated = gate ? async (claim, run) => ({ ...(await spec(claim, run)), gate }) : spec;
+  const runner = startRunner({ store, createLoop: createAdapterLoop(gated, { restartLimit: MAX_RESTARTS }), name: "runner-a", ...TIMING });
   t.after(async () => {
     try { await runner.close(); } finally { await release(opened); }
   });
@@ -380,6 +381,30 @@ async function metaRun(t, harness, script, own, { native } = {}) {
   }, "the run ended", 30_000);
   const { entries } = await journalRecords(server.journal({ runId: "run-1", runner: "test-reader", epoch: row.epoch, until: 0, from: row.state }), ctx);
   return { row, said: messagesOf(entries).filter((message) => message.role === "model").map((message) => message.text), requests, server };
+}
+
+for (const harness of HARNESSES.filter((one) => one.codemode)) {
+  test(`${harness.name}: a codemode script that stops at a call set to deny reads Refused on the timeline, as that call does, never as a script that ran and failed`, async (t) => {
+    const { BACKGROUND_CONTEXT: ctx } = await import("@earendil-works/chord/context");
+    const { runTimeline } = await import("../dist/store-reads/journal.js");
+    const ran = { add: 0, block: 0 };
+    const add = { name: "add", replaySafe: false, run: async () => (ran.add++, "5") };
+    const block = { name: "block", replaySafe: false, run: async () => (ran.block++, "blocked ran") };
+    const gate = (call) => (call.tool === "block" ? "deny" : "allow");
+    const script = "await tools.add({}); await tools.block({}); await tools.add({}); return 'all done';";
+    const { row, server } = await metaRun(t, harness, [{ call: CODEMODE, args: { script } }, { say: "done" }], { add, block }, { gate });
+    assert.equal(row.state, "ended", JSON.stringify(row));
+    assert.deepEqual(ran, { add: 1, block: 0 }, "add ran once, block never");
+    const rows = (await runTimeline(server, "run-1", ctx)).filter((one) => one.kind === "tool_result");
+    const shown = JSON.stringify(rows.map((one) => [one.tool_name, one.tool_status, one.refused ?? null, one.summary]));
+    const script_ = rows.find((one) => one.tool_name === CODEMODE);
+    const blocked = rows.find((one) => one.tool_name === "block");
+    assert.ok(script_ && blocked, `the script and its refused call each have a result row: ${shown}`);
+    assert.equal(blocked.refused, true, `the refused call reads refused: ${shown}`);
+    assert.equal(script_.refused, true, `the script that stopped at it reads refused too: ${shown}`);
+    assert.match(script_.summary, /^Refused/, `its summary says refused, never "failed": ${shown}`);
+    assert.equal(rows.find((one) => one.tool_name === "add")?.refused, undefined, `the call that ran before it is no refusal: ${shown}`);
+  });
 }
 
 for (const harness of HARNESSES) {

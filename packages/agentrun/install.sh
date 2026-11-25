@@ -748,14 +748,16 @@ vps_install_docker() {
 # A server that has just booted may still be running cloud-init's, apt-daily's or unattended-upgrades' apt. dpkg's lock
 # is waited for once (DPkg::Lock::Timeout): a dpkg still stuck after it stops the install. Every other lock apt-get could
 # not get, which that option does not cover (the archives' an install takes, the lists' an update takes), by trying
-# again, for 600 s as well. Under LC_ALL=C, so the words matched are apt's English ones on a server set to any language.
+# again until 600 s by the clock have passed since the first try. A try can itself wait up to 600 s for dpkg's lock before
+# another lock refuses it, so the clock, not the sleeps, bounds the whole wait: at most about 1200 s.
+# Under LC_ALL=C, so the words matched are apt's English ones on a server set to any language.
 vps_apt() {
-  apt_waited=0
+  apt_until=$(($(date +%s) + 600)) apt_said=
   until LC_ALL=C DEBIAN_FRONTEND=noninteractive apt-get -y -qq -o Dpkg::Use-Pty=0 -o DPkg::Lock::Timeout=600 "$@" > "$work/apt.log" 2>&1; do
-    if [ "$apt_waited" -lt 600 ] && grep 'Could not get lock' "$work/apt.log" | grep -qv '/var/lib/dpkg/'; then
-      [ "$apt_waited" -gt 0 ] || say "Waiting for the apt-get another process is running ..."
+    if [ "$(date +%s)" -lt "$apt_until" ] && grep 'Could not get lock' "$work/apt.log" | grep -qv '/var/lib/dpkg/'; then
+      [ -n "$apt_said" ] || say "Waiting for the apt-get another process is running ..."
+      apt_said=1
       sleep 5
-      apt_waited=$((apt_waited + 5))
       continue
     fi
     tail -n 20 "$work/apt.log" >&2

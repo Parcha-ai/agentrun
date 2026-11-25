@@ -7,11 +7,11 @@
 // this machine.
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
-import { createServer } from "node:net";
 import { join } from "node:path";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
+import { freePort } from "./fixtures/ports.mjs";
 import { agent, follow, serve, withEnv } from "./support.mjs";
 
 /** Dummy keys: none is a real one. */
@@ -31,26 +31,6 @@ delete process.env.NET_GUARD_LOG;
 const guardLines = () => (existsSync(GUARD_LOG) ? readFileSync(GUARD_LOG, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []);
 /** The guard's refusals written after `mark` (a count of its lines read before). */
 const refusedSince = (mark) => guardLines().slice(mark).filter((line) => line.kind === "refused");
-
-/** A port free on 127.0.0.1 now, below the kernel's ephemeral range (no listen(0) or outbound connection is handed it). */
-async function freePort() {
-  let low = 32768;
-  try {
-    low = Number(readFileSync("/proc/sys/net/ipv4/ip_local_port_range", "utf8").trim().split(/\s+/)[0]) || 32768;
-  } catch {}
-  const to = Math.min(low, 32768);
-  const from = Math.max(1024, Math.min(20000, to - 1000));
-  for (let tries = 0; tries < 200; tries++) {
-    const port = from + Math.floor(Math.random() * (to - from));
-    const free = await new Promise((resolve) => {
-      const probe = createServer();
-      probe.once("error", () => resolve(false));
-      probe.listen(port, "127.0.0.1", () => probe.close(() => resolve(true)));
-    });
-    if (free) return port;
-  }
-  throw new Error(`no free port in ${from}-${to - 1}`);
-}
 
 async function gateway(t) {
   const gw = await startFauxGateway({ usage: USAGE, port: await freePort() });

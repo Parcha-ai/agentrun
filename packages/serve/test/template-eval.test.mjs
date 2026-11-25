@@ -235,7 +235,46 @@ test("tool_used's at_least passes on that many matching calls or more, its args 
   grader("zero.md", "at_least: 0");
   grader("none.md", "expect: not_called\nat_least: 2");
   assert.throws(() => readCases(dir, ["graded"]), (e) => {
-    for (const said of [/graders\/both\.md: count is an exact number of calls and at_least a least one: give one, not both/, /graders\/zero\.md: at_least is a whole number of calls, 1 or more/, /graders\/none\.md: expect not_called and at_least 2 say different things/]) assert.match(e.message, said);
+    for (const said of [/graders\/both\.md: count is an exact number of calls and at_least a lower bound: give one, not both/, /graders\/zero\.md: at_least is a whole number of calls, 1 or more/, /graders\/none\.md: expect not_called and at_least 2 say different things/]) assert.match(e.message, said);
+    return true;
+  });
+});
+
+test("tool_used's at_most passes on at least one and at most that many matching calls, between at_least and it when both are given; it is never beside count or expect: not_called", async (t) => {
+  const search = (query) => ({ tool: "web_search", arguments: { query }, status: "success", result: "{}" });
+  const runOf = (n) => ({ answer: "", calls: [...Array.from({ length: n }, () => search("robots")), search("other")], mcpCalls: [], files: [] });
+  const grade = (n, fields) => gradeDeterministic({ file: "s.md", type: "tool_used", tools: ["web_search"], expect: "called", args: { query: "robots" }, ...fields }, runOf(n), []);
+  const what = `web_search with {"query":"robots"}`;
+  assert.deepEqual(grade(2, { atMost: 3 }), { pass: true, reason: `2 calls of ${what}; the grader expects at least one and at most 3` }, "two calls pass at most 3");
+  assert.deepEqual(grade(4, { atMost: 3 }), { pass: false, reason: `4 calls of ${what}; the grader expects at least one and at most 3` }, "four calls fail at most 3");
+  assert.equal(grade(0, { atMost: 3 }).pass, false, "at_most implies expect: called, so no call fails it");
+  for (const [n, pass] of [[2, false], [3, true], [4, true], [5, false]]) {
+    assert.deepEqual(grade(n, { atLeast: 3, atMost: 4 }), { pass, reason: `${n} calls of ${what}; the grader expects at least 3 and at most 4` }, `${n} calls against at least 3 and at most 4`);
+  }
+  // Read from a grader's front matter: at_most, a whole number of calls of 1 or more, at or above at_least, never beside
+  // count or expect: not_called.
+  const dir = await webPackage(t, "graded", "unavailable", [["web_search", { query: "x" }]]);
+  const grader = (name, front) => writeFileSync(join(dir, "evals", "graded", "graders", name), `---\ntype: tool_used\ntool: web_search\n${front}\n---\n`);
+  grader("range.md", "at_least: 3\nat_most: 4");
+  grader("cap.md", "at_most: 3");
+  const read = readCases(dir, ["graded"]).cases[0].graders;
+  assert.deepEqual(read.find((g) => g.file === "range.md"), { file: "range.md", type: "tool_used", tools: ["web_search"], expect: "called", atLeast: 3, atMost: 4 });
+  assert.deepEqual(read.find((g) => g.file === "cap.md"), { file: "cap.md", type: "tool_used", tools: ["web_search"], expect: "called", atMost: 3 });
+  grader("none.md", "expect: not_called\nat_most: 2");
+  grader("exact.md", "count: 2\nat_most: 3");
+  grader("inverted.md", "at_least: 5\nat_most: 4");
+  grader("negative.md", "at_most: -1");
+  grader("half.md", "at_most: 2.5");
+  grader("zero.md", "at_most: 0");
+  assert.throws(() => readCases(dir, ["graded"]), (e) => {
+    for (const said of [
+      /graders\/none\.md: expect not_called and at_most 2 say different things/,
+      /graders\/exact\.md: count is an exact number of calls and at_most an upper bound: give one, not both/,
+      /graders\/inverted\.md: at_least 5 and at_most 4 leave no number of calls to pass/,
+      /graders\/negative\.md: at_most is a whole number of calls, 1 or more \(for none, say expect: not_called\)/,
+      /graders\/half\.md: at_most is a whole number of calls, 1 or more \(for none, say expect: not_called\)/,
+      /graders\/zero\.md: at_most is a whole number of calls, 1 or more \(for none, say expect: not_called\)/,
+    ]) assert.match(e.message, said);
     return true;
   });
 });
@@ -1152,7 +1191,7 @@ test("graders read the answer as written: the last fenced json block, a target f
   assert.match(gradeDeterministic(regex, record('```json\n{"draft": {}}\n```'), []).reason, /has no field draft\.text/);
   assert.match(gradeDeterministic({ ...regex, expect: "no_match" }, record("no json"), []).reason, /has no fenced json block/);
   const used = { file: "t.md", type: "tool_used", tools: ["mcp:crm/update_contact"], expect: "not_called", args: { method: "update" } };
-  const calls = { mcpCalls: [{ tool: "mcp:crm/update_contact", arguments: { method: "create", body: "x" } }], calls: [{ tool: "mcp:crm/update_contact" }] };
+  const calls = { fakeLog: [{ tool: "mcp:crm/update_contact", arguments: { method: "create", body: "x" } }], calls: [{ tool: "mcp:crm/update_contact" }] };
   assert.equal(gradeDeterministic(used, record("", calls), ["crm"]).pass, true, "the fake's log, with its arguments, for a faked server");
   assert.equal(gradeDeterministic({ ...used, args: { method: "create" } }, record("", calls), ["crm"]).pass, false);
   const fixture = { server: "crm", description: "", tools: { get: { description: "", input: { type: "object" }, answers: [{ when: { id: "7", tags: ["a"] }, result: { content: [{ type: "text", text: "seven" }] } }], default: { content: [{ type: "text", text: "none" }], isError: true } } } };

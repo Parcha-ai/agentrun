@@ -3,7 +3,6 @@
 // another process sees the run's phones, and its drifted twin, which expects phoned to report another version. A phone is
 // rented by the minute, so nothing is built without AGENTRUN_COMPUTER_LIVE_PHONE_HARNESS=1, and a run's phones live at
 // most 10 min.
-// The provider reads no environment: this module reads these names and passes them in as options.
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, linkSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -11,8 +10,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PHONE_IMAGE } from "../descriptors/phone-harness.js";
 import { type AdbTransport, adbCli, create, type PhoneHarnessProvider, type PhoneLedger, type PhoneLedgerEntry, type PhoneProviderOptions } from "../phone-harness.js";
+import { type Env, requireLive, setOptions } from "./module-kit.js";
 
-/** The environment this module reads, by name. */
 export const PHONE_ENV = {
 	/** The phone harness API key: this module's own name, never the bare PHONE_HARNESS_API_KEY. */
 	key: "COMPUTER_PHONE_HARNESS_API_KEY",
@@ -26,7 +25,6 @@ export const PHONE_ENV = {
 	live: "AGENTRUN_COMPUTER_LIVE_PHONE_HARNESS",
 } as const;
 
-/** The names this module reads, under the conformance modules' common name. */
 export const ENV = PHONE_ENV;
 
 /** A conformance run's phones live at most this long. */
@@ -40,13 +38,8 @@ export interface PhoneSettings {
 }
 
 /** The provider's settings this module reads from env, each only when its name is set. */
-export function settingsFromEnv(env: Record<string, string | undefined> = process.env): PhoneSettings {
-	return {
-		...(env[PHONE_ENV.key] ? { apiKey: env[PHONE_ENV.key] } : {}),
-		...(env[PHONE_ENV.platform] ? { platform: env[PHONE_ENV.platform] as PhoneSettings["platform"] } : {}),
-		...(env[PHONE_ENV.adb] ? { adb: env[PHONE_ENV.adb] } : {}),
-		...(env[PHONE_ENV.ledger] ? { ledgerPath: env[PHONE_ENV.ledger] } : {}),
-	};
+export function settingsFromEnv(env: Env = process.env): PhoneSettings {
+	return setOptions(env, { apiKey: PHONE_ENV.key, platform: PHONE_ENV.platform, adb: PHONE_ENV.adb, ledgerPath: PHONE_ENV.ledger }) as PhoneSettings;
 }
 
 /** How long a writer waits for a live writer's lock on the ledger. A write holds it for well under a millisecond. */
@@ -222,8 +215,7 @@ export function fileLedger(path: string, { waitMs = LOCK_WAIT_MS }: { waitMs?: n
 export const UI_FIXTURE_APK = fileURLToPath(new URL("../ui-fixture.apk", import.meta.url));
 
 export interface PhoneModuleOptions extends Pick<PhoneProviderOptions, "fetch" | "now" | "sleep" | "baseUrl" | "phoned"> {
-	/** Where the settings are read; default process.env. */
-	env?: Record<string, string | undefined>;
+	env?: Env;
 	/** The adb runner; default the CLI the settings name. */
 	adb?: AdbTransport | string;
 	/** The ui fixture's APK; default UI_FIXTURE_APK. Installed on each phone when it is there. */
@@ -231,7 +223,7 @@ export interface PhoneModuleOptions extends Pick<PhoneProviderOptions, "fetch" |
 }
 
 function optionsOf({ env = process.env, adb, uiFixture = UI_FIXTURE_APK, ...rest }: PhoneModuleOptions): PhoneProviderOptions {
-	if (env[PHONE_ENV.live] !== "1") throw new Error(`a conformance run rents a cloud phone, billed by the minute: set ${PHONE_ENV.live}=1 to run it`);
+	requireLive(env, PHONE_ENV.live, "a conformance run rents a cloud phone, billed by the minute");
 	const settings = settingsFromEnv(env);
 	if (!settings.apiKey) throw new Error(`set ${PHONE_ENV.key} to the phone harness API key`);
 	return {

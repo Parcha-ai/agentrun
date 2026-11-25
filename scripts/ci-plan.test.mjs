@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { parse } from 'yaml';
+import { isAlias, parse, parseDocument } from 'yaml';
 import { checkCover, commandsOf, modelSeconds, plan, pools, readConfig, readSuites, testShards, timingDrift, unitsOf } from './ci-plan.mjs';
 
 const scratch = mkdtempSync(join(tmpdir(), 'ci-plan-'));
@@ -172,12 +172,17 @@ test("on a pull request this repository's any pool runs the tests its changes re
   assert.match(depth, /github\.event_name == 'pull_request' && startsWith\(matrix\.shard, 'any-'\)\) && '2'/, depth);
 });
 
-test("the build and the test shards run on Blacksmith in the merge queue and on a pull request from this repository's own branch; a fork's pull request and main stay on GitHub's runners", () => {
+test("the build, the test shards and the required Postgres and console jobs run on Blacksmith in the merge queue and on a pull request from this repository's own branch; a fork's pull request and main stay on GitHub's runners", () => {
   const workflow = parse(readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8'));
   const runner = workflow.jobs.build['runs-on'];
   // The expression names the pull request's head repository: a fork's is not this one, so it takes the last arm.
   assert.equal(runner, "${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}");
-  for (const job of ['test', 'test-lean']) assert.equal(workflow.jobs[job]['runs-on'], runner, `${job} runs where the build does`);
+  // The other four write no expression of their own: each is an alias of the build's `&own-runner` anchor.
+  const jobs = parseDocument(readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')).get('jobs');
+  for (const job of ['test', 'test-lean', 'serve-postgres', 'console']) {
+    assert.ok(isAlias(jobs.getIn([job, 'runs-on'], true)), `${job} runs where the build does`);
+    assert.equal(workflow.jobs[job]['runs-on'], runner, `${job} resolves to the build's runner`);
+  }
 });
 
 test("the Postgres job's shares hold every test file that opens the store once, none empty, and ci.yml runs each of them", async () => {

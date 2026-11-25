@@ -38,6 +38,7 @@ function memorySettings() {
   return {
     get: async (key) => (rows.has(key) ? structuredClone(rows.get(key)) : undefined),
     put: async (key, value) => void rows.set(key, structuredClone(value)),
+    putIfAbsent: async (key, value) => structuredClone(rows.has(key) ? rows.get(key) : (rows.set(key, structuredClone(value)), value)),
     replaceIf: async (key, was, value) => rows.has(key) && JSON.stringify(rows.get(key)) === JSON.stringify(was) && (rows.set(key, structuredClone(value)), true),
     removeIf: async (key, was) => rows.has(key) && JSON.stringify(rows.get(key)) === JSON.stringify(was) && rows.delete(key),
     remove: async (key) => void rows.delete(key),
@@ -83,7 +84,7 @@ async function claim({ recreates, kept = false, synced, archil } = {}) {
   const keys = new Map();
   const store = {
     agents: { revision: async () => undefined },
-    sealedKeys: { get: async (name) => keys.get(name), put: async (name, sealed) => void keys.set(name, sealed), remove: async () => {}, all: async () => [] },
+    sealedKeys: { get: async (name) => keys.get(name), put: async (name, sealed) => void keys.set(name, sealed), remove: async () => {}, all: async () => [], clock: async () => Date.now() },
     computerLedger: { put: async () => {}, get: async () => undefined, list: async () => [], remove: async () => {} },
     computerIntervals: memoryIntervals(),
     settings: memorySettings(),

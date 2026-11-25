@@ -13,7 +13,7 @@ const GOOD = ["https://example.com/refunds", "http://example.com/terms"];
 let root: Root | undefined;
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; });
 
-const drawer = (d: Partial<Decision>) => {
+const drawer = (d: Partial<Decision>, shared = false, effects: unknown[] = []) => {
   const workflow = { v: 2, name: "t", root: { node: "route", label: "triage", provider: "jev", state: {}, instructions: "Which?",
     branches: { ok: { criteria: "fine", body: { node: "code", label: "a", code: "(s) => s" } }, no: { criteria: "not", body: { node: "code", label: "b", code: "(s) => s" } } } } };
   const decision: Decision = { id: "d1", node: "/root", executionPath: "/root", item: null, kind: "route", provider: "jev", model: "jev-1", status: "answered",
@@ -22,12 +22,12 @@ const drawer = (d: Partial<Decision>) => {
     rule: { kind: "route", branches: ["ok", "no"], unsure: null }, action: { taken: "no" }, cost_usd: 0.0001, latency_ms: 300, ...d } as Decision;
   const g: RunGraph = {
     run: { id: "r", agent: "a", revision: "1", status: "completed", paused: false, startedAt: "2026-11-01T00:00:00Z", endedAt: "2026-11-01T00:00:02Z" },
-    workflow, graph: workflowGraph(workflow), decisions: [decision], effects: [], totals: { cost_usd: 0.0001, decisions: 1, effects: 0, elapsed_ms: 2000 },
+    workflow, graph: workflowGraph(workflow), decisions: [decision], effects, totals: { cost_usd: 0.0001, decisions: 1, effects: 0, elapsed_ms: 2000 },
     nodes: { "/root": { status: "done" } },
   } as RunGraph;
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  act(() => root!.render(createElement(NodeDrawer, { data: g, selected: { path: "/root" }, onSelect: () => {}, onClose: () => {}, fileUrl: (r: string) => `/v2/runs/r/files/${r}` } as never)));
+  act(() => root!.render(createElement(NodeDrawer, { data: g, selected: { path: "/root" }, onSelect: () => {}, onClose: () => {}, fileUrl: (r: string) => (shared ? "" : `/v2/runs/r/files/${r}`), shared } as never)));
   return host;
 };
 
@@ -44,5 +44,18 @@ describe("NodeDrawer, links from a decision's sources", () => {
     const host = drawer({ images: [...BAD.map((url, k) => ({ token: `bad${k}`, ref: "", url })), { token: "good", ref: "", url: "https://example.com/shot.png" }, { token: "kept", ref: "pages/1.png" }] });
     expect(host.textContent).toContain("Which branch fits?");
     expect([...host.querySelectorAll("img")].map((i) => i.getAttribute("src"))).toEqual(["https://example.com/shot.png", "/v2/runs/r/files/pages/1.png"]);
+  });
+  it("shared (the share page): no image at all, neither the run's file nor a provider's URL; each is named by its token and page", () => {
+    const host = drawer({ images: [{ token: "seen", ref: "", url: "https://example.com/shot.png" }, { token: "kept", ref: "pages/1.png", url: "https://example.com/two.png" }] }, true);
+    expect(host.querySelectorAll("img")).toHaveLength(0);
+    expect(host.textContent).toContain("seen");
+    expect(host.textContent).toContain("pages/1.png");
+    expect(host.innerHTML).not.toContain("example.com");
+  });
+  it("shared: a document's pages are named, never drawn", () => {
+    const effect = { node: "/root", executionPath: "/root", item: null, tool: "read_document", status: "done", input: { file: "in.pdf" }, output: { pages: [{ page: 1, image: "pages/1.png" }, { page: 2, image: "pages/2.png" }] } };
+    const host = drawer({}, true, [effect]);
+    expect(host.querySelectorAll("img")).toHaveLength(0);
+    expect(host.textContent).toContain("Page 2");
   });
 });

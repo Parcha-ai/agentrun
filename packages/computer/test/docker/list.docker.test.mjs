@@ -28,7 +28,7 @@ describe("list() and sweep() on a labelled container made with no --mount", { sk
 	it("lists it through the real docker CLI, then sweeps it past its deadline", async () => {
 		docker("create", "--name", name, "--network", "none", "--label", "agentrun.computer=1", "--label", "agentrun.computer.deadline=2026-01-01T00:00:00.000Z", "--label", `${TEST_LABEL}=${test}`, "debian:bookworm-slim", "true");
 		// list() makes no computer, so it needs no daemon binary.
-		const provider = new DockerProvider({ daemonPath: "/nonexistent/computerd" });
+		const provider = new DockerProvider({ env: process.env, daemonPath: "/nonexistent/computerd" });
 		const listed = await provider.list({ [TEST_LABEL]: test });
 		assert.equal(listed.ok, true, listed.ok ? "" : listed.error.message);
 		assert.deepEqual(listed.value.map((info) => info.ref.name), [name]);

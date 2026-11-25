@@ -48,7 +48,11 @@ async function cappedRun(t, script, first = {}, { capUsd = CAP } = {}) {
   const server = await openStore(dir, "server", now);
   const store = await openStore(dir, "runner", now);
   const runners = [];
+  // A stuck runner's commits that never land are let go once the case is over, before its close: a loop still waiting
+  // on one would hold that close to the end of its claim (the lease less its margin, 55 s), after every assertion.
+  const releases = [];
   t.after(async () => {
+    for (const release of releases) release();
     for (const runner of runners) await runner.close();
     await store.close().catch(() => {});
     await server.close().catch(() => {});
@@ -69,8 +73,10 @@ async function cappedRun(t, script, first = {}, { capUsd = CAP } = {}) {
   // A lease no stall of a loaded machine outlasts: the run moves between runners here by its park's release, never by a
   // lease that ran out, and a claim lost and retaken would hand the resume to a loop these tests do not count.
   // `storeOf`, `journalOf`, `timing`: a runner's own store and journal hooks, and its lease.
-  // `loopOf`: the loop as the runner sees it (a test's view of its commands).
-  const startOne = ({ storeOf = (s) => s, journalOf, timing = STEADY, loopOf = (l) => l } = {}) => {
+  // `loopOf`: the loop as the runner sees it (a test's view of its commands). `release`: lets go what a hook holds
+  // (neverLands), once the case is over.
+  const startOne = ({ storeOf = (s) => s, journalOf, timing = STEADY, loopOf = (l) => l, release } = {}) => {
+    if (release) releases.push(release);
     const createLoop = (deps) => loopOf(loop(journalOf ? { ...deps, journal: (claim) => journalOf(deps.journal(claim)) } : deps));
     runners.push(startRunner({ store: storeOf(store), createLoop, name: `runner-${runners.length}`, ...timing }));
     return `runner-${runners.length - 1}`;
@@ -159,9 +165,17 @@ const renewsRefused = (store) =>
     },
   });
 
+/** A commit that never lands while the case runs: `release()`, once the case is over, refuses it (the store went away). */
+const neverLands = () => {
+  let release = () => {};
+  const released = new Promise((resolve) => (release = resolve));
+  return { hang: () => released.then(() => Promise.reject(new Error("the case is over: the store went away"))), release };
+};
+
 /** A journal hook whose commit of a raise entry never lands (a claim lost before its raise entry did): `reached` resolves
  *  once that commit is asked for. */
 const raiseEntryNeverLands = () => {
+  const { hang, release } = neverLands();
   let told = () => {};
   const reached = new Promise((resolve) => (told = resolve));
   const journalOf = (journal) =>
@@ -172,11 +186,11 @@ const raiseEntryNeverLands = () => {
         return (batches, ...rest) => {
           if (!batches.flat().some((write) => write.type === "entry" && write.value?.kind === "agentrun.raise")) return value.call(target, batches, ...rest);
           told();
-          return new Promise(() => {});
+          return hang();
         };
       },
     });
-  return { journalOf, reached };
+  return { journalOf, reached, release };
 };
 
 test("a raised run whose resumed claim is lost before its raise entry lands resumes on the next claim: one follow-up at the later cap, never ended without it", async (t) => {
@@ -189,7 +203,7 @@ test("a raised run whose resumed claim is lost before its raise entry lands resu
   // (the store's clock moved past its until), and the run is left running with its pause unanswered and both raise rows
   // untaken. Ordered by that event, never by a short real lease.
   const stuck = raiseEntryNeverLands();
-  w.startOne({ storeOf: renewsRefused, journalOf: stuck.journalOf });
+  w.startOne({ storeOf: renewsRefused, journalOf: stuck.journalOf, release: stuck.release });
   await reached(stuck.reached, "the resuming runner asks to commit its raise entry");
   w.runOut();
   // The next runner claims it once that lease ran out: from "running", its pause still unanswered.
@@ -203,6 +217,7 @@ test("a raised run whose resumed claim is lost before its raise entry lands resu
  *  commit never lands and its renews are refused from then on, so its claim runs out after everything before the park
  *  landed and before the park did (an order of events, no timing), and it never claims again. */
 const starvedAtPark = () => {
+  const { hang, release } = neverLands();
   let starved = false;
   let told = () => {};
   const reached = new Promise((resolve) => (told = resolve));
@@ -215,12 +230,12 @@ const starvedAtPark = () => {
           if (!batches.flat().some((write) => write.type === "entry" && write.value?.kind === "agentrun.budget")) return value.call(target, batches, ...rest);
           starved = true;
           told();
-          return new Promise(() => {});
+          return hang();
         };
       },
     });
   // `reached`: once the park's commit is asked for (the starved point), for the case to run the claim out from there.
-  return { hooks: { storeOf: (store) => claimsOnce(store, () => starved), journalOf }, reached };
+  return { hooks: { storeOf: (store) => claimsOnce(store, () => starved), journalOf, release }, reached };
 };
 
 /** `store` that claims once, its renews refused once `starved()` says so. */
@@ -399,6 +414,7 @@ test("a run refused at its cap, parked and raised, is held to the raised cap: it
  *  its lands and its renews are refused, so it is stuck after the raise was taken and before the resumed turn sent
  *  anything (an order of events, no timing), and it claims no more. `reached`: once its next commit is asked for. */
 const lostAfterRaise = () => {
+  const { hang, release } = neverLands();
   let lost = false;
   let told = () => {};
   const reached = new Promise((resolve) => (told = resolve));
@@ -410,7 +426,7 @@ const lostAfterRaise = () => {
         return async (batches, ...rest) => {
           if (lost) {
             told();
-            return new Promise(() => {});
+            return hang();
           }
           const result = await value.call(target, batches, ...rest);
           if (batches.flat().some((write) => write.type === "entry" && write.value?.kind === "agentrun.raise")) lost = true;
@@ -418,7 +434,7 @@ const lostAfterRaise = () => {
         };
       },
     });
-  return { hooks: { storeOf: (store) => claimsOnce(store, () => lost), journalOf }, reached };
+  return { hooks: { storeOf: (store) => claimsOnce(store, () => lost), journalOf, release }, reached };
 };
 
 test("a raised run taken over by another runner after its raise entry landed is held to the raised cap there: its next model request is admitted", async (t) => {

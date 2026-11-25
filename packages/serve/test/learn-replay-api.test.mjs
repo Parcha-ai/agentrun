@@ -33,8 +33,9 @@ const TEXT = JSON.stringify(FLOW);
 const DIGEST = createHash("sha256").update(TEXT).digest("hex").slice(0, 16);
 
 /** A server with accounts and the owner's session; agent `source` learning (`learning`: its definition's), `graded` runs of
- *  it ended on the agent's path and graded right, then the workflow landed on its learning folder's main. */
-async function world(t, { graded = 5, learning = true } = {}) {
+ *  it ended on the agent's path and graded right, then the workflow landed on its learning folder's main. `together`: the
+ *  graded runs after the first run side by side. */
+async function world(t, { graded = 5, learning = true, together = false } = {}) {
   withEnv(t, {}, ["AGENTRUN_TEST_FAUX_CALLS", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG"]);
   const server = await serve(t, { learning: "on", accounts: true, openSetup: true });
   const { api, data, port, baseUrl } = server;
@@ -44,15 +45,22 @@ async function world(t, { graded = 5, learning = true } = {}) {
   const cookie = cookieOf(setup);
   assert.equal((await api("POST", "/agents", agent("source", { learning }))).status, 201);
   // The graded runs: on the agent's path (no workflow learned yet), keeping nothing (`use`), each graded right.
-  const runs = [];
-  for (let i = 0; i < graded; i++) {
+  const gradedRun = async (i) => {
     const started = await api("POST", "/agents/source/runs", { input: { content: `What is ${i} plus 42?` }, learning: "use" });
     assert.equal(started.status, 202, JSON.stringify(started.body));
     await follow(api, started.body.run_id, ["completed"], { deadlineMs: 60_000 });
     const grade = await api("PUT", `/runs/${started.body.run_id}/grade`, { correct: true, source: "eval" });
     assert.equal(grade.status, 200, JSON.stringify(grade.body));
     assert.equal(grade.body.path, "agent");
-    runs.push(started.body.run_id);
+    return started.body.run_id;
+  };
+  const runs = [];
+  if (!together) for (let i = 0; i < graded; i++) runs.push(await gradedRun(i));
+  else {
+    // `together`: the first ends before the rest start, so it is the oldest; the rest run side by side (the case reads
+    // them as a set), as a 31-run history one at a time is half a minute of waiting.
+    runs.push(await gradedRun(0));
+    runs.push(...(await Promise.all(Array.from({ length: graded - 1 }, (_, i) => gradedRun(i + 1)))));
   }
   await seedOf(data, "source");
   const repo = join(agentFolderOf(data, "source"), "learning");
@@ -161,7 +169,7 @@ test("an owner's held replay after the check's reservation fell out of the kept 
 // Review on #3064 (PRRT_kwDOUmdVMs64PlpE): with no earlier check, an owner's replay picks the agent's own compile_after
 // (its definition's), never the default's 20: 5 picks 5 of 6 runs, 30 picks 30 of 31. Its record's bar says the same.
 for (const compileAfter of [5, 30]) test(`an owner's replay of a revision never checked, compile_after ${compileAfter} on the definition: it picks the agent's last ${compileAfter} completed runs`, { timeout: 480_000 }, async (t) => {
-  const { api, runs, replay } = await world(t, { graded: compileAfter + 1, learning: { compile_after: compileAfter } });
+  const { api, runs, replay } = await world(t, { graded: compileAfter + 1, learning: { compile_after: compileAfter }, together: compileAfter > 5 });
   const started = await replay();
   assert.equal(started.status, 202, started.text);
   assert.equal(started.json.inputs, compileAfter, `the agent's compile_after, not the default 20: ${started.text}`);

@@ -1,11 +1,10 @@
 // GET /v2/capacity: what an operator, or an autoscaler, reads to size the runners. Read from the store alone, so a server
 // with no runner beside it (--no-runner, the API-only profile) answers for every runner on its store: the runs waiting for
-// a runner and the runs a claim holds, each live runner (its row seen within PRESENCE_STALE_MS) with its version, its
+// a runner and the runs a claim holds, each live runner (its row seen within RUNNER_STALE_MS) with its version, its
 // slots and how many are free, and the hand-backs within a window. Counts, runner names and versions only: no run id,
 // agent, prompt, address or customer's word. Behind the server's token, as every route but capabilities and health.
 import { ApiError } from "./errors.js";
-import { PRESENCE_STALE_MS } from "./runner/presence.js";
-import type { Runners } from "./store/store.js";
+import { RUNNER_STALE_MS, type Runners } from "./store/store.js";
 
 /** The hand-back window when none is asked, in minutes. */
 export const CAPACITY_WINDOW_MINUTES = 15;
@@ -62,7 +61,7 @@ export function capacityWindowOf(url: URL): number {
 }
 
 /** The capacity read over `runners` (the store's), with hand-backs over the last `windowMinutes`. */
-export async function capacityOverStore(runners: Pick<Runners, "live" | "capacity">, windowMinutes: number, staleMs = PRESENCE_STALE_MS): Promise<CapacityView> {
+export async function capacityOverStore(runners: Pick<Runners, "live" | "capacity">, windowMinutes: number, staleMs = RUNNER_STALE_MS): Promise<CapacityView> {
   const [counts, live] = await Promise.all([runners.capacity(windowMinutes * 60_000), runners.live(staleMs)]);
   const shown = live.map((row): CapacityRunner => {
     const executing = counts.held.get(row.runner) ?? 0;

@@ -1,6 +1,7 @@
 // The phone harness's descriptor: a cloud Android over adb, its sessions in a ledger the server keeps.
 import { defineProvider } from "../descriptor.js";
 import type { Group } from "../protocol.js";
+import { ADB_ENV_NAMES } from "./env-names.js";
 
 /** The groups a phone harness phone offers: phoned's, the driver it runs (daemon-android/), in its hello's order. */
 export const PHONE_GROUPS: readonly Group[] = ["exec", "screen", "input.keys", "input.touch", "apps", "ui"];
@@ -23,7 +24,8 @@ export const PHONE_HARNESS = defineProvider({
 	// The phone is driven by adb from the server's machine (the module's adb option, adb on PATH by default). Google
 	// builds platform-tools for x86-64 Linux, macOS and x86-64 Windows alone.
 	hostCommand: { command: "adb", from: "Android platform-tools", builds: ["linux-x64", "darwin-x64", "darwin-arm64", "win32-x64"] },
-	// The APKs every phone installs, files on this machine each pinned by its sha256: the operator's setting alone.
-	hostEnv: ["PHONE_HARNESS_APKS"],
+	// The APKs every phone installs, files on this machine each pinned by its sha256: the operator's setting alone. And
+	// what adb reads (ADB_ENV_NAMES), the only environment an adb the provider runs starts with.
+	hostEnv: ["PHONE_HARNESS_APKS", ...ADB_ENV_NAMES],
 	load: () => import("../phone-harness.js"),
 });
