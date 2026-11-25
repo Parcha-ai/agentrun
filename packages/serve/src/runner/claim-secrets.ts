@@ -61,16 +61,15 @@ type RunLaunchReader = { launch(runId: string): Promise<{ readonly sealed: Uint8
 export async function claimSecrets(deps: ClaimSecretsDeps & { readonly redact: HeldRedact }, revision: Revision, launch: Pick<RunLaunch, "plane" | "model" | "hold">, runId?: string): Promise<NodeJS.ProcessEnv> {
   const base = withoutSecrets(deps.env ?? {});
   const needs = await needsOf(revision);
-  const modelRefused = launch.hold?.refused !== undefined;
-  // A held run its model kept from running lays no model key, so its claim opens none: a key it never lays is never
+  const keyless = sendsNoModelKey(launch, deps.env ?? {});
+  // A run that sends no model key (sendsNoModelKey) lays none, so its claim opens none: a key it never lays is never
   // decrypted. OpenRouter's is read still for a run whose decision nodes may run on it (decisionKeysFor), as a decision key.
-  const unread = modelRefused ? MODEL_KEY_NAMES.filter((name) => !(name === JEV_OPENROUTER_KEY_ENV && needs.decisionProviders.length > 0)) : [];
+  const unread = keyless ? MODEL_KEY_NAMES.filter((name) => !(name === JEV_OPENROUTER_KEY_ENV && needs.decisionProviders.length > 0)) : [];
   const working = await workingEnv(deps, unread);
   // An agentic run's model keys are its PINNED model's (the launch's, chosen at its start), the one its route sends, never
   // the host's default now: a key saved since the run started (another provider's, now first) would otherwise be opened
   // in its place, and the run would hold a key its model never sends and lack the one it does.
   const scoped = launch.model && !needs.tiers ? { ...needs, model: `${launch.model.provider}/${launch.model.modelId}` } : needs;
-  const keyless = sendsNoModelKey(launch, deps.env ?? {});
   const env: NodeJS.ProcessEnv = { ...base };
   // The key of a gateway saved in the console (model-gateway.ts) stays on the run environment its model routes read, never
   // on the tools': it is read there by name alone (claimModelEnv), as a run's own model key is.
