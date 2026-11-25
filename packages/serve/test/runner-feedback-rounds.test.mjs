@@ -245,7 +245,8 @@ test("the path compares the workflow's answer as it produced it and as the agent
 });
 
 test("a run with rounds: its impact and its cost per run read the same split: the job is its first round's, every later turn its learning", async () => {
-  const { impactLearningOf, roundsLooked } = await import("../dist/store-reads/learning.js");
+  const { impactLearningOf } = await import("../dist/store-reads/learning.js");
+  const { roundsLooked } = await import("../dist/learn/ledger.js");
   const rounds = { answered_at: "2026-11-13T00:00:00.000Z", job_cost_usd: 0.6, look_back_usd: 0.1 };
   // Round 1's job $0.60, a follow-up turn $0.30, two compile turns $0.10: the row holds $1.00.
   assert.deepEqual(roundsLooked(rounds, 1.0), { answered_at: rounds.answered_at, job_cost_usd: 0.6, look_back_usd: 0.4 });

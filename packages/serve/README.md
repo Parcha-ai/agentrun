@@ -329,7 +329,8 @@ two processes in the container: the server with `--no-runner`, and one runner on
 `GET /v2/health`. Each has its own store connection, so a busy runner never holds up the API. If either exits, the other
 stops and the container exits non-zero. Give the image other arguments and it runs that one command, as given:
 `runner --data /data --name runner-1` is a runner, and server options alone (no `server-and-runner`) are a server with
-its runner in its own process, which a [paired computer](#a-persons-own-computer) needs.
+its runner in its own process. A [paired computer](#a-persons-own-computer) works under either once the runner relays,
+below.
 
 A computer provider whose machines dial the server (Fly Machines and Cloudflare; the computer package's `connectOf`,
 which also says dial for E2B, Daytona or Modal made with `connect: "dial"`) works under a runner apart that knows the
@@ -344,6 +345,15 @@ its next claim. A runner apart with no public address refuses such a create, nam
 and the server says it sooner: in `GET /v2/computers`, each dial provider's row carries `runs_refused` with that fix,
 and its Test connection in Settings → Computers fails in the same words. With a runner that relays, `runs_refused` is
 null.
+
+A [paired computer](#a-persons-own-computer) takes the same relay. A run's claim on a runner that relays writes the
+computer's route (a settings row: the runner, its process, the run and the hold's end), refused while a live run on a
+live runner holds it, and taken from a runner that is gone or restarted, or a run that is over. Once a second the server
+closes a paired computer's socket that is not where its route says (close 1001), and the driver's redial lands there:
+relayed to the run's runner, or back on the server once the run releases it. The run's create waits for it about 80 s
+(the driver's longest redial, a relay's connect and a hello) and fails in words naming the runner when it does not
+come. `GET /v2/computers` lists the runner the hold is on (`held_on`), and the server's note when a relay was refused
+(`hold_note`), each shown on the computer's row in Settings → Computers.
 
 The token is in the log of the start that made it. A `docker stop` reaches both processes. The runner gives a busy run
 6 s (`--drain-timeout 6s`) to finish its turn, so a busy `docker stop` ends in about 7.5 s, inside Docker's default 10 s
@@ -1095,13 +1105,16 @@ passes the binding's conformance cases (below) needs no change here.
   refused at its start, saying to open its driver. A run uses what the hello's groups and features allow.
 - **Remove it.** Remove on its row (`DELETE /v2/computers/{computer_id}`) ends its token and closes its connection; a
   run holding it loses it. Pairing it again gives it a new id.
-- **One process.** A computer's connection lands on one server process, and only a run in that process can use it:
-  run `agentrun-serve start` with its runner beside the server (the default). A runner started apart
-  (`agentrun-serve runner`, beside a server started with `--no-runner`) refuses a paired computer at the claim, saying
-  so. Such a server says it sooner: its pairing code, the pair answer and each paired computer carry `runs_refused`,
-  which the console shows with the code and on the computer's row. The image's default command starts its runner apart; give the image the server's options alone
-  (`--data /data --listen 0.0.0.0 --port 7340 --drain-timeout 6s`) to keep the runner in the server's process. A
-  second server on one store is already refused by the store's owner lock, on SQLite and Postgres alike.
+- **One process, or a relay.** A computer's connection lands on the server process it dials. A run of the runner
+  beside the server (`agentrun-serve start`, the default) uses it there. A runner started apart (`agentrun-serve
+  runner`, beside a server started with `--no-runner`; the image's default command) uses it through the server's relay
+  when it knows the server's public address, `AGENTRUN_PUBLIC_URL`: its run's claim routes the computer's next dial to
+  that runner, and its release routes it back (above). One that does not refuses a paired computer at the claim,
+  naming both fixes. Such a server says it sooner: while no runner relays, its pairing code, the pair answer and each
+  paired computer carry `runs_refused`, which the console shows with the code and on the computer's row. Give the
+  runner `AGENTRUN_PUBLIC_URL`, or give the image the server's options alone (`--data /data --listen 0.0.0.0 --port
+  7340 --drain-timeout 6s`) to keep the runner in the server's process. A second server on one store is already
+  refused by the store's owner lock, on SQLite and Postgres alike.
 - **Conformance.** `node dist/attach-conformance-cli.js [--port 7392] [--listen 127.0.0.1]` runs the binding's cases
   against whatever driver pairs with the code it prints: pair, a wrong or used code, ping, a quiet minute, a redial
   after each close it must redial after (4408, 1000, 1001, 4409) and after a drop, a binary frame (1003), a frame over
@@ -1683,13 +1696,37 @@ reads of the login. A model named on a gateway or OpenRouter keeps its key, and 
 `model_key`. With no key at all, claude-agent's default
 model is `anthropic/claude-sonnet-5-5`. A run whose login is signed out fails at its start and says so. A status check
 the CLI outlasts (15 s) is asked once more; still no answer, the run goes on when the same login read signed in within
-the last 10 minutes in this server process (at a run's check or in Settings), else it fails saying the check timed out.
+the last 10 minutes on this machine (at a run's check or in Settings, in the server or in a runner process of its own on
+the same data folder, which keeps that time alone per login in `claude-login-answers/`, 0600), else it fails saying the
+check timed out. Being on disk, a signed-in answer outlives a restart of the server, and a turn-off and turn-on, for up to
+those 10 minutes; a signed-out answer removes it, and a new machine id (`machine-id` made again) leaves it standing for
+nothing.
 A check where the CLI answered nothing that reads as a status gets the same. Any other failure of the check, such as no CLI at
 its path, fails the run at once in the check's own words. It never switches to a key. The run books its tokens and no dollars (`cost.plan`, `on: "claude_code"`), and the plan's own limits
 apply. Only a run in a runner place, on the machine the mode was turned on for, goes on the login. A run placed in a
-sandbox, or on another machine, uses the keys. The login is the server's user's, so a run on it needs runs under that
-user: where each run is a user of its own (the image, `run_isolation: "uid"`), a claude-agent run that would go on the
-login fails at its claim and says so. Set `AGENTRUN_RUN_USER=same`, or give the run a `model_key`.
+sandbox, or on another machine, uses the keys. The login is the server's user's. Where each run is a user of its own
+(the image, `run_isolation: "uid"`), a run on AgentRun's own login folder gets the login's access token alone in
+`CLAUDE_CODE_OAUTH_TOKEN`: never the folder and never the refresh token, so its CLI never renews the login. The runner
+reads the token from the folder at the run's start and again whenever Anthropic refuses it mid-run, so a renewal the
+person's own Claude Code wrote there is picked up. The runner renews the login itself, in the CLI's place: when a token
+has less than five minutes left, and after Anthropic refuses one mid-run. It sends the pinned CLI's own refresh request,
+holds the CLI's own refresh lock on the folder (so a renewal by the CLI or another runner is taken and nothing is sent
+twice), and writes the answer back to the folder's `.credentials.json` alone, atomically at mode 0600, every other field
+kept. It holds that lock as the CLI does, by the mtime it set: a lock another holder took over while the runner was
+paused is never touched or removed, and the runner sends nothing under it. If the write back fails, the runner keeps the
+new pair in memory: each later ask gets its token, sends nothing (the old refresh token is spent and is never sent
+again) and tries the write again, under the same refresh lock and after reading the file again, so a newer pair another
+holder wrote there is kept. Once that token has less than five minutes left and is still unsaved, the run fails
+in words that say the renewal could not be saved and what to fix. A held token Anthropic refuses is never handed again:
+the ask fails while the pair is unsaved, and once it is saved the runner renews from it. One ask sends at most one renewal and nothing retries it. A renewal that fails, a refresh token Anthropic refused
+included, fails the run at its start in words that say to open Claude Code once to renew it, and mid-run ends the turn
+in the same words (or, with no failure to tell, words that say to run the claude CLI once on this login to renew it).
+No token is in the runner's log or in any error, and each token handed is cut from the run's journal, messages and rows
+as the runner writes them. A command the run's CLI starts can read the token,
+as the run's own user can. Under per-run users, a run on this machine's own Claude Code login (`~/.claude`, or the `CLAUDE_CONFIG_DIR` AgentRun was started with) fails at its
+claim and says so, and so does any login run while another runner on the same data folder runs its login runs under
+the server's user (its CLI renews the folder's login itself), naming that runner. Set `AGENTRUN_RUN_USER=same`, or give
+the run a `model_key`.
 
 The mode exists only on a server that listens on loopback (a local install, or one behind a local proxy). A server
 bound to any other address, such as all interfaces in a container or on a hosting service, has it off
@@ -3589,26 +3626,20 @@ serves these routes alone:
 
   The names route above is the listing: there is no list or read of a server's address, auth or tools here. The
   generic save (`PUT /settings/mcp-servers/{name}`) is a `404` unless the operator names the MCP origins it may save at,
-  so by default the token saves no server at an address or with headers of its own. The preview, refresh, sign-in, Composio tool listing and every other MCP settings route stay refused. On the full
-  server the token's `api_key_env` is `403`, as `api_key` is: the owner's session saves a Composio server there either
-  way;
-- a per_run MCP server's save at an origin the operator names, for a backend whose runs each bring their own
-  credential for a gateway it runs (such as a loopback forwarder): `AGENTRUN_API_ONLY_MCP_ORIGINS`, comma-separated
-  origins (`https://mcp.example.com`), a plain setting. With it, the token's `PUT /settings/mcp-servers/{name}` saves
-  `"auth": {"type": "per_run"}` at one of those origins, a new name or over a server the token saved that seals no
-  credential, and each run hands its own credential in `mcp_auth`. A body that sends a credential (a bearer token, or
-  headers with any other auth type) is `403`, as is a save over a server saved any other way or one that seals a
-  credential. A per_run body at any other origin, any other auth type, and a Composio server's name (its own route
-  saves it) are this profile's `404`. Each refusal comes before anything is sent to the address.
-  `AGENTRUN_MCP_ALLOW_LOOPBACK=1` is still needed for a loopback origin. Unset or blank, the save is a `404` as before;
-  an entry that is not an http or https origin alone, or a wildcard, stops the start, in words. The list holds past
-  the save: drop an origin and restart, and a per_run server the token saved there is refused at a run's start, at
-  an agent's save and at the next call of a run already going, and nothing is sent to it. Unset, the list is empty, so
-  a per_run server the token saved with API-only off is refused until its origin is listed: list it before upgrading,
-  or re-save it from the owner's signed-in session with API-only off, which makes it the owner's and leaves the save
-  closed. The start logs one line (`api_only_mcp_off_list`) with the count and names of the servers off the list,
-  never their addresses, and nothing when there are none. A server saved from the owner's signed-in session (which an
-  API-only server doesn't serve) is the owner's, whenever it was saved, and the list does not govern it;
+  so by default the token saves no server at an address or with headers of its own. The preview, refresh, sign-in,
+  Composio tool listing and every other MCP settings route stay refused. On the full server the token's `api_key_env`
+  is `403`, as `api_key` is: the owner's session saves a Composio server there either way;
+- a per_run MCP server's save at an origin the operator names: `AGENTRUN_API_ONLY_MCP_ORIGINS`, comma-separated
+  http(s) origins (`https://mcp.example.com`), a plain setting. With it, the token's `PUT /settings/mcp-servers/{name}`
+  saves `"auth": {"type": "per_run"}` at a listed origin, and each run hands its own credential in `mcp_auth`. A body
+  that carries a credential, or a save over a server the token did not save or one that seals a credential, is `403`;
+  any other origin or auth type, or a Composio server's name, is `404`. A wildcard or an entry that is not an http(s)
+  origin alone stops the start, and a loopback origin also needs `AGENTRUN_MCP_ALLOW_LOOPBACK=1`. The list holds past
+  the save: a per_run server the token saved at an origin not listed is refused, and nothing is sent to it. Unset, the
+  list is empty, so on an upgrade list each such server's origin first, or re-save it from the owner's signed-in
+  session with API-only off; the start names the servers off the list in one log line (`api_only_mcp_off_list`), never
+  their addresses. A server the owner's session saved is not governed by the list, and its runs' `mcp_auth` still
+  goes there;
 - a run's desktop or phone, for a backend that shows its user the live view and lets them take over: see below.
 
 Here a run's computer routes take the server's token. `POST /runs/{id}/computer/viewer` mints a 5-minute link on

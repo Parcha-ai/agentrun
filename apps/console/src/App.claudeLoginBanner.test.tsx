@@ -209,6 +209,34 @@ describe("the Playground's No model bar heeds the login only for a run on the ru
   });
 });
 
+// A server with no agents yet: the Playground picks none, so there is no run to read the bar from, only where a first
+// agent would run. The console's new-agent form puts it on the server's default place (newAgentPlace), and the login is
+// a model only for a run on the runner. So on a server whose default place is the runner, a login that is on and reads
+// signed in is the model a first agent on Claude Agent runs on, and the bar goes; signed out, it stays. On one whose
+// default place is a box, a first agent runs in that box on the model keys, and with the server's places not read yet
+// that is not known: the bar stays in both, signed in or not.
+describe("the No model bar with no agent picked", () => {
+  it("a Playground with no agents on a server whose default place is the runner shows no bar while the login is on and reads signed in, and the bar while it reads signed out", async () => {
+    const page = await open(SIGNED_IN, RUNNER_DEFAULT, []);
+    expect(page.bar()?.textContent ?? null, "the bar over a Playground with no agents while the login reads signed in").toBeNull();
+    act(() => root?.unmount());
+    root = undefined;
+    document.body.innerHTML = "";
+    const out = await open({ ...LOGIN, state: "signed_out" }, RUNNER_DEFAULT, []);
+    expect(out.bar()?.textContent ?? "", "the bar over a Playground with no agents while the login reads signed out").toContain(BAR);
+  });
+
+  it("a Playground with no agents on a server whose default place is a box, or whose places are not read yet, keeps the bar though the login reads signed in: a first agent there runs on the model keys", async () => {
+    const boxed = await open(SIGNED_IN, SANDBOX_DEFAULT, []);
+    expect(boxed.bar()?.textContent ?? "", "the bar over a Playground with no agents on a server whose default place is a box, while the login reads signed in").toContain(BAR);
+    act(() => root?.unmount());
+    root = undefined;
+    document.body.innerHTML = "";
+    const unknown = await open(SIGNED_IN, CAPS, []);
+    expect(unknown.bar()?.textContent ?? "", "the bar over a Playground with no agents before the server's places are known, while the login reads signed in").toContain(BAR);
+  });
+});
+
 // The login serves only Anthropic's own models (serve's providerFor): a claude-agent run that names one, or names none
 // (the login's default is Anthropic's), goes on it. One that names an OpenRouter model, Anthropic's through OpenRouter
 // included, goes to OpenRouter on its key whatever the login says, so with no key it still needs one, and the bar stays.

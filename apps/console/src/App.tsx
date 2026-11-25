@@ -53,7 +53,9 @@ import { ConnectExistingAgents, NativeConnections } from "@/components/NativeCon
 import { StartHere } from "@/components/StartHere";
 import { missionFrom, type MissionView, rangeFrom, type StatsRange } from "@/lib/mission";
 import { Playground, type StartResult, startFailure } from "@/components/Playground";
-import { type Agent, decisionProvider, runsWhere, toolOffers } from "@/lib/agentForm";
+import type { MovedToRunner } from "@/components/RunnerOffer";
+import { type Agent, decisionProvider, editBody, runsWhere, toolOffers } from "@/lib/agentForm";
+import { computerFields } from "@/lib/computers";
 import { RUN_STATUSES, RunsList } from "@/components/RunsList";
 import { type Section, Shell } from "@/components/Shell";
 import { SessionUnread, SignIn } from "@/components/SignIn";
@@ -527,7 +529,9 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
   // with no capabilities at all, never hidden for the rest of the visit by one failed read; the race form says so, with
   // Try again, rather than loading for ever.
   const [capsFailed, setCapsFailed] = useState(false);
-  const readCaps = () => { const n = ++capsAsked.current; return v2.capabilities().then((x) => { if (n === capsAsked.current) { setCaps(x); setCapsFailed(false); } return true; }, () => { if (n === capsAsked.current) setCapsFailed(true); return false; }); };
+  // `fetchCaps` answers what it read, null when the read failed, for a caller that needs them now (the move to the runner).
+  const fetchCaps = () => { const n = ++capsAsked.current; return v2.capabilities().then((x) => { if (n === capsAsked.current) { setCaps(x); setCapsFailed(false); } return x; }, () => { if (n === capsAsked.current) setCapsFailed(true); return null; }); };
+  const readCaps = () => fetchCaps().then((x) => x !== null);
   useEffect(() => { readCaps(); }, [v2]); // eslint-disable-line react-hooks/exhaustive-deps
   // The agents' names, every page of the active ones and of the archived: read at the start, and again each time a runs
   // view, Mission Control or Triggers opens (the list, one agent's runs, a run's page, a trigger's page), so an agent made
@@ -745,13 +749,18 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
     return refused;
   };
   const revsAsked = useRef(0);
+  /** Reads `agentId`'s revisions, every page: only the newest read lands. */
+  const readRevisions = (agentId: string) => {
+    const n = ++revsAsked.current;
+    allPages((cursor) => v2.listRevisions(agentId, cursor), (p) => p.revisions).then((r) => { if (n === revsAsked.current) setRevs(r); }).catch(() => {});
+  };
   useEffect(() => {
     // The picked agent's revisions only: the old ones go at once, and an answer for an earlier pick is dropped.
-    const n = ++revsAsked.current;
+    ++revsAsked.current;
     setRevs([]);
     setPlaygroundRevision({ revision: "" });
-    if (pick) allPages((cursor) => v2.listRevisions(pick, cursor), (p) => p.revisions).then((r) => { if (n === revsAsked.current) setRevs(r); }).catch(() => {});
-  }, [v2, pick]);
+    if (pick) readRevisions(pick);
+  }, [v2, pick]); // eslint-disable-line react-hooks/exhaustive-deps
   // Runs the Playground started: the Claude login is read again after each (claudeSignedIn below).
   const [runsStarted, setRunsStarted] = useState(0);
   const send = async (agentId: string, body: Parameters<typeof v2.startRun>[1], key: string): Promise<StartResult> => {
@@ -764,6 +773,28 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
     } finally {
       setRunsStarted((n) => n + 1);
     }
+  };
+  // The Playground's offer under a run refused in a box while Claude Code's login, which runs agents on the runner only, is
+  // on: the agent read now, saved with the edit its Computer step makes for a runner pick (computerFields), on the
+  // version read, and the agents and the picked agent's revisions read again so the bar, the revision picker and the next
+  // run see it there. An agent the edit leaves as it is (on the runner already: a second click, or a move made elsewhere)
+  // is not saved again. Answers the revision the agent runs now and the box-only tools the move dropped. Which tools run
+  // only in a box is the capabilities' word: taken before they answered, or after their read failed, the move reads them
+  // itself, and when that read fails too it saves nothing and says so.
+  const moveToRunner = async (agentId: string): Promise<MovedToRunner> => {
+    const { agent, etag } = await v2.getAgent(agentId);
+    const tools = agent.definition.tools ?? [];
+    const fields = computerFields({ kind: "none" }, tools, editorCaps.tools)
+      ?? computerFields({ kind: "none" }, tools, toolOffers((await fetchCaps() as unknown as { tools?: unknown } | null)?.tools));
+    if (!fields) throw new Error("the server's tools could not be read, so which of them run only in a box is unknown. Try again.");
+    const { unchanged, ...body } = editBody(agent, fields, "Moved to the runner, where Claude Code's login on this machine runs it");
+    if (unchanged) return { revision: agent.revision, saved: false, dropped: [] };
+    const kept = new Set(body.definition.tools ?? []);
+    const dropped = (agent.definition.tools ?? []).filter((tool) => !kept.has(tool));
+    const saved = await v2.updateDefinition(agentId, body, etag);
+    setRetry((n) => n + 1);
+    if (pickedAgent.current === agentId) readRevisions(agentId);
+    return { revision: saved.agent.revision, saved: true, dropped };
   };
   const efforts = ((caps as unknown as { features?: { efforts?: string[] } } | null)?.features?.efforts) ?? [];
   // The server's learning switch: undefined until its capabilities are read, null on a server without learning.
@@ -831,8 +862,13 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
   // the server's default place for a revision with a shell tool, else the runner). Not known (the server's places not
   // read yet), the bar stays.
   const runPlace = runDefinition && selectedAgent ? runsWhere({ kind: selectedAgent.kind, definition: runDefinition as Agent["definition"] }, placesOf(caps))?.place : undefined;
-  // And only for a model the login serves (loginServes): one naming an OpenRouter model still needs OpenRouter's key.
-  const onClaudeLogin = claudeSignedIn && caps?.models?.needs !== "model" && runDefinition?.harness === LOGIN_HARNESS && loginServes(runDefinition.model) && runPlace?.mode === "runner";
+  // The bar renders only in the Playground. With no agent picked there (no agents yet, or the agents still being read)
+  // there is no run to read, only where a first agent would run: the new-agent form puts it on the server's default
+  // place (newAgentPlace). So the bar goes only when that place is the runner, where a first agent on Claude Agent runs
+  // on the login; on a box, or with the places not read yet, it stays, for every harness. A picked agent's run goes on
+  // the login only for a model the login serves (loginServes): one naming an OpenRouter model still needs its key.
+  const noAgentOnRunner = placesOf(caps)?.defaultPlace.mode === "runner";
+  const onClaudeLogin = claudeSignedIn && caps?.models?.needs !== "model" && (!selectedAgent ? noAgentOnRunner : (runDefinition?.harness === LOGIN_HARNESS && loginServes(runDefinition.model) && runPlace?.mode === "runner"));
   const playgroundTarget = where.operation ? where.playgroundAgent : pick ?? where.playgroundAgent;
   // The playground's operation, first on its request row: the page's own row, or Start a run's beside its agent.
   // Under the request row: no model to run on yet, unless the run goes on Claude Code's login (onClaudeLogin).
@@ -882,7 +918,7 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
               : where.settings === "webhook" ? <WebhookPage v2={v2} />
               : where.settings === "slack" ? <SlackPage v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} />
               : <KeysPage v2={v2} onChange={readCaps} writable={secretsWritable} whyNot={secretsWhyNot} harnesses={editorCaps.harnesses}
-                  plan={<><ChatGPTRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} onChange={() => void readCaps()} /><ClaudeLoginRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} available={caps ? caps.features?.claude_login !== false : capsFailed} onChange={() => void readCaps()} /><ModelGatewayRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} onChange={() => void readCaps()} /></>} />}
+                  plan={<><ChatGPTRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} source={caps?.models?.source} defaultModel={caps?.models?.default} routePrefix={caps?.models?.route_prefix} onChange={() => void readCaps()} /><ClaudeLoginRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} available={caps ? caps.features?.claude_login !== false : capsFailed} onChange={() => void readCaps()} /><ModelGatewayRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} onChange={() => void readCaps()} /></>} />}
           </Settings>
         : where.section === "dojo"
         ? <AgentDojo key={refreshed} v2={v2} server={learningCap} modelAccess={caps?.learning_model} />
@@ -899,7 +935,7 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
                 needsYou={needs && <NeedsYouStrip asking={needs.asking} failed={needs.failed} failedAll={mission?.runs.failed} live={needs.live} learning={learningWaits} problem={needsProblem} agentName={agentName} onAnswer={answer} onApprove={approve} onHandBack={handBack} onRunAgain={runAgain} onStop={stop} />}
                 startHere={ownRun === false && !observations.data?.sessions.length ? <StartHere harnesses={editorCaps.harnesses} tools={editorCaps.tools} onTry={tryIt} imported={importedRuns}
                   keySettings={caps?.features?.tool_keys?.routes === true && caps.features.tool_keys.at_rest === "sealed"}
-                  modelSetup={caps && (caps.models.ready === false || planShown) ? <ModelKeyCard v2={v2} needs={caps.models.needs} model={caps.models.default} onSaved={readCaps} writable={secretsWritable} whyNot={secretsWhyNot}
+                  modelSetup={caps && (caps.models.ready === false || planShown) ? <ModelKeyCard v2={v2} needs={caps.models.needs} model={caps.models.default} source={caps.models.source} routePrefix={caps.models.route_prefix} onSaved={readCaps} writable={secretsWritable} whyNot={secretsWhyNot}
                     plan={plan} harnesses={editorCaps.harnesses} onPlan={onPlan} onDone={() => setPlanShown(false)} /> : undefined} /> : undefined} />
             </div>
           </div>
@@ -922,7 +958,7 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
             {where.operation === "apply-template" ? <div className="min-h-0 flex-1 overflow-auto"><TemplatesPage key={where.template ?? ""} v2={v2} name={where.template} go={go} playground draft={where.draft} /></div> : where.operation === "list-runs" ? <RunsRequest key={`list:${where.playgroundAgent ?? ""}:${where.status ?? ""}:${where.archived ?? false}:${where.source ?? ""}:${where.from ?? ""}:${where.to ?? ""}:${where.model ?? ""}`} v2={v2} origin={location.origin} agentId={where.playgroundAgent} filter={{ status: where.status, archived: where.archived, source: where.source, from: where.from, to: where.to, model: where.model }} /> : where.operation ? <AgentRequest key={`${where.operation}:${where.playgroundAgent ?? ""}:${where.draft ?? ""}`} v2={v2} operation={where.operation} origin={location.origin} agentId={where.playgroundAgent} draft={where.draft} harnesses={editorCaps.harnesses} routePrefix={c?.models?.route_prefix} /> : <>
               {!agents && noModel}
               {startError && <div className="m-8 border p-4" role="alert"><p className="text-lead text-destructive-text">The agents could not be read: {startError}</p><Button size="sm" className="mt-3" type="button" onClick={() => setRetry((n) => n + 1)}>Try again</Button></div>}
-              {agents && <Playground lead={operationPicker} notice={noModel} agents={agents.filter((a) => !a.archived_at)} revisions={revs} efforts={efforts} origin={location.origin} agentId={pick ?? undefined} onAgent={setPick} onRevision={(revision, definition) => setPlaygroundRevision({ revision, definition })} onSend={send} limits={caps?.limits} {...(demo ? { upload: demoUpload } : {})} removeUpload={v2.deleteUpload} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)}
+              {agents && <Playground lead={operationPicker} notice={noModel} agents={agents.filter((a) => !a.archived_at)} revisions={revs} efforts={efforts} origin={location.origin} agentId={pick ?? undefined} onAgent={setPick} onRevision={(revision, definition) => setPlaygroundRevision({ revision, definition })} onSend={send} limits={caps?.limits} {...(demo ? { upload: demoUpload } : {})} removeUpload={v2.deleteUpload} onMoveToRunner={moveToRunner} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)}
                 live={(id) => <LiveRun key={id} v2={v2} runId={id} caps={caps} agentName={agentName} />} />}
             </>}
           </section>

@@ -69,8 +69,6 @@ export type MarketplaceTemplate = MarketplaceList["templates"][number];
 export type Cost = components["Cost"];
 
 export type Run = components["Run"];
-/** POST /v2/runs' body: a run of an agent the request carries whole (`definition`), kept here under `external`. */
-export type RunCreateInline = components["RunCreateInline"];
 
 /** A trigger of any kind (GET /v2/triggers/{id}): a schedule or a webhook. */
 export type Trigger = Answer<"getTrigger">;
