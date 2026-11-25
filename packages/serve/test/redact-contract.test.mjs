@@ -1138,7 +1138,7 @@ test("adversarial texts: the characters the shape scanners visit are at most a f
 // - the shapes, sought over the text and over its cut, and each run read: 128, the shapes' own bound (the test above);
 // - planCut's finds: the text lowered (1), each form and the hex searched (2 each, a find and the text before it: 16),
 //   the folded search (4), the finds merged (1): about 21;
-// - one whole-text check: what the text holds that a view decodes (8); fourteen views at most: the squeezed one and the
+// - one whole-text check: what the text holds that a view decodes (9); fifteen views at most: the squeezed one and the
 //   percent-decoded two (one with "+") built in 9 reads each (its special characters found, its blanks, its non-ASCII
 //   stretches squeezed twice, its cover), the views of JSON's escapes alone (two levels, and one where the text has an
 //   escaped backslash) and the two stacked ones (one with "+") in 23 each (two levels of escapes read per character
@@ -1147,11 +1147,12 @@ test("adversarial texts: the characters the shape scanners visit are at most a f
 //   then all), and two decoding views over that join (one with "+": 46 each, 92); the strings join, read at level 0
 //   alone (2) and written (2), and four decoding views over it (one level of JSON's escapes alone, with percent, with
 //   percent and "+", and two levels: 46 each, 184); the quoted join (a single-quoted dict's), read and written the same
-//   (4), and one decoding view over it (46); then each searched for 7 plain needles, the hex and the fold, lowered and
-//   flattened, each find checked against the covered stretches (21 each, 42 over a join): about 903; planCut runs two
-//   (the text with its cuts, then the cut text, at most 10/8 as long): about 2,032;
-// - so planCut is about 2,181; an answer adds its pieces' ends and joins (10), heldIn's check of what it returns (10/8
-//   of a check: 1,129), of the pieces as they came (903), and its shape pass (64): about 4,287.
+//   (4), and two decoding views over it (JSON's escapes, and Python's where the text holds one: 46 each, 92); then each
+//   searched for 7 plain needles, the hex and the fold, lowered and flattened, each find checked against the covered
+//   stretches (21 each, 42 over a join): about 992; planCut runs two (the text with its cuts, then the cut text, at most
+//   10/8 as long): about 2,232;
+// - so planCut is about 2,381; an answer adds its pieces' ends and joins (10), heldIn's check of what it returns (10/8
+//   of a check: 1,240), of the pieces as they came (992), and its shape pass (64): about 4,687.
 // That sum takes each stage at its most at once, which no text reaches: a text that builds every view decodes most of
 // itself, so each decoded view is far shorter than the text and its searches read far less.
 // A held value of two lines adds its three parts as forms and plain needles (about 30 more). A held value of k long
