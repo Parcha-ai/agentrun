@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { Banner } from "@/components/ui/banner";
 import { Input } from "@/components/ui/field";
-import { Picker, type PickerOption } from "@/components/ui/picker";
+import { SearchPicker, type SearchPickerOption } from "@/components/ui/search-picker";
 import { Switch } from "@/components/ui/switch";
 import { type Client, ClientError } from "@/lib/client";
 import { when } from "@/lib/format";
@@ -478,7 +478,7 @@ function ComposioForm({ v2, add, onClose, onSaved }: { v2: Client; add?: Add; on
   const keyChanged = () => { stale(); setKits(null); setToolkit((now) => (typed || (add?.toolkit && now === add.toolkit) ? now : "")); };
   // A list that fails leaves the slug to be typed.
   const loadKits = () => asking((signal) => v2.composioToolkits(key(), signal).catch((e: unknown) => { if (!signal.aborted) setTyped(true); throw e; }), (answer) => { setKits(answer.toolkits); setTyped(false); });
-  const kitOptions: PickerOption[] = (kits ?? []).map((k) => ({ value: k.slug, label: `${k.name} · ${k.slug}` }));
+  const kitOptions: SearchPickerOption[] = (kits ?? []).map((k) => ({ value: k.slug, label: `${k.name} · ${k.slug}` }));
   // A toolkit already chosen (a template's) that the list doesn't have stays an option, so the field still shows it.
   if (toolkit && !kitOptions.some((o) => o.value === toolkit)) kitOptions.unshift({ value: toolkit, label: toolkit });
   const save = () => act(async () => {
@@ -513,8 +513,8 @@ function ComposioForm({ v2, add, onClose, onSaved }: { v2: Client; add?: Add; on
           {typed
             ? <Input name="composio-toolkit" aria-label="Toolkit slug" className="min-w-0 flex-1" value={toolkit} placeholder="github" spellCheck={false} autoCapitalize="off" autoCorrect="off"
                 onChange={(e) => { setToolkit(e.target.value); changed(); }} />
-            : <Picker label="Toolkit" className="min-w-0 flex-1" value={toolkit} options={kitOptions} disabled={!kitOptions.length}
-                placeholder={kits ? "Pick a toolkit" : "Load the toolkits with your key"} onChange={(next) => { setToolkit(next); changed(); }} />}
+            : <SearchPicker label="Toolkit" className="min-w-0 flex-1" value={toolkit} options={kitOptions} disabled={!kitOptions.length}
+                placeholder={kits ? "Search or pick a toolkit" : "Load the toolkits with your key"} nothing={(q) => `No toolkit matches “${q}”`} onChange={(next) => { setToolkit(next); changed(); }} />}
           <Button type="button" size="md" disabled={busy || !hasKey} onClick={() => void loadKits()}>Load toolkits</Button>
         </div>
         {kits && !kits.length && <p className="mt-1 font-mono text-small text-muted-foreground">Composio lists no toolkit for this key.</p>}

@@ -80,6 +80,7 @@ __all__ = [
     "CapabilitiesStoreSchema",
     "CapabilitiesSwitchesValue",
     "CapabilitiesToolsItem",
+    "CapabilitiesToolsItemHeldItem",
     "CapabilitiesToolsItemResolves",
     "CapabilitiesToolsItemWhy",
     "CapabilitiesWorkflows",
@@ -1103,8 +1104,10 @@ __all__ = [
     "RunSummarySdkUsage",
     "RunSummaryTrigger",
     "RunSummaryWorkflow",
+    "RunSummaryWorkflowCallsItem",
     "RunTrigger",
     "RunWorkflow",
+    "RunWorkflowCallsItem",
     "RunsResource",
     "SaveCalendarBody",
     "SaveCalendarResponse",
@@ -1605,7 +1608,7 @@ class DefinitionPlace1(TypedDict):
 
 class DefinitionPlace2(TypedDict):
     mode: Literal["sandbox"]
-    box: Literal["docker", "modal", "daytona"]
+    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "boxd", "groundbox"]
 
 
 class _DefinitionComputerRequired(TypedDict):
@@ -2111,7 +2114,7 @@ class DefinitionInputPlace1(TypedDict):
 
 class DefinitionInputPlace2(TypedDict):
     mode: Literal["sandbox"]
-    box: Literal["docker", "modal", "daytona"]
+    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "boxd", "groundbox"]
 
 
 class _DefinitionInputComputerRequired(TypedDict):
@@ -3468,6 +3471,8 @@ class RunSummary(_RunSummaryRequired, total=False):
     trigger: RunSummaryTrigger | None
     path: Literal["agent", "handed_back", "workflow", "replay", "audit"] | None
     workflow: RunSummaryWorkflow | None
+    workflow_calls: list[RunSummaryWorkflowCallsItem] | None
+    first_choice: Literal["served", "replay", "replay_missing", "none_laid", "off", "none_fit", "many_fit", "not_promoted", "champion_misfit", "many_champions", "cost_stop", "no_by_hand_cost", "past_unread", "held"] | None
 
 
 RunStatus: TypeAlias = "Literal[\"queued\", \"working\", \"paused\", \"input_required\", \"completed\", \"failed\", \"cancelled\"]"
@@ -3754,6 +3759,14 @@ class RunSummaryWorkflow(TypedDict):
     name: str | None
     digest: str | None
     repick: Literal["found", "missed"] | None
+
+
+class RunSummaryWorkflowCallsItem(TypedDict):
+    workflow: str
+    digest: str
+    caller: Literal["platform", "agent"]
+    outcome: Literal["answered", "handed_back", "failed", "refused"]
+    usd: float | None
 
 
 class SetSourceSyncBody(TypedDict):
@@ -4608,6 +4621,7 @@ class GetLearningCostResponseWorkflowsItem(TypedDict):
     workflow: str
     digest: str
     state: Literal["serving", "needs_revision"]
+    reason: Literal["over_line", "no_by_hand_cost"] | None
     served: GetLearningCostResponseWorkflowsItemServed | None
     by_hand: GetLearningCostResponseWorkflowsItemByHand | None
     unknown_cost_runs: int
@@ -5819,6 +5833,8 @@ class Run(_RunRequired, total=False):
     audit_of: str | None
     path: Literal["agent", "handed_back", "workflow", "replay", "audit"] | None
     workflow: RunWorkflow | None
+    workflow_calls: list[RunWorkflowCallsItem] | None
+    first_choice: Literal["served", "replay", "replay_missing", "none_laid", "off", "none_fit", "many_fit", "not_promoted", "champion_misfit", "many_champions", "cost_stop", "no_by_hand_cost", "past_unread", "held"] | None
 
 
 class _RunResultRequired(TypedDict):
@@ -5945,7 +5961,7 @@ class RunPlace1(TypedDict):
 
 class RunPlace2(TypedDict):
     mode: Literal["sandbox"]
-    box: Literal["docker", "modal", "daytona"]
+    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "boxd", "groundbox"]
 
 
 class _RunComputerRequired(TypedDict):
@@ -6069,6 +6085,14 @@ class RunWorkflow(TypedDict):
     name: str | None
     digest: str | None
     repick: Literal["found", "missed"] | None
+
+
+class RunWorkflowCallsItem(TypedDict):
+    workflow: str
+    digest: str
+    caller: Literal["platform", "agent"]
+    outcome: Literal["answered", "handed_back", "failed", "refused"]
+    usd: float | None
 
 
 class ListSuggestionsResponse(TypedDict):
@@ -8850,7 +8874,7 @@ class CapabilitiesPlaces(_CapabilitiesPlacesRequired, total=False):
 
 
 class _CapabilitiesPlacesBoxesItemRequired(TypedDict):
-    id: Literal["docker", "modal", "daytona"]
+    id: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "boxd", "groundbox"]
     available: bool
     state: Literal["ready", "unavailable"]
 
@@ -8868,7 +8892,7 @@ class CapabilitiesPlacesDefaultPlace1(TypedDict):
 
 class CapabilitiesPlacesDefaultPlace2(TypedDict):
     mode: Literal["sandbox"]
-    box: Literal["docker", "modal", "daytona"]
+    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "boxd", "groundbox"]
 
 
 class _CapabilitiesHarnessesItemRequired(TypedDict):
@@ -8928,6 +8952,7 @@ class CapabilitiesToolsItem(_CapabilitiesToolsItemRequired, total=False):
     default_provider: str
     resolves: CapabilitiesToolsItemResolves
     why: CapabilitiesToolsItemWhy
+    held: list[CapabilitiesToolsItemHeldItem]
     ask_needs: Literal["password"]
     key: Literal["parallel", "monid", "browserbase", "kernel", "typesafe", "anthropic", "openai", "particle", "openrouter"]
 
@@ -8936,6 +8961,14 @@ CapabilitiesToolsItemResolves = TypedDict("CapabilitiesToolsItemResolves", {"pi"
 
 
 CapabilitiesToolsItemWhy = TypedDict("CapabilitiesToolsItemWhy", {"pi": "str", "claude-agent": "str", "codex": "str", "opencode": "str"})
+
+
+class CapabilitiesToolsItemHeldItem(TypedDict):
+    provider: str
+    tool: Literal["search", "fetch", "key"]
+    kind: Literal["quota", "rate"]
+    until: str
+    words: str
 
 
 class CapabilitiesWorkflows(TypedDict):

@@ -27,7 +27,7 @@ import { maxRunsOf } from "../dist/host.js";
 import { claimInstallsStopped } from "../dist/harness-install.js";
 import { runnerMemory } from "../dist/runner/memory-claim.js";
 import { dispatchRunner } from "../dist/runner/harness-loops.js";
-import { childLoops } from "../dist/runner/run-child-host.js";
+import { childLoops, isolationLoops } from "../dist/runner/run-child-host.js";
 import { runnerComputers } from "../dist/runner/main.js";
 import { routeOf } from "../dist/runner/model-route.js";
 import { withoutFaux } from "../dist/model.js";
@@ -376,7 +376,7 @@ const FAST_MODEL_RETRY = { retry: { enabled: true, maxRetries: 8, baseDelayMs: 1
  *  disk's file API (`makeDisk`, AdapterSpecDeps.makeArchilDisk) and the control plane (`control`,
  *  AdapterSpecDeps.mountControl). `ownData`: a data directory of the runner's own, apart from the server's, for its
  *  scratch and everything a run's claim reads or writes on this machine (the store and the seal key stay the server's). */
-export async function startInProcessRunner(data, { faux, githubApi, githubWeb, githubMcpOrigin, composioMcpOrigin, gradeTimeoutMs, computerForClaim, computers: own, mcpOwn, harnessLocks, runnerTiming, modelRetry = FAST_MODEL_RETRY, log, failRunsUpdate, fauxVendorApi, evalFakes, childRuns, archil, ownData, ...switches } = {}) {
+export async function startInProcessRunner(data, { faux, githubApi, githubWeb, githubMcpOrigin, composioMcpOrigin, gradeTimeoutMs, computerForClaim, computers: own, mcpOwn, harnessLocks, runnerTiming, modelRetry = FAST_MODEL_RETRY, log, failRunsUpdate, failAgentsGet, fauxVendorApi, evalFakes, childRuns, archil, ownData, ...switches } = {}) {
   const opened = await openStore({ dataDir: data, role: "runner" });
   // The runner's store, as a crash would leave its writes: once kill() has run, a journal commit of its loops never
   // lands while the test runs (a dead process writes nothing more), and fails when the runner's handle is closed.
@@ -401,10 +401,23 @@ export async function startInProcessRunner(data, { faux, githubApi, githubWeb, g
       };
     },
   });
+  // A store-read fault (`failAgentsGet(id)`, a test's): an agents.get it answers true for throws, as a store that cannot
+  // be read does. The test's predicate counts its own hits to prove the fault fired.
+  const agentsOf = (agents) => new Proxy(agents, {
+    get(target, prop) {
+      const value = Reflect.get(target, prop, target);
+      if (prop !== "get") return typeof value === "function" ? value.bind(target) : value;
+      return async (id, ...rest) => {
+        if (failAgentsGet(id)) throw new Error("the store can't be read (a test's fault)");
+        return value.call(target, id, ...rest);
+      };
+    },
+  });
   const store = new Proxy(opened, {
     get(target, prop) {
       const value = Reflect.get(target, prop, target);
       if (prop === "runs" && failRunsUpdate) return runsOf(value);
+      if (prop === "agents" && failAgentsGet) return agentsOf(value);
       if (prop === "journal") return (...args) => journalOf(value.apply(target, args));
       return typeof value === "function" ? value.bind(target) : value;
     },
@@ -444,13 +457,17 @@ export async function startInProcessRunner(data, { faux, githubApi, githubWeb, g
     // its keys and calls the runner's across the channel; the same user unless `childRuns.isolation` says otherwise (a
     // stand-in helper's), its lines on `childRuns.log`, its runs' traces on `childRuns.tracing` (a test's exporter).
     const childLog = childRuns?.log ?? (() => {});
-    const createLoop = childRuns ? childLoops({ deps: { ...deps, log: childLog }, isolation: childRuns.isolation ?? { kind: "process", why: "a test's runner" }, log: childLog, ...(childRuns.tracing ? { tracing: childRuns.tracing } : {}) }) : dispatchRunner(deps);
+    const childIsolation = childRuns?.isolation ?? { kind: "process", why: "a test's runner" };
+    const createLoop = childRuns ? childLoops({ deps: { ...deps, log: childLog }, isolation: childIsolation, log: childLog, ...(childRuns.tracing ? { tracing: childRuns.tracing } : {}) }) : dispatchRunner(deps);
     runner = startRunner({
       ...(runnerTiming ?? {}),
       store,
       // Each end's census of what its caller handed the run, as the CLI's runner beside it makes it (runner/beside.ts).
       census: runCensus(store, { data: deps.data, sealKey, env }),
-      loops: maxRunsOf(process.env, switches.maxRuns),
+      // Where each run is a user of its own, no more runs at once than its slots, as the CLI's runners hold them
+      // (run-child-host.ts isolationLoops): a run that reads completed while its claim still gives its slot back leaves the
+      // next run queued, never claimed onto the held slot and refused for it.
+      loops: isolationLoops(childIsolation, maxRunsOf(process.env, switches.maxRuns)),
       // And by memory, as the CLI's runners claim (memory-claim.ts): each waiting run weighed by its harness against this
       // host's memory, read now (a test's process.constrainedMemory stand-in, set before serve(), is its container limit).
       memory: runnerMemory(store, undefined, env),
@@ -604,9 +621,7 @@ function read({ status, headers, text }) {
 }
 
 export function client(baseUrl, token, { owner = false } = {}) {
-  /** A plain read with the token: no owner's session and no guard of api's. */
-  const fresh = async (method, path) => read(await alone(`${baseUrl}${path}`, { method, headers: token ? { authorization: `Bearer ${token}` } : {} }));
-  return Object.assign(api, { fresh });
+  return api;
   /** `raiseCheck: false`: no raise guard read after this request (raisedReadsQueued), for a test whose server goes away
    *  once the raise is answered. */
   async function api(method, path, body, headers = {}, { raiseCheck = true } = {}) {
@@ -846,14 +861,16 @@ export async function whenFree(send) {
 export const retried = (api) => (...args) => whenFree(() => api(...args));
 
 /** Apply timeline pages from `after` the way a client must (drop, then upsert), until the run's status is in `until`: an end
- *  once its page is final, any other status on the first page that leaves no change behind it. */
-export async function follow(api, runId, until, { after = 0, deadlineMs = 30_000 } = {}) {
+ *  once its page is final, any other status on the first page that leaves no change behind it. `done(rows, page)`: and
+ *  until the rows so far say what the case waits on (a run that is not final, such as one paused, may say its status
+ *  before every row behind it is written); it reads on, on the same long poll, until they do. */
+export async function follow(api, runId, until, { after = 0, deadlineMs = 30_000, done = () => true } = {}) {
   const view = new Map();
   const pages = [];
   const end = Date.now() + deadlineMs;
+  const rowsNow = () => [...view.values()].sort((a, b) => a.seq - b.seq);
   for (;;) {
-    // Each long poll on a connection of its own: a loaded machine's pooled socket closing under it is not the run's state.
-    const { status, body: page } = await (api.fresh ?? api)("GET", `/runs/${runId}/timeline?${new URLSearchParams({ ...(after ? { after: String(after) } : {}), wait_ms: "2000" })}`);
+    const { status, body: page } = await api("GET", `/runs/${runId}/timeline?${new URLSearchParams({ ...(after ? { after: String(after) } : {}), wait_ms: "2000" })}`);
     assert.equal(status, 200, JSON.stringify(page));
     pages.push(page);
     if (page.reset) view.clear();
@@ -863,11 +880,10 @@ export async function follow(api, runId, until, { after = 0, deadlineMs = 30_000
     // A page's status and its rows are read together, so a page with no more to come has every row up to that status. A
     // second, empty page to confirm it would only return when its long poll runs out.
     const settled = ["completed", "failed", "cancelled"].includes(page.status) ? page.final : !page.has_more;
-    if (until.includes(page.status) && settled) break;
-    assert.ok(Date.now() < end, `the run did not reach ${until.join("|")}: last ${page.status}/${page.state}`);
+    if (until.includes(page.status) && settled && done(rowsNow(), page)) break;
+    assert.ok(Date.now() < end, `the run did not reach ${until.join("|")}${until.includes(page.status) && settled ? " with the rows the case waits on" : ""}: last ${page.status}/${page.state}`);
   }
-  const rows = [...view.values()].sort((a, b) => a.seq - b.seq);
-  return { rows, pages, after, last: pages.at(-1) };
+  return { rows: rowsNow(), pages, after, last: pages.at(-1) };
 }
 
 /** An OpenAI Responses endpoint on loopback: every turn answers `text` and reports `tokens` input and output tokens.

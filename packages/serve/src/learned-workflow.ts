@@ -56,6 +56,7 @@ import type { JsonValue, NestedCalls, Refusal } from "@parcha/agentrun-kernel";
 import type { RunDecisions } from "@parcha/agentrun-kernel/kernel/cap";
 import { workflowNodes } from "./model.js";
 import { type ReplayCalls, SKIPPED_WRITE, toolWord, unmarkedWords } from "./learn/replay-calls.js";
+import { WORKFLOW_FIRST_CALL, workflowDigest } from "./runner/workflow-first.js";
 
 /** What a learned_workflow call's approval card says of its MCP actions' arguments: a `{name}` in one is filled in as
  *  the workflow runs. */
@@ -365,12 +366,14 @@ export function learnedWorkflowTool(run: LearnedWorkflowRun): ToolRegistration {
       const loops: LoopRow[] = [];
       // A replay's write the recording did not have (learn/replay-calls.ts) rides on the same entry, ran a node or not; so
       // does how the workflow ended (`ended`, LearnedEnded), the one thing a replay's outcome reads (workflow-first.ts
-      // pathMetrics): a replay run keeps its entry whatever ran, so a refusal before any node is read as one.
-      const keep = (signal: Context, ended?: LearnedEnded) => {
+      // pathMetrics). The entry is the call's record whatever ran (runner/workflow-calls.ts workflowCallsOf): its
+      // workflow's digest, who called it (the platform's call before the agent's first turn, WORKFLOW_FIRST_CALL, or the
+      // agent's own), so a refusal before any node is one call too (`refused`: it ran nothing, and the money rule counts
+      // it on no side), and a call stopped part way one with no `ended`.
+      const record = { call: ledger.call, workflow: flow.name, digest: workflowDigest(flow), caller: ledger.call === WORKFLOW_FIRST_CALL ? "platform" : "agent" };
+      const keep = (signal: Context, ended?: LearnedEnded, refused?: true) => {
         const skipped = run.replay?.skipped;
-        // A loop's exit counts too: a loop over an empty map ends no node, yet its row is the run's (metrics `loops`).
-        if (!trace.length && !loops.length && !skipped && !(run.replay && ended)) return undefined;
-        return api.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: LEARNED_NODES, data: { call: ledger.call, workflow: flow.name, nodes: trace, ...(loops.length ? { loops } : {}), ...(skipped ? { replay_skipped: skipped } : {}), ...(ended ? { ended } : {}) } as never })), signal).catch(() => undefined);
+        return api.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: LEARNED_NODES, data: { ...record, nodes: trace, ...(loops.length ? { loops } : {}), ...(skipped ? { replay_skipped: skipped } : {}), ...(ended ? { ended } : {}), ...(refused ? { refused } : {}) } as never })), signal).catch(() => undefined);
       };
       let said: Awaited<ReturnType<typeof runLearned>>;
       try {
@@ -379,21 +382,21 @@ export function learnedWorkflowTool(run: LearnedWorkflowRun): ToolRegistration {
         await keep(BACKGROUND_CONTEXT);
         throw error;
       }
-      await keep(context, said.ended);
+      await keep(context, said.ended, said.refused);
       return forModel(said.text, { isError: said.isError });
     },
   });
 }
 
 /** `flow` run on `input` for `run`: its output as its tool hands it back (learnedOutput), or why it did not run, and each of its nodes that ran (at most
- *  LEARNED_NODES_MAX), none for one refused before any node ran. Never throws, but on an abort. `ledger`: the tool call's,
+ *  LEARNED_NODES_MAX), none for one refused before any node ran (`refused`). Never throws, but on an abort. `ledger`: the tool call's,
  *  which each call node's paid requests are booked under, as a call of its own within it. `nodes`: where each node is
  *  added as it ends, the caller's to keep when the call is aborted (and so throws) part way. `nested`: the session's tools as calls nested in this one, which its MCP nodes run as; and the values its first run
  *  fixed (`memo`), so a rerun of the call (after a park, a crash) goes on from what its model, decision and call nodes
  *  answered then, its MCP calls with the arguments they were asked and approved with, each recorded one answered from its
  *  record, never sent twice. `loops`: where each loop's exit is added (LoopRow), never capped. */
-export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow, input: unknown, signal?: AbortSignal, ledger?: Ledger, nodes: LearnedNode[] = [], nested?: NestedCalls, loops: LoopRow[] = []): Promise<{ text: string; isError: boolean; nodes: LearnedNode[]; ended: LearnedEnded }> {
-  const refuse = (why: string) => ({ text: `The learned workflow ${flow.name} was not run: ${why}`, isError: true, nodes, ended: "failed" as const });
+export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow, input: unknown, signal?: AbortSignal, ledger?: Ledger, nodes: LearnedNode[] = [], nested?: NestedCalls, loops: LoopRow[] = []): Promise<{ text: string; isError: boolean; nodes: LearnedNode[]; ended: LearnedEnded; refused?: true }> {
+  const refuse = (why: string) => ({ text: `The learned workflow ${flow.name} was not run: ${why}`, isError: true, nodes, ended: "failed" as const, refused: true as const });
   if (!input || typeof input !== "object" || Array.isArray(input)) return refuse("its input must be a JSON object");
   const dsl = await import("@parcha/agentrun-dsl");
   // Checked again at the call, against the agent's own tools as its run has them, before any node runs: what merged under
@@ -551,7 +554,8 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
     const skipped = skippedWords();
     if (skipped) return skipped;
     if (result.status === "escalated") return { text: learnedText(handedBackText(flow.name, result.escalation, result.state, nodes)), isError: true, nodes, ended: "escalated" };
-    if (result.status !== "complete") return refuse(`it ended ${(result as { status: string }).status}`);
+    // It ran and ended neither way: failed, never a refusal (its nodes ran).
+    if (result.status !== "complete") return { text: `The learned workflow ${flow.name} was not run: it ended ${(result as { status: string }).status}`, isError: true, nodes, ended: "failed" };
     return { text: learnedText(learnedOutput(result.output)), isError: false, nodes, ended: "complete" };
   } catch (error) {
     if (signal?.aborted) throw error;

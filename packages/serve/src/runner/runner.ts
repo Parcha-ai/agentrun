@@ -19,6 +19,7 @@ import { HELD_COMMANDS } from "../computer-held.js";
 import { HAND_BACK } from "./hand-back.js";
 import { KINDS, withdrawnAnswers } from "./journal-kinds.js";
 import { journalEntries } from "./journal-reader.js";
+import { type BoundTimer, REAL_TIMER } from "./loop.js";
 import { type Claim, ClaimRefused, type Command, type Journal, type Loop, type LoopEnd, type LoopFactory, stopEnd, type StopReason } from "./loop-contract.js";
 import { FrameTooLarge } from "./run-channel.js";
 import { isFenced, type RunnerStore } from "./store-port.js";
@@ -30,7 +31,7 @@ import { keptBy, readKept } from "../workspace/computer-kept.js";
 import { cutDeep, heldRedactor, processSecretRedactor, type Redact } from "./redact.js";
 import { type LiveTickerOptions, withLiveTicker } from "./live-ticker.js";
 import { keepPresence, type Presence } from "./presence.js";
-import { flushTraces } from "../otel/tracer.js";
+import { flushTraces, genAiTracing } from "../otel/tracer.js";
 
 /** Tries of the re-read after a claim or release commit was answered Unanswered (the commit may have landed). */
 const UNKNOWN_READS = 5;
@@ -183,7 +184,7 @@ export interface RunnerOptions {
   claimGate?: (fresh: boolean) => Promise<string | undefined>;
   /** For tests: the claim deadline's clock (the deadline a claim not renewed in time is lost at, and the time its claimed
    *  until is reckoned from). Default: the real one. Nothing else in the runner reads it. */
-  clock?: { now(): number; setTimeout(fn: () => void, ms: number): unknown; clearTimeout(handle: unknown): void };
+  clock?: BoundTimer & { now(): number };
 }
 
 /** A runner's memory budget and its runs' weights, in MiB (RunnerOptions.memory). `weigh` answers each id it is given; an
@@ -305,11 +306,14 @@ export function startRunner(options: RunnerOptions): Runner {
     redact: given = processSecretRedactor(),
     now = Date.now,
     onBeat = () => {},
-    clock = { now: () => Date.now(), setTimeout: (fn: () => void, ms: number) => setTimeout(fn, ms), clearTimeout: (handle: unknown) => clearTimeout(handle as NodeJS.Timeout) },
+    clock = { now: () => Date.now(), ...REAL_TIMER },
   } = options;
   // The one instance every run's loop gets (LoopDeps.redact), able to hold what each claim opens from the store
   // (redact.ts holdClaimed): a stored key is cut wherever a key of the runner's environment is.
   const redact = heldRedactor(given);
+  // The process's tracing, made at its runner's start rather than at its first claim: on, it says so then, and where its
+  // spans go (otel/tracer.ts); off (no OTLP endpoint), nothing of OpenTelemetry loads and nothing is said.
+  void genAiTracing().catch(() => undefined);
   /** The first try whose wait is the cap (endRefused): 7 with the defaults (5 s × 2^6 = 320 s, over the 300 s cap). */
   const endRetryCapFrom = 1 + Math.ceil(Math.log2(endRetryCapMs / endRetryBackoffMs));
   const beat = () => {
@@ -1107,8 +1111,9 @@ export function startRunner(options: RunnerOptions): Runner {
       // - a parked run stopped or cancelled whose computer its park kept pinned to another runner, or whose kept row can't
       //   be read (keptElsewhere): the store gives a stop to any runner at once, never waiting on the pin, and this
       //   runner can't reach that machine.
-      //   A loop would take the kept row (takeKept) and try to attach it, orphaning it on that runner's host; ending here
-      //   leaves the row that runner's, whose own timer at its time, or its janitor once the run is final, ends it.
+      //   A loop would take the kept row (takeKept) and try to attach it, orphaning it on that runner's host. Ending here,
+      //   the run's end marks the row ending (run-end-computers.ts endingKept) before it deletes what its provider lists,
+      //   so no follow-up claim takes that machine back; that runner's own timer at its time, or its janitor, ends the row.
       // One read of those claims' rows, made only when the batch has a queued or a released run.
       const reread = claims.filter((claim) => claim.from === "queued" || claim.from === "running" || claim.from === "parked");
       const rows = reread.length ? await store.commandsOf(reread.map((claim) => ({ runId: claim.runId, after: 0 }))) : new Map<string, Command[]>();

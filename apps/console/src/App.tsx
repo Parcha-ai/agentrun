@@ -578,7 +578,7 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
   const agentName = (id: string) => names[id] ?? agents?.find((a) => a.agent_id === id)?.definition.name ?? (namesRead ? id : "");
   const c = caps as unknown as { harnesses: EditorCaps["harnesses"]; tools?: unknown; features?: { thinking?: string[] }; models?: { default?: string; source?: string; route_prefix?: string | null } } | null;
   // The server lists its tools as objects (name, available, missing).
-  const editorCaps: EditorCaps = { harnesses: c?.harnesses ?? [], tools: toolOffers(c?.tools), thinking: c?.features?.thinking ?? [], ...(typeof caps?.limits?.free_model_requests === "number" ? { freeRequests: caps.limits.free_model_requests } : {}) };
+  const editorCaps: EditorCaps = { harnesses: c?.harnesses ?? [], tools: toolOffers(c?.tools), thinking: c?.features?.thinking ?? [], ...(typeof caps?.limits?.free_model_requests === "number" ? { freeRequests: caps.limits.free_model_requests } : {}), places: placesOf(caps), mcp: !!caps?.features?.mcp_client, mcpHarnesses: caps?.features?.mcp_client?.harnesses };
   // The capabilities with a choice of provider (providers/1): Settings → Tools, and an agent's tool settings.
   const choices = toolChoices(c?.tools);
   // Each tool's permission (approvals/1): Settings → Tools, and an agent's tool settings.
@@ -877,13 +877,13 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
   // keys. Where the run goes is its definition's own place, else where the server runs one that names none (runsWhere:
   // the server's default place for a revision with a shell tool, else the runner). Not known (the server's places not
   // read yet), the bar stays.
-  const runPlace = runDefinition && selectedAgent ? runsWhere({ kind: selectedAgent.kind, definition: runDefinition as Agent["definition"] }, placesOf(caps))?.place : undefined;
+  const runPlace = runDefinition && selectedAgent ? runsWhere({ kind: selectedAgent.kind, definition: runDefinition as Agent["definition"] }, editorCaps.places)?.place : undefined;
   // The bar renders only in the Playground. With no agent picked there (no agents yet, or the agents still being read)
   // there is no run to read, only where a first agent would run: the new-agent form puts it on the server's default
   // place (newAgentPlace). So the bar goes only when that place is the runner, where a first agent on Claude Agent runs
   // on the login; on a box, or with the places not read yet, it stays, for every harness. A picked agent's run goes on
   // the login only for a model the login serves (loginServes): one naming an OpenRouter model still needs its key.
-  const noAgentOnRunner = placesOf(caps)?.defaultPlace.mode === "runner";
+  const noAgentOnRunner = editorCaps.places?.defaultPlace.mode === "runner";
   const onClaudeLogin = claudeSignedIn && caps?.models?.needs !== "model" && (!selectedAgent ? noAgentOnRunner : (runDefinition?.harness === LOGIN_HARNESS && loginServes(runDefinition.model) && runPlace?.mode === "runner"));
   const playgroundTarget = where.operation ? where.playgroundAgent : pick ?? where.playgroundAgent;
   // The playground's operation, first on its request row: the page's own row, or Start a run's beside its agent.
@@ -925,7 +925,7 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
             {settingsPage === "demo" ? <DemoPage on={demo} onChange={setDemo} v2={v2} go={go} />
               : where.settings === "harness-keys" ? <HarnessKeysPage v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} onChange={() => void readCaps()} />
               : where.settings === "api-keys" ? <ApiKeysPage v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} origin={location.origin} />
-              : where.settings === "tools" ? <ToolsPage v2={v2} choices={choices} gates={gates} harnesses={editorCaps.harnesses} mcp={!!caps?.features?.mcp_client} onSaved={readCaps} onOpen={readCaps} />
+              : where.settings === "tools" ? <ToolsPage v2={v2} choices={choices} gates={gates} harnesses={editorCaps.harnesses} mcp={!!editorCaps.mcp} onSaved={readCaps} onOpen={readCaps} />
               : where.settings === "mcp" ? <McpServersPage v2={v2} signIn={where.signIn} add={where.add} writable={secretsWritable} whyNot={secretsWhyNot} choices={choices} />
               : where.settings === "github" ? <GitHubPage v2={v2} returned={where.github} />
               : where.settings === "email" ? <EmailPage v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} />
@@ -987,12 +987,12 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
         : where.section === "agents"
         ? where.observation ? <ObservedSessionPage v2={v2} sessionId={where.observation} go={go} /> : where.nativeConnect ? <NativeConnections v2={v2} go={go} initialSource={where.connectionSource} />
           : where.agent === undefined ? <AgentsPage key={refreshed} v2={v2} archived={!!where.archived} go={go} learning={learningCap} />
-          : where.agent === null && !where.edit ? <BuildAgent origin={location.origin} v2={v2} caps={{ tools: editorCaps.tools, gates, places: placesOf(caps), mcp: !!caps?.features?.mcp_client, mcpHarnesses: caps?.features?.mcp_client?.harnesses }} />
-          : where.agent !== null && !where.edit ? <AgentPage key={where.agent} v2={v2} agentId={where.agent} tab={where.tab} learning={learningCap} routePrefix={c?.models?.route_prefix} harnesses={editorCaps.harnesses} efforts={efforts} limits={caps?.limits} places={placesOf(caps)} go={go} {...(demo ? { upload: demoUpload } : {})} />
+          : where.agent === null && !where.edit ? <BuildAgent origin={location.origin} v2={v2} caps={{ ...editorCaps, gates }} />
+          : where.agent !== null && !where.edit ? <AgentPage key={where.agent} v2={v2} agentId={where.agent} tab={where.tab} learning={learningCap} routePrefix={c?.models?.route_prefix} harnesses={editorCaps.harnesses} efforts={efforts} limits={caps?.limits} places={editorCaps.places} go={go} {...(demo ? { upload: demoUpload } : {})} />
           // A new decision agent's judge names the server's decision provider (agentForm's decisionProvider).
-          : <AgentEditPage key={where.agent === null ? "creating" : `agent:${where.agent}:${where.tool ?? ""}`} v2={v2} choices={choices} gates={gates} focusTool={where.tool} caps={{ ...editorCaps, routePrefix: c?.models?.route_prefix, decisionProvider: decisionProvider((caps as unknown as { workflows?: Parameters<typeof decisionProvider>[0] } | null)?.workflows), places: placesOf(caps), mcp: !!caps?.features?.mcp_client, mcpHarnesses: caps?.features?.mcp_client?.harnesses }} agentId={where.agent} go={go} />
+          : <AgentEditPage key={where.agent === null ? "creating" : `agent:${where.agent}:${where.tool ?? ""}`} v2={v2} choices={choices} gates={gates} focusTool={where.tool} caps={{ ...editorCaps, routePrefix: c?.models?.route_prefix, decisionProvider: decisionProvider((caps as unknown as { workflows?: Parameters<typeof decisionProvider>[0] } | null)?.workflows) }} agentId={where.agent} go={go} />
         // The form picks its lanes from the harnesses once, so it waits for the capabilities' first read.
-        : where.newRace ? (caps ? <RaceStart v2={v2} harnesses={editorCaps.harnesses} tools={editorCaps.tools} places={placesOf(caps)} go={go} />
+        : where.newRace ? (caps ? <RaceStart v2={v2} harnesses={editorCaps.harnesses} tools={editorCaps.tools} places={editorCaps.places ?? null} go={go} />
           : capsFailed ? <div className="p-5 md:p-8"><Banner tone="error" actions={<Button size="xs" onClick={() => void readCaps()}>Try again</Button>}>The server's harnesses could not be read, so there is nothing to pick a lane from yet.</Banner></div>
           : <RunSkeleton />)
         : where.race ? <Race key={where.race} v2={v2} label={where.race} />

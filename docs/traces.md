@@ -30,7 +30,10 @@ the traces endpoint (the one ending in `/integration/otlp/v1/traces`, taken as g
 
 Then open **Explore → Agents** in Sentry ([Sentry: Agents][sentry-agents]):
 
-- **Traces**: one trace per run. Its root is `invoke_agent {harness}`; under it, `chat {model}` for each model request
+- **Agents**: every span carries `gen_ai.agent.name`, the agent's name as you gave it, and `gen_ai.agent.id`, its id
+  ([GenAI agent spans][genai-agent]), so a run is listed under the agent that ran. The harness that ran it is
+  `agentrun.harness`.
+- **Traces**: one trace per run. Its root is `invoke_agent {agent name}`; under it, `chat {model}` for each model request
   and `execute_tool {tool}` for each tool call, in order, each with its duration and any error. A run that a runner
   took up again (a resume) has one `invoke_agent` span per claim, all in the same trace.
 - **LLM Calls**: each `chat` span with its provider, model and tokens: `gen_ai.usage.input_tokens` (the whole input,
@@ -85,11 +88,14 @@ header there ([Sentry: Collector][sentry-collector]).
 ## How spans leave
 
 Spans are sent in the background, so a run's end never waits on the collector or backend. A server or runner that stops
-waits at most 3 s to send what is left. A backend that is down costs one log line and the dropped spans; the run is not
-affected. A run is sampled whole or not at all (`OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG`), so a trace is never
+waits at most 3 s to send what is left. A runner with tracing on says so in its log as it starts, with the endpoint's
+origin alone: scheme, host and port, never its user, password, path, query, fragment or headers. A backend that is
+down costs the dropped spans and a log line with that origin and the time, then at most one line a minute counting the
+failed exports since the last; the run is not affected. A run is sampled whole or not at all (`OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG`), so a trace is never
 missing part of its run. `OTEL_SDK_DISABLED=true` turns tracing off even with an endpoint set.
 
 [genai]: https://github.com/open-telemetry/semantic-conventions-genai/releases/tag/v0.1.0
+[genai-agent]: https://github.com/open-telemetry/semantic-conventions-genai/blob/d0e74ba6c48bcc4ded473b1828a8212f06b23753/docs/gen-ai/gen-ai-agent-spans.md#L213-L272
 [otlp-env]: https://github.com/open-telemetry/opentelemetry-specification/blob/v1.62.0/specification/protocol/exporter.md
 [sentry-otlp]: https://github.com/getsentry/sentry-docs/blob/fba2d1a3c4cf875cf51395a981e0e561880f1e8f/docs/concepts/otlp/direct/traces.mdx
 [sentry-agents]: https://github.com/getsentry/sentry-docs/blob/fba2d1a3c4cf875cf51395a981e0e561880f1e8f/docs/product/agents/index.mdx
