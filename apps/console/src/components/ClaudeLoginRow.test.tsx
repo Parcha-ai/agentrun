@@ -250,6 +250,20 @@ describe("Settings → Model keys, Claude Code's login on this machine", () => {
     expect(page.row()!.querySelector('[role="alert"]')).toBeNull();
   });
 
+  it("a turn-on that failed before the row was switched off: its alert goes with the row and does not come back with it", async () => {
+    const { v2 } = server(() => OFF, () => json(500, { error: { code: "internal", message: "putClaudeLogin: the write failed" } }));
+    const page = await open(v2, undefined, true);
+    await act(async () => { page.row()!.querySelector<HTMLInputElement>('input[name="only_me"]')!.click(); });
+    await page.click(/^Turn on$/);
+    expect(page.row()!.querySelector('[role="alert"]')).not.toBeNull();
+    act(() => root!.render(createElement(KeysPage, { v2, writable: true, plan: createElement(ClaudeLoginRow, { v2, writable: true, available: false }) })));
+    await page.settle();
+    act(() => root!.render(createElement(KeysPage, { v2, writable: true, plan: createElement(ClaudeLoginRow, { v2, writable: true, available: true }) })));
+    await page.settle();
+    expect(page.row()).not.toBeNull();
+    expect(page.row()!.querySelector('[role="alert"]')).toBeNull();
+  });
+
   it("switched off on the server (404): no row; the Anthropic key says which plans include API credits", async () => {
     const { v2 } = server(() => json(404, { error: { code: "not_found", message: "getClaudeLogin: Claude Code's login on this machine is off on this server (AGENTRUN_CLAUDE_CODE_LOGIN=off)." } }), () => OFF);
     const page = await open(v2);
