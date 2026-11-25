@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve
+kind: fix
+---
+A kept desktop, phone or sandbox is never left running with nothing to end it. A run that resumes marks the machine's keep as being taken back instead of deleting it, and drops the mark once it holds the machine. If it can't reach the machine, it marks the keep ending, trying the write again when the store fails it. A keep still marked when the store never took that write, or when the server stopped mid-way, ends at its 10 minutes like any other. A park no longer writes over a keep that is ending or being taken back. A stop or cancel that ends a parked run marks its kept machine ending before it deletes it, so a follow-up message can't take that machine back mid-delete. A paired computer's token now travels from the server to a runner apart only as its SHA-256, never as itself, so a server and its runners apart must run the same version. The `503` a dialing machine or box gets when the server can't relay it no longer names the runner's internal host, port or socket error. The server's log keeps those details, and so does the refusal stored with the machine or box.
