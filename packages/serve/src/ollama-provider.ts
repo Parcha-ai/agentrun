@@ -313,9 +313,13 @@ type ChatLine = {
   error?: string;
 };
 
+/** What a request asks Ollama past pi-ai's own options (model-route.ts ollamaAsks): `format`, the JSON schema its answer is
+ *  held to (/api/chat's format); `think: false`, a thinking model asked not to think. */
+export type OllamaAsks = { format?: Record<string, unknown>; think?: false };
+
 /** `context` as /api/chat's body for `model`: the current system prompt first, each message in Ollama's shape (a call's
  *  arguments an object, a result `tool` with the tool's name, images as base64), and the current tools in its `tools`. */
-export function chatBody(model: Model<string>, context: TranscriptContext, options: SimpleStreamOptions | undefined): Record<string, unknown> {
+export function chatBody(model: Model<string>, context: TranscriptContext, options: (SimpleStreamOptions & OllamaAsks) | undefined): Record<string, unknown> {
   const collapsed = collapseSystemMessages(context);
   const system = getCurrentSystemPrompt(collapsed.messages);
   const tools = getCurrentTools(collapsed.messages);
@@ -338,21 +342,23 @@ export function chatBody(model: Model<string>, context: TranscriptContext, optio
     }
   }
   const window = Math.min(model.contextWindow, OLLAMA_NUM_CTX);
+  const topP = options?.samplingParams?.top_p;
   return {
     model: model.id,
     messages,
     ...(tools.length ? { tools: tools.map((tool) => ({ type: "function", function: { name: tool.name, description: tool.description, parameters: tool.parameters } })) } : {}),
     stream: true,
-    // A thinking model asked to reason thinks; asked nothing, Ollama's default.
-    ...(model.reasoning && options?.reasoning ? { think: true } : {}),
-    options: { num_ctx: window, ...(options?.maxTokens ? { num_predict: options.maxTokens } : {}), ...(options?.temperature === undefined ? {} : { temperature: options.temperature }) },
+    // A thinking model asked to reason thinks; asked not to (think false), does not; asked nothing, Ollama's default.
+    ...(model.reasoning && options?.reasoning ? { think: true } : model.reasoning && options?.think === false ? { think: false } : {}),
+    ...(options?.format ? { format: options.format } : {}),
+    options: { num_ctx: window, ...(options?.maxTokens ? { num_predict: options.maxTokens } : {}), ...(options?.temperature === undefined ? {} : { temperature: options.temperature }), ...(typeof topP === "number" ? { top_p: topP } : {}) },
   };
 }
 
 /** One request on /api/chat, its NDJSON read into pi-ai's events: text and thinking as they stream, each tool call whole,
  *  and the end with Ollama's counts as its usage (prompt_eval_count in, eval_count out), at the model's price ($0). An
  *  error line, a refused status or a broken stream ends in an error event; a stopped one in an aborted one. */
-function streamChat(model: Model<string>, context: TranscriptContext, options?: StreamOptions & SimpleStreamOptions): AssistantMessageEventStream {
+function streamChat(model: Model<string>, context: TranscriptContext, options?: StreamOptions & SimpleStreamOptions & OllamaAsks): AssistantMessageEventStream {
   const stream = createAssistantMessageEventStream();
   const output: AssistantMessage = { role: "assistant", content: [], api: model.api, provider: model.provider, model: model.id, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { ...ZERO, total: 0 } }, stopReason: "stop", timestamp: Date.now() };
   void (async () => {

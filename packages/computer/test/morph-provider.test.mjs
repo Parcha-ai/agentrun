@@ -111,6 +111,7 @@ test("the provider takes the key as an option, checks ssh2, fetch, the API URL a
 		"http://127.0.0.1:8080/api": /must be https/,
 		"not a url": /is not a URL/,
 		"https://cloud.morph.so/api?x=1": /takes no query or fragment/,
+		"https://cloud.morph.so/api?key=fake-test-key": /takes no query or fragment.* has none: https:\/\/cloud\.morph\.so$/,
 	};
 	for (const [apiUrl, words] of Object.entries(refusals)) {
 		assert.throws(

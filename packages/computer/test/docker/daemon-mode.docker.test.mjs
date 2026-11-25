@@ -41,7 +41,7 @@ describe("a Docker computer whose daemon was installed under umask 077", { skip:
 		chmodSync(installed, 0o755 & ~0o077);
 		assert.equal(statSync(installed).mode & 0o7777, 0o700);
 		cache = join(dir, "cache");
-		provider = new DockerProvider({ daemonPath: installed, daemonCache: cache });
+		provider = new DockerProvider({ env: process.env, daemonPath: installed, daemonCache: cache });
 	});
 
 	after(async () => {

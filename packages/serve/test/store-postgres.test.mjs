@@ -741,7 +741,9 @@ test("a runner refuses a schema not set up yet, and one a later build migrated p
   await sql(schema, "INSERT INTO schema_migrations (version, name, sha256, applied_at) VALUES ($1, 'later', 'x', 0)", known + 1);
   // Additive (unmarked): the runner floor stays, and a runner of this build runs on the schema ahead of it.
   const runner = await openPostgresStore({ url: PG_URL, schema, role: "runner" });
-  assert.deepEqual(await runner.schemaState(), { version: known + 1, runnerFloor: LAST_UNMARKED, known });
+  // The floor this build's migrations hold: the newest marked breaking, or LAST_UNMARKED.
+  const floor = Math.max(...migrationsIn().filter((m) => m.breaking || m.version <= LAST_UNMARKED).map((m) => m.version));
+  assert.deepEqual(await runner.schemaState(), { version: known + 1, runnerFloor: floor, known });
   await runner.close();
   await assert.rejects(openPostgresStore({ url: PG_URL, schema, role: "server" }), SchemaVersionUnknown, "the server does not open a later build's schema");
   // Breaking (marked): the floor rises past this build, and its runner is refused, as a schema it does not know.

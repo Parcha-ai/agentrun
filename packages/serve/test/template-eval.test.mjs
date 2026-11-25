@@ -1152,7 +1152,7 @@ test("graders read the answer as written: the last fenced json block, a target f
   assert.match(gradeDeterministic(regex, record('```json\n{"draft": {}}\n```'), []).reason, /has no field draft\.text/);
   assert.match(gradeDeterministic({ ...regex, expect: "no_match" }, record("no json"), []).reason, /has no fenced json block/);
   const used = { file: "t.md", type: "tool_used", tools: ["mcp:crm/update_contact"], expect: "not_called", args: { method: "update" } };
-  const calls = { mcpCalls: [{ tool: "mcp:crm/update_contact", arguments: { method: "create", body: "x" } }], calls: [{ tool: "mcp:crm/update_contact" }] };
+  const calls = { fakeLog: [{ tool: "mcp:crm/update_contact", arguments: { method: "create", body: "x" } }], calls: [{ tool: "mcp:crm/update_contact" }] };
   assert.equal(gradeDeterministic(used, record("", calls), ["crm"]).pass, true, "the fake's log, with its arguments, for a faked server");
   assert.equal(gradeDeterministic({ ...used, args: { method: "create" } }, record("", calls), ["crm"]).pass, false);
   const fixture = { server: "crm", description: "", tools: { get: { description: "", input: { type: "object" }, answers: [{ when: { id: "7", tags: ["a"] }, result: { content: [{ type: "text", text: "seven" }] } }], default: { content: [{ type: "text", text: "none" }], isError: true } } } };

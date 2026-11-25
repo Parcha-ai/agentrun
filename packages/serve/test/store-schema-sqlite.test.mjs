@@ -39,6 +39,8 @@ for (const need of SQLITE_RUNNER_NEEDS) {
       for (const { name } of db.prepare(`SELECT name FROM pragma_index_list('${need.table}')`).all()) {
         if (db.prepare(`SELECT 1 FROM pragma_index_info('${name}') WHERE name = ?`).get(column) && !name.startsWith("sqlite_autoindex")) db.exec(`DROP INDEX "${name}"`);
       }
+      // A trigger that names the column came with it (schema.ts RUN_LAUNCH_CENSUS_ERASED): an earlier build had none.
+      for (const { name } of db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = 'run_launch_census_erased' AND tbl_name = ? AND sql LIKE ?").all(need.table, `%${column}%`)) db.exec(`DROP TRIGGER "${name}"`);
       db.exec(`ALTER TABLE ${need.table} DROP COLUMN ${column}`);
     }
     db.close();

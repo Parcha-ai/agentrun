@@ -128,7 +128,10 @@ test("each request is priced as read: its own model or else the session's, its 1
     return { total: cost.input * usage.input + 0.1 };
   };
   const [a, b] = await parseHome(home, { sources: ["fixture"], readers: { fixture: reader }, catalog: prices, calculateCost: cost }).then((out) => out.sort((x, y) => (x.file < y.file ? -1 : 1)));
-  assert.deepEqual(asked, [
+  // Each request priced at its own price, with what it has (a request may be priced more than once: when it is read,
+  // and again at the totals when its source is read again).
+  const distinct = [...new Map(asked.map((call) => [JSON.stringify(call, (_k, v) => (Object.is(v, -0) ? "-0" : v)), call])).values()];
+  assert.deepEqual(distinct, [
     { price: 10, keys: ["cacheWrite1h"], input: 1, output: 2 },
     { price: 20, keys: [], input: 5, output: 6 },
     { price: 20, keys: [], input: 0.5, output: -0 },

@@ -105,16 +105,56 @@ them). A first compile's earns the one recompile, as a check's hold does; a reco
 
 A new revision is checked once before it serves (`runner/promotion.ts` startCheck, settleCheck). The first run that
 lays it replays it on the inputs of the agent's last `compile_after` completed runs it fits (one replay run each, at
-workflow cost, one check at a time), and the agent takes the runs meanwhile. Each input is scored against the agent's
-own recorded answer to it (`sameAnswer`): no grade and no teacher is read. The two answers are compared on the fields
+workflow cost, one check at a time), and the agent takes the runs meanwhile. The check judges the draft field by field
+(`learn/field-check.ts` check): each field of each input it answered alone against that field's best known answer, a
+label (none is fed yet), else the expected answer of the agent run's newest grade (`Grade.expected`), else the agent's
+own recorded answer to it; no teacher is read. Fields are split only where the definition names them (agree_on, the
+owner's own names): there each path is judged against the grade's value at that path. With no agree_on there is one
+field, the whole answer (`answer`), judged against the agent's answer with the grade's expected keys written over it
+when both are JSON objects, else against the grade's expected answer whole (`learn/promote.ts` knownAnswerText: equal,
+or the same decision by the grader's verdict on the draft and that answer, which the replay run asks; the grade says
+whether the agent's own answer was right). The agent said `{"answer":42,"note":"checked"}` and the grade expects
+`{"answer":41}`: a draft of `{"answer":41,"note":"checked"}` is right. A disagreement still shows the recompile the
+grade's own expected answer. With no grade, it is judged against the agent's answer (equal, or the grader's same
+decision). No field name is ever taken from a
+grade's keys: they are a person's data, and a run's purge leaves them nowhere in the record. A grade with no expected answer still says something: not
+correct, on the whole answer, makes a draft that repeats it wrong there, and leaves any other answer unjudged (under
+agree_on it names no field, so it changes nothing); correct changes nothing (the agent's answer is known as with no
+grade, at the same bar: a thumbs-up never makes the check stricter). A draft whose answer is the one a grade marked
+wrong (sameAnswer: equal as JSON or trimmed text, in any dress) is never right on that input, whatever the grader says. A
+grade that contradicts itself (marked wrong, yet its expected answer written over the agent's is the agent's answer)
+gives that input no known answer: unjudged. Each replay's record keeps the grade it was judged with
+(`replay.compared.graded`, null for none; with equal answers too, where no model is asked), and the check judges that
+input on it: a grade given after the replay ended counts from the next check, never makes this one's pair stale. A
+learning reset deletes the grades and keeps the replay runs: their records and journals keep the grade content they
+were judged with, as their grader prompts already did. An unjudged input is never right: not on every field at once, and a field judged on fewer than `alone_min` of
+the inputs that carried it fails. A field passes on all its known inputs pooled, wherever each one's known answer came
+from: at least `agree_min` of them right (an input known only from the agent counts at the agent's self-agreement on
+the field less the margin instead, where that was measured; none is yet). Its inputs with a known answer (labels and
+grades together) keep their own bar too: at least `agree_min` of them right, and within `margin` (0.02) of the agent's
+own accuracy there, one miss always allowed in each (misses at most max(1, floor((1 - agree_min) n)); a correction,
+where the agent was wrong, is no free pass). So agent-known inputs never carry graded ones the draft got wrong: 80
+agent-known right and 20 graded wrong hold, while one graded input missed among 19 the agent knows serves, and 2 of 3
+labels right where the agent had 3 serves among 97 agent-known. `check.fields.<f>.by` keeps each source's counts, with
+whether it would pass alone. It serves when at least `alone_min` of the inputs were answered alone, at least
+`agree_min` of those were right on every field at once (the joint floor: misses spread over several fields add up), and
+every field passes; a hold names the failing fields (`check.fields`, each with its counts and reason), or its fields
+together when only the joint floor fell short, and each disagreement the fields it had wrong, with the known answer of
+each a label or grade gave (`expected`, its value cut and redacted, and its source), which the recompile is asked to
+say. An unjudged input is listed too, its field marked `unknown` with no value: the recompile is told the owner marked
+the agent's answer wrong without giving the right one. A purge blanks each value and keeps the field and source. The recompile prompt is not reached: it quotes each disagreement's input, the agent's answer and the grade's expected value, and it is asked in the agent's next user run, whose journal keeps it; purging the graded run leaves that copy, as it leaves the traces of other runs a compile prompt quotes. Phase 4d moves the compile turn into a learning run of its own, made from the runs it quotes, so a purge of any of them deletes it. The record counts
+the agent's side too (`check.agent_agreed`: of the inputs answered alone, those the agent's own answers had right on
+every field against the same known answers), which the cost summary's `agent_pct` and a replay's `agent_acc` read. A
+connected agent's turns kept before the per-field tally count each field from the same turns as `alone`. No new
+agree_on path may hold a `__proto__` segment (a saved definition keeps its setting on read). Against the agent, the answers are compared on the fields
 that say the decision, as the definition declares them in `learning.agree_on` (`learning-setting.ts` agreeOnOf): dotted
 paths into the answer's JSON object (`verdict.decision`, `["mcc", "riskTier"]`), each segment an object's own key; each
 path must resolve in both answers' values (bare JSON, a whole fence, or the last fenced json block) to equal values, and
 a path that resolves in neither or in only one (a key missing, a segment through an array, text or null) disagrees.
 Without it, two answers equal as JSON or as trimmed text agree with no model call, and two that differ are read by the
 grader (`learn/promote.ts` gradeAnswers, `runner/compare-end.ts`): the agent's fast model (its `model_tiers.fast`, else
-AGENT_MODEL_FAST), asked once by the replay run itself at its end whether its answer and the agent's reach the same
-decision, its system text GRADER_PROMPT and its reply `{"same": boolean, "differs_on": string | null}`. Its request goes
+AGENT_MODEL_FAST), asked once by the replay run itself at its end whether its answer and the known one (the agent's, or
+for a graded run the known answer above) reach the same decision, its system text GRADER_PROMPT and its reply `{"same": boolean, "differs_on": string | null}`. Its request goes
 through the run's own session on a tier proxy of its own (route `grader`), judged by the run's cap before it leaves and
 booked as the run's spend, so it is the check's cost (`check_usd`); a cap refusal never parks the run. It is asked once
 more on a transport failure alone. Its wait is raced, as the end-of-run turn's is, against the run's stop or cancel, a
@@ -140,14 +180,16 @@ with no fast model. The record keeps `check.agree_on` when it compared paths, an
 said on mcc and riskTier": agree_on asks no model, free and exact where the definition can name the fields. Of the
 inputs it ran on, `alone` is the share
 it answered with no escalate and no failed step (a replay obeys an escalate, so an input one of them hands back is no
-answer alone), and `agreement` the share of those that say what the agent said. A newer revision that comes while a
+answer alone), and `agreed` counts those right on every field. A newer revision that comes while a
 check runs waits and records nothing; the claim after the running check is decided starts the newest. It is promoted
-when agreement is at least `learning.agree_min` (0.8) and alone at least `learning.alone_min` (0.7). Under either bar
+when alone is at least `learning.alone_min` (0.7), `agreed` is at least `learning.agree_min` (0.8) of `alone`, and
+every field passes (above). Otherwise
 it is held, and the agent's next run it fits asks one revision with the inputs it did not agree on as data (each one's
 input, the agent's answer, and the draft's answer or why it handed it back); that revision is checked the same way.
 Held again, it stops (`check.stopped`): the agent keeps the runs and nothing compiles again until a hold or its owner
 acts. The record keeps `check`: the bar it was held to, `n`, `agreed`, `alone`, the runs it read, the tools that stopped
-skipped inputs (`skipped_tools`) and, on a hold, the disagreements. A promotion by check is never moved by grades. The
+skipped inputs (`skipped_tools`), each field's verdict (`fields`) and, on a hold, the disagreements. A promotion by
+check is never moved by its served runs' grades. The
 inputs are the agent's last `compile_after` runs of its own picked first, however many runs its workflow served since.
 Every reserved input counts in `n`: one whose replay run was never created, or never ended, by the check's deadline is a
 failed input, never left out, in `n` and in `outcomes` alike (the record's `unstarted` counts the never created; every

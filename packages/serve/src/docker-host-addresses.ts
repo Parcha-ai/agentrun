@@ -164,18 +164,36 @@ export function unionOf(read: HostRead, named: readonly string[] | undefined): {
 }
 
 /** One read per process, for each environment's docker (the binary PATH finds and the daemon it reaches), kept once it
- *  succeeds: a server and the runner beside it share it, and a failed read is tried again at the next ask. A read this
- *  call starts ends at `signal` (readHostAddresses). */
+ *  succeeds: a server and the runner beside it share it, and a failed read is tried again at the next ask. A read in
+ *  flight ends when any caller's `signal` aborts, whoever started it (the runner beside the server starts one with no
+ *  signal): the server's stop then waits for the read's removal by name, not for the read's own bound. */
 const reads = new Map<string, Promise<HostRead>>();
+const cuts = new Map<string, AbortController>();
 export function hostAddressesOnce(env: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<HostRead> {
   const key = envKey(env);
-  const known = reads.get(key);
-  if (known) return known;
-  const read = readHostAddresses(env, undefined, undefined, undefined, signal).then((result) => {
-    if ("why" in result) reads.delete(key);
-    return result;
-  });
-  reads.set(key, read);
+  let read = reads.get(key);
+  if (!read) {
+    const cut = new AbortController();
+    cuts.set(key, cut);
+    read = readHostAddresses(env, undefined, undefined, undefined, cut.signal).then((result) => {
+      if ("why" in result) reads.delete(key);
+      cuts.delete(key);
+      return result;
+    });
+    reads.set(key, read);
+  }
+  const cut = cuts.get(key);
+  if (signal && cut) {
+    if (signal.aborted) cut.abort();
+    else {
+      // The server's retry asks again on its one stop signal for every read while Docker stays down: the handler goes
+      // when this read settles, or a long outage piles one up per read.
+      const onAbort = () => cut.abort();
+      signal.addEventListener("abort", onAbort, { once: true });
+      const drop = () => signal.removeEventListener("abort", onAbort);
+      void read.then(drop, drop);
+    }
+  }
   return read;
 }
 

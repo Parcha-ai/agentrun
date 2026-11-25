@@ -4,11 +4,15 @@ import { ChatGPTSignIn, WhatRunsHere } from "@/components/ChatGPTSignIn";
 import { KEY_ADVICE, KeyForm } from "@/components/KeysPage";
 import { RunError } from "@/components/RunError";
 import { Button } from "@/components/ui/button";
-import { isPlanModel, ownModel, planRuns } from "@/lib/chatgpt";
+import { isPlanModel, planRuns } from "@/lib/chatgpt";
 import { type Capabilities, type Client, ClientError } from "@/lib/client";
 import type { HarnessInfo } from "@/lib/models";
+import { withoutRoutePrefix } from "@/lib/routePrefix";
 import { secretLabel, type SecretsWhyNot, WHY_NOT_WORDS } from "@/lib/secrets";
 import type { ApiError, ChatGPTView, ToolKey } from "@/lib/v2";
+
+/** What names a gateway's model: serve's own words for it (chooseModel), which ModelKeyCard.chatgpt.test holds them to. */
+const GATEWAY_NAMES_NONE = "Name the gateway's model in AGENT_MODEL where AgentRun starts, or pick its models in Settings → Model keys → Use a model gateway.";
 
 const apiError = (e: unknown): ApiError => (e instanceof ClientError ? e.toApiError() : { code: "network", message: e instanceof Error ? e.message : String(e), retryable: false });
 
@@ -22,8 +26,11 @@ const apiError = (e: unknown): ApiError => (e instanceof ClientError ? e.toApiEr
 /** `plan`: the server's ChatGPT sign-in (GET /settings/chatgpt), null on a server without it. Offered, the card leads with
  *  "Continue with ChatGPT", the keys behind "Add a key" beside it; `onPlan` hears each state the sign-in moves to (the
  *  page keeps the card while one waits), and once signed in the card says who and OpenAI's words on usage until `onDone`.
- *  `harnesses`: the capabilities' harnesses, listed as what runs here. */
-export function ModelKeyCard({ v2, needs, model, onSaved, writable, whyNot = "sign_in", plan, onPlan, onDone, harnesses, source, routePrefix }: { v2: Client; needs?: "key" | "model" | null; model?: string | null; onSaved?: () => void; writable: boolean; whyNot?: SecretsWhyNot; plan?: ChatGPTView | null; onPlan?: (v: ChatGPTView) => void; onDone?: () => void; harnesses?: readonly HarnessInfo[]; source?: Capabilities["models"]["source"]; routePrefix?: string | null }) {
+ *  `harnesses`: the capabilities' harnesses, listed as what runs here. On a gateway server (`source` `gateway`) whose
+ *  default isn't the plan's, neither the sign-in nor a key runs an agent: the card says what does, the gateway's model,
+ *  or why serve refuses the gateway's address (GET /v2/settings/model-gateway's `problem`), read again with each new read
+ *  of the capabilities (`capsRead`, a new value each time: an address fixed at a restart then stops reading refused). */
+export function ModelKeyCard({ v2, needs, model, onSaved, writable, whyNot = "sign_in", plan, onPlan, onDone, harnesses, source, routePrefix, capsRead }: { v2: Client; needs?: "key" | "model" | null; model?: string | null; onSaved?: () => void; writable: boolean; whyNot?: SecretsWhyNot; plan?: ChatGPTView | null; onPlan?: (v: ChatGPTView) => void; onDone?: () => void; harnesses?: readonly HarnessInfo[]; source?: Capabilities["models"]["source"]; routePrefix?: string | null; capsRead?: unknown }) {
   const [rows, setRows] = useState<ToolKey[] | null>(null);
   const [loadError, setLoadError] = useState<ApiError | null>(null);
   const [pick, setPick] = useState<string | null>(null);
@@ -32,17 +39,31 @@ export function ModelKeyCard({ v2, needs, model, onSaved, writable, whyNot = "si
   useEffect(() => { setPlanView(plan ?? null); }, [plan]);
   const [keysOpen, setKeysOpen] = useState(false);
   const asked = useRef(0);
+  // The plan's own model (chatgpt/<id>, the default once signed in, or AGENT_MODEL's) names no key, also behind a gateway,
+  // which sends it under its route prefix (agent-model/chatgpt/<id>).
+  const planDefault = isPlanModel(withoutRoutePrefix(model, routePrefix));
+  // Behind a gateway, a default that isn't the plan's runs on the gateway alone: signing in gives no default there (serve's
+  // settingsModel) and the provider keys are not used, so neither is offered. What stops it is the gateway's: an address
+  // serve refuses (GET /v2/settings/model-gateway's `problem`, a run's words), or no model named. Until that view is read
+  // (undefined, also when the read fails) the two look alike, so the card names no fix.
+  const onGateway = source === "gateway" && needs === "key" && !planDefault;
+  const [gateway, setGateway] = useState<{ problem: string | null; fromEnv: boolean } | undefined>(undefined);
+  useEffect(() => {
+    if (!onGateway) return;
+    let live = true;
+    v2.modelGateway().then((v) => { if (live) setGateway({ problem: v.problem, fromEnv: v.source === "env" }); }, () => { if (live) setGateway(undefined); });
+    return () => { live = false; };
+  }, [v2, onGateway, capsRead]);
   const load = () => {
     const n = ++asked.current;
     v2.listToolKeys()
       .then((v) => { if (n === asked.current) { setRows(v.keys.filter((k) => k.kind === "model")); setLoadError(null); } })
       .catch((e) => { if (n === asked.current) setLoadError(apiError(e)); });
   };
-  useEffect(() => { if (needs !== "model") load(); }, [v2, needs]); // eslint-disable-line react-hooks/exhaustive-deps
-  // The default's provider, when the server's default names one of these keys: that key alone runs it. The plan's own
-  // model (chatgpt/<id>, the default once signed in, or AGENT_MODEL's) names no key, also behind a gateway, which sends it
-  // under its route prefix (agent-model/chatgpt/<id>). A gateway's other defaults keep the prefix as their "provider".
-  const provider = model?.includes("/") && !isPlanModel(ownModel(model, routePrefix)) ? model.slice(0, model.indexOf("/")) : undefined;
+  useEffect(() => { if (needs !== "model" && !onGateway) load(); }, [v2, needs, onGateway]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The default's provider, when the server's default names one of these keys: that key alone runs it. The plan's model
+  // names none. A gateway's other defaults keep the prefix as their "provider", which names no key either.
+  const provider = model?.includes("/") && !planDefault ? model.slice(0, model.indexOf("/")) : undefined;
   const required = rows?.find((k) => k.id === provider);
   const offered = required ? [required] : rows;
   const picked = rows?.find((k) => k.id === pick);
@@ -50,8 +71,8 @@ export function ModelKeyCard({ v2, needs, model, onSaved, writable, whyNot = "si
   const own = picked?.fields.filter((f) => picked.secrets.find((s) => secretLabel(s.name) === f.name)?.source !== "env") ?? [];
   // The ChatGPT sign-in, offered where it gives the server its model: not for a default the server names (AGENT_MODEL),
   // which only its provider's key runs. Offered, the keys wait behind "Add a key".
-  const planOffered = !!planView && needs !== "model" && !provider;
-  const keysShown = needs !== "model" && (!planOffered || keysOpen);
+  const planOffered = !!planView && needs !== "model" && !provider && !onGateway;
+  const keysShown = needs !== "model" && !onGateway && (!planOffered || keysOpen);
   const moved = (v: ChatGPTView) => { setPlanView(v); onPlan?.(v); };
   const whatRuns = harnesses && <WhatRunsHere harnesses={harnesses} />;
 
@@ -75,9 +96,19 @@ export function ModelKeyCard({ v2, needs, model, onSaved, writable, whyNot = "si
       <div className="flex gap-3">
         <KeyRound className="mt-1 size-4 shrink-0 text-warning-text" aria-hidden />
         <div className="min-w-0 flex-1 space-y-3">
-          <h2 className="text-prose font-semibold">{needs === "model" ? "This server's default model doesn't run" : planOffered ? "Sign in with ChatGPT or add a model key to run agents" : "Add a model key to run agents"}</h2>
+          <h2 className="text-prose font-semibold">{needs === "model" ? "This server's default model doesn't run" : onGateway ? (gateway?.problem ? "This server's model gateway is refused" : gateway && !model ? "Name the gateway's model to run agents" : "This server's model gateway runs no model yet") : planOffered ? "Sign in with ChatGPT or add a model key to run agents" : "Add a model key to run agents"}</h2>
           {needs === "model"
             ? <p className="text-body text-muted-foreground">The server's AGENT_MODEL names a model it doesn't know, so an agent that names no model can't run. Set AGENT_MODEL to a provider/model-id where the server starts, or name a model in each agent.</p>
+            : onGateway
+            ? gateway?.problem
+              ? <>
+                  <p className="text-body text-muted-foreground">AgentRun refuses the address of this server's model gateway, so an agent that names no model can't run:</p>
+                  <p className="font-mono text-small text-warning-text" role="status">{gateway.problem}</p>
+                  <p className="text-body text-muted-foreground">{gateway.fromEnv ? "It is set where AgentRun starts (AGENT_MODEL_BASE_URL): change it there." : "Change it in Settings → Model keys → Use a model gateway."}</p>
+                </>
+              : gateway && !model
+              ? <p className="text-body text-muted-foreground">This server sends its models to a gateway and names none of them, so an agent that names no model can't run. {GATEWAY_NAMES_NONE}</p>
+              : <p className="text-body text-muted-foreground">This server sends its models to a gateway, and an agent that names no model can't run there yet. Settings → Model keys → Use a model gateway says why.</p>
             : required
             ? <p className="text-body text-muted-foreground">This server's default model is <span className="font-mono">{model}</span>, and no {required.label} key is set, so an agent that names no model can't run. Save the {required.label} key: such an agent then runs on that model.</p>
             : planOffered

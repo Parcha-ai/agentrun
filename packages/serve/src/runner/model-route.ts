@@ -20,9 +20,10 @@ import type { Wire } from "@parcha/agentrun-kernel";
 import { onOpenRouter, openRouterAttribution, ROUTE_ORIGIN, streamErrorOf } from "@parcha/agentrun-kernel/host";
 import type { ToolsAs } from "../local-models.js";
 import { chooseModel, FAUX_PROVIDER, MODEL_PROVIDER, type PinnedModel, runModels, type Tier } from "../model.js";
-import { OLLAMA_PROVIDER } from "../ollama-provider.js";
+import { OLLAMA_PROVIDER, type OllamaAsks } from "../ollama-provider.js";
 import { gatewayHeadersAt, providerFor } from "../provider.js";
 import { keepText, type Redact, runnerSecrets, secretRedactor } from "./redact.js";
+import { type EdgeAsks, responsesFetch } from "./responses-fetch.js";
 import { callsOfText, type PiContext, toolsAsText } from "./text-tools.js";
 
 /** What a request on a model costs, USD per million tokens, as pi-ai's catalog lists it (tiers included). */
@@ -187,6 +188,7 @@ function tapped(upstream: typeof fetch | undefined): { fetch: typeof fetch; kept
 export function messagesFetch(models: PiModels, target: PiModel, redact: Redact = keepText, upstream?: typeof fetch, env: NodeJS.ProcessEnv = process.env): typeof fetch {
   const attribution = piOnOpenRouter(target) ? openRouterAttribution(env) : {};
   const particle = target.provider === "particle";
+  const ollama = target.provider === OLLAMA_PROVIDER;
   // Side requests without a Pi session id retain affinity for this route's lifetime.
   const cacheSession = particle ? randomUUID() : undefined;
   // A tool call's id as Messages carries it (letters, digits, _ and -), and back to the provider's own on its result.
@@ -196,7 +198,7 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
     providerIds.set(safe, id);
     return safe;
   };
-  return (async (_url: unknown, init: { body?: unknown; signal?: AbortSignal } = {}) => {
+  return (async (_url: unknown, init: { body?: unknown; signal?: AbortSignal; edgeAsks?: EdgeAsks } = {}) => {
     const body = JSON.parse(String(init.body ?? "{}")) as MessagesRequest;
     const built = contextOf(body, target, (id) => providerIds.get(id) ?? id) as PiContext;
     // A model that takes its tools as text (its catalog entry's toolsAs): its tools in its system prompt, every call and
@@ -210,7 +212,7 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
     // Particle's cache affinity: the session's id (the Messages hop's metadata.user_id), else this route's own; an
     // empty id is a caller that asked for no cache hint.
     const affinity = !particle ? {} : body.metadata?.user_id === "" ? { cacheRetention: "none" } : { sessionId: body.metadata?.user_id || cacheSession };
-    const streamOptions = { ...affinity, ...(body.max_tokens ? { maxTokens: body.max_tokens } : {}), ...(level ? { reasoning: level } : {}), ...(init.signal ? { signal: init.signal } : {}), ...(sendWith ? { fetch: sendWith } : {}), ...(Object.keys(attribution).length ? { headers: attribution } : {}) };
+    const streamOptions = { ...affinity, ...(body.max_tokens ? { maxTokens: body.max_tokens } : {}), ...(level ? { reasoning: level } : {}), ...(ollama && init.edgeAsks ? ollamaAsks(init.edgeAsks) : {}), ...(init.signal ? { signal: init.signal } : {}), ...(sendWith ? { fetch: sendWith } : {}), ...(Object.keys(attribution).length ? { headers: attribution } : {}) };
     const events = models.streamSimple(target as never, context as never, streamOptions as never);
     const encoder = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({
@@ -488,10 +490,17 @@ export function forMessagesClients(route: typeof fetch): typeof fetch {
 
 /** The route's translation onto each wire it translates a model onto (wires.ts TRANSLATED), by wire: what a harness's
  *  proxy on that wire forwards with for `model` (`provider/model-id`), made on `env`. Anthropic's Messages: the route's
- *  own Messages fetch (messagesFetch), as a Messages client asks it (forMessagesClients). provider.ts routedProvider reads
- *  it; a wire with no entry has no translation, whatever TRANSLATED says. */
+ *  own Messages fetch (messagesFetch), as a Messages client asks it (forMessagesClients). OpenAI's Responses: that same
+ *  fetch under a Responses edge (responsesFetch). provider.ts routedProvider reads it; a wire with no entry has no
+ *  translation, whatever TRANSLATED says. */
 export const TRANSLATORS: Readonly<Partial<Record<Wire, (model: string, env: NodeJS.ProcessEnv) => Promise<typeof fetch>>>> = Object.freeze({
   "anthropic-messages": async (model: string, env: NodeJS.ProcessEnv) => forMessagesClients((await routeOf(model, env)).fetch!),
+  // OpenAI's Responses: the same Messages fetch under a Responses edge (responses-fetch.ts), a model that reasons asked its
+  // effort by name as on Messages.
+  "openai-responses": async (model: string, env: NodeJS.ProcessEnv) => {
+    const route = await routeOf(model, env);
+    return responsesFetch(route.fetch!, { reasons: route.like?.reasoning === true });
+  },
 });
 
 type StreamBlock = { type: string; text?: string; thinking?: string; signature?: string; input?: unknown; [key: string]: unknown };
@@ -573,6 +582,19 @@ const LEVELS_BY_NAME = { reasoning: true, adaptiveThinking: true, thinkingLevelM
 function levelOf(body: MessagesRequest): (typeof NAMED_LEVELS)[number] | undefined {
   const effort = body.output_config?.effort;
   return body.thinking?.type === "adaptive" && (NAMED_LEVELS as readonly unknown[]).includes(effort) ? (effort as (typeof NAMED_LEVELS)[number]) : undefined;
+}
+
+/** What the Responses edge asks an Ollama model past the Messages body (responses-fetch.ts EdgeAsks, on the in-process
+ *  call's init, never the body) as pi-ai's options and ollama-provider.ts chatBody read them: the format and think as
+ *  they are, temperature as pi-ai's own, top_p as its samplingParams. Read on an Ollama model alone; a Messages client's
+ *  own request carries none, so the Messages wire is as it was. */
+function ollamaAsks(asks: EdgeAsks): OllamaAsks & { temperature?: number; samplingParams?: { top_p: number } } {
+  return {
+    ...(asks.format ? { format: asks.format } : {}),
+    ...(asks.temperature === undefined ? {} : { temperature: asks.temperature }),
+    ...(asks.top_p === undefined ? {} : { samplingParams: { top_p: asks.top_p } }),
+    ...(asks.think === false ? { think: false as const } : {}),
+  };
 }
 
 /** A part of a pi-ai message, as the context carries it. */
