@@ -1579,6 +1579,44 @@ test("a renewal whose save fails to read the login's file (an I/O error, not the
   assert.deepEqual(listing(login.dir), [".credentials.json"], "no temp file or lock left");
 });
 
+test("two asks on one held pair: the first saves it, and the second, finding that same pair in the file, says it was already saved, never a newer pair (another holder's takeover), and is handed its token", { timeout: 20_000 }, async (t) => {
+  assert.equal(typeof tokens.renewLogin, "function", "the runner's renewal (renewLogin)");
+  const { login, write } = loginFolder(t);
+  const now = 1_900_000_000_000;
+  const file = join(login.dir, ".credentials.json");
+  const old = { access: fake("access-old"), refresh: fake("refresh-old") };
+  const next = { access: fake("access-new"), refresh: fake("refresh-new") };
+  write(oauthOf(old.access, now + 60_000, old.refresh));
+  const endpoint = await rotatingEndpoint(t, new Map([[old.refresh, next]]));
+  // The save's read of the file after the post fails once (EIO): the new pair is held unsaved.
+  let failNext = false;
+  const fetch = async (url, init) => {
+    const answer = await endpoint.fetch(url, init);
+    if (JSON.parse(init.body).refresh_token === old.refresh) failNext = true;
+    return answer;
+  };
+  const readFile = async (path) => {
+    if (failNext) {
+      failNext = false;
+      throw Object.assign(new Error(`EIO: i/o error, read '${path}'`), { code: "EIO" });
+    }
+    return fsp.readFile(path, "utf8");
+  };
+  const lines = [];
+  const renew = tokens.renewLogin({ fetch, now: () => now, log: (fields) => lines.push(fields), readFile });
+  assert.equal((await renew(login, old.access, undefined))?.access, next.access, "renewed, its pair held unsaved");
+  assert.equal(JSON.parse(readFileSync(file, "utf8")).claudeAiOauth.refreshToken, old.refresh, "unsaved: the file still holds the spent refresh token");
+  lines.length = 0;
+  // Two asks on the held pair at once: each takes the held pair at its start, and their saves take turns under the
+  // refresh locks, so the second reads the file after the first wrote the held pair into it.
+  const asks = await Promise.all([renew(login, old.access, undefined), renew(login, old.access, undefined)]);
+  assert.deepEqual(lines, [{ claude_login: "renewed", saved: "yes" }, { claude_login: "renewed", saved: "yes", reason: "already_saved" }], "the second save of one held pair says the pair was already saved, never reason newer, which reads as another holder's takeover");
+  assert.deepEqual(asks.map((renewed) => renewed?.access), [next.access, next.access], "both asks are handed the held pair's token");
+  assert.equal(JSON.parse(readFileSync(file, "utf8")).claudeAiOauth.refreshToken, next.refresh, "the held pair saved");
+  assert.deepEqual(endpoint.posts.map((post) => post.body.refresh_token), [old.refresh], "nothing posted again");
+  assert.deepEqual(listing(login.dir), [".credentials.json"], "no temp file or lock left");
+});
+
 test("an ask that reads the old pair while the renewal that rotated its refresh token is saving the new pair joins that renewal and is handed the new token, never refused for the refresh token that renewal spent; once saved, an ask that read the old pair is sent back to the file, and a spent refresh token is still never posted again", { timeout: 20_000 }, async (t) => {
   assert.equal(typeof tokens.renewLogin, "function", "the runner's renewal (renewLogin)");
   const { login, write } = loginFolder(t);
