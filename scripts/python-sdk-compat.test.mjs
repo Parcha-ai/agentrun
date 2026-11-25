@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { commandOf, operationsOf } from './generate-clients.mjs';
 import { pythonText } from './clients/python.mjs';
+import { NATIVE_PATHS } from '../packages/serve/dist/native/schema.js';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const PYRIGHT = join(ROOT, 'node_modules', 'pyright', 'index.js');
@@ -88,4 +89,33 @@ test('unmarked object unions retain their existing numbered public types', () =>
   for (const name of ['DefinitionSdk1', 'DefinitionSdk2', 'RunSdk1Usage', 'StartSdkRunBodyObject1WorkflowToolsItem'])
     assert.ok(text.includes(`    "${name}",`), `${name} is still exported`);
   assert.match(text, /StartSdkRunBody: TypeAlias = "StartSdkRunBodyObject1 \| StartSdkRunBodyObject2"/);
+});
+
+test('expanded remote imports keep their published Python constructors and nested names', { skip: !python }, () => {
+  const path = '/connectors/{connector_id}/import';
+  const text = pythonText(operationsOf({ paths: { [path]: NATIVE_PATHS[path] } }), {
+    secretBody: [], omit: {}, multiSegment: {}, commands: { importRemoteTarget: ['connectors', 'import-remote-target'] },
+  }, commandOf);
+  const names = [
+    'ImportRemoteTargetBody', 'ImportRemoteTargetBodyCliAdoption', 'ImportRemoteTargetBodyTarget',
+    'ImportRemoteTargetBodyTargetCapabilities', 'ImportRemoteTargetBodyTargetConfigurationItem',
+    'ImportRemoteTargetBodyTargetRemote', 'ImportRemoteTargetBodyTargetSelector', 'ImportRemoteTargetResponse',
+    'ImportRemoteTargetResponseNative', 'ImportRemoteTargetResponseNativeCapabilities',
+    'ImportRemoteTargetResponseNativeConfigurationItem', 'ImportRemoteTargetResponseNativeRemote',
+    'ImportRemoteTargetResponseNativeSelector',
+  ];
+  const checked = spawnSync('python3', ['-I', '-c', `
+import sys
+sys.path.insert(0, sys.argv[1])
+namespace = {'__name__': 'agentrun.compatibility', '__package__': 'agentrun'}
+exec(compile(sys.stdin.read(), '<generated>', 'exec'), namespace)
+for name in ${JSON.stringify(names)}:
+    assert name in namespace['__all__'], name
+    assert callable(namespace[name]), name
+    assert namespace[name]() == {}, name
+body = namespace['ImportRemoteTargetBody'](target_id='target', target={})
+assert body == {'target_id': 'target', 'target': {}}
+assert namespace['ImportRemoteTargetResponse'](native={}) == {'native': {}}
+`, join(ROOT, 'python')], { input: text, encoding: 'utf8' });
+  assert.equal(checked.status, 0, checked.stdout + checked.stderr);
 });

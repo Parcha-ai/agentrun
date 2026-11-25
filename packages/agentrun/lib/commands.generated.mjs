@@ -1226,7 +1226,26 @@ export const COMMANDS = [
     "multiSegment": [],
     "query": [],
     "headers": [],
-    "bodyFlags": [],
+    "bodyFlags": [
+      {
+        "name": "target_id",
+        "type": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "name",
+        "type": "string",
+        "required": false,
+        "description": ""
+      },
+      {
+        "name": "history_only",
+        "type": "boolean",
+        "required": false,
+        "description": ""
+      }
+    ],
     "hasBody": true,
     "bodyRequired": true,
     "bodyTypes": [

@@ -373,6 +373,9 @@ Import a selected source reference or reserve a setup-only deployment without na
 
 Route: `POST /connectors/{connector_id}/import`.
 
+- `--target-id STRING` (string, required)
+- `--name STRING` (string)
+- `--history-only` (boolean)
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 

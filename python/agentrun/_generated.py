@@ -648,30 +648,28 @@ __all__ = [
     "ImportRemoteHistoryResponse",
     "ImportRemoteHistoryResponseRunsItem",
     "ImportRemoteTargetBody",
-    "ImportRemoteTargetBodyObject1",
-    "ImportRemoteTargetBodyObject1CliAdoption",
-    "ImportRemoteTargetBodyObject1Target",
-    "ImportRemoteTargetBodyObject1TargetCapabilities",
-    "ImportRemoteTargetBodyObject1TargetConfigurationItem",
-    "ImportRemoteTargetBodyObject1TargetRemote",
-    "ImportRemoteTargetBodyObject1TargetSelector",
-    "ImportRemoteTargetBodyObject2",
-    "ImportRemoteTargetBodyObject2Target",
-    "ImportRemoteTargetBodyObject2TargetCapabilities",
-    "ImportRemoteTargetBodyObject2TargetConfigurationItem",
-    "ImportRemoteTargetBodyObject2TargetSelector",
+    "ImportRemoteTargetBody2",
+    "ImportRemoteTargetBody2Target",
+    "ImportRemoteTargetBody2TargetCapabilities",
+    "ImportRemoteTargetBody2TargetConfigurationItem",
+    "ImportRemoteTargetBody2TargetSelector",
+    "ImportRemoteTargetBodyCliAdoption",
+    "ImportRemoteTargetBodyTarget",
+    "ImportRemoteTargetBodyTargetCapabilities",
+    "ImportRemoteTargetBodyTargetConfigurationItem",
+    "ImportRemoteTargetBodyTargetRemote",
+    "ImportRemoteTargetBodyTargetSelector",
     "ImportRemoteTargetResponse",
-    "ImportRemoteTargetResponseObject1",
-    "ImportRemoteTargetResponseObject1Native",
-    "ImportRemoteTargetResponseObject1NativeCapabilities",
-    "ImportRemoteTargetResponseObject1NativeConfigurationItem",
-    "ImportRemoteTargetResponseObject1NativeRemote",
-    "ImportRemoteTargetResponseObject1NativeSelector",
-    "ImportRemoteTargetResponseObject2",
-    "ImportRemoteTargetResponseObject2Target",
-    "ImportRemoteTargetResponseObject2TargetCapabilities",
-    "ImportRemoteTargetResponseObject2TargetConfigurationItem",
-    "ImportRemoteTargetResponseObject2TargetSelector",
+    "ImportRemoteTargetResponse2",
+    "ImportRemoteTargetResponse2Target",
+    "ImportRemoteTargetResponse2TargetCapabilities",
+    "ImportRemoteTargetResponse2TargetConfigurationItem",
+    "ImportRemoteTargetResponse2TargetSelector",
+    "ImportRemoteTargetResponseNative",
+    "ImportRemoteTargetResponseNativeCapabilities",
+    "ImportRemoteTargetResponseNativeConfigurationItem",
+    "ImportRemoteTargetResponseNativeRemote",
+    "ImportRemoteTargetResponseNativeSelector",
     "ImportTemplateBody",
     "ImportTemplateBodyFilesItem",
     "ImportTemplateResponse",
@@ -4213,57 +4211,54 @@ class ImportRemoteHistoryResponseRunsItem(TypedDict):
     already: bool
 
 
-ImportRemoteTargetBody: TypeAlias = "ImportRemoteTargetBodyObject1 | ImportRemoteTargetBodyObject2"
-
-
-class _ImportRemoteTargetBodyObject1Required(TypedDict):
+class _ImportRemoteTargetBodyRequired(TypedDict):
     target_id: str
-    target: ImportRemoteTargetBodyObject1Target
+    target: ImportRemoteTargetBodyTarget
 
 
-class ImportRemoteTargetBodyObject1(_ImportRemoteTargetBodyObject1Required, total=False):
+class ImportRemoteTargetBody(_ImportRemoteTargetBodyRequired, total=False):
     name: str
     history_only: bool
     deployment: Literal[False]
-    cli_adoption: ImportRemoteTargetBodyObject1CliAdoption
+    cli_adoption: ImportRemoteTargetBodyCliAdoption
 
 
-class _ImportRemoteTargetBodyObject1TargetRequired(TypedDict):
+class _ImportRemoteTargetBodyTargetRequired(TypedDict):
     runtime: Literal["claude-code", "codex"]
     project: str
-    selector: ImportRemoteTargetBodyObject1TargetSelector
+    selector: ImportRemoteTargetBodyTargetSelector
     machine_id: str
     version: str | None
     model: str | None
     fingerprint: str
-    configuration: list[ImportRemoteTargetBodyObject1TargetConfigurationItem]
+    configuration: list[ImportRemoteTargetBodyTargetConfigurationItem]
     skills: list[str]
     mcp_servers: list[str]
     state: Literal["needs_verification", "needs_attention", "ready"]
     issues: list[str]
-    capabilities: ImportRemoteTargetBodyObject1TargetCapabilities
+    capabilities: ImportRemoteTargetBodyTargetCapabilities
     connected: bool
 
 
-class ImportRemoteTargetBodyObject1Target(_ImportRemoteTargetBodyObject1TargetRequired, total=False):
+class ImportRemoteTargetBodyTarget(_ImportRemoteTargetBodyTargetRequired, total=False):
     verified_at: str
-    remote: ImportRemoteTargetBodyObject1TargetRemote
+    remote: ImportRemoteTargetBodyTargetRemote
 
 
-class _ImportRemoteTargetBodyObject1TargetSelectorRequired(TypedDict):
+class _ImportRemoteTargetBodyTargetSelectorRequired(TypedDict):
     kind: Literal["project", "agent", "profile"]
 
 
-class ImportRemoteTargetBodyObject1TargetSelector(_ImportRemoteTargetBodyObject1TargetSelectorRequired, total=False):
+class ImportRemoteTargetBodyTargetSelector(_ImportRemoteTargetBodyTargetSelectorRequired, total=False):
     name: str
 
 
-class ImportRemoteTargetBodyObject1TargetConfigurationItem(TypedDict):
+class ImportRemoteTargetBodyTargetConfigurationItem(TypedDict):
     path: str
     sha256: str
 
 
-class ImportRemoteTargetBodyObject1TargetCapabilities(TypedDict):
+class ImportRemoteTargetBodyTargetCapabilities(TypedDict):
     launch: bool
     learning: bool
     workflows: Literal[False]
@@ -4271,62 +4266,62 @@ class ImportRemoteTargetBodyObject1TargetCapabilities(TypedDict):
     usage: bool
 
 
-class ImportRemoteTargetBodyObject1TargetRemote(TypedDict):
+class ImportRemoteTargetBodyTargetRemote(TypedDict):
     connector_id: str
     target_id: str
 
 
-class ImportRemoteTargetBodyObject1CliAdoption(TypedDict):
+class ImportRemoteTargetBodyCliAdoption(TypedDict):
     connection_id: str
     credential_epoch: str
     proof: str
 
 
-class _ImportRemoteTargetBodyObject2Required(TypedDict):
+class _ImportRemoteTargetBody2Required(TypedDict):
     target_id: str
-    target: ImportRemoteTargetBodyObject2Target
+    target: ImportRemoteTargetBody2Target
     deployment: Literal[True]
 
 
-class ImportRemoteTargetBodyObject2(_ImportRemoteTargetBodyObject2Required, total=False):
+class ImportRemoteTargetBody2(_ImportRemoteTargetBody2Required, total=False):
     name: str
 
 
-class _ImportRemoteTargetBodyObject2TargetRequired(TypedDict):
+class _ImportRemoteTargetBody2TargetRequired(TypedDict):
     runtime: Literal["claude-code", "codex", "pi"]
     project: str
-    selector: ImportRemoteTargetBodyObject2TargetSelector
+    selector: ImportRemoteTargetBody2TargetSelector
     machine_id: str
     version: str | None
     model: str | None
     fingerprint: str
-    configuration: list[ImportRemoteTargetBodyObject2TargetConfigurationItem]
+    configuration: list[ImportRemoteTargetBody2TargetConfigurationItem]
     skills: list[str]
     mcp_servers: list[str]
     state: Literal["needs_verification", "needs_attention", "ready"]
     issues: list[str]
-    capabilities: ImportRemoteTargetBodyObject2TargetCapabilities
+    capabilities: ImportRemoteTargetBody2TargetCapabilities
     sync_only: Literal[True]
 
 
-class ImportRemoteTargetBodyObject2Target(_ImportRemoteTargetBodyObject2TargetRequired, total=False):
+class ImportRemoteTargetBody2Target(_ImportRemoteTargetBody2TargetRequired, total=False):
     connected: bool
 
 
-class _ImportRemoteTargetBodyObject2TargetSelectorRequired(TypedDict):
+class _ImportRemoteTargetBody2TargetSelectorRequired(TypedDict):
     kind: Literal["project", "agent", "profile"]
 
 
-class ImportRemoteTargetBodyObject2TargetSelector(_ImportRemoteTargetBodyObject2TargetSelectorRequired, total=False):
+class ImportRemoteTargetBody2TargetSelector(_ImportRemoteTargetBody2TargetSelectorRequired, total=False):
     name: str
 
 
-class ImportRemoteTargetBodyObject2TargetConfigurationItem(TypedDict):
+class ImportRemoteTargetBody2TargetConfigurationItem(TypedDict):
     path: str
     sha256: str
 
 
-class ImportRemoteTargetBodyObject2TargetCapabilities(TypedDict):
+class ImportRemoteTargetBody2TargetCapabilities(TypedDict):
     launch: bool
     learning: bool
     workflows: Literal[False]
@@ -4334,50 +4329,47 @@ class ImportRemoteTargetBodyObject2TargetCapabilities(TypedDict):
     usage: bool
 
 
-ImportRemoteTargetResponse: TypeAlias = "ImportRemoteTargetResponseObject1 | ImportRemoteTargetResponseObject2"
-
-
-class ImportRemoteTargetResponseObject1(TypedDict):
+class ImportRemoteTargetResponse(TypedDict):
     agent_id: str
-    native: ImportRemoteTargetResponseObject1Native
+    native: ImportRemoteTargetResponseNative
 
 
-class _ImportRemoteTargetResponseObject1NativeRequired(TypedDict):
+class _ImportRemoteTargetResponseNativeRequired(TypedDict):
     runtime: Literal["claude-code", "codex"]
     project: str
-    selector: ImportRemoteTargetResponseObject1NativeSelector
+    selector: ImportRemoteTargetResponseNativeSelector
     machine_id: str
     version: str | None
     model: str | None
     fingerprint: str
-    configuration: list[ImportRemoteTargetResponseObject1NativeConfigurationItem]
+    configuration: list[ImportRemoteTargetResponseNativeConfigurationItem]
     skills: list[str]
     mcp_servers: list[str]
     state: Literal["needs_verification", "needs_attention", "ready"]
     issues: list[str]
-    capabilities: ImportRemoteTargetResponseObject1NativeCapabilities
+    capabilities: ImportRemoteTargetResponseNativeCapabilities
     connected: bool
 
 
-class ImportRemoteTargetResponseObject1Native(_ImportRemoteTargetResponseObject1NativeRequired, total=False):
+class ImportRemoteTargetResponseNative(_ImportRemoteTargetResponseNativeRequired, total=False):
     verified_at: str
-    remote: ImportRemoteTargetResponseObject1NativeRemote
+    remote: ImportRemoteTargetResponseNativeRemote
 
 
-class _ImportRemoteTargetResponseObject1NativeSelectorRequired(TypedDict):
+class _ImportRemoteTargetResponseNativeSelectorRequired(TypedDict):
     kind: Literal["project", "agent", "profile"]
 
 
-class ImportRemoteTargetResponseObject1NativeSelector(_ImportRemoteTargetResponseObject1NativeSelectorRequired, total=False):
+class ImportRemoteTargetResponseNativeSelector(_ImportRemoteTargetResponseNativeSelectorRequired, total=False):
     name: str
 
 
-class ImportRemoteTargetResponseObject1NativeConfigurationItem(TypedDict):
+class ImportRemoteTargetResponseNativeConfigurationItem(TypedDict):
     path: str
     sha256: str
 
 
-class ImportRemoteTargetResponseObject1NativeCapabilities(TypedDict):
+class ImportRemoteTargetResponseNativeCapabilities(TypedDict):
     launch: bool
     learning: bool
     workflows: Literal[False]
@@ -4385,46 +4377,46 @@ class ImportRemoteTargetResponseObject1NativeCapabilities(TypedDict):
     usage: bool
 
 
-class ImportRemoteTargetResponseObject1NativeRemote(TypedDict):
+class ImportRemoteTargetResponseNativeRemote(TypedDict):
     connector_id: str
     target_id: str
 
 
-class ImportRemoteTargetResponseObject2(TypedDict):
+class ImportRemoteTargetResponse2(TypedDict):
     agent_id: str
-    target: ImportRemoteTargetResponseObject2Target
+    target: ImportRemoteTargetResponse2Target
 
 
-class ImportRemoteTargetResponseObject2Target(TypedDict):
+class ImportRemoteTargetResponse2Target(TypedDict):
     runtime: Literal["claude-code", "codex", "pi"]
     project: str
-    selector: ImportRemoteTargetResponseObject2TargetSelector
+    selector: ImportRemoteTargetResponse2TargetSelector
     machine_id: str
     version: str | None
     model: str | None
     fingerprint: str
-    configuration: list[ImportRemoteTargetResponseObject2TargetConfigurationItem]
+    configuration: list[ImportRemoteTargetResponse2TargetConfigurationItem]
     skills: list[str]
     mcp_servers: list[str]
     state: Literal["needs_verification", "needs_attention", "ready"]
     issues: list[str]
-    capabilities: ImportRemoteTargetResponseObject2TargetCapabilities
+    capabilities: ImportRemoteTargetResponse2TargetCapabilities
 
 
-class _ImportRemoteTargetResponseObject2TargetSelectorRequired(TypedDict):
+class _ImportRemoteTargetResponse2TargetSelectorRequired(TypedDict):
     kind: Literal["project", "agent", "profile"]
 
 
-class ImportRemoteTargetResponseObject2TargetSelector(_ImportRemoteTargetResponseObject2TargetSelectorRequired, total=False):
+class ImportRemoteTargetResponse2TargetSelector(_ImportRemoteTargetResponse2TargetSelectorRequired, total=False):
     name: str
 
 
-class ImportRemoteTargetResponseObject2TargetConfigurationItem(TypedDict):
+class ImportRemoteTargetResponse2TargetConfigurationItem(TypedDict):
     path: str
     sha256: str
 
 
-class ImportRemoteTargetResponseObject2TargetCapabilities(TypedDict):
+class ImportRemoteTargetResponse2TargetCapabilities(TypedDict):
     launch: bool
     learning: bool
     workflows: Literal[False]
@@ -12383,7 +12375,7 @@ class ConnectorsResource(Group):
         """Import explicitly selected, redacted past sessions without running or learning from them (POST /connectors/{connector_id}/targets/{target_id}/history)."""
         return self._call("importRemoteHistory", (connector_id, target_id), body, None, timeout=timeout)
 
-    def import_remote_target(self, connector_id: str, body: ImportRemoteTargetBody, *, timeout: float | None = None) -> ImportRemoteTargetResponse:
+    def import_remote_target(self, connector_id: str, body: ImportRemoteTargetBody | ImportRemoteTargetBody2, *, timeout: float | None = None) -> ImportRemoteTargetResponse | ImportRemoteTargetResponse2:
         """Import a selected source reference or reserve a setup-only deployment without native execution (POST /connectors/{connector_id}/import)."""
         return self._call("importRemoteTarget", (connector_id,), body, None, timeout=timeout)
 

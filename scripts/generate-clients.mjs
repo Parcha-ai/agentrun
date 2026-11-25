@@ -84,7 +84,8 @@ function flagType(shape) {
 // A description's first paragraph, its hard-wrapped lines joined: its first line alone can stop mid-sentence.
 const firstLine = (text) => (text ?? '').trim().split(/\n\s*\n/)[0].replace(/\s*\n\s*/g, ' ');
 
-/** CLI fields of an object body. Closed object alternatives with a shared, required string discriminator can share
+/** CLI fields of an object body. A union may name the established object variant whose scalar fields remain CLI flags;
+ *  the server still validates any fields added to the body against the whole union. Closed object alternatives with a shared, required string discriminator can share
  *  scalar flags when each branch parses that field the same way. The server still validates the selected branch;
  *  branch-only fields are optional in the CLI. Other unions stay a whole --body instead of guessing their shape. */
 function bodyProperties(doc, schema) {
@@ -92,6 +93,15 @@ function bodyProperties(doc, schema) {
     const value = deref(doc, raw);
     return { name, ...shapeOf(doc, value), ...(value?.const !== undefined ? { const: value.const } : {}), required, description: firstLine(value?.description) };
   };
+  const flagsVariant = schema?.['x-agentrun-cli-flags-variant'];
+  if (flagsVariant !== undefined) {
+    if (!Number.isSafeInteger(flagsVariant) || flagsVariant < 0 || flagsVariant >= (schema.oneOf?.length ?? 0))
+      throw new Error('generate-clients: x-agentrun-cli-flags-variant must select one oneOf branch');
+    const variant = deref(doc, schema.oneOf[flagsVariant]);
+    if (variant?.type !== 'object' || variant.additionalProperties !== false || !variant.properties || variant.oneOf || variant.anyOf || variant.allOf)
+      throw new Error('generate-clients: x-agentrun-cli-flags-variant must select one closed object branch');
+    return Object.entries(variant.properties).map(([name, value]) => property(name, value, variant.required?.includes(name) ?? false));
+  }
   if (!schema?.oneOf || schema.properties || schema.allOf || schema.anyOf)
     return Object.entries(schema?.properties ?? {}).map(([name, value]) => property(name, value, schema.required?.includes(name) ?? false));
   const variants = schema.oneOf.map(variant => deref(doc, variant));

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { commandsOf, operationsOf } from './generate-clients.mjs';
 import { SDK_PATHS } from '../packages/serve/dist/sdk/schema.js';
+import { NATIVE_PATHS } from '../packages/serve/dist/native/schema.js';
 
 const map = { commands: {}, secretBody: [], omit: {}, multiSegment: {} };
 const object = (properties, required = Object.keys(properties)) => ({ type: 'object', additionalProperties: false, properties, required });
@@ -25,6 +26,17 @@ test('SDK start keeps the existing scalar flags and adds the start time, the tit
   assert.deepEqual(start.bodyFlags.find(row => row.name === 'runtime').enum, ['claude-agent-sdk', 'codex-sdk', 'eve', 'external']);
   assert.equal(start.bodyFill, undefined, 'no variant discriminator is filled on behalf of the caller');
   assert.equal(operations.find(row => row.operationId === 'startSdkRun').body.type.oneOf.length, 2, 'client types retain their closed alternatives');
+});
+
+test('remote target deployment keeps the established import flags on its native variant', () => {
+  const path = '/connectors/{connector_id}/import';
+  const operation = operationsOf({ paths: { [path]: NATIVE_PATHS[path] } });
+  const imported = commandsOf(operation, map).find(row => row.operationId === 'importRemoteTarget');
+  assert.deepEqual(imported.bodyFlags.map(({ name, type, required }) => ({ name, type, required })), [
+    { name: 'target_id', type: 'string', required: true },
+    { name: 'name', type: 'string', required: false },
+    { name: 'history_only', type: 'boolean', required: false },
+  ]);
 });
 
 test('object alternatives expose only compatible flags, union literals, and require only common fields', () => {
