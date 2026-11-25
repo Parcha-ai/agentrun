@@ -1687,10 +1687,11 @@ test("LVI: an env command among others on its line is the output's context, and 
   // A failed call's summary is one line, `<label> failed: <its output's first line>`: what follows the head is read with
   // the call's command before it, so a variable with no key-shaped name and no format is cut too; the head is kept.
   const region = "basin-orchard-41";
-  for (const [summary, command] of [[`Bash failed: APP_REGION=${region}`, "env; sleep 5"], [`Bash failed: APP_REGION=${region}`, "env"], [`shell failed: APP_REGION=${region}`, "env && exit 1"]]) {
+  // Under a line that runs other commands too, the whole summary is the dump, its head with it.
+  for (const [summary, command, kept] of [[`Bash failed: APP_REGION=${region}`, "env; sleep 5", ""], [`Bash failed: APP_REGION=${region}`, "env", "Bash failed: "], [`shell: APP_REGION=${region}`, "env && exit 1", ""]]) {
     const out = await gone(summary, [region], { command });
     assert.deepEqual(out.cuts.map((cut) => [cut.rule, cut.kind]), [["env-dump", "dump"]], `${command}: ${JSON.stringify(out.cuts)}`);
-    assert.equal(out.text, `${summary.slice(0, summary.indexOf(": ") + 2)}[redacted:env-dump 1 lines]`, command);
+    assert.equal(out.text, `${kept}[redacted:env-dump 1 lines]`, command);
   }
   // No env command among them, or one only inside a quoted word: NAME=value lines and a summary are no dump.
   for (const [text, command] of [[env.replace(pw, "gold"), "make; ls"], [env.replace(pw, "gold"), "export APP_REGION=north && npm test"], [`Bash failed: APP_REGION=${region}`, "ls; false"], [env.replace(pw, "gold"), 'echo "a; env"'], [env.replace(pw, "gold"), "set -e; make"]]) {
@@ -1714,9 +1715,9 @@ test("LVI: a line that runs an env command among others is one dump of its whole
     assert.deepEqual(out.cuts.map((cut) => [cut.rule, cut.kind, cut.restorable]), [["env-dump", "dump", false]], `${command}: ${JSON.stringify(out.cuts)}`);
     assert.equal(out.text, `[redacted:env-dump ${text.split("\n").length} lines]`, command);
   }
-  // A failed call's one-line summary under such a line: what follows its head is cut, the head kept.
+  // A failed call's one-line summary under such a line is cut whole, its head with it.
   const out = await gone(`Bash failed: ${seed}`, [seed], { command: "printenv APP_REGION; printenv APP_SEED" });
-  assert.equal(out.text, "Bash failed: [redacted:env-dump 1 lines]");
+  assert.equal(out.text, "[redacted:env-dump 1 lines]");
   // A lone command is read as before: its output's lines, by its names (and again past a first line of the caller's).
   const lone = await gone(`${seed}\nnext step`, [seed], { command: "printenv APP_SEED" });
   assert.ok(lone.cuts.every((cut) => cut.rule === "env-dump"), JSON.stringify(lone.cuts));
