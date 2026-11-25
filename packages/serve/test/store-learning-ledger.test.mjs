@@ -11,7 +11,8 @@
 //     locked before it is read again, so a heal another server commits meanwhile stands;
 //   - a store the ledger's first release left (version 15, which a runner refuses until the server brings it to 16) has
 //     its wrong rows recorded again at the open that drops their epoch (a shadow with no path or audit spend, a stale
-//     row, an unknown cost its run now has, a run by hand with no path); Postgres 0030 runs again unharmed;
+//     row, an unknown cost its run now has, a run by hand with no path), by the ledger step alone (no earlier step runs
+//     again), its mark set back so even a ledger marked whole is recorded again; Postgres 0030 runs again unharmed;
 //   - the read before the window (Learning.byHandBefore) walks the by-hand index, no sort of the agent's rows;
 //   - a cancel that wins an end keeping its job's end (keepsEnd) moves its ended_at after its row is written: the row
 //     is read as written, no round read again;
@@ -275,6 +276,53 @@ test("a store the ledger's first release left: its wrong rows are recorded again
   const after = await raw(file);
   assert.deepEqual([(await after.get("SELECT schema_version AS v FROM store_meta")).v, (await after.all("SELECT name FROM pragma_table_info('learning_ledger') WHERE name = 'epoch'")).length], [16, 0], "16, the epoch gone");
   await after.close();
+});
+
+test("a store at 15 comes to 16 by the ledger step alone: no earlier step runs again (a stop at that step leaves 15; a purged run's tombstone keeps its disk), and with the epoch there the mark is set back, so a ledger marked whole has its wrong rows recorded again", sqliteOnly("SQLite's upgrade chain; Postgres has migrations"), async (t) => {
+  const { Connection } = await import("../dist/store/sqlite/connection.js");
+  const { store, file, clock, end } = await ledgerStore(t);
+  await end("h1", 1);
+  await end("p1", 1, undefined, { disk: "disk-p" });
+  // Purged: its launch body gone, its tombstone keeps its disk. Running the disk step (14 to 15) again would null it.
+  await store.runs.purge("p1", { meters: null, spend: { usd: 0.1, basis: "list" }, learning: null });
+  assert.equal((await store.runs.get("p1")).disk, "disk-p");
+  const rows = (await store.learning.ledger("agent-1")).rows;
+  await store.close();
+  let db = await raw(file);
+  // The ledger's first release with its mark already whole: each row's epoch, the mark at 1, and h1's row wrong (the
+  // unknown cost its run now has).
+  await db.run("ALTER TABLE learning_ledger ADD COLUMN epoch INTEGER");
+  await db.run("UPDATE learning_ledger SET epoch = (SELECT epoch FROM runs WHERE runs.id = learning_ledger.run_id)");
+  await db.run("UPDATE learning_ledger SET cost = 'unknown', job_usd = NULL WHERE run_id = 'h1'");
+  await db.run("UPDATE store_meta SET schema_version = 15, ledger_backfilled = 1 WHERE singleton = 1");
+  await db.close();
+  const version = async () => {
+    const read = await raw(file);
+    try {
+      return Number((await read.get("SELECT schema_version AS v FROM store_meta WHERE singleton = 1")).v);
+    } finally {
+      await read.close();
+    }
+  };
+  // A stop at the ledger step's write: no step before it ran, so nothing stamped an earlier version (the purge step stamps
+  // 14, and an open at 14 runs the disk step).
+  const write = Connection.prototype.write;
+  Connection.prototype.write = function (statements, options) {
+    return statements.some(({ sql }) => sql === "UPDATE store_meta SET schema_version = 16 WHERE singleton = 1") ? Promise.reject(new Error("stopped at the ledger step")) : write.call(this, statements, options);
+  };
+  try {
+    await assert.rejects(storeOn(t, { file, clock }), /stopped at the ledger step/);
+  } finally {
+    Connection.prototype.write = write;
+  }
+  assert.equal(await version(), 15, "still 15: neither the purge step nor the disk step ran");
+  const { store: reopened } = await storeOn(t, { file, clock });
+  assert.equal(await version(), 16);
+  assert.equal((await reopened.runs.get("p1")).disk, "disk-p", "the tombstone keeps its disk: the disk step did not run again");
+  assert.deepEqual((await reopened.learning.ledger("agent-1")).rows, rows, "h1's row recorded again at its run's figures: the mark set back to 0 with the epoch, so the open's backfill ran");
+  db = await raw(file);
+  assert.equal(Number((await db.get("SELECT ledger_backfilled AS whole FROM store_meta WHERE singleton = 1")).whole), 1, "marked whole again once recorded");
+  await db.close();
 });
 
 test("Postgres migration 0030 repairs the same rows, only while their epoch is there and before it drops it, and makes the same by-hand index and mark, each only where missing", async () => {
