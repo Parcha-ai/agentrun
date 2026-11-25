@@ -3,9 +3,10 @@
 // token that could name the owner's user would run the owner's connected accounts. The set is read from the store at
 // each check, never kept: a user the owner connects after a token's start is refused at the next request and at the
 // run's next claim.
-import { composioAccountKey, composioMadeKey, recordedMade } from "./composio-made.js";
+import { recordedMade } from "./composio-made.js";
 import { COMPOSIO_LISTING_USER, COMPOSIO_USER, composioAddressUser } from "./composio-preset.js";
-import { mcpSourceKey, savedByToken } from "./mcp-sources.js";
+import { savedByToken } from "./mcp-sources.js";
+import { composioAccountKey, composioMadeKey, mcpSourceKey } from "./store/mcp-record-keys.js";
 import { isObject } from "./validate.js";
 
 type SavedServers = { mcp: { servers(): Promise<readonly { name: string; url: string; createdAt: number }[]> }; settings: { get(key: string): Promise<unknown> } };
