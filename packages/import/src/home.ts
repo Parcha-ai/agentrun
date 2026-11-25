@@ -272,13 +272,16 @@ function ownPart(read: Compact, mirrored: (request: { mirrors?: Mirror }) => boo
     const priced = at.every((i) => !Number.isNaN(marks.cost[i]!) || !(c.has[i]! & HAS_USAGE));
     const costUsd = priced ? at.reduce((n, i) => n + (Number.isNaN(marks.cost[i]!) ? 0 : marks.cost[i]!), 0) : undefined;
     const { costUsd: _, ...session } = read.session;
+    // Its own requests' rows of Counts (STRIDE numbers each: usage and time), copied in place.
+    const values = new Float64Array(at.length * STRIDE);
+    for (const [k, i] of at.entries()) values.set(c.values.subarray(i * STRIDE, (i + 1) * STRIDE), k * STRIDE);
     own = {
       session: { ...session, ...(costUsd !== undefined ? { costUsd } : {}) },
       counts: {
         n: at.length,
         models: c.models,
         model: Int32Array.from(at, (i) => c.model[i]!),
-        values: Float64Array.from(at.flatMap((i) => Array.from(c.values.subarray(i * STRIDE, (i + 1) * STRIDE)))),
+        values,
         has: Uint8Array.from(at, (i) => c.has[i]!),
       },
     };
