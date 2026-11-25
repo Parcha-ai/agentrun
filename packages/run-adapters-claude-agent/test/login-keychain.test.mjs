@@ -33,7 +33,7 @@ const fs = require('node:fs'), path = require('node:path');
 const file = path.join(process.env.HOME ?? '', 'Library', 'Keychains', 'login.keychain-db');
 const [command, ...args] = process.argv.slice(2);
 const flag = (name) => args[args.indexOf(name) + 1];
-fs.appendFileSync(path.join(path.dirname(process.argv[1]), 'asked.jsonl'), JSON.stringify([command, flag('-a')]) + '\\n');
+fs.appendFileSync(path.join(__dirname, 'asked.jsonl'), JSON.stringify([command, flag('-a')]) + '\\n');
 if (!fs.existsSync(file)) process.exit(command === 'add-generic-password' ? 50 : 44);
 const items = JSON.parse(fs.readFileSync(file, 'utf8'));
 const key = JSON.stringify([flag('-a'), flag('-s')]);
