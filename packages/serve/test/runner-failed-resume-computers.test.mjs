@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { readBackOf } from "@parcha/agentrun-computer";
+import { archilControlFetch } from "./archil-control-fake.mjs";
 import { closeOpenSessions, scriptedOrigin } from "./conformance-pi-adapter.mjs";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
 import { KINDS } from "./workspace-kinds-fixture.mjs";
@@ -24,6 +25,8 @@ const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-sp
 const { sendCommand } = await import("../dist/runner/commands.js");
 const { computerForClaim } = await import("../dist/workspace/index.js");
 const { runEndComputers } = await import("../dist/workspace/run-end-computers.js");
+const { ARCHIL_API_KEY_ROW, saveArchilSettings } = await import("../dist/archil-settings.js");
+const { putSealedKey } = await import("../dist/server-keys.js");
 const { deleteKept, endKept, KEEP_MS, keepKept, keptKeyOf, readKept } =await import("../dist/workspace/computer-kept.js");
 
 const RUN = "run-1";
@@ -424,6 +427,41 @@ test("a run's end whose kept-row mark the store fails tries it again, and delete
       assert.deepEqual(run.docker.left(), ["c2@2"], "a row never marked ending: its machine is left for the row's time, so no claim attaches a machine being deleted");
       assert.deepEqual(await readKept(run.server.settings, RUN), kept, "its row as its park wrote it");
       assert.ok(logged.some((line) => line.includes("could not be marked ending") && line.includes("the store did not answer") && line.includes("c2")), `said in the log: ${JSON.stringify(logged)}`);
+    }
+  }
+});
+
+// A kept machine that held the run's folder on Archil carries its park's mount credential. The run's end that deletes it
+// removes that credential before it marks the row ended, since an ended row is one no janitor pass removes a credential
+// for; a remove that fails leaves the row ending, so the janitor's kept pass removes it and ends the row.
+test("a stopped run's end that deletes a machine kept on Archil removes the park's mount credentials up to its epoch at Archil, then marks the row ended; a remove Archil refuses leaves the row ending for the janitor, said in the log", { timeout: 60_000 }, async (t) => {
+  const run = await opened(t);
+  const disk = "dsk-0000000000000001";
+  await saveArchilSettings(run.server, { region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" });
+  await putSealedKey(run.server, SEAL_KEY, ARCHIL_API_KEY_ROW, "fake-test-key");
+  const computers = { kinds: KINDS, providers: { docker: () => run.docker.provider() } };
+  const kept = { provider: "docker", kind: "sandbox", id: "c2", name: "c2", epoch: 2, until: Date.now() + KEEP_MS, folder: "archil", disk };
+  for (const refuse of [false, true]) {
+    // run-1's credentials of epochs 1 and 2 (the park's), the ending claim's (3), and another run's.
+    const archil = archilControlFetch({
+      existing: ["agentrun:run-1:1", "agentrun:run-1:2", "agentrun:run-1:3", "agentrun:run-2:2"].map((nickname, n) => ({ type: "token", identifier: `tok-${n}`, nickname, disk })),
+      answer: ({ method }) => (refuse && method === "DELETE" ? { status: 500, body: { error: "Archil is down" } } : undefined),
+    });
+    const nicknames = () => [...archil.users.values()].map((user) => user.nickname).sort();
+    run.docker.held.set("c2", { ref: { id: "c2", name: "c2" }, labels: { "agentrun.run": RUN, "agentrun.epoch": "2" } });
+    await run.server.settings.put(keptKeyOf(RUN), kept);
+    const logged = [];
+    // A person's stop: the claim at epoch 3 ends the run, and its end deletes the kept machine.
+    await runEndComputers({ store: run.server, computers, log: (line) => logged.push(line), retryMs: 50, env: {}, sealKey: SEAL_KEY, mountControl: { baseUrl: archil.baseUrl, fetch: archil.fetch } })({ runId: RUN, epoch: 3 });
+    assert.deepEqual(run.docker.left(), [], `refuse ${refuse}: the kept machine is deleted`);
+    if (!refuse) {
+      assert.deepEqual(nicknames(), ["agentrun:run-1:3", "agentrun:run-2:2"], "the park's credential and an earlier one's removed with the machine, not left for their 24-hour ttl; the ending claim's and another run's stand");
+      assert.ok(archil.requests.every((request) => request.authorization === "Bearer fake-test-key"), "with the server's saved Archil key");
+      assert.deepEqual(await readKept(run.server.settings, RUN), { ...kept, ended: true }, "the row ended once the credential was removed");
+    } else {
+      assert.deepEqual(nicknames(), ["agentrun:run-1:1", "agentrun:run-1:2", "agentrun:run-1:3", "agentrun:run-2:2"], "Archil refused the remove");
+      assert.deepEqual(await readKept(run.server.settings, RUN), { ...kept, ending: true }, "the row left ending, so the janitor's kept pass removes the credential and ends it");
+      assert.ok(logged.some((line) => line.includes("mount credential") && line.includes("janitor")), `said in the log: ${JSON.stringify(logged)}`);
     }
   }
 });

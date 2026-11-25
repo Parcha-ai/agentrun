@@ -21,7 +21,7 @@ import { pairedOf } from "../dist/workspace/attached-computers.js";
 import { fauxComputers } from "../dist/faux-computers.js";
 import { computerKeptWords, computerReadyWords, computerReplacedNote } from "../dist/workspace/computer-deps.js";
 import { computerLapsedWords, endKept, KEEP_MS, KEPT_DELETE_MS, keptKeyOf, readKept, sweepKept, writeKept } from "../dist/workspace/computer-kept.js";
-import { startJanitor, sweepKeptComputers } from "../dist/workspace/computer-janitor.js";
+import { startJanitor, sweepKeptComputers, sweepServerComputers } from "../dist/workspace/computer-janitor.js";
 import { ARCHIL_API_KEY_ROW, agentDiskKey, clearArchilSettings, saveArchilSettings } from "../dist/archil-settings.js";
 import { MOUNT_TTL_MS } from "../dist/workspace/archil-claim.js";
 import { StoreLaunchMissing } from "../dist/store/index.js";
@@ -1273,6 +1273,50 @@ test("Mode 2, a kept Archil desktop given back to its runner still there: the gi
   assert.equal((await readKept(one.store.settings, "run-1"))?.ended, true);
   assert.deepEqual(nicknames(archil), ["agentrun:run-1:6", "agentrun:run-2:3"], "the kept machine's credentials went with it; the giving claim's stands");
   await resumed.release();
+});
+
+// The provider sweep ends a stopped run's kept machine whoever kept it, and marks its row ended so the run's next park
+// writes its own keep. An ended row is one no kept pass removes a credential for, so a machine kept on Archil has its
+// park's mount credential removed by that sweep before the row is marked ended; a remove that fails leaves the row ending,
+// and the kept pass that then ends it removes the credential.
+test("Mode 2, a stopped run's kept Archil desktop pinned to a runner still there: another runner's provider sweep deletes it and removes the park's mount credentials before it marks the row ended; a remove Archil refuses leaves the row ending, and the keeper's own kept pass removes them and ends it", async () => {
+  for (const refuse of [false, true]) {
+    let refusing = refuse;
+    const archil = archilControlFetch({
+      existing: ["agentrun:run-1:1", "agentrun:run-1:3", "agentrun:run-1:6", "agentrun:run-2:3"].map((nickname, n) => ({ type: "token", identifier: `tok-${n}`, nickname, disk: DISK })),
+      answer: ({ method }) => (refusing && method === "DELETE" ? { status: 500, body: { error: "Archil is down" } } : undefined),
+    });
+    const one = await server({ mode: 2, archil });
+    await (await one.claim(3)).park();
+    const key = keptKeyOf("run-1");
+    // Pinned to runner-a, still there: runner-b's kept pass leaves the row.
+    const written = { ...(await one.store.settings.get(key)), ...RUNNER_A };
+    await one.store.settings.put(key, written);
+    assert.equal(written.disk, DISK, "the park wrote the credential's disk");
+    one.store.runs.set("run-1", "stopped");
+    one.clock.now = T0 + 60_000;
+    // runner-b's provider sweep, on the one provider its row names.
+    const { store, sealKey } = one;
+    const swept = await sweepServerComputers({
+      store: { runs: store.runs, computerLedger: store.computerLedger, settings: store.settings, sealedKeys: store.sealedKeys, computerIntervals: store.computerIntervals },
+      computers: { kinds: KINDS, providers: { e2b: () => one.account.provider }, keyOf: (name) => getSealedKey(store, sealKey, name) },
+      env: {}, sealKey, mountControl: { baseUrl: archil.baseUrl, fetch: archil.fetch }, now: () => one.clock.now,
+    });
+    assert.ok(swept.every(({ swept: result }) => result.ok), `refuse ${refuse}: ${JSON.stringify(swept)}`);
+    assert.deepEqual(deletes(one.account), ["c1"], `refuse ${refuse}: the stopped run's machine deleted`);
+    if (!refuse) {
+      assert.deepEqual(nicknames(archil), ["agentrun:run-1:6", "agentrun:run-2:3"], "the park's credential and an earlier one's removed with the machine; a later claim's and another run's stand");
+      assert.deepEqual(await store.settings.get(key), { ...written, ended: true }, "the row ended once the credential was removed");
+      continue;
+    }
+    assert.equal(nicknames(archil).length, 4, "Archil refused the remove");
+    assert.deepEqual(await store.settings.get(key), { ...written, ending: true }, "the row left ending, never ended with its credential standing");
+    refusing = false;
+    const there = { live: async () => [{ ...RUNNER_A, refused: null }] };
+    assert.deepEqual(await one.janitor({ self: RUNNER_A, runners: there }), { ended: ["c1"], failed: [] }, "runner-a's kept pass ends the row left ending");
+    assert.deepEqual(nicknames(archil), ["agentrun:run-1:6", "agentrun:run-2:3"], "and removes the park's credentials");
+    assert.equal(await readKept(store.settings, "run-1"), undefined, "the row removed, the run being over");
+  }
 });
 
 /** The store's next clock read waits until `release()`: `reached` resolves once a read is waiting. Later reads answer
