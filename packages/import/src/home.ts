@@ -4,7 +4,6 @@
 import { createHash } from "node:crypto";
 import type { Stats } from "node:fs";
 import { stat } from "node:fs/promises";
-import { availableParallelism } from "node:os";
 import { relative, sep } from "node:path";
 import { type CalculateCost, type Catalog, builtinCatalog, loadCalculateCost, priceRequest, priceRequests, roundUsd } from "./price.js";
 import { childrenOf, inOrder, type Readers, readerOf, sessionLocators } from "./read.js";
@@ -12,7 +11,7 @@ import { type Env, type Locator, locatorKey, type SessionRead } from "./reader.j
 import { READERS, SOURCES, type Source } from "./readers/index.js";
 import { AT, HAS_LONG, HAS_REASONING, HAS_USAGE, STRIDE, USAGE_FIELDS } from "./counts.js";
 import { DROPS_CURSOR, type InternalReadOptions } from "./internal.js";
-import { OLD_MB, type PoolRead, ReadPool, readAheadBytes } from "./pool.js";
+import { defaultThreads, OLD_MB, type PoolRead, ReadPool, readAheadBytes } from "./pool.js";
 import { addDisjoint, addNew, addRecord, dropOwner, locatorNumber, markOf, ownAll, ownerOf, type RecordIndex, recordIndex, someRecord, undoTo } from "./record-index.js";
 import { type Packed, packed, packInto } from "./record-key.js";
 import type { Usage } from "./types.js";
@@ -82,10 +81,11 @@ export type ParseOptions = {
    *  their times and models, text-free as the totals are. `started`: the time (ms) of the first request of the session's
    *  own files (not its subagents'), absent when it has none. For a caller that buckets the same numbers (wrapped.ts). */
   requests?: (totals: SessionTotals, requests: readonly SessionRequest[], started: number | undefined) => void;
-  /** Threads that read the sources' files ahead, largest first, without a state and with the registry's readers (default:
-   *  the cores this process may run on, at most 8: past that the largest files set the time, and each worker costs its
-   *  heap). Each read is kept only when it is the one parseHome would make in order; 1 reads every file in order on this
-   *  thread. At most MOST_THREADS (64). */
+  /** Threads that read the sources' files ahead, largest first, without a state and with the registry's readers. Default:
+   *  the cores this process may run on less one (two on two), at most 16, and no more than the workers whose heaps (16 MB
+   *  young generation plus `workerOldMb` each) fit in the memory still free (the machine's, at most its container's
+   *  limit) once `readAhead` is set aside; at least 1 (pool.ts, defaultThreads). Each read is kept only when it is the
+   *  one parseHome would make in order; 1 reads every file in order on this thread. At most MOST_THREADS (64). */
   threads?: number;
   /** With threads, a cap on the bytes of finished reads made ahead of the one being taken that may wait (default
    *  readAheadBytes(): 1 GiB, or a sixteenth of the machine's memory when less); at it, the threads read only the file
@@ -162,9 +162,6 @@ type Pricer = { ready: boolean; catalog?: Catalog | undefined; calculate?: Calcu
 /** Tokens summed as reads come cannot round: thrown when a count is not a whole number of at most 2^53 - 1 or a source's
  *  sum would pass it, and the source is read again with each request's tokens kept. */
 class Inexact extends Error {}
-
-/** The default threads' ceiling (ParseOptions.threads). */
-const MAX_THREADS = 8;
 
 /** The most threads parseHome takes: each is a worker with a heap of its own, and past the cores the largest files set
  *  the time anyway. More is refused before any worker starts. */
@@ -282,10 +279,11 @@ function counted(read: Unpriced, models: Models, pricer: Pricer, sums: Float64Ar
 type Part = { locator: Locator; read: Compact };
 
 /** Every session of `sources` under `home`, as totals, sorted by key. */
-export async function parseHome(home: string, { sources = SOURCES, readers = READERS, state, catalog, calculateCost, env, failures, requests, threads = Math.min(availableParallelism(), MAX_THREADS), readAhead = readAheadBytes(), workerOldMb = OLD_MB }: ParseOptions = {}): Promise<SessionTotals[]> {
-  if (!Number.isSafeInteger(threads) || threads < 1 || threads > MOST_THREADS) throw new RangeError(`threads: a whole number from 1 to ${MOST_THREADS}, not ${threads}`);
+export async function parseHome(home: string, { sources = SOURCES, readers = READERS, state, catalog, calculateCost, env, failures, requests, threads: asked, readAhead = readAheadBytes(), workerOldMb = OLD_MB }: ParseOptions = {}): Promise<SessionTotals[]> {
+  if (asked !== undefined && (!Number.isSafeInteger(asked) || asked < 1 || asked > MOST_THREADS)) throw new RangeError(`threads: a whole number from 1 to ${MOST_THREADS}, not ${asked}`);
   if (!(readAhead >= 0)) throw new RangeError(`readAhead: a number of bytes, 0 or more, not ${readAhead}`);
   if (!Number.isSafeInteger(workerOldMb) || workerOldMb < 1) throw new RangeError(`workerOldMb: a whole number of MB, at least 1, not ${workerOldMb}`);
+  const threads = asked ?? defaultThreads(undefined, undefined, readAhead, workerOldMb);
   const pool = !state && readers === READERS && threads > 1 ? new ReadPool(threads, readAhead, workerOldMb) : undefined;
   try {
   let prices: Promise<Catalog | undefined> | undefined;

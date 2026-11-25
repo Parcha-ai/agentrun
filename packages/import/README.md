@@ -27,10 +27,12 @@ const sessions = await parseHome(homedir(), { sources: ["claude-code", "codex"] 
 - `failures: []` collects each file its reader could not read (`{ key, file, source, error }`) while the rest are
   totalled; without it, parseHome throws `ReadFailures`. An unreadable file is never taken for an empty one.
 - `env` names where a source keeps its own directory (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`); without it the home's.
-- `threads` reads the files on that many worker threads (default: the cores the process may run on, at most 8; `1`
-  reads them in order on the calling thread; at most 64). A read is kept only when it is the one the import's order would make; any
-  other file is read again in order, so the totals are the same whatever the count. A call with a `state`, or with
-  readers of its own, reads on the calling thread.
+- `threads` reads the files on that many worker threads (default: the cores the process may run on less one, two on
+  two, at most 16, and no more than the workers whose heaps, 80 MiB each at the default `workerOldMb`, fit in the memory
+  still free (the machine's, page cache counted as free, at most its container's limit) once `readAhead` is set aside;
+  `1` reads them in order on the calling thread; at most 64). A read is kept only when it is the one the import's order
+  would make; any other file is read again in order, so the totals are the same whatever the count. A call with a
+  `state`, or with readers of its own, reads on the calling thread.
 - `readAhead` caps the bytes of finished reads waiting to be taken (default 1 GiB, or a sixteenth of the memory the
   process may use, its container's limit when one is set, when that is less: 512 MiB at 8 GiB). Under it, files of 64 MiB and over are read first, largest first, then
   the rest in order; at it, the threads read only the file the import waits on. It is a cap on finished reads waiting,
@@ -40,6 +42,8 @@ const sessions = await parseHome(homedir(), { sources: ["claude-code", "codex"] 
 
   On a 73.7 GB home, 8 threads took 90.9 s (median of 5) at a peak of 1.83 GiB, and 1 thread 441.1 s at 1.05 GiB
   (x1); with `readAhead` at 256 MiB, 8 threads took 136.5 s (x1). Measured on a loaded machine (load 17 to 45).
+  On a 23 GB home on a 48-core machine (median of 2), 8 threads took 27.5 s at a peak of 1.13 GiB, 16 took 20.3 s at
+  1.77 GiB, 24 took 17.2 s at 2.39 GiB and 32 took 23.3 s at 2.87 GiB: the peak grows about 80 MiB a thread.
 
 ## A year of work
 

@@ -7,7 +7,7 @@
 // (readAheadBytes()), the pool reads large files first (BIG_FILE and over, the largest first: they set the time), then
 // the rest in the import's order; at the read-ahead it reads only the one parseHome waits for. A worker's heap is bounded (OLD_MB): one that
 // runs out gives up its file, which parseHome reads itself, and another worker takes its place.
-import { totalmem } from "node:os";
+import { availableParallelism, freemem, totalmem } from "node:os";
 import { Worker } from "node:worker_threads";
 import type { Locator, SessionRead } from "./reader.js";
 import type { RecordIndex } from "./record-index.js";
@@ -44,6 +44,34 @@ export const memoryLimit = (total = totalmem(), constrained = process.constraine
 /** The default read-ahead: READ_AHEAD_BYTES, or a sixteenth of the memory this process may use when that is less (512 MiB
  *  at 8 GiB, 128 MiB in a 2 GiB container). */
 export const readAheadBytes = (memory = memoryLimit()): number => Math.min(READ_AHEAD_BYTES, Math.floor(memory / 16));
+
+/** The default threads' ceiling. On a 48-core machine, a 23 GB home (pooled, median of 2) took 27.5 s at 8 threads
+ *  (peak 1.13 GiB), 20.3 s at 16 (1.77 GiB), 17.2 s at 24 (2.39 GiB) and 23.3 s at 32 (2.87 GiB): 16 takes most of 24's
+ *  gain for three quarters of its memory, and past 24 the threads slow each other down. */
+export const DEFAULT_THREADS_CEILING = 16;
+
+/** The most a worker's heap holds: its young generation (YOUNG_MB) and its old one (`oldMb`), both capped at its start.
+ *  The pool's peak grew by about this, 80 MiB a worker at the default, from 8 threads to 24 (the runs DEFAULT_THREADS_CEILING cites). */
+export const workerBytes = (oldMb = OLD_MB): number => (YOUNG_MB + oldMb) * 2 ** 20;
+
+/** The memory still free to this process: the machine's (os.freemem, MemAvailable on Linux: page cache it may reclaim
+ *  counts as free), at most its container's limit (memoryLimit). Not process.availableMemory: under a cgroup it takes the
+ *  limit less memory.current, which counts the page cache as used. On a 503 GiB machine with 345 GiB free, in a cgroup
+ *  of 350 GiB whose 346 GiB in use were 250 GiB of page cache, it read 130 MiB to 3.6 GiB from one second to the next. */
+export const freeMemory = (free = freemem(), limit = memoryLimit()): number => Math.min(free, limit);
+
+/** parseHome's default threads: the fewest of
+ *  - the cores this process may run on, one left for the thread that takes the reads and totals them (two cores keep
+ *    two threads: one worker would read no faster than the calling thread alone);
+ *  - DEFAULT_THREADS_CEILING;
+ *  - the workers whose heaps (workerBytes) fit in the memory still free (freeMemory) once the read-ahead (`aheadBytes`)
+ *    is set aside, since the reads waiting are held on the calling thread;
+ *  and at least 1 (every file read on the calling thread). A caller's `threads` is taken as given, up to MOST_THREADS. */
+export const defaultThreads = (cores = availableParallelism(), available = freeMemory(), aheadBytes = readAheadBytes(), oldMb = OLD_MB): number => {
+  const byCores = cores <= 2 ? cores : cores - 1;
+  const byMemory = Math.floor(Math.max(0, available - aheadBytes) / workerBytes(oldMb));
+  return Math.max(1, Math.min(byCores, DEFAULT_THREADS_CEILING, byMemory));
+};
 
 /** Workers lost (out of memory, or ended) past this many times the threads: the pool stops, and parseHome reads the rest. */
 const LOSSES_PER_THREAD = 2;
