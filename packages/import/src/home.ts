@@ -11,7 +11,7 @@ import { childrenOf, inOrder, type Readers, readerOf, sessionLocators } from "./
 import { type Env, type Locator, locatorKey, type SessionRead } from "./reader.js";
 import { READERS, SOURCES, type Source } from "./readers/index.js";
 import { AT, HAS_LONG, HAS_REASONING, HAS_USAGE, STRIDE, USAGE_FIELDS } from "./counts.js";
-import { OLD_MB, type PoolRead, ReadPool, readAheadBytes } from "./pool.js";
+import { MIN_OLD_MB, OLD_MB, type PoolRead, ReadPool, readAheadBytes } from "./pool.js";
 import { addDisjoint, addNew, addRecord, dropOwner, locatorNumber, markOf, ownAll, ownerOf, type RecordIndex, recordIndex, someRecord, undoTo } from "./record-index.js";
 import { type Packed, packed, packInto } from "./record-key.js";
 import type { Usage } from "./types.js";
@@ -92,8 +92,9 @@ export type ParseOptions = {
    *  more memory and waits less behind a large file. A cap on finished reads waiting, plus at most one read in flight
    *  per thread; not on the process's memory. */
   readAhead?: number;
-  /** With threads, each worker's old generation in MB (default OLD_MB, 64). A worker that runs out of it gives its file
-   *  back, which is read on this thread, and another takes its place; past 2 x threads such losses the rest is read here. */
+  /** With threads, each worker's old generation in MB (default OLD_MB, 64; at least MIN_OLD_MB, 8: at 1 or 2 V8 ends the
+   *  process as a worker starts, at 3 to 7 the workers run out of memory). A worker that runs out of it gives its file back, which is read on this
+   *  thread, and another takes its place; past 2 x threads such losses the rest is read here. */
   workerOldMb?: number;
 };
 
@@ -284,7 +285,7 @@ type Part = { locator: Locator; read: Compact };
 export async function parseHome(home: string, { sources = SOURCES, readers = READERS, state, catalog, calculateCost, env, failures, requests, threads = Math.min(availableParallelism(), MAX_THREADS), readAhead = readAheadBytes(), workerOldMb = OLD_MB }: ParseOptions = {}): Promise<SessionTotals[]> {
   if (!Number.isSafeInteger(threads) || threads < 1 || threads > MOST_THREADS) throw new RangeError(`threads: a whole number from 1 to ${MOST_THREADS}, not ${threads}`);
   if (!(readAhead >= 0)) throw new RangeError(`readAhead: a number of bytes, 0 or more, not ${readAhead}`);
-  if (!Number.isSafeInteger(workerOldMb) || workerOldMb < 1) throw new RangeError(`workerOldMb: a whole number of MB, at least 1, not ${workerOldMb}`);
+  if (!Number.isSafeInteger(workerOldMb) || workerOldMb < MIN_OLD_MB) throw new RangeError(`workerOldMb: a whole number of MB, at least ${MIN_OLD_MB}, not ${workerOldMb}`);
   const pool = !state && readers === READERS && threads > 1 ? new ReadPool(threads, readAhead, workerOldMb) : undefined;
   try {
   let prices: Promise<Catalog | undefined> | undefined;
