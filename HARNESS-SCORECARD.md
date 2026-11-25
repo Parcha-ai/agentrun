@@ -4,15 +4,17 @@ Whether 25 ACP agents fit door 1 ([HARNESS.md](HARNESS.md#a-recipe)), and what's
 
 As of main `98c17062ca`, 2026-11-19, from the [ACP registry](https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json)
 of that day and the vendors' public documentation; nothing here was run on a vendor's account except Goose, whose recipe
-passed `harness-check` on a model through AgentRun's proxy. Re-rated on 2026-11-22 for what a recipe gained since: `.zip`
-releases, the whole-tree pin, per-platform `args`, a key handed under the name the agent reads, `keyMethod` and a
-the owner's own sign-in made by the agent. Google Antigravity's row is Google's own agy CLI release of that day, and
+passed `harness-check` on a model through AgentRun's proxy, and Google Antigravity, whose recipe passed it on a Gemini
+API key (2026-11-25). Re-rated on 2026-11-22 for what a recipe gained since: `.zip` releases, the whole-tree pin,
+per-platform `args`, a key handed under the name the agent reads, `keyMethod` and the owner's own sign-in made by the
+agent. Google Antigravity's row is Google's own agy CLI release of that day, and
 its recipe is [examples/harness-recipe/antigravity.json](examples/harness-recipe/README.md); the other rows keep
 2026-11-19's versions.
 
 **The bar for a clean fit.** Every rule ([the five rules](HARNESS.md#the-five-rules)) holds with what's on
 main, and the agent passes every stage of `agentrun harness-check` with nothing of AgentRun's run beside it but the
-recipe's own files.
+recipe's own files. A plan-billed agent's model requests never reach this host, so its check says two stages (its own
+tools off, what it sends to `hosts`) are **unverified** and passes on the rest; its row says so.
 
 **Fits if** means no workaround code is left, but a fact about the agent hasn't been checked on a real run. Those facts
 are marked **unverified** everywhere on this page. Most of them are lines
@@ -25,7 +27,7 @@ are the registry's for `linux-x86_64`.
 
 ## The table
 
-Of 25 rows: 1 clean, 11 fit if unverified facts hold, 1 needs a workaround, 12 are blocked. Two are built in: Goose (also a
+Of 25 rows: 2 clean, 10 fit if unverified facts hold, 1 needs a workaround, 12 are blocked. Two are built in: Goose (also a
 recipe in this page's proof) and Cursor ([harness-cursor.ts](packages/serve/src/harness-cursor.ts)). The installer unpacks `.tar.bz2`, `.tar.gz` and `.zip`
 ([harness-archive.ts](packages/serve/src/harness-archive.ts) ARCHIVE_FORMATS), and a recipe's loader takes the same three
 formats; the rows below are rated with it. A key the server holds under a provider's name (`GEMINI_API_KEY`,
