@@ -694,9 +694,15 @@ test("under the runner subcommand (each run a process of its own), a run's relea
   });
   withEnv(t, { OTEL_EXPORTER_OTLP_ENDPOINT: `http://127.0.0.1:${collector.address().port}` });
   const hanging = hangingExporter();
-  // The runner's tracing, its flush a spy that never answers: a release that waited on it would never come.
+  // The runner's tracing, its flush a spy that never answers: a release that waited on it would never come. It takes the
+  // run's end 300 ms late, as a post the runner handles after the run's release does (a slow runner, CI's Postgres).
   let flushed = 0;
-  const tracing = genAiTracing(ON, { exporter: hanging, log: () => {} }).then((made) => ({ open: made.open, flush: () => ((flushed += 1), new Promise(() => {})) }));
+  const late = (trace) => {
+    const end = trace.end;
+    trace.end = (...args) => new Promise((resolve) => setTimeout(resolve, 300)).then(() => end.apply(trace, args));
+    return trace;
+  };
+  const tracing = genAiTracing(ON, { exporter: hanging, log: () => {} }).then((made) => ({ open: (...args) => late(made.open(...args)), flush: () => ((flushed += 1), new Promise(() => {})) }));
   const server = await serve(t, { childRuns: { tracing } });
   const made = await whenFree(() => server.api("POST", "/agents", agent("traced")));
   assert.equal(made.status, 201, JSON.stringify(made.body));
@@ -706,7 +712,9 @@ test("under the runner subcommand (each run a process of its own), a run's relea
   assert.equal(last.status, "completed");
   await until(async () => (await server.store.runs.get(run.body.run_id)).runner === null, "the run's claim was released", 20_000);
   assert.deepEqual(asked.filter((request) => request.startsWith("POST ")), [], `the run's process sent no span to the collector itself (all it was asked: ${JSON.stringify(asked)})`);
-  assert.ok(hanging.exported.some((span) => span.name.startsWith("invoke_agent ")), `the runner's exporter took the run's spans: ${hanging.exported.map((span) => span.name)}`);
+  // The run's process posts its root span's end to the runner and releases its claim without waiting for it (by design),
+  // so the release can be seen before the runner has taken the post: the span comes, the order of the two is not ours.
+  await until(() => hanging.exported.some((span) => span.name.startsWith("invoke_agent ")), "the runner's exporter took the run's root span", 10_000);
   assert.equal(flushed, 0, "no flush of the runner's tracing before the run's release");
   assert.equal(hanging.flushes, 0, "no flush of the exporter before the run's release");
 });

@@ -17,13 +17,27 @@
 // server that stopped before this ran, or a vendor that stayed down past the bound.
 //
 // A machine the run's park kept (computer-kept.ts) goes too when this end's provider lists it, whichever runner kept it:
-// the run is final, so it has no user, and its runner's own end then reads it gone and marks its row ended.
-import { releaseOlder } from "@parcha/agentrun-computer";
+// the run is final, so it has no user. Its row is marked ending first (endingKept), so no claim takes it back while the
+// delete runs (a follow-up that queues the run again makes a new one). Once that machine is gone, its row is marked
+// ended here (finishedKept), whatever came of the other machines' deletes: its own delete answered ok, or its vendor
+// says it is gone already, or a later try's list no longer shows it. A row left ending refuses the run's next park until
+// a janitor's pass, so a follow-up would keep nothing, and no retry here would find the machine to end it by. A row
+// whose machine this list never showed (another runner's engine) stays ending for that runner's end. A
+// row a later claim wrote or is taking back (a follow-up that queued the run again while this end
+// waited on the store) is that claim's: the mark leaves it as it stands, and the delete leaves its machine.
+// A machine kept on Archil has its park's mount credential removed before its row is marked ended
+// (computer-janitor.ts keptMountRevoke, as the janitor's kept pass removes it): an ended row is one no janitor pass
+// removes a credential for, so one marked ended first would leave it valid for its ttl with no machine. A remove that
+// fails, or an end composed without the runs' environment, leaves the row ending, and the janitor's kept pass removes the
+// credential and ends it.
+import { type ComputerProvider, epochOf, ok, releaseOlder } from "@parcha/agentrun-computer";
 import { KEY_TABLE, providerOptions } from "../computer-keys.js";
 import { readLaunchBody } from "../run-launch.js";
 import type { Store } from "../store/index.js";
 import { settingOf } from "./computer-for-claim.js";
 import type { ComputerDeps } from "./computer-deps.js";
+import { keptMountRevoke } from "./computer-janitor.js";
+import { endingKept, finishedKept, type KeptMountRevoke } from "./computer-kept.js";
 import { storeLedger } from "./computer-ledger.js";
 import { type ComputerSetting, providerKeys } from "./resolve-computer.js";
 import { endingDeletes, intervalWrites } from "./computer-intervals.js";
@@ -39,6 +53,58 @@ class NoProviderHere extends Error {}
 
 /** A releaseOlder answer no later try changes: fenced by a later claim's computer (refused), asked wrongly, or cut. */
 const FINAL_CODES: ReadonlySet<string> = new Set(["refused", "invalid", "aborted"]);
+
+/** `provider` with the kept machine `id` out of its lists, where releaseOlder would delete it (labelled at or below the
+ *  ending claim's `epoch`, or with no epoch it can read); labelled above, it stays listed and fences the call as before. */
+function sparing(provider: ComputerProvider, id: string, epoch: number): ComputerProvider {
+  return new Proxy(provider, {
+    get(target, key) {
+      if (key !== "list") {
+        const value: unknown = Reflect.get(target, key, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      }
+      return async (...args: Parameters<ComputerProvider["list"]>) => {
+        const listed = await target.list(...args);
+        if (!listed.ok) return listed;
+        return ok(listed.value.filter((info) => {
+          if (info.ref.id !== id) return true;
+          const read = epochOf(info.labels);
+          return read.ok && read.value > epoch;
+        }));
+      };
+    },
+  });
+}
+
+/** `provider` that calls `gone` once the kept machine `id` is gone, whatever comes of the other deletes in the same
+ *  release: its own delete answered ok, or not_found or gone (its vendor ended it already), or a list no longer shows it
+ *  where an earlier one did (a delete that went through with its answer lost). `seen` carries what earlier lists showed
+ *  across tries, each of which makes its provider anew. */
+function finishing(provider: ComputerProvider, id: string, seen: { listed: boolean }, gone: () => Promise<void>): ComputerProvider {
+  return new Proxy(provider, {
+    get(target, key) {
+      if (key === "list") {
+        return async (...args: Parameters<ComputerProvider["list"]>) => {
+          const listed = await target.list(...args);
+          if (!listed.ok) return listed;
+          if (listed.value.some((info) => info.ref.id === id)) seen.listed = true;
+          else if (seen.listed) await gone();
+          return listed;
+        };
+      }
+      if (key === "release") {
+        return async (...args: Parameters<ComputerProvider["release"]>) => {
+          const released = await target.release(...args);
+          const [ref, how] = args;
+          if (ref.id === id && how === "delete" && (released.ok || released.error.code === "not_found" || released.error.code === "gone")) await gone();
+          return released;
+        };
+      }
+      const value: unknown = Reflect.get(target, key, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
 
 /** Waits `ms`, or less when `signal` aborts first: whether the wait ran its course. */
 const pause = (ms: number, signal: AbortSignal): Promise<boolean> =>
@@ -58,7 +124,14 @@ const pause = (ms: number, signal: AbortSignal): Promise<boolean> =>
 export interface RunEndComputersDeps {
   /** The run's row and launch (its revision and place) and the agent's revision, where its computer setting is; the
    *  computer ledger, for a provider that keeps one. */
-  readonly store: Pick<Store, "agents" | "computerLedger"> & { readonly runs: Pick<Store["runs"], "get" | "launch">; readonly computerIntervals?: Store["computerIntervals"] };
+  readonly store: Pick<Store, "agents" | "computerLedger" | "settings" | "sealedKeys"> & { readonly runs: Pick<Store["runs"], "get" | "launch">; readonly computerIntervals?: Store["computerIntervals"] };
+  /** The runs' environment and the server's seal key, as the janitor is handed them: with them, a machine kept on Archil
+   *  that this end deletes has its park's mount credential removed (computer-janitor.ts keptMountRevoke) before its row
+   *  is marked ended. Absent `env`: that row is left ending, for the janitor's kept pass. */
+  readonly env?: NodeJS.ProcessEnv;
+  readonly sealKey?: Buffer | undefined;
+  /** Archil's control plane for that remove: a test's fake. Absent: the region's own. */
+  readonly mountControl?: { readonly baseUrl?: string; readonly fetch?: typeof fetch };
   /** The run's computers as the runner composed them (computer-deps.ts computerDepsFrom): the registry, the provider
    *  makers, the key reader, and --faux's launch with the providers it takes. */
   readonly computers: Pick<ComputerDeps, "kinds" | "providers" | "keyOf" | "keyTable" | "settings" | "launch" | "launches">;
@@ -77,6 +150,8 @@ export function runEndComputers(deps: RunEndComputersDeps): (claim: { readonly r
   const { store, computers, log } = deps;
   /** Each computer let go here ends its interval (computer-intervals.ts), on its provider's ok alone. */
   const writes = intervalWrites(store, log);
+  /** The remove of a kept row's Archil mount credential, its ttl judged on the store's clock. */
+  const revokeMount = deps.env !== undefined ? keptMountRevoke({ settings: store.settings, sealedKeys: store.sealedKeys, env: deps.env, sealKey: deps.sealKey, ...(deps.mountControl ? { mountControl: deps.mountControl } : {}) }, () => store.sealedKeys.clock()) : undefined;
   /** The provider the run's computers are on, by the agent's setting; undefined where none of them is this end's to let
    *  go (none, the agent's own, a paired computer, --faux's). */
   const providerOf = async (runId: string, epoch: number) => {
@@ -107,13 +182,45 @@ export function runEndComputers(deps: RunEndComputersDeps): (claim: { readonly r
       said = true;
       log(`run ${runId} is over, but its computers could not be let go: ${why}`);
     };
+    // Its kept row, where its park kept one, marked ending before any delete: no claim takes that machine back now. A
+    // later claim's keep is left as it stands, its machine with it (endingKept). A mark the store fails is tried again;
+    // a machine whose row no try marked is not deleted, since a claim could still take the row and attach it mid-delete:
+    // it is left for its row's own time (its keeper's end, or a janitor's pass, which marks the row first). A row that
+    // could not even be read names no machine, so none of the run's is deleted here, and the janitor's sweep ends them.
+    const marked = await endingKept(store.settings, runId, epoch);
+    if (marked.kind === "unmarked") {
+      log(`run ${runId} is over, but its kept computer's row could not be marked ending (${marked.why}): ${marked.id === undefined ? "no computer of the run is let go here, and the computer janitor's next sweep ends them" : `${marked.id} is left for its row's time, which ends it`}`);
+      if (marked.id === undefined) return;
+    }
+    /** The kept machine this end leaves: a later claim's, or one whose row no try marked. */
+    const spared = marked.kind === "marked" ? undefined : marked.id;
+    /** The kept row this end marked ending: ended as soon as its own machine is gone (finishing), so a follow-up's park
+     *  writes its own keep, though another machine's delete failed and this end asks again or gives up. On Archil, its
+     *  park's mount credential is removed first (finishedKept); one that fails leaves the row ending, said. */
+    const kept = marked.kind === "marked" ? marked.kept : undefined;
+    const seen = { listed: false };
+    let finished = false;
+    const revoked: KeptMountRevoke | undefined = revokeMount && (async (id, row) => {
+      try {
+        await revokeMount(id, row);
+      } catch (error) {
+        log(`run ${runId} is over and its kept ${row.kind} ${row.id} is gone, but its mount credential could not be removed (${error instanceof Error ? error.message : String(error)}): its row is left ending, and the computer janitor's next pass removes it`);
+        throw error;
+      }
+    });
+    const gone = async () => {
+      if (finished || !kept) return;
+      finished = true;
+      await finishedKept(store.settings, runId, kept, revoked);
+    };
     /** The last try's failure, for the line said at the bound. */
     let why = `its provider did not answer within ${bound / 1000} s`;
     const tries = async () => {
       for (;;) {
         try {
-          const provider = await providerOf(runId, epoch);
-          if (!provider) return;
+          const found = await providerOf(runId, epoch);
+          if (!found) return;
+          const provider = spared !== undefined ? sparing(found, spared, epoch) : kept ? finishing(found, kept.id, seen, gone) : found;
           // Every claim's at or below this one's: a computer of a later epoch fences the call (a later claim holds the run).
           const released = await releaseOlder(provider, runId, epoch + 1, { signal });
           if (released.ok) {

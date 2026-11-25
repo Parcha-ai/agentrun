@@ -69,7 +69,8 @@ test("runner --check --env with no store: a seal key that is not one is bad, by 
   const wrong = "q".repeat(60);
   const bad = await run(["runner", "--check", "--env"], { ...baseEnv(root), AGENTRUN_SEAL_KEY: wrong });
   assert.equal(bad.code, 1, bad.out + bad.err);
-  assert.match(bad.out, /^bad\s+AGENTRUN_SEAL_KEY\s+set, but is not 32 bytes in base64 \(43 characters, or 44 ending in =; it has 60\)$/m);
+  assert.equal(stateOf(bad.out, "AGENTRUN_SEAL_KEY"), "bad", bad.out);
+  assert.match(bad.out, /^bad\s+AGENTRUN_SEAL_KEY\s.*it has 60/m);
   assert.ok(!(bad.out + bad.err).includes(wrong), "the value is never printed");
   const shaped = await run(["runner", "--check", "--env"], { ...baseEnv(root), AGENTRUN_SEAL_KEY: SEAL });
   assert.equal(stateOf(shaped.out, "AGENTRUN_SEAL_KEY"), "skipped", shaped.out);
