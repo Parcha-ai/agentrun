@@ -3,7 +3,7 @@
 // tracing off; tracer.ts makes spans of what it says.
 //
 // A run is one trace:
-//   invoke_agent {harness}       INTERNAL  the claim's run of its agent; no usage, so a backend's sum never counts twice
+//   invoke_agent {agent name}    INTERNAL  the claim's run of its agent; no usage, so a backend's sum never counts twice
 //   ├─ chat {request.model}      CLIENT    one per model request through the session's proxy, with its usage
 //   └─ execute_tool {tool.name}  INTERNAL  one per tool call (a nested call under the call that made it)
 // A plan-billed harness (its wire `plan`: its requests never reach the host) has a chat span per turn, with no usage
@@ -12,6 +12,7 @@
 // is a name the model wrote, as written: a refused call is unnamed, and any other name is cut (tracedEvent, tracedModel).
 import { normalizeUsage, otelUsage, type OtelUsage } from "@parcha/agentrun-import";
 import type { AdapterEvent, Ended, ModelUsage } from "@parcha/agentrun-kernel";
+import { redactSecrets } from "../learn/secrets.js";
 
 /** The GenAI semantic conventions this mapping follows, stamped on every span until the spec has a schema URL. */
 export const SEMCONV_VERSION = "genai-0.1.0";
@@ -34,10 +35,19 @@ export const USAGE_ATTRIBUTES: Readonly<Record<keyof OtelUsage, readonly string[
 const PROVIDER_NAMES: Readonly<Record<string, string>> = Object.freeze({ chatgpt: "openai", "claude-login": "anthropic" });
 export const providerName = (provider: string): string => PROVIDER_NAMES[provider] ?? provider;
 
-/** What a run's spans say of it, known once its spec is: its id, its harness, and the model route its requests take
- *  (AdapterRunSpec.trace), each where known. */
+/** The agent a run is of, as its spans name it (gen_ai.agent.id, gen_ai.agent.name): its id, and its name as the person
+ *  named it where it has one. Each already cut (tracedAgent). */
+export interface TracedAgent {
+  readonly id: string;
+  readonly name?: string;
+}
+
+/** What a run's spans say of it, known once its spec is: its id, its agent, its harness, and the model route its
+ *  requests take (AdapterRunSpec.trace), each where known. */
 export interface TracedRun {
   readonly runId: string;
+  /** The agent it is a run of: absent, its spans name none (never the harness in its place). */
+  readonly agent?: TracedAgent;
   readonly harness: string;
   /** The harness's model is billed to a plan (its wire `plan`): its turns are its chat spans, with no usage. */
   readonly plan?: boolean;
@@ -90,6 +100,36 @@ export function written(name: string, redact?: (text: string) => string): string
   return cut.length > WRITTEN_MAX ? cut.slice(0, WRITTEN_MAX) : cut;
 }
 
+/** The agent a run is of, as its runner reads it from the store: its id (the run row's) and its name (the agent row's;
+ *  none when the row is gone). Not yet cut: tracedAgent cuts it. */
+export interface AgentOfRun {
+  readonly id: string;
+  readonly name?: string | null;
+}
+
+/** The agent of a run whose row names agent `agentId`, read from `agents` (a store's Agents). Every run has one: an
+ *  inline run (POST /runs) writes its agent's row, with its name, before the run. A read that fails is the id alone: a
+ *  trace's name never fails a run, nor keeps a claim from its cleanup. */
+export async function agentOfRun(agents: { get(id: string): Promise<{ readonly name: string } | undefined> }, agentId: string): Promise<AgentOfRun> {
+  let row: { readonly name: string } | undefined;
+  try {
+    row = await agents.get(agentId);
+  } catch {
+    // The store could not be read: the run's row still holds the id.
+  }
+  return { id: agentId, ...(row ? { name: row.name } : {}) };
+}
+
+/** A run's agent as its spans carry it: its id and its name, each through the runner's redactor, then with every
+ *  secret-shaped run cut (redactSecrets over no value: a name written like a key is cut whatever the runner holds), then
+ *  cut at WRITTEN_MAX. A blank name (a purged agent's) is none: the spans then name no agent, as the conventions ask of a
+ *  run with no meaningful name, and never the harness in its place. */
+export function tracedAgent(agent: AgentOfRun, redact?: (text: string) => string): TracedAgent {
+  const cut = (text: string) => written(redactSecrets(redact ? redact(text) : text, []));
+  const name = agent.name?.trim() ? cut(agent.name) : undefined;
+  return { id: cut(agent.id), ...(name ? { name } : {}) };
+}
+
 /** How a trace names what its session's events name: `mcp`, whether a tool of that name is an MCP server's; `redact`, the
  *  runner's redactor. */
 export interface EventNaming {
@@ -119,19 +159,22 @@ export function tracedModel(asked: string | undefined, rule: { readonly known: (
   return written(rule.known(asked) ? asked : (rule.routed ?? asked), rule.redact);
 }
 
-/** Span names: low-cardinality, never an id, a command or an argument. */
+/** Span names: low-cardinality, never an id, a command or an argument. The run's span is named by its agent's name, else
+ *  `invoke_agent` alone (the conventions' span name). */
 export const spanName = {
-  agent: (run: TracedRun) => `invoke_agent ${run.harness}`,
+  agent: (run: TracedRun) => (run.agent?.name ? `invoke_agent ${run.agent.name}` : "invoke_agent"),
   chat: (model: string | undefined) => (model ? `chat ${model}` : "chat"),
   tool: (name: string | undefined) => (name ? `execute_tool ${name}` : "execute_tool"),
 };
 
-/** What every span of the run carries. */
+/** What every span of the run carries: the agent as the conventions name it (gen_ai.agent.name, the person's name for
+ *  it; gen_ai.agent.id, its id), and the harness that ran it on agentrun.harness, which no GenAI attribute names. */
 function common(run: TracedRun, operation: "invoke_agent" | "chat" | "execute_tool"): Attributes {
   return {
     "gen_ai.operation.name": operation,
     "gen_ai.conversation.id": run.runId,
-    "gen_ai.agent.name": run.harness,
+    ...(run.agent ? { "gen_ai.agent.id": run.agent.id } : {}),
+    ...(run.agent?.name ? { "gen_ai.agent.name": run.agent.name } : {}),
     "agentrun.harness": run.harness,
     "agentrun.run.id": run.runId,
     "session.id": run.runId,

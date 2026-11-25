@@ -127,5 +127,5 @@ test("phone-harness: one GET /sessions, which rents nothing; ok with its own pho
 	const unreached = await away.testConnection();
 	assert.equal(unreached.ok, false);
 	assert.equal(unreached.error.code, "unreachable");
-	assert.match(unreached.error.message, /^GET \/sessions: the phone harness could not be reached: fetch failed/);
+	assert.match(unreached.error.message, /^GET \/sessions: fetch failed: getaddrinfo ENOTFOUND/);
 });

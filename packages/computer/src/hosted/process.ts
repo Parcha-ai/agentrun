@@ -52,6 +52,25 @@ export const pause = (ms: number, signal?: AbortSignal) =>
 	});
 
 /**
+ * What reading answers, or undefined once a signal aborts first: a caller that stopped waiting never waits on a read.
+ * Its listener goes when either settles, so a signal given to many waits holds none of them.
+ */
+export function untilAborted<T>(reading: Promise<T>, signals: readonly (AbortSignal | undefined)[]): Promise<T | undefined> {
+	const given = signals.filter((signal): signal is AbortSignal => signal !== undefined);
+	if (given.length === 0) return reading;
+	const signal = AbortSignal.any(given);
+	if (signal.aborted) return Promise.resolve(undefined);
+	return new Promise((settle) => {
+		const onAbort = () => settle(undefined);
+		signal.addEventListener("abort", onAbort, { once: true });
+		reading.then((value) => {
+			signal.removeEventListener("abort", onAbort);
+			settle(value);
+		});
+	});
+}
+
+/**
  * done() asked until it answers a value, pollMs apart: for an image build's waits (a build machine, a snapshot), all
  * held to one end (epoch ms). Past the end is a timeout, the caller's abort aborted, each a HostError in words; an
  * abort is read before each ask, so a cancelled caller is never answered a value it would act on.

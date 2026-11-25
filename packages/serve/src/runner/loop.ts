@@ -50,6 +50,13 @@ export const END_PATCH_MS = 30_000;
 /** What an end whose patch was late or failed writes: its cost and metrics unknown (null), never left as an earlier end
  *  of the run stored them, never read as a run that cost $0 by the agent's own path. */
 export const END_PATCH_UNKNOWN = { costUsd: null, metrics: null } as const;
+/** What a loop's bound is armed on: the timer half of the runner's clock (RunnerOptions.clock). Every runner arms the real
+ *  one (REAL_TIMER); a test's fires when its case says, so a stalled read is let go on an event, never after a real wait. */
+export interface BoundTimer {
+  setTimeout(fn: () => void, ms: number): unknown;
+  clearTimeout(handle: unknown): void;
+}
+export const REAL_TIMER: BoundTimer = { setTimeout: (fn, ms) => setTimeout(fn, ms), clearTimeout: (handle) => clearTimeout(handle as NodeJS.Timeout) };
 /** How many times an end reads its cost before it is written unknown, and the pause between reads: all within the end's
  *  bound (END_PATCH_MS), so a store that refused one read never leaves the cost null. The stored cost is every reader's
  *  answer for an ended run (the list, the view, usage, learning), so a null there stays only when no read could be made. */

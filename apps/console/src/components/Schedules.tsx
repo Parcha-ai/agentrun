@@ -17,7 +17,7 @@ import { ScheduleWhen } from "@/components/ScheduleWhen";
 import { askCue, UnattendedWarning, useAskingTools } from "@/components/UnattendedWarning";
 import { ZonePicker } from "@/components/ZonePicker";
 import { type Client, ClientError, type FieldIssue } from "@/lib/client";
-import { type AgentInput, type FieldSpec, fieldIssueWords, fieldLabel, fieldOfIssue, fieldStartText, fieldValid } from "@/lib/inputForm";
+import { type AgentInput, agentInputOf, type FieldSpec, fieldIssueWords, fieldLabel, fieldOfIssue, fieldStartText, fieldValid } from "@/lib/inputForm";
 import { paramHelp } from "@/lib/templatePackages";
 import { httpHref } from "@/lib/safeUrl";
 import { markdown, runLabel, when } from "@/lib/format";
@@ -25,7 +25,7 @@ import { keeper, uuid } from "@/lib/idempotency";
 import { type Problem, problem } from "@/lib/problem";
 import type { Tone } from "@/lib/runState";
 import { ACCEPT_LIMITS, acceptFields, emptyRule, type RuleDraft, ruleDraftOf } from "@/lib/accept";
-import { agentCapOf, triggerInputOf, atLeast, bodyOf, capOf, type CapRule, CONNECTED_NO_CAP, disabledWords, dollars, acceptWords, onceState, type OnceState, emptyGitHub, FIRED_BY, GITHUB_EVENT_NAMES, GITHUB_EVENTS, githubBodyOf, type GitHubDraft, type GitHubPicks, githubPicksOf, githubRulesOf, githubSourceOf, githubWhen, emailWhen, feedWhen, composioWhen, type ComposioDraft, type ComposioTrigger, composioBodyOf, composioSourceOf, type ConfigField, configFieldsOf, emptyComposio, isComposioTrigger, type GitHubTrigger, isGitHubTrigger, HOOK_URL_HINT, hookUrlOf, hookWhen, isScheduleTrigger, isWebhookTrigger, same, SIGNATURE_WORDS, utcWhen, type Draft, draftOf, type Schedule, type WebhookTrigger, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, pastWords, scheduleLine, emptyWebhook, type WebhookDraft, webhookBodyOf, webhookSourceOf, type FeedDraft, type FeedTrigger, type InputDraft, emptyFeed, feedBodyOf, feedDraftOf, feedFields, feedSourceOf, feedUrlsOf, FEED_EVERY_S, isFeedTrigger, type EmailTrigger, isEmailTrigger, type EmailDraft, emptyEmail, emailBodyOf, EMAIL_FIELDS, MAX_FEEDS, span, TRIGGER_KINDS } from "@/lib/schedules";
+import { agentCapOf, atLeast, bodyOf, capOf, type CapRule, CONNECTED_NO_CAP, disabledWords, dollars, acceptWords, onceState, type OnceState, emptyGitHub, FIRED_BY, GITHUB_EVENT_NAMES, GITHUB_EVENTS, githubBodyOf, type GitHubDraft, type GitHubPicks, githubPicksOf, githubRulesOf, githubSourceOf, githubWhen, emailWhen, feedWhen, composioWhen, type ComposioDraft, type ComposioTrigger, composioBodyOf, composioSourceOf, type ConfigField, configFieldsOf, emptyComposio, isComposioTrigger, type GitHubTrigger, isGitHubTrigger, HOOK_URL_HINT, hookUrlOf, hookWhen, isScheduleTrigger, isWebhookTrigger, same, SIGNATURE_WORDS, utcWhen, type Draft, draftOf, type Schedule, type WebhookTrigger, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, pastWords, scheduleLine, emptyWebhook, type WebhookDraft, webhookBodyOf, webhookSourceOf, type FeedDraft, type FeedTrigger, type InputDraft, emptyFeed, feedBodyOf, feedDraftOf, feedFields, feedSourceOf, feedUrlsOf, FEED_EVERY_S, isFeedTrigger, type EmailTrigger, isEmailTrigger, type EmailDraft, emptyEmail, emailBodyOf, EMAIL_FIELDS, MAX_FEEDS, span, TRIGGER_KINDS } from "@/lib/schedules";
 import type { ComposioEvent, ComposioTriggers, Firing, Trigger, TriggerCreate, TriggerMade } from "@/lib/v2";
 import type { McpServer } from "@/lib/mcp";
 import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
@@ -113,7 +113,7 @@ function ScheduleList({ v2, go, agentName, every, now, failuresToPause, noAddres
   const startsOf = (t: Trigger) => (t.target.kind === "start_run" ? t.target.agent_id : null);
   const { asks, outcome } = useAskingTools(v2, (triggers ?? []).flatMap((t) => startsOf(t) ?? []));
   return (
-    // The page's frame is every list page's (Connected agents, Runs): a header bar with the place's icon and name in caps
+    // The page's frame is every list page's (Agents, Runs): a header bar with the place's icon and name in caps
     // and its actions at the right, the main one last, then the content.
     <section className="flex min-h-full flex-col" aria-label="Triggers">
       <header className={cn(pageToolbarClass, "flex-wrap justify-between gap-3 px-5")}>
@@ -506,9 +506,10 @@ function RunTargetFields({ v2, draft, edit, issues, agents, input, agentCap, cap
   issues: Record<string, string>; agents: Agent[] | null; input: RunInputState; agentCap: number | undefined; capRule: CapRule; what: string; asked?: string; skips?: boolean;
 }) {
   // Another agent's input starts afresh (its fields as they start, its example), and the issues at the last one's fields go.
+  // An edited trigger's stored input goes too (inputRead): it was the last agent's, keys the new one may refuse or never show.
   const pick = (agentId: string) => {
     if (agentId === draft.agentId) return;
-    edit({ agentId, values: undefined, json: undefined });
+    edit({ agentId, values: undefined, json: undefined, inputRead: undefined });
     input.setFieldIssues([]);
   };
   return <>
@@ -551,7 +552,7 @@ function AgentPick({ agents, value, onChange }: { agents: Agent[] | null; value:
 
 /** How the picked agent takes its input (lib/inputForm.ts, as the run bar reads it): an agentic agent's input_schema; a
  *  workflow agent's trigger sends the message, as it always has. None while the agents load. */
-const shapeOf = (agent: Agent | undefined): AgentInput | undefined => (agent && agent.kind !== "workflow" ? triggerInputOf(agent.definition.input_schema) : undefined);
+const shapeOf = (agent: Agent | undefined): AgentInput | undefined => (agent && agent.kind !== "workflow" ? agentInputOf(agent.definition.input_schema) : undefined);
 
 /** A trigger form's run input: how the picked agent takes it (`shape`), the input fields the form shows for it (`keys`),
  *  and the server's issues at those fields. */

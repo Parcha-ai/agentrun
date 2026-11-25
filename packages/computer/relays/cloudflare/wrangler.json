@@ -3,12 +3,12 @@
 	"main": "src/index.ts",
 	"compatibility_date": "2026-11-01",
 	"observability": { "enabled": false },
-	"vars": { "BOX_IMAGE": "ghcr.io/parcha-ai/agentrun-box:d289bcc6d0c2" },
+	"vars": { "BOX_IMAGE": "ghcr.io/parcha-ai/agentrun-box:244e45e13f7f" },
 	"containers": [
 		{
 			"class_name": "Computer",
 			"scheduling_policy": "durable_object",
-			"images": { "box": { "dockerfile": "./Dockerfile", "build_vars": { "BOX_IMAGE": "ghcr.io/parcha-ai/agentrun-box:d289bcc6d0c2" } } }
+			"images": { "box": { "dockerfile": "./Dockerfile", "build_vars": { "BOX_IMAGE": "ghcr.io/parcha-ai/agentrun-box:244e45e13f7f" } } }
 		}
 	],
 	"durable_objects": {

@@ -6,6 +6,7 @@ import { type CloudflareProvider, create } from "../cloudflare.js";
 import { CLOUDFLARE } from "../descriptors/cloudflare.js";
 import type { MachineHost } from "../host.js";
 import type { HostedDial } from "../hosted/provider.js";
+import { httpsBase } from "../hosted/rest.js";
 import type { ProviderNote } from "../mount-archil.js";
 import { dialOnlyFromServer } from "./dial-only.js";
 import { CONFORMANCE_MAX_LIFETIME_MS, type Env, kindFrom, preparedImage } from "./module-kit.js";
@@ -68,5 +69,5 @@ export function createHost({ env = process.env, fetch }: Pick<CloudflareModuleOp
 
 /** Where the sweep lists, in words: the relay the settings name. */
 export function sweepScope({ env = process.env }: Pick<CloudflareModuleOptions, "env"> = {}): string {
-	return `the Cloudflare relay at ${settingsFromEnv(env).relayUrl}`;
+	return `the Cloudflare relay at ${httpsBase(settingsFromEnv(env).relayUrl, `the Cloudflare relay URL (${ENV.url})`)}`;
 }

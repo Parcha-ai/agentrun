@@ -237,7 +237,7 @@ test("(b) a draft that says what the agent said on its last runs, alone, is prom
   assert.deepEqual(records.map(({ decided }) => [decided]), [["replaying"], ["promote"]]);
   const { fields, ...check } = records[1].check;
   assert.deepEqual({ ...check, of: [...check.of].sort(), cost_usd: typeof check.cost_usd }, {
-    compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 5, agreed: 5, alone: 5, agent_agreed: 5,
+    compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 5, agreed: 5, alone: 5, agent_agreed: 5, joint: true,
     of: ["prior-0", "prior-1", "prior-2", "prior-3", "prior-4"], cost_usd: "number", outcomes: { answered: 5, handed_back: 0, failed: 0, skipped_write: 0 },
   });
   assert.deepEqual(Object.entries(fields).map(([name, one]) => [name, one.workflow_right, one.n, one.known, one.pass]), [["answer", 5, 5, "agent", true]]);
@@ -297,7 +297,7 @@ test("(f) graded inputs: the check judges the whole answer against each grade's 
   const decided = (await promotionsOf(w.server.settings, "agent-1")).at(-1);
   assert.deepEqual([decided.decided, decided.check.n, decided.check.agreed], ["promote", 5, 5], decided.reason);
   assert.deepEqual(Object.fromEntries(Object.entries(decided.check.fields).map(([name, one]) => [name, one.by])), {
-    answer: { grade: { n: 5, workflow_right: 5, agent_right: 0, pass: true } },
+    answer: { grade: { n: 5, workflow_right: 5, agent_right: 0 } },
   }, "one field, the whole answer: right on all 5 against the grades, where the agent was right on none");
 });
 
@@ -328,7 +328,7 @@ test("(f) graded inputs: a draft that says neither the expected 41 nor the agent
   const held = (await promotionsOf(w.server.settings, "agent-1")).find((one) => one.decided === "hold" && one.check?.n);
   assert.ok(held, "the check held it");
   assert.deepEqual(Object.keys(held.check.fields), ["answer"], "no field is made from a grade's keys");
-  assert.deepEqual(held.check.fields.answer.by, { grade: { n: 5, workflow_right: 0, agent_right: 0, pass: false } }, held.reason);
+  assert.deepEqual(held.check.fields.answer.by, { grade: { n: 5, workflow_right: 0, agent_right: 0 } }, held.reason);
   assert.deepEqual(held.check.disagreements.map((one) => one.expected), Array.from({ length: 5 }, () => [{ field: "answer", known: "grade", value: JSON.stringify({ answer: 41, sure: true }) }]), "each disagreement carries the known answer it missed, whole");
 });
 
@@ -394,6 +394,19 @@ test("(c, d) the revision's check holds it too: stopped, its numbers on the reco
     assert.deepEqual(w.asks.get(`run-${i}`), [], `run-${i} compiles nothing`);
   }
   assert.equal((await w.replays()).length, 10, "no third check");
+});
+
+// Once per hold, on the agent's own runs: the revise the run after the hold was asked is on its kept learning as that
+// hold's (its compile record names the held digest), so with nothing landed the run after it asks none.
+test("(c) once per hold: the run after the hold is asked the revise; nothing lands, and the run after it asks none", { timeout: 240_000 }, async (t) => {
+  const w = await world(t, { learning: { compile_after: 5 }, prior: 5, submit: twice(true), landsRevision: true });
+  await w.start("run-1", "Question 10");
+  await w.replaysEnded(5);
+  await w.start("run-2", "Question 11");
+  assert.ok(w.asks.get("run-2")[0]?.startsWith("One more turn: revise your learned workflow `answer`"), w.asks.get("run-2")[0]?.slice(0, 200));
+  const third = await w.start("run-3", "Question 12");
+  assert.equal(third.metrics?.path, "agent", JSON.stringify(third.metrics));
+  assert.deepEqual(w.asks.get("run-3"), [], "the hold's one revise was asked: none again");
 });
 
 /** Two learned workflows of an agent: `answer` stopped (its one recompile's check held it too) and `second` held (its

@@ -31,16 +31,16 @@ test("results are mapped and clipped into the one search shape: excerpts joined 
   withEnv(t, {}, [MODE]);
   const { sent, send } = parallel();
   const answer = await webSearch({ query: "  widgets delaware ", n: 3 }, parallelExtract(CANARY, send));
-  assert.deepEqual(sent, [{ url: PARALLEL_SEARCH_URL, key: CANARY, body: { objective: "widgets delaware", search_queries: ["widgets delaware"], mode: "fast", advanced_settings: { max_results: 3, excerpt_settings: { max_chars_per_result: 3_000 } } } }]);
-  assert.deepEqual([answer.provider, answer.query, Object.keys(answer)], ["parallel", "widgets delaware", ["provider", "query", "results"]]);
+  assert.deepEqual(sent, [{ url: PARALLEL_SEARCH_URL, key: CANARY, body: { objective: "widgets delaware", search_queries: ["widgets delaware"], mode: "fast", advanced_settings: { max_results: 3 } } }]);
+  assert.deepEqual([answer.provider, answer.objective, answer.queries, Object.keys(answer)], ["parallel", "widgets delaware", ["widgets delaware"], ["provider", "objective", "queries", "results"]]);
   const [first, ...rest] = answer.results;
   assert.deepEqual(Object.entries({ ...first, snippet: "" }), Object.entries({ url: "https://registry.example/widgets", title: "", snippet: "", published: "2026-10-01" }), "a null title is empty");
   assert.match(first.snippet, /^See the registry entry for Widgets, Inc\. … Widgets are registered in Delaware/, "the excerpts joined, the link its text, whitespace collapsed");
   assert.ok(first.snippet.length <= 3_000 && first.snippet.length > 2_900 && first.snippet.endsWith("…"), `clipped on a word: ${first.snippet.length}`);
   assert.deepEqual(rest, [2, 3].map((i) => ({ url: `https://result.example/${i}`, title: `Result ${i} for widgets delaware`, snippet: `Excerpt ${i}.` })), "no published where Parallel gives no date");
   const long = await webSearch({ query: "q".repeat(300) }, parallelExtract(CANARY, send));
-  assert.equal(long.query, "q".repeat(200), "the query is cut at 200 characters");
-  assert.deepEqual(await webSearch({ query: "  " }, parallelExtract(CANARY, send)), { error: "web_search needs a query" });
+  assert.deepEqual([long.objective, long.queries], ["q".repeat(300), ["q".repeat(200)]], "a query alone is the objective, cut at 1,000, and the one query, cut at 200");
+  assert.deepEqual(await webSearch({ query: "  " }, parallelExtract(CANARY, send)), { error: "web_search needs an objective" });
   assert.equal(sent.length, 2, "an empty query is not sent");
 });
 

@@ -3,6 +3,9 @@
 // the bridge, the probe, idempotent create, late-create cleanup, extend, release) is tested once, against its one fake
 // host (hosted-provider.test.mjs); boxd's own is proven live (test/boxd). No SDK is loaded and nothing reaches the network.
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { BOXD, kindRefusals } from "../dist/index.js";
 import { providerFor } from "../dist/providers.js";
@@ -20,6 +23,13 @@ const LINUX_GROUPS = ["exec", "files", "processes"];
 const DESKTOP_GROUPS = [...LINUX_GROUPS, "screen", "input.pointer", "input.keys", "apps"];
 const TIMEOUTS = { requestMs: 2_000, createMs: 3_000 };
 const HOUR = 3_600_000;
+
+// The provider's create reads the daemon before it calls the recorder, which takes any bytes: a stand-in, so these
+// tests hold on a checkout with no computerd built.
+const dir = mkdtempSync(join(tmpdir(), "computer-boxd-"));
+test.after(() => rmSync(dir, { recursive: true, force: true }));
+const DAEMON = join(dir, "computerd");
+writeFileSync(DAEMON, Buffer.from("a stand-in for computerd, linux/amd64\n"));
 
 const named = (name, extra = {}) => Object.assign(new Error(name), { name, ...extra });
 
@@ -69,7 +79,7 @@ function recorder(answers = {}) {
 
 function setup(options = {}, answers = {}) {
 	const rec = recorder(answers);
-	const provider = new BoxdProvider({ apiKey: KEY, Boxd: rec.Boxd, org: "acme", timeouts: TIMEOUTS, ...options });
+	const provider = new BoxdProvider({ apiKey: KEY, Boxd: rec.Boxd, org: "acme", timeouts: TIMEOUTS, daemonPath: DAEMON, ...options });
 	return { rec, provider, host: provider.host };
 }
 const ctx = { timeoutMs: 1_234 };
@@ -403,6 +413,21 @@ test("prepareImage: a desktop's snapshot the org has is answered by its name, wi
 	assert.deepEqual([pending.rec.calls.map(([call]) => call), told], [["snapshots.get", "snapshots.get"], []]);
 });
 
+test("prepareImage: the desktop recipe adds what boxd's own image lacks: Mousepad and xfce4-terminal from Ubuntu, Firefox ESR from Mozilla's APT repository with its signing key pinned by sha256, each program and desktop file checked", async () => {
+	const { rec, provider } = setup({ kind: "desktop" }, building());
+	assert.equal((await provider.prepareImage()).ok, true);
+	const { command } = rec.calls.find(([call]) => call === "streamExec")[2];
+	assert.ok(!command.slice("sudo -n sh -c '".length, -1).includes("'"), "the recipe holds no single quote, so its quoting is one pair");
+	const key = "/etc/apt/keyrings/packages.mozilla.org.asc";
+	assert.ok(command.includes(`curl -fsSL https://packages.mozilla.org/apt/repo-signing-key.gpg -o ${key}`), "Mozilla's signing key, fetched");
+	assert.ok(command.includes(`echo "3ecc63922b7795eb23fdc449ff9396f9114cb3cf186d6f5b53ad4cc3ebfbb11f  ${key}" | sha256sum -c --quiet -`), "and held to the key whose fingerprint is 35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3");
+	assert.ok(command.includes(`deb [signed-by=${key}] https://packages.mozilla.org/apt mozilla main`), "the repository signed by that key alone");
+	assert.ok(command.indexOf("sha256sum -c") < command.indexOf("mozilla main"), "the key is checked before apt reads anything it signs");
+	assert.match(command, /apt-get install -y -qq --no-install-recommends mousepad xfce4-terminal firefox-esr >\/dev\/null/);
+	assert.match(command, /for x in mousepad xfce4-terminal firefox-esr; do command -v "\$x"/);
+	assert.match(command, /for app in org\.xfce\.mousepad xfce4-terminal firefox-esr; do test -f "\/usr\/share\/applications\/\$app\.desktop"/);
+});
+
 test("prepareImage: a desktop's snapshot is built once from boxd's own image: the recipe as root, the capture, the build machine deleted and gone", async () => {
 	const { rec, provider } = setup({ kind: "desktop" }, building());
 	const told = [];
@@ -417,7 +442,7 @@ test("prepareImage: a desktop's snapshot is built once from boxd's own image: th
 	assert.deepEqual({ ...params, name: "x" }, { name: "x", org: "acme", isolated: true, config: { autoSuspendTimeout: 0 }, deleteAfter: 7_200 }, "boxd's own image, no labels (a restore carries them over), boxd's delete timer");
 	const exec = rest.find(([call]) => call === "streamExec");
 	assert.equal(exec[1], "b-1");
-	assert.match(exec[2].command, /^sudo -n sh -c '[^']*apt-get install -y -qq --no-install-recommends mousepad[^']*org\.xfce\.mousepad\.desktop[^']*'$/);
+	assert.match(exec[2].command, /^sudo -n sh -c '[^']*apt-get install -y -qq --no-install-recommends mousepad [^']*'$/, "the recipe as root (its apps: the test above)");
 	assert.deepEqual(
 		rest.map(([call]) => call),
 		["waitUntilReady", "streamExec", "snapshots.create", "snapshots.get", "list", "delete", "get"],

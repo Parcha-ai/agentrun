@@ -317,12 +317,18 @@ describe("CostChart", () => {
     expect(text(host)).not.toContain("Workflow took over, run 21");
   });
   it("says a learned workflow that costs more than the agent by hand no longer runs first, with the two levels", () => {
-    const host = draw({ ...sample, workflows: [{ workflow: "sort-invoice", digest: "0123456789abcdef", state: "needs_revision", served: { runs: 10, mean_usd: 0.95 }, by_hand: { runs: 19, mean_usd: 0.889921 }, unknown_cost_runs: 0 }] });
+    const host = draw({ ...sample, workflows: [{ workflow: "sort-invoice", digest: "0123456789abcdef", state: "needs_revision", reason: "over_line", served: { runs: 10, mean_usd: 0.95 }, by_hand: { runs: 19, mean_usd: 0.889921 }, unknown_cost_runs: 0 }] });
     expect(text(host)).toContain("sort-invoice no longer runs first: $0.950 a run all-in over its newest 10 priced runs, at or over $0.890 a run by hand. The agent takes its runs; a new version runs first again.");
     act(() => root!.unmount()); document.body.innerHTML = "";
-    expect(text(draw({ ...sample, workflows: [{ workflow: "sort-invoice", digest: "0123456789abcdef", state: "needs_revision", served: { runs: 10, mean_usd: 0.95 }, by_hand: { runs: 19, mean_usd: 0.889921 }, unknown_cost_runs: 2 }] }))).toContain("at or over $0.890 a run by hand. 2 runs of unknown cost left out. The agent takes its runs");
+    expect(text(draw({ ...sample, workflows: [{ workflow: "sort-invoice", digest: "0123456789abcdef", state: "needs_revision", reason: "over_line", served: { runs: 10, mean_usd: 0.95 }, by_hand: { runs: 19, mean_usd: 0.889921 }, unknown_cost_runs: 2 }] }))).toContain("at or over $0.890 a run by hand. 2 runs of unknown cost left out. The agent takes its runs");
     act(() => root!.unmount()); document.body.innerHTML = "";
-    expect(text(draw({ ...sample, workflows: [{ workflow: "sort-invoice", digest: "0123456789abcdef", state: "serving", served: { runs: 10, mean_usd: 0.1 }, by_hand: { runs: 19, mean_usd: 0.889921 }, unknown_cost_runs: 0 }] }))).not.toContain("no longer runs first");
+    expect(text(draw({ ...sample, workflows: [{ workflow: "sort-invoice", digest: "0123456789abcdef", state: "serving", reason: null, served: { runs: 10, mean_usd: 0.1 }, by_hand: { runs: 19, mean_usd: 0.889921 }, unknown_cost_runs: 0 }] }))).not.toContain("no longer runs first");
+  });
+  it("says a learned workflow with no by-hand cost to hold it to doesn't run first, with no by-hand price", () => {
+    const host = draw({ ...sample, workflows: [{ workflow: "sort-invoice", digest: "0123456789abcdef", state: "needs_revision", reason: "no_by_hand_cost", served: { runs: 10, mean_usd: 0.4 }, by_hand: null, unknown_cost_runs: 0 }] });
+    expect(text(host)).toContain("sort-invoice doesn't run first: no run by hand has a known cost to hold it to. The agent takes its runs; once one does and the workflow costs less, it runs first again.");
+    expect(text(host)).not.toContain("a run by hand.");
+    expect(text(host)).not.toContain("no longer runs first");
   });
   it("says only the latest runs are drawn when the server sent fewer than there are", () => {
     const host = draw({ ...sample, total_runs: 1200 });

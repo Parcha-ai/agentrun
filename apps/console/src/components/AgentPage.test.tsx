@@ -47,7 +47,7 @@ async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = nul
   const button = (label: string) => [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.getAttribute("aria-label") === label || b.textContent?.trim() === label)!;
   const click = async (label: string) => { await act(async () => button(label).click()); await settle(); };
   const tabs = () => [...host.querySelectorAll('[role="tab"]')].map((t) => t.textContent);
-  const fact = (name: string) => [...host.querySelectorAll("dt")].find((t) => t.textContent === name)?.nextElementSibling as HTMLElement | undefined;
+  const fact = (name: string) => [...host.querySelectorAll("dt")].find((t) => (t.querySelector("span")?.textContent ?? t.textContent) === name)?.nextElementSibling as HTMLElement | undefined;
   const rows = () => [...host.querySelectorAll('table[aria-label="Runs"] tbody tr')];
   const focus = async () => { await act(async () => window.dispatchEvent(new Event("focus"))); await settle(); };
   return { host, went, asked, starts, timelines, statsAsked, button, click, tabs, fact, rows, focus };
@@ -121,9 +121,9 @@ describe("AgentPage overview and run workspace", () => {
     const description = heading.querySelector<HTMLElement>("[data-agent-description]")!;
     for (const c of ["lg:max-h-[50%]", "lg:flex", "lg:flex-col", "lg:shrink-0"]) expect(heading.className.split(" "), c).toContain(c);
     for (const c of ["scroll-quiet", "lg:min-h-7", "lg:overflow-y-auto"]) expect(description.className.split(" "), c).toContain(c);
-    expect(description.querySelector("#agent-description")?.textContent).toContain("Checks invoices.");
+    expect(description.querySelector("#agent-overview-description")?.textContent).toContain("Checks invoices.");
     // A word longer than the column wraps: the box shows nothing sideways.
-    expect(description.querySelector("#agent-description")!.className.split(" ")).toContain("break-words");
+    expect(description.querySelector("#agent-overview-description")!.className.split(" ")).toContain("break-words");
     expect(heading.contains(overview.querySelector("h1"))).toBe(true);
     expect(description.contains(overview.querySelector("h1"))).toBe(false);
     expect(description.textContent).not.toContain("invoice-checker");

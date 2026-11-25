@@ -80,9 +80,16 @@ test("only the template evals reach the fake mail account: email-faux by eval-ma
   const edges = cli.imported.filter((one) => one.file === "template-eval.ts");
   assert.deepEqual(edges.map((one) => one.dynamic), [true], "cli.ts imports template-eval once, dynamically");
   const at = cli.code.search(/import\(\s*["']\.\/template-eval\.js["']\s*\)/);
-  const branch = [...cli.code.slice(0, at).matchAll(/^if \(process\.argv\[2\] === "([^"]+)"\) \{$/gm)].at(-1);
-  assert.equal(branch?.[1], "eval-template", "the import is in the eval-template command's branch");
-  assert.ok(!/^\}$/m.test(cli.code.slice(branch.index, at)), "and that branch has not closed before it");
+  // That import sits inside evalTemplateCommand(): the last top-level function declaration before it is that one, and it has not closed.
+  const home = [...cli.code.slice(0, at).matchAll(/^(?:async )?function (\w+)\(/gm)].at(-1);
+  assert.equal(home?.[1], "evalTemplateCommand", "the import is in evalTemplateCommand");
+  assert.ok(!/^\}$/m.test(cli.code.slice(home.index, at)), "and that function has not closed before it");
+  // And the command runs only under the eval-template branch: its one call is the branch's own first statement.
+  const calls = [...cli.code.matchAll(/\bevalTemplateCommand\(\)/g)].filter((one) => !/^async function /.test(cli.code.slice(one.index - 15, one.index)));
+  assert.equal(calls.length, 1, "evalTemplateCommand is called once");
+  const branch = [...cli.code.slice(0, calls[0].index).matchAll(/^if \(process\.argv\[2\] === "([^"]+)"\) \{$/gm)].at(-1);
+  assert.equal(branch?.[1], "eval-template", "and that call is in the eval-template command's branch");
+  assert.ok(!/^\}/m.test(cli.code.slice(branch.index + 1, calls[0].index)), "which has not closed before it");
 });
 
 test("only the template evals reach the fake feed: feed-faux by eval-feed and template-eval, eval-feed by template-eval, never the server", () => {

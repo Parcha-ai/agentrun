@@ -807,10 +807,11 @@ was deleted.
   reported as a policy. `network(ref, policy)` returns the policy when it is the computer's (an allowlist with the same
   entries, normalized, in any order); any change is refused: a Docker computer's network is fixed at create, since
   Docker cannot move a container with no network onto one, and an allowlist needs its volume mounted at create.
-- `release(ref, "stop" | "delete")` runs `docker stop`, or `docker rm --force --volumes`, then stops or removes the
-  computer's egress proxy and, on delete, its volume, each found by its label (below); `capabilities().release`
-  declares both, and `stopDeletes` is false: a stopped container is kept until it is deleted. A computer already gone is
-  ok.
+- `release(ref, "stop" | "delete")` finds the computer's egress proxy by its label (below), then runs `docker stop` on
+  the computer and then the proxy, or one `docker rm --force --volumes` of the computer and the proxy together, then on
+  delete removes its volume, found by its label too. A computer whose own stop or removal fails still has its proxy and
+  volume stopped or removed, and the computer's failure is the answer. `capabilities().release` declares both, and
+  `stopDeletes` is false: a stopped container is kept until it is deleted. A computer already gone is ok.
 - Only containers with the label `agentrun.computer=1` and a computer's name count for `attach`, `list` and `network`;
   any other container is `not_found`.
 
@@ -890,13 +891,18 @@ key.
   then `docker pull` for one that is not; a failed pull fails create in words, with nothing made). It then makes the
   volume, starts the proxy and waits for its ready line (`egress.readyMs`, 10 s), then runs the computer; both runs
   take `--pull never`, so no pull happens between the volume and the computer. A proxy that ends first, or is not ready in time, fails create in its own words; the proxy and the
-  volume are removed, and the computer is never run. `release` removes the proxy and the volume after the computer, each
-  found by the label `agentrun.computer.egress=<computer>`, never by name alone, so the janitor's sweep and
-  `releaseOlder` remove them too. Parts left with no computer (one removed by hand, or a provider that died between its
+  volume are removed, and the computer is never run. `release` removes the proxy with the computer, in the same
+  `docker rm`, and then the volume, each found by the label `agentrun.computer.egress=<computer>`, never by name alone,
+  so the janitor's sweep and `releaseOlder` remove them too. A release cut off once that call is made leaves no proxy
+  running without its computer. Parts left with no computer (one removed by hand, or a provider that died between its
   proxy and its computer) the sweep removes too (`sweepLeftovers`): a proxy or volume with the egress label, and the
-  sweep's labels, whose deadline label has passed, or whose computer is gone and that is older than a create could
-  take (its ready wait and two minutes), removed by what the label found. The volume carries the computer's deadline
-  and the spec's labels for this. Until then the proxy stops forwarding at its deadline.
+  sweep's labels, past its deadline label or older than a create could take (its ready wait and two minutes), and
+  whose computer is not there, read by name right before that part's removal (a read that fails keeps it). A sweep
+  given `mine` removes only the ones whose labels it answers true for, asked before the computer is read, so callers
+  sharing a Docker host each remove their own (serve: a run of its store that no claim holds). A part with an owner
+  label is never removed: Docker makes no agent's computer. Each is removed by what the label found, never by a name.
+  The volume carries the computer's deadline and the spec's labels for this. Until then the proxy stops forwarding at
+  its deadline.
 - **Read-back.** `network`, `list` and `attach` read open or the allowlist from Docker: network mode none, the egress volume
   read-only at its path, init's relay in its command, and a proxy container that carries the computer's label and
   deadline, runs while the computer runs, is hardened and bounded as above (its memory and swap, pids limit, private
@@ -2549,7 +2555,7 @@ kind browser that declares them.
 
 | | Browserbase | Kernel | Local Chrome |
 | --- | --- | --- | --- |
-| `capabilities().browser` | wall-clock, `stealth`, `profiles` (settle 5 s), `downloads` (`downloads/`) | inactivity, `headless`, `profiles` (settle 0) | wall-clock |
+| `capabilities().browser` | wall-clock, `stealth`, `profiles` (settle 10 s, its descriptor's `profiles`), `downloads` (`downloads/`) | inactivity, `headless`, `profiles` (settle 0) | wall-clock |
 | `viewport` | `browserSettings.viewport` | `viewport` | the window's size |
 | `stealth` | `browserSettings.verified` and `solveCaptchas` (the solver is off otherwise: Browserbase's default is on) | not declared (Kernel's stealth brings a proxy nothing prices yet) | not declared |
 | `profile` | a context: `browserSettings.context { id, persist }` | a profile by name: `profile { name, save_changes }`, made first if Kernel does not know it | not declared |
@@ -2722,8 +2728,10 @@ the API's control URL) is a later change: `platform: "ios"` is refused in words.
 - **create** asks for `timeout_seconds` = the lifetime, and the phone harness ends the session then, whatever happens.
   The lifetime includes the boot, so a phone ready past its deadline fails `timeout`.
   - Each POST carries an Idempotency-Key, and a create whose answer is uncertain is found by it, never sent twice.
-    Only a refusal (a 4xx, or `phones_busy`) says nothing was made. No answer, a 5xx, or a 2xx with no session is
-    uncertain: create asks `GET /sessions/requests/<key>` before it forgets the key, and records the phone it finds.
+    Only a refusal (a 4xx, or `phones_busy`) says nothing was made. No answer, a 5xx, a redirect, or a 2xx with no
+    session is uncertain: create asks `GET /sessions/requests/<key>` before it forgets the key, and records the phone it
+    finds. A redirect is never followed: the API's calls go through the shared REST client (`hosted/rest.ts`), which
+    refuses it in its own words. Its answer is unread, and a 303 after a create is the usual answer to a POST.
   - A create cancelled during its POST is recovered by its key all the same, and the phone the service made is ended.
   - A phone that fails, or is not ready within `readyMs` (240 s), is ended.
   - Each request has a bound of its own, `requestMs` (30 s), beside the caller's signal, and a readiness read takes no
@@ -2811,15 +2819,17 @@ an optional dependency, pinned exactly, as E2B's and Modal's are.
 
 ### The desktop snapshot
 
-boxd's own image (`"default"`) has Xvfb but lists none of a desktop's stock apps (Xfce's text editor and terminal,
-xterm), so a boxd desktop starts from a snapshot that adds one. `prepareImage()` answers it by name,
+boxd's own image (`"default"`) has Xvfb, xdotool and Thunar but not Xfce's text editor and terminal or a browser, so
+a boxd desktop starts from a snapshot that adds them. `prepareImage()` answers it by name,
 `agentrun-desktop-<12 hex>`, the hash of the recipe in `src/boxd.ts`, so a new recipe is a new snapshot. When the
 key's org has none, it builds it once, telling `onWait` "build" first:
 
 1. `machines.create` of an isolated machine of boxd's own image, named `agentrun-desktop-build-<8 hex>`, with no labels
    (a restore carries a snapshot's labels over to every machine made from it) and boxd's delete timer at 2 hours;
-2. the recipe as root through the image user's passwordless sudo: `apt-get install mousepad` (Ubuntu's universe), its
-   `org.xfce.mousepad.desktop` checked;
+2. the recipe as root through the image user's passwordless sudo: `mousepad` and `xfce4-terminal` from Ubuntu's
+   universe, and `firefox-esr` from Mozilla's APT repository (Ubuntu 24.04's `firefox` is a snap, and a microVM runs no
+   snapd), its signing key held to a pinned sha256 before apt reads anything it signs; each program and its desktop
+   file (`org.xfce.mousepad`, `xfce4-terminal`, `firefox-esr`) checked;
 3. `snapshots.create` under the name, read until boxd says `ready`;
 4. the build machine deleted and read gone, pass, fail or cancel: the id create answered, read through `get` (a
    lagging list can't hide it), and any machine of its name in the org's list, so a create whose reply was lost is
@@ -3059,8 +3069,8 @@ What Groundbox refuses or this host works around:
   templates it runs as the image's user, `runner` (uid 1001), with passwordless sudo, which the adapter's scripts use;
   `daemonUser` may not be 1001 there.
 - A desktop needs Xvfb and xfwm4 in its image. Groundbox's own image has Xvfb but not xfwm4, so `check()` refuses
-  `"default"` for kind desktop; the box image has both, and Xfce's terminal and text editor, Firefox ESR and xdotool as
-  its apps.
+  `"default"` for kind desktop; the box image has both, and Xfce's terminal, text editor and file manager (Thunar),
+  Firefox ESR and xdotool as its apps.
 - Groundbox's own image keeps toolchains under `/opt` (corepack's pnpm under
   `/opt/corepack/v1/pnpm/<version>/dist/node_modules/...`, and `/opt/hostedtoolcache`), deeper than the isolation probe's
   8 levels, so `isolation.vendor-agent` can't prove the socket fence on it. That is why the box image is the default.

@@ -2,12 +2,12 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it } from "vitest";
-import { AgentEditor, type EditorCaps } from "./AgentEditor";
+import { AgentEditor, type EditorCaps, type EditorProps } from "./AgentEditor";
 import { type Agent, type AgentFields, createBody, editBody } from "@/lib/agentForm";
 import { SERVED_AGENT } from "@/test/agent";
+import { pick, picker } from "@/test/picker";
 
-// The editor's Settings step: "Learns from its runs", the definition's `learning` switch, on an agentic agent of a server
-// that has learning.
+// Learning is its own settings section during both creation and editing.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const tools = [{ name: "read", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }, { name: "write", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }];
@@ -19,11 +19,11 @@ const agentOf = (definition: Partial<Agent["definition"]> = {}, kind: Agent["kin
 
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
-function mount(agent: Agent | null, c: EditorCaps) {
+function mount(agent: Agent | null, c: EditorCaps, props: Partial<EditorProps> = {}) {
   const saves: AgentFields[] = [];
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  act(() => root!.render(createElement(AgentEditor, { agent, caps: c, step: "settings", onSave: async (f) => { saves.push(f); return null; } })));
+  act(() => root!.render(createElement(AgentEditor, { agent, caps: c, step: "learning", onSave: async (f) => { saves.push(f); return null; }, ...props })));
   const sw = () => host.querySelector('[role="switch"]') as HTMLButtonElement | null;
   const click = async (el: Element) => { await act(async () => { (el as HTMLElement).click(); }); };
   const save = async () => click([...host.querySelectorAll("button")].find((b) => /^(Save revision|Create)$/.test(b.textContent ?? ""))!);
@@ -31,7 +31,7 @@ function mount(agent: Agent | null, c: EditorCaps) {
 }
 
 describe("AgentEditor, the learning switch", () => {
-  it("shows on an agentic agent's Settings step, named and explained in a line, off when the definition says nothing", () => {
+  it("shows in the agent's Learning section, named and explained, off when the definition says nothing", () => {
     const e = mount(agentOf(), caps("on"));
     expect(e.text()).toContain("Learns from its runs");
     expect(e.text()).toContain("Every later run is given your corrections first, and a job it does again compiles into a workflow it can run as one step.");
@@ -67,7 +67,7 @@ describe("AgentEditor, the learning switch", () => {
     expect(editBody(agentOf({ tools: ["read"] }), e.saves[0], "").definition).toMatchObject({ learning: true, tools: ["read"] });
   });
   it("on a server with learning off, says no run learns there yet", () => {
-    expect(renderToStaticMarkup(createElement(AgentEditor, { agent: agentOf({ learning: true }), caps: caps("off"), step: "settings" }))).toContain("This server has learning turned off");
+    expect(renderToStaticMarkup(createElement(AgentEditor, { agent: agentOf({ learning: true }), caps: caps("off"), step: "learning" }))).toContain("This server has learning turned off");
   });
   it("is not offered on a server without learning, nor on a workflow agent, which does not learn", () => {
     expect(renderToStaticMarkup(createElement(AgentEditor, { agent: agentOf(), caps: caps(), step: "settings" }))).not.toContain("Learns from its runs");
@@ -80,6 +80,66 @@ describe("AgentEditor, the learning switch", () => {
     await e.click(e.sw()!);
     expect(createBody({ name: "N", description: "", instructions: "I", harness: "pi", tools: [], learning: true }).definition.learning).toBe(true);
     expect("learning" in createBody({ name: "N", description: "", instructions: "I", harness: "pi", tools: [] }).definition).toBe(false);
+  });
+});
+
+describe("AgentEditor, Learning settings navigation", () => {
+  it("keeps Learning separate from Model & runtime, reachable in the sidebar and mobile picker without losing its draft", async () => {
+    const e = mount(agentOf(), caps("on"), { step: "settings" });
+    const nav = e.host.querySelector('nav[aria-label="Agent settings sections"]')!;
+    const learning = [...nav.querySelectorAll("ul button")].find(button => button.textContent?.trimStart().startsWith("Learning"));
+    expect(learning).toBeTruthy();
+    expect(e.sw()).toBeNull();
+    expect(e.text()).toContain("Spending");
+    await e.click(learning!);
+    expect(e.host.querySelector('nav [aria-current="page"]')?.textContent).toContain("Learning");
+    expect(e.host.querySelector("fieldset")?.textContent).toContain("Turning learning off stops future runs from using or adding learning");
+    await e.click(e.sw()!);
+    expect(e.saves).toEqual([]);
+    await pick(picker(nav, "Settings section")!, "settings");
+    expect(e.sw()).toBeNull();
+    await pick(picker(nav, "Settings section")!, "learning");
+    expect(e.sw()?.getAttribute("aria-checked")).toBe("true");
+    await e.save();
+    expect(editBody(agentOf(), e.saves[0], "").definition).toMatchObject({ learning: true, tools: ["read", "write"], instructions: "Find it." });
+  });
+
+  it("routes learning warnings to Learning and shows field errors beside the switch", async () => {
+    const warning = "Learning is disabled on this server.";
+    const e = mount({ ...agentOf(), warnings: [{ field: "definition.learning", reason: "not_set_up_here", message: warning }] }, caps("off"), {
+      step: "settings",
+      problem: { kind: "invalid", message: "Invalid learning settings", fields: { "definition.learning.compile_after": "compile_after must be positive" } },
+    });
+    const warningLink = [...e.host.querySelectorAll('[aria-label="Save warnings"] button')].find(button => button.textContent === "Learning");
+    expect(warningLink).toBeTruthy();
+    await e.click(warningLink!);
+    expect(e.sw()).toBeTruthy();
+    expect(e.host.querySelector("fieldset")?.textContent).toContain(warning);
+    expect(e.host.querySelector("fieldset [role=alert]")?.textContent).toBe("compile_after must be positive");
+  });
+
+  it.each(["on", "off"] as const)("offers the section when the server reports learning %s", learning => {
+    const e = mount(agentOf(), caps(learning));
+    expect(e.host.querySelector('nav [aria-current="page"]')?.textContent).toContain("Learning");
+    expect(e.sw()).toBeTruthy();
+  });
+
+  it("hides Learning navigation for workflows and servers without the capability", () => {
+    const wf = agentOf({ workflow: { version: 1, root: { kind: "agent", id: "a", task: "t" } } }, "workflow");
+    for (const [agent, c] of [[agentOf(), caps()], [wf, caps("on")]] as const) {
+      const html = renderToStaticMarkup(createElement(AgentEditor, { agent, caps: c, step: "settings" }));
+      expect(html).not.toContain("Learns from its runs");
+      expect(html).not.toContain("Corrections and reusable workflows");
+    }
+  });
+
+  it("keeps creation learning in its own section across runtime settings visits", async () => {
+    const e = mount(null, caps("on"));
+    expect(e.sw()).toBeTruthy();
+    await pick(picker(e.host, "Settings section")!, "settings");
+    expect(e.sw()).toBeNull();
+    await pick(picker(e.host, "Settings section")!, "learning");
+    expect(e.sw()).toBeTruthy();
   });
 });
 
