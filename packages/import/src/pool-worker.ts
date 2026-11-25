@@ -3,7 +3,7 @@
 // asked for, did not hold and never added (missed). parseHome takes the read as its own when no record of either is one
 // an earlier locator holds: its `seen` would then have answered every question alike (a record asked for and then added
 // is in mine), so the read is the one it would have made.
-import { parentPort } from "node:worker_threads";
+import { parentPort, workerData } from "node:worker_threads";
 import { packed, packInto } from "./record-key.js";
 import { addRecord, notIn, ownerOf, recordIndex } from "./record-index.js";
 import { DROPS_CURSOR, type InternalReadOptions } from "./internal.js";
@@ -11,6 +11,9 @@ import { READERS } from "./readers/index.js";
 import type { Locator } from "./reader.js";
 
 export type PoolAsk = { id: number; source: string; locator: Locator };
+
+/** The longest line this worker decodes (pool.ts sets it from the heap cap): a file with a longer one is handed back. */
+const { maxLine } = workerData as { maxLine: number };
 
 const buffers = (index: ReturnType<typeof recordIndex>): ArrayBuffer[] =>
   [index.uuids.slots, index.uuids.owners, index.uuids.words, index.others.slots, index.others.owners, index.others.ends, index.others.bytes].map((a) => a.buffer as ArrayBuffer);
@@ -34,7 +37,7 @@ parentPort!.on("message", async ({ id, source, locator }: PoolAsk) => {
   } as unknown as Set<string>;
   try {
     // The cursor is never sent back: the read makes no copy for it.
-    const options: InternalReadOptions = { turns: false, totals: true, seen, [DROPS_CURSOR]: true };
+    const options: InternalReadOptions = { turns: false, totals: true, seen, maxLine, [DROPS_CURSOR]: true };
     const result = await reader.read(locator, undefined, options);
     const missed = notIn(asked, mine);
     const counts = result.sessions.flatMap(({ counts }) => (counts ? [counts.model.buffer, counts.values.buffer, counts.has.buffer] : [])) as ArrayBuffer[];

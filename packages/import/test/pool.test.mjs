@@ -130,28 +130,37 @@ test("a source read again whole (tokens past a safe sum) gives up its reads in t
   for (const opts of THREADS.flatMap(each)) assert.deepEqual(await parseHome(home, { catalog: false, ...opts }), one, JSON.stringify(opts));
 });
 
-test("threads and readAhead out of range are refused", async (t) => {
+test("threads, readAhead and workerOldMb out of range are refused", async (t) => {
   const home = await plainHome(t);
-  for (const opts of [{ threads: 0 }, { threads: 2.5 }, { threads: Number.NaN }, { readAhead: -1 }, { readAhead: Number.NaN }]) {
+  for (const opts of [{ threads: 0 }, { threads: 2.5 }, { threads: Number.NaN }, { readAhead: -1 }, { readAhead: Number.NaN }, { workerOldMb: 0 }, { workerOldMb: 1.5 }]) {
     await assert.rejects(parseHome(home, { catalog: false, ...opts }), RangeError, JSON.stringify(opts));
   }
 });
 
-test("a worker that ends stops the pool: none starts in its place, and parseHome reads its file and the rest, the totals of one thread", async (t) => {
-  const home = await plainHome(t);
+test("workerOldMb under 8 is refused before any worker starts, naming the floor; 8 reads every file on the workers", async (t) => {
+  const home = await copiedHome(t);
   const one = await parseHome(home, { catalog: false, threads: 1 });
-  let ended = false;
-  const end = (worker) => {
-    if (ended) return;
-    ended = true;
-    void worker.terminate();
+  // 7 first: on a build without the floor it starts workers that lose their reads, where 1 or 2 would end this process.
+  for (const workerOldMb of [7, 3, 2, 1]) {
+    const { result, workers } = await workersOf(() => parseHome(home, { catalog: false, threads: 2, workerOldMb }).then(() => "read", (e) => e));
+    assert.ok(result instanceof RangeError, `workerOldMb ${workerOldMb}: ${result}`);
+    assert.match(result.message, /^workerOldMb: a whole number of MB, at least 8, not \d+$/);
+    assert.equal(workers, 0, `workerOldMb ${workerOldMb}: no worker started`);
+  }
+  // Refused on the calling thread too: the option is the same whatever the threads.
+  await assert.rejects(parseHome(home, { catalog: false, threads: 1, workerOldMb: 7 }), RangeError);
+  let made = 0;
+  let ok = 0;
+  let back = 0;
+  const watch = (worker) => {
+    made += 1;
+    worker.on("message", (read) => (read.ok ? (ok += 1) : (back += 1)));
   };
-  process.on("worker", end);
-  t.after(() => process.off("worker", end));
-  const { result, workers } = await workersOf(() => readsHere(home, () => parseHome(home, { catalog: false, threads: 2 })));
-  assert.equal(workers, 2, "the two threads' workers, and none in the ended one's place");
-  assert.deepEqual(result.result, one);
-  assert.ok(result.files.length >= 1, "the ended worker's file, at least, read on this thread");
+  process.on("worker", watch);
+  t.after(() => process.off("worker", watch));
+  assert.deepEqual(await parseHome(home, { catalog: false, threads: 2, workerOldMb: 8 }), one, "at the floor, the totals of one thread");
+  assert.deepEqual({ made, back }, { made: 2, back: 0 }, "no worker lost, no file handed back");
+  assert.ok(ok > 0, "the workers read files");
 });
 
 test("threads over 64 are refused before any worker starts", async (t) => {
@@ -208,24 +217,26 @@ const MiB = 2 ** 20;
 test("the default threads are the cores less one, at most 16, and no more workers than the memory free holds", () => {
   const { defaultThreads } = poolModule;
   assert.equal(typeof defaultThreads, "function", "pool.js exports defaultThreads");
-  // A worker, as the default counts it.
-  const worker = 96 * MiB;
-  assert.equal(poolModule.WORKER_BYTES, worker);
+  // A worker's heap: its 16 MB young generation and its old one (OLD_MB, 64), 80 MiB.
+  assert.equal(poolModule.workerBytes(), 80 * MiB);
+  assert.equal(poolModule.workerBytes(32), 48 * MiB);
   assert.equal(defaultThreads(48, 503 * GiB, GiB), 16, "48 cores, 503 GB: the ceiling");
   assert.equal(defaultThreads(10, 16 * GiB, GiB), 9, "a 10-core laptop, 16 GB free");
-  assert.equal(defaultThreads(10, 2 * GiB, GiB), 9, "the same with 2 GB free: 1 GiB past the read-ahead holds 10 workers");
-  assert.equal(defaultThreads(10, 1.5 * GiB, GiB), 5, "1.5 GB free: 512 MiB past the read-ahead holds 5");
+  assert.equal(defaultThreads(10, 2 * GiB, GiB), 9, "the same with 2 GB free: 1 GiB past the read-ahead holds 12 workers");
+  assert.equal(defaultThreads(10, 1.5 * GiB, GiB), 6, "1.5 GB free: 512 MiB past the read-ahead holds 6");
   assert.equal(defaultThreads(4, 8 * GiB, 512 * MiB), 3, "4 cores, 8 GB");
   assert.equal(defaultThreads(2, 8 * GiB, 512 * MiB), 2, "two cores keep two threads");
   assert.equal(defaultThreads(1, 8 * GiB, 512 * MiB), 1, "one core: the calling thread alone");
-  assert.equal(defaultThreads(48, GiB + 3 * worker, GiB), 3, "three workers past the read-ahead: three");
-  assert.equal(defaultThreads(48, GiB + 3 * worker - 1, GiB), 2, "a byte short of three: two");
+  assert.equal(defaultThreads(48, GiB + 3 * 80 * MiB, GiB), 3, "three heaps past the read-ahead: three");
+  assert.equal(defaultThreads(48, GiB + 3 * 80 * MiB - 1, GiB), 2, "a byte short of three: two");
   assert.equal(defaultThreads(48, 512 * MiB, GiB), 1, "less free than the read-ahead: the calling thread alone");
+  assert.equal(defaultThreads(48, GiB + 3 * 48 * MiB, GiB, 32), 3, "a smaller old generation fits more");
+  assert.equal(defaultThreads(48, GiB + 3 * 48 * MiB, GiB), 1, "at the default's 80 MiB, the same memory holds one");
   assert.equal(poolModule.freeMemory(8 * GiB, 2 * GiB), 2 * GiB, "a 2 GiB container: its limit");
   assert.equal(poolModule.freeMemory(GiB, 512 * GiB), GiB, "1 GiB free on the machine: 1 GiB");
 });
 
-test("without threads, parseHome starts the default's workers: the cores less one, none when the read-ahead fills the memory free", async (t) => {
+test("without threads, parseHome starts the default's workers: the cores less one, none when the heaps or the read-ahead fill the memory free", async (t) => {
   const home = await copiedHome(t);
   const one = await parseHome(home, { catalog: false, threads: 1 });
   const cores = availableParallelism();
@@ -233,12 +244,17 @@ test("without threads, parseHome starts the default's workers: the cores less on
   // One thread is the calling thread alone: no worker.
   const workersAt = (threads) => (threads > 1 ? threads : 0);
   const free = Math.min(freemem(), memoryLimit());
-  // Nothing set aside: the cores set the count while the memory free holds 16 workers (1.5 GiB; under twice that, the
-  // test is skipped).
-  if (free < 2 * 16 * poolModule.WORKER_BYTES) return t.skip(`${Math.round(free / MiB)} MiB free`);
+  // 80 MiB heaps, nothing set aside: the cores set the count while the memory free holds 16 of them (1.25 GiB; under
+  // twice that, the test is skipped).
+  if (free < 2 * 16 * 80 * MiB) return t.skip(`${Math.round(free / MiB)} MiB free`);
   const small = await workersOf(() => parseHome(home, { catalog: false, readAhead: 0 }));
   assert.equal(small.workers, workersAt(byCores), `${cores} cores`);
   assert.deepEqual(small.result, one);
+  // An old generation four times the memory free: not one heap fits, so every file is read on the calling thread.
+  const huge = Math.ceil((4 * free) / MiB);
+  const big = await workersOf(() => parseHome(home, { catalog: false, readAhead: 0, workerOldMb: huge }));
+  assert.equal(big.workers, 0, "heaps past the memory free");
+  assert.deepEqual(big.result, one);
   // A read-ahead four times the memory free leaves none for a worker.
   const ahead = await workersOf(() => parseHome(home, { catalog: false, readAhead: 4 * free }));
   assert.equal(ahead.workers, 0, "a read-ahead past the memory free");

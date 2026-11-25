@@ -28,7 +28,7 @@ const sessions = await parseHome(homedir(), { sources: ["claude-code", "codex"] 
   totalled; without it, parseHome throws `ReadFailures`. An unreadable file is never taken for an empty one.
 - `env` names where a source keeps its own directory (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`); without it the home's.
 - `threads` reads the files on that many worker threads (default: the cores the process may run on less one, two on
-  two, at most 16, and no more than the workers, counted at 96 MiB each, that fit in the memory
+  two, at most 16, and no more than the workers whose heaps, 80 MiB each at the default `workerOldMb`, fit in the memory
   still free (the machine's, page cache counted as free, at most its container's limit) once `readAhead` is set aside;
   `1` reads them in order on the calling thread; at most 64). A read is kept only when it is the one the import's order
   would make; any other file is read again in order, so the totals are the same whatever the count. A call with a
@@ -37,7 +37,9 @@ const sessions = await parseHome(homedir(), { sources: ["claude-code", "codex"] 
   process may use, its container's limit when one is set, when that is less: 512 MiB at 8 GiB). Under it, files of 64 MiB and over are read first, largest first, then
   the rest in order; at it, the threads read only the file the import waits on. It is a cap on finished reads waiting,
   plus at most one read in flight per thread (one of those can be a giant file), not on the process's memory.
-- A worker that ends (out of memory, or crashed) gives its file back, and the calling thread reads it and the rest.
+- `workerOldMb` caps each worker's old generation (default 64, at least 8, refused with a RangeError under it: at 1 or
+  2 MB V8 ends the whole process as a worker starts, and at 3 to 7 the workers run out of memory). A line over an eighth of it, or a file that runs a worker
+  out of memory, is read on the calling thread instead; past two such losses a thread, the calling thread reads the rest.
 
 ## A year of work
 

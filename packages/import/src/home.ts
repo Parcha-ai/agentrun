@@ -11,7 +11,7 @@ import { type Env, type Locator, locatorKey, type SessionRead } from "./reader.j
 import { READERS, SOURCES, type Source } from "./readers/index.js";
 import { addRequest, AT, atOf, type Counts, counts, HAS_LONG, HAS_REASONING, HAS_USAGE, STRIDE, trimmed, USAGE_FIELDS } from "./counts.js";
 import { DROPS_CURSOR, type InternalReadOptions } from "./internal.js";
-import { defaultThreads, type PoolRead, ReadPool, readAheadBytes } from "./pool.js";
+import { defaultThreads, MIN_OLD_MB, OLD_MB, type PoolRead, ReadPool, readAheadBytes } from "./pool.js";
 import { addDisjoint, addNew, addRecord, anyIn, dropOwner, locatorNumber, markOf, ownAll, ownerOf, type RecordIndex, recordIndex, undoTo } from "./record-index.js";
 import { packed, packInto } from "./record-key.js";
 import type { Usage } from "./types.js";
@@ -82,11 +82,10 @@ export type ParseOptions = {
    *  own files (not its subagents'), absent when it has none. For a caller that buckets the same numbers (wrapped.ts). */
   requests?: (totals: SessionTotals, requests: readonly SessionRequest[], started: number | undefined) => void;
   /** Threads that read the sources' files ahead, largest first, without a state and with the registry's readers. Default:
-   *  the cores this process may run on less one (two on two), at most 16, and no more than the workers (96 MiB each)
-   *  that fit in the memory still free (the machine's, at most its container's limit) once `readAhead` is set aside; at
-   *  least 1 (pool.ts, defaultThreads). Each read is kept only when it is the one parseHome would make in order; 1 reads
-   *  every file in order on this thread. A worker that ends gives its file back, and this thread reads it and the rest.
-   *  At most MOST_THREADS (64). */
+   *  the cores this process may run on less one (two on two), at most 16, and no more than the workers whose heaps (16 MB
+   *  young generation plus `workerOldMb` each) fit in the memory still free (the machine's, at most its container's
+   *  limit) once `readAhead` is set aside; at least 1 (pool.ts, defaultThreads). Each read is kept only when it is the
+   *  one parseHome would make in order; 1 reads every file in order on this thread. At most MOST_THREADS (64). */
   threads?: number;
   /** With threads, a cap on the bytes of finished reads made ahead of the one being taken that may wait (default
    *  readAheadBytes(): 1 GiB, or a sixteenth of the machine's memory when less); at it, the threads read only the file
@@ -94,6 +93,10 @@ export type ParseOptions = {
    *  more memory and waits less behind a large file. A cap on finished reads waiting, plus at most one read in flight
    *  per thread; not on the process's memory. */
   readAhead?: number;
+  /** With threads, each worker's old generation in MB (default OLD_MB, 64; at least MIN_OLD_MB, 8: at 1 or 2 V8 ends the
+   *  process as a worker starts, at 3 to 7 the workers run out of memory). A worker that runs out of it gives its file back, which is read on this
+   *  thread, and another takes its place; past 2 x threads such losses the rest is read here. */
+  workerOldMb?: number;
 };
 
 /** One model request of a session: when (ms), by which model ("provider/model", the session's when the request names none),
@@ -239,11 +242,12 @@ function counted(session: Meta, c: Counts, pricer: Pricer, sums: Float64Array): 
 type Part = { locator: Locator; read: Compact };
 
 /** Every session of `sources` under `home`, as totals, sorted by key. */
-export async function parseHome(home: string, { sources = SOURCES, readers = READERS, state, catalog, calculateCost, env, failures, requests, threads: asked, readAhead = readAheadBytes() }: ParseOptions = {}): Promise<SessionTotals[]> {
+export async function parseHome(home: string, { sources = SOURCES, readers = READERS, state, catalog, calculateCost, env, failures, requests, threads: asked, readAhead = readAheadBytes(), workerOldMb = OLD_MB }: ParseOptions = {}): Promise<SessionTotals[]> {
   if (asked !== undefined && (!Number.isSafeInteger(asked) || asked < 1 || asked > MOST_THREADS)) throw new RangeError(`threads: a whole number from 1 to ${MOST_THREADS}, not ${asked}`);
   if (!(readAhead >= 0)) throw new RangeError(`readAhead: a number of bytes, 0 or more, not ${readAhead}`);
-  const threads = asked ?? defaultThreads(undefined, undefined, readAhead);
-  const pool = !state && readers === READERS && threads > 1 ? new ReadPool(threads, readAhead) : undefined;
+  if (!Number.isSafeInteger(workerOldMb) || workerOldMb < MIN_OLD_MB) throw new RangeError(`workerOldMb: a whole number of MB, at least ${MIN_OLD_MB}, not ${workerOldMb}`);
+  const threads = asked ?? defaultThreads(undefined, undefined, readAhead, workerOldMb);
+  const pool = !state && readers === READERS && threads > 1 ? new ReadPool(threads, readAhead, workerOldMb) : undefined;
   try {
   let prices: Promise<Catalog | undefined> | undefined;
   const priceWith = () => (catalog === false ? Promise.resolve(undefined) : catalog ? Promise.resolve(catalog) : (prices ??= builtinCatalog()));
