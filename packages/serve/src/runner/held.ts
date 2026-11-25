@@ -69,6 +69,15 @@ export interface Held {
   projectCheckpoint(signal?: AbortSignal): Promise<ProjectCheckpoint>;
   /** The ChatGPT sign-in's reader (chatgpt-plan.ts planReaderOf), for a run whose models reach the plan; else none. */
   plan(): Promise<PlanReader | undefined>;
+  /** Claude Code's login on this machine, for a claim of a run that goes on it (claude-login.ts loginForRun, the
+   *  claim's own harness and place, and no model key of its own): its access token alone, read by the runner at each ask
+   *  and renewed by it when near its end (claude-login-token.ts LoginTokens), which throws in words where there is none
+   *  to hand; `refused(sent)` tells the runner Anthropic refused `sent` (the CLI's 401), so the next ask renews it. Else
+   *  none, and the claim does not go on the login: the one answer to that, since the process can read neither the
+   *  setting's machine id nor the login's folder. A claim on a login other than AgentRun's own folder is refused at the
+   *  claim (run-child-host.ts staysInRunner, LOGIN_MACHINE_NEEDS_SERVER_USER), before this is asked; the runner refuses
+   *  it here too (LOGIN_NOT_HANDED) only when handed a claim read that check did not make. */
+  claudeLogin(): Promise<{ token(): Promise<string>; refused(sent: string): Promise<void> } | undefined>;
   /** Whether a browser sign-in handed to the run reads back here (sign-ins-store.ts handedSignInReadsBack). */
   signInReadsBack(): Promise<boolean>;
   /** The run's browser sign-in for vendor `resolution` (sign-ins-store.ts runSignIn). */

@@ -366,21 +366,18 @@ export function computerDepsFrom(options: ComputerDepsOptions): { computerForCla
     const addresses = read ? unionOf(read, namedAddresses).addresses : (namedAddresses ?? []);
     return { ...(volume ?? {}), ...(addresses.length > 0 ? { egress: { hostAddresses: addresses } } : {}) };
   };
-  /** The server's own values of the environment variables a provider declares it reads on this machine (hostEnv: Local
-   *  Chrome's, where it finds Chrome), and no other variable of the server's. */
-  const hostEnvOf = (names: readonly string[]): Record<string, string> => Object.fromEntries(names.flatMap((name) => (env[name] === undefined ? [] : [[name, String(env[name])]])));
   /** The options a provider takes beside its keys, by what its descriptor declares, never by its id: for a local one,
-   *  its image source and its host options; for a remote one, the server's dial; the host environment it reads. */
+   *  its image source and its host options; for a remote one, the server's dial. The host environment it reads is the
+   *  makers' (computerProviderMakers' `env`). */
   const declaredOptions = async (id: string, boxAllow: readonly string[] | "none" | undefined): Promise<Record<string, unknown>> => {
     const entry = kinds.PROVIDERS.find((one) => one.id === id);
     return {
       ...(entry?.local ? { image: preparedImage, ...(await localHostOptions(boxAllow)) } : options.dial ? { dial: options.dial } : {}),
-      ...(entry?.hostEnv ? { env: hostEnvOf(entry.hostEnv) } : {}),
     };
   };
   const load = options.load ?? (providerFor as unknown as ProviderLoad);
   // The claim and Settings → Computers' test alike.
-  const providers = computerProviderMakers({ load: async (id, given, claim) => load(id, { ...given, ...(await declaredOptions(id, claim?.boxAllow)) }) });
+  const providers = computerProviderMakers({ env: env as NodeJS.ProcessEnv, load: async (id, given, claim) => load(id, { ...given, ...(await declaredOptions(id, claim?.boxAllow)) }) });
   const computerDeps: ComputerDeps = {
     kinds,
     providers,
