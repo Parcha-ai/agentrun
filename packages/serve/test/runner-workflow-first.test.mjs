@@ -919,13 +919,29 @@ test("held: a compile of it since the hold, past the last 4 runs, asks no revisi
   const check = { compile_after: 20, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 20, agreed: 13, alone: 20, of: [], cost_usd: 0.4, outcomes: { answered: 20, handed_back: 0, failed: 0, skipped_write: 0 } };
   const held = { workflow: "answer", digest: DIGEST, at, decided: "hold", reason: "checked on 20 of the agent's inputs: held", check };
   const past = pastRuns({ served: 0, byHand: 6 });
-  const compiledAt = (createdAt) => [{ runId: "past-5", agentId: "agent-1", turn: null, createdAt, proposal: { state: "dropped", reason: "checker", detail: "d", compiled: { workflow: "answer", attempts: [{ ok: false, errors: ["workflow: no root"] }] }, draft_errors: ["workflow: no root"] } }];
+  // The revise of this hold (`held`: the digest it revised) a run since it was asked.
+  const compiledAt = (createdAt) => [{ runId: "past-5", agentId: "agent-1", turn: null, createdAt, proposal: { state: "dropped", reason: "checker", detail: "d", compiled: { workflow: "answer", attempts: [{ ok: false, errors: ["workflow: no root"] }], held: DIGEST }, draft_errors: ["workflow: no root"] } }];
   const asksRevision = (gateway) => gateway.requests.some((request) => /One more turn: revise your learned workflow `answer`/.test(textOf(request.body)));
   const since = await piRun(t, { promotions: [held], past, keptBefore: compiledAt(Date.parse(at) + 1) });
   assert.equal(since.row.metrics?.path, "agent", JSON.stringify(since.row.metrics));
   assert.ok(!asksRevision(since.gateway), "asked once already, 6 runs ago: never again for this hold");
   const before = await piRun(t, { promotions: [held], past, keptBefore: compiledAt(Date.parse(at) - 60_000) });
   assert.ok(asksRevision(before.gateway), "a compile before the hold was not this hold's ask");
+});
+
+// A bench run: a first compile merged `answer`, and two more first compiles of the agent's, asked while that one was in
+// flight (nothing learned on main yet), drafted `answer` too; their merges were refused (dropped, "checker"). One of those
+// runs ended after `answer`'s check held it, so its kept learning is newer than the hold. It was a new compile, asked
+// before the hold existed, never the hold's revise: the next completed run asks the one revise.
+test("held: a first compile in flight when the check held, its kept learning written after the hold, is not the hold's revise: the next run asks it", async (t) => {
+  const at = new Date().toISOString();
+  const check = { compile_after: 20, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 20, agreed: 14, alone: 20, of: [], cost_usd: 0.4, outcomes: { answered: 20, handed_back: 0, failed: 0, skipped_write: 0 } };
+  const held = { workflow: "answer", digest: DIGEST, at, decided: "hold", reason: "checked on 20 of the agent's inputs: held", check };
+  // Its draft passed its checks; the merge refused it (main held `answer` by then).
+  const rival = { runId: "past-0", agentId: "agent-1", turn: null, createdAt: Date.parse(at) + 1_000, proposal: { state: "dropped", reason: "checker", detail: "d", compiled: { workflow: "answer", attempts: [{ ok: true, errors: [] }], digest: "0123456789abcdef" }, problems: [{ rule: "workflow", detail: "workflows/answer/workflow.json changed on main since the draft read it" }] } };
+  const { row, gateway } = await piRun(t, { promotions: [held], past: pastRuns({ served: 0, byHand: 6 }), keptBefore: [rival] });
+  assert.equal(row.metrics?.path, "agent", JSON.stringify(row.metrics));
+  assert.ok(gateway.requests.some((request) => /One more turn: revise your learned workflow `answer`/.test(textOf(request.body))), "the next completed run after the hold asks the one revise");
 });
 
 // #3390 review: a connected agent's hold on give-backs spends no recompile, so its revise whose draft failed its checks
