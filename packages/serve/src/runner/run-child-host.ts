@@ -21,6 +21,7 @@ import { dirname, join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { encode, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, withoutSecrets } from "../secrets.js";
 import { genAiTracing, type GenAiTracing, tracePosts } from "../otel/tracer.js";
+import { agentOfRun } from "../otel/genai.js";
 import { putLiveViewer, dropLiveViewer } from "../browser-live.js";
 import { CALENDAR_EVENTS } from "../calendar/names.js";
 import { openCalendar } from "../calendar/address.js";
@@ -1372,7 +1373,8 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
         // spans and exports them in the background. No exporter, flush or OTLP setting is ever the process's, so neither
         // its exit nor this claim's release waits on a collector.
         const tracing = await (options.tracing ?? genAiTracing()).catch(() => undefined);
-        const traced = tracing ? tracePosts(tracing, claim.runId, cut) : undefined;
+        // Its agent is the one this runner reads from the store, never one the process posts.
+        const traced = tracing ? tracePosts(tracing, claim.runId, cut, await agentOfRun(deps.store.agents, runRow.agentId)) : undefined;
         try {
           let extra: Record<string, string> = {};
           let argv = [...(options.argv ?? childArgv())];

@@ -1,0 +1,8 @@
+---
+packages: @parcha/agentrun-serve
+kind: breaking
+---
+A run's OpenTelemetry trace names the agent that ran: `gen_ai.agent.name` is the agent's name as you gave it and `gen_ai.agent.id` its id, on every span, and the run's span is `invoke_agent {agent name}`. Before, `gen_ai.agent.name` was the harness (`pi`) and the span was `invoke_agent pi`, so a trace never said which agent ran. The harness stays on `agentrun.harness`. A dashboard, alert or saved query that filters on `gen_ai.agent.name` being a harness, or on a span named `invoke_agent <harness>`, must filter on `agentrun.harness` instead.
+- An agent with no name gets no `gen_ai.agent.name` (never the harness in its place) and a span named `invoke_agent` alone, as the GenAI semantic conventions ask. The name and id are cut as other names are, and a name written like a key is `[redacted]` whatever the runner holds. A run in a process of its own is named by the agent its runner reads from the store, never one the process posts.
+- A runner with tracing on now says so once as it starts: `[otel] tracing is on: spans export to <endpoint>`, the endpoint without its user or password and with a credential's query parameter cut, never a header. Off, nothing is said.
+- A failed export's line names the endpoint and the time, and a collector that keeps failing is said again at most once a minute, by the next failure once a minute has passed, with the count of failures since the last line (`[otel] 25 more trace exports to <endpoint> failed since <time>, the last at <time>; ...`). Before, the first failure was one line with neither, and nothing more until an export succeeded and failed again. A run's end still never waits on an export.

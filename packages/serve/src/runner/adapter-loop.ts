@@ -27,7 +27,7 @@ import { CAP_REFUSED, CAP_WRAPUP, COMPUTER_NOTE, endsTurn, HOST_PHASE, MESSAGE_O
 import { raiseFollowUpId } from "../run-view.js";
 import { durableWait } from "../workflow/pi-versions.js";
 import { genAiTracing, type GenAiTracing, type RunTrace } from "../otel/tracer.js";
-import { tracedEvent, tracedModel, type RouteTrace } from "../otel/genai.js";
+import { tracedAgent, tracedEvent, tracedModel, type AgentOfRun, type RouteTrace } from "../otel/genai.js";
 
 /** The root entries a claim writes before its turn, whatever the run's turns are (its session's key, a phase row, a
  *  takeover's note, its computer's hold, the learning seed it laid, the computer it made): read past when a claim asks
@@ -294,8 +294,9 @@ export interface AdapterRunSpec {
   readonly outputSchema?: unknown;
   /** The model route its requests take, as the run's GenAI trace names it (otel/genai.ts TracedRun): the provider id its
    *  model is named by, the host its requests go to, its model. Each where the spec knows it; absent, its spans name none.
-   *  `routes`: the session's other routes (a subagent's tier), by the name its requests carry (ModelRequest.route). */
-  readonly trace?: RouteTrace & { readonly routes?: ReadonlyMap<string, RouteTrace> };
+   *  `routes`: the session's other routes (a subagent's tier), by the name its requests carry (ModelRequest.route).
+   *  `agent`: the agent the run is of, its id and its name as its row has them (the loop cuts them: tracedAgent). */
+  readonly trace?: RouteTrace & { readonly routes?: ReadonlyMap<string, RouteTrace>; readonly agent?: AgentOfRun };
 }
 
 /** A tool host's lifecycle, as its bindings registered it: run by the adapter loop (AdapterRunSpec.lifecycle). */
@@ -1893,7 +1894,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // The run's trace, from its claim's start, once its spec says what runs (a restart's spec changes nothing of it).
         // The tracing is made long before (as the loop is): waited for only on the rare claim whose spec beat it.
         trace ??= (tracing ?? (await tracingMade)).now?.open({ startedAt: claimedAt });
-        trace?.known({ runId: claim.runId, harness: spec.adapter.id, ...(spec.facts?.wire === "plan" ? { plan: true } : {}), ...spec.trace });
+        // Its agent, as the spec read it from the store, cut by the runner's redactor and of every secret shape (tracedAgent).
+        const { agent, ...route } = spec.trace ?? {};
+        trace?.known({ runId: claim.runId, ...(agent ? { agent: tracedAgent(agent, deps.redact) } : {}), harness: spec.adapter.id, ...(spec.facts?.wire === "plan" ? { plan: true } : {}), ...route });
         mcp = spec.mcp;
         specNow = spec;
         specKnown = true;

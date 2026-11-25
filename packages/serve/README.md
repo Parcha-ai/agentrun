@@ -252,10 +252,23 @@ names no run, and a store with no such run says nothing; quiet keeps it too.
 
 Set `OTEL_EXPORTER_OTLP_ENDPOINT` (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) and every run on a pi or CLI harness
 exports a GenAI trace over OTLP/HTTP to any backend that takes one, with the official OpenTelemetry SDK: an
-`invoke_agent {harness}` span per claim of the run, under it a `chat {model}` span per model request (provider, model,
+`invoke_agent {agent name}` span per claim of the run, under it a `chat {model}` span per model request (provider, model,
 `server.address` (the host the request goes to, OpenRouter's for a model reached through it; none where not known),
 and tokens with the cache: `gen_ai.usage.input_tokens` includes the cache read and write, which are also given on their
-own) and an `execute_tool {tool}` span per tool call. A name the model wrote is never sent as written: a call the
+own) and an `execute_tool {tool}` span per tool call. Every span says which agent ran and on what, as the
+[GenAI semantic conventions][otel-agent-spans] name it:
+
+| Attribute | Value |
+| --- | --- |
+| `gen_ai.agent.name` | The agent's name as you gave it (`billing-helper`). An agent with no name has none, never the harness in its place, and its span is `invoke_agent` alone. |
+| `gen_ai.agent.id` | The agent's id, the one its API routes take. |
+| `agentrun.harness` | The harness that ran it (`pi`, `claude-agent`, `codex`). The conventions have no attribute for it. |
+| `gen_ai.conversation.id`, `agentrun.run.id`, `session.id` | The run's id. |
+| `gen_ai.operation.name` | `invoke_agent`, `chat` or `execute_tool`. |
+
+An inline run (`POST /runs` with its definition) names its agent too, since it writes the agent's row first. The
+agent's name and id are cut as any other name is (below), and a name written like a key (a GitHub token's shape, an
+`sk-` key's) is `[redacted]` whatever the runner holds. A name the model wrote is never sent as written: a call the
 harness refused (a tool the session does not have) is `execute_tool` with `error.type=tool_refused` and no tool name, a
 model the run does not know is named by its route's model, and any other name is cut of every secret the runner holds
 and at 64 characters. A run is one trace, sampled whole or not at
@@ -289,9 +302,17 @@ SDK's diag writes can quote a header value as sent, and a test fails if a source
 writes, a held value is cut at 8 characters or more, a header value's as any other's, and a shorter header value is on
 no held list: that floor is kept on purpose, since a needle of a few characters would cut ordinary text, turn a served
 number such as `1` into `[redacted]`, or refuse a source capture of any project that holds it. Spans are sent in the background, so a run's end never waits on
-the collector; a server or runner that stops waits at most 3 s to send what is left, and a collector that is down
-costs one log line and the dropped spans. Unset, or with `OTEL_SDK_DISABLED=true`, no OpenTelemetry code loads and
-nothing is sent.
+the collector; a server or runner that stops waits at most 3 s to send what is left. At its start, a runner (the one
+beside the server, or `agentrun-serve runner`) with tracing on says so once, and where its spans go:
+`[otel] tracing is on: spans export to https://collector.example/v1/traces`, the endpoint without its user or password
+and with a credential's query parameter cut, never a header. A collector that is down costs the dropped spans and a
+line with the endpoint and the time (`[otel] a trace export to ... failed at 2026-11-25T07:01:31.465Z; its spans were
+dropped: Request timed out`), then at most one line a minute, said by the next failure once a minute has passed, that
+counts the failures since the last line (`[otel] 25 more trace exports to ... failed since ..., the last at ...`); never
+a line per span or per batch. Unset, or with `OTEL_SDK_DISABLED=true`, no OpenTelemetry code loads, nothing is sent and
+nothing is said.
+
+[otel-agent-spans]: https://github.com/open-telemetry/semantic-conventions-genai/blob/d0e74ba6c48bcc4ded473b1828a8212f06b23753/docs/gen-ai/gen-ai-agent-spans.md#L213-L272
 
 To send traces to Sentry (two variables: its OTLP endpoint and its `x-sentry-auth` header) or to any other backend
 through an OpenTelemetry Collector, and for what Sentry's Agents view shows of a run, see
