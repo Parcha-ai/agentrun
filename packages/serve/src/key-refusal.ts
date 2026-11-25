@@ -128,9 +128,11 @@ export function redactedCall(text: string, secrets: readonly string[], shown: nu
 
 /** Whether redactSecrets withholds `text` whole: it holds a held value or a secret shape no cut in place takes (split by
  *  whitespace, encoded, written as JSON's \uXXXX escapes). Read whole, never in pieces: the caller bounds what it reads
- *  (a call's arguments or a web call's output: TimelineOptions.holds). */
-export function withheldWhole(text: string, secrets: readonly string[]): boolean {
-  return redactSecrets(text, secrets, Number.POSITIVE_INFINITY) === "[redacted]";
+ *  (a call's arguments or a web call's output: TimelineOptions.holds). `held`: spans of `text` cut in place beside its
+ *  own finds, so a value read wholly inside one of them is taken there (sdk/runs.ts withheldParts: a part withheld by
+ *  itself). */
+export function withheldWhole(text: string, secrets: readonly string[], held: readonly (readonly [number, number])[] = []): boolean {
+  return redactSecrets(text, secrets, Number.POSITIVE_INFINITY, held) === "[redacted]";
 }
 
 /** Whether the text a reader is about to be shown (`shown`, what the caller returns) holds a held value, or the joined

@@ -223,26 +223,38 @@ function checkToolParents(row: SdkInbox, events: readonly SdkEvent[]): void {
 /** Which of `parts` (what a run reported: a tool event's input and output, a completion's answer and error) are stored
  *  withheld, as "[redacted]": each whose text (a string as it is, anything else as its JSON) holds a held value no cut in
  *  place takes (key-refusal.ts withheldWhole, whose join view reads a JSON text's strings joined: one split across two
- *  of its strings), then, read together with those withheld, every one when a value is split across two of them. Only
- *  these parts, never the event's or the completion's own facts; each part not withheld is cut in place after (clean).
- *  A part JSON cannot write is withheld. */
+ *  of its strings), then every one when a value is split across two of them. That second read takes the parts as they
+ *  came, one JSON text, each part withheld by itself a span cut in place (withheldWhole's `held`): a value read wholly
+ *  inside one is that part's, and one with any of its characters in another part withholds them all. Read with a
+ *  withheld part as "[redacted]" instead, the head of a second value at its edge would be gone, and the rest of it in
+ *  the next part stored as it came. Only these parts, never the event's or the completion's own facts; each part not
+ *  withheld is cut in place after (clean). A part JSON cannot write is withheld. */
 function withheldParts(parts: Record<string, unknown>, values: readonly string[]): Set<string> {
   const given = Object.entries(parts).filter(([, part]) => part !== undefined);
-  const textOf = (part: unknown): string | undefined => {
-    if (typeof part === "string") return part;
+  const jsonOf = (part: unknown): string | undefined => {
     try {
       return JSON.stringify(part);
     } catch {
       return undefined;
     }
   };
-  const held = (part: unknown): boolean => {
-    const text = textOf(part);
-    return text === undefined || withheldWhole(text, values);
-  };
-  const withheld = new Set(given.filter(([, part]) => held(part)).map(([name]) => name));
-  if (given.length > 1 && held(given.map(([name, part]) => (withheld.has(name) ? "[redacted]" : part))))
-    for (const [name] of given) withheld.add(name);
+  const withheld = new Set<string>();
+  for (const [name, part] of given) {
+    const text = typeof part === "string" ? part : jsonOf(part);
+    if (text === undefined || withheldWhole(text, values)) withheld.add(name);
+  }
+  if (given.length < 2) return withheld;
+  // The parts as one JSON array, each withheld one's span of it held; one JSON cannot write is read as "[redacted]".
+  let joined = "[";
+  const held: [number, number][] = [];
+  for (const [i, [name, part]] of given.entries()) {
+    if (i) joined += ",";
+    const json = jsonOf(part) ?? JSON.stringify("[redacted]");
+    if (withheld.has(name)) held.push([joined.length, joined.length + json.length]);
+    joined += json;
+  }
+  joined += "]";
+  if (withheldWhole(joined, values, held)) for (const [name] of given) withheld.add(name);
   return withheld;
 }
 
