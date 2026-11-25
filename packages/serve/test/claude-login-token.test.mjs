@@ -1563,7 +1563,7 @@ test("a renewal whose save fails to read the login's file (an I/O error, not the
     return fsp.readFile(path, "utf8");
   };
   const lines = [];
-  const renew = tokens.renewLogin({ fetch, now: () => clock, log: (fields) => lines.push(fields), readFile });
+  const renew = tokens.renewLogin({ fetch, now: () => clock, log: (fields) => lines.push(fields), lockFs: { readFile } });
   const reader = new tokens.LoginTokens({ login, now: () => clock, renew });
   assert.equal(await reader.token(), next.access, "the ask is handed the renewed token");
   assert.deepEqual(failed, [file], "the save's read of the login's file failed once (EIO)");
@@ -1603,7 +1603,7 @@ test("two asks on one held pair: the first saves it, and the second, finding tha
     return fsp.readFile(path, "utf8");
   };
   const lines = [];
-  const renew = tokens.renewLogin({ fetch, now: () => now, log: (fields) => lines.push(fields), readFile });
+  const renew = tokens.renewLogin({ fetch, now: () => now, log: (fields) => lines.push(fields), lockFs: { readFile } });
   assert.equal((await renew(login, old.access, undefined))?.access, next.access, "renewed, its pair held unsaved");
   assert.equal(JSON.parse(readFileSync(file, "utf8")).claudeAiOauth.refreshToken, old.refresh, "unsaved: the file still holds the spent refresh token");
   lines.length = 0;
@@ -1646,7 +1646,7 @@ test("an ask that reads the old pair while the renewal that rotated its refresh 
     } else reads++;
     return fsp.readFile(path, "utf8");
   };
-  const renew = tokens.renewLogin({ fetch, now: () => now, readFile });
+  const renew = tokens.renewLogin({ fetch, now: () => now, lockFs: { readFile } });
   const first = new tokens.LoginTokens({ login, now: () => now, renew });
   const other = new tokens.LoginTokens({ login, now: () => now, renew });
   const renewing = first.token();
@@ -1710,7 +1710,7 @@ test("an ask whose read of the file starts before a renewal that rotated its ref
     }
     return fsp.readFile(path, "utf8");
   };
-  const renew = tokens.renewLogin({ fetch, now: () => now, readFile });
+  const renew = tokens.renewLogin({ fetch, now: () => now, lockFs: { readFile } });
   const first = new tokens.LoginTokens({ login, now: () => now, renew });
   const other = new tokens.LoginTokens({ login, now: () => now, renew });
   const renewing = first.token();
