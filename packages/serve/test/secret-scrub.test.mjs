@@ -1687,7 +1687,7 @@ test("LVI: an env command among others on its line is the output's context, and 
   // A failed call's summary is one line, `<label> failed: <its output's first line>`: what follows the head is read with
   // the call's command before it, so a variable with no key-shaped name and no format is cut too; the head is kept.
   const region = "basin-orchard-41";
-  for (const [summary, command] of [[`Bash failed: APP_REGION=${region}`, "env; sleep 5"], [`Bash failed: APP_REGION=${region}`, "env"], [`shell: APP_REGION=${region}`, "env && exit 1"]]) {
+  for (const [summary, command] of [[`Bash failed: APP_REGION=${region}`, "env; sleep 5"], [`Bash failed: APP_REGION=${region}`, "env"], [`shell failed: APP_REGION=${region}`, "env && exit 1"]]) {
     const out = await gone(summary, [region], { command });
     assert.deepEqual(out.cuts.map((cut) => [cut.rule, cut.kind]), [["env-dump", "dump"]], `${command}: ${JSON.stringify(out.cuts)}`);
     assert.equal(out.text, `${summary.slice(0, summary.indexOf(": ") + 2)}[redacted:env-dump 1 lines]`, command);
@@ -1717,9 +1717,14 @@ test("LVI: a line that runs an env command among others is one dump of its whole
   // A failed call's one-line summary under such a line: what follows its head is cut, the head kept.
   const out = await gone(`Bash failed: ${seed}`, [seed], { command: "printenv APP_REGION; printenv APP_SEED" });
   assert.equal(out.text, "Bash failed: [redacted:env-dump 1 lines]");
-  // A lone command keeps its exact cut: printenv's one line, not what follows it.
-  const lone = await scrub(`${seed}\nnext step`, { mode: "cut", command: "printenv APP_SEED" });
-  assert.equal(lone.text, "[redacted:env-dump 1 lines]\nnext step");
+  // A lone command is read as before: its output's lines, by its names (and again past a first line of the caller's).
+  const lone = await gone(`${seed}\nnext step`, [seed], { command: "printenv APP_SEED" });
+  assert.ok(lone.cuts.every((cut) => cut.rule === "env-dump"), JSON.stringify(lone.cuts));
+  // A line with `: ` in it that is no failed call's head is cut whole: a value can hold `: ` (`printenv A; false`).
+  for (const text of [`shell: ${seed}`, `${seed}: ${region}`]) {
+    const whole = await gone(text, [seed, region].filter((v) => text.includes(v)), { command: "printenv APP_SEED; false" });
+    assert.equal(whole.text, "[redacted:env-dump 1 lines]", text);
+  }
 });
 
 test("LIX: a dotted name is no code evidence alone; a self./this./cls. root, a trailing `;` or an environment root is", async () => {

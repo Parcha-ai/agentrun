@@ -2536,21 +2536,38 @@ export const commandReadPath = (command: string | undefined): string | undefined
  *  not read; a split inside them only makes a piece that names no env command alone (`echo "a; env"`). */
 const COMMAND_SPLIT = /;|&&|\|\||(?<![<>&])&(?![&>])|\n/;
 const COMMAND_PIECES = 64;
-/** The command of a call's line that prints the environment or a variable's value (ruling LVI): the line itself, or the
- *  first of the commands it runs one after another that is one (`env; sleep 5`, `cd app && env | sort`). Its output
- *  is that command's. */
-function dumpCommand(command: string): string {
+/** A command that prints the environment or a variable's value, as a piece of a call's line. */
+const dumpPiece = (piece: string): boolean => ENV_COMMAND.test(piece) || PRINTENV_NAMES.test(piece) || ECHO_VARIABLE.test(piece);
+/** Whether a call's line runs commands one after another, one of them printing the environment or a variable's value
+ *  (`env; sleep 5`, `cd app && env | sort`, `printenv A; printenv A B`). Its output can't be told apart by command, so
+ *  all of it is the dump's (ruling LVI). A line that is one command alone keeps that command's exact cut. */
+function dumpAmongOthers(command: string): boolean {
   const pieces = command.slice(0, COMMAND_MAX).split(COMMAND_SPLIT, COMMAND_PIECES);
-  if (pieces.length < 2) return command;
-  return pieces.find((piece) => ENV_COMMAND.test(piece) || PRINTENV_NAMES.test(piece) || ECHO_VARIABLE.test(piece))?.trim() ?? command;
+  return pieces.length >= 2 && pieces.some(dumpPiece);
 }
 /** A failed call's summary (timeline.ts: `<tool label> failed: <its output's first line>`, or `<tool label>: <words>`):
  *  its head, before what the call printed. */
 const SUMMARY_HEAD = /^[^\n:]{1,80}: /;
+/** A failed call's summary head (timeline.ts: `<tool label> failed: `): a label a printed value can't be taken for. */
+const FAILED_HEAD = /^[^\n:]{1,80} failed: /;
+/** All of a call's output as one dump: its lines from the first to the last that is not blank; of a failed call's
+ *  one-line summary, what follows its head. Any other line is cut whole: a value printed with `: ` in it is no head. */
+function wholeDump(text: string): Hit[] {
+  const lines = linesOf(text);
+  let from = 0;
+  let to = lines.length - 1;
+  while (to >= 0 && blank(lines[to]!)) to--;
+  while (from <= to && blank(lines[from]!)) from++;
+  if (from > to) return [];
+  const head = from === to ? FAILED_HEAD.exec(lines[from]!.body) : null;
+  if (head && head[0].length < lines[from]!.body.length) return [{ start: lines[from]!.start + head[0].length, end: lines[from]!.end }];
+  return [block(lines, from, to)];
+}
 
 function commandDumps(text: string, given: string | undefined): Hit[] {
   if (given === undefined || given.trim() === "") return [];
-  const command = dumpCommand(given);
+  if (dumpAmongOthers(given)) return wholeDump(text);
+  const command = given;
   const shift = command.length + 1;
   const read = (body: string, offset: number): Hit[] =>
     envDumps(`${command}\n${body}`).filter((hit) => hit.end > shift).map((hit) => ({ ...hit, start: Math.max(hit.start - shift, 0) + offset, end: hit.end - shift + offset }));
@@ -2849,7 +2866,7 @@ export const RULE_PATTERNS: Readonly<Record<string, RegExp>> = Object.freeze({
   CODE_CALL, IDENT_CHAIN, MEMBER_CHAIN, CODE_CASE, CAMEL_OR_SNAKE, CALL_AFTER, LITERAL_START, YAML_NODE, ELIDED_AFTER, REFERENCE, ELIDED, TRAILING_PUNCTUATION, SENTENCE_END, BARE_START, EDGE_BLANK, EDGE_TOKEN_PUNCT, SLUG_OFF, SLUG_ENDS, PEM_END, PEM_BEGIN, PEM_OFF, PEM_TAIL, PEM_BODY_LINE, PEM_LAST_LINE, PEM_END_LINE, LEAD_TOKEN, DIGIT_START, BASE64_CHAR, BACKSLASH_RUN, BARE_STOP, URL_USERINFO, NAME_KEY_OFF, IDENTIFIER, ENDS_ENTRY, ENTRY_END_AFTER, TYPE_SUFFIX, TYPE_AFTER, LOCAL_LEAD, LOCAL_END, NESTED_ESCAPE, COOKIE_SPLIT, LINT_URL, CAMEL_HUMP, NAME_SEPARATORS, DIGITS_ONLY,
   UPPER_NAME, LEAD_AT_START, LINE_PREFIX, LINE_REST, CODE_KEYWORD, CODE_EXPRESSION, OPENERS, CLOSERS, INI_HEADER, INI_LINE, NPMRC_AUTH, NPM_COMMAND, NPM_SET_SCAN, NPM_SET_AUTH, NPM_AUTH_KEY, ESCAPED_QUOTE_BEFORE, ESCAPED_QUOTE_AFTER, DOTTED_KEY_BEFORE, CODE_END, MEMBER_OBJECT_BEFORE, CODE_ROOT_BEFORE, STATEMENT_END_AFTER, REFERENCE_START, ENV_ASSIGN, HF_TOKEN, DIGITALOCEAN_TOKEN, PYPI_TOKEN, SENDGRID_KEY, ASSIGN, ASSIGN_SPACED, ASSIGN_COLON, SSHPASS, MYSQL_COMMAND, PASSWORD_FLAG, LOGIN_COMMAND,
   REDIS_COMMAND, LOGIN_SCAN, LOGIN_P, REDIS_SCAN, REDIS_A, MYSQL_SCAN, MYSQL_P, OPENSSL_PASS, NETRC, AUTH_HEADER, TOKEN_RUN, CODE_KEY_BEFORE, URL_SAFE_RUN, BASE64_RUN_BEFORE, BASE64_RUN_AFTER, LETTER_OR_DIGIT, ENV_NAME_RUN, BASE64_CHARS, COOKIE_HEADER, COOKIE_PAIR, CURL_COMMAND, CURL_SCAN, CURL_USER, GLUED_STOP, NUMBERED, JSON_FIELD_OPEN, PROMPT_LINE,
-  ENV_LINE, ENV_COMMAND, PRINTENV_NAMES, ECHO_VARIABLE, COMMAND_SPLIT, SUMMARY_HEAD, NAME_RUN, READ_COMMAND, READ_TOOL, PATH_SEPARATOR, ENV_FILE_NAME, ENV_TEMPLATE, SSH_FILE,
+  ENV_LINE, ENV_COMMAND, PRINTENV_NAMES, ECHO_VARIABLE, COMMAND_SPLIT, SUMMARY_HEAD, FAILED_HEAD, NAME_RUN, READ_COMMAND, READ_TOOL, PATH_SEPARATOR, ENV_FILE_NAME, ENV_TEMPLATE, SSH_FILE,
   CREDENTIAL_FILE, FILE_VARIABLE, ENV_FILE_LINE, KEY_LINE, SSH_CONFIG, COMMENT_LINE, PEM_LINE, BASE64_LINE, PEM_HEADER_LINE, HOME_UNIX, HOME_WINDOWS, SEGMENT_AFTER,
   TRAILING_SLASHES, HOME_USER, CLAUDE_SLUG, CLAUDE_PROJECTS_BEFORE, SLUG_OFF_CHARS, SLUG_USER, BOT_TRAILER, DUMP_MARKER_LINE, EMAIL, EXAMPLE_DOMAIN, NO_REPLY_LOCAL, NO_REPLY_DOMAIN, FORGE_NO_REPLY, USER_ONLY_BEFORE, PORT_PASSWORD, HOST_SHAPED, IPV4, VERSION_BEFORE, PRE_RELEASE_AFTER,
   BUILD_AFTER, RANGE_AFTER, IPV6, IPV6_GROUPS, ENV_PREFIX_BEFORE, ENV_PREFIX_AFTER, ENV_PREFIX_CHAIN, ENV_PREFIX_STATEMENT, ENV_FLAG, HELM_LIST_FLAG, HELM_SET, HELM_NAME, RESOURCE_NAME, SECRET_OBJECT_NAME, CONNECTION_PASSWORD, ADO_PAIR, CONNECTION_KEY_PAIR, BLANKS, LIBPQ_PAIR_AFTER, FORMAT_FIELD, PWD_PATH, QUERY_VALUE_STOP, QUERY_PASSWORD, ARGUMENT_TAIL, NEXT_ASSIGNMENT, ASSIGNMENT_BEFORE,
