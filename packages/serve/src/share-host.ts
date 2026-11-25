@@ -88,6 +88,16 @@ const HEX64 = /^[0-9a-f]{64}$/;
 const refuse = (why: string): never => {
   throw new ApiError("bad_request", `This is not a share bundle the host takes: ${why}.`);
 };
+/** A body's bytes as text, or a 400: bytes that are not UTF-8 are refused, never replaced, and a byte-order mark is kept
+ *  (so the JSON read refuses it), so the text checked, scrubbed and stored is the bytes sent. */
+const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+function bodyText(bytes: Uint8Array): string {
+  try {
+    return STRICT_UTF8.decode(bytes);
+  } catch {
+    return refuse("the body is not UTF-8");
+  }
+}
 /** `value` is an object whose keys are `required` and those of `optional`, no other. */
 function closed(value: unknown, at: string, required: readonly string[], optional: readonly string[] = []): Record<string, unknown> {
   if (!isObject(value)) return refuse(`${at} is not an object`);
@@ -544,7 +554,7 @@ export function shareHost(deps: ShareHostDeps): (req: IncomingMessage, res: Serv
       // createShare: the quota before the body is read, and again as the share is made.
       await store.roomFor(tokenId, quota);
       if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) throw new ApiError("unsupported_media_type", "a share's body is its bundle, application/json");
-      const text = (await readCapped(req, SHARE_BODY_BYTES)).toString("utf8");
+      const text = bodyText(await readCapped(req, SHARE_BODY_BYTES));
       const { sha256 } = checkShareBundle(text);
       const { unchecked } = await screenShare(text, deps.held(), deps.scrub, deps.strings);
       const meta = await store.create(tokenId, text, sha256, quota);
