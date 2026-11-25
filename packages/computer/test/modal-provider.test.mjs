@@ -13,9 +13,10 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { AttachHub, checkLifetime, kindRefusals, MemoryMachineTokens, mountsOf, recordedMount, sweep } from "../dist/index.js";
+import { AttachHub, checkLifetime, computerNameFor, kindRefusals, MemoryMachineTokens, mountsOf, recordedMount, sweep } from "../dist/index.js";
 import { fakeObjects } from "./fake-archil.mjs";
 import { bootDial, desktopOverDial, dialServer } from "./fake-dial-host.mjs";
+import { refusesHttp } from "./https-refusal.mjs";
 
 const modal = await import("../dist/modal.js");
 const { MODAL } = await import("../dist/descriptors/modal.js");
@@ -459,6 +460,62 @@ test('the Modal conformance module: mountFor("archil") gives a fresh run folder 
 	noToken(objects.calls, "the object API's calls");
 });
 
+test("a conformance run's mount cases fit Modal's 10 tags and 512 bytes: each computer as the runner makes it, the run's and the runner's labels, the claim, the case, the mount and the box image, the longest image a Modal recipe runs", async (t) => {
+	const { conformanceImage, mountFor } = await import("../dist/conformance/modal.js");
+	const { runConformance } = await import("../dist/conformance/index.js");
+	// The box image: the run's image on dial, and the image that holds the Archil client, so an Archil run's --image.
+	const image = conformanceImage({ env: { COMPUTER_MODAL_CONNECT: "dial" } });
+	assert.equal(image, BOX_IMAGE);
+	const env = {
+		AGENTRUN_COMPUTER_LIVE_MODAL: "1",
+		COMPUTER_ARCHIL_DISK: MOUNT.disk,
+		COMPUTER_ARCHIL_REGION: MOUNT.region,
+		COMPUTER_ARCHIL_TOKEN: TOKEN,
+		COMPUTER_ARCHIL_API_KEY: "fake-test-key",
+		COMPUTER_ARCHIL_S3_URL: "https://s3.green.us-east-1.aws.prod.archil.com",
+	};
+	const { provider, rec } = setup();
+	const report = await runConformance(provider, {
+		image,
+		only: ["mount"],
+		mountFor: (kind) => mountFor(kind, { env, archil: { objects: fakeObjects() } }),
+		caseTimeoutMs: 10_000,
+		cleanupTimeoutMs: 2_000,
+	});
+	// A case whose labels are past Modal's bounds is refused by the adapter itself (check, then create) before Modal is
+	// called, so it never reaches sandboxes.create. That refusal is the bound this test guards, so it is read first.
+	const overBudget = report.results.filter(({ reason }) => /a Modal computer carries at most 10 labels|a Modal computer's labels come to at most 512 bytes/.test(reason ?? ""));
+	assert.deepEqual(
+		overBudget.map(({ id }) => id),
+		[],
+		`these mount cases' labels are past Modal's 10 tags or 512 bytes, and the adapter refused them:\n${overBudget.map(({ id, reason }) => `${id}: ${reason}`).join("\n").replaceAll(TOKEN, "[token]")}`,
+	);
+	// The tags of each create, as Modal is handed them: the recorder refuses every create, so each case ends at its first.
+	// The mount cases carry the most of a run's labels (a claim's two and the mount's beside the case's), so they bound it.
+	// The run's shared computer is made once too, for the hello the cases' exec and files needs are read from. It carries
+	// no case label: it is the create named by its request, <runner>/shared (the runner's own label holds <runner>).
+	const made = rec.calls.filter(([name]) => name === "sandboxes.create").map(([, , , params]) => params.tags);
+	const roleOf = (tags) => (tags[NAME] === computerNameFor(`${tags["agentrun.conformance.runner"]}/shared`) ? "the run's shared computer" : tags["agentrun.conformance.case"]);
+	const results = report.results.map(({ id, status, reason }) => `${id} ${status}: ${reason}`).join("\n");
+	assert.deepEqual(
+		made.map(roleOf).sort(),
+		["mount-archil", "mount-archil-durable", "mount-archil-isolated-durable", "mount-archil-loop-tool-edit", "mount-archil-takeover-1", "mount-archil-token", "mount-sync-cap", "mount-sync-delete", "mount-sync-durable", "mount-sync-push", "the run's shared computer"],
+		`every mount case Modal takes, and the run's shared computer, reached sandboxes.create:\n${results}`,
+	);
+	for (const tags of made) {
+		const which = `${roleOf(tags)} (${JSON.stringify(tags).replaceAll(TOKEN, "[token]")})`;
+		assert.ok(tags["agentrun.conformance"] && tags["agentrun.conformance.runner"], `${which}: the run's and the runner's labels`);
+		assert.ok(Object.keys(tags).length <= 10, `${which}: ${Object.keys(tags).length} tags, past Modal's 10`);
+		assert.ok(bytesOf(tags) <= 512, `${which}: ${bytesOf(tags)} bytes of tags, past Modal's 512`);
+	}
+	noToken(made, "the tags");
+	// The worst: an Archil case, the longest case name, its mount's tag beside the box image's. The shared computer's tags
+	// are a subset of every case's (no claim, case or mount label), so it is never the worst.
+	const worst = made.reduce((most, tags) => (bytesOf(tags) > bytesOf(most) ? tags : most));
+	assert.equal(worst["agentrun.conformance.case"], "mount-archil-isolated-durable");
+	t.diagnostic(`the worst case's tags: ${Object.keys(worst).length} of Modal's 10, ${bytesOf(worst)} of its 512 bytes`);
+});
+
 // --- the token, the server, the environment ---
 
 /** The names a host may hold a production token under, with values that must never be used. */
@@ -567,8 +624,8 @@ test("the conformance module pins the client's server: an ambient MODAL_PROFILE 
 		await withProcessEnv({ MODAL_PROFILE: "prod", MODAL_CONFIG_PATH: toml }, async () => {
 			for (const make of [createProvider, createDriftedProvider]) {
 				for (const [chosen, server] of [
-					[{}, "https://api.modal.com:443"],
-					[{ COMPUTER_MODAL_SERVER_URL: "https://dev.example.invalid:443" }, "https://dev.example.invalid:443"],
+					[{}, "https://api.modal.com"],
+					[{ COMPUTER_MODAL_SERVER_URL: "https://dev.example.invalid:8443" }, "https://dev.example.invalid:8443"],
 				]) {
 					const { ModalClient, made, servers } = fakeClient();
 					await make({ env: { ...MODAL_SETTINGS, ...DEV_TOKEN, MODAL_PROFILE: "prod", MODAL_CONFIG_PATH: toml, ...chosen }, ModalClient, ...MODULE_TEST });
@@ -610,17 +667,22 @@ test("the provider's create() reads no environment: the token, the app and the s
 		assert.equal(provider.id, "modal");
 		assert.equal(provider.capabilities().maxLifetimeMs, DAY_MS);
 		assert.deepEqual(made, [TOKEN_OPTIONS], "the token passed in, never one of the environment");
-		assert.deepEqual(servers, ["https://api.modal.com:443"], "the SDK's default server, not COMPUTER_MODAL_SERVER_URL");
+		assert.deepEqual(servers, ["https://api.modal.com"], "the SDK's default server (its default port, 443, is inferred from https), not COMPUTER_MODAL_SERVER_URL");
 		const chosen = fakeClient();
-		await modal.create({ ...TOKEN_OPTIONS, app: APP, serverUrl: "https://dev.example.invalid:443", ModalClient: chosen.ModalClient, daemonPath: DAEMON_PATH });
-		assert.deepEqual(chosen.servers, ["https://dev.example.invalid:443"], "options.serverUrl is the server");
+		await modal.create({ ...TOKEN_OPTIONS, app: APP, serverUrl: "https://dev.example.invalid:8443", ModalClient: chosen.ModalClient, daemonPath: DAEMON_PATH });
+		assert.deepEqual(chosen.servers, ["https://dev.example.invalid:8443"], "options.serverUrl is the server");
+		// An upper-case scheme reaches the client in lower case: nice-grpc reads the scheme case-sensitively (its
+		// includes('https')), and would dial an upper-case one in the clear.
+		const upper = fakeClient();
+		await modal.create({ ...TOKEN_OPTIONS, app: APP, serverUrl: "HTTPS://API.MODAL.COM", ModalClient: upper.ModalClient, daemonPath: DAEMON_PATH });
+		assert.deepEqual(upper.servers, ["https://api.modal.com"], "the scheme and host are lower-case");
 	});
 });
 
 test("the server URL is https alone, loopback included, so the token never crosses in the clear: another is refused before any client is made", async () => {
 	for (const serverUrl of ["http://api.modal.com:443", "http://127.0.0.1:8080", "http://[::1]:8080", "http://localhost:8080", "grpc://api.modal.com:443"]) {
 		const { ModalClient, made } = fakeClient();
-		await assert.rejects(modal.create({ ...TOKEN_OPTIONS, app: APP, serverUrl, ModalClient, daemonPath: DAEMON_PATH }), (error) => /^the Modal server URL \(options\.serverUrl\) must be https, so the key never crosses in the clear/.test(error.message) && !error.message.includes(TOKEN_OPTIONS.tokenId), serverUrl);
+		await assert.rejects(modal.create({ ...TOKEN_OPTIONS, app: APP, serverUrl, ModalClient, daemonPath: DAEMON_PATH }), refusesHttp("the Modal server URL (options.serverUrl)", serverUrl, TOKEN_OPTIONS.tokenId));
 		assert.deepEqual(made, [], serverUrl);
 	}
 	const { ModalClient, made } = fakeClient();
@@ -671,7 +733,8 @@ test("the provider refuses an ambient MODAL_SERVER_URL in process.env, the one v
 		const { ModalClient, made } = fakeClient();
 		await assert.rejects(modal.create({ ...TOKEN_OPTIONS, app: APP, ModalClient, daemonPath: DAEMON_PATH }), (error) => {
 			assert.match(error.message, /MODAL_SERVER_URL is set/);
-			assert.match(error.message, /options\.serverUrl/);
+			// The default named as the client gets it, with no :443 (https's own port).
+			assert.match(error.message, /pass the server as options\.serverUrl if it is not https:\/\/api\.modal\.com$/);
 			return true;
 		});
 		assert.deepEqual(made, []);
@@ -681,7 +744,7 @@ test("the provider refuses an ambient MODAL_SERVER_URL in process.env, the one v
 
 test("client constructions run one at a time: each sees only its own MODAL_SERVER_URL, and process.env is put back after each, a failed one too", async () => {
 	const { modalClient } = modal;
-	const servers = ["https://one.example.invalid:443", "https://two.example.invalid:443", "https://three.example.invalid:443"];
+	const servers = ["https://one.example.invalid:8443", "https://two.example.invalid:8443", "https://three.example.invalid:8443"];
 	const seen = [];
 	let inside = 0;
 	function ModalClient(params) {
@@ -704,7 +767,7 @@ test("client constructions run one at a time: each sees only its own MODAL_SERVE
 	});
 	assert.equal(process.env.MODAL_SERVER_URL, before);
 	assert.ok(await modalClient({ ...TOKEN_OPTIONS, ModalClient }), "a failed construction leaves the turn free for the next");
-	assert.equal(seen.at(-1).server, "https://api.modal.com:443");
+	assert.equal(seen.at(-1).server, "https://api.modal.com");
 	assert.equal(process.env.MODAL_SERVER_URL, before, "and unset again after it");
 });
 

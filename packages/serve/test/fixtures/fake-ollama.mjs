@@ -23,7 +23,8 @@ const json = (res, status, value) => res.writeHead(status, { "content-type": "ap
 /**
  * The request handler: `models` as the fake lists them; `hang`, a fake that takes each request to its paths and never
  * answers (an Ollama stuck loading); `reply(body, n)` the answer to the n-th chat (from 1), as
- * `{ text?, thinking?, calls?: [{ name, arguments }], usage?: { input, output } }`, or `{ status, error }` for a refusal;
+ * `{ text?, thinking?, calls?: [{ name, arguments }], usage?: { input, output }, doneReason? }` (doneReason: the last line's
+ * done_reason, "stop" when absent; "length" for an answer cut at its output limit), or `{ status, error }` for a refusal;
  * `got`, where each counted request is kept: `tags` (a count), `show` (each model asked), `chat` (each body).
  * `hangOn(route, body)`: true for a request it takes, counts and never answers (`tags`, `show` or `chat`), the rest
  * answered (an Ollama whose listing is stuck, or one model's /api/show).
@@ -81,10 +82,10 @@ export function ollamaHandler({ models: given = SYNTH_MODELS, reply = () => ({ t
       const cut = Math.ceil(text.length / 2);
       for (const part of [text.slice(0, cut), text.slice(cut)]) if (part) lines.push({ ...base, message: { role: "assistant", content: part }, done: false });
       if (answer.calls?.length) lines.push({ ...base, message: { role: "assistant", content: "", tool_calls: answer.calls.map((call) => ({ function: { name: call.name, arguments: call.arguments } })) }, done: false });
-      lines.push({ ...base, message: { role: "assistant", content: "" }, done: true, done_reason: "stop", total_duration: 1, prompt_eval_count: usage.input, eval_count: usage.output });
+      lines.push({ ...base, message: { role: "assistant", content: "" }, done: true, done_reason: answer.doneReason ?? "stop", total_duration: 1, prompt_eval_count: usage.input, eval_count: usage.output });
       if (body?.stream === false) {
         const message = { role: "assistant", content: text, ...(answer.thinking ? { thinking: answer.thinking } : {}), ...(answer.calls?.length ? { tool_calls: answer.calls.map((call) => ({ function: { name: call.name, arguments: call.arguments } })) } : {}) };
-        return json(res, 200, { ...base, message, done: true, done_reason: "stop", prompt_eval_count: usage.input, eval_count: usage.output });
+        return json(res, 200, { ...base, message, done: true, done_reason: answer.doneReason ?? "stop", prompt_eval_count: usage.input, eval_count: usage.output });
       }
       res.writeHead(200, { "content-type": "application/x-ndjson" });
       res.end(lines.map((line) => `${JSON.stringify(line)}\n`).join(""));

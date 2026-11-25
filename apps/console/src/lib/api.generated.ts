@@ -217,6 +217,7 @@ export interface components {
       call_only?: boolean;
       meta?: boolean;
       sandbox_only?: boolean;
+      runner_only?: boolean;
       available: boolean;
       reason?: string;
       missing?: string[];
@@ -1042,7 +1043,7 @@ export interface components {
       kind: "stopped";
     } | null;
     imported_from?: {
-      source: "claude-code" | "codex" | "pi";
+      source: "claude-code" | "codex" | "pi" | "opencode";
       session: string;
     } | null;
     trigger?: {
@@ -1294,7 +1295,7 @@ export interface components {
       kind: "stopped";
     } | null;
     imported_from?: {
-      source: "claude-code" | "codex" | "pi";
+      source: "claude-code" | "codex" | "pi" | "opencode";
       session: string;
     } | null;
     trigger?: {
@@ -3723,7 +3724,7 @@ export interface operations {
           unknown_cost_runs: number;
         }[];
         by_source: {
-          source: "live" | "claude-code" | "codex" | "pi";
+          source: "live" | "claude-code" | "codex" | "pi" | "opencode";
           runs: number;
           completed: number;
           needs_review: number;
@@ -4722,7 +4723,7 @@ export interface operations {
         ready: boolean;
         reenter: {
           name: string;
-          why: "recipe_changed" | "seal_key_changed" | "file_unreadable";
+          why: "recipe_changed" | "not_bound" | "seal_key_changed" | "file_unreadable";
         }[];
       }[];
     };
