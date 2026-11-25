@@ -1720,8 +1720,8 @@ test("LVI: a line that runs an env command among others is one dump of its whole
   // A lone command is read as before: its output's lines, by its names (and again past a first line of the caller's).
   const lone = await gone(`${seed}\nnext step`, [seed], { command: "printenv APP_SEED" });
   assert.ok(lone.cuts.every((cut) => cut.rule === "env-dump"), JSON.stringify(lone.cuts));
-  // A line with `: ` in it that is no failed call's head is cut whole: a value can hold `: ` (`printenv A; false`).
-  for (const text of [`shell: ${seed}`, `${seed}: ${region}`]) {
+  // A line with `: ` or ` failed: ` in it is cut whole: a printed value can hold either (`printenv A; false`).
+  for (const text of [`shell: ${seed}`, `${seed}: ${region}`, `${seed} failed: suffix`]) {
     const whole = await gone(text, [seed, region].filter((v) => text.includes(v)), { command: "printenv APP_SEED; false" });
     assert.equal(whole.text, "[redacted:env-dump 1 lines]", text);
   }
