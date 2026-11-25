@@ -32,12 +32,19 @@ test("combine: sufficient checks decide, and a grader that disagrees sends the r
 	assert.deepEqual(combine("fail", true, verdict("unknown")), { final: "fail", by: "checks", queue: "the checks fail and the grader can't tell" });
 });
 
-test("combine: checks that are not sufficient leave the verdict to the grader", () => {
+test("combine: checks that are not sufficient leave a pass to the grader", () => {
 	assert.deepEqual(combine("pass", false, undefined), { final: "pass", by: "checks", queue: "the checks are not sufficient and no grader ran" });
 	assert.deepEqual(combine("pass", false, verdict("pass")), { final: "pass", by: "grader" });
 	assert.deepEqual(combine("pass", false, verdict("fail")), { final: "fail", by: "grader", queue: "the grader says fail where the checks say pass" });
-	assert.deepEqual(combine("fail", false, verdict("fail")), { final: "fail", by: "grader" });
-	assert.deepEqual(combine("fail", false, verdict("unknown")), { final: "fail", by: "grader", queue: "the grader can't tell" });
+	assert.deepEqual(combine("pass", false, verdict("unknown")), { final: "fail", by: "grader", queue: "the grader can't tell" });
+});
+
+test("combine: the grader never turns a failing check into a pass, even where the checks are not sufficient", () => {
+	// The grader reads the agent's own answer, so an answer could talk it into a pass; failing checks can't be talked to.
+	assert.deepEqual(combine("fail", false, verdict("pass")), { final: "fail", by: "checks", queue: "the checks fail and the grader passes it" });
+	assert.deepEqual(combine("fail", false, verdict("unknown")), { final: "fail", by: "checks", queue: "the checks fail and the grader can't tell" });
+	assert.deepEqual(combine("fail", false, verdict("fail")), { final: "fail", by: "checks" });
+	assert.deepEqual(combine("fail", false, undefined), { final: "fail", by: "checks" });
 });
 
 test("wantsGrader: auto grades what the checks can't settle and every failure, always grades passes too, never grades nothing", () => {

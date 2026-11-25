@@ -275,8 +275,10 @@ async function rmEmptyParents(parents: readonly string[]): Promise<void> {
  *  login is its claim's one read (run-child-host.ts staysInRunner), which its runner hands down, so a turn-on after the
  *  claim never moves it onto a login the claim did not check (a user of its own, a process runner on the same folder).
  *  Nor could it: the setting names the machine by the id in the server's data folder (claude-login.ts machineId), which
- *  the run's user can neither read nor make there. The runner's answer is the one decision (none: not on the login; a
- *  login other than AgentRun's own folder is refused there, in LOGIN_NOT_HANDED's words). A run in the runner itself (a
+ *  the run's user can neither read nor make there. The runner's answer is the one decision (none: not on the login). A
+ *  claim on a login other than AgentRun's own folder never gets this far: the claim itself is refused (staysInRunner,
+ *  in LOGIN_MACHINE_NEEDS_SERVER_USER's words). The runner's claudeLogin refuses such a login again, in
+ *  LOGIN_NOT_HANDED's words, only when it is handed a claim read that check did not make. A run in the runner itself (a
  *  seal key) reads the setting here. */
 export async function runLoginOf(deps: Pick<CliSpecDeps, "store" | "data" | "env" | "sealKey">, keyed: boolean, name: string | undefined, place: { readonly mode: string }, hold: (values: string[]) => void): Promise<RunLogin | undefined> {
   if (keyed) return undefined;
@@ -654,6 +656,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // native tools are named by its facts on the owner's table (factsOf: a module's harness's too).
   const ownerFacts = factsOf(deps.env, name);
   const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace, tools.shell, { ...(mcp ? { effectOf: (name: string) => mcp.effectOf(name), argumentsOf: (name: string) => mcp.argumentsOf(name) } : {}), facts: ownerFacts, turnedOff: offAlready !== undefined, onComputerOff: (kind) => recordComputerOff(run.harness, kind) });
+  // A park lets a computer the gate turned off go rather than keep it (SpecHolds Held.computerOff).
+  holds.hold({ computerOff: gate.computerOff });
 
   // The run's tools: the kernel registry's hands on its Workspace (and computer); the web host tools it is granted
   // (web_fetch, web_search, monid), bound by the binding the pi spec uses (webHostTools) on the ToolHost the pi spec builds
@@ -879,8 +883,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     ...(heldComputer ? { held: heldComputer } : {}),
     // The run's Archil mount credential is revoked at its end on every outcome, even with no computer (idempotent with
     // the computer's release). A run that minted none revokes nothing. At a park, a desktop or a phone is kept for the
-    // resume instead, its mount credential with it, as the pi spec's.
-    ...(computer.keeps ? { keptWords: computerKeptWords(computer.keeps) } : {}),
+    // resume instead, its mount credential with it, as the pi spec's; one the gate turned off is not, nor said to be.
+    keptWords: () => (computer.keeps === undefined || gate.computerOff() ? undefined : computerKeptWords(computer.keeps)),
     release: (how) => holds.release(how),
     ...(movedProject ? { projectCheckpoint: projectCheckpointForRun({ store: deps.store, agentId: runRow.agentId, claim, launch, tools, computer,
       workspace: { data: deps.data, sealKey: deps.sealKey, env: deps.env, control: { ...deps.mountControl, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) } },

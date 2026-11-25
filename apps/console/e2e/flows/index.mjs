@@ -51,6 +51,7 @@ import learningLoop from "./learning-loop.mjs";
 import gradeRun from "./grade-run.mjs";
 import toolCards from "./tool-cards.mjs";
 import narrowLayouts from "./narrow-layouts.mjs";
+import eventSearch from "./event-search.mjs";
 import playgroundOperationWidth from "./playground-operation-width.mjs";
 import playgroundAgentWidth from "./playground-agent-width.mjs";
 import devToolsPanelWidth from "./dev-tools-panel-width.mjs";
@@ -66,6 +67,7 @@ export const flows = [
   demoMode,
   connectGitHub,
   githubTrigger,
+  eventSearch,
   { name: "github-trigger-create", pending: "waits on a connected GitHub App without GitHub: the server's GitHub API (githubApi) is a programmatic option only, not a flag the built server takes" },
   templateApply,
   templateUnattended,

@@ -1,6 +1,7 @@
 // Local Chrome for the conformance CLI: `npm run conformance -w @parcha/agentrun-computer -- --provider local-chrome`.
 // It starts a real Chrome on this machine (nothing billed, no key).
 import { BROWSER_IMAGE } from "../descriptors/shared.js";
+import { CHROME_ENV_NAMES, childEnv } from "../child-env.js";
 import { create, type LocalBrowserOptions, type LocalBrowserProvider } from "../local-chrome.js";
 import { type Env, requireLive, setOptions } from "./module-kit.js";
 
@@ -16,10 +17,11 @@ export const ENV = LOCAL_ENV;
 
 export type LocalSettings = Pick<LocalBrowserOptions, "executablePath" | "headed" | "env">;
 
-/** The provider's options this module reads from env, each only when its name is set; PATH goes in as the provider's env, to find a Chrome on it. */
+/** The provider's options this module reads from env, each only when its name is set; the names Chrome reads go in as the
+ *  provider's env (CHROME_ENV_NAMES: PATH, to find a Chrome on it, HOME, the display, locale and fonts), and no other. */
 export function settingsFromEnv(env: Env = process.env): LocalSettings {
 	const headed = env[LOCAL_ENV.headed] === "1";
-	return { ...setOptions(env, { executablePath: LOCAL_ENV.chrome }), ...(headed ? { headed } : {}), env: { PATH: env.PATH } };
+	return { ...setOptions(env, { executablePath: LOCAL_ENV.chrome }), ...(headed ? { headed } : {}), env: childEnv(env, CHROME_ENV_NAMES) };
 }
 
 export const conformanceNotes: string[] = [
