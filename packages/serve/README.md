@@ -295,7 +295,8 @@ longer than its plural (`api_key`, `access_token`, `apiKey`, `token2`, `accessto
 `jsessionid`, `writekey` and `hmackey` are; `authority`, `keyspace`, `tokens`, `sessions` and `sessioncount` are not).
 Commas split the header variables, so write a comma inside a value as `%2C`. The tracer's own `[otel]` lines, where an exporter's error may quote a header it sent or the URL it
 posted to, are cut of every such value at any length, a short one too, and of what follows any header value's first
-word, whatever the word and the header's name. A run's process can hold at most 512
+word, whatever the word and the header's name; values that overlap or touch in a line are cut as one `[redacted]`, as
+every other redactor cuts them, so no character of any of them is left. A run's process can hold at most 512
 model requests and 512 tool calls open in its runner's trace at once; one started past that has no span. No OpenTelemetry diag logger is set, since the
 SDK's diag writes can quote a header value as sent, and a test fails if a source sets one or `OTEL_LOG_LEVEL`. Everywhere else, the runner's logs and what a run
 writes, a held value is cut at 8 characters or more, a header value's as any other's, and a shorter header value is on
