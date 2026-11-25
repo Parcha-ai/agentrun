@@ -1837,7 +1837,7 @@ test("a login saved on folders its server's user may not use reads `refused` in 
 // The server holds the login it found at its start (and at each turn on or off), and its runs' checks and claude-agent's
 // offer are made from it. A login kept while its folder is refused, then mended with a chmod, reads signed in in the
 // view, and must run too, with no restart and no turn off and on; one that is refused again must stop. Each change is
-// asked first of a different read (a run, then capabilities), so each read finds the login as its folder is now.
+// asked first of a different read (a run, capabilities, a save), so each read finds the login as its folder is now.
 test("a login kept at the start while its folder is refused runs once the folder is mended, with no restart: a run of an agent with no key is not refused, claude-agent is offered and the view reads signed in; refused again, the run is refused, the offer gone and the view refused", { skip: process.platform === "win32" ? "no modes" : process.geteuid() === 0 ? "root may write anywhere" : false, timeout: 120_000 }, async (t) => {
   const folder = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-config-dir-"));
   t.after(() => rmSync(folder, { recursive: true, force: true }));
@@ -1881,6 +1881,17 @@ test("a login kept at the start while its folder is refused runs once the folder
   const refused = (await api("GET", "/settings/claude-login")).body;
   assert.equal(refused.state, "refused", JSON.stringify(refused));
   assert.match(refused.refused ?? "", open);
+
+  // A save asked first: its warnings say what the agent lacks here, by the login as its folder is now.
+  const needsKey = /claude-agent needs ANTHROPIC_API_KEY/;
+  chmodSync(folder, 0o700);
+  const savedMended = await api("POST", "/agents", agent("mended", { harness: "claude-agent" }));
+  assert.equal(savedMended.status, 201, JSON.stringify(savedMended.body));
+  assert.doesNotMatch(JSON.stringify(savedMended.body), needsKey, `a save on the mended login warns of no key: ${JSON.stringify(savedMended.body)}`);
+  chmodSync(folder, 0o775);
+  const savedRefused = await api("POST", "/agents", agent("refused", { harness: "claude-agent" }));
+  assert.equal(savedRefused.status, 201, JSON.stringify(savedRefused.body));
+  assert.match(JSON.stringify(savedRefused.body), needsKey, `a save on a login refused since warns that it needs a key: ${JSON.stringify(savedRefused.body)}`);
   chmodSync(folder, 0o700);
 });
 
