@@ -12,7 +12,7 @@
 // nothing.
 import { cutStrings } from "../key-refusal.js";
 import { type Problem, redactSecrets } from "../learn/index.js";
-import { type CompileAsk, type CompiledRecord, compileTurn, type DraftChecked } from "../learn/compile.js";
+import { type CompileAsk, type CompiledRecord, COMPILE_TIMEOUT_MS, compileTurn, type DraftChecked } from "../learn/compile.js";
 import type { LearnedFile } from "../learning.js";
 import { correctionsCapOf, said, STOPPED } from "../learning-words.js";
 import type { AlsoRow, EndOfRunKept, EndOfRunTurn } from "./loop-contract.js";
@@ -58,6 +58,10 @@ export interface ReflectDeps {
   readonly compileFailed?: (input: { runId: string; agentId: string; compile: CompileAsk; workflow: string; errors: readonly string[] }) => Promise<void>;
   /** The compile turn's deadline, every attempt in it. Default learn/compile.ts COMPILE_TIMEOUT_MS. */
   readonly compileDeadlineMs?: number;
+  /** Keeps the run's learning deadline at least `until` (its compile turn's start + that deadline), before the turn asks a
+   *  model (learning-work.ts noteLearningDeadline). A write that fails fails the step: no compile turn without its bound.
+   *  Absent: none kept. */
+  readonly compileStarts?: (input: { runId: string; until: number }) => Promise<void>;
   /** One compile draft through the checks (learning-end.ts checkDraftOf): its errors, else what is committed and its
    *  digest. `revised`: a revision's workflow and the commit of main it was read at, its conflict base. */
   readonly checkDraft: (input: { runId: string; agentId: string; draft: { name: string; text: string }; refuse: readonly string[]; revised?: { readonly workflow: string; readonly base: string } }) => Promise<DraftChecked<DraftCommit>>;
@@ -148,6 +152,7 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
       // since), and it is the revised workflow's conflict base in every check of the turn.
       let revised = compile.mode === "revise" && compile.base ? { workflow: compile.workflow, base: compile.base } : undefined;
       let capped = false;
+      await deps.compileStarts?.({ runId: input.runId, until: now() + (deps.compileDeadlineMs ?? COMPILE_TIMEOUT_MS) });
       const result = await compileTurn<DraftCommit>({
         ask: async (prompt, attempt, left) => {
           asked = true;

@@ -10,7 +10,7 @@ import type { RunLearningResultData } from "@/lib/learning";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const KEPT = { file: "workflows/check-totals/workflow.json", name: "check-totals" };
 const run: Run = {
-  sha: null, place: { mode: "runner" }, learning_work: { state: "none", runs: [], ended_at: null }, updated_at: "2026-11-01T12:01:00Z", poll_after_ms: 0,
+  sha: null, place: { mode: "runner" }, learning_work: { state: "none", runs: [], ended_at: null, deadline_at: null }, updated_at: "2026-11-01T12:01:00Z", poll_after_ms: 0,
   run_id: "run-review", agent_id: "invoice-checker", agent_version: 2, revision: "rev-2", kind: "agentic", status: "completed", state: "idle", title: "Check invoice",
   created_at: "2026-11-01T12:00:00Z", ended_at: "2026-11-01T12:01:00Z", result: null, error: null, cost: { usd: null, basis: "estimate" }, archived_at: null,
   learning: { state: "merged", reason: null, detail: "Learned 1 workflow: check-totals", at: "2026-11-01T12:01:02Z", workflows: [KEPT] },

@@ -9,7 +9,7 @@ import type { Run } from "@/lib/v2";
 // the runs list and on its run page, with the Learning tab's workflow series mark beside the words; every other run reads
 // its kind, and a run the workflow handed back reads as the agent's, its hand-back named on the run page alone.
 const base: Run = {
-  sha: null, updated_at: "2026-11-18T00:00:00Z", poll_after_ms: 0, place: { mode: "runner" }, learning_work: { state: "none", runs: [], ended_at: null },
+  sha: null, updated_at: "2026-11-18T00:00:00Z", poll_after_ms: 0, place: { mode: "runner" }, learning_work: { state: "none", runs: [], ended_at: null, deadline_at: null },
   run_id: "r1", agent_id: "mcc", agent_version: 2, revision: "rv2", kind: "agentic", status: "completed", state: "idle", title: "Coffee shop",
   created_at: "2026-11-18T06:00:00Z", ended_at: "2026-11-18T06:00:03Z", result: null, error: null, cost: { usd: 0.002, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null,
 };

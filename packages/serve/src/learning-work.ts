@@ -10,11 +10,23 @@
 // A child that spends on its run's own model key (`keyed`, resealed into its launch from the claiming run's) counts against
 // that run's cap beside its own spend (keyedBesideOf, learning-end.ts capSpendOf): at its cost once it ended, at its own
 // cap while it has not, so the run, its compile turn and its children never spend past the cap together.
+//
+// The row also keeps the run's learning deadline (`deadline`, ms): the latest instant any learning work it started may
+// still spend, its caller's key-expiry backstop for a lost signal (the view's `deadline_at`). Each started child moves it
+// to its start + LEARNING_CHILD_MS in the write that names it, and the compile turn's start to its start + its timeout
+// (noteLearningDeadline), never earlier. The bound on a child is enforced: its launch carries its deadline (run-launch.ts
+// Replay.deadlineAt), and the runner holding it cancels it there as a person's cancel is (runner.ts).
 import { FINAL_STATES, type RunRow, type Settings, type Store } from "./store/store.js";
 import { readLaunchBody } from "./run-launch.js";
 
 /** The smallest cap a run is started with: a child its run's cap leaves less than this for is dropped (`no_budget`). */
 export const RUN_CAP_MIN_USD = 0.01;
+
+/** The most a learning child (a check's replay run, an audit's shadow run) may take from its start: its runner cancels one
+ *  still at work then. A replay runs one learned workflow on one input and a shadow one agent turn, minutes at most;
+ *  half an hour leaves room for a slow model and a queue, and ends inside a check's own deadline (promotion.ts
+ *  REPLAY_DEADLINE_MS), so a cancelled replay is one failed input of its check. A tuning parameter: this one name sets it. */
+export const LEARNING_CHILD_MS = 30 * 60_000;
 
 /** Work a claim holding its run's own key starts at its run's end instead of its start (a learned workflow's check):
  *  queued by its claim (`later`), run by its end-of-run step after the step and before its audit (runner/audit.ts
@@ -57,6 +69,7 @@ export type LearningWork = {
   readonly state: "none" | "running" | "ended";
   readonly runs: string[];
   readonly ended_at: string | null;
+  readonly deadline_at: string | null;
 };
 
 const childOf = (value: unknown): LearningChild | undefined => {
@@ -72,15 +85,42 @@ export async function learningChildrenOf(settings: Pick<Settings, "get">, runId:
   return Array.isArray(saved?.children) ? saved.children.map(childOf).filter((one): one is LearningChild => one !== undefined) : [];
 }
 
-/** Appends `child` to the learning work run `runId` started, in one guarded write (a compare-and-set, tried again while
- *  another write lands first). A child already named is not named twice. Written before the child is created. */
+/** Run `runId`'s learning deadline as its row keeps it (ms), or undefined when it keeps none. */
+const deadlineIn = (saved: unknown): number | undefined => {
+  const deadline = (saved as { deadline?: unknown } | undefined | null)?.deadline;
+  return typeof deadline === "number" && Number.isFinite(deadline) ? deadline : undefined;
+};
+
+/** The later of a kept deadline and a new bound: a deadline only moves later. */
+const later = (kept: number | undefined, bound: number | undefined): number | undefined => (kept === undefined ? bound : bound === undefined ? kept : Math.max(kept, bound));
+
+/** Appends `child` to the learning work run `runId` started, and moves the run's learning deadline to the child's start +
+ *  LEARNING_CHILD_MS when later (a dropped child spends nothing and moves nothing), in one guarded write (a
+ *  compare-and-set, tried again while another write lands first). A child already named is not named twice. Written
+ *  before the child is created. */
 export async function noteLearningChild(settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, runId: string, child: LearningChild): Promise<void> {
+  await changeWork(settings, runId, (children, deadline) => {
+    if (child.run !== null && children.some((one) => one.run === child.run)) return undefined;
+    return { children: [...children, child], deadline: later(deadline, child.run === null ? undefined : child.at + LEARNING_CHILD_MS) };
+  });
+}
+
+/** Moves run `runId`'s learning deadline to `until` (ms) when later, never earlier, in one guarded write: its compile
+ *  turn's start + its timeout, written before the turn asks the model (runner/learning-end.ts). */
+export async function noteLearningDeadline(settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, runId: string, until: number): Promise<void> {
+  await changeWork(settings, runId, (children, deadline) => (deadline !== undefined && deadline >= until ? undefined : { children, deadline: until }));
+}
+
+/** One guarded write of run `runId`'s learning work row: `change` given its children and deadline, the row it writes, or
+ *  undefined for none (nothing to change). */
+async function changeWork(settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, runId: string, change: (children: LearningChild[], deadline: number | undefined) => { children: LearningChild[]; deadline: number | undefined } | undefined): Promise<void> {
   const key = learningWorkKey(runId);
   for (let tries = 0; tries < 20; tries++) {
     const was = await settings.get(key);
     const children = await learningChildrenOf({ get: async () => was }, runId);
-    if (child.run !== null && children.some((one) => one.run === child.run)) return;
-    const value = { children: [...children, child] };
+    const next = change(children, deadlineIn(was));
+    if (!next) return;
+    const value = { children: next.children, ...(next.deadline !== undefined ? { deadline: next.deadline } : {}) };
     if (was === undefined) {
       const saved = await settings.putIfAbsent(key, value);
       if (JSON.stringify(saved) === JSON.stringify(value)) return;
@@ -115,20 +155,25 @@ export async function keyedBesideOf(store: Pick<Store, "runs" | "settings">, run
 
 /** What a run's view knows of its own learning, beside its children: whether it learns at all (a learning start, and no
  *  replay or shadow run), whether its end-of-run (compile) turn is going now, whether one began, and when its learning
- *  ended (its learning end's time, else its end's). */
+ *  ended (its learning end's time, else its end's). `compileBy`: while it looks back, the most its compile turn may take
+ *  as the view knows it from the job's end (that end + the turn's timeout; the turn's own start, later, is kept in the row
+ *  by noteLearningDeadline), else null. */
 export type OwnLearning = {
   readonly learns: boolean;
   readonly compiling: boolean;
   readonly compiled: boolean;
   readonly endedAt: number | null;
+  readonly compileBy: number | null;
 };
 
 /** Run `runId`'s `learning_work`: `running` while its compile turn goes or a child it started has not ended (`runs`, the
  *  child run ids not ended), `ended` once every piece it started has finished or dropped (`ended_at`, the last one's end),
  *  else `none`. A child whose row is gone or was never created counts as ended at the time it was named: its own end, or
- *  its absence, settles it, so the state cannot stay `running` forever. */
+ *  its absence, settles it, so the state cannot stay `running` forever. `deadline_at` while running: the later of the
+ *  row's deadline and the compile turn's bound (`own.compileBy`); null otherwise. */
 export async function learningWorkOf(store: Pick<Store, "runs" | "settings">, runId: string, own: OwnLearning): Promise<LearningWork> {
-  const children = await learningChildrenOf(store.settings, runId);
+  const saved = await store.settings.get(learningWorkKey(runId));
+  const children = await learningChildrenOf({ get: async () => saved }, runId);
   const going: string[] = [];
   let last = own.compiled && own.endedAt !== null ? own.endedAt : Number.NEGATIVE_INFINITY;
   for (const child of children) {
@@ -139,7 +184,10 @@ export async function learningWorkOf(store: Pick<Store, "runs" | "settings">, ru
     }
     last = Math.max(last, row?.endedAt ?? child.at);
   }
-  if (going.length || (own.learns && own.compiling)) return { state: "running", runs: going, ended_at: null };
-  if (!children.length && !(own.learns && own.compiled)) return { state: "none", runs: [], ended_at: null };
-  return { state: "ended", runs: [], ended_at: Number.isFinite(last) ? new Date(last).toISOString() : null };
+  if (going.length || (own.learns && own.compiling)) {
+    const deadline = later(deadlineIn(saved), own.learns && own.compiling && own.compileBy !== null ? own.compileBy : undefined);
+    return { state: "running", runs: going, ended_at: null, deadline_at: deadline === undefined ? null : new Date(deadline).toISOString() };
+  }
+  if (!children.length && !(own.learns && own.compiled)) return { state: "none", runs: [], ended_at: null, deadline_at: null };
+  return { state: "ended", runs: [], ended_at: Number.isFinite(last) ? new Date(last).toISOString() : null, deadline_at: null };
 }

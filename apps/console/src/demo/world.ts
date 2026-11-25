@@ -192,7 +192,7 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     const kept = h.gradeLabel ? `Kept a correction from your grade: ${h.gradeLabel}` : "Kept a correction from your grade.";
     const run: Run = {
       run_id: story.id, agent_id: agent.id, agent_version: versionOf(agent), revision: revisionOf(agent), kind: agent.kind, sha: null,
-      status, state, title: story.title, ...(story.effort ? { effort: story.effort } : {}), input: story.input, file_ids: h.files?.map((f) => f.id) ?? [], place: { mode: "runner" }, claim: null, learning_work: { state: "none", runs: [], ended_at: null },
+      status, state, title: story.title, ...(story.effort ? { effort: story.effort } : {}), input: story.input, file_ids: h.files?.map((f) => f.id) ?? [], place: { mode: "runner" }, claim: null, learning_work: { state: "none", runs: [], ended_at: null, deadline_at: null },
       created_at: iso(h.start), updated_at: iso(endedAt ?? Math.min(now, h.start + 60 * MIN)), ended_at: ended ? iso(endedAt!) : null,
       result: status === "completed" ? { output: story.output ?? null, final_answer: finalAnswer } : null,
       error: status === "failed" && story.fails && !after.length ? { code: story.fails.code, message: story.fails.message, retryable: false } : null,

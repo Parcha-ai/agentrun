@@ -79,6 +79,8 @@ import { BASH_POLICIES } from "./bash-read-only.js";
 import "./computers.js";
 import { ARCHIL_KEY_NAMES } from "./archil-routes.js";
 import { RUN_FILE_CUT_MAX } from "./run-files.js";
+import { COMPILE_TIMEOUT_MS } from "./learn/compile.js";
+import { LEARNING_CHILD_MS } from "./learning-work.js";
 import { ATTACH_HEARTBEAT_MS, ATTACH_IDLE_MS, ATTACH_SUBPROTOCOL, MAX_LINE_BYTES, PAIRING_CODE_PATTERN, PAIRING_CODE_TTL_MS, PROTOCOL_VERSION } from "@parcha/agentrun-computer";
 import { DAEMON_FETCHES_PER_MINUTE, PAIR_TRIES_PER_MINUTE, PAIRED_NAME_MAX } from "./computer-attach.js";
 
@@ -4117,6 +4119,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
         state: { enum: ["none", "running", "ended"], description: "`none`: the run started no learning work (it does not learn, its learning was off, or nothing of it began), and never will once the run is terminal. `running`: learning work it started is still going: its end-of-run compile turn (inside the run's own claim, while the run already reads `completed`), a learned workflow's check replay runs, or its audit's shadow run. `ended`: every piece it started finished or was dropped: a child run that failed, was cancelled or lost, or one dropped before it started because the run's cap left too little for it (`no_budget`: nothing spent). Once the run is terminal it only moves forward: none or running, then ended; it never reads `running` again after `none` or `ended` (a message that opens the run again starts a new turn, whose learning starts afresh)." },
         runs: { type: "array", items: { type: "string" }, description: "The id of each child run this run started that has not ended (a check's replay runs, an audit's shadow run), oldest first; `[]` while only the compile turn runs, and in `none` and `ended`." },
         ended_at: { ...DATE_TIME, type: ["string", "null"], description: "When the last piece of its learning work finished or dropped; null unless `state` is `ended`." },
+        deadline_at: { ...DATE_TIME, type: ["string", "null"], description: `The latest instant any learning work this run started may still spend on its key: the later of its compile turn's start + its timeout (${COMPILE_TIMEOUT_MS / 60_000} min) and each started child's start + its bound (${LEARNING_CHILD_MS / 60_000} min). The server cancels a child still at work at its bound, as a person's cancel is, and it then counts as ended. It only moves later while \`state\` is \`running\`; null unless \`state\` is \`running\`. A key-expiry backstop for a caller that missed \`state\`: \`state\` stays the signal to revoke on.` },
       }, "The learning work this run started beside its turn, what a caller that handed the run its own model key (`model_key`) revokes it on: once the run is terminal (`completed`, `failed`, `stopped`, `cancelled`) and `state` is not `running`, nothing of the run or of a child it started sends that key again. A child spends on a copy of the run's key sealed for it alone, erased by the write that ends it, within its share of what the run's cap left at the run's end. Always on a run's view (GET /runs/{run_id}, and each answer that returns the run), never on run lists or webhooks."),
       "x-agentrun-serve": "learningwork/1",
     },

@@ -37,7 +37,7 @@ import { runEntries } from "../store-reads/journal.js";
 import { runPathOverStore } from "../store-reads/learning.js";
 import { FINAL_STATES, type RunRow, type Store, StoreConstraint } from "../store/store.js";
 import { openRunLaunch, sealHandedLaunch } from "../store/seal.js";
-import { type AtRunEnd, noteLearningChild, RUN_CAP_MIN_USD } from "../learning-work.js";
+import { type AtRunEnd, LEARNING_CHILD_MS, noteLearningChild, RUN_CAP_MIN_USD } from "../learning-work.js";
 import { isObject, type Json } from "../validate.js";
 import { type AuditRow, type AuditStarted, auditableLaunch, auditChange, auditEveryOf, auditDrawn, auditsOffWords, auditWriterOf, holdOf, type LedgerLine, ledgerOf, lineKey, openAudits, rowsOf, shadowRunId } from "../learn/audit.js";
 import { lastRunsOf, sinceReset } from "../learn/compile.js";
@@ -229,6 +229,8 @@ export async function startAudit(deps: AuditDeps & { readonly runId: string; rea
       log(`workflow-first: ${serve.name} at ${serve.digest} served this run, drawn for its audit (1 in ${k}); no shadow: ${allowance === null ? "what it spent under its cap is not known" : `its cap leaves $${allowance}, under a run's smallest cap`} (no allowance)`);
       return;
     }
+    // Its start, and its deadline from it (learning-work.ts LEARNING_CHILD_MS): its runner cancels it there.
+    const at = (deps.now ?? Date.now)();
     const shadow: RunLaunch = {
       input: launch.input,
       title: `Audit of ${launch.title}`.slice(0, 200),
@@ -244,14 +246,15 @@ export async function startAudit(deps: AuditDeps & { readonly runId: string; rea
       ...(launch.boxAllow !== undefined ? { boxAllow: launch.boxAllow } : {}),
       ...(launch.boxAllowSet ? { boxAllowSet: true as const } : {}),
       ...(launch.archilDisk ? { archilDisk: launch.archilDisk } : {}),
-      audit: { of: runId, workflow: serve.name, digest: serve.digest },
+      audit: { of: runId, workflow: serve.name, digest: serve.digest, deadlineAt: at + LEARNING_CHILD_MS },
     };
     const started: AuditStarted = { source: "started", run: runId, shadow_run: id, workflow: serve.name, digest: serve.digest, promoted_at: promoted?.at ?? null, ...turn, at: iso((deps.now ?? Date.now)()) };
     await addLines(deps, [started]);
     const keyed = deps.keyed?.() === true;
     const sealed = await handedTo(deps, runId, id, keyed);
-    // Named as the run's learning work before it exists (learning-work.ts): its learning_work lists it while it runs.
-    await noteLearningChild(store.settings, runId, { run: id, kind: "shadow", at: (deps.now ?? Date.now)(), ...(keyed ? { keyed: true as const } : {}) });
+    // Named as the run's learning work before it exists (learning-work.ts): its learning_work lists it while it runs, and
+    // the same write moves the run's learning deadline to this one's.
+    await noteLearningChild(store.settings, runId, { run: id, kind: "shadow", at, ...(keyed ? { keyed: true as const } : {}) });
     try {
       if (sourceSyncOf(revision?.body)) await deps.admitAuxiliary!({ runId: id, agentId, revisionId: deps.revisionId, launch: shadow, ...(sealed ? { sealed } : {}) });
       else await store.runs.create({ id, agentId, revisionId: deps.revisionId }, { body: launchBody(shadow) as Json, ...(sealed ? { sealed } : {}) });

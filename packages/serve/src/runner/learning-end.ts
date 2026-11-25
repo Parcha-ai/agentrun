@@ -45,7 +45,7 @@ import { learningStartOf, readLaunchBody, type RunLaunch, seedFailed } from "../
 import type { SignInReader } from "../run-view.js";
 import { type AlsoRow, FINAL_STATES, type LearningProposal, type McpServerRow, type Store } from "../store/store.js";
 import { shadowRunId } from "../learn/audit.js";
-import { keyedBesideOf } from "../learning-work.js";
+import { keyedBesideOf, noteLearningDeadline } from "../learning-work.js";
 import { getMcpServer } from "../mcp-store.js";
 import { purgeGate, refusedIn } from "../purged-workflow.js";
 import { readApprovers } from "../server-approvers.js";
@@ -139,6 +139,7 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     ...(start.noWorkflows ? {} : {
       compileFacts: (input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[]; round: number }) => compileAskOf(deps, { ...input, input: launch.input, ...(launch.sdk ? { sdkTask: sdkInputText(launch) } : {}), seedWorkflows: start.workflows?.length ?? 0, corrections: start.section }),
       compileFailed: (input: { runId: string; agentId: string; compile: CompileAsk; workflow: string; errors: readonly string[] }) => recordDraftFailed(deps, input),
+      compileStarts: ({ runId, until }: { runId: string; until: number }) => noteLearningDeadline(deps.store.settings, runId, until),
     }),
     // The run's secrets, what the claim handed it, every secret the server keeps sealed, and the sign-in pointers it was
     // handed (each at least MIN_SECRET long, as every cut takes them); `unreadable` when those can't be read back, or the

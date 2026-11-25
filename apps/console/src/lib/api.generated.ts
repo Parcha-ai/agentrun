@@ -1056,6 +1056,7 @@ export interface components {
       state: "none" | "running" | "ended";
       runs: string[];
       ended_at: string | null;
+      deadline_at: string | null;
     };
     path?: "agent" | "handed_back" | "workflow" | "replay" | "audit" | null;
     workflow?: {

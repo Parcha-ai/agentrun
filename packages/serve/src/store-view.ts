@@ -76,6 +76,7 @@ import { LISTING_HELD, LISTING_KEYED } from "./store/schema.js";
 import { createHash } from "node:crypto";
 import type { RecordingView } from "./run-recordings.js";
 import { learningWorkOf, type OwnLearning } from "./learning-work.js";
+import { COMPILE_TIMEOUT_MS } from "./learn/compile.js";
 
 /** What the store-backed view needs beside the store: where its console lives, every secret it never shows (read now, so
  *  one rotated is cut at once), and the agents' saved sign-ins (for the handed-pointer cut). The server passes the same it
@@ -452,13 +453,15 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   const shownEnd = lookingBack && started && !started.use ? { state: "reflecting" as const, reason: null, detail: said.reflecting, at: iso(lookingBack.endedAt) } : ended ?? under;
   // Its own learning, as learning_work reads it: a run that learns (a learning start, and no replay or shadow run), its
   // compile turn going (it looks back), one begun (its job's end kept for an end-of-run step), and, once its end is in,
-  // when that learning ended (its learning end's time, else its end's).
+  // when that learning ended (its learning end's time, else its end's). While it looks back, its compile turn's bound as
+  // far as the view knows it: the job's end + the turn's timeout (the turn's own start, later, is kept with its children).
   const learnedAt = !lookingBack && stored.state !== "running" ? Math.max(stored.endedAt ?? 0, ended ? Date.parse(ended.at) || 0 : 0) : 0;
   const ownLearning: OwnLearning = {
     learns: started !== undefined && !launch?.replay && !launch?.audit,
     compiling: lookingBack !== undefined,
     compiled: records.entries.some((entry) => entry.kind === KINDS.jobEnd),
     endedAt: learnedAt > 0 ? learnedAt : null,
+    compileBy: lookingBack ? lookingBack.endedAt + COMPILE_TIMEOUT_MS : null,
   };
   const turns = new Turns();
   turns.note(recordOf(records.entries), records.submissions ?? [], skip, liveRow?.updatedAt ?? deps.now?.() ?? Date.now());

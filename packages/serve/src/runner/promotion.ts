@@ -54,7 +54,7 @@ import { launchBody, readLaunchBody, type RunLaunch } from "../run-launch.js";
 import { uuidv7 } from "../ids.js";
 import { FINAL_STATES, RunFinal, RunPurged, type RunRow, type Store, StoreConstraint } from "../store/store.js";
 import { openRunLaunch, sealHandedLaunch } from "../store/seal.js";
-import { type AtRunEnd, learningChildrenOf, noteLearningChild, RUN_CAP_MIN_USD } from "../learning-work.js";
+import { type AtRunEnd, LEARNING_CHILD_MS, learningChildrenOf, noteLearningChild, RUN_CAP_MIN_USD } from "../learning-work.js";
 import { roomAtEndOf } from "./learning-end.js";
 import { isCliRecord, piShaped, runEntries, runTimeline } from "../store-reads/journal.js";
 import type { McpPin } from "../mcp-gateway.js";
@@ -1052,11 +1052,13 @@ async function startReplay(deps: PromotionDeps, workflow: LearnedWorkflow, diges
   // A keyed replay names the run whose own key it spends on: its cost is that run's learning, never its revision's
   // (learn/ledger.ts record).
   const paidBy = launch.keyed && launch.handed_from ? { paidBy: launch.handed_from } : {};
-  const replay: RunLaunch = { ...base, input: from.input, title: `Replay of ${workflow.name}: ${from.title}`.slice(0, 200), replay: { of, workflow: workflow.name, digest, ...paidBy } };
+  // Its start, and its deadline from it (learning-work.ts LEARNING_CHILD_MS): its runner cancels it there.
+  const at = (deps.now ?? Date.now)();
+  const replay: RunLaunch = { ...base, input: from.input, title: `Replay of ${workflow.name}: ${from.title}`.slice(0, 200), replay: { of, workflow: workflow.name, digest, ...paidBy, deadlineAt: at + LEARNING_CHILD_MS } };
   const sealed = await handedTo(deps, launch, id);
   // The reserving claim's run names it as its learning work before it exists (learning-work.ts), so no replay runs that
-  // its run's learning_work does not list.
-  if (parent) await noteLearningChild(store.settings, parent, { run: id, kind: "replay", at: (deps.now ?? Date.now)(), ...(launch.keyed ? { keyed: true as const } : {}) });
+  // its run's learning_work does not list; the same write moves that run's learning deadline to this one's.
+  if (parent) await noteLearningChild(store.settings, parent, { run: id, kind: "replay", at, ...(launch.keyed ? { keyed: true as const } : {}) });
   try {
     if (source) return (await deps.admitAuxiliary!({ runId: id, agentId, revisionId: launch.revision, launch: replay, ...(sealed ? { sealed } : {}) })).created;
     await store.runs.create({ id, agentId, revisionId: launch.revision }, { body: launchBody(replay) as Json, ...(sealed ? { sealed } : {}) });

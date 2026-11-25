@@ -1503,6 +1503,10 @@ with too little left they are dropped and spend nothing. GET `/v2/runs/{run_id}`
   child counts as ended.
 - Revoke the key once the run is terminal and `learning_work.state` is not `running`. No request of the run or its
   children answers 401 for it then.
+- `deadline_at`, while `running`: the latest instant that work may still spend on the key. It is the later of the
+  compile turn's start plus its 10 minute timeout and each child's start plus 30 minutes, and it only moves later. The
+  server cancels a child still at work at its 30 minutes, as a person's cancel is, and it then counts as ended. Set
+  the key's expiry no earlier than `deadline_at` as a backstop for a missed read; `state` stays the signal to revoke on.
 - A purge of the run (`DELETE /v2/runs/{run_id}`) while its check's replays still run cancels them and erases their
   copies first, and answers only once they have ended: after a 204 nothing spends on the key. A live shadow audit
   refuses the purge (409 `run_not_final`), as any run made from it does.

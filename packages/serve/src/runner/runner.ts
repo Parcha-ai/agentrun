@@ -12,7 +12,8 @@ import { hostname } from "node:os";
 import type { JsonValue } from "@earendil-works/chord/json";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId, EntryId, StorageWrite } from "@earendil-works/pi-durable";
-import { COMMAND_KINDS, endedReason } from "./commands.js";
+import { COMMAND_KINDS, type CommandSink, endedReason, sendCommand } from "./commands.js";
+import { learningDeadlineOf } from "../run-launch.js";
 import { COMPUTER_CALL } from "../computer-channel.js";
 import { COMPUTER_HAND_BACK, COMPUTER_TAKE_OVER } from "../computer-commands.js";
 import { HELD_COMMANDS } from "../computer-held.js";
@@ -22,7 +23,7 @@ import { journalEntries } from "./journal-reader.js";
 import { type Claim, ClaimRefused, type Command, type Journal, type Loop, type LoopEnd, type LoopFactory, stopEnd, type StopReason } from "./loop-contract.js";
 import { FrameTooLarge } from "./run-channel.js";
 import { isFenced, type RunnerStore } from "./store-port.js";
-import { FINAL_STATES, type RunPatch, type RunState } from "../store/store.js";
+import { FINAL_STATES, RunFinal, type RunPatch, type RunState } from "../store/store.js";
 import { Unanswered } from "../store/postgres/connection.js";
 import { clearWaitEnded } from "../browser-wait-ended.js";
 import { clearBrowserHeld } from "../browser-hold.js";
@@ -184,6 +185,9 @@ export interface RunnerOptions {
   /** For tests: the claim deadline's clock (the deadline a claim not renewed in time is lost at, and the time its claimed
    *  until is reckoned from). Default: the real one. Nothing else in the runner reads it. */
   clock?: { now(): number; setTimeout(fn: () => void, ms: number): unknown; clearTimeout(handle: unknown): void };
+  /** For tests: the clock (epoch ms) a held learning child's deadline is read on (its launch's, run-launch.ts
+   *  learningDeadlineOf): one still held at it is cancelled, as a person's cancel is. Default Date.now. */
+  learningClock?: () => number;
 }
 
 /** A runner's memory budget and its runs' weights, in MiB (RunnerOptions.memory). `weigh` answers each id it is given; an
@@ -212,6 +216,8 @@ export type RunnerEvent =
   | { type: "refused"; runId: string; commandId: number; reason: string }
   /** The runner stopped claiming (`reason`, its claimGate's words) or claims again (null): said once at each change. */
   | { type: "refusing"; reason: string | null }
+  /** A learning child (a check's replay run, an audit's shadow run) held at its deadline: its cancel is written. */
+  | { type: "learning-deadline"; runId: string }
   | { type: "error"; runId?: string; step: string; message: string };
 
 /** Why a runner handed a run back, still running, for another claim: `drain`, its close stopped the run's loop after the
@@ -268,6 +274,10 @@ interface Held {
   done?: Promise<void>;
   /** What the run weighs against the memory budget (RunnerOptions.memory), in MiB; 0 without one. */
   mib: number;
+  /** A learning child's deadline (ms), read from its launch once held; undefined for any other run. */
+  learningDeadline?: number;
+  /** Its cancel at that deadline is written (or being written): never twice. */
+  overdue?: boolean;
 }
 
 /** A claim that only ends its run, with no loop (endRetried): renewed with the held claims until its end lands. */
@@ -304,6 +314,7 @@ export function startRunner(options: RunnerOptions): Runner {
     runEnded,
     redact: given = processSecretRedactor(),
     now = Date.now,
+    learningClock = Date.now,
     onBeat = () => {},
     clock = { now: () => Date.now(), setTimeout: (fn: () => void, ms: number) => setTimeout(fn, ms), clearTimeout: (handle: unknown) => clearTimeout(handle as NodeJS.Timeout) },
   } = options;
@@ -989,6 +1000,7 @@ export function startRunner(options: RunnerOptions): Runner {
     armDeadline(held, deadlineOf(claim, sentAt));
     emit({ type: "claimed", claim });
     void announceStart(claim);
+    void readLearningDeadline(held);
     held.done = (async () => {
       let end: LoopEnd;
       let threw = false;
@@ -1212,11 +1224,42 @@ export function startRunner(options: RunnerOptions): Runner {
   let claiming: Promise<void> | undefined;
   /** A run was queued while a poll was in flight (claimNow): one more poll follows that poll's end at once. */
   let pollAgain = false;
+  /** A held learning child's deadline (its launch's: a check's replay or an audit's shadow, learning-work.ts
+   *  LEARNING_CHILD_MS), read once as it is held. A store without launches (a test's) gives none; a read that fails is
+   *  said, and the next claim of the run reads it again. */
+  const readLearningDeadline = async (held: Held) => {
+    if (!store.runs.launch || !store.command) return;
+    try {
+      const deadline = learningDeadlineOf((await store.runs.launch(held.claim.runId)).body);
+      if (deadline !== undefined) held.learningDeadline = deadline;
+    } catch (error) {
+      emit({ type: "error", runId: held.claim.runId, step: "learning deadline", message: message(error) });
+    }
+  };
+  /** Each held learning child at its deadline on the learning clock is cancelled as a person's cancel is (a cancel row,
+   *  its loop's ordinary stop: its spend booked once at its end, its copy of a key erased by that end's write). Serve has
+   *  no run deadline, so this is what bounds a learning child's spend on its run's key (learning_work.deadline_at). */
+  const endOverdue = () => {
+    if (!store.command) return;
+    const at = learningClock();
+    for (const held of runs.values()) {
+      if (held.learningDeadline === undefined || held.overdue || held.ending || held.fence.lost || at < held.learningDeadline) continue;
+      held.overdue = true;
+      emit({ type: "learning-deadline", runId: held.claim.runId });
+      void sendCommand(store as CommandSink, held.claim.runId, { kind: "cancel", body: {} }).catch((error: unknown) => {
+        // Final already: it ended on its own.
+        if (error instanceof RunFinal) return;
+        held.overdue = false;
+        emit({ type: "error", runId: held.claim.runId, step: "learning deadline", message: message(error) });
+      });
+    }
+  };
   const poll = () => {
     if (closed || killed) return;
     clearTimeout(pollTimer);
     pollAgain = false;
     beat();
+    endOverdue();
     const claimed = claimMore();
     claiming = claimed;
     void claimed.finally(() => {

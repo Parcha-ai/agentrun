@@ -823,6 +823,7 @@ export type Run = {
     state: "none" | "running" | "ended";
     runs: Array<string>;
     ended_at: string | null;
+    deadline_at: string | null;
   };
   path?: "agent" | "handed_back" | "workflow" | "replay" | "audit" | null;
   workflow?: {

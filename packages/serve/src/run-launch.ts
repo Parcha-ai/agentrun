@@ -132,12 +132,14 @@ export function sourceProjectOf(value: unknown): SourceProjectLaunch | undefined
 
 /** What a replay run replays: the graded run, and the learned workflow at the digest it decides. `paidBy`: a replay
  *  that spends on run `paidBy`'s own model key (a keyed check, runner/promotion.ts), whose learning its cost is
- *  (learn/ledger.ts record), never its revision's. */
+ *  (learn/ledger.ts record), never its revision's. `deadlineAt` (ms): a learning child's deadline, its start +
+ *  learning-work.ts LEARNING_CHILD_MS; the runner holding it cancels it there (runner.ts). */
 export interface Replay {
   readonly of: string;
   readonly workflow: string;
   readonly digest: string;
   readonly paidBy?: string;
+  readonly deadlineAt?: number;
 }
 
 /** The disk a launch record names, and whose it is. */
@@ -151,8 +153,21 @@ const readDisk = (value: unknown): LaunchDisk | undefined =>
   isObject(value) && typeof value.disk_id === "string" && (value.kind === "launch" || value.kind === "agent") ? { diskId: value.disk_id, kind: value.kind } : undefined;
 
 /** The replay a launch body names, as read back, or undefined. */
-const readReplay = (value: unknown): Replay | undefined =>
-  isObject(value) && typeof value.of === "string" && typeof value.workflow === "string" && typeof value.digest === "string" ? { of: value.of, workflow: value.workflow, digest: value.digest, ...(typeof value.paid_by === "string" ? { paidBy: value.paid_by } : {}) } : undefined;
+const readReplay = (value: unknown): Replay | undefined => {
+  if (!(isObject(value) && typeof value.of === "string" && typeof value.workflow === "string" && typeof value.digest === "string")) return undefined;
+  const deadline = typeof value.deadline_at === "string" ? Date.parse(value.deadline_at) : Number.NaN;
+  return { of: value.of, workflow: value.workflow, digest: value.digest, ...(typeof value.paid_by === "string" ? { paidBy: value.paid_by } : {}), ...(Number.isFinite(deadline) ? { deadlineAt: deadline } : {}) };
+};
+
+/** A learning child's deadline (ms) as its launch body keeps it: its replay's or its audit's `deadline_at`; undefined for
+ *  any other run, and for a body that is no launch. */
+export function learningDeadlineOf(body: unknown): number | undefined {
+  if (!isObject(body)) return undefined;
+  return readReplay(body.replay)?.deadlineAt ?? readReplay(body.audit)?.deadlineAt;
+}
+
+/** A replay or an audit as a launch body keeps it. */
+const replayBody = (replay: Replay): Record<string, string> => ({ of: replay.of, workflow: replay.workflow, digest: replay.digest, ...(replay.paidBy ? { paid_by: replay.paidBy } : {}), ...(replay.deadlineAt !== undefined ? { deadline_at: new Date(replay.deadlineAt).toISOString() } : {}) });
 
 /** The trigger a launch body names, as read back: `{ id, firing_key }` and its firing's `attrs` (each a string) when it
  *  kept them, or null (triggerOf of the old serve.json). */
@@ -214,8 +229,8 @@ export function launchBody(launch: RunLaunch): Json {
     ...(launch.sourceProject ? { source_project: launch.sourceProject } : {}),
     ...(launch.learning ? { learning: { seed: launch.learning.seed, section: launch.learning.section, ...(launch.learning.workflows?.length ? { workflows: [...launch.learning.workflows] } : {}), ...(launch.learning.noWorkflows ? { noWorkflows: true } : {}), ...(launch.learning.model ? { model: launch.learning.model } : {}), ...(launch.learning.seedFailed ? { seedFailed: launch.learning.seedFailed } : {}), ...(launch.learning.use ? { use: true } : {}), ...(launch.learning.seededAt !== undefined ? { seededAt: launch.learning.seededAt } : {}) } } : {}),
     ...(launch.workflowFirst === false ? { workflow_first: false } : {}),
-    ...(launch.replay ? { replay: { of: launch.replay.of, workflow: launch.replay.workflow, digest: launch.replay.digest, ...(launch.replay.paidBy ? { paid_by: launch.replay.paidBy } : {}) } } : {}),
-    ...(launch.audit ? { audit: { of: launch.audit.of, workflow: launch.audit.workflow, digest: launch.audit.digest } } : {}),
+    ...(launch.replay ? { replay: replayBody(launch.replay) } : {}),
+    ...(launch.audit ? { audit: replayBody({ of: launch.audit.of, workflow: launch.audit.workflow, digest: launch.audit.digest, ...(launch.audit.deadlineAt !== undefined ? { deadlineAt: launch.audit.deadlineAt } : {}) }) } : {}),
     ...(launch.trigger ? { trigger: launch.trigger } : {}),
     ...(launch.inputOrigin ? { input_origin: launch.inputOrigin } : {}),
     ...(launch.followUp ? { follow_up: true } : {}),

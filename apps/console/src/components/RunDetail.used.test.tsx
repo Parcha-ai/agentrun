@@ -12,7 +12,7 @@ let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; });
 const settle = async () => { for (let i = 0; i < 6; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
 
-const run = (learning: Run["learning"]): Run => ({ sha: null, updated_at: "2026-11-11T00:00:00Z", poll_after_ms: 0, place: { mode: "runner" }, learning_work: { state: "none", runs: [], ended_at: null },
+const run = (learning: Run["learning"]): Run => ({ sha: null, updated_at: "2026-11-11T00:00:00Z", poll_after_ms: 0, place: { mode: "runner" }, learning_work: { state: "none", runs: [], ended_at: null, deadline_at: null },
   run_id: "run-u", agent_id: "refunds", agent_version: 1, revision: "rv1", kind: "agentic", status: "completed", state: "idle", title: "allbirds.com",
   created_at: "2026-11-11T10:00:00Z", ended_at: "2026-11-11T10:00:09Z", result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null, learning,
 });

@@ -5992,6 +5992,7 @@ class RunLearningWork(TypedDict):
     state: Literal["none", "running", "ended"]
     runs: list[str]
     ended_at: str | None
+    deadline_at: str | None
 
 
 class RunWorkflow(TypedDict):
