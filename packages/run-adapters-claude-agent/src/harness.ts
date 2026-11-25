@@ -31,7 +31,7 @@ import {
   waitForSubmissions,
 } from './host/process.js';
 import { durableEnv, nativeModelId } from './env.js';
-import { type ClaudeAgentLogin, loginBooking, loginEnv } from './login.js';
+import { type ClaudeAgentLogin, type ClaudeLoginToken, LOGIN_TOKEN_REFUSED, loginBooking, loginByToken, loginEnv } from './login.js';
 import type { ModelPort } from '@parcha/agentrun-kernel';
 import { uuidFrom } from './ids.js';
 import { MessageQueue } from './inbox.js';
@@ -230,9 +230,10 @@ export interface ClaudeCodeHarnessOptions {
   /**
    * The person's own login the CLI runs on (login.ts), in place of the model route: the drive asks its machine for no
    * proxy, the CLI's environment holds no model URL, key or token, and each response is booked from the CLI's stream
-   * through `models`, billed to the plan. `credential` and `gatewayUrl` are not read.
+   * through `models`, billed to the plan. `credential` and `gatewayUrl` are not read. A login handed as a token
+   * (ClaudeLoginToken) is asked for its token at each drive, and again when the CLI asks for a newer one on a 401.
    */
-  login?: { at: ClaudeAgentLogin; models: Pick<ModelPort, 'beforeRequest' | 'afterRequest'> };
+  login?: { at: ClaudeAgentLogin | ClaudeLoginToken; models: Pick<ModelPort, 'beforeRequest' | 'afterRequest'> };
   /** The CLI's path in the VM. Default `CLAUDE_VM_EXECUTABLE` (the base image's pinned build). Tests on the stand-in VM pass the host build. */
   executable?: string;
   /** The kernel name (its sessions' runs are `workflow//durable-harness@<version>//<name>`). Default `claude-code`. */
@@ -749,13 +750,17 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           ],
         };
 
+        // A login handed as a token: its token as the host reads it now, for this start of the CLI (a token the host
+        // refuses, one near its end say, fails the drive in the host's words before the CLI starts).
+        const byToken = login && loginByToken(login.at) ? login.at : undefined;
+        let sentToken = byToken ? await byToken.token() : undefined;
         // The CLI's environment in the VM (the SDK gets it with the Function's config dir; `sandboxSpawn` swaps the VM's back in).
         const vmEnv = durableEnv({
           home: machine.dirs.home,
           configDir: machine.dirs.config,
           tmpDir: machine.dirs.tmp,
           cacheDir: machine.dirs.cache,
-          ...(login ? { login: login.at } : { baseUrl: machine.modelUrl, token: machine.modelKey }),
+          ...(sentToken !== undefined ? { oauthToken: sentToken } : login ? { login: login.at as ClaudeAgentLogin } : { baseUrl: machine.modelUrl, token: machine.modelKey }),
           model,
           ...(smallModel ? { smallModel } : {}),
           ...(sandbox.commandTimeoutMs ? { bashTimeoutMs: sandbox.commandTimeoutMs } : {}),
@@ -793,10 +798,30 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
         /** A message the CLI's transcript holds told the model `day`. */
         const told = (day: string) =>
           ctx.state().effectOrder.some((e) => e.name === DATE_EFFECT && (e.input as { day?: unknown } | undefined)?.day === day && store.hasUser(e.key.slice(DATE_EFFECT.length + 1)));
+        // On a login handed as a token, the CLI's ask for a newer one when Anthropic refuses it (the SDK's
+        // `getOAuthToken`, answering the CLI's `oauth_token_refresh`; the pins test holds that the pinned SDK takes it,
+        // as its typings do not say): the host told which token was refused (`refused`, so a host that renews renews
+        // it), then its token read once more, answered when it is another than the one the CLI holds. Else null, and
+        // the drive halts in words (the host's, or LOGIN_TOKEN_REFUSED), so the CLI fails the request at once
+        // (CLAUDE_CODE_OAUTH_401_WAIT_MS=0) and the turn ends: never a wait.
+        const askToken = byToken
+          ? async (): Promise<string | null> => {
+              try {
+                if (sentToken !== undefined) await byToken.refused?.(sentToken);
+                const next = await byToken.token();
+                if (next !== sentToken) return (sentToken = next);
+                ctx.halt?.(new Error(LOGIN_TOKEN_REFUSED));
+              } catch (error) {
+                ctx.halt?.(error instanceof Error ? error : new Error(String(error)));
+              }
+              return null;
+            }
+          : undefined;
         const queryOptions: QueryOptions = {
           model,
           cwd: machine.root,
           env: sdkEnv,
+          ...(askToken ? { getOAuthToken: askToken } : {}),
           // Built-ins on: the allowed ones (less those whose state the log does not carry), each let through by
           // the PreToolUse hook once its intent is in the log. Off: the bridged tools are the only ones. Either
           // way nothing is asked of a user, and nothing else is permitted.
@@ -805,7 +830,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           ...(skills ? { plugins: [{ type: 'local' as const, path: skills.plugin }], skills: [...skills.names] } : {}),
           disallowedTools: disallowed,
           hooks,
-          ...(ownSandbox ? { sandbox: claudeSandboxSettings(machine, sandbox.network, login?.at) } : {}),
+          ...(ownSandbox ? { sandbox: claudeSandboxSettings(machine, sandbox.network, login && !byToken ? (login.at as ClaudeAgentLogin) : undefined) } : {}),
           ...(bridge.tools.length ? { mcpServers: { [MCP_SERVER]: server } } : {}),
           allowedTools: bridge.tools.map((t) => `mcp__${MCP_SERVER}__${t.name}`),
           permissionMode: 'dontAsk',

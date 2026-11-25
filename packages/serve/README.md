@@ -1704,9 +1704,29 @@ nothing.
 A check where the CLI answered nothing that reads as a status gets the same. Any other failure of the check, such as no CLI at
 its path, fails the run at once in the check's own words. It never switches to a key. The run books its tokens and no dollars (`cost.plan`, `on: "claude_code"`), and the plan's own limits
 apply. Only a run in a runner place, on the machine the mode was turned on for, goes on the login. A run placed in a
-sandbox, or on another machine, uses the keys. The login is the server's user's, so a run on it needs runs under that
-user: where each run is a user of its own (the image, `run_isolation: "uid"`), a claude-agent run that would go on the
-login fails at its claim and says so. Set `AGENTRUN_RUN_USER=same`, or give the run a `model_key`.
+sandbox, or on another machine, uses the keys. The login is the server's user's. Where each run is a user of its own
+(the image, `run_isolation: "uid"`), a run on AgentRun's own login folder gets the login's access token alone in
+`CLAUDE_CODE_OAUTH_TOKEN`: never the folder and never the refresh token, so its CLI never renews the login. The runner
+reads the token from the folder at the run's start and again whenever Anthropic refuses it mid-run, so a renewal the
+person's own Claude Code wrote there is picked up. The runner renews the login itself, in the CLI's place: when a token
+has less than five minutes left, and after Anthropic refuses one mid-run. It sends the pinned CLI's own refresh request,
+holds the CLI's own refresh lock on the folder (so a renewal by the CLI or another runner is taken and nothing is sent
+twice), and writes the answer back to the folder's `.credentials.json` alone, atomically at mode 0600, every other field
+kept. It holds that lock as the CLI does, by the mtime it set: a lock another holder took over while the runner was
+paused is never touched or removed, and the runner sends nothing under it. If the write back fails, the runner keeps the
+new pair in memory: each later ask gets its token, sends nothing (the old refresh token is spent and is never sent
+again) and tries the write again, under the same refresh lock and after reading the file again, so a newer pair another
+holder wrote there is kept. Once that token has less than five minutes left and is still unsaved, the run fails
+in words that say the renewal could not be saved and what to fix. A held token Anthropic refuses is never handed again:
+the ask fails while the pair is unsaved, and once it is saved the runner renews from it. One ask sends at most one renewal and nothing retries it. A renewal that fails, a refresh token Anthropic refused
+included, fails the run at its start in words that say to open Claude Code once to renew it, and mid-run ends the turn
+in the same words (or, with no failure to tell, words that say to run the claude CLI once on this login to renew it).
+No token is in the runner's log or in any error, and each token handed is cut from the run's journal, messages and rows
+as the runner writes them. A command the run's CLI starts can read the token,
+as the run's own user can. Under per-run users, a run on this machine's own Claude Code login (`~/.claude`, or the `CLAUDE_CONFIG_DIR` AgentRun was started with) fails at its
+claim and says so, and so does any login run while another runner on the same data folder runs its login runs under
+the server's user (its CLI renews the folder's login itself), naming that runner. Set `AGENTRUN_RUN_USER=same`, or give
+the run a `model_key`.
 
 The mode exists only on a server that listens on loopback (a local install, or one behind a local proxy). A server
 bound to any other address, such as all interfaces in a container or on a hosting service, has it off

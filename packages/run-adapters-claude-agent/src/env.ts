@@ -13,8 +13,10 @@
 
 import { type ClaudeAgentLogin, loginEnv, personHome } from './login.js';
 
-/** What never reaches a CLI that runs on a person's login: a model URL, key or token of any kind. */
-export const LOGIN_UNSET: readonly string[] = Object.freeze(['ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_CUSTOM_HEADERS', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX']);
+/** What never reaches a CLI that runs on a person's login from the app's own variables: a model URL, key or token of
+ *  any kind, a refresh token or a token's file descriptor among them. A login handed as a token sets its own
+ *  CLAUDE_CODE_OAUTH_TOKEN after. */
+export const LOGIN_UNSET: readonly string[] = Object.freeze(['ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_OAUTH_REFRESH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR', 'ANTHROPIC_CUSTOM_HEADERS', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX']);
 
 /** The `PATH` of the CLI and its commands in the VM: the image's, never the Function's. */
 export const VM_PATH = '/usr/local/bin:/usr/bin:/bin';
@@ -47,6 +49,12 @@ export interface DurableEnvOptions {
    * environment has no model URL or key at all (login.ts).
    */
   login?: ClaudeAgentLogin;
+  /**
+   * The person's own login handed as its access token alone (login.ts ClaudeLoginToken, read by the host for this
+   * start), in place of the model port and of `login`: the CLI gets it as CLAUDE_CODE_OAUTH_TOKEN, with no refresh token
+   * and no login directory (its credentials directories are the session's own), and a 401 never parks it.
+   */
+  oauthToken?: string;
   /** The platform the CLI runs on, this host's by default. On macOS a CLI on a login runs in the person's home (`HOME`). */
   platform?: NodeJS.Platform;
   /** The model, as the CLI's main and alias models. */
@@ -99,12 +107,17 @@ export function durableEnv(options: DurableEnvOptions): Record<string, string> {
   const { home, model } = options;
   const small = options.smallModel ?? model;
   const env: Record<string, string> = { ...(options.extra ?? {}) };
-  if (options.login) {
+  if (options.login && options.oauthToken !== undefined) throw new Error('agentrun-harness-claude: the CLI takes a login by its directories or by its token, not both');
+  if (options.login || options.oauthToken !== undefined) {
     // On a login, no model URL, key or token reaches the CLI, the app's own variables included: its login is its only one.
     for (const name of Object.keys(env)) if (LOGIN_UNSET.includes(name)) delete env[name];
   } else if (options.baseUrl === undefined || options.token === undefined) {
     throw new Error('agentrun-harness-claude: the CLI needs its model port and key, or a login');
   }
+  // A login by its token: the token alone, its credentials directories the session's own (so no app variable points
+  // them at a login), and no wait for a newer token on a 401: the host is asked for one at once (getOAuthToken). It
+  // reads no keychain, so its HOME stays the session's on every platform.
+  const byToken = options.oauthToken === undefined ? undefined : { CLAUDE_CODE_OAUTH_TOKEN: options.oauthToken, CLAUDE_CODE_OAUTH_401_WAIT_MS: '0', CLAUDE_SECURESTORAGE_CONFIG_DIR: options.configDir, ANTHROPIC_CONFIG_DIR: `${home}/.config/anthropic` };
   const platform = options.platform ?? process.platform;
   Object.assign(env, {
     PATH: VM_PATH,
@@ -118,7 +131,7 @@ export function durableEnv(options: DurableEnvOptions): Record<string, string> {
     XDG_CACHE_HOME: options.cacheDir,
     XDG_DATA_HOME: `${home}/.local/share`,
     XDG_STATE_HOME: `${home}/.local/state`,
-    ...(options.login ? loginEnv(options.login, platform) : { ANTHROPIC_BASE_URL: options.baseUrl, ANTHROPIC_AUTH_TOKEN: options.token }),
+    ...(byToken ?? (options.login ? loginEnv(options.login, platform) : { ANTHROPIC_BASE_URL: options.baseUrl, ANTHROPIC_AUTH_TOKEN: options.token })),
     ANTHROPIC_DEFAULT_OPUS_MODEL: model,
     ANTHROPIC_DEFAULT_SONNET_MODEL: model,
     ANTHROPIC_DEFAULT_HAIKU_MODEL: small,
