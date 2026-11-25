@@ -70,8 +70,8 @@ export function browserPrice(provider: string, env: NodeJS.ProcessEnv): { usdPer
 }
 
 /** A hold on the run's ledger, as the browser keeps it: its figure (moved as charges book the time it covers), and
- *  `drop`, which gives it back. */
-type Hold = { usd: number; drop(): void };
+ *  `drop`, which gives it back (on the ledger, once its returned promise settles; a hold held nowhere returns nothing). */
+type Hold = { usd: number; drop(): Promise<void> | void };
 /** A cap refusal as the run's pause reads it (its words; for good, or for room with its figures). */
 type LedgerRefusal = Refusal;
 /** Up to the millionth of a dollar, so the cap's words name a figure never below the hold. */
@@ -106,12 +106,15 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
    *  it held being booked by the session's own charge). `admitted`: the ledger's answer (refused in the cap's words when
    *  it has no room; refused with no ledger, where nothing is held). `owed`: time its provider is already owed, run
    *  outside any call (a person's carried time, a session held from a reopen, a delayed release): never refused. A fresh
-   *  session's reserve and a person's time to come (personTime) are not owed: the cap may refuse them. */
-  const holdOf = (name: string, usd: number, basis: string, options: { owed?: true; tag?: string } = {}): { hold: Hold; admitted: Promise<{ refused?: string; refusal?: LedgerRefusal }> } => {
+   *  session's reserve and a person's time to come (personTime) are not owed: the cap may refuse them. `after`: the hold
+   *  this one takes the place of, given back (its drop's promise): this one is asked only once that has landed, so the
+   *  ledger never judges the two side by side, whatever order it books them in. */
+  const holdOf = (name: string, usd: number, basis: string, options: { owed?: true; tag?: string; after?: Promise<void> | void } = {}): { hold: Hold; admitted: Promise<{ refused?: string; refusal?: LedgerRefusal }> } => {
     if (!paid) return { hold: { usd, drop: () => {} }, admitted: Promise.resolve({ refused: unbookedRefusal(name) }) };
     const booking = paid;
     const id = `browser:${name}#${(ledgerSeq += 1)}`;
-    const admitted: Promise<{ refused?: string; refusal?: LedgerRefusal }> = booking.admit({ id, name, holdUsd: usd, basis, chargedBy: provider, tool: BROWSER_TOOL, hold: true, ...(options.tag ? { tag: options.tag } : {}), ...(options.owed ? { owed: true as const } : {}) }).then(
+    const ask = () => booking.admit({ id, name, holdUsd: usd, basis, chargedBy: provider, tool: BROWSER_TOOL, hold: true, ...(options.tag ? { tag: options.tag } : {}), ...(options.owed ? { owed: true as const } : {}) });
+    const admitted: Promise<{ refused?: string; refusal?: LedgerRefusal }> = (options.after ? options.after.then(ask, ask) : ask()).then(
       () => ({}),
       (error: unknown) => {
         const capped = (error as { code?: unknown })?.code === "spend_cap_reached";
@@ -124,16 +127,17 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
     );
     pending.add(admitted);
     void admitted.finally(() => pending.delete(admitted));
-    let dropped = false;
+    let settled: Promise<void> | undefined;
     const hold = {
       usd,
-      drop: () => {
-        if (dropped) return;
-        dropped = true;
+      drop: (): Promise<void> => {
+        if (settled) return settled;
         // Given back: a hold is no charge (its time, when it ran, is booked by the session's own charge), never a $0 one.
-        const settled = admitted.then((answer) => (answer.refused === undefined ? booking.settle(id, 0, { givenBack: true }) : undefined)).catch(() => undefined);
-        pending.add(settled);
-        void settled.finally(() => pending.delete(settled));
+        const giving = admitted.then((answer) => (answer.refused === undefined ? booking.settle(id, 0, { givenBack: true }) : undefined)).then(() => undefined, () => undefined);
+        settled = giving;
+        pending.add(giving);
+        void giving.finally(() => pending.delete(giving));
+        return giving;
       },
     };
     return { hold, admitted };
@@ -180,8 +184,10 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
     (carried.get(tag) ?? []).reduce((sum, { from, to }) => sum + usdOf(Math.max(0, to - Math.max(from, since)) / 1000), 0) +
     // A person who has the browser now: what of their held time has run is held already, as carried time is.
     [...(active.get(tag) ?? [])].reduce((sum, { from, to }) => sum + usdOf(Math.max(0, Math.min(to, now) - Math.max(from, since)) / 1000), 0);
-  /** Each call under way, by its id: its conversation and its hold. */
-  const calls = new Map<string, { cid: number; hold: Hold }>();
+  /** Each call under way, by its id: its conversation, its hold, `givenBack` (settles once its hold on the run's ledger
+   *  is given back) and `reserves`, the reserves of the sessions it opened, each asked on the ledger once that has landed
+   *  (the call returns only once they are held, or refused and acted on). */
+  const calls = new Map<string, { cid: number; hold: Hold; givenBack: Promise<void>; reserves: Promise<void>[] }>();
   const take = (hold: Hold | undefined, usd: number) => void (hold && (hold.usd = Math.max(0, hold.usd - usd)));
 
   /** Recorded in the commit that bills it: a BROWSER_CHARGED under the call that ran it (a release's, under its session's
@@ -237,12 +243,38 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
       sessions.delete(data.tag);
     } else if (session) {
       take(data.call === null ? undefined : calls.get(data.call)?.hold, Math.max(0, usd - personBooked));
-      // Its reserve is one stretch again: a kept session's held what it ran before this charge, which booked it.
-      session.reserve.usd = stretch;
+      // Its reserve is one stretch again: a kept session's (a reopen's, a delayed release's) held what it ran before this
+      // charge, which booked it. On the run's ledger too, where a hold keeps the figure it was admitted at: that hold is
+      // given back for one of a stretch, so the time this charge booked is never held beside it. Owed, as the reserve it
+      // takes the place of was: the session is open and its provider bills its time whatever the cap says, so a refusal
+      // would only leave that time unheld (a new session's reserve is the cap's to refuse: its room is its call's hold's).
+      // Asked once the old one is given back on the ledger (after), so the two are never held side by side there.
+      if (session.reserve.usd !== stretch) {
+        const givenBack = session.reserve.drop();
+        session.reserve = holdOf("this browser session's reserve", stretch, `${provider}'s next stretch of session time, held again once its charge booked the time before it`, { owed: true, tag: data.tag, after: givenBack }).hold;
+      }
       Object.assign(session, { at: through, call: data.call ?? session.call });
     } else {
-      take(data.call === null ? undefined : calls.get(data.call)?.hold, usd + stretch);
-      sessions.set(data.tag, { cid: data.conversation, reserve: holdOf("this browser session's reserve", stretch, `${provider}'s next stretch of session time, held until its release is booked`, { tag: data.tag }).hold, at: through, call: data.call });
+      const call = data.call === null ? undefined : calls.get(data.call);
+      take(call?.hold, usd + stretch);
+      // Its call's hold is two stretches, one of them for this reserve, but on the run's ledger that hold keeps its
+      // admitted figure until the call returns: asked beside it, the reserve would be judged twice and refused for room
+      // the run has. So it is asked once the call's hold is given back (after), in the room that hold kept for it, and the
+      // call returns only once it is held (reserves): until then the call's own hold covers the session. A charge under no
+      // call still running asks at once.
+      const reserve = holdOf("this browser session's reserve", stretch, `${provider}'s next stretch of session time, held until its release is booked`, { tag: data.tag, ...(call ? { after: call.givenBack } : {}) });
+      sessions.set(data.tag, { cid: data.conversation, reserve: reserve.hold, at: through, call: data.call });
+      // A new session's reserve is the cap's to refuse (starting a session is a choice), and refused, its next stretch is
+      // held nowhere: that is said, and the cap's own refusal pauses the run, as an ask's refused time does (personTime),
+      // so its next request is refused in the cap's words and it parks for a raise.
+      const acted = reserve.admitted.then(async (answer) => {
+        if (answer.refused === undefined) return;
+        log(logLine("browser_reserve_refused", { said: `the reserve of browser session ${data.tag} was not held on the run's ledger (${answer.refused.slice(0, 200)}): its next stretch is held nowhere` }));
+        if (answer.refusal && ledger.pause) await ledger.pause(answer.refusal);
+      }).catch((error: unknown) => void log(logLine("browser_reserve_refused", { said: `the run could not be paused on the refused reserve of browser session ${data.tag} (${String((error as Error)?.message ?? error).slice(0, 200)})` })));
+      pending.add(acted);
+      void acted.finally(() => pending.delete(acted));
+      call?.reserves.push(acted);
     }
   }
 
@@ -359,13 +391,21 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
         const basis = `${provider}'s session time at $${rate} an hour: the ${Math.round(ranS)} s its session ran since its last charge, and twice the next stretch of ${stretchS} s (its ${price.minimumS} s minimum, the ${idleS} s idle window and ${RELEASE_ALLOWANCE_S} s for its release)`;
         // One hold-only step, held at that figure and given back when the call returns (or its claim is lost): the call's
         // charges are each their own step (booked).
-        calls.set(api.callId, { cid: api.conversationId, hold: { usd, drop: () => {} } });
+        let landed!: () => void;
+        const entry = { cid: api.conversationId, hold: { usd, drop: () => {} }, givenBack: new Promise<void>((resolve) => (landed = resolve)), reserves: [] as Promise<void>[] };
+        calls.set(api.callId, entry);
         try {
           // A provider whose time has no price is held at no figure: the cap's rule refuses it for good, as main does.
           // One refused for room pauses the run (ledger.pause, the run's own: a native tool task runs in no host tool
           // call's ledger), in the cap's words and figures, as an ask's person time does: its next request is refused
           // and the run parks for a raise.
-          const stepped = await paidStep(paid, api.callId, { name: "this browser call", holdUsd: rate === null ? Number.NaN : usd, basis, by: provider, tool: BROWSER_TOOL, hold: true }, () => tool.execute(args, api as never, context), () => 0, ledger.pause);
+          // paidStep returns once the call's hold is given back on the ledger (its settle): the reserves of the sessions
+          // the call opened are asked then, and the call returns once they are held, so nothing the run does next is judged
+          // while the session is held nowhere.
+          const stepped = await paidStep(paid, api.callId, { name: "this browser call", holdUsd: rate === null ? Number.NaN : usd, basis, by: provider, tool: BROWSER_TOOL, hold: true }, () => tool.execute(args, api as never, context), () => 0, ledger.pause).finally(async () => {
+            landed();
+            await Promise.all(entry.reserves);
+          });
           return "refused" in stepped ? await refuse(stepped.refused, api, context) : stepped.result;
         } finally {
           calls.delete(api.callId);

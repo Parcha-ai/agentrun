@@ -52,16 +52,21 @@ type NoOffer = { offer: false };
 
 /** A runs list's filter (GET /v2/runs's `status`, `archived` and `label`): runs in one status, the archived runs in place
  *  of the others, and runs holding one `<key>:<value>` label (one per request, as the route takes it). */
-/** `source`: the runs imported from one source (`claude-code`, ...), or `live` for the runs made here (GET /v2/runs only). */
-export type RunsFilter = { status?: RunStatus; archived?: boolean; label?: string; source?: string };
+/** `source`: the runs imported from one source (`claude-code`, ...), or `live` for the runs made here (GET /v2/runs only).
+ *  `from` and `to`: the runs started in [from, to), each an instant with its zone (the console's own dates made instants);
+ *  `model`: the runs that used one model, `provider/model` (GET /v2/runs only). */
+export type RunsFilter = { status?: RunStatus; archived?: boolean; label?: string; source?: string; from?: string; to?: string; model?: string };
 
-const runsQuery = (limit: number, cursor: string | null | undefined, { status, archived, label, source }: RunsFilter = {}) => {
+const runsQuery = (limit: number, cursor: string | null | undefined, { status, archived, label, source, from, to, model }: RunsFilter = {}) => {
   const q = new URLSearchParams({ limit: String(limit) });
   if (cursor) q.set("cursor", cursor);
   if (status) q.set("status", status);
   if (archived) q.set("archived", "true");
   if (label) q.set("label", label);
   if (source) q.set("source", source);
+  if (from) q.set("from", from);
+  if (to) q.set("to", to);
+  if (model) q.set("model", model);
   return `?${q}`;
 };
 
@@ -439,9 +444,9 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** A change that moves a Composio server off Composio answers `composio` beside it: what it removed there. */
     saveMcpServer: (name: string, url: string, auth: McpAuth, kind: { toolkit?: string | null } = {}) => call<McpServer & { composio?: { removed: boolean; note: string } }>("PUT", mcpServer(name), { body: { url, auth, ...kind } }),
     /** The Composio preset: a toolkit's actions, for the picker (the owner's session alone; the key goes to Composio). */
-    composioTools: (api_key: string, toolkit: string) => call<ComposioTools>("POST", "/settings/mcp-servers/composio/tools", { body: { api_key, toolkit } }),
+    composioTools: (api_key: string, toolkit: string, signal?: AbortSignal) => call<ComposioTools>("POST", "/settings/mcp-servers/composio/tools", { body: { api_key, toolkit }, signal }),
     /** The Composio preset's toolkit picker: the toolkits Composio offers, by name (the owner's session alone). */
-    composioToolkits: (api_key: string) => call<{ toolkits: ComposioToolkit[] }>("POST", "/settings/mcp-servers/composio/toolkits", { body: { api_key } }),
+    composioToolkits: (api_key: string, signal?: AbortSignal) => call<{ toolkits: ComposioToolkit[] }>("POST", "/settings/mcp-servers/composio/toolkits", { body: { api_key }, signal }),
     /** Has Composio make a managed MCP server for the chosen actions and saves it as an MCP server; `connect_url` when the
      *  toolkit needs the person's account connected; `not_served` names chosen actions Composio's server left out. */
     saveComposioServer: (name: string, api_key: string, toolkit: string, tools: string[]) => call<{ server: McpServer; connect_url?: string; not_served?: string[]; composio?: { removed: boolean; note: string } }>("PUT", `${mcpServer(name)}/composio`, { body: { api_key, toolkit, tools } }),

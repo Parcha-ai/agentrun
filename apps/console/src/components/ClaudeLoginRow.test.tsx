@@ -1,6 +1,6 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { KeysPage } from "./KeysPage";
 import { ClaudeLoginRow } from "./ClaudeLoginRow";
 import { ANTHROPIC_KEY_CREDITS, LOGIN_ROW } from "@/lib/claudeLogin";
@@ -37,7 +37,7 @@ function server(read: () => Answer | Promise<Answer>, write: (call: Call) => Ans
 }
 
 let root: ReturnType<typeof createRoot> | undefined;
-afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; });
+afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; vi.useRealTimers(); });
 
 async function open(v2: ReturnType<typeof createClient>, onChange?: () => void, available?: boolean) {
   const host = document.body.appendChild(document.createElement("div"));
@@ -198,18 +198,40 @@ describe("Settings → Model keys, Claude Code's login on this machine", () => {
   });
 
   it("switched off while it waits for a sign-in it started: the row goes, and no poll or return to the page asks again", async () => {
-    const SIGNED_OUT: ClaudeLoginView = { ...OFF, state: "signed_out", can_start: true };
-    const { v2, calls } = server(() => SIGNED_OUT, () => SIGNED_OUT);
+    // Signed out, then the sign-in the row starts waits for the browser, so the row polls (it polls only then).
+    let view: ClaudeLoginView = { ...OFF, state: "signed_out", can_start: true };
+    const { v2, calls } = server(() => view, () => (view = { ...view, sign_in: { state: "waiting", started_at: STARTED_AT, limit_ms: 600_000 } }));
+    // The poll runs on a fake clock, stepped past its interval instead of slept through. setTimeout stays real for settle().
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     const page = await open(v2, undefined, true);
     await page.click(/Open the CLI's sign-in here/);
+    const reads = () => calls.filter((call) => call.method === "GET" && call.path === "/v2/settings/claude-login").length;
+    // Still on, a step past the poll's interval reads the status: the same step below would reach a poll left running.
+    const polled = reads();
+    await act(async () => { vi.advanceTimersByTime(2_500); });
+    await page.settle();
+    expect(reads()).toBeGreaterThan(polled);
     act(() => root!.render(createElement(KeysPage, { v2, writable: true, plan: createElement(ClaudeLoginRow, { v2, writable: true, available: false }) })));
     await page.settle();
-    const reads = () => calls.filter((call) => call.method === "GET" && call.path === "/v2/settings/claude-login").length;
+    expect(vi.getTimerCount()).toBe(0);
     const before = reads();
-    await act(async () => { window.dispatchEvent(new Event("focus")); await new Promise((r) => setTimeout(r, 2_500)); });
+    await act(async () => { window.dispatchEvent(new Event("focus")); vi.advanceTimersByTime(2_500); });
     await page.settle();
     expect(page.row()).toBeNull();
     expect(reads()).toBe(before);
+  });
+
+  it("switched off while a turn-on is out: its answer, landing after, never puts the row back", async () => {
+    let land: (view: ClaudeLoginView) => void = () => {};
+    const { v2 } = server(() => OFF, () => new Promise<ClaudeLoginView>((resolve) => { land = resolve; }));
+    const page = await open(v2, undefined, true);
+    await act(async () => { page.row()!.querySelector<HTMLInputElement>('input[name="only_me"]')!.click(); });
+    await act(async () => { page.button(/^Turn on$/)!.click(); });
+    act(() => root!.render(createElement(KeysPage, { v2, writable: true, plan: createElement(ClaudeLoginRow, { v2, writable: true, available: false }) })));
+    await page.settle();
+    await act(async () => { land({ ...OFF, state: "signed_out" }); });
+    await page.settle();
+    expect(page.row()).toBeNull();
   });
 
   it("switched off on the server (404): no row; the Anthropic key says which plans include API credits", async () => {

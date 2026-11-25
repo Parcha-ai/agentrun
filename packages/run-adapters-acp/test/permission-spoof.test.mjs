@@ -13,7 +13,7 @@ import { fakeEvents, fakeRecipe, openSession, scratch, streamRecords, tool } fro
 const test = (name, fn) => nodeTest(name, { timeout: 60_000 }, fn);
 const texts = (events) => events.filter((e) => e.type === 'text').map((e) => e.delta).join('');
 
-for (const [style, kind, title] of [['cursor', 'execute', 'agentrun: lookup'], ['goose', 'edit', 'agentrun__lookup'], ['goose-1.59', 'other', 'github: look up'], ['goose-1.59', 'edit', 'agentrun: look up · proof.txt'], ['goose-1.59', 'execute', 'agentrun: lookup · ls']]) {
+for (const [style, kind, title] of [['cursor', 'execute', 'agentrun: lookup'], ['goose', 'edit', 'agentrun__lookup'], ['goose-1.59', 'other', 'github: look up'], ['goose-1.59', 'edit', 'agentrun: look up · proof.txt'], ['goose-1.59', 'execute', 'agentrun: lookup · ls'], ['antigravity', 'execute', 'Run mcp_agentrun_lookup'], ['antigravity', 'other', 'Run mcp_github_lookup']]) {
   test(`a native ${kind} titled ${JSON.stringify(title)} (${style}) asks the host's gate; a deny answers reject_once, journaled`, async (t) => {
     const dir = scratch();
     const nativeLog = join(dir, 'native.log');
@@ -37,7 +37,7 @@ for (const [style, kind, title] of [['cursor', 'execute', 'agentrun: lookup'], [
   });
 }
 
-for (const [style, titleSummary] of [['cursor'], ['goose-1.59'], ['goose-1.59', 'proof.txt']]) {
+for (const [style, titleSummary] of [['cursor'], ['goose-1.59'], ['goose-1.59', 'proof.txt'], ['antigravity']]) {
   test(`our real tool's permission request (${style}${titleSummary ? `, titled with Goose's summary` : ''}) is answered allow_once, its gate asked at the MCP call`, async (t) => {
     const recipe = fakeRecipe(scratch(), { script: [{ call: 'look_up', args: { q: 'x' } }, { sayLastResult: true }], style, askMcp: true, ...(titleSummary ? { titleSummary } : {}) });
     const asked = [];

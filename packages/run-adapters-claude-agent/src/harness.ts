@@ -38,7 +38,7 @@ import { MessageQueue } from './inbox.js';
 import { sandboxSpawn } from './spawn.js';
 import { MCP_OUTPUT_TOKENS, toolServer } from './host/tool-server.js';
 import { releasedSearches, resumeDanglingCalls, resumeDanglingSearches, searchKey, WEB_SEARCH } from './resume.js';
-import { JournalSessionStore } from './store.js';
+import { JournalSessionStore, type BarrierTimers } from './store.js';
 import { MCP_SERVER, TranscriptBuilder, type TurnEnd } from './transcript.js';
 import { CLAUDE_AGENT_CLI_SKILL_NAMES } from './cli-names.js';
 import { assertAgentSdkVersion, CLAUDE_VM_EXECUTABLE } from './versions.js';
@@ -240,8 +240,11 @@ export interface ClaudeCodeHarnessOptions {
   name?: string;
   /** The Agent SDK module. Default: `import('@anthropic-ai/claude-agent-sdk')` on the first drive, after its version is checked against the pin. */
   sdk?: ClaudeAgentSdk;
-  /** How long a `never` tool waits for its call to reach the log before it is refused. Default 10 s. */
+  /** How long a `never` tool waits for its call to reach the log before it is refused, from the last stream event of the
+   *  message that made the call (the SDK mirrors a message's lines once it ends). Default 10 s. */
   barrierMs?: number;
+  /** The timers that wait runs on. Default the system's; a test passes a fake clock. */
+  barrierTimers?: BarrierTimers;
   /**
    * Hold mirrored transcript lines this long so they share journal batches
    * (fewer events per turn). A barrier or a turn's end sends them at once.
@@ -504,7 +507,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
       const { query } = await loadSdk();
       const journal = new NativeJournal(ctx);
       const records = await journal.read();
-      const store = new JournalSessionStore(journal, { records, coalesceMs: options.coalesceMs ?? 150 });
+      const store = new JournalSessionStore(journal, { records, coalesceMs: options.coalesceMs ?? 150, ...(options.barrierTimers ? { timers: options.barrierTimers } : {}) });
       // The handler reads the credential per request, in the drive's async
       // context: on a serverless function the OIDC token comes from the request
       // that started the drive.
@@ -952,6 +955,9 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
               ctx.halt?.(mirrorUnmapped('a batch the Agent SDK could not keep in the log'));
               throw ctx.signal.reason ?? mirrorUnmapped('a batch the Agent SDK could not keep in the log');
             }
+            // Each event of a message's stream restarts the barrier's clock for the calls made in it (the mirror sends a
+            // message's lines once the message ends).
+            store.heard(m);
             booking?.observe(m);
             const end = transcript.observe(m);
             // A turn on a login ends once its responses are booked.

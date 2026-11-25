@@ -5,10 +5,13 @@
 //   - censusCut cuts a file by its entry only while its bytes are the ones counted, and withholds ("unreadable") a file
 //     with no entry, changed bytes, a marker, or ranges that don't fall on the text's characters;
 //   - censusAfter keeps, over an earlier end's census, only the files both ends counted byte for byte, with both cuts;
-//   - the store: a launch takes CENSUS_PENDING with its first sealed bytes; an end writes its census in the erased
-//     secrets' place only when it was made under those bytes, else CENSUS_UNSCANNED; an end with none (a runner from
-//     before the census) leaves CENSUS_PENDING; a message's seal over that turns it to CENSUS_UNSCANNED, and over a
-//     census keeps it; every write that seals anew moves the run's list mark, so its kept listing is built again.
+//   - the store: a launch's census is null until an end writes one; an end writes its census in the erased secrets' place
+//     only when it was made under those bytes, else CENSUS_UNSCANNED; a message's seal keeps the census as the last end
+//     wrote it; every write that seals anew moves the run's list mark, so its kept listing is built again;
+//   - Postgres migration 0029 settles each "pending" 0027 left as this build reads it and drops 0027's trigger; a
+//     SQLite server open settles each one 0.1.0-beta.57 left the same way;
+//   - on both, an update that erases a launch's sealed bytes and leaves its census null (an earlier runner's end) writes
+//     "unscanned".
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -20,13 +23,15 @@ import { test } from "node:test";
 import { redactSecrets } from "../dist/learn/secrets.js";
 import { CENSUS_JSON_MAX, CENSUS_RANGES_MAX, censusAfter, censusCut, censusOf, fileMac, pathMac } from "../dist/run-census.js";
 import { RUN_FILE_CUT_MAX } from "../dist/run-files.js";
-import { censusOnSeal } from "../dist/store/sqlite/run-launch.js";
 import { openSqliteStore } from "../dist/store/sqlite/store.js";
 import { localWorkspace } from "../dist/workspace/index.js";
 import { agentWithRevision, storeOn, T0 } from "./store-helpers.mjs";
-import { client, dropSchema, freshSchema, PG_URL, postgresOnly, raw, sqliteOnly } from "./store-target.mjs";
+import { client, dropSchema, freshSchema, PG_URL, postgresOnly, sqliteOnly } from "./store-target.mjs";
 
-const { CENSUS_PENDING, CENSUS_UNSCANNED } = await import("../dist/store/index.js");
+const { CENSUS_UNSCANNED } = await import("../dist/store/index.js");
+/** The census 0027 gave a launch from its first sealed bytes until an end counted them. This build writes none; one left
+ *  over is text it doesn't read. */
+const PENDING = JSON.stringify("pending");
 
 const KEY = `not-a-secret-${"census-model-key"}-7c41e2`;
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -92,7 +97,7 @@ test("censusCut withholds a file with no entry, changed bytes, a marker, a damag
   assert.equal(readAfter(good, "a.txt", text), "ñ=[redacted]\n", "the counted file is cut");
   assert.equal(readAfter(good, "b.txt", text), "withheld", "no entry: written after the end, or past the census's caps");
   assert.equal(readAfter(good, "a.txt", `${text}more\n`), "withheld", "changed since it was counted");
-  for (const marker of [CENSUS_UNSCANNED, CENSUS_PENDING, "not json", JSON.stringify({ v: 2, files: {} }), JSON.stringify({ v: 1 })]) assert.equal(readAfter(marker, "a.txt", text), "withheld", marker);
+  for (const marker of [CENSUS_UNSCANNED, PENDING, "not json", JSON.stringify({ v: 2, files: {} }), JSON.stringify({ v: 1 })]) assert.equal(readAfter(marker, "a.txt", text), "withheld", marker);
   const forged = (cut) => JSON.stringify({ v: 1, files: { [keyOf("a.txt")]: { mac: mac(bytes), cut } } });
   assert.equal(readAfter(forged([[1, 3]]), "a.txt", text), "withheld", "a range splitting ñ's two bytes");
   assert.equal(readAfter(forged([[from, bytes.length + 1]]), "a.txt", text), "withheld", "a range past the end");
@@ -105,26 +110,15 @@ test("censusCut withholds a file with no entry, changed bytes, a marker, a damag
 test("censusAfter keeps, over an earlier end's census, only the files both ends counted byte for byte, with both cuts; a marker before it gives none", () => {
   const next = { v: 1, files: { "same.txt": { mac: "aa", cut: [[10, 20]] }, "changed.txt": { mac: "bb", cut: [] }, "new.txt": { mac: "cc", cut: [] }, "whole.txt": { mac: "dd", cut: [[0, 2]] } } };
   assert.deepEqual(censusAfter(null, next), next, "no census before: this end's");
-  assert.deepEqual(censusAfter(CENSUS_PENDING, next), next, "pending before: this end's");
   assert.equal(censusAfter(CENSUS_UNSCANNED, next), undefined, "a marker before: nothing says where the earlier secrets sat");
+  assert.equal(censusAfter(PENDING, next), undefined, "a \"pending\" left over: no census this build reads, so the end writes the marker");
   assert.equal(censusAfter("damaged", next), undefined);
   const before = JSON.stringify({ v: 1, files: { "same.txt": { mac: "aa", cut: [[0, 5], [15, 30]] }, "changed.txt": { mac: "b0", cut: [] }, "whole.txt": { mac: "dd", cut: "whole" } } });
   assert.deepEqual(censusAfter(before, next), { v: 1, files: { "same.txt": { mac: "aa", cut: [[0, 5], [10, 30]] }, "whole.txt": { mac: "dd", cut: "whole" } } }, "a changed file and a new one have no entry: they may hold what the earlier turn was handed");
 });
 
-test("censusOnSeal: pending with a launch's first sealed bytes, unscanned over a pending an end erased with no census, an earlier census kept", () => {
-  const bytes = new Uint8Array([1, 2, 3]);
-  const census = JSON.stringify({ v: 1, files: {} });
-  assert.equal(censusOnSeal(null, null, bytes), CENSUS_PENDING);
-  assert.equal(censusOnSeal(null, null, null), null, "nothing sealed: no census");
-  assert.equal(censusOnSeal(CENSUS_PENDING, bytes, bytes), CENSUS_PENDING, "a live launch sealed anew: still uncounted");
-  assert.equal(censusOnSeal(CENSUS_PENDING, null, bytes), CENSUS_UNSCANNED, "an end erased them and wrote no census");
-  assert.equal(censusOnSeal(census, null, bytes), census, "an earlier end's census stays: it says where that turn's sat");
-  assert.equal(censusOnSeal(CENSUS_UNSCANNED, null, bytes), CENSUS_UNSCANNED);
-});
-
-test("the store: a sealed launch is pending; an end writes its census only when made under the bytes it erases, else unscanned; an end with none leaves pending; a message's seal over pending makes it unscanned", async (t) => {
-  const { store, file } = await storeOn(t);
+test("the store: a sealed launch has no census until an end writes one, made under the bytes it erases, else unscanned; a message's seal keeps what the last end wrote", async (t) => {
+  const { store } = await storeOn(t);
   await agentWithRevision(store);
   const sealedA = new Uint8Array([7, 7, 7, 1]);
   const sealedB = new Uint8Array([7, 7, 7, 2]);
@@ -139,7 +133,7 @@ test("the store: a sealed launch is pending; an end writes its census only when 
   assert.equal((await launch("none")).census, null, "an end with nothing sealed writes none");
 
   await make("counted", sealedA);
-  assert.equal((await launch("counted")).census, CENSUS_PENDING, "sealed at its start: pending");
+  assert.equal((await launch("counted")).census, null, "sealed at its start: no end counted it yet");
   await end("counted", { census: { json: census, sealed: sealedA } });
   assert.deepEqual([(await launch("counted")).sealed, (await launch("counted")).census], [null, census], "erased, its census in their place");
 
@@ -151,20 +145,12 @@ test("the store: a sealed launch is pending; an end writes its census only when 
   await end("no-census");
   assert.deepEqual([(await launch("no-census")).sealed, (await launch("no-census")).census], [null, CENSUS_UNSCANNED], "an end with none: unscanned");
 
-  // A runner from before the census erases the sealed bytes and writes nothing else: pending stays, read as uncounted. A
-  // message sealing new secrets over that turns it to unscanned, so its next turn's reads still withhold that end's files.
-  await make("old-runner", sealedA);
-  await store.runs.update(await store.claim("old-runner", "runner-a", { leaseMs: 30_000 }), { state: "ended", summary: "Done." });
-  const db = await raw(file);
-  try {
-    // What that runner's end wrote of the launch: its sealed bytes erased, nothing else.
-    await db.run("UPDATE run_launch SET sealed = NULL, census = ? WHERE run_id = ?", CENSUS_PENDING, "old-runner");
-  } finally {
-    await db.close();
-  }
-  assert.deepEqual([(await launch("old-runner")).sealed, (await launch("old-runner")).census], [null, CENSUS_PENDING], "pending with nothing sealed: an end erased them uncounted");
-  await store.runs.reopen("old-runner", { kind: "steer", body: { text: "More." } }, { launchSealed: sealedB });
-  assert.deepEqual([(await launch("old-runner")).sealed, (await launch("old-runner")).census], [sealedB, CENSUS_UNSCANNED], "a message's seal over it: unscanned, so that end's files stay withheld");
+  // A message's seal writes the sealed bytes alone: over the marker it stays, so that end's files stay withheld; on a
+  // launch that never held any, there is still no census until its end.
+  await store.runs.reopen("no-census", { kind: "steer", body: { text: "More." } }, { launchSealed: sealedB });
+  assert.deepEqual([(await launch("no-census")).sealed, (await launch("no-census")).census], [sealedB, CENSUS_UNSCANNED], "a message's seal over the marker keeps it");
+  await store.runs.reopen("none", { kind: "steer", body: { text: "More." } }, { launchSealed: sealedB });
+  assert.deepEqual([(await launch("none")).sealed, (await launch("none")).census], [sealedB, null], "a first seal by a message: no census until an end");
 
   // A run's cut grows by what its caller hands it only in a message's write (runs.command, runs.reopen), and that write
   // inserts the message's command, which moves the run's list mark (commands_list_moved): its kept listing, cut of the
@@ -188,7 +174,7 @@ async function liveAndPlain(store) {
   await store.runs.create({ id: "plain", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Answer." } }, sealed: null });
 }
 
-test("a store an earlier build of this version made (no run_launch.census): a runner waits for the server, which adds it and marks each launch holding sealed bytes pending", sqliteOnly("an earlier build's store file"), async (t) => {
+test("a store an earlier build of this version made (no run_launch.census): a runner waits for the server, which adds it, null on every launch until an end writes one", sqliteOnly("an earlier build's store file"), async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "store-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const file = join(dir, "store.sqlite");
@@ -197,6 +183,7 @@ test("a store an earlier build of this version made (no run_launch.census): a ru
   await first.close();
   const db = new DatabaseSync(file);
   try {
+    db.exec("DROP TRIGGER IF EXISTS run_launch_census_erased");
     db.exec("ALTER TABLE run_launch DROP COLUMN census");
   } finally {
     db.close();
@@ -204,14 +191,65 @@ test("a store an earlier build of this version made (no run_launch.census): a ru
   await assert.rejects(openSqliteStore({ file, role: "runner" }), /Start the AgentRun server to add each run's census before opening a runner/);
   const second = await openSqliteStore({ file, role: "server", now: () => T0 });
   try {
-    assert.equal((await second.runs.launch("live")).census, CENSUS_PENDING, "a launch holding sealed bytes: pending, so its end counts them or its files read as uncounted");
+    assert.equal((await second.runs.launch("live")).census, null, "a launch holding sealed bytes: no end counted them yet, so its end does");
     assert.equal((await second.runs.launch("plain")).census, null, "one holding none: no census");
   } finally {
     await second.close();
   }
 });
 
-test("migration run_launch_census adds run_launch.census where it is missing and marks each launch holding sealed bytes pending", postgresOnly("the Postgres migrations"), async (t) => {
+test("a store an earlier release left with \"pending\" censuses: the server settles each as this build reads it, null on a launch still holding sealed bytes, unscanned on one an end erased, and keeps a census an end wrote", sqliteOnly("an earlier release's store file"), async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "store-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, "store.sqlite");
+  const first = await openSqliteStore({ file, role: "server", now: () => T0 });
+  await liveAndPlain(first);
+  await first.runs.create({ id: "counted", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Answer." } }, sealed: new Uint8Array([7, 7, 7, 2]) });
+  await first.close();
+  // As 0.1.0-beta.57 left them: "pending" on each launch that held sealed bytes, kept after an end erased them, and no
+  // trigger (this build's server makes it).
+  const counted = JSON.stringify({ v: 1, files: {} });
+  const db = new DatabaseSync(file);
+  try {
+    db.exec("DROP TRIGGER run_launch_census_erased");
+    db.prepare("UPDATE run_launch SET census = ? WHERE run_id IN ('live', 'plain')").run(PENDING);
+    db.prepare("UPDATE run_launch SET census = ? WHERE run_id = 'counted'").run(counted);
+  } finally {
+    db.close();
+  }
+  const second = await openSqliteStore({ file, role: "server", now: () => T0 });
+  try {
+    assert.equal((await second.runs.launch("live")).census, null, "a launch still holding sealed bytes: no end counted them yet, so its end does");
+    assert.equal((await second.runs.launch("plain")).census, CENSUS_UNSCANNED, "one an end erased: nothing counted them, so its files are withheld");
+    assert.equal((await second.runs.launch("counted")).census, counted, "a census an end wrote is kept");
+  } finally {
+    await second.close();
+  }
+});
+
+test("an end that erases a launch's sealed bytes and names no census (a runner of 0.1.0-beta.56 or earlier, still live beside this server) leaves it unscanned: its files are withheld, never read cut of the server's values alone; a write that names one keeps it", sqliteOnly("a raw write to the store file"), async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "store-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, "store.sqlite");
+  const store = await openSqliteStore({ file, role: "server", now: () => T0 });
+  await liveAndPlain(store);
+  await store.runs.create({ id: "counted", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Answer." } }, sealed: new Uint8Array([7, 7, 7, 3]) });
+  await store.close();
+  const census = JSON.stringify({ v: 1, files: {} });
+  const db = new DatabaseSync(file);
+  try {
+    db.exec("UPDATE run_launch SET sealed = NULL WHERE run_id = 'live'");
+    db.prepare("UPDATE run_launch SET census = ?, sealed = NULL WHERE run_id = 'counted'").run(census);
+    const at = (id) => ({ ...db.prepare("SELECT sealed IS NOT NULL AS held, census FROM run_launch WHERE run_id = ?").get(id) });
+    assert.deepEqual(at("live"), { held: 0, census: CENSUS_UNSCANNED }, "erased with no census: unscanned");
+    assert.deepEqual(at("counted"), { held: 0, census }, "an end that names its census keeps it");
+    assert.deepEqual(at("plain"), { held: 0, census: null }, "a launch that held none: untouched");
+  } finally {
+    db.close();
+  }
+});
+
+test("migrations run_launch_census and run_launch_census_settle add run_launch.census where it is missing, null on every launch until an end writes one", postgresOnly("the Postgres migrations"), async (t) => {
   const { migrationsIn, openPostgresStore } = await import("../dist/store/index.js");
   const schema = await freshSchema();
   t.after(() => dropSchema(schema));
@@ -230,7 +268,7 @@ test("migration run_launch_census adds run_launch.census where it is missing and
   }
   const second = await openPostgresStore({ url: PG_URL, schema });
   try {
-    assert.equal((await second.runs.launch("live")).census, CENSUS_PENDING);
+    assert.equal((await second.runs.launch("live")).census, null, "a launch holding sealed bytes: no end counted them yet");
     assert.equal((await second.runs.launch("plain")).census, null);
   } finally {
     await second.close();
@@ -285,39 +323,71 @@ test("a census stays small: a file past CENSUS_RANGES_MAX cuts is cut whole, ent
   assert.equal(readAfter(huge, "a.txt", "a"), "withheld", "a census past CENSUS_JSON_MAX is no census");
 });
 
-test("Postgres holds the census rule for an earlier build's writes during a rolling deploy: its launch with sealed bytes takes pending, its seal over a pending an end erased turns it unscanned, and this build's census stays", postgresOnly("the run_launch census trigger"), async (t) => {
-  const { openPostgresStore } = await import("../dist/store/index.js");
+test("migration run_launch_census_settle settles each \"pending\" 0027 left as this build reads it, and drops 0027's trigger", postgresOnly("the Postgres migrations"), async (t) => {
+  const { migrationsIn, openPostgresStore } = await import("../dist/store/index.js");
   const schema = await freshSchema();
   t.after(() => dropSchema(schema));
-  const store = await openPostgresStore({ url: PG_URL, schema });
+  const first = await openPostgresStore({ url: PG_URL, schema });
   try {
-    await liveAndPlain(store);
-    await store.runs.create({ id: "older", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Answer." } }, sealed: null });
+    await liveAndPlain(first);
+    await first.runs.create({ id: "counted", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Answer." } }, sealed: new Uint8Array([7, 7, 7, 9]) });
   } finally {
-    await store.close();
+    await first.close();
   }
+  const before = migrationsIn().find((one) => one.name === "run_launch_census");
+  const settle = migrationsIn().find((one) => one.name === "run_launch_census_settle");
+  assert.ok(before && settle && settle.version > before.version, "run_launch_census_settle ships after run_launch_census");
+  assert.equal(settle.breaking, true, "it raises the runner floor: each runner of an earlier build stops at its next floor read");
   const census = JSON.stringify({ v: 1, files: {} });
-  const c = await client(schema);
-  const at = async (id) => (await c.query("SELECT sealed IS NOT NULL AS held, census FROM run_launch WHERE run_id = $1", [id])).rows[0];
+  const at = async (c, id) => (await c.query("SELECT sealed IS NOT NULL AS held, census FROM run_launch WHERE run_id = $1", [id])).rows[0];
+  // 0027's trigger and function in this schema alone: other tests' schemas share the database.
+  const held = async (c) =>
+    Number(
+      (
+        await c.query(
+          `SELECT (SELECT count(*) FROM pg_trigger t JOIN pg_class r ON r.oid = t.tgrelid JOIN pg_namespace n ON n.oid = r.relnamespace WHERE n.nspname = $1 AND t.tgname = 'run_launch_census_on_seal')
+                + (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = $1 AND p.proname = 'run_launch_census_on_seal') AS n`,
+          [schema],
+        )
+      ).rows[0].n,
+    );
+  let c = await client(schema);
   try {
-    // An earlier server's insert names no census.
-    await c.query("DELETE FROM run_launch WHERE run_id = 'older'");
-    await c.query("INSERT INTO run_launch (run_id, body, sealed, created_at) VALUES ('older', '{}', $1, 1)", [Buffer.from([7, 7, 7, 3])]);
-    assert.deepEqual(await at("older"), { held: true, census: CENSUS_PENDING }, "an earlier server's launch holding sealed bytes: pending");
-    // An earlier runner's end erases them and writes no census: still pending, read as uncounted.
-    await c.query("UPDATE run_launch SET sealed = NULL WHERE run_id = 'older'");
-    assert.deepEqual(await at("older"), { held: false, census: CENSUS_PENDING });
-    // An earlier server's message seals anew over it: that end counted nothing.
-    await c.query("UPDATE run_launch SET sealed = $1 WHERE run_id = 'older'", [Buffer.from([7, 7, 7, 4])]);
-    assert.deepEqual(await at("older"), { held: true, census: CENSUS_UNSCANNED }, "unscanned, not pending: the files that end left stay withheld");
-    // An earlier server's seal on a launch that never held any: pending.
+    assert.equal(await held(c), 0, "at this build's schema: no trigger, no function");
+    // The schema as 0027 left it: the ledger past it gone, and 0027 run again (it is written to be), so its backfill marks
+    // "live" pending and its trigger is back.
+    await c.query("DELETE FROM schema_migrations WHERE version > $1", [before.version]);
+    await c.query(before.sql);
+    await c.query("UPDATE store_meta SET schema_version = $1 WHERE singleton = 1", [before.version]);
+    assert.equal(await held(c), 2, "0027's trigger and function");
+    assert.deepEqual(await at(c, "live"), { held: true, census: PENDING }, "a launch holding sealed bytes: pending");
+    // An earlier server seals "plain", and an earlier runner's end erases its bytes, writing no census: pending, erased.
     await c.query("UPDATE run_launch SET sealed = $1 WHERE run_id = 'plain'", [Buffer.from([7, 7, 7, 5])]);
-    assert.deepEqual(await at("plain"), { held: true, census: CENSUS_PENDING });
-    // This build's end writes its census as it erases; a later seal keeps it, as censusOnSeal does.
-    await c.query("UPDATE run_launch SET census = $1, sealed = NULL WHERE run_id = 'live'", [census]);
-    assert.deepEqual(await at("live"), { held: false, census });
+    await c.query("UPDATE run_launch SET sealed = NULL WHERE run_id = 'plain'");
+    assert.deepEqual(await at(c, "plain"), { held: false, census: PENDING });
+    // An end that counted: its census in the erased bytes' place.
+    await c.query("UPDATE run_launch SET census = $1, sealed = NULL WHERE run_id = 'counted'", [census]);
+  } finally {
+    await c.end();
+  }
+  const second = await openPostgresStore({ url: PG_URL, schema });
+  try {
+    assert.equal((await second.runs.launch("live")).census, null, "pending on a launch still holding its bytes: null, its end counts them");
+    assert.equal((await second.runs.launch("plain")).census, CENSUS_UNSCANNED, "pending on one an end erased: unscanned, its files withheld");
+    assert.equal((await second.runs.launch("counted")).census, census, "an end's census stays");
+  } finally {
+    await second.close();
+  }
+  c = await client(schema);
+  try {
+    assert.equal(await held(c), 0, "0027's trigger and function are gone");
+    // With no trigger, a seal that names no census leaves it null (0027's trigger made it pending).
     await c.query("UPDATE run_launch SET sealed = $1 WHERE run_id = 'live'", [Buffer.from([7, 7, 7, 6])]);
-    assert.deepEqual(await at("live"), { held: true, census }, "an earlier end's census stays");
+    assert.deepEqual(await at(c, "live"), { held: true, census: null });
+    // An earlier runner's end (0.1.0-beta.51 to beta.56, draining after the floor rose) erases the bytes and names no
+    // census: unscanned, its files withheld, never read cut of the server's values alone.
+    await c.query("UPDATE run_launch SET sealed = NULL WHERE run_id = 'live'");
+    assert.deepEqual(await at(c, "live"), { held: false, census: CENSUS_UNSCANNED });
   } finally {
     await c.end();
   }
