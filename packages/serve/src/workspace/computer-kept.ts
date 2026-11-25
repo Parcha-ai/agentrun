@@ -13,7 +13,8 @@
 // removes the mount credential of a run folder it held on Archil, then marks the row ended, so the resume says why its
 // computer is new; a row left ending (its process died, or its delete or remove failed or hung mid-way) is ended again at
 // the janitor's next pass, with no remove once the credential's ttl is past its time. A row whose run is final is
-// removed, its computer deleted first.
+// removed, its computer deleted first: by the run's end, once the row reads ended (forgetEnded), so a follow-up never
+// says that lapse again, and otherwise by the janitor's pass (none runs under --faux).
 //
 // A sandbox's run folder is the run's either way (bound from this machine, or on Archil, as before); what the keep adds is
 // the rest of the machine (its other files, its processes). A synced folder's delta lands on the disk at the park; what
@@ -441,6 +442,22 @@ export async function finishedKept(settings: Pick<KeptSettings, "replaceIf">, ru
     }
   }
   return settings.replaceIf(keptKeyOf(runId), rowOf(kept, "ending"), rowOf(kept, "ended")).catch(() => false);
+}
+
+/** Removes `runId`'s kept row at the end of the run (run-end-computers.ts) once it reads ended, for the claim at `epoch`
+ *  that ended the run: its machine is gone and its end finished, and the resume it was ended for (to say why its computer
+ *  is new) has come and gone, so a follow-up that queues the run again never reads it and never says that lapse again.
+ *  Only a row kept at or before `epoch` (a later claim's keep is that claim's), and only while it still reads as read.
+ *  A row left ending is left for its end at its time. True when removed. Never throws. */
+export async function forgetEnded(settings: Pick<KeptSettings, "get" | "removeIf">, runId: string, epoch: number): Promise<boolean> {
+  try {
+    const was = await settings.get(keptKeyOf(runId));
+    const kept = keptOf(was);
+    if (kept?.ended !== true || kept.epoch > epoch) return false;
+    return await settings.removeIf(keptKeyOf(runId), was);
+  } catch {
+    return false;
+  }
 }
 
 /** Removes run `runId`'s Archil mount credentials of `kept`'s claim epoch and earlier, by their names, on the disk its

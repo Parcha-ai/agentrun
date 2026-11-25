@@ -1070,7 +1070,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // A computer that replaced an earlier claim's: the model is told once, on its next request (the loop's computer note).
     ...(computer.replaced ? { computerNote: computerReplacedNote(computer.replaced) } : {}),
     // A desktop or a phone that holds none of the run's files: the model is told once in the run where they are.
-    ...(tools.apart ? { computerFilesNote: computerFilesNote(tools.apart) } : {}),
+    ...(tools.apart ? { computerFilesNote: computerFilesNote({ ...tools.apart, outlives: computer.outlives === true }) } : {}),
     workRoot: root,
     // The end's cost: its booking's, by the one rule every reader of an ended run's cost takes (metrics.ts runCostOf):
     // every model request its session's proxy booked (pi's own answers and its side calls: a learned workflow's nodes,

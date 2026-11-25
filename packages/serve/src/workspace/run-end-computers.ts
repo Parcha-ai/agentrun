@@ -24,7 +24,17 @@
 // a janitor's pass, so a follow-up would keep nothing, and no retry here would find the machine to end it by. A row
 // whose machine this list never showed (another runner's engine) stays ending for that runner's end. A
 // row a later claim wrote or is taking back (a follow-up that queued the run again while this end
-// waited on the store) is that claim's: the mark leaves it as it stands, and the delete leaves its machine.
+// waited on the store) is that claim's: the mark leaves it as it stands, and the delete leaves its machine. A row
+// that reads ended once the deletes are done is removed (forgetEnded): the resume it was ended for came and went, so a
+// follow-up that queues the run again reads no keep and never says that lapse again, with no janitor's pass to wait for.
+//
+// A later claim that took the run before this end got to it (a follow-up queued the stopped run again, claimed it and
+// took the kept machine back, the row gone) holds a machine labelled at the epoch of the claim that made it, at or below
+// the ending claim's: deleted here, it would go from under that claim's turn. So an end whose run a later claim has
+// taken (its epoch moved past the end's own move, run-patch.ts) lets nothing go, and leaves the kept row as it reads:
+// every machine left is that claim's to let go, at its own end or its launch (releaseOlderClaims). Read before the mark
+// and again after it: a claim takes a row only after its claim, so one not yet there once the row reads ending, ended or
+// gone can no longer take a machine of this end's.
 // A machine kept on Archil has its park's mount credential removed before its row is marked ended
 // (computer-janitor.ts keptMountRevoke, as the janitor's kept pass removes it): an ended row is one no janitor pass
 // removes a credential for, so one marked ended first would leave it valid for its ttl with no machine. A remove that
@@ -37,7 +47,7 @@ import type { Store } from "../store/index.js";
 import { settingOf } from "./computer-for-claim.js";
 import type { ComputerDeps } from "./computer-deps.js";
 import { keptMountRevoke } from "./computer-janitor.js";
-import { endingKept, finishedKept, type KeptMountRevoke } from "./computer-kept.js";
+import { endingKept, finishedKept, forgetEnded, type KeptMountRevoke } from "./computer-kept.js";
 import { storeLedger } from "./computer-ledger.js";
 import { type ComputerSetting, providerKeys } from "./resolve-computer.js";
 import { endingDeletes, intervalWrites } from "./computer-intervals.js";
@@ -172,8 +182,18 @@ export function runEndComputers(deps: RunEndComputersDeps): (claim: { readonly r
     // A throw from here on is the vendor's or the daemon's (Docker's architecture asked): asked again.
     return endingDeletes(await make(options.options, { ledger: storeLedger(store.computerLedger, entry.id) }), entry.id, writes);
   };
+  /** Whether a later claim took run `runId` since the claim at `epoch` ended it: that end moved the run's epoch once past
+   *  the claim's (run-patch.ts), and only a claim (or its release) moves it again. Said once in the log when so. A run
+   *  gone or a read that fails says no: the deletes below are fenced by the end's epoch all the same. */
+  const movedOn = async (runId: string, epoch: number): Promise<boolean> => {
+    const run = await store.runs.get(runId).catch(() => undefined);
+    if (!run || run.epoch <= epoch + 1) return false;
+    log(`run ${runId}'s end at claim ${epoch} lets no computer go: a later claim took the run again and may hold one of them, so they are that claim's to let go`);
+    return true;
+  };
   return async ({ runId, epoch }) => {
     if (epoch <= 1) return;
+    if (await movedOn(runId, epoch)) return;
     const bound = deps.timeoutMs ?? RUN_END_COMPUTERS_MS;
     const signal = AbortSignal.timeout(bound);
     let said = false;
@@ -192,6 +212,7 @@ export function runEndComputers(deps: RunEndComputersDeps): (claim: { readonly r
       log(`run ${runId} is over, but its kept computer's row could not be marked ending (${marked.why}): ${marked.id === undefined ? "no computer of the run is let go here, and the computer janitor's next sweep ends them" : `${marked.id} is left for its row's time, which ends it`}`);
       if (marked.id === undefined) return;
     }
+    if (await movedOn(runId, epoch)) return;
     /** The kept machine this end leaves: a later claim's, or one whose row no try marked. */
     const spared = marked.kind === "marked" ? undefined : marked.id;
     /** The kept row this end marked ending: ended as soon as its own machine is gone (finishing), so a follow-up's park
@@ -252,5 +273,7 @@ export function runEndComputers(deps: RunEndComputersDeps): (claim: { readonly r
     } finally {
       signal.removeEventListener("abort", stop);
     }
+    // Its row, where it reads ended now (this end finished it, or it was ended before): the run's no more.
+    await forgetEnded(store.settings, runId, epoch);
   };
 }
