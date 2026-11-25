@@ -145,3 +145,8 @@ test('the interpreter hands runNode the original schema, criteria included, and 
   assert.deepEqual(criteriaKeys(seen[0]), ['/definitions/Label/criteria'], 'the runner receives the schema as written');
   await assert.rejects(runWorkflow(wf, {}, { runNode: async () => ({ label: 'wontfix' }) }), (error) => error.code === 'output_invalid');
 });
+
+test('a list where a property map belongs is kept as written, not read as a map', () => {
+  const kept = submitParameters({ type: 'object', properties: [{ type: 'string' }] }).properties.value.properties;
+  assert.deepEqual(kept, [{ type: 'string' }], `a list under properties stays a list: it became ${JSON.stringify(kept)}`);
+});

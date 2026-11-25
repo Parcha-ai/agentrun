@@ -48,6 +48,7 @@ export const SMOKE = {
   '@parcha/agentrun-dsl': 'test/job.test.mjs',
   '@parcha/agentrun-import': 'test/usage.test.mjs',
   '@parcha/agentrun-jev': 'test/adapter.test.mjs',
+  '@parcha/agentrun-web': 'test/fees.test.mjs',
   '@parcha/pi-browser': 'test/dial.test.mjs',
   '@parcha/agentrun-kernel': 'test/kernel.test.mjs',
   '@parcha/agentrun-harness-claude': 'test/names.test.mjs',

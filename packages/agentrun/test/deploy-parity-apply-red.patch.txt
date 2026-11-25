@@ -1,0 +1,13 @@
+diff --git a/packages/serve/src/templates.ts b/packages/serve/src/templates.ts
+index aed937bc1c..a573448ac4 100644
+--- a/packages/serve/src/templates.ts
++++ b/packages/serve/src/templates.ts
+@@ -1311,7 +1311,7 @@ export function compiled(p: Package, parameters: Json, chosen: { harness?: strin
+     name: p.displayName ? filled(p.displayName, parameters) : p.name, description: p.description, instructions: filled(p.instructions, parameters),
+     ...(chosen.harness ? { harness: chosen.harness } : {}), ...(chosen.model ? { model: chosen.model } : {}), ...(chosen.modelTiers && Object.keys(chosen.modelTiers).length ? { model_tiers: chosen.modelTiers } : {}), ...(p.effort ? { thinking: p.effort } : {}),
+     ...(pick ? { computer: pick.computer } : {}), ...(tools ? { tools } : {}), ...(Object.keys(settings).length ? { tool_settings: settings } : {}),
+-    ...(p.learning !== undefined ? { learning: p.learning } : {}), ...(p.budget?.per_run_usd ? { max_cost_usd: p.budget.per_run_usd } : {}), ...(p.budget?.max_requests ? { max_requests: p.budget.max_requests } : {}), skills,
++    ...(p.budget?.per_run_usd ? { max_cost_usd: p.budget.per_run_usd } : {}), ...(p.budget?.max_requests ? { max_requests: p.budget.max_requests } : {}), skills,
+     // The apply's choice: unattended only when it says never (none given: the agent asks).
+     ...(chosen.approvals === "never" ? { approvals: "never" } : {}),
+     // The package's typed input (manifest `inputs`): what each run's input is checked against, and how the model reads it.

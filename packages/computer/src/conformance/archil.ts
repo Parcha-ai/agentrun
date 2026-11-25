@@ -1,7 +1,7 @@
 // The Archil run folder for the mount cases, shared by every remote provider's conformance module: a fresh
 // agents/<agent>/runs/<run>/work on the owner's disk, the mount that reaches it from inside a computer,
-// and its outside, read and written through the disk's object API. The object API is given, or the host's own Archil
-// SDK (the npm package `disk`, not a dependency of this package, imported only here and only when asked): `new Archil({
+// and its outside, read and written through the disk's object API. The object API is given, or Archil's Node SDK (the
+// npm package `disk`, an optional dependency of this package, loaded only here and only when asked): `new Archil({
 // apiKey, region, s3BaseUrl })`, then `disks.get(disk)`, whose disk has getObject, putObject and deleteObject with keys
 // relative to the disk's root, and rejects with the HTTP `status` when there was an answer (404: not there). Every
 // setting is passed to the SDK, so it reads none of its own from the environment.
@@ -12,6 +12,7 @@
 import { randomBytes } from "node:crypto";
 import type { MountKind } from "../mount.js";
 import { ARCHIL_REGION } from "../mount-archil.js";
+import { vendorSdk } from "../vendor-sdk.js";
 import type { RunFolder } from "./types.js";
 
 /** The settings of the Archil mount cases, by the names a conformance module reads them from. */
@@ -59,14 +60,10 @@ export interface ArchilRunFolderOptions {
 	s3BaseUrl?: string;
 	/** Another control plane than the region's, for the SDK's client. */
 	baseUrl?: string;
-	/** The SDK's Archil client; default the host's `disk` package's. */
+	/** The SDK's Archil client; default the `disk` package's. */
 	Archil?: ArchilConstructor;
-	/** For tests: the package the SDK's client is imported from; default `disk`. */
-	sdkPackage?: string;
 }
 
-/** Not a literal, so no type checker or bundler resolves the SDK from this package. */
-const ARCHIL_PACKAGE: string = "disk";
 // The shapes the root helper takes (box/agentrun-archil), so a run folder is one a computer can mount.
 const DISK = /^(?:dsk-[0-9a-f]{16}|[A-Za-z0-9][A-Za-z0-9._@+-]{0,127}\/[A-Za-z0-9][A-Za-z0-9._-]{0,127})$/;
 const REGION = new RegExp(`^${ARCHIL_REGION}$`);
@@ -115,17 +112,9 @@ function failure(what: string, error: unknown, apiKey: string): Error {
 }
 
 /** The disk's object API from the SDK's client: every setting given, the disk looked up once. */
-async function sdkObjects({ disk, region, apiKey, s3BaseUrl, baseUrl, Archil, sdkPackage = ARCHIL_PACKAGE }: ArchilRunFolderOptions): Promise<ArchilObjects> {
+async function sdkObjects({ disk, region, apiKey, s3BaseUrl, baseUrl, Archil }: ArchilRunFolderOptions): Promise<ArchilObjects> {
 	if (!apiKey || !s3BaseUrl) throw new Error(`the Archil run folder reaches its disk through the object API: give objects, or apiKey and s3BaseUrl (${ARCHIL_ENV.archilKey}, ${ARCHIL_ENV.archilS3Url})`);
-	let Client = Archil;
-	if (Client === undefined) {
-		try {
-			Client = ((await import(sdkPackage)) as { Archil: ArchilConstructor }).Archil;
-		} catch (error) {
-			const why = (error instanceof Error ? error.message : String(error)).replaceAll(apiKey, "[key]").slice(0, 200);
-			throw new Error(`the Archil run folder needs Archil's Node SDK, the package ${JSON.stringify(sdkPackage)}: it is serve's dependency, pinned in the lockfile, so npm ci at the repository root installs it (${why})`);
-		}
-	}
+	const Client = Archil ?? (await vendorSdk<{ Archil: ArchilConstructor }>("Archil", "disk")).Archil;
 	try {
 		return await new Client({ apiKey, region, s3BaseUrl, ...(baseUrl === undefined ? {} : { baseUrl }) }).disks.get(disk);
 	} catch (error) {
@@ -179,10 +168,10 @@ export async function archilRunFolder(options: ArchilRunFolderOptions): Promise<
 	};
 }
 
-/** What a module's mountFor takes: where the settings are read, and the object API or client in place of the host's SDK. */
+/** What a module's mountFor takes: where the settings are read, and the object API or client in place of the SDK's. */
 export interface ArchilMountOptions {
 	env?: Record<string, string | undefined>;
-	/** For mountFor("archil"): the disk's object API, or the SDK's Archil client, in place of the host's disk package. */
+	/** For mountFor("archil"): the disk's object API, or the SDK's Archil client, in place of the `disk` package's. */
 	archil?: Pick<ArchilRunFolderOptions, "objects" | "Archil" | "baseUrl">;
 }
 

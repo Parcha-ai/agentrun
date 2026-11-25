@@ -1,0 +1,17 @@
+{
+  "about": "A fixed test vector for a Composio webhook delivery's signature, for any verifier of it to test against the same bytes. Not a real key.",
+  "scheme": "Standard Webhooks headers and message, webhook-signature: v1,<base64 HMAC-SHA256 of \"{webhook-id}.{webhook-timestamp}.{body}\">, keyed by the UTF-8 bytes of the whole secret string, whsec_ prefix included and nothing decoded (as @composio/core 0.31.0 signs: utils/crypto.ts hmacSha256Base64 imports TextEncoder().encode(secret) as the raw key).",
+  "body_bytes": "body is the request's raw body, its UTF-8 encoding exactly (356 bytes, non-ASCII included); body_sha256 is the SHA-256 of those bytes, so a reader can check it has them.",
+  "time": "webhook_timestamp is fixed: a verifier with a timestamp window checks this vector with its clock set to that time.",
+  "secret": "whsec_AgentRunComposioTestVectorOnlyNotAKey000",
+  "webhook_id": "msg_01JCOMPOSIOVECTOR0000000001",
+  "webhook_timestamp": "1795392000",
+  "body": "{\"id\":\"msg_01JCOMPOSIOVECTOR0000000001\",\"type\":\"composio.trigger.message\",\"metadata\":{\"log_id\":\"log_vector_1\",\"trigger_slug\":\"GITHUB_ISSUE_ADDED_EVENT\",\"trigger_id\":\"ti_vector1\",\"connected_account_id\":\"ca_vector1\",\"auth_config_id\":\"ac_vector1\",\"user_id\":\"user_vector\"},\"data\":{\"repository\":\"acme/widgets\",\"title\":\"Café crème ✓ issue\",\"labels\":[\"bug\"]}}",
+  "body_sha256": "db2a076631424106f31905960b1da8b17807f7da91a1b0cdbab070e73475c238",
+  "signature": "v1,jurcy+bYQtPSTHuUlofr3mynZyYAkodjVMDD6GJl4ws=",
+  "decoded_key_negative": {
+    "about": "What a signer keyed by the base64-decoded part after whsec_ would send for the same message: a correct verifier refuses it.",
+    "key_base64": "AgentRunComposioTestVectorOnlyNotAKey000",
+    "signature": "v1,Z+WBJgOwlJ4hyqYctUrtT1Pbk9RoRl7cAgyxR63tKUE="
+  }
+}

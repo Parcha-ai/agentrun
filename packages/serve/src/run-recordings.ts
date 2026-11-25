@@ -23,8 +23,10 @@ export async function recordingsWorkspace(folder: string): Promise<Workspace | n
   return there?.isDirectory() ? readOnlyWorkspace(localWorkspace(folder)) : null;
 }
 
-/** How far a file was read, and what it said up to there; its size and change time as read. */
-type Read = { at: number; size: number; mtimeMs: number; timescale: number; dflt: number; end: number; finished: boolean };
+/** How far a file was read, and what it said up to there; its size and change time as read. `created`: when its
+ *  recording started, as its header says (mvhd's creation time, in ms; 0 when it says none); `made`: its birth time, or
+ *  its last change at the first read where the file system keeps none, never read again while the file only grows. */
+type Read = { at: number; size: number; mtimeMs: number; timescale: number; dflt: number; end: number; finished: boolean; created: number; made: number };
 /** The newest reads, by path: at most READS_KEPT. */
 const reads = new Map<string, Read>();
 const READS_KEPT = 256;
@@ -41,9 +43,17 @@ function* boxes(buf: Buffer): Generator<[string, Buffer]> {
   }
 }
 
+/** 1970-01-01 in an MP4 header's seconds since 1904-01-01. */
+const MP4_EPOCH_S = 2_082_844_800;
+
 /** What box `type` says into `read`: the timescale, the default frame duration, and a fragment's end. */
 function take(read: Read, type: string, body: Buffer): void {
   if (type === "moov" || type === "trak" || type === "mdia" || type === "mvex" || type === "moof") for (const [inner, part] of boxes(body)) take(read, inner, part);
+  else if (type === "mvhd") {
+    // Seconds since 1904-01-01 UTC, 64-bit in a version 1 box.
+    const seconds = body[0] === 1 ? Number(body.readBigUInt64BE(4)) : body.readUInt32BE(4);
+    read.created = seconds > MP4_EPOCH_S ? (seconds - MP4_EPOCH_S) * 1000 : 0;
+  }
   else if (type === "mdhd") read.timescale = body.readUInt32BE(body[0] === 1 ? 20 : 12);
   else if (type === "trex") read.dflt = body.readUInt32BE(12);
   else if (type === "traf") {
@@ -64,17 +74,18 @@ function take(read: Read, type: string, body: Buffer): void {
   }
 }
 
-/** File `path`'s read, `size` bytes long and changed at `mtimeMs` now: the last read when the file is unchanged (it is not
- *  opened), on from it when the file only grew, else from its start. */
-async function readOf(path: string, size: number, mtimeMs: number): Promise<Read> {
+/** File `path`'s read, as `file` stats it now: the last read when the file is unchanged (it is not opened), on from it
+ *  when the file only grew, else from its start. */
+async function readOf(path: string, file: { size: number; mtimeMs: number; birthtimeMs: number }): Promise<Read> {
+  const { size, mtimeMs } = file;
   const kept = reads.get(path);
   if (kept && kept.size === size && kept.mtimeMs === mtimeMs) return kept;
-  const read: Read = kept && kept.size <= size ? { ...kept } : { at: 0, size: 0, mtimeMs: 0, timescale: 0, dflt: 0, end: 0, finished: false };
-  const file = await open(path, "r");
+  const read: Read = kept && kept.size <= size ? { ...kept } : { at: 0, size: 0, mtimeMs: 0, timescale: 0, dflt: 0, end: 0, finished: false, created: 0, made: file.birthtimeMs || mtimeMs };
+  const opened = await open(path, "r");
   try {
     const head = Buffer.alloc(16);
     while (read.at + 8 <= size) {
-      await file.read(head, 0, 16, read.at);
+      await opened.read(head, 0, 16, read.at);
       let length = head.readUInt32BE(0);
       let skip = 8;
       if (length === 1) [length, skip] = [Number(head.readBigUInt64BE(8)), 16];
@@ -83,13 +94,13 @@ async function readOf(path: string, size: number, mtimeMs: number): Promise<Read
       if (type === "mfra") read.finished = true;
       if (type === "moov" || type === "moof") {
         const body = Buffer.alloc(length - skip);
-        await file.read(body, 0, body.length, read.at + skip);
+        await opened.read(body, 0, body.length, read.at + skip);
         take(read, type, body);
       }
       read.at += length;
     }
   } finally {
-    await file.close();
+    await opened.close();
   }
   read.size = size;
   read.mtimeMs = mtimeMs;
@@ -99,7 +110,11 @@ async function readOf(path: string, size: number, mtimeMs: number): Promise<Read
   return read;
 }
 
-/** The recordings in `folder`, each computer's files in the order it recorded them: its path on the files route, its
+/** The recordings in `folder`, in the order they were recorded: computers by when their first file started, each
+ *  computer's files in the order it recorded them. A file's start is the one its header says (computer-record.ts writes
+ *  it), else its birth time, else its last change when this process first read it: never a time that moves while the
+ *  file is written, so a computer that records on does not move behind one that started after it. Each is its path on
+ *  the files route, its
  *  computer (its ref id, as its file is named: computer-record.ts names a computer's later files <computer>-2.mp4 and
  *  on), its length in seconds, its size, and whether it is finished: its trailer is there, or the run ended at `endedAt`
  *  and neither that end nor the file's last change is within twice the time the recorder gives ffmpeg to finish it
@@ -114,16 +129,26 @@ export async function recordingsOf(folder: string, endedAt: number | null): Prom
     const later = /^(.+)-(\d+)$/.exec(base);
     return later && Number(later[2]) >= 2 && files.has(`${later[1]}.mp4`) ? { name, computer: later[1]!, n: Number(later[2]) } : { name, computer: base, n: 1 };
   });
-  series.sort((a, b) => (a.computer === b.computer ? a.n - b.n : a.computer < b.computer ? -1 : 1));
-  const listed: RecordingView[] = [];
-  for (const { name, computer } of series) {
+  const found: { name: string; computer: string; n: number; view: RecordingView; read: Read | undefined }[] = [];
+  for (const { name, computer, n } of series) {
     const path = join(folder, name);
     const file = await lstat(path).catch(() => undefined);
     if (!file?.isFile()) continue;
-    const read = await readOf(path, file.size, file.mtimeMs).catch(() => undefined);
+    const read = await readOf(path, file).catch(() => undefined);
     const seconds = read?.timescale ? Math.round((read.end / read.timescale) * 10) / 10 : 0;
     const settled = endedAt !== null && Date.now() - Math.max(endedAt, file.mtimeMs) > 2 * RECORDING_LIMITS.settleMs;
-    listed.push({ path: `${RECORDINGS}/${name}`, computer, seconds, bytes: file.size, finished: read?.finished === true || settled });
+    found.push({ name, computer, n, read, view: { path: `${RECORDINGS}/${name}`, computer, seconds, bytes: file.size, finished: read?.finished === true || settled } });
   }
+  // Each computer's start, from its first file: its header's (to the second), then its making (to the ms, for two that
+  // started in the same second), then its name. A computer whose first file can't be read goes last.
+  const starts = new Map<string, [number, number]>();
+  for (const { computer, n, read } of found) if (n === 1 && read) starts.set(computer, [read.created || read.made, read.made]);
+  const last: [number, number] = [Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY];
+  found.sort((a, b) => {
+    if (a.computer === b.computer) return a.n - b.n;
+    const [x, y] = [starts.get(a.computer) ?? last, starts.get(b.computer) ?? last];
+    return x[0] - y[0] || x[1] - y[1] || (a.computer < b.computer ? -1 : 1);
+  });
+  const listed = found.map((one) => one.view);
   return listed;
 }
