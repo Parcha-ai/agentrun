@@ -40,3 +40,12 @@ test("the same arguments read after a held value is added are read anew: the val
   assert.equal(useOf([FIRST, SECOND]).tool_input_preview, "[redacted]");
   assert.notEqual(useOf([FIRST]).tool_input_preview, "[redacted]");
 });
+
+test("two texts that differ only in a lone surrogate and U+FFFD in its place keep a verdict each: the one that is a held value is withheld, read first or second", () => {
+  const [lone, replaced] = [`${FIRST.slice(0, 16)}\uD800${FIRST.slice(16)}`, `${FIRST.slice(0, 16)}�${FIRST.slice(16)}`];
+  for (const [i, order] of [[lone, replaced], [replaced, lone]].entries()) {
+    // A held set of its own per order, so neither verdict was kept by the order before.
+    const held = heldWholeFor([replaced, `${"x".repeat(i)}${HEAD}`]);
+    for (const text of order) assert.equal(held(text), text === replaced, JSON.stringify(text));
+  }
+});
