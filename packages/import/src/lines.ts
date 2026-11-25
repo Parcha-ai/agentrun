@@ -115,6 +115,28 @@ async function markOf(handle: FileHandle, offset: number): Promise<string> {
   return bytes.subarray(0, bytesRead).toString("base64");
 }
 
+/** Whether a read from `cursor` of the open file goes on from it: the same source and kind of read, the same file (device
+ *  and inode), no shorter, and the bytes before its offset as they were. Else it reads the file from its start. */
+async function goesOn(source: string, keep: boolean, totals: boolean, chained: boolean, cursor: FileCursor, handle: FileHandle, stats: { dev: number; ino: number; size: number }): Promise<boolean> {
+  return cursor.source === source && cursor.keep === keep && (cursor.totals ?? false) === totals && (cursor.chain ?? false) === chained && cursor.dev === stats.dev && cursor.ino === stats.ino && stats.size >= cursor.offset && (await markOf(handle, cursor.offset)) === cursor.mark;
+}
+
+/** Whether a read with these options is a totals read: asked for, with no turns kept, from a source that has one. */
+const totalsRead = <S extends string, O>(spec: LineSource<S, O>, keep: boolean, asked: boolean): boolean => asked && !keep && spec.totals === true;
+
+/** Whether `spec`'s line reader would go on from `cursor` in `file` now (a read with `options`), as it decides when it
+ *  reads: so a reader built on it can choose how to read before reading. A file it cannot open is no place to go on. */
+export async function resumes<S extends string, O>(spec: LineSource<S, O>, file: string, cursor: FileCursor | undefined, { turns: keep = true, totals: asked = false, chain = false }: ReadOptions = {}): Promise<boolean> {
+  if (cursor === undefined) return false;
+  const handle = await open(file, "r").catch(() => undefined);
+  if (!handle) return false;
+  try {
+    return await goesOn(spec.source, keep, totalsRead(spec, keep, asked), chain && keep, cursor, handle, await handle.stat());
+  } finally {
+    await handle.close();
+  }
+}
+
 /** The records seen, as a source asks: `extra` over `base`, so a line read that is not kept leaves `base` as it was. */
 const overlay = (base: Set<string>): Set<string> => {
   const extra = new Set<string>();
@@ -124,13 +146,14 @@ const overlay = (base: Set<string>): Set<string> => {
 /** One session file of `spec`'s source, read from its start or from `cursor`. */
 async function readLines<S extends string, O>(spec: LineSource<S, O>, file: string, cursor: FileCursor | undefined, { turns: keep = true, totals: asked = false, seen, keepsCursor = true, maxLine = Infinity, chain = false }: ReadOptions = {}): Promise<ReadResult<S, FileCursor>> {
   const { source } = spec;
-  const totals = asked && !keep && spec.totals === true;
+  const totals = totalsRead(spec, keep, asked);
   const handle = await open(file, "r");
   try {
     const stats = await handle.stat();
     // A chain is kept with the turns alone.
     const chained = chain && keep;
-    const resumed = cursor !== undefined && cursor.source === source && cursor.keep === keep && (cursor.totals ?? false) === totals && (cursor.chain ?? false) === chained && cursor.dev === stats.dev && cursor.ino === stats.ino && stats.size >= cursor.offset && (await markOf(handle, cursor.offset)) === cursor.mark;
+    // The cursor's presence checked here, so `resumed` narrows it where its state and offset are read.
+    const resumed = cursor !== undefined && (await goesOn(source, keep, totals, chained, cursor, handle, stats));
     const state = (
       resumed
         ? structuredClone(cursor.state)

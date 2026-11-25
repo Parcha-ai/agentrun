@@ -195,6 +195,8 @@ export async function cacheHome(home: string, { sources = CACHE_SOURCES, readers
   const priced: CacheOptions = { catalog: prices, ...(calculateCost ? { calculateCost } : {}) };
   const out: SessionCache[] = [];
   const failed: NonNullable<ParseOptions["failures"]> = [];
+  // One per run, as parseHome keeps one per import: what a reader looks up once (the Codex rollouts index) is shared.
+  const lookups = new Map<string, unknown>();
   for (const source of sources) {
     // Each file analyzed as it is read, on its own; and its first turn compared, with the chain before it, kept to compare
     // with the last turn of the session's file before it once the files are joined (a Codex thread goes on in a new
@@ -202,7 +204,7 @@ export async function cacheHome(home: string, { sources = CACHE_SOURCES, readers
     // Each file alone two ways, the cache before it written for 5 minutes or for an hour (`long`): which holds is known
     // once the session's files before it are joined, and holds until the file writes the cache itself.
     const reports = new Map<string, { alone: CacheReport; long: CacheReport; head?: Pick<SessionOf, "turns" | "chain" | "model">; skipped: number }>();
-    const { tops, children, unread } = await readSource(home, source, readers, env, undefined, UNPRICED, true, undefined, async (read): Promise<SessionRead> => {
+    const { tops, children, unread } = await readSource(home, source, readers, env, undefined, lookups, UNPRICED, true, undefined, async (read): Promise<SessionRead> => {
       reports.set(locatorKey(read.locator), { alone: await analyzed(read.session, priced, false), long: await analyzed(read.session, priced, true), ...headOf(read.session) });
       const { turns: _turns, chain: _chain, firstPrompt: _prompt, titleText: _title, sourceTitle: _source, cwd: _cwd, ...session } = read.session;
       return { locator: read.locator, session: { ...session, turns: [] }, requests: read.requests.map(({ at, usage }): Answer => ({ role: "assistant", text: "", calls: [], at, ...(usage ? { usage } : {}) })) };

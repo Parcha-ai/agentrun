@@ -221,7 +221,7 @@ const plus = (a, b) => Object.fromEntries(Object.keys(a).map((key) => [key, a[ke
  *  `thenModel` (else `model`). Each request's usage is in a token_count event (the first one written twice), with `usage: "records"`
  *  also in a token_usage_record (the first one written twice), with `usage: "none"` in neither. With `failing`, the first
  *  request also runs two calls that fail: one whose output says so, one whose completed item does, after its output. */
-export function codexSession(home, cwd, n, { prompt = "Run the tests.", output = "2 passed", subagent = false, parent = sessionId(n + 1000), aborted = false, events = true, then, model = "gpt-sol-6.1", thenModel = model, usage = "token_count", failing = false, provider = "openai" } = {}) {
+export function codexSession(home, cwd, n, { prompt = "Run the tests.", output = "2 passed", subagent = false, parent = sessionId(n + 1000), forkedFrom, aborted = false, events = true, then, model = "gpt-sol-6.1", thenModel = model, usage = "token_count", failing = false, provider = "openai" } = {}) {
   const id = sessionId(n);
   const text = (value) => ({ type: "input_text", text: value });
   const requests = [codexUsage(900, 600, 40, 10), codexUsage(1000, 900, 25, 5), codexUsage(1200, 1000, 10, 0)];
@@ -271,6 +271,7 @@ export function codexSession(home, cwd, n, { prompt = "Run the tests.", output =
       payload: {
         id,
         cwd,
+        ...(forkedFrom ? { forked_from_id: forkedFrom } : {}),
         timestamp: at(0),
         model_provider: provider,
         cli_version: events ? "0.99.0" : "0.150.0",

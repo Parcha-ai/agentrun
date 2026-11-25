@@ -4914,9 +4914,15 @@ export type GetRunGraphResponse = {
     paused: boolean;
     startedAt: string;
     endedAt: string | null;
+    withheld?: true;
   };
   workflow: Record<string, unknown>;
-  graph: Record<string, unknown>;
+  graph: {
+    nodes: Array<Record<string, unknown>>;
+    edges: Array<Record<string, unknown>>;
+    withheld?: true;
+    [key: string]: unknown;
+  };
   nodes: Record<string, {
     status: "pending" | "working" | "done" | "failed" | "stopped" | "escalated" | "not_run" | "needs_review";
     startedAt?: string;
