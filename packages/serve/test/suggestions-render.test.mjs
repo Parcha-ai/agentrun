@@ -303,6 +303,52 @@ test("no client follows a redirect: a start or a read answered with one is refus
   }
 });
 
+// The client runs inside an app's process, which goes on after the call throws: a redirect's body it never reads would
+// hold its connection open. In this process, so its exit closes nothing for it.
+test("a TS or JS client refused a redirect lets go of its body: the connection a redirect's endless body comes on closes while the app goes on", async (t) => {
+  let redirects = "POST";
+  const closed = [];
+  const server = createServer((req, res) => {
+    req.resume();
+    req.on("end", () => {
+      // The client's calls alone, by their path: a probe of a new loopback listener asks for / alone.
+      if (req.method !== redirects || !req.url.startsWith("/v2/")) {
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ run_id: "run_1", status: "running", result: null }));
+        return;
+      }
+      // A redirect whose body never ends: only the client letting go of it closes the connection.
+      res.writeHead(302, { location: "https://elsewhere.example/" });
+      const drip = setInterval(() => res.write("x".repeat(1024)), 20);
+      res.on("close", () => { clearInterval(drip); closed.push(req.method); });
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const dir = mkdtempSync(join(tmpdir(), "suggestions-redirect-body-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const saved = Object.fromEntries(["AGENTRUN_BASE_URL", "AGENTRUN_API_KEY", "AGENTRUN_AGENT_TICKET_TRIAGE"].map((name) => [name, process.env[name]]));
+  t.after(() => { for (const [name, value] of Object.entries(saved)) value === undefined ? delete process.env[name] : (process.env[name] = value); });
+  Object.assign(process.env, { AGENTRUN_BASE_URL: `http://127.0.0.1:${server.address().port}/v2`, AGENTRUN_API_KEY: "fake-test-key", AGENTRUN_AGENT_TICKET_TRIAGE: "agent_1" });
+
+  const s = checked(base());
+  const render = (language, path) => clientFile({ ...s, integration: { ...s.integration, language, path } }, "acme/app", "a".repeat(40)).content;
+  const files = { "typed.mjs": ts.transpileModule(render("typescript", "src/a.ts"), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText, "plain.mjs": render("javascript", "src/a.mjs") };
+  for (const [name, content] of Object.entries(files)) {
+    writeFileSync(join(dir, name), content);
+    const { runTicketTriage } = await import(pathToFileURL(join(dir, name)).href);
+    for (const method of ["POST", "GET"]) {
+      redirects = method;
+      closed.length = 0;
+      await assert.rejects(runTicketTriage({ subject: "Charged twice", body: "My card was charged twice." }), /with a redirect \(HTTP 302\); not followed/, `${name}, ${method}`);
+      // The body is let go of before the error: its connection closes within moments, the app still running.
+      const until = Date.now() + 2_000;
+      while (!closed.includes(method) && Date.now() < until) await new Promise((resolve) => setTimeout(resolve, 25));
+      assert.deepEqual(closed, [method], `${name}, ${method}: the redirect's connection stayed open after the call threw`);
+    }
+  }
+});
+
 test("a template placeholder in the model's words is text, never a parameter the package would need", () => {
   const raw = base();
   raw.agent.instructions = `${raw.agent.instructions} Write \${parameters.secret} as it is.`;

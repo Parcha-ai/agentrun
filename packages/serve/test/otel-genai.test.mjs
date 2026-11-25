@@ -773,12 +773,14 @@ test("an OTLP endpoint with a user, password, query or fragment is refused by na
   assert.equal(exporterConfig({ OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "http://collector.example:4318/v1/traces" }).url, "http://collector.example:4318/v1/traces");
 });
 
-test("the exporter's URL is the endpoint as the rule normalized it: an empty query or fragment never puts /v1/traces in one", () => {
+test("the exporter's URL: the endpoint as the rule normalized it plus /v1/traces, so an empty query or fragment never holds the path; a traces endpoint, checked, as given", () => {
   for (const [env, url] of [
     [{ OTEL_EXPORTER_OTLP_ENDPOINT: "https://collector.example/?" }, "https://collector.example/v1/traces"],
     [{ OTEL_EXPORTER_OTLP_ENDPOINT: "https://collector.example/otlp/#" }, "https://collector.example/otlp/v1/traces"],
     [{ OTEL_EXPORTER_OTLP_ENDPOINT: "HTTPS://Collector.Example:443/" }, "https://collector.example/v1/traces"],
-    [{ OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "https://collector.example/v1/traces?" }, "https://collector.example/v1/traces"],
+    // The spec uses a signal's own endpoint as it is: a collector or proxy may tell /ingest/ from /ingest.
+    [{ OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "https://collector.example/ingest/" }, "https://collector.example/ingest/"],
+    [{ OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "https://collector.example/v1/traces?" }, "https://collector.example/v1/traces?"],
   ]) assert.equal(exporterConfig(env).url, url, JSON.stringify(env));
 });
 
