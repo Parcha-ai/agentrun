@@ -9,7 +9,9 @@
 //     only when it was made under those bytes, else CENSUS_UNSCANNED; a message's seal keeps the census as the last end
 //     wrote it; every write that seals anew moves the run's list mark, so its kept listing is built again;
 //   - Postgres migration 0029 settles each "pending" 0027 left as this build reads it and drops 0027's trigger; a
-//     SQLite server open settles each one 0.1.0-beta.57 left the same way.
+//     SQLite server open settles each one 0.1.0-beta.57 left the same way;
+//   - on both, an update that erases a launch's sealed bytes and leaves its census null (an earlier runner's end) writes
+//     "unscanned".
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -181,6 +183,7 @@ test("a store an earlier build of this version made (no run_launch.census): a ru
   await first.close();
   const db = new DatabaseSync(file);
   try {
+    db.exec("DROP TRIGGER IF EXISTS run_launch_census_erased");
     db.exec("ALTER TABLE run_launch DROP COLUMN census");
   } finally {
     db.close();
@@ -203,10 +206,12 @@ test("a store an earlier release left with \"pending\" censuses: the server sett
   await liveAndPlain(first);
   await first.runs.create({ id: "counted", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Answer." } }, sealed: new Uint8Array([7, 7, 7, 2]) });
   await first.close();
-  // As 0.1.0-beta.57 left them: "pending" on each launch that held sealed bytes, kept after an end erased them.
+  // As 0.1.0-beta.57 left them: "pending" on each launch that held sealed bytes, kept after an end erased them, and no
+  // trigger (this build's server makes it).
   const counted = JSON.stringify({ v: 1, files: {} });
   const db = new DatabaseSync(file);
   try {
+    db.exec("DROP TRIGGER run_launch_census_erased");
     db.prepare("UPDATE run_launch SET census = ? WHERE run_id IN ('live', 'plain')").run(PENDING);
     db.prepare("UPDATE run_launch SET census = ? WHERE run_id = 'counted'").run(counted);
   } finally {
@@ -219,6 +224,28 @@ test("a store an earlier release left with \"pending\" censuses: the server sett
     assert.equal((await second.runs.launch("counted")).census, counted, "a census an end wrote is kept");
   } finally {
     await second.close();
+  }
+});
+
+test("an end that erases a launch's sealed bytes and names no census (a runner of 0.1.0-beta.56 or earlier, still live beside this server) leaves it unscanned: its files are withheld, never read cut of the server's values alone; a write that names one keeps it", sqliteOnly("a raw write to the store file"), async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "store-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, "store.sqlite");
+  const store = await openSqliteStore({ file, role: "server", now: () => T0 });
+  await liveAndPlain(store);
+  await store.runs.create({ id: "counted", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Answer." } }, sealed: new Uint8Array([7, 7, 7, 3]) });
+  await store.close();
+  const census = JSON.stringify({ v: 1, files: {} });
+  const db = new DatabaseSync(file);
+  try {
+    db.exec("UPDATE run_launch SET sealed = NULL WHERE run_id = 'live'");
+    db.prepare("UPDATE run_launch SET census = ?, sealed = NULL WHERE run_id = 'counted'").run(census);
+    const at = (id) => ({ ...db.prepare("SELECT sealed IS NOT NULL AS held, census FROM run_launch WHERE run_id = ?").get(id) });
+    assert.deepEqual(at("live"), { held: 0, census: CENSUS_UNSCANNED }, "erased with no census: unscanned");
+    assert.deepEqual(at("counted"), { held: 0, census }, "an end that names its census keeps it");
+    assert.deepEqual(at("plain"), { held: 0, census: null }, "a launch that held none: untouched");
+  } finally {
+    db.close();
   }
 });
 
@@ -357,6 +384,10 @@ test("migration run_launch_census_settle settles each \"pending\" 0027 left as t
     // With no trigger, a seal that names no census leaves it null (0027's trigger made it pending).
     await c.query("UPDATE run_launch SET sealed = $1 WHERE run_id = 'live'", [Buffer.from([7, 7, 7, 6])]);
     assert.deepEqual(await at(c, "live"), { held: true, census: null });
+    // An earlier runner's end (0.1.0-beta.51 to beta.56, draining after the floor rose) erases the bytes and names no
+    // census: unscanned, its files withheld, never read cut of the server's values alone.
+    await c.query("UPDATE run_launch SET sealed = NULL WHERE run_id = 'live'");
+    assert.deepEqual(await at(c, "live"), { held: false, census: CENSUS_UNSCANNED });
   } finally {
     await c.end();
   }

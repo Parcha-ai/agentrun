@@ -91,11 +91,19 @@ export const TRIGGERS_TEMPLATE_ID = "ALTER TABLE triggers ADD COLUMN template_id
  *  build of this version made, as RUNS_LABELS is (a run ended before reads as never handed a secret). */
 export const RUN_LAUNCH_CENSUS = `ALTER TABLE run_launch ADD COLUMN ${json("census", true)}`;
 /** The census "pending" of 0.1.0-beta.57, which marked a launch holding sealed bytes until an end counted them. This build
- *  keeps no such state: a server open settles each one left as this build reads it, as Postgres migration 0029 does. A
- *  launch still holding its sealed bytes gets null (its end counts them), and one an end erased gets "unscanned" (nothing
- *  counted them, so its files are withheld). */
-export const RUN_LAUNCH_CENSUS_PENDING_LEFT = `SELECT 1 AS found FROM run_launch WHERE census = '"pending"' LIMIT 1`;
+ *  keeps no such state: the server open that makes RUN_LAUNCH_CENSUS_ERASED settles each one left as this build reads it,
+ *  as Postgres migration 0029 does. A launch still holding its sealed bytes gets null (its end counts them), and one an
+ *  end erased gets "unscanned" (nothing counted them, so its files are withheld). */
 export const RUN_LAUNCH_CENSUS_SETTLE = `UPDATE run_launch SET census = CASE WHEN sealed IS NULL THEN '"unscanned"' ELSE NULL END WHERE census = '"pending"'`;
+/** An update that erases a launch's sealed bytes and leaves its census null writes "unscanned", as Postgres migration 0029's
+ *  trigger does. This build's end always names a census when it erases them, so only an end by a runner of
+ *  0.1.0-beta.56 or earlier, still live beside this server, does that: its run's files are withheld, never read cut of
+ *  the server's values alone. */
+export const RUN_LAUNCH_CENSUS_ERASED = `CREATE TRIGGER IF NOT EXISTS run_launch_census_erased AFTER UPDATE OF sealed ON run_launch
+  WHEN OLD.sealed IS NOT NULL AND NEW.sealed IS NULL AND OLD.census IS NULL AND NEW.census IS NULL
+  BEGIN UPDATE run_launch SET census = '"unscanned"' WHERE run_id = NEW.run_id; END`;
+/** Whether the store holds RUN_LAUNCH_CENSUS_ERASED: a store no server of this build opened yet holds none. */
+export const RUN_LAUNCH_CENSUS_ERASED_MADE = `SELECT 1 AS found FROM sqlite_master WHERE type = 'trigger' AND name = 'run_launch_census_erased'`;
 
 /** A template package imported from GitHub (POST /v2/templates/import), by its id (`github:<owner>/<repo>[/<path>]`): its
  *  source as given (ref and all), the full commit SHA read, the GitHub account that publishes it, and its files as read

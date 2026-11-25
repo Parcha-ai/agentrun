@@ -12,7 +12,7 @@ import { watchCommandsAt, wakeCommands } from "../command-wake.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { JOURNAL_FIRST_ID, RunStorage } from "../journal/storage.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
-import { COMMANDS_ONE_ANSWER, COMPUTER_INTERVALS, COMPUTER_INTERVALS_ADDED, COMPUTER_INTERVALS_RUN, DDL, diskUpgrade, HAND_BACKS, HAND_BACKS_AT, HAND_BACKS_KEPT_MS, HAND_BACKS_RUN, IMPORTED_TEMPLATES, LEARNING_LEDGER, LEARNING_LEDGER_AGENT, LEARNING_SPEND, LEARNING_SPEND_AGENT, LEARNING_SPEND_OF_RUN, listingUpgrade, MINTED_TOKENS, purgeUpgrade, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUN_ATTEMPTS, RUNNERS, RUNNERS_ADDED, RUN_LAUNCH_CENSUS, RUN_LAUNCH_CENSUS_PENDING_LEFT, RUN_LAUNCH_CENSUS_SETTLE, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, TRIGGERS_TEMPLATE_ID } from "../schema.js";
+import { COMMANDS_ONE_ANSWER, COMPUTER_INTERVALS, COMPUTER_INTERVALS_ADDED, COMPUTER_INTERVALS_RUN, DDL, diskUpgrade, HAND_BACKS, HAND_BACKS_AT, HAND_BACKS_KEPT_MS, HAND_BACKS_RUN, IMPORTED_TEMPLATES, LEARNING_LEDGER, LEARNING_LEDGER_AGENT, LEARNING_SPEND, LEARNING_SPEND_AGENT, LEARNING_SPEND_OF_RUN, listingUpgrade, MINTED_TOKENS, purgeUpgrade, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUN_ATTEMPTS, RUNNERS, RUNNERS_ADDED, RUN_LAUNCH_CENSUS, RUN_LAUNCH_CENSUS_ERASED, RUN_LAUNCH_CENSUS_ERASED_MADE, RUN_LAUNCH_CENSUS_SETTLE, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, TRIGGERS_TEMPLATE_ID } from "../schema.js";
 import {
   ActiveRuns, AgentArchived, AgentDeleting, AgentPurged, CommandTaken, ExternalBodyConflict, Fenced, FiringMoved, RunFinal, RunPurged, RunsMadeFromLeft, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreAwaitsServer, StoreBusy, StoreConstraint, StoreFromEarlierVersion, TriggerFull, TriggersLeft, UPLOAD_PREFIX, type AgentRow, type Agents,
   type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
@@ -504,12 +504,13 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
       if (role === "runner") throw new StoreAwaitsServer("add each run's census");
       await connection.write([{ sql: RUN_LAUNCH_CENSUS }], { full: true });
     }
-    // A store 0.1.0-beta.57 made marked each launch holding sealed bytes "pending" until an end counted them (schema.ts
-    // RUN_LAUNCH_CENSUS_SETTLE): the server settles each one left, so a run live at the upgrade is counted at its end. It
-    // reads first, so an open with none left takes no write lock. A runner leaves them: an end over one writes the marker,
+    // A store no server of this build opened yet holds no RUN_LAUNCH_CENSUS_ERASED (an end that erases sealed bytes with
+    // no census, as an earlier runner's does, writes "unscanned"). The server makes it, and in the same write settles each
+    // "pending" 0.1.0-beta.57 left (RUN_LAUNCH_CENSUS_SETTLE), so a run live at the upgrade is counted at its end. Every
+    // later open reads only that the trigger is there. A runner leaves both: an end over a "pending" writes the marker,
     // and its files are withheld, never read uncut.
-    if (role === "server" && (await connection.all(RUN_LAUNCH_CENSUS_PENDING_LEFT)).length > 0) {
-      await connection.write([{ sql: RUN_LAUNCH_CENSUS_SETTLE }], { full: true });
+    if (role === "server" && (await connection.all(RUN_LAUNCH_CENSUS_ERASED_MADE)).length === 0) {
+      await connection.write([{ sql: RUN_LAUNCH_CENSUS_SETTLE }, { sql: RUN_LAUNCH_CENSUS_ERASED }], { full: true });
     }
     // An earlier build of this version kept no package mark on a trigger (schema.ts TRIGGERS_TEMPLATE_ID): the server adds
     // the column, nullable, every trigger made before reading as no package's. A runner reads each trigger through it, so
