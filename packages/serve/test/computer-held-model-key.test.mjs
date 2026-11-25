@@ -43,7 +43,7 @@ const { routeOf } = await import("../dist/runner/model-route.js");
 const { heldRefusedRoute } = await import("../dist/runner/adapter-run-spec.js");
 const { cliRunSpecFromLaunch } = await import("../dist/runner/cli-run-spec.js");
 const { claimSecrets, MODEL_KEY_NAMES } = await import("../dist/runner/claim-secrets.js");
-const { childLoops, heldFor, staysInRunner } = await import("../dist/runner/run-child-host.js");
+const { childLoops, heldFor, LOGIN_MACHINE_NEEDS_SERVER_USER, staysInRunner } = await import("../dist/runner/run-child-host.js");
 const { cursorOptions } = await import("../dist/harness-table.js");
 const { cursorFacts } = await import("@parcha/agentrun-harness-acp");
 const { DATA_ENV } = await import("../dist/files.js");
@@ -716,6 +716,32 @@ test("per-run process (run-child-host heldFor), Claude login: the runner hands a
   const held = seam({ hold: { minutes: 5, refused: REFUSAL } });
   assert.equal(await held.held.claudeLogin(), undefined, "a held run its model kept from running is handed no login, though its process asks: its agent never starts");
   assert.equal(held.asked.login, 0, "and the runner reads no login for it");
+});
+
+test("per-run process (run-child-host staysInRunner), Claude login: a held run its model kept from running, claimed under users of their own while this machine's own login is on, reads no login and is not refused for it, so it goes on to hold its computer; the same run not held is refused", async (t) => {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "held-model-key-stays-"));
+  const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "held-model-key-stays-data-"));
+  const store = await openSqliteStore({ dataDir: dir, role: "server" });
+  t.after(async () => {
+    await store.close().catch(() => {});
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(data, { recursive: true, force: true });
+  });
+  // This machine's own login (~/.claude) turned on after the run's create: under users of their own, a claim on it is refused.
+  await store.settings.put("claude_login", settingFor("machine", data));
+  // The login setting's reads (claude-login.ts loginForRun reads it from the store's settings), counted.
+  const reads = [];
+  const settings = { get: async (key) => (key === "claude_login" && reads.push(key), store.settings.get(key)) };
+  const deps = { store: { ...store, settings, runs: store.runs, runners: store.runners }, sealKey: SEAL_KEY, env: {}, data };
+  const users = { kind: "uid", helper: "/nonexistent/agentrun-runas", first: 0, slots: 1 };
+  const launch = { input: { content: "Do the task." }, title: "t", place: { mode: "runner" }, harness: "claude-agent" };
+  await assert.rejects(staysInRunner(deps, "claude-agent", launch, "run-1", users), (error) => (assert.equal(error.message, LOGIN_MACHINE_NEEDS_SERVER_USER), true), "a run not held is refused on this machine's own login, as before");
+  assert.ok(reads.length > 0, "its claim read the login");
+  reads.length = 0;
+  const place = await staysInRunner(deps, "claude-agent", { ...launch, hold: { minutes: 5, refused: REFUSAL } }, "run-2", users)
+    .catch((error) => assert.fail(`a held run its model kept from running is not refused for a login it never uses: ${error.message}`));
+  assert.deepEqual(place, { stays: false, login: undefined }, "it is a process of its own, on no login");
+  assert.deepEqual(reads, [], "and its claim reads no login");
 });
 
 test("CLI (cli-run-spec), Claude login: a held run its model kept from running, in a run's own process, never asks its runner for the login; the same run not held asks", async (t) => {
