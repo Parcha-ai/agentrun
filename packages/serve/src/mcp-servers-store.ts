@@ -19,8 +19,8 @@ import { checkPrivateHosts, privateOAuthHosts, savePrivateOAuthHosts } from "./m
 import { credentialMark } from "./mcp-secret-writes.js";
 import { type SecretMeta, secretMeta, secretName } from "./secret-writes.js";
 import { type ClientKind, dialAt, issuerOf, LOOPBACK, MAX_PENDING, MCP_SETTINGS_PAGE, mcpServerAt, McpSignIns, type OAuthNetwork, type Pending, type PendingStore, reasonOf, SIGN_IN_AGAIN, systemNetwork, type TokenSet } from "./mcp-oauth.js";
-import { type Cleanup, cleanupOf, COMPOSIO_KEY_ENV, COMPOSIO_ORIGIN, composioEnvKey, composioKeyFromEnv, composioMadeKey, type ComposioMade, composioPerRun, droppedOf, madeToWrite, recordedMade, releasedOf, storedMade } from "./composio-made.js";
-import { COMPOSIO_PER_RUN, COMPOSIO_USER, composioListingAddress, composioServerId } from "./composio-preset.js";
+import { type Cleanup, cleanupOf, COMPOSIO_KEY_ENV, COMPOSIO_ORIGIN, composioAccountKey, composioEnvKey, composioKeyFromEnv, composioMadeKey, type ComposioMade, composioPerRun, droppedOf, madeToWrite, recordedMade, releasedOf, storedMade } from "./composio-made.js";
+import { accountLabel, asking, COMPOSIO_ACCOUNT_STATES, COMPOSIO_PER_RUN, COMPOSIO_USER, composioAccount, type ComposioAccount, type ComposioAccountState, type ComposioControl, composioListingAddress, composioServerId } from "./composio-preset.js";
 import { mcpSourceKey, type RecordedRow, recordedForAnother, savedByToken, sourceOf, type SourceRecord, sourceToWrite, standInGiven, storedSource, toolkitGiven } from "./mcp-sources.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
 import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN, githubMcpUrl } from "./github.js";
@@ -489,8 +489,9 @@ export class McpServersOverStore {
     }
   }
 
-  /** POST refresh: list the saved server's tools again, keep them, and say what was added, removed and changed. */
-  async refresh(name: string, stop?: AbortSignal) {
+  /** POST refresh: list the saved server's tools again, keep them, and say what was added, removed and changed. A
+   *  Composio server's account is read again at Composio too (`composio`, where Composio is: checkAccount). */
+  async refresh(name: string, stop?: AbortSignal, composio?: ComposioControl) {
     const was = await this.need(name);
     const send = await this.reached(was.auth, new URL(was.url), stop);
     const open = await this.opened(name, was, "name");
@@ -507,6 +508,7 @@ export class McpServersOverStore {
         ...(Object.keys(prices).length ? { prices } : {}), updatedAt: row.updatedAt,
       };
     }, "refresh", (fresh) => fresh.url === was.url && fresh.auth === was.auth);
+    if (composio) await this.checkAccount(saved, composio, stop);
     await this.store.flush();
     return {
       added: [...after.keys()].filter((tool) => !before.has(tool)),
@@ -514,6 +516,38 @@ export class McpServersOverStore {
       changed: [...after.keys()].filter((tool) => before.has(tool) && before.get(tool) !== after.get(tool)),
       server: await this.view(saved),
     };
+  }
+
+  /** A Composio preset server's account read at Composio and kept (composioAccountKey) for every read of the server to
+   *  say: connected or not, and each connected account's label. Only a server whose save recorded its user and auth config
+   *  (composio-made.ts): one per-run (each run names its own account), of a toolkit with no sign-in (no auth config), or
+   *  saved before that was recorded has none. A failure keeps `unknown`, and the refresh goes on: its tools are listed. */
+  private async checkAccount(row: McpServerRow, control: ComposioControl, stop?: AbortSignal): Promise<void> {
+    if (row.auth !== "headers") return;
+    const { source, toolkit } = await this.sourceOf(row);
+    const made = recordedMade(await this.store.settings.get(composioMadeKey(row.name)), row.createdAt);
+    if (source !== "composio" || !toolkit || !made?.auth_config || made.per_run) return;
+    const of = { user: made.user, toolkit, auth_config: made.auth_config.id };
+    let account: ComposioAccount;
+    try {
+      const key = Object.entries((await this.opened(row.name, row, "api_key")).headers).find(([header]) => header.toLowerCase() === "x-api-key")?.[1];
+      account = key ? await composioAccount(asking(control, key, stop, "its account was not checked"), of) : { state: "unknown" };
+    } catch {
+      account = { state: "unknown" };
+    }
+    await this.store.settings.put(composioAccountKey(row.name), { of: row.createdAt, ...of, ...account, checked_at: new Date().toISOString() });
+  }
+
+  /** The account a refresh last read for `row` (checkAccount), while it was read for what the server stands on now (its
+   *  user, toolkit and auth config); none otherwise. */
+  private async accountOf(row: McpServerRow, toolkit: string | null): Promise<(ComposioAccount & { checked_at: string }) | undefined> {
+    const kept = await this.store.settings.get(composioAccountKey(row.name));
+    if (!isObject(kept) || kept.of !== row.createdAt || !toolkit || kept.toolkit !== toolkit) return undefined;
+    const made = recordedMade(await this.store.settings.get(composioMadeKey(row.name)), row.createdAt);
+    if (!made?.auth_config || made.per_run || kept.user !== made.user || kept.auth_config !== made.auth_config.id) return undefined;
+    if (!COMPOSIO_ACCOUNT_STATES.includes(kept.state as ComposioAccountState) || typeof kept.checked_at !== "string") return undefined;
+    const labels = kept.state === "connected" && Array.isArray(kept.labels) ? kept.labels.map(accountLabel).filter((label): label is string => !!label) : [];
+    return { state: kept.state as ComposioAccountState, ...(labels.length ? { labels } : {}), checked_at: kept.checked_at };
   }
 
   /** Writes a change over the row it read (`was`), its credential left as it is, by a compare-and-set on that row's
@@ -561,6 +595,7 @@ export class McpServersOverStore {
     // Its record goes with it, unless a server saved again under the name meanwhile wrote its own: one left behind is
     // never read for another row (mcp-sources.ts), so a server saved again says what it is afresh.
     if (!recordedForAnother(await this.store.settings.get(mcpSourceKey(name)), row.createdAt)) await this.store.settings.remove(mcpSourceKey(name));
+    if (!recordedForAnother(await this.store.settings.get(composioAccountKey(name)), row.createdAt)) await this.store.settings.remove(composioAccountKey(name));
     // What it made at Composio that another saved server uses stays, that one's now (its record rewritten to own it); the
     // rest the delete route removes there.
     let cleanup: Cleanup | undefined;
@@ -826,6 +861,7 @@ export class McpServersOverStore {
     // A refresh moves listed_at, not updated_at, so the two differ after a refresh (updatedAt for a row from before the
     // column).
     const listedAt = new Date(row.listedAt ?? row.updatedAt).toISOString();
+    const account = source === "composio" ? await this.accountOf(row, toolkit) : undefined;
     return {
       name,
       // Its origin, the path and query held as a secret (shownUrl): the whole URL is only ever sent to the server itself.
@@ -850,6 +886,8 @@ export class McpServersOverStore {
       listed_at: listedAt,
       updated_at: updatedAt,
       secret: secretOf(row, keyEnv),
+      // A Composio server's account as its last refresh read it: connected or not, and each connected one's label.
+      ...(account ? { composio_account: account } : {}),
     };
   }
 

@@ -19,7 +19,7 @@ import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { startFakeOAuth } from "./fixtures/fake-oauth-server.mjs";
 import { call, clientOwnerSession, cookieOf, serve as serveOf, withEnv } from "./support.mjs";
-import { onPostgres } from "./store-target.mjs";
+import { freshSchema, onPostgres, PG_URL } from "./store-target.mjs";
 import { Connection } from "../dist/store/sqlite/connection.js";
 import { PgConnection } from "../dist/store/postgres/connection.js";
 
@@ -31,7 +31,13 @@ await import("../dist/server.js");
 
 const TOKEN = `not-a-secret-${"owner-only-bearer"}`;
 const json = { "content-type": "application/json" };
-const serve = (t) => (withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }), serveOf(t, { accounts: true, openSetup: true }));
+/** A server on the store the suite targets: on Postgres a schema of its own (AGENTRUN_STORE_URL, as a deployment names it),
+ *  so the server, its runner and the test's handle all open it, and a test's hook on PgConnection sees the server's reads. */
+const serve = async (t) => {
+  const schema = onPostgres ? await freshSchema() : undefined;
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), ...(schema ? { AGENTRUN_STORE_URL: PG_URL, AGENTRUN_STORE_SCHEMA: schema } : {}) });
+  return serveOf(t, { accounts: true, openSetup: true });
+};
 
 /** The owner's session, as the console sends a request: its cookie, the server's own origin, JSON. */
 async function asPage(server) {

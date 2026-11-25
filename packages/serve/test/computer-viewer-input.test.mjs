@@ -193,6 +193,21 @@ test("a soft keyboard's typing while the agent has the computer sends nothing an
   assert.equal(notice.textContent, "Take over to drive.");
 });
 
+test("Tab moves the focus out of the viewer while the agent has the computer, which never takes the focus; the person's Tab goes to the computer", () => {
+  const { sent, sink, socket, press } = viewer("desktop");
+  const tab = { key: "Tab", code: "Tab" };
+  assert.equal(press(tab).down.defaultPrevented, true, "the person drives: Tab is the computer's");
+  assert.deepEqual(sent.map((m) => m.key), ["Tab"]);
+  socket.onmessage({ data: JSON.stringify({ type: "hold", held: false, reason: "given" }) });
+  sent.length = 0;
+  assert.equal(press(tab).down.defaultPrevented, false, "the agent drives: Tab leaves the viewer");
+  assert.deepEqual(sent, []);
+  let focused = 0;
+  sink.focus = () => { focused += 1; };
+  socket.onmessage({ data: JSON.stringify({ type: "ready", kind: "desktop", input: "desktop", held: false, drive: "agent" }) });
+  assert.equal(focused, 0, "a viewer the agent drives leaves the focus where the page around it has it");
+});
+
 test("framed by a page with its own Take over and Hand back (hands=page), the viewer shows neither, nor who drives; a desktop's bar goes, a phone's keeps its buttons", () => {
   for (const input of ["desktop", "android"]) {
     const { socket, hands, drive, bar, phone, notice } = viewer(input, "#t=token&hands=page");

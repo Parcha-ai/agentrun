@@ -8,7 +8,9 @@ const need = floor.split('.').map(Number);
 const have = process.versions.node.split('.').map(Number);
 const at = need.findIndex((part, i) => have[i] !== part);
 if (at !== -1 && !(have[at] > need[at])) {
+  // Every way to get it, not only nvm's (GRE-4837: a Mac with Node 22 and no nvm), and the way that needs no Node at all.
   console.error(`AgentRun needs Node.js ${floor} or newer; you have v${process.versions.node}.`);
-  console.error('With nvm, run: nvm install && nvm use. Then retry your command.');
+  console.error(`Get it with nvm (nvm install && nvm use: this checkout's .nvmrc), or from https://nodejs.org/en/download (${floor.split('.')[0]}.x, ${floor} or newer). Then retry your command.`);
+  console.error('Or skip the build: curl -fsSL https://agentrun.ai/install | sh installs AgentRun with a Node.js of its own.');
   process.exitCode = 1;
 }

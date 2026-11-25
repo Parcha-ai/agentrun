@@ -2,9 +2,9 @@ import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "rea
 import { Button } from "@/components/ui/button";
 import { Chip, type ChipTone } from "@/components/ui/chip";
 import { Input } from "@/components/ui/field";
-import { harnessLabel } from "@/lib/agentForm";
-import { chatGPTView, EXPIRED, MANAGE_USAGE_URL, NOT_REVOKED, PASTE_STEP, PLAN_IS_YOURS, PLAN_RUNS, signedInAs, SIGNED_OUT } from "@/lib/chatgpt";
-import { type Client, ClientError } from "@/lib/client";
+import { HarnessName } from "@/components/HarnessIcon";
+import { chatGPTView, EXPIRED, MANAGE_USAGE_URL, NOT_REVOKED, PASTE_STEP, PLAN_IS_YOURS, planRuns, signedInAs, SIGNED_OUT } from "@/lib/chatgpt";
+import { type Capabilities, type Client, ClientError } from "@/lib/client";
 import { clock } from "@/lib/format";
 import { type HarnessInfo, modelLabel } from "@/lib/models";
 import { httpHref } from "@/lib/safeUrl";
@@ -33,7 +33,8 @@ export function PlanDisclosure() {
 /** Sign in with ChatGPT, over /v2/settings/chatgpt. Signed out or expired: "Continue with ChatGPT" (with `beside` next to
  *  it), which starts the sign-in and opens OpenAI's page in a new tab. Waiting: the paste step (the address the tab ended
  *  on, which finishes it on a server elsewhere), until when it waits (the server's view says it, so a reload shows it
- *  too), and Start again; on the machine the server runs on, the browser's return finishes it by itself, which a read
+ *  too), the server's `hint` once a read carries one (past the first minute: a workspace admin's setting OpenAI refuses
+ *  on its own page, with no way back), and Start again; on the machine the server runs on, the browser's return finishes it by itself, which a read
  *  every POLL_MS sees while the page is in view. While a pasted address finishes (the server reads the plan's models
  *  first, a few seconds), reads still say pending and the page says it is finishing; a paste the server refuses because
  *  the browser's return finished the sign-in first shows the sign-in, not the refusal. Signed in: who, on which plan, and
@@ -45,10 +46,14 @@ export function ChatGPTSignIn({ v2, view, onView, writable = true, whyNot = "sig
   const [busy, setBusy] = useState(false);
   const [finishing, setFinishing] = useState(false);
   const [typed, setTyped] = useState(false);
+  // A waiting sign-in's newest `hint` from a read or a start (why it may be stuck; null, none), over the view it opened on
+  // (undefined, nothing newer).
+  const [hint, setHint] = useState<string | null | undefined>(undefined);
   const field = useRef<HTMLInputElement>(null);
   // Only the newest read or write lands: a read sent before a finish never undoes it.
   const asked = useRef(0);
-  useEffect(() => { setV(view); }, [view]);
+  // A new view from the page is newer than any read's hint: its own hint (or none) shows.
+  useEffect(() => { setV(view); setHint(undefined); }, [view]);
   const set = (next: ChatGPTView) => { setV(next); onView?.(next); };
 
   const pending = v.state === "pending";
@@ -64,6 +69,8 @@ export function ChatGPTSignIn({ v2, view, onView, writable = true, whyNot = "sig
         const next = chatGPTView(body);
         // The sign-in ended: a paste's refusal from while it waited is stale, and the server's view says how it ended.
         if (n === asked.current && next && next.state !== "pending") { setProblem(null); set(next); }
+        // Still waiting: the server's word on why it may be stuck (OpenAI's page can refuse with no way back here).
+        else if (n === asked.current && next?.state === "pending") setHint(next.hint ?? null);
       }, () => {}).finally(() => { reading = false; });
     };
     const timer = setInterval(read, POLL_MS);
@@ -81,6 +88,7 @@ export function ChatGPTSignIn({ v2, view, onView, writable = true, whyNot = "sig
     try {
       const s = await v2.startChatGPT();
       if (tab) { tab.opener = null; tab.location.href = s.authorize_url; }
+      setHint(null);
       set({ state: "pending", authorize_url: s.authorize_url, expires_at: s.expires_at });
     } catch (e) {
       tab?.close();
@@ -132,6 +140,7 @@ export function ChatGPTSignIn({ v2, view, onView, writable = true, whyNot = "sig
   );
   const link = httpHref(v.authorize_url);
   const expires = v.expires_at;
+  const stuck = hint === undefined ? v.hint : hint;
   return (
     <form onSubmit={(e) => void finish(e)} autoComplete="off" className="space-y-3 border bg-card p-4" aria-label="Finish signing in with ChatGPT">
       <p className="text-body">{PASTE_STEP}</p>
@@ -145,6 +154,7 @@ export function ChatGPTSignIn({ v2, view, onView, writable = true, whyNot = "sig
         <Input ref={field} name="redirect_url" spellCheck={false} autoCapitalize="off" autoCorrect="off" data-1p-ignore data-lpignore="true" placeholder="127.0.0.1:1455/auth/callback?code=…"
           onInput={() => setTyped(!!field.current?.value.trim())} />
       </label>
+      {stuck && <p className="text-small text-warning-text" role="status">{stuck}</p>}
       {alert}
       <div className="flex flex-wrap gap-2">
         <Button type="submit" size="sm" variant="solid" disabled={!typed || busy}>{finishing ? "Finishing…" : "Finish sign-in"}</Button>
@@ -165,7 +175,7 @@ const STATE: Record<ChatGPTView["state"], { tone: ChipTone; words: string }> = {
  *  usage; Sign out asks first and then says what is left to do in ChatGPT; expired, it says so and offers the sign-in
  *  again. Nothing on a server without the sign-in (its GET is not one). `onChange`: after a sign-in or a sign-out, which
  *  change the server's models. */
-export function ChatGPTRow({ v2, writable, whyNot, onChange }: { v2: Client; writable: boolean; whyNot?: SecretsWhyNot; onChange?: () => void }) {
+export function ChatGPTRow({ v2, writable, whyNot, onChange, source, defaultModel, routePrefix }: { v2: Client; writable: boolean; whyNot?: SecretsWhyNot; onChange?: () => void; source?: Capabilities["models"]["source"]; defaultModel?: string | null; routePrefix?: string | null }) {
   const [view, setView] = useState<ChatGPTView | null>(null);
   const [confirming, setConfirming] = useState(false);
   // `settings`: the note says to act in ChatGPT's settings, which it links beside its words.
@@ -200,7 +210,7 @@ export function ChatGPTRow({ v2, writable, whyNot, onChange }: { v2: Client; wri
         <span className="font-mono text-prose font-semibold">ChatGPT plan</span>
         <Chip tone={state.tone}>{state.words}</Chip>
       </p>
-      <p className="mt-1.5 font-mono text-small text-muted-foreground">{PLAN_RUNS}</p>
+      <p className="mt-1.5 font-mono text-small text-muted-foreground">{planRuns(source, defaultModel, routePrefix)}</p>
       <div className="mt-3 space-y-3">
         {view.state === "expired" && <p className="text-body text-warning-text">{EXPIRED}</p>}
         {view.state === "signed_in" && view.models?.length ? <p className="font-mono text-small text-muted-foreground">Models: {view.models.join(" · ")}</p> : null}
@@ -240,7 +250,7 @@ export function WhatRunsHere({ harnesses, routePrefix }: { harnesses: readonly H
           const chip = harnessChip(h);
           return (
             <li key={h.id} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b px-4 py-2.5 last:border-b-0">
-              <span className="font-mono text-body font-semibold">{harnessLabel(h.id)}</span>
+              <HarnessName harness={h.id} className="self-center font-mono text-body font-semibold" />
               <Chip tone={chip.tone}>{chip.text}</Chip>
               {h.available && !h.needs?.length
                 ? h.default_model && <span className="font-mono text-small text-muted-foreground">{modelLabel(h.default_model, routePrefix).text}</span>
