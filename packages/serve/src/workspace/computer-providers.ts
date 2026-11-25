@@ -26,13 +26,14 @@ export function hostEnvOf(env: NodeJS.ProcessEnv, names: readonly string[]): Rec
 
 /** Every provider in `entries` (the computer package's PROVIDERS, each from its descriptor), made through `load`
  *  (providerFor) from its options, plus the server's ledger as the option its descriptor names, when it declares one, and
- *  `env`'s values of the host variables it declares (hostEnv) as its `env`. Without `env`, such a provider gets none. */
-export function computerProviderMakers({ load = providerFor as unknown as ProviderLoad, entries = PROVIDERS, env = {} }: { readonly load?: ProviderLoad; readonly entries?: readonly Pick<ProviderEntry, "id" | "ledger" | "hostEnv">[]; readonly env?: NodeJS.ProcessEnv } = {}): ProviderMakers {
+ *  `env`'s values of the host variables it declares (hostEnv) as its `env`. Without `env`, no `env` option is added, and
+ *  the package gives such a provider none. */
+export function computerProviderMakers({ load = providerFor as unknown as ProviderLoad, entries = PROVIDERS, env }: { readonly load?: ProviderLoad; readonly entries?: readonly Pick<ProviderEntry, "id" | "ledger" | "hostEnv">[]; readonly env?: NodeJS.ProcessEnv } = {}): ProviderMakers {
   return Object.fromEntries(
     entries.map(({ id, ledger, hostEnv }) => [
       id,
       (options: Readonly<Record<string, unknown>>, extras: ProviderExtras) =>
-        load(id, { ...options, ...(ledger === undefined ? {} : { [ledger.option]: extras.ledger }), ...(hostEnv ? { env: hostEnvOf(env, hostEnv) } : {}) }, extras.boxAllow === undefined ? {} : { boxAllow: extras.boxAllow }),
+        load(id, { ...options, ...(ledger === undefined ? {} : { [ledger.option]: extras.ledger }), ...(hostEnv && env ? { env: hostEnvOf(env, hostEnv) } : {}) }, extras.boxAllow === undefined ? {} : { boxAllow: extras.boxAllow }),
     ]),
   ) as ProviderMakers;
 }
