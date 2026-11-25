@@ -1757,6 +1757,10 @@ has the row **Use Claude Code's login on this machine**, over these routes:
   `machine` with the default `~/.claude`, the CLI is signed in as the person's own `claude` runs: no
   `CLAUDE_CONFIG_DIR` or `CLAUDE_SECURESTORAGE_CONFIG_DIR`, in their home, so it writes the account in `~/.claude.json`
   and the tokens where their Claude Code keeps them (in `~/.claude`; on macOS the Keychain item `Claude Code-credentials`).
+  On macOS the CLI names that item's account by `USER`, so the sign-in, the status check and a run all get `USER` and
+  `LOGNAME` set to the user the server runs as (as the system names it, whatever `USER` the server was started with):
+  the item is the one the person's own `claude auth status` reads in their terminal, never one under the account
+  `unknown`, which a CLI started with no `USER` uses.
   `command` there is `env -u CLAUDE_CONFIG_DIR -u CLAUDE_SECURESTORAGE_CONFIG_DIR ... auth login`, so a terminal that
   exports either still signs in at that login. env is a program, so the line runs alike when pasted into sh, bash,
   zsh, fish or tcsh; a CLI path holding `=`, which env would read as a variable, goes to `sh -c` as its `$0`. env skips
