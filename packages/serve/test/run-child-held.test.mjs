@@ -27,7 +27,7 @@ const host = await import("../dist/runner/run-child-host.js");
 const live = await import("../dist/live-reach.js");
 const { sealRunLaunch } = await import("../dist/store/index.js");
 const { Channel } = await import("../dist/runner/run-channel.js");
-const { settingFor } = await import("../dist/claude-login.js");
+const { loginForRun, settingFor } = await import("../dist/claude-login.js");
 
 const KEY = randomBytes(32);
 const { privateKey: PEM } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { type: "pkcs1", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } });
@@ -444,6 +444,25 @@ test("the runner's reader of the login (held claudeLogin) says each renewal's ou
     for (const secret of [first.access, first.refresh, second.access, second.refresh, renewed.access, renewed.refresh]) assert.ok(!line.includes(secret), `no token in the runner's log: ${line}`);
     for (const text of [textOf(first.access, first.refresh), readFileSync(elsewhere, "utf8")]) assert.ok(!line.includes(text), `no file text in the runner's log: ${line}`);
   }
+});
+
+test("the runner's answer to held claudeLogin is the claim's one decision whether it goes on the login: none with the login off, and a claim on this machine's own login refused in words, never left to a model key", async (t) => {
+  const { store } = await storeOn(t);
+  const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "held-login-answer-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  const { heldRedactor, keepText } = await import("../dist/runner/redact.js");
+  const place = { mode: "runner" };
+  // `login`: the claim's one read of the login (run-child-host.ts staysInRunner), which the runner hands down.
+  const claimOf = (runId, login) => host.heldFor({ store, sealKey: KEY, env: {}, data }, { claim: { runId, epoch: 1 }, run: { agentId: "agent-own", revisionId: "rev-own", signInHanded: null }, launch: { input: { content: "Hello." }, harness: "claude-agent", place }, revision: { kind: "agentic", body: { harness: "claude-agent" } }, claimed: {}, login }, heldRedactor(keepText), () => {}).held;
+  assert.equal(await claimOf("run-own", await loginForRun(store.settings, data, {}, "claude-agent", place)).claudeLogin(), undefined, "the login off: none, so the claim goes on the model keys");
+  await store.settings.put("claude_login", settingFor("machine", data));
+  const machine = await loginForRun(store.settings, data, {}, "claude-agent", place);
+  assert.ok(machine, "the claim read this machine's own login");
+  await assert.rejects(claimOf("run-own", machine).claudeLogin(), (error) => {
+    assert.equal(error.name, "ClaimRefused", `refused for good: ${error.stack}`);
+    assert.equal(error.message, loginToken.LOGIN_NOT_HANDED);
+    return true;
+  });
 });
 
 test("the install a run's process asks for is readable by every user and writable by none, an install from before installs were shared too", { skip: process.getuid?.() === 0 && "root reads every folder" }, async (t) => {

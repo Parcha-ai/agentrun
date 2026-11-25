@@ -329,7 +329,8 @@ two processes in the container: the server with `--no-runner`, and one runner on
 `GET /v2/health`. Each has its own store connection, so a busy runner never holds up the API. If either exits, the other
 stops and the container exits non-zero. Give the image other arguments and it runs that one command, as given:
 `runner --data /data --name runner-1` is a runner, and server options alone (no `server-and-runner`) are a server with
-its runner in its own process, which a [paired computer](#a-persons-own-computer) needs.
+its runner in its own process. A [paired computer](#a-persons-own-computer) works under either once the runner relays,
+below.
 
 A computer provider whose machines dial the server (Fly Machines and Cloudflare; the computer package's `connectOf`,
 which also says dial for E2B, Daytona or Modal made with `connect: "dial"`) works under a runner apart that knows the
@@ -344,6 +345,15 @@ its next claim. A runner apart with no public address refuses such a create, nam
 and the server says it sooner: in `GET /v2/computers`, each dial provider's row carries `runs_refused` with that fix,
 and its Test connection in Settings → Computers fails in the same words. With a runner that relays, `runs_refused` is
 null.
+
+A [paired computer](#a-persons-own-computer) takes the same relay. A run's claim on a runner that relays writes the
+computer's route (a settings row: the runner, its process, the run and the hold's end), refused while a live run on a
+live runner holds it, and taken from a runner that is gone or restarted, or a run that is over. Once a second the server
+closes a paired computer's socket that is not where its route says (close 1001), and the driver's redial lands there:
+relayed to the run's runner, or back on the server once the run releases it. The run's create waits for it about 80 s
+(the driver's longest redial, a relay's connect and a hello) and fails in words naming the runner when it does not
+come. `GET /v2/computers` lists the runner the hold is on (`held_on`), and the server's note when a relay was refused
+(`hold_note`), each shown on the computer's row in Settings → Computers.
 
 The token is in the log of the start that made it. A `docker stop` reaches both processes. The runner gives a busy run
 6 s (`--drain-timeout 6s`) to finish its turn, so a busy `docker stop` ends in about 7.5 s, inside Docker's default 10 s
@@ -1095,13 +1105,16 @@ passes the binding's conformance cases (below) needs no change here.
   refused at its start, saying to open its driver. A run uses what the hello's groups and features allow.
 - **Remove it.** Remove on its row (`DELETE /v2/computers/{computer_id}`) ends its token and closes its connection; a
   run holding it loses it. Pairing it again gives it a new id.
-- **One process.** A computer's connection lands on one server process, and only a run in that process can use it:
-  run `agentrun-serve start` with its runner beside the server (the default). A runner started apart
-  (`agentrun-serve runner`, beside a server started with `--no-runner`) refuses a paired computer at the claim, saying
-  so. Such a server says it sooner: its pairing code, the pair answer and each paired computer carry `runs_refused`,
-  which the console shows with the code and on the computer's row. The image's default command starts its runner apart; give the image the server's options alone
-  (`--data /data --listen 0.0.0.0 --port 7340 --drain-timeout 6s`) to keep the runner in the server's process. A
-  second server on one store is already refused by the store's owner lock, on SQLite and Postgres alike.
+- **One process, or a relay.** A computer's connection lands on the server process it dials. A run of the runner
+  beside the server (`agentrun-serve start`, the default) uses it there. A runner started apart (`agentrun-serve
+  runner`, beside a server started with `--no-runner`; the image's default command) uses it through the server's relay
+  when it knows the server's public address, `AGENTRUN_PUBLIC_URL`: its run's claim routes the computer's next dial to
+  that runner, and its release routes it back (above). One that does not refuses a paired computer at the claim,
+  naming both fixes. Such a server says it sooner: while no runner relays, its pairing code, the pair answer and each
+  paired computer carry `runs_refused`, which the console shows with the code and on the computer's row. Give the
+  runner `AGENTRUN_PUBLIC_URL`, or give the image the server's options alone (`--data /data --listen 0.0.0.0 --port
+  7340 --drain-timeout 6s`) to keep the runner in the server's process. A second server on one store is already
+  refused by the store's owner lock, on SQLite and Postgres alike.
 - **Conformance.** `node dist/attach-conformance-cli.js [--port 7392] [--listen 127.0.0.1]` runs the binding's cases
   against whatever driver pairs with the code it prints: pair, a wrong or used code, ping, a quiet minute, a redial
   after each close it must redial after (4408, 1000, 1001, 4409) and after a drop, a binary frame (1003), a frame over
@@ -1683,7 +1696,11 @@ reads of the login. A model named on a gateway or OpenRouter keeps its key, and 
 `model_key`. With no key at all, claude-agent's default
 model is `anthropic/claude-sonnet-5-5`. A run whose login is signed out fails at its start and says so. A status check
 the CLI outlasts (15 s) is asked once more; still no answer, the run goes on when the same login read signed in within
-the last 10 minutes in this server process (at a run's check or in Settings), else it fails saying the check timed out.
+the last 10 minutes on this machine (at a run's check or in Settings, in the server or in a runner process of its own on
+the same data folder, which keeps that time alone per login in `claude-login-answers/`, 0600), else it fails saying the
+check timed out. Being on disk, a signed-in answer outlives a restart of the server, and a turn-off and turn-on, for up to
+those 10 minutes; a signed-out answer removes it, and a new machine id (`machine-id` made again) leaves it standing for
+nothing.
 A check where the CLI answered nothing that reads as a status gets the same. Any other failure of the check, such as no CLI at
 its path, fails the run at once in the check's own words. It never switches to a key. The run books its tokens and no dollars (`cost.plan`, `on: "claude_code"`), and the plan's own limits
 apply. Only a run in a runner place, on the machine the mode was turned on for, goes on the login. A run placed in a

@@ -73,7 +73,9 @@ export interface Held {
    *  claim's own harness and place, and no model key of its own): its access token alone, read by the runner at each ask
    *  and renewed by it when near its end (claude-login-token.ts LoginTokens), which throws in words where there is none
    *  to hand; `refused(sent)` tells the runner Anthropic refused `sent` (the CLI's 401), so the next ask renews it. Else
-   *  none. */
+   *  none, and the claim does not go on the login: the one answer to that, since the process can read neither the
+   *  setting's machine id nor the login's folder. A claim on a login other than AgentRun's own folder is refused
+   *  (LOGIN_NOT_HANDED). */
   claudeLogin(): Promise<{ token(): Promise<string>; refused(sent: string): Promise<void> } | undefined>;
   /** Whether a browser sign-in handed to the run reads back here (sign-ins-store.ts handedSignInReadsBack). */
   signInReadsBack(): Promise<boolean>;

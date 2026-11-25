@@ -14,12 +14,15 @@ const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const TOKEN = `ar_test_${"b".repeat(40)}`;
 /** The fix in one line, as an operator reads it wherever it is said. */
 const FIX = "start the image with the server options alone, without server-and-runner";
+/** The other fix: a runner that knows the server's public address takes a paired computer's relayed socket. */
+const RELAY_FIX = "give the runner AGENTRUN_PUBLIC_URL";
 
-/** `said` is the runner-apart line: no run here can use the computer, and the fix. */
+/** `said` is the runner-apart line: no run here can use the computer, and both fixes. */
 function saysRunnerApart(said, where) {
   assert.equal(typeof said, "string", `${where}: ${JSON.stringify(said)}`);
   assert.match(said, /^no run on this server can use a paired computer: /, where);
   assert.ok(said.includes(FIX), `${where} names the fix: ${said}`);
+  assert.ok(said.includes(RELAY_FIX), `${where} names the relay's fix: ${said}`);
 }
 
 test("on a server started with --no-runner, the pairing code, the pair answer and the computer's row each say no run here can use a paired computer, and name the fix a run's refusal names", { timeout: 120_000 }, async (t) => {

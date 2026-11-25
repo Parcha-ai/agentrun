@@ -20,6 +20,7 @@ import { join, relative } from "node:path";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { inspect } from "node:util";
+import { stranger } from "./fixtures/stranger.mjs";
 
 // Namespaces: a name the module does not export reads as undefined, and its assertion says what is missing.
 const tokens = await import("../dist/claude-login-token.js").catch(() => ({}));
@@ -72,6 +73,8 @@ function noPosts(t) {
 async function tokenEndpoint(t, answer) {
   const posts = [];
   const server = createServer((request, response) => {
+    // A probe of the loopback port (a bare GET /) is no post of the renewal's: never parsed or counted.
+    if (stranger(request, response)) return;
     let body = "";
     request.setEncoding("utf8");
     request.on("data", (chunk) => (body += chunk));
@@ -1762,6 +1765,7 @@ test("the renewal never follows a redirect: a 307 to another origin gets no requ
   // a token, as a host the refresh token was steered to would.
   const elsewhere = [];
   const other = createServer((request, response) => {
+    if (stranger(request, response)) return;
     let body = "";
     request.setEncoding("utf8");
     request.on("data", (chunk) => (body += chunk));
