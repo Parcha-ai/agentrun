@@ -1051,6 +1051,11 @@ export interface components {
       firing_key: string;
     } | null;
     audit_of?: string | null;
+    learning_work?: {
+      state: "none" | "running" | "ended";
+      runs: string[];
+      ended_at: string | null;
+    };
     path?: "agent" | "handed_back" | "workflow" | "replay" | "audit" | null;
     workflow?: {
       name: string | null;

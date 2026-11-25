@@ -242,6 +242,7 @@ import { emailRoute } from "./email/routes.js";
 import { addressForms, openCalendar } from "./calendar/address.js";
 import { calendarRoute } from "./calendar/routes.js";
 import { agentDiskOf, ARCHIL_DISK_ID, archilSettingsFromEnv, inArchilMode, loadArchilSettings, runDiskKept, runDiskKey } from "./archil-settings.js";
+import { learningWorkKey } from "./learning-work.js";
 import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceView, settingOfDefinition } from "./computer-setting.js";
 import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folderModeOf, hostCommandRefusals, settingsComputerRoute } from "./computers.js";
 import { runningComputers } from "./computers-running.js";
@@ -3170,13 +3171,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       // The run's folder (its work and what sits beside it), its scratch and its native context, on this machine.
       for (const folder of [dirname(runFolder(data, agentId, runId)), scratchFolder(data, agentId, runId), join(data, "native-context", runId)]) await rm(folder, { recursive: true, force: true });
-      // Its settings: an SDK run's row, its browser wait's end and take, the Archil disk it resolved to. Its kept computer's row
-      // (workspace/computer-kept.ts) is left to the janitor, which deletes the computer of a run no longer there and then
-      // the row: removed here, the computer would have nothing left to reach it.
+      // Its settings: an SDK run's row, its browser wait's end and take, the Archil disk it resolved to, the learning work it
+      // started (learning-work.ts: child run ids; each child keeps its own row and its sealed key copy until its own end).
+      // Its kept computer's row (workspace/computer-kept.ts) is left to the janitor, which deletes the computer of a run no
+      // longer there and then the row: removed here, the computer would have nothing left to reach it.
       await store.settings.remove(sdkRunKey(runId));
       await store.settings.remove(waitEndedKey(runId));
       await store.settings.remove(browserHoldKey(runId));
       await store.settings.remove(runDiskKey(runId));
+      await store.settings.remove(learningWorkKey(runId));
       await forgetKept("run", runId);
     },
     forgetAgent: async (agentId) => {

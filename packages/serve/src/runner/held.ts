@@ -121,9 +121,9 @@ export interface Held {
   /** A change of the claim's computer's hold, committed to the run's journal here: signalled on the runner, whose live
    *  view of the computer tells its open viewer (computer-journal.ts heardComputerHold). */
   computerHold(change: ComputerHoldChange): Promise<void>;
-  /** The MCP credentials run `from` was handed, sealed again for run `id`, a run this one starts (promotion.ts,
-   *  audit.ts): none unless `from` is the claim's own run. */
-  handOn(from: string, id: string): Promise<Uint8Array | undefined>;
+  /** The MCP credentials run `from` was handed, and its own model key when `keyed` (store/seal.ts sealHandedLaunch),
+   *  sealed again for run `id`, a run this one starts (promotion.ts, audit.ts): none unless `from` is the claim's own run. */
+  handOn(from: string, id: string, keyed: boolean): Promise<Uint8Array | undefined>;
   /** The run's agent's live sign-in pointer for `resolution`, and its forgotten ones (sign-ins-store.ts signInReads): what
    *  its learning end holds to refuse a pointer in what the run learned. */
   signInPeek(resolution: string): Promise<unknown>;

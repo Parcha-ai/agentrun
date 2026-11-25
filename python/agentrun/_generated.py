@@ -1029,6 +1029,7 @@ __all__ = [
     "RunFileList",
     "RunImportedFrom",
     "RunLearning",
+    "RunLearningWork",
     "RunLearningWorkflowsItem",
     "RunList",
     "RunNative",
@@ -5736,6 +5737,7 @@ class Run(_RunRequired, total=False):
     imported_from: RunImportedFrom | None
     trigger: RunTrigger | None
     audit_of: str | None
+    learning_work: RunLearningWork
     path: Literal["agent", "handed_back", "workflow", "replay", "audit"] | None
     workflow: RunWorkflow | None
 
@@ -5982,6 +5984,12 @@ class RunImportedFrom(TypedDict):
 class RunTrigger(TypedDict):
     id: str
     firing_key: str
+
+
+class RunLearningWork(TypedDict):
+    state: Literal["none", "running", "ended"]
+    runs: list[str]
+    ended_at: str | None
 
 
 class RunWorkflow(TypedDict):

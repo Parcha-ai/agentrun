@@ -142,8 +142,19 @@ export function openRunLaunch(key: Buffer, runId: string, sealed: Uint8Array | n
   }
 }
 
-/** Seals a run's handed MCP credentials alone as its launch's sealed column (AAD run_launch|<run_id>|sealed): a run started
- *  by the runner from another (a replay, an audit) takes its MCP credentials, never its model key. */
+/** What a run the runner starts from run `from` (a check's replay, an audit's shadow) takes of `from`'s launch secrets
+ *  (`sealed`, its launch's sealed column), sealed for run `id` alone (AAD run_launch|<id>|sealed): its handed MCP
+ *  credentials, and, when `keyed` (the claim of `from` holds its own model key now), that model key with the origin it was
+ *  handed for, so the child spends on the key its run brought and never on the server's. Never its tool keys, nor a value
+ *  a message retired. The child's copy is erased at the child's own end, as any run's launch secrets are. Undefined when
+ *  it takes nothing, or the bytes do not open for `from`. */
+export function sealHandedLaunch(key: Buffer, from: string, sealed: Uint8Array | null, id: string, keyed: boolean): Uint8Array | undefined {
+  const opened = openRunLaunch(key, from, sealed);
+  if (!opened) return undefined;
+  return sealRunLaunch(key, id, { ...(opened.mcp ? { mcp: opened.mcp } : {}), ...(keyed && opened.model ? { model: opened.model } : {}) }) ?? undefined;
+}
+
+/** Seals a run's handed MCP credentials alone as its launch's sealed column (AAD run_launch|<run_id>|sealed). */
 export function sealRunMcpAuth(key: Buffer, runId: string, auth: RunMcpAuth): Uint8Array {
   return sealColumn(key, sealedAt.runLaunch(runId), JSON.stringify({ mcp: auth }));
 }

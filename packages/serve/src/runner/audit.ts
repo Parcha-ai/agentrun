@@ -36,7 +36,8 @@ import { launchBody, readLaunchBody, type RunLaunch } from "../run-launch.js";
 import { runEntries } from "../store-reads/journal.js";
 import { runPathOverStore } from "../store-reads/learning.js";
 import { FINAL_STATES, type RunRow, type Store, StoreConstraint } from "../store/store.js";
-import { openRunMcpAuth, sealRunMcpAuth } from "../store/seal.js";
+import { openRunLaunch, sealHandedLaunch } from "../store/seal.js";
+import { type AtRunEnd, noteLearningChild, RUN_CAP_MIN_USD } from "../learning-work.js";
 import { isObject, type Json } from "../validate.js";
 import { type AuditRow, type AuditStarted, auditableLaunch, auditChange, auditEveryOf, auditDrawn, auditsOffWords, auditWriterOf, holdOf, type LedgerLine, ledgerOf, lineKey, openAudits, rowsOf, shadowRunId } from "../learn/audit.js";
 import { lastRunsOf, sinceReset } from "../learn/compile.js";
@@ -50,10 +51,6 @@ import type { EndOfRunTurn } from "./loop-contract.js";
 import { answerJudged, answerOf, answerRowOf } from "./promotion.js";
 import { servedOf, type WorkflowFirst } from "./workflow-first.js";
 import { held, heldEndOfRun } from "./held.js";
-
-/** The least cap a run can take a step under (cap.ts: the next step needs at least a cent): a shadow with less left
- *  is never started. */
-const RUN_CAP_MIN_USD = 0.01;
 
 /** What the audit reads and writes at a claim (or the server's grade): the agent, the run claimed (none for a grade),
  *  its revision (whose definition holds the numbers) and launch, the agent's learning folder, the host's secrets as a
@@ -70,9 +67,14 @@ export type AuditDeps = {
   readonly sealKey?: Buffer;
   readonly admitAuxiliary?: AuxiliaryAdmitter;
   readonly now?: () => number;
-  /** Why model spend beside the claimed run is skipped (claim-secrets.ts claimSpendOff): a shadow is a run the runner
-   *  starts with no caller's key. Absent: it runs. */
+  /** Why model spend beside the claimed run is skipped (claim-secrets.ts claimSpendOff). Absent: it runs. */
   readonly spendOff?: (what: string) => string | undefined;
+  /** Whether the claim holds its run's own model key now (claim-secrets.ts keyedNow): its shadow then spends on a sealed
+   *  copy of that key. Absent: never. */
+  readonly keyed?: () => boolean;
+  /** What the claim queued to start at its run's end (learning-work.ts atRunEnd): run after the end-of-run step, before
+   *  the audit's start (withAudit). */
+  readonly atEnd?: AtRunEnd;
 };
 
 /** The words a second hold within stop_window leaves on its record: what the owner reads. */
@@ -138,13 +140,20 @@ export const AUDIT_PARKED = "the audit ended where it would wait on a person";
  *  end is counted (auditRoomOf: its job, its follow-ups, its compile turns). A run that
  *  could never be audited (no learning start, or not auditableLaunch) keeps `step` as it is. */
 export function withAudit(step: EndOfRunTurn | undefined, deps: AuditDeps & { readonly launch: RunLaunch; readonly redact?: (text: string) => string }): EndOfRunTurn | undefined {
-  if (!deps.launch.learning || !auditableLaunch(deps.launch)) return step;
+  if (!deps.launch.learning) return step;
+  const audited = auditableLaunch(deps.launch);
+  // A run never audited gets no step it had none of: the end of a run with no step queues nothing (its checks wait).
+  if (!audited && (!deps.atEnd || !step)) return step;
   // In a run's own process the whole step is its runner's (held.ts endOfRun), the audit's start with it: it reads the
   // run's journal and writes the ledger and a run, which no run's process may.
   if (held()) return heldEndOfRun();
+  // What the claim queued for its run's end (a check on its own key) starts first, so the audit's room counts it.
   return async (input) => {
     const rows = step ? await step(input) : undefined;
-    if (input.cut === undefined) await auditAtEnd(deps, input.runId);
+    if (input.cut === undefined) {
+      await deps.atEnd?.run();
+      if (audited) await auditAtEnd(deps, input.runId);
+    }
     return rows;
   };
 }
@@ -177,8 +186,8 @@ async function auditAtEnd(deps: AuditDeps & { readonly launch: RunLaunch; readon
 export async function startAudit(deps: AuditDeps & { readonly runId: string; readonly launch: RunLaunch; readonly room?: () => Promise<number | null> }, serve: Pick<WorkflowFirst, "name" | "digest" | "replay"> | undefined): Promise<void> {
   const { store, agentId, runId, launch, log } = deps;
   if (!serve || serve.replay || launch.replay || launch.audit || !launch.learning || !auditableLaunch(launch)) return;
-  // A shadow is a run of its own the runner starts, on no caller's key: skipped where the served run brought its own key
-  // or the server holds none (claimSpendOff).
+  // A shadow is a run of its own the runner starts: on the served run's own key while its claim holds it, else on the
+  // server's; skipped where the run's key was erased, or the server holds none (claimSpendOff).
   const off = deps.spendOff?.("A shadow audit");
   if (off) return void log(`workflow-first: ${off}`);
   try {
@@ -216,6 +225,7 @@ export async function startAudit(deps: AuditDeps & { readonly runId: string; rea
     if (allowance === null || (allowance !== undefined && allowance < RUN_CAP_MIN_USD)) {
       const skipped: AuditRow = { run: runId, shadow_run: null, workflow: serve.name, digest: serve.digest, promoted_at: promoted?.at ?? null, source: "shadow", agreed: null, served_cost: null, shadow_cost: null, ...turn, skipped: "no allowance", at: iso((deps.now ?? Date.now)()) };
       await addLines(deps, [skipped]);
+      await noteLearningChild(store.settings, runId, { run: null, kind: "shadow", at: (deps.now ?? Date.now)(), ...(deps.keyed?.() ? { keyed: true as const } : {}), dropped: "no_budget" });
       log(`workflow-first: ${serve.name} at ${serve.digest} served this run, drawn for its audit (1 in ${k}); no shadow: ${allowance === null ? "what it spent under its cap is not known" : `its cap leaves $${allowance}, under a run's smallest cap`} (no allowance)`);
       return;
     }
@@ -238,7 +248,10 @@ export async function startAudit(deps: AuditDeps & { readonly runId: string; rea
     };
     const started: AuditStarted = { source: "started", run: runId, shadow_run: id, workflow: serve.name, digest: serve.digest, promoted_at: promoted?.at ?? null, ...turn, at: iso((deps.now ?? Date.now)()) };
     await addLines(deps, [started]);
-    const sealed = await handedTo(deps, runId, id);
+    const keyed = deps.keyed?.() === true;
+    const sealed = await handedTo(deps, runId, id, keyed);
+    // Named as the run's learning work before it exists (learning-work.ts): its learning_work lists it while it runs.
+    await noteLearningChild(store.settings, runId, { run: id, kind: "shadow", at: (deps.now ?? Date.now)(), ...(keyed ? { keyed: true as const } : {}) });
     try {
       if (sourceSyncOf(revision?.body)) await deps.admitAuxiliary!({ runId: id, agentId, revisionId: deps.revisionId, launch: shadow, ...(sealed ? { sealed } : {}) });
       else await store.runs.create({ id, agentId, revisionId: deps.revisionId }, { body: launchBody(shadow) as Json, ...(sealed ? { sealed } : {}) });
@@ -252,13 +265,16 @@ export async function startAudit(deps: AuditDeps & { readonly runId: string; rea
   }
 }
 
-/** The per_run MCP credentials run `from` was handed, sealed for shadow run `id` alone (as a replay run's are). */
-async function handedTo(deps: Pick<AuditDeps, "store" | "sealKey">, from: string, id: string): Promise<Uint8Array | undefined> {
+/** The per_run MCP credentials run `from` was handed, and its own model key when `keyed`, sealed for shadow run `id`
+ *  alone (store/seal.ts sealHandedLaunch, as a replay run's are). A keyed shadow whose run holds no key now is never
+ *  started (throws): it would spend on the server's key. */
+async function handedTo(deps: Pick<AuditDeps, "store" | "sealKey">, from: string, id: string, keyed: boolean): Promise<Uint8Array | undefined> {
   // A run's own process holds no seal key: its runner seals them again, from its own run alone (held.ts handOn).
-  if (!deps.sealKey) return held()?.handOn(from, id);
-  const sealed = await deps.store.runs.launch(from).then((one) => one.sealed ?? null, () => null);
-  const handed = sealed === null ? undefined : openRunMcpAuth(deps.sealKey, from, sealed);
-  return handed && Object.keys(handed).length ? sealRunMcpAuth(deps.sealKey, id, handed) : undefined;
+  const sealed = deps.sealKey
+    ? await deps.store.runs.launch(from).then((one) => (one.sealed === null ? undefined : sealHandedLaunch(deps.sealKey!, from, one.sealed, id, keyed)), () => undefined)
+    : await held()?.handOn(from, id, keyed);
+  if (keyed && (!deps.sealKey || !sealed || !openRunLaunch(deps.sealKey, id, sealed)?.model)) throw new Error("the run whose own model key its shadow would spend on holds none now");
+  return sealed;
 }
 
 /** Writes the row of each open audit (a started line with no row yet) whose two runs, read by id, ended, the batch

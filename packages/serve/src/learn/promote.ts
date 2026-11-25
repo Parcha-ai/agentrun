@@ -238,11 +238,14 @@ export const CHECK_TEXT_MAX = 1_200;
 export const checkShares = (score: { readonly n: number; readonly agreed: number; readonly alone: number }): { agreement: number; alone: number } =>
   ({ agreement: score.alone ? score.agreed / score.alone : 0, alone: score.n ? score.alone / score.n : 0 });
 
-/** What a replay's runs are launched with (PromotionRecord.launch). */
+/** What a replay's runs are launched with (PromotionRecord.launch). `keyed`: its runs spend on run `handed_from`'s own
+ *  model key, a sealed copy of it handed to each (store/seal.ts sealHandedLaunch), each capped at its share of what that
+ *  run's cap left at its end (runner/promotion.ts keyedCapOf); never created again once that run's claim is gone. */
 export interface ReplayLaunch {
   readonly revision: string;
   readonly body: unknown;
   readonly handed_from?: string;
+  readonly keyed?: true;
 }
 
 /** A tool that stopped a replay's inputs (each a skipped_write row): its catalog name, how many inputs it stopped, and

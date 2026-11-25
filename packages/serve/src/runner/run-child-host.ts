@@ -41,7 +41,7 @@ import { FAUX_ENV, FAUX_PROVIDER, GATEWAY_KEY_ENV } from "../model.js";
 import { SAVED_GATEWAY_ENV, savedGatewayIn } from "../model-gateway.js";
 import { FAUX_VENDOR_API_ENV } from "../tools.js";
 import { withinCarried } from "../paid-calls.js";
-import { openRunMcpAuth, sealRunMcpAuth } from "../store/seal.js";
+import { sealHandedLaunch } from "../store/seal.js";
 import { runZone } from "../environment.js";
 import { shadowRunId } from "../learn/audit.js";
 import { LEARNING_SCRIPT, learningWorkspace } from "../learn/folder.js";
@@ -53,7 +53,8 @@ import type { Workspace } from "../workspace/workspace.js";
 import { keptKeyOf } from "../workspace/computer-kept.js";
 import { waitEndedKey } from "../browser-wait-ended.js";
 import { browserHoldKey } from "../browser-hold.js";
-import { claimModelKey, claimSecrets, claimSpendOff, hostDecisionKeys, learnedDecisionKeys, openRunModelKey, savedModelKeys, serverKeyless, tierModelKeys, withoutModelKeys } from "./claim-secrets.js";
+import { claimModelKey, claimSecrets, claimSpendOff, hostDecisionKeys, keyedNow, learnedDecisionKeys, openRunModelKey, savedModelKeys, serverKeyless, tierModelKeys, withoutModelKeys } from "./claim-secrets.js";
+import { atRunEnd } from "../learning-work.js";
 import { type GithubAppAccessAt, githubAppAccess } from "./github-app.js";
 import { githubPullOf, githubTargetOf } from "../github.js";
 import { isObject } from "../validate.js";
@@ -726,6 +727,8 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
   let learnedFlows: readonly LearnedWorkflow[] = [];
   /** The claim's one learned first choice: its promotion's writes are made once, however often the process asks. */
   let chosen: Promise<LearnedFirst> | undefined;
+  /** What the claim's learned first choice queued for its run's end (a check on its own key), run by its end-of-run step. */
+  const atEnd = atRunEnd(log);
   const held: Held = {
     projectCheckpoint: (...args: [AbortSignal?]) => {
       if (args.length > 1 || args[0] !== undefined && !(args[0] instanceof AbortSignal)) throw new ClaimRefused("A project checkpoint accepts only its cancellation signal.");
@@ -899,11 +902,10 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     liveViewerDrop: (tag) => dropLiveViewer(store, claim, tag),
     // The claim's own run, whatever the process names: its view on this runner hears the change.
     computerHold: async (change) => heardComputerHold(claim.runId, change, cut),
-    handOn: async (from, id) => {
+    handOn: async (from, id, keyed) => {
       if (from !== claim.runId || typeof id !== "string") return undefined;
       const sealed = await store.runs.launch(from).then((one) => one.sealed ?? null, () => null);
-      const handed = sealed === null ? undefined : openRunMcpAuth(sealKey, from, sealed);
-      return handed && Object.keys(handed).length ? sealRunMcpAuth(sealKey, id, handed) : undefined;
+      return sealed === null ? undefined : sealHandedLaunch(sealKey, from, sealed, id, keyed === true);
     },
     signInPeek: (resolution) => peekSignIn(store, sealKey, run.agentId, String(resolution)),
     signInForgotten: (resolution) => forgottenSignIns(store, sealKey, run.agentId, String(resolution)),
@@ -996,9 +998,10 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       }
       const made = await archilOf();
       // The audit's spend, skipped as the run's spec skips it (claim-secrets.ts claimSpendOff): over the claim's own key.
-      const spendOff = await claimSpendOff(keys, await claimModelKey(keys, claim.runId));
+      const runKey = await claimModelKey(keys, claim.runId);
+      const spendOff = await claimSpendOff(keys, runKey);
       // The audit's start after the step (audit.ts withAudit) is this runner's too: it reads the run's journal and writes
-      // the ledger and a run.
+      // the ledger and a run, and starts what the claim queued for the run's end first.
       const step = withAudit(learningEndOfRun(launch, {
         store,
         data: deps.data,
@@ -1009,7 +1012,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
         log,
         decisionProviders: async () => decisionProvidersIn({ ...(deps.env ?? {}), ...(await hostDecisionKeys(keys, DECISION_PROVIDER_KEYS)) }),
         learningFolder: made === undefined ? (agentId: string) => learningFolderOf(deps.data, agentId) : (agentId: string) => learningWorkspace({ mode: "archil", agentId, archil: made }),
-      }), { store, agentId: run.agentId, revisionId: run.revisionId, context: BACKGROUND_CONTEXT, folder: await folderNow(), shown, log, sealKey, spendOff, launch, redact: cut, admitAuxiliary });
+      }), { store, agentId: run.agentId, revisionId: run.revisionId, context: BACKGROUND_CONTEXT, folder: await folderNow(), shown, log, sealKey, spendOff, keyed: keyedNow(runKey), atEnd, launch, redact: cut, admitAuxiliary });
       if (!step) return undefined;
       // keptOf is the run's process's, asked over the channel: read once, for the round learningEndOfRun reads (the
       // round after the newest the run kept), before the step reads it at once.
@@ -1038,9 +1041,10 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       const start = learningStartOf(launch);
       const folder = await folderNow();
       const laid = ask?.laid === true && start && !seedFailed(start) && !start.noWorkflows ?await workflowsAt({ folder, store, shown }, start.seed).catch(() => []) : [];
-      const spendOff = await claimSpendOff(keys, await claimModelKey(keys, claim.runId));
+      const runKey = await claimModelKey(keys, claim.runId);
+      const spendOff = await claimSpendOff(keys, runKey);
       const outputSchema = (revision.body as { outputSchema?: unknown }).outputSchema;
-      const got = await learnedFirst({ store, sealKey, agentId: run.agentId, runId: claim.runId, revisionId: run.revisionId, kind: revision.kind, ...(outputSchema !== undefined ? { outputSchema } : {}), launch, context: BACKGROUND_CONTEXT, log, folder, shown, spendOff, admitAuxiliary }, laid);
+      const got = await learnedFirst({ store, sealKey, agentId: run.agentId, runId: claim.runId, revisionId: run.revisionId, kind: revision.kind, ...(outputSchema !== undefined ? { outputSchema } : {}), launch, context: BACKGROUND_CONTEXT, log, folder, shown, spendOff, keyed: keyedNow(runKey), atEnd, admitAuxiliary }, laid);
       learnedFlows = got.workflows;
       return cutDeep(dataOnly(got) as LearnedFirst, cut);
     })()),
