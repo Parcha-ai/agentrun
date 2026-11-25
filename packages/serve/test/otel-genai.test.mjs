@@ -537,6 +537,55 @@ test("the tracer's [otel] lines cut an unknown header's tail after any first wor
   assert.equal(otlpHeaderCut(env)(`401: bad credential ${cred}`), "401: bad credential [redacted]", "an [otel] line quoting the tail alone is cut");
 });
 
+// Which of `names`, each an OTLP endpoint's query parameter with a dummy value of its own, have their value on the held list.
+const heldParams = (names) => {
+  const value = (name) => `${name}-${"dummy"}-value-6060`;
+  const values = runnerSecrets({ OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: `https://collector.invalid/v1/traces?${names.map((name) => `${name}=${value(name)}`).join("&")}` });
+  return names.filter((name) => values.includes(value(name)));
+};
+
+test("an OTLP endpoint's query parameter named like a credential with a number after it (apiKey2, token2, secret01, token_2) is held", () => {
+  const names = ["apiKey2", "token2", "secret01", "token_2", "api_key_2"];
+  assert.deepEqual(names.filter((name) => !heldParams(names).includes(name)), [], "every numbered credential name's value is held");
+});
+
+test("an OTLP endpoint's query parameter whose name is one lowercase word starting with a credential word (tokenvalue, passwordhash) is held; a plural count (tokens, secrets) and authority, keyspace are not", () => {
+  const names = ["tokenvalue", "passwordhash", "secretvalue", "jwtpayload", "passwdhash"];
+  assert.deepEqual(names.filter((name) => !heldParams(names).includes(name)), [], "every name starting with a credential word has its value held");
+  assert.deepEqual(heldParams(["tokens", "secrets", "authority", "keyspace"]), [], "a plural count, authority and keyspace are not held");
+});
+
+test("an OTLP endpoint's query parameter named jwt or session, or ending in passwd, pwd, authorization or sessionid, is held; sessions and sessioncount are not", () => {
+  const names = ["jwt", "session", "sessionid", "session_token", "jsessionid", "dbpasswd", "userpwd", "proxyauthorization", "accessjwt"];
+  assert.deepEqual(names.filter((name) => !heldParams(names).includes(name)), [], "every jwt, session and passwd/pwd/authorization name's value is held");
+  assert.deepEqual(heldParams(["sessions", "sessioncount"]), [], "a count of sessions is not held");
+});
+
+test("an OTLP endpoint's lowercase *key query parameter is held only when the compound names a credential: apikey, accesskey, writekey are; routingkey, sortkey, primarykey, partitionkey, cachekey are not", () => {
+  const names = ["apikey", "accesskey", "secretkey", "privatekey", "writekey", "clientkey", "authkey", "signingkey", "sessionkey", "subscriptionkey", "datadogapikey"];
+  assert.deepEqual(names.filter((name) => !heldParams(names).includes(name)), [], "every credential *key name's value is held");
+  assert.deepEqual(heldParams(["routingkey", "sortkey", "primarykey", "partitionkey", "cachekey", "keyspace"]), [], "a *key that names no credential is not held");
+});
+
+test("an OTLP header value carrying a credential-named name=value pair or a URL with a credential in it is held and cut of that credential alone; a harmless pair is left whole", () => {
+  const [session, dsnKey, user, password] = [`session-${"dummy"}-tok-1301`, `dsn-${"dummy"}-key-2402`, `user-${"dummy"}-3503`, `pass-${"dummy"}-4604`];
+  const userinfo = (name, secret) => [name, secret].join(":");
+  const env = {
+    ...ON,
+    OTEL_EXPORTER_OTLP_HEADERS: `Cookie=session=${session}; theme=dark-mode-on,X-Sentry-Dsn=https://${dsnKey}@sentry.invalid/1`,
+    OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Upstream=https://${userinfo(user, password)}@relay.invalid/v1`,
+  };
+  for (const [list, values] of [["runnerSecrets", runnerSecrets(env)], ["hostSecrets", hostSecrets(env)]]) {
+    assert.deepEqual([["the cookie's session", session], ["the DSN's key", dsnKey], ["the URL's user", user], ["its password", password]].filter(([, value]) => !values.includes(value)).map(([what]) => what), [], `every credential inside a header value is held alone (${list})`);
+    for (const value of ["dark-mode-on", "theme=dark-mode-on"]) assert.equal(values.includes(value), false, `${value} (a pair named like no credential) is not held (${list})`);
+  }
+  assert.equal(
+    otlpHeaderCut(env)(`401: session ${session} expired; theme=dark-mode-on; dsn key ${dsnKey}; relay ${user} ${password}`),
+    "401: session [redacted] expired; theme=dark-mode-on; dsn key [redacted]; relay [redacted] [redacted]",
+    "an [otel] line quoting each credential alone is cut of it, and the harmless pair is left",
+  );
+});
+
 test("a short OTLP header value is cut from the tracer's own error text, at any length; a standard header's value is left as it is", async (t) => {
   const short = `hc${"7"}x1`;
   const env = { ...ON, OTEL_EXPORTER_OTLP_HEADERS: `x-honeycomb-team=${short},Content-Type=application/json`, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `x-team=${short}` };
