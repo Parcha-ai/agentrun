@@ -53,6 +53,24 @@ test("--known-answer exits 1 with one stderr line per unreadable file, its key a
   for (const text of [PROMPT, "work-fixture", SESSION, dir]) assert.equal(result.stderr.includes(text), false, `stderr holds no ${text}`);
 });
 
+test("an OpenCode database that cannot be opened is a failure, never an OpenCode history of no sessions", async (t) => {
+  const { mkdir, writeFile } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const dir = await tempHome(t);
+  const data = join(dir, ".local", "share", "opencode");
+  await mkdir(data, { recursive: true });
+  await writeFile(join(data, "opencode.db"), "not a database, not even close to one");
+  const failures = [];
+  assert.deepEqual(await parseHome(dir, { sources: ["opencode"], catalog: false, failures }), []);
+  assert.deepEqual(failures.map(({ key, source }) => ({ key, source })), [{ key: sha(".local/share/opencode/opencode.db"), source: "opencode" }]);
+  await assert.rejects(parseHome(dir, { sources: ["opencode"], catalog: false }), (error) => error.failures?.length === 1);
+  // OPENCODE_DB may name a database of any name: one that does not open fails the same way.
+  await writeFile(join(dir, "history.sqlite"), "not a database either");
+  const named = [];
+  await parseHome(dir, { sources: ["opencode"], catalog: false, failures: named, env: { XDG_DATA_HOME: join(dir, "elsewhere"), OPENCODE_DB: join(dir, "history.sqlite") } });
+  assert.deepEqual(named.map(({ key }) => key), [sha("history.sqlite")]);
+});
+
 test("a read that fails partway leaves the state as it was: a retry with the same state gives the fresh pass's totals", async (t) => {
   const dir = await tempHome(t);
   await writeJsonl(claudeFile(dir), [
@@ -86,6 +104,58 @@ test("a read that fails partway leaves the state as it was: a retry with the sam
   const fresh = await parseHome(dir, { sources: ["claude-code"], catalog: false });
   assert.equal(fresh[0].calls, 2);
   assert.deepEqual(retry, fresh);
+});
+
+test("an OpenCode storage session with a file or folder that cannot be read is a failure, never a session of fewer messages; a malformed record is passed over", { skip }, async (t) => {
+  const { join } = await import("node:path");
+  const { buildLegacy } = await import("./fixtures/opencode/fixture.mjs");
+  const dir = await tempHome(t);
+  const storage = join(dir, ".local", "share", "opencode", "storage");
+  await buildLegacy(storage);
+  // The fixture's malformed parts ("[]", "{not json") are no failure.
+  const clean = [];
+  const whole = await parseHome(dir, { sources: ["opencode"], catalog: false, failures: clean });
+  assert.deepEqual(clean, []);
+  assert.deepEqual(whole.map(({ id }) => id), ["ses_A"]);
+  const key = sha(".local/share/opencode/storage/session/prj_fixture/ses_A.json");
+  for (const path of ["part/msg_A2/prt_A2c.json", "message/ses_A/msg_A3.json", "part/msg_A2", "message/ses_A", "session/prj_fixture/ses_A.json"]) {
+    const at = join(storage, path);
+    await chmod(at, 0);
+    try {
+      const failures = [];
+      const rows = await parseHome(dir, { sources: ["opencode"], catalog: false, failures });
+      assert.deepEqual(failures.map(({ key, source }) => ({ key, source })), [{ key, source: "opencode" }], path);
+      assert.equal(rows.some(({ id }) => id === "ses_A"), false, `${path}: no totals of part of the session`);
+    } finally {
+      await chmod(at, path.endsWith(".json") ? 0o644 : 0o755);
+    }
+  }
+});
+
+test("a session whose size query fails is a failure when its read fails too, never left out unsaid; one its reader says is gone is passed over", async (t) => {
+  const { mkdir, writeFile } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const dir = await tempHome(t);
+  const db = join(dir, ".local", "share", "opencode", "opencode.db");
+  await mkdir(join(db, ".."), { recursive: true });
+  await writeFile(db, "");
+  const broken = Object.assign(new Error("database disk image is malformed"), { code: "ERR_SQLITE_ERROR" });
+  // Listed with two sessions; ses_gone no longer there by its size, ses_bad's size and read both failing (a database
+  // damaged after it was listed).
+  const reader = {
+    ...READERS.opencode,
+    discover: async () => [{ file: db, id: "ses_bad" }, { file: db, id: "ses_gone" }],
+    stat: async ({ id }) => {
+      if (id === "ses_gone") return null;
+      throw broken;
+    },
+    read: async () => {
+      throw broken;
+    },
+  };
+  const failures = [];
+  assert.deepEqual(await parseHome(dir, { sources: ["opencode"], readers: { opencode: reader }, catalog: false, failures }), []);
+  assert.deepEqual(failures.map(({ key, source }) => ({ key, source })), [{ key: sha(".local/share/opencode/opencode.db#ses_bad"), source: "opencode" }]);
 });
 
 test("a resumed read that fails gives up the records it held: copies in later files count, as in a fresh pass, and the next pass reads it from its start", async (t) => {

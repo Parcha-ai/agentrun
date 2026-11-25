@@ -45,7 +45,7 @@ describe("attach to a Docker computer by Docker's names for it", { skip: LIVE ? 
 		arch = docker("version", "--format", "{{.Server.Arch}}").trim();
 		daemonPath = fileURLToPath(new URL(`../../dist/computerd-linux-${arch}`, import.meta.url));
 		assert.ok(existsSync(daemonPath), `no daemon for Docker's arch at ${daemonPath}: run npm run build:daemon`);
-		provider = new DockerProvider({ daemonPath });
+		provider = new DockerProvider({ env: process.env, daemonPath });
 		const created = await provider.create({ image: "alpine:3.20", lifetimeMs: 10 * 60_000, network: "none", labels: { [RUN_LABEL]: run } }, newRequest("provider"));
 		assert.equal(created.ok, true, JSON.stringify(created));
 		ref = created.value;
@@ -126,7 +126,7 @@ describe("attach to a Docker computer by Docker's names for it", { skip: LIVE ? 
 		// path are the same daemon. A byte past the end of the ELF file changes the hash and nothing it runs.
 		appendFileSync(other, "\n");
 		chmodSync(other, 0o755);
-		const created = await new DockerProvider({ daemonPath: other }).create({
+		const created = await new DockerProvider({ env: process.env, daemonPath: other }).create({
 			image: "debian:bookworm-slim",
 			lifetimeMs: 10 * 60_000,
 			network: "none",
@@ -178,7 +178,7 @@ setInterval(() => (existsSync(${JSON.stringify(go)}) || Date.now() > bound) && r
 `,
 			{ mode: 0o755 },
 		);
-		const holding = new DockerProvider({ daemonPath, docker: wrapper });
+		const holding = new DockerProvider({ env: process.env, daemonPath, docker: wrapper });
 		const controller = new AbortController();
 		const pending = holding.create(
 			{ image: "alpine:3.20", network: "none", lifetimeMs: 10 * 60_000, labels: { [RUN_LABEL]: run, role: "abort" } },
@@ -215,7 +215,7 @@ describe("a Docker computer's /work is bounded", { skip: LIVE ? false : "set AGE
 		const arch = docker("version", "--format", "{{.Server.Arch}}").trim();
 		const daemonPath = fileURLToPath(new URL(`../../dist/computerd-linux-${arch}`, import.meta.url));
 		assert.ok(existsSync(daemonPath), `no daemon for Docker's arch at ${daemonPath}: run npm run build:daemon`);
-		provider = new DockerProvider({ daemonPath });
+		provider = new DockerProvider({ env: process.env, daemonPath });
 	});
 
 	after(() => {

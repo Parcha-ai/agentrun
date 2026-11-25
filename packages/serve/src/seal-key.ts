@@ -20,7 +20,7 @@ import { chmodSync, closeSync, linkSync, lstatSync, mkdirSync, openSync, readFil
 import { join } from "node:path";
 import { unseal } from "./sealing.js";
 import type { Store } from "./store/index.js";
-import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
+import { notASealKey, SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
 import { handedSecret, holdSealKey } from "./secrets.js";
 
 /** The seal key's own directory in the data directory, and its file there. */
@@ -85,7 +85,7 @@ function keptIn(dir: string): SealKey | undefined {
   }
   const text = readFileSync(file, "utf8").split("\n")[0]!.trim();
   const key = sealKeyOf(text);
-  if (!key) throw refused(`${file} does not hold 32 bytes in base64`);
+  if (!key) throw refused(`${file} holds a key that ${notASealKey(text)}`);
   return { key, text, path: file, generated: false };
 }
 
@@ -135,7 +135,7 @@ function writeIn(dir: string, text: string): boolean {
 export function ensureSealKey(given: string | undefined, { dataDir }: { dataDir: string }): SealKey {
   if (given) {
     const key = sealKeyOf(given);
-    if (!key) throw refused(`${SEAL_KEY_ENV} is set but is not 32 bytes in base64`);
+    if (!key) throw refused(`${SEAL_KEY_ENV} is set but ${notASealKey(given)}`);
     return { key, text: given, path: null, generated: false };
   }
   const dir = join(dataDir, SEAL_KEY_DIR);
@@ -229,7 +229,7 @@ async function sealKeyFor(store: SealKeyStore, dataDir: string, given: string | 
   let seal: SealKey | undefined;
   if (given) {
     const key = sealKeyOf(given);
-    if (!key) throw refused(`${SEAL_KEY_ENV} is set but is not 32 bytes in base64`);
+    if (!key) throw refused(`${SEAL_KEY_ENV} is set but ${notASealKey(given)}`);
     const why = notTheStoresWhy(kept, key);
     if (why !== undefined) throw notTheStores(`The ${SEAL_KEY_ENV} handed now is not it${why}.`);
     seal = { key, text: given, path: null, generated: false };

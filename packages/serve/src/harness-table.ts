@@ -227,8 +227,9 @@ function adapterEntry(facts: AdapterFacts, make: (env: NodeJS.ProcessEnv, needs:
     ...extra,
     // Its wire's vendor's model, or that vendor's on OpenRouter; behind serve's gateway, on the wire it serves, any id,
     // which is the gateway's own string and names no provider here. One that runs on a ChatGPT plan, the plan's models.
-    // A model the route translates onto its wire (wires.ts routed: an Ollama model on Messages), except behind a gateway.
-    runs: (env, model) => (gateway && Boolean(env.AGENT_MODEL_BASE_URL)) || model.slice(0, Math.max(0, model.indexOf("/"))) === vendor || onOpenRouter(model, vendor) || (onPlan && model.startsWith(`${PLAN_PROVIDER}/`)) || (routedId(wire, model) && !env.AGENT_MODEL_BASE_URL),
+    // A model the route translates onto its wire (wires.ts routed: an Ollama model on Messages or Responses), where its
+    // proxy forwards with the route's fetch (its forwardsRoute fact), except behind a gateway.
+    runs: (env, model) => (gateway && Boolean(env.AGENT_MODEL_BASE_URL)) || model.slice(0, Math.max(0, model.indexOf("/"))) === vendor || onOpenRouter(model, vendor) || (onPlan && model.startsWith(`${PLAN_PROVIDER}/`)) || (facts.forwardsRoute === true && routedId(wire, model) && !env.AGENT_MODEL_BASE_URL),
     onWire: (env) => facts.ownModel || openRouterOnly(wire, env),
     model: async (env, ref, available) => (facts.ownModel && !available ? undefined : modelOn(wire, env, ref, id)),
     priceModel: (env, model) => priceModelFor(wire, env, model, id),
@@ -334,6 +335,10 @@ const ACP_PROMISES: HarnessPromises = Object.freeze({ resume: "load", tool_gate:
 /** As ACP_PROMISES, with a resume by a new session given the conversation so far: a module's ACP agent's, unless it
  *  says "load" (AcpEntryOptions.resume). */
 const ACP_RESTART_PROMISES: HarnessPromises = Object.freeze({ ...ACP_PROMISES, resume: "restart" });
+/** Goose's: as ACP_PROMISES, its tool calls held by its config. Its recipe's allowFile (Goose's permission file, written at
+ *  each start) allows each tool of the run by name, so Goose asks nothing for a call of ours and the host's gate is asked at
+ *  the MCP call. */
+const GOOSE_PROMISES: HarnessPromises = Object.freeze({ ...ACP_PROMISES, tool_gate: "config" });
 
 /** The code a module's ACP entry is refused by at its first launch when it promises resume "load" and its recipe
  *  declares no session/load (AcpEntryOptions.resume). */
@@ -569,7 +574,7 @@ const BUILTIN: Readonly<Record<HarnessId, HarnessEntry>> = Object.freeze({
         if ("missing" in found) throw gooseRefused(found.missing);
         return undefined;
       },
-      promises: ACP_PROMISES,
+      promises: GOOSE_PROMISES,
       hidden: gooseHidden,
     }),
   } : {}),

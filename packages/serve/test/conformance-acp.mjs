@@ -67,6 +67,11 @@ export function acpSpec(setup, mode) {
     state: [".fake-acp"],
     declares: { load: mode.load, mcp: mode.http ? "http" : "stdio" },
     billing: { kind: "plan", maxTurns: 100, maxToolCalls: 100 },
+    // Our tools' permission requests as each style's shipped recipe answers them: Goose's permission file (the fake asks
+    // nothing for our tools), Cursor's title tie. Each names its calls by its shipped recipe's field (announces).
+    ...(mode.style === "cursor"
+      ? { announces: { tool: "rawInput.toolName", server: "rawInput.providerIdentifier", args: "rawInput.args" }, quirks: { permissionTie: "title" } }
+      : { announces: { tool: "_meta.goose.toolCall.toolName" }, allowFile: { path: ".config/goose/permission.yaml", form: "goose-permission" } }),
   };
   return async () => ({
     ...(agentId ? { agentId } : {}),
