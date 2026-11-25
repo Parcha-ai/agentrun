@@ -287,8 +287,9 @@ const planClosed = (plan: ChatGPTPlan, ms: number): Promise<void> => {
   return Promise.race([plan.close(), new Promise<void>((done) => (timer = setTimeout(done, ms)))]).finally(() => clearTimeout(timer));
 };
 /** How far past its runs' bound a signed-in server's stop may run before the CLI stops it at once (Serve.stopping): the
- *  sign-in's close and a renewal's drain (stopRenewals), so the 15 s margin (stop-signals.ts) never cuts a drain short. */
-const PLAN_STOP_BOUND_MS = PLAN_CLOSE_MS + RENEWAL_DRAIN_MS;
+ *  sign-in's close and a renewal's drain (stopRenewals), so the 15 s margin (stop-signals.ts) never cuts a drain short.
+ *  Every shipped deploy's stop grace is at least this (test/deploy-grace.test.mjs): a platform that kills sooner loses it. */
+export const PLAN_STOP_BOUND_MS = PLAN_CLOSE_MS + RENEWAL_DRAIN_MS;
 const PAGE_ROWS = 500;
 const FILE_LIST_CAP = 2_000;
 /** Where the stop's lines go (ServeOptions.notice). Best-effort: a notice that throws never stops a close or a start. */

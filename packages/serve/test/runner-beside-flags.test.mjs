@@ -134,6 +134,24 @@ test("a runner of its own stops inside the stop grace of compose, the Helm chart
   }
 });
 
+test("every shipped deploy gives each AgentRun process at least a signed-in server's stop bound (the ChatGPT sign-in's close and a renewal's drain) before it kills: the quickstart, the --no-runner server, its runners, the chart and the templates", async () => {
+  const { PLAN_STOP_BOUND_MS } = await import("../dist/server.js");
+  assert.equal(PLAN_STOP_BOUND_MS, 27_000, "2 s close + 15 s refresh + 10 s store write");
+  const values = await readFile(new URL("../../../deploy/helm/agentrun/values.yaml", import.meta.url), "utf8");
+  const pod = /^terminationGracePeriodSeconds: (\d+)$/m.exec(values);
+  assert.ok(pod && Number(pod[1]) * 1_000 >= PLAN_STOP_BOUND_MS, `the chart's ${pod?.[1]} s`);
+  for (const path of ["compose.yaml", "deploy/compose.yaml", "deploy/coolify/agentrun.yaml", "deploy/dokploy/agentrun/docker-compose.yml"]) {
+    const { services } = parseYaml(await readFile(new URL(`../../../${path}`, import.meta.url), "utf8"), { merge: true });
+    // AgentRun's own processes: its image or a build of it, never a service it runs beside (the "pg" profile's Postgres).
+    const ours = Object.entries(services).filter(([, service]) => service.build !== undefined || /agentrun/.test(String(service.image ?? "")));
+    assert.ok(ours.length > 0, `${path} runs AgentRun`);
+    for (const [name, service] of ours) {
+      const grace = /^(\d+)s$/.exec(String(service.stop_grace_period ?? ""));
+      assert.ok(grace && Number(grace[1]) * 1_000 >= PLAN_STOP_BOUND_MS, `${path}'s ${name}: stop_grace_period ${service.stop_grace_period ?? "(Docker's 10 s)"} is under ${PLAN_STOP_BOUND_MS / 1_000} s, so a stop is killed inside a renewal's drain`);
+    }
+  }
+});
+
 test("--max-runs 2 with 4 runs queued: the runner holds 2 at once, the other 2 wait queued, then run as places free", async (t) => {
   const { server, runner, turns, events, beats } = await besideRunner(t, { maxRuns: 2 }, ["run-1", "run-2", "run-3", "run-4"]);
   await until(() => turns.loops.filter((loop) => loop.claim).length === 2, "two runs claimed");

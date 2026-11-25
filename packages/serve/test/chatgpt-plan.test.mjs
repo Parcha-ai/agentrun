@@ -1878,8 +1878,17 @@ test("a stop waits for a renewal already spent at OpenAI to save its pair before
   const other = mapStore();
   await seatRow(other, sealKey, -1_000);
   await stopRenewals(other);
-  await assert.rejects(new ChatGPTPlan({ store: other, sealKey }).token(), /try again in a moment/, "a stopping store starts no renewal");
+  // Refused at once: a renewal started would wait on the refresh held above, and the race says so in its own words.
+  let late;
+  const atOnce = new Promise((_, reject) => (late = setTimeout(() => reject(new Error("a stopping store's token() did not answer at once")), 2_000)));
+  await assert.rejects(Promise.race([new ChatGPTPlan({ store: other, sealKey }).token(), atOnce]).finally(() => clearTimeout(late)), /try again in a moment/, "a stopping store starts no renewal");
   assert.equal(openai.refreshes, 1, "and sends OpenAI nothing");
+  // The drain is bounded: past its `ms` (RENEWAL_DRAIN_MS, 25 s, in a stop) it resolves with the renewal still out.
+  let settled = false;
+  renewing.then(() => (settled = true));
+  const capped = Date.now();
+  await stopRenewals(store, 50);
+  assert.ok(Date.now() - capped < 1_000 && !settled, "a drain past its bound ends with the renewal still out");
   // This store's stop: its renewals stopped and the one out drained, then the store closed.
   let ended = false;
   const drained = stopRenewals(store).then(() => (ended = true));
@@ -1899,28 +1908,46 @@ test("a renewal's write-back that faults: refused unsent by a closed store, its 
   const openai = fakeOpenAI(t);
   const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
   const { StoreBusy, StoreClosed, StoreDeadline } = await import("../dist/store/index.js");
+  const { Unanswered } = await import("../dist/store/postgres/connection.js");
   const cases = [
     { what: "refused unsent, the store closed", fault: () => new StoreClosed(), saved: false, revoked: 1 },
     { what: "refused unsent, the store busy: the row is still our lease", fault: () => new StoreBusy("database is locked"), saved: true, revoked: 0 },
     { what: "past its deadline, written all the same", fault: () => new StoreDeadline(10_000), lands: true, saved: true, revoked: 0 },
     { what: "past its deadline, and the read back faults too", fault: () => new StoreDeadline(10_000), readFaults: true, saved: false, revoked: 0, unknown: "StoreDeadline" },
+    // Postgres: a COMMIT unanswered lands after the read back has seen our lease, so the write again waits on its row lock
+    // and loses to it. The row then holds the new pair: read once more, it is saved, never revoked.
+    { what: "its commit unanswered, landing after the read back", fault: () => new Unanswered("its commit", 10_000), late: true, saved: true, revoked: 0 },
+    // The write again refused unsent (the store closed) while the first may still land: kept, never revoked, unknown.
+    { what: "its commit unanswered, then the write again refused unsent", fault: () => new Unanswered("its commit", 10_000), again: () => new StoreClosed(), saved: false, revoked: 0, unknown: "Unanswered" },
+    // The first refused for sure (busy: nothing written), the write again refused unsent: no row holds the pair, revoked.
+    { what: "refused unsent, the store busy, then the write again refused unsent", fault: () => new StoreBusy("database is locked"), again: () => new StoreClosed(), saved: false, revoked: 1 },
   ];
-  for (const { what, fault, lands = false, readFaults = false, saved, revoked, unknown } of cases) {
+  for (const { what, fault, lands = false, late = false, again, readFaults = false, saved, revoked, unknown } of cases) {
     const store = mapStore();
     const sealKey = randomBytes(32);
     const stale = await seatRow(store, sealKey, -1_000);
     const { get, replaceIf } = store.sealedKeys;
     let writes = 0;
-    // The lease's write lands; the write-back (the second) faults, having written (`lands`) or not.
+    let landing;
+    // The lease's write lands; the write-back (the second) faults, having written (`lands`), not yet (`late`: it lands
+    // once the next read has answered) or not at all; the write again (the third) faults with `again`.
     store.sealedKeys.replaceIf = async (...args) => {
       writes += 1;
+      if (writes === 3 && again) throw again();
       if (writes !== 2) return replaceIf(...args);
       if (lands) await replaceIf(...args);
+      if (late) landing = args;
       throw fault();
     };
     store.sealedKeys.get = async (...args) => {
       if (readFaults && writes >= 2) throw fault();
-      return get(...args);
+      const bytes = await get(...args);
+      if (landing) {
+        const commit = landing;
+        landing = undefined;
+        await replaceIf(...commit);
+      }
+      return bytes;
     };
     const logged = [];
     const before = openai.revoked.length;
@@ -1939,6 +1966,48 @@ test("a renewal's write-back that faults: refused unsent by a closed store, its 
     }
     if (unknown) assert.ok(logged.some((fields) => fields.chatgpt === "renewed_pair_unsaved" && fields.write === "unknown" && fields.reason === unknown), `${what}: ${JSON.stringify(logged)}`);
     else assert.ok(!logged.some((fields) => fields.write === "unknown"), `${what}: ${JSON.stringify(logged)}`);
+  }
+});
+
+test("a renewal whose write-back finds another sign-in in the row revokes its pair and takes that sign-in; at a stop, one OpenAI didn't confirm revoked is not carried past another holder's lease, and the log says why", { timeout: 30_000 }, async (t) => {
+  const openai = fakeOpenAI(t);
+  const { ChatGPTPlan, stopRenewals } = await import("../dist/chatgpt-plan.js");
+  const { StoreBusy } = await import("../dist/store/index.js");
+  for (const stop of [false, true]) {
+    const where = stop ? "at a stop" : "read back";
+    const store = mapStore();
+    const sealKey = randomBytes(32);
+    await seatRow(store, sealKey, -1_000);
+    const { replaceIf } = store.sealedKeys;
+    let writes = 0;
+    let renewal;
+    let other;
+    // The write-back (the second write): the owner signed in again meanwhile. Read back: it faults busy, and the row read
+    // back is neither our pair nor our lease. At a stop: another holder renewing that sign-in holds its lease, the stop
+    // begins, and the write-back loses its compare-and-set; OpenAI answers the revocation with a fault.
+    store.sealedKeys.replaceIf = async (...args) => {
+      writes += 1;
+      if (writes !== 2) return replaceIf(...args);
+      renewal = openai.issued.at(-1);
+      other = await seatRow(store, sealKey, 3_600_000, stop ? { holder: "another", until: Date.now() + 20_000 } : undefined);
+      if (!stop) throw new StoreBusy("database is locked");
+      openai.revokeStatus = 500;
+      void stopRenewals(store);
+      return replaceIf(...args);
+    };
+    const logged = [];
+    const started = Date.now();
+    const answer = await new ChatGPTPlan({ store, sealKey, log: (fields) => logged.push(fields) }).token().catch((e) => e);
+    openai.revokeStatus = 200;
+    assert.equal(openai.revocationsOf(renewal.refresh), 1, `${where}: the renewal's pair is revoked`);
+    assert.equal(answer, other.access, `${where}: the sign-in in the row is handed out`);
+    const row = await openRow(store, sealKey);
+    assert.equal(row.credential.refresh, other.refresh, `${where}: the row keeps the other sign-in`);
+    if (stop) {
+      assert.ok(Date.now() - started < 5_000, `${where}: the carry gives up at once, not after the other's lease`);
+      assert.equal(row.retired, undefined, `${where}: nothing carried past the other holder's lease`);
+      assert.ok(logged.some((fields) => fields.chatgpt === "renewed_pair_unsaved" && fields.carry === "stopping"), `${where}: ${JSON.stringify(logged)}`);
+    } else assert.ok(!logged.some((fields) => fields.chatgpt === "renewed_pair_unsaved"), `${where}: ${JSON.stringify(logged)}`);
   }
 });
 
