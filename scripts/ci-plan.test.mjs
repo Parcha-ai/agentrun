@@ -45,20 +45,21 @@ test('the plan puts the longest units first, each on the shard it lengthens leas
 test("a node --test suite's files in one shard take as long as node schedules them: sorted, its concurrency at a time", () => {
   const file = (id, seconds) => ({ ...unit(id, seconds, 'serve', 4), slots: 2 });
   // A 100 s file that sorts first starts at once and the short ones share the other slot; one that sorts last starts when the
-  // short ones have held both slots for 40 s. The longest-file-or-total-over-parallelism model reads 100 s either way.
+  // short ones have held both slots for 40 s. Each file holds its slot a quarter second past its tests. The
+  // longest-file-or-total-over-parallelism model reads 100 s either way.
   const short = [1, 2, 3, 4].map((n) => file(`m-${n}`, 20));
-  assert.equal(modelSeconds([file('a-long', 100), ...short]), 2 + 100);
-  assert.equal(modelSeconds([...short, file('z-long', 100)]), 2 + 40 + 100);
+  assert.equal(modelSeconds([file('a-long', 100), ...short]), 2 + 100.25);
+  assert.equal(modelSeconds([...short, file('z-long', 100)]), 2 + 40.5 + 100.25);
   assert.equal(modelSeconds([...short, file('z-long', 100)].map(({ slots, ...rest }) => rest)), 2 + 100);
   // Slots are not CPUs: eight 20 s files in eight slots take their total over the suite's parallelism of 4, not 20 s.
-  assert.equal(modelSeconds([1, 2, 3, 4, 5, 6, 7, 8].map((n) => ({ ...file(`c-${n}`, 20), slots: 8 }))), 2 + 160 / 4);
+  assert.equal(modelSeconds([1, 2, 3, 4, 5, 6, 7, 8].map((n) => ({ ...file(`c-${n}`, 20), slots: 8 }))), 2 + (8 * 20.25) / 4);
   // Planned: beside a long file that sorts first the short ones cost nothing; beside one that sorts last they do, so one goes
   // to the other shard.
   const others = [unit('x', 60, 'other'), unit('y', 50, 'other')];
   assert.deepEqual(plan([file('a-long', 100), ...short, ...others], 2).map(ids), [['a-long', 'm-1', 'm-2', 'm-3', 'm-4'], ['x', 'y']]);
   const late = plan([file('z-long', 100), ...short, ...others], 2);
   assert.deepEqual(late.map(ids), [['m-1', 'm-2', 'm-3', 'z-long'], ['m-4', 'x', 'y']]);
-  assert.deepEqual(late.map((shard) => shard.seconds), [2 + 20 + 100, 2 + 20 + 2 + 110]);
+  assert.deepEqual(late.map((shard) => shard.seconds), [Math.round(2 + 20.25 + 100.25), Math.round(2 + 20.25 + 2 + 110)]);
 });
 
 test('a suite takes its script\'s --test-concurrency, or node\'s default on the 4-CPU runners where it sets none', () => {

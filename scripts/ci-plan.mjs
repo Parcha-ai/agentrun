@@ -138,6 +138,10 @@ export function unitsOf(suites, timings, { typecheck = [] } = {}) {
 
 // Each command a shard starts costs a few seconds (npm, the runner's own start) whatever it runs.
 const COMMAND_SECONDS = 2;
+// Each file node --test runs holds a slot a little longer than its tests take (its process's start and imports), which a
+// file's weight, its tests' total, leaves out. A quarter second is what CI's shards fit: it matters for a shard of hundreds
+// of small files.
+const FILE_SECONDS = 0.25;
 
 /** When the last of `queue` ends, run in its order `slots` at a time, each starting when one ends: node --test's schedule. */
 function makespan(queue, slots) {
@@ -159,13 +163,13 @@ function grow(group, unit) {
   if (group.slots !== undefined) {
     let at = queue.length;
     while (at > 0 && queue[at - 1].file > unit.file) at--;
-    queue.splice(at, 0, { file: unit.file, seconds: unit.seconds });
+    queue.splice(at, 0, { file: unit.file, seconds: unit.seconds + FILE_SECONDS });
   }
   return { ...group, max: Math.max(group.max, unit.seconds), sum: group.sum + unit.seconds, count: group.count + 1, queue };
 }
 const groupSeconds = (group) => {
   if (!group.count) return 0;
-  if (group.slots !== undefined) return COMMAND_SECONDS + Math.max(makespan(group.queue, group.slots), group.sum / group.parallelism);
+  if (group.slots !== undefined) return COMMAND_SECONDS + Math.max(makespan(group.queue, group.slots), (group.sum + group.count * FILE_SECONDS) / group.parallelism);
   return COMMAND_SECONDS + Math.max(group.max, group.sum / Math.min(group.parallelism, group.count));
 };
 
