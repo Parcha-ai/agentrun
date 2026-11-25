@@ -58,7 +58,7 @@ import type { HeldRedact } from "./redact.js";
 import { deniedText as setToDenyText, ENDED_WHILE_WAITING, refusedText, STOPPED_WHILE_WAITING } from "../refusal-words.js";
 import { ADAPTER_API } from "../turn-end.js";
 import { answerText, REFLECT_PREFIX, reflectRequestId } from "./end-of-run.js";
-import { agentEntriesOf, approvalOf, BOOKING_WRITE_MS, CLOSE_MS, CUT_STEP_MS, END_PATCH_MS, END_PATCH_UNKNOWN, PARK_SIBLINGS_MS, readAgain, STOP_SETTLE_MS, commandRequest, cutLast, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, INPUT_REQUEST, Interrupted, KernelFault, lastAnswerText, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
+import { agentEntriesOf, approvalOf, BOOKING_WRITE_MS, CLOSE_MS, CUT_STEP_MS, END_PATCH_MS, END_PATCH_UNKNOWN, PARK_SIBLINGS_MS, REAL_TIMER, type BoundTimer, readAgain, STOP_SETTLE_MS, commandRequest, cutLast, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, INPUT_REQUEST, Interrupted, KernelFault, lastAnswerText, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
 import { outputMiss, outputRetryWords } from "../answer-json.js";
 import type { PiRun, PiSessionIO, PreIntentAnswer, PreIntentCall } from "./adapters/pi.js";
 import { answerOnce, HAND_BACK, handBackOf } from "./hand-back.js";
@@ -210,16 +210,17 @@ export interface AdapterRunSpec {
    *  workspace (store-reads/journal.ts runTimeline). */
   readonly cwd?: string;
   /** The end's patch beside its state: the run's outcome, cost and metrics, read when the end is written and carried in
-   *  its commit. Bounded (endPatchMs): a reader that stalls gives no patch, and the end is still written, its cost and
+   *  its commit. Bounded (END_PATCH_MS): a reader that stalls gives no patch, and the end is still written, its cost and
    *  metrics unknown (END_PATCH_UNKNOWN). */
   readonly endPatch?: (end: EndData) => Promise<Pick<EndData, "outcome" | "costUsd" | "metrics">>;
   /** The run's cost for its end, read apart from the end's patch and in place of the patch's own `costUsd`: one cheap
-   *  read of its booking (metrics.ts runCostOf), so a patch whose metrics run past endPatchMs never takes the cost with
-   *  them. Bounded by endPatchMs too: a read that fails is read again (END_COST_TRIES in all, within the bound), and
+   *  read of its booking (metrics.ts runCostOf), so a patch whose metrics run past END_PATCH_MS never takes the cost with
+   *  them. Bounded by END_PATCH_MS too: a read that fails is read again (END_COST_TRIES in all, within the bound), and
    *  late or failing every time, the cost is unknown (null), the answer every reader of the ended run then gives. */
   readonly endCost?: () => Promise<EndCost>;
-  /** The most the end's patch may take before the end is written without it. Default END_PATCH_MS. */
-  readonly endPatchMs?: number;
+  /** For tests: the timer the end's bound (END_PATCH_MS) on its patch and cost is armed on. Default: the real one
+   *  (REAL_TIMER). */
+  readonly endPatchTimer?: BoundTimer;
   /** Optional moved-project capture, only after actual dispatch has drained. Failure remains an explicit terminal receipt. */
   readonly projectCheckpoint?: { capture(signal: AbortSignal): Promise<ProjectCheckpoint>; uncertain(): ProjectCheckpoint; readonly timeoutMs?: number };
   /** The most a booking whose write has begun is waited for before an answer's cost, a park or the end goes on without
@@ -4042,9 +4043,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   async function endPatchOf(data: EndData): Promise<Pick<EndData, "outcome" | "costUsd" | "costUpperBound" | "metrics">> {
     const spec = specNow;
     if (!spec?.endPatch && !spec?.endCost) return {};
-    let timer: NodeJS.Timeout | undefined;
-    const boundMs = spec.endPatchMs ?? END_PATCH_MS;
-    const late = new Promise<"late">((resolve) => (timer = setTimeout(() => resolve("late"), boundMs)));
+    const bound = spec.endPatchTimer ?? REAL_TIMER;
+    let timer: unknown;
+    const late = new Promise<"late">((resolve) => (timer = bound.setTimeout(() => resolve("late"), END_PATCH_MS)));
     // The cost, read apart (AdapterRunSpec.endCost): a patch whose metrics run late or fail never takes it with them. A
     // read that fails is read again within the same bound (END_COST_TRIES): the stored cost is every reader's answer
     // (the list, the view, usage), so a null there is kept only when the booking could not be read at all.
@@ -4053,7 +4054,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       ? readAgain(endCost, late, (error, tries, last) =>
           console.warn(last ? `[runner] its end's cost failed ${tries} times, last: ${said(error)}; the end is written with its cost unknown` : `[runner] its end's cost failed: ${said(error)}; read again`),
         ).then((answer): EndCost => {
-          if (answer === "late") console.warn(`[runner] its end's cost gave no answer within ${boundMs / 1000} s; the end is written with its cost unknown`);
+          if (answer === "late") console.warn(`[runner] its end's cost gave no answer within ${END_PATCH_MS / 1000} s; the end is written with its cost unknown`);
           return answer === "late" || answer === "failed" ? { costUsd: null, costUpperBound: false } : answer;
         })
       : undefined;
@@ -4062,7 +4063,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       try {
         const patch = await Promise.race([spec.endPatch(data), late]);
         if (patch === "late") {
-          console.warn(`[runner] its end's patch gave no answer within ${boundMs / 1000} s; the end is written with its ${cost ? "metrics" : "cost and metrics"} unknown`);
+          console.warn(`[runner] its end's patch gave no answer within ${END_PATCH_MS / 1000} s; the end is written with its ${cost ? "metrics" : "cost and metrics"} unknown`);
           return END_PATCH_UNKNOWN;
         }
         return patch ?? {};
@@ -4075,7 +4076,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       const [patch, read] = await Promise.all([patched(), cost]);
       return read ? { ...patch, ...read } : patch;
     } finally {
-      clearTimeout(timer);
+      bound.clearTimeout(timer);
     }
   }
 

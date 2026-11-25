@@ -69,7 +69,7 @@ import { held as runnerSeam, heldOrThrow, heldSignInReads } from "./held.js";
 import { type AdapterLoopOptions, type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
 import { RUNNER_HARNESSES, type RunnerHarness } from "./adapters/index.js";
 import { DEFAULT_HARNESS } from "../harness.js";
-import { agentEntriesOf } from "./loop.js";
+import { agentEntriesOf, type BoundTimer } from "./loop.js";
 import { routedSubagentTiers, SUBAGENT_TOOL, type SubagentTier, subagentTool } from "./subagent.js";
 import { type Claim, ClaimRefused, type Journal } from "./loop-contract.js";
 import { bookedSpend, cliRunMetrics, costBasisOf, endCostOf, runCostOf, runMetrics } from "./metrics.js";
@@ -184,9 +184,9 @@ export interface AdapterSpecDeps {
   readonly log?: (message: string) => void;
   /** For tests: a learning run's grade bound, as a signal (learning-dispatch.ts gradeBound). Default: GRADE_TIMEOUT_MS. */
   readonly gradeBound?: () => AbortSignal;
-  /** For tests: the most a native or SDK run's end waits on its cost and metrics read before it is written without them.
-   *  Default: END_PATCH_MS (loop.ts), as the adapter loop's spec.endPatchMs. */
-  readonly endPatchMs?: number;
+  /** For tests: the timer a native or SDK run's end arms its bound on (END_PATCH_MS, loop.ts) while it waits on its cost
+   *  and metrics read, as the adapter loop's spec.endPatchTimer. Default: the real one (REAL_TIMER). */
+  readonly endPatchTimer?: BoundTimer;
   /** The one shared claim-time computer (computer-for-claim.ts), for both the pi and the CLI spec: none for a runner place.
    *  The runner gives it; a test gives its own. */
   readonly computerForClaim: ComputerForClaim;
