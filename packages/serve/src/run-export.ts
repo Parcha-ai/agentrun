@@ -243,12 +243,12 @@ export async function exportBundle(input: ExportInput): Promise<{ body: string; 
     }
     return typeof value === "string" ? walk(value, at) : value;
   };
-  // A row whose field holds a call's output (a result's preview, an approval outcome's text: share-context.ts rowOutput):
-  // that field cut with the call's context, its other fields without. The pointers are the same either way.
+  // A row whose fields hold a call's output (a result's preview and summary, an approval outcome's text: share-context.ts
+  // rowOutput): those fields cut with the call's context, its other fields without. The pointers are the same either way.
   const contexts = input.contexts ?? new Map<string, CallContext>();
   const walkRow = (row: unknown, at: string): Promise<unknown> => {
     const output = rowOutput(row, contexts);
-    return output === undefined ? walk(row, at) : each(row, at, (item, here, key) => walk(item, here, key === output.field ? output.context : undefined));
+    return output === undefined ? walk(row, at) : each(row, at, (item, here, key) => walk(item, here, (output.fields as readonly string[]).includes(key) ? output.context : undefined));
   };
   // A workflow's call (graph `effects[i]`): its output cut with its own tool's and input's context, the rest without.
   const walkEffect = (effect: unknown, at: string): Promise<unknown> => {
