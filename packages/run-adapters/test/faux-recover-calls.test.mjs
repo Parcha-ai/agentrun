@@ -97,3 +97,40 @@ test('a reply of two calls whose first parked says each call\'s text once: the p
   assert.deepEqual(after, ['Looking up b.'], 'the recovery says the second call\'s text, and never the parked one\'s again');
   assert.deepEqual(ran, [{ q: 'a' }, { q: 'b' }], 'both ran once, in order');
 });
+
+// A call a crash cut off mid-call (its intent in the log, no outcome), as a run's process left it.
+async function cutMidCall(store, key) {
+  const writer = await store.open(key);
+  await writer.append([
+    { kind: FAUX_RECORDS.user, data: { text: 'go' } },
+    { kind: FAUX_RECORDS.turn, data: { n: 1 } },
+    { kind: FAUX_RECORDS.request, data: { index: 0 } },
+    { kind: FAUX_RECORDS.answered, data: { index: 0 } },
+    { kind: FAUX_RECORDS.call, data: { callId: `${key}:0`, name: 'lookup' } },
+  ]);
+}
+
+test('a call a crash cut off mid-call, its action marked `again`, is issued again on the recovery, its gate asked with `replayed`; unmarked, it is answered interrupted and never asked', async () => {
+  for (const again of [true, false]) {
+    const key = `step:cut-${again}`;
+    const script = [{ call: 'lookup', args: { q: 'x' }, ...(again ? { again } : {}) }, { end: true }];
+    const store = memorySessionStore();
+    await cutMidCall(store, key);
+    const ran = [];
+    const asked = [];
+    const session = (await opened(store, key, script, ran, async (call) => (asked.push(call), { deny: 'denied on the replay' }))).session;
+    assert.equal(session.state, 'open_turn');
+    await session.recover();
+    assert.equal((await session.turnEnd()).status, 'completed');
+    await session.close();
+    const results = (await store.read(key)).filter((r) => r.kind === FAUX_RECORDS.result).map((r) => r.data);
+    if (again) {
+      assert.deepEqual(asked, [{ callId: `${key}:0`, tool: 'lookup', args: { q: 'x' }, replayed: true }], 'asked again under its id, as replayed');
+      assert.deepEqual(results, [{ callId: `${key}:0`, isError: true, refused: true }], 'the deny is its answer');
+    } else {
+      assert.deepEqual(asked, [], 'never asked again');
+      assert.deepEqual(results, [{ callId: `${key}:0`, interrupted: true }], 'answered interrupted');
+    }
+    assert.deepEqual(ran, [], 'never run again');
+  }
+});
