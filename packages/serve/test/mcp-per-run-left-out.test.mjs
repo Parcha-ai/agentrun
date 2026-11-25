@@ -113,6 +113,34 @@ test("pi: a message that hands a per_run server's credential while the run's tur
   assert.deepEqual(notesOf(rows), [unconnectedWords("gw"), connectedLaterWords(["gw"])], "the claim that left gw out says why the message waits for the next turn");
 });
 
+test("pi: a message that hands no credential, sent while the run's turn is going on a claim that left a per_run server out, still goes into that turn: never held for the run's next turn", { timeout: 120_000 }, async (t) => {
+  const dir = await scratch(t);
+  const release = join(dir, "release");
+  withEnv(t, { [OFFERED_ENV]: join(dir, "offered.jsonl"), [RELEASE_ENV]: release, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
+  const { api, store } = await serveOf(t, { faux: FAUX_OFFERED, harnesses: true });
+  const fake = await addGw(t, api);
+  const save = await retried(api)("POST", "/agents", agent("reader", { tools: ["mcp:gw/add"], tool_settings: ALLOW }));
+  assert.equal(save.status, 201, JSON.stringify(save.body));
+
+  const started = await retried(api)("POST", "/agents/reader/runs", { input: { content: HOLD } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const runId = started.body.run_id;
+  await follow(api, runId, ["working"], { deadlineMs: 60_000, done: (rows) => notesOf(rows).length === 1 });
+  // The turn is held until the row is taken: steered into it. Held for the next turn, it is never taken while this one
+  // is held.
+  const sent = await api("POST", `/runs/${runId}/messages`, { content: "Say done." });
+  assert.equal(sent.status, 202, JSON.stringify(sent.body));
+  const steeredIn = async () => (await store.commands(runId, 0)).some((row) => row.kind === "steer" && row.takenAt !== null);
+  for (const end = Date.now() + 30_000; !(await steeredIn()); await new Promise((resolve) => setTimeout(resolve, 50))) assert.ok(Date.now() < end, "the message was not taken into the turn going on");
+  writeFileSync(release, "");
+
+  const { rows } = await follow(api, runId, ["completed", "failed"], { after: 0, deadlineMs: 60_000 });
+  const answer = String((await api("GET", `/runs/${runId}`)).body.result?.final_answer ?? "");
+  assert.equal(answer, "Answered.", JSON.stringify(rows.filter((row) => row.kind === "error" || row.kind === "phase")));
+  assert.deepEqual(notesOf(rows), [unconnectedWords("gw")], "nothing said of a message waiting");
+  assert.deepEqual(callsOf(fake), [], "nothing sent to the server");
+});
+
 /** serve's gateway on loopback: each Responses request answered with the text it carries. */
 async function echoGateway(t) {
   const server = createServer(async (req, res) => {
