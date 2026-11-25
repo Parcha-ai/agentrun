@@ -520,6 +520,33 @@ test("capped, a new session's reserve the cap refuses is said and pauses the run
   assert.ok(Math.abs(paid.spentUsd() - 0.0951) < 1e-9, `the charge is booked: ${paid.spentUsd()}`);
 });
 
+test("capped, a new session's reserve the cap refused is asked again at the session's next charge: after a raise its next stretch is held", async (t) => {
+  // As above, $0.095 spent of a $0.10 cap refuses the reserve and pauses the run. The owner raises the cap to $1, the run
+  // goes on, and the session is charged again (3 s more, not its last): its next stretch ($0.009) is held from then on.
+  t.mock.timers.enable({ apis: ["Date"], now: T0 });
+  let cap = 0.1;
+  const paid = await toolLedger(() => cap);
+  await paid.spend(0.095);
+  const logs = [];
+  const paused = [];
+  const spend = browserSpend("browserbase", BROWSERBASE, 180, async () => {}, (line) => logs.push(line), { paid, pause: async (refusal) => void paused.push(refusal) });
+  let listener;
+  spend.watch({ observeCommits: (observer) => ((listener = (publication) => observer.advance(publication)), { detach: () => {} }) });
+  const charge = async (at) => {
+    const entries = [];
+    await spend.onCharge({ conversationId: 1, tag: "ar-new", provider: "browserbase", at: new Date(at).toISOString(), seconds: 3, usd: 3 * 0.12 / 3600, final: false, state: "priced" }, { appendEntry: async (_, entry) => void entries.push(entry) });
+    listener({ seq: 1, changes: entries.map((value) => ({ type: "entry", value })) });
+    await spend.ledgerIdle();
+  };
+  await charge(T0);
+  assert.equal(paused.length, 1, `the refused reserve pauses the run: ${JSON.stringify(paused)}`);
+  assert.equal(paid.heldUsd(), 0, "the refused reserve holds nothing");
+  cap = 1;
+  await charge(T0 + 3_000);
+  assert.ok(Math.abs(paid.heldUsd() - 0.009) < 1e-9, `after the raise the session's next stretch is held on the ledger, one stretch: ${paid.heldUsd()}`);
+  assert.equal(paused.length, 1, "the reserve held after the raise pauses nothing");
+});
+
 test("capped with room, a new session's reserve is held, and nothing is said or paused", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: T0 });
   const paid = await toolLedger(5);
