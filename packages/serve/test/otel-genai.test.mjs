@@ -903,14 +903,21 @@ test("an OTLP header value of 16 KB holding 8,000 @, 4,000 URL starts, or 1,000 
     "await genAiTracing(queried, { exporter, log: () => {} });",
     "otlpHeaderCut(queried)(line);",
     "const queriedMs = performance.now() - queriedStarted;",
-    "console.log(JSON.stringify({ ms, held, otel, runner, nestedMs, queriedMs }));",
+    // The [otel] cut, which finds every place each value starts, over lines quoting each 16 KB value twice.
+    "const cutStarted = performance.now();",
+    "const cuts = [[env, process.env.TRACER_HEADER.slice('X-Upstream='.length)], [queried, queried.OTEL_EXPORTER_OTLP_TRACES_HEADERS.slice('X-Upstream='.length)]].map(([of, value]) => otlpHeaderCut(of)(`401 from relay: ${value} ${value}; 2 spans passed`));",
+    "const cutMs = performance.now() - cutStarted;",
+    "console.log(JSON.stringify({ ms, held, otel, runner, nestedMs, queriedMs, cutMs, cuts }));",
     "process.exit(0);",
   ].join("\n");
   const env = { ...process.env, AGENTRUN_TELEMETRY: "0", TRACER_DIST: new URL("../dist/", import.meta.url).href, TRACER_HEADER: header, TRACER_USER: user };
   delete env.NODE_TEST_CONTEXT;
   const child = spawnSync(process.execPath, ["--max-old-space-size=1024", "--input-type=module", "-e", script], { encoding: "utf8", env, timeout: 20_000, maxBuffer: 16 * 1024 * 1024 });
   assert.equal(child.error?.code ?? child.signal ?? child.status, 0, `the tracer started within 20 s and the child ended on its own (stderr: ${(child.stderr ?? "").slice(-300)})`);
-  const { ms, held, otel, runner, nestedMs, queriedMs } = JSON.parse(child.stdout.trim().split("\n").at(-1));
+  const { ms, held, otel, runner, nestedMs, queriedMs, cutMs, cuts } = JSON.parse(child.stdout.trim().split("\n").at(-1));
+  assert.ok(cutMs < 1000, `the [otel] cut of two lines each quoting a 16 KB value twice took ${Math.round(cutMs)} ms, under 1 s`);
+  // The nested queries' value holds `token=a`, so the cut, which has no floor, takes every `a` of the line too.
+  assert.deepEqual(cuts.map((cut) => !cut.includes("a@a") && !cut.includes("://") && cut.includes("[redacted] [redacted]") || cut.slice(0, 200)), [true, true], "each quoted value is cut, none of it left");
   assert.ok(ms < 1000, `the tracer started and cut a line in ${Math.round(ms)} ms, under 1 s`);
   assert.ok(nestedMs < 1000, `a 16 KB value of 4,000 URL starts, each inside the last, started the tracer in ${Math.round(nestedMs)} ms, under 1 s`);
   assert.ok(queriedMs < 1000, `a 16 KB value of 1,000 URLs with a query, each inside the last's query, started the tracer in ${Math.round(queriedMs)} ms, under 1 s`);

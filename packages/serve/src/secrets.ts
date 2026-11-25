@@ -515,13 +515,33 @@ const CUT = "[redacted]";
  *  The tracer's own lines take it, after the runner's redactor (otel/tracer.ts saidOf), since they are where one can
  *  show: an exporter's error may quote a header it sent or the URL it posted to, and a run's process never holds one.
  *  Every other cut keeps the floor on purpose: a needle of a few characters in every redactor would cut ordinary text
- *  everywhere. Each value is matched exactly as held, the longest first, so one inside another is cut whole; a
- *  "[redacted]" already in the text is left whole. */
+ *  everywhere. Each value is matched exactly as held, and the cut is the union of every place each one stands: at each
+ *  character, the longest value (or a "[redacted]" already in the text) starting there is found without being taken,
+ *  so a value starting inside another is found too, and the places, which come in order, are merged where they overlap
+ *  or touch and each run cut as one "[redacted]". So no character of any held value is left, whichever of two
+ *  overlapping values starts first or is longer (the SDK's reading `api_key=<key>` and a key `<key;rest>` quoted as
+ *  `api_key=<key;rest>`), and a "[redacted]" already in the text is left whole. One pass over the text, one merge. */
 export function otlpHeaderCut(env: NodeJS.ProcessEnv): (text: string) => string {
-  const values = [...new Set(otlpValues(env, false))].sort((a, b) => b.length - a.length);
-  if (!values.length) return (text) => text;
-  const needle = new RegExp([CUT, ...values].map((value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "g");
-  return (text) => (text ? text.replace(needle, () => CUT) : text);
+  const values = [...new Set([CUT, ...otlpValues(env, false)])].sort((a, b) => b.length - a.length);
+  if (values.length === 1) return (text) => text;
+  const needle = new RegExp(`(?=(${values.map((value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")}))`, "g");
+  return (text) => {
+    if (!text) return text;
+    const spans: [number, number][] = [];
+    for (const found of text.matchAll(needle)) {
+      const [start, end] = [found.index, found.index + found[1].length];
+      const last = spans.at(-1);
+      if (last && start <= last[1]) last[1] = Math.max(last[1], end);
+      else spans.push([start, end]);
+    }
+    let out = "";
+    let from = 0;
+    for (const [start, end] of spans) {
+      out += `${text.slice(from, start)}${CUT}`;
+      from = end;
+    }
+    return out + text.slice(from);
+  };
 }
 
 /** Every header value of `credentials`: what a secret scan refuses. */
