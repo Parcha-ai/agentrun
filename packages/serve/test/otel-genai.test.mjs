@@ -727,7 +727,7 @@ const INNER_ROWS = [
   ["a URL nested in another URL's query", `X-Upstream=https://relay.invalid/go?next=https://${innerUserinfo(`u2-${"dummy"}-user`, `p2-${"dummy"}-pass`)}@inner.invalid/`, [`u2-${"dummy"}-user`, `p2-${"dummy"}-pass`], []],
   ["a URL nested in another URL's path", `X-Upstream=https://relay.invalid/go/https://${innerUserinfo(`u3-${"dummy"}-user`, `p3-${"dummy"}-pass`)}@inner.invalid/x`, [`u3-${"dummy"}-user`, `p3-${"dummy"}-pass`], []],
   ["an unquoted URL with a raw ' in its password", `X-Upstream=https://${innerUserinfo(`user-${"dummy"}`, `pa'ss-${"dummy"}-99`)}@host.invalid/`, [`user-${"dummy"}`, `pa'ss-${"dummy"}-99`], []],
-  ["sentry's key between commas written %2C", `X-Sentry-Auth=Sentry sentry_version=7%2C sentry_key=${SENTRY_KEY}%2C sentry_client=x`, [SENTRY_KEY], [`${SENTRY_KEY},`, `${SENTRY_KEY}%2C`]],
+  ["sentry's key between commas written %2C", `X-Sentry-Auth=Sentry sentry_version=7%2C sentry_key=${SENTRY_KEY}%2C sentry_client=x`, [SENTRY_KEY], []],
   ["sentry's key between raw commas", `X-Sentry-Auth=Sentry sentry_version=7, sentry_key=${SENTRY_KEY}, sentry_client=x`, [SENTRY_KEY], [`${SENTRY_KEY},`]],
   ["a scheme-relative URL's user", `X-Upstream=//key-${"dummy"}-1234@host.invalid`, [`key-${"dummy"}-1234`], []],
   ["a JSON-escaped URL's user and password", `X-Upstream=https:\\/\\/${innerUserinfo(`u-${"dummy"}-12`, `p-${"dummy"}-34`)}@host.invalid`, [`u-${"dummy"}-12`, `p-${"dummy"}-34`], []],

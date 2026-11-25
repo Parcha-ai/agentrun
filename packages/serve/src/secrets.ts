@@ -420,23 +420,29 @@ const urlSpans = (value: string): { start: number; end: number }[] => {
 
 /** The breaks between a header value's `name=value` pairs: `;`, `&`, a comma (or its `%2C`) and spaces; and, for a
  *  second, finer read, also `?`, `#` and `/`, so a pair inside a URL that is itself a pair's value
- *  (`upstream=https://relay/v1#access_token=<token>`) or a path's segment stands alone; and, for a third, all but `;`,
- *  so a credential with a raw `;` in it (`api_key=<key;rest>&region=us`) is held whole too. */
+ *  (`upstream=https://relay/v1#access_token=<token>`) or a path's segment stands alone; and, for a third, `&` and spaces
+ *  alone, so a credential with a raw `;` or a comma in it (`api_key=<key;rest%2Cmore>&region=us`) is held whole too.
+ *  That third read also holds a value with the comma that ends it (sentry's `sentry_key=<key>%2C`); the first holds the
+ *  value alone. */
 const PAIR_BREAK = /[;&,\s]+|%2C/i;
 const PIECE_BREAK = /[;&,\s?#/]+|%2C/i;
-const WHOLE_BREAK = /[&,\s]+|%2C/i;
+const WHOLE_BREAK = /[&\s]+/;
 
 /** The value of each `name=value` pair of `text` split at `breaks` whose name says it is a credential (credentialNamed),
  *  out of any quotes around it, as written and decoded. A name is what follows the last `/`, `?`, `#` or `:` before its
- *  `=` (a URL's query or fragment, `https://relay/v1?region=us`, names `region`). A value of only `=` (a base64
- *  credential's padding, read as a pair) is not taken. */
+ *  `=` (a URL's query or fragment, `https://relay/v1?region=us`, names `region`). A value whose part before its first
+ *  `;` is empty (`token=;<key>`, read whole) is taken after that `;` too, whole and up to its next `;`, as a reader that
+ *  skips an empty part reads it. A value of only `=` and `;` (a base64 credential's padding read as a pair, or
+ *  `token=;` before a space) is not taken. */
 const pairValues = (text: string, breaks: RegExp): string[] =>
   text.split(breaks).flatMap((pair) => {
     const at = pair.indexOf("=");
     if (at <= 0) return [];
     const name = pair.slice(0, at).split(/[/?#:]/).at(-1) ?? "";
+    if (!credentialNamed(decoded(name) ?? name)) return [];
     const inner = pair.slice(at + 1).replace(/^(["'])(.*)\1$/, "$2");
-    return /[^=]/.test(inner) && credentialNamed(decoded(name) ?? name) ? [inner, decoded(inner) ?? inner] : [];
+    const after = inner.startsWith(";") ? inner.replace(/^;+/, "") : undefined;
+    return [inner, ...(after === undefined ? [] : [after, after.split(";")[0]])].filter((value) => /[^=;]/.test(value)).flatMap((value) => [value, decoded(value) ?? value]);
   });
 
 /** The credentials a header value carries inside it, the union of two reads over the whole value as written: the value
