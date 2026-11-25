@@ -4,6 +4,7 @@
 // Concurrent callers in one process share one build; a failure is never kept, so the next call tries again. The words
 // say what happened and the next step, and hold none of Docker's output.
 import assert from "node:assert/strict";
+import { ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
 import * as index from "../dist/index.js";
@@ -232,10 +233,21 @@ test("an onWait that aborts its own caller's signal settles that caller as abort
 	const other = "FROM alpine:3.20\nRUN echo seven > /seven\n";
 	fake.mark("build-hold");
 	const alone = new AbortController();
-	const stopped = ensureImage({ recipe: other }, { docker: fake.docker, signal: alone.signal, onWait: () => alone.abort() });
-	assert.deepEqual(await within(stopped), { ok: false, error: { code: "aborted", message: `the wait for ${recipeTag(other)} was aborted, and the build, which no other caller waited on, was stopped` } });
-	await new Promise((resolve) => setTimeout(resolve, 300));
-	assert.equal(fake.calls().filter(([command]) => command === "build").length, 1, "no docker build was started for it");
+	// Each docker this process starts, recorded as it is started: a build started and killed at once may never get to
+	// write its line to the fake's log, so the log alone cannot say that none was.
+	const asked = [];
+	const spawn = ChildProcess.prototype.spawn;
+	ChildProcess.prototype.spawn = function (options) {
+		if (options.file === fake.docker) asked.push(options.args.slice(1));
+		return spawn.call(this, options);
+	};
+	try {
+		const stopped = ensureImage({ recipe: other }, { docker: fake.docker, signal: alone.signal, onWait: () => alone.abort() });
+		assert.deepEqual(await within(stopped), { ok: false, error: { code: "aborted", message: `the wait for ${recipeTag(other)} was aborted, and the build, which no other caller waited on, was stopped` } });
+	} finally {
+		ChildProcess.prototype.spawn = spawn;
+	}
+	assert.deepEqual(asked, [[...INSPECT, recipeTag(other)]], "its inspect alone: no docker build was started for it");
 	fake.clear("build-hold");
 	assert.deepEqual(await ensureImage({ recipe: other }, { docker: fake.docker }), { ok: true, value: recipeTag(other) }, "the next call builds it");
 });
