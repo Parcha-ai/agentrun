@@ -203,8 +203,10 @@ function installTool(host: Pick<ToolHost, "install">, name: string, tool: ToolRe
 export type EffectRun = { signal: AbortSignal; env: NodeJS.ProcessEnv; work: string; complete?: Complete; ledger?: Ledger; search?: SearchOn };
 
 /** What a tool's own ask (ToolEntry.asks) reads: the run's host, and how many calls of a tool the run has run to a good
- *  end, from the run's record (its journal), so a pause and a new host count them all. */
-export type AskContext = { readonly host: ToolHost; ran(tool: string): Promise<number> };
+ *  end, from the run's record (its journal), so a pause and a new host count them all; `made`, the arguments of those
+ *  calls (each one whose arguments the record names), with those of the calls the gate let through that have no result
+ *  yet. */
+export type AskContext = { readonly host: ToolHost; ran(tool: string): Promise<number>; made(tool: string): Promise<readonly unknown[]> };
 
 export type ToolEntry = {
   /** One line, for capabilities. */
@@ -264,7 +266,7 @@ const webFetchEntry = (name: string): ToolEntry => ({
   // A call node's Page is the workflow's, not a model's context: it reads the most of a part by default, from the page
   // the run read (its Web's pages) where it holds the URL. Its request to Parallel, when it makes one, is booked under the call
   // (paid-calls.ts); a part from what the run read makes none and books nothing.
-  effect: async (args, run) => bookedIn(run.ledger, async () => fetchFor(run.env, args.url, { ...(await fetchOptions(run.env, FAUX_ENV)), offset: args.offset as number | undefined, maxChars: (args.max_chars as number | undefined) ?? TEXT_CAP, signal: run.signal })),
+  effect: async (args, run) => bookedIn(run.ledger, async () => fetchFor(run.env, args.url, { ...(await fetchOptions(run.env, FAUX_ENV)), offset: args.offset as number | undefined, maxChars: (args.max_chars as number | undefined) ?? TEXT_CAP, ...(typeof args.objective === "string" ? { objective: args.objective } : {}), signal: run.signal })),
 });
 
 /** A file or shell tool: listed here for its words and its rules, bound by the run's workspace registry
@@ -770,7 +772,7 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
   },
   [WEB_FETCH_TOOL]: webFetchEntry(WEB_FETCH_TOOL),
   [WEB_SEARCH_TOOL]: {
-    summary: "Search the web: Parallel's Search API where the server holds its key, else Firecrawl's keyless search with Exa's behind it; or the provider picked, the harness's own search (claude-agent's, codex's) or on pi the model provider's hosted search (Anthropic, OpenAI) only where native is picked: { query, n? } -> { provider, query, results: [{ url, title, snippet, published? }], text? }, provider naming the one that served it, 1 to 25 results, each snippet at most 3,000 characters; { error } when the search gives no answer.",
+    summary: "Search the web: Parallel's Search API where the server holds its key, else Firecrawl's keyless search with Exa's behind it; or the provider picked, the harness's own search (claude-agent's, codex's) or on pi the model provider's hosted search (Anthropic, OpenAI) only where native is picked: { objective, queries?, n? } (query is deprecated: a model's call gives objective, which the schema requires; a call node's { query } alone is the objective and its one query) -> { provider, objective, queries, results: [{ url, title, snippet, published? }], text? }, provider naming the one that served it, 1 to 25 results, each snippet at most 3,000 characters; { error } when the search gives no answer.",
     needs: [],
     nodes: true,
     // On the runner its hosted search goes through the run's own route (host.search, run.search), labelled web_search.

@@ -45,7 +45,7 @@ const searchingFlow = (tools) => ({
   output: { schemaId: "Answer", path: "answer" },
   root: { node: "agent", label: "look", instructions: "Search, then answer.", tools, out: "Answer", as: "answer" },
 });
-const SCRIPT = [{ call: "web_search", args: { query: "agentrun", n: 3 } }, { call: "submit", args: { answer: 42 } }];
+const SCRIPT = [{ call: "web_search", args: { objective: "agentrun", n: 3 } }, { call: "submit", args: { answer: 42 } }];
 
 /** run-1, a workflow run of `workflow` (its revision with `toolSettings`), the model on the scripted origin and
  *  Parallel's search on the faux module; its row once it leaves running, with the store's files' text. */

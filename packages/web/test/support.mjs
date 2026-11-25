@@ -9,7 +9,10 @@ export const guard = { fetch: publicFetch, check: publicCheck, html: readPage };
 
 export const fetchPage = (url, options = {}) => web.fetchPage(url, { guard, ...options });
 export const readDirect = (url, options = {}) => web.readDirect(url, guard, options);
-export const webFetch = (url, options = {}) => web.webFetch(url, { guard, ...options });
+/** A case's provider clients as webFetch's readers: `parallel`, a Parallel client (parallelExtract, or a stand-in with
+ *  its live and read); `firecrawl`, keyless Firecrawl's reader (firecrawlFetch). */
+export const asReaders = ({ parallel, firecrawl, ...options }) => ({ ...options, readers: { ...(parallel ? { parallel: web.readerOf(web.parallelReads(parallel), web.searchBreaker()) } : {}), ...(firecrawl ? { "firecrawl-keyless": firecrawl } : {}) } });
+export const webFetch = (url, options = {}) => web.webFetch(url, { guard, ...asReaders(options) });
 
 /** Sets `vars` in this process's environment for test `t`; the rest of `names` unset. */
 export function withEnv(t, vars, names = Object.keys(vars)) {

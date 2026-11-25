@@ -27,7 +27,7 @@ export const ONE_PROCESS_FIX = "start the image with the server options alone, w
 
 /** The fix for a runner in a process of its own that relays no computer's socket: it relays once it has the server's
  *  public address (dial-relay.ts). */
-const RELAY_FIX = "give the runner AGENTRUN_PUBLIC_URL (this server's public address)";
+export const RELAY_FIX = "give the runner AGENTRUN_PUBLIC_URL (this server's public address)";
 
 /** The words a run gets when its agent's computer is a paired computer and its runner, in a process of its own, keeps
  *  no relay. */
@@ -40,9 +40,10 @@ export const RUNNER_APART_WORDS = `no run on this server can use a paired comput
 
 /** What a provider whose machines dial this server (the computer package's connectOf "dial": Fly Machines, Cloudflare,
  *  and E2B, Daytona or Modal set to dial) says on such a server: its row in GET /v2/computers and its test. Its
- *  machines' sockets are taken by the server's attach hub, and a runner of its own process has none, so its create
- *  refuses (the computer package's hosted/provider.ts, naming the same fix). */
-export const dialApartWords = (label: string): string => `no run on this server can use ${label}: its machines dial this server, and its runner runs in a process of its own, with no attach hub to take their socket: ${ONE_PROCESS_FIX}`;
+ *  machines' sockets are taken by the server's attach hub, and a runner of its own process takes them only through its
+ *  relay (dial-relay.ts), which it keeps once it has the server's public address; with none, its create refuses (the
+ *  computer package's hosted/provider.ts, naming the same fixes, the relay's first). */
+export const dialApartWords = (label: string): string => `no run on this server can use ${label}: its machines dial this server, and its runner runs in a process of its own and relays no machine's socket: ${RELAY_FIX}, or ${ONE_PROCESS_FIX}`;
 
 /** A runner's relay of the paired computers (dial-relay.ts pairedRelayOn): its hub, where the server moves a box's
  *  socket for a run of this runner (a runner apart's own; the server's, for the runner beside it). `bring` routes the

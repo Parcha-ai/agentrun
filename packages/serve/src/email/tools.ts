@@ -2,7 +2,8 @@
 // it (PEEK only: every message stays as unread as it was), email_draft keeps a message in its Drafts folder, email_send
 // sends one, marked as this server's (X-AgentRun-Sent, its value the run's id) so the email trigger never starts a run on
 // it, and files a copy in Sent unless the provider files its own (Gmail); email_file files a message under a Gmail label
-// or in a folder, and never deletes one (the trash and junk folders are refused). Host tools on every harness, bound beside
+// or in a folder, and never deletes one (the trash and junk folders are refused) nor files one into Sent or Drafts. Host
+// tools on every harness, bound beside
 // web_fetch (tool-list.ts `host`); the password is read in the runner, from the one store under its seal key, and never
 // in an answer. Each answer is held under the host's result bound (answer.ts).
 // Thread scope: a run an email trigger started reads only that email's thread (the message, and every message whose
@@ -27,7 +28,7 @@ const opens = (host: ToolHost): boolean => host.store !== undefined && (host.sea
 const accountOf = async (host: ToolHost): Promise<OpenedAccount | undefined> => (host.sealKey ? openAccount(host.store!, host.sealKey) : held()?.emailAccount());
 import { EMAIL_ANSWER_MAX_CHARS, emailError, emailText } from "./answer.js";
 import { archiveDescription, EMAIL_ADDRESS, EMAIL_DESCRIPTIONS, EMAIL_DRAFT, EMAIL_FILE, EMAIL_READ, EMAIL_SEARCH, EMAIL_SEND, fileDescription, LIMIT_DEFAULT, LIMIT_MAX, OUTSIDE_THREAD, SEND_CAP, type ServerKind } from "./names.js";
-import { composed, foundOf, type ImapSession, inThread, involves, MailError, type MailHead, type MailMessage, READ_BYTES, readOf, SEARCH_BYTES, SENT_HEADER, smtpSend, TOOL_SOCKET_TIMEOUT_MS, withImap } from "./mail.js";
+import { addressKey, composed, foundOf, type ImapSession, inThread, involves, MailError, type MailHead, type MailMessage, neverSentTo, READ_BYTES, readOf, SEARCH_BYTES, SENT_HEADER, smtpSend, TOOL_SOCKET_TIMEOUT_MS, withImap } from "./mail.js";
 
 export { EMAIL_DRAFT, EMAIL_FILE, EMAIL_READ, EMAIL_SCOPES, EMAIL_SEARCH, EMAIL_SEND, OUTSIDE_THREAD, SCOPED_TOOLS, SEND_CAP, sendSummary } from "./names.js";
 
@@ -71,9 +72,10 @@ const messageId = (value: string) => {
   return id.startsWith("<") ? id : `<${id}>`;
 };
 
-/** The message a thread run started from: who sent it (its From's address, lowercased), its Message-ID, and where the
- *  trigger found it (the mailbox, its UIDVALIDITY, the UID). */
-export type ThreadRoot = { from: string; message_id: string; mailbox: string; uidvalidity: string; uid: number };
+/** The message a thread run started from: who sent it (its From's address, as compared: addressKey), its Message-ID, where the
+ *  trigger found it (the mailbox, its UIDVALIDITY, the UID), and `dmarc`, whether the receiving server's own
+ *  Authentication-Results said DMARC passed for that From's domain (the firing's `dmarc` attr, trigger-email.ts). */
+export type ThreadRoot = { from: string; message_id: string; mailbox: string; uidvalidity: string; uid: number; dmarc: boolean };
 
 /** What a run may read: the whole account, or the thread of the message that started it (`root`, null when its firing
  *  does not say which message and where it was found: then nothing). */
@@ -83,10 +85,10 @@ type Scope = { kind: "mailbox" } | { kind: "thread"; root: ThreadRoot | null };
  *  sender, its Message-ID and where the trigger found it. Null when any of them is missing or does not read, so the run
  *  reads nothing (fail closed). */
 export function threadRootOf(attrs: Readonly<Record<string, unknown>> | undefined): ThreadRoot | null {
-  const { from, message_id, mailbox, uidvalidity, uid } = attrs ?? {};
+  const { from, message_id, mailbox, uidvalidity, uid, dmarc } = attrs ?? {};
   const named = (value: unknown): value is string => typeof value === "string" && value.trim() !== "";
   if (!named(from) || !named(message_id) || !named(mailbox) || !named(uidvalidity) || !named(uid) || !/^[1-9]\d{0,15}$/.test(uid)) return null;
-  return { from: from.trim().toLowerCase(), message_id, mailbox, uidvalidity, uid: Number(uid) };
+  return { from: addressKey(from), message_id, mailbox, uidvalidity, uid: Number(uid), dmarc: dmarc === "pass" };
 }
 
 /** The scope of `tool`'s calls in the run `host` binds for: the agent's `scope: "mailbox"` reads the whole account; a run
@@ -125,7 +127,7 @@ async function located(session: ImapSession, root: ThreadRoot | null): Promise<T
 }
 
 /** Whether `head` is `root`'s message: its Message-ID, from its sender. */
-const isRoot = (head: MailHead, root: ThreadRoot) => head.message_id === root.message_id && head.from.trim().toLowerCase() === root.from;
+const isRoot = (head: MailHead, root: ThreadRoot) => head.message_id === root.message_id && addressKey(head.from) === root.from;
 
 /** `root`'s message where the trigger found it, when it is still there. */
 async function recorded(session: ImapSession, root: ThreadRoot): Promise<MailHead | undefined> {
@@ -192,17 +194,17 @@ class Mail {
     return found.filter((uid) => inside.has(uid));
   }
 
-  /** The thread's people, lowercased: the account's own address and every From, To and Cc of the thread's messages (those
+  /** The thread's people, as compared (addressKey): the account's own address and every From, To and Cc of the thread's messages (those
    *  `allows` takes), across the account's mailboxes; undefined when the run reads the whole account. */
   async people(session: ImapSession): Promise<Set<string> | undefined> {
     const ids = await this.thread(session);
     if (!ids) return undefined;
-    const people = new Set([this.account.address.trim().toLowerCase()]);
+    const people = new Set([addressKey(this.account.address)]);
     if (!ids.size) return people;
     for (const path of await session.searchable()) {
       await session.open(path);
       for (const head of await session.heads(path, await session.uids(session.threadQuery([...ids])))) {
-        if (inThread(head, ids) && (await this.allows(session, head))) for (const one of [head.from, ...head.to, ...head.cc]) people.add(one.trim().toLowerCase());
+        if (inThread(head, ids) && (await this.allows(session, head))) for (const one of [head.from, ...head.to, ...head.cc]) people.add(addressKey(one));
       }
     }
     return people;
@@ -385,15 +387,64 @@ const listed = (names: readonly string[]) => (names.length < 2 ? names.join("") 
 
 /** Why an email_send its setting allows asks a person anyway (tools.ts ToolEntry.asks), or nothing: the run has sent
  *  SEND_CAP emails or more (its record's count, across pauses); or, on a run that reads only its email's thread (email_read's
- *  scope), it sends to someone outside the thread's people (Mail.people), each named. Both, when both. A thread that can't
- *  be read asks too, saying so. A call whose arguments don't read asks nothing: the tool refuses it in its own words. */
+ *  scope), it sends to someone outside the thread's people (Mail.people), each named; or, on any run a trigger started
+ *  (that thread run too), it sends to an address the account has never sent to (newWords), each named. Each that holds,
+ *  joined. A thread
+ *  or a Sent folder that can't be read asks too, saying so. A call whose arguments don't read asks nothing: the tool
+ *  refuses it in its own words. */
 export async function sendAsks(args: Record<string, unknown>, ctx: AskContext): Promise<string | undefined> {
   const why: string[] = [];
   const sent = await ctx.ran(EMAIL_SEND);
   if (sent >= SEND_CAP) why.push(`this run has sent ${sent} emails`);
   const outside = await outsideWords(ctx.host, args);
   if (outside) why.push(outside);
+  const fresh = await newWords(ctx, args);
+  if (fresh) why.push(fresh);
   return why.length ? why.join("; ") : undefined;
+}
+
+/** The recipients of a send's arguments (to and cc), as compared (addressKey), once each; none when they don't read. */
+function recipientsOf(args: Record<string, unknown>): string[] {
+  const list = (value: unknown) => (typeof value === "string" ? [value] : Array.isArray(value) ? value.filter((one): one is string => typeof one === "string") : []);
+  return [...new Set([...list(args.to), ...list(args.cc)].map(addressKey))];
+}
+
+/** On a run a trigger started (host.startedBy: a schedule, a webhook, an email, any source), the recipients of the send
+ *  `args` this account has never sent to, in words: none of its Sent mail, from the account and no draft, is to them
+ *  (mail.ts neverSentTo, To, Cc or Bcc, the exact address). The account's own address is never new, nor one this run
+ *  already sent to (its earlier sends, unasked or approved, from its record: a copy in Sent or not), nor, on a run that
+ *  reads only its email's thread, the thread's starter (its root's From, as the trigger read it: ThreadRoot.from), whom
+ *  an auto-responder answers, but only when the receiving server vouched for that From (ThreadRoot.dmarc: its own
+ *  Authentication-Results said dmarc=pass for the From's domain); a From it didn't vouch for may be forged, and asks
+ *  as anyone's. Everyone else that message names, its Cc's strangers among them, is checked as on any other run. A Sent
+ *  folder that can't be read asks, saying so (fail closed). Nothing on a run no trigger started. */
+async function newWords(ctx: AskContext, args: Record<string, unknown>): Promise<string | undefined> {
+  const host = ctx.host;
+  if (!host.startedBy || !opens(host)) return undefined;
+  const scope = await scopeOf(host, EMAIL_READ);
+  const starter = scope.kind === "thread" && scope.root?.dmarc ? [scope.root.from] : [];
+  let recipients: string[];
+  try {
+    const letter = letterOf(args);
+    recipients = [...new Set([...letter.to, ...letter.cc].map(addressKey))];
+  } catch {
+    return undefined;
+  }
+  try {
+    const account = await accountOf(host);
+    // No account when the send is checked: the tool opens the account again when it runs, so one saved in between would
+    // let the send out unchecked. It asks, saying so (fail closed).
+    if (!account) throw new MailError("missing", NO_ACCOUNT);
+    // One a template eval's run may not open: the send itself is refused in its own words.
+    if (!fakeHeld(host, account)) return undefined;
+    const known = new Set([addressKey(account.address), ...starter, ...(await ctx.made(EMAIL_SEND)).flatMap((one) => (isObject(one) ? recipientsOf(one) : []))]);
+    const unknown = recipients.filter((one) => !known.has(one));
+    if (!unknown.length) return undefined;
+    const never = await withImap(account, (session) => neverSentTo(session, unknown, account.address), { socketTimeoutMs: TOOL_SOCKET_TIMEOUT_MS });
+    return never.length ? `${listed(never)}: this account has never sent to them` : undefined;
+  } catch (error) {
+    return `its recipients couldn't be checked against this account's sent mail (${(error as Error)?.message ?? String(error)})`;
+  }
 }
 
 /** The recipients of the send `args` outside the run's thread, in words; nothing on a run that reads the whole account. */
@@ -403,7 +454,7 @@ async function outsideWords(host: ToolHost, args: Record<string, unknown>): Prom
   let recipients: string[];
   try {
     const letter = letterOf(args);
-    recipients = [...new Set([...letter.to, ...letter.cc].map((one) => one.toLowerCase()))];
+    recipients = [...new Set([...letter.to, ...letter.cc].map(addressKey))];
   } catch {
     return undefined;
   }
@@ -431,6 +482,10 @@ function fakeHeld(host: ToolHost, account: { imap: { host: string; port: number 
 
 /** The names email_file refuses whatever the account flags: the trash and junk folders by their usual names. */
 const BINS = new Set(["trash", "junk", "spam", "[gmail]/trash", "[gmail]/spam", "\\trash", "\\junk"]);
+/** The names email_file refuses as Sent or Drafts whatever the account flags: those ImapSession.resolve takes for them,
+ *  Gmail's folders and its \Sent and \Draft labels. Sent holds what the account sent (the never-written-to check reads
+ *  it), so only email_send and email_draft put mail there. */
+const KEPT = new Set(["sent", "drafts", "\\sent", "\\drafts", "\\draft", "[gmail]/sent mail", "[gmail]/drafts"]);
 /** A folders server's answer to an explicit archive: false, a filing that would keep the message in the inbox. */
 const FOLDERS_REFUSAL = "this server has folders: filing moves the message out of the inbox; pass archive: true to move it";
 /** Gmail's label for a message in the inbox: taken off, the message is archived. */
@@ -438,22 +493,30 @@ const INBOX_LABEL = "\\Inbox";
 
 /** The message `id` filed under `to`: a Gmail label (archive: true takes its \Inbox label off too), else a move to the
  *  folder `to`, created if missing, with no archive or archive: true. Never a delete: the trash and junk folders are
- *  refused before anything is touched; and an explicit archive: false never takes mail out of the inbox. */
+ *  refused before anything is touched; and an explicit archive: false never takes mail out of the inbox. Never into Sent
+ *  or Drafts either (KEPT, or the folder flagged \Sent or \Drafts; and once made, only into a mailbox the server lists
+ *  by exactly that name: listedExactly): a message filed there would read as the account's own sent mail to the
+ *  never-written-to check. */
 async function file(mail: Mail, args: Record<string, unknown>) {
   const id = messageId(text(args, "message_id", 998, true)!);
   const to = text(args, "to", 300, true)!.trim();
   if (/[\u0000-\u001f]/.test(to)) throw new BadArgs("to is a folder's or a label's name, on one line.");
   if (args.archive !== undefined && typeof args.archive !== "boolean") throw new BadArgs("archive is true or false.");
   const refused = () => new BadArgs(`${EMAIL_FILE} files mail, it never deletes it: ${to} is the trash or junk folder.`);
+  const kept = () => new BadArgs(`${EMAIL_FILE} never files into Sent or Drafts: ${to} is the account's sent or drafts mail, which only ${EMAIL_SEND} and ${EMAIL_DRAFT} write.`);
   if (BINS.has(to.toLowerCase())) throw refused();
+  if (KEPT.has(to.toLowerCase())) throw kept();
   return withMail(mail, async (session) => {
-    const bin = (await session.mailboxes()).find((box) => box.path === to && (box.specialUse === "\\Trash" || box.specialUse === "\\Junk"));
+    const boxes = await session.mailboxes();
+    const bin = boxes.find((box) => box.path === to && (box.specialUse === "\\Trash" || box.specialUse === "\\Junk"));
     if (bin) throw refused();
+    if (boxes.some((box) => box.path.toLowerCase() === to.toLowerCase() && (box.specialUse === "\\Sent" || box.specialUse === "\\Drafts"))) throw kept();
     const found = await findById(session, id, mail);
     if (!found) throw new MailError("missing", mail.scope.kind === "thread" ? `${id} is ${OUTSIDE_THREAD}, or not in this account: this run files only the thread of the email that started it.` : `No message ${id} in this account.`);
     const done = (archived: boolean, note?: string) => ({ filed: true, message_id: id, to, archived, subject: found.subject, ...(note ? { note } : {}) });
     if (session.can("X-GM-EXT-1")) {
       await session.ensure(to);
+      await listedExactly(session, to, kept);
       await session.select(found.mailbox);
       await session.label(found.uid, [to]);
       const leaves = args.archive === true && found.mailbox.toUpperCase() === "INBOX";
@@ -464,11 +527,23 @@ async function file(mail: Mail, args: Record<string, unknown>) {
     // does; an explicit archive: false never takes mail out of the inbox.
     if (args.archive === false) throw new BadArgs(FOLDERS_REFUSAL);
     await session.ensure(to);
+    await listedExactly(session, to, kept);
     await session.select(found.mailbox);
     await session.move(found.uid, to);
     // The answer says the move: the model reads the answer, not the timeline.
     return done(true, `moved out of the inbox to ${to}`);
   });
+}
+
+/** Once `to` is made (ImapSession.ensure), that the server lists a mailbox of exactly that name (INBOX in any case), and
+ *  that it is neither Sent nor Drafts, by its flag or as ImapSession.resolve reads them: a server may take a name as
+ *  another's (CREATE may drop a trailing hierarchy delimiter, so `Sent/` is Sent; an alias), and the names alone
+ *  can't say so. Otherwise nothing is filed: `kept()`'s refusal for Sent or Drafts, else one that says the name. */
+async function listedExactly(session: ImapSession, to: string, kept: () => Error): Promise<void> {
+  const box = (await session.mailboxes()).find((one) => one.path === to || (to.toUpperCase() === "INBOX" && one.path.toUpperCase() === "INBOX"));
+  if (!box) throw new MailError("failed", `the mail server lists no mailbox named exactly ${JSON.stringify(to)} once it is made, so nothing was filed: give the folder's name as the server lists it.`);
+  const special = await Promise.all(["Sent", "Drafts"].map((name) => session.resolve(name).catch(() => undefined)));
+  if (box.specialUse === "\\Sent" || box.specialUse === "\\Drafts" || special.includes(box.path)) throw kept();
 }
 
 const STRING = { type: "string" };

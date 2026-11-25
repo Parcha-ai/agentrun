@@ -35,6 +35,9 @@ export const UNUSABLE = {
   blocked: "its sign-in server's address is refused here",
   /** A per_run server's run that was handed no credential for it (mcp_auth), or whose credential was erased at its end. */
   perRunMissing: "this server takes its credential from each run, and this run was handed none: its caller sends one as mcp_auth when it starts the run or sends it a message",
+  /** A per-run Composio server's binding of a Composio user the owner connects here (composio-owners.ts), which the API
+   *  token handed, or which was sealed before the seal marked who handed it. */
+  composioOwnersUser: "the Composio user this run is bound to is one the owner connects on this install, and nothing marks the binding as the owner's: hand mcp_auth again on a message, or start a new run",
 } as const;
 /** What a run's timeline says of a server whose credential comes from each run when the run was handed none: its tools
  *  were left out of the run's (mcp-run.ts mcpForClaim), so the model is never offered a tool every call of which is

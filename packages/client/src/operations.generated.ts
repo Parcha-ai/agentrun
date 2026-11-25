@@ -521,6 +521,14 @@ export type RunSummary = {
     digest: string | null;
     repick: "found" | "missed" | null;
   } | null;
+  workflow_calls?: Array<{
+    workflow: string;
+    digest: string;
+    caller: "platform" | "agent";
+    outcome: "answered" | "handed_back" | "failed" | "refused";
+    usd: number | null;
+  }> | null;
+  first_choice?: "served" | "replay" | "replay_missing" | "none_laid" | "off" | "none_fit" | "many_fit" | "not_promoted" | "champion_misfit" | "many_champions" | "cost_stop" | "no_by_hand_cost" | "past_unread" | "held" | null;
 };
 
 export type RunStatus = "queued" | "working" | "paused" | "input_required" | "completed" | "failed" | "cancelled";
@@ -824,6 +832,14 @@ export type Run = {
     digest: string | null;
     repick: "found" | "missed" | null;
   } | null;
+  workflow_calls?: Array<{
+    workflow: string;
+    digest: string;
+    caller: "platform" | "agent";
+    outcome: "answered" | "handed_back" | "failed" | "refused";
+    usd: number | null;
+  }> | null;
+  first_choice?: "served" | "replay" | "replay_missing" | "none_laid" | "off" | "none_fit" | "many_fit" | "not_promoted" | "champion_misfit" | "many_champions" | "cost_stop" | "no_by_hand_cost" | "past_unread" | "held" | null;
 };
 
 export type RunResult = {
@@ -1160,6 +1176,13 @@ export type Capabilities = {
       codex: string;
       opencode: string;
     };
+    held?: Array<{
+      provider: string;
+      tool: "search" | "fetch" | "key";
+      kind: "quota" | "rate";
+      until: string;
+      words: string;
+    }>;
     permission: "allow" | "ask" | "deny";
     default_permission: "allow" | "ask" | "deny";
     permissions: Array<"allow" | "ask" | "deny">;

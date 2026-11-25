@@ -90,11 +90,13 @@ const TWO_REQUESTS = [
   { model: "openai/gpt-5", usage: portUsage(OPENAI, 0.02), ended: { end: "answered", usd: 0.02 } },
 ];
 
-/** The run's route as its spec's trace names it: its own model, and the route the second request's model is its own on. */
-const TRACE = { provider: "openrouter", serverAddress: "openrouter.ai", model: "anthropic/claude-sonnet-4.5", routes: new Map([["second", { model: "openai/gpt-5" }]]) };
+/** The run's route as its spec's trace names it: its own model, and the route the second request's model is its own on;
+ *  and its agent, as the spec reads it from the store (stores() makes agent-1, "Agent one"). */
+const TRACE = { provider: "openrouter", serverAddress: "openrouter.ai", model: "anthropic/claude-sonnet-4.5", routes: new Map([["second", { model: "openai/gpt-5" }]]), agent: { id: "agent-1", name: "Agent one" } };
 
-/** One run of the stand-in, traced into memory: its spans, the run's row, and the trace's log lines. `redact`: the
- *  runner's redactor; `extra`: more events of its turn (standIn). */
+/** One run of the stand-in, traced into memory: its spans, the run's row, and the trace's log lines after the one its
+ *  start says (`[otel] tracing is on`, asserted in otel-agent-name.test.mjs). `redact`: the runner's redactor; `extra`:
+ *  more events of its turn (standIn). */
 async function tracedRun(t, { requests = TWO_REQUESTS, extra, redact, facts, exporter = new InMemorySpanExporter(), env = ON, trace = TRACE, runCap = { capUsd: () => undefined, modelOf: () => undefined } } = {}) {
   const lines = [];
   // The claim's trace, told when it ends: its end() is the last thing the claim does (adapter-loop.ts traced).
@@ -132,8 +134,11 @@ async function tracedRun(t, { requests = TWO_REQUESTS, extra, redact, facts, exp
   // The run's end commits before its trace ends: the loop's last patch lands the run ended and released, and only then
   // does the claim's trace end, its open spans and its invoke_agent span with it. Read the spans once it has.
   if (await tracing) await until(() => traceEnded, "the claim's trace ended", 5_000);
-  return { spans: exporter.getFinishedSpans?.() ?? [], row, lines };
+  return { spans: exporter.getFinishedSpans?.() ?? [], row, lines: lines.filter((line) => !line.startsWith("[otel] tracing is on: ")) };
 }
+
+/** The first line a failed export says, as a pattern: the endpoint's origin, the time, then `why` (a pattern's source). */
+const failedLine = (why) => new RegExp(`^\\[otel\\] a trace export to http://otlp\\.invalid:4318 failed at \\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d\\.\\d{3}Z; its spans were dropped: ${why}$`);
 
 const KINDS = ["INTERNAL", "SERVER", "CLIENT", "PRODUCER", "CONSUMER"];
 /** A trace as a tree of names, kinds, statuses and attributes: children in start order, no ids or times. */
@@ -209,7 +214,7 @@ test("an exporter that throws never fails the run: it ends ok, and the failure i
   const { row, lines } = await tracedRun(t, { exporter: throwing });
   assert.equal(row.state, "ended", `the run ended ok: ${JSON.stringify(row)}`);
   assert.equal(lines.length, 1, `one line for every span it dropped: ${JSON.stringify(lines)}`);
-  assert.match(lines[0], /^\[otel\] a trace export failed; its spans were dropped: collector down$/);
+  assert.match(lines[0], failedLine("collector down"));
 });
 
 test("a name the model wrote reaches no span uncut: a refused tool is execute_tool with error.type=tool_refused, a body's unknown model is the route's, and a held value is on no span", async (t) => {
@@ -417,7 +422,7 @@ test("a run's process posts no held value onto a span: its provider, host, call 
   const [lost, refused] = chatSpans(spans);
   assert.equal(lost.attributes["error.type"], undefined, "an end the runner does not know is read as none");
   assert.equal(refused.attributes["error.type"], "refused", "a known end keeps its label");
-  assert.equal(spans.find((span) => span.name === "invoke_agent pi").attributes["error.type"], "run-error", "a failure that is not a code is the runner's");
+  assert.equal(spans.find((span) => span.name === "invoke_agent" && span.attributes["agentrun.harness"] === "pi").attributes["error.type"], "run-error", "a failure that is not a code is the runner's");
   assert.equal(spans.find((span) => span.attributes["agentrun.run.id"] === "run-plan" && span.attributes["gen_ai.operation.name"] === "chat").attributes["error.type"], "failed", "a turn status it does not know is failed");
 });
 
@@ -449,7 +454,7 @@ test("a runner error line holds no OTLP header value: each one is a held secret,
   assert.equal(row.state, "ended");
   assert.equal(lines.length, 1, JSON.stringify(lines));
   assert.equal(lines[0].includes(key), false, `the tracer's line holds no header value: ${lines[0]}`);
-  assert.match(lines[0], /^\[otel\] a trace export failed; its spans were dropped: 401: Authorization: (Bearer )?\[redacted\]$/);
+  assert.match(lines[0], failedLine("401: Authorization: (Bearer )?\\[redacted\\]"));
 });
 
 test("an OTLP header value of 8 or more is held but a standard one's, under any name; a shorter one is on no held list, and the tracer's cut still takes it", () => {
@@ -537,6 +542,395 @@ test("the tracer's [otel] lines cut an unknown header's tail after any first wor
   assert.equal(otlpHeaderCut(env)(`401: bad credential ${cred}`), "401: bad credential [redacted]", "an [otel] line quoting the tail alone is cut");
 });
 
+// Which of `names`, each an OTLP endpoint's query parameter with a dummy value of its own, have their value on the held list.
+const heldParams = (names) => {
+  const value = (name) => `${name}-${"dummy"}-value-6060`;
+  const values = runnerSecrets({ OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: `https://collector.invalid/v1/traces?${names.map((name) => `${name}=${value(name)}`).join("&")}` });
+  return names.filter((name) => values.includes(value(name)));
+};
+
+test("an OTLP endpoint's query parameter named like a credential with a number after it (apiKey2, token2, secret01, token_2) is held", () => {
+  const names = ["apiKey2", "token2", "secret01", "token_2", "api_key_2"];
+  assert.deepEqual(names.filter((name) => !heldParams(names).includes(name)), [], "every numbered credential name's value is held");
+});
+
+test("an OTLP endpoint's query parameter whose name is one lowercase word starting with a credential word (tokenvalue, passwordhash) is held; a plural count (tokens, secrets) and authority, keyspace are not", () => {
+  const names = ["tokenvalue", "passwordhash", "secretvalue", "jwtpayload", "passwdhash"];
+  assert.deepEqual(names.filter((name) => !heldParams(names).includes(name)), [], "every name starting with a credential word has its value held");
+  assert.deepEqual(heldParams(["tokens", "secrets", "authority", "keyspace"]), [], "a plural count, authority and keyspace are not held");
+});
+
+test("an OTLP endpoint's query parameter named jwt or session, or ending in passwd, pwd, authorization or sessionid, is held; sessions and sessioncount are not", () => {
+  const names = ["jwt", "session", "sessionid", "session_token", "jsessionid", "dbpasswd", "userpwd", "proxyauthorization", "accessjwt"];
+  assert.deepEqual(names.filter((name) => !heldParams(names).includes(name)), [], "every jwt, session and passwd/pwd/authorization name's value is held");
+  assert.deepEqual(heldParams(["sessions", "sessioncount"]), [], "a count of sessions is not held");
+});
+
+test("an OTLP endpoint's query parameter whose lowercase name ends in key is held, whatever comes before it (hmackey, accountkey, storagekey, routingkey); keyspace is not", () => {
+  const names = ["apikey", "accesskey", "writekey", "datadogapikey", "hmackey", "accountkey", "storagekey", "sharedkey", "consumerkey", "instrumentationkey", "routingkey", "sortkey"];
+  assert.deepEqual(names.filter((name) => !heldParams(names).includes(name)), [], "every name ending in key has its value held");
+  assert.deepEqual(heldParams(["keyspace", "keys"]), [], "a name that only starts with key is not held");
+});
+
+test("an OTLP header value carrying a credential-named name=value pair or a URL with a credential in it is held and cut of that credential alone; a harmless pair is left whole", () => {
+  const [session, dsnKey, user, password] = [`session-${"dummy"}-tok-1301`, `dsn-${"dummy"}-key-2402`, `user-${"dummy"}-3503`, `pass-${"dummy"}-4604`];
+  const userinfo = (name, secret) => [name, secret].join(":");
+  const env = {
+    ...ON,
+    OTEL_EXPORTER_OTLP_HEADERS: `Cookie=session=${session}; theme=dark-mode-on,X-Sentry-Dsn=https://${dsnKey}@sentry.invalid/1`,
+    OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Upstream=https://${userinfo(user, password)}@relay.invalid/v1`,
+  };
+  for (const [list, values] of [["runnerSecrets", runnerSecrets(env)], ["hostSecrets", hostSecrets(env)]]) {
+    assert.deepEqual([["the cookie's session", session], ["the DSN's key", dsnKey], ["the URL's user", user], ["its password", password]].filter(([, value]) => !values.includes(value)).map(([what]) => what), [], `every credential inside a header value is held alone (${list})`);
+    for (const value of ["dark-mode-on", "theme=dark-mode-on"]) assert.equal(values.includes(value), false, `${value} (a pair named like no credential) is not held (${list})`);
+  }
+  assert.equal(
+    otlpHeaderCut(env)(`401: session ${session} expired; theme=dark-mode-on; dsn key ${dsnKey}; relay ${user} ${password}`),
+    "401: session [redacted] expired; theme=dark-mode-on; dsn key [redacted]; relay [redacted] [redacted]",
+    "an [otel] line quoting each credential alone is cut of it, and the harmless pair is left",
+  );
+});
+
+test("an OTLP header value's URL is read with its whole user and password before the value is split at ; & and spaces: a password with ; & or = in it is held whole with its user, and cut", () => {
+  const userinfo = (name, secret) => [name, secret].join(":");
+  const user = `relayuser-${"dummy"}-5705`;
+  const passwords = [["a ; in the password", `relay;${"dummy"}-pass-6806`], ["an & and an = in the password", `relay&${"dummy"}=pass-7907`]];
+  const missed = [];
+  for (const [what, password] of passwords) {
+    const env = { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Upstream=https://${userinfo(user, password)}@relay.invalid/v1` };
+    for (const [list, values] of [["runnerSecrets", runnerSecrets(env)], ["hostSecrets", hostSecrets(env)]]) {
+      for (const [part, value] of [["the user", user], ["the password", password]]) if (!values.includes(value)) missed.push(`${what}: ${part} (${list})`);
+    }
+    const line = `401 from relay: user ${user}, password ${password}`;
+    const cut = "401 from relay: user [redacted], password [redacted]";
+    if (otlpHeaderCut(env)(line) !== cut) missed.push(`${what}: the [otel] cut shows ${otlpHeaderCut(env)(line)}`);
+    if (secretRedactor(runnerSecrets(env))(line) !== cut) missed.push(`${what}: the runner's redactor shows ${secretRedactor(runnerSecrets(env))(line)}`);
+  }
+  assert.deepEqual(missed, [], "a URL's user and its whole password are held alone and cut, whatever the password holds");
+  const session = `session-${"dummy"}-tok-9109`;
+  const values = runnerSecrets({ OTEL_EXPORTER_OTLP_HEADERS: `X-Relay=https://relay.invalid;session=${session};contact=ops@team.invalid` });
+  assert.equal(values.includes(session), true, "a credential-named pair inside what reads as a URL's user is still held alone");
+});
+
+test("an OTLP header value's URL with a percent-encoded password is held as written and decoded, and no piece of the decoded password is cut from other words", () => {
+  const userinfo = (name, secret) => [name, secret].join(":");
+  const user = `relayuser-${"dummy"}-5705`;
+  const written = `pass%40word%3B${"dummy"}-8008`;
+  const plain = decodeURIComponent(written);
+  const env = { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Upstream=https://${userinfo(user, written)}@relay.invalid/v1` };
+  for (const [list, values] of [["runnerSecrets", runnerSecrets(env)], ["hostSecrets", hostSecrets(env)]]) {
+    assert.deepEqual([["the user", user], ["the password as written", written], ["the password decoded", plain]].filter(([, value]) => !values.includes(value)).map(([what]) => what), [], `the user and the password both ways are held (${list})`);
+  }
+  assert.equal(
+    otlpHeaderCut(env)(`401 from relay: password ${written} (${plain}); 2 spans passed`),
+    "401 from relay: password [redacted] ([redacted]); 2 spans passed",
+    "an [otel] line quoting the password either way is cut of it, and no piece of it is cut from other words",
+  );
+});
+
+test("an OTLP header value's quoted URL ends at its closing quote: its user alone is held and cut, though a later pair holds an @", () => {
+  const key = `relay-key-${"123"}`;
+  const env = { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=upstream='https://${key}@relay.invalid'&contact=ops@team.invalid` };
+  for (const [list, values] of [["runnerSecrets", runnerSecrets(env)], ["hostSecrets", hostSecrets(env)]]) assert.equal(values.includes(key), true, `the quoted URL's user alone is held (${list})`);
+  const line = `401 from relay: bad key ${key}; 2 spans passed, contact ops`;
+  const cut = "401 from relay: bad key [redacted]; 2 spans passed, contact ops";
+  assert.equal(otlpHeaderCut(env)(line), cut, "the [otel] cut takes the quoted URL's user alone and leaves passed, contact and ops");
+  assert.equal(secretRedactor(runnerSecrets(env))(line), cut, "the runner's redactor takes the quoted URL's user alone");
+});
+
+// Every shape a URL with a user and password takes in an OTLP header value: bare, in single quotes or in double quotes; as
+// the header's whole value, or as one name=value pair joined to a later pair holding an @ by &, ;, a comma (written %2C:
+// a bare comma splits the variable) or a space; with a path or none; with a password holding one of the characters a
+// naive read stops at, percent-encoded where RFC 3986 requires it and raw where a person would paste it.
+const URL_QUOTES = [["bare", ""], ["single-quoted", "'"], ["double-quoted", '"']];
+const URL_PLACES = [
+  ["as the header's value", (url) => url],
+  ...[["&", "&"], [";", ";"], ["a comma", "%2C"], ["a space", " "]].map(([what, joint]) => [`as a pair joined by ${what} to a later pair with an @`, (url) => `upstream=${url}${joint}contact=ops@team.invalid`]),
+];
+const URL_PATHS = [["no path", ""], ["a path", "/v1"]];
+// [what, the password as written in a URL in `quote`]; null: a user alone (a DSN's key).
+const URL_PASSWORDS = [
+  ["no password", () => null],
+  ["a raw ;", () => `pa;ss-${"dummy"}-7101`],
+  ["a raw &", () => `pa&ss-${"dummy"}-7102`],
+  ["a raw =", () => `pa=ss-${"dummy"}-7103`],
+  ["an encoded comma", () => `pa%2Css-${"dummy"}-7104`],
+  ["a quote, raw in double quotes and encoded elsewhere", (quote) => (quote === '"' ? `pa'ss-${"dummy"}-7105` : `pa%27ss-${"dummy"}-7105`)],
+  ["a raw @", () => `pa@ss-${"dummy"}-7106`],
+  ["an encoded @", () => `pa%40ss-${"dummy"}-7107`],
+  ["a raw %", () => `pa%ss-${"dummy"}-7108`],
+  ["an encoded %", () => `pa%25ss-${"dummy"}-7109`],
+  ["a raw :", () => `pa:ss-${"dummy"}-7110`],
+  ["an encoded /", () => `pa%2Fss-${"dummy"}-7111`],
+];
+
+test("an OTLP header value's URL, in every shape and with any hard character in its password, has its user and password held as written and decoded and cut alone, and no ordinary word is cut", () => {
+  const userinfo = (name, secret) => [name, secret].join(":");
+  const plainOf = (text) => {
+    try {
+      return decodeURIComponent(text);
+    } catch {
+      return text;
+    }
+  };
+  const user = `relayuser-${"dummy"}-5705`;
+  const missed = [];
+  for (const [quoting, quote] of URL_QUOTES) {
+    for (const [place, put] of URL_PLACES) {
+      for (const [pathing, path] of URL_PATHS) {
+        for (const [what, passwordIn] of URL_PASSWORDS) {
+          const password = passwordIn(quote);
+          const row = `${quoting} URL ${place}, ${pathing}, ${what}`;
+          const url = `${quote}https://${password === null ? user : userinfo(user, password)}@relay.invalid${path}${quote}`;
+          const env = { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Upstream=${put(url)}` };
+          const parts = [["the user", user], ...(password === null ? [] : [["the password as written", password], ["the password decoded", plainOf(password)]])];
+          for (const [list, values] of [["runnerSecrets", runnerSecrets(env)], ["hostSecrets", hostSecrets(env)]]) {
+            for (const [part, value] of parts) if (!values.includes(value)) missed.push(`${row}: ${part} (${list})`);
+          }
+          const line = password === null
+            ? `401 from relay: key ${user}; 2 spans passed, contact ops`
+            : `401 from relay: user ${user}, password ${password}, decoded ${plainOf(password)}; 2 spans passed, contact ops`;
+          const cut = password === null
+            ? "401 from relay: key [redacted]; 2 spans passed, contact ops"
+            : "401 from relay: user [redacted], password [redacted], decoded [redacted]; 2 spans passed, contact ops";
+          const otel = otlpHeaderCut(env)(line);
+          if (otel !== cut) missed.push(`${row}: the [otel] cut shows ${otel}`);
+          const runner = secretRedactor(runnerSecrets(env))(line);
+          if (runner !== cut) missed.push(`${row}: the runner's redactor shows ${runner}`);
+        }
+      }
+    }
+  }
+  assert.deepEqual(missed.slice(0, 24), [], `every URL shape's user and password are held and cut alone, and passed, contact and ops are left (${missed.length} missed)`);
+});
+
+test("a quoted URL's short password, under the held lists' floor, is still cut from the [otel] line at any length, though a later pair holds an @", () => {
+  const userinfo = (name, secret) => [name, secret].join(":");
+  const [user, password] = [`ab${"12"}`, `cd${"34"}`];
+  const missed = [];
+  for (const [quoting, quote] of URL_QUOTES.filter(([, quote]) => quote)) {
+    for (const [place, put] of URL_PLACES) {
+      const env = { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Upstream=${put(`${quote}https://${userinfo(user, password)}@relay.invalid${quote}`)}` };
+      const otel = otlpHeaderCut(env)(`401 from relay: user ${user}, password ${password}; 2 spans passed, contact ops`);
+      if (otel !== "401 from relay: user [redacted], password [redacted]; 2 spans passed, contact ops") missed.push(`${quoting} URL ${place}: the [otel] cut shows ${otel}`);
+    }
+  }
+  assert.deepEqual(missed, [], "a quoted URL's user and password are read inside its quotes, so the [otel] cut takes them at any length");
+});
+
+// Where a credential sits inside an OTLP header value, past what a URL's own reading covers. Each row: [what, the header
+// (an OTEL_EXPORTER_OTLP_TRACES_HEADERS part), the credentials held and cut alone, what is on no held list]. Each row's
+// [otel] line also carries ordinary words, none of which may be cut.
+const innerUserinfo = (name, secret) => [name, secret].join(":");
+const innerToken = (n) => `tok-${"dummy"}-${n}`;
+const SENTRY_KEY = `sentry-${"dummy"}-key-8181`;
+const INNER_ROWS = [
+  ["a credential pair after a ; in an unquoted URL's query", `Cookie=upstream=https://relay.invalid/v1?region=us;session=${innerToken(1201)}`, [innerToken(1201)], ["us"]],
+  ["a credential pair after an & in an unquoted URL's query", `Cookie=upstream=https://relay.invalid/v1?region=us&session=${innerToken(1202)}`, [innerToken(1202)], ["us"]],
+  ["an access_token in an unquoted URL's fragment", `X-Upstream=upstream=https://relay.invalid/v1#access_token=${innerToken(1203)}`, [innerToken(1203)], []],
+  ["a credential pair after a ; in an unquoted URL's fragment", `X-Upstream=upstream=https://relay.invalid/v1#x;session=${innerToken(1204)}`, [innerToken(1204)], []],
+  ["a URL nested in another URL's query", `X-Upstream=https://relay.invalid/go?next=https://${innerUserinfo(`u2-${"dummy"}-user`, `p2-${"dummy"}-pass`)}@inner.invalid/`, [`u2-${"dummy"}-user`, `p2-${"dummy"}-pass`], []],
+  ["a URL nested in another URL's path", `X-Upstream=https://relay.invalid/go/https://${innerUserinfo(`u3-${"dummy"}-user`, `p3-${"dummy"}-pass`)}@inner.invalid/x`, [`u3-${"dummy"}-user`, `p3-${"dummy"}-pass`], []],
+  ["an unquoted URL with a raw ' in its password", `X-Upstream=https://${innerUserinfo(`user-${"dummy"}`, `pa'ss-${"dummy"}-99`)}@host.invalid/`, [`user-${"dummy"}`, `pa'ss-${"dummy"}-99`], []],
+  ["sentry's key between commas written %2C", `X-Sentry-Auth=Sentry sentry_version=7%2C sentry_key=${SENTRY_KEY}%2C sentry_client=x`, [SENTRY_KEY], [`${SENTRY_KEY},`, `${SENTRY_KEY}%2C`]],
+  ["sentry's key between raw commas", `X-Sentry-Auth=Sentry sentry_version=7, sentry_key=${SENTRY_KEY}, sentry_client=x`, [SENTRY_KEY], [`${SENTRY_KEY},`]],
+  ["a scheme-relative URL's user", `X-Upstream=//key-${"dummy"}-1234@host.invalid`, [`key-${"dummy"}-1234`], []],
+  ["a JSON-escaped URL's user and password", `X-Upstream=https:\\/\\/${innerUserinfo(`u-${"dummy"}-12`, `p-${"dummy"}-34`)}@host.invalid`, [`u-${"dummy"}-12`, `p-${"dummy"}-34`], []],
+  ["a single-quoted credential pair's value", `X-Upstream=token='${innerToken(5678)}'`, [innerToken(5678)], []],
+  ["a bare URL with no path, then an & pair holding an @", "X-Upstream=https://relay.invalid&contact=ops@team.invalid", [], ["relay.invalid"]],
+  ["the same URL as a pair's value", "X-Upstream=upstream=https://relay.invalid&contact=ops@team.invalid", [], ["relay.invalid"]],
+];
+
+test("an OTLP header value's credential pair is read anywhere in the value, a URL's query and fragment too, and every URL in it is read, one nested in another, one with a raw ' in its password, scheme-relative or JSON-escaped; a hostname and ordinary words are left", () => {
+  const words = "2 spans passed, contact ops, region us v1 relay";
+  const missed = [];
+  for (const [what, header, held, unheld] of INNER_ROWS) {
+    const env = { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: header };
+    for (const [list, values] of [["runnerSecrets", runnerSecrets(env)], ["hostSecrets", hostSecrets(env)]]) {
+      for (const value of held) if (!values.includes(value)) missed.push(`${what}: ${value} not held (${list})`);
+      for (const value of unheld) if (values.includes(value)) missed.push(`${what}: ${value} held (${list})`);
+    }
+    const shown = unheld.filter((value) => !held.some((credential) => value.includes(credential)));
+    const line = `401 from relay: ${held.map((value) => `got ${value}`).join(", ")}; ${words} ${shown.join(" ")}`;
+    const cut = `401 from relay: ${held.map(() => "got [redacted]").join(", ")}; ${words} ${shown.join(" ")}`;
+    const otel = otlpHeaderCut(env)(line);
+    if (otel !== cut) missed.push(`${what}: the [otel] cut shows ${otel}`);
+    const runner = secretRedactor(runnerSecrets(env))(line);
+    if (runner !== cut) missed.push(`${what}: the runner's redactor shows ${runner}`);
+  }
+  assert.deepEqual(missed, [], "every credential is held and cut alone; the hostname, a comma after a key and the ordinary words are not");
+});
+
+// A credential with a raw ; in it, as an OTLP endpoint's query parameter or inside a header value. A query or a pair list
+// read split at & alone keeps the whole value; read split at ; too, it keeps each pair after a ;. Both readings are held.
+// Each row: [what, the env, the credentials held and cut alone, what is on no held list, a line quoting the variable and
+// its cut].
+const SEMI_PREFIX = `prefix-${"dummy"}`;
+const SEMI_WHOLE = `${SEMI_PREFIX};suffix-${"dummy"}`;
+const SEMI_ROWS = [
+  [
+    "an endpoint's credential parameter with a ; in its value",
+    { OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: `https://collector.invalid/v1/traces?api_key=${SEMI_WHOLE}` },
+    [SEMI_WHOLE, SEMI_PREFIX],
+    [],
+    [`POST https://collector.invalid/v1/traces?api_key=${SEMI_WHOLE} failed`, "POST https://collector.invalid/v1/traces?api_key=[redacted] failed"],
+  ],
+  [
+    "an endpoint's credential pair after a ; in its query",
+    { OTEL_EXPORTER_OTLP_ENDPOINT: `https://collector.invalid?region=us-east-1;session=${innerToken(1301)}` },
+    [innerToken(1301)],
+    ["us-east-1", `us-east-1;session=${innerToken(1301)}`],
+    [`POST https://collector.invalid?region=us-east-1;session=${innerToken(1301)} failed`, "POST https://collector.invalid?region=us-east-1;session=[redacted] failed"],
+  ],
+  [
+    "a credential-named header's value with a ;",
+    { ...ON, OTEL_EXPORTER_OTLP_HEADERS: `api-key=${SEMI_WHOLE}` },
+    [SEMI_WHOLE, SEMI_PREFIX],
+    [],
+    [`401 for api-key: ${SEMI_WHOLE}`, "401 for api-key: [redacted]"],
+  ],
+  [
+    "a header value's URL's credential parameter with a ; in its value",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Upstream=https://relay.invalid/v1?api_key=${SEMI_WHOLE}` },
+    [SEMI_WHOLE, SEMI_PREFIX],
+    [],
+    [`401 from relay: api_key=${SEMI_WHOLE} refused`, "401 from relay: api_key=[redacted] refused"],
+  ],
+  [
+    "a header value's credential pair with a ; in its value, before an & pair",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=api_key=${SEMI_WHOLE}&region=us-east-1` },
+    [SEMI_WHOLE, SEMI_PREFIX],
+    ["us-east-1"],
+    [`401 for X-Relay: api_key=${SEMI_WHOLE}&region=us-east-1; region us-east-1`, "401 for X-Relay: [redacted]; region us-east-1"],
+  ],
+];
+
+test("an OTLP endpoint's or header value's credential with a raw ; in it is held whole and as each pair after a ;, and a line quoting it is cut to [redacted] with no piece after the ; left", () => {
+  const words = "2 spans passed, contact ops, region us-east-1";
+  const missed = [];
+  for (const [what, env, held, unheld, [said, saidCut]] of SEMI_ROWS) {
+    for (const [list, values] of [["runnerSecrets", runnerSecrets(env)], ["hostSecrets", hostSecrets(env)]]) {
+      for (const value of held) if (!values.includes(value)) missed.push(`${what}: ${value} not held (${list})`);
+      for (const value of unheld) if (values.includes(value)) missed.push(`${what}: ${value} held (${list})`);
+    }
+    const line = `401 from collector: ${held.map((value) => `got ${value}`).join(", ")}; ${words}`;
+    const cut = `401 from collector: ${held.map(() => "got [redacted]").join(", ")}; ${words}`;
+    for (const [redactor, redact] of [["the [otel] cut", otlpHeaderCut(env)], ["the runner's redactor", secretRedactor(runnerSecrets(env))]]) {
+      for (const [text, want] of [[line, cut], [said, saidCut]]) {
+        const shown = redact(text);
+        if (shown !== want) missed.push(`${what}: ${redactor} shows ${shown}`);
+      }
+    }
+  }
+  assert.deepEqual(missed, [], "every credential with a ; is held whole and by its pairs, and cut with nothing after the ; left; region and the ordinary words are not");
+});
+
+// Held OTLP values that overlap or touch in a line: each row [what, the OTEL_EXPORTER_OTLP_HEADERS value, the line, its
+// cut]. Every redactor cuts the union of every held value's places, so no character of any held value is left.
+const OVERLAP_KEY = `${SEMI_PREFIX};suffix-${"dummy"}`;
+const OVERLAP_ROWS = [
+  [
+    "the X-Relay pair quoted alone (the SDK's reading `api_key=<key>` starts first, the key with its ; ends later)",
+    `X-Relay=api_key=${OVERLAP_KEY}&region=us-east-1`,
+    `401 from relay: api_key=${OVERLAP_KEY} refused, region us-east-1`,
+    "401 from relay: [redacted] refused, region us-east-1",
+  ],
+  [
+    "two values overlapping, the longer starting first",
+    `X-One=alpha-${"dummy"}-long-value-shared,X-Two=shared-tail-${"dummy"}`,
+    `401: got alpha-${"dummy"}-long-value-shared-tail-${"dummy"} back`,
+    "401: got [redacted] back",
+  ],
+  [
+    "two values overlapping, the longer starting later",
+    `X-One=head-${"dummy"}-shared,X-Two=shared-long-${"dummy"}-tail-value`,
+    `401: got head-${"dummy"}-shared-long-${"dummy"}-tail-value back`,
+    "401: got [redacted] back",
+  ],
+  [
+    "two values touching",
+    `X-One=touch-one-${"dummy"},X-Two=touch-two-${"dummy"}`,
+    `401: got touch-one-${"dummy"}touch-two-${"dummy"} back`,
+    "401: got [redacted] back",
+  ],
+];
+
+test("OTLP values that overlap or touch in a line are cut as one by every redactor, so no character of any held value is left, whichever starts first or is longer", () => {
+  const missed = [];
+  for (const [what, headers, line, cut] of OVERLAP_ROWS) {
+    const env = { ...ON, OTEL_EXPORTER_OTLP_HEADERS: headers };
+    for (const [redactor, redact] of [["the [otel] cut", otlpHeaderCut(env)], ["the runner's redactor", secretRedactor(runnerSecrets(env))], ["the host's held list's redactor", secretRedactor(hostSecrets(env))]]) {
+      const shown = redact(line);
+      if (shown !== cut) missed.push(`${what}: ${redactor} shows ${shown}`);
+    }
+  }
+  assert.deepEqual(missed, [], "every overlapping or touching held value is cut as one [redacted]");
+});
+
+test("after a header value's first URL query, a later URL's query is read while 4,096 characters of them in all fit: one that fits has its + read as a space, and a longer one's key is still held as written by the pair read", () => {
+  // A key of `length` characters with a + in it; the second URL's query is `api_key=` and the key.
+  const key = (length) => `dummy+key-${"x".repeat(length - 10)}`;
+  const envOf = (query) => ({ ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Upstream=https://a.invalid/?region=us-east-1 https://b.invalid/?api_key=${key(query - 8)}` });
+  const fits = runnerSecrets(envOf(4096));
+  assert.equal(fits.includes(key(4088).replace("+", " ")), true, "a later query of 4,096 characters is read, its + as a space");
+  const over = runnerSecrets(envOf(4097));
+  assert.equal(over.includes(key(4089)), true, "a later query over 4,096 characters still has its key held as written (the pair read)");
+  assert.equal(over.includes(key(4089).replace("+", " ")), false, "a later query over 4,096 characters is not read as a query");
+});
+
+test("an OTLP header value of 16 KB holding 8,000 @, 4,000 URL starts, or 1,000 URLs each in the last's query, starts the tracer and cuts an [otel] line in well under a second, and still holds its URL's user as RFC 3986 reads it (before the last @)", () => {
+  const user = `${"a@".repeat(7999)}a`;
+  const header = `X-Upstream=https://${user}@relay.invalid`;
+  // In a child bounded by its own timeout, so a reading that grows with the @ count fails here by time, never hangs the file.
+  const script = [
+    "const dist = process.env.TRACER_DIST;",
+    "const { genAiTracing } = await import(`${dist}otel/tracer.js`);",
+    "const { runnerSecrets, secretRedactor } = await import(`${dist}runner/redact.js`);",
+    "const { otlpHeaderCut } = await import(`${dist}secrets.js`);",
+    "const exporter = { export: (spans, done) => done({ code: 0 }), shutdown: async () => {}, forceFlush: async () => {} };",
+    "const on = { OTEL_EXPORTER_OTLP_ENDPOINT: 'http://otlp.invalid:4318' };",
+    "await genAiTracing(on, { exporter, log: () => {} });",
+    "const env = { ...on, OTEL_EXPORTER_OTLP_TRACES_HEADERS: process.env.TRACER_HEADER };",
+    "const line = `401 from relay: user ${process.env.TRACER_USER}; 2 spans passed`;",
+    "const started = performance.now();",
+    "await genAiTracing(env, { exporter, log: () => {} });",
+    "const otel = otlpHeaderCut(env)(line);",
+    "const runner = secretRedactor(runnerSecrets(env))(line);",
+    "const ms = performance.now() - started;",
+    "const held = runnerSecrets(env).includes(process.env.TRACER_USER);",
+    "const nested = { ...on, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Upstream=${'a://'.repeat(4000)}` };",
+    "const nestedStarted = performance.now();",
+    "await genAiTracing(nested, { exporter, log: () => {} });",
+    "otlpHeaderCut(nested)(line);",
+    "const nestedMs = performance.now() - nestedStarted;",
+    "const queried = { ...on, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Upstream=${'a://h?token=a;b&'.repeat(1000)}` };",
+    "const queriedStarted = performance.now();",
+    "await genAiTracing(queried, { exporter, log: () => {} });",
+    "otlpHeaderCut(queried)(line);",
+    "const queriedMs = performance.now() - queriedStarted;",
+    // The [otel] cut, which finds every place each value starts, over lines quoting each 16 KB value twice.
+    "const cutStarted = performance.now();",
+    "const cuts = [[env, process.env.TRACER_HEADER.slice('X-Upstream='.length)], [queried, queried.OTEL_EXPORTER_OTLP_TRACES_HEADERS.slice('X-Upstream='.length)]].map(([of, value]) => otlpHeaderCut(of)(`401 from relay: ${value} ${value}; 2 spans passed`));",
+    "const cutMs = performance.now() - cutStarted;",
+    "console.log(JSON.stringify({ ms, held, otel, runner, nestedMs, queriedMs, cutMs, cuts }));",
+    "process.exit(0);",
+  ].join("\n");
+  const env = { ...process.env, AGENTRUN_TELEMETRY: "0", TRACER_DIST: new URL("../dist/", import.meta.url).href, TRACER_HEADER: header, TRACER_USER: user };
+  delete env.NODE_TEST_CONTEXT;
+  const child = spawnSync(process.execPath, ["--max-old-space-size=1024", "--input-type=module", "-e", script], { encoding: "utf8", env, timeout: 20_000, maxBuffer: 16 * 1024 * 1024 });
+  assert.equal(child.error?.code ?? child.signal ?? child.status, 0, `the tracer started within 20 s and the child ended on its own (stderr: ${(child.stderr ?? "").slice(-300)})`);
+  const { ms, held, otel, runner, nestedMs, queriedMs, cutMs, cuts } = JSON.parse(child.stdout.trim().split("\n").at(-1));
+  assert.ok(cutMs < 1000, `the [otel] cut of two lines each quoting a 16 KB value twice took ${Math.round(cutMs)} ms, under 1 s`);
+  // The nested queries' value holds `token=a`, so the cut, which has no floor, takes every `a` of the line too.
+  assert.deepEqual(cuts.map((cut) => !cut.includes("a@a") && !cut.includes("://") && cut.includes("[redacted] [redacted]") || cut.slice(0, 200)), [true, true], "each quoted value is cut, none of it left");
+  assert.ok(ms < 1000, `the tracer started and cut a line in ${Math.round(ms)} ms, under 1 s`);
+  assert.ok(nestedMs < 1000, `a 16 KB value of 4,000 URL starts, each inside the last, started the tracer in ${Math.round(nestedMs)} ms, under 1 s`);
+  assert.ok(queriedMs < 1000, `a 16 KB value of 1,000 URLs with a query, each inside the last's query, started the tracer in ${Math.round(queriedMs)} ms, under 1 s`);
+  assert.equal(held, true, "the URL's user before the last @ is held");
+  assert.equal(otel, "401 from relay: user [redacted]; 2 spans passed", "the [otel] cut takes the user");
+  assert.equal(runner.includes("a@a"), false, `the runner's redactor shows no piece of the user (it shows ${runner.slice(0, 80)})`);
+});
+
 test("a short OTLP header value is cut from the tracer's own error text, at any length; a standard header's value is left as it is", async (t) => {
   const short = `hc${"7"}x1`;
   const env = { ...ON, OTEL_EXPORTER_OTLP_HEADERS: `x-honeycomb-team=${short},Content-Type=application/json`, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `x-team=${short}` };
@@ -546,7 +940,7 @@ test("a short OTLP header value is cut from the tracer's own error text, at any 
   assert.equal(row.state, "ended");
   assert.equal(lines.length, 1, JSON.stringify(lines));
   assert.equal(lines[0].includes(short), false, `the tracer's line holds no header value: ${lines[0]}`);
-  assert.equal(lines[0], "[otel] a trace export failed; its spans were dropped: 401 for x-honeycomb-team: [redacted] (x-team=[redacted]), Content-Type: application/json");
+  assert.match(lines[0], failedLine("401 for x-honeycomb-team: \\[redacted\\] \\(x-team=\\[redacted\\]\\), Content-Type: application/json"));
 });
 
 test("no span carries content, even with OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT=true: no message, prompt, argument or result", async (t) => {
@@ -586,6 +980,7 @@ test("off by default: a whole run with no OTEL_* set loads no @opentelemetry mod
   const said = JSON.parse(child.stdout.trim().split("\n").at(-1));
   assert.equal(said.state, "ended", "the run ended");
   assert.deepEqual(said.loaded, [], "no @opentelemetry module was loaded");
+  assert.doesNotMatch(`${child.stdout}\n${child.stderr}`, /\[otel\]/, "off, the runner's start says nothing of tracing");
   // The same probe sees them once tracing is on: its silence above is no blind spot.
   assert.ok(said.loadedOn.includes("@opentelemetry/resources"), `on, the SDK's modules load: ${JSON.stringify(said.loadedOn)}`);
 });
@@ -678,7 +1073,7 @@ test("a claim's end never waits on the collector: with an exporter that never an
   void trace.end().then(() => (ended = true));
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(ended, true, "the claim's end did not wait for the export");
-  assert.ok(hanging.exported.some((span) => span.name === "invoke_agent pi"), "its spans were handed to the exporter, unanswered");
+  assert.ok(hanging.exported.some((span) => span.name === "invoke_agent"), "its spans were handed to the exporter, unanswered");
   assert.equal(hanging.flushes, 0, "no flush was asked");
 });
 
@@ -735,7 +1130,7 @@ test("a run whose root span failed to start leaves its trace id to no later span
   const spans = exporter.getFinishedSpans();
   const ids = spans.map((span) => [span.name, span.spanContext().traceId]);
   assert.ok(!ids.some(([, id]) => id === traceIdOf("run-a")), `run-a's id is on no span: ${JSON.stringify(ids)}`);
-  assert.equal(spans.find((span) => span.name === "invoke_agent pi").spanContext().traceId, traceIdOf("run-b"));
+  assert.equal(spans.find((span) => span.name === "invoke_agent").spanContext().traceId, traceIdOf("run-b"));
 });
 
 test("a turn that did not complete cuts its own calls, never one an earlier turn left going", async () => {
