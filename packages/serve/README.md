@@ -2022,7 +2022,8 @@ it is Parallel on the server's key, else keyless Firecrawl, or the provider pick
 unavailable for a workflow.
 
 Where the server holds a TypeSafe key (`TYPESAFE_API_KEY`, set or saved), Jev runs on the web tools by default, and
-run content goes to TypeSafe. Each `web_search` sends TypeSafe its objective and each result's URL, title and snippet.
+run content goes to TypeSafe. Each `web_search` sends TypeSafe its objective and each result's URL, title, snippet and
+published date (when the provider gives one).
 Each `web_fetch` given an objective sends TypeSafe the page's text (up to 1,000,000 characters, in chunks) and the
 objective; a fetch with no objective sends nothing. TypeSafe bills every request to the server's TypeSafe key. To
 keep the old behaviour on a server that holds the key, set `AGENTRUN_WEB_JEV_OFF=1`. Jev (`jev-1.14.0`) scores each
@@ -2037,7 +2038,7 @@ OpenRouter key runs no ranking; `AGENTRUN_WEB_JEV_OFF=1` on the server turns Jev
 set, on whatever runner host claims it (the run's plane carries the switch, and keeps it at every later launch); a
 runner's own switch can add off for the runs that host claims, never turn it back on. `GET /capabilities`' `why` for
 each tool says what it sends TypeSafe, or that Jev is off: for `web_search` `…; Jev (jev-1.14.0) ranks results …; each
-search sends that and each result's URL, title and snippet to TypeSafe …`, for `web_fetch` `…; a fetch given an
+search sends that and each result's URL, title, snippet and published date to TypeSafe …`, for `web_fetch` `…; a fetch given an
 objective sends the page's text and the objective to TypeSafe …`, and for either `…; Jev off: no TypeSafe key` or
 `…; Jev off (AGENTRUN_WEB_JEV_OFF)`.
 
