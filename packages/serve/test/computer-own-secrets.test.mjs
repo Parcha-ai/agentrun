@@ -3,7 +3,7 @@
 // them, one per server store, each sealed under the seal key in store.sealedKeys (AAD sealed_keys|<row>|sealed), so the
 // key outlives a restart of the same store and is in no row in the clear. Agent37 then needs AGENT37_API_KEY alone.
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
+import { createPrivateKey, randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -82,7 +82,9 @@ test("the server's Agent37 key is made once, sealed in the store under computer.
   const { id } = await provider.host.create(request(), CTX);
   assert.equal(await exitOf(provider.host, id, ["true"]), 0);
   const pem = await getSealedKey(first, sealKey, ROW);
-  assert.match(pem ?? "", /^-----BEGIN PRIVATE KEY-----\n/, "sealed under the server's seal key, at its own row");
+  assert.equal(typeof pem, "string", "sealed under the server's seal key, at its own row");
+  assert.equal(createPrivateKey(pem).export({ type: "pkcs8", format: "pem" }), pem, "an ed25519 key's private half, PKCS#8 PEM");
+  assert.equal(createPrivateKey(pem).asymmetricKeyType, "ed25519");
   const bytes = Buffer.from(await first.sealedKeys.get(ROW)).toString("latin1");
   for (const line of bodyLines(pem)) assert.ok(!bytes.includes(line), "the row holds sealed bytes, never the key");
   assert.equal(await getSealedKey(first, randomBytes(32), ROW), undefined, "another seal key opens none of it");

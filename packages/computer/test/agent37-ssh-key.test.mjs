@@ -92,10 +92,11 @@ test("with the API key alone, the provider makes an ed25519 key, keeps its priva
 	assert.ok(registered >= 0 && registered < calls.indexOf("POST /v1/instances"), `the key is registered before the create: ${calls.join(", ")}`);
 	assert.equal(calls.filter((call) => call === "POST /v1/ssh-keys").length, 1);
 	const { public_key: line, name } = fake.rest.calls[registered].body;
-	assert.match(line, /^ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI[A-Za-z0-9+/]{43}= \S+$/, "one OpenSSH public line, ed25519");
+	// The blob is 51 bytes (two length-prefixed strings: the 11-byte type and the 32-byte key), 68 base64 characters, no padding.
+	assert.match(line, /^ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI[A-Za-z0-9+/]{43} \S+$/, "one OpenSSH public line, ed25519");
 	assert.match(name, /^agentrun-[A-Za-z0-9_-]+$/);
 	const pem = secrets.held.get("ssh_key");
-	assert.match(pem, /^-----BEGIN PRIVATE KEY-----\n/, "the private half is kept in the store, PKCS#8 PEM");
+	assert.equal(createPrivateKey(pem).export({ type: "pkcs8", format: "pem" }), pem, "the private half is kept in the store, PKCS#8 PEM");
 	assert.deepEqual(secrets.puts, ["ssh_key"]);
 	assert.equal(createPrivateKey(pem).asymmetricKeyType, "ed25519");
 	assert.equal(fingerprintOf(lineOf(pem)), fake.rest.sshKeys[0].fingerprint, "the stored key is the registered one");
@@ -150,7 +151,7 @@ test("a workspace at its 20 SSH keys: the provider refuses in words naming the c
 		() => assert.fail("made an instance"),
 		(error) => error,
 	);
-	assert.equal(codeOfError(refused), "limit");
+	assert.equal(codeOfError(provider.host, refused), "limit");
 	assert.match(refused.message, /at most 20 SSH keys/);
 	assert.match(refused.message, /agentrun-/, "names the keys this platform made, to delete");
 	assert.match(refused.message, /AGENT37_SSH_KEY/, "or a key of the owner's own");
@@ -164,7 +165,7 @@ test("a workspace at its 20 SSH keys: the provider refuses in words naming the c
 		() => assert.fail("made an instance"),
 		(error) => error,
 	);
-	assert.equal(codeOfError(raced), "limit");
+	assert.equal(codeOfError(provider.host, raced), "limit");
 	assert.match(raced.message, /at most 20 SSH keys/);
 	assert.equal(said(fake.rest.calls).filter((call) => call === "POST /v1/instances").length, 0);
 });
@@ -200,7 +201,7 @@ test("a key registered long ago that an sshd refuses is denied at once, in words
 		(error) => error,
 	);
 	assert.ok(Date.now() - started < 1_500, `denied at once, not retried (${Date.now() - started} ms)`);
-	assert.equal(codeOfError(denied), "denied");
+	assert.equal(codeOfError(provider.host, denied), "denied");
 	assert.match(denied.message, /SSH key/);
 	assert.match(denied.message, new RegExp(fake.rest.sshKeys[0].fingerprint.replace(/[+/]/g, "\\$&")), "names the key by its fingerprint");
 	assert.deepEqual(leaks(`${denied.message}\n${denied.stack}`, key.pem), []);
@@ -217,7 +218,7 @@ test("a key registered long ago that an sshd refuses is denied at once, in words
 	);
 	const took = Date.now() - started;
 	assert.ok(took >= 500 && took < 8_000, `retried until the few minutes passed (${took} ms)`);
-	assert.equal(codeOfError(late), "denied");
+	assert.equal(codeOfError(retried.host, late), "denied");
 	assert.match(late.message, /within about two minutes/);
 	assert.deepEqual(leaks(`${late.message}\n${late.stack}`, fresh.pem), []);
 });
