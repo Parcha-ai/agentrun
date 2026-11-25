@@ -112,6 +112,7 @@ describe("route", () => {
     expect(route("#/agents/x/learning")).toEqual({ section: "agents", agent: "x", tab: "learning" });
     expect(route("#/agents/x/edit")).toEqual({ section: "agents", agent: "x", edit: true });
     expect(route("#/agents/new")).toEqual({ section: "agents", agent: null });
+    expect(route("#/agents/new?editor")).toEqual({ section: "agents", agent: null, edit: true });
     expect(route("#/agents?archived=true")).toEqual({ section: "agents", archived: true });
     expect(route("#/agents")).toEqual({ section: "agents", archived: false });
   });
@@ -594,6 +595,33 @@ describe("App, an agent's address", () => {
     expect(saveButton()).toBeTruthy();
     expect(host.querySelector('[role="tab"]')).toBeNull();
   });
+
+  it("opens the editor creating, blank, after an agent named new's editor: it never keeps that agent", async () => {
+    const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    const named = { agent_id: "new", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Calc", instructions: "Answer.", harness: "pi", skills: [], tools: [] } };
+    vi.stubGlobal("fetch", async (url: string) => {
+      const path = new URL(url, "http://serve.test").pathname;
+      if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true, secrets_writable: true });
+      if (path === "/v2/capabilities") return json(200, { models: { source: "providers", ready: true }, harnesses: [{ id: "pi", available: true }] });
+      if (path === "/v2/agents") return json(200, { agents: [named], next_cursor: null });
+      if (path === "/v2/agents/new") return json(200, named);
+      if (path === "/v2/agents/new/runs" || path === "/v2/agents/new/revisions") return json(200, { runs: [], revisions: [], next_cursor: null });
+      return json(404, { error: { code: "not_found", message: path, retryable: false } });
+    });
+    location.hash = "#/agents/new/edit";
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(App)));
+    const wait = async (ok: () => boolean) => { const end = Date.now() + 4000; while (!ok() && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 25)); }); };
+    const name = () => host.querySelector<HTMLInputElement>("#agent-name");
+    await wait(() => name()?.value === "Calc");
+    expect(name()?.readOnly).toBe(true);
+    await act(async () => { location.hash = "#/agents/new?editor"; window.dispatchEvent(new HashChangeEvent("hashchange")); });
+    await wait(() => name()?.value === "");
+    expect(name()?.value).toBe("");
+    expect(name()?.readOnly).toBe(false);
+    expect([...host.querySelectorAll("h1")].map((h) => h.textContent)).toContain("New agent");
+  });
 });
 
 // An agent made in this console is named at once wherever its runs show, never by its id until a reload.
@@ -845,6 +873,17 @@ describe("App, the no-model bar", () => {
     await act(async () => { location.hash = "#/agents/new"; });
     await until(() => !!host.textContent?.includes("What do you want to build?"));
     expect(bar(host)).toBeNull();
+  });
+
+  it("opens the editor, creating, from Build's link: the one place a Decision or a Workflow agent is made", async () => {
+    serve(() => ({ source: "providers", default: null, ready: false, needs: "key" }), true, undefined, agentsList());
+    const host = await mount("#/agents/new");
+    await until(() => !!host.querySelector('a[href="#/agents/new?editor"]'));
+    await act(async () => { location.hash = "#/agents/new?editor"; });
+    const heading = () => [...host.querySelectorAll("h1")].map((h) => h.textContent);
+    await until(() => heading().includes("New agent"));
+    expect(host.textContent).not.toContain("What do you want to build?");
+    expect(host.querySelector("#agent-name")).not.toBeNull();
   });
 
   it("reads the capabilities again on its own while no model is ready, and stops once one is", async () => {

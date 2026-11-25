@@ -142,7 +142,7 @@ type Reader<S extends string, C> = {
   harness: string;
   discover(home: string, env?: Env): Promise<Locator[]>;
   idOf(locator: Locator): string;
-  read(locator: Locator, cursor?: C, options?: { turns?: boolean; totals?: boolean; seen?: Set<string> }): Promise<{ sessions: SessionRead<S>[]; cursor: C; read: number; resumed: boolean }>;
+  read(locator: Locator, cursor?: C, options?: { turns?: boolean; totals?: boolean; seen?: Set<string>; lookups?: Map<string, unknown> }): Promise<{ sessions: SessionRead<S>[]; cursor: C; read: number; resumed: boolean }>;
   order?(a, b): number;
   children?(home: string, env?: Env): Promise<{ locator: Locator; of: Locator }[]>;
   stat?(locator: Locator): Promise<{ bytes: number; mtimeMs: number; parent?: string } | null>;
@@ -152,7 +152,14 @@ type Reader<S extends string, C> = {
 
 `idOf` is the id a read gives the locator's session when no record names one (Claude Code's always: its file's name;
 pi's the last `_` part of its file's name; an OpenCode locator's `id`): a caller that names a session without reading it
-takes the same id. The cursor is the reader's own: hand it back to the same reader for the same locator. A JSONL source builds its reader
+takes the same id.
+
+`lookups` is one map per import, shared by all its reads: a reader keeps there what it looks up once for the whole
+import (the Codex reader, the rollouts under a sessions directory, listed the first time a fork's parent is not on its
+own date). `parseHome` passes one; with threads, each worker of its read pool keeps one for the import. Without it, each
+read looks up afresh.
+
+The cursor is the reader's own: hand it back to the same reader for the same locator. A JSONL source builds its reader
 with `lineReader` from a per-record function; its cursor is the file's device and inode, the byte after the last whole
 line read, and the read's state. A file replaced or truncated since is read from its start, and a last line with no
 newline yet is read but not consumed. A source that keeps many sessions in one file (a SQLite database) implements
