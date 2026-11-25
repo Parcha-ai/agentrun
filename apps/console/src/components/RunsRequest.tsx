@@ -32,18 +32,21 @@ export function RunsRequest({ v2, origin, agentId, filter = {} }: { v2: Client; 
     generation.current++;
     setStatus(filter.status ?? ""); setArchived(!!filter.archived); setCursor(""); setPage(null); setResult(null); setSending(false);
     return () => { generation.current++; };
-  }, [agentId, filter.status, filter.archived]);
-  const filters: RunsFilter = { ...(status ? { status } : {}), ...(archived ? { archived: true } : {}) };
+  }, [agentId, filter.status, filter.archived, filter.source]);
+  // The runs list's source stays on the request (GET /v2/runs only; one agent's runs have none).
+  const source = agentId ? undefined : filter.source;
+  const filters: RunsFilter = { ...(status ? { status } : {}), ...(archived ? { archived: true } : {}), ...(source ? { source } : {}) };
   const path = agentId ? `/v2/agents/${encodeURIComponent(agentId)}/runs` : "/v2/runs";
   const query = new URLSearchParams({ limit: String(limit) });
   if (cursor) query.set("cursor", cursor);
   if (status) query.set("status", status);
   if (archived) query.set("archived", "true");
+  if (source) query.set("source", source);
   const url = `${origin}${path}?${query}`;
   const code = language === "curl"
     ? `curl -X GET ${quote(url)} \\\n  -H "Authorization: Bearer $AGENTRUN_API_KEY"`
     : `const response = await fetch(${JSON.stringify(url)}, {\n  method: "GET",\n  headers: { Authorization: \`Bearer \${process.env.AGENTRUN_API_KEY}\` },\n});\nconsole.log(response.status, await response.json());`;
-  const prompt = `${queryRunsPrompt(origin, agentId)}\n\nPrepared read-only request: GET ${url}\nUse exactly this agent scope, status, archive selection, page size and cursor. Do not broaden the query or issue writes. Show the results and links to relevant runs. Follow next_cursor only when more results are needed, keeping the same filters.`;
+  const prompt = `${queryRunsPrompt(origin, agentId)}\n\nPrepared read-only request: GET ${url}\nUse exactly this agent scope, status, archive selection, source, page size and cursor. Do not broaden the query or issue writes. Show the results and links to relevant runs. Follow next_cursor only when more results are needed, keeping the same filters.`;
   const changed = () => { generation.current++; setCursor(""); setPage(null); setResult(null); setCopied(false); };
   const send = async (after = cursor) => {
     if (sending) return;

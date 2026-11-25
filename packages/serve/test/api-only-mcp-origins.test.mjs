@@ -22,7 +22,7 @@ const { apiOnlyRefusal } = await import("../dist/api-only.js");
 const { API_ONLY_MCP_ORIGINS_ENV, apiOnlyMcpOriginsFrom } = await import("../dist/env-switch.js");
 const { mcpSourceKey, ownersRecord, storedSource } = await import("../dist/mcp-sources.js");
 const { sealMcpCredential, sealRunMcpAuth } = await import("../dist/store/index.js");
-const { holdApiOnlyMcpOrigins } = await import("../dist/mcp-api-only-origins.js");
+const { holdApiOnlyMcpOrigins, offApiOnlyMcpOriginsWords } = await import("../dist/mcp-api-only-origins.js");
 const { mcpClaim } = await import("../dist/runner/mcp-claim.js");
 
 const LIST = `not-a-secret-${"cf-list-token-0001"}`;
@@ -52,7 +52,7 @@ async function setup(t, origins, more = {}) {
 }
 
 const perRun = (url) => ({ url, auth: { type: "per_run", headers: { authorization: `Bearer ${LIST}` } } });
-const OFF_LIST = "The MCP server contextforge can't be used: the API token saved it at an origin that is no longer on this server's AGENTRUN_API_ONLY_MCP_ORIGINS. Nothing was sent.";
+const OFF_LIST = offApiOnlyMcpOriginsWords("contextforge");
 /** An inline run (external `id`) granted contextforge's add, handed the run's own token. */
 const runAdd = (s, id) => s.token("POST", "/runs", {
   external: { source: "backend", kind: "expert", id, version: 1 },
@@ -280,6 +280,29 @@ test("a run already going: when the origin list can't be read before a call (a s
   assert.deepEqual({ ...step.credentials.contextforge }, handed, "the read works: the call goes on the run's header");
   failing = true;
   await assert.rejects(call(), /the store could not be read/, "the read fails: the check throws, so the gateway refuses the call unsent");
+});
+
+test("a run already going: one check before a call reads the origin list once, not again for the server's row", async (t) => {
+  let reads = 0;
+  // The store as the claim sees it: each settings read of the API-only list counted.
+  const wrap = (store) => new Proxy(store, {
+    get(target, key) {
+      if (key === "settings") return new Proxy(target.settings, {
+        get(settings, field) {
+          if (field === "get") return async (name) => ((name === "mcp.api_only_origins" && reads++), settings.get(name));
+          const value = Reflect.get(settings, field, settings);
+          return typeof value === "function" ? value.bind(settings) : value;
+        },
+      });
+      const value = Reflect.get(target, key, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const { call, handed, step } = await goingClaim(t, wrap);
+  reads = 0;
+  await call();
+  assert.deepEqual({ ...step.credentials.contextforge }, handed, "listed: the call goes on the run's header");
+  assert.equal(reads, 1, "the list read once in the check");
 });
 
 test("an upgrade with the setting unset: an API-only start holds an empty list, so a per_run server the token saved on a full start is refused (a run granted it fails in the words, and nothing reaches the address), and the start says so in one log line with the count and the server's name, never its address; listed, the start says nothing", async (t) => {

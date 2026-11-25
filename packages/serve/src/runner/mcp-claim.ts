@@ -482,8 +482,9 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
     // The list is read first: with none held (a full server's store) the row is not read, and nothing is refused.
     let listMoved = false;
     if (stamp.auth === "per_run") {
-      const row = (await heldApiOnlyMcpOrigins(store)) ? await getMcpServer(store, name) : undefined;
-      listMoved = (row !== undefined && (await offApiOnlyMcpOrigins(store, name, row)) !== undefined) !== offList.has(name);
+      const held = await heldApiOnlyMcpOrigins(store);
+      const row = held ? await getMcpServer(store, name) : undefined;
+      listMoved = (row !== undefined && (await offApiOnlyMcpOrigins(store, name, row, held)) !== undefined) !== offList.has(name);
       if (released) return;
     }
     const was = stamps.get(name);
