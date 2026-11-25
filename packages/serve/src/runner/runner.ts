@@ -1107,8 +1107,9 @@ export function startRunner(options: RunnerOptions): Runner {
       // - a parked run stopped or cancelled whose computer its park kept pinned to another runner, or whose kept row can't
       //   be read (keptElsewhere): the store gives a stop to any runner at once, never waiting on the pin, and this
       //   runner can't reach that machine.
-      //   A loop would take the kept row (takeKept) and try to attach it, orphaning it on that runner's host; ending here
-      //   leaves the row that runner's, whose own timer at its time, or its janitor once the run is final, ends it.
+      //   A loop would take the kept row (takeKept) and try to attach it, orphaning it on that runner's host. Ending here,
+      //   the run's end marks the row ending (run-end-computers.ts endingKept) before it deletes what its provider lists,
+      //   so no follow-up claim takes that machine back; that runner's own timer at its time, or its janitor, ends the row.
       // One read of those claims' rows, made only when the batch has a queued or a released run.
       const reread = claims.filter((claim) => claim.from === "queued" || claim.from === "running" || claim.from === "parked");
       const rows = reread.length ? await store.commandsOf(reread.map((claim) => ({ runId: claim.runId, after: 0 }))) : new Map<string, Command[]>();

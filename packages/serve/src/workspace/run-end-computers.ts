@@ -17,13 +17,16 @@
 // server that stopped before this ran, or a vendor that stayed down past the bound.
 //
 // A machine the run's park kept (computer-kept.ts) goes too when this end's provider lists it, whichever runner kept it:
-// the run is final, so it has no user, and its runner's own end then reads it gone and marks its row ended.
+// the run is final, so it has no user. Its row is marked ending first (endingKept), so no claim takes it back while the
+// delete runs (a follow-up that queues the run again makes a new one), and its runner's own end then reads it gone and
+// marks its row ended.
 import { releaseOlder } from "@parcha/agentrun-computer";
 import { KEY_TABLE, providerOptions } from "../computer-keys.js";
 import { readLaunchBody } from "../run-launch.js";
 import type { Store } from "../store/index.js";
 import { settingOf } from "./computer-for-claim.js";
 import type { ComputerDeps } from "./computer-deps.js";
+import { endingKept } from "./computer-kept.js";
 import { storeLedger } from "./computer-ledger.js";
 import { type ComputerSetting, providerKeys } from "./resolve-computer.js";
 import { endingDeletes, intervalWrites } from "./computer-intervals.js";
@@ -58,7 +61,7 @@ const pause = (ms: number, signal: AbortSignal): Promise<boolean> =>
 export interface RunEndComputersDeps {
   /** The run's row and launch (its revision and place) and the agent's revision, where its computer setting is; the
    *  computer ledger, for a provider that keeps one. */
-  readonly store: Pick<Store, "agents" | "computerLedger"> & { readonly runs: Pick<Store["runs"], "get" | "launch">; readonly computerIntervals?: Store["computerIntervals"] };
+  readonly store: Pick<Store, "agents" | "computerLedger" | "settings"> & { readonly runs: Pick<Store["runs"], "get" | "launch">; readonly computerIntervals?: Store["computerIntervals"] };
   /** The run's computers as the runner composed them (computer-deps.ts computerDepsFrom): the registry, the provider
    *  makers, the key reader, and --faux's launch with the providers it takes. */
   readonly computers: Pick<ComputerDeps, "kinds" | "providers" | "keyOf" | "keyTable" | "settings" | "launch" | "launches">;
@@ -107,6 +110,9 @@ export function runEndComputers(deps: RunEndComputersDeps): (claim: { readonly r
       said = true;
       log(`run ${runId} is over, but its computers could not be let go: ${why}`);
     };
+    // Its kept row, where its park kept one, marked ending before any delete: no claim takes that machine back now.
+    const marked = await endingKept(store.settings, runId).catch((error: unknown) => (error instanceof Error ? error.message : String(error)));
+    if (marked !== true) log(`run ${runId} is over, but its kept computer's row could not be marked ending: ${marked === false ? "the row kept changing" : marked}`);
     /** The last try's failure, for the line said at the bound. */
     let why = `its provider did not answer within ${bound / 1000} s`;
     const tries = async () => {

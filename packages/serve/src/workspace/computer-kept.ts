@@ -269,6 +269,22 @@ export async function keepKept(settings: Pick<KeptSettings, "get" | "putIfAbsent
   return undefined;
 }
 
+/** Marks `runId`'s kept row ending at the run's end (run-end-computers.ts): the run is final, so its kept machine has no
+ *  user, whichever runner kept it or claim is taking it back. No claim takes it back after (a follow-up that queues the
+ *  run again makes a new one), so the run's end deleting it and its keeper's end agree; the keeper's end at its time, or
+ *  any janitor's pass, finishes the row. A write that lost reads again, up to KEEP_TRIES times. True when the row reads
+ *  ending or ended after, or there is none. */
+export async function endingKept(settings: Pick<KeptSettings, "get" | "replaceIf">, runId: string): Promise<boolean> {
+  const key = keptKeyOf(runId);
+  for (let tries = 0; tries < KEEP_TRIES; tries += 1) {
+    const was = await settings.get(key);
+    const kept = keptOf(was);
+    if (!kept || kept.ending || kept.ended) return true;
+    if (await settings.replaceIf(key, was, rowOf(kept, "ending"))) return true;
+  }
+  return false;
+}
+
 /** Takes `row` off `runId`'s row, only while it still reads so: a keep written for a park that never followed. */
 export async function dropKept(settings: Pick<KeptSettings, "removeIf">, runId: string, row: Kept): Promise<boolean> {
   return settings.removeIf(keptKeyOf(runId), row);
