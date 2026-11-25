@@ -29,6 +29,25 @@ export const COMPOSIO_USER = "agentrun";
 export const COMPOSIO_TOKEN_USER_PREFIX = "agentrun.token.";
 /** The Composio user an API token's save names `user` as (composioSave `userAs`). */
 export const composioTokenUser = (user: string): string => COMPOSIO_TOKEN_USER_PREFIX + user;
+/** Whether `user` is in the API token's namespace, the prefix exactly as its saves write it. On an API-only server a
+ *  run's Composio binding must be (server.ts handedLaunchSecrets, runner/mcp-claim.ts). */
+export const composioTokenNamespaced = (user: string): boolean => user.startsWith(COMPOSIO_TOKEN_USER_PREFIX);
+/** Why a run's Composio binding on an API-only server can't be used: its user is not in the token's namespace. Never
+ *  names the user. */
+export const COMPOSIO_TOKEN_BINDING_WORDS = `on this API-only server a run's Composio user is the API token's own, one starting "${COMPOSIO_TOKEN_USER_PREFIX}" (the namespace its Composio saves are kept in), so a run never calls as a user the owner or another client connects`;
+
+/** Whether Composio lists the connected account `account` under `user` for `toolkit`: every page read, up to the
+ *  lookup's bound (past it, false). Any failure to read throws (asking): the caller refuses, never assumes. */
+export async function composioListsAccount(ask: Ask, user: string, toolkit: string, account: string): Promise<boolean> {
+  let cursor: string | undefined;
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const listed = await ask("checking the run's connected account", "GET", `/api/v3/connected_accounts?user_ids=${encodeURIComponent(user)}&toolkit_slugs=${encodeURIComponent(toolkit)}&limit=${ACCOUNT_PAGE}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
+    if ((Array.isArray(listed.items) ? listed.items : []).some((one) => isObject(one) && one.id === account && one.user_id === user)) return true;
+    cursor = text(listed.next_cursor) || undefined;
+    if (!cursor) return false;
+  }
+  return false;
+}
 /** A Composio toolkit's slug, as a save takes it once trimmed and lower-cased. */
 export const COMPOSIO_TOOLKIT = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const TOOLKIT = COMPOSIO_TOOLKIT;
@@ -340,7 +359,8 @@ export async function composioSave<T extends { tools?: readonly { name: string }
   const issues: InputIssue[] = [];
   if (!tools.length || tools.length > MAX_TOOLS || !tools.every((t) => typeof t === "string" && t && t.length <= MAX_SLUG)) issues.push(issue("tools", "invalid", `Send the slugs of the actions to grant: 1 to ${MAX_TOOLS} of them, each at most ${MAX_SLUG} characters.`));
   if (!USER_ID.test(given)) issues.push(issue("user_id", "invalid", `A user_id is ${COMPOSIO_USER_ID_WORDS}, or "${COMPOSIO_PER_RUN}" for a server each run names its own account for.`));
-  else if (given.startsWith(COMPOSIO_TOKEN_USER_PREFIX)) issues.push(issue("user_id", "not_allowed", `A user_id starting "${COMPOSIO_TOKEN_USER_PREFIX}" is the API token's: its saves are kept at Composio under that prefix, and no save names one. Name another user_id.`));
+  // In any letter case: Composio may fold a user id's, and then such a user would land in the token's namespace.
+  else if (given.toLowerCase().startsWith(COMPOSIO_TOKEN_USER_PREFIX)) issues.push(issue("user_id", "not_allowed", `A user_id starting "${COMPOSIO_TOKEN_USER_PREFIX}" (in any letter case) is the API token's: its saves are kept at Composio under that prefix, and no save names one. Name another user_id.`));
   else if (userAs && given !== COMPOSIO_PER_RUN && !USER_ID.test(userAs(given))) issues.push(issue("user_id", "invalid", `This save's user_id is at most ${128 - userAs("").length} characters (${COMPOSIO_USER_ID_WORDS} in all): Composio knows it as ${userAs("<user_id>")}.`));
   if (price !== undefined && !priceValid(price)) issues.push(issue("price_usd", "invalid", "price_usd is what each call of the server's actions costs, in USD: a finite number, 0 or more."));
   if (ownConfig !== undefined && !COMPOSIO_AUTH_CONFIG_ID.test(ownConfig)) issues.push(issue("auth_config_id", "invalid", "An auth_config_id is the id Composio shows for an auth config: ac_ then letters, digits, _ and - (at most 64 after ac_)."));

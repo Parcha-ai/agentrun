@@ -79,15 +79,22 @@ for (const [shape, binding, field] of REFUSED) {
     const saved = await s.token("PUT", "/settings/mcp-servers/mail/composio", SAVE);
     assert.equal(saved.status, 200, JSON.stringify(saved.body));
     const before = await runCount(s);
-    const mcpFrom = s.composio.mcpKeys.length;
     const run = await runAs(s.token, binding);
     assert.equal(run.status, 422, JSON.stringify(run.body));
     assert.deepEqual(run.body.error?.fields?.map((issue) => [issue.field, issue.reason]), [[`mcp_auth.mail.${field}`, "not_allowed"]], JSON.stringify(run.body.error));
     assert.match(run.body.error.fields[0].message, field === "composio_user_id" ? /API token's own.*agentrun\.token\./ : /Composio lists under/, run.body.error.fields[0].message);
-    for (const value of [binding.composio_user_id, binding.connected_account_id ?? "-", KEY]) assert.equal(JSON.stringify(run.body).includes(value), false, `the refusal never quotes ${value}`);
+    for (const value of [binding.composio_user_id, binding.connected_account_id, KEY].filter(Boolean)) assert.equal(JSON.stringify(run.body).includes(value), false, `the refusal never quotes ${value}`);
     assert.equal(await runCount(s), before, "no run made");
-    assert.equal(s.composio.mcpKeys.length, mcpFrom, "nothing reached Composio's MCP endpoint");
+    nothingAsBound(s, binding);
   });
+}
+
+/** No request to Composio's MCP endpoint called a tool, or named the bound user or account (the agent's save lists the
+ *  server's tools at its own address, which names neither). */
+function nothingAsBound(s, binding) {
+  assert.deepEqual(s.composio.mcpLog.filter((entry) => entry.method === "tools/call"), [], "no tool was called");
+  const named = [binding.composio_user_id, binding.connected_account_id].filter(Boolean).map(encodeURIComponent);
+  assert.deepEqual(s.composio.mcpLog.filter((entry) => named.some((value) => String(entry.path).includes(value))), [], "no MCP request named the bound user or account");
 }
 
 test("API-only: a run bound to a user in the token's namespace and an account Composio lists under it starts (202) and calls as them; the lookup names that user, with the server's key", async (t) => {
@@ -112,14 +119,14 @@ test("API-only: a run bound to an account in the token's namespace is refused wh
   const s = await setup(t, { fake: { fail: { path: "/api/v3/connected_accounts", status: 500 } } });
   assert.equal((await s.token("PUT", "/settings/mcp-servers/mail/composio", SAVE)).status, 200);
   const before = await runCount(s);
-  const mcpFrom = s.composio.mcpKeys.length;
-  const run = await runAs(s.token, { composio_user_id: TOKENS, connected_account_id: TOKENS_ACCOUNT });
-  assert.ok(run.status >= 400, JSON.stringify(run.body));
-  assert.notEqual(run.status, 202);
-  assert.match(JSON.stringify(run.body.error), /mail/, "it names the server");
+  const binding = { composio_user_id: TOKENS, connected_account_id: TOKENS_ACCOUNT };
+  const run = await runAs(s.token, binding);
+  assert.equal(run.status, 424, JSON.stringify(run.body));
+  assert.equal(run.body.error?.code, "upstream_failed");
+  assert.match(run.body.error.message, /mail.*never taken unchecked/, run.body.error.message);
   assert.equal(JSON.stringify(run.body).includes(KEY), false);
   assert.equal(await runCount(s), before, "no run made");
-  assert.equal(s.composio.mcpKeys.length, mcpFrom, "nothing reached Composio's MCP endpoint");
+  nothingAsBound(s, binding);
 });
 
 test("full profile: the owner's run of the owner's per-run Composio server is as before: bound to the owner's user and account, it starts (202) and calls as them, with no account lookup", async (t) => {

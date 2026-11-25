@@ -37,7 +37,7 @@ import type { AddressInfo } from "node:net";
 import proxyaddr from "proxy-addr";
 import { API_ONLY_HOOKED_KINDS, apiOnlyMcpSave, apiOnlyRefusal, apiOnlyTriggerSkipped, servedApiOnly } from "./api-only.js";
 import { API_ONLY_MCP_ORIGINS_ENV, apiOnlyMcpOriginsFrom, RUN_KEYS_ENV } from "./env-switch.js";
-import { holdApiOnlyMcpOrigins, offApiOnlyMcpServers } from "./mcp-api-only-origins.js";
+import { composioOutsideNamespaceServers, holdApiOnlyMcpOrigins, offApiOnlyMcpServers } from "./mcp-api-only-origins.js";
 import { declaredKeys, keysOwed, keysOwedRefusal, type RunKeys, runKeysOf, runKeysTriggerSkipped, undeclaredKeys, withCarried } from "./run-keys.js";
 import { capacityOverStore, capacityWindowOf } from "./capacity.js";
 import { carriedFields } from "./answer-json.js";
@@ -1547,7 +1547,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const fields = { count: offList.length, servers: offList.join(","), line: `runs that grant these per_run MCP servers the API token saved are refused, nothing sent, until ${API_ONLY_MCP_ORIGINS_ENV} lists their origin` };
     log ? log(logLine("api_only_mcp_off_list", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("api_only_mcp_off_list", fields)}\n`);
   }
-  const mcpServers = mcpServersOverStore(store, own(withSecrets(base, "own")), VERSION);
+  // And the Composio servers the token saved before its users were namespaced, which may call as the owner's user: refused
+  // at every claim (composioOutsideNamespace) until deleted. Their names alone, never a user or an address.
+  const outside = options.apiOnly ? await composioOutsideNamespaceServers(store) : [];
+  if (outside.length) {
+    const fields = { count: outside.length, servers: outside.join(","), line: "runs that grant these Composio servers the API token saved before its Composio users were namespaced are refused, nothing sent: delete each, then save it again" };
+    log ? log(logLine("api_only_composio_outside_namespace", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("api_only_composio_outside_namespace", fields)}\n`);
+  }
+  const mcpServers =mcpServersOverStore(store, own(withSecrets(base, "own")), VERSION);
   if (options.githubMcpOrigin) mcpServers.appOrigin = options.githubMcpOrigin;
   if (options.composioMcpOrigin) mcpServers.composioOrigin = options.composioMcpOrigin;
   mcpServers.standIns = options.mcpStandIns === true;
@@ -4114,7 +4121,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // A per-run Composio server takes a binding (its key is its own); a per_run server takes headers; no other takes either.
         const perRunComposio = composioPerRun(row, await store.settings.get(composioMadeKey(server)));
         if ("composio" in entry) {
-          if (perRunComposio) auth[server] = { composio: entry.composio, origin: new URL(row.url).origin };
+          // On API-only every caller is the token: its binding stays in the token's namespace, on an account Composio lists
+          // under that user (McpServersOverStore.tokenBinding). The owner's runs, on the full profile, bind as before.
+          const refused = perRunComposio && options.apiOnly ? await mcpServers.tokenBinding(server, row, entry.composio, field, options.composioControl ?? {}, stopping.signal) : undefined;
+          if (refused) issues.push(refused);
+          else if (perRunComposio) auth[server] = { composio: entry.composio, origin: new URL(row.url).origin };
           else issues.push({ field, reason: "not_an_option", message: `The MCP server ${server} is not a per-run Composio server: only one saved through the Composio preset with user_id "${COMPOSIO_PER_RUN}" takes a Composio account from a run.` });
         } else if (row.auth === "per_run") auth[server] = { headers: entry.headers, origin: new URL(row.url).origin };
         else issues.push({ field, reason: "not_an_option", message: perRunComposio ? `The MCP server ${server} takes a Composio account from each run, not headers: send {"composio_user_id": "<user>", "connected_account_id": "ca_..."} (the account optional).` : `The MCP server ${server} keeps its own credential (auth ${row.auth}): only a per_run server takes one from a run.` });

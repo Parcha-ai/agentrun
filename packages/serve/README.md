@@ -2534,7 +2534,9 @@ runs as one account. A server saved for one user before this mode keeps calling 
 
 With `user_id: "per_run"`, whoever can start a run chooses its Composio user, so the host owns which user each run
 binds: it binds each run to its own person and never takes the ids from that person. Only `agentrun` is
-refused, so a host must not bind a per-run server to a `user_id` that a single-user server calls as.
+refused, so a host must not bind a per-run server to a `user_id` that a single-user server calls as. On an API-only
+server a run's user is one in the API token's namespace (`agentrun.token.`), and a named account one Composio lists
+under it (see [API only](#api-only)).
 
 What can go wrong, told apart:
 
@@ -3633,19 +3635,31 @@ serves these routes alone:
     calls, as `agentrun.token.<user_id>` (no `user_id`: `agentrun.token.agentrun`), a user that, through this install,
     only the token's own connect link connects (the Composio dashboard, or another client of the same Composio project,
     can connect any user id), so its `user_id` is at most 113 characters. No save names a `user_id` starting
-    `agentrun.token.`, the owner's included: `422` under `user_id`, before anything is sent;
+    `agentrun.token.` in any letter case, the owner's included: `422` under `user_id`, before anything is sent;
   - nor does the token's save stand on a connected account it did not connect: when Composio already has ACTIVE
     accounts for that user under its auth config, the save is `403` before anything is made, unless a server the token
     saved holds each of them as one it made (connected through the token's own link). The lookup reads 50 accounts a
     page, at most 10 pages (500 for that user and auth config): past that the token's save is `403`, since it can't
     check them all, and an owner's save goes on with the ones it read. That check sees the accounts there when the token
     saves; the namespace is what keeps the user the token's after it, since no save here names it;
-  - a server the token saved before the namespace (0.1.0-beta.56 and earlier) keeps calling as its bare `user_id` until
-    it is saved again. Its next save moves it to the namespaced user and returns a connect link for it: connect the
-    account again there. That save deletes at Composio every account the server's record holds as made here under the bare user (the
-    one its own link connected, or one handed to it), unless another saved server stands on it (that one then owns it),
-    and keeps an account it found there, which was never its own. Or delete the server. A `per_run` save names no user,
-    so none of this applies to it: each run calls as the user and account it names.
+  - a run's binding of a per-run Composio server (`mcp_auth.<server>`, `{composio_user_id, connected_account_id?}`)
+    stays in that namespace too, since every caller here is the token: its `composio_user_id` starts `agentrun.token.`
+    (exactly), else `422` `not_allowed` under it, and a `connected_account_id` it names is one Composio lists under that
+    user for the server's toolkit, read at the start or the message that hands it with the server's key, else `422`
+    `not_allowed` under it. Composio not answering that read is `424` (`upstream_failed`): a run's account is never
+    taken unchecked. Nothing is started, and no refusal quotes what was sent. A run's claim refuses a binding outside the
+    namespace too (one sealed before this rule), its calls refused unsent. The token's backend connects its users'
+    accounts at Composio under namespaced user ids (`agentrun.token.<its own id>`). On the full server the owner's runs
+    bind as before;
+  - a server the token saved before the namespace (0.1.0-beta.56 and earlier) calls as a user outside it, which may be
+    the owner's: every run's claim of it is refused unsent, in words that say to delete it, and the start names each such
+    server in one log line (`api_only_composio_outside_namespace`), never its user or address. Delete it, then save it
+    again: the new save is namespaced and returns a connect link for it. Where a server the owner saved stands on its
+    auth config, which is the case a takeover leaves, a save over it is `403` (the auth config rule above), so it can only
+    be deleted, and the refusal says so. Where none does, a save over it moves it to the namespaced user and returns a
+    connect link; that save deletes at Composio every account the server's record holds as made here under the bare user
+    (the one its own link connected, or one handed to it), unless another saved server stands on it (that one then owns
+    it), and keeps an account it found there, which was never its own.
 
   The names route above is the listing: there is no list or read of a server's address, auth or tools here. The
   generic save (`PUT /settings/mcp-servers/{name}`) is a `404` unless the operator names the MCP origins it may save at,
@@ -3657,7 +3671,7 @@ serves these routes alone:
   saves `"auth": {"type": "per_run"}` at a listed origin, and each run hands its own credential in `mcp_auth`. A body
   that carries a credential, or a save over a server the token did not save or one that seals a credential, is `403`;
   any other origin or auth type, or a Composio server's name, is `404`. A wildcard, an entry that is not an http(s)
-  origin alone, or plain http to a host other than a loopback one (127.0.0.1, ::1, localhost) stops the start, and a
+  origin alone, or plain http to a host other than a loopback one (127.0.0.0/8, ::1, localhost) stops the start, and a
   loopback origin also needs `AGENTRUN_MCP_ALLOW_LOOPBACK=1`. The list holds past
   the save: a per_run server the token saved at an origin not listed is refused, and nothing is sent to it. Unset, the
   list is empty, so on an upgrade list each such server's origin first, or re-save it from the owner's signed-in
