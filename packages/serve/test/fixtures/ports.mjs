@@ -13,9 +13,10 @@ export function ephemeralLow() {
   }
 }
 
-/** Every port this process has handed out, or is probing now. One is never handed out again: serve keeps a down Ollama
- *  address's listing for its TTL (OLLAMA_TTL_MS), and a test given an address an earlier one listed as down would read
- *  that listing, never asking what listens there now. */
+/** Every port this process has handed out, or is probing now. One is never handed out again: serve keeps each Ollama
+ *  address's listing (ollama-provider.ts listOllama), a good one fresh for OLLAMA_TTL_MS and a refused one empty and
+ *  stale, handed to the next call once more while it asks again. A test given an address an earlier one listed would
+ *  read that listing first, not what listens there now. */
 const handedOut = new Set();
 
 /**
