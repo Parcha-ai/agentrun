@@ -1,7 +1,7 @@
 // Docker by default: a server started with AGENTRUN_BOXES not set at all probes Docker as if it were listed (place-offers.ts
 // enabledBoxes), and offers it when Docker answers, so a new agent lands in the Docker box with a shell (place.ts
-// newAgentPlace). Where Docker is not there, new agents run on the runner and capabilities, the start's banner and the
-// console's editor say why in words a first-time user can act on. An operator's AGENTRUN_BOXES still wins: a list probes
+// newAgentPlace). Where Docker is not there, a new agent names its place (a box, or the runner) or is refused, and
+// capabilities, the start's banner and the console's editor say why in words a first-time user can act on. An operator's AGENTRUN_BOXES still wins: a list probes
 // only what it names, and an empty value or `none` sets up no box. Every other box stays the operator's to list.
 // Everything runs on a fake `docker` first on PATH (fixtures/fake-docker.mjs), or on a PATH with no docker at all: no
 // daemon is reached, nothing is pulled or built, and no box provider is called.
@@ -53,6 +53,8 @@ async function noDocker(t) {
   assert.notEqual(spawnSync("/bin/sh", ["-c", "command -v docker"], { encoding: "utf8" }).status, 0, "no docker on PATH");
 }
 
+/** Why a new agent that names no place is refused where no Docker box is set up (and no other box is). */
+const NAME_A_BOX = "name a box: this server has no Docker box for a new agent. Set place to {mode: sandbox, box: <none is set up>}, or to {mode: runner} to run without a shell.";
 const placesOf = async (api) => (await api("GET", "/capabilities")).body.places;
 const dockerOf = (places) => places.boxes.find((box) => box.id === "docker");
 /** A definition as a person writes one first: a name and instructions, no place and no tools. */
@@ -100,16 +102,17 @@ test("demo through the API: with AGENTRUN_BOXES not set and Docker answering, do
   assert.equal((await api("GET", `/runs/${run.body.run_id}/files/out.txt`)).body, "hello from the box\n");
 });
 
-test("with AGENTRUN_BOXES not set and no docker command on PATH, new agents run on the runner, and capabilities and the banner say why plainly", { timeout: 60_000 }, async (t) => {
+test("with AGENTRUN_BOXES not set and no docker command on PATH, a new agent that names no place is refused in words that name a box, and capabilities and the banner say why plainly", { timeout: 60_000 }, async (t) => {
   await noDocker(t);
   const server = await serve(t, { faux: PROBE });
   const places = await placesOf(server.api);
   assert.deepEqual(dockerOf(places), { id: "docker", available: false, state: "unavailable", reason: NO_DOCKER });
   assert.deepEqual(places.default_place, RUNNER);
-  assert.equal(places.default_reason, `new agents run on the runner, because the docker box is unavailable here: ${NO_DOCKER}`);
-  assert.equal(server.boxesLine, `Boxes: none, so new agents run on the runner. ${NO_DOCKER}.`);
-  const made = await server.api("POST", "/agents", fresh("plain"));
-  assert.equal(made.status, 201, JSON.stringify(made.body));
+  assert.equal(places.default_reason, NAME_A_BOX);
+  assert.equal(server.boxesLine, `Boxes: none, so a new agent must name its place: a box, or the runner. ${NO_DOCKER}.`);
+  const refused = await server.api("POST", "/agents", fresh("plain"));
+  assert.equal(refused.status, 422, JSON.stringify(refused.body));
+  assert.equal(refused.body.error.message, NAME_A_BOX);
   assert.equal("place" in made.body.definition, false);
   assert.deepEqual(made.body.definition.tools, []);
 });
@@ -255,15 +258,15 @@ test("a --faux server in AgentRun's image (the deploy walk's) says the image's w
   assert.equal(dockerOf(await placesOf(server.api)).reason, DOCKER_NO_SOCKET);
 });
 
-test("a refused docker socket's reason is the one capabilities, the default reason and the banner say, default or listed", { timeout: 60_000 }, async (t) => {
+test("a refused docker socket's reason is the one capabilities and the banner say, default or listed; the default reason names a box", { timeout: 60_000 }, async (t) => {
   const bin = await deniedDocker(t, CLI_DENIED);
   withEnv(t, { PATH: `${bin}:${dirname(process.execPath)}` }, ["AGENTRUN_BOXES", "AGENTRUN_DOCKER_IMAGE", "AGENTRUN_BOX_ALLOW"]);
   const server = await serve(t, { faux: PROBE });
   const places = await placesOf(server.api);
   const reason = dockerOf(places).reason;
   assert.ok([NOT_IN_GROUP, JOIN_GROUP].includes(reason), reason);
-  assert.equal(places.default_reason, `new agents run on the runner, because the docker box is unavailable here: ${reason}`);
-  assert.equal(server.boxesLine, `Boxes: none, so new agents run on the runner. ${reason}.`);
+  assert.equal(places.default_reason, NAME_A_BOX);
+  assert.equal(server.boxesLine, `Boxes: none, so a new agent must name its place: a box, or the runner. ${reason}.`);
   withEnv(t, { AGENTRUN_BOXES: "docker" });
   const listed = await serve(t, { faux: PROBE });
   assert.ok(listed.boxesLine.includes(`docker: ${reason}.`), listed.boxesLine);
@@ -282,7 +285,7 @@ test("an explicit AGENTRUN_BOXES wins: a list probes only what it names, so dayt
 });
 
 for (const value of ["", "none", " none "]) {
-  test(`AGENTRUN_BOXES=${JSON.stringify(value)} sets up no box: nothing is probed, and new agents run on the runner`, { timeout: 60_000 }, async (t) => {
+  test(`AGENTRUN_BOXES=${JSON.stringify(value)} sets up no box: nothing is probed, and a new agent names its place`, { timeout: 60_000 }, async (t) => {
     const docker = await fakeDocker(t, value);
     assert.deepEqual([...enabledBoxes(process.env)], []);
     const server = await serve(t, { faux: PROBE });
@@ -290,7 +293,7 @@ for (const value of ["", "none", " none "]) {
     assert.ok(places.boxes.every((box) => !box.available), JSON.stringify(places.boxes));
     assert.equal(dockerOf(places).reason, NOT_ENABLED);
     assert.deepEqual(places.default_place, RUNNER);
-    assert.equal(places.default_reason, `new agents run on the runner, because the docker box is unavailable here: ${NOT_ENABLED}`);
+    assert.equal(places.default_reason, NAME_A_BOX);
     assert.deepEqual(docker.calls(), [], "no docker command ran");
     assert.ok(server.boxesLine.startsWith("Boxes: none is ready, so sandbox agents do not run here."), server.boxesLine);
   });

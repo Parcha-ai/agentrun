@@ -1,7 +1,8 @@
 // A new agent's place: the box is the default machine for a shell. An agentic definition that names no place and no tools
 // is saved with the Docker box as its place wherever this server has docker, and gets a shell (bash); one that names its
-// tools gets the box only when one needs a shell, and else runs on the runner. Where docker is not there, a new agent is saved as
-// before, with no place, and runs on the runner; capabilities say why (places.default_reason). The default is stamped on
+// tools gets the box only when one needs a shell, and else runs on the runner. Where docker is not there, a new agent that
+// would get the box is refused in words that say to name a box or the runner (places.default_reason); one whose tools
+// need no shell is saved with no place and runs on the runner. The default is stamped on
 // the revision at its create, so an agent saved before keeps running where it ran: a stored revision with no place is the
 // runner, whatever this server has now. A workflow is never given a box, and an explicit runner is kept. Everything runs
 // on a fake `docker` first on PATH (fixtures/fake-docker.mjs): no daemon is reached, nothing is pulled or built.
@@ -99,6 +100,8 @@ function refusedNotForPlace(answer) {
 }
 /** A definition as a person writes one first: a name and instructions, no place and no tools. */
 const fresh = (id) => ({ definition: { id, name: id, instructions: "Probe." } });
+/** Why an agent with no place and a shell is refused where no Docker box is set up (no box is, here). */
+const NAME_A_BOX = "name a box: this server has no Docker box for a new agent. Set place to {mode: sandbox, box: <none is set up>}, or to {mode: runner} to run without a shell.";
 
 // A run in the Docker box starts a computer: computerDocker gives it a fake computerd, so its bash and background tools run.
 test("a new agent on a server with docker can start a command in the background and read its output, with no tools named", { timeout: 120_000, skip: NO_DAEMON }, async (t) => {
@@ -168,17 +171,19 @@ test("a new agent that names a shell among its tools gets exactly those in the b
   assert.deepEqual([edited.body.definition.place, edited.body.definition.tools], [DOCKER, ["read"]]);
 });
 
-test("with no docker, a new agent is saved as before, with no place, and runs on the runner; capabilities say why: docker turned off (AGENTRUN_BOXES=none), or its image failed", { timeout: 60_000 }, async (t) => {
+test("with no docker, a new agent that names no place and no tools is refused, in words that name a box; one whose tools need no shell is saved with no place and runs on the runner", { timeout: 60_000 }, async (t) => {
   withEnv(t, { AGENTRUN_BOXES: "none" });
   const { api, data } = await serve(t, { faux: PROBE });
   const places = await placesOf(api);
   assert.equal("default" in places, false);
   assert.deepEqual(places.default_place, RUNNER);
-  assert.equal(places.default_reason, "new agents run on the runner, because the docker box is unavailable here: not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker");
-  const made = await api("POST", "/agents", fresh("plain"));
+  const refused = await api("POST", "/agents", fresh("plain"));
+  assert.equal(refused.status, 422, JSON.stringify(refused.body));
+  assert.deepEqual(refused.body.error.fields.map((one) => [one.field, one.message]), [["definition.place", NAME_A_BOX]]);
+  assert.equal((await api("GET", "/agents/plain")).status, 404, "nothing saved");
+  const made = await api("POST", "/agents", { definition: { ...fresh("plain").definition, tools: ["write"] } });
   assert.equal(made.status, 201, JSON.stringify(made.body));
   assert.equal("place" in made.body.definition, false);
-  assert.deepEqual(made.body.definition.tools, []);
   assert.ok(storedBodies(data).every((body) => !("place" in body)), "nothing stamped: the revision is the one it was before");
   const run = await probe(api, "plain", [{ tool: "write", args: { path: "a.txt", content: "a" } }]);
   assert.deepEqual(run.place, RUNNER);
@@ -191,7 +196,7 @@ test("a revision that names no place runs where default_place says, as a new age
   const first = await startServe({ data, port: 0, faux: PROBE, drainTimeout: "5s" });
   t.after(() => first.close());
   const before = client(first.baseUrl, first.token);
-  const made = await before("POST", "/agents", fresh("old"));
+  const made = await before("POST", "/agents", { definition: { ...fresh("old").definition, tools: [] } });
   assert.equal(made.status, 201, JSON.stringify(made.body));
   assert.equal("place" in made.body.definition, false, "saved with no place where docker was not there");
   assert.equal((await before("POST", "/agents", agent("browsing", { tools: ["read", "browser"] }))).status, 201);
@@ -235,7 +240,7 @@ test("a revision with no place and bash, saved while docker was there, is refuse
   const first = await startServe({ data, port: 0, faux: PROBE, drainTimeout: "5s" });
   t.after(() => first.close());
   const none = client(first.baseUrl, first.token);
-  assert.equal((await none("POST", "/agents", fresh("shell"))).status, 201);
+  assert.equal((await none("POST", "/agents", { definition: { ...fresh("shell").definition, tools: [] } })).status, 201);
   assert.equal((await none("POST", "/agents", agent("browsing", { tools: ["read", "browser"] }))).status, 201);
   await first.close();
   // Docker is there: an edit naming bash and no place saves, its place resolving to the box.
@@ -259,8 +264,8 @@ test("a revision with no place and bash, saved while docker was there, is refuse
   const refused = await api("POST", "/agents/shell/runs", { input: { content: JSON.stringify({ probe: [{ tool: "bash", args: { command: "echo hi" } }] }) } });
   assert.equal(refused.status, 409, JSON.stringify(refused.body));
   assert.equal(refused.body.error.code, "agent_not_runnable");
-  // The words name why the sandbox is not the default here (default_reason) and both ways out: fix that, or pin the runner.
-  assert.equal(refused.body.error.message, `bash runs only in a box, and this agent names no place, so it runs on the runner, which has no shell (a shell needs a sandbox computer), and ${(await placesOf(api)).default_reason}. Do that, or keep this agent on the runner: name "place": {"mode": "runner"} and remove "bash" from definition.tools.`);
+  // The words a new agent with no place is refused in here: name a box (listing the boxes, never picking one), or the runner.
+  assert.equal(refused.body.error.message, NAME_A_BOX);
   assert.equal((await api("GET", "/runs?agent=shell")).body.runs.length, before, "no run was made");
   assert.deepEqual(docker.execs(), [], "no shell ran anywhere");
 });

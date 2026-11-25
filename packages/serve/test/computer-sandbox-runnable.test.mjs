@@ -436,7 +436,7 @@ test("Mode 1 with no Docker: an agent with no computer and bash is refused, 422,
   const said = await saveWithTools(api, "no-shell", { computer: { kind: "none" } }, ["read", "bash"]);
   assert.equal(said.made.status, 422, JSON.stringify(said.made.body));
   assert.deepEqual(said.made.body.error.fields.map((one) => [one.field, one.reason, one.fix]), [["definition.tools[1]", "not_an_option", "Remove \"bash\" from definition.tools."]]);
-  assert.equal(said.made.body.error.fields[0].message, "bash runs only in a box, and this agent's place is the runner, which has no shell (a shell needs a sandbox computer), and new agents run on the runner, because the docker box is unavailable here: Docker isn't running on this machine, or this user may not use it (docker version failed: exit 1): start Docker, or add this user to the docker group, then restart AgentRun. Do that, or keep this agent on the runner: name \"place\": {\"mode\": \"runner\"} and remove \"bash\" from definition.tools.");
+  assert.equal(said.made.body.error.fields[0].message, "bash runs only in a box, and this agent's place is the runner, which has no shell (a shell needs a sandbox computer), and the docker box is unavailable here: Docker isn't running on this machine, or this user may not use it (docker version failed: exit 1): start Docker, or add this user to the docker group, then restart AgentRun. Do that, or keep this agent on the runner: name \"place\": {\"mode\": \"runner\"} and remove \"bash\" from definition.tools.");
 });
 
 test("capabilities show bash available in Mode 2, where a run on the runner has it on Archil's serverless exec; the background tools still want a box, and in Mode 1 bash does too", async (t) => {
