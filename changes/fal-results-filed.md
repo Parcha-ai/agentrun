@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve
+kind: feature
+---
+A completed fal job's `result` is kept in the run's files at `evidence/fal/<request_id>.json`, so a step that needs the whole result (an audio clip's timestamp chunks, say) reads it from the file instead of the model retyping it. The run's MCP gateway files it when an answer of a fal server (`run_model`, `submit_jobs`, `wait_for_jobs`) carries a job whose `status` is `completed` and which has a `result`. The answer the model reads is unchanged, byte for byte. Only a request_id in fal's UUID shape names a file; any other id (a path, `..`, a plain name, a UUID with a suffix) is not filed, and the call works as before. A file is saved once: whatever is already at the path (a file, a folder, a link) is kept, and a link on the way is never followed. A result that can't be filed never fails the call. `web_save` now saves through the same helper, with the same behaviour. The parsing is fal's meter's (`McpMeter.results`), so the gateway stays the same for every server.
