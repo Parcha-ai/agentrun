@@ -464,8 +464,8 @@ export type ServeOptions = {
   /** Under `faux`: the directory a Docker computer's computerd build is looked for in at the start (the computer
    *  package's dockerDaemonOf), in place of that package's own build; absent, a faux server doesn't check for one. */
   fauxDaemonDir?: string;
-  /** For tests: whether Docker's start probe takes this server to be in a container (place-offers.ts containerReason),
-   *  in place of its own marks; a faux server's is a host's. */
+  /** For tests: where Docker's start probe takes this server to be (place-offers.ts containerOf), in place of its own
+   *  marks. The test support's serve() pins a host, so the suite reads the same words in a container. */
   probeContainer?: ContainerFacts;
   /** For tests: the wait before each read again of the Docker host's addresses after the start's failed
    *  (docker-host-addresses.ts retryHostAddresses), in place of the backoff's timer. */
@@ -1800,11 +1800,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // them, docker alone when it is not set; docker by its probe, daytona and modal by their providers' keys, read as a
   // run's claim reads them. Under --faux, `fauxDocker` stands in for Docker's answer, and nothing asks Docker.
   const fauxDocker = Boolean(options.faux) && options.fauxDocker === true;
-  // A faux server's probe is on a host, as its Docker paths are below, so a test reads the same words in a container;
-  // `probeContainer` sets it for a test of a real one.
+  // Where the probe takes this server to be is its own marks (place-offers.ts containerOf), faux or not, so a faux server
+  // in AgentRun's image (the deploy walk's) says the image's words; `probeContainer` pins it for a test.
   // The probe names Docker's architecture too, which says which computerd build a Docker computer binds (below).
   let dockerArch: string | undefined;
-  const found = await placeOffers(env, { keyOf: keyReader(store, seal.key, env), fauxDocker, dockerArch: (arch) => (dockerArch = arch), ...(options.probeContainer ? { container: options.probeContainer } : options.faux ? { container: { inside: false } } : {}) });
+  const found = await placeOffers(env, { keyOf: keyReader(store, seal.key, env), fauxDocker, dockerArch: (arch) => (dockerArch = arch), ...(options.probeContainer ? { container: options.probeContainer } : {}) });
   const docker = found.some((offer) => offer.id === "docker" && offer.available);
   // Under --faux, the mountinfo a test gives (fauxMountinfo, or FAUX_MOUNTINFO_ENV in the process's own environment, which
   // `env` leaves out: a server under test in a container names its own /proc/self/mountinfo there); with none, a faux

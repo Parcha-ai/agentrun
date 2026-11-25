@@ -2,7 +2,7 @@
 // within a short bound, the answer kept for a while and asked again after it, so a daemon that comes up after the start
 // is seen. Settings → Computers' view, a run's start check and the claim's launch read it, and say one thing when no
 // daemon answers (noDockerWords): a hosted server (Render and the like) runs none, so a vendor's computer is the way.
-import { askDockerDaemon, type DockerDaemon } from "./place-offers.js";
+import { askDockerDaemon, type DockerDaemon, NO_DOCKER_HERE } from "./place-offers.js";
 
 export type { DockerDaemon };
 
@@ -64,9 +64,8 @@ const either = (names: readonly string[]): string => (names.length < 2 ? names.j
  *  daemon: a sandbox holds the run's folder, so it is one that mounts Archil, and in Mode 1 those need Archil turned on
  *  first; a desktop, phone or browser holds none, so any that takes no folder of this machine (no bind) does. */
 export function noDockerWords(kind: string, providers: readonly Named[], mode: 1 | 2): string {
-  const NO_DOCKER = "No Docker on this server: Render and most hosted services run none.";
   const vendors = providers.filter((one) => one.kinds.includes(kind) && (kind === "sandbox" ? one.mounts.includes("archil") : !one.mounts.includes("bind"))).map((one) => one.label);
-  if (vendors.length === 0) return `${NO_DOCKER} Pick another kind of computer, or none.`;
-  if (kind === "sandbox" && mode === 1) return `${NO_DOCKER} A vendor sandbox (${either(vendors)}) needs Archil turned on in Settings → Workspace.`;
-  return `${NO_DOCKER} Use a vendor computer, e.g. ${either(vendors)} for a ${kind}.`;
+  if (vendors.length === 0) return `${NO_DOCKER_HERE} Pick another kind of computer, or none.`;
+  if (kind === "sandbox" && mode === 1) return `${NO_DOCKER_HERE} A vendor sandbox (${either(vendors)}) needs Archil turned on in Settings → Workspace.`;
+  return `${NO_DOCKER_HERE} Use a vendor computer, e.g. ${either(vendors)} for a ${kind}.`;
 }
