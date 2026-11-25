@@ -15,7 +15,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { accessSync, chmodSync, closeSync, constants, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
-import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
+import { delimiter, dirname, isAbsolute, join } from "node:path";
 import type { ClaudeAgentLogin, ClaudeLoginStatus, ClaudeLoginToken } from "@parcha/agentrun-harness-claude";
 import { facts as claudeFacts } from "@parcha/agentrun-harness-claude/facts";
 import { registerSecretWrite } from "./secret-writes.js";
@@ -145,8 +145,8 @@ const MAX_LINKS = 40;
 const GROUP_OR_OTHER_WRITE = 0o022;
 const STICKY = 0o1000;
 
-/** `dir` (absolute, resolved: no trailing slash, no `.` or `..` of its own) walked one name at a time from the root, as
- *  the system walks it: each link is followed where it is met, and must be one user `uid` or root made, as must each
+/** `dir` (absolute) walked one name at a time from the root, as the system walks it: an empty name (a trailing or
+ *  doubled slash) and `.` name nothing, `..` goes to the folder above the real one reached so far, and each link is followed where it is met, and must be one user `uid` or root made, as must each
  *  link in the chain it leads through (another user's could be pointed elsewhere once this has looked). Gives the real
  *  folder the walk ends in (`real`: no link on its way) and the names still to make in it (`missing`, none where `dir`
  *  is there), or undefined where a link fails, a name past one still to make is `..` (from a link), or there is no way
@@ -227,9 +227,10 @@ function heldFolder(uid: number, real: string): NotHeld | undefined {
 const openWords = (open: { at: string; mode: number }): string =>
   `is open to writes by others than its owner: ${open.at} has mode ${(open.mode & 0o7777).toString(8).padStart(4, "0")}, which its group or anyone may write in. Make it writable by its owner alone (chmod g-w,o-w ${open.at}): a umask of 002 makes new folders so.`;
 
-/** The folder `dir` names, as the CLI is to get it, where it is one user `uid` owns; else undefined. `dir` is resolved
- *  first (path.resolve: a trailing slash, `.` and `..` go), so no slash hides a link. Then every link on its way is
- *  judged and followed (followLinks), every folder above the real folder it leads to is held (wayHeld), and that folder
+/** The folder `dir` names, as the CLI is to get it, where it is one user `uid` owns; else why not. `dir` is walked as
+ *  the system walks it, one name at a time (followLinks: a trailing slash or `.` names nothing, and a `..` goes up from
+ *  the real folder reached so far, past any link, never from the text), so no slash hides a link and the folder is the
+ *  one the CLI given `dir` would reach. Every link on its way is judged and followed, every folder above the real folder it leads to is held (wayHeld), and that folder
  *  is the user's own (heldFolder). `make`: where `dir` is not there yet, the nearest folder above it that is must be the
  *  user's own (heldFolder), since the CLI, run as that user, makes the rest there. The answer is the real path (no link
  *  left on it, plus the names still to make), which is what the login hands the CLI, so a link changed after this has
@@ -238,7 +239,7 @@ const openWords = (open: { at: string; mode: number }): string =>
  *  make. Else why not (NotHeld). */
 function ownedFolder(uid: number, dir: string, make: boolean): { real: string; missing: boolean; not?: undefined } | NotHeld {
   if (!isAbsolute(dir)) return { not: "owned" };
-  const walked = followLinks(uid, resolve(dir));
+  const walked = followLinks(uid, dir);
   if (walked === undefined || (walked.missing.length > 0 && !make)) return { not: "owned" };
   // A folder that is not the user's first, as a chmod mends no such folder; else the open one.
   const way = wayHeld(uid, walked.real);
