@@ -59,11 +59,12 @@ test("an abort during the computer's own docker run, which the daemon still fini
 	}
 });
 
-test("a retry cut off during its docker run, before Docker said the name is taken, leaves the computer its request already has", { timeout: 5_000 }, async () => {
+test("a retry cut off during its docker run, before Docker said the name is taken, leaves the computer its request already has", { timeout: 3_000 }, async () => {
 	const requestId = "docker-abort-retry";
 	const name = computerNameFor(requestId);
 	// The computer an earlier create of this request made (here or in another process); the retry's run never answers.
-	// Nothing comes late here, so the looks need not stay empty the default 3 s (settleQuietMs) before create answers.
+	// Nothing comes late here, so the looks need not stay empty the default 3 s (settleQuietMs) before create answers:
+	// the 3 s cap fails while they must.
 	const fake = fakeDocker({ containers: [container({ name })], hold: ["run"], settleQuietMs: 300 });
 	const controller = new AbortController();
 	const watch = (async () => {
@@ -78,11 +79,12 @@ test("a retry cut off during its docker run, before Docker said the name is take
 	assert.ok(!fake.calls().some((args) => args[0] === "rm" && args.includes(name)), "no rm by its name");
 });
 
-test("a retry with an allowlist cut off during its proxy's docker run leaves the computer, proxy and volume its request already has", { timeout: 5_000 }, async () => {
+test("a retry with an allowlist cut off during its proxy's docker run leaves the computer, proxy and volume its request already has", { timeout: 3_000 }, async () => {
 	const requestId = "docker-abort-retry-egress";
 	const name = computerNameFor(requestId);
 	// What an earlier create of this request made: the computer, its proxy and its volume. The retry's proxy run never answers.
-	// Nothing comes late here, so the looks need not stay empty the default 3 s (settleQuietMs) before create answers.
+	// Nothing comes late here, so the looks need not stay empty the default 3 s (settleQuietMs) before create answers:
+	// the 3 s cap fails while they must.
 	const fake = fakeDocker({ ...allowed({ name, allow: ALLOW }), hold: ["run"], settleQuietMs: 300 });
 	const controller = new AbortController();
 	const watch = (async () => {
