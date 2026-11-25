@@ -53,7 +53,6 @@ export const CONTROL_SIZES = [
 ] as const;
 
 export const SHAPES = [
-  { name: "composer", use: "The integrated build-agent prompt and its actions." },
   { name: "action", use: "All action buttons, including the unified coding-agent action and chooser." },
 ] as const;
 

@@ -47,7 +47,7 @@ test("a stop while an approved paid call is in flight cuts it, withdraws it over
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Search." }, title: "t", place: { mode: "runner" }, harness: "pi", model: { provider: "anthropic", modelId: "claude-sonnet-5-5" }, plane: { web_search: "parallel" }, max_cost_usd: 10 } });
   const route = {
     model: "faux-1", provider: { api: "anthropic-messages", origin: "https://route.invalid", credential: () => `not-a-secret-${"r"}` },
-    fetch: scriptedOrigin([{ call: "web_search", args: { query: "agentrun", n: 3 } }, { say: "done" }]),
+    fetch: scriptedOrigin([{ call: "web_search", args: { objective: "agentrun", n: 3 } }, { say: "done" }]),
     price: () => 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 1_000,
   };
   const deps = {

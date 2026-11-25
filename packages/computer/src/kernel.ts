@@ -137,7 +137,7 @@ const refOf = (id: string): ComputerRef => ({ id, name: id });
 const statusOf = (error: unknown) => (error as { status?: unknown } | null)?.status;
 
 /** What a Kernel browser offers beyond the protocol, a fresh copy each time. */
-const KERNEL_BROWSER = (): BrowserFeatures => ({ timeout: "inactivity", minLifetimeMs: KERNEL_MIN_LIFETIME_MS, profiles: { settleMs: 0 }, headless: true });
+const KERNEL_BROWSER = (): BrowserFeatures => ({ timeout: "inactivity", minLifetimeMs: KERNEL_MIN_LIFETIME_MS, profiles: { settleMs: KERNEL.profiles.settleMs }, headless: true });
 
 /** Computers that are Kernel browsers. */
 export class KernelProvider implements ComputerProvider, BrowserComputerProvider {

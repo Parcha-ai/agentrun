@@ -2479,6 +2479,24 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "export/1",
     },
   },
+  "/agents/{agent_id}/revisions/{revision}/skills": {
+    get: {
+      operationId: "getRevisionSkills", tags: ["agents"], summary: "Read all skill files saved with one agent revision",
+      description: "Returns the exact revision's complete skill file map, including SKILL.md and supporting text files, without changing the agent. Use these files when preparing a replacement skills map for PUT /agents/{agent_id}/definition, with the ETag of the revision being edited. An unknown revision or a revision belonging to another agent is 404; there is no fallback to the current revision. Only files stored in the revision are returned: detected skills on a connected native agent's source machine are not read. Revisions with no stored skill files return an empty map.",
+      parameters: [ref("parameters/AgentId"), { name: "revision", in: "path", required: true, description: "The immutable revision ID from the agent or its revisions list.", schema: { type: "string" } }],
+      responses: {
+        "200": json({
+          type: "object", additionalProperties: false, required: ["revision", "skills"],
+          properties: {
+            revision: { type: "string" },
+            skills: { type: "object", additionalProperties: { type: "string" }, description: "Paths relative to .agents/skills/ mapped to their complete text." },
+          },
+        }, "The requested revision's saved skill files."),
+        ...errors(401, 404, 429, 500),
+      },
+      "x-agentrun-serve": "skills/1",
+    },
+  },
   "/agents/{agent_id}/current": {
     post: {
       operationId: "setCurrent", tags: ["agents"], summary: "Make one of the agent's revisions current again",
@@ -3050,7 +3068,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     put: {
       operationId: "turnOnClaudeLogin", tags: ["local"], summary: "Turn on Claude Code's login on this machine for claude-agent's runs",
-      description: "Runs claude-agent on the login at `place` (default `agentrun`), on this machine's runner only. 403 forbidden in one line where more than one person can start runs (more than one API token, the API-only profile); 422 input_invalid without `only_me` true. A model a revision names on a gateway or OpenRouter still runs on its key. 404 not_found, naming the operation, when AGENTRUN_CLAUDE_CODE_LOGIN is `off`. A secret write: the owner's signed-in session alone (ownerSession).",
+      description: "Runs claude-agent on the login at `place` (default `agentrun`), on this machine's runner only. 403 forbidden in one line where more than one person can start runs (more than one API token, the API-only profile); 422 input_invalid without `only_me` true. 403 forbidden, too, at `agentrun` when AgentRun's own login folder (`<data>/claude-login`) is a link, in words naming it and where it leads: the login a sign-out removes is always a folder of AgentRun's own. A model a revision names on a gateway or OpenRouter still runs on its key. 404 not_found, naming the operation, when AGENTRUN_CLAUDE_CODE_LOGIN is `off`. A secret write: the owner's signed-in session alone (ownerSession).",
       "x-agentrun-secret": true,
       security: [{ ownerSession: [] }],
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["only_me"], properties: { place: { enum: ["agentrun", "machine"], description: "Where the login is (see the answer's `place`)." }, only_me: { const: true, description: "The owner's word that they alone run agents on this server, since its runs would use their Claude plan." } } } } } },
@@ -3073,6 +3091,19 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-secret": true,
       security: [{ ownerSession: [] }],
       responses: { "200": json(CLAUDE_LOGIN, "The sign-in started."), ...errors(401, 403, 404, 409, 429, 500) },
+      "x-agentrun-serve": "claudelogin/1",
+    },
+  },
+  "/settings/claude-login/sign-out": {
+    post: {
+      operationId: "signOutClaudeLogin", tags: ["local"], summary: "Sign out of Claude Code's login on this machine: AgentRun's own login removed, the mode off",
+      description: "For a person to sign in fresh, or as another account: a turn-off leaves the login as the CLI keeps it, so the next turn-on reads it again. Ends a sign-in that waits, turns the mode off, runs the pinned CLI's own `claude auth logout` on AgentRun's own login folder (`<data>/claude-login`), which removes its credentials file and, on macOS, its Keychain item for that folder, then removes the folder (credentials, account, profiles, refresh locks), the login's signed-in note and the runner's token reader, whatever the CLI said. The next turn-on finds no login (`signed_out`) and the sign-in starts as before. Runs already going on the login are left as a turn-off leaves them: each keeps the token its CLI holds, and fails saying the login is signed out at its next read of it. `confirmed` false: signed out here and the mode off, and `message` says what may remain: the CLI didn't confirm its own sign-out, or its step failed, named (on macOS its Keychain item may remain); a removal failed, each named with its path (the others still happen); or the folder had become a link, which alone is removed, with no CLI run through it and nothing it leads to touched. 403 forbidden, with nothing touched, when the login is this machine's own (`place` `machine`: the person's `~/.claude` or CLAUDE_CONFIG_DIR): AgentRun never signs it out, and the words say to run `claude auth logout` in a terminal there. 404 not_found, naming the operation, when AGENTRUN_CLAUDE_CODE_LOGIN is `off`. A secret write: the owner's signed-in session alone (ownerSession).",
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      responses: {
+        "200": json({ type: "object", additionalProperties: false, required: ["confirmed", "login"], properties: { confirmed: { type: "boolean", description: "Whether all of the login is gone: the CLI confirmed its own sign-out and every removal landed. The CLI's sign-out runs where the folder is already gone too, so a retry after an unconfirmed sign-out is true only where the CLI confirms." }, message: { type: "string", description: "With `confirmed` false: what may remain, in words (the CLI's step unconfirmed or failed, a removal that failed, a link left in place of the folder)." }, login: CLAUDE_LOGIN } }, "Signed out here."),
+        ...errors(401, 403, 404, 429, 500),
+      },
       "x-agentrun-serve": "claudelogin/1",
     },
   },
@@ -3422,7 +3453,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/settings/tools": {
     get: {
       operationId: "getToolSettings", tags: ["capabilities"], summary: "The server's tool settings",
-      description: "Each capability that has a choice, and its provider, and each tool's permission that is set (an MCP server's wildcard mcp:<server>/* among them): web_search auto (Parallel where the server holds its key, which bills it, else Firecrawl's keyless search with Exa's behind it, on every harness), native (the harness's own search, claude-agent's or codex's, or on pi the model provider's hosted one: that alone), firecrawl-keyless (Firecrawl's, Exa's behind it), exa-keyless (that alone) or parallel; web_fetch auto (the guarded direct fetch where the server holds a Parallel key, else Firecrawl's keyless fetch, which is sent each URL read, never a private or local one, with the guarded direct fetch behind it), firecrawl-keyless (that, whatever the key), kernel (the guarded direct fetch alone) or parallel; browser auto (Browserbase where the server holds its keys, else Kernel where it holds Kernel's), browserbase, kernel (each that alone) or chrome (a Chrome on the server's host, not set up on any server yet: unavailable). An agent's definition.tool_settings is over these, except a permission set to deny here: a server deny is absolute and refuses the tool on this server whatever the agent sets. capabilities.tools say what each resolves to on each harness, and GET /agents/{agent_id} for that agent. An MCP tool's own key may carry its pin, the arguments its calls must carry.",
+      description: "Each capability that has a choice, and its provider, and each tool's permission that is set (an MCP server's wildcard mcp:<server>/* among them): web_search auto (Parallel where the server holds its key, which bills it, else Firecrawl's keyless search with Exa's behind it, on every harness), native (the harness's own search, claude-agent's or codex's, or on pi the model provider's hosted one: that alone), firecrawl-keyless (Firecrawl's, Exa's behind it), exa-keyless (that alone) or parallel; web_fetch auto (Parallel's extract where the server holds a Parallel key, which bills it, with the guarded direct fetch behind it, else Firecrawl's keyless fetch, which is sent each URL read, never a private or local one, with the guarded direct fetch behind it), firecrawl-keyless (that, whatever the key), kernel (the guarded direct fetch alone) or parallel; browser auto (Browserbase where the server holds its keys, else Kernel where it holds Kernel's), browserbase, kernel (each that alone) or chrome (a Chrome on the server's host, not set up on any server yet: unavailable). An agent's definition.tool_settings is over these, except a permission set to deny here: a server deny is absolute and refuses the tool on this server whatever the agent sets. capabilities.tools say what each resolves to on each harness, and GET /agents/{agent_id} for that agent. An MCP tool's own key may carry its pin, the arguments its calls must carry.",
       responses: { "200": json(TOOL_SETTINGS_ANSWER, "Each capability's provider."), ...errors(401, 429, 500) },
       "x-agentrun-serve": "providers/1",
     },
@@ -3982,7 +4013,7 @@ const SO_FAR = {
 /** composioperrun/1: the Composio user (and connected account) a per-run Composio server's calls run as, for one run. */
 const COMPOSIO_RUN_BINDING: Json = {
   ...closedWith({
-    composio_user_id: { type: "string", pattern: COMPOSIO_USER_ID.source, description: "The Composio user this run's calls of that server run as. The preset's default user `agentrun` is refused (422 not_allowed): it is the one single-user preset servers call as. On an API-only server (AGENTRUN_API_ONLY=1) any user the owner calls as here is refused too, in any letter case, before any account is looked up (422 not_allowed): the default and tool-listing users, and each user a server the owner saved stands on; any other user, a backend's own id or one starting `agentrun.token.`, is the caller's, and a `connected_account_id` it names must be one Composio lists under it (422 not_allowed; 424 when Composio doesn't answer)." },
+    composio_user_id: { type: "string", pattern: COMPOSIO_USER_ID.source, description: "The Composio user this run's calls of that server run as. The preset's default user `agentrun` is refused (422 not_allowed): it is the one single-user preset servers call as. From the API token, so is any user the owner calls as here, in any letter case: the default and tool-listing users, and each user a server the owner saved (not per-run) stands on: 422 not_allowed at this field, read at each request, nothing written. The owner's session binds any user. On an API-only server (AGENTRUN_API_ONLY=1), where every caller is the token, that refusal comes before any account is looked up; any other user, a backend's own id or one starting `agentrun.token.`, is the caller's, and a `connected_account_id` it names must be one Composio lists under it (422 not_allowed; 424 when Composio doesn't answer)." },
   }, {
     connected_account_id: { type: "string", pattern: "^ca_[A-Za-z0-9_-]{5,64}$", description: "The user's connected account they run on (Composio's `ca_...` id). Absent: Composio picks the user's account for the toolkit." },
   }),
@@ -3997,7 +4028,7 @@ const MCP_RUN_AUTH: Json = {
   propertyNames: { pattern: "^[a-z][a-z0-9-]{0,31}$" },
   // Not x-agentrun-secret: that marks a write of a secret the server keeps for every run (an owner's alone). This one is
   // the run's own, handed by whoever may start it, and kept only for that run.
-  description: "What each MCP server this run calls takes from the run, by server name: a per_run server's headers, `{\"<server>\": {\"headers\": {...}}}`, or the Composio account a per-run Composio server's calls run as, `{\"<server>\": {\"composio_user_id\": \"...\", \"connected_account_id\": \"ca_...\"}}` (the account optional). For this run alone, from whoever starts it: the server keeps it sealed for the run's life and redacts its values from what the run shows; a per-run Composio server's row never names a user or an account. A server of either kind that this run hands nothing calls its tools refused, nothing sent.",
+  description: "What each MCP server this run calls takes from the run, by server name: a per_run server's headers, `{\"<server>\": {\"headers\": {...}}}`, or the Composio account a per-run Composio server's calls run as, `{\"<server>\": {\"composio_user_id\": \"...\", \"connected_account_id\": \"ca_...\"}}` (the account optional). For this run alone, from whoever starts it: the server keeps it sealed for the run's life and redacts its values from what the run shows; a per-run Composio server's row never names a user or an account. A server of either kind that this run hands nothing calls its tools refused, nothing sent. The API token never binds a per-run Composio server to a Composio user the owner connects here (the user a preset server the owner saved calls as, or `agentrun`): 422 not_allowed at `mcp_auth.<server>.composio_user_id`, nothing written. Each binding is sealed with who handed it (the token or the owner's session), and each claim reads the owner's users again: a token's binding of a user the owner connected since, or one sealed before that mark, has its calls refused unsent until `mcp_auth` is handed again on a message or a new run starts.",
   "x-agentrun-serve": "mcpperrun/1",
 };
 

@@ -778,6 +778,15 @@ export function loginTokensFor(login: ClaudeAgentLogin, log: (fields: Record<str
   return reader;
 }
 
+/** What this process keeps of the login in folder `dir`, dropped at its sign-out (claude-login.ts signOutClaudeLogin):
+ *  its reader (with the token Anthropic refused) and a renewed pair still held unsaved, so nothing of the old login is
+ *  handed or written back over a fresh sign-in. A runner in another process keeps its own until its next read finds
+ *  the file gone, and then refuses as signed out. */
+export function forgetLoginTokens(dir: string): void {
+  readers.delete(dir);
+  heldPairs.delete(join(dir, LOGIN_FILE));
+}
+
 /** The words a run's start is refused in by its runner (held.ts claudeLogin) when its claim read Claude Code's login and
  *  the runner's second read of the setting, at the start, names none or another folder: the run is put on no login its
  *  start did not read, and never falls to a model key it was not claimed on. They name no folder. */
