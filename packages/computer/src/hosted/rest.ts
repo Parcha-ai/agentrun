@@ -53,6 +53,8 @@ export interface RestOptions {
 	fetch?: typeof fetch;
 	/** The bound of a call that gives none. */
 	timeoutMs: number;
+	/** A signal that fires after ms, which bounds a call; default a timer. Tests give one they fire. */
+	timeout?: (ms: number) => AbortSignal;
 	retry?: { attempts: number; baseMs: number; pause?: (ms: number, signal?: AbortSignal) => Promise<void> };
 	/** The vendor's own code or words for an answer that is not accepted; what it leaves out is httpCode and `what: status text`. */
 	explain?: (answer: { status: number; bytes: Uint8Array; text: string; what: string }) => { code?: ComputerErrorCode; message?: string };
@@ -77,6 +79,27 @@ function redirected(cause: unknown): boolean {
 	return /redirect/i.test(`${(cause as Error | null)?.message ?? ""} ${(inner as Error | null)?.message ?? ""}`);
 }
 
+/**
+ * A call's failure. `redirect` marks one the API answered with a redirect, refused unfollowed: its answer is unread,
+ * so the vendor may have acted on the call (a 303 after a create is the usual answer to a POST).
+ */
+export interface RestError extends ComputerError {
+	redirect?: true;
+}
+
+/**
+ * An answer's body. One that is not a 2xx keeps its status when its words break off, unless the bound or the caller cut
+ * them: the status is the vendor's answer, the words only explain it.
+ */
+async function bytesOf(response: Response, cut: AbortSignal): Promise<Uint8Array> {
+	try {
+		return new Uint8Array(await response.arrayBuffer());
+	} catch (error) {
+		if (response.ok || cut.aborted) throw error;
+		return new Uint8Array();
+	}
+}
+
 /** An accepted answer whose body is read as it comes: an event stream. */
 export interface RestStream {
 	status: number;
@@ -85,33 +108,41 @@ export interface RestStream {
 
 export interface Rest {
 	url(path: string): string;
-	call(method: string, url: string, init?: RestInit, signal?: AbortSignal): Promise<Result<RestAnswer>>;
+	call(method: string, url: string, init?: RestInit, signal?: AbortSignal): Promise<Result<RestAnswer, RestError>>;
 	/** call, with the body read as JSON (null for none). */
-	json(method: string, url: string, init?: RestInit, signal?: AbortSignal): Promise<Result<unknown>>;
+	json(method: string, url: string, init?: RestInit, signal?: AbortSignal): Promise<Result<unknown, RestError>>;
 	/**
 	 * call, with an accepted answer's body handed back unread, as it comes (a process's events). The bound covers the
 	 * answer's start alone: the body has none but the caller's signal, which ends it too.
 	 */
-	stream(method: string, url: string, init?: RestInit, signal?: AbortSignal): Promise<Result<RestStream>>;
+	stream(method: string, url: string, init?: RestInit, signal?: AbortSignal): Promise<Result<RestStream, RestError>>;
 }
 
 const NO_BODY: AsyncIterable<Uint8Array> = { async *[Symbol.asyncIterator]() {} };
 
 /**
- * An API's https base URL, with no trailing slash, so a key never crosses in the clear; throws in words on another,
- * loopback http included. Every provider that takes a URL from its caller and sends a key to it takes the URL through
- * it: Agent37, boxd, Browserbase, the Cloudflare relay, Daytona, Groundbox, Kernel, Modal, Morph, Orgo, the phone
- * harness and smol cloud. E2B takes a host name and Fly nothing, and each builds its https URL itself.
+ * An API's https base URL: its origin and path, normalized, with no trailing slash. Throws in words on another scheme,
+ * loopback http included, so a key never crosses in the clear, and on a user or password, a query or a fragment, which
+ * no provider's API takes. Every provider that takes a URL from its caller and sends a key to it takes the URL through
+ * it: Agent37, boxd, Browserbase, the Cloudflare relay, Daytona (and the toolbox URL Daytona answers with), Groundbox,
+ * Kernel, Modal, Morph, Orgo, the phone harness and smol cloud, and so does each sweep scope that names one. E2B takes a
+ * host name and Fly nothing, and each builds its https URL itself.
  */
 export function httpsBase(url: string, what: string): string {
 	let parsed: URL;
 	try {
 		parsed = new URL(url);
 	} catch {
-		throw new Error(`${what} is not a URL: ${JSON.stringify(url)}`);
+		// Nothing of the string is echoed: it may carry a key in its query.
+		throw new Error(`${what} is not a URL`);
 	}
 	if (parsed.protocol !== "https:") throw new Error(`${what} must be https, so the key never crosses in the clear: ${parsed.protocol}`);
-	return url.replace(/\/+$/, "");
+	// The words give the origin alone: a user, a password or a query may be a key.
+	if (parsed.username !== "" || parsed.password !== "") throw new Error(`${what} takes no user or password, since the key goes to it: ${parsed.origin}`);
+	if (parsed.search !== "" || parsed.hash !== "") throw new Error(`${what} takes no query or fragment: ${parsed.origin}`);
+	// The normalized form (lower-case scheme and host, a default port dropped), so a consumer that reads the scheme
+	// case-sensitively, as nice-grpc does for Modal's server, sees https.
+	return `${parsed.origin}${parsed.pathname}`.replace(/\/+$/, "");
 }
 
 export function rest(options: RestOptions): Rest {
@@ -120,7 +151,7 @@ export function rest(options: RestOptions): Rest {
 	const wait = options.retry?.pause ?? pause;
 
 	/** One call, sent again as init.retry says; an accepted answer is what take makes of it, within the call's bound. */
-	async function exchange<T>(method: string, url: string, init: RestInit, signal: AbortSignal | undefined, take: (response: Response) => Promise<T>): Promise<Result<T>> {
+	async function exchange<T>(method: string, url: string, init: RestInit, signal: AbortSignal | undefined, take: (response: Response, cut: AbortSignal) => Promise<T>): Promise<Result<T, RestError>> {
 		const what = `${method} ${new URL(url).pathname}`;
 		const attempts = init.retry === undefined || init.retry === false || options.retry === undefined ? 1 : options.retry.attempts;
 		const timeoutMs = init.timeoutMs ?? options.timeoutMs;
@@ -129,21 +160,26 @@ export function rest(options: RestOptions): Rest {
 			if (signal?.aborted) return fail("aborted", `${what} was aborted`);
 			// A bound that lets go once the answer is taken, so a body read after it (a stream's) is never cut by it.
 			const timeout = new AbortController();
-			const timer = setTimeout(() => timeout.abort(), timeoutMs);
-			let failure: ComputerError;
+			const cut = () => timeout.abort();
+			const bound = options.timeout?.(timeoutMs);
+			const timer = bound === undefined ? setTimeout(cut, timeoutMs) : undefined;
+			if (bound?.aborted) cut();
+			bound?.addEventListener("abort", cut, { once: true });
+			let failure: RestError;
 			let retryable: boolean;
 			try {
 				const headers = init.json === undefined ? options.headers() : { ...options.headers(), "Content-Type": "application/json" };
+				const either = signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal;
 				// Never a redirect: a followed one keeps the key, and could carry a call to another host.
 				const response = await fetcher(url, {
 					method,
 					headers,
 					body: init.json === undefined ? (init.bytes ?? init.form) : JSON.stringify(init.json),
 					redirect: "error",
-					signal: signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal,
+					signal: either,
 				});
-				if (accepted(response.status)) return ok(await take(response));
-				const bytes = new Uint8Array(await response.arrayBuffer());
+				if (accepted(response.status)) return ok(await take(response, either));
+				const bytes = await bytesOf(response, either);
 				const own = typeof init.retry === "function";
 				retryable = own ? (init.retry as (status: number, bytes: Uint8Array) => boolean)(response.status, bytes) : init.retry === true && (response.status === 429 || response.status >= 500);
 				const text = decoder.decode(bytes).replace(/\s+/g, " ").slice(0, 300);
@@ -153,11 +189,15 @@ export function rest(options: RestOptions): Rest {
 				if (signal?.aborted) return fail("aborted", `${what} was aborted`);
 				// No answer: the request may have reached the vendor, so only a call that may run twice is sent again.
 				retryable = init.retry === true;
-				if (timeout.signal.aborted) failure = { code: "timeout", message: `${what} did not answer within ${timeoutMs / 1000} s` };
-				else if (redirected(cause)) return vendorFail(options.vendor, `${what}: the API answered with a redirect, which is never followed: it would carry the key`);
+				if (timeout.signal.aborted) failure = { code: "timeout", message: `${what} did not answer within ${Math.round(timeoutMs / 100) / 10} s` };
+				else if (redirected(cause)) {
+					const message = `${what}: the API answered with a redirect, which is never followed: it would carry the key`;
+					return { ok: false, error: { code: "vendor", vendor: options.vendor, message, redirect: true } };
+				}
 				else failure = { code: "vendor", vendor: options.vendor, message: `${what}: ${(cause as Error).message}` };
 			} finally {
 				clearTimeout(timer);
+				bound?.removeEventListener("abort", cut);
 			}
 			if (!retryable || attempt >= attempts) return { ok: false, error: failure };
 			await wait((options.retry?.baseMs ?? 0) * 2 ** (attempt - 1), signal);
@@ -165,7 +205,7 @@ export function rest(options: RestOptions): Rest {
 	}
 
 	const call = (method: string, url: string, init: RestInit = {}, signal?: AbortSignal) =>
-		exchange(method, url, init, signal, async (response): Promise<RestAnswer> => ({ status: response.status, bytes: new Uint8Array(await response.arrayBuffer()) }));
+		exchange(method, url, init, signal, async (response, cut): Promise<RestAnswer> => ({ status: response.status, bytes: await bytesOf(response, cut) }));
 
 	return {
 		url: (path) => `${base}${path}`,

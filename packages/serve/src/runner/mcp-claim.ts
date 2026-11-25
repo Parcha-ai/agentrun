@@ -57,15 +57,15 @@
 // the next call sends the new one (or is refused for the move); and an OAuth access token within REFRESH_MARGIN_MS of its
 // end is refreshed through open's lease path: behind the call while the token is still valid (the call goes at once on
 // it), waited on only when it has run out. Concurrent calls to one server share one such open.
-import { heldApiOnlyMcpOrigins, offApiOnlyMcpOrigins } from "../mcp-api-only-origins.js";
+import { composioOutsideNamespace, heldApiOnlyMcpOrigins, offApiOnlyMcpOrigins } from "../mcp-api-only-origins.js";
+import { bindingRuns, ownersComposioUsers, ownersUser } from "../composio-owners.js";
 import { randomUUID } from "node:crypto";
 import { EndpointRefused, REFRESH_REQUEST_MS, refreshed, refused, RequestUnsent, type Seen, systemNetwork, type OAuthNetwork, type TokenSet } from "../mcp-oauth.js";
 import { type McpCredentials, type McpPin } from "../mcp-gateway.js";
 import { type PinListing, pinFirst } from "../mcp-pin-first.js";
 import { mcpNameOf } from "../tool-names.js";
 import { composioEnvKey, composioMadeKey, composioPerRun, recordedMade } from "../composio-made.js";
-import { bindingRuns, ownersComposioUsers } from "../composio-owners.js";
-import { composioRunQuery } from "../composio-preset.js";
+import { COMPOSIO_OWNERS_USER_WORDS, composioRunQuery } from "../composio-preset.js";
 import { META_REASON, metaToolOf } from "../mcp-meta.js";
 import { resourceToolProblem } from "../mcp-resources.js";
 import { credentialInQuery, credentialInQueryWords, shownUrl } from "../mcp-probe.js";
@@ -302,6 +302,9 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
     // A per-run Composio server: the run's account, or its calls refused unsent; its key is opened below as any server's.
     const account = row.auth === "headers" ? await composioAccount(name, row) : undefined;
     if (account && "unopened" in account) return entry({ unopened: account.unopened }), { awaited: false };
+    // One the API token saved calling as a user outside its namespace (saved before it): refused unsent, as said at start.
+    const outside = account ? undefined : await composioOutsideNamespace(store, name, row);
+    if (outside) return entry({ unopened: outside }), { awaited: false };
     const query = account?.query;
     // Its key named by api_key_env: the value the runner was handed at its start, for an address on Composio's origin
     // alone; else its calls refused unsent, naming why (composioEnvKey).
@@ -448,12 +451,16 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
 
   /** A per-run Composio server's account for this run, as the query its requests add (composio-preset.ts
    *  composioRunQuery); or why there is none. Undefined: `row` is no per-run Composio server (its own record says so:
-   *  composioPerRun). */
+   *  composioPerRun). A binding of a user the owner calls as (composio-owners.ts ownersComposioUsers, the start's own
+   *  check, read again: one sealed before the check, or before the owner's server was saved) is refused unsent: on an
+   *  API-only store whoever handed it, on a full one unless the owner's session did (bindingRuns). */
   const composioAccount = async (name: string, row: McpServerRow): Promise<{ query: Record<string, string> } | { unopened: string } | undefined> => {
     if (!composioPerRun(row, await store.settings.get(composioMadeKey(name)))) return undefined;
     const given = await handed(name, row.url, "composio");
     if ("unopened" in given) return given;
-    if (!bindingRuns(given.composio, await ownersComposioUsers(store))) return { unopened: UNUSABLE.composioOwnersUser };
+    const owners = await ownersComposioUsers(store);
+    const apiOnly = (await heldApiOnlyMcpOrigins(store)) !== undefined;
+    if (apiOnly ? ownersUser(owners, given.composio.user_id) : !bindingRuns(given.composio, owners)) return { unopened: apiOnly ? COMPOSIO_OWNERS_USER_WORDS : UNUSABLE.composioOwnersUser };
     return { query: composioRunQuery(given.composio) };
   };
 

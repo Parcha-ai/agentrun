@@ -124,10 +124,11 @@ test("the bin on a store a later release set up says to run that release, once, 
   assert.doesNotMatch(err, /\n\s+at /);
 });
 
-/** The bin started as `npx @parcha/agentrun@0.4.22` starts it (the launcher names itself in AGENTRUN_NPX_PACKAGE, and
- *  opens the browser unless --no-open), on `data`: its stderr and exit code. */
+/** The bin started as `npx @parcha/agentrun@0.4.22` starts it (the launcher names itself in AGENTRUN_NPX_PACKAGE), on
+ *  `data`, on any free port and with no browser (a regression that starts the server then opens nothing on 7340): its
+ *  stderr and exit code. A refusal's commands keep those flags (startedWith): ` --port 0 --no-open`. */
 const startByLauncher = async (t, data, home = dirname(data)) => {
-  const child = spawn(process.execPath, [new URL("../dist/cli.js", import.meta.url).pathname, "--open", "--data", data, "--faux", FAUX], { stdio: ["ignore", "ignore", "pipe"], env: { ...process.env, HOME: home, AGENTRUN_NPX_PACKAGE: "@parcha/agentrun@0.4.22", AGENTRUN_SERVE_PORT: "", npm_config_yes: "" } });
+  const child = spawn(process.execPath, [new URL("../dist/cli.js", import.meta.url).pathname, "--port", "0", "--data", data, "--faux", FAUX], { stdio: ["ignore", "ignore", "pipe"], env: { ...process.env, HOME: home, AGENTRUN_NPX_PACKAGE: "@parcha/agentrun@0.4.22", AGENTRUN_SERVE_PORT: "", npm_config_yes: "" } });
   const killer = setTimeout(() => child.kill("SIGTERM"), 10_000);
   t.after(() => (clearTimeout(killer), child.kill("SIGTERM")));
   let err = "";
@@ -135,43 +136,57 @@ const startByLauncher = async (t, data, home = dirname(data)) => {
   const code = child.exitCode ?? (await new Promise((resolve) => child.once("exit", resolve)));
   return { err, code };
 };
+const LAUNCHER = "npx @parcha/agentrun@0.4.22";
+const FLAGS = " --port 0 --no-open";
+/** The line of `err` that holds `words`, and the index of that line. */
+const lineWith = (err, words) => {
+  const lines = err.split("\n");
+  const at = lines.findIndex((line) => line.includes(words));
+  return { at, line: lines[at] ?? "" };
+};
 
 // A new folder is not a new AgentRun: `npx @parcha/agentrun` keeps its data in ~/.agentrun wherever it is run, so an
-// earlier version's ~/.agentrun stops this one. The refusal gives the command the person ran on a new, empty folder, and
-// the other way, the old folder moved aside whole; it never says to delete it.
-test("started by npx @parcha/agentrun on an earlier version's data, the refusal names the command on a new folder, and moving the old one aside", { timeout: 20_000 }, async (t) => {
-  const data = join(await scratch(t), ".agentrun");
-  await oldHome(data, "old");
-  const { err, code } = await startByLauncher(t, data);
-  assert.equal(code, 1, err);
-  assert.match(err, /^agentrun-serve: .* holds an earlier version's data \(old\/agent\.sqlite\)/m);
-  const lines = err.split("\n");
-  const aside = lines.findIndex((line) => line.startsWith(`To keep all of it where the earlier version still opens it and start this version in ${data}: mv ${data} ${data}-earlier, then npx @parcha/agentrun@0.4.22. `));
-  const fresh = lines.indexOf(`Or start this version on a new, empty folder: npx @parcha/agentrun@0.4.22 --data ${data}-new`);
-  assert.ok(aside > 0 && fresh > aside, `the old folder moved aside first, then a new folder:\n${err}`);
-  assert.doesNotMatch(err, /\bdelete\b|\brm\b/i, "it never says to delete the old folder");
-  assert.equal(err.match(/add your agents/gi).length, 1, err);
-  assert.ok(!existsSync(`${data}-new`) && !existsSync(`${data}-earlier`), "the refusal only names the folders");
-  assert.equal(err.match(/agentrun-serve:/g).length, 1, err);
-});
-
-// install.sh keeps its Node (node/), its packages (lib/) and the command (bin/agentrun) in ~/.agentrun, beside the data:
-// that command, or the service running it, may be what started this refusal. Moving the folder takes all three.
-test("the new folder it names is one not there yet, and an installed agentrun in the old folder is said to move with it: run the installer again", { timeout: 20_000 }, async (t) => {
+// earlier version's ~/.agentrun stops this one. The refusal gives the old folder moved aside whole, then the command the
+// person ran on a new, empty folder (one not there yet); it never says to delete it.
+test("started by npx @parcha/agentrun on an earlier version's data, the refusal names moving the old folder aside, then the command on a new folder", { timeout: 20_000 }, async (t) => {
   const data = join(await scratch(t), ".agentrun");
   await oldHome(data, "old");
   await mkdir(`${data}-new`, { recursive: true });
   await mkdir(`${data}-earlier`, { recursive: true });
-  for (const dir of ["bin", "node", "lib"]) await mkdir(join(data, dir), { recursive: true });
+  const { err, code } = await startByLauncher(t, data);
+  assert.equal(code, 1, err);
+  assert.match(err, /^agentrun-serve: .* holds an earlier version's data \(old\/agent\.sqlite\)/m);
+  const aside = lineWith(err, `mv ${data} ${data}-earlier-2, then ${LAUNCHER}${FLAGS}.`);
+  const fresh = lineWith(err, `${LAUNCHER} --data ${data}-new-2${FLAGS}`);
+  assert.ok(aside.at > 0 && fresh.at > aside.at, `the old folder moved aside first, then a new folder:\n${err}`);
+  assert.ok(aside.line.includes(`--data ${data}-earlier-2`), "the earlier version opens the folder moved aside");
+  assert.doesNotMatch(err, /\bdelete\b|\brm\b/i, "it never says to delete the old folder");
+  assert.equal(err.match(/add your agents/gi).length, 1, err);
+  assert.ok(!existsSync(`${data}-new-2`) && !existsSync(`${data}-earlier-2`), "the refusal only names the folders");
+  assert.equal(err.match(/agentrun-serve:/g).length, 1, err);
+});
+
+// install.sh keeps its Node, its packages and the command (bin/agentrun) in ~/.agentrun, beside the data: that command, or
+// the service running it, may be what started this refusal, with no npx at hand. Moving the folder takes the command,
+// and the service starts on the refused folder whatever a --data says, so the one way on is the installer run again.
+test("an installed agentrun in the old folder: the folder moved aside, then the installer run again, and no npx command", { timeout: 20_000 }, async (t) => {
+  const data = join(await scratch(t), ".agentrun");
+  await oldHome(data, "old");
+  await mkdir(join(data, "bin"), { recursive: true });
   await writeFile(join(data, "bin", "agentrun"), "#!/bin/sh\n");
   const { err, code } = await startByLauncher(t, data);
   assert.equal(code, 1, err);
-  assert.ok(err.includes(`npx @parcha/agentrun@0.4.22 --data ${data}-new-2`), err);
-  assert.ok(err.includes(`mv ${data} ${data}-earlier-2`), err);
-  const note = err.split("\n").find((line) => line.includes(`mv ${data} `)) ?? "";
-  assert.match(note, /\bnode\/.*\blib\/.*\bbin\/agentrun\b/, "the runtime and packages move too, not only the command");
-  assert.match(note, /run the installer again/);
-  assert.doesNotMatch(err, /earlier installer's command/, "the command there may be this version's: the installer run again for it");
+  assert.ok(lineWith(err, `mv ${data} ${data}-earlier, then run the installer again.`).at > 0, err);
+  assert.doesNotMatch(err, /\bnpx\b|--data /, err);
+});
+
+test("with no installed agentrun in the folder, the folder moved aside starts again with the launcher's command, not the installer", { timeout: 20_000 }, async (t) => {
+  const data = join(await scratch(t), ".agentrun");
+  await oldHome(data, "old");
+  const { err, code } = await startByLauncher(t, data);
+  assert.equal(code, 1, err);
+  assert.ok(lineWith(err, `mv ${data} ${data}-earlier, then ${LAUNCHER}${FLAGS}.`).at > 0, err);
+  assert.doesNotMatch(err, /installer/, err);
 });
 
 test("started by the launcher on a store an earlier release set up, the refusal names the launcher's command, not docker's", { timeout: 20_000 }, async (t) => {
@@ -184,7 +199,7 @@ test("started by the launcher on a store an earlier release set up, the refusal 
   const { err, code } = await startByLauncher(t, data);
   assert.equal(code, 1, err);
   assert.match(err, /^agentrun-serve: the store at .*store\.sqlite is schema version/m);
-  assert.ok(err.split("\n").includes(`Or start this version on a new, empty folder: npx @parcha/agentrun@0.4.22 --data ${data}-new`), err);
+  assert.ok(lineWith(err, `${LAUNCHER} --data ${data}-new${FLAGS}`).at > 0, err);
   assert.doesNotMatch(err, /docker run|On Render/);
 });
 
@@ -194,6 +209,6 @@ test("started on a --data of the person's own, the old folder moved aside starts
   await oldHome(data, "old");
   const { err, code } = await startByLauncher(t, data, join(root, "home"));
   assert.equal(code, 1, err);
-  assert.ok(err.includes(`start this version in ${data}: mv ${data} ${data}-earlier, then npx @parcha/agentrun@0.4.22 --data ${data}. `), err);
-  assert.ok(err.includes(`without it, they open ${join(root, "home", ".agentrun")})`), err);
+  assert.ok(lineWith(err, `mv ${data} ${data}-earlier, then ${LAUNCHER} --data ${data}${FLAGS}.`).at > 0, err);
+  assert.ok(err.includes(join(root, "home", ".agentrun")), "the folder later commands open without --data");
 });

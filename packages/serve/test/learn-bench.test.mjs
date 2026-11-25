@@ -172,18 +172,74 @@ test("a finished run whose learning has not settled by the deadline is not cance
   assert.deepEqual([got.timedOut, got.learningUnsettled, posts], [false, true, []], "the finished run stands; its learning is the open part");
 });
 
-test("a step's timeline is read page by page, through next_after while has_more", async () => {
+test("a step's timeline is read page by page, through next_after while has_more, each page with its calls whole as the template eval reads one", async () => {
+  const TE = await import("../dist/template-eval.js");
   const pages = { 0: { rows: [{ id: "a", seq: 1 }], has_more: true, next_after: 1 }, 1: { rows: [{ id: "b", seq: 2 }, { id: "c", seq: 3, kind: "usage" }], has_more: false, next_after: 3 } };
-  const api = async (_method, path) => ({ status: 200, body: pages[Number(/after=(\d+)/.exec(path)?.[1] ?? 0)], headers: new Headers() });
+  const paths = [];
+  const api = async (_method, path) => (paths.push(path), { status: 200, body: pages[Number(/after=(\d+)/.exec(path)?.[1] ?? 0)], headers: new Headers() });
   assert.deepEqual((await bench.timelineRows(api, "run-1")).map((row) => row.id), ["a", "b", "c"]);
+  // A grader reads a call's arguments and its output whole (tool_input, tool_result_text), which only a calls=whole page
+  // carries; a preview page shows a CRM call's {id, fields} as nothing at all.
+  assert.ok(Number.isInteger(TE.CALLS_PAGE_ROWS) && TE.CALLS_PAGE_ROWS > 0, "the template eval's page size is exported");
+  assert.equal(paths.length, 2);
+  for (const path of paths) {
+    const query = new URLSearchParams(path.split("?")[1]);
+    assert.deepEqual([query.get("calls"), query.get("limit")], ["whole", String(TE.CALLS_PAGE_ROWS)], path);
+  }
 });
 
 test("a grader whose run fails is recorded as not graded, and the step is kept", async () => {
   const api = async () => ({ status: 500, body: { error: "down" }, headers: new Headers() });
   const ctx = { api, options: { deadline: Date.now() + 60_000, runTimeoutMs: 1000 } };
-  const got = await bench.gradeOne(ctx, { file: "finds.md", type: "llm", rubric: "r" }, { input: "x" }, { answer: "", calls: [], mcpCalls: [], files: [] }, [], true);
+  const got = await bench.gradeOne(ctx, { file: "finds.md", type: "llm", rubric: "r" }, { input: "x" }, { answer: "", calls: [], mcpCalls: [], fakeLog: [], files: [] }, [], true);
   assert.deepEqual([got.grader, got.pass, got.cost_usd], ["finds.md", false, null]);
   assert.match(got.reason, /^not graded: /);
+});
+
+test("a step's record shows its calls on the fakes' tools as its timeline shows them, as the template eval's does: the fake answers as its fixture is written, a tool_used grader on a faked tool reads the fakes' own log, and neither its grader's input nor the record shows a raw fake argument", async () => {
+  const TE = await import("../dist/template-eval.js");
+  const { Client, StreamableHTTPClientTransport } = await import("@modelcontextprotocol/client");
+  // A real fake, called as a run's MCP client calls it: its own log (the tool's name as the fake logs it) and the answer
+  // it gave make the timeline's rows.
+  const fixture = { server: "crm", description: "A contact.", tools: { update_contact: { description: "Set a contact's fields.", input: { type: "object", properties: { id: { type: "string" }, note: { type: "string" } }, required: ["id"] }, answers: [{ when: { id: "7" }, result: { content: [{ type: "text", text: "updated 7" }] } }] } } };
+  const fake = await TE.startFake("crm", fixture);
+  const client = new Client({ name: "learn-bench-test", version: "1.0.0" }, { capabilities: {}, versionNegotiation: { mode: "auto" } });
+  let answered;
+  try {
+    await client.connect(new StreamableHTTPClientTransport(new URL(fake.url)));
+    answered = await client.callTool({ name: "update_contact", arguments: { id: "7", note: "a raw fake argument" } });
+  } finally {
+    await client.close().catch(() => undefined);
+    await fake.close();
+  }
+  assert.deepEqual(answered.content, fixture.tools.update_contact.answers[0].result.content, "the fixture's answer, as it is written");
+  const [logged] = fake.calls;
+  const resultText = answered.content.map((part) => part.text ?? "").join("\n\n");
+  // The timeline's copy: the run's cut took the note.
+  const rows = [
+    { kind: "tool_use", tool_name: logged.tool, tool_use_id: "u", tool_input: { id: "7", note: "[redacted]" } },
+    { kind: "tool_result", tool_use_id: "u", tool_status: "success", tool_result_text: resultText },
+  ];
+  const fakes = [{ name: "crm", calls: [...fake.calls] }];
+  const view = { result: { final_answer: `The CRM said: ${resultText}` } };
+  const record = bench.recordOf({ view, rows, harness: "pi", servers: ["crm"], fakes, files: [] });
+  assert.equal(record.answer, "The CRM said: updated 7");
+  assert.deepEqual(record.fakeLog.map((call) => call.arguments.note), ["a raw fake argument"], "the fakes' own log, whole, for a tool_used grader");
+  assert.deepEqual(record.mcpCalls.map((call) => [call.tool, call.arguments?.note, call.result]), [["mcp:crm/update_contact", "[redacted]", "updated 7"]], "the timeline's call, under the run's cut");
+  const used = TE.gradeDeterministic({ type: "tool_used", file: "u.md", tools: ["mcp:crm/update_contact"], count: 1, args: { note: "a raw fake argument" } }, record, ["crm"]);
+  assert.equal(used.pass, true, JSON.stringify(used));
+  const input = TE.graderInput({ type: "llm", file: "g.md", rubric: "r" }, "x", record);
+  assert.ok(!input.includes("a raw fake argument"), input);
+});
+
+test("a step's calls keep their own servers' names: the bench's faked servers are a list, never a map callsOf renames by", () => {
+  // A list's own keys (its indexes, `length`) read as server names in a map; a call on a server so named stays on it.
+  const rows = [
+    { kind: "tool_use", tool_name: "mcp:length/lookup", tool_use_id: "u", tool_input: {} },
+    { kind: "tool_result", tool_use_id: "u", tool_status: "success", tool_result_text: "ok" },
+  ];
+  const record = bench.recordOf({ view: { result: { final_answer: "" } }, rows, harness: "pi", servers: ["crm"], fakes: [], files: [] });
+  assert.deepEqual(record.calls.map((call) => call.tool), ["mcp:length/lookup"]);
 });
 
 test("a step whose learning had not settled stops its series, naming the step: no later step runs without its lesson", () => {
@@ -221,7 +277,7 @@ test("an ungraded check is no wrong keep: a grader outage after the plant is cou
 });
 
 test("a grader that could not grade says so: ungraded, from a run that did not finish, a grader run that failed, or the deadline", async () => {
-  const kase = { input: "x" }; const record = { answer: "", calls: [], mcpCalls: [], files: [] };
+  const kase = { input: "x" }; const record = { answer: "", calls: [], mcpCalls: [], fakeLog: [], files: [] };
   const llm = { file: "finds.md", type: "llm", rubric: "r" };
   const down = { api: async () => ({ status: 500, body: {}, headers: new Headers() }), options: { deadline: Date.now() + 60_000, runTimeoutMs: 1000 } };
   assert.equal((await bench.gradeOne(down, llm, kase, record, [], false)).ungraded, true, "the run did not finish");

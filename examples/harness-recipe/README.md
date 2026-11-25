@@ -21,7 +21,16 @@ What each part does:
   ([Sign-in](../../HARNESS.md#sign-in), [Vendor terms](../../HARNESS.md#vendor-terms)).
 - `model`: plan billing. Google bills the person's plan (or the key's project); AgentRun sees none of those requests,
   so the adapter stops a run at 20 turns or 40 tool calls. `hosts` names the Google hosts the binary refers to.
-- `declares`: the agent's `initialize` advertises `loadSession` and MCP over HTTP.
+- `announces`: where agy's `tool_call` names the tool it calls. Its `name` field holds `mcp_agentrun_<tool>` (`prefix`),
+  and the arguments it reports carry its own `toolSummary` beside the call's, which the MCP call never has (`extras`), so
+  the adapter leaves it out before matching the two. agy's title (`Run mcp_agentrun_<tool>`) names nothing.
+- `state`: `.gemini/antigravity-cli/conversations`, where agy 1.5.14 keeps each conversation (a SQLite file), so
+  another runner's agent loads it after a kill.
+- `declares`: the agent's `initialize` advertises `loadSession` and no MCP over HTTP, so AgentRun's tools reach it over
+  stdio.
+- `quirks.permissionTie`: `"title"`. agy asks permission for every MCP call, AgentRun's included, and the adapter answers
+  allow once a request whose title names a tool of ours, for a call `announces` named as that same tool. The host's gate
+  is asked at the MCP call itself.
 
 ## Use it
 
@@ -48,14 +57,11 @@ not yours alone on your machine ([Run it](../../HARNESS.md#run-it)). An agent wi
 on it. Never share the sign-in or the server's runs on it. A scheduled or triggered run is refused until a harness's
 own keys can be saved on a server.
 
-## Not yet checked
+## Checked
 
-The recipe loads under the five rules (`packages/serve/test/harness-recipe.test.mjs`), but it has not passed
-`harness-check` on a real sign-in or key yet. Until it does, these are read from the agent's binary, not seen in a run:
-
-- `declares` (`loadSession`, MCP over HTTP);
-- `hosts`. Check once with no `hosts`, and the report's `side_requests.beyondLoopbackRefused` lists every host it
-  reached for;
-- whether its own tools stay out of the way of AgentRun's, and how it resumes after a kill.
+The recipe passes `harness-check` on a Gemini API key (agy 1.5.14, linux-x86_64): a call of AgentRun's tool over MCP,
+a denied call asked of the host's gate, a resume after a kill (`session/load`) and another runner picking the session
+up. Plan billing hides the agent's model requests, so two things stay **unverified**: whether its own tools stay out of
+the way of AgentRun's, and what it sends to `hosts`.
 
 [HARNESS-SCORECARD.md](../../HARNESS-SCORECARD.md) carries its row.

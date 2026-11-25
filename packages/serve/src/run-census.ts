@@ -8,8 +8,8 @@
 // the end's commit writes it in the erased secrets' place (store/sqlite/run-patch.ts refuseLeftovers). A cut read after
 // the end cuts a file by its entry when the file's bytes are still the ones counted (their MAC), and withholds it
 // otherwise: a file with no entry (written after the end, past the census's caps, or one the census couldn't read), one
-// changed since, or a run whose end erased its secrets with no census made under them ("unscanned", or "pending" left by
-// a runner from before the census: store.ts CENSUS_UNSCANNED, CENSUS_PENDING). A later turn handed secrets anew keeps an
+// changed since, or a run whose end erased its secrets with no census made under them ("unscanned": store.ts
+// CENSUS_UNSCANNED). A later turn handed secrets anew keeps an
 // earlier end's count of each file it left as it was (censusAfter).
 import { createHash, createHmac } from "node:crypto";
 import { launchValuesOf } from "./handed-values.js";
@@ -17,7 +17,7 @@ import { heldSpans } from "./learn/secrets.js";
 import type { Span } from "./redact/match.js";
 import { cutsAsText, listFiles, RUN_FILE_CUT_MAX } from "./run-files.js";
 import { typeOf } from "./file-types.js";
-import { CENSUS_PENDING, type RunPatch, type Store } from "./store/store.js";
+import { type RunPatch, type Store } from "./store/store.js";
 import type { Workspace } from "./workspace/index.js";
 import { RECORDINGS } from "./workspace/paths.js";
 import { serverRunWorkspace, type ServerRunWorkspaceOptions } from "./workspace/server-run-workspace.js";
@@ -203,13 +203,13 @@ function unionRanges(a: readonly (readonly [number, number])[], b: readonly (rea
 }
 
 /** The census an end writes over `prior`, its launch's census before it (RunLaunchRow.census), given `next`, the one it
- *  made for the secrets the launch holds now: `next` when no end counted any before (null, CENSUS_PENDING); each file of
+ *  made for the secrets the launch holds now: `next` when no end counted any before (null); each file of
  *  `next` still byte for byte as an earlier end counted it, with both counts' cuts; and no entry for a file written or
  *  changed since (it may hold what that earlier turn was handed, which this end can't name, so it is withheld), within
  *  the entry limits (bounded).
  *  Undefined when an earlier end left no census (a marker): nothing says where those sat, and the end writes the marker. */
 export function censusAfter(prior: string | null, next: Census): Census | undefined {
-  if (prior === null || prior === CENSUS_PENDING) return next;
+  if (prior === null) return next;
   const before = parsedCensus(prior);
   if (!before) return undefined;
   const files: [string, CensusFile][] = [];

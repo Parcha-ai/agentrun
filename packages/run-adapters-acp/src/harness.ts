@@ -3,7 +3,7 @@
 // The agent is one process per kernel Drive (one per runner's hold of the session), started at the drive's first turn
 // and ended with it: a turn after another goes to the same agent session, as a person's would. A drive:
 //  1. makes the session's private HOME fresh and gives it back what the records mirrored of the agent's own session
-//     store (state.ts), then the recipe's own files;
+//     store (state.ts), then the recipe's own files and its allowFile, from the tools this start lists;
 //  2. starts the agent (host/agent.ts: the environment allowlist, its own process group) and the adapter's MCP server
 //     (host/mcp.ts: the host's tools, nothing else), and checks initialize against the recipe's declares;
 //  3. gives the agent back its session (session/load, its replayed history kept off the timeline), or a new one, whose
@@ -22,9 +22,9 @@ import type { GateAnswer, GateCall } from "@parcha/agentrun-kernel";
 import type { DriveContext, HostTool, SessionState } from "@parcha/agentrun-kernel/kernel";
 import { askGate, journalRecords, NativeJournal, openTurn, placeSubmissions, recoveryNote, resumeUnstartedCalls, toolBridge, toolKey, transcriptOf, type DanglingCall, type ToolBridge, type TranscriptEntry } from "@parcha/agentrun-kernel/process";
 import type { ParentWatch } from "@parcha/agentrun-kernel/host";
-import { CallIds, MCP_SERVER, ourTool, permissionCallId } from "./calls.js";
+import { announceCall, announcedField, CallIds, MCP_SERVER, nameCall, ourTool, permissionCallId } from "./calls.js";
 import { ACP_CODES } from "./facts.js";
-import { homePath, type AcpRecipe } from "./recipe.js";
+import { allowFileText, homePath, type AcpRecipe } from "./recipe.js";
 import { restoreState, STATE_STREAM, StateMirror, type StateRecord } from "./state.js";
 import { startAgent, type AgentProcess } from "./host/agent.js";
 import { cutKeys, keysToCut } from "./host/key-cut.js";
@@ -93,6 +93,10 @@ export interface AcpHarnessOptions {
   callIdWaitMs?: number;
   startMs?: number;
   log?: (message: string, fields?: Record<string, unknown>) => void;
+  /** Log each call the agent announces ("acp: the agent announced a call": its toolCallId, kind, the word at the
+   *  recipe's announces.tool and the tool of ours it named), on a recipe that declares announces, and again when a later
+   *  update names a call announced with no name. Ids and names only. */
+  debug?: boolean;
 }
 
 /** What the adapter holds of the drive in flight, to stop its turn. */
@@ -139,8 +143,6 @@ interface Runtime {
   /** The permission call ids this agent process's requests took: each request of the open turn takes one of its own. */
   claimed: Set<string>;
   ownIds: Set<string>;
-  /** The kind each tool_call was announced with: an update that names the call later is held to it (ourTool). */
-  kinds: Map<string, string>;
   mirror: StateMirror;
   /** Its private HOME was removed with its process (recipe.credentials): nothing is mirrored from it any more. */
   wiped: boolean;
@@ -318,6 +320,17 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     return turn?.limitHit ?? `${ACP_CODES.toolCallLimit}: the plan's limit of ${plan.maxToolCalls} tool calls is reached`;
   };
 
+  /** Debug only (serve's AGENTRUN_LOG=debug), on a recipe that declares announces: a call the agent announced, by its
+   *  ids and names, never its input or the agent's text. The word at the recipe's field is quoted only when it names a
+   *  tool of ours: on Cursor's recipe it sits inside the call's input, so another call's is "native" (null: none).
+   *  Written at its tool_call, and again at the later update that names a call announced with no name (Cursor's). */
+  const logAnnounced = (rt: Runtime, said: { readonly toolCallId: string; readonly kind?: string | null }) => {
+    if (!options.debug || !recipe.announces) return;
+    const ours = rt.calls.announced(said.toolCallId) ?? null;
+    const field = announcedField(said, recipe.announces);
+    log("acp: the agent announced a call", { toolCallId: said.toolCallId, kind: said.kind ?? null, field: field && (ours === null ? "native" : field), ours });
+  };
+
   const onUpdate = (rt: Runtime, notification: SessionNotification) => {
     if (rt.loading || notification.sessionId !== rt.sessionId) return;
     const cur = rt.current;
@@ -334,30 +347,17 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
         if (!cur) return;
         if (cur.turn) cur.turn.final = "";
         countCall(rt, cur, update.toolCallId);
-        if (typeof update.kind === "string") rt.kinds.set(update.toolCallId, update.kind);
-        // Only a call whose kind has no effects of its own can be ours (ourTool): a shell titled as our tool never takes an
-        // MCP call's id, and never passes the permission shortcut below.
-        const tool = ourTool(update as { title?: string | null; name?: string | null; kind?: string | null }, names);
-        if (tool) rt.calls.add(update.toolCallId, tool, update.rawInput);
+        // Kept for the MCP call it may be, named by the recipe's announces field, never by its title (announceCall).
+        announceCall(rt.calls, update, recipe.announces, names);
+        logAnnounced(rt, update);
         return;
       }
       case "tool_call_update": {
         if (!cur) return;
-        // A call the agent named only after announcing it (Cursor's MCP calls: a tool_call titled "MCP: tool" with no
-        // input, then this update titled `agentrun: <tool>` with {providerIdentifier, toolName, args}): taken as ours
-        // here, under the id its tool_call already counted. Its kind is the tool_call's, which ourTool already let
-        // through, or this update's own when it names one.
-        if (!rt.calls.has(update.toolCallId)) {
-          // Held to both kinds, the tool_call's and the update's: a shell renamed by a later update is never ours.
-          const title = update.title ?? null;
-          const announcedAs = ourTool({ title, kind: rt.kinds.get(update.toolCallId) ?? null }, names);
-          const tool = announcedAs && ourTool({ title, kind: update.kind ?? null }, names) === announcedAs ? announcedAs : undefined;
-          if (tool) {
-            const raw = update.rawInput as { toolName?: unknown; args?: unknown } | null | undefined;
-            const args = raw && raw.toolName === tool && typeof raw.args === "object" && raw.args !== null && !Array.isArray(raw.args) ? raw.args : raw;
-            rt.calls.add(update.toolCallId, tool, args);
-          }
-        }
+        // A call the agent named only after announcing it with no input (Cursor's): by the recipe's field (nameCall).
+        const held = rt.calls.held(update.toolCallId);
+        nameCall(rt.calls, update, recipe.announces, names);
+        if (held && !rt.calls.held(update.toolCallId)) logAnnounced(rt, update);
         // Its status is the agent's word only: what it changes is the mirror of the agent's session store.
         if (update.status !== "completed" && update.status !== "failed") return;
         mirrorInto(rt, cur.journal);
@@ -370,8 +370,9 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
   };
 
   /** The gate's call for a permission request of the agent's own tool: the same when the agent asks and when a resume
-   *  asks about it again (settlePermissions), so both reach the one approval. */
-  const permissionGateCall = (callId: string, kind: string, title: string, input: unknown): GateCall => ({ callId, tool: `acp_${kind.replace(/[^A-Za-z0-9_]/g, "_")}`, args: { title, kind, input } });
+   *  asks about it again (settlePermissions), so both reach the one approval. Under its journal id (`callId`); its args
+   *  carry the toolCallId the agent first asked under, so a host (harness-check) ties the question to the request. */
+  const permissionGateCall = (callId: string, toolCallId: string | undefined, kind: string, title: string, input: unknown): GateCall => ({ callId, tool: `acp_${kind.replace(/[^A-Za-z0-9_]/g, "_")}`, args: { title, kind, input, ...(toolCallId ? { toolCallId } : {}) } });
 
   /** The recovery note's line for a settled answer: the request as the agent asked it (its kind, title and input, so an
    *  agent started without session/load can ask for the same call) and what the person said. */
@@ -406,7 +407,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     for (const request of waiting) {
       const kind = request.kind ?? "other";
       const title = request.title ?? kind;
-      const refused = await askGate(gate, permissionGateCall(request.callId, kind, title, request.input ?? null), ctx.signal);
+      const refused = await askGate(gate, permissionGateCall(request.callId, request.toolCallId, kind, title, request.input ?? null), ctx.signal);
       const answer = { type: "answered", callId: request.callId, answer: refused ? "deny" : "allow", ...(refused?.deny ? { words: refused.deny } : {}), settled: true, turn: turnId } satisfies PermissionRecord;
       journal.append(PERMISSION_STREAM, answer);
       await journal.flush();
@@ -434,12 +435,18 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     const turn = cur?.turn;
     if (!cur || !turn || turn.stop.signal.aborted) return turn?.limitHit ? choose("reject_once") : cancelled;
     if (turn.limitHit) return choose("reject_once");
-    // Our own tool: the gate is the bridge's, asked at the MCP call itself. Allowed once, never always. The title is the
-    // agent's text, so it takes both: a request whose kind has no effects of its own and whose name is ours, for the
-    // tool_call the agent announced as that same tool of ours under the request's own id. Anything else is the agent's
-    // own call: the host's gate, journaled.
-    const mine = ourTool(request.toolCall as { title?: string | null; name?: string | null; kind?: string | null }, names);
-    if (mine && rt.calls.announced(request.toolCall.toolCallId) === mine) return choose("allow_once");
+    // Our own tool, on a recipe that declares the title tie (quirks.permissionTie: Cursor's and Antigravity's): the gate
+    // is the bridge's, asked at the MCP call itself, so the request is allowed once, never always. Cursor needs it: its
+    // allowlist with allow: [] (which keeps it from writing files unasked) asks for every MCP call, ours included, and
+    // agy asks for every MCP call. The
+    // title is the agent's text, so the tie takes both: a request whose kind has no effects of its own and whose title
+    // names our tool, for a call the recipe's announces field named as that same tool under the request's own id (a
+    // title never sets that: CallIds.announced comes from the field alone). Without the
+    // quirk (Goose, which asks nothing for our tools: its allowFile) every request is the host gate's, journaled.
+    if (recipe.quirks?.permissionTie === "title") {
+      const mine = ourTool(request.toolCall as { title?: string | null; name?: string | null; kind?: string | null }, names);
+      if (mine && rt.calls.announced(request.toolCall.toolCallId) === mine) return choose("allow_once");
+    }
     const call = request.toolCall;
     const kind = typeof call.kind === "string" && call.kind ? call.kind : "other";
     const title = typeof call.title === "string" ? call.title : kind;
@@ -487,8 +494,10 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     }
     let refused: { deny: string } | undefined;
     if (options.gate) {
+      // The toolCallId the request was first asked under, as the journal has it: the same question a resume asks.
+      const askedAs = records.find((r) => r.type === "asked")?.toolCallId ?? call.toolCallId;
       try {
-        refused = await askGate(options.gate, permissionGateCall(callId, kind, title, input), AbortSignal.any([cur.signal, connection, turn.stop.signal]));
+        refused = await askGate(options.gate, permissionGateCall(callId, askedAs, kind, title, input), AbortSignal.any([cur.signal, connection, turn.stop.signal]));
       } catch {
         // Parked, and the session let go (or the turn was cancelled): nothing is answered, nothing recorded.
         return cancelled;
@@ -565,8 +574,12 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     const records = (await journal.read<StateRecord>(STATE_STREAM)).map((r) => r.data);
     restoreState(home, records);
     const own = new Set<string>();
-    for (const [path, text] of Object.entries(recipe.files ?? {})) {
-      const clean = homePath(path)!;
+    // The recipe's allowFile (Goose's permission file): the tools this start lists, in the agent's own form, and nothing
+    // else, so the agent runs them unasked and our gate asks at the MCP call.
+    const allowed = recipe.allowFile ? { [recipe.allowFile.path]: allowFileText(recipe.allowFile.form, listed.map((tool) => tool.name)) } : {};
+    for (const [path, text] of [...Object.entries(recipe.files ?? {}), ...Object.entries(allowed)]) {
+      const clean = homePath(path);
+      if (!clean) throw new Error(`acp: the file ${JSON.stringify(path)} must be inside the private HOME`);
       const file = join(home, clean);
       mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
       writeFileSync(file, text, { mode: 0o600 });
@@ -586,7 +599,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     const stopped = new AbortController();
     const signal = AbortSignal.any([ctx.signal, stopped.signal]);
     const key = randomBytes(32).toString("base64url");
-    const rt = { ctx, loading: false, fresh: true, wiped: false, firstBlocks: [], calls: new CallIds(), counted: new Set(), claimed: new Set(), ownIds: new Set(), kinds: new Map(), sessionId: "", mirror: new StateMirror(home, (recipe.state ?? []).map((p) => homePath(p)!), own, records, log, (words) => (rt.current?.ctx ?? ctx).live({ type: "notice", text: words })) } as unknown as Runtime;
+    const rt = { ctx, loading: false, fresh: true, wiped: false, firstBlocks: [], calls: new CallIds(), counted: new Set(), claimed: new Set(), ownIds: new Set(), sessionId: "", mirror: new StateMirror(home, (recipe.state ?? []).map((p) => homePath(p)!), own, records, log, (words) => (rt.current?.ctx ?? ctx).live({ type: "notice", text: words })) } as unknown as Runtime;
     const mcp = await startMcpServer({ tools: listed.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema as Record<string, unknown> })), key, log, call: (name, args, callSignal) => onMcpCall(rt, name, args, callSignal) });
     let proxy: { env: Record<string, string>; close(): Promise<void> } | undefined;
     let agent: AgentProcess | undefined;

@@ -30,15 +30,18 @@ const OTHER_KEY = `not-a-secret-${"other-env-key-0004"}`;
 const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
 const ADD = { slug: "add", name: "Add", description: "Add two numbers." };
 const TOOLKITS = { gmail: { no_auth: false, tools: [ADD] } };
-const USER_A = "grep-user-alice-0001";
+// A run's user on an API-only server is none the owner calls as here (one in the token's namespace is one such), and its
+// account one Composio lists under it (api-only-composio-binding.test.mjs).
+const USER_A = "agentrun.token.grep-user-alice-0001";
 const ACCOUNT_A = "ca_alice_gmail_0001";
 const MCP_ACCOUNTS = { [USER_A]: [ACCOUNT_A] };
+const ACCOUNTS = { gmail: [{ status: "ACTIVE", auth_config: "ac_alice_own", id: ACCOUNT_A, user: USER_A }] };
 const CALL = 'Call mcp__mail__add with {"a":2,"b":3}';
 const SAVE = { api_key_env: KEY_ENV, toolkit: "gmail", tools: ["add"], user_id: "per_run" };
 
 /** A server (API-only unless `full`) beside a fake Composio whose key is KEY (`fake`: more of its options), and the log. */
 async function setup(t, { full = false, fake = {} } = {}) {
-  const composio = await startFakeComposio({ apiKey: KEY, toolkits: TOOLKITS, mcpAccounts: MCP_ACCOUNTS, ...fake });
+  const composio = await startFakeComposio({ apiKey: KEY, toolkits: TOOLKITS, mcpAccounts: MCP_ACCOUNTS, accounts: ACCOUNTS, ...fake });
   t.after(() => composio.close());
   const log = serverLog(t);
   // The fake's MCP endpoint stands in for Composio's origin (composioMcpOrigin, the server's and runner's test-only seam).
@@ -48,12 +51,13 @@ async function setup(t, { full = false, fake = {} } = {}) {
   return { composio, log, server, token };
 }
 
-/** An inline run of `expert` granted mail's `add`, bound to USER_A's account: its answer. */
-const inlineRun = (s, expert = "mail-reader") => s.token("POST", "/runs", {
+/** An inline run of `expert` granted mail's `add`, bound to USER_A's account (`account` false: to USER_A alone, so its
+ *  start reads no account at Composio): its answer. */
+const inlineRun = (s, expert = "mail-reader", { account = true } = {}) => s.token("POST", "/runs", {
   external: { source: "backend", kind: "expert", id: expert, version: 1 },
   definition: { name: `Expert ${expert}`, instructions: "Answer.", skills: [], tools: ["mcp:mail/add"], tool_settings: { "mcp:mail/add": { permission: "allow" } }, harness: "pi" },
   input: { content: CALL },
-  mcp_auth: { mail: { composio_user_id: USER_A, connected_account_id: ACCOUNT_A } },
+  mcp_auth: { mail: { composio_user_id: USER_A, ...(account ? { connected_account_id: ACCOUNT_A } : {}) } },
 });
 const runCount = async (s) => (await s.token("GET", "/runs")).body.runs.length;
 
@@ -378,14 +382,18 @@ test("API-only: a run of a Composio server whose variable was unset after its sa
   const before = await runCount(s);
 
   delete process.env[KEY_ENV];
-  // The agent its first run made, pinned already: refused at the run's start.
-  const again = await inlineRun(s);
+  // A run naming an account: the start's check of it can't open the key, so it is refused by name there.
+  const checked = await inlineRun(s);
+  assert.equal(checked.status, 422, JSON.stringify(checked.body));
+  assert.match(checked.body.error.message, /mail.*COMPOSIO_API_KEY/, checked.body.error.message);
+  // One naming no account: the agent its first run made, pinned already, is refused at the run's start.
+  const again = await inlineRun(s, "mail-reader", { account: false });
   assert.equal(again.status, 409, JSON.stringify(again.body));
   assert.equal(again.body.error?.code, "agent_not_runnable");
   assert.match(again.body.error.message, /mail.*COMPOSIO_API_KEY/, again.body.error.message);
   assert.deepEqual(again.body.error.fields?.map((issue) => [issue.field, issue.reason]), [["definition.tools[0]", "missing"]]);
   // An agent never run before: its save can't list the server to pin it, in the same words.
-  const fresh = await inlineRun(s, "mail-writer");
+  const fresh = await inlineRun(s, "mail-writer", { account: false });
   assert.equal(fresh.status, 422, JSON.stringify(fresh.body));
   assert.match(JSON.stringify(fresh.body.error), /COMPOSIO_API_KEY/);
   assert.equal(await runCount(s), before, "no run made");
@@ -397,7 +405,8 @@ test("API-only: the server keeps the variable's name, not its value: after the v
   assert.equal((await s.token("PUT", "/settings/mcp-servers/mail/composio", SAVE)).status, 200);
   process.env[KEY_ENV] = ROTATED;
   const from = s.composio.mcpKeys.length;
-  const started = await inlineRun(s);
+  // Bound to the user alone: the fake's API takes KEY only, and a start naming an account reads it there first.
+  const started = await inlineRun(s, "mail-reader", { account: false });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   await follow(s.server.api, started.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
   const view = (await s.token("GET", `/runs/${started.body.run_id}`)).body;

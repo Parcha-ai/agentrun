@@ -373,9 +373,10 @@ process.stdout.write("AGENTRUN_RUNNER_READY\\n");`;
 test("started by their launchers, the server and the runner hold COMPOSIO_API_KEY in neither environment, nor does a run's process of the same user; a run granted the Composio server's tool still reaches Composio with it", { timeout: 180_000 }, async (t) => {
   const canary = `nak-${process.pid}-${Date.now().toString(36)}`;
   const key = `${canary}-COMPOSIO_API_KEY`;
-  const user = "grep-user-alice-0001";
+  // An API-only run's Composio user is in the token's namespace, its account one Composio lists under it.
+  const user = "agentrun.token.grep-user-alice-0001";
   const account = "ca_alice_gmail_0001";
-  const composio = await startFakeComposio({ apiKey: key, toolkits: { gmail: { no_auth: false, tools: [{ slug: "add", name: "Add", description: "Add two numbers." }] } }, mcpAccounts: { [user]: [account] } });
+  const composio = await startFakeComposio({ apiKey: key, toolkits: { gmail: { no_auth: false, tools: [{ slug: "add", name: "Add", description: "Add two numbers." }] } }, mcpAccounts: { [user]: [account] }, accounts: { gmail: [{ status: "ACTIVE", auth_config: "ac_alice_own", id: account, user }] } });
   t.after(() => composio.close());
   const hold = join(await scratch(t), "held");
   const env = { ...Object.fromEntries(SECRET_NAMES.map((name) => [name, undefined])), AGENTRUN_TOKEN: `${canary}-AGENTRUN_TOKEN-${"t".repeat(16)}`, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), COMPOSIO_API_KEY: key, AGENTRUN_RUN_USER: "same", [HOLD_ENV]: hold };

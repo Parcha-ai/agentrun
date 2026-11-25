@@ -34,7 +34,7 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { constants, type Stats } from "node:fs";
-import { access, type FileHandle, lstat, mkdir as makeDir, open, readdir, realpath, rename, rmdir, unlink } from "node:fs/promises";
+import { access, type FileHandle, link, lstat, mkdir as makeDir, open, readdir, realpath, rename, rmdir, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
 import type { MountSpec } from "@parcha/agentrun-computer";
@@ -365,6 +365,42 @@ class LocalWorkspace implements Workspace {
           throw error;
         }
         await dir.handle.sync();
+      } catch (error) {
+        throw failed(error, path);
+      }
+    }, { make: true });
+  }
+
+  async writeNew(path: string, data: Uint8Array | string): Promise<boolean> {
+    const bytes = bytesOf(data);
+    const segments = LocalWorkspace.#below(path, "a file");
+    const name = segments.at(-1)!;
+    return this.#in(path, segments, segments.length - 1, async (dir) => {
+      try {
+        // The bytes in a temporary file of their own first, made durable; then a hard link gives them the name, which the
+        // kernel refuses (EEXIST) when anything is at it, a file, a folder or a link, in the same step that would make it.
+        const temp = `.workspace-${randomBytes(8).toString("hex")}.tmp`;
+        const handle = await dir.open(temp, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW, 0o666);
+        let made = false;
+        try {
+          await handle.writeFile(bytes);
+          await handle.sync();
+          await handle.close();
+          await dir.confirm(path);
+          try {
+            await link(dir.at(temp), dir.at(name));
+            made = true;
+          } catch (error) {
+            if (errno(error) !== "EEXIST") throw error;
+          }
+        } catch (error) {
+          await handle.close().catch(() => undefined);
+          throw error;
+        } finally {
+          await unlink(dir.at(temp)).catch(() => undefined);
+        }
+        await dir.handle.sync();
+        return made;
       } catch (error) {
         throw failed(error, path);
       }
