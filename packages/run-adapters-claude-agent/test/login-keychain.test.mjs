@@ -35,7 +35,7 @@ const file = path.join(process.env.HOME ?? '', 'Library', 'Keychains', 'login.ke
 const [command, ...args] = process.argv.slice(2);
 const flag = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
 const deleting = command === 'delete-generic-password';
-fs.appendFileSync(path.join(path.dirname(process.argv[1]), deleting ? 'deleted.jsonl' : 'asked.jsonl'), JSON.stringify([command, flag('-a')]) + '\\n');
+fs.appendFileSync(path.join(__dirname, deleting ? 'deleted.jsonl' : 'asked.jsonl'), JSON.stringify([command, flag('-a')]) + '\\n');
 if (!fs.existsSync(file)) process.exit(command === 'add-generic-password' ? 50 : 44);
 const items = JSON.parse(fs.readFileSync(file, 'utf8'));
 const key = JSON.stringify([flag('-a'), flag('-s')]);
@@ -110,6 +110,10 @@ function mac() {
 /** The user this test runs as, as the system has it: the account a Mac keeps that person's Keychain items under, which
  *  their terminal's USER names. */
 const ACCOUNT = userInfo().username;
+/** The Keychain account the CLI names for ACCOUNT, by the stand-in's rule above: the name itself, or "claude-code-user"
+ *  for a name with a character outside [A-Za-z0-9._-] (an account such as `alice@example.com`). USER and LOGNAME keep
+ *  ACCOUNT as it is. */
+const KEYCHAIN_ACCOUNT = /^[a-zA-Z0-9._-]+$/.test(ACCOUNT) ? ACCOUNT : 'claude-code-user';
 
 /** `fn` as a server started with `user` as its USER and LOGNAME (undefined: neither set, as a service launchd starts may
  *  have it). */
@@ -254,12 +258,12 @@ test("on macOS the sign-in this host starts saves its Keychain item under the ac
       const where = `${place}, the server's USER ${how}`;
       await withServerUser(user, () => asServerOf(m, async () => {
         await WAYS['the sign-in this host starts'](m, login);
-        assert.deepEqual(m.asked().filter(([command]) => command === 'add-generic-password'), [['add-generic-password', ACCOUNT]], `${where}: the sign-in saved its item under the account ${ACCOUNT}`);
+        assert.deepEqual(m.asked().filter(([command]) => command === 'add-generic-password'), [['add-generic-password', KEYCHAIN_ACCOUNT]], `${where}: the sign-in saved its item under the account ${KEYCHAIN_ACCOUNT}`);
         assert.equal((await status(m, login)).signedIn, true, `${where}: the badge after the sign-in`);
         assert.equal(runSays(m, login), true, `${where}: a run after the sign-in`);
       }));
       assert.equal(plainStatus(m, claude.claudeSignInEnv(login)), true, `${where}: the person's own \`claude auth status\` in their terminal (USER ${ACCOUNT}) read signed out after the sign-in`);
-      assert.deepEqual([...new Set(m.asked().map(([, account]) => account))], [ACCOUNT], `${where}: every Keychain write and read named the account ${ACCOUNT}`);
+      assert.deepEqual([...new Set(m.asked().map(([, account]) => account))], [KEYCHAIN_ACCOUNT], `${where}: every Keychain write and read named the account ${KEYCHAIN_ACCOUNT}`);
     }
   }
 });

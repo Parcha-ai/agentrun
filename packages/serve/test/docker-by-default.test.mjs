@@ -12,7 +12,6 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { noDockerWords } from "../dist/docker-daemon.js";
 import { askDockerDaemon, containerOf, DOCKER_NO_SOCKET, DOCKER_SOCKET_GROUP, enabledBoxes, IMAGE_ENV, placeOffers, withNetworks } from "../dist/place-offers.js";
 import { dockerHost } from "./docker-host-fake.mjs";
 import { client, follow, jsonLines, printed, scratch, serve, withEnv } from "./support.mjs";
@@ -172,11 +171,6 @@ async function unreachableDocker(t, at) {
 const CONTEXT_SOCKET = "/run/user/1000/docker.sock";
 
 test("a server in AgentRun's image: no Docker socket says both ways, a vendor computer hosted and compose.yaml's socket on a machine you run; a socket it may not use says DOCKER_GID; never start Docker or usermod", async (t) => {
-  // Fly.io, Render and a pod run the image with no host socket to give: its words open as Settings → Computers' do
-  // (noDockerWords), so one server says one thing, and name that page's way beside compose.yaml's.
-  const hosted = noDockerWords("sandbox", [], 2).replace(/ Pick another kind of computer, or none\.$/, "");
-  assert.ok(DOCKER_NO_SOCKET.startsWith(hosted), DOCKER_NO_SOCKET);
-  assert.match(DOCKER_NO_SOCKET, /vendor computer/);
   const failing = await unreachableDocker(t, "unix:///var/run/docker.sock");
   const dockerOfOffers = async (env, options) => (await placeOffers(env, options)).find((offer) => offer.id === "docker");
   assert.deepEqual(await dockerOfOffers({ PATH: failing }, { container: inContainerWith() }), { id: "docker", available: false, reason: DOCKER_NO_SOCKET }, "the image's docker CLI, no socket");
@@ -193,7 +187,9 @@ test("a server in AgentRun's image: no Docker socket says both ways, a vendor co
   // daemon at all, which that page words as none (docker-daemon.ts noDockerWords).
   const ask = (env, container) => askDockerDaemon(env, AbortSignal.timeout(10_000), groups, container);
   assert.deepEqual(await ask({ PATH: denied }, inContainerWith("/var/run/docker.sock")), { up: false, absent: false, reason: DOCKER_SOCKET_GROUP });
-  assert.deepEqual(await ask({ PATH: failing }, inContainerWith()), { up: false, absent: true, reason: DOCKER_NO_SOCKET });
+  const none = await ask({ PATH: failing }, inContainerWith());
+  assert.deepEqual([none.up, none.absent], [false, true], JSON.stringify(none));
+  assert.notEqual(none.reason, DOCKER_NO_SOCKET, "no socket is an absent daemon, whose words that page never reads: not the container's");
   assert.deepEqual(await ask({ PATH: denied }, HOST), { up: false, absent: false, reason: JOIN_GROUP });
 });
 

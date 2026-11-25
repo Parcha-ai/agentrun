@@ -474,9 +474,12 @@ test("a message that reuses an older conversation's Message-ID gets none of it: 
   assert.deepEqual(faux.messages("Kept").map((m) => m.raw.includes("attacker@example.net")), [true], "only the attacker's own was filed");
 });
 
-test("a thread run's root is the message the trigger found, who sent it and where (mailbox, UIDVALIDITY, UID): a launch that doesn't say reads nothing", () => {
+test("a thread run's root is the message the trigger found, who sent it and where (mailbox, UIDVALIDITY, UID), and whether the receiving server passed its From's DMARC: a launch that doesn't say where reads nothing", () => {
   const where = { from: "ana@example.com", message_id: "<x@example.com>", mailbox: "INBOX", uidvalidity: "1000", uid: "3" };
-  assert.deepEqual(threadRootOf(where), { from: "ana@example.com", message_id: "<x@example.com>", mailbox: "INBOX", uidvalidity: "1000", uid: 3 });
+  assert.deepEqual(threadRootOf(where), { from: "ana@example.com", message_id: "<x@example.com>", mailbox: "INBOX", uidvalidity: "1000", uid: 3, dmarc: false });
+  // The receiving server's DMARC pass, as the trigger wrote it, and nothing else, vouches for the From.
+  assert.equal(threadRootOf({ ...where, dmarc: "pass" })?.dmarc, true);
+  for (const dmarc of ["fail", "PASS", "pass ", "true"]) assert.equal(threadRootOf({ ...where, dmarc })?.dmarc, false, dmarc);
   const without = (name) => Object.fromEntries(Object.entries(where).filter(([key]) => key !== name));
   for (const attrs of [undefined, {}, without("from"), { ...where, from: " " }, without("message_id"), without("mailbox"), without("uidvalidity"), without("uid"), { ...where, uid: "0" }, { ...where, uid: "3x" }, { ...where, uidvalidity: "" }, { ...where, mailbox: "" }]) {
     assert.equal(threadRootOf(attrs), null, JSON.stringify(attrs));

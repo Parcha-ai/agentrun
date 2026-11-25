@@ -12,7 +12,7 @@ import { AgentsList } from "@/components/AgentsList";
 import { ConnectExistingAgents } from "@/components/NativeConnections";
 import { type Agent, createBody, editBody, saveError } from "@/lib/agentForm";
 import { allPages, type Client, ClientError } from "@/lib/client";
-import type { McpServer } from "@/lib/mcp";
+import { useMcpServers } from "@/lib/useMcpServers";
 import type { ToolChoice, ToolGate } from "@/lib/toolSettings";
 import type { ComputerKindView, ToolSettings } from "@/lib/v2";
 
@@ -98,16 +98,7 @@ export function AgentEditPage({ v2, caps, choices = [], gates = [], focusTool, a
     return () => { live = false; };
   }, [v2]);
   // The saved MCP servers, for the Tools step's MCP groups.
-  const [mcpServers, setMcpServers] = useState<McpServer[] | null | "failed">(null);
-  // Only the newest read lands: an older one's late answer (a failure most of all) never replaces it.
-  const mcpAsked = useRef(0);
-  const loadMcp = () => {
-    if (!caps.mcp) return;
-    const n = ++mcpAsked.current;
-    setMcpServers(null);
-    v2.listMcpServers().then((r) => { if (n === mcpAsked.current) setMcpServers(r.servers); }, () => { if (n === mcpAsked.current) setMcpServers("failed"); });
-  };
-  useEffect(loadMcp, [v2, caps.mcp]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [mcpServers, loadMcp] = useMcpServers(v2, !!caps.mcp);
   // An action (archive, make current): its write and the page's refresh after it fail apart, so a committed write never
   // reads as failed. The page shows the write's own answer; the refresh brings the ETag and the history. When the refresh
   // finds another current revision (made current here, or saved in another tab), the form reloads with it, so a later save
