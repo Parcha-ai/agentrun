@@ -236,7 +236,7 @@ function readRecord(value: Record<string, unknown>, at: number, { state, keep, a
 //   too, as spawned subagents never copy the parent's records. No boundary: the whole rollout.
 // - The window's leading usages are matched against the parent's usages from before the fork's time: the longest run
 //   equal to that stream's start, or to its end (the history a parent kept after it compacted), is copied.
-// - Usage between the first marker naming another thread and the boundary is copied as well.
+// - Usage between the first marker naming another thread and the boundary is copied as well, when the parent is read.
 // - A parent whose rollout is not under the home has nothing to match: the usages count (ccusage warns and counts).
 // A usage is a token_count whose total moved, by its last_token_usage; records with a response id are never copies here.
 
@@ -530,7 +530,8 @@ async function forkReplay(file: string, lookups?: Map<string, unknown>, maxLine?
       const copied = copiedLength(await parentStream(), window);
       if (copied) skip.push([0, copied]);
     }
-    if (foreign !== undefined && boundary !== undefined && boundary > foreign) skip.push([foreign, boundary]);
+    // Copied, and counted in the parent, only when the parent's rollout was read: else nothing counts it but the fork.
+    if (foreign !== undefined && boundary !== undefined && boundary > foreign && looked?.path) skip.push([foreign, boundary]);
     const found = looked ? { looked } : {};
     if (!skip.length && !ended) return { replay: null, ...found };
     return { replay: { skip, until: skip.length ? Math.max(...skip.map(([, to]) => to)) - 1 : -1, seen: 0, open: ended }, ...found };

@@ -11,6 +11,7 @@ import type { RunRow, Store } from "../store/store.js";
 import { DEFAULT_HARNESS } from "../harness.js";
 import { costOfRun, runReadState } from "./runs.js";
 import { isShadowRun, shadowRunId } from "../learn/audit.js";
+import { shadowOfRun, shadowUsdOf } from "../learn/ledger.js";
 
 export type ImportSource = Source;
 /** The states a run's end can have (AnalyticsFilter.pending). */
@@ -67,10 +68,11 @@ type Fact = {
   harness: string;
   source: "live" | ImportSource;
   effort: string | null;
-  /** Its audit's shadow run's cost, once known (learn/audit.ts shadowRunId): learning spend on this run, booked on its
-   *  day and in its groups (A8), whenever the shadow started; 0 for none. The shadow is no fact of its own: in no count,
-   *  time, token or tool figure, and out of every filter its run is out of. */
-  shadowUsd: number;
+  /** Its audit's shadow run's cost (learn/audit.ts shadowRunId; learn/ledger.ts shadowUsdOf): learning spend on this run,
+   *  booked on its day and in its groups (A8), whenever the shadow started; 0 for none; null while it is at work or
+   *  unpriced, which leaves the run's cost unknown. The shadow is no fact of its own: in no count, time, token or tool
+   *  figure, and out of every filter its run is out of. */
+  shadowUsd: number | null;
 };
 
 /** The runs and their metrics summed (the old AgentStoreReader.analytics), from A's run rows. */
@@ -109,7 +111,7 @@ export async function analytics(store: Store, filter: AnalyticsFilter = {}): Pro
     const metered = !running && metricsOf(run) !== null;
     const metrics = metered ? metricsOf(run) : null;
     const shadow = shadows.get(shadowRunId(run.id));
-    const shadowUsd = shadow && runReadState(shadow, "agentic") !== "running" && shadow.costUsd !== null ? shadow.costUsd : 0;
+    const shadowUsd = shadowUsdOf(shadow && shadowOfRun(shadow));
     facts.push({
       startedMs: run.startedAt,
       endedMs: run.endedAt,
@@ -128,10 +130,10 @@ export async function analytics(store: Store, filter: AnalyticsFilter = {}): Pro
   }
 
   const counted = (group: readonly Fact[]): AnalyticsGroup => {
-    let runsN = 0, completed = 0, needsReview = 0, failed = 0, metered = 0, tokenMetered = 0, tokens = 0, costUsd = 0, known = 0, pend = 0;
+    let runsN = 0, completed = 0, needsReview = 0, failed = 0, metered = 0, tokenMetered = 0, tokens = 0, costUsd = 0, priced = 0, known = 0, pend = 0;
     let shadowUsd = 0;
     for (const f of group) {
-      shadowUsd += f.shadowUsd;
+      shadowUsd += f.shadowUsd ?? 0;
       runsN += 1;
       if (f.state === "completed" || f.state === "escalated") completed += 1;
       if (f.state === "escalated") needsReview += 1;
@@ -141,10 +143,11 @@ export async function analytics(store: Store, filter: AnalyticsFilter = {}): Pro
         const reported = tokensOf(f.metrics!);
         if (reported !== null) { tokenMetered += 1; tokens += reported; }
       }
-      if (!f.running && !f.pending && f.costUsd !== null) (costUsd += f.costUsd, (known += 1));
+      // Its $ is spent either way; the run is known only with its shadow's.
+      if (!f.running && !f.pending && f.costUsd !== null) (costUsd += f.costUsd, (priced += 1), (known += f.shadowUsd === null ? 0 : 1));
       if (f.pending) pend += 1;
     }
-    return { runs: runsN, completed, needsReview, failed, runsWithMetrics: metered, runsWithTokenMetrics: tokenMetered, tokens: tokenMetered > 0 || runsN === 0 ? tokens : null, costUsd: known > 0 || shadowUsd > 0 ? costUsd + shadowUsd : null, unknownCostRuns: runsN - known - pend };
+    return { runs: runsN, completed, needsReview, failed, runsWithMetrics: metered, runsWithTokenMetrics: tokenMetered, tokens: tokenMetered > 0 || runsN === 0 ? tokens : null, costUsd: priced > 0 || shadowUsd > 0 ? costUsd + shadowUsd : null, unknownCostRuns: runsN - known - pend };
   };
 
   // Totals over the whole scope: the group counts, the token sums, and the time figures.

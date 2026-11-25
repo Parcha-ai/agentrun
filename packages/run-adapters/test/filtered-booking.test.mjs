@@ -22,16 +22,16 @@ const policy = {
   filtered: (text) => events(text).some((e) => e.stop === 'refusal'),
 };
 
-/** The provider's answer in two pieces: the stop, then (once `release` resolves) the end with the usage, or, with `last`
- *  null, the provider cutting the answer off there (an error part way). */
-function twoPieces(release, last = '{"end":true,"usage":{"input":12,"output":3,"cacheRead":0}}') {
+/** The provider's answer in two pieces: the stop (`first`, its whole event), then (once `release` resolves) the end with
+ *  the usage, or, with `last` null, the provider cutting the answer off there (an error part way). */
+function twoPieces(release, last = '{"end":true,"usage":{"input":12,"output":3,"cacheRead":0}}', first = 'data: {"stop":"refusal"}\n\n') {
   const encoder = new TextEncoder();
   // As a real fetch does, an abort of the request ends its body with an error.
   return async (_url, init) => new Response(new ReadableStream({
     async start(controller) {
       let cut = false;
       init?.signal?.addEventListener('abort', () => { cut = true; controller.error(new Error('the request was aborted')); }, { once: true });
-      controller.enqueue(encoder.encode('data: {"stop":"refusal"}\n\n'));
+      controller.enqueue(encoder.encode(first));
       await release;
       if (cut) return;
       if (last === null) return controller.error(new Error('the provider reset the stream'));
@@ -73,6 +73,37 @@ test('an answer the provider stopped on its content filter, its client gone at t
   for (const end = Date.now() + 10_000; !booked.length; await sleep(20)) assert.ok(Date.now() < end, 'the request is booked');
   assert.deepEqual([booked[0].input, booked[0].output, booked[0].usd], [12, 3, 0.002], `booked at its usage: ${JSON.stringify(booked[0])}`);
   assert.equal(booked.length, 1, 'booked once');
+  assert.equal(booked[0].stoppedAfterBytes, undefined, 'by its usage alone: no streamed figure beside it');
+});
+
+test("a content-filter stop whose data comes on two `data:` lines of one event is told before its client has the event: the answer is read on after its client hangs up, and booked at its usage", { timeout: 30_000 }, async (t) => {
+  // The policy reads each `data:` line on its own: only the event's data joined, as the format joins it, says the stop.
+  const booked = [];
+  let settle;
+  const settled = new Promise((resolve) => (settle = resolve));
+  let release;
+  const released = new Promise((resolve) => (release = resolve));
+  const told = [];
+  const p = await startModelProxy({
+    policy, model: 'session-model', origin: 'https://provider.invalid', credential: () => 'provider-secret', price: () => 0.002, log: () => {},
+    hooks: { beforeRequest: async () => {}, afterRequest: async (usage) => { booked.push(usage); settle(); } },
+    fetch: twoPieces(released, undefined, 'data: {"stop":\ndata: "refusal"}\n\n'),
+    onFiltered: (message) => { told.push(message); },
+  }, KEY);
+  t.after(() => { release(); return p.close(); });
+  // The client hangs up once it has the stop's event, as the harness's halt takes it down.
+  const toldAtEvent = await new Promise((resolve) => {
+    const { hostname, port } = new URL(p.url);
+    const req = request({ host: hostname, port, method: 'POST', path: '/v1/test', headers: { 'content-type': 'application/json', authorization: `Bearer ${KEY}` } }, (res) => {
+      res.once('data', () => { resolve(told.length); req.destroy(); });
+    });
+    req.on('error', () => {});
+    req.end('{}');
+  });
+  assert.equal(toldAtEvent, 1, 'the stop, its data on two lines, is told before its client has the event');
+  release();
+  await settled;
+  assert.deepEqual([booked[0].input, booked[0].output, booked[0].usd], [12, 3, 0.002], `read on past its client and booked at its usage: ${JSON.stringify(booked[0])}`);
   assert.equal(booked[0].stoppedAfterBytes, undefined, 'by its usage alone: no streamed figure beside it');
 });
 

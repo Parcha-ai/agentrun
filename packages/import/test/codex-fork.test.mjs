@@ -307,3 +307,47 @@ test("a fork read with a chain from a plain read's cursor starts over with its c
   assert.equal(next.sessions[0].requests.length, 1, "the fork's own request, the copy left to the parent");
   assert.ok(next.sessions[0].session.chain?.length > 0, "the chain kept");
 });
+
+// Codex 0.152 stamps a thread's records with its id: a thread_settings_applied (or token_usage_record) naming the fork's
+// own thread is the end of its copy, and usage after a marker naming another thread, up to that end, is copied too.
+const settings = (thread, i) => ({ type: "event_msg", timestamp: at(i), payload: { type: "thread_settings_applied", thread_id: thread } });
+/** A 0.152 parent: its records stamped with its thread, as the fork copies them in. */
+const stampedParent = () => [meta(PARENT, 0), settings(PARENT, 0), ...parentLines().slice(1)];
+/** A usage in the copy that the parent's rollout does not hold (written after the parent's rollout was read). */
+const FOREIGN = openaiUsage(50, 0, 5);
+const foreignFork = () => [
+  meta(FORK, 20, { forked_from_id: PARENT }),
+  ...stampedParent().slice(1).map((line) => ({ ...line, timestamp: at(21) })),
+  ...turn(5, FOREIGN, openaiUsage(TOTALS.at(-1).input_tokens + 50, TOTALS.at(-1).cached_input_tokens, TOTALS.at(-1).output_tokens + 5), 22),
+  settings(FORK, 26),
+  ...ownTurn(),
+];
+const callsOf = async (home, id) => (await parseHome(home, { sources: ["codex"], catalog: false })).find((line) => line.id === id)?.calls;
+
+test("a thread-stamped fork (Codex 0.152): usage after a marker naming another thread, up to its own, is a copy when its parent is read", async (t) => {
+  const home = await tempHome(t);
+  await writeJsonl(rollout(home, PARENT), stampedParent());
+  await writeJsonl(rollout(home, FORK), foreignFork());
+  assert.equal(await callsOf(home, FORK), 1, "the fork's own request: all before its marker, after the parent's, is copied");
+  assert.equal(await callsOf(home, PARENT), 3);
+});
+
+test("a thread-stamped fork (Codex 0.152) whose parent is archived, or missing, counts what it copied: nothing else counts it", async (t) => {
+  for (const where of ["archived", "missing"]) {
+    const home = await tempHome(t);
+    if (where === "archived") await writeJsonl(join(home, ".codex", "archived_sessions", `rollout-2026-01-01T00-00-00-${PARENT}.jsonl`), stampedParent());
+    await writeJsonl(rollout(home, FORK), foreignFork());
+    assert.equal(await callsOf(home, FORK), 5, `${where}: the parent's three, the one after the foreign marker and its own`);
+  }
+});
+
+test("a thread-stamped fork (Codex 0.152): its own marker ends the copy, so usage after it equal to the parent's next is its own", async (t) => {
+  const home = await tempHome(t);
+  await writeJsonl(rollout(home, PARENT), stampedParent());
+  // Two of the parent's turns copied, then its own marker, then a turn whose usage happens to equal the parent's third.
+  await writeJsonl(rollout(home, FORK), [meta(FORK, 20, { forked_from_id: PARENT }), ...stampedParent().slice(1, 10).map((line) => ({ ...line, timestamp: at(21) })), settings(FORK, 25), ...turn(9, USES[2], TOTALS[2], 30)]);
+  const sessions = await parseHome(home, { sources: ["codex"], catalog: false });
+  const fork = sessions.find((line) => line.id === FORK);
+  assert.equal(fork.calls, 1);
+  assert.deepEqual(fork.tokens, { input: 50, output: 30, cacheRead: 250, cacheWrite: 0, cacheWrite1h: 0 });
+});
