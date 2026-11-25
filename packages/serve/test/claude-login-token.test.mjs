@@ -1636,7 +1636,9 @@ test("a runner says on its data folder, by its name, whether its runs on the log
   assert.equal(typeof tokens.sayLoginRunner, "function", "a runner says on the data folder how its runs on the login run");
   const { data } = loginFolder(t);
   tokens.sayLoginRunner(data, "host/one runner", "process");
-  const said = join(tokens.loginRunnersDir(data), "host_one_runner");
+  const files = readdirSync(tokens.loginRunnersDir(data));
+  assert.equal(files.length, 1, "one file for the one runner");
+  const said = join(tokens.loginRunnersDir(data), files[0]);
   assert.equal(readFileSync(said, "utf8"), "host/one runner\n", "its name, kept whole in the file whatever the file's name");
   assert.equal(statSync(said).mode & 0o777, 0o600);
   assert.equal(statSync(tokens.loginRunnersDir(data)).mode & 0o777, 0o700);
@@ -1646,4 +1648,40 @@ test("a runner says on its data folder, by its name, whether its runs on the log
   tokens.sayLoginRunner(data, "host/one runner", "uid");
   assert.equal(await tokens.loginRunnerInProcess(data, live(["host/one runner"])), undefined, "started again with users of their own: none");
   assert.equal(await tokens.loginRunnerInProcess(join(data, "elsewhere"), live(["host/one runner"])), undefined, "no runner said anything on another folder");
+});
+
+test("each runner's word on the data folder is its own: a start with users of their own takes back only that runner's word, also for two names that differ only in a character a file name cannot hold", async (t) => {
+  assert.equal(typeof tokens.sayLoginRunner, "function", "a runner says on the data folder how its runs on the login run");
+  const live = (names) => ({ live: async () => names.map((runner) => ({ runner })) });
+  const apart = loginFolder(t).data;
+  tokens.sayLoginRunner(apart, "runner-a", "process");
+  tokens.sayLoginRunner(apart, "runner-b", "process");
+  tokens.sayLoginRunner(apart, "runner-b", "uid");
+  assert.equal(await tokens.loginRunnerInProcess(apart, live(["runner-b", "runner-a"])), "runner-a", "runner-b's start with users of their own leaves runner-a's word");
+  const { data } = loginFolder(t);
+  tokens.sayLoginRunner(data, "host/one", "process");
+  tokens.sayLoginRunner(data, "host_one", "uid");
+  assert.equal(await tokens.loginRunnerInProcess(data, live(["host_one", "host/one"])), "host/one", "host_one's start with users of their own leaves host/one's word");
+  tokens.sayLoginRunner(data, "host_one", "process");
+  tokens.sayLoginRunner(data, "host/one", "uid");
+  assert.equal(await tokens.loginRunnerInProcess(data, live(["host/one", "host_one"])), "host_one", "and the other way round");
+});
+
+test("a runner named . or .. says its word in a file of its own on the data folder, never on the folder itself", async (t) => {
+  assert.equal(typeof tokens.sayLoginRunner, "function", "a runner says on the data folder how its runs on the login run");
+  const live = (names) => ({ live: async () => names.map((runner) => ({ runner })) });
+  const { data } = loginFolder(t);
+  const dir = tokens.loginRunnersDir(data);
+  tokens.sayLoginRunner(data, ".", "process");
+  tokens.sayLoginRunner(data, "..", "process");
+  assert.equal(await tokens.loginRunnerInProcess(data, live(["."])), ".");
+  assert.equal(await tokens.loginRunnerInProcess(data, live([".."])), "..");
+  tokens.sayLoginRunner(data, ".", "uid");
+  assert.ok(statSync(dir).isDirectory(), "the runners' folder is still there");
+  assert.ok(statSync(join(data, "claude-login")).isDirectory(), "the data folder's other contents are still there");
+  assert.equal(await tokens.loginRunnerInProcess(data, live(["."])), undefined, ". started again with users of their own: none");
+  assert.equal(await tokens.loginRunnerInProcess(data, live([".."])), "..", ".. keeps its word");
+  tokens.sayLoginRunner(data, "..", "uid");
+  assert.ok(statSync(data).isDirectory(), "the data folder is still there");
+  assert.deepEqual(listing(dir), [], "nothing said");
 });
