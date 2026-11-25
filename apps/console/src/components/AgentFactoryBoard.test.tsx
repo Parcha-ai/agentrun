@@ -109,8 +109,12 @@ describe("Agent Factory board", () => {
     expect(host.querySelector('[aria-label="Matching sessions"]')).toBeNull();
     expect(host.textContent).not.toContain("with unknown activity");
     await pick(picker(host, "Repository")!, "repo:example/console");
-    // The filter's result is said in the totals' own row, beside what it is a part of.
-    expect(host.querySelector('[aria-label="Loaded active session totals"] [aria-label="Matching sessions"]')?.textContent).toBe("1 of 1 loaded active sessions match");
+    // The filter's result is said in the filters' own row, just left of the button that clears them, and not among the totals.
+    const clear = [...host.querySelectorAll("button")].find((b) => b.textContent === "Clear filters")!;
+    const match = host.querySelector('[aria-label="Matching sessions"]')!;
+    expect(match.textContent).toBe("1 of 1 loaded active sessions match");
+    expect(clear.previousElementSibling?.contains(match)).toBe(true);
+    expect(host.querySelector('[aria-label="Loaded active session totals"] [aria-label="Matching sessions"]')).toBeNull();
   });
 
   it("filters both active and ended runs without changing the explicitly loaded totals", async () => {

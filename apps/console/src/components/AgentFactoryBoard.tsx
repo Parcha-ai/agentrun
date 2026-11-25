@@ -111,9 +111,6 @@ export function AgentFactoryBoard({ cards, review, loading, refreshing, error, u
               <dd className="order-first font-mono text-lg">{cards.filter((card) => card.lane === lane.id).length}</dd>
             </div>)}
           </dl>
-          <div className="ml-auto" aria-live="polite">
-            {filtered && <p aria-label="Matching sessions" className="font-mono text-small text-muted-foreground">{shown.length} of {cards.length} loaded active sessions match</p>}
-          </div>
         </section>
 
         {hasMore && <Banner tone="info" title="Partial coverage">More sessions may be available. Counts and filters cover only the sessions loaded so far.</Banner>}
@@ -123,7 +120,13 @@ export function AgentFactoryBoard({ cards, review, loading, refreshing, error, u
             <Field label="Repository"><Picker label="Repository" small value={repository} onChange={setRepository} options={options.repositories} className="w-full sm:w-60" /></Field>
             <Field label="Control"><Picker label="Control" small value={control} onChange={setControl} options={options.controls} className="w-full sm:w-48" /></Field>
           </div>
-          {filtered && <Button size="sm" onClick={clearFilters}>Clear filters</Button>}
+          {/* What the filters leave, then the way out of them: one line, read on the button's own baseline. */}
+          <div className="flex flex-wrap items-baseline gap-3">
+            <div aria-live="polite">
+              {filtered && <p aria-label="Matching sessions" className="font-mono text-small text-muted-foreground">{shown.length} of {cards.length} loaded active sessions match</p>}
+            </div>
+            {filtered && <Button size="sm" onClick={clearFilters}>Clear filters</Button>}
+          </div>
         </div>
 
         {!cards.length && <Banner>{hasMore ? "No active sessions in the loaded results. Load more to check further results." : "No active sessions reported."}</Banner>}
