@@ -411,7 +411,8 @@ records (its grades, a failed draft's hold). Before such a revision's promotions
 newest promotion's check `compile_after`) are kept in the agent's reset ledger, as a reset keeps them, when another run
 is still billed against it (its ledger row, a compile or check spend row of it, or the metrics of a run with no ledger
 row name it), so the runs that carry its spend read the same share after; when none is, nothing of it is kept, since a
-gone workflow's name is the purged run's words. Every other promotion's copies of the run (a check's or an audit's
+gone workflow's name is the purged run's words. For the same reason a ledger entry goes with the purge of the last run
+billed against it. Every other promotion's copies of the run (a check's or an audit's
 disagreement naming it) are blanked, its decision, numbers and run ids kept. Its saves stay as facts with no words (their merge keys still taken), and so does a
 person's save left with no item. No other save, a run's or a person's, names a path only it wrote (no version holds it
 after) in its files, its file or its reason, nor a workflow gone with it in its reason.

@@ -220,14 +220,40 @@ async function keptRevision(tx: Tx, agentId: string, runId: string, name: string
 }
 
 /** Whether a run of agent `agentId` other than `runId` is billed against revision `name` at `digest` (learn/ledger.ts
- *  summarize spreads a revision's compile and check over its served runs), read inside the caller's transaction: its
- *  ledger row names it (a run it served), a compile or check spend row of it names it (a run whose spend is the
- *  revision's), or, for an unpurged run with no ledger row (`unledgered`: one that ended before the ledger, whose reader
- *  records it from its metrics), its metrics name it. */
+ *  summarize spreads a revision's compile and check over its served runs), read inside the caller's transaction, with
+ *  run `runId`'s own ledger and spend rows left out (its purge drops them after this, dropLedger): a ledger row names it
+ *  (a run it served), a spend row names it (a compile turn, a check's replay, an audit's shadow), or, for an unpurged run
+ *  with no ledger row (`unledgered`: one that ended before the ledger, whose reader records it from its metrics), its
+ *  metrics name it. */
 async function billedElsewhere(tx: Tx, agentId: string, runId: string, name: string, digest: string, unledgered: () => Promise<ReadonlySet<string>>): Promise<boolean> {
   if (await tx.get("SELECT 1 AS one FROM learning_ledger WHERE agent_id = ? AND run_id <> ? AND workflow = ? AND digest = ?", agentId, runId, name, digest)) return true;
-  if (await tx.get("SELECT 1 AS one FROM learning_spend WHERE agent_id = ? AND run_id <> ? AND kind IN ('compile', 'check') AND workflow = ? AND digest = ?", agentId, runId, name, digest)) return true;
+  if (await tx.get("SELECT 1 AS one FROM learning_spend WHERE agent_id = ? AND run_id <> ? AND (of_run IS NULL OR of_run <> ?) AND workflow = ? AND digest = ?", agentId, runId, runId, name, digest)) return true;
   return (await unledgered()).has(resetRevisionKey({ workflow: name, digest }));
+}
+
+/** The revisions run `runId` of agent `agentId` is billed against (by resetRevisionKey), read inside the caller's
+ *  transaction before its rows go: its ledger row's, its spend rows' and an audit's spend row of it, and its metrics'. */
+async function billedRevisions(tx: Tx, agentId: string, runId: string): Promise<Map<string, Revision>> {
+  const out = new Map<string, Revision>();
+  const named = [
+    ...(await tx.all<{ workflow: string | null; digest: string | null }>("SELECT workflow, digest FROM learning_ledger WHERE agent_id = ? AND run_id = ?", agentId, runId)),
+    ...(await tx.all<{ workflow: string | null; digest: string | null }>("SELECT workflow, digest FROM learning_spend WHERE agent_id = ? AND (run_id = ? OR of_run = ?)", agentId, runId, runId)),
+  ];
+  for (const { workflow, digest } of named) if (workflow !== null && digest !== null) out.set(resetRevisionKey({ workflow, digest }), { workflow, digest });
+  const row = await tx.get<{ metrics: string | null }>("SELECT metrics FROM runs WHERE id = ? AND agent_id = ?", runId, agentId);
+  const revision = revisionOfMetrics(row?.metrics ?? null);
+  if (revision) out.set(resetRevisionKey(revision), revision);
+  return out;
+}
+
+/** A learned workflow revision: its workflow and its digest. */
+type Revision = { workflow: string; digest: string };
+
+/** The revision a run's metrics name (metrics.workflow and metrics.workflow_digest, as JSON text or parsed). */
+function revisionOfMetrics(raw: unknown): Revision | undefined {
+  const metrics = typeof raw === "string" ? (JSON.parse(raw) as unknown) : raw;
+  const { workflow, workflow_digest: digest } = (metrics && typeof metrics === "object" ? metrics : {}) as { workflow?: unknown; workflow_digest?: unknown };
+  return typeof workflow === "string" && typeof digest === "string" ? { workflow, digest } : undefined;
 }
 
 /** The revisions the metrics of agent `agentId`'s unpurged runs other than `runId` with no ledger row name (by
@@ -237,23 +263,25 @@ async function unledgeredRevisions(tx: Tx, agentId: string, runId: string): Prom
     AND NOT EXISTS (SELECT 1 FROM learning_ledger l WHERE l.run_id = r.id)`, agentId, runId);
   const out = new Set<string>();
   for (const row of rows) {
-    const metrics = typeof row.metrics === "string" ? (JSON.parse(row.metrics) as unknown) : row.metrics;
-    const { workflow, workflow_digest: digest } = (metrics && typeof metrics === "object" ? metrics : {}) as { workflow?: unknown; workflow_digest?: unknown };
-    if (typeof workflow === "string" && typeof digest === "string") out.add(resetRevisionKey({ workflow, digest }));
+    const revision = revisionOfMetrics(row.metrics);
+    if (revision) out.add(resetRevisionKey(revision));
   }
   return out;
 }
 
-/** The revisions `kept` added to agent `agentId`'s reset ledger inside the caller's transaction (a run's purge), by the
- *  rule keepResetLedger adds a reset's by (withKept), compare and set on the row as read, so a ledger write that lands
- *  between the read and the write (keepResetLedger's own compare and set) is read again, never lost. */
-async function keepInResetLedger(tx: Tx, agentId: string, kept: ReadonlyMap<string, ResetRevision>, at: number): Promise<void> {
+/** Agent `agentId`'s reset ledger changed inside the caller's transaction (a run's purge): the revisions `kept` added by
+ *  the rule keepResetLedger adds a reset's by (withKept), and the ones `dropped` (by resetRevisionKey: no run is billed
+ *  against them after the purge) taken out. Compare and set on the row as read, so a ledger write that lands between
+ *  the read and the write (keepResetLedger's own compare and set) is read again, never lost. */
+async function changeResetLedger(tx: Tx, agentId: string, kept: ReadonlyMap<string, ResetRevision>, dropped: ReadonlySet<string>, at: number): Promise<void> {
   const key = resetLedgerKey(agentId);
   for (let tries = 0; tries < 20; tries++) {
     const row = await tx.get<{ value: string }>("SELECT value FROM settings WHERE key = ?", key);
     const was = row === undefined ? undefined : (JSON.parse(row.value) as { items?: unknown } | null);
     const items = Array.isArray(was?.items) ? (was.items as ResetRevision[]) : [];
-    const encoded = JSON.stringify({ v: 1, items: withKept(items, kept) });
+    const next = withKept(items, kept).filter((one) => !dropped.has(resetRevisionKey(one)));
+    if (row === undefined ? !next.length : JSON.stringify(next) === JSON.stringify(items)) return;
+    const encoded = JSON.stringify({ v: 1, items: next });
     const done = row === undefined
       ? await tx.runCounted("INSERT INTO settings (key, value, connector_id, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (key) DO NOTHING", key, encoded, nativeCommandOwner(key, encoded), at)
       : await tx.runCounted("UPDATE settings SET value = ?, connector_id = ?, updated_at = ? WHERE key = ? AND value = ?", encoded, nativeCommandOwner(key, encoded), at, key, row.value);
@@ -266,7 +294,8 @@ async function keepInResetLedger(tx: Tx, agentId: string, kept: ReadonlyMap<stri
  *  delete), every statement scoped to that agent: each workflow it wrote a file of rewritten without its files
  *  (rewriteWorkflow), with the promotions and audits of each digest no version holds then (each such revision another
  *  run is still billed against kept first in the agent's reset ledger, its workflow, digest and K alone: keptRevision,
- *  so the runs that carry its spend read the same share after); its notes; its records (its
+ *  so the runs that carry its spend read the same share after; and each revision the ledger holds that the run was
+ *  billed against and no other run is after it, taken out of the ledger: changeResetLedger); its notes; its records (its
  *  grades and audits, a failed draft's hold); every other promotion's copies of it (forgetRunIn); and its saves' words (each save's version, id and merge key stay), a person's save left with no item (an
  *  approve of its draft, a removal of its line) with them: that save's words name what the run wrote. Every other save
  *  names none of the paths only it wrote, nor a workflow gone with it. When any row changed, the purge is a save of its
@@ -292,6 +321,9 @@ export async function dropRunLearning(tx: Tx, agentId: string, runId: string, at
   const kept = new Map<string, ResetRevision>();
   let unledgered: Promise<Set<string>> | undefined;
   const unledgeredOnce = () => (unledgered ??= unledgeredRevisions(tx, agentId, runId));
+  // The revisions the run is billed against, read before its rows go: one the ledger kept that no other run is billed
+  // against after this purge leaves the ledger with it (its name was carried by purged runs alone).
+  const billed = await billedRevisions(tx, agentId, runId);
   for (const name of names) {
     const rewritten = await rewriteWorkflow(tx, agentId, runId, name);
     for (const digest of rewritten.lost) {
@@ -330,7 +362,11 @@ export async function dropRunLearning(tx: Tx, agentId: string, runId: string, at
     }
   }
   await tx.run("UPDATE learning_saves SET kind = 'purged', by_run = NULL, change = '{}' WHERE agent_id = ? AND by_run = ?", agentId, runId);
-  if (kept.size) await keepInResetLedger(tx, agentId, kept, at);
+  const dropped = new Set<string>();
+  for (const [one, { workflow, digest }] of billed) {
+    if (!kept.has(one) && !(await billedElsewhere(tx, agentId, runId, workflow, digest, unledgeredOnce))) dropped.add(one);
+  }
+  if (kept.size || dropped.size) await changeResetLedger(tx, agentId, kept, dropped, at);
   if (!changed) return;
   const head = Number((await tx.get<{ v: number | string | null }>("SELECT MAX(version) AS v FROM learning_saves WHERE agent_id = ?", agentId))?.v ?? 0);
   await tx.run("INSERT INTO learning_saves (agent_id, version, id, at, kind, by_run, merge_key, change) VALUES (?, ?, ?, ?, 'purged', NULL, NULL, '{}')", agentId, head + 1, versionId(), at);
