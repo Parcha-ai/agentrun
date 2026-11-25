@@ -3,7 +3,8 @@
 // thread, the pool stops and parseHome reads the rest. The totals are those of one thread whatever happens.
 //
 // The heap is run out for real: a line of empty objects (`[{},{},...]`) parses to some 13 times its size, so a line
-// under the worker's line limit (an eighth of its heap) still outgrows the heap inside JSON.parse.
+// under the worker's line limit (an eighth of its heap) still outgrows the heap as it is read. The objects are the user
+// message's content, which a totals read builds block by block (a field it does not read it never builds: scan.ts).
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdir, utimes, writeFile } from "node:fs/promises";
@@ -16,14 +17,14 @@ import { anthropicUsage, claudeAnswer, claudeFile, claudeUser, tempHome, writeJs
 const TIMEOUT = 120_000;
 const id = (group, k) => `00000000-0000-4000-8000-${group}${String(k).padStart(10, "0")}`;
 
-/** A session whose first line carries `mb` MB of empty objects, then one request of its own. */
+/** A session whose first line's user message is `mb` MB of empty objects, then one request of its own. */
 async function bomb(home, session, mb, time) {
-  const user = JSON.stringify(claudeUser({ uuid: `${session}-u`, text: "Fixture question.", i: 0, session }));
+  const user = JSON.stringify(claudeUser({ uuid: `${session}-u`, text: "\0", i: 0, session }));
   const pad = `[${"{},".repeat(Math.floor((mb * 2 ** 20) / 3) - 1)}{}]`;
   const answer = JSON.stringify(claudeAnswer({ uuid: `${session}-a`, msg: `${session}-m`, req: `${session}-r`, usage: anthropicUsage(3, 5, 7, 11), i: 1, session }));
   const file = claudeFile(home, session);
   await mkdir(dirname(file), { recursive: true });
-  await writeFile(file, `${user.slice(0, -1)},"pad":${pad}}\n${answer}\n`);
+  await writeFile(file, `${user.replace('"content":"\\u0000"', `"content":${pad}`)}\n${answer}\n`);
   await utimes(file, time, time);
 }
 

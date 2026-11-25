@@ -6,6 +6,7 @@ import { type LineSource, lineReader, type ReadContext } from "../lines.js";
 import { type Env, entries } from "../reader.js";
 import { addNew, ownerOf, type RecordIndex, recordIndex } from "../record-index.js";
 import { packed, packInto } from "../record-key.js";
+import type { Shape } from "../scan.js";
 import { argsOf, effortOf, INTERRUPTED, isObject, str, textOf } from "../text.js";
 import type { Answer, SessionOf, ToolCall } from "../types.js";
 import { normalizeUsage } from "../usage.js";
@@ -221,6 +222,27 @@ export async function childFiles(home: string, env?: Env): Promise<{ file: strin
 /** Claude Code's own directory: CLAUDE_CONFIG_DIR where the environment names it, else ~/.claude. */
 const configDir = (home: string, env?: Env): string => env?.CLAUDE_CONFIG_DIR || join(home, ".claude");
 
+/** The counts normalizeUsage takes from Anthropic's usage (usage.ts). */
+const USAGE = { input_tokens: true, output_tokens: true, cache_read_input_tokens: true, cache_creation_input_tokens: true, cache_creation: { ephemeral_1h_input_tokens: true } } as const;
+
+/** What record reads of a line in a totals read (LineSource.fields). A tool_result's content is left out: it is only the
+ *  result's turn's text, which a totals read keeps none of; so are a tool_use's input (its call's arguments, kept only
+ *  with turns), a thinking block's text, and every field record reads only with turns (titles, efforts). */
+const FIELDS = {
+  cwd: true,
+  isSidechain: true,
+  type: true,
+  uuid: true,
+  totalCostUSD: true,
+  hasUnknownModelCost: true,
+  isMeta: true,
+  isCompactSummary: true,
+  isVisibleInTranscriptOnly: true,
+  isApiErrorMessage: true,
+  requestId: true,
+  message: { model: true, id: true, usage: USAGE, content: [{ type: true, text: true, id: true, name: true, tool_use_id: true, is_error: true }] },
+} as const satisfies Shape;
+
 const spec: LineSource<"claude-code", Own> = {
   source: "claude-code",
   name: "Claude Code",
@@ -240,6 +262,7 @@ const spec: LineSource<"claude-code", Own> = {
   start: () => ({ keyed: new Map(), copied: new Set(), titles: { summaries: [], uuids: new Set() } }),
   record,
   totals: true,
+  fields: FIELDS,
   finish(out, turns, { state: { own } }) {
     const { titles } = own;
     const sourceTitle = titles.custom ?? titles.ai ?? titles.summaries.findLast(({ leaf }) => leaf === undefined || titles.uuids.has(leaf))?.title;
@@ -252,3 +275,5 @@ const spec: LineSource<"claude-code", Own> = {
 };
 
 export const claudeCode = lineReader(spec);
+/** The source as lineReader takes it (a test reads with it, its fields or not). */
+export const claudeCodeLines = spec;

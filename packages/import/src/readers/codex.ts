@@ -3,6 +3,7 @@ import { basename, join } from "node:path";
 import { addRequest, setUsage } from "../counts.js";
 import { type LineSource, lineReader, type ReadContext } from "../lines.js";
 import { entries, rememberUser } from "../reader.js";
+import type { Shape } from "../scan.js";
 import { argsOf, effortOf, isObject, str, textOf } from "../text.js";
 import type { Answer, Turn } from "../types.js";
 import { normalizeUsage } from "../usage.js";
@@ -210,6 +211,31 @@ function record(value: Record<string, unknown>, at: number, { state, keep, add }
   }
 }
 
+/** What record reads of a line in a totals read (LineSource.fields). A call's arguments and output, and an item's
+ *  output, are left out: a totals read keeps no call's arguments nor result; so is everything of the records it reads
+ *  nothing of (compacted, reasoning's encrypted content). */
+const FIELDS = {
+  type: true,
+  payload: {
+    type: true,
+    id: true,
+    cwd: true,
+    model_provider: true,
+    parent_thread_id: true,
+    source: true,
+    model: true,
+    effort: true,
+    response_id: true,
+    usage: true,
+    message: true,
+    info: true,
+    item: { id: true },
+    role: true,
+    content: [{ type: true, text: true, content: true }],
+    call_id: true,
+  },
+} as const satisfies Shape;
+
 const spec: LineSource<"codex", Own> = {
   source: "codex",
   name: "Codex",
@@ -229,6 +255,7 @@ const spec: LineSource<"codex", Own> = {
   start: () => ({ events: false, held: [], records: false, responses: new Set(), items: new Map(), results: new Map() }),
   record,
   totals: true,
+  fields: FIELDS,
   // Older Codex writes each of the person's turns twice, as a user_message event and as a user message; current Codex
   // writes the user message alone. One source per file, so no turn counts twice.
   finish(out, turns, { state: { own }, keep }) {
@@ -254,3 +281,5 @@ const spec: LineSource<"codex", Own> = {
 };
 
 export const codex = lineReader(spec);
+/** The source as lineReader takes it (a test reads with it, its fields or not). */
+export const codexLines = spec;
