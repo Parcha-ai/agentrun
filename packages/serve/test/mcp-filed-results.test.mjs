@@ -1,14 +1,17 @@
 // An MCP tool whose answers the agent's tool setting files (`mcp:<server>/<tool>: {file: {folder, show}}`): the gateway
 // writes the answer's text, scrubbed and whole, at <folder>/<tool>-<time>-<id>.json in the run's files before it answers,
 // and the model reads only a summary: the bytes, where it is filed, the values of the paths the setting shows, and the
-// answer's shape (keys and types to depth 2, array lengths), never another value. A write that fails shows nothing and
-// is an error; an answer that is an error is shown as before; a tool with no setting is answered as before, a long one
-// spilled at the clip. Never through the clip: an answer past it is filed whole and none of it is shown.
+// answer's shape (keys and types to depth 2, the keys that read as names, array lengths), never another value. The file
+// is for the skill's code, and the summary says so. An answer that is an error is filed the same way and answers an
+// error. A write that fails shows nothing and is an error. A stored setting that no longer reads refuses every call of
+// its tool. A tool with no setting is answered as before, a long one spilled at the clip. Never through the clip: an
+// answer past it is filed whole and none of it is shown.
 import assert from "node:assert/strict";
 import { mkdtemp, readdir, readFile, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { filedBy } from "../dist/filed-tool.js";
 import { MCP_CLIP, mcpGateway } from "../dist/mcp-gateway.js";
 import { localWorkspace, WORKSPACE_ERRORS } from "../dist/workspace/index.js";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
@@ -28,6 +31,12 @@ const SETTING = { folder: "stripe", show: SHOW };
 
 /** Every string value in `value`, keys left out. */
 const stringsOf = (value) => (typeof value === "string" ? [value] : Array.isArray(value) ? value.flatMap(stringsOf) : value && typeof value === "object" ? Object.values(value).flatMap(stringsOf) : []);
+/** Every key in `value`, at any depth. */
+const keysOf = (value) => (Array.isArray(value) ? value.flatMap(keysOf) : value && typeof value === "object" ? Object.entries(value).flatMap(([key, one]) => [key, ...keysOf(one)]) : []);
+/** A card_error as a payments server passes it on: its payment intent, a customer's description included. */
+const DECLINED = { error: { type: "card_error", code: "card_declined", decline_code: "insufficient_funds", message: "Your card was declined.", payment_intent: { id: "pi_3Q0001", amount: 4900, currency: "usd", description: description(7), metadata: { order_ref: "ord_x41" } } } };
+/** An answer keyed by data: emails (and a person's name, and a long key) as keys, a few short names beside them. */
+const BY_EMAIL = { results: { "jane@acme.com": { orders: 2 }, "raj@acme.com": { orders: 1 }, total_orders: 3 }, owners: { "lee@acme.com": "admin" }, count: 2, "Jane Doe": "vip", a_key_name_that_runs_well_past_32_chars: 1 };
 
 async function setup(t, { filed, work: workOf } = {}) {
   const fake = await startFakeMcp({ token: TOKEN });
@@ -38,6 +47,8 @@ async function setup(t, { filed, work: workOf } = {}) {
     shapes: () => ({ content: [{ type: "text", text: JSON.stringify(SHAPES) }] }),
     words: () => ({ content: [{ type: "text", text: "not JSON: Marisol Quintero paid" }] }),
     refused: () => ({ content: [{ type: "text", text: "Stripe refused: rate limited, try again in 2 s" }], isError: true }),
+    declined: () => ({ content: [{ type: "text", text: JSON.stringify(DECLINED) }], isError: true }),
+    by_email: () => ({ content: [{ type: "text", text: JSON.stringify(BY_EMAIL) }] }),
     echo: () => ({ content: [{ type: "text", text: JSON.stringify({ seen: `Bearer ${TOKEN}` }) }] }),
   };
   for (const [name, run] of Object.entries(answers)) fake.tools[name] = { description: name, input: { type: "object", properties: {} }, run };
@@ -67,7 +78,7 @@ test("a tool the setting files: its answer is filed byte for byte, and the model
   assert.equal(await readFile(join(work, "stripe", name), "utf8"), PAGE, "the answer's text, whole and unchanged");
   const bytes = Buffer.byteLength(PAGE).toLocaleString("en-US");
   assert.equal(textOf(result), [
-    `page answered ${bytes} bytes, filed whole at stripe/${name}. Its values are not shown here (the agent's setting files this tool's answers); only these are:`,
+    `page answered ${bytes} bytes, filed whole at stripe/${name} for the skill's code; its values are not shown here (the agent's setting files this tool's answers); only these are:`,
     '{"successful": true, "error": null, "data.has_more": true, "data.data.-1.id": "txn_0099", "data.data.-1.created": 1763337699}',
     'Shape: {"successful": boolean, "error": null, "data": {"object": string, "data": [100 objects], "has_more": boolean, "url": string}}',
   ].join("\n"));
@@ -130,16 +141,60 @@ test("a write that fails shows nothing of the answer and is an error, in the Wor
   assert.match(textOf(unopened), /could not be filed/);
 });
 
-test("an answer that is an error is shown as before and filed nowhere, so the model can react to a refusal", async (t) => {
-  const { call, work } = await setup(t, { filed: () => SETTING });
-  assert.deepEqual(await call("refused"), { content: [{ type: "text", text: "Stripe refused: rate limited, try again in 2 s" }], isError: true });
-  assert.deepEqual(await readdir(work), []);
+test("with a setting, an answer that is an error is filed the same way and answers an error: nothing of it is shown but the show paths", async (t) => {
+  const show = ["error.type", "error.code", "error.decline_code"];
+  const { call, work } = await setup(t, { filed: (_server, tool) => (tool === "declined" ? { folder: "stripe", show } : undefined) });
+  const result = await call("declined");
+  assert.equal(result.isError, true, "the model still reads it as an error");
+  const [name, ...more] = await filedIn(work, "stripe");
+  assert.deepEqual(more, []);
+  assert.equal(await readFile(join(work, "stripe", name), "utf8"), JSON.stringify(DECLINED), "the error answer, whole");
+  const bytes = Buffer.byteLength(JSON.stringify(DECLINED)).toLocaleString("en-US");
+  assert.equal(textOf(result), [
+    `declined answered ${bytes} bytes, filed whole at stripe/${name} for the skill's code; its values are not shown here (the agent's setting files this tool's answers); only these are:`,
+    '{"error.type": "card_error", "error.code": "card_declined", "error.decline_code": "insufficient_funds"}',
+    'Shape: {"error": {"type": string, "code": string, "decline_code": string, "message": string, "payment_intent": object}}',
+  ].join("\n"));
+  const shown = stringsOf(DECLINED).filter((value) => textOf(result).includes(value));
+  assert.deepEqual(shown, ["card_error", "card_declined", "insufficient_funds"], "no string of the error but the shown ones");
+  assert.ok(!/Marisol|Track Day|pi_3Q|declined\./.test(textOf(result)), textOf(result));
+  assert.deepEqual(await readdir(work), ["stripe"], "nothing at evidence/");
 });
 
-test("with no setting, or the setting on another tool, the answer is the model's as before, and a long one spills at the clip", async (t) => {
+test("the shape names a key only when it reads as a short name; the rest are counted, so a map keyed by emails shows none of them", async (t) => {
+  const { call, work } = await setup(t, { filed: () => ({ folder: "people", show: ["count"] }) });
+  const result = await call("by_email");
+  const [name] = await filedIn(work, "people");
+  assert.equal(await readFile(join(work, "people", name), "utf8"), JSON.stringify(BY_EMAIL));
+  const [, shown, shape] = textOf(result).split("\n");
+  assert.equal(shown, '{"count": 2}');
+  assert.equal(shape, 'Shape: {"results": {"total_orders": number, … 2 more keys}, "owners": {… 1 key}, "count": number, … 2 more keys}');
+  const named = [...stringsOf(BY_EMAIL), ...keysOf(BY_EMAIL)].filter((value) => !/^[A-Za-z_][A-Za-z0-9_]{0,31}$/.test(value) && textOf(result).includes(value));
+  assert.deepEqual(named, [], `no key or value that is not a short name: ${textOf(result)}`);
+  assert.ok(!/@|Jane|runs_well_past/.test(textOf(result)), textOf(result));
+});
+
+test("a stored file setting that no longer reads refuses every call of its tool in words naming the setting: nothing is sent, filed or shown", async (t) => {
+  for (const file of [{ folder: "../x", show: [] }, { folder: "stripe", show: "data.has_more" }, { folder: "stripe" }, { folder: "stripe", show: [], more: 1 }, null, "stripe"]) {
+    const { call, fake, work } = await setup(t, { filed: filedBy({ "mcp:fake/page": { file } }) });
+    const result = await call("page");
+    assert.equal(result.isError, true, `${JSON.stringify(file)}: ${textOf(result)}`);
+    assert.match(textOf(result), /mcp:fake\/page/, "names the tool");
+    assert.match(textOf(result), /file setting/, "names the setting");
+    assert.match(textOf(result), /Nothing was sent/);
+    assert.ok(!/txn_|Marisol/.test(textOf(result)), textOf(result));
+    assert.deepEqual(fake.log.filter((entry) => entry.method === "tools/call"), [], `${JSON.stringify(file)}: no call reached the server`);
+    assert.deepEqual(await readdir(work), [], "nothing filed");
+    assert.deepEqual(await call("words"), { content: [{ type: "text", text: "not JSON: Marisol Quintero paid" }] }, "the server's other tools answer as before");
+  }
+});
+
+test("with no setting, or the setting on another tool, the answer is the model's as before, an error answer too, and a long one spills at the clip", async (t) => {
   for (const filed of [undefined, (_server, tool) => (tool === "other" ? SETTING : undefined)]) {
     const { call, work } = await setup(t, { filed });
     assert.deepEqual(await call("page"), { content: [{ type: "text", text: PAGE }] });
+    assert.deepEqual(await call("declined"), { content: [{ type: "text", text: JSON.stringify(DECLINED) }], isError: true }, "an error answer, unchanged");
+    assert.deepEqual(await call("refused"), { content: [{ type: "text", text: "Stripe refused: rate limited, try again in 2 s" }], isError: true });
     assert.deepEqual(await readdir(work), [], "nothing filed");
     const long = textOf(await call("big"));
     assert.match(long, /the whole answer is in the run's files at evidence\/mcp\/fake\//, "spilled as before");

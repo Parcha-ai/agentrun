@@ -31,7 +31,7 @@ const GRANTS = ["mcp:stripe/list_transactions"];
 const PIN = (url) => ({ stripe: { url, tools: [LIST] } });
 const PAGE = JSON.stringify({ data: [{ id: "txn_1", description: "Track Day Pass for Marisol Quintero" }, { id: "txn_2", description: "Refund to Marisol Quintero" }], has_more: false });
 const SETTINGS = { "mcp:stripe/list_transactions": { file: { folder: "stripe", show: ["has_more", "data.-1.id"] } } };
-const SUMMARY = /^list_transactions answered \d+ bytes, filed whole at stripe\/(list_transactions-[^ ]+\.json)\. Its values are not shown here \(the agent's setting files this tool's answers\); only these are:\n\{"has_more": false, "data\.-1\.id": "txn_2"\}\nShape: \{"data": \[2 objects\], "has_more": boolean\}$/;
+const SUMMARY = /^list_transactions answered \d+ bytes, filed whole at stripe\/(list_transactions-[^ ]+\.json) for the skill's code; its values are not shown here \(the agent's setting files this tool's answers\); only these are:\n\{"has_more": false, "data\.-1\.id": "txn_2"\}\nShape: \{"data": \[2 objects\], "has_more": boolean\}$/;
 
 async function fakeStripe(t) {
   const fake = await startFakeMcp({ token: TOKEN });
@@ -124,4 +124,28 @@ test("a run's own process (its runner's MCP, heldFor), Mode 2 with no computer a
       assert.equal(readFileSync(join(runFolder(data, "agent-own", "run-own"), "stripe", file), "utf8"), PAGE, "the whole answer, in the run's folder");
     }
   }
+});
+
+test("a revision whose stored file setting no longer reads (a folder of ../x): the runner refuses every call of the tool, naming the setting, and the server logs no call", { timeout: 120_000 }, async (t) => {
+  const { fake, register } = await fakeStripe(t);
+  const { store } = await storeOn(t);
+  const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "mode1-unreadable-file-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  await register(store);
+  const broken = { "mcp:stripe/list_transactions": { file: { folder: "../x", show: ["has_more"] } } };
+  const revision = { kind: "agentic", body: { instructions: "Answer.", tools: GRANTS, toolSettings: broken }, mcpPin: PIN(fake.url) };
+  await store.agents.create({ id: "agent-own", name: "Own" }, { id: "rev-own", ...revision });
+  await store.runs.create({ id: "run-own", agentId: "agent-own", revisionId: "rev-own" });
+  const reads = { claim: { runId: "run-own", epoch: 1 }, run: { agentId: "agent-own", revisionId: "rev-own", signInHanded: null }, launch: { input: { content: "Hello." } }, revision, claimed: {} };
+  const side = host.heldFor({ store, sealKey: SEAL_KEY, env: {}, data, mcpLoopback: true }, reads, (text) => text, () => {});
+  t.after(() => side.release());
+  const mcp = await side.held.mcp({ appendRoot: async () => {} });
+  const tool = mcp?.tools.find((one) => one.catalog === GRANTS[0]);
+  assert.ok(tool, "the run's list_transactions");
+  const result = await tool.call({}, { callId: "c1", signal: new AbortController().signal, attempt: 0 });
+  assert.equal(result.isError, true, result.text);
+  assert.match(result.text, /mcp:stripe\/list_transactions/);
+  assert.match(result.text, /file setting/);
+  assert.ok(!/Marisol|txn_/.test(result.text), result.text);
+  assert.deepEqual(fake.log.filter((entry) => entry.method === "tools/call"), [], "no call reached the server");
 });
