@@ -296,6 +296,13 @@ test("list asks Render by name when the name is asked, every page by cursor, lea
 	assert.equal(few.runs().length, 2, "read once, then kept");
 });
 
+test("list throws in words when a running computer's labels file can't be read, rather than answer a listing without it", async () => {
+	const render = fakeRender({ answer: (method, path, body) => (path === "/runs/sync" && body.command.includes(LABELS_FILE) ? json(200, { stdout: "", stderr: "cat: Permission denied", exit_code: 1 }) : undefined) });
+	plant(render, "sbx-one0123456789", "computer-000000000001", { labels: { "agentrun.computer": "1", "agentrun.computer.name": "computer-000000000001", "agentrun.run": "run-1" } });
+	const { host } = provider(render);
+	await assert.rejects(host.list({ "agentrun.computer": "1", "agentrun.run": "run-1" }, CTX), (error) => error.code === "vendor" && /labels file of sbx-one0123456789 exited 1: cat: Permission denied/.test(error.message));
+});
+
 test("delete terminates the sandbox, which Render answers 204 even once it is terminated", async () => {
 	const render = fakeRender();
 	const { host } = provider(render);
@@ -388,6 +395,19 @@ test("prepareImage answers the box image's build in the workspace's default sand
 	assert.match(answer.error.message, /^the box image as the Render build agentrun-box-[0-9a-f]{12}: Render's build sbb-00000000000000000000 failed: the image's manifest is not linux\/amd64$/);
 });
 
+test("prepareImage reads the sandbox groups page by page, by cursor, until it finds the default one", async () => {
+	const others = Array.from({ length: 100 }, (_, i) => ({ sandboxGroup: { id: `sbg-other${String(i).padStart(12, "0")}`, isDefault: false }, cursor: `c${i}` }));
+	const paged = fakeRender({
+		builds: [{ id: "sbb-00000000000000000009", sandboxGroupId: GROUP, name: BUILD, status: "succeeded" }],
+		answer: (method, path) => (method === "GET" && path === "/sandbox-groups" ? json(200, paged.calls.at(-1).url.searchParams.get("cursor") === "c99" ? [{ sandboxGroup: { id: GROUP, isDefault: true }, cursor: "d" }] : others) : undefined),
+	});
+	assert.deepEqual(await provider(paged).prepareImage(), { ok: true, value: BUILD });
+	assert.deepEqual(
+		paged.calls.filter(({ url }) => url.pathname === "/v1/sandbox-groups").map(({ url }) => [url.searchParams.get("limit"), url.searchParams.get("cursor")]),
+		[["100", null], ["100", "c99"]],
+	);
+});
+
 test("a Render sandbox over dial, as serve builds it: the sandbox boots from its env and the launch script, dials, and its daemon answers linux; release terminates it", async () => {
 	const dial = dialServer();
 	const daemonPath = fileURLToPath(import.meta.url);
@@ -422,9 +442,11 @@ test("check holds a size to Render's plans and an image to a Render build: Rende
 	assert.deepEqual(host.check({ image: "ghcr.io/parcha-ai/agentrun-box:0123456789ab" }).map(({ field }) => field), ["image"], "an OCI image is imported by prepareImage, not started");
 });
 
-test("the constructor refuses a missing key, a workspace that is no Render workspace id, a fetch that is no function and a lifetime past a day, never echoing the key", () => {
+test("the constructor refuses a missing key, a workspace id with characters no id has, a fetch that is no function and a lifetime past a day, never echoing the key; Render's answer, not a prefix, says whether a workspace is one", () => {
 	assert.throws(() => new RenderProvider({ ownerId: OWNER }), /options.apiKey, a Render API key, is required/);
-	assert.throws(() => new RenderProvider({ apiKey: KEY, ownerId: "acme" }), (error) => /options.ownerId is the Render workspace/.test(error.message) && !error.message.includes(KEY));
+	assert.throws(() => new RenderProvider({ apiKey: KEY, ownerId: "tea x/.." }), (error) => /options.ownerId is the Render workspace/.test(error.message) && !error.message.includes(KEY));
+	assert.throws(() => new RenderProvider({ apiKey: KEY, ownerId: "" }), /options.ownerId is the Render workspace/);
+	assert.ok(new RenderProvider({ apiKey: KEY, ownerId: "test-value" }) instanceof RenderProvider, "serve builds every provider from test values");
 	assert.throws(() => new RenderProvider({ apiKey: KEY, ownerId: OWNER, fetch: "no" }), /options.fetch must be a function/);
 	assert.throws(() => new RenderProvider({ apiKey: KEY, ownerId: OWNER, maxLifetimeMs: 25 * 3_600_000 }), /maxLifetimeMs/);
 	assert.ok(create({ apiKey: KEY, ownerId: OWNER }) instanceof RenderProvider);
