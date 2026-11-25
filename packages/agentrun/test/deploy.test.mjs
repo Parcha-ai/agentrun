@@ -12,7 +12,8 @@ import { createServer, request } from "node:http";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { serve } from "../../serve/test/support.mjs";
+import { startFakeComposio } from "../../serve/test/fixtures/fake-composio.mjs";
+import { serve, withEnv } from "../../serve/test/support.mjs";
 import { packageFiles, packageSha256 } from "../lib/deploy.mjs";
 import { cli as agentrun, scratch as scratchOf, server as serverOf } from "./support.mjs";
 
@@ -677,6 +678,106 @@ test("agentrun deploy DIR to an API-only install of a package whose one trigger 
   assert.equal(again.json().status, "up_to_date", again.err);
   assert.deepEqual(proxy.seen.slice(sent).filter((one) => WRITES.test(one)), [], "no upload, no apply");
   assert.doesNotMatch(again.err, /Not made on/);
+});
+
+/** pr-alert with a Composio trigger beside its daily schedule: an API-only install makes neither, and says the Composio
+ *  one is not an option there. */
+const MAILED = AGENT({ extra: ["mcp:", "  - { source: composio, toolkit: gmail, tools: [add], required: true }"] }).replace("---\nYou check", `  - name: new-mail
+    source: { kind: composio, server: gmail, event: GMAIL_NEW_GMAIL_MESSAGE, config: {} }
+    target: { kind: start_run, input: { content: "A mail arrived." } }
+---
+You check`);
+
+const COMPOSIO_KEY = `not-a-secret-${"composio-env-key-0202"}`;
+const ADD = { slug: "add", name: "Add", description: "Add two numbers." };
+
+/** An API-only install (no runner) beside a fake Composio, with the per-run Composio server of gmail its token saved, as
+ *  a backend in front of it saves one before it deploys an agent that needs it. */
+async function mailInstall(t) {
+  withEnv(t, { COMPOSIO_API_KEY: COMPOSIO_KEY });
+  const composio = await startFakeComposio({ apiKey: COMPOSIO_KEY, toolkits: { gmail: { no_auth: false, tools: [ADD] } }, authConfigs: { gmail: [{ id: "ac_managed_gmail", is_composio_managed: true, status: "ENABLED" }] } });
+  t.after(() => composio.close());
+  const hosted = await serve(t, { runner: false, apiOnly: true, composioControl: { baseUrl: composio.baseUrl }, composioMcpOrigin: composio.mcpOrigin });
+  const saved = await hosted.api("PUT", "/settings/mcp-servers/mail/composio", { api_key_env: "COMPOSIO_API_KEY", toolkit: "gmail", tools: [ADD.slug], user_id: "per_run" }, { authorization: `Bearer ${hosted.token}` });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  return hosted;
+}
+
+/** A deploy target that sets up Composio triggers itself, in front of the API-only install at `to`: each apply's answer
+ *  (its plan's too) is the install's, with `triggers_set_up` added, `said(dryRun)` its entries. */
+async function settingUp(t, to, said) {
+  const target = new URL(to);
+  const front = createServer((req, res) => {
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", () => {
+      const sent = Buffer.concat(chunks);
+      const headers = { ...req.headers, "content-length": String(sent.length) };
+      const out = request({ host: target.hostname, port: target.port, path: req.url, method: req.method, headers }, (answer) => {
+        const parts = [];
+        answer.on("data", (chunk) => parts.push(chunk));
+        answer.on("end", () => {
+          let bytes = Buffer.concat(parts);
+          if (req.method === "POST" && /\/templates\/[^/]+\/apply$/.test(req.url) && answer.statusCode < 300) {
+            const dryRun = JSON.parse(sent.toString("utf8")).dry_run === true;
+            bytes = Buffer.from(JSON.stringify({ ...JSON.parse(bytes.toString("utf8")), triggers_set_up: said(dryRun) }));
+          }
+          const { "content-length": _length, "transfer-encoding": _encoding, ...kept } = answer.headers;
+          res.writeHead(answer.statusCode, { ...kept, "content-length": String(bytes.length) });
+          res.end(bytes);
+        });
+      });
+      out.on("error", () => res.writeHead(502).end());
+      out.end(sent);
+    });
+  });
+  await new Promise((resolve) => front.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => (front.closeAllConnections(), front.close(resolve))));
+  return `http://127.0.0.1:${front.address().port}${target.pathname}`;
+}
+
+test("agentrun deploy to a target that sets up a Composio trigger itself in front of an API-only install: the trigger it made is said set up, never skipped, though the install's plan and warning skip it", { timeout: 180_000 }, async (t) => {
+  const { dir, env } = scratch();
+  const hosted = await mailInstall(t);
+  const base = await settingUp(t, hosted.baseUrl, (dryRun) => [{ name: "new-mail", kind: "composio", made: true, ...(dryRun ? {} : { enabled: true }) }]);
+  const pkg = folder(dir);
+  writeFileSync(join(pkg, "agent.md"), MAILED);
+
+  const done = await cli(env, ["deploy", pkg, "--to", base, "--yes"], { AGENTRUN_API_KEY: hosted.token });
+  assert.equal(done.code, 0, done.err);
+  assert.match(done.err, /\+ trigger\s+new-mail\s+composio \(the target sets it up\)/);
+  assert.match(done.err, /Trigger new-mail \(composio\) set up by /);
+  const mailLines = done.err.split("\n").filter((line) => line.includes("new-mail"));
+  assert.ok(mailLines.length > 0);
+  for (const line of mailLines) assert.doesNotMatch(line, /skipped|was not made|through the API instead/, line);
+  // The schedule the target says nothing of keeps the install's word.
+  assert.match(done.err, /! trigger\s+daily\s+schedule skipped: .*has no launch hook/);
+  const answer = done.json();
+  assert.deepEqual(answer.warnings.filter((one) => one.field.startsWith("triggers.")).map((one) => one.field), ["triggers.0"], "the install's warning on new-mail (triggers.1) gives way to the target's word");
+  assert.deepEqual(answer.triggers_set_up, [{ name: "new-mail", kind: "composio", made: true, enabled: true }]);
+  // The install behind the target skips new-mail all the same: the words given way to are its own.
+  const planned = await hosted.api("POST", "/templates/upload%3Apr-alert/apply", { dry_run: true });
+  assert.deepEqual(planned.body.plan.triggers.map((one) => [one.name, one.action, one.code]), [["daily", "skip", "not_set_up_here"], ["new-mail", "skip", "not_an_option"]]);
+  assert.match(planned.body.plan.triggers[1].reason, /Start its runs through the API instead/);
+});
+
+test("agentrun deploy to a target that sets up Composio triggers itself but did not make this one: still said skipped in the target's words, a warning after the apply, and not made yet, so the next deploy applies again", { timeout: 180_000 }, async (t) => {
+  const { dir, env } = scratch();
+  const hosted = await mailInstall(t);
+  const why = "Connect a Gmail account, then deploy again.";
+  const base = await settingUp(t, hosted.baseUrl, () => [{ name: "new-mail", kind: "composio", made: false, reason: "account_not_connected", message: why }]);
+  const pkg = folder(dir);
+  writeFileSync(join(pkg, "agent.md"), MAILED);
+
+  const done = await cli(env, ["deploy", pkg, "--to", base, "--yes"], { AGENTRUN_API_KEY: hosted.token });
+  assert.equal(done.code, 0, done.err);
+  assert.match(done.err, /! trigger\s+new-mail\s+composio skipped: Connect a Gmail account/);
+  assert.match(done.err, /Warning \(triggers\.1\): Connect a Gmail account, then deploy again\./);
+  assert.match(done.err, /Not made on .* yet: .*new-mail/);
+  assert.doesNotMatch(done.err, /set up by /);
+  const answer = done.json();
+  assert.deepEqual(answer.warnings.find((one) => one.field === "triggers.1"), { field: "triggers.1", reason: "account_not_connected", message: why });
+  assert.equal(answer.package_sha256, null, "the lock names no package, so the next deploy applies again");
 });
 
 test("agentrun deploy with no lock for a target that has an agent made from the package with these parameters: exit 2, nothing applied, naming it; --agent ID deploys onto it, --agent new makes another; with a lock, --agent naming another agent is refused", { timeout: 300_000 }, async (t) => {
