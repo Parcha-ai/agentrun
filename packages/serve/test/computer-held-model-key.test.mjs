@@ -685,7 +685,8 @@ test("Cursor (harness-table cursorOptions), no CURSOR_API_KEY here: a held run i
   await assert.rejects(options.recipe(launch), (error) => (assert.match(error.message, /CURSOR_API_KEY is not set/, error.message), true), "a Cursor run not held is refused for want of its key, as before");
   const held = await options.recipe({ ...launch, held: true }).then(() => undefined, (error) => error);
   assert.ok(held === undefined || !held.message.includes("CURSOR_API_KEY"), `a held Cursor run is not refused for the key it never uses: ${held?.message}`);
-  assert.ok(held === undefined || held.name === "HarnessUnavailable", `with no release installed here, it is refused for the install alone: ${held?.stack}`);
+  // Where Cursor is pinned for this host, its install is missing; where it is not (a Mac), it is refused before any install is read.
+  assert.ok(held === undefined || /HARNESS_NOT_INSTALLED|ACP_BINARY_UNPINNED/.test(held.message), `with no release installed here, it is refused for the install alone: ${held?.stack}`);
 });
 
 test("per-run process (run-child-host heldFor), Claude login: the runner hands a held run its model kept from running no login and reads none for it, whatever its process asks; the same run not held is handed the login's reader", async (t) => {
