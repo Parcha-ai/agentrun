@@ -78,6 +78,7 @@ test("a second read of a run's rows cuts no text again, whatever the run's lengt
   await long.more();
   const grown = await page(long.store, [KEY]);
   assert.equal(results(grown.served).length, TURNS + 1);
+  t.diagnostic(`texts cut: ${firstLong.passes} by the first read of ${TURNS} searches, ${againLong.passes} by the second, ${grown.passes} after one more; ${firstShort.passes} and ${againShort.passes} for 1 search`);
   assert.ok(grown.passes <= againShort.passes + firstShort.passes, `a read after one more search cuts at most one search's texts more than a second read: ${grown.passes}, over ${againShort.passes} + ${firstShort.passes}`);
 });
 

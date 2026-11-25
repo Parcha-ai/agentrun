@@ -10,7 +10,7 @@ import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { wireName } from "../catalog.js";
 import { TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { Hearing } from "../heard.js";
-import { redactedAnswer } from "../key-refusal.js";
+import { redacted, redactedAnswer, withheldWhole } from "../key-refusal.js";
 import { LEARNED_NODES_MAX, learnedCallEntries } from "../learned-nodes.js";
 import { type ComputerCallRecord, computerCallsOf, shownName } from "../computer-calls.js";
 import { labelled, type Reflect, reflects } from "../reflect-range.js";
@@ -453,15 +453,62 @@ const ANSWERS_KEPT = 32;
 const forgetsOf = new WeakMap<Store, number>();
 export const servedSince = (store: Store): number => forgetsOf.get(store.origin) ?? 0;
 
-/** Run `runId`'s answer rows dropped from what the readers of `store` last served (wholeAnswers): a purged or deleted
- *  run's text kept in no memory of this process (store-view.ts forgetServed). Counted (servedSince), so no read begun
- *  before it keeps what it read. The keys it dropped. */
+/** Run `runId`'s answer rows dropped from what the readers of `store` last served (wholeAnswers), and its texts from what
+ *  they last cut (rowCutsOnce): a purged or deleted run's text kept in no memory of this process (store-view.ts
+ *  forgetServed). Counted (servedSince), so no read begun before it keeps what it read. The answer keys it dropped. */
 export function forgetServedAnswers(store: Store, runId: string): string[] {
   forgetsOf.set(store.origin, servedSince(store) + 1);
   const kept = answersServed.get(store.origin);
   const dropped = [...(kept?.keys() ?? [])].filter((key) => key.startsWith(`${runId}\0`));
   for (const key of dropped) kept!.delete(key);
+  const cut = cutsKept.get(store.origin);
+  for (const set of [...(cut?.keys() ?? [])]) if (set.startsWith(`${runId}\0`)) cut!.delete(set);
   return dropped;
+}
+
+/** What each store's readers last cut of a run's texts, by run and the digest of the values they were cut of: by each
+ *  text's digest, what the row's redactor made of it (key-refusal.ts redacted) or whether it is withheld whole
+ *  (withheldWhole). A reader that follows a run (a console's live Timeline, its view polled) reads its rows once per
+ *  change, each read renders every row from the journal again, and an entry's words never change: so each text is cut
+ *  once per held value set, not once per read, and a run of n turns costs the redactor n turns of work, not n². The
+ *  newest CUT_SETS run and value set pairs of each store, at most CUT_TEXTS texts each, the oldest dropped first. Kept
+ *  by digest: no text the run wrote is kept, only what a reader is shown of it. */
+const cutsKept = new WeakMap<Store, Map<string, Map<string, string | boolean>>>();
+const CUT_SETS = 16;
+const CUT_TEXTS = 8192;
+
+/** The row redactor (`redact`) and the whole-text check (`holds`) of run `runId`'s rows under the held `values` (run-cut.ts
+ *  runCutValues), as a reader's TimelineOptions takes them: each text cut once per held value set (cutsKept), what was
+ *  cut kept only while no run's text was forgotten since `since` (servedSince, taken before the read began). */
+export function rowCutsOnce(store: Store, runId: string, values: readonly string[], since: number): { redact: (text: string) => string; holds: (text: string) => boolean } {
+  const origin = store.origin;
+  const set = `${runId}\0${wholeAnswerFor(values).key}`;
+  const once = <T extends string | boolean>(how: string, text: string, cut: () => T): T => {
+    const slot = `${how}\0${createHash("sha256").update(text).digest("base64")}`;
+    const kept = cutsKept.get(origin)?.get(set)?.get(slot);
+    if (kept !== undefined) return kept as T;
+    const made = cut();
+    if (servedSince(store) !== since) return made;
+    let sets = cutsKept.get(origin);
+    if (!sets) cutsKept.set(origin, (sets = new Map()));
+    const texts = sets.get(set) ?? new Map<string, string | boolean>();
+    sets.delete(set);
+    sets.set(set, texts);
+    texts.set(slot, made);
+    for (const oldest of texts.keys()) {
+      if (texts.size <= CUT_TEXTS) break;
+      texts.delete(oldest);
+    }
+    for (const oldest of sets.keys()) {
+      if (sets.size <= CUT_SETS) break;
+      sets.delete(oldest);
+    }
+    return made;
+  };
+  return {
+    redact: (text) => once("redact", text, () => redacted(text, values)),
+    holds: (text) => once("holds", text, () => withheldWhole(text, values)),
+  };
 }
 
 /** `rows` (runTimeline's, rendered with `options`) with each final answer whole, as main served a run's answer: the renderer
