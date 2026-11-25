@@ -87,9 +87,10 @@ async function readOnce(url: unknown, { readers, order, guard, checkMs, options,
     const why = held ?? (checked && "why" in checked ? failure("refused", "GUARD", `not tried: ${checked.why}`) : undefined);
     if (why !== undefined) {
       if (shape.miss === "said" || held) said[id as AheadProvider] = why.message;
-      // A turn its breaker holds is on the receipt as search's is; a said provider's other unasked turns are failed ones.
+      // Every turn not asked is on the receipt, as search's are: one its breaker holds as held, any other (its key refused
+      // earlier, the guard's refusal) as a failed one.
       if (held?.code === HELD_CODE) tries.push({ provider: id, outcome: "held", failure: held, ms: 0 });
-      else if (shape.miss === "said") tries.push({ provider: id, outcome: "error", error: why.message, failure: why });
+      else tries.push({ provider: id, outcome: "error", error: why.message, failure: why });
       continue;
     }
     const read = await reader.read((checked as { href: string }).href, options);

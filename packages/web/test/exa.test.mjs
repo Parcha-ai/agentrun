@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { publicCheck, publicFetch, readPage } from "@parcha/pi-browser";
 import * as web from "../dist/index.js";
 import { SEARCH_UNAVAILABLE } from "../dist/search.js";
-import { EXA_CANARY, EXA_HITS, exaPage, exaResults, exaUnread, keyedServer, ok, refused } from "./fixtures/fake-keyed.mjs";
+import { EXA_CANARY, EXA_HITS, exaPage, exaResults, exaUnread, FIRECRAWL_CANARY, FIRECRAWL_HITS, firecrawlResults, keyedServer, ok, refused } from "./fixtures/fake-keyed.mjs";
 import { network } from "./fixtures/fake-network.mjs";
 
 const PUBLIC = "http://public.example/";
@@ -85,7 +85,7 @@ test("a 401 says the run's key is refused, and Exa is not asked again by either 
   const again = await w.search("gadgets");
   assert.match(again.answer.error, /Exa refused this run's key/);
   const page = await w.fetch(PUBLIC);
-  assert.deepEqual([page.answer.via, page.receipt.tries.map((one) => [one.provider, one.outcome])], ["direct", [["direct", "ok"]]]);
+  assert.deepEqual([page.answer.via, page.receipt.tries.map((one) => [one.provider, one.outcome, one.failure?.code])], ["direct", [["exa", "error", "KEY_REFUSED"], ["direct", "ok", undefined]]], "Exa's turn, unsent, says why");
   assert.equal(exa.got.length, 1);
   keyless("401", first, again, page, logs);
 });
@@ -165,4 +165,140 @@ test("Exa's answer of something other than its results is a failed turn, never t
   const { answer, receipt } = await w.search("widgets");
   assert.match(answer.error, /Exa's search answered no results/);
   assert.deepEqual(receipt.tries.map((one) => one.outcome), ["error"]);
+});
+
+// An answer whose headers came (200, or a status this server reads) and whose body then broke: a socket reset, or the
+// request's own timeout (a TimeoutError, or an AbortError with no stop by the caller). Exa's fake sends one chunk and
+// then breaks as `breaks` says; Firecrawl's answers whole. A caller's stop is the signal's, tested on its own below.
+const BROKEN = {
+  reset: () => new TypeError("terminated"),
+  timeout: () => new DOMException("The operation was aborted due to timeout", "TimeoutError"),
+  abort: () => new DOMException("This operation was aborted", "AbortError"),
+};
+/** What each way of breaking is typed as, with no stop by the caller. */
+const BROKEN_CODE = { reset: "CONNECT", timeout: "TIMEOUT", abort: "TIMEOUT" };
+
+/** A send whose answer is `status` with `headers`, one chunk of body, then `breaks()`'s error, or, with `breaks` null, the
+ *  request's own signal's reason once it aborts. `asked` counts the requests. */
+function brokenSend(status, breaks, headers = {}) {
+  const sent = { asked: 0 };
+  sent.send = async (_url, init) => {
+    sent.asked += 1;
+    let pulls = 0;
+    const body = new ReadableStream({
+      pull(controller) {
+        pulls += 1;
+        if (pulls === 1) return controller.enqueue(new TextEncoder().encode('{"requestId":"req-exa-1","results":['));
+        if (breaks) return controller.error(breaks());
+        return new Promise((resolve) => {
+          const stop = () => (controller.error(init.signal.reason), resolve());
+          if (init.signal.aborted) stop();
+          else init.signal.addEventListener("abort", stop, { once: true });
+          sent.waiting?.();
+        });
+      },
+    });
+    return new Response(body, { status, headers: { "content-type": "application/json", ...headers } });
+  };
+  return sent;
+}
+
+/** A send answering `answer` ({status, headers, json}) whole. */
+const wholeSend = (answer) => async () => new Response(JSON.stringify(answer.json), { status: answer.status, headers: { "content-type": "application/json", ...answer.headers } });
+
+/** A Web on a breaking Exa, a whole Firecrawl behind it for search and the guarded direct fetch for fetch. */
+function brokenWeb(exaSend) {
+  const net = network();
+  const guard = { fetch: (url, options) => publicFetch(url, { lookup: net.lookup, fetchImpl: net.fetchImpl, ...options }), check: (url, options) => publicCheck(url, { lookup: net.lookup, ...options }), html: readPage };
+  return web.createWeb({ order: { search: ["exa", "firecrawl"], fetch: ["exa", "direct"] }, keys: { exa: EXA_CANARY, firecrawl: FIRECRAWL_CANARY }, send: { exa: exaSend, firecrawl: wholeSend(firecrawlResults(FIRECRAWL_HITS)) }, guard, pay: async (_fee, send) => send(), now: () => START });
+}
+
+const turns = (receipt) => receipt.tries.map((one) => [one.provider, one.outcome, one.failure?.class, one.failure?.code]);
+
+test("Exa's answer whose body breaks after its 200 headers is a failed turn typed by why: web_fetch goes on to the direct fetch, web_search to Firecrawl", async () => {
+  for (const [how, breaks] of Object.entries(BROKEN)) {
+    const code = BROKEN_CODE[how];
+    const w = brokenWeb(brokenSend(200, breaks).send);
+    const page = await w.fetch(PUBLIC);
+    assert.deepEqual([page.answer.ok, page.answer.via, turns(page.receipt)], [true, "direct", [["exa", "error", "infra", code], ["direct", "ok", undefined, undefined]]], `fetch, ${how}`);
+    const found = await w.search("widgets");
+    assert.deepEqual([found.answer.provider, turns(found.receipt)], ["firecrawl", [["exa", "error", "infra", code], ["firecrawl", "ok", undefined, undefined]]], `search, ${how}`);
+  }
+});
+
+test("Exa's 402 or 429 whose body breaks after its headers is still read by its status: a 402 holds both tools, a 429 its tool", async () => {
+  for (const [code, breaks] of Object.entries(BROKEN)) {
+    const quota = brokenWeb(brokenSend(402, breaks).send);
+    const page = await quota.fetch(PUBLIC);
+    assert.deepEqual(turns(page.receipt), [["exa", "error", "quota", "HTTP_402"], ["direct", "ok", undefined, undefined]], `402, ${code}`);
+    const found = await quota.search("widgets");
+    assert.deepEqual(turns(found.receipt), [["exa", "held", "quota", "HELD"], ["firecrawl", "ok", undefined, undefined]], `402 holds search too, ${code}`);
+    const rate = brokenWeb(brokenSend(429, breaks).send);
+    const limited = await rate.search("widgets");
+    assert.deepEqual(turns(limited.receipt), [["exa", "error", "rate", "HTTP_429"], ["firecrawl", "ok", undefined, undefined]], `429, ${code}`);
+  }
+});
+
+test("a search stopped while Exa's body is read: the call answers, its Exa turn says it was stopped", async () => {
+  const exa = brokenSend(200, null);
+  const w = brokenWeb(exa.send);
+  const call = new AbortController();
+  exa.waiting = () => call.abort();
+  const found = await w.search("widgets", { signal: call.signal });
+  assert.ok("error" in found.answer, "no results from a stopped search");
+  assert.deepEqual(turns(found.receipt), [["exa", "error", "infra", "STOPPED"]], "Firecrawl is not started on a spent deadline");
+  assert.equal(exa.asked, 1);
+});
+
+test("a fetch turn Exa is not asked, its key refused earlier or the URL refused by the guard, is on the receipt as search's is", async (t) => {
+  const { exa, w } = await exaWeb(t, () => refused(401, { error: "Invalid API key", tag: "INVALID_API_KEY" }), { order: { search: ["exa"], fetch: ["exa", "direct"] } });
+  const first = await w.fetch(PUBLIC);
+  assert.deepEqual(turns(first.receipt), [["exa", "error", "refused", "INVALID_API_KEY"], ["direct", "ok", undefined, undefined]]);
+  const second = await w.fetch(NOTES);
+  assert.deepEqual(turns(second.receipt), [["exa", "error", "refused", "KEY_REFUSED"], ["direct", "ok", undefined, undefined]], "refused earlier: a turn, unsent");
+  const found = await w.search("widgets");
+  assert.deepEqual(turns(found.receipt), [["exa", "error", "refused", "KEY_REFUSED"]], "search's turn, for the same refusal");
+  assert.equal(exa.got.length, 1);
+  const { w: fresh } = await exaWeb(t, (_path, body) => exaPage(body.urls[0], "never"), { order: { search: [], fetch: ["exa", "direct"] } });
+  const evil = await fresh.fetch(EVIL);
+  assert.deepEqual(turns(evil.receipt)[0], ["exa", "error", "refused", "GUARD"], "the guard's refusal: a turn, unsent");
+});
+
+test("Exa's 402 or 429 whose body breaks keeps what its status said: the 402 a quota of the whole key, the 429 its Retry-After, and the next search held by it", async () => {
+  for (const [code, breaks] of Object.entries(BROKEN)) {
+    const quota = brokenWeb(brokenSend(402, breaks).send);
+    const spent = await quota.search("widgets");
+    assert.deepEqual([turns(spent.receipt)[0], spent.receipt.tries[0].limit, spent.receipt.tries[0].failure.covers], [["exa", "error", "quota", "HTTP_402"], { kind: "quota" }, "key"], `402, ${code}`);
+    const rate = brokenWeb(brokenSend(429, breaks, { "retry-after": "30" }).send);
+    const limited = await rate.search("widgets");
+    assert.deepEqual([turns(limited.receipt)[0], limited.receipt.tries[0].limit], [["exa", "error", "rate", "HTTP_429"], { kind: "rate", retryAfter: "30" }], `429, ${code}`);
+    const next = await rate.search("gadgets");
+    assert.deepEqual(turns(next.receipt), [["exa", "held", "rate", "HELD"], ["firecrawl", "ok", undefined, undefined]], `held for its Retry-After, ${code}`);
+  }
+});
+
+/** A send that never answers: once the request's signal aborts, it fails with that signal's reason, as fetch does. */
+function hangingSend() {
+  const sent = { asked: 0 };
+  sent.send = (_url, init) => {
+    sent.asked += 1;
+    return new Promise((_resolve, reject) => {
+      const stop = () => reject(init.signal.reason);
+      if (init.signal.aborted) stop();
+      else init.signal.addEventListener("abort", stop, { once: true });
+      sent.waiting?.();
+    });
+  };
+  return sent;
+}
+
+test("a search the run stops with a reason of its own (an Error, not an AbortError), before Exa's headers or while its body is read, is a stopped turn", async () => {
+  for (const [label, exa] of [["before the headers", hangingSend()], ["mid-body", brokenSend(200, null)]]) {
+    const w = brokenWeb(exa.send);
+    const call = new AbortController();
+    exa.waiting = () => call.abort(new Error("the run was stopped"));
+    const found = await w.search("widgets", { signal: call.signal });
+    assert.deepEqual(turns(found.receipt), [["exa", "error", "infra", "STOPPED"]], label);
+    assert.equal(exa.asked, 1);
+  }
 });

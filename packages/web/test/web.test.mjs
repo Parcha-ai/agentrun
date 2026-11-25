@@ -248,7 +248,10 @@ test("keyless Firecrawl with the direct fetch behind it: Firecrawl reads a publi
   await run(f, w, [
     { url: PUBLIC, asks: ["firecrawl-keyless"], tries: [["firecrawl-keyless", "ok"]], by: "firecrawl-keyless" },
     { url: PUBLIC, part: { offset: 10 }, asks: [], tries: [], by: "firecrawl-keyless", check: (_answer, receipt) => assert.equal(receipt.cache, "hit") },
-    { url: EVIL, asks: [], tries: [["direct", "error"]], by: null, check: (answer) => assert.match(answer.refused, /^refused: evil\.example is not a public host/) },
+    { url: EVIL, asks: [], tries: [["firecrawl-keyless", "error"], ["direct", "error"]], by: null, check: (answer, receipt) => {
+      assert.match(answer.refused, /^refused: evil\.example is not a public host/);
+      assert.equal(receipt.tries[0].failure?.code, "GUARD", "keyless Firecrawl's turn is the guard's refusal");
+    } },
     { url: NOTES, asks: ["firecrawl-keyless", "direct"], tries: [["firecrawl-keyless", "error"], ["direct", "ok"]], by: "direct" },
     { url: `${PUBLIC}?run=a`, asks: ["direct"], tries: [["firecrawl-keyless", "held"], ["direct", "ok"]], by: "direct" },
   ], "fetch firecrawl-keyless");
@@ -365,7 +368,7 @@ test("a URL short as asked but longer than 4,096 characters as sent (its href) i
   const url = `${PUBLIC}${"\u00e9".repeat(1_500)}`;
   assert.ok(url.length < web.URL_MAX && new URL(url).href.length > web.URL_MAX, "short as asked, long as sent");
   const providers = web.createWeb({ ...f.config, keys: { parallel: CANARY }, order: { search: [], fetch: ["firecrawl-keyless", "parallel"] } });
-  await run(f, providers, [{ url, asks: [], tries: [["parallel", "error"]], by: null }], "providers");
+  await run(f, providers, [{ url, asks: [], tries: [["firecrawl-keyless", "error"], ["parallel", "error"]], by: null }], "providers");
   const direct = web.createWeb({ ...f.config, order: { search: [], fetch: ["direct"] } });
   await run(f, direct, [{ url, asks: [], tries: [["direct", "error"]], by: null, check: (answer) => assert.equal(answer.error, "url is longer than 4,096 characters") }], "direct");
 });
