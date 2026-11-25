@@ -27,7 +27,7 @@ import { HARNESS_ID_PATTERN, HARNESSES } from "./harness.js";
 import { HARNESS_KEY_REENTER } from "./server-keys.js";
 import { LEARNING_LABEL, LEARNING_MODES, LEARNING_REASONS, LEARNING_STATES, RUN_LEARNING_USE } from "./learning.js";
 import { AUDIT_DEFAULTS, AUDIT_MAX, REPICK_MAX_CHARS_DEFAULT, REPICK_MAX_CHARS_MAX } from "./learning-setting.js";
-import { AFTER_STATES, CHEAPER_AFTER_RUNS, COST_CSV_COLUMNS, COST_WINDOW, COST_RUNS_DEFAULT, COST_RUNS_MAX, RUN_PATHS } from "./learning-cost.js";
+import { AFTER_STATES, CHEAPER_AFTER_RUNS, COST_CSV_COLUMNS, COST_WINDOW, COST_RUNS_DEFAULT, COST_RUNS_MAX, RUN_PATHS, WORKFLOW_CALL_OUTCOMES, WORKFLOW_CALLERS } from "./learning-cost.js";
 import { FEEDBACK_ROUNDS, FEEDBACK_STATUSES } from "./runner/feedback-round.js";
 import { COMPILE_AFTER_MAX } from "./learning-setting.js";
 import { LOOP_COMPILES_MAX } from "./store-reads/loop.js";
@@ -72,7 +72,7 @@ import { tableTools } from "./tool-list.js";
 import { SECRET_META_SCHEMA } from "./secret-writes.js";
 import { LABEL_KEY, MAX_LABEL_VALUE, MAX_LABELS } from "./run-labels.js";
 import { COST_BASES } from "./runner/metrics.js";
-import { PAST_RUNS } from "./runner/workflow-first.js";
+import { FIRST_REASONS, PAST_RUNS } from "./runner/workflow-first.js";
 import { BASH_POLICIES } from "./bash-read-only.js";
 // The modules that own the computer and Archil key writes: loading the document loads their secret-write predicates
 // (secret-writes.ts registerSecretWrite), so every operation the document marks has its predicate wherever it is read.
@@ -1385,6 +1385,25 @@ const RUN_PATH: Record<string, Json> = {
     description: "The learned workflow that served the run, as its end recorded it: present on a run with `path` `workflow` (its answer is the workflow's) or `handed_back` (its answer is the agent's), null on every other run. Read off the run's record, so every row of a runs list carries it.",
     "x-agentrun-serve": "path/1",
   },
+  workflow_calls: {
+    oneOf: [{
+      type: "array",
+      items: closed({
+        workflow: { type: "string", description: "The learned workflow called, by name." },
+        digest: { type: "string", description: "The revision that ran: the first 16 hex of its workflow.json's sha256." },
+        caller: { enum: [...WORKFLOW_CALLERS], description: "`platform`: it ran first, before the agent's first turn; `agent`: the agent called it itself." },
+        outcome: { enum: [...WORKFLOW_CALL_OUTCOMES], description: "`answered`; `handed_back`, it escalated, or the platform took its answer back to the agent; `failed`, it threw or was stopped; `refused`, it was refused before any node ran (its input, a check, a tool its gate denies, or the call's own gate: its ask declined, the cap's wrap-up) and ran nothing." },
+        usd: { type: ["number", "null"], description: "What its nodes' requests booked, in dollars; null when that is not known or can't be told apart from other work of the run (another call ran beside it)." },
+      }),
+    }, { type: "null" }],
+    description: "Every learned workflow call the run made, in call order, as its end recorded it: the platform's and the agent's own. The money rule charges a run the platform served first to that workflow alone, and a run only the agent called to each workflow it ran; a refused call counts on no side. An empty list on an ended run that called none; null where `path` is null.",
+    "x-agentrun-serve": "path/1",
+  },
+  first_choice: {
+    oneOf: [{ enum: [...FIRST_REASONS] }, { type: "null" }],
+    description: "Why the platform ran a learned workflow first on the run's last claim, or why not: `served`; `replay`, a replay run serves the workflow it replays; `replay_missing`; `none_laid`, the agent learns no workflow (or its run is not agentic); `off`, its launch set `workflow_first: false`; `none_fit`, no workflow takes its input; `many_fit`, more than one does; `not_promoted`, the one that does is not checked to serve yet; `champion_misfit`, the revision serving in its place does not take the input; `many_champions`; `cost_stop`, the money rule stopped it, over its cost by hand; `no_by_hand_cost`, the money rule stopped it, with no cost by hand to hold its served runs to (it is never served unchecked); `past_unread`, the money rule could not read the agent's past runs, so nothing ran first (it fails closed); `held`, a check refused the claim's workflow. Null on a run whose end recorded none (one that does not learn, or an SDK or native run).",
+    "x-agentrun-serve": "path/1",
+  },
 };
 const DATE_TIME = { type: "string", format: "date-time" };
 /** A trigger's source, as `adapters` give it. */
@@ -1819,7 +1838,7 @@ const LEARNING_COST = closed({
   workflows: { type: "array", items: closed({
     workflow: { type: "string", description: "The learned workflow, by name." },
     digest: { type: "string", description: "The version of it its newest run served first ran: the first 16 hex characters of its workflow.json's sha256. A new version starts its count from zero." },
-    state: { enum: ["serving", "needs_revision"], description: `\`serving\`: it runs first on every run it fits. \`needs_revision\`: the money rule stopped it, as a run's launch decides (\`reason\` says why), so it no longer runs first: the agent takes each run it would have served, and the stop asks for no new version. A new version (a new digest) runs first again.` },
+    state: { enum: ["serving", "needs_revision"], description: `\`serving\`: it runs first on every run it fits. \`needs_revision\`: the money rule stopped it, as a run's launch decides (\`reason\` says why), so it no longer runs first and the agent's own learned_workflow tool no longer runs it: the agent takes each run it would have served, and the stop asks for no new version. A new version (a new digest) runs first again.` },
     reason: { enum: ["over_line", "no_by_hand_cost", null], description: `Why \`state\` is \`needs_revision\`; null while it serves. \`over_line\`: over its newest ${COST_WINDOW} priced runs served at this version, its mean all-in cost (\`served\`) is at or over the agent's cost by hand (\`by_hand\`). \`no_by_hand_cost\`: it served ${COST_WINDOW} priced runs or more at this version and there is no cost by hand to hold them to (\`by_hand\` null: no run by hand, or none whose own cost is known exactly, \`unknown_cost_runs\` counting those), so it is never served unchecked.` },
     served: COST_MEAN(`The mean all-in cost (\`total_usd\`: the run's own cost, the workflow's nodes and, after a handback, the agent's work, with every learning round booked for it) of its newest ${COST_WINDOW} runs served first at this version whose all-in cost is known (a window, never how many runs it served: \`runs\` stops at ${COST_WINDOW}); null when none is.`),
     by_hand: COST_MEAN(`The agent's cost by hand, as the money rule reads it at a run's launch: the mean of the job's own cost (\`cost_usd\`, learning left out) of its runs on the \`agent\` path (a run that does not learn among them) in a window, the agent's newest ${PAST_RUNS} runs on no named disk since its learning's reset, whose cost is known exactly; null when there are none: past ${COST_WINDOW} served runs the workflow then stops (\`reason\` \`no_by_hand_cost\`). The window, never every run: \`summary.before\` reads every run before the takeover, so the two differ.`),
@@ -3963,7 +3982,7 @@ const SO_FAR = {
 /** composioperrun/1: the Composio user (and connected account) a per-run Composio server's calls run as, for one run. */
 const COMPOSIO_RUN_BINDING: Json = {
   ...closedWith({
-    composio_user_id: { type: "string", pattern: COMPOSIO_USER_ID.source, description: "The Composio user this run's calls of that server run as. The preset's default user `agentrun` is refused (422 not_allowed): it is the one single-user preset servers call as. On an API-only server (AGENTRUN_API_ONLY=1) any user the owner calls as here is refused too, in any letter case, before any account is looked up (422 not_allowed): the default and tool-listing users, and each user a server the owner saved stands on; any other user, a backend's own id or one starting `agentrun.token.`, is the caller's, and a `connected_account_id` it names must be one Composio lists under it (422 not_allowed; 424 when Composio doesn't answer)." },
+    composio_user_id: { type: "string", pattern: COMPOSIO_USER_ID.source, description: "The Composio user this run's calls of that server run as. The preset's default user `agentrun` is refused (422 not_allowed): it is the one single-user preset servers call as. From the API token, so is any user the owner calls as here, in any letter case: the default and tool-listing users, and each user a server the owner saved (not per-run) stands on: 422 not_allowed at this field, read at each request, nothing written. The owner's session binds any user. On an API-only server (AGENTRUN_API_ONLY=1), where every caller is the token, that refusal comes before any account is looked up; any other user, a backend's own id or one starting `agentrun.token.`, is the caller's, and a `connected_account_id` it names must be one Composio lists under it (422 not_allowed; 424 when Composio doesn't answer)." },
   }, {
     connected_account_id: { type: "string", pattern: "^ca_[A-Za-z0-9_-]{5,64}$", description: "The user's connected account they run on (Composio's `ca_...` id). Absent: Composio picks the user's account for the toolkit." },
   }),
@@ -3978,7 +3997,7 @@ const MCP_RUN_AUTH: Json = {
   propertyNames: { pattern: "^[a-z][a-z0-9-]{0,31}$" },
   // Not x-agentrun-secret: that marks a write of a secret the server keeps for every run (an owner's alone). This one is
   // the run's own, handed by whoever may start it, and kept only for that run.
-  description: "What each MCP server this run calls takes from the run, by server name: a per_run server's headers, `{\"<server>\": {\"headers\": {...}}}`, or the Composio account a per-run Composio server's calls run as, `{\"<server>\": {\"composio_user_id\": \"...\", \"connected_account_id\": \"ca_...\"}}` (the account optional). For this run alone, from whoever starts it: the server keeps it sealed for the run's life and redacts its values from what the run shows; a per-run Composio server's row never names a user or an account. A server of either kind that this run hands nothing calls its tools refused, nothing sent.",
+  description: "What each MCP server this run calls takes from the run, by server name: a per_run server's headers, `{\"<server>\": {\"headers\": {...}}}`, or the Composio account a per-run Composio server's calls run as, `{\"<server>\": {\"composio_user_id\": \"...\", \"connected_account_id\": \"ca_...\"}}` (the account optional). For this run alone, from whoever starts it: the server keeps it sealed for the run's life and redacts its values from what the run shows; a per-run Composio server's row never names a user or an account. A server of either kind that this run hands nothing calls its tools refused, nothing sent. The API token never binds a per-run Composio server to a Composio user the owner connects here (the user a preset server the owner saved calls as, or `agentrun`): 422 not_allowed at `mcp_auth.<server>.composio_user_id`, nothing written. Each binding is sealed with who handed it (the token or the owner's session), and each claim reads the owner's users again: a token's binding of a user the owner connected since, or one sealed before that mark, has its calls refused unsent until `mcp_auth` is handed again on a message or a new run starts.",
   "x-agentrun-serve": "mcpperrun/1",
 };
 

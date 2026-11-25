@@ -19,6 +19,34 @@ import { ApiError } from "./errors.js";
 export const RUN_PATHS = ["agent", "handed_back", "workflow", "replay", "audit"] as const;
 export type RunPath = (typeof RUN_PATHS)[number];
 
+/** Who called a learned workflow: the `platform` (it ran first, before the agent's first turn: runner/workflow-first.ts
+ *  WORKFLOW_FIRST_CALL) or the `agent` (its own learned_workflow call). */
+export const WORKFLOW_CALLERS = ["platform", "agent"] as const;
+export type WorkflowCaller = (typeof WORKFLOW_CALLERS)[number];
+/** How a learned workflow's call ended: `answered`, `handed_back` (it escalated, or a run served first took its answer
+ *  back to the agent), `failed` (it threw, or was stopped), or `refused` (refused before any node ran: its input, a
+ *  check, a tool its gate denies; it ran nothing, so the money rule counts it on no side). */
+export const WORKFLOW_CALL_OUTCOMES = ["answered", "handed_back", "failed", "refused"] as const;
+export type WorkflowCallOutcome = (typeof WORKFLOW_CALL_OUTCOMES)[number];
+/** One call of a learned workflow in a run, as its record keeps it (runner/workflow-calls.ts workflowCallsOf, from the
+ *  call's own journal entry): the workflow at its `digest`, who called it, how it ended, and what it booked (`usd`: the
+ *  requests its nodes made, the run's one booking read; null when that can't be told apart from other work or is not
+ *  known). A run's metrics keep each as `workflow_calls`, in call order; the ledger row and the money rule read them. */
+export type WorkflowCall = { readonly workflow: string; readonly digest: string; readonly caller: WorkflowCaller; readonly outcome: WorkflowCallOutcome; readonly usd: number | null };
+
+/** The workflow calls a run's metrics keep (`workflow_calls`), each checked field by field: one off its shape is left
+ *  out; none for a run that keeps none. */
+export function workflowCallsIn(metrics: unknown): WorkflowCall[] {
+  const calls = metrics && typeof metrics === "object" ? (metrics as { workflow_calls?: unknown }).workflow_calls : undefined;
+  if (!Array.isArray(calls)) return [];
+  return calls.flatMap((one): WorkflowCall[] => {
+    const c = (one ?? {}) as Record<string, unknown>;
+    const usdOk = c.usd === null || (typeof c.usd === "number" && Number.isFinite(c.usd));
+    if (typeof c.workflow !== "string" || typeof c.digest !== "string" || !WORKFLOW_CALLERS.includes(c.caller as WorkflowCaller) || !WORKFLOW_CALL_OUTCOMES.includes(c.outcome as WorkflowCallOutcome) || !usdOk) return [];
+    return [{ workflow: c.workflow, digest: c.digest, caller: c.caller as WorkflowCaller, outcome: c.outcome as WorkflowCallOutcome, usd: c.usd as number | null }];
+  });
+}
+
 /** A mean, rounded to the millionth: a quotient, never a booked figure. */
 const usd = (value: number) => Math.round(value * 1e6) / 1e6;
 
