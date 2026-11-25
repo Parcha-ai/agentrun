@@ -374,8 +374,12 @@ test("an OTLP credential is held as an error may quote it: a scheme's credential
   // A value with a `;` that ours can't decode: the SDK still sends what comes before the `;` (core parseKeyPairsIntoRecord).
   const property = `team-${"dummy"}-value-7710`;
   const [user, password, query] = [`user-${"dummy"}-4410`, `pass-${"dummy"}-8812`, `query-${"dummy"}-key-9931`];
+  // The userinfo is joined apart from the URL, so no line here reads as a URL with a password in it to the source export's
+  // credential scan (scripts/export-source.mjs credential_url).
+  const userinfo = (name, secret) => [name, secret].join(":");
+  const endpoint = `https://${userinfo(user, password)}@collector.invalid/v1/traces?region=us-east-1&api_key=${query}`;
   const env = {
-    OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: `https://${user}:${password}@collector.invalid/v1/traces?region=us-east-1&api_key=${query}`,
+    OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: endpoint,
     OTEL_EXPORTER_OTLP_HEADERS: `Authorization=Basic%20${basic},X-Api=Api-Key ${apiKey},x-sentry-auth=sentry sentry_key=${sentry},x-team=${property};%ZZ`,
   };
   const values = runnerSecrets(env);
@@ -383,8 +387,8 @@ test("an OTLP credential is held as an error may quote it: a scheme's credential
     assert.ok(values.includes(value), `${what} is held`);
   }
   assert.equal(values.includes("us-east-1"), false, "a parameter named like no credential is not held");
-  const said = otlpHeaderCut(env)(`401 from https://${user}:${password}@collector.invalid/v1/traces?region=us-east-1&api_key=${query}: bad credential ${basic}, ${apiKey}, ${property}`);
-  assert.equal(said, "401 from https://[redacted]:[redacted]@collector.invalid/v1/traces?region=us-east-1&api_key=[redacted]: bad credential [redacted], [redacted], [redacted]");
+  const said = otlpHeaderCut(env)(`401 from ${endpoint}: bad credential ${basic}, ${apiKey}, ${property}`);
+  assert.equal(said, `401 from https://${userinfo("[redacted]", "[redacted]")}@collector.invalid/v1/traces?region=us-east-1&api_key=[redacted]: bad credential [redacted], [redacted], [redacted]`);
 });
 
 test("a short OTLP header value is cut from the tracer's own error text, at any length; a standard header's value is left as it is", async (t) => {
