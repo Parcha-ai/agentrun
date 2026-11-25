@@ -185,3 +185,48 @@ test("Mode 1, a run's own process (its runner's MCP, heldFor): the MCP files in 
   assert.equal(readFileSync(join(local, "evidence", "mcp", "fal", filed[0]), "utf8"), LONG, "the whole answer, in the run's folder");
   assert.deepEqual(JSON.parse(readFileSync(join(local, "evidence", "fal", `${ID}.json`), "utf8")), RESULT, "fal's result, in the run's folder");
 });
+
+test("Mode 2, a run's own process, no computer: its MCP opens the run's disk Workspace at the first answer that files something, once, and a claim whose MCP files nothing opens none", { timeout: 120_000 }, async (t) => {
+  const { fake, register } = await fakeFal(t);
+  const { store } = await storeOn(t);
+  const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "mode2-mcp-lazy-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  const DISK = { diskId: "dsk-0000000000000001", region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" };
+  await saveArchilSettings(store, DISK);
+  await storeAgentDisk(store, "agent-own", { diskId: DISK.diskId });
+  await store.sealedKeys.put(ARCHIL_API_KEY_ROW, sealColumn(SEAL_KEY, sealedAt.sealedKey(ARCHIL_API_KEY_ROW), "fake-test-key-api-0001"));
+  await register(store);
+  const revision = { kind: "agentic", body: { instructions: "Answer.", tools: GRANTS }, mcpPin: PIN(fake.url) };
+  await store.agents.create({ id: "agent-own", name: "Own" }, { id: "rev-own", ...revision });
+  await store.runs.create({ id: "run-own", agentId: "agent-own", revisionId: "rev-own" });
+  const key = runKey("agent-own", "run-own");
+  strayFolder(data, "agent-own", "run-own");
+  const control = archilControlFetch();
+  const claimOn = (disk) => {
+    const deps = { store, sealKey: SEAL_KEY, env: {}, data, mcpLoopback: true, makeArchilDisk: () => disk, mountControl: { baseUrl: control.baseUrl, fetch: control.fetch } };
+    const reads = { claim: { runId: "run-own", epoch: 1 }, run: { agentId: "agent-own", revisionId: "rev-own", signInHanded: null }, launch: { input: { content: "Hello." } }, revision, claimed: {} };
+    return host.heldFor(deps, reads, (text) => text, () => {});
+  };
+  /** The disk's calls under the run's folder, and how many times its Workspace was opened (each open lists its root). */
+  const underTheRun = (disk) => disk.calls.filter((call) => [call.key, call.prefix].some((at) => typeof at === "string" && (at === key || at.startsWith(`${key}/`))));
+  const opens = (disk) => disk.calls.filter((call) => call.op === "listPage" && call.prefix === key && call.recursive === false && call.token === undefined).length;
+
+  // A claim whose MCP is made and let go with no call: nothing on the run's disk is touched for it.
+  const idle = new FakeArchilDisk();
+  const quiet = claimOn(idle);
+  assert.ok(await quiet.held.mcp({ appendRoot: async () => {} }), "the claim's MCP is made");
+  await quiet.release();
+  assert.deepEqual(underTheRun(idle), [], "a claim whose MCP files nothing opens no Workspace on the run's disk");
+
+  // A claim whose MCP files twice (a fal result it can't file there, then a long answer): opened at the first, once.
+  const disk = new FakeArchilDisk();
+  const side = claimOn(disk);
+  t.after(() => side.release());
+  const mcp = await side.held.mcp({ appendRoot: async () => {} });
+  assert.deepEqual(underTheRun(disk), [], "nothing is opened before a call");
+  const tool = mcp?.tools.find((one) => one.catalog === "mcp:fal/wait_for_jobs");
+  assert.ok(tool, "the run's wait_for_jobs");
+  const [first, second] = await callTwice(tool);
+  assert.equal(opens(disk), 1, "the run's disk Workspace is opened once for both answers");
+  assertFiledOverTheDisk({ data, agentId: "agent-own", runId: "run-own", disk, key, first, second });
+});
