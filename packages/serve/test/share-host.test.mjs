@@ -391,6 +391,9 @@ test("a file's content is read knowing its path: a credential file's plain conte
     const body = resigned({ ...doc, files });
     await assert.rejects(screenShare(body, []), (error) => error.code === "input_invalid" && (error.extra.details.counts["credential-file"] ?? 0) >= 1, files.map((file) => file.path).join());
   }
+  // A string read with no path (the agent's name, read before the files) that spells the file's read can't stand in for it.
+  const forged = resigned({ ...doc, agent: { ...doc.agent, name: JSON.stringify([".pgpass", `${pgpass}\n`]) }, files: [fileOf(".pgpass")] });
+  await assert.rejects(screenShare(forged, []), (error) => error.code === "input_invalid" && (error.extra.details.counts["credential-file"] ?? 0) >= 1, "a forged name");
 });
 
 test("each string is read alone too: a label the whole-body read misses still refuses", async (t) => {
