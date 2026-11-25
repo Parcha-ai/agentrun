@@ -13,6 +13,7 @@
 // relay's parts against a server in this process and a runner's relay over the same data.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createServer } from "node:http";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, test } from "node:test";
@@ -252,11 +253,16 @@ after(() => {
   for (const ws of boxes) ws.terminate();
 });
 
+/** The header the server's relay hop names a paired box's token in, by its SHA-256 alone (computer-attach.ts relayDial). */
+const RELAY_TOKEN = "x-agentrun-relay-token";
+
 /** One dial of `address`'s attach socket with the box's `token`, as its driver makes it: hello and ping answered, every
- *  close kept. `opened` settles with true once open, or the refusal's status and words. With `answer` (a promise), the
- *  box answers hello only once it settles; `asked` settles when the hello comes. */
-function box(address, token, { headers = {}, answer } = {}) {
-  const ws = new WebSocket(`${address.replace(/^http/, "ws")}${ATTACH_PATH}`, ATTACH_SUBPROTOCOL, { headers: { authorization: `Bearer ${token}`, ...headers }, perMessageDeflate: false });
+ *  close kept. `opened` settles with true once open, or the refusal's status, headers and words. With `answer` (a
+ *  promise), the box answers hello only once it settles; `asked` settles when the hello comes. With `hashed`, the dial
+ *  is the server's relay hop's: the token's SHA-256 in RELAY_TOKEN, no bearer. */
+function box(address, token, { headers = {}, answer, hashed = false } = {}) {
+  const named = hashed ? { [RELAY_TOKEN]: sha256Hex(token) } : { authorization: `Bearer ${token}` };
+  const ws = new WebSocket(`${address.replace(/^http/, "ws")}${ATTACH_PATH}`, ATTACH_SUBPROTOCOL, { headers: { ...named, ...headers }, perMessageDeflate: false });
   boxes.add(ws);
   ws.on("error", () => undefined);
   const closed = new Promise((resolve) => ws.once("close", (code, reason) => resolve({ code, reason: reason.toString("utf8") })));
@@ -265,7 +271,7 @@ function box(address, token, { headers = {}, answer } = {}) {
     ws.once("unexpected-response", (_req, res) => {
       let body = "";
       res.on("data", (chunk) => void (body += chunk));
-      res.on("end", () => resolve({ status: res.statusCode, body }));
+      res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, body }));
     });
     ws.once("error", (error) => resolve({ error: error.message }));
   });
@@ -287,7 +293,7 @@ function box(address, token, { headers = {}, answer } = {}) {
   return { ws, opened, closed, asked };
 }
 
-test("the runner's attach listener takes a paired box's socket only with the server's proof and only while the box's row routes it to this runner and incarnation: a row routed nowhere or elsewhere, no proof and a replay are each 401", { timeout: 60_000 }, async (t) => {
+test("the runner's attach listener takes a paired box's socket only with the server's proof, only by its token's hash, and only while the box's row routes it to this runner and incarnation: a row routed nowhere or elsewhere, no proof, a replay and the raw token are each 401", { timeout: 60_000 }, async (t) => {
   const { data, api, address } = await relayServer(t);
   const side = await runnerSide(t, data);
   const { relay } = await relayOf(t, side, address, "runner-a");
@@ -295,8 +301,8 @@ test("the runner's attach listener takes a paired box's socket only with the ser
   const listener = `http://${relay.host}:${relay.port}`;
   const key = relayKeyOf(side.seal.key);
   const to = { tokenSha256: sha256Hex(token), runner: "runner-a", incarnation: relay.incarnation };
-  const tried = async (proof) => {
-    const dial = box(listener, token, proof === undefined ? {} : { headers: { [LIVE_PROOF_HEADER]: proof } });
+  const tried = async (proof, { hashed = true, headers = {} } = {}) => {
+    const dial = box(listener, token, { hashed, headers: { ...(proof === undefined ? {} : { [LIVE_PROOF_HEADER]: proof }), ...headers } });
     const opened = await dial.opened;
     if (opened === true) dial.ws.close();
     return opened === true ? 101 : opened.status;
@@ -309,6 +315,10 @@ test("the runner's attach listener takes a paired box's socket only with the ser
   assert.equal(await paired.route(computer, { runner: "runner-a", incarnation: relay.incarnation, run: "run-a", until: UNTIL() }), true);
   assert.equal(await tried(undefined), 401, "no proof");
   assert.equal(await tried(relayProof(key, { ...to, incarnation: "another" })), 401, "a proof for another incarnation");
+  // Each with a proof of its own time (the listener takes a proof once, and a refused one is taken too).
+  assert.equal(await tried(relayProof(key, to, Date.now() - 3_000), { hashed: false }), 401, "the raw token with a good proof: the listener takes a paired token by its hash alone");
+  assert.equal(await tried(relayProof(key, to, Date.now() - 4_000), { headers: { authorization: `Bearer ${token}` } }), 401, "the hash and a bearer both: one or the other");
+  assert.equal(await tried(relayProof(key, { ...to, tokenSha256: "A".repeat(64) }, Date.now() - 5_000), { headers: { [RELAY_TOKEN]: "A".repeat(64) } }), 401, "a hash that is not a SHA-256's lower-case hex");
   const proof = relayProof(key, to);
   assert.equal(await tried(proof), 101, "the server's proof for this token, runner and incarnation opens it, the row routing the box here");
   assert.equal(await tried(proof), 401, "the same proof again (a captured one) opens no second socket");
@@ -355,6 +365,61 @@ test("a paired box routed to a runner that is gone, or that restarted since, is 
   assert.doesNotMatch(lines.join("\n"), PAIRED_TOKEN, "no paired token in the server's lines");
 });
 
+/** A runner's listener stand-in on loopback: the headers of each upgrade it is sent, each answered 403. Its runner's row
+ *  (a presence of its own) says it answers there. */
+async function listenerStandIn(t, side, runner) {
+  const heard = [];
+  const server = createServer((_req, res) => void res.writeHead(404).end());
+  server.on("upgrade", (req, socket) => {
+    heard.push(req.headers);
+    socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\ncontent-length: 0\r\n\r\n");
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => (server.closeAllConnections(), server.close(resolve))));
+  const presence = keepPresence(side.store.runners, runner, null);
+  t.after(() => presence.close());
+  await presence.relay({ host: "127.0.0.1", port: server.address().port });
+  return { heard, incarnation: presence.incarnation };
+}
+
+test("the server's relay hop carries a paired box's token only as its SHA-256: the runner's listener is sent no bearer and no raw token, the hash its proof binds", { timeout: 60_000 }, async (t) => {
+  const { data, api, address } = await relayServer(t);
+  const side = await runnerSide(t, data);
+  const { computer, token } = await pairedBox(api, address);
+  const { heard, incarnation } = await listenerStandIn(t, side, "runner-h");
+  assert.equal(await (await routing(side.store)).route(computer, { runner: "runner-h", incarnation, run: "run-h", until: UNTIL() }), true);
+  const refused = await Promise.race([box(address, token).opened, sleep(10_000).then(() => "hung")]);
+  assert.equal(refused.status, 503, JSON.stringify(refused));
+  assert.equal(heard.length, 1, "the server relayed the dial to the runner's listener");
+  const [sent] = heard;
+  assert.equal(sent.authorization, undefined, `no bearer on the hop: ${JSON.stringify(sent)}`);
+  assert.doesNotMatch(JSON.stringify(sent), PAIRED_TOKEN, "no raw paired token in any header");
+  assert.equal(sent[RELAY_TOKEN], sha256Hex(token), "the token's SHA-256 alone");
+  assert.ok(sent[LIVE_PROOF_HEADER], "with the proof that binds it");
+});
+
+test("a relay refusal the box is answered names no internal host or port: the 503's words and headers carry only the box, the run and the runner, while the server's line keeps where it dialed", { timeout: 60_000 }, async (t) => {
+  const { data, lines, api, address } = await relayServer(t);
+  const side = await runnerSide(t, data);
+  const { computer, token } = await pairedBox(api, address);
+  // A runner whose row names a loopback port nothing answers on now.
+  const closed = createServer();
+  await new Promise((resolve) => closed.listen(0, "127.0.0.1", resolve));
+  const { port } = closed.address();
+  await new Promise((resolve) => closed.close(resolve));
+  const presence = keepPresence(side.store.runners, "runner-c", null);
+  t.after(() => presence.close());
+  await presence.relay({ host: "127.0.0.1", port });
+  assert.equal(await (await routing(side.store)).route(computer, { runner: "runner-c", incarnation: presence.incarnation, run: "run-c", until: UNTIL() }), true);
+  const refused = await Promise.race([box(address, token).opened, sleep(15_000).then(() => "hung")]);
+  assert.equal(refused.status, 503, JSON.stringify(refused));
+  assert.equal(refused.body, `${NAME} (${computer}) for run run-c: runner runner-c, which holds it, did not answer`);
+  const said = `${refused.body}\n${JSON.stringify(refused.headers)}`;
+  assert.doesNotMatch(said, new RegExp(`127\\.0\\.0\\.1|:${port}\\b|ECONNREFUSED`), `no host, port or socket error text: ${said}`);
+  await until(async () => lines.find((line) => line.includes("computer_relay_refused") && line.includes("run-c")), Boolean, "the server's refusal line");
+  assert.match(lines.find((line) => line.includes("computer_relay_refused") && line.includes("run-c")), new RegExp(`127\\.0\\.0\\.1:${port}`), "the server's line keeps where it dialed");
+});
+
 test("a close on either side of a relayed paired socket closes the other: the box's close takes it off the runner's hub, and the runner's stop closes the box's socket with 1001, which it redials", { timeout: 60_000 }, async (t) => {
   const { data, lines, api, address } = await relayServer(t);
   const side = await runnerSide(t, data);
@@ -394,7 +459,7 @@ test("a paired box whose route leaves the runner while it says hello there (its 
   /** A dial of the runner's listener whose box answers hello only once `then` (called at the hello) is done. */
   const heldDial = async (then) => {
     let answer;
-    const dial = box(listener, token, { headers: proof(), answer: new Promise((resolve) => (answer = resolve)) });
+    const dial = box(listener, token, { hashed: true, headers: proof(), answer: new Promise((resolve) => (answer = resolve)) });
     assert.equal(await dial.opened, true, "the runner's listener takes the box, its route naming this runner");
     await dial.asked;
     await then();
@@ -411,7 +476,7 @@ test("a paired box whose route leaves the runner while it says hello there (its 
   assert.equal((await side.store.pairedComputers.get(computer))?.revokedAt, null, "its pairing stays good");
   assert.ok(pairedRow((await api("GET", "/computers")).body, computer), "the server still lists it as paired");
   assert.equal(await paired.route(computer, { ...mine, run: "run-b", until: UNTIL() }), true);
-  const again = box(listener, token, { headers: proof() });
+  const again = box(listener, token, { hashed: true, headers: proof() });
   assert.equal(await again.opened, true, "its redial, routed to this runner again, is taken");
   await until(async () => relay.dial.hub.online(computer), Boolean, "the runner's hub takes the box again: nothing of it was revoked");
   again.ws.close(1000, "done");
