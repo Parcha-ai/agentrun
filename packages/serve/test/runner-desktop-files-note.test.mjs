@@ -62,8 +62,9 @@ const until = async (done, what, ms = 60_000) => {
 const FAUX_DEPS = { kinds: FAUX.kinds, keyTable: FAUX.keyTable, launch: FAUX.launch, providers: {}, spec: () => ({ image: "faux", lifetimeMs: 600_000, network: "open" }), check: { readBackOf } };
 
 /** run-1 on --faux's desktop, run by a runner on the pi spec with `script` as its model, or with `cli` (`{ env }`) on
- *  opencode's CLI spec; `body`, the agent's. Each pi request's body is kept in `requests`. */
-async function desktopRun(t, { script = [], body = { tools: ["read", "write"] }, approvers = false, cli }) {
+ *  opencode's CLI spec; `body`, the agent's; `approvers`, given, the server's approvers row. Each pi request's body is
+ *  kept in `requests`. */
+async function desktopRun(t, { script = [], body = { tools: ["read", "write"] }, approvers, cli }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-desktop-files-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -77,7 +78,7 @@ async function desktopRun(t, { script = [], body = { tools: ["read", "write"] },
   await server.agents.create({ id: "agent-1", name: "Desk" }, { id: "rev-1", kind: "agentic", body: { instructions: "Look.", computer: DESKTOP, ...body } });
   const model = cli ? { harness: "opencode", model: { provider: "openai", modelId: "gpt-6.1-sol" } } : { harness: "pi", model: { provider: "anthropic", modelId: "claude-sonnet-5.5" } };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Look." }, title: "t", place: { mode: "runner" }, ...model } });
-  if (approvers) await server.settings.put("approvers", { approvers: true });
+  if (approvers !== undefined) await server.settings.put("approvers", { approvers });
   await server.flush?.();
   const requests = [];
   const route = { model: "faux-1", provider: { api: "anthropic-messages", origin: "https://route.invalid", credential: () => "not-a-secret" }, fetch: scriptedOrigin(script, requests), price: () => 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 100 };
@@ -112,7 +113,11 @@ test("a desktop that mounts no folder: the model's first request carries the fil
   assert.match(JSON.stringify(one.requests[1]), /saved as shots\/desktop\.png in the run's files/, "the model is told where it went");
 });
 
-test("with the desktop allowed and write set to deny, a screenshot with save_as is refused in write's words and nothing is written to the run's files", { timeout: 120_000 }, async (t) => {
+/** The computer_screenshot a request offers the model. */
+const offeredShot = (request) => request.tools.find((tool) => tool.name === "computer_screenshot");
+
+// Write's deny in the gate's own words is screenshot-save-gate.test.mjs's: here the offered schema refuses save_as first.
+test("with the desktop allowed and write set to deny, computer_screenshot offers no save_as, a screenshot with save_as anyway is refused, and nothing is written to the run's files", { timeout: 120_000 }, async (t) => {
   const one = await desktopRun(t, {
     script: [{ call: "computer_screenshot", args: { save_as: "shots/desktop.png" } }, { say: "done" }],
     body: { tools: ["read", "write"], toolSettings: { desktop: { permission: "allow" }, write: { permission: "deny" } } },
@@ -121,11 +126,35 @@ test("with the desktop allowed and write set to deny, a screenshot with save_as 
   assert.equal(row.state, "ended", JSON.stringify(row));
   assert.equal(one.requests.length, 2, "the refused screenshot, then the answer");
   assert.equal(JSON.stringify(one.requests[0]).match(NOTES)?.[0], NOTE_NO_FILES, "the files note says screenshots can't be saved here, and promises no save_as");
-  const answered = JSON.stringify(one.requests[1]);
-  assert.match(answered, /write is set to deny for this agent/, "the model reads write's deny");
-  assert.match(answered, /save_as/, "and why it holds a screenshot");
-  assert.doesNotMatch(answered, /saved as shots/, "nothing says it was saved");
+  const offered = offeredShot(one.requests[0]);
+  assert.ok(offered && !("save_as" in offered.input_schema.properties), `no save_as offered: ${JSON.stringify(offered?.input_schema)}`);
+  assert.doesNotMatch(offered.description, /save_as/, "nor named in its words");
+  const answered = JSON.stringify(one.requests[1].messages.at(-1));
+  assert.match(answered, /save_as/, `the call is refused: ${answered}`);
+  assert.doesNotMatch(JSON.stringify(one.requests), /saved as shots/, "nothing says it was saved");
   assert.ok(!existsSync(join(runFolder(one.dir, "agent-1", RUN), "shots/desktop.png")), "nothing in the run's files");
+});
+
+test("given write set to ask on a server where no one can approve, or naming no tools list, the files note says screenshots can't be saved and computer_screenshot offers no save_as", { timeout: 120_000 }, async (t) => {
+  for (const [what, body, approvers] of [
+    ["write asks, no approvers", { tools: ["read", "write"], toolSettings: { desktop: { permission: "allow" }, write: { permission: "ask" } } }, false],
+    ["no tools list", { toolSettings: { desktop: { permission: "allow" } } }, undefined],
+  ]) {
+    const one = await desktopRun(t, { script: [{ say: "done" }], body, approvers });
+    const row = await rests(one, ["ended"]);
+    assert.equal(row.state, "ended", `${what}: ${JSON.stringify(row)}`);
+    assert.equal(JSON.stringify(one.requests[0]).match(NOTES)?.[0], NOTE_NO_FILES, `${what}: the note offers no save_as`);
+    const offered = offeredShot(one.requests[0]);
+    assert.ok(offered && !("save_as" in offered.input_schema.properties), `${what}: no save_as offered: ${JSON.stringify(offered?.input_schema)}`);
+  }
+});
+
+test("the same with write set to ask and approvers on: the full note, and save_as offered", { timeout: 120_000 }, async (t) => {
+  const one = await desktopRun(t, { script: [{ say: "done" }], body: { tools: ["read", "write"], toolSettings: { desktop: { permission: "allow" }, write: { permission: "ask" } } }, approvers: true });
+  const row = await rests(one, ["ended"]);
+  assert.equal(row.state, "ended", JSON.stringify(row));
+  assert.equal(JSON.stringify(one.requests[0]).match(NOTES)?.[0], NOTE, "a person can approve a save: the note offers it");
+  assert.ok("save_as" in offeredShot(one.requests[0]).input_schema.properties, "save_as offered");
 });
 
 // The direct call and a codemode script's nested call are both refused by the session's check of the offered schema,
@@ -179,7 +208,9 @@ test("the files note is told once a run: the claim that resumes it after a park 
   assert.deepEqual(fileRows(said), [ROW], "its row once");
 });
 
-test("a CLI harness (opencode) on a desktop that mounts no folder: its first main-model request carries the files note once, and the timeline shows it once", { timeout: 120_000 }, async (t) => {
+/** A model gateway opencode's stand-in talks to, answering "Done." to each request, and the env that points it there;
+ *  each POST's body is kept in `bodies`. */
+async function opencodeGateway(t) {
   const bodies = [];
   const gw = createServer(async (req, res) => {
     let text = "";
@@ -195,6 +226,11 @@ test("a CLI harness (opencode) on a desktop that mounts no folder: its first mai
   await new Promise((resolve) => gw.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => gw.close(resolve)));
   const env = { AGENT_MODEL_BASE_URL: `http://127.0.0.1:${gw.address().port}`, AGENT_MODEL_API_KEY: "not-a-secret", [OPENCODE_STANDIN_ENV]: JSON.stringify({ command: process.execPath, args: [STAND_IN] }), PATH: process.env.PATH };
+  return { env, bodies };
+}
+
+test("a CLI harness (opencode) on a desktop that mounts no folder: its first main-model request carries the files note once, and the timeline shows it once", { timeout: 120_000 }, async (t) => {
+  const { env, bodies } = await opencodeGateway(t);
   const one = await desktopRun(t, { body: { harness: "opencode", tools: ["read", "write"] }, cli: { env } });
   const row = await rests(one, ["ended"]);
   assert.equal(row.state, "ended", JSON.stringify(row));
@@ -202,4 +238,20 @@ test("a CLI harness (opencode) on a desktop that mounts no folder: its first mai
   assert.deepEqual(bodies.map((body) => (body.match(NOTES) ?? []).length), [1, ...bodies.slice(1).map(() => 0)], "the first request carries it, no later one");
   const said = (await runTimeline(one.server, RUN, ctx)).map((entry) => entry.summary);
   assert.deepEqual(fileRows(said), [ROW], "one row of the server's, labelled once");
+});
+
+test("a CLI harness (opencode) not given write, or given write set to ask where no one can approve: its files note says screenshots can't be saved", { timeout: 120_000 }, async (t) => {
+  for (const [what, body, approvers] of [
+    ["write absent", { harness: "opencode", tools: ["read"] }, undefined],
+    ["write asks, no approvers", { harness: "opencode", tools: ["read", "write"], toolSettings: { write: { permission: "ask" } } }, false],
+  ]) {
+    const { env, bodies } = await opencodeGateway(t);
+    const one = await desktopRun(t, { body, approvers, cli: { env } });
+    const row = await rests(one, ["ended"]);
+    assert.equal(row.state, "ended", `${what}: ${JSON.stringify(row)}`);
+    const noted = bodies.filter((sent) => sent.match(NOTES) !== null);
+    assert.equal(noted.length, 1, `${what}: one request carries the note`);
+    assert.ok(noted[0].includes(NOTE_NO_FILES.slice(0, -1)), `${what}: the note says screenshots can't be saved: ${noted[0].match(NOTES)?.[0]}`);
+    assert.ok(!noted[0].includes("save_as saves the screen"), `${what}: no save_as promised`);
+  }
 });
