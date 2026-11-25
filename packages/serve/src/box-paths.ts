@@ -81,11 +81,13 @@ export function remoteDockerOnce(env: NodeJS.ProcessEnv): Promise<string | undef
 /** Why this server can't run a Docker computer, or undefined when it can: on its Docker's own host (`here`), or in a
  *  container of that Docker's with its data on a named volume (`paths`: the computer mounts the run's folder and its
  *  daemon as that volume's subpaths, workspace/computer-deps.ts dockerVolumeOf). Any other layout says why (`reason`,
- *  dockerPathsOf), and so does a daemon of another machine (`remote`, remoteDockerOf's endpoint). The one check every
- *  reader of Docker's offer takes. */
-export function dockerComputerRefusal(paths: DockerPaths, remote: string | undefined): string | undefined {
+ *  dockerPathsOf), and so does a daemon of another machine (`remote`, remoteDockerOf's endpoint), and then a computerd
+ *  build missing for Docker's architecture (`noDaemon`: the computer package's dockerDaemonOf words, the ones its
+ *  create() would fail with). The one check every reader of Docker's offer takes. */
+export function dockerComputerRefusal(paths: DockerPaths, remote: string | undefined, noDaemon?: string): string | undefined {
   if ("reason" in paths) return paths.reason;
-  return remote !== undefined ? remoteDockerWords(remote) : undefined;
+  if (remote !== undefined) return remoteDockerWords(remote);
+  return noDaemon === undefined ? undefined : `${noDaemon}, then restart AgentRun`;
 }
 
 /** Where a runner's Docker has the data directory `data`, read once by the runner that makes a Docker computer: as the

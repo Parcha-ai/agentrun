@@ -14,6 +14,7 @@
 // runner only copies bytes and calls the Workspace: it reads nothing of them and dials nothing.
 import { ClaimRefused } from "./loop-contract.js";
 import { ChannelClosed } from "./run-channel.js";
+import { until } from "../until.js";
 import { saveSlots, SAVE_MAX_BYTES, type SaveSlots } from "../web-save.js";
 import type { Pieces, WritePieces } from "../workspace/pieced.js";
 import { type Workspace, WorkspaceError } from "../workspace/workspace.js";
@@ -50,16 +51,6 @@ export type BigWritesOptions = {
 export interface RunBigWrites {
   pieces(ws: Workspace): Pieces;
   close(): void;
-}
-
-/** `work`'s answer, or `signal`'s reason as soon as it aborts. */
-function until<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
-  if (signal.aborted) return Promise.reject(signal.reason);
-  return new Promise<T>((resolve, reject) => {
-    const abort = () => reject(signal.reason);
-    signal.addEventListener("abort", abort, { once: true });
-    work.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
-  });
 }
 
 export function runBigWrites(options: BigWritesOptions = {}): RunBigWrites {

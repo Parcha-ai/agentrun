@@ -308,6 +308,37 @@ The server maps an attached computer to a provider so a run takes it like any ot
 - **The policy** (which apps a run may use, which routes) stays the server's, as for every computer: the driver offers
   what its `hello` declares, and the server's claim narrows it.
 
+**A runner of its own process.** A paired computer dials the server, and a runner in a process of its own reaches its
+socket only through the server's relay, the one a hosted machine's dial takes ([Hosted machines that
+dial](#hosted-machines-that-dial)). It needs the runner to know the server's public address (`AGENTRUN_PUBLIC_URL`).
+Where the computer's socket goes is one settings row per computer, its route: the runner, that runner's process (its
+incarnation), the run, the hold's end, and the server's note of why a route was refused or dropped. Every write to it
+is a compare-and-set.
+
+- **The claim takes the route.** A run's `create` on a runner writes the route to name itself, under the run's claim.
+  It takes a route that is empty, or stale: its runner is gone or restarted since, or its run is final (completed,
+  failed or cancelled), read from the run's row. A route held by a live run on a live runner is refused `refused`:
+  `<name> is held by run <run> on runner <runner>: one run at a time`.
+- **The server moves the socket.** Once a second, the server compares each route with where each paired computer's
+  socket is. One in the wrong place is closed `1001`, and the driver's redial lands where its route says: with no
+  route, on the server's own hub; with a live route, relayed to the runner, which takes a paired token only while the
+  route names it; with a stale route, refused `503` in words the server keeps on the route, and the route dropped.
+- **The run waits for it.** `create` waits for the computer's socket on the runner for the computer's longest redial,
+  a relay's connect and a `hello`, and is refused in words naming the runner when it does not arrive. A cancel of the
+  run's claim ends the wait at once: the route it took is dropped, and `create` answers `aborted` in words. The run's
+  `release`, or the runner's sweep of a hold it no longer has, ends the hold, then drops the route, so the computer's
+  next dial comes back to the server. A run that ends any other way (cancelled, failed, its claim lost) releases the
+  same way as its loop unwinds. A runner process that dies releases nothing: its runner row stops renewing, so its
+  route is stale within 30 s, and a redial in that window gets the `503` and the stale drop. A runner whose relay
+  closed while its row is fresh still holds its route for at most those 30 s: it errs toward refusing a take.
+- **The runner beside the server takes a route too.** A run on the runner in the server's own process takes the route
+  the same way, naming that runner (its name and incarnation the server's, new at each start; it is live by its runner
+  row, with no relay), and is refused in the same words. The server keeps a computer whose route names it on its own
+  hub: the tick never moves it there, and moves it back there from a relay. A server restart leaves the old route stale.
+- **The list says where it is.** `GET /v2/computers` lists a routed computer's run, its runner (`held_on`) and the
+  hold's end from the route, online while its socket is relayed, and the route's note (`hold_note`) when a relay was
+  refused or the computer is attached nowhere.
+
 ## Hosted machines that dial
 
 A vendor that boots an image with env, and has no two-way exec, makes machines that dial this socket instead of being
@@ -369,8 +400,10 @@ test is `packages/serve/test/computer-attach-e2e.test.mjs`.
    computer; `computer-for-claim.ts` claims it (`create`) for the run and releases it at the run's end.
 5. **More than one serve process**: a computer's socket lands on one process. Until claims route to the process that
    holds the socket, attached computers need serve to run as one process, or a sticky route by computer id. Built: the
-   runner beside the server shares its `AttachHub`; a runner of its own process refuses a paired computer at the claim
-   in words that say so.
+   runner beside the server shares its `AttachHub`; a runner of its own process that knows the server's public address
+   takes the computer through the route its claim writes, and the server relays the socket to it ([A runner of its own
+   process](#the-servers-side-the-provider-attached)); one that does not refuses a paired computer at the claim in
+   words that say so.
 6. **The console**: a "pair a computer" page that shows the code and the paired computers, online or offline.
 
 ## Open questions

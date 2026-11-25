@@ -344,6 +344,17 @@ test('a state that does not rebuild to the digest it was committed with refuses 
   await assert.rejects(run(kept.store, workflowOf(), { input, layout: 'v4' }), (error) => error.code === 'FROZEN_CHECKPOINT_INVALID' && /does not rebuild/.test(error.message));
 });
 
+test('a stored maps table that is a list, not a record, refuses the open', async () => {
+  const kept = inspectable();
+  const input = { items: itemsOf(6) };
+  await assert.rejects(run(kept.store, workflowOf(), { input, layout: 'v4', cut: 'tally' }));
+  const record = kept.record();
+  record.state.maps = [];
+  kept.set(record);
+  const got = await run(kept.store, workflowOf(), { input, layout: 'v4' }).then(() => 'the run opened and finished', (error) => `${error.code}: ${error.message}`);
+  assert.equal(got, "FROZEN_CHECKPOINT_INVALID: The run's maps are not a record", `a maps table stored as a list refuses the open: it ended with ${got}`);
+});
+
 test('the default layout is the whole state in one record, on a store that keeps parts too', async () => {
   const kept = inspectable();
   const { layout } = await run(kept.store, workflowOf(), { input: { items: itemsOf(4) } });

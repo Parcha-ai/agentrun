@@ -507,14 +507,14 @@ test("a workflow a purged run wrote, still on main, is refused at the raw reads:
 // skip a record the gate refuses as championOf does, so none of them names the purged digest.
 test("the cost reads and the compile's held names skip a record the purge gate refuses: none names the purged digest", async () => {
   const { heldNamesOf } = await import("../dist/learn/compile.js");
-  const { revisionLedgerOf, servingReplayOf } = await import("../dist/store-reads/learning.js");
+  const { revisionsOf, servingReplayOf } = await import("../dist/store-reads/learning.js");
   const check = (n) => ({ compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1, n, alone: n, agreed: n - 1 });
   const rec = (digest, decided, commit, extra = {}) => ({ workflow: "answer", digest, at: "t", decided, reason: "r", commit, ...extra });
   const skip = (one) => one.commit === "c2";
   const crowned = [rec("v1", "promote", "c1", { check: check(10) }), rec("v2", "promote", "c2", { check: check(20) })];
   const held = [...crowned, rec("v2", "hold", "c2")];
   const runs = [{ path: "workflow", workflow: "answer" }];
-  const states = (records) => Object.fromEntries(revisionLedgerOf(records, [], [], [], skip).revisions.map(({ digest, state }) => [digest, state]));
+  const states = (records) => Object.fromEntries(revisionsOf(records, [], skip).map(({ digest, state }) => [digest, state]));
   assert.deepEqual({ replay: servingReplayOf(crowned, runs, skip)?.n ?? null, states: states(crowned), held: [...heldNamesOf(held, skip)] }, { replay: 10, states: { v1: "serving", v2: "stopped" }, held: [] }, "the serving check is v1's, the bill says v1 serves, and no revision of the purged v2 is asked of the compile");
 });
 
