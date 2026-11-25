@@ -342,7 +342,7 @@ async function credentialsNow(file: string, options: RenewLoginOptions): Promise
 /** The pinned CLI's renewal of a login (the adapter's login-refresh.ts), as the runner does it in the CLI's place. */
 export function renewLogin(options: RenewLoginOptions = {}): Renew {
   const now = options.now ?? Date.now;
-  return async (login, seen, refusedAccess) => {
+  const renew: Renew = async (login, seen, refusedAccess) => {
     const file = join(login.dir, LOGIN_FILE);
     // A pair renewed here and not saved yet: its token is handed and its write tried again (under the refresh locks, read
     // again there: saveHeldUnderLock), and nothing is posted, for the file's refresh token is spent. Once saved, a token
@@ -370,12 +370,18 @@ export function renewLogin(options: RenewLoginOptions = {}): Renew {
     // is handed that pair. The spent check stops only a new request.
     let flight = flights.get(refresh);
     if (!flight) {
-      if (dead.has(refresh)) throw new Error("the login's refresh token is spent or was refused for good");
+      if (dead.has(refresh)) {
+        // The renewal that spent it may have held its pair unsaved and settled while this read was out, after the check
+        // of heldPairs above: that pair is this ask's, through the held branch, never a refusal.
+        if (heldPairs.get(file)?.posted === refresh) return renew(login, seen, refusedAccess);
+        throw new Error("the login's refresh token is spent or was refused for good");
+      }
       flight = renewUnderLock(login.dir, file, seen, refresh, options).finally(() => flights.delete(refresh));
       flights.set(refresh, flight);
     }
     return flight;
   };
+  return renew;
 }
 
 /** The file operations a refresh lock is taken, touched and released with: fs/promises' own, or a test's that watches
