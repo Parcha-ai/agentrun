@@ -1234,8 +1234,12 @@ passes the binding's conformance cases (below) needs no change here.
 - **Mode 1** (the default): on this server's own disk. Only a provider that binds a folder of this machine can hold
   it, so a sandbox runs on Docker only; a Daytona, Modal, E2B or Agent37 sandbox is refused ("Mode 1 runs a sandbox only on
   Docker").
-- **Mode 2**: on Archil disks. `PUT /v2/workspace/archil` turns it on with the account key, `ARCHIL_API_KEY`, its
-  region and that region's S3 URL (and an exec image pinned by digest, if you want one other than serve's default);
+- **Mode 2**: on Archil disks. `PUT /v2/workspace/archil` turns it on with the account key, `ARCHIL_API_KEY`, and its
+  region (and an exec image pinned by digest, if you want one other than serve's default). For a region serve knows
+  (`aws-us-east-1`, `aws-us-west-2`, `aws-eu-west-1` and `gcp-us-central1`, the regions Archil's SDK names; `GET` lists
+  them in `regions`), the S3 URL is the region's (`https://s3.green.us-east-1.aws.prod.archil.com` for `aws-us-east-1`)
+  and `s3Url` may be left out; one given is used instead, and `GET` says which in `s3UrlFrom`. Any other region needs
+  its `s3Url`;
   `DELETE` turns it off. The default exec image is Docker's `buildpack-deps:trixie-scm` pinned by digest (git 2.47),
   because Archil's own has git 2.34 and a read-only bash policy runs git only at 2.43 or later. An image you name needs
   git 2.43 for that too, and GNU coreutils and perl, as Debian-family images have. A Modal, E2B or Agent37 sandbox
@@ -1258,17 +1262,17 @@ passes the binding's conformance cases (below) needs no change here.
   machine) or null (none).
 
   The PUT is a secret write, so it takes the owner's signed-in session. A server with none to give it (API only, or
-  `AGENTRUN_ACCOUNTS=0` reached beyond loopback) is set where it is started instead: `AGENTRUN_ARCHIL_REGION` and
-  `AGENTRUN_ARCHIL_S3_URL` together, and `AGENTRUN_ARCHIL_IMAGE` for a pinned exec image, with the account key in
-  `ARCHIL_API_KEY`. Each agent's disk is then made on its first run, as with saved settings:
+  `AGENTRUN_ACCOUNTS=0` reached beyond loopback) is set where it is started instead: `AGENTRUN_ARCHIL_REGION`,
+  `AGENTRUN_ARCHIL_S3_URL` for a region serve doesn't know (or to use another endpoint than a known region's), and
+  `AGENTRUN_ARCHIL_IMAGE` for a pinned exec image, with the account key in `ARCHIL_API_KEY`. Each agent's disk is then
+  made on its first run, as with saved settings:
 
   ```sh
-  AGENTRUN_ARCHIL_REGION=aws-us-east-1 AGENTRUN_ARCHIL_S3_URL=https://s3.example.com \
-  ARCHIL_API_KEY=... node packages/serve/dist/cli.js
+  AGENTRUN_ARCHIL_REGION=aws-us-east-1 ARCHIL_API_KEY=... node packages/serve/dist/cli.js
   ```
 
-  Each value is checked as the PUT checks it. One of the region and S3 URL without the other, or a value the PUT would refuse,
-  stops the start, in words naming each variable. Set, they win over saved settings, as `ARCHIL_API_KEY` wins over a
+  Each value is checked as the PUT checks it. A variable set without the region, no S3 URL for a region serve doesn't
+  know, or a value the PUT would refuse, stops the start, in words naming each variable. Set, they win over saved settings, as `ARCHIL_API_KEY` wins over a
   saved key, and nothing is written to the store: `GET /v2/workspace/archil` says `source: "env"` (saved ones say
   `"console"`), and `PUT` and `DELETE` are `409 key_set_by_server`, since they are changed where the server is started.
   Unset, the saved settings, if any, hold again. A runner started on its own (`agentrun-serve runner`) reads them from its
@@ -1827,6 +1831,28 @@ has the row **Use Claude Code's login on this machine**, over these routes:
   The CLI dies with the server, as a session's CLI does, so a server that is killed outright (SIGKILL, the OOM killer)
   leaves no sign-in waiting on the browser's port.
 - `DELETE /v2/settings/claude-login` turns it off. The login stays as the CLI keeps it.
+- `POST /v2/settings/claude-login/sign-out` signs out of AgentRun's own login, for a fresh sign-in or another account: it
+  ends a sign-in that waits, turns the mode off, runs the pinned CLI's own `claude auth logout` on
+  `<data>/claude-login` (which removes its credentials file and, on macOS, its Keychain item for that folder), then
+  removes that folder, the login's signed-in note in `claude-login-answers/` and the runner's token reader, whatever the
+  CLI said. Each removal stands alone: one that fails is named in the answer and the rest still happen. It answers
+  `{ "confirmed": true, "login": <the view, off> }`; `confirmed` false adds a `message` saying what may remain: the
+  CLI didn't confirm its own sign-out, or its step failed, named (on macOS its Keychain item may remain), or a file it
+  could not remove, by path. The CLI's sign-out runs where the folder is already gone too, so a retry after an
+  unconfirmed sign-out confirms only where the CLI does. The next turn-on reads `signed_out` and the sign-in starts as
+  before. `<data>/claude-login`
+  is a folder AgentRun keeps itself: a turn-on where it is a link is refused, and a sign-out that finds a link there
+  removes the link alone (and the login's signed-in note), runs no CLI through it, and names what it led to. Runs already going are left as a turn-off leaves them, and fail saying the
+  login is signed out at their next read of it. Where each run is a user of its own, a run claimed on the login and
+  started while the mode is off is refused at its start, as after a turn-off; the claim checks the login's folder, not
+  its account, so a run claimed before Sign out and started after a new sign-in may run on the new account. What Sign
+  out does not guarantee for a run still going: where runs stay in the runner's process, the run's CLI holds the login's
+  refresh token itself and may write a renewed token pair back into `<data>/claude-login` after the folder is removed
+  (nothing removes it again when that run ends), so once such runs end, a turn-on that reads `signed_in` again means
+  Sign out again. The runner's own renewal, for
+  runs that are users of their own, never writes back to a removed login. This machine's own login (`place` `machine`)
+  is the person's: the sign-out is refused (403) with nothing touched, and the words say to run `claude auth logout` in
+  a terminal there. The console's Claude login row offers Sign out only while AgentRun's own login is signed in.
 
 While it is on, a claude-agent run on an `anthropic/<model>` model goes on the login: its CLI gets no
 `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` or key, no model proxy runs, and the CLI's sandbox denies its commands
