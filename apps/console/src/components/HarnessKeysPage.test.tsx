@@ -118,6 +118,17 @@ describe("HarnessKeysPage", () => {
     expect(asked.find((a) => a.method === "DELETE")).toEqual({ method: "DELETE", path: "/v2/settings/harness-keys/old-agent/OLD_AGENT_API_KEY" });
   });
 
+  it("a key saved before keys were tied to a recipe file says so, not that the recipe changed", async () => {
+    const unbound: HarnessKeys = { harnesses: [
+      { ...unsaved.harnesses[0]!, reenter: [{ name: "harness:model-agent:MODEL_AGENT_API_KEY", why: "not_bound" }] },
+    ] };
+    const { host } = await mount(true, { list: () => unbound });
+    const row = host.querySelector('[data-harness="model-agent"]')!.textContent;
+    expect(row).toContain("Not tied to a recipe file");
+    expect(row).toContain("paste it again");
+    expect(row).not.toContain("another version");
+  });
+
   it("a saved key that does not open stays removable: one to enter again for a changed recipe, and a kept one under another seal key", async () => {
     const unopened: HarnessKeys = { harnesses: [
       { ...unsaved.harnesses[0]!, reenter: [{ name: "harness:model-agent:MODEL_AGENT_API_KEY", why: "recipe_changed" }] },

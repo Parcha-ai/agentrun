@@ -7,6 +7,7 @@ import { constants, existsSync, readFileSync } from "node:fs";
 import { access, mkdtemp, readFile, readlink, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
+import { chromeEnv, type HostEnv } from "./child-env.js";
 import { fail, ok, type Result } from "./result.js";
 
 /** The names a Chrome or Chromium goes by on a Linux PATH. */
@@ -187,9 +188,10 @@ export const CHECK_MS = 30_000;
  * Whether the Chrome at `path` starts here with its sandbox on: an executable file, a user that is not root, and one
  * headless start on a blank page (`--dump-dom about:blank`) in a profile of its own that goes with it, with a proxy no
  * name or address reaches, so nothing leaves the machine. ok with the resolved path; refused in words that never offer
- * to turn the sandbox off. From #1718's checkChrome. `uid`: the user this process runs as (a test's seam).
+ * to turn the sandbox off. From #1718's checkChrome. `uid`: the user this process runs as (a test's seam). `env`: the
+ * host's environment, of which Chrome holds the names it reads (CHROME_ENV_NAMES) and nothing else; without it, none.
  */
-export async function checkChrome(path: string, { uid = process.getuid?.(), timeoutMs = CHECK_MS }: { uid?: number; timeoutMs?: number } = {}): Promise<Result<string>> {
+export async function checkChrome(path: string, { uid = process.getuid?.(), timeoutMs = CHECK_MS, env }: { uid?: number; timeoutMs?: number; env?: HostEnv } = {}): Promise<Result<string>> {
 	const at = resolve(path);
 	const runs = (await stat(at).then((info) => info.isFile(), () => false)) && (await access(at, constants.X_OK).then(() => true, () => false));
 	if (!runs) return fail("not_found", `${at} is not an executable file: name a Chrome or Chromium binary with the executablePath option, or leave it out to look in the usual places`);
@@ -201,6 +203,7 @@ export async function checkChrome(path: string, { uid = process.getuid?.(), time
 		const said = await new Promise<{ code: number | null; signal: NodeJS.Signals | null; stderr: string }>((done) => {
 			const child = spawn(at, ["--headless=new", `--user-data-dir=${profile}`, "--no-first-run", "--proxy-server=http://agentrun-check.invalid:9", "--host-resolver-rules=MAP * ~NOTFOUND", "--dump-dom", "about:blank"], {
 				stdio: ["ignore", "ignore", "pipe"],
+				env: chromeEnv(env),
 				timeout: timeoutMs,
 				killSignal: "SIGKILL",
 			});

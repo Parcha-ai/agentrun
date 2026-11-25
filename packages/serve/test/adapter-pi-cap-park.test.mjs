@@ -46,10 +46,28 @@ test("a refusal's park keeps the run's computer for a raise: its spec's release 
     const base = piAdapterSpec({ script, tools: {}, hooks: quiet }, { fetch: scriptedOrigin(script, sent) });
     return async (claim, run) => {
       const spec = await base(claim, run);
-      return { ...spec, keptWords: "The desktop is kept for 10 minutes while you decide.", release: async (how) => { releases.push(how); await spec.release?.(how); } };
+      return { ...spec, keptWords: () => "The desktop is kept for 10 minutes while you decide.", release: async (how) => { releases.push(how); await spec.release?.(how); } };
     };
   };
   const { row } = await capRun(t, { script, specOf, cap: specCap(CAP), runCap: ({ capUsd: () => CAP, modelOf: () => SONNET }) });
   assert.equal(row.state, "parked", JSON.stringify(row));
   assert.deepEqual(releases, [{ parked: "refusal" }], "parked at the refusal, waiting for a raise");
+});
+
+test("a park whose computer was turned off by then keeps nothing, and says nothing of keeping it: its kept words read undefined at the park", async (t) => {
+  const script = [{ say: "never sent" }];
+  const releases = [];
+  const KEPT = "The desktop is kept for 10 minutes while you decide.";
+  const specOf = (sent) => {
+    const base = piAdapterSpec({ script, tools: {}, hooks: quiet }, { fetch: scriptedOrigin(script, sent) });
+    return async (claim, run) => {
+      const spec = await base(claim, run);
+      return { ...spec, keptWords: () => undefined, release: async (how) => { releases.push(how); await spec.release?.(how); } };
+    };
+  };
+  const { row, store } = await capRun(t, { script, specOf, cap: specCap(CAP), runCap: ({ capUsd: () => CAP, modelOf: () => SONNET }) });
+  assert.equal(row.state, "parked", JSON.stringify(row));
+  assert.deepEqual(releases, [{}], "released with no park cause: the computer goes, as at the run's end");
+  const rows = timelineOf(await rootEntries(store), { settled: true });
+  assert.equal(rows.some((r) => String(r.summary ?? "").includes(KEPT)), false, JSON.stringify(rows.map((r) => [r.kind, r.summary])));
 });
