@@ -250,11 +250,11 @@ export async function sweepKept(deps: {
   readonly runners?: Pick<Runners, "live">;
   /** The runner this sweep runs in (its name and presence incarnation): the rows pinned to it are its own to end. */
   readonly self?: KeptHolder;
-  /** Removes run `runId`'s Archil mount credentials of claim epoch `epoch` and earlier, by their names: asked after the
-   *  delete of a row whose computer held the run's folder on Archil, within the same bound. No claim removes that
+  /** Removes run `runId`'s Archil mount credentials of the row's claim epoch and earlier, by their names: asked after
+   *  the delete of a row whose computer held the run's folder on Archil, within the same bound. No claim removes that
    *  credential once the janitor ends the row (a stop takes no row; a resume that starts no computer never reads it).
    *  One that throws leaves the row ending, for the next pass. */
-  readonly revokeMount?: (runId: string, epoch: number) => Promise<void>;
+  readonly revokeMount?: (runId: string, kept: Kept) => Promise<void>;
 }): Promise<KeptSweep> {
   const ended: string[] = [];
   const failed: string[] = [];
@@ -298,7 +298,7 @@ export async function sweepKept(deps: {
       }
       const proven = async (): Promise<void> => {
         if (await deleteKept(provider, kept)) await deps.deleted?.(kept.provider, kept.id);
-        if (kept.folder === "archil") await deps.revokeMount?.(runId, kept.epoch);
+        if (kept.folder === "archil") await deps.revokeMount?.(runId, kept);
       };
       const deleted = await endKept(deps.settings, runId, kept, () => bounded(deps.deleteMs ?? KEPT_DELETE_MS, proven()));
       if (deleted) ended.push(kept.name);

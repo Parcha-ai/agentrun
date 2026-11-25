@@ -40,7 +40,8 @@ import { deleteUnderHold, ownerGoneOf, serverIdOf, wantsOn } from "./agent-compu
 import { archilApiKey } from "./archil-key.js";
 import { removeRunMountTokens } from "./archil-mount-credential.js";
 import type { ComputerDeps } from "./computer-deps.js";
-import { type KeptHolder, type KeptSweep, sparedKept, sweepKept } from "./computer-kept.js";
+import { type Kept, type KeptHolder, type KeptSweep, sparedKept, sweepKept } from "./computer-kept.js";
+import { MOUNT_TTL_MS } from "./archil-claim.js";
 import { storeLedger } from "./computer-ledger.js";
 import { providerKeys } from "./resolve-computer.js";
 import { intervalWrites } from "./computer-intervals.js";
@@ -241,20 +242,25 @@ export async function sweepServerComputers(deps: Pick<JanitorDeps, "store" | "co
  *  hours away); one pinned to another runner still there (the store's runners) is left to that runner. One that held the
  *  run's folder on Archil has the run's mount credentials up to its epoch removed, by name, on the run's disk, with this
  *  server's Archil key read as the claims read it (archil-key.ts); a run no longer in the store names no disk, and its
- *  credential ends at its ttl. Undefined without the store's settings, where none is kept. Never throws. */
+ *  credential ends at its ttl. Past its keep's time plus MOUNT_TTL_MS no remove is asked: the credential was minted
+ *  before the park, so it has ended at its ttl, and a remove that can never succeed (Archil turned off, its key gone, a
+ *  refusal for good) no longer keeps the row ending and said at every pass. Undefined without the store's settings,
+ *  where none is kept. Never throws. */
 export async function sweepKeptComputers(deps: Pick<JanitorDeps, "store" | "computers" | "env" | "sealKey" | "mountControl" | "now" | "self"> & { readonly log?: (line: string) => void }): Promise<KeptSweep | undefined> {
   const { store, computers } = deps;
   const writes = intervalWrites(store, deps.log, deps.now);
   const { settings } = store;
   if (!settings) return undefined;
-  const revokeMount = async (runId: string, epoch: number): Promise<void> => {
+  const now = (deps.now ?? Date.now)();
+  const revokeMount = async (runId: string, kept: Pick<Kept, "epoch" | "until">): Promise<void> => {
+    if (now >= kept.until + MOUNT_TTL_MS) return;
     const archil = await loadArchilSettings({ settings }, deps.env);
     if (!archil) throw new Error("its mount credential was not removed: this server's Archil settings are gone");
     const run = await store.runs.get(runId);
     const disk = run && (await runDiskIdOf({ runs: store.runs, settings }, runId, run.agentId));
     if (!disk) return;
     const { value } = await archilApiKey({ env: deps.env, keys: store.sealedKeys, sealKey: deps.sealKey });
-    await removeRunMountTokens({ region: archil.region, key: () => value, disk, ...deps.mountControl }, runId, epoch);
+    await removeRunMountTokens({ region: archil.region, key: () => value, disk, ...deps.mountControl }, runId, kept.epoch);
   };
   const keysOf = providerKeys(computers.kinds, computers.keyOf ?? (async () => undefined));
   const providerOf = async (id: string): Promise<ComputerProvider | undefined> => {
@@ -263,7 +269,7 @@ export async function sweepKeptComputers(deps: Pick<JanitorDeps, "store" | "comp
     const options = providerOptions(id, await keysOf(id), computers.settings ?? {}, computers.keyTable ?? KEY_TABLE);
     return options.ok ? make(options.options, { ledger: storeLedger(store.computerLedger, id) }) : undefined;
   };
-  return sweepKept({ settings, runs: store.runs, now: (deps.now ?? Date.now)(), providerOf, deleted: (provider, id) => writes.ended(provider, id), revokeMount, ...(store.runners ? { runners: store.runners } : {}), ...(deps.self ? { self: deps.self } : {}) });
+  return sweepKept({ settings, runs: store.runs, now, providerOf, deleted: (provider, id) => writes.ended(provider, id), revokeMount, ...(store.runners ? { runners: store.runners } : {}), ...(deps.self ? { self: deps.self } : {}) });
 }
 
 /** The janitor: one sweep now, then one every `everyMs`, never two at once, and a kept pass at the earliest time a kept
