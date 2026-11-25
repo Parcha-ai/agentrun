@@ -21,7 +21,10 @@ import { fauxComputers } from "../dist/faux-computers.js";
 import { computerKeptWords, computerReadyWords, computerReplacedNote } from "../dist/workspace/computer-deps.js";
 import { computerLapsedWords, endKept, KEEP_MS, KEPT_DELETE_MS, keptKeyOf, readKept, sweepKept, writeKept } from "../dist/workspace/computer-kept.js";
 import { startJanitor, sweepKeptComputers } from "../dist/workspace/computer-janitor.js";
+import { ARCHIL_API_KEY_ROW, agentDiskKey, saveArchilSettings } from "../dist/archil-settings.js";
+import { StoreLaunchMissing } from "../dist/store/index.js";
 import { computerStillOffWords } from "../dist/refusal-words.js";
+import { archilControlFetch } from "./archil-control-fake.mjs";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
 import { memoryIntervals } from "./memory-intervals.mjs";
 import { KINDS } from "./workspace-kinds-fixture.mjs";
@@ -53,12 +56,14 @@ function memorySettings() {
 /** The store parts the claim reads, its settings shared by every claim and the janitor (one server's store). */
 function memoryStore() {
   const keys = new Map();
-  const runs = new Map([["run-1", { id: "run-1", state: "parked", epoch: 0, runner: null }]]);
+  const runs = new Map([["run-1", { id: "run-1", agentId: "agent-1", state: "parked", epoch: 0, runner: null }]]);
   return {
     // `take`: a runner's claim of the run, at `epoch` (the store's claim moves the epoch up and names the runner); `end`:
-    // its end, park or release commit (the epoch up by one, no runner).
+    // its end, park or release commit (the epoch up by one, no runner). No run has a launch record: its Archil disk is its
+    // agent's.
     runs: {
       get: async (id) => runs.get(id),
+      launch: async (id) => { throw new StoreLaunchMissing(id); },
       heldAt: async () => undefined,
       list: async () => [...runs.values()],
       set: (id, state) => runs.set(id, { ...runs.get(id), id, state }),
@@ -129,13 +134,29 @@ const PHONE_GROUPS = ["screen", "input.touch", "input.keys", "apps", "ui"];
 const E2B_DESKTOP = { kind: "desktop", provider: "e2b" };
 const SPEC = () => ({ image: "agentrun/computer:test", lifetimeMs: 60_000, network: "none" });
 const T0 = 1_800_000_000_000;
+/** The agent's Archil disk, where run-1's folder and its mount credentials are. */
+const DISK = "dsk-0000000000000001";
 
-/** One server: its store, a vendor's account, a clock, and its claims of run-1 (each a claim at `epoch`). */
-async function server({ setting = E2B_DESKTOP, mode = 1, groups = DESKTOP_GROUPS, machine, keys = { E2B_API_KEY: "fake-test-key" }, workspace } = {}) {
+/** Archil's control plane holding token users on the run's disk, by nickname (archil-mount-credential.ts nicknameOf):
+ *  run-1's of claim epochs 1 and 3 (the parking claim's), a later claim's of run-1, and another run's. */
+const mountUsers = () => archilControlFetch({ existing: ["agentrun:run-1:1", "agentrun:run-1:3", "agentrun:run-1:6", "agentrun:run-2:3"].map((nickname, n) => ({ type: "token", identifier: `tok-${n}`, nickname, disk: DISK })) });
+/** The token users' nicknames still at Archil. */
+const nicknames = (archil) => [...archil.users.values()].map((user) => user.nickname).sort();
+
+/** One server: its store, a vendor's account, a clock, and its claims of run-1 (each a claim at `epoch`). `archil`: the
+ *  fake of Archil's control plane (archilControlFetch) its janitor reaches, with the server's Archil settings, its sealed
+ *  account key and the agent's disk saved. */
+async function server({ setting = E2B_DESKTOP, mode = 1, groups = DESKTOP_GROUPS, machine, keys = { E2B_API_KEY: "fake-test-key" }, workspace, archil } = {}) {
   const root = scratch();
   const store = memoryStore();
   const sealKey = randomBytes(32);
   for (const [name, value] of Object.entries(keys)) await putSealedKey(store, sealKey, name, value);
+  if (archil) {
+    await saveArchilSettings(store, { region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" });
+    await putSealedKey(store, sealKey, ARCHIL_API_KEY_ROW, "fake-test-key");
+    await store.settings.put(agentDiskKey("agent-1"), { diskId: DISK });
+  }
+  const mountControl = archil ? { mountControl: { baseUrl: archil.baseUrl, fetch: archil.fetch } } : {};
   const account = vendor(root, groups, machine);
   const clock = { now: T0 };
   const providers = Object.fromEntries(["docker", "e2b", "agent37", "phone-harness", "daytona"].map((id) => [id, () => account.provider]));
@@ -147,14 +168,14 @@ async function server({ setting = E2B_DESKTOP, mode = 1, groups = DESKTOP_GROUPS
     return computerForClaim({ runId: "run-1", epoch, computer: setting, ...launch }, store, { ...deps, check: { readBackOf, epoch }, ...extra });
   };
   // `self` and `runners`: the janitor of a runner (its name and incarnation), reading which runners are there.
-  const janitor = ({ self, runners } = {}) => sweepKeptComputers({ store: runners ? { ...store, runners } : store, computers: { kinds: KINDS, providers, keyOf: (name) => getSealedKey(store, sealKey, name) }, now: () => clock.now, ...(self ? { self } : {}) });
+  const janitor = ({ self, runners } = {}) => sweepKeptComputers({ store: runners ? { ...store, runners } : store, computers: { kinds: KINDS, providers, keyOf: (name) => getSealedKey(store, sealKey, name) }, env: {}, sealKey, ...mountControl, now: () => clock.now, ...(self ? { self } : {}) });
   // A full janitor pass as the runner process runs it (startJanitor's first: the kept pass, then every provider's sweep),
   // as runner `self` reading `runners`; one vendor account behind every provider, as a dial vendor's (or one Docker
   // engine) both runners list. The store without its agents, so no server id is minted. What it logged.
   const pass = async ({ self, runners } = {}) => {
     const logged = [];
-    const swept = { runs: store.runs, computerLedger: store.computerLedger, settings: store.settings, computerIntervals: store.computerIntervals, ...(runners ? { runners } : {}) };
-    const running = startJanitor({ store: swept, computers: { kinds: KINDS, providers, keyOf: (name) => getSealedKey(store, sealKey, name) }, env: {}, log: (line) => void logged.push(line), everyMs: 600_000, now: () => clock.now, ...(self ? { self } : {}) });
+    const swept = { runs: store.runs, computerLedger: store.computerLedger, settings: store.settings, sealedKeys: store.sealedKeys, computerIntervals: store.computerIntervals, ...(runners ? { runners } : {}) };
+    const running = startJanitor({ store: swept, computers: { kinds: KINDS, providers, keyOf: (name) => getSealedKey(store, sealKey, name) }, env: {}, sealKey, ...mountControl, log: (line) => void logged.push(line), everyMs: 600_000, now: () => clock.now, ...(self ? { self } : {}) });
     try {
       await running.first;
     } finally {
@@ -323,6 +344,80 @@ test("a claim whose desktop is off finds its park's kept desktop ended, its fold
   const off = await one.claim(5, { turnedOff: "desktop", hadComputer: async () => true });
   assert.deepEqual([off.computer, off.off], [undefined, true]);
   assert.deepEqual(one.mounts.steps, [], "no credential to take on");
+});
+
+test("Mode 2, a run stopped while parked, its parking runner gone: the janitor's pass deletes the kept desktop and removes the run's mount credentials up to the parking claim's epoch at Archil, by name, with the server's key", async () => {
+  const archil = mountUsers();
+  const one = await server({ mode: 2, archil });
+  await (await one.claim(3)).park();
+  assert.equal((await readKept(one.store.settings, "run-1"))?.folder, "archil", "its row says the desktop holds the run's folder on Archil");
+  // The stop's claim ends the run with no loop and never takes the row (computer-kept.ts); the runner that parked it is gone.
+  one.store.runs.set("run-1", "stopped");
+  const logged = await one.pass();
+  assert.deepEqual(logged.filter((line) => line.includes("could not")), [], logged.join("\n"));
+  assert.deepEqual(deletes(one.account), ["c1"]);
+  assert.equal(await readKept(one.store.settings, "run-1"), undefined, "its row removed");
+  assert.deepEqual(nicknames(archil), ["agentrun:run-1:6", "agentrun:run-2:3"], "the parking claim's credential and an earlier one's removed now, not left for their 24-hour ttl; a later claim's and another run's stand");
+  assert.ok(archil.requests.every((request) => request.authorization === "Bearer fake-test-key"), "with the server's saved Archil key");
+});
+
+test("Mode 2, a resume whose computer setting is none leaves the park's kept desktop to its time; the janitor that ends it then removes the parking claim's mount credential", async () => {
+  const archil = mountUsers();
+  const one = await server({ mode: 2, archil });
+  await (await one.claim(3)).park();
+  const resumed = await one.claim(5, { hadComputer: async () => true }, { computer: { kind: "none" } });
+  assert.equal(resumed.computer, undefined);
+  assert.deepEqual(one.mounts.steps, [], "the resume took nothing on");
+  assert.equal((await readKept(one.store.settings, "run-1"))?.ended, undefined, "its row is left to its time");
+  one.clock.now = T0 + KEEP_MS;
+  const swept = await one.janitor();
+  assert.deepEqual([swept.ended, swept.failed], [["c1"], []]);
+  assert.equal((await readKept(one.store.settings, "run-1"))?.ended, true);
+  assert.deepEqual(nicknames(archil), ["agentrun:run-1:6", "agentrun:run-2:3"], "the parking claim's credential removed with its desktop");
+});
+
+test("Mode 2, a claim that began a kept desktop's end and died before its delete: the janitor's next pass deletes it and removes the parking claim's mount credential", async () => {
+  const archil = mountUsers();
+  const one = await server({ mode: 2, archil });
+  await (await one.claim(3)).park();
+  const row = await readKept(one.store.settings, "run-1");
+  await assert.rejects(endKept(one.store.settings, "run-1", row, async () => { throw new Error("the runner died"); }));
+  const swept = await one.janitor();
+  assert.deepEqual([swept.ended, swept.failed], [["c1"], []]);
+  assert.deepEqual(nicknames(archil), ["agentrun:run-1:6", "agentrun:run-2:3"]);
+});
+
+test("Mode 2, the janitor's pass whose mount remove Archil refuses: the kept desktop is deleted, the row left ending and said, and the next pass removes it", async () => {
+  let refuse = true;
+  const archil = archilControlFetch({
+    existing: [{ type: "token", identifier: "tok-3", nickname: "agentrun:run-1:3", disk: DISK }],
+    answer: ({ method }) => (refuse && method === "DELETE" ? { status: 500, body: { error: "Archil is down" } } : undefined),
+  });
+  const one = await server({ mode: 2, archil });
+  await (await one.claim(3)).park();
+  one.store.runs.set("run-1", "stopped");
+  const first = await one.janitor();
+  assert.deepEqual(first.ended, []);
+  assert.equal(first.failed.length, 1);
+  assert.match(first.failed[0], /Archil is down/);
+  assert.equal((await readKept(one.store.settings, "run-1"))?.ending, true, "left ending for the next pass");
+  assert.deepEqual(nicknames(archil), ["agentrun:run-1:3"]);
+  refuse = false;
+  const second = await one.janitor();
+  assert.deepEqual([second.ended, second.failed], [["c1"], []]);
+  assert.equal(await readKept(one.store.settings, "run-1"), undefined, "its row removed");
+  assert.deepEqual(nicknames(archil), []);
+});
+
+test("a kept desktop whose folder is not on Archil: the janitor ends it with no call to Archil", async () => {
+  const archil = mountUsers();
+  const one = await server({ archil });
+  await (await one.claim(3)).park();
+  assert.notEqual((await readKept(one.store.settings, "run-1"))?.folder, "archil");
+  one.store.runs.set("run-1", "stopped");
+  const swept = await one.janitor();
+  assert.deepEqual([swept.ended, swept.failed], [["c1"], []]);
+  assert.deepEqual(archil.requests, []);
 });
 
 test("a desktop resumed after 10 minutes is a new one: the kept one let go, said once with why", async () => {
