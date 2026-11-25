@@ -759,6 +759,11 @@ export const harnessModulesEnv = (names: readonly string[], data: string): NodeJ
  *  not one its entry hides on `env` (HarnessEntry.hidden: Goose until it is installed). */
 export const harnessIds = (env: NodeJS.ProcessEnv): readonly string[] => Object.entries(harnessTable(env)).filter(([, entry]) => entry.hidden?.(env) === undefined).map(([id]) => id);
 
+/** The ids capabilities offer (harness.ts harnessOffers), in the table's order: harnessIds', and each recipe the server is
+ *  started with though its entry hides it (not installed, not checked, keys not saved): its owner named it, so it is
+ *  offered as not available, with why and the command that fixes it, never left out. */
+export const offeredIds = (env: NodeJS.ProcessEnv): readonly string[] => Object.entries(harnessTable(env)).filter(([, entry]) => entry.hidden?.(env) === undefined || madeByRecipe.has(entry)).map(([id]) => id);
+
 /** The ids of every harness `env`'s table has, hidden ones too: those a definition may name (a save warns of a hidden one,
  *  a run is refused with why). */
 export const tableIds = (env: NodeJS.ProcessEnv): readonly string[] => Object.keys(harnessTable(env));
