@@ -223,3 +223,20 @@ test("a held value split across two strings where a call's read stops, empty str
   const shown = redactedCall(text, [KEY], CALL_RESULT_CHARS).slice(0, CALL_RESULT_CHARS);
   assert.ok(!shown.includes(HEAD.slice(0, 8)), shown.slice(-60));
 });
+
+test("a held value split by combining marks past U+FFFF, its head ending the piece before a run too long to read and its rest in that run, shows none of its head in a call's result", () => {
+  // 500 U+1D165 marks (a combining mark written as two UTF-16 units, or as two \uXXXX escapes) between the head and the
+  // rest: the views drop each whole, so the value reads whole across them. "y " x 4085 puts a piece's edge right after
+  // the head and its space, and the run after it is too long to read: the read of the run's head counts each mark as
+  // the views do, nothing, so it reaches the rest. Counted one per UTF-16 unit, 500 marks are more than it reads.
+  const B = String.fromCharCode(92);
+  const runsOf = (shown) => Array.from({ length: HEAD.length - 7 }, (_, i) => HEAD.slice(i, i + 8)).filter((run) => shown.includes(run));
+  for (const [what, marks] of [["as they are", String.fromCodePoint(0x1d165).repeat(500)], ["as \\uXXXX escapes", `${B}ud834${B}udd65`.repeat(500)]]) {
+    const text = `${"y ".repeat(4085)}${HEAD} ${marks}${REST}${"a".repeat(9000)} end`;
+    assert.equal(withheldWhole(text, [KEY]), true, what);
+    const shown = resultTextOf(text, [KEY], "bash");
+    assert.deepEqual(runsOf(shown), [], `${what}: ${shown.slice(-60)}`);
+    // Control: with no held value in the text, the same layout shows, its head as written and the run as "[redacted]".
+    assert.ok(resultTextOf(text, ["not-in-this-text-0123456789abcdef"], "bash").endsWith(`${HEAD} [redacted] end`), what);
+  }
+});
