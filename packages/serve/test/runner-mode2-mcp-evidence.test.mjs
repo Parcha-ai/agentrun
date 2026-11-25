@@ -296,7 +296,7 @@ const sweepsOf = (disk, key) => disk.calls.filter((call) => call.op === "listPag
 const evidencePuts = (disk, key) => disk.calls.filter((call) => call.op === "putObject" && call.key.startsWith(`${key}/evidence/`)).map((call) => call.key);
 const LONG_ONLY = [{ content: [{ type: "text", text: LONG }] }];
 
-test("Mode 2, a run's own process: a disk Workspace whose open is still running when the claim lets go is ended once, and the filing that opened it writes nothing", { timeout: 120_000 }, async (t) => {
+test("Mode 2, a run's own process: a disk Workspace whose open is still running when the claim lets go is let go with it, and the filing that opened it writes nothing", { timeout: 120_000 }, async (t) => {
   const { claimOn, key } = await ownMode2(t, LONG_ONLY);
   const { disk, open, reached } = gatedDisk(key);
   const side = claimOn(disk);
@@ -310,9 +310,26 @@ test("Mode 2, a run's own process: a disk Workspace whose open is still running 
   open();
   await released;
   const answer = await call;
-  assert.equal(sweepsOf(disk, key), 2, `the Workspace opened is ended at the claim's release, once: ${JSON.stringify(disk.calls.map((c) => [c.op, c.prefix ?? c.key]))}`);
+  assert.equal(sweepsOf(disk, key), 0, `the filing Workspace sweeps no spill folder, at its open or at the release: ${JSON.stringify(disk.calls.map((c) => [c.op, c.prefix ?? c.key]))}`);
   assert.deepEqual(evidencePuts(disk, key), [], "the filing whose open outlived the claim writes nothing on the run's disk");
   if (!answer.error) assert.doesNotMatch(answer.text, /the whole answer is in the run's files/, "and says nothing was saved");
+});
+
+test("Mode 2, a run's own process, no computer: the MCP's filing Workspace, opened mid-run, sweeps no spill folder, so an exec of the run's other Workspace keeps its spill files", { timeout: 120_000 }, async (t) => {
+  const { claimOn, key, data } = await ownMode2(t);
+  const disk = new FakeArchilDisk();
+  // A command the run's own Workspace (the archil answer's) is running: its output spill file, still to be read back.
+  const inFlight = `${spillFolderOf(key)}/exec-in-flight.out`;
+  await disk.putObject(inFlight, Buffer.from("the command's output"));
+  const side = claimOn(disk);
+  const mcp = await side.held.mcp({ appendRoot: async () => {} });
+  const tool = mcp?.tools.find((one) => one.catalog === "mcp:fal/wait_for_jobs");
+  assert.ok(tool, "the run's wait_for_jobs");
+  const [first, second] = await callTwice(tool);
+  assertFiledOverTheDisk({ data, agentId: "agent-own", runId: "run-own", disk, key, first, second });
+  await side.release();
+  assert.equal(Buffer.from(disk.files.get(inFlight) ?? []).toString("utf8"), "the command's output", "the in-flight command's spill file is still there");
+  assert.equal(sweepsOf(disk, key), 0, `no sweep of the run's spill folder, at the filing's open or at the release: ${JSON.stringify(disk.calls.map((c) => [c.op, c.prefix ?? c.key]))}`);
 });
 
 // The claim's release lets its MCP go first, which stops a call that comes after it, so this pins the whole path; the
