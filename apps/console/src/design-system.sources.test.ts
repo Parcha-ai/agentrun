@@ -25,7 +25,7 @@ const RULES: Rule[] = [
     find: /\bfont-(?:thin|extralight|light|medium|bold|extrabold|black)\b/ },
   { id: "numbered-layer", says: "A layer has a name.", fix: "z-raised, z-sticky, z-overlay, z-dialog, z-popover, z-toast",
     find: /(?<![\w-])-?z-(?:\d+|\[)/ },
-  { id: "rounded", says: "Rounded corners belong to action buttons, the active sidebar item and the build composer.", fix: "use Button, buttonVariants or NavItem; keep fields and surfaces square", find: /(?<![\w-])rounded(?![\w(]|-none\b)(?:-[a-z0-9[\]]+)*(?=[\s"'`])/ },
+  { id: "rounded", says: "Rounded corners belong to action buttons and the active sidebar item.", fix: "use Button, buttonVariants or NavItem; keep fields and surfaces square", find: /(?<![\w-])rounded(?![\w(]|-none\b)(?:-[a-z0-9[\]]+)*(?=[\s"'`])/ },
   // A bare `shadow` is a class only in a string that is a class list (lower case, no sentence's capitals or apostrophes;
   // an apostrophe after a letter opens no string): "an audit's shadow run" in a title or a readout is the learning
   // words, not a class.
@@ -49,7 +49,6 @@ const RULES: Rule[] = [
 
 /** An exception: the rule, the file, a string the line holds, and why the guide's sentence does not apply to it. */
 const ALLOWED: { rule: string; file: string; has: string; why: string }[] = [
-  { rule: "rounded", file: "components/BuildAgent.tsx", has: "!rounded-composer", why: "The build composer has a scoped softer edge to group the prompt and its coding-agent action." },
   { rule: "rounded", file: "components/ui/button.tsx", has: "!rounded-action", why: "Every action button uses the shared action radius, including links and menu triggers." },
   { rule: "rounded", file: "components/ui/nav-item.tsx", has: "!rounded-action", why: "The active sidebar item uses the shared action radius around its tint; other surfaces stay square." },
   { rule: "palette-colour", file: "components/NodeDrawer.tsx", has: "bg-white", why: "A page of a document is shown on paper white in both themes, as the document is." },

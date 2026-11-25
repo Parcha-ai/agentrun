@@ -8,7 +8,7 @@ import type { Agent, SaveWarning } from "@/lib/agentForm";
 import { SERVED_AGENT } from "@/test/agent";
 
 /** A fake client with no computers list unless it brings its own: the Computer step then shows where runs go. */
-const withoutComputers = (v2: object) => ({ computers: () => Promise.reject(new Error("fixture: no computers list")), ...v2 });
+const withoutComputers = (v2: object) => ({ getRevisionSkills: async (_agentId: string, revision: string) => ({ revision, skills: {} }), computers: () => Promise.reject(new Error("fixture: no computers list")), ...v2 });
 
 // A save the server took can still say what this host lacks to run it (`warnings`): the editor shows each one, above
 // the form and beside the field it names, so nothing the server said is hidden.

@@ -4,7 +4,7 @@
 // (runner/journal-reader.ts), the same for every harness.
 import type { Context } from "@earendil-works/chord/context";
 import type { CallRecord } from "../journal-reader.js";
-import type { Journal, LoopFactory } from "../loop-contract.js";
+import type { EndOfRunTurn, Journal, LoopFactory } from "../loop-contract.js";
 
 /** One step of the model's script: call a tool, say a text, or say the text of the last steer it was given. */
 export type ScriptStep =
@@ -63,6 +63,9 @@ export interface ConformanceSetup {
   readonly hooks: KernelHooks;
   /** The run's agent, for the subject's spec to name (AdapterRunSpec.agentId): the end-of-run step is asked with it. */
   readonly agentId?: string;
+  /** The run's end-of-run step, for the subject's spec to carry (AdapterRunSpec.endOfRun), where every run's step comes
+   *  from: a loop's deps carry none. */
+  readonly endOfRun?: EndOfRunTurn;
   /** Called with each message the subject's model is handed, when the subject can see it (a stand-in's fake reports what
    *  it consumed and at what priority): for a case's failure message to name, never asserted on. */
   readonly received?: (message: { readonly text: string; readonly priority?: string }) => void;

@@ -15,12 +15,15 @@
 // cost. Both are the cost page's own (store-reads/learning.ts, over learn/ledger.ts summarize): the served side reads a
 // run's all-in (its booked cost, the workflow and any handback's agent work together, and every learning round booked
 // for it), and the by-hand cost is the job's own cost of the agent's runs on its own path among the same runs (its newest
-// PAST_RUNS on no named disk since its learning's reset), so a compile turn is never by hand: it is its revision's spend. A run
-// whose cost is unknown is left out of its side's mean and counted, never read as 0. Over that line it stops running
-// first: the agent takes the run, the run's journal keeps why with the two numbers (WORKFLOW_FIRST, outcome
-// needs_revision), and the agent's cost per run shows it stopped. The stop asks for no compile. A new revision of it (a
+// PAST_RUNS on no named disk since its learning's reset; with none there, the newest COST_WINDOW before them), so a
+// compile turn is never by hand: it is its revision's spend. A run
+// whose cost is unknown is left out of its side's mean and counted, never read as 0. Over that line it stops, whoever
+// made its calls: it no longer runs first, the agent's own learned_workflow tool leaves it out (toolStopsOf), the run's
+// journal keeps why with the two numbers (WORKFLOW_FIRST, outcome needs_revision), and the agent's cost per run shows it
+// stopped. The stop asks for no compile. A new revision of it (a
 // new digest: one its hold asked, or its owner's) serves again from zero. Fewer than
-// COST_WINDOW served runs, or no by-hand cost at all (said in the log): it serves. Every input is the run record's path
+// COST_WINDOW served runs: it serves. Past runs it can't read, or no by-hand cost at all: it fails closed, the agent
+// takes the run and its learned_workflow tool runs none of it (said in the log), never served unchecked. Every input is the run record's path
 // (metrics.path, one classifier: store-reads/learning.ts runPathOverStore). The rule catches a workflow that costs more
 // than doing the job by hand; it does not catch one that answers wrong with confidence. The spec builders
 // (adapter-run-spec.ts, cli-run-spec.ts) choose here, once per claim; the adapter loop serves it (adapter-loop.ts, before
@@ -28,7 +31,9 @@
 import { createHash } from "node:crypto";
 import { type LearnedWorkflow, LEARNING_LABEL } from "../learning.js";
 import type { RunLaunch } from "../run-launch.js";
-import { COST_WINDOW, type RunPath, SERVED_PATHS } from "../learning-cost.js";
+import { COST_WINDOW, type RunPath, SERVED_PATHS, type WorkflowCall, workflowCallsIn } from "../learning-cost.js";
+import { workflowCallsOf } from "./workflow-calls.js";
+import type { EntryLike } from "../timeline/index.js";
 import { auditableLaunch } from "../learn/audit.js";
 
 export { COST_WINDOW };
@@ -87,33 +92,48 @@ export type PastRun = { readonly metrics: unknown; readonly allInUsd: number | n
 type Mean = { readonly runs: number; readonly mean_usd: number };
 /** What the money rule reads of the agent (store-reads/learning.ts pastRunsOf): of its newest PAST_RUNS runs on no named
  *  disk, those since its learning's reset (`runs`, any order), and the by-hand cost over those same runs (`by_hand`: the
- *  mean job's own $ of the ones on the `agent` path, learning left out) with the by-hand runs it left out for an unknown
- *  cost (`by_hand_unknown`). */
+ *  mean job's own $ of the ones on the `agent` path, learning left out; when they hold none of known cost, of the newest
+ *  COST_WINDOW before them, pastRunsRead) with the by-hand runs it left out for an unknown cost (`by_hand_unknown`). */
 export type PastRuns = { readonly runs: readonly PastRun[]; readonly by_hand: Mean | null; readonly by_hand_unknown: number };
-/** No runs read: nothing to stop. */
-export const NO_PAST_RUNS: PastRuns = { runs: [], by_hand: null, by_hand_unknown: 0 };
 /** How many of the agent's newest runs on no named disk the money rule reads, both sides (store-reads/learning.ts
  *  pastRunsOf): a launch's read is bounded whatever the agent's history, and the cost page reads the same window. */
 export const PAST_RUNS = 500;
 
-const SERVED: readonly unknown[] = ["workflow", "handed_back"];
 const usd = (value: number) => Math.round(value * 1e6) / 1e6;
-const meanOf = (costs: readonly number[]): Mean | null => (costs.length ? { runs: costs.length, mean_usd: usd(costs.reduce((a, b) => a + b, 0) / costs.length) } : null);
-const pathFields = (metrics: unknown) => (isObject(metrics as Json) ? (metrics as { path?: unknown; workflow?: unknown; workflow_digest?: unknown }) : {});
+/** The mean of `costs`, rounded to 1e-6; null for none. */
+export const meanOf = (costs: readonly number[]): Mean | null => (costs.length ? { runs: costs.length, mean_usd: usd(costs.reduce((a, b) => a + b, 0) / costs.length) } : null);
+
+/** The calls a run's all-in is charged to, of those its record keeps (`metrics.workflow_calls`, learning-cost.ts
+ *  workflowCallsIn) that ran (one refused before any node ran ran nothing): the platform's, when it served the run first
+ *  (the run is that workflow's alone, whatever the agent called after it handed back), else each the agent called. A
+ *  record that keeps no calls (a run that ended before they were kept) is charged as its path says, the rule calls
+ *  replaced: the workflow and digest it names when its path is one a workflow served (`workflow`, `handed_back`), so a
+ *  stop made on those runs stays made. */
+const chargedCallsIn = (metrics: unknown): WorkflowCall[] => {
+  const calls = workflowCallsIn(metrics);
+  if (!calls.length) {
+    const { path, workflow, workflow_digest: digest } = (metrics ?? {}) as { path?: unknown; workflow?: unknown; workflow_digest?: unknown };
+    return SERVED_PATHS.includes(path as RunPath) && typeof workflow === "string" && typeof digest === "string" ? [{ workflow, digest, caller: "platform", outcome: path === "workflow" ? "answered" : "handed_back", usd: null }] : [];
+  }
+  const ran = calls.filter((call) => call.outcome !== "refused");
+  const first = ran.filter((call) => call.caller === "platform");
+  return first.length ? first : ran;
+};
 
 /** The money rule's two sides for workflow `name` at `digest`, over the agent's runs (`past`): `served`, the mean all-in
- *  of its newest COST_WINDOW runs served first at that digest (path workflow or handed_back) whose all-in is known (the
- *  cost page's `after` side reads the same figure); `by_hand`, as given (PastRuns: the job's own $ over the same runs,
- *  never a second baseline here); `unknown_runs`, the runs either side would have read that it left out for an unknown cost (the cost
- *  page's rule: left out and counted). */
+ *  of its newest COST_WINDOW runs charged to it at that digest (their record's `workflow_calls`, chargedCallsIn: the
+ *  platform's call before the agent's first turn, else the agent's own) whose all-in is known
+ *  (the cost page's `after` side reads the same figure); `by_hand`, as given (PastRuns: the job's own $ over the same
+ *  runs, never a second baseline here); `unknown_runs`, the runs either side would have read that it left out for an
+ *  unknown cost (the cost page's rule: left out and counted). */
 export function costLineOf(past: PastRuns, name: string, digest: string): { served: Mean | { runs: 0; mean_usd: null }; by_hand: Mean | null; unknown_runs: number } {
   const newest = [...past.runs].sort((a, b) => b.startedAt - a.startedAt);
   const known = (run: PastRun) => typeof run.allInUsd === "number" && Number.isFinite(run.allInUsd);
-  const ran = (run: PastRun) => { const m = pathFields(run.metrics); return m.workflow === name && SERVED.includes(m.path); };
+  const called = (run: PastRun) => chargedCallsIn(run.metrics).some((call) => call.workflow === name && call.digest === digest);
   // Newest first, until COST_WINDOW known: an unknown one met before the window filled is one it left out.
   const served: number[] = [];
   let servedUnknown = 0;
-  for (const run of newest.filter((run) => ran(run) && pathFields(run.metrics).workflow_digest === digest)) {
+  for (const run of newest.filter(called)) {
     if (served.length >= COST_WINDOW) break;
     if (known(run)) served.push(run.allInUsd as number);
     else servedUnknown += 1;
@@ -126,34 +146,58 @@ export function costLineOf(past: PastRuns, name: string, digest: string): { serv
 export const overLine = (line: ReturnType<typeof costLineOf>): boolean =>
   line.served.runs >= COST_WINDOW && line.by_hand !== null && line.served.mean_usd !== null && line.served.mean_usd >= line.by_hand.mean_usd;
 
-/** The money rule's decision over the agent's runs (`past`, store-reads/learning.ts pastRunsOverStore): whether it stops a
- *  workflow at a digest from running first (overLine), the one workflowFirstOf reads at a claim. Each workflow's state
- *  (learn/promote.ts servingStateOf) folds it in at its champion's digest. */
-export const costStopOf = (past: PastRuns): CostStop => (workflow, digest) => overLine(costLineOf(past, workflow, digest));
+/** Why the money rule stops a workflow from running first, as workflowFirstOf decides at a claim: `over_line` (overLine),
+ *  or `no_by_hand_cost`, COST_WINDOW served runs and no run by hand of a priced cost to hold them to (none, or each one's
+ *  cost unknown or only a bound): the agent takes the run, never one served unchecked. Null: it serves. */
+export type CostStopReason = "over_line" | "no_by_hand_cost";
+export const stopReasonOf = (line: ReturnType<typeof costLineOf>): CostStopReason | null =>
+  overLine(line) ? "over_line" : line.served.runs >= COST_WINDOW && line.by_hand === null ? "no_by_hand_cost" : null;
 
-/** Each learned workflow that has served one of the agent's runs (`past`) first, at the digest its newest served run
- *  ran, with the money rule's two sides there, the runs they left out for an unknown all-in, and where it stands:
- *  `serving`, or `needs_revision` once over the line (overLine). What the agent's cost per run shows its owner. */
-export function workflowCostsOf(past: PastRuns): { workflow: string; digest: string; state: "serving" | "needs_revision"; served: Mean | null; by_hand: Mean | null; unknown_cost_runs: number }[] {
+/** The money rule's decision over the agent's runs (`past`, store-reads/learning.ts pastRunsOverStore): whether it stops a
+ *  workflow at a digest from running first (stopReasonOf). Each workflow's state (learn/promote.ts servingStateOf) folds
+ *  it in at its champion's digest. */
+export const costStopOf = (past: PastRuns): CostStop => (workflow, digest) => stopReasonOf(costLineOf(past, workflow, digest)) !== null;
+
+/** Each learned workflow one of the agent's runs (`past`) is charged to (its record's `workflow_calls`, chargedCallsIn),
+ *  at the digest its newest such call ran, with the money rule's two sides there, the runs they left out for an unknown
+ *  all-in, and where it stands: `serving`, or `needs_revision` with why once the money rule stops it (stopReasonOf, the
+ *  launch's decision). What the agent's cost per run shows its owner. */
+export function workflowCostsOf(past: PastRuns): { workflow: string; digest: string; state: "serving" | "needs_revision"; reason: CostStopReason | null; served: Mean | null; by_hand: Mean | null; unknown_cost_runs: number }[] {
   const newest = new Map<string, string>();
   for (const run of [...past.runs].sort((a, b) => b.startedAt - a.startedAt)) {
-    const m = pathFields(run.metrics);
-    if (SERVED.includes(m.path) && typeof m.workflow === "string" && typeof m.workflow_digest === "string" && !newest.has(m.workflow)) newest.set(m.workflow, m.workflow_digest);
+    for (const call of chargedCallsIn(run.metrics).reverse()) if (!newest.has(call.workflow)) newest.set(call.workflow, call.digest);
   }
   return [...newest].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([workflow, digest]) => {
     const line = costLineOf(past, workflow, digest);
-    return { workflow, digest, state: overLine(line) ? "needs_revision" : "serving", served: line.served.runs ? (line.served as Mean) : null, by_hand: line.by_hand, unknown_cost_runs: line.unknown_runs };
+    const reason = stopReasonOf(line);
+    return { workflow, digest, state: reason ? "needs_revision" : "serving", reason, served: line.served.runs ? (line.served as Mean) : null, by_hand: line.by_hand, unknown_cost_runs: line.unknown_runs };
   });
 }
 
-/** What workflowFirstOf chose: the workflow the run serves first, or the one the money rule stopped (the run asks for its
- *  revision), or neither. */
+/** Why the platform did or did not run a learned workflow first (firstChoice), kept on every learning run's record
+ *  (metrics.first_choice): `served`, one serves; `replay`, a replay run serves the workflow it replays;
+ *  `replay_missing`, its claim laid no workflow by that name, or its input is no object; `none_laid`, the run is not
+ *  agentic, learns nothing, or its claim laid no workflow; `off`, its launch forces the agent (workflow_first: false);
+ *  `none_fit`, no laid workflow (nor a champion in place of one) takes its input; `many_fit`, more than one laid
+ *  workflow does; `not_promoted`, the one that does is not promoted, nor a champion of it; `champion_misfit`, its
+ *  champion does not take the input; `many_champions`, more than one champion does; `cost_stop`, the money rule
+ *  stopped it (costLineOf), or, nothing else served or stopped first, one the agent's own tool would run (toolStopsOf:
+ *  runner/learned-first.ts); `no_by_hand_cost`, the one that serves has COST_WINDOW served runs and no by-hand cost to
+ *  hold them to (stopReasonOf), and fails closed: the agent takes the run, no revision asked; `past_unread`, the money
+ *  rule could not read the agent's past runs, and fails closed: the agent takes the run; `held`, a check refused the
+ *  claim's workflow and nothing serves this claim. */
+export const FIRST_REASONS = ["served", "replay", "replay_missing", "none_laid", "off", "none_fit", "many_fit", "not_promoted", "champion_misfit", "many_champions", "cost_stop", "no_by_hand_cost", "past_unread", "held"] as const;
+export type FirstReason = (typeof FIRST_REASONS)[number];
+
+/** What firstChoice chose: the workflow the run serves first, or the one the money rule stopped (the run asks for its
+ *  revision), or neither, and why (`reason`). */
 export interface FirstChoice {
   readonly serve?: WorkflowFirst;
   readonly revise?: WorkflowRevise;
   /** The champion that serves (or that the money rule stopped) in place of the laid revision of the same name, which
    *  is not promoted yet or was held (runner/promotion.ts): the text the run's learned_workflow tool runs (laidFor). */
   readonly champion?: LearnedWorkflow;
+  readonly reason: FirstReason;
 }
 
 /** The laid learned workflows with a first choice's champion (FirstChoice) in place of its laid revision: what
@@ -214,88 +258,195 @@ export function sdkTakes(workflow: LearnedWorkflow, task: string, resolve: Param
 /** A learned workflow's digest: the first 16 hex of its text's sha256. A new revision of it is a new digest. */
 export const workflowDigest = (workflow: Pick<LearnedWorkflow, "workflow">): string => createHash("sha256").update(workflow.workflow).digest("hex").slice(0, 16);
 
-/** The workflow a run serves first (`serve`), or the one the money rule stopped (`revise`), or neither: the run is
- *  agentic, its claim laid learned workflows (`workflows`: the active ones the seed lay chose, so learning is neither off
- *  nor notes-only), its launch does not force the agent path, and exactly one of them fits its input; then its promotion
- *  (`promoted`, runner/promotion.ts: a new digest serves only once its replay on the agent's graded inputs clears the bar,
- *  learn/promote.ts, its champion serving meanwhile when it fits the input too, `champion`; none leaves the run to the
- *  agent), then costLineOf over the agent's runs (`past`, store-reads/learning.ts pastRunsOverStore) at the digest that
- *  serves. When none of them fits, the revisions allowed to serve in their place are asked (`promoted.champion`: a
- *  champion whose revision on the folder changed its input, a new required field say): exactly one champion that fits
- *  serves. `outputSchema`: the agent's, when it has one: the workflow's answer is served shaped to it (answer-json.ts
- *  answerAsServed), on a replay too, so a replay scores the answer a run would serve. `log`: one line when the launch
- *  forces the agent, more than one fits, there is no by-hand cost to hold the workflow to, or the rule stops it. A replay
- *  run (launch.replay) serves the workflow it replays, by name, alone: no promotion, no money rule; none when its claim
- *  laid no workflow by that name at that digest (runner/promotion.ts replayClaimed then refuses the claim: the run ends
- *  failed, never on the agent's path). */
+/** A claim's first choice (firstChoice), with each fact it asks for read here: the promotion's verdict on the laid
+ *  digest (`promoted`, runner/promotion.ts promotionGate, which settles that digest's checks as it answers), the
+ *  champions that serve in place of their revision (`promoted.champion`), the agent's past runs (`past`,
+ *  store-reads/learning.ts pastRunsOverStore). Each line firstChoice says goes to `log`. */
 export async function workflowFirstOf(kind: string, workflows: readonly LearnedWorkflow[], launch: RunLaunch, log?: (line: string) => void, past?: () => Promise<PastRuns>, promoted?: Promoted, outputSchema?: unknown): Promise<FirstChoice> {
-  if (kind !== "agentic" || workflows.length === 0 || !launch.learning) return {};
+  const { resolveSchemaForWorkflow } = await import("@parcha/agentrun-dsl");
+  let facts: FirstFacts = {
+    kind, workflows, launch, ...(outputSchema !== undefined ? { outputSchema } : {}),
+    fits: (workflow) => fits(workflow, launch.input, resolveSchemaForWorkflow as never),
+    promotion: !promoted ? "none" : promoted.champion ? "champions" : "laid",
+    money: past !== undefined,
+  };
+  // Each fact firstChoice asks for, read here and handed back to it: the promotion's verdict (which settles the laid
+  // digest's checks: runner/promotion.ts promotionGate), the champions, the agent's past runs. Past runs it can't read
+  // fail closed (firstChoice's past_unread): the agent takes the run, and the log says why.
+  for (;;) {
+    const step = firstChoice(facts);
+    if (!("ask" in step)) {
+      for (const line of step.said) log?.(line);
+      const { said: _said, ...choice } = step;
+      return choice;
+    }
+    if (step.ask === "verdict") facts = { ...facts, verdict: { digest: step.digest, serving: await promoted!(step.workflow, step.digest) } };
+    else if (step.ask === "champions") {
+      const champions: (Serving | undefined)[] = [];
+      for (const one of workflows) champions.push(await promoted!.champion!(one, workflowDigest(one)));
+      facts = { ...facts, champions };
+    } else facts = { ...facts, past: await past!().catch((error: unknown) => ({ unread: error instanceof Error ? error.message : String(error) })) };
+  }
+}
+
+/** What firstChoice is told of a claim: the run's kind, the learned workflows its claim laid (`workflows`: the active
+ *  ones the seed lay chose), its launch and the agent's output schema, whether a workflow takes the run's input (`fits`,
+ *  the DSL's schema resolver over workflow-first.ts fits), which promotion it asks (`promotion`: `none`, every laid
+ *  workflow serves as laid; `laid`, the laid one's verdict; `champions`, also the champions that serve in place of their
+ *  revision), whether the money rule is read (`money`), and each fact it asked for so far (FirstAsk): the verdict for the
+ *  laid digest, each laid workflow's champion (undefined for none, in `workflows`' order), the agent's past runs (or
+ *  why they could not be read, `unread`). */
+export type FirstFacts = {
+  readonly kind: string;
+  readonly workflows: readonly LearnedWorkflow[];
+  readonly launch: RunLaunch;
+  readonly outputSchema?: unknown;
+  readonly fits: (workflow: LearnedWorkflow) => boolean;
+  readonly promotion: "none" | "laid" | "champions";
+  readonly money: boolean;
+  readonly verdict?: { readonly digest: string; readonly serving: Serving | undefined };
+  readonly champions?: readonly (Serving | undefined)[];
+  readonly past?: PastRuns | { readonly unread: string };
+};
+/** A fact firstChoice needs before it chooses (FirstFacts). */
+export type FirstAsk = { readonly ask: "verdict"; readonly workflow: LearnedWorkflow; readonly digest: string } | { readonly ask: "champions" } | { readonly ask: "past" };
+/** firstChoice's choice, with the log lines that say why (`said`). */
+export type FirstChosen = FirstChoice & { readonly said: readonly string[] };
+
+/** The workflow a run serves first (`serve`), or the one the money rule stopped (`revise`), or neither, and why
+ *  (`reason`, FIRST_REASONS), over what it is told (`facts`), or the fact it asks for next (FirstAsk); pure: it reads,
+ *  settles and starts nothing (the gatherer, workflowFirstOf, does). The run is agentic, its claim laid learned
+ *  workflows, its launch does not force the agent path, and exactly one of them fits its input; then its promotion's
+ *  verdict (runner/promotion.ts: a new digest serves only once its replay on the agent's graded inputs clears the bar,
+ *  learn/promote.ts, its champion serving meanwhile when it fits the input too, `champion`; none leaves the run to the
+ *  agent), then costLineOf over the agent's runs at the digest that serves (runs it can't read: none serves,
+ *  `past_unread`). When none of them fits, the revisions allowed
+ *  to serve in their place are asked (`champions`: a champion whose revision on the folder changed its input, a new
+ *  required field say): exactly one champion that fits serves. `outputSchema`: the agent's, when it has one: the
+ *  workflow's answer is served shaped to it (answer-json.ts answerAsServed), on a replay too, so a replay scores the
+ *  answer a run would serve. A line is said when the launch forces the agent, more than one fits, a champion does not
+ *  fit or serves in place of its revision, the past runs could not be read, there is no by-hand cost to hold the workflow
+ *  to, or the rule stops it. A replay run (launch.replay) serves the workflow it replays, by name, alone: no promotion,
+ *  no money rule; none when its claim laid no workflow by that name (runner/promotion.ts replayClaimed then refuses the
+ *  claim: the run ends failed, never on the agent's path). */
+export function firstChoice(facts: FirstFacts): FirstAsk | FirstChosen {
+  const { kind, workflows, launch, outputSchema } = facts;
+  const said: string[] = [];
+  const done = (reason: FirstReason, chosen: Omit<FirstChoice, "reason"> = {}): FirstChosen => ({ ...chosen, reason, said });
+  if (kind !== "agentic" || workflows.length === 0 || !launch.learning) return done("none_laid");
+  const shaped = outputSchema !== undefined ? { outputSchema } : {};
   if (launch.replay) {
     const { workflow: name, digest } = launch.replay;
-    const chosen = workflows.find((one) => one.name === name);
-    if (!chosen || !isObject(launch.input as Json)) {
-      log?.(`workflow-first: replay of ${name} at ${digest}: the run's claim laid no workflow by that name, or its input is no object; the replay fails`);
-      return {};
+    if (!workflows.some((one) => one.name === name) || !isObject(launch.input as Json)) {
+      said.push(`workflow-first: replay of ${name} at ${digest}: the run's claim laid no workflow by that name, or its input is no object; the replay fails`);
+      return done("replay_missing");
     }
-    return { serve: { name, digest, input: launch.input as Record<string, unknown>, revision: launch.learning.seed, replay: true, ...(outputSchema !== undefined ? { outputSchema } : {}) } };
+    return done("replay", { serve: { name, digest, input: launch.input as Record<string, unknown>, revision: launch.learning.seed, replay: true, ...shaped } });
   }
   if (launch.workflowFirst === false) {
-    log?.("workflow-first: off for this run (workflow_first: false); the agent takes it");
-    return {};
+    said.push("workflow-first: off for this run (workflow_first: false); the agent takes it");
+    return done("off");
   }
-  const { resolveSchemaForWorkflow } = await import("@parcha/agentrun-dsl");
-  const fitting = workflows.filter((workflow) => fits(workflow, launch.input, resolveSchemaForWorkflow as never));
+  const fitting = workflows.filter(facts.fits);
   // None fitting is the common case (a workflow for another job): nothing to say. More than one: which serves is not
   // the engine's call, in one line.
-  if (fitting.length > 1) log?.(`workflow-first: ${fitting.length} of ${workflows.length} learned workflows fit this run's input; the agent takes it`);
-  if (fitting.length > 1) return {};
-  let chosen: LearnedWorkflow | undefined;
+  if (fitting.length > 1) {
+    said.push(`workflow-first: ${fitting.length} of ${workflows.length} learned workflows fit this run's input; the agent takes it`);
+    return done("many_fit");
+  }
+  let chosen: LearnedWorkflow;
   let laid: LearnedWorkflow | undefined;
   let promotion: number | undefined;
   if (fitting.length === 1) {
     laid = fitting[0]!;
-    const serving = promoted ? await promoted(laid, workflowDigest(laid)) : { workflow: laid };
-    if (!serving) return {};
+    let serving: Serving | undefined = { workflow: laid };
+    if (facts.promotion !== "none") {
+      const digest = workflowDigest(laid);
+      if (facts.verdict?.digest !== digest) return { ask: "verdict", workflow: laid, digest };
+      serving = facts.verdict.serving;
+    }
+    if (!serving) return done("not_promoted");
     chosen = serving.workflow;
     promotion = serving.promotion;
-    if (chosen !== laid && !fits(chosen, launch.input, resolveSchemaForWorkflow as never)) {
-      log?.(`workflow-first: ${laid.name}'s champion does not take this run's input; the agent takes it`);
-      return {};
+    if (chosen !== laid && !facts.fits(chosen)) {
+      said.push(`workflow-first: ${laid.name}'s champion does not take this run's input; the agent takes it`);
+      return done("champion_misfit");
     }
   } else {
     // None laid fits: a champion serving in place of its revision may (the revision changed its input).
-    if (!promoted?.champion) return {};
-    const champions: Serving[] = [];
-    for (const one of workflows) {
-      const champion = await promoted.champion(one, workflowDigest(one));
-      if (champion && fits(champion.workflow, launch.input, resolveSchemaForWorkflow as never)) champions.push(champion);
+    if (facts.promotion !== "champions") return done("none_fit");
+    if (!facts.champions) return { ask: "champions" };
+    const champions = facts.champions.filter((one): one is Serving => one !== undefined && facts.fits(one.workflow));
+    if (champions.length > 1) {
+      said.push(`workflow-first: ${champions.length} learned workflows' champions fit this run's input; the agent takes it`);
+      return done("many_champions");
     }
-    if (champions.length > 1) log?.(`workflow-first: ${champions.length} learned workflows' champions fit this run's input; the agent takes it`);
-    if (champions.length !== 1) return {};
+    if (champions.length !== 1) return done("none_fit");
     chosen = champions[0]!.workflow;
     promotion = champions[0]!.promotion;
-    log?.(`workflow-first: ${chosen.name}'s revision does not take this run's input; its champion at ${workflowDigest(chosen)} does, and serves it`);
+    said.push(`workflow-first: ${chosen.name}'s revision does not take this run's input; its champion at ${workflowDigest(chosen)} does, and serves it`);
   }
   const champion = chosen !== laid ? { champion: chosen } : {};
   const digest = workflowDigest(chosen);
-  const serve = { ...champion, serve: { name: chosen.name, digest, ...(promotion !== undefined ? { promotion } : {}), input: launch.input as Record<string, unknown>, revision: launch.learning.seed, ...(outputSchema !== undefined ? { outputSchema } : {}) } };
-  if (!past) return serve;
-  // Runs it can't read stop nothing: the run is served unchecked, and the log says so.
-  const read = await past().catch((error: unknown) => {
-    log?.(`workflow-first: the money rule could not read the agent's past runs (${error instanceof Error ? error.message : String(error)}); ${chosen.name} serves this run unchecked`);
-    return NO_PAST_RUNS;
-  });
-  const line = costLineOf(read, chosen.name, digest);
-  if (line.served.runs < COST_WINDOW) return serve;
-  if (line.by_hand === null) {
-    log?.(`workflow-first: no by-hand cost to hold ${chosen.name} to (no run of known cost on the agent's path before a learned workflow first served); it runs first`);
-    return serve;
+  const serve = { ...champion, serve: { name: chosen.name, digest, ...(promotion !== undefined ? { promotion } : {}), input: launch.input as Record<string, unknown>, revision: launch.learning.seed, ...shaped } };
+  if (!facts.money) return done("served", serve);
+  if (!facts.past) return { ask: "past" };
+  // Fails closed: runs it can't read leave the run to the agent, and the log says why.
+  if ("unread" in facts.past) {
+    said.push(`workflow-first: the money rule could not read the agent's past runs (${facts.past.unread}); ${chosen.name} does not run first, the agent takes this run`);
+    return done("past_unread");
   }
-  if (!overLine(line)) return serve;
-  const revise = { workflow: chosen.name, digest, served_usd: line.served.mean_usd!, by_hand_usd: line.by_hand.mean_usd, runs: line.served.runs, revision: launch.learning.seed, ...(outputSchema !== undefined ? { outputSchema } : {}) };
+  const line = costLineOf(facts.past, chosen.name, digest);
+  const stopped = stopReasonOf(line);
+  if (!stopped) return done("served", serve);
+  // Fails closed: COST_WINDOW served runs and no by-hand cost to hold them to leave the run to the agent, never served
+  // unchecked, and ask for no revision (there is no by-hand figure to say).
+  if (stopped === "no_by_hand_cost") {
+    said.push(`workflow-first: no by-hand cost to hold ${chosen.name} to (no run of known cost on the agent's path since the reset, among its newest ${PAST_RUNS} runs or the ${COST_WINDOW} by hand before them); the agent takes this run`);
+    return done("no_by_hand_cost");
+  }
+  const { stop, words } = stopOf(chosen.name, digest, line);
+  said.push(`workflow-first: ${words}; it does not run first until a new revision of it; the agent takes this run`);
+  return done("cost_stop", { ...champion, revise: { ...stop, revision: launch.learning.seed, ...shaped } });
+}
+
+/** The money rule's stop of workflow `name` at `digest` over its line (one overLine holds), and the words it is said in. */
+function stopOf(name: string, digest: string, line: ReturnType<typeof costLineOf>): { stop: Revise; words: string } {
+  const stop = { workflow: name, digest, served_usd: line.served.mean_usd!, by_hand_usd: line.by_hand!.mean_usd, runs: line.served.runs };
   const unknown = line.unknown_runs ? ` (${line.unknown_runs} run${line.unknown_runs === 1 ? "" : "s"} of unknown cost left out)` : "";
-  log?.(`workflow-first: ${chosen.name} cost $${revise.served_usd} a run over its last ${revise.runs} served runs, at or over $${revise.by_hand_usd} by hand (served all-in, by hand the job's own, over the same runs)${unknown}; it does not run first until a new revision of it; the agent takes this run`);
-  return { ...champion, revise };
+  return { stop, words: `${name} cost $${stop.served_usd} a run over its last ${stop.runs} served runs, at or over $${stop.by_hand_usd} by hand (served all-in, by hand the job's own, over the same runs)${unknown}` };
+}
+
+/** The money rule over the learned workflows a run's own learned_workflow tool runs (`flows`, runner/promotion.ts
+ *  toolFlowsFor), whoever would call them, by the stop firstChoice reads (stopReasonOf over costLineOf of the agent's
+ *  runs, `past`, at the digest the tool runs): over the line (`over_line`) it leaves the tool (`flows`) and is a stop that
+ *  asks for its revision (`stops`, Revise), as firstChoice's cost_stop; with COST_WINDOW served runs and no by-hand cost
+ *  to hold them to (`no_by_hand_cost`) it leaves the tool with no stop, as firstChoice's no_by_hand_cost (no by-hand
+ *  figure for a revision to beat). Past runs it can't read (`unread`) leave the tool none: it fails closed, as
+ *  firstChoice does. `said`: the log lines. Pure. */
+export function toolStopsOf(past: PastRuns | { readonly unread: string }, flows: readonly LearnedWorkflow[]): { flows: LearnedWorkflow[]; stops: Revise[]; said: string[] } {
+  if (!flows.length) return { flows: [], stops: [], said: [] };
+  if ("unread" in past) return { flows: [], stops: [], said: [`workflow-first: the money rule could not read the agent's past runs (${past.unread}); the learned_workflow tool runs none of ${flows.map((one) => one.name).join(", ")}`] };
+  const kept: LearnedWorkflow[] = [];
+  const stops: Revise[] = [];
+  const said: string[] = [];
+  for (const flow of flows) {
+    const digest = workflowDigest(flow);
+    const line = costLineOf(past, flow.name, digest);
+    const stopped = stopReasonOf(line);
+    if (!stopped) {
+      kept.push(flow);
+      continue;
+    }
+    if (stopped === "no_by_hand_cost") {
+      said.push(`workflow-first: no by-hand cost to hold ${flow.name} to (${line.served.runs} served runs and no run of known cost on the agent's path); the learned_workflow tool leaves it out`);
+      continue;
+    }
+    const { stop, words } = stopOf(flow.name, digest, line);
+    stops.push(stop);
+    said.push(`workflow-first: ${words}; the learned_workflow tool leaves it out until a new revision of it`);
+  }
+  return { flows: kept, stops, said };
 }
 
 /** What a run's workflow-first step did, from its root entries (the WORKFLOW_FIRST entry): the workflow, its digest, the
@@ -316,9 +467,13 @@ export function servedOf(entries: readonly { readonly kind: string; readonly dat
  *  called by its agent) and, for one served first, its digest and the promotion it served under (`workflow_promotion`,
  *  which its grade keeps), `workflow_cut` on a hand-back a restart cut (servedOf `cut`: the workflow handed nothing back
  *  itself), and `not_auditable` when a trigger started it (never audited); and from its root `entries`,
- *  each loop's exit (`loops`, loopsOf: a quote re-pick is a loop's second pass), when one ran. learning-cost reads path
+ *  each loop's exit (`loops`, loopsOf: a quote re-pick is a loop's second pass), when one ran, and every learned
+ *  workflow call it made, the platform's and the agent's (`workflow_calls`, runner/workflow-calls.ts workflowCallsOf:
+ *  what the money rule and the ledger count; none on a replay or a shadow, which serve no one). `choice`: why its
+ *  ending claim's first choice served or did not (`first_choice`, FirstReason), for a run whose spec chose one. `entries`
+ *  are every conversation's (store-reads/journal.ts runEntries), so a call's booking is read. learning-cost reads path
  *  and workflow from here. None for a run that does not learn. */
-export function pathMetrics(launch: RunLaunch, classified: { path: RunPath; workflow: string | null; digest?: string; promotion?: number; cut?: true } | undefined, entries: readonly { readonly kind: string; readonly data?: unknown }[] = []): { path?: RunPath; learned_revision?: string; workflow?: string; workflow_digest?: string; workflow_promotion?: number; workflow_cut?: true; not_auditable?: true; not_served?: "cost_stop"; loops?: LoopRow[]; replay?: ReplayMetrics; audit?: NonNullable<RunLaunch["audit"]> & { readonly compared?: Compared } } {
+export function pathMetrics(launch: RunLaunch, classified: { path: RunPath; workflow: string | null; digest?: string; promotion?: number; cut?: true } | undefined, entries: readonly { readonly kind: string; readonly data?: unknown }[] = [], choice?: FirstReason): { path?: RunPath; learned_revision?: string; workflow?: string; workflow_digest?: string; workflow_promotion?: number; workflow_cut?: true; not_auditable?: true; not_served?: "cost_stop"; loops?: LoopRow[]; workflow_calls?: WorkflowCall[]; first_choice?: FirstReason; replay?: ReplayMetrics; audit?: NonNullable<RunLaunch["audit"]> & { readonly compared?: Compared } } {
   // The grader's verdict its end-of-run step kept (runner/compare-end.ts), for a replay run and a shadow.
   const compared = comparedOf(entries.findLast((entry) => entry.kind === KINDS.compared)?.data);
   const verdict = compared ? { compared } : {};
@@ -328,6 +483,7 @@ export function pathMetrics(launch: RunLaunch, classified: { path: RunPath; work
   const { path, workflow, digest, promotion, cut } = classified ?? { path: "agent" as const, workflow: null };
   const loops = loopsOf(entries);
   const rows = loops.length ? { loops } : {};
+  const chose = choice ? { first_choice: choice } : {};
   if (launch.replay) {
     // A replay run (runner/promotion.ts): path `replay`, whatever its workflow did, so the money rule and the agent's
     // by-hand cost never read it; how its workflow ended, for the replay's score (learn/promote.ts ReplayRow); and the run
@@ -339,14 +495,14 @@ export function pathMetrics(launch: RunLaunch, classified: { path: RunPath; work
     // evidence. Skipped when a write it needed is not in the graded run's recording (learn/replay-calls.ts): never run.
     const skipped = replaySkippedIn(entries);
     const outcome = skipped ? "skipped_write" : path === "workflow" && workflow === name ? "answered" : path === "handed_back" && workflow === name && endedIn(entries, name) === "escalated" ? "handed_back" : "failed";
-    return { path: "replay", ...(launch.learning.seed ? { learned_revision: launch.learning.seed } : {}), workflow: name, workflow_digest: at, ...rows, replay: { of, ...(paidBy ? { paid_by: paidBy } : {}), outcome, ...(skipped ? { skipped } : {}), ...verdict } };
+    return { path: "replay", ...(launch.learning.seed ? { learned_revision: launch.learning.seed } : {}), workflow: name, workflow_digest: at, ...rows, ...chose, replay: { of, ...(paidBy ? { paid_by: paidBy } : {}), outcome, ...(skipped ? { skipped } : {}), ...verdict } };
   }
   // A served run a trigger started (learn/audit.ts auditableLaunch) is never audited: counted on the promotions read.
   const notAuditable = SERVED_PATHS.includes(path) && !auditableLaunch(launch);
   // The money rule stopped its workflow from running first (its WORKFLOW_FIRST entry asks for a revision): why it was not
   // served, the ledger's (learn/ledger.ts record).
   const costStop = path === "agent" && entries.some((entry) => entry.kind === WORKFLOW_FIRST && (entry.data as { outcome?: unknown } | undefined)?.outcome === "needs_revision");
-  return { path, ...(launch.learning.seed ? { learned_revision: launch.learning.seed } : {}), ...(workflow ? { workflow } : {}), ...(digest ? { workflow_digest: digest } : {}), ...(promotion !== undefined ? { workflow_promotion: promotion } : {}), ...(cut && path === "handed_back" ? { workflow_cut: true as const } : {}), ...(notAuditable ? { not_auditable: true as const } : {}), ...(costStop ? { not_served: "cost_stop" as const } : {}), ...rows };
+  return { path, ...(launch.learning.seed ? { learned_revision: launch.learning.seed } : {}), ...(workflow ? { workflow } : {}), ...(digest ? { workflow_digest: digest } : {}), ...(promotion !== undefined ? { workflow_promotion: promotion } : {}), ...(cut && path === "handed_back" ? { workflow_cut: true as const } : {}), ...(notAuditable ? { not_auditable: true as const } : {}), ...(costStop ? { not_served: "cost_stop" as const } : {}), ...rows, workflow_calls: workflowCallsOf(entries as readonly EntryLike[]), ...chose };
 }
 
 /** A replay run's record (metrics.replay): the graded run it replayed and how its workflow ended there. */
