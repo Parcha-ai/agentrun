@@ -111,7 +111,7 @@ Terminal with Ctrl+Alt+T too. Firefox runs on a fresh profile in the run's folde
 | os-4d117223 | os/4d117223-a354-47fb-8b45-62ab1390a95f | terminal | chmod 644 every regular file | OSWorld's eval.sh, and all three files kept |
 | os-6f56bf42 | os/6f56bf42-85b8-4fbb-8e06-6c44960184ba | terminal | copy file1 into dir1, dir2, dir3 | OSWorld's eval.sh |
 | os-5ea617a3 | os/5ea617a3-0e86-4ba6-aab2-dac9aa2e8d57 | terminal | restore a poster from the Trash | OSWorld's test, and the bytes match |
-| os-c288e301 | os/c288e301-e626-4b98-a1ab-159dcb162af5 | terminal | make Python4 the default (infeasible) | refusal in the answer, no fake python4; graded with rubric.md |
+| os-c288e301 | os/c288e301-e626-4b98-a1ab-159dcb162af5 | terminal | make Python4 the default (infeasible) | no fake python4; the grader reads the refusal in the answer with rubric.md |
 | multi-2c9fc0de | multi_apps/2c9fc0de-3ee7-45e1-a5df-c86206ad78b5 | terminal, git | commit "daily update" and push to origin main | OSWorld's command, its two lines exactly |
 | vscode-0ed39f63 | vs_code/0ed39f63-6049-43d4-ba4d-5fa2fe04a951 | Mousepad | replace "text" with "test" | the file equals OSWorld's gold copy |
 | vscode-ec71221e | vs_code/ec71221e-ac43-46f9-89b8-ee7d80f7e1c5 | Mousepad | indent lines 2 to 10 by one tab | the original with a tab (or four spaces) before lines 2 to 10 |

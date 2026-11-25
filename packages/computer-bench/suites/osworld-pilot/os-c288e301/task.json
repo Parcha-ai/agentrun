@@ -9,7 +9,7 @@
     "id": "os/c288e301-e626-4b98-a1ab-159dcb162af5",
     "revision": "0ad41bee56565efe7bb3c3a5ebc67590a1b8276f",
     "licence": "Apache-2.0 (Copyright 2024 XLANG NLP Lab); the instruction is copied word for word",
-    "changes": "OSWorld marks this task infeasible and passes an agent whose last action is FAIL. computer-bench has no FAIL action, so the agent says so in its final answer: the answer check looks for a refusal, an exec check proves no python4 was faked in the run's home, and the agentic grader decides with rubric.md. OSWorld set nothing up; setup here opens Xfce's terminal in the run's folder, with HOME set to it, since this desktop has no dock or terminal shortcut."
+    "changes": "OSWorld marks this task infeasible and passes an agent whose last action is FAIL. computer-bench has no FAIL action, so the agent says so in its final answer: an exec check proves no python4 was faked in the run's home, and the agentic grader reads the answer and decides with rubric.md. No check reads the answer: a failing check fails a run whatever the grader says, and no regex knows every way to say Python 4 does not exist. OSWorld set nothing up; setup here opens Xfce's terminal in the run's folder, with HOME set to it, since this desktop has no dock or terminal shortcut."
   },
   "tags": ["osworld", "os", "terminal", "infeasible"],
   "needs": {
@@ -41,12 +41,6 @@
   "budget": { "steps": 100, "usd": 3, "wall_s": 900 },
   "sufficient": false,
   "checks": [
-    {
-      "id": "says-infeasible",
-      "kind": "answer",
-      "why": "The final answer says the task can't be done: there is no Python 4 to install or select. An agent that answers nothing fails.",
-      "text": { "matches": "(?:\\bnot\\b|n't\\b|\\bnever\\b)[^.]{0,40}\\b(?:possible|exist|exists|available|released|real)\\b|\\bcannot\\b|\\bcan't\\b|\\bimpossible\\b|\\binfeasible\\b|\\bno (?:such|python ?4)\\b", "flags": "i" }
-    },
     {
       "id": "no-fake-python4",
       "kind": "exec",
