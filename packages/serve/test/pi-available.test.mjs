@@ -5,7 +5,8 @@
 // on loopback (fixtures/fake-ollama.mjs); no test asks this box's Ollama.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { closedPort, fakeOllama, SYNTH_MODELS } from "./fixtures/fake-ollama.mjs";
+import { fakeOllama, SYNTH_MODELS } from "./fixtures/fake-ollama.mjs";
+import { freePort } from "./fixtures/ports.mjs";
 import { agent, serve, withEnv } from "./support.mjs";
 
 const { ollamaAsking, ollamaClock } = await import("../dist/ollama-provider.js");
@@ -27,7 +28,7 @@ const piOf = (body) => body.harnesses.find((harness) => harness.id === "pi");
 
 test("no key and no Ollama: pi is not available, in words that name Ollama and a key; a save on it warns, never refuses", { timeout: 120_000 }, async (t) => {
   withEnv(t, {}, KEYS);
-  withEnv(t, { OLLAMA_HOST: `127.0.0.1:${await closedPort()}` });
+  withEnv(t, { OLLAMA_HOST: `127.0.0.1:${await freePort()}` });
   const { api } = await serve(t, { faux: undefined });
   const body = await caps(api);
   const pi = piOf(body);
@@ -72,7 +73,7 @@ test("an Ollama started after the server, with a tools model: pi turns available
   // Held still: nothing here waits for the kept listing to age.
   ollamaClock(() => 1_000_000);
   t.after(() => ollamaClock());
-  const port = await closedPort();
+  const port = await freePort();
   const env = { OLLAMA_HOST: `127.0.0.1:${port}` };
   withEnv(t, env);
   const { api } = await serve(t, { faux: undefined });
@@ -105,7 +106,7 @@ async function fakeAnthropic(t) {
 test("a model key saved after the start turns pi available with no restart", { timeout: 120_000 }, async (t) => {
   withEnv(t, {}, KEYS);
   const anthropic = await fakeAnthropic(t);
-  withEnv(t, { OLLAMA_HOST: `127.0.0.1:${await closedPort()}`, ANTHROPIC_BASE_URL: anthropic.base });
+  withEnv(t, { OLLAMA_HOST: `127.0.0.1:${await freePort()}`, ANTHROPIC_BASE_URL: anthropic.base });
   const { api } = await serve(t, { faux: undefined });
   assert.equal(piOf(await caps(api)).available, false);
   const put = await api("PUT", "/settings/tool-keys/anthropic", { values: { ANTHROPIC_API_KEY: `not-a-secret-${"pi-available"}` } });
@@ -135,7 +136,7 @@ test("the Ollama words go only where a model of the Ollama here would give the h
   const { chooseModel, ollamaWouldRun } = await import("../dist/model.js");
   // The env a server hands its own reads and its runner's: OLLAMA_HOST set where it asks one (server.ts, ollamaHostOf).
   // A closed port: this file clears the suites' Ollama switch, and no test asks this box's Ollama.
-  const asks = { OLLAMA_HOST: `127.0.0.1:${await closedPort()}` };
+  const asks = { OLLAMA_HOST: `127.0.0.1:${await freePort()}` };
   assert.equal(ollamaWouldRun(asks, "pi"), true);
   assert.equal(ollamaWouldRun({}, "pi"), false, "no OLLAMA_HOST: a shared server asks no Ollama");
   assert.equal(ollamaWouldRun({ OLLAMA_HOST: "10.0.0.5:11434" }, "pi"), false, "a refused OLLAMA_HOST is never asked");
@@ -168,7 +169,7 @@ test("a shared server with no OLLAMA_HOST never asks an Ollama: its words name a
 
 test("a shared server whose operator sets OLLAMA_HOST asks that Ollama: its words offer starting it", { timeout: 120_000 }, async (t) => {
   withEnv(t, {}, OWNER);
-  withEnv(t, { OLLAMA_HOST: `127.0.0.1:${await closedPort()}` });
+  withEnv(t, { OLLAMA_HOST: `127.0.0.1:${await freePort()}` });
   const { api } = await serve(t, { faux: undefined, runner: false, runnerApart: true });
   const pi = piOf(await caps(api));
   assert.equal(pi.available, false, JSON.stringify(pi));

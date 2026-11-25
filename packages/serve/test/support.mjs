@@ -503,7 +503,9 @@ export async function serve(t, { harnesses: asked, runner: wantRunner = true, co
   // a case that wants the hosted rule passes mcpLoopback: false.
   // probeContainer: Docker's start probe takes a test's server to be on a host, so a suite run in a container reads the
   // host's words; a case about a container passes its own facts, or undefined for the server's own marks.
-  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", mcpLoopback: true, probeContainer: { where: "host" }, ...options });
+  // timelinePollMs: a waiting timeline page (follow's long poll) reads the store every 100 ms, not every second, so a
+  // run's end is served within a tenth of a second of it.
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", mcpLoopback: true, probeContainer: { where: "host" }, timelinePollMs: 100, ...options });
   // A runner beside the server on the same data (the CLI start's server-and-runner): it claims and runs what the server
   // starts, so a test reads a run that runs, not one that queues forever. `runner: false` leaves it off for a test that
   // wants the server alone. Its loop is the switch's dispatch (learning wired; pi/workflow the server's own, E2r).

@@ -522,14 +522,7 @@ class DaytonaHost implements MachineHost {
 			const asked = orThrow(await this.#rest.json("GET", sandboxUrl(this.#rest, id, "/toolbox-proxy-url"), { retry: true }, signal));
 			proxy = (asked as { url?: unknown } | null)?.url as string | undefined;
 		}
-		let url: URL;
-		try {
-			url = new URL(proxy ?? "");
-		} catch {
-			throw new Error(`Daytona gave no toolbox URL for ${id}`);
-		}
-		if (url.protocol !== "https:") throw new Error(`the toolbox URL Daytona gave is not https (${url.protocol}), so the key is not sent to it`);
-		const toolbox = `${url.href.replace(/\/+$/, "")}/${encodeURIComponent(id)}`;
+		const toolbox = `${httpsBase(proxy ?? "", `the toolbox URL Daytona gave for ${id}`)}/${encodeURIComponent(id)}`;
 		this.#toolboxes.set(id, toolbox);
 		return toolbox;
 	}
