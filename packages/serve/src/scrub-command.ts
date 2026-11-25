@@ -210,6 +210,14 @@ async function heldSecretsOf(store: Store, dir: string, env: NodeJS.ProcessEnv, 
 
 /** The line that says a run could not be counted: the error's own words, cut by the scrubber first with `held` as its
  *  held values (a store's error could quote what it read, a held value among it), else withheld. */
+/** The values the error path cuts with (couldNotCount): the run's cut (run-cut.ts runCutValues), the server's secrets
+ *  among them, read before the count, so an error the count throws (a workspace read naming a path) is cut by what the
+ *  run was handed too. A cut that can't be read here leaves the server's secrets. */
+export async function errorHeld(store: Pick<Store, "runs">, runId: string, deps: { serverSecrets: () => string[]; signIns?: SignInReader; sealKey: Buffer | undefined }): Promise<string[]> {
+  const cut = await runCutValues(deps, store, runId).catch(() => "unreadable" as const);
+  return cut === "unreadable" ? deps.serverSecrets() : [...new Set(cut.values)];
+}
+
 export async function couldNotCount(runId: string, error: unknown, held: readonly string[]): Promise<string> {
   const said = await scrub(error instanceof Error ? error.message : String(error), { mode: "cut", held });
   return `agentrun-serve scrub: run ${runId} could not be counted: ${said.ok ? said.text : "the reason is withheld"}. Nothing was counted.`;
@@ -264,13 +272,13 @@ export async function scrubMain(argv: readonly string[], usage: string, io: { ou
       env = withSealKey(env, seal.text);
     }
     const { serverSecrets, stored } = await heldSecretsOf(store, dir, env, seal !== undefined, say);
-    held.push(...serverSecrets());
     const deps: ShareTextDeps = {
       serverSecrets,
       ...(seal ? { signIns: signInReads(store, seal.key) } : {}),
       sealKey: seal?.key,
       keyEnv: () => withSecrets(env, "all", stored),
     };
+    held.push(...(await errorHeld(store, runId, deps)));
     const count = await shareCount(store, runId, { ...deps, data: dir });
     for (const line of warnings.splice(0)) io.err(line);
     if (count === "unknown") return unknown();

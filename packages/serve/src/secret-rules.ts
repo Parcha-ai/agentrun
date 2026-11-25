@@ -2453,6 +2453,8 @@ function linesOf(text: string): Line[] {
   return lines;
 }
 const blank = (line: Line) => line.body.trim() === "";
+/** Where the raw line holding `offset` starts: its first character, before any JSON field opening linesOf skips. */
+const rawStart = (text: string, offset: number): number => text.lastIndexOf("\n", offset - 1) + 1;
 const block = (lines: readonly Line[], from: number, to: number): Hit => ({ start: lines[from]!.start, end: lines[to]!.end });
 
 /** The lines after `at` while `fits` holds, trailing blank lines left out; undefined when none is left. */
@@ -2497,7 +2499,9 @@ function envDumps(text: string): Hit[] {
       const count = named ? named[1]!.match(NAME_RUN)!.length : 1;
       let to = at;
       while (to + 1 < lines.length && to - at < count && !blank(lines[to + 1]!) && notPrompt(lines[to + 1]!.body) && notMarker(lines[to + 1]!.body)) to++;
-      if (to > at) out.push(block(lines, at + 1, to));
+      // From the value line's own start, not past a JSON field's opening: a cut starting inside a string would end at
+      // that string's quote (11-25 read, P1-1).
+      if (to > at) out.push({ start: rawStart(text, lines[at + 1]!.start), end: lines[to]!.end });
       at = to + 1;
       continue;
     }
@@ -2526,64 +2530,114 @@ const readPath = (body: string): string | undefined => READ_COMMAND.exec(body)?.
  *  (ruling LVI). */
 export const commandReadPath = (command: string | undefined): string | undefined => (command === undefined ? undefined : readPath(command));
 
-/** envDumps with `command` as the line before the text (ruling LVI): the output of `env`, `printenv NAME` or
- *  `echo $KEY`, given apart from its command, is cut as it is when the command stands in the text. A caller's text may
- *  open with one line of its own above the command's output (an approval outcome's head line, run-view.ts outcomeShows),
- *  so the text after its first line is read with the command before it too, whatever that line says, and the hits of both
- *  reads are cut. */
-/** Where a command line splits into the commands it runs one after another: `;`, `&&`, `||`, a lone `&` (not a
- *  redirection's, `2>&1`, `&>`), a line break. A pipe does not split it: `env | sort` prints the environment. Quotes are
- *  not read; a split inside them only makes a piece that names no env command alone (`echo "a; env"`). */
-const COMMAND_SPLIT = /;|&&|\|\||(?<![<>&])&(?![&>])|\n/;
-const COMMAND_PIECES = 64;
-/** A command that prints the environment or a variable's value, as a piece of a call's line. */
-const dumpPiece = (piece: string): boolean => ENV_COMMAND.test(piece) || PRINTENV_NAMES.test(piece) || ECHO_VARIABLE.test(piece);
-/** Whether a call's line runs commands one after another, one of them printing the environment or a variable's value
- *  (`env; sleep 5`, `cd app && env | sort`, `printenv A; printenv A B`). Its output can't be told apart by command, so
- *  all of it is the dump's (ruling LVI). A line that is one command alone keeps that command's exact cut. */
-function dumpAmongOthers(command: string): boolean {
-  const pieces = command.slice(0, COMMAND_MAX).split(COMMAND_SPLIT, COMMAND_PIECES);
-  return pieces.length >= 2 && pieces.some(dumpPiece);
-}
-/** A failed call's summary (timeline.ts: `<tool label> failed: <its output's first line>`, or `<tool label>: <words>`):
- *  its head, before what the call printed. */
-const SUMMARY_HEAD = /^[^\n:]{1,80}: /;
-/** All of a call's output as one dump: its lines from the first to the last that is not blank. A one-line summary is cut
- *  whole too, its head with it: a printed value can read as a head (`note failed: …`), and the text alone can't tell. */
-function wholeDump(text: string): Hit[] {
-  const lines = linesOf(text);
-  let from = 0;
-  let to = lines.length - 1;
-  while (to >= 0 && blank(lines[to]!)) to--;
-  while (from <= to && blank(lines[from]!)) from++;
-  return from > to ? [] : [block(lines, from, to)];
-}
+/** Where a command line splits into the commands it runs: `;`, `&&`, `||`, a pipe, a lone `&` (not a redirection's:
+ *  `2>&1`, `&>`), a line break, a subshell's or a substitution's `(` and `)`, a backtick. Quotes are not read: a split
+ *  inside them only makes more pieces to read, and an env word in one is read as a command (`echo "a; env"`, an over-cut
+ *  that fails closed). */
+const COMMAND_SPLIT = /;|&&|\|\||\||(?<![<>&])&(?![&>])|\n|\(|\)|`/;
+const COMMAND_BLANKS = /[ \t\r]{1,4096}/;
+/** A shell prompt standing as a piece's first word (`$ env`, `C:\app> set`). */
+const PROMPT_WORD = /^(?:[$#%>❯]|[A-Za-z]:\\[^>\n]{0,256}>)$/;
+/** A leading assignment (`FOO=1 printenv A`): the command follows it. */
+const ASSIGNMENT_WORD = /^[A-Za-z_][A-Za-z0-9_]{0,127}=/;
+/** A redirection (`2>&1`, `>/tmp/e`, `&>log`); one that is its operator alone takes the next word as its file. */
+const REDIRECT_WORD = /^(?:\d{1,2}|&)?(?:<<?|>>?)(?:&\d{0,2}-?)?/;
+const REDIRECT_ALONE = /^(?:\d{1,2}|&)?(?:<<?|>>?)$/;
+/** A variable's expansion in a word (`$APP_SEED`, `"x=${A}"`). */
+const VARIABLE_WORD = /\$\{?[A-Za-z_]/;
+/** A word's quotes at its ends (`'env'`, `env"` past a split inside quotes). */
+const WORD_EDGE_QUOTES = /^["']{1,8}|["']{1,8}$/g;
+/** A shell's flag that runs its next words as a script (`-c`, `-lc`). */
+const SCRIPT_FLAG = /^-[A-Za-z]{0,8}c[A-Za-z]{0,8}$/;
+const NUMBER_WORD = /^\d{1,12}(?:\.\d{1,6})?[smhd]?$/;
+/** export's or declare's flag that prints (`-p`, `-px`). */
+const PRINT_FLAG = /^-[A-Za-z]{0,8}p/;
+/** Words a command can stand behind: grouping, control flow, negation. */
+const LEAD_WORDS = new Set(["{", "}", "!", "if", "then", "else", "elif", "do", "while", "until"]);
+/** Commands that run the command after them (their flags, a flag's argument and a number between). */
+const WRAPPERS = new Set(["sudo", "doas", "exec", "command", "builtin", "time", "nice", "nohup", "timeout", "stdbuf", "ionice", "chrt", "unbuffer"]);
+const WRAPPER_ARG_FLAGS = new Set(["-u", "-g", "-n", "-p", "-c", "-s", "-k", "-C", "-o", "-e", "-i"]);
+const ENV_ARG_FLAGS = new Set(["-u", "--unset", "-C", "--chdir"]);
+const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "fish"]);
+const commandName = (word: string): string => {
+  const bare = word.replace(WORD_EDGE_QUOTES, "");
+  return bare.slice(bare.lastIndexOf("/") + 1);
+};
 
-function commandDumps(text: string, given: string | undefined): Hit[] {
-  if (given === undefined || given.trim() === "") return [];
-  if (dumpAmongOthers(given)) return wholeDump(text);
-  const command = given;
-  const shift = command.length + 1;
-  const read = (body: string, offset: number): Hit[] =>
-    envDumps(`${command}\n${body}`).filter((hit) => hit.end > shift).map((hit) => ({ ...hit, start: Math.max(hit.start - shift, 0) + offset, end: hit.end - shift + offset }));
-  const hits = read(text, 0);
-  const seen = new Set(hits.map((hit) => `${hit.start}:${hit.end}`));
-  const also = (from: number): void => {
-    for (const hit of read(text.slice(from), from)) {
-      if (seen.has(`${hit.start}:${hit.end}`)) continue;
-      seen.add(`${hit.start}:${hit.end}`);
-      hits.push(hit);
+/** Whether one command of a line prints the environment or a variable's value: env or printenv (env's own options and
+ *  assignments aside, no command after it), set or export with no argument, export or declare -p, compgen -v, an echo
+ *  or printf of a variable, or a shell's `-c` script that does. Read past a prompt, grouping and control-flow words,
+ *  wrappers (`sudo -E`, `nice -n 5`, `exec`, a path), leading assignments and redirections. An echo of any variable
+ *  counts, a secret name or not (`cd x && echo $PWD && npm test` cuts the test's output too: an over-cut, fails
+ *  closed). */
+function pieceDumps(piece: string, depth: number): boolean {
+  const words = piece.split(COMMAND_BLANKS).filter(Boolean);
+  let at = 0;
+  while (at < words.length) {
+    const word = words[at]!;
+    if (PROMPT_WORD.test(word) || LEAD_WORDS.has(word) || ASSIGNMENT_WORD.test(word)) {
+      at++;
+      continue;
     }
-  };
-  const firstLine = text.indexOf("\n");
-  if (firstLine >= 0) also(firstLine + 1);
-  // A failed call's one-line summary: what follows its head is the output's first line.
-  else {
-    const head = SUMMARY_HEAD.exec(text);
-    if (head) also(head[0].length);
+    if (!WRAPPERS.has(commandName(word))) break;
+    at++;
+    while (at < words.length && (words[at]!.startsWith("-") || NUMBER_WORD.test(words[at]!))) at += WRAPPER_ARG_FLAGS.has(words[at]!) ? 2 : 1;
   }
-  return hits;
+  if (at >= words.length) return false;
+  const name = commandName(words[at]!);
+  const args: string[] = [];
+  for (let i = at + 1; i < words.length; i++) {
+    if (REDIRECT_ALONE.test(words[i]!)) i++;
+    else if (!REDIRECT_WORD.test(words[i]!)) args.push(words[i]!);
+  }
+  const flagsOnly = args.every((arg) => arg.startsWith("-"));
+  switch (name) {
+    case "printenv":
+      return true;
+    case "env":
+      for (let i = 0; i < args.length; i++) {
+        if (ENV_ARG_FLAGS.has(args[i]!)) i++;
+        else if (!args[i]!.startsWith("-") && !ASSIGNMENT_WORD.test(args[i]!)) return false;
+      }
+      return true;
+    case "set":
+      return args.length === 0;
+    case "export":
+    case "declare":
+    case "typeset":
+      return flagsOnly || args.some((arg) => PRINT_FLAG.test(arg));
+    case "compgen":
+      return args.includes("-v");
+    case "echo":
+    case "printf":
+      return args.some((arg) => VARIABLE_WORD.test(arg));
+    default: {
+      if (!SHELLS.has(name) || depth >= 2) return false;
+      const flag = args.findIndex((arg) => SCRIPT_FLAG.test(arg));
+      return flag >= 0 && printsEnvironment(args.slice(flag + 1).join(" ").replace(WORD_EDGE_QUOTES, ""), depth + 1);
+    }
+  }
 }
+/** Whether a call's command line prints the environment or a variable's value, any one of its commands (`env`,
+ *  `cd app && env | sort`, `printenv A; printenv A B`, `(env)`, `bash -c 'env'`). A line longer than is read is read so
+ *  too: what lies past the read can't be told (fails closed). */
+function printsEnvironment(command: string, depth = 0): boolean {
+  if (command.length > COMMAND_MAX) return true;
+  return command.split(COMMAND_SPLIT).some((piece) => pieceDumps(piece, depth));
+}
+/** All of a call's output as one dump, from its first character that is not a blank to its last (11-25 read): its
+ *  lines can't be told apart by command, a value can span lines, and a first line that opens like a JSON field or a
+ *  quote is no head to start after. A one-line summary is cut whole, its head with it. Already a dump's cut: no cut. */
+function wholeDump(text: string): Hit[] {
+  if (DUMP_MARKER_LINE.test(text)) return [];
+  const end = text.trimEnd().length;
+  const start = text.length - text.trimStart().length;
+  return end > start ? [{ start, end }] : [];
+}
+/** A command's output, given apart from its command (ruling LVI): all of it is a dump when the command prints the
+ *  environment or a variable's value, alone on its line or among others. An approval outcome's head line is cut with
+ *  it (ruled so: never split on run-view's words). */
+const commandDumps = (text: string, given: string | undefined): Hit[] => (given !== undefined && given.trim() !== "" && printsEnvironment(given) ? wholeDump(text) : []);
 
 const PATH_SEPARATOR = /[\\/]/;
 const ENV_FILE_NAME = /^(?:\.env(?:rc)?|\.env\.[A-Za-z0-9_.-]{1,64}|[A-Za-z0-9_.-]{1,64}\.env)$/;
@@ -2861,7 +2915,7 @@ export const RULE_PATTERNS: Readonly<Record<string, RegExp>> = Object.freeze({
   CODE_CALL, IDENT_CHAIN, MEMBER_CHAIN, CODE_CASE, CAMEL_OR_SNAKE, CALL_AFTER, LITERAL_START, YAML_NODE, ELIDED_AFTER, REFERENCE, ELIDED, TRAILING_PUNCTUATION, SENTENCE_END, BARE_START, EDGE_BLANK, EDGE_TOKEN_PUNCT, SLUG_OFF, SLUG_ENDS, PEM_END, PEM_BEGIN, PEM_OFF, PEM_TAIL, PEM_BODY_LINE, PEM_LAST_LINE, PEM_END_LINE, LEAD_TOKEN, DIGIT_START, BASE64_CHAR, BACKSLASH_RUN, BARE_STOP, URL_USERINFO, NAME_KEY_OFF, IDENTIFIER, ENDS_ENTRY, ENTRY_END_AFTER, TYPE_SUFFIX, TYPE_AFTER, LOCAL_LEAD, LOCAL_END, NESTED_ESCAPE, COOKIE_SPLIT, LINT_URL, CAMEL_HUMP, NAME_SEPARATORS, DIGITS_ONLY,
   UPPER_NAME, LEAD_AT_START, LINE_PREFIX, LINE_REST, CODE_KEYWORD, CODE_EXPRESSION, OPENERS, CLOSERS, INI_HEADER, INI_LINE, NPMRC_AUTH, NPM_COMMAND, NPM_SET_SCAN, NPM_SET_AUTH, NPM_AUTH_KEY, ESCAPED_QUOTE_BEFORE, ESCAPED_QUOTE_AFTER, DOTTED_KEY_BEFORE, CODE_END, MEMBER_OBJECT_BEFORE, CODE_ROOT_BEFORE, STATEMENT_END_AFTER, REFERENCE_START, ENV_ASSIGN, HF_TOKEN, DIGITALOCEAN_TOKEN, PYPI_TOKEN, SENDGRID_KEY, ASSIGN, ASSIGN_SPACED, ASSIGN_COLON, SSHPASS, MYSQL_COMMAND, PASSWORD_FLAG, LOGIN_COMMAND,
   REDIS_COMMAND, LOGIN_SCAN, LOGIN_P, REDIS_SCAN, REDIS_A, MYSQL_SCAN, MYSQL_P, OPENSSL_PASS, NETRC, AUTH_HEADER, TOKEN_RUN, CODE_KEY_BEFORE, URL_SAFE_RUN, BASE64_RUN_BEFORE, BASE64_RUN_AFTER, LETTER_OR_DIGIT, ENV_NAME_RUN, BASE64_CHARS, COOKIE_HEADER, COOKIE_PAIR, CURL_COMMAND, CURL_SCAN, CURL_USER, GLUED_STOP, NUMBERED, JSON_FIELD_OPEN, PROMPT_LINE,
-  ENV_LINE, ENV_COMMAND, PRINTENV_NAMES, ECHO_VARIABLE, COMMAND_SPLIT, SUMMARY_HEAD, NAME_RUN, READ_COMMAND, READ_TOOL, PATH_SEPARATOR, ENV_FILE_NAME, ENV_TEMPLATE, SSH_FILE,
+  ENV_LINE, ENV_COMMAND, PRINTENV_NAMES, ECHO_VARIABLE, COMMAND_SPLIT, COMMAND_BLANKS, PROMPT_WORD, ASSIGNMENT_WORD, REDIRECT_WORD, REDIRECT_ALONE, VARIABLE_WORD, WORD_EDGE_QUOTES, SCRIPT_FLAG, NUMBER_WORD, PRINT_FLAG, NAME_RUN, READ_COMMAND, READ_TOOL, PATH_SEPARATOR, ENV_FILE_NAME, ENV_TEMPLATE, SSH_FILE,
   CREDENTIAL_FILE, FILE_VARIABLE, ENV_FILE_LINE, KEY_LINE, SSH_CONFIG, COMMENT_LINE, PEM_LINE, BASE64_LINE, PEM_HEADER_LINE, HOME_UNIX, HOME_WINDOWS, SEGMENT_AFTER,
   TRAILING_SLASHES, HOME_USER, CLAUDE_SLUG, CLAUDE_PROJECTS_BEFORE, SLUG_OFF_CHARS, SLUG_USER, BOT_TRAILER, DUMP_MARKER_LINE, EMAIL, EXAMPLE_DOMAIN, NO_REPLY_LOCAL, NO_REPLY_DOMAIN, FORGE_NO_REPLY, USER_ONLY_BEFORE, PORT_PASSWORD, HOST_SHAPED, IPV4, VERSION_BEFORE, PRE_RELEASE_AFTER,
   BUILD_AFTER, RANGE_AFTER, IPV6, IPV6_GROUPS, ENV_PREFIX_BEFORE, ENV_PREFIX_AFTER, ENV_PREFIX_CHAIN, ENV_PREFIX_STATEMENT, ENV_FLAG, HELM_LIST_FLAG, HELM_SET, HELM_NAME, RESOURCE_NAME, SECRET_OBJECT_NAME, CONNECTION_PASSWORD, ADO_PAIR, CONNECTION_KEY_PAIR, BLANKS, LIBPQ_PAIR_AFTER, FORMAT_FIELD, PWD_PATH, QUERY_VALUE_STOP, QUERY_PASSWORD, ARGUMENT_TAIL, NEXT_ASSIGNMENT, ASSIGNMENT_BEFORE,

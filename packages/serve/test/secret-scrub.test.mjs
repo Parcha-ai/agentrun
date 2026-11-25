@@ -1669,10 +1669,13 @@ test("LVI: the command a text is the output of is its context: a read of a crede
   }
   // No context, an unrelated read, or a command that is no read or dump: the output alone is no dump (no unanchored
   // pgpass or env shape).
-  for (const [text, command] of [[pgpass, undefined], [pgpass, "cat notes.txt"], [pgpass, "echo ok"], [env, "echo ok"], [env, undefined], [`no names here, just ${pw}`, "env"]]) {
+  for (const [text, command] of [[pgpass, undefined], [pgpass, "cat notes.txt"], [pgpass, "echo ok"], [env, "echo ok"], [env, undefined]]) {
     const out = await scrub(text, { mode: "count", ...(command !== undefined ? { command } : {}) });
     assert.deepEqual(out.cuts, [], `${command}: ${JSON.stringify(out.cuts)}`);
   }
+  // env's output is all values, whatever its lines look like (11-25 read, P2-3): one dump.
+  const unnamed = await gone(`no names here, just ${pw}`, [pw], { command: "env" });
+  assert.equal(unnamed.text, "[redacted:env-dump 1 lines]");
 });
 
 test("LVI: an env command among others on its line is the output's context, and a failed call's one-line summary is read after its head", async () => {
@@ -1687,14 +1690,15 @@ test("LVI: an env command among others on its line is the output's context, and 
   // A failed call's summary is one line, `<label> failed: <its output's first line>`: what follows the head is read with
   // the call's command before it, so a variable with no key-shaped name and no format is cut too; the head is kept.
   const region = "basin-orchard-41";
-  // Under a line that runs other commands too, the whole summary is the dump, its head with it.
-  for (const [summary, command, kept] of [[`Bash failed: APP_REGION=${region}`, "env; sleep 5", ""], [`Bash failed: APP_REGION=${region}`, "env", "Bash failed: "], [`shell: APP_REGION=${region}`, "env && exit 1", ""]]) {
+  // The whole summary is the dump, its head with it, under a lone env too (11-25 read, P2-3).
+  for (const [summary, command, kept] of [[`Bash failed: APP_REGION=${region}`, "env; sleep 5", ""], [`Bash failed: APP_REGION=${region}`, "env", ""], [`shell: APP_REGION=${region}`, "env && exit 1", ""]]) {
     const out = await gone(summary, [region], { command });
     assert.deepEqual(out.cuts.map((cut) => [cut.rule, cut.kind]), [["env-dump", "dump"]], `${command}: ${JSON.stringify(out.cuts)}`);
     assert.equal(out.text, `${kept}[redacted:env-dump 1 lines]`, command);
   }
-  // No env command among them, or one only inside a quoted word: NAME=value lines and a summary are no dump.
-  for (const [text, command] of [[env.replace(pw, "gold"), "make; ls"], [env.replace(pw, "gold"), "export APP_REGION=north && npm test"], [`Bash failed: APP_REGION=${region}`, "ls; false"], [env.replace(pw, "gold"), 'echo "a; env"'], [env.replace(pw, "gold"), "set -e; make"]]) {
+  // No env command among them: NAME=value lines and a summary are no dump. (An env word inside quotes, `echo "a; env"`,
+  // is read as a command now: quotes are not read, and the split fails closed.)
+  for (const [text, command] of [[env.replace(pw, "gold"), "make; ls"], [env.replace(pw, "gold"), "export APP_REGION=north && npm test"], [`Bash failed: APP_REGION=${region}`, "ls; false"], [env.replace(pw, "gold"), "set -e; make"]]) {
     const out = await scrub(text, { mode: "count", command });
     assert.deepEqual(out.cuts, [], `${command}: ${JSON.stringify(out.cuts)}`);
   }
@@ -3360,20 +3364,21 @@ test("LXXVII: a credential file named through shell quotes, a $...FILE variable 
     assert.deepEqual(out.cuts.map((cut) => [cut.rule, cut.kind, cut.restorable]), [["credential-file", "dump", false]], `${JSON.stringify(opts)}: ${JSON.stringify(out.cuts)}`);
   }
   // A path that only holds pgpass, my.cnf or npmrc in a longer name, another aws file, a variable whose name only ends
-  // in FILE: no dump.
-  for (const command of ["cat docs/pgpass-setup.md", "cat ~/.pgpass.example", "grep -r my.cnf docs/", "cat ~/.npmrc-notes.txt", "cat ~/.aws/config", "echo $PROFILE", "cat $HOME/pgpass.txt"]) {
+  // in FILE: no dump. (`ls`, not `echo`: an echo of any variable is an env dump, 11-25 read.)
+  for (const command of ["cat docs/pgpass-setup.md", "cat ~/.pgpass.example", "grep -r my.cnf docs/", "cat ~/.npmrc-notes.txt", "cat ~/.aws/config", "ls $PROFILE", "cat $HOME/pgpass.txt"]) {
     const out = await scrub(pgpass, { mode: "count", command });
     assert.deepEqual(out.cuts, [], `${command}: ${JSON.stringify(out.cuts)}`);
   }
 });
 
-test("LVI: an env command's output under one line of its caller's own (an approval outcome's head line) is still its dump; the line is kept", async () => {
+test("LVI: an env command's output under one line of its caller's own (an approval outcome's head line) is still its dump, that line with it", async () => {
   const token = "Lumen4copper9Dusk2";
   const head = "Bash ran once you allowed it. Its result:";
   for (const command of ["env", "env | sort", "printenv"]) {
     const out = await gone(`${head}\nA=1\nTOKEN=${token}`, [token], { command });
     assert.deepEqual(out.cuts.map((cut) => [cut.rule, cut.kind, cut.restorable]), [["env-dump", "dump", false]], `${command}: ${JSON.stringify(out.cuts)}`);
-    assert.equal(out.text, `${head}\n[redacted:env-dump 2 lines]`, command);
+    // The whole text is the dump (11-25 read, P2-3): the head is never split from it on run-view's words.
+    assert.equal(out.text, "[redacted:env-dump 3 lines]", command);
   }
   // As before: with no command the lines are no dump (the label rule cuts the token alone); `ls` is no env command, so
   // its NAME=value lines are no dump either.
@@ -3385,8 +3390,8 @@ test("LVI: an env command's output under one line of its caller's own (an approv
   assert.equal(listed.text, `${head}\nA=1\nB=2`);
   const listedToken = await gone(`${head}\nA=1\nTOKEN=${token}`, [token], { command: "ls" });
   assert.deepEqual(listedToken.cuts.map((cut) => [cut.rule, cut.kind]), [["secret-assign", "label"]]);
-  // A text whose first line is its only env line: that line is the dump, as before, and the prose below it is kept.
+  // A text whose first line is its only env line: all of it is env's output, the line after it too.
   const first = await gone(`TOKEN=${token}\nthe rest is prose`, [token], { command: "env" });
-  assert.deepEqual(first.cuts.map((cut) => [cut.rule, cut.kind, cut.start, cut.end]), [["env-dump", "dump", 0, 24]]);
-  assert.equal(first.text, "[redacted:env-dump 1 lines]\nthe rest is prose");
+  assert.deepEqual(first.cuts.map((cut) => [cut.rule, cut.kind, cut.start, cut.end]), [["env-dump", "dump", 0, 42]]);
+  assert.equal(first.text, "[redacted:env-dump 2 lines]");
 });

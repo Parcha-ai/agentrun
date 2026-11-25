@@ -546,12 +546,13 @@ test("LVI: a restore of a cut id a context-free read named on a call's output an
   await assert.rejects(exported(readsOf({ rows, calls }), [label.id]), (error) => error instanceof ApiError && error.status === 400 && /no cut/.test(error.message) && !error.message.includes(CTX_PW));
 });
 
-test("LVI: an env command a person approved: its outcome row's text holds one env-dump cut below the outcome's head line, and no planted value", async () => {
+test("LVI: an env command a person approved: its outcome row's text is one env-dump cut, its head line with it, and no planted value", async () => {
   for (const [tool, input] of [["Bash", { command: "env | sort" }], ["shell", { command: ["bash", "-lc", "printenv"] }], ["Bash", { command: "printenv" }]]) {
     const { doc, body } = await exported(readsOf(callRows(tool, input, CTX_ENV, { approved: true })));
     const at = doc.rows.findIndex((row) => row.id === "approval:toolu_01:after:outcome");
     assert.deepEqual(cutsAt(doc, `/rows/${at}/text`).map((cut) => [cut.kind, cut.rule, cut.restorable]), [["dump", "env-dump", false]], `${JSON.stringify(input)}: ${JSON.stringify(doc.cuts)}`);
-    assert.equal(doc.rows[at].text, `${tool} ran once you allowed it. Its result:\n[redacted:env-dump 2 lines]`);
+    // The whole text is the dump (11-25 read, P2-3): the outcome's head is never split from it on run-view's words.
+    assert.equal(doc.rows[at].text, "[redacted:env-dump 3 lines]");
     oneDump(doc, `/rows/${doc.rows.findIndex((row) => row.kind === "tool_result")}/tool_result_preview`, "env-dump");
     assertNoPlanted(body, { pw: CTX_PW });
   }
