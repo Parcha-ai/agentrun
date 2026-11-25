@@ -413,25 +413,28 @@ test("what may be deleted (3): a live claim's proxy is never a leftover while it
   assert.deepEqual(fake.volumeNames(), ["computer-0000000000b1-egress"]);
 });
 
-test("what may be deleted (3): a live claim's running computer keeps its proxy when the claim is released (the run parks, its computer kept) just as the leftover sweep reads the run", { skip: !existsSync(DAEMON) && "no computerd-linux-amd64: run npm run build:daemon -w @parcha/agentrun-computer (CI's build job does)" }, async (t) => {
+test("what may be deleted (3): a create that finishes and parks (claim released, computer kept) just as the leftover sweep reads its run keeps its proxy: the claim is read before the computer", { skip: !existsSync(DAEMON) && "no computerd-linux-amd64: run npm run build:daemon -w @parcha/agentrun-computer (CI's build job does)" }, async (t) => {
   const server = await sweptStore(t);
   await server.runs.create({ id: "run-2", agentId: "agent-1", revisionId: "rev-1" });
   const [claim] = await server.runs.claimMany("runner-other", 1, { leaseMs: 600_000 });
   assert.equal(claim.runId, "run-2");
-  const running = allowed({ name: "computer-0000000000c1", allow: ["pypi.org"], labels: labels("run-2", claim.epoch) });
-  const fake = fakeDocker(partsOfAll(running, leftoverOf("computer-0000000000c2", labels("run-over", 1))));
-  // The release lands inside the leftover sweep, at its first read of run-2 (whichever read the rule makes), before
-  // that read answers: the worst order for the sweep.
+  // Another runner's create under way: its proxy made long ago, its computer not yet.
+  const made = allowed({ name: "computer-0000000000c1", allow: ["pypi.org"], labels: labels("run-2", claim.epoch) });
+  const computer = made.containers.find((one) => one.Name === "/computer-0000000000c1");
+  const fake = fakeDocker(partsOfAll({ containers: made.containers.filter((one) => one !== computer), volumes: made.volumes }, leftoverOf("computer-0000000000c2", labels("run-over", 1))));
+  // Inside the leftover sweep, at its first read of run-2 and before that read answers, the create finishes and the run
+  // parks, keeping its computer: the worst order for the sweep.
   let sweeping = false;
-  let released = false;
-  const release = async () => {
-    if (!sweeping || released) return;
-    released = true;
-    await server.runs.release(claim, { state: "parked" });
+  let raced = false;
+  const race = async () => {
+    if (!sweeping || raced) return;
+    raced = true;
+    fake.add([computer]);
+    await server.release(claim, { state: "parked" });
   };
   const runs = over(server.runs, {
-    get: async (id, ...rest) => (id === "run-2" && (await release()), server.runs.get(id, ...rest)),
-    heldAt: async (id, ...rest) => (id === "run-2" && (await release()), server.runs.heldAt(id, ...rest)),
+    get: async (id, ...rest) => (id === "run-2" && (await race()), server.runs.get(id, ...rest)),
+    heldAt: async (id, ...rest) => (id === "run-2" && (await race()), server.runs.heldAt(id, ...rest)),
   });
   const docker = over(fake.provider, { sweepLeftovers: async (context) => ((sweeping = true), fake.provider.sweepLeftovers(context)) });
   const said = [];
@@ -439,9 +442,9 @@ test("what may be deleted (3): a live claim's running computer keeps its proxy w
   t.after(() => janitor.close());
   await janitor.first;
   assert.ok(goneFrom(fake, "computer-0000000000c2"), `the sweep ran and removed run-over's orphan; said: ${said.join(" | ")}`);
-  assert.ok(released, "the release raced the leftover sweep");
+  assert.ok(raced, "the create and the park raced the leftover sweep");
   assert.equal(await server.runs.heldAt("run-2"), undefined, "no claim holds run-2 now");
-  assert.deepEqual(fake.names().sort(), ["computer-0000000000c1", "computer-0000000000c1-egress"], "the running computer and its proxy stay");
+  assert.deepEqual(fake.names().sort(), ["computer-0000000000c1", "computer-0000000000c1-egress"], "the kept computer and its proxy stay");
   assert.deepEqual(fake.volumeNames(), ["computer-0000000000c1-egress"]);
 });
 
