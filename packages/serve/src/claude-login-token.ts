@@ -39,9 +39,8 @@ import { dirname, join } from "node:path";
 import type { ClaudeAgentLogin, ClaudeLoginToken } from "@parcha/agentrun-harness-claude";
 import { loginRefresh } from "@parcha/agentrun-harness-claude/facts";
 import { LOGIN_SIGNED_OUT, loginAt } from "./claude-login.js";
-import { PRESENCE_STALE_MS } from "./runner/presence.js";
 import { holdSecret } from "./secrets.js";
-import type { Runners } from "./store/index.js";
+import { RUNNER_STALE_MS, type Runners } from "./store/index.js";
 
 /** The pinned CLI's credentials file in its credentials directory (CLAUDE_SECURESTORAGE_CONFIG_DIR). */
 export const LOGIN_FILE = ".credentials.json";
@@ -767,5 +766,5 @@ export async function loginRunnerInProcess(data: string, runners: Pick<Runners, 
     }
   }));
   if (said.size === 0) return undefined;
-  return (await runners.live(PRESENCE_STALE_MS)).find((row) => said.has(row.runner))?.runner;
+  return (await runners.live(RUNNER_STALE_MS)).find((row) => said.has(row.runner))?.runner;
 }

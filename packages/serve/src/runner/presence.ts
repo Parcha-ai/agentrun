@@ -21,12 +21,12 @@ export const PRESENCE_RENEW_MS = 10_000;
 /** A runner's row that says where its relay answers. */
 export type RelayRow = RunnerRow & { readonly host: string; readonly port: number };
 
-/** The runners whose relay takes dials now: their rows seen within PRESENCE_STALE_MS on the store's clock (Runners.live,
+/** The runners whose relay takes dials now: their rows seen within RUNNER_STALE_MS on the store's clock (Runners.live,
  *  the database's on Postgres), never one process's, that say where their relay answers. The server relays a dial only
  *  to one of these (computer-attach.ts), says a dial provider is served while one answers at a host it dials (server.ts
  *  relayed), and a paired computer's route to a runner not among them is stale (workspace/paired-route.ts). */
 export async function liveRelays(runners: Pick<Runners, "live">): Promise<RelayRow[]> {
-  return (await runners.live(PRESENCE_STALE_MS)).filter((row): row is RelayRow => row.host !== null && row.port !== null);
+  return (await runners.live(RUNNER_STALE_MS)).filter((row): row is RelayRow => row.host !== null && row.port !== null);
 }
 
 /** This build's version (the serve package's), which every runner says on its row (runners.version) for the server's

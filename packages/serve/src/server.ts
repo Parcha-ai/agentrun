@@ -1481,7 +1481,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // process of its own made is relayed to that runner's attach listener the same way (dial-relay.ts).
   const reach = liveReachOf(process.env, seal.key);
   // A runner in a process of its own that relays its dials (dial-relay.ts): one whose attach listener said it is there
-  // within PRESENCE_STALE_MS on the store's clock (liveRelays), at a host this server dials.
+  // within RUNNER_STALE_MS on the store's clock (liveRelays), at a host this server dials.
   const relayedNow = async (): Promise<boolean> => (await liveRelays(store.runners)).some((row) => dialHost(row.host, reach) !== undefined);
   const attachLog = (event: string, fields: Record<string, string>) => (log ? log(logLine(event, fields)) : void process.stderr.write(`agentrun-serve: ${logLine(event, fields)}\n`));
   const attach = createAttachRoutes({
