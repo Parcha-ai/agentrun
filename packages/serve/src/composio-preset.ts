@@ -238,8 +238,10 @@ const labelOf = (account: Json): string | undefined =>
 
 /** The connected accounts of `of.user` for `of.toolkit` under `of.auth_config` (under every config where none is named;
  *  ACTIVE ones alone with `active`), as Composio lists them now: never one it names as another user's. One with no
- *  user_id (a field Composio's docs say it will stop answering) is kept: Composio was asked for this user's alone. */
+ *  user_id (a field Composio's docs say it will stop answering) is kept: Composio was asked for this user's alone. None,
+ *  unasked, for a user that is no Composio user id (COMPOSIO_USER_ID): a blank one Composio may read as every user. */
 export async function accountsUnder(ask: Ask, of: { user: string; toolkit: string; auth_config?: string }, active = false): Promise<Json[]> {
+  if (!COMPOSIO_USER_ID.test(of.user)) return [];
   const enc = encodeURIComponent;
   const listed = await ask("checking the connected account", "GET", `/api/v3/connected_accounts?user_ids=${enc(of.user)}&toolkit_slugs=${enc(of.toolkit)}${of.auth_config ? `&auth_config_ids=${enc(of.auth_config)}` : ""}${active ? "&statuses=ACTIVE" : ""}`);
   return (Array.isArray(listed.items) ? listed.items : []).filter((a): a is Json =>

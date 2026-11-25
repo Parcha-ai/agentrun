@@ -31,7 +31,8 @@ jq -n --arg p "$PASSWORD" '{password: $p}' | curl -sS -c jar.txt -X POST "$BASE/
 ## 1. Add your key and pick a toolkit
 
 In **Settings → MCP servers → Add from Composio**, paste your Composio API key, press **Load toolkits**, pick a
-toolkit (`Hacker News · hackernews`) and press **Load actions**.
+toolkit (`Hacker News · hackernews`) and press **Load actions**. If the list doesn't load, or leaves your toolkit out,
+press **Not listed? Type its slug** and type it (`hackernews`); the screenshot shows the slug typed.
 
 <p align="center">
   <img alt="The Add from Composio form: the Composio API key field, masked, and the toolkit typed as hackernews" src="../assets/tutorials/composio-1-key.png" width="100%">

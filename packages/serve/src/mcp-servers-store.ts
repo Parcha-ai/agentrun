@@ -33,6 +33,10 @@ import { type McpCredential, type McpCredentialMark, type Mcp, type McpOauth, ty
 import { isObject, unknownFields } from "./validate.js";
 import { MCP_ALLOW_LOOPBACK_ENV, restartToAllow } from "./start-switches.js";
 
+/** Stamped on each account row checkAccount writes: the row was read for the server's Composio user alone. A row without
+ *  it predates that filter and is never shown. */
+const ACCOUNT_READ_FOR = "user";
+
 /** How many writes an owner's save or tools refresh makes over a row whose credential a run's refresh keeps changing,
  *  each re-applied onto the row read again, before it is refused in words. */
 const REWRITE_TRIES = 3;
@@ -532,15 +536,17 @@ export class McpServersOverStore {
     } catch {
       account = { state: "unknown" };
     }
-    await this.store.settings.put(composioAccountKey(row.name), { of: row.createdAt, ...of, ...account, checked_at: new Date().toISOString() });
+    await this.store.settings.put(composioAccountKey(row.name), { of: row.createdAt, ...of, ...account, read_for: ACCOUNT_READ_FOR, checked_at: new Date().toISOString() });
   }
 
   /** The account a refresh last read for `row` (checkAccount, its only writer), while it was read for what the server
-   *  stands on now (`made`, its save's record, and its toolkit); none otherwise. */
+   *  stands on now (`made`, its save's record, and its toolkit) and for the server's user alone (ACCOUNT_READ_FOR); none
+   *  otherwise, so a row kept by 0.1.0-beta.57 or beta.58, which took any ACTIVE account under the auth config, says
+   *  nothing until the next refresh. */
   private async accountOf(row: McpServerRow, toolkit: string | null, made: ComposioMade | undefined): Promise<(ComposioAccount & { checked_at: string }) | undefined> {
     if (!toolkit || !made?.auth_config || made.per_run) return undefined;
     const kept = await this.store.settings.get(composioAccountKey(row.name));
-    if (!isObject(kept) || kept.of !== row.createdAt || kept.toolkit !== toolkit || kept.user !== made.user || kept.auth_config !== made.auth_config.id) return undefined;
+    if (!isObject(kept) || kept.read_for !== ACCOUNT_READ_FOR || kept.of !== row.createdAt || kept.toolkit !== toolkit || kept.user !== made.user || kept.auth_config !== made.auth_config.id) return undefined;
     const { state, labels, checked_at } = kept as ComposioAccount & { checked_at: string };
     return { state, ...(labels?.length ? { labels } : {}), checked_at };
   }
