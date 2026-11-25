@@ -96,11 +96,12 @@ test("graded inputs with no agree_on: one field, the whole answer, judged agains
   assert.equal(same.record.decided, "promote", `the same decisions as the expected answer by the fast model's verdict: ${same.record.reason}`);
   assert.deepEqual(same.stored.check.fields.answer.by, { grade: { n: 5, workflow_right: 5, agent_right: 0, pass: true } });
 
-  // A correction that changes the agent's answer (graded wrong, an expected answer equal to it would repeat what the
-  // grade marked wrong, which is never right): a draft equal to the corrected answer is right, no model asked.
-  const fixed = { riskTier: "medium" };
-  const equal = await decide({}, gradedRead(readOf(() => draftSays({ ...AGENT, ...fixed })), fixed));
-  assert.equal(equal.record.decided, "promote", `equal to the corrected answer, no model asked: ${equal.record.reason}`);
+  // Graded wrong, yet the expected keys written over the agent's answer are the agent's answer: the grade contradicts
+  // itself, so a draft equal to that answer is neither known right nor known wrong (unjudged). A correction that changes
+  // the answer, and a draft that says it, is test 4's.
+  const equal = await decide({}, gradedRead(readOf(() => draftSays({ ...AGENT, ...expected })), expected));
+  assert.equal(equal.record.decided, "hold", equal.record.reason);
+  assert.deepEqual([equal.stored.check.fields.answer.n, equal.stored.check.fields.answer.unjudged], [0, 5], equal.record.reason);
 
   // The expected keys alone leave out the rest of the agent's answer: another answer, with no verdict saying otherwise.
   const bare = await decide({}, gradedRead(readOf(() => draftSays(expected)), expected));
@@ -339,4 +340,15 @@ test("an edit that leaves learning out carries the saved agree_on forward, a `__
   assert.deepEqual((await api("GET", "/agents/kept")).body.definition.learning, learning, "carried, not dropped");
   const wrote = await api("PUT", "/agents/kept/definition", { definition: { name: "kept", instructions: "Classify the merchant.", skills: [], tools: [], learning } });
   assert.equal(wrote.status, 422, JSON.stringify(wrote.body));
+});
+
+test("a grade that contradicts itself (marked wrong, yet its expected answer written over the agent's is the agent's own) is neither known right nor known wrong: the input is unjudged, whatever the draft says", async () => {
+  const expected = { mcc: AGENT.mcc };
+  for (const draft of [agentSays(AGENT), draftSays({ ...AGENT, mcc: "5999" })]) {
+    const decided = await decide({}, gradedRead(readOf(() => draft), expected));
+    assert.equal(decided.record.decided, "hold", decided.record.reason);
+    const { answer } = decided.stored.check.fields;
+    assert.deepEqual([answer.n, answer.workflow_right, answer.unjudged], [0, 0, 5], decided.record.reason);
+    assert.deepEqual(decided.stored.check.disagreements[0].expected, [{ field: "answer", known: "unknown" }]);
+  }
 });
