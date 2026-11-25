@@ -81,3 +81,12 @@ test("a single-quoted dict written in a call's arguments (a JSON string's text) 
   // Control: another value under the held login's name, in an argument, is no spelling of it.
   assert.equal(withheldWhole(JSON.stringify({ note: "{'alice': 'other'}" }), ["alice:secretpw"]), false);
 });
+
+test("a JSON string's text read again for a dict written in it is closed off from the text's own parts: no held value reads across the seam", () => {
+  // Greptile's case: the values read again come after the values as they are, "abcd efgh" then "abcd efgh", and
+  // "efgh abcd" is no spelling the text holds. And one string read again whose own end and first part read again
+  // would join as "abcd efgh", where the text holds efgh before abcd.
+  for (const text of ['{"don\'t":"abcd","x":"efgh"}', `{"x":"{'a': 'efgh'} abcd"}`]) {
+    assert.equal(withheldWhole(text, [text.startsWith('{"don') ? "efghabcd" : "abcdefgh"]), false, text);
+  }
+});
