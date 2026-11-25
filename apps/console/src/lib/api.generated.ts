@@ -625,7 +625,6 @@ export interface components {
       routes: boolean;
       at_rest: "sealed";
       harnesses: string[];
-      kept: string[];
     };
     mcp_client?: {
       transports: "streamable-http"[];

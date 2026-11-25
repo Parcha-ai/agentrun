@@ -576,7 +576,7 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
   const gates = toolGates(c?.tools);
   // The settings pages this server has: tool keys (their routes), tools (a capability with a choice of provider, or a
   // permission to set), MCP servers, GitHub, computers and the workspace (every server has them), and the webhook (its routes).
-  const settingsOffered: SettingsPage[] = [...(caps?.features?.tool_keys?.routes ? ["keys" as const] : []), ...(caps?.features?.harness_keys?.harnesses.length || caps?.features?.harness_keys?.kept?.length ? ["harness-keys" as const] : []), ...(caps?.features?.api_keys?.routes ? ["api-keys" as const] : []), ...(choices.length || gates.length ? ["tools" as const] : []), "mcp" as const, "github" as const, "email" as const, "computers" as const, "workspace" as const, ...(caps?.features?.webhooks?.routes ? ["webhook" as const] : []), ...(caps?.features?.slack?.routes ? ["slack" as const] : []), "demo" as const];
+  const settingsOffered: SettingsPage[] = [...(caps?.features?.tool_keys?.routes ? ["keys" as const] : []), ...(caps?.features?.harness_keys?.routes ? ["harness-keys" as const] : []), ...(caps?.features?.api_keys?.routes ? ["api-keys" as const] : []), ...(choices.length || gates.length ? ["tools" as const] : []), "mcp" as const, "github" as const, "email" as const, "computers" as const, "workspace" as const, ...(caps?.features?.webhooks?.routes ? ["webhook" as const] : []), ...(caps?.features?.slack?.routes ? ["slack" as const] : []), "demo" as const];
   // In demo mode Settings is the demo's page alone: the server's own settings are no part of the sample story, and are
   // kept out of what a demo shows.
   const settingsShown: SettingsPage[] = demo ? ["demo"] : settingsOffered;

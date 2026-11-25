@@ -1165,10 +1165,9 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
        *  (tool-keys-store.ts), never in the clear. */
       tool_keys: { routes: true, at_rest: "sealed" },
       /** GET /settings/harness-keys and PUT/DELETE of one key: a plan-billed recipe's keys, saved for that harness alone
-       *  (harness-keys.ts); `harnesses` its ids here, and `kept` each id with keys saved whose recipe it no longer names
-       *  (a running server's, from its store: HarnessKeysOverStore.unnamed), so the console offers the page only where
-       *  there is one or a key to remove. */
-      harness_keys: { routes: true, at_rest: "sealed", harnesses: planRecipesOf(env).map((recipe) => recipe.id), kept: [] as string[] },
+       *  (harness-keys.ts); `harnesses` its ids here. The page's own GET lists the ids with keys kept whose recipe the
+       *  server no longer names, so the console offers the page on `routes`, as it does tool keys'. */
+      harness_keys: { routes: true, at_rest: "sealed", harnesses: planRecipesOf(env).map((recipe) => recipe.id) },
       /** /settings/mcp-servers: remote MCP servers previewed and saved, each credential sealed under the server's seal key,
        *  which always exists (seal-key.ts), so MCP credentials are always kept sealed. Every harness of the table runs a
        *  grant (runnable.ts takes one on any), a module's among them. `composio_per_run`: a per-run Composio server takes
@@ -1666,11 +1665,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // The start-time switches as this server was started: its options, else the CLI's variables. mcpLoopback is the
   // option alone, as everywhere it is read here (localInstall): the CLI sets it from AGENTRUN_MCP_ALLOW_LOOPBACK.
   const switched: SwitchedOn = { mcpLoopback: options.mcpLoopback === true, webhookPrivateTargets: switchedOnBy(process.env, options).webhookPrivateTargets };
-  // harness_keys.kept from the store's snapshot, made again at each key's save or removal (harnessKeysChanged's probe).
-  const compose = (runnerShell?: ReadonlySet<string>) => {
-    const made = askNeeds(capabilitiesWith(env, maxRuns, offers, learning, needs, settings.get(), boxOffers, toolKeys.refused(), runnerShell, isolation, switched));
-    return { ...made, features: { ...made.features, harness_keys: { ...made.features.harness_keys, kept: harnessKeys.unnamed() } } };
-  };
+  const compose = (runnerShell?: ReadonlySet<string>) => askNeeds(capabilitiesWith(env, maxRuns, offers, learning, needs, settings.get(), boxOffers, toolKeys.refused(), runnerShell, isolation, switched));
   const recompose = () => void (caps = compose());
   // What the offers held now were made from (offersInputs), and the latest probe: one a later probe overtook is dropped.
   let offersFrom: readonly (string | undefined)[] | undefined;
@@ -4902,14 +4897,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // skew check; left out when the store cannot say (a read that failed).
       const state = await store.schemaState?.().catch(() => undefined);
       const storeSchema = state ? { store_schema: { version: state.version, runner_floor: state.runnerFloor, known: state.known } } : {};
-      // features.harness_keys.kept names which harness ids still have keys stored: the owner's session or a holder of
-      // the server's token reads it; a caller with neither (this route answers before any bearer check) reads none. A
-      // bearer this server does not take still gets the answer, and the auth_failed line any other route writes for it.
-      const keptShown = byOwnerSession(req) || bearer(req.headers.authorization, req);
-      if (!keptShown && req.headers.authorization !== undefined) authFailed(`/v2${path}`, "wrong_token");
-      const keptCap = { ...answer.features.harness_keys, kept: keptShown ? answer.features.harness_keys.kept : [] };
+      // This route answers before any bearer check, the same to every caller. A bearer this server does not take still
+      // gets the answer, and the auth_failed line any other route writes for it.
+      if (req.headers.authorization !== undefined && !byOwnerSession(req) && !bearer(req.headers.authorization, req)) authFailed(`/v2${path}`, "wrong_token");
       // features.api_keys.routes: false on an API-only server, which serves none of the keys' routes and reads no key.
-      return send(res, 200, { ...answer, ...storeSchema, runner_refused: runnerRefused, features: { ...answer.features, harness_keys: keptCap, computers: await computerCapabilities(computersOf()), triggers: { ...answer.features.triggers, public_url: Boolean(options.publicUrl) }, claude_login: loginServed, api_keys: { ...answer.features.api_keys, routes: !options.apiOnly } } });
+      return send(res, 200, { ...answer, ...storeSchema, runner_refused: runnerRefused, features: { ...answer.features, computers: await computerCapabilities(computersOf()), triggers: { ...answer.features.triggers, public_url: Boolean(options.publicUrl) }, claude_login: loginServed, api_keys: { ...answer.features.api_keys, routes: !options.apiOnly } } });
     }
     if (found.name === "getOpenapi") return send(res, 200, servedOpenapi(openapi, ownerCookieName(req)));
     // With accounts off there is no owner, and the console still asks whether it may save a secret: secret-writes.ts'
