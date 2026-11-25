@@ -13,7 +13,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { AttachHub, checkLifetime, kindRefusals, MemoryMachineTokens, mountsOf, recordedMount, sweep } from "../dist/index.js";
+import { AttachHub, checkLifetime, computerNameFor, kindRefusals, MemoryMachineTokens, mountsOf, recordedMount, sweep } from "../dist/index.js";
 import { fakeObjects } from "./fake-archil.mjs";
 import { bootDial, desktopOverDial, dialServer } from "./fake-dial-host.mjs";
 import { refusesHttp } from "./https-refusal.mjs";
@@ -458,6 +458,62 @@ test('the Modal conformance module: mountFor("archil") gives a fresh run folder 
 	await folder.close();
 	assert.equal(objects.objects.size, 0);
 	noToken(objects.calls, "the object API's calls");
+});
+
+test("a conformance run's mount cases fit Modal's 10 tags and 512 bytes: each computer as the runner makes it, the run's and the runner's labels, the claim, the case, the mount and the box image, the longest image a Modal recipe runs", async (t) => {
+	const { conformanceImage, mountFor } = await import("../dist/conformance/modal.js");
+	const { runConformance } = await import("../dist/conformance/index.js");
+	// The box image: the run's image on dial, and the image that holds the Archil client, so an Archil run's --image.
+	const image = conformanceImage({ env: { COMPUTER_MODAL_CONNECT: "dial" } });
+	assert.equal(image, BOX_IMAGE);
+	const env = {
+		AGENTRUN_COMPUTER_LIVE_MODAL: "1",
+		COMPUTER_ARCHIL_DISK: MOUNT.disk,
+		COMPUTER_ARCHIL_REGION: MOUNT.region,
+		COMPUTER_ARCHIL_TOKEN: TOKEN,
+		COMPUTER_ARCHIL_API_KEY: "fake-test-key",
+		COMPUTER_ARCHIL_S3_URL: "https://s3.green.us-east-1.aws.prod.archil.com",
+	};
+	const { provider, rec } = setup();
+	const report = await runConformance(provider, {
+		image,
+		only: ["mount"],
+		mountFor: (kind) => mountFor(kind, { env, archil: { objects: fakeObjects() } }),
+		caseTimeoutMs: 10_000,
+		cleanupTimeoutMs: 2_000,
+	});
+	// A case whose labels are past Modal's bounds is refused by the adapter itself (check, then create) before Modal is
+	// called, so it never reaches sandboxes.create. That refusal is the bound this test guards, so it is read first.
+	const overBudget = report.results.filter(({ reason }) => /a Modal computer carries at most 10 labels|a Modal computer's labels come to at most 512 bytes/.test(reason ?? ""));
+	assert.deepEqual(
+		overBudget.map(({ id }) => id),
+		[],
+		`these mount cases' labels are past Modal's 10 tags or 512 bytes, and the adapter refused them:\n${overBudget.map(({ id, reason }) => `${id}: ${reason}`).join("\n").replaceAll(TOKEN, "[token]")}`,
+	);
+	// The tags of each create, as Modal is handed them: the recorder refuses every create, so each case ends at its first.
+	// The mount cases carry the most of a run's labels (a claim's two and the mount's beside the case's), so they bound it.
+	// The run's shared computer is made once too, for the hello the cases' exec and files needs are read from. It carries
+	// no case label: it is the create named by its request, <runner>/shared (the runner's own label holds <runner>).
+	const made = rec.calls.filter(([name]) => name === "sandboxes.create").map(([, , , params]) => params.tags);
+	const roleOf = (tags) => (tags[NAME] === computerNameFor(`${tags["agentrun.conformance.runner"]}/shared`) ? "the run's shared computer" : tags["agentrun.conformance.case"]);
+	const results = report.results.map(({ id, status, reason }) => `${id} ${status}: ${reason}`).join("\n");
+	assert.deepEqual(
+		made.map(roleOf).sort(),
+		["mount-archil", "mount-archil-durable", "mount-archil-isolated-durable", "mount-archil-loop-tool-edit", "mount-archil-takeover-1", "mount-archil-token", "mount-sync-cap", "mount-sync-delete", "mount-sync-durable", "mount-sync-push", "the run's shared computer"],
+		`every mount case Modal takes, and the run's shared computer, reached sandboxes.create:\n${results}`,
+	);
+	for (const tags of made) {
+		const which = `${roleOf(tags)} (${JSON.stringify(tags).replaceAll(TOKEN, "[token]")})`;
+		assert.ok(tags["agentrun.conformance"] && tags["agentrun.conformance.runner"], `${which}: the run's and the runner's labels`);
+		assert.ok(Object.keys(tags).length <= 10, `${which}: ${Object.keys(tags).length} tags, past Modal's 10`);
+		assert.ok(bytesOf(tags) <= 512, `${which}: ${bytesOf(tags)} bytes of tags, past Modal's 512`);
+	}
+	noToken(made, "the tags");
+	// The worst: an Archil case, the longest case name, its mount's tag beside the box image's. The shared computer's tags
+	// are a subset of every case's (no claim, case or mount label), so it is never the worst.
+	const worst = made.reduce((most, tags) => (bytesOf(tags) > bytesOf(most) ? tags : most));
+	assert.equal(worst["agentrun.conformance.case"], "mount-archil-isolated-durable");
+	t.diagnostic(`the worst case's tags: ${Object.keys(worst).length} of Modal's 10, ${bytesOf(worst)} of its 512 bytes`);
 });
 
 // --- the token, the server, the environment ---
