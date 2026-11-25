@@ -102,3 +102,51 @@ test("the server's Agent37 key is made once, sealed in the store under computer.
   assert.equal(fake.sshd.state.denied, 0);
   for (const line of bodyLines(pem)) assert.ok(!JSON.stringify(fake.rest.calls).includes(line), "no call to Agent37 carries the private key");
 });
+
+test("sealedKeys.putIfAbsent writes a row only where none is, in one statement: the first writer's bytes are kept", async (t) => {
+  const { reopen } = await storeFile(t);
+  const store = await reopen();
+  assert.equal(await store.sealedKeys.putIfAbsent("x", Uint8Array.of(1, 2, 3)), true, "written");
+  assert.equal(await store.sealedKeys.putIfAbsent("x", Uint8Array.of(4, 5, 6)), false, "a row is there: nothing written");
+  assert.deepEqual([...(await store.sealedKeys.get("x"))], [1, 2, 3]);
+});
+
+/** Each of `providers` makes an instance and runs `true` on it, all at once: their exit codes. */
+async function firstUseTogether(providers) {
+  const made = await Promise.all(providers.map((provider) => provider.host.create(request(), CTX)));
+  return Promise.all(providers.map((provider, i) => exitOf(provider.host, made[i].id, ["true"])));
+}
+
+test("five claims at once on one sealed store make one key: one row, one POST /v1/ssh-keys, one key on the workspace, every claim reaching its instance", async (t) => {
+  const fake = await fakeWorkspace();
+  t.after(() => fake.sshd.close());
+  const sealKey = randomBytes(32);
+  const { reopen } = await storeFile(t);
+  const store = await reopen();
+  const { computerDeps } = computerDepsFrom({ env: {}, store, sealKey, load: (id, options) => providerFor(id, options), daemon: async () => ({ up: true }) });
+  const providers = await Promise.all(Array.from({ length: 5 }, () => computerDeps.providers.agent37({ ...fake.options }, { ledger: undefined })));
+  assert.deepEqual(await firstUseTogether(providers), [0, 0, 0, 0, 0]);
+  assert.deepEqual((await store.sealedKeys.all()).map((row) => row.name), [ROW], "one row");
+  assert.equal(fake.rest.calls.filter((call) => call.method === "POST" && call.path === "/v1/ssh-keys").length, 1, "registered once");
+  assert.equal(fake.rest.sshKeys.length, 1, "one key on the workspace");
+  assert.equal(fake.sshd.state.denied, 0);
+});
+
+test("two servers on one database at their first use together keep one key: the row's, the one both register", async (t) => {
+  const fake = await fakeWorkspace();
+  t.after(() => fake.sshd.close());
+  const sealKey = randomBytes(32);
+  const { reopen } = await storeFile(t);
+  const stores = [await reopen(), await reopen()];
+  const providers = await Promise.all(
+    stores.flatMap((store) => {
+      const { computerDeps } = computerDepsFrom({ env: {}, store, sealKey, load: (id, options) => providerFor(id, options), daemon: async () => ({ up: true }) });
+      return Array.from({ length: 3 }, () => computerDeps.providers.agent37({ ...fake.options }, { ledger: undefined }));
+    }),
+  );
+  assert.deepEqual(await firstUseTogether(providers), [0, 0, 0, 0, 0, 0]);
+  const kept = await getSealedKey(stores[0], sealKey, ROW);
+  assert.equal(await getSealedKey(stores[1], sealKey, ROW), kept, "both read the one row");
+  assert.equal(fake.rest.sshKeys.length, 1, "one key on the workspace: the loser's was never registered");
+  assert.equal(fake.sshd.state.denied, 0);
+});

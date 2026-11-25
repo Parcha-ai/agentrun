@@ -351,7 +351,10 @@ export async function fakeWorkspace({ settleMs = 0 } = {}) {
 	return { rest, sshd, ws, options: { apiKey: KEY, ssh2, fetch: rest.fetch, WebSocket: ws.WebSocket, apiUrl: API_URL, proxyDomain: PROXY } };
 }
 
-/** A store of a provider's own secrets in memory, as a server's sealed one is used: get and put by name. puts lists each write. */
+/**
+ * A store of a provider's own secrets in memory, as a server's sealed one is used: get by name, and putIfAbsent, which
+ * keeps the first value under a name and answers the one kept. puts lists each write asked.
+ */
 export function memorySecrets() {
 	const held = new Map();
 	const puts = [];
@@ -362,6 +365,11 @@ export function memorySecrets() {
 		put: async (name, value) => {
 			puts.push(name);
 			held.set(name, value);
+		},
+		putIfAbsent: async (name, value) => {
+			puts.push(name);
+			if (!held.has(name)) held.set(name, value);
+			return held.get(name);
 		},
 	};
 }

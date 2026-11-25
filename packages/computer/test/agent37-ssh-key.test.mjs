@@ -107,7 +107,7 @@ test("with the API key alone, the provider makes an ed25519 key, keeps its priva
 	assert.equal(said(fake.rest.calls).filter((call) => call === "POST /v1/ssh-keys").length, 1, "the exec registers nothing more");
 });
 
-test("a second provider on the same store reuses the key: its fingerprint is listed, so nothing is registered; a key the listing misses answers 409, taken as registered", async (t) => {
+test("providers on one store share its key and its registration: a second makes no call; one on another store holding the same key finds it listed, and when the listing misses it, a 409 is taken as registered", async (t) => {
 	const fake = await fakeWorkspace();
 	t.after(() => fake.sshd.close());
 	const secrets = memorySecrets();
@@ -117,17 +117,58 @@ test("a second provider on the same store reuses the key: its fingerprint is lis
 	const second = new Agent37Provider({ ...fake.options, secrets });
 	const before = fake.rest.calls.length;
 	assert.deepEqual(await run(second.host, id, ["echo", "again"]), { code: 0, stdout: "again\n" });
-	assert.deepEqual(said(fake.rest.calls.slice(before)), ["GET /v1/ssh-keys"], "read, never registered again");
+	assert.deepEqual(said(fake.rest.calls.slice(before)), [], "the store's registration, already made in this process");
 	assert.equal(secrets.held.get("ssh_key"), pem, "the same key");
 	assert.deepEqual(secrets.puts, ["ssh_key"], "written once");
+	// Another store with the same key (a restarted server's): the workspace lists it, so it is read, never registered again.
+	const restarted = memorySecrets();
+	restarted.held.set("ssh_key", pem);
+	const third = new Agent37Provider({ ...fake.options, secrets: restarted });
+	const read = fake.rest.calls.length;
+	assert.deepEqual(await run(third.host, id, ["echo", "third"]), { code: 0, stdout: "third\n" });
+	assert.deepEqual(said(fake.rest.calls.slice(read)), ["GET /v1/ssh-keys"], "read, never registered again");
+	assert.deepEqual(restarted.puts, [], "a kept key is not written again");
 	// The listing misses it (a stale page): the POST answers 409 ssh_key_exists, which is the registration it needed.
 	fake.rest.fail("GET", /^\/v1\/ssh-keys$/, () => jsonAnswer(200, { object: "list", data: [] }));
-	const third = new Agent37Provider({ ...fake.options, secrets });
+	const stale = memorySecrets();
+	stale.held.set("ssh_key", pem);
+	const fourth = new Agent37Provider({ ...fake.options, secrets: stale });
 	const mark = fake.rest.calls.length;
-	assert.deepEqual(await run(third.host, id, ["echo", "third"]), { code: 0, stdout: "third\n" });
+	assert.deepEqual(await run(fourth.host, id, ["echo", "fourth"]), { code: 0, stdout: "fourth\n" });
 	assert.deepEqual(said(fake.rest.calls.slice(mark)), ["GET /v1/ssh-keys", "POST /v1/ssh-keys"]);
 	assert.equal(fake.rest.sshKeys.length, 1, "one key on the workspace");
 	assert.equal(fake.sshd.state.denied, 0);
+});
+
+test("five providers on one store at their first use together make one key: one kept, one POST /v1/ssh-keys, one key on the workspace, and each reaches its instance with it", async (t) => {
+	const fake = await fakeWorkspace();
+	t.after(() => fake.sshd.close());
+	const secrets = memorySecrets();
+	const providers = Array.from({ length: 5 }, () => new Agent37Provider({ ...fake.options, secrets }));
+	const made = await Promise.all(providers.map((provider) => provider.host.create(request(), CTX)));
+	const ran = await Promise.all(providers.map((provider, i) => run(provider.host, made[i].id, ["echo", String(i)])));
+	assert.deepEqual(ran, [0, 1, 2, 3, 4].map((i) => ({ code: 0, stdout: `${i}\n` })));
+	assert.equal(said(fake.rest.calls).filter((call) => call === "POST /v1/ssh-keys").length, 1, "registered once");
+	assert.equal(fake.rest.sshKeys.length, 1, "one key on the workspace");
+	assert.equal(fingerprintOf(lineOf(secrets.held.get("ssh_key"))), fake.rest.sshKeys[0].fingerprint, "the kept key is the registered one");
+	assert.equal(fake.sshd.state.denied, 0);
+});
+
+test("a 400 from POST /v1/ssh-keys that is not the cap is Agent37's refusal in its own words, never read as the 20 keys", async (t) => {
+	const fake = await fakeWorkspace();
+	t.after(() => fake.sshd.close());
+	for (let i = 0; i < 2; i++) fake.rest.register(keyPair().public, { name: `someone-${i}` });
+	fake.rest.fail("POST", /^\/v1\/ssh-keys$/, () => jsonAnswer(400, { error: { code: "invalid_request", message: "public_key could not be parsed" } }));
+	const provider = new Agent37Provider({ ...fake.options, secrets: memorySecrets() });
+	const refused = await provider.host.create(request(), CTX).then(
+		() => assert.fail("made an instance"),
+		(error) => error,
+	);
+	assert.equal(codeOfError(provider.host, refused), "vendor");
+	assert.match(refused.message, /public_key could not be parsed/, "Agent37's words");
+	assert.match(refused.message, /SSH key/);
+	assert.doesNotMatch(refused.message, /at most 20/, "not the cap: the workspace holds two keys");
+	assert.equal(said(fake.rest.calls).filter((call) => call === "POST /v1/instances").length, 0);
 });
 
 test("a set AGENT37_SSH_KEY is used as given: nothing is made, stored or registered", async (t) => {
