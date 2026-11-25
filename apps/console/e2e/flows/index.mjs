@@ -50,6 +50,7 @@ import replayButton from "./replay-button.mjs";
 import learningLoop from "./learning-loop.mjs";
 import gradeRun from "./grade-run.mjs";
 import toolCards from "./tool-cards.mjs";
+import toolsStepScroll from "./tools-step-scroll.mjs";
 import narrowLayouts from "./narrow-layouts.mjs";
 import playgroundOperationWidth from "./playground-operation-width.mjs";
 import playgroundAgentWidth from "./playground-agent-width.mjs";
@@ -95,6 +96,7 @@ export const flows = [
   learningLoop,
   gradeRun,
   toolCards,
+  toolsStepScroll,
   ...narrowLayouts,
   playgroundOperationWidth,
   playgroundAgentWidth,
