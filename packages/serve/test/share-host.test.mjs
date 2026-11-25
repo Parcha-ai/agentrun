@@ -20,6 +20,7 @@ import { request } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
 import { builtConsole, call, serve } from "./support.mjs";
+import { unixHome } from "./scrub-positives.mjs";
 
 /** One GET of / at the host, as the box's probe of a new loopback listener makes: its status. */
 async function portProbe(url) {
@@ -281,7 +282,7 @@ const { scrub } = await import("../dist/secret-cut.js");
 const plantedRestorable = () => {
   const user = `qa${randomBytes(3).toString("hex").replace(/[0-9]/g, "x")}`;
   const password = `Synthetic-${randomBytes(6).toString("hex")}`;
-  return { user, password, content: `# Notes\n\nSee /home/${user}/proj/a.txt\nPASSWORD=${password}\n` };
+  return { user, password, content: `# Notes\n\nSee ${unixHome(user)}/proj/a.txt\nPASSWORD=${password}\n` };
 };
 /** A bundle whose file holds `content`, exported twice by run-export.ts: once to read its cuts, then restoring every
  *  restorable one of them (the owner's preview restore). */
@@ -368,7 +369,7 @@ test("a restored record that names no value the host finds is a stale or edited 
   const twice = { ...doc, restored: [...doc.restored, doc.restored[0]] };
   // A restorable value where no restore may stand (the bundle's own words): found, and its record excuses nothing.
   const ownWords = structuredClone(clean);
-  ownWords.source.agentrun = `/home/${planted.user}/agentrun`;
+  ownWords.source.agentrun = `${unixHome(planted.user)}/agentrun`;
   await declare(ownWords, "/source/agentrun", "home-path", "personal");
   for (const [name, changed, reason, rule] of [["a forged record", forged, "restored_unmatched", "home-path"], ["one record twice", twice, "restored_unmatched", doc.restored[0].rule], ["a record in the bundle's own words", ownWords, "scrub_found", "home-path"]]) {
     const res = await upload(s, resigned(changed));

@@ -1,8 +1,7 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-// The export route's own golden bundle (serve's run-export test writes and checks it). Synthetic, made from fixed seeds.
-import golden from "../../../../packages/serve/test/fixtures/run-export/golden.json";
+import { golden } from "./golden.fixture";
 import { VerdictCard } from "@/components/NodeDrawer";
 import type { Decision } from "@/lib/runGraph";
 import { HostedSharePage } from "./SharePage";
@@ -12,7 +11,7 @@ import { shareIdOf, storedSource, type ShareBundle, type ShareLoad, type ShareSo
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; vi.unstubAllGlobals(); });
 
-const bundle = golden as unknown as ShareBundle;
+const bundle: ShareBundle = golden;
 const ID = "abcdefghijklmnopqrstuvwxyz";
 // Words of the run that must never show on a refusal.
 const RUN_TEXT = ["Golden agent", "Done. Mail", "out/report.md", "[redacted:"];
