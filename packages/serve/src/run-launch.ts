@@ -295,9 +295,12 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
   };
 }
 
-/** A held run's model refusal as its launch keeps it, else undefined. */
+/** A held run's model refusal as its launch keeps it, else undefined (none kept). One kept that can't be read (a corrupt
+ *  row, another version's) is a refusal still, in words that name the field and never what it holds: read as none, the
+ *  run would start and its claim open the keys its model was refused for. */
 function readRefusal(value: unknown): HeldRefusal | undefined {
-  if (!isObject(value) || typeof value.message !== "string" || !Array.isArray(value.fields) || !isObject(value.details)) return undefined;
+  if (value === undefined) return undefined;
+  if (!isObject(value) || typeof value.message !== "string" || !Array.isArray(value.fields) || !isObject(value.details)) return { message: "This run's model was kept from running at its create, and its launch's hold.refused can't be read: it holds its computer only. Start a new run to run its agent.", fields: [], details: {} };
   return { message: value.message, fields: value.fields as InputIssue[], details: value.details };
 }
 
