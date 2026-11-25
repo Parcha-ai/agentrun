@@ -236,6 +236,13 @@ test("a connect base URL the signing key may not go to is refused, naming its se
   }
 });
 
+test("a connect base URL only a Browserbase session uses never stops another browser's attach, refused or not", () => {
+  for (const base of ["http://proxy.example/ws", "https://proxy.example/ws?key=not-a-secret"]) {
+    assert.equal(rewriteConnectUrl("ws://127.0.0.1:9/devtools/b1", base), "ws://127.0.0.1:9/devtools/b1", base);
+    assert.equal(rewriteConnectUrl("wss://api.onkernel.com/browser/cdp?token=t", base), "wss://api.onkernel.com/browser/cdp?token=t", base);
+  }
+});
+
 test("a provider that is no browser, or a browser that declares no features, is refused in browser_unavailable's words", () => {
   const capabilities = { lifetime: "vendor", network: ["open"], isolation: "vm", os: "linux", daemon: "none", groups: [], maxLifetimeMs: 1, release: ["delete"] };
   assert.throws(() => planeBrowser({ id: "docker", capabilities: () => ({ ...capabilities, kind: "linux" }) }, RUN), (error) => error.failure?.code === "browser_unavailable" && /gives no browser/.test(error.message));
