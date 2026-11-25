@@ -220,6 +220,20 @@ test("a Browserbase connect URL moves onto the credential proxy, its signing que
   assert.equal(rewriteConnectUrl("wss://connect.browserbase.com/?sessionId=s&signingKey=k", "https://proxy.example/ws/"), "https://proxy.example/ws/?sessionId=s&signingKey=k");
   assert.equal(rewriteConnectUrl("ws://127.0.0.1:9/devtools/b1", "https://proxy.example"), "ws://127.0.0.1:9/devtools/b1");
   assert.equal(rewriteConnectUrl("wss://connect.browserbase.com/?x=1", undefined), "wss://connect.browserbase.com/?x=1");
+  assert.equal(rewriteConnectUrl("wss://connect.browserbase.com/?x=1", "wss://proxy.example/ws"), "wss://proxy.example/ws?x=1");
+});
+
+test("a connect base URL the signing key may not go to is refused, naming its setting and the origin alone, never quietly used", () => {
+  const FAKE = "not-a-secret";
+  const credentialed = "https://agent:" + FAKE + "@proxy.example/ws";
+  const connect = "wss://connect.browserbase.com/?sessionId=s&signingKey=k";
+  for (const base of [credentialed, "https://proxy.example/ws?key=not-a-secret", "https://proxy.example/ws#not-a-secret", "http://proxy.example/ws", "ws://proxy.example/ws"]) {
+    assert.throws(() => rewriteConnectUrl(connect, base), (error) => {
+      assert.match(error.message, /^BROWSERBASE_CONNECT_BASE_URL /, base);
+      assert.doesNotMatch(error.message, /not-a-secret|key=|agent:|signingKey/, base);
+      return true;
+    }, base);
+  }
 });
 
 test("a provider that is no browser, or a browser that declares no features, is refused in browser_unavailable's words", () => {
