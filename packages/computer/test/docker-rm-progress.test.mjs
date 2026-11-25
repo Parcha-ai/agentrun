@@ -4,6 +4,7 @@
 // name it. No Docker is needed.
 import assert from "node:assert/strict";
 import test from "node:test";
+import { DockerProvider, SETTLE_MS, SETTLE_QUIET_MS, settleBoundsOf } from "../dist/docker.js";
 import { releaseOlder, runLabels } from "../dist/index.js";
 import { computerNameFor } from "../dist/provider.js";
 import { allowed, container, fakeDocker, idOf } from "./fake-docker.mjs";
@@ -73,13 +74,41 @@ test("create() whose docker run made the container and failed, while that contai
 	assert.ok(looksAfterRm(calls, idOf(name)) >= 1, "the provider looked until the computer was gone");
 });
 
-test("a removal already under way that never ends fails release(delete) once the bound runs out, in words that name the container", async () => {
-	const { provider, names } = fakeDocker({ containers: [container({ name: A })], removing: { [A]: null } });
+test("a removal already under way that never ends fails release(delete) once the bound runs out, in words that name the container", { timeout: 5_000 }, async () => {
+	// The bound is the provider's settleMs, set far below its default 10 s: the test waits out a bound of its own.
+	const { provider, names } = fakeDocker({ containers: [container({ name: A })], removing: { [A]: null }, settleMs: 300 });
+	const started = Date.now();
 	const released = await provider.release(ref(A), "delete");
 	assert.equal(released.ok, false);
 	assert.deepEqual([released.error.code, released.error.vendor], ["vendor", "docker"]);
-	assert.equal(released.error.message, `docker rm ${A} failed: docker answered that the removal of ${A} was already in progress, and it was still there when the 10 s bound ran out`);
+	assert.equal(released.error.message, `docker rm ${A} failed: docker answered that the removal of ${A} was already in progress, and it was still there when the 0.3 s bound ran out`);
+	assert.ok(Date.now() - started >= 300, "it waited out the bound");
 	assert.deepEqual(names(), [A]);
+});
+
+test("the provider's default bounds are SETTLE_MS (10 s) and SETTLE_QUIET_MS (3 s), read from settleBoundsOf, not waited out; given bounds pass through, bad ones throw", () => {
+	// The constructor's bounds are settleBoundsOf(options), so a provider given no settleMs waits SETTLE_MS: the test reads
+	// the constant instead of waiting 10 s for a removal that never ends.
+	assert.equal(SETTLE_MS, 10_000);
+	assert.equal(SETTLE_QUIET_MS, 3_000);
+	assert.deepEqual(settleBoundsOf({}), { settleMs: SETTLE_MS, quietMs: SETTLE_QUIET_MS });
+	assert.deepEqual(settleBoundsOf({ settleMs: 300 }), { settleMs: 300, quietMs: SETTLE_QUIET_MS });
+	assert.deepEqual(settleBoundsOf({ settleQuietMs: 100 }), { settleMs: SETTLE_MS, quietMs: 100 });
+	assert.deepEqual(settleBoundsOf({ settleMs: 300, settleQuietMs: 100 }), { settleMs: 300, quietMs: 100 });
+	for (const bad of [0, -1, 1.5, 2 ** 31, Number.NaN, "300"]) {
+		for (const name of ["settleMs", "settleQuietMs"]) {
+			assert.throws(() => settleBoundsOf({ [name]: bad }), new RegExp(`^Error: the provider's ${name} must be a whole number of milliseconds above 0`), `${name}: ${String(bad)}`);
+		}
+	}
+});
+
+test("the bounds a test may set (settleMs, settleQuietMs) are whole milliseconds above 0 that a timer can hold; anything else is refused when the provider is made", () => {
+	for (const bad of [0, -1, 1.5, 2 ** 31, Number.NaN, "300"]) {
+		for (const name of ["settleMs", "settleQuietMs"]) {
+			assert.throws(() => new DockerProvider({ daemonPath: "/nonexistent", [name]: bad }), new RegExp(`^Error: the provider's ${name} must be a whole number of milliseconds above 0`), `${name}: ${String(bad)}`);
+		}
+	}
+	assert.doesNotThrow(() => new DockerProvider({ daemonPath: "/nonexistent", settleMs: 300, settleQuietMs: 100 }));
 });
 
 test("sweepLeftovers aborted while a proxy's removal is under way ends aborted, naming the proxy", async () => {
