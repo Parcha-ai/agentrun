@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { accessSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { homedir, hostname, tmpdir, userInfo } from "node:os";
@@ -1338,7 +1338,7 @@ test("each folder the server's env gives this machine's login must be one its us
   const who = `uid ${process.geteuid()} (${userInfo().username})`;
   const mine = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-folders-"));
   t.after(() => rmSync(mine, { recursive: true, force: true }));
-  mkdirSync(join(mine, "own"));
+  mkdirSync(join(mine, "own"), { mode: 0o700 });
   symlinkSync("/", join(mine, "to-root"));
   symlinkSync(join(mine, "own"), join(mine, "to-own"));
   const data = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-data-"));
@@ -1352,10 +1352,12 @@ test("each folder the server's env gives this machine's login must be one its us
       await refusedEverywhere(rig, deps, notOwnFolder(who, name, gives(value)), `${name}=${value}`);
       assert.deepEqual(asked, [], `${name}=${value}: the CLI was not asked, and no sign-in started`);
     }
-    for (const value of [join(mine, "own"), join(mine, "still", "to-make"), join(mine, "to-own")]) {
+    // The login has each folder's real path: a link of the user's own is followed.
+    const real = realpathSync(mine);
+    for (const [value, at] of [[join(mine, "own"), join(real, "own")], [join(mine, "still", "to-make"), join(real, "still", "to-make")], [join(mine, "to-own"), join(real, "own")]]) {
       const login = await loginForRun(saved, data, { HOME: UP, [name]: value }, "claude-agent", RUNNER);
       assert.ok(login, `${name}=${value}: a folder of the server's user's own is the login's`);
-      assert.equal(has(login), gives(value), `${name}=${value}: ${JSON.stringify(login)}`);
+      assert.equal(has(login), gives(at), `${name}=${value}: ${JSON.stringify(login)}`);
     }
   }
   // AgentRun's own login keeps its folders in its data: the env's are not its, and refuse nothing there.
@@ -1436,59 +1438,93 @@ test("a link another user made above this machine's login folder or its home ref
 
 test("a trailing slash hides no link: another user's link as the last name of this machine's login folder or its home, written with a trailing slash, refuses the login in the view, the sign-in, the turn-on and a run: root, with CLAUDE_CONFIG_DIR or HOME the person's link to root's /, and a slash after it", { skip: ROOT_LINKS_SKIP, timeout: 60_000 }, (t) => refusedThroughPersonsLinks(t, (link) => `${link}/`));
 
-// A folder of another user's on the way is theirs to change as their link is: the person could put a link in the place
-// of a name in it once the check has looked, and a `..` after that name would then go up from where the link leads.
-// Here, under root, a way into the person's folder and back out of it with `..` to root's own /usr.
-test("a folder of another user's on the way to this machine's login folder or its home refuses the login in the view, the sign-in, the turn-on and a run, a way back out of it with `..` included: root, with CLAUDE_CONFIG_DIR or HOME through the person's folder and up to root's /usr", { skip: process.platform === "win32" ? "no uid" : process.geteuid() === 0 ? "root owns the test's folders" : false, timeout: 60_000 }, async (t) => {
-  const mine = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-theirs-"));
-  t.after(() => rmSync(mine, { recursive: true, force: true }));
-  const value = `${mine}${"/..".repeat(mine.split("/").length - 1)}/usr`;
+/** A folder root owns, that neither its group nor anyone else may write in, inside this process's own folder in /proc,
+ *  which is the test's user's (`/proc/<pid>/net/stat`, say): a folder of root's in another user's folder, for `uid` 0.
+ *  Undefined where there is none (no /proc). */
+const ROOTS_IN_PERSONS = (() => {
+  const net = `/proc/${process.pid}/net`;
+  try {
+    if (lstatSync(`/proc/${process.pid}`).uid !== process.geteuid() || lstatSync(net).uid !== process.geteuid()) return undefined;
+    return readdirSync(net).map((name) => join(net, name)).find((at) => {
+      const folder = lstatSync(at);
+      return folder.isDirectory() && folder.uid === 0 && (folder.mode & 0o022) === 0;
+    });
+  } catch {
+    return undefined;
+  }
+})();
+
+// A folder of root's inside another user's folder (one a sudo that kept the env left in the person's home, say) is the
+// person's to rename and put a folder of theirs in its place once the check has looked, as their link is theirs to
+// point elsewhere. So every folder above the login's is judged too: each must be the server's user's or root's.
+test("a folder of root's inside another user's folder, as this machine's login folder or its home, refuses the login in the view, the sign-in, the turn-on and a run: root, with CLAUDE_CONFIG_DIR or HOME a folder of its own in the person's", { skip: process.platform === "win32" ? "no uid" : process.geteuid() === 0 ? "root owns the test's folders" : ROOTS_IN_PERSONS === undefined ? "no folder of root's in one of the test user's here" : false, timeout: 60_000 }, async (t) => {
   const rig = await loginRig(t);
   const asked = [];
   const asRoot = (env) => rig.deps({ uid: 0, env: { ...rig.env, ...env }, claude: async () => askedClaude(asked) });
+  const value = ROOTS_IN_PERSONS;
   await refusedEverywhere(rig, asRoot({ HOME: "/", CLAUDE_CONFIG_DIR: value }), notOwnFolder("uid 0", "CLAUDE_CONFIG_DIR", value), `root, its own HOME, CLAUDE_CONFIG_DIR=${value}`);
   await refusedEverywhere(rig, asRoot({ HOME: value }), homeNotOwned("uid 0", value), `root, HOME=${value}`);
   assert.deepEqual(asked, [], "the CLI was not asked, and no sign-in started");
 });
 
+// A folder still to make is made by the CLI in the nearest folder above it that is there. In one that others may write
+// in, sticky or not (/tmp), another user can make it first, as theirs: refused, root's /tmp included.
+test("a folder still to make, in a folder others may write in, refuses this machine's login in the view, the sign-in, the turn-on and a run: root, with CLAUDE_CONFIG_DIR a folder still to make in the sticky temporary folder", { skip: ROOT_LINKS_SKIP, timeout: 60_000 }, async (t) => {
+  const rig = await loginRig(t);
+  const asked = [];
+  const asRoot = (env) => rig.deps({ uid: 0, env: { ...rig.env, ...env }, claude: async () => askedClaude(asked) });
+  const value = join(STICKY, `agentrun-claude-login-never-made-${randomBytes(6).toString("hex")}`);
+  await refusedEverywhere(rig, asRoot({ HOME: "/", CLAUDE_CONFIG_DIR: value }), notOwnFolder("uid 0", "CLAUDE_CONFIG_DIR", value), `root, its own HOME, CLAUDE_CONFIG_DIR=${value}`);
+  assert.deepEqual(asked, [], "the CLI was not asked, and no sign-in started");
+  assert.equal(existsSync(value), false);
+});
+
 // A person's own server, with a link of theirs to a folder of theirs anywhere on the way (a home moved to another disk,
-// say), keeps its login, and the CLI gets the folders as the env gives them.
-test("a link the server's user made to a folder of its own, above this machine's login folder or its home or as their last name, with a trailing slash or none, keeps the login, and the login has the folders as the env gives them", { skip: process.platform === "win32" ? "no uid" : process.geteuid() === 0 ? "root owns /" : false, timeout: 60_000 }, async (t) => {
+// say), keeps its login. The login has the real paths, and the CLI gets those: a link changed after the check, by
+// anyone, redirects nothing.
+test("a link the server's user made to a folder of its own, above this machine's login folder or its home or as their last name, with a trailing slash or none, keeps the login, and the login and the CLI's variables have the real paths", { skip: process.platform === "win32" ? "no uid" : process.geteuid() === 0 ? "root owns /" : false, timeout: 60_000 }, async (t) => {
   const mine = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-own-links-"));
   t.after(() => rmSync(mine, { recursive: true, force: true }));
-  mkdirSync(join(mine, "own", "claude"), { recursive: true });
+  mkdirSync(join(mine, "own", "claude"), { recursive: true, mode: 0o700 });
   symlinkSync(join(mine, "own"), join(mine, "current"));
   const data = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-data-"));
   t.after(() => rmSync(data, { recursive: true, force: true }));
   const saved = { get: async () => settingFor("machine", data) };
   const current = join(mine, "current");
-  for (const home of [current, `${current}/`, join(current, "claude")]) {
-    for (const value of [join(current, "claude"), `${join(current, "claude")}/`, `${current}/`, join(current, "still", "to-make")]) {
-      const login = await loginForRun(saved, data, { HOME: home, CLAUDE_CONFIG_DIR: value }, "claude-agent", RUNNER);
-      assert.ok(login, `HOME=${home}, CLAUDE_CONFIG_DIR=${value}: the login is the server's user's own`);
-      assert.equal(login.dir, value, `HOME=${home}, CLAUDE_CONFIG_DIR=${value}: ${JSON.stringify(login)}`);
-      assert.equal(login.userHome, home, `HOME=${home}, CLAUDE_CONFIG_DIR=${value}: ${JSON.stringify(login)}`);
+  const own = join(realpathSync(mine), "own");
+  for (const [home, homeAt] of [[current, own], [`${current}/`, own], [join(current, "claude"), join(own, "claude")]]) {
+    for (const [value, at] of [[join(current, "claude"), join(own, "claude")], [`${join(current, "claude")}/`, join(own, "claude")], [`${current}/`, own], [join(current, "still", "to-make"), join(own, "still", "to-make")]]) {
+      const env = { HOME: home, CLAUDE_CONFIG_DIR: value, CLAUDE_SECURESTORAGE_CONFIG_DIR: value, ANTHROPIC_CONFIG_DIR: value };
+      const login = await loginForRun(saved, data, env, "claude-agent", RUNNER);
+      const what = `HOME=${home}, the folder variables ${value}`;
+      assert.ok(login, `${what}: the login is the server's user's own`);
+      assert.deepEqual([login.dir, login.secure, login.profiles, login.userHome], [at, at, at, homeAt], `${what}: ${JSON.stringify(login)}`);
+      assert.deepEqual(claude.claudeLoginEnv(login), { CLAUDE_SECURESTORAGE_CONFIG_DIR: at, ANTHROPIC_CONFIG_DIR: at }, `${what}: the CLI's variables`);
     }
   }
 });
 
-// A folder on the way that anyone may write in, with no sticky bit to keep each entry its maker's, lets another user put
-// a folder or a link of theirs in the place of the next one once the check has looked; one anyone may write in as the
-// login folder itself lets them put their files in it. Both are refused. The sticky bit (as /tmp has it) keeps a folder
-// on the way, but not the login folder itself.
-test("a folder anyone may write in, on the way to this machine's login folder with no sticky bit or as that folder itself, refuses the login in the view, the sign-in, the turn-on and a run; with the sticky bit, one on the way keeps it", { skip: process.platform === "win32" ? "no uid" : process.geteuid() === 0 ? "root may write anywhere" : false, timeout: 60_000 }, async (t) => {
+// A folder on the way that its group or anyone may write in, with no sticky bit to keep each entry its maker's, lets
+// another user put a folder or a link of theirs in the place of the next one once the check has looked; one open so as
+// the login folder itself lets them put their files in it, and as the folder the CLI makes the login's in, make that
+// first. All are refused. The sticky bit (as /tmp has it) keeps a folder on the way, but not the login folder itself
+// nor the one it is made in.
+test("a folder its group or anyone may write in, on the way to this machine's login folder with no sticky bit, or as that folder itself or the one it is to be made in, refuses the login in the view, the sign-in, the turn-on and a run; with the sticky bit, one on the way keeps it", { skip: process.platform === "win32" ? "no uid" : process.geteuid() === 0 ? "root may write anywhere" : false, timeout: 60_000 }, async (t) => {
   const who = `uid ${process.geteuid()} (${userInfo().username})`;
   const mine = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-open-"));
   t.after(() => rmSync(mine, { recursive: true, force: true }));
   const open = join(mine, "open");
-  mkdirSync(join(open, "claude"), { recursive: true });
-  chmodSync(open, 0o777);
-  for (const value of [join(open, "claude"), open, join(open, "still", "to-make")]) {
-    const rig = await loginRig(t);
-    const asked = [];
-    const deps = rig.deps({ env: { ...rig.env, CLAUDE_CONFIG_DIR: value }, claude: async () => askedClaude(asked) });
-    await refusedEverywhere(rig, deps, notOwnFolder(who, "CLAUDE_CONFIG_DIR", value), `CLAUDE_CONFIG_DIR=${value}, anyone may write in ${open}`);
-    assert.deepEqual(asked, [], `CLAUDE_CONFIG_DIR=${value}: the CLI was not asked, and no sign-in started`);
+  mkdirSync(join(open, "claude"), { recursive: true, mode: 0o700 });
+  for (const mode of [0o777, 0o770]) {
+    chmodSync(open, mode);
+    for (const value of [join(open, "claude"), open, join(open, "still", "to-make")]) {
+      const rig = await loginRig(t);
+      const asked = [];
+      const deps = rig.deps({ env: { ...rig.env, CLAUDE_CONFIG_DIR: value }, claude: async () => askedClaude(asked) });
+      const what = `CLAUDE_CONFIG_DIR=${value}, ${open} ${mode.toString(8)}`;
+      await refusedEverywhere(rig, deps, notOwnFolder(who, "CLAUDE_CONFIG_DIR", value), what);
+      assert.deepEqual(asked, [], `${what}: the CLI was not asked, and no sign-in started`);
+    }
   }
   chmodSync(open, 0o1777);
   const data = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-data-"));
@@ -1496,6 +1532,36 @@ test("a folder anyone may write in, on the way to this machine's login folder wi
   const saved = { get: async () => settingFor("machine", data) };
   assert.ok(await loginForRun(saved, data, { HOME: UP, CLAUDE_CONFIG_DIR: join(open, "claude") }, "claude-agent", RUNNER), "with the sticky bit, a folder on the way keeps the login");
   assert.equal(await loginForRun(saved, data, { HOME: UP, CLAUDE_CONFIG_DIR: open }, "claude-agent", RUNNER), undefined, "with the sticky bit, the login folder itself still refuses it");
+  assert.equal(await loginForRun(saved, data, { HOME: UP, CLAUDE_CONFIG_DIR: join(open, "still", "to-make") }, "claude-agent", RUNNER), undefined, "with the sticky bit, the folder the login is to be made in still refuses it");
+});
+
+/** Whether the test's user owns its own home as the system has it, held as the login's home must be. */
+const ownHomeHeld = (() => {
+  try {
+    const home = lstatSync(userInfo().homedir);
+    return home.isDirectory() && home.uid === process.geteuid() && (home.mode & 0o022) === 0;
+  } catch {
+    return false;
+  }
+})();
+
+// A server whose env's HOME is another user's (root under a sudo that keeps the env, with the person's HOME) keeps its
+// login in its own user's home (homeOf). A terminal with that env is in the other user's home, so a line that left HOME
+// to the terminal would sign the CLI in there, where the server never reads. The line the view shows carries the home.
+// Here the test's user stands for root, and "/" (root's) for the person's HOME; its own home is only named, not read.
+test("a server whose env's HOME is another user's shows a sign-in line that carries its own user's home, at either place, so the line signs in where the server reads; with its own HOME, the line leaves HOME to the terminal", { skip: process.platform === "win32" ? "no uid" : process.geteuid() === 0 ? "root owns /" : !ownHomeHeld ? "the test user's own home is not one it holds" : false, timeout: 60_000 }, async (t) => {
+  const rig = await loginRig(t);
+  const own = realpathSync(userInfo().homedir);
+  const withLine = async () => ({ ...askedClaude([]), claudeLoginCommand: claude.claudeLoginCommand });
+  const carriesHome = (line, home) => line.includes(` HOME=${home} `) || line.includes(` HOME='${home}' `) || line.startsWith(`HOME=${home} `) || line.startsWith(`HOME='${home}' `);
+  for (const place of ["machine", "agentrun"]) {
+    rig.rows.set(CLAUDE_LOGIN_SETTING, settingFor(place, rig.data));
+    const view = await claudeLoginView(rig.deps({ env: { PATH: rig.env.PATH, HOME: "/" }, claude: withLine }));
+    assert.equal(view.refused, undefined, `${place}: ${JSON.stringify(view)}`);
+    assert.ok(carriesHome(view.command, own), `${place}, the person's HOME: the line carries the server's user's own home: ${view.command}`);
+    const mine = await claudeLoginView(rig.deps({ env: { PATH: rig.env.PATH, HOME: UP }, claude: withLine }));
+    assert.doesNotMatch(mine.command, /(^| )HOME=/, `${place}, its own HOME: ${mine.command}`);
+  }
 });
 
 // A login saved before is turned off at the start of a server that refuses it, so no runner, in this process or another,
