@@ -20,7 +20,7 @@ import { credentialMark } from "./mcp-secret-writes.js";
 import { type SecretMeta, secretMeta, secretName } from "./secret-writes.js";
 import { type ClientKind, dialAt, issuerOf, LOOPBACK, MAX_PENDING, MCP_SETTINGS_PAGE, mcpServerAt, McpSignIns, type OAuthNetwork, type Pending, type PendingStore, reasonOf, SIGN_IN_AGAIN, systemNetwork, type TokenSet } from "./mcp-oauth.js";
 import { type Cleanup, cleanupOf, COMPOSIO_KEY_ENV, COMPOSIO_ORIGIN, composioAccountKey, composioEnvKey, composioKeyFromEnv, composioMadeKey, type ComposioMade, composioPerRun, droppedOf, madeToWrite, recordedMade, releasedOf, storedMade } from "./composio-made.js";
-import { asking, COMPOSIO_PER_RUN, COMPOSIO_USER, composioAccount, type ComposioAccount, type ComposioControl, composioListingAddress, composioServerId } from "./composio-preset.js";
+import { asking, COMPOSIO_PER_RUN, COMPOSIO_USER, COMPOSIO_USER_ID, composioAccount, type ComposioAccount, type ComposioControl, composioListingAddress, composioServerId } from "./composio-preset.js";
 import { mcpSourceKey, type RecordedRow, recordedForAnother, savedByToken, sourceOf, type SourceRecord, sourceToWrite, standInGiven, storedSource, toolkitGiven } from "./mcp-sources.js";
 import { handedNoSealKey, SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
 import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN, githubMcpUrl } from "./github.js";
@@ -838,7 +838,12 @@ export class McpServersOverStore {
     const key = Object.entries(headers).find(([header]) => header.toLowerCase() === "x-api-key")?.[1];
     if (!key) throw refuse(`${name}'s saved credential holds no Composio key: save it again with its key.`);
     const config = recordedMade(recorded, row.createdAt)?.auth_config?.id;
-    return { key, user: new URL(row.url).searchParams.get("user_id") || COMPOSIO_USER, toolkit, ...(config ? { auth_config: config } : {}) };
+    // Only an address with no user_id at all is the default user's: an empty one is a blank user, refused below.
+    const user = new URL(row.url).searchParams.get("user_id") ?? COMPOSIO_USER;
+    // A user that is no Composio user id (a blank one Composio may read as every user) is refused before Composio is asked
+    // anything: no account read, no connect link made for it.
+    if (!COMPOSIO_USER_ID.test(user)) throw refuse(`${name}'s saved Composio user ${JSON.stringify(user)} is no Composio user id: save the server again with its user.`);
+    return { key, user, toolkit, ...(config ? { auth_config: config } : {}) };
   }
 
   /** What the saved server `row` is, for a template's apply to match (mcp-sources.ts sourceOf): github on the GitHub App's

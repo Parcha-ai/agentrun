@@ -6,7 +6,7 @@ import { type LineSource, lineReader, type ReadContext } from "../lines.js";
 import { type Env, entries } from "../reader.js";
 import { addRecord, ownerOf, type RecordIndex, recordIndex } from "../record-index.js";
 import { packed, packInto } from "../record-key.js";
-import { argsOf, effortOf, INTERRUPTED, isObject, str, textOf } from "../text.js";
+import { argsOf, effortOf, FAILED, INTERRUPTED, isObject, str, textOf } from "../text.js";
 import type { Answer, SessionOf, ToolCall } from "../types.js";
 import { normalizeUsage } from "../usage.js";
 
@@ -145,7 +145,7 @@ function record(value: Record<string, unknown>, at: number, { state, seen, keep,
     if (!key && !text && calls.length === 0) return;
     const effort = effortOf(value.perTurnEffort) ?? effortOf(value.effort);
     // Without turns, no answer text: the request is kept for its counts, in the result and the cursor alike.
-    const turn: Answer = { role: "assistant", text: keep ? text : "", calls, at, ...(key ? { key } : {}), ...(session.model ? { model: session.model } : {}), ...(effort ? { effort } : {}), ...(usage ? { usage } : {}), ...(failed ? { error: text || "API error" } : {}), ...mark };
+    const turn: Answer = { role: "assistant", text: keep ? text : "", calls, at, ...(key ? { key } : {}), ...(session.model ? { model: session.model } : {}), ...(effort ? { effort } : {}), ...(usage ? { usage } : {}), ...(failed ? { error: keep ? text || "API error" : FAILED } : {}), ...mark };
     if (key) {
       own.keyed.set(key, turn);
       seen.add(`m:${key}`);

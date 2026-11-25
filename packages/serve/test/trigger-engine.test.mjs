@@ -27,22 +27,37 @@ async function shared(t, at) {
   return { ...opened, clocks };
 }
 
-/** The store's triggers with its next `n` settle calls failing, as a store that does not answer. */
-function failing(store, gate) {
-  const triggers = new Proxy(store.triggers, {
-    get(target, key) {
-      const value = Reflect.get(target, key, target);
+/** `store` with each method named in `triggers` (or `agents`) going through the test's hand on it: `hand(call, ...args)`
+ *  in the method's place, `call()` the store's own method on those args. */
+function through(store, { triggers = {}, agents } = {}) {
+  const wrap = (target, hands) => new Proxy(target, {
+    get(on, name) {
+      const value = Reflect.get(on, name, on);
       if (typeof value !== "function") return value;
-      return (...args) => {
-        if (key === "settle" && gate.settle > 0) {
-          gate.settle -= 1;
-          return Promise.reject(new Error("the store did not answer"));
-        }
-        return value.apply(target, args);
-      };
+      const hand = hands[name];
+      return hand ? (...args) => hand(() => value.apply(on, args), ...args) : value.bind(on);
     },
   });
-  return { ...store, triggers, runs: store.runs };
+  return { ...store, triggers: wrap(store.triggers, triggers), ...(agents ? { agents: wrap(store.agents, agents) } : {}), runs: store.runs };
+}
+
+/** A hand for `through` that adds one to `trap[name]` once each call answers while `when()` holds: by the test's next look
+ *  the engine's code after that read has run. */
+function tally(trap, name, when) {
+  return (read) => (when() ? read().then((answer) => ((trap[name] += 1), answer)) : read());
+}
+
+/** The store's triggers with its next `gate.settle` settle calls failing, as a store that does not answer. */
+function failing(store, gate) {
+  return through(store, {
+    triggers: {
+      settle: (write) => {
+        if (gate.settle <= 0) return write();
+        gate.settle -= 1;
+        return Promise.reject(new Error("the store did not answer"));
+      },
+    },
+  });
 }
 
 /** An engine on `on`'s store (a new store when none), started; its start dep puts the run in the store as the run port
@@ -562,13 +577,13 @@ for (const [write, answer, on] of [["sent", 204, "runOf"], ["failed", 400, "runO
   const told = [];
   const writes = [];
   const at = { id: undefined, read: false, landed: false };
-  // The host's start as the API runs one for trigger_firing: handedStart, which writes its run under the firing's key
-  // through the start it is given, then starts the firing with it.
+  // The host's start as the API runs one for trigger_firing: handedStart, whose start writes its run under the firing's
+  // key and starts the firing with it in the same write.
   const land = async (key) => {
     at.landed = true;
     const started = await triggers.handedStart({ trigger_id: at.id, firing_id: key }, "a", async (handed) => {
       assert.equal(handed.key, key, JSON.stringify(handed));
-      await opened.store.runs.create({ id: "run-host", agentId: "a", revisionId: "rev-a", origin: { key } });
+      await opened.store.runs.create({ id: "run-host", agentId: "a", revisionId: "rev-a", origin: { key }, firing: { triggerId: at.id, key } });
       ran.set(key, { run_id: "run-host" });
       return { run_id: "run-host" };
     });
@@ -582,25 +597,22 @@ for (const [write, answer, on] of [["sent", 204, "runOf"], ["failed", 400, "runO
     }
     return found;
   };
-  const watched = new Proxy(opened.store.triggers, {
-    get(target, name) {
-      const value = Reflect.get(target, name, target);
-      if (typeof value !== "function") return value;
-      if (name === "firing") return async (...args) => {
-        const row = await value.apply(target, args);
-        if (on === "firing" && at.read && !at.landed) await land(args[1]);
+  const watched = through(opened.store, {
+    triggers: {
+      firing: async (read, id, key) => {
+        const row = await read();
+        if (on === "firing" && at.read && !at.landed) await land(key);
         return row;
-      };
-      if (name === "settle") return async (...args) => {
-        const settled = await value.apply(target, args);
-        if (at.landed) writes.push(args[2]);
+      },
+      settle: async (write, id, key, change) => {
+        const settled = await write();
+        if (at.landed) writes.push(change);
         return settled;
-      };
-      return value.bind(target);
+      },
     },
   });
   const { triggers } = await engine(t, {
-    store: { ...opened.store, triggers: watched, runs: opened.store.runs },
+    store: watched,
     runOf,
     notify: (failed) => (told.push(failed.firing_key), "queued"),
     launchHook: { url: `http://127.0.0.1:${host.address().port}/agentrun/firings`, secret: mintSecret() },
@@ -805,7 +817,7 @@ test("a host start of a sent firing holds the room until its run is written, how
 
 test("a host start at a sent firing's start_by pushes it out and holds the room until its run is written, however long that takes: with max_active_runs 1 and the run still being written an hour past the pushed start_by, another firing's host start is refused", (t) => slowStart(t, true));
 
-test("a firing whose run started while its hook is still open counts once: with max_active_runs 2 and that run the one in progress, another firing's host start is taken", async (t) => {
+test("the room count takes a firing both mid-hand and in the store's runs in progress once: with max_active_runs 2, a firing whose run started while its hook is still open fills one place, and another firing's host start is taken", async (t) => {
   const host = await heldHost(t);
   const { clock, store, triggers } = await engine(t, { launchHook: host.launchHook });
   const made = await triggers.create({ ...hookBody, max_active_runs: 2 });
@@ -918,29 +930,27 @@ test("a host start whose read of the trigger is older than another firing's star
   assert.equal(await store.runs.get("run-b"), undefined, "one run at a time: the overlap check's");
 });
 
-test("with max_active_runs 1, a firing started by another server between a host start's trigger read and its count of runs in progress still fills the room: the start waits on that firing, never takes the place", async (t) => {
+test("with max_active_runs 1, a firing started between a host start's trigger read and its count of runs in progress still fills the room: the start waits on that firing, never takes the place", async (t) => {
   const on = await shared(t, "2026-06-01T00:00:00Z");
   const host = await heldHost(t);
   const trap = { armed: false };
   const elsewhere = async (id, key) => {
-    // Another server on the same store starts firing `key` with its run: the trigger's last run is set in that write.
+    // Firing `key` started with its run, written to the store in that gap: the trigger's last run is set in that write.
     await on.store.runs.create({ id: "run-a", agentId: "a", revisionId: "rev-a", origin: { key } });
     await on.store.triggers.settle(id, key, { status: "started", runId: "run-a" }, { reset: true });
   };
-  const triggersOf = new Proxy(on.store.triggers, {
-    get(target, name) {
-      const value = Reflect.get(target, name, target);
-      if (name !== "activeKeys" || typeof value !== "function") return value;
-      return async (...args) => {
+  const counted = through(on.store, {
+    triggers: {
+      activeKeys: async (count) => {
         if (trap.armed) {
           trap.armed = false;
           await elsewhere(trap.id, trap.key);
         }
-        return value.apply(target, args);
-      };
+        return count();
+      },
     },
   });
-  const { store, triggers } = await engine(t, { launchHook: host.launchHook, store: { ...on.store, triggers: triggersOf, runs: on.store.runs }, ...storeReads(on) }, { on });
+  const { store, triggers } = await engine(t, { launchHook: host.launchHook, store: counted, ...storeReads(on) }, { on });
   const made = await triggers.create({ ...hookBody, max_active_runs: 1 });
   const a = await timedOut(triggers, store, host, made.id, "evt-a");
   const b = await timedOut(triggers, store, host, made.id, "evt-b");
@@ -974,17 +984,64 @@ test("a host start of a sent firing that writes no run leaves its start_by where
   assert.equal(seen.length, 1, "the start past the window never began");
 });
 
+/** The server's reads of runs over `on` (storeReads), each lookup under a key counted in `looked.n` once it answered. A
+ *  host start whose lookup found no run goes on to its room check before any timer runs, so once `until` sees it
+ *  counted, that start follows a start of the same firing already writing its run. */
+function countedReads(on) {
+  const reads = storeReads(on);
+  const looked = { n: 0 };
+  const runOf = async (key) => {
+    const found = await reads.runOf(key);
+    looked.n += 1;
+    return found;
+  };
+  return { looked, deps: { ...reads, runOf } };
+}
+
 test("two host starts of one firing at once start one run: the second waits on the first's and answers it, replayed, with no start of its own", async (t) => {
+  const on = await shared(t, "2026-06-01T00:00:00Z");
   const host = await heldHost(t);
-  const { store, triggers } = await engine(t, { launchHook: host.launchHook });
+  const reads = countedReads(on);
+  const { store, triggers } = await engine(t, { launchHook: host.launchHook, ...reads.deps }, { on });
   const made = await triggers.create({ ...hookBody, max_active_runs: 1 });
   const a = await timedOut(triggers, store, host, made.id, "evt-a");
   const first = heldStart(triggers, store, made.id, a, "run-a");
   await until(() => first.entered, "the first start is writing a's run");
-  const second = triggers.handedStart({ trigger_id: made.id, firing_id: a }, "a", async () => assert.fail("the second start writes no run"));
+  const looked = reads.looked.n;
+  // Settled as a value at once: a second start that runs its own start fails the deepEqual below, not as an unhandled
+  // rejection while the first is still held.
+  const second = triggers.handedStart({ trigger_id: made.id, firing_id: a }, "a", async () => assert.fail("the second start writes no run"))
+    .then((ok) => ok, (error) => ({ refused: error?.message }));
+  await until(() => reads.looked.n > looked, "the second start found no run under a's key and follows the first");
   first.writing.resolve();
   assert.deepEqual(await first.done, { run_id: "run-a", replayed: false });
   assert.deepEqual(await second, { run_id: "run-a", replayed: true });
+});
+
+test("two host starts of one firing at once, the first writing no run: the second, following it, gets no run to answer and starts its own, not replayed", async (t) => {
+  const on = await shared(t, "2026-06-01T00:00:00Z");
+  const host = await heldHost(t);
+  const reads = countedReads(on);
+  const { store, triggers } = await engine(t, { launchHook: host.launchHook, ...reads.deps }, { on });
+  const made = await triggers.create({ ...hookBody, max_active_runs: 1 });
+  const a = await timedOut(triggers, store, host, made.id, "evt-a");
+  const failing = held();
+  const at = { entered: false };
+  const first = triggers.handedStart({ trigger_id: made.id, firing_id: a }, "a", async () => {
+    at.entered = true;
+    await failing.promise;
+    throw new Error("the host's start failed");
+  });
+  first.catch(() => {});
+  await until(() => at.entered, "the first start is writing a's run");
+  const looked = reads.looked.n;
+  const second = triggers.handedStart({ trigger_id: made.id, firing_id: a }, "a", hostRun(store, a, "run-b"));
+  await until(() => reads.looked.n > looked, "the second start found no run under a's key and follows the first");
+  failing.resolve();
+  await assert.rejects(first, /the host's start failed/);
+  assert.deepEqual(await second, { run_id: "run-b", replayed: false });
+  const row = await store.triggers.firing(made.id, a);
+  assert.deepEqual([row.status, row.runId], ["started", "run-b"], JSON.stringify(row));
 });
 
 /** Firing a of a trigger (`body`), waiting on its retry, its host's start writing its run when that retry comes due
@@ -995,26 +1052,19 @@ async function midStartRetry(t, body, before) {
   const on = await shared(t, "2026-06-01T00:00:00Z");
   const host = await heldHost(t);
   const trap = { a: null, watching: false, aReads: 0, waiting: 0, pending: 0, selfWaits: 0 };
-  const counted = (name, result) => {
-    if (name === "waiting") trap.waiting += 1;
-    if (name === "pending") trap.pending += 1;
-    return result;
-  };
-  const triggersOf = new Proxy(on.store.triggers, {
-    get(target, name) {
-      const value = Reflect.get(target, name, target);
-      if (typeof value !== "function") return value;
-      return (...args) => {
-        if (name === "settle" && trap.a && args[1] === trap.a && args[2]?.waitsOn === trap.a) trap.selfWaits += 1;
-        const out = value.apply(target, args);
-        if (!trap.watching) return out;
-        // Counted once answered: the engine's code after the read has run by the test's next look.
-        if (name === "firing" && args[1] === trap.a) return out.then((row) => ((trap.aReads += 1), row));
-        return name === "waiting" || name === "pending" ? out.then((rows) => counted(name, rows)) : out;
-      };
+  const watching = () => trap.watching;
+  const counted = through(on.store, {
+    triggers: {
+      settle: (write, id, key, change) => {
+        if (trap.a && key === trap.a && change?.waitsOn === trap.a) trap.selfWaits += 1;
+        return write();
+      },
+      firing: (read, id, key) => (trap.watching && key === trap.a ? tally(trap, "aReads", watching)(read) : read()),
+      waiting: tally(trap, "waiting", watching),
+      pending: tally(trap, "pending", watching),
     },
   });
-  const { clock, store, triggers } = await engine(t, { launchHook: host.launchHook, store: { ...on.store, triggers: triggersOf, runs: on.store.runs }, statusOf: async () => "working" }, { on });
+  const { clock, store, triggers } = await engine(t, { launchHook: host.launchHook, store: counted, statusOf: async () => "working" }, { on });
   const made = await triggers.create(body);
   await before?.({ triggers, store, host, made });
   const a = await timedOut(triggers, store, host, made.id, "evt-a");
@@ -1074,30 +1124,25 @@ test("a tick while a firing's host start is writing its run leaves the firing to
   // waits at `gate` until the test lets it read.
   const trap = { a: null, watching: false, aCalls: 0, waiting: 0, pending: 0 };
   const gate = { entered: false, read: held() };
-  const triggersOf = new Proxy(on.store.triggers, {
-    get(target, name) {
-      const value = Reflect.get(target, name, target);
-      if (typeof value !== "function") return value;
-      return (...args) => {
-        if (trap.watching && name === "firing" && args[1] === trap.a) trap.aCalls += 1;
-        const out = value.apply(target, args);
-        if (!trap.watching || (name !== "waiting" && name !== "pending")) return out;
-        return out.then((rows) => ((trap[name] += 1), rows));
-      };
+  const watching = () => trap.watching;
+  const counted = through(on.store, {
+    triggers: {
+      firing: (read, id, key) => {
+        if (trap.watching && key === trap.a) trap.aCalls += 1;
+        return read();
+      },
+      waiting: tally(trap, "waiting", watching),
+      pending: tally(trap, "pending", watching),
     },
-  });
-  const agentsOf = new Proxy(on.store.agents, {
-    get(target, name) {
-      const value = Reflect.get(target, name, target);
-      if (typeof value !== "function") return value;
-      return (...args) => {
-        if (name !== "get" || !trap.watching || gate.entered) return value.apply(target, args);
+    agents: {
+      get: (read) => {
+        if (!trap.watching || gate.entered) return read();
         gate.entered = true;
-        return gate.read.promise.then(() => value.apply(target, args));
-      };
+        return gate.read.promise.then(read);
+      },
     },
   });
-  const { clock, store, triggers } = await engine(t, { launchHook: host.launchHook, store: { ...on.store, triggers: triggersOf, agents: agentsOf, runs: on.store.runs } }, { on });
+  const { clock, store, triggers } = await engine(t, { launchHook: host.launchHook, store: counted }, { on });
   const made = await triggers.create(hookBody);
   const a = await timedOut(triggers, store, host, made.id, "evt-a");
   trap.a = a;
@@ -1132,21 +1177,17 @@ async function driveReadBeforeStart(t, between) {
   const gate = { armed: false, entered: false, answer: held() };
   const trap = { a: null, watching: false, waiting: 0, pending: 0, settles: 0 };
   const queued = [];
-  const triggersOf = new Proxy(on.store.triggers, {
-    get(target, name) {
-      const value = Reflect.get(target, name, target);
-      if (typeof value !== "function") return value;
-      return (...args) => {
-        const out = value.apply(target, args);
-        if (name === "settle" && trap.watching && args[1] === trap.a) return out.then((row) => ((trap.settles += 1), row));
-        if (!gate.armed || (name !== "waiting" && name !== "pending")) return out;
-        return out.then((rows) => ((trap[name] += 1), rows));
-      };
+  const armedGate = () => gate.armed;
+  const counted = through(on.store, {
+    triggers: {
+      settle: (write, id, key) => (trap.watching && key === trap.a ? tally(trap, "settles", () => true)(write) : write()),
+      waiting: tally(trap, "waiting", armedGate),
+      pending: tally(trap, "pending", armedGate),
     },
   });
   const { clock, store, triggers } = await engine(t, {
     launchHook: host.launchHook,
-    store: { ...on.store, triggers: triggersOf, runs: on.store.runs },
+    store: counted,
     // The server's lookup of a run under a firing's key: the first once `gate` is armed (the drive's) reads, then
     // answers what it read when the test lets it.
     runOf: async (key) => {
@@ -1585,33 +1626,24 @@ test("a trigger's adapter settings go before its row, on a DELETE and on an agen
 
 /** `store` with each of its firing writes going through `settle(write, change)`: the test's hold on it. */
 function settledThrough(store, settle) {
-  const triggers = new Proxy(store.triggers, {
-    get(target, name) {
-      const value = Reflect.get(target, name, target);
-      if (typeof value !== "function") return value;
-      return name === "settle" ? (...args) => settle(() => value.apply(target, args), args[2]) : value.bind(target);
-    },
-  });
-  return { ...store, triggers, runs: store.runs };
+  return through(store, { triggers: { settle: (write, id, key, change) => settle(write, change) } });
 }
-/** Firing evt-a of a max_active_runs 1 webhook trigger, its host's hook answered 2xx with no run (sent), on server `a`;
- *  and server `b`, a second engine on the same store with the same hook, each of whose firing writes goes through
- *  `settle` (the test's hold on it; `a`'s through `settleA`, and its log lines to `sayA`). Neither server's own checks
- *  know of the other's work: the store is all they share. */
-async function twoServers(t, settle = (write) => write(), { settleA = (write) => write(), sayA = () => {} } = {}) {
+/** Firing evt-a of a max_active_runs 1 webhook trigger, its host's hook answered 2xx with no run (sent), on an engine each
+ *  of whose firing writes goes through `settle` (the test's hold on it). A release writes after its room check, so a
+ *  host start can check and write between a release's read and its write on one server. `deps(on)` adds engine deps
+ *  over the shared store `on` (its say, the server's reads of runs). */
+async function sentFiring(t, settle = (write) => write(), deps = () => ({})) {
   const host = await heldHost(t);
   const told = [];
-  const notify = (failed) => (told.push(failed.firing_key), "queued");
   const on = await shared(t, "2026-06-01T00:00:00Z");
-  const a = await engine(t, { launchHook: host.launchHook, notify, say: sayA, store: settledThrough(on.store, settleA) }, { on });
-  const made = await a.triggers.create({ ...hookBody, max_active_runs: 1 });
-  await a.triggers.receive(made.id, "evt-a", "{}");
+  const { clock, store, triggers } = await engine(t, { launchHook: host.launchHook, notify: (failed) => (told.push(failed.firing_key), "queued"), ...deps(on), store: settledThrough(on.store, settle) }, { on });
+  const made = await triggers.create({ ...hookBody, max_active_runs: 1 });
+  await triggers.receive(made.id, "evt-a", "{}");
   const key = firingKey("webhook", made.id, "evt-a");
   await until(() => host.open.length === 1, "the host has the POST");
   host.open[0].writeHead(200).end();
-  await until(async () => (await a.store.triggers.firing(made.id, key)).status === "sent", "its host took it with no run");
-  const b = await engine(t, { launchHook: host.launchHook, notify, store: settledThrough(a.store, settle) }, { on: a });
-  return { a, b, id: made.id, key, told, store: a.store };
+  await until(async () => (await store.triggers.firing(made.id, key)).status === "sent", "its host took it with no run");
+  return { clock, triggers, id: made.id, key, told, store };
 }
 /** The 422 not_due a release is refused with once firing's run `runId` started: details run_started and the run. */
 const runStarted = (runId) => (error) => {
@@ -1625,7 +1657,7 @@ test("a release that read its firing sent before the host's start wrote its run,
   const reached = held();
   const go = held();
   const wrote = held();
-  const { a, b, id, key, told, store } = await twoServers(t, async (write, change) => {
+  const { triggers, id, key, told, store } = await sentFiring(t, async (write, change) => {
     if (change.status !== "failed") return write();
     reached.resolve();
     await go.promise;
@@ -1635,14 +1667,14 @@ test("a release that read its firing sent before the host's start wrote its run,
       wrote.resolve();
     }
   });
-  const released = b.triggers.release(id, key, { error: "The job failed at launch." }, (text) => text);
+  const released = triggers.release(id, key, { error: "The job failed at launch." }, (text) => text);
   // Its refusal can land before this start answers (on Postgres, each of the release's reads and writes is a round trip
   // that can finish ahead of the start's own): handled from now on, so the node:test runner never sees it as unhandled,
   // and asserted below.
   released.catch(() => {});
-  // Server b read the firing sent with no run under its key, and holds its write.
+  // The release read the firing sent with no run under its key, and holds its write.
   await reached.promise;
-  const started = await a.triggers.handedStart({ trigger_id: id, firing_id: key }, "a", async (handed) => {
+  const started = await triggers.handedStart({ trigger_id: id, firing_id: key }, "a", async (handed) => {
     const run = await hostRun(store, key, "run-host")(handed);
     // The release's write lands after the run's, before this start goes on to start the firing with it.
     go.resolve();
@@ -1657,17 +1689,31 @@ test("a release that read its firing sent before the host's start wrote its run,
   assert.deepEqual(told, [], "no trigger.failed");
 });
 
-test("a host start that read its firing sent before a release wrote it, and writes its run after, is refused naming the release: the run and the firing's start are one conditional write, so no run is left, the firing stays failed host_released, and one trigger.failed goes out", async (t) => {
-  const { a, b, id, key, told, store } = await twoServers(t);
+test("a host start that checked its firing sent before a release wrote it, and writes its run after, is refused naming the release: the run and the firing's start are one conditional write, so no run is left, the firing stays failed host_released, and one trigger.failed goes out", async (t) => {
+  const reached = held();
+  const go = held();
+  const { triggers, id, key, told, store } = await sentFiring(t, async (write, change) => {
+    if (change.status !== "failed") return write();
+    reached.resolve();
+    await go.promise;
+    return write();
+  });
+  const releasing = triggers.release(id, key, { error: "The job failed at launch." }, (text) => text);
+  // Handled from here (a refusal can land before the test awaits it), and asserted below.
+  releasing.catch(() => {});
+  // The release read the firing sent with no run, and holds its write: the host's start checks its room meanwhile.
+  await reached.promise;
   const writing = held();
   const at = { entered: false };
-  const start = a.triggers.handedStart({ trigger_id: id, firing_id: key }, "a", async (handed) => {
+  const start = triggers.handedStart({ trigger_id: id, firing_id: key }, "a", async (handed) => {
     at.entered = true;
     await writing.promise;
     return hostRun(store, key, "run-host")(handed);
   });
+  start.catch(() => {});
   await until(() => at.entered, "the host's start checked its room and is writing its run");
-  const released = await b.triggers.release(id, key, { error: "The job failed at launch." }, (text) => text);
+  go.resolve();
+  const released = await releasing;
   assert.deepEqual([released.status, released.error?.code], ["failed", "host_released"], JSON.stringify(released));
   writing.resolve();
   await assert.rejects(start, (error) => {
@@ -1683,30 +1729,77 @@ test("a host start that read its firing sent before a release wrote it, and writ
   assert.deepEqual(told, [key], "one trigger.failed");
 });
 
-test("a host start whose run was written apart from its firing (by a server from before the one write), and whose firing a release fails between handedRan's read and its write, leaves the firing released: the start answers its run, the firing is never overwritten to started, and the log says so", async (t) => {
-  const reached = held();
-  const go = held();
+test("a host start whose start answers a run its own write never linked, and whose firing a release fails between handedRan's read and its write, leaves the firing released: the start answers its run, the firing is never overwritten to started, and the log says so", async (t) => {
+  const releaseHeld = held();
+  const startReached = held();
+  const releaseWrote = held();
   const said = [];
-  const { b, a, id, key, store } = await twoServers(t, undefined, {
-    sayA: (fields) => said.push(fields),
-    settleA: async (write, change) => {
-      if (change.status !== "started") return write();
-      reached.resolve();
-      await go.promise;
-      return write();
-    },
-  });
-  // The run under the firing's key alone: the firing's start is handedRan's own write after it.
-  const start = a.triggers.handedStart({ trigger_id: id, firing_id: key }, "a", async () => (await store.runs.create({ id: "run-apart", agentId: "a", revisionId: "rev-a", origin: { key } }), { run_id: "run-apart" }));
-  // Server a read the firing sent with no run, and holds its write of the firing's start.
-  await reached.promise;
-  const released = await b.triggers.release(id, key, { error: "The job failed at launch." }, (text) => text);
+  const { triggers, id, key, store } = await sentFiring(t, async (write, change) => {
+    if (change.status === "failed") {
+      // The release read the firing sent with no run, and writes once handedRan has read it too.
+      releaseHeld.resolve();
+      await startReached.promise;
+      try {
+        return await write();
+      } finally {
+        releaseWrote.resolve();
+      }
+    }
+    if (change.status === "started") {
+      // handedRan read the firing sent with no run, and writes its start once the release's write has landed.
+      startReached.resolve();
+      await releaseWrote.promise;
+    }
+    return write();
+  }, () => ({ say: (fields) => said.push(fields) }));
+  const releasing = triggers.release(id, key, { error: "The job failed at launch." }, (text) => text);
+  releasing.catch(() => {});
+  await releaseHeld.promise;
+  // A run under the firing's key alone, as startRun's re-delivery or constraint fallback answers one: the firing's start
+  // is handedRan's own write after it.
+  const start = triggers.handedStart({ trigger_id: id, firing_id: key }, "a", async () => (await store.runs.create({ id: "run-apart", agentId: "a", revisionId: "rev-a", origin: { key } }), { run_id: "run-apart" }));
+  const released = await releasing;
   assert.deepEqual([released.status, released.error?.code], ["failed", "host_released"], JSON.stringify(released));
-  go.resolve();
   assert.deepEqual(await start, { run_id: "run-apart", replayed: false }, "the run exists: its start is answered, never refused");
   const row = await store.triggers.firing(id, key);
   assert.deepEqual([row.status, row.runId, row.error?.code], ["failed", null, "host_released"], JSON.stringify(row));
-  assert.deepEqual(said.filter((f) => f.firing === key && /fired|release/.test(f.condition)).map((f) => [f.condition, f.run]), [["trigger_run_after_release", "run-apart"]], JSON.stringify(said));
+  assert.deepEqual(said.filter((f) => f.firing === key && f.run).map((f) => [f.condition, f.run]), [["trigger_run_after_release", "run-apart"]], JSON.stringify(said));
+});
+
+test("a host start whose start answers a run its own write never linked has the firing started with that run: handedRan links it, and the log says it fired once", async (t) => {
+  const said = [];
+  const { triggers, id, key, store } = await sentFiring(t, undefined, () => ({ say: (fields) => said.push(fields) }));
+  // A run under the firing's key alone, as startRun's re-delivery or constraint fallback answers one.
+  const apart = async () => (await store.runs.create({ id: "run-apart", agentId: "a", revisionId: "rev-a", origin: { key } }), { run_id: "run-apart" });
+  assert.deepEqual(await triggers.handedStart({ trigger_id: id, firing_id: key }, "a", apart), { run_id: "run-apart", replayed: false });
+  const row = await store.triggers.firing(id, key);
+  assert.deepEqual([row.status, row.runId], ["started", "run-apart"], JSON.stringify(row));
+  assert.deepEqual(said.filter((f) => f.firing === key && f.run).map((f) => [f.condition, f.run]), [["trigger_fired", "run-apart"]], JSON.stringify(said));
+});
+
+test("a host start whose start_by push finds the firing moved, because its run was written meanwhile, reads it again and answers that run, replayed, with no start of its own", async (t) => {
+  const trap = { armed: false };
+  const reached = held();
+  const go = held();
+  const { clock, triggers, id, key, store } = await sentFiring(t, async (write, change) => {
+    if (!trap.armed || change.status !== "sent" || change.holdsAt === undefined) return write();
+    reached.resolve();
+    await go.promise;
+    return write();
+  }, (on) => storeReads(on));
+  const { startBy } = await store.triggers.firing(id, key);
+  // Under a minute before start_by: the start's check pushes start_by out a minute before its run is written.
+  clock.to(new Date(startBy - 30_000).toISOString());
+  trap.armed = true;
+  const start = triggers.handedStart({ trigger_id: id, firing_id: key }, "a", async () => assert.fail("this start writes no run of its own"));
+  await reached.promise;
+  // Its check read the firing sent with no run and holds its push: the firing's run is written and starts it meanwhile.
+  await store.runs.create({ id: "run-b", agentId: "a", revisionId: "rev-a", origin: { key }, firing: { triggerId: id, key } });
+  go.resolve();
+  const answer = await start.catch((error) => assert.fail(`the start refused (${error?.code}, ${error?.extra?.fields?.[0]?.reason}) where it reads the moved firing again and answers its run`));
+  assert.deepEqual(answer, { run_id: "run-b", replayed: true });
+  const row = await store.triggers.firing(id, key);
+  assert.deepEqual([row.status, row.runId], ["started", "run-b"], JSON.stringify(row));
 });
 
 test("a release that lands while the engine is still writing its hook's 2xx waits for that write, and fails the firing host_released: never refused not_due as a firing not handed yet, and its trigger's room is free for the next firing", async (t) => {
@@ -1805,7 +1898,7 @@ test("two releases that land while the engine is still writing its hook's 2xx bo
 });
 
 // The hook's try ends with no 2xx while a release waits on its turn: an answer the engine retries, or no answer in time.
-for (const [what, endTry] of [["answers 503", (host) => host.open[0].writeHead(503).end()], ["is cut at its timeout", (host) => host.bounds[0].abort()]]) test(`a release that lands while the launch hook is still open waits for the engine's turn, and when the hook ${what} the firing stays due on its retry and the release is refused not_due as not handed yet: a firing the engine tries again is never released`, async (t) => {
+for (const [what, endTry] of [["answers 503", (host) => host.open[0].writeHead(503).end()], ["is cut at its timeout", (host) => host.bounds[0].abort()]]) test(`a release that lands while the launch hook is still open waits for the engine's turn, and when the hook ${what} the firing stays due on its retry and the release is refused not_due as not handed yet: a firing the engine tries again is never released`, { timeout: 30_000 }, async (t) => {
   const host = await heldHost(t);
   const said = [];
   const told = [];
