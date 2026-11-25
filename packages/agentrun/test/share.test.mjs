@@ -271,6 +271,10 @@ test("share --restore passes the ids as ?restore=; a refusal (400) is printed pl
   const restored = await share([run, "--dry-run", "--restore", keep.join(",")], { data: fake.data });
   assert.equal(restored.code, 0, restored.err);
   assert.equal(new URLSearchParams(fake.got[0].query).get("restore"), keep.join(","));
+  // The page opens with the same restores, so its first read is the bundle this summary is of.
+  const page = `${fake.page}?${new URLSearchParams({ restore: keep.join(",") })}`;
+  assert.deepEqual(restored.opened, [["xdg-open", page]], "the opened page carries the restores");
+  assert.equal(JSON.parse(restored.out).page, page, "and so does the printed one");
 
   const file = join(fresh(), "bundle.json");
   const refused = await share([run, "--dry-run", "--restore", cutId(4), "--out", file], { data: fake.data });
