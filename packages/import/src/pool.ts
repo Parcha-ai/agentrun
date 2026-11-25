@@ -7,7 +7,9 @@
 // (readAheadBytes()), the pool reads large files first (BIG_FILE and over, the largest first: they set the time), then
 // the rest in the import's order; at the read-ahead it reads only the one parseHome waits for. A worker's heap is bounded (OLD_MB): one that
 // runs out gives up its file, which parseHome reads itself, and another worker takes its place.
+import { readFileSync } from "node:fs";
 import { availableParallelism, freemem, totalmem } from "node:os";
+import { join } from "node:path";
 import { Worker } from "node:worker_threads";
 import type { Locator, SessionRead } from "./reader.js";
 import { indexArrays, type RecordIndex } from "./record-index.js";
@@ -45,9 +47,39 @@ export const BIG_FILE = 64 * 2 ** 20;
  *  memory. */
 export const READ_AHEAD_BYTES = 2 ** 30;
 
-/** The memory this process may use: its container's limit (process.constrainedMemory) when one is set below the
- *  machine's, else the machine's. A 2 GiB container on a 512 GiB host has 2 GiB. */
-export const memoryLimit = (total = totalmem(), constrained = process.constrainedMemory()): number => (constrained > 0 && constrained < total ? constrained : total);
+/** The container's memory limit: process.constrainedMemory(), or the lowest memory.max of this process's cgroup v2 and
+ *  every cgroup above it when that is lower. Node reads only the process's own cgroup (the lower of its memory.max and
+ *  memory.high, libuv 1.52): a container whose process sits in /init.scope (memory.max "max") under a namespace root of
+ *  4 GiB had no limit by Node, and the pool was sized for the host's 810 GB. A level whose memory.max is "max", missing (the host's root cgroup has none) or not a number sets
+ *  nothing; cgroup v1 (no "0::" line), no /proc/self/cgroup (not Linux), a path outside the mount, or any error give
+ *  `constrained` as it is. Synchronous: read while the pool is sized, a few small files. */
+export function constrainedMemory(root = "/sys/fs/cgroup", self = "/proc/self/cgroup", constrained = process.constrainedMemory()): number {
+  try {
+    const line = readFileSync(self, "utf8").split("\n").find((l) => l.startsWith("0::"));
+    if (line === undefined) return constrained;
+    const parts = line.slice(3).split("/").filter((p) => p !== "" && p !== ".");
+    if (parts.includes("..")) return constrained;
+    let lowest = constrained > 0 ? constrained : Infinity;
+    for (let depth = parts.length; depth >= 0; depth -= 1) {
+      let max: string;
+      try {
+        max = readFileSync(join(root, ...parts.slice(0, depth), "memory.max"), "utf8").trim();
+      } catch {
+        continue;
+      }
+      if (!/^\d+$/.test(max)) continue;
+      const bytes = Number(max);
+      if (bytes > 0 && bytes < lowest) lowest = bytes;
+    }
+    return lowest === Infinity ? constrained : lowest;
+  } catch {
+    return constrained;
+  }
+}
+
+/** The memory this process may use: its container's limit (constrainedMemory) when one is set below the machine's, else
+ *  the machine's. A 2 GiB container on a 512 GiB host has 2 GiB. */
+export const memoryLimit = (total = totalmem(), constrained = constrainedMemory()): number => (constrained > 0 && constrained < total ? constrained : total);
 
 /** The default read-ahead: READ_AHEAD_BYTES, or a sixteenth of the memory this process may use when that is less (512 MiB
  *  at 8 GiB, 128 MiB in a 2 GiB container). */
