@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-const { DATA_ROOT_FILE, DATA_ROOT_KEY, DISK_FREE_MODE_1, DISK_FREE_NO_ARCHIL, diskFreeRefusal } = await import("../dist/runner/disk-free.js");
+const { ARCHIL_S3_URL_NOT_HELD, DATA_ROOT_FILE, DATA_ROOT_KEY, DISK_FREE_MODE_1, DISK_FREE_NO_ARCHIL, diskFreeGate, diskFreeRefusal } = await import("../dist/runner/disk-free.js");
 const { ARCHIL_SETTINGS_KEY, ARCHIL_SETTINGS_ENV } = await import("../dist/archil-settings.js");
 const { RUN_ENV_KEY } = await import("../dist/runner/runner-check.js");
 
@@ -61,4 +61,41 @@ test("a runner on the server's disk, on SQLite, or beside a server older than th
   assert.equal(await diskFreeRefusal(storeWith(), dataDir(t, true), ARCHIL_ENV, "postgres"), undefined);
   assert.equal(await diskFreeRefusal(storeWith(), dataDir(t), ARCHIL_ENV, "sqlite"), undefined);
   assert.equal(await diskFreeRefusal({ settings: { get: async () => null } }, dataDir(t), ARCHIL_ENV, "postgres"), undefined);
+});
+
+// A runner given a region without an S3 URL reaches Archil at the region's (archil-settings.ts ARCHIL_S3_URLS). Its claim
+// gate (diskFreeGate) refuses while the server's S3 URL may be another, so no run's folder is reached at two endpoints:
+// the server started with AGENTRUN_ARCHIL_S3_URL (its names say so; never its value), or in Mode 2 by saved settings whose
+// s3Url is not the runner's. This holds for any runner, on the server's disk or not, on either store.
+const OTHER = "https://s3.other.example.test";
+const REGION_ONLY = { [ARCHIL_SETTINGS_ENV.region]: REGION };
+const NOT_HELD = new RegExp(`given ${ARCHIL_SETTINGS_ENV.region} without ${ARCHIL_SETTINGS_ENV.s3Url}.*Hand this runner the server's S3 URL as ${ARCHIL_SETTINGS_ENV.s3Url}\\.$`);
+const gateOf = (t, store, env, { shared = false, kind = "postgres" } = {}) => diskFreeGate(store, dataDir(t, shared), env, kind)(true);
+
+test("the server started with AGENTRUN_ARCHIL_S3_URL: a runner given the region alone claims nothing, on its disk or not, on either store; one given the S3 URL too claims", async (t) => {
+  const store = storeWith({ [RUN_ENV_KEY]: { v: 1, names: [ARCHIL_SETTINGS_ENV.region, ARCHIL_SETTINGS_ENV.s3Url] } });
+  for (const where of [{}, { shared: true }, { kind: "sqlite" }]) {
+    const words = await gateOf(t, store, REGION_ONLY, where);
+    assert.equal(typeof words, "string", `refused: ${JSON.stringify(where)}`);
+    assert.match(words, NOT_HELD);
+    assert.equal(words, ARCHIL_S3_URL_NOT_HELD);
+  }
+  assert.equal(await gateOf(t, store, ARCHIL_ENV), undefined);
+  assert.equal(await gateOf(t, store, { ...REGION_ONLY, [ARCHIL_SETTINGS_ENV.s3Url]: OTHER }, { shared: true }), undefined);
+});
+
+test("the server in Mode 2 by saved settings whose S3 URL is not the region's: a runner given the region alone claims nothing; one given none, or the S3 URL too, claims", async (t) => {
+  const store = storeWith({ [ARCHIL_SETTINGS_KEY]: { region: REGION, s3Url: OTHER } });
+  assert.match(await gateOf(t, store, REGION_ONLY), NOT_HELD);
+  assert.match(await gateOf(t, store, REGION_ONLY, { shared: true }), NOT_HELD);
+  assert.equal(await gateOf(t, store, {}), undefined);
+  assert.equal(await gateOf(t, store, { ...REGION_ONLY, [ARCHIL_SETTINGS_ENV.s3Url]: OTHER }), undefined);
+});
+
+test("the server's S3 URL the region's own: a runner given the region alone claims, whether the server has it by its environment (even over a saved row with another) or saved", async (t) => {
+  const byEnv = storeWith({ [RUN_ENV_KEY]: { v: 1, names: [ARCHIL_SETTINGS_ENV.region] }, [ARCHIL_SETTINGS_KEY]: { region: REGION, s3Url: OTHER } });
+  assert.equal(await gateOf(t, byEnv, REGION_ONLY), undefined);
+  assert.equal(await gateOf(t, byEnv, REGION_ONLY, { shared: true }), undefined);
+  const saved = storeWith({ [ARCHIL_SETTINGS_KEY]: { region: REGION, s3Url: S3 } });
+  assert.equal(await gateOf(t, saved, REGION_ONLY), undefined);
 });
