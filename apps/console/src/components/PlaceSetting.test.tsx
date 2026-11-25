@@ -100,7 +100,7 @@ describe("PlaceSetting, a server with no box it can run", () => {
 // agent starts on neither, and the person chooses a box or the server. The server refuses a create that names no place
 // and would get a box, so nothing is picked for it.
 describe("PlaceSetting, a server with no default place", () => {
-  const NONE: Places = { ...PLACES, boxes: [{ id: "modal", available: false, reason: "fixture: no modal" }, { id: "e2b", available: true }], defaultPlace: null };
+  const NONE: Places = { ...PLACES, boxes: [{ id: "daytona", available: false, reason: "fixture: no daytona" }, { id: "e2b", available: true }], defaultPlace: null };
   const open = (props: { creating?: boolean; picked?: string[]; places?: Places }) => {
     const changes: { place: Place; tools?: string[] }[] = [];
     const host = document.body.appendChild(document.createElement("div"));
