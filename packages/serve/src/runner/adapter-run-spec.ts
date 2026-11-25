@@ -61,7 +61,7 @@ import { filesToCopy, placeRunInputs } from "../uploads.js";
 import { handedSignInReadsBack, signInReads } from "../sign-ins-store.js";
 import { UNREADABLE_SIGN_IN } from "../run-view.js";
 import { durableWait } from "../workflow/pi-versions.js";
-import { type ClaimModelKey, claimModelEnv, claimModelKey, claimSecrets, claimSpendOff, heldSpendOff, holdRunKey, keyedAtClaim, hostDecisionKeys, keysOver, learnedDecisionKeys, savedModelKeys, tierModelKeys, underClaimed, withoutModelKeys } from "./claim-secrets.js";
+import { type ClaimModelKey, claimModelEnv, claimModelKey, claimSecrets, claimSpendOff, holdRunKey, keyedAtClaim, hostDecisionKeys, keysOver, learnedDecisionKeys, savedModelKeys, tierModelKeys, underClaimed, withoutModelKeys } from "./claim-secrets.js";
 import { compareEndOfRun, GRADER, withGrader } from "./compare-end.js";
 import { agreeOnOf } from "../learning-setting.js";
 import { catalogSessionNames, claimMetering, type ClaimMcp, mcpWhereHeld } from "./mcp-run.js";
@@ -583,7 +583,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // a copy that fails ends the run failed, saying why. A run's own process copies nothing: its runner placed them before
   // the process started (run-child-host.ts), as the server's held uploads are never the run's to read.
   if (!(deps.sealKey === undefined && runnerSeam())) await placeRunInputs(deps.data, claim.runId, ws.workspace, filesToCopy(launch), messageText(launch.input));
-  await seedEvalFiles(ws.workspace, deps.evalFakes?.(runRow.agentId)?.files);
+  // The run's template eval fakes (AdapterSpecDeps.evalFakes), read once: its files, its metered jobs' media and its tools.
+  const fakes = deps.evalFakes?.(runRow.agentId);
+  await seedEvalFiles(ws.workspace, fakes?.files);
 
   // The pull request's checkout, when the revision asks for one (pr-checkout.ts): the server's own fetch before the first
   // turn, with the GitHub App's read-only token for that one repository (or none); the run is told what it holds, or why
@@ -622,7 +624,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // words before the session opens. The seal key is the runner's own (deps.sealKey), not re-read from the environment.
   // A credential the claim opens mid-run (a GitHub App token, a saved or per_run server's) joins the run's redactor.
   const hold = (values: string[]) => cut.hold(values);
-  const mcp = await mcpWhereHeld({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => ws.workspace, launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, ...claimMetering(deps, runRow.agentId, launch) });
+  const mcp = await mcpWhereHeld({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => ws.workspace, launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, ...claimMetering(deps, fakes?.web, launch) });
   // The claim's MCP goes to the loop, which lets it go; a build that throws lets it go itself.
   holds.hold({ passed: mcp });
 
@@ -827,17 +829,14 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // five); while the folder's revision replays or is held, the champion (the digest promoted last) serves in its place
   // (laidFor). Or the one the money rule stopped, over the agent's past runs (costLineOf): the agent takes the run.
   // The audits that finished since are written first (runner/audit.ts settleAudits): a hold they make decides this claim.
-  // Model spend beside the run that its caller's key does not pay for (claimSpendOff): a shadow audit and a replay check
-  // are skipped, in words, where the run brought its own key or the server holds none. A held run its model kept from
-  // running reads no saved key for it (serverKeyless): any such spend is skipped (heldSpendOff), and it starts none.
-  const spendOff = heldRefusal === undefined ? await claimSpendOff({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, runKey) : heldSpendOff;
   const admitAuxiliary = runnerSeam() ? undefined : sourceAuxiliaryAdmitter(deps.store, { data: deps.data, sealKey: deps.sealKey, env: deps.env, control: { ...deps.mountControl, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) } });
-  const audits = { store: deps.store, agentId: runRow.agentId, revisionId: runRow.revisionId, context, log, folder: learningFolder, shown, sealKey: deps.sealKey, spendOff, admitAuxiliary };
+  // None for a held run, so its claim reads no saved key for spend beside it (claimSpendOff).
+  const audits = heldRefusal === undefined ? { store: deps.store, agentId: runRow.agentId, revisionId: runRow.revisionId, context, log, folder: learningFolder, shown, sealKey: deps.sealKey, spendOff: await claimSpendOff({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, runKey), admitAuxiliary } : undefined;
   // Each step writes the store or reads another run (runner/learned-first.ts): in a run's own process its runner takes
   // them (held.ts learnedFirst), over the workflows it reads at the claim's seed itself. A held run its model kept from
   // running takes none of them: it settles no audit and starts no replay run, starts on no workflow, and its tool runs
   // none (so no learned tier is routed, below).
-  const learned: LearnedFirst = heldRefusal === undefined ? await learnedFirstWhereHeld(deps, { agentId: runRow.agentId, runId: claim.runId, revisionId: runRow.revisionId, kind: revision.kind, outputSchema: (revision.body as { outputSchema?: unknown }).outputSchema, launch, context, log, folder: learningFolder, shown, spendOff, admitAuxiliary }, seedLaid?.workflows ?? []) : { choice: {}, workflows: [] };
+  const learned: LearnedFirst = audits ? await learnedFirstWhereHeld(deps, { agentId: runRow.agentId, runId: claim.runId, revisionId: runRow.revisionId, kind: revision.kind, outputSchema: (revision.body as { outputSchema?: unknown }).outputSchema, launch, context, log, folder: learningFolder, shown, spendOff: audits.spendOff, admitAuxiliary }, seedLaid?.workflows ?? []) : { choice: {}, workflows: [] };
   const firstChoice = learned.choice;
   // A replay run's call nodes: reads live through a cache seeded from the graded run's recorded calls, writes only ever
   // answered from that recording (runner/promotion.ts replayCallsOver, learn/replay-calls.ts).
@@ -883,7 +882,6 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // spec builds too), on the claim's keys and the run's one ledger and redactor.
   // An agent whose computer is a browser the claim started gets the browser tool on that one session (tools.ts).
   const claimBrowser = computer.computer?.kind === "browser" ? computer.computer.browser : undefined;
-  const fakes = deps.evalFakes?.(runRow.agentId);
   const liveAt = await claimLiveAt(deps, claim.runId);
   const host: ToolHost = { ...buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: cut, launch, toolSettings: body.toolSettings, ...(fakes ? { fakes } : {}), ...reach, ...(liveAt ? { liveAt } : {}), ...(deps.saveSlots ? { saveSlots: deps.saveSlots } : {}) }), ...(claimBrowser ? { browserComputer: claimBrowser } : {}) };
   gate.askedOn(host);
@@ -972,10 +970,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // from. With a grader it compares its answer with the other one (runner/compare-end.ts), on its own cap.
   // A run the promoted workflow answered (path `workflow`) starts its shadow audit after the step, drawn at 1 in k (runner/audit.ts
   // withAudit): at its end, so the shadow's cap is what the run's own left.
-  // A held run its model kept from running takes none: its model runs nowhere, so it has no turn to learn from, and its end
-  // reads no saved key and starts no audit (in a run's own process, its runner refuses the step too: run-child-host.ts heldFor).
-  // `null`, so the loop asks no step of its own deps either (adapter-loop.ts stepOf), nor one when the run is cut (cutRows).
-  const endOfRun = heldRefusal !== undefined ? null : launch.replay || launch.audit ? withGrader(compareEndOfRun(launch, { store: deps.store, folder: learningFolder, log, ...(run.redact ? { redact: run.redact } : {}) }), graderRoute ? { model: graderRoute.model, models: () => run.ledger.models(GRADER, GRADER) } : undefined) : withAudit(learningEndOfRun(launch, {
+  // A held run (no audits) takes none, and its runner refuses one too (run-child-host.ts heldFor).
+  const endOfRun = audits === undefined ? undefined : launch.replay || launch.audit ? withGrader(compareEndOfRun(launch, { store: deps.store, folder: learningFolder, log, ...(run.redact ? { redact: run.redact } : {}) }), graderRoute ? { model: graderRoute.model, models: () => run.ledger.models(GRADER, GRADER) } : undefined) : withAudit(learningEndOfRun(launch, {
     store: deps.store,
     data: deps.data,
     ...(deps.env ? { env: deps.env } : {}),
@@ -1020,9 +1016,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     ...(catalog ? { mcp: catalog } : {}),
     // The run's own model key: a command row opens it again before the next model request (a message's new key).
     ...(runKey ? { modelKey: runKey } : {}),
-    // The run's end-of-run step, when it learns (the spec's, which the loop prefers over its deps': adapter-loop.ts stepOf),
-    // or null, none at all.
-    ...(endOfRun === undefined ? {} : { endOfRun }),
+    // The run's end-of-run step, when it learns (the spec's, which the loop prefers over its deps': adapter-loop.ts stepOf).
+    ...(endOfRun ? { endOfRun } : {}),
     ...(start ? { learningLaid: laidOf(seedLaid) } : {}),
     ...(workflowFirst ? { workflowFirst } : {}),
     ...(workflowRevise ? { workflowRevise } : {}),

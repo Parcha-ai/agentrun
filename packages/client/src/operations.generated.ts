@@ -548,6 +548,10 @@ export type Cost = {
   learning_usd?: number | null;
   tools_usd?: number | null;
   all_in_usd?: number | null;
+  compile_usd?: number | null;
+  followup_usd?: number | null;
+  shadow_usd?: number | null;
+  share_usd?: number | null;
   degraded?: true;
   plan?: {
     requests: number;
@@ -2735,6 +2739,11 @@ export type GetLearningCostResponse = {
     cost_upper_bound: boolean;
     learning_usd: number | null;
     total_usd: number | null;
+    compile_usd?: number | null;
+    followup_usd?: number | null;
+    shadow_usd?: number | null;
+    share_usd?: number | null;
+    not_served?: "cost_stop" | "cut" | null;
   }>;
   total_runs: number;
   unknown_cost_runs: number;
@@ -3254,6 +3263,7 @@ export type GetClaudeLoginResponse = {
   machine: {
     folder: string;
     source: "CLAUDE_CONFIG_DIR" | "default";
+    credentials?: string;
   };
   sign_in?: {
     state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
@@ -3526,6 +3536,8 @@ export type ListComputersResponse = {
     online: boolean;
     held_by_run: string | null;
     held_until: string | null;
+    held_on: string | null;
+    hold_note: string | null;
     pairing: string;
     created_at: string;
     seen_at: string | null;
@@ -4106,6 +4118,7 @@ export type StartClaudeLoginResponse = {
   machine: {
     folder: string;
     source: "CLAUDE_CONFIG_DIR" | "default";
+    credentials?: string;
   };
   sign_in?: {
     state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
@@ -4214,6 +4227,7 @@ export type TurnOffClaudeLoginResponse = {
   machine: {
     folder: string;
     source: "CLAUDE_CONFIG_DIR" | "default";
+    credentials?: string;
   };
   sign_in?: {
     state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
@@ -4247,6 +4261,7 @@ export type TurnOnClaudeLoginResponse = {
   machine: {
     folder: string;
     source: "CLAUDE_CONFIG_DIR" | "default";
+    credentials?: string;
   };
   sign_in?: {
     state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
@@ -7235,6 +7250,7 @@ export type GetWrappedResponse = {
     sessions: number;
     requests: number;
     tokens: number;
+    sources: Array<string>;
   }>;
   models: Array<{
     model: string;

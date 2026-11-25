@@ -739,7 +739,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     mcp: (ask) => projectCall(async () => {
       const reach = await mcpReachOf(deps);
       const harness = { commit: (change: (tx: unknown) => Promise<unknown>) => change({ appendEntry: async (_conversation: number, entry: unknown) => void (await ask.appendRoot(dataOnly(entry))) }) };
-      const made = await mcpForClaim({ claim, store, sealKey, grants: granted, harness: harness as never, work: () => runFolder(deps.data, run.agentId, claim.runId), launchInput: launch.input, githubAppAccess: () => github(), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, ...claimMetering(deps, run.agentId, launch) });
+      const made = await mcpForClaim({ claim, store, sealKey, grants: granted, harness: harness as never, work: () => runFolder(deps.data, run.agentId, claim.runId), launchInput: launch.input, githubAppAccess: () => github(), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, ...claimMetering(deps, undefined, launch) });
       if (!made) return undefined;
       releases.push(() => made.release());
       const exposed = heldMcpOf(made, cut);

@@ -1,5 +1,0 @@
----
-packages: @parcha/agentrun-serve, @parcha/agentrun-harness-acp
-kind: fix
----
-A harness recipe's install is checked by one rule, its tree, in harness-check, harness sign-in, a server's harness entry and each start. The tree digest covers every file, the binary among them, so an install no longer writes a separate first-seen binary record: it records its first tree alone, and a recipe's own binarySha256 is still checked at install. An install with no tree record is refused with the line that installs it again, and an install folder holding any link that leads out of it, as the filesystem resolves it (a chain of links included), or that leads to nothing (the tree digest holds a link by its target's name, not the bytes behind it: the executable behind a linked folder, or code beside it) is refused at the install, before anything is put in place, and at every check; an old install that holds one is not taken as already installed, so installing it again says why. The check note keeps the recipe, the tree and the platform. A recipe's keyMethod is checked by the ACP package's AUTH_METHOD, the adapter's own definition.
