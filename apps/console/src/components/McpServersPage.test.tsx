@@ -444,6 +444,7 @@ describe("Settings → MCP servers, the saved ones", () => {
     await p.click(/^Refresh$/, p.row("gmail"));
     expect(account()?.dataset.composioAccount).toBe("connected");
     expect(account()?.textContent).toContain("connected");
+    expect(account()?.textContent).not.toContain("not connected");
     expect(account()?.textContent).toContain("person@example.com");
   });
 

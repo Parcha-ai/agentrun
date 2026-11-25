@@ -332,8 +332,9 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
     // The janitor sweeps with the computers the loop composed, never a second composition. Its lines are the runner's
     // warnings, said where the runner says its others (warn: stderr unless a test gives its own).
     // It sweeps as this runner (its name and its presence's incarnation): a computer kept at a park pinned to another
-    // runner still there is that runner's to end (computer-kept.ts sweepKept).
-    if (options.janitor && typeof parts !== "function") janitor = startJanitor({ store, computers: parts.computers, env: parts.env, log: warn, self: { runner: name, incarnation } });
+    // runner still there is that runner's to end (computer-kept.ts sweepKept). The seal key is the claims' too: it opens
+    // the Archil key a kept computer's mount credential is removed with.
+    if (options.janitor && typeof parts !== "function") janitor = startJanitor({ store, computers: parts.computers, env: parts.env, sealKey: seal.key, log: warn, self: { runner: name, incarnation } });
     // Before it claims: the scratch folders of runs that ended after their runner died (scratch-sweep.ts), said as warnings.
     await sweepEndedScratch(store, options.dataDir, { log: warn });
     // A run's end lets go of what its earlier claims' computers left, with the same computers (run-end-computers.ts).

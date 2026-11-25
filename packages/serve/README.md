@@ -2547,8 +2547,9 @@ lists. Composio's server can leave out an action it was allowed (it did for `HAC
 A refresh of a saved Composio server also reads its account at Composio, and every read of the server then says it as
 `composio_account: {state, labels?, checked_at}`: `connected` with each account's label (its alias, else the name
 Composio shows, else its word id; never its id or a token), `pending` while its connect link is unfinished, `expired`,
-`none`, or `unknown` when Composio didn't answer. An account Composio answers as another user's is never the server's,
-and only one it names as the server's user's gives a label. A per-run server has none; an empty recorded user reads
+`none`, or `unknown` when Composio didn't answer. Only an account Composio names as the server's user's is the server's,
+for its state, its label, a save and a trigger alike: one answered as another user's, or with no user at all, never is,
+and the user connects one again. A per-run server has none; an empty recorded user reads
 `unknown`. The API token sees `composio_account` too, in a server's full read: its label may be the account's email.
 
 A saved Composio server is gated, approved and shown on the Timeline as any MCP server's tools are, "not metered" until
