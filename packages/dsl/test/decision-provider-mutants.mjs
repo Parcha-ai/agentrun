@@ -1,5 +1,6 @@
 // Providers that each break one rule of the DecisionProvider contract, for the test that shows the conformance suite
-// catches them. Run by decision-provider-mutants.test.mjs, one mutant per process, named by DECISION_MUTANT.
+// catches them. Run by decision-provider-mutants.test.mjs: one process registers the suite once for each mutant
+// DECISION_MUTANT names (comma-separated), each under its own name.
 import { DecisionProviderError, checkCapabilities } from '@parcha/agentrun-dsl';
 import { registerDecisionProviderConformance } from '@parcha/agentrun-dsl/testing';
 
@@ -16,9 +17,17 @@ function scripted(replies, breaks = {}) {
     calls++;
     if (reply.kind === 'lost') return reply;
     if (reply.kind === 'hang') {
+      // Whichever ends the hang clears the other, and the deadline's timer is unreferenced (the suite's own keeps the
+      // process up while it waits): a request the suite aborted leaves no timer behind to hold the process for its deadline.
       await new Promise((resolve) => {
-        if (!breaks.ignoresAbort) signal.addEventListener('abort', resolve, { once: true });
-        if (!breaks.ignoresDeadline) setTimeout(resolve, deadline);
+        let timer;
+        const end = () => {
+          clearTimeout(timer);
+          signal.removeEventListener('abort', end);
+          resolve();
+        };
+        if (!breaks.ignoresAbort) signal.addEventListener('abort', end, { once: true });
+        if (!breaks.ignoresDeadline) timer = setTimeout(end, deadline).unref();
       });
       if (signal.aborted && !breaks.ignoresAbort) throw fail('aborted', 'The request was cancelled.');
       if (breaks.ignoresDeadline) return { kind: 'answer', answers: {} };
@@ -81,5 +90,7 @@ export const MUTANTS = {
   'declares-pdf-input': { declaresPdfInput: true },
 };
 
-const mutant = process.env.DECISION_MUTANT;
-if (mutant) registerDecisionProviderConformance(mutant, { canary: KEY, refuses: true, build: (replies) => scripted(replies, MUTANTS[mutant]) });
+for (const mutant of process.env.DECISION_MUTANT?.split(',').filter(Boolean) ?? []) {
+  if (!(mutant in MUTANTS)) throw new Error(`no mutant ${mutant}`);
+  registerDecisionProviderConformance(mutant, { canary: KEY, refuses: true, build: (replies) => scripted(replies, MUTANTS[mutant]) });
+}
