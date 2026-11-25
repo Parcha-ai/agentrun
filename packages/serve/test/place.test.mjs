@@ -79,9 +79,9 @@ test("a place of the wrong shape is a 422 at definition.place with a plain messa
     [{}, "missing", /mode is one of runner, sandbox/],
     [{ mode: "elsewhere" }, "not_an_option", /mode is one of runner, sandbox/],
     [{ mode: "tool-box", box: "docker" }, "not_an_option", /mode is one of runner, sandbox/],
-    [{ mode: "sandbox" }, "missing", /names its box: one of docker, modal, daytona/],
-    [{ mode: "sandbox", box: "podman" }, "not_an_option", /box is one of docker, modal, daytona/],
-    [{ mode: "sandbox", box: "bwrap" }, "not_an_option", /box is one of docker, modal, daytona/],
+    [{ mode: "sandbox" }, "missing", /names its box: one of docker, daytona, modal, e2b, /],
+    [{ mode: "sandbox", box: "podman" }, "not_an_option", /box is one of docker, daytona, modal, e2b, /],
+    [{ mode: "sandbox", box: "bwrap" }, "not_an_option", /box is one of docker, daytona, modal, e2b, /],
     [{ mode: "runner", box: "docker" }, "not_allowed", /runner place uses no box/],
     [{ mode: "runner", home: "/data" }, "not_allowed", /keeps only mode and box, not home/],
     [{ mode: "sandbox", box: "docker", region: "eu" }, "not_allowed", /keeps only mode and box, not region/],
@@ -180,7 +180,7 @@ test("capabilities lists the place modes, this host's default, and each box: non
   assert.deepEqual(Object.keys(places), ["modes", "default_place", "default_reason", "boxes", "allow"]);
   assert.deepEqual(places.modes, ["runner", "sandbox"], "one boxed mode: no tool-box");
   assert.deepEqual(places.default_place, { mode: "runner" }, "no docker here, so a new agent, and a revision that names no place, runs on the runner");
-  assert.deepEqual(places.boxes.map((b) => [b.id, b.available]), [["docker", false], ["modal", false], ["daytona", false]]);
+  assert.deepEqual(places.boxes.map((b) => [b.id, b.available]), [["docker", false], ["daytona", false], ["modal", false], ["e2b", false], ["agent37", false], ["morph", false], ["cloudflare", false], ["fly", false], ["boxd", false], ["groundbox", false]]);
   for (const box of places.boxes) assert.equal(box.reason, `not enabled on this server: start AgentRun with AGENTRUN_BOXES=${box.id}`);
 });
 

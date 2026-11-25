@@ -34,24 +34,26 @@ async function calls(t, key) {
   return async () => ({ parallel: (await lines(files.parallel)).map((line) => JSON.parse(line)), dialled: await lines(files.web) });
 }
 
-for (const [key, picked, mode] of [[true, true, ""], [true, true, "errors"], [true, false, ""], [false, false, ""]]) {
-  const what = picked && mode ? "with Parallel picked, when Parallel lists the URL in its errors, fetches directly and says so to the model" : picked ? "with Parallel picked reads through Parallel on the server's key" : key ? "with the server's Parallel key but Parallel not picked fetches directly, and no request reaches Parallel" : "with no Parallel key fetches directly, and no request reaches Parallel";
+// `pick`: the server's tool setting for web_fetch, none being auto. With the server's Parallel key, auto is Parallel first.
+for (const [key, pick, mode] of [[true, "parallel", ""], [true, "parallel", "errors"], [true, undefined, ""], [true, undefined, "errors"], [true, "kernel", ""], [false, undefined, ""]]) {
+  const parallel = key && pick !== "kernel";
+  const what = parallel && mode ? `with ${pick ? "Parallel picked" : "the server's Parallel key and no pick (auto)"}, when Parallel lists the URL in its errors, fetches directly and says so to the model, never that Parallel was picked` : pick === "parallel" ? "with Parallel picked reads through Parallel on the server's key" : pick === "kernel" ? "with the server's Parallel key but the guarded direct fetch picked fetches directly, and no request reaches Parallel" : key ? "with the server's Parallel key and no pick (auto) reads through Parallel first, on the server's key" : "with no Parallel key fetches directly, and no request reaches Parallel";
   test(`an agentic run naming web_fetch ${what}`, { timeout: 60_000 }, async (t) => {
     const seen = await calls(t, key);
     process.env[MODE] = mode;
     const { api } = await serve(t, { fauxWeb: FAUX_WEB, fauxParallel: FAUX_PARALLEL });
-    const tool_settings = picked ? { tool_settings: { web_fetch: { provider: "parallel" } } } : {};
+    const tool_settings = pick ? { tool_settings: { web_fetch: { provider: pick } } } : {};
     assert.equal((await api("POST", "/agents", { definition: { id: "reader", name: "reader", instructions: "Read.", tools: ["web_fetch"], ...tool_settings } })).status, 201);
     const started = await api("POST", "/agents/reader/runs", { input: { content: `Fetch these pages with web_fetch: ${JSON.stringify([PUBLIC])}` } });
     assert.equal(started.status, 202, JSON.stringify(started.body));
     const { rows } = await follow(api, started.body.run_id, ["completed"]);
     const results = rows.filter((row) => row.kind === "tool_result").map((row) => row.tool_result_preview);
     assert.equal(results.length, 1, JSON.stringify(results));
-    if (picked && mode) assert.match(results[0], /"title":"Public page".*"via":"direct","parallel":"listed the URL in errors"\}\nParallel was picked for web_fetch and gave no page \(listed the URL in errors\); this one was fetched directly\.$/s);
-    else assert.match(results[0], picked ? /"title":"Read by Parallel".*"via":"parallel"\}$/s : /"title":"Public page".*"via":"direct"\}$/s, "no word of Parallel where it read the page or was never picked");
+    if (parallel && mode) assert.match(results[0], /"title":"Public page".*"via":"direct","parallel":"listed the URL in errors"\}\nParallel gave no page \(listed the URL in errors\); this one was fetched directly\.$/s, "the fallback line says Parallel gave no page, never that it was picked");
+    else assert.match(results[0], parallel ? /"title":"Read by Parallel".*"via":"parallel"\}$/s : /"title":"Public page".*"via":"direct"\}$/s, "no word of Parallel where it read the page or was never asked");
     const { parallel: sent, dialled } = await seen();
-    assert.deepEqual(sent.map((call) => [call.path, call.authorized, call.urls]), picked ? [["/v1/extract", true, [PUBLIC]]] : []);
-    assert.deepEqual(dialled, picked && !mode ? [] : [PUBLIC]);
+    assert.deepEqual(sent.map((call) => [call.path, call.authorized, call.urls]), parallel ? [["/v1/extract", true, [PUBLIC]]] : [], "Parallel's extract asked once on the server's key where web_fetch resolves to Parallel, picked or auto");
+    assert.deepEqual(dialled, parallel && !mode ? [] : [PUBLIC]);
   });
 }
 
@@ -76,7 +78,7 @@ const where = (page, name = "web_fetch") => web.webFetchText(page, name).slice(J
 
 test("max_chars below its minimum (200) is refused before anything is fetched, saying the minimum, and so is an offset below 0; a smaller part read directly still advances by a whole character, never stuck at its offset", async () => {
   assert.equal(pages.MAX_CHARS_MIN, 200);
-  assert.equal(pages.URL_PARAMETERS.properties.max_chars.minimum, 200, "the tool's schema says it");
+  assert.equal(pages.WEB_FETCH_PARAMETERS.properties.max_chars.minimum, 200, "the tool's schema says it");
   for (const [part, said] of [[{ maxChars: 1 }, "max_chars must be at least 200 (it was 1)"], [{ maxChars: 199.5 }, "max_chars must be at least 200 (it was 199.5)"], [{ offset: -1 }, "offset must be a whole number, 0 or more (it was -1)"]]) {
     const net = network();
     const page = await fetchFor({}, PUBLIC, { ...net, ...part });

@@ -33,7 +33,8 @@ const ANTHROPIC = normalizeUsage("anthropic", { input_tokens: 100, output_tokens
 const OPENAI = normalizeUsage("openai", { input_tokens: 1500, cached_input_tokens: 1200, output_tokens: 400 });
 const portUsage = ({ input, output, cacheRead, cacheWrite }, usd) => ({ input, output, cacheRead, cacheWrite, usd });
 
-// The run's own route is Anthropic's; a subagent's tier (`fast`) is OpenAI's; `plan` is a ChatGPT plan's.
+// The run's own route is Anthropic's; a subagent's tier (`fast`) is OpenAI's; `plan` is a ChatGPT plan's. Its agent is
+// the one stores() makes, as the spec reads it from the store.
 const TRACE = {
   provider: "anthropic",
   serverAddress: "api.anthropic.com",
@@ -42,6 +43,7 @@ const TRACE = {
     ["fast", { provider: "openai", serverAddress: "api.openai.com" }],
     ["plan", { provider: "chatgpt", serverAddress: "chatgpt.com" }],
   ]),
+  agent: { id: "agent-1", name: "Agent one" },
 };
 const REQUESTS = {
   anthropic: { model: "claude-opus-5-5", usage: portUsage(ANTHROPIC, 0.01), ended: { end: "answered", usd: 0.01 } },
@@ -143,8 +145,13 @@ test("Sentry's walk: one run is one tree of AI spans (invoke_agent over chat and
   // its child.
   assert.deepEqual([...new Set(spans.map((span) => span.spanContext().traceId))], [traceIdOf("run-1")]);
   const roots = spans.filter((span) => !spans.some((other) => other.spanContext().spanId === span.parentSpanContext?.spanId));
-  assert.deepEqual(roots.map((span) => span.name), ["invoke_agent stand-in-cli"]);
+  // Its root is named by the agent, and says which agent ran (gen_ai.agent.name, gen_ai.agent.id): what Sentry's
+  // Agents view groups by. The harness is apart, on agentrun.harness.
+  assert.deepEqual(roots.map((span) => span.name), ["invoke_agent Agent one"]);
   const [root] = roots;
+  assert.equal(root.attributes["gen_ai.agent.name"], "Agent one");
+  assert.equal(root.attributes["gen_ai.agent.id"], "agent-1");
+  assert.equal(root.attributes["agentrun.harness"], "stand-in-cli");
   for (const span of spans.filter((one) => one !== root)) assert.equal(span.parentSpanContext?.spanId, root.spanContext().spanId, `${span.name} is under the run's invoke_agent`);
   // SENTRY_CONV: Conversations group spans by gen_ai.conversation.id: the run's, on every span.
   for (const span of spans) assert.equal(span.attributes["gen_ai.conversation.id"], "run-1", span.name);

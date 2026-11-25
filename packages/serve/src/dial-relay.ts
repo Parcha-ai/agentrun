@@ -12,7 +12,9 @@
 // runner's listener (computer-attach.ts relayDial) with the proxy's proof under the seal key (live-reach.ts relayProof).
 // The listener answers nothing without a good, fresh proof it has not taken before, for this token, this runner and
 // this incarnation, on loopback too, and its attach routes take only a token whose row names this runner and
-// incarnation. The daemon fetch stays the server's; nothing changes on the machine.
+// incarnation. A paired box's token, which never expires, reaches it as its SHA-256 alone (live-reach.ts
+// RELAY_TOKEN_HEADER), never as itself; a minted machine's, of one run, as its bearer. The daemon fetch stays the
+// server's; nothing changes on the machine.
 //
 // A runner with no public address keeps no relay: its dial providers still refuse (hosted/provider.ts), and the server's
 // Settings → Computers still says so (computers.ts runs_refused).
@@ -34,7 +36,7 @@ import type { Duplex } from "node:stream";
 import { setTimeout as sleep } from "node:timers/promises";
 import { ATTACH_PATH, AttachHub, type HostedDial } from "@parcha/agentrun-computer";
 import { type AttachTiming, bearerOf, createAttachRoutes, sha256Hex } from "./computer-attach.js";
-import { LOOPBACK, relayKeyOf, relayProofs, runnerLiveOf } from "./live-reach.js";
+import { isTokenSha256, LOOPBACK, RELAY_TOKEN_HEADER, relayKeyOf, relayProofs, runnerLiveOf } from "./live-reach.js";
 import { logLine } from "./print.js";
 import { PRESENCE_RENEW_MS, type Presence } from "./runner/presence.js";
 import type { Store } from "./store/index.js";
@@ -210,9 +212,13 @@ export async function startRunnerRelay(options: RunnerRelayOptions): Promise<Run
   server.on("upgrade", (req, socket: Duplex, head: Buffer) => {
     socket.on("error", () => socket.destroy());
     if ((req.url ?? "/").split("?")[0] !== ATTACH_PATH) return deny(socket, "404 Not Found");
+    // A token named one way: a minted machine's as its bearer, a paired box's by its SHA-256 alone (RELAY_TOKEN_HEADER),
+    // never both.
     const bearer = bearerOf(req.headers.authorization);
-    if (bearer === undefined || !proven(req, { tokenSha256: sha256Hex(bearer), runner, incarnation })) return deny(socket, "401 Unauthorized");
-    routes.upgrade(req, socket, head, (status, words, headers) => deny(socket, status, words, headers));
+    const hashed = req.headers[RELAY_TOKEN_HEADER];
+    const tokenSha256 = hashed === undefined ? (bearer === undefined ? undefined : sha256Hex(bearer)) : bearer === undefined && isTokenSha256(hashed) ? hashed : undefined;
+    if (tokenSha256 === undefined || !proven(req, { tokenSha256, runner, incarnation })) return deny(socket, "401 Unauthorized");
+    routes.upgrade(req, socket, head, (status, words, headers) => deny(socket, status, words, headers), hashed === undefined ? undefined : { tokenSha256 });
   });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
