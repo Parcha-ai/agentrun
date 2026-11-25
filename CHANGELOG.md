@@ -90,7 +90,7 @@ This release imports GitHub Copilot CLI and OpenCode sessions as runs, beside Cl
 - An API token's `GET /v2/settings/calendar` is refused 403 in the words for saving a secret. Reading the calendar's settings takes the owner's signed-in session in the console, as saving them does.
 - On Postgres a purge does not reach the database's bytes: `VACUUM` only makes a purged row's space reusable, `VACUUM FULL` rewrites the table, and Postgres's WAL, archived WAL and backups keep the old values for their own lifetimes.
 - A Daytona sandbox kept while the listing still leaves it out is found by a retry of its request on the same provider instance alone; `list()` leaves it out until the listing shows it (#3488).
-- An exported share bundle can still carry, uncut, part of a held value that wraps over a line break, and a value a run's census erased. Read a bundle before you share it.
+- An exported share bundle's files are cut the way the run's file reads cut them before they pass through the server's scrubber, and a run whose census erased a value it was handed exports no files (#3867). Its other text (the run's fields, its Timeline rows and a workflow's graph) passes through the scrubber alone, so it can still carry, uncut, part of a held value that wraps over a line break, and a value the run's census erased. Read a bundle before you share it.
 - An agent's "Edit" buttons open the coding-agent menu, not the tools editor. To edit an agent's tools, open DETAILED EDITOR, then TOOLS & SKILLS.
 
 **Changes:**
@@ -296,7 +296,7 @@ CI and tests
 
 Internals
 
-- The import's `parseHome` keeps each read as its own counts and reads each request's time in one place (#3708), and the trigger engine takes one simplification pass, with no behaviour change (#3672). A learned workflow that its check holds asks for its one recompile on the next run (#3857). The server parses a request's Host header and splits its cookies in one place each, and the deploy guide's Fly section is shorter (#3855). The withholding of held values also reads a value split across a JSON text's strings, written in two encodings, with a combining mark or as a character reference (#3692). Test-only changes: #3679, #3771, #3774, #3783, #3794, #3800, #3815, #3844, #3882, #3883.
+- The import's `parseHome` keeps each read as its own counts and reads each request's time in one place (#3708), and the trigger engine takes one simplification pass, with no behaviour change (#3672). A learned workflow that its check holds asks for its one recompile on the next run (#3857). The server parses a request's Host header and splits its cookies in one place each, and the deploy guide's Fly section is shorter (#3855). The withholding of held values also reads a value split across a JSON text's strings, written in two encodings, with a combining mark or as a character reference (#3692). Test-only changes: #3679, #3771, #3774, #3783, #3794, #3800, #3815, #3844, #3882, #3883, #3899.
 
 ## 0.1.0-beta.58 (2026-11-25)
 
