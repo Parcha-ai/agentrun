@@ -4,12 +4,12 @@
 // The fake serve's computers are fake worlds and its agents the fake agents. Last, the preflight against this
 // repository's own serve, which has every route the bench needs.
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createServer } from "node:http";
 import test from "node:test";
 import { FAKE_AGENTS, FakeWorld, helper, SETTINGS_APP } from "../dist/fake-world.js";
-import { ENTRY, MissingRoute, resolveTask, runBench, serveBackend, Store, verifySuite } from "../dist/index.js";
+import { buildReport, ENTRY, MissingRoute, reportMarkdown, resolveTask, runBench, serveBackend, Store, verifySuite } from "../dist/index.js";
 import { arm, fakeTasks, recordOf, store, tmp, withSpec } from "./support.mjs";
 
 const TOKEN = "t0ken";
@@ -31,7 +31,7 @@ function callRecordOf(method, params, answer, ms) {
  *  SERVE_CONTRACT names them) 404 "no route" or 405, an agent or run it doesn't have 404 not_found, and, once it has the
  *  agent, a runs body field it keeps none of (`keepsNo`) 422 not_allowed. Its OpenAPI document has RunCreate.hold unless
  *  it keeps no hold, and Run.computer.held unless `noHeld`, which leaves held out of its run reads too. */
-async function fakeServe({ holdPolls = 1, endAs, cost = 0.01, refuseRuns = 0, lacks = [], lackStatus = 404, keepsNo = [], noHeld = false, agents: extraAgents = {}, words = false, maxCalls = 200, lateRows = false } = {}) {
+async function fakeServe({ holdPolls = 1, endAs, cost = 0.01, refuseRuns = 0, lacks = [], lackStatus = 404, keepsNo = [], noHeld = false, agents: extraAgents = {}, words = false, maxCalls = 200, lateRows = false, replay } = {}) {
 	const agents = new Map();
 	const runs = new Map();
 	const requests = [];
@@ -114,31 +114,49 @@ async function fakeServe({ holdPolls = 1, endAs, cost = 0.01, refuseRuns = 0, la
 		if (req.method === "POST" && rest === "start") {
 			if (run.held !== "waiting") return send(409, { error: { code: "computer_not_live", message: "not waiting" } });
 			run.held = "started";
+			const row = (fields) => run.timeline.push({ id: `r${run.timeline.length + 1}`, seq: run.timeline.length + 1, timestamp: new Date().toISOString(), conversation_id: 0, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, text: null, ...fields });
+			// replay: a Timeline's rows as serve wrote them (a fixture), shown at once, and the run's agent done.
+			if (replay) {
+				for (const one of replay) row(one);
+				run.cost = cost;
+				run.held = "ended";
+				return send(200, { held: { state: "started" } });
+			}
 			const agent = { ...FAKE_AGENTS, ...extraAgents }[run.definition.harness];
-			const row = (fields) => run.timeline.push({ id: `r${run.timeline.length + 1}`, seq: run.timeline.length + 1, timestamp: new Date().toISOString(), tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, text: null, ...fields });
 			// The agent's surface as serve gives it (its definition's computer.surface): "tools", one computer method per tool
 			// call; "code", one script per tool call and no per-step tool; absent, both. computer.exec false: no shell. Each
 			// tool call is a tool_use row and its tool_result row, which carries the computer calls it made, as serve's does.
+			// A script's own rows carry none: each computer call it makes is a nested call of its own, under the script's call
+			// in the same conversation, whose tool_result row carries that call (serve's codemode-computer.test.mjs).
 			const { surface, exec } = run.definition.computer ?? {};
 			let uses = 0;
-			const toolCall = async (name, input, work, extra = {}) => {
-				const use = `call-${(uses += 1)}`;
-				row({ kind: "tool_use", tool_name: name, tool_use_id: use, tool_input_preview: input });
+			const toolCall = async (name, input, work, extra = {}, { use = `call-${(uses += 1)}`, parent } = {}) => {
+				const under = parent ? { parent_tool_use_id: parent } : {};
+				row({ kind: "tool_use", tool_name: name, tool_use_id: use, tool_input_preview: input, ...under });
 				const calls = [];
 				const answer = await work(calls);
 				const ok = answer?.ok !== false;
-				row({ kind: "tool_result", tool_name: name, tool_use_id: use, tool_status: ok ? "success" : "failed", tool_result_preview: ok ? "ok" : (answer.error?.message ?? ""), ...(calls.length > 0 ? { computer_calls: calls.slice(0, maxCalls) } : {}), ...(calls.length > maxCalls ? { computer_calls_dropped: calls.length - maxCalls } : {}), ...extra });
+				row({ kind: "tool_result", tool_name: name, tool_use_id: use, tool_status: ok ? "success" : "failed", tool_result_preview: ok ? "ok" : (answer.error?.message ?? ""), ...(calls.length > 0 ? { computer_calls: calls.slice(0, maxCalls) } : {}), ...(calls.length > maxCalls ? { computer_calls_dropped: calls.length - maxCalls } : {}), ...under, ...extra });
 				return answer;
 			};
 			const computerCall = async (calls, method, params) => {
 				const t = Date.now();
 				const answer = exec === false && (method === "exec.run" || method.startsWith("process.")) ? { ok: false, error: { code: "denied", message: "this agent's computer has no shell" } } : await run.world.call(method, params);
-				calls.push({ ...callRecordOf(method, params, answer, Date.now() - t), ...(words ? { words: `${method} said ${answer.ok ? "ok" : answer.error.code}`, at: new Date(t).toISOString() } : {}) });
+				calls.push({ ...callRecordOf(method, params, answer, Date.now() - t), started_at: new Date(t).toISOString(), ...(words ? { words: `${method} said ${answer.ok ? "ok" : answer.error.code}` } : {}) });
 				return answer;
 			};
+			const tool = (method) => `computer_${method.replace(".", "_")}`;
+			const script = async (fn) => {
+				let nested = 0;
+				const parent = `call-${(uses += 1)}`;
+				return toolCall("codemode", null, () => fn({ call: (method, params) => toolCall(tool(method), null, (calls) => computerCall(calls, method, params), {}, { use: `${parent}/${(nested += 1)}`, parent }) }), {}, { use: parent });
+			};
 			const given = {
-				call: (method, params) => (surface === "code" ? Promise.resolve({ ok: false, error: { code: "denied", message: "code mode: no per-step tool" } }) : toolCall(`computer_${method.replace(".", "_")}`, JSON.stringify(params), (calls) => computerCall(calls, method, params))),
-				...(surface === "tools" ? {} : { script: (fn) => toolCall("codemode", "a script", (calls) => fn({ call: (method, params) => computerCall(calls, method, params) })) }),
+				call: (method, params) => (surface === "code" ? Promise.resolve({ ok: false, error: { code: "denied", message: "code mode: no per-step tool" } }) : toolCall(tool(method), JSON.stringify(params), (calls) => computerCall(calls, method, params))),
+				// One tool call whose computer calls are all on its own row, as serve's computer_act that names an app is (its
+				// apps.launch and its input).
+				batch: (fn) => toolCall("computer_act", null, (calls) => fn({ call: (method, params) => computerCall(calls, method, params) })),
+				...(surface === "tools" ? {} : { script }),
 				// A non-computer tool call: answered, failed ("failed"), or refused before it ran ("refused", serve's row
 				// then says refused: true).
 				tool: (name, how) => toolCall(name, "{}", async () => (how ? { ok: false, error: { message: `${name} ${how}` } } : { ok: true, value: {} }), how === "refused" ? { refused: true } : {}),
@@ -236,17 +254,23 @@ test("serve: a held run is set up, driven, checked before release, and released,
 
 /** A code-mode agent: a search first (a tool call that makes no computer call), then one script of six computer calls
  *  that turns the dark theme on, sets the volume and the device name. */
+const sixCalls = async (computer) => {
+	const h = helper(computer);
+	await h.observe(SETTINGS_APP);
+	await h.act([{ press: h.find("Dark theme") }]);
+	await h.observe(SETTINGS_APP);
+	await h.act([{ set: h.find("Volume"), value: "6" }]);
+	await h.observe(SETTINGS_APP);
+	await h.act([{ set: h.find("Device name"), value: "Bench" }]);
+};
 const six = async (given) => {
 	await given.tool("web_search");
-	await given.script(async (computer) => {
-		const h = helper(computer);
-		await h.observe(SETTINGS_APP);
-		await h.act([{ press: h.find("Dark theme") }]);
-		await h.observe(SETTINGS_APP);
-		await h.act([{ set: h.find("Volume"), value: "6" }]);
-		await h.observe(SETTINGS_APP);
-		await h.act([{ set: h.find("Device name"), value: "Bench" }]);
-	});
+	await given.script(sixCalls);
+	return { outcome: "done" };
+};
+/** The same six calls made by one tool call that keeps them all on its own row. */
+const sixOnOneRow = async (given) => {
+	await given.batch(sixCalls);
 	return { outcome: "done" };
 };
 
@@ -287,6 +311,37 @@ test("serve: steps are computer calls: one script of six calls is six steps and 
 	}
 });
 
+test("serve: a code-mode agent's computer calls, each on its own row under its script as serve writes them, are its steps, and the report's median says so", async () => {
+	const fixture = JSON.parse(readFileSync(join(import.meta.dirname, "fixtures", "serve-codemode-timeline.json"), "utf8"));
+	const serve = await fakeServe({ replay: fixture.rows });
+	try {
+		const s = store();
+		const backend = withTask(serveBackend({ baseUrl: serve.baseUrl, token: TOKEN, pollMs: 5 }), serve);
+		const results = await runBench({ tasks: fakeTasks("fake.settings.dark-theme"), arms: [arm("replay", "replay", "code")], seeds: [1, 2, 3], backend, store: s, grade: "never" });
+		for (const result of results) {
+			assert.equal(result.steps, fixture.steps, "the scripts' computer calls; the subagent's screenshot is not the agent's");
+			assert.equal(result.tool_calls, fixture.tool_calls, "the model's own tool calls: a script's nested calls are no turns of their own");
+		}
+		const steps = recordOf(s, results[0].run).filter((entry) => entry.kind === ENTRY.step && entry.data.phase === "agent").map((entry) => entry.data);
+		assert.deepEqual(
+			steps.map((step) => [step.method, step.tool, step.turn]),
+			[
+				["screen.shot", "codemode", 1],
+				["apps.launch", "codemode", 1],
+				["input.actions", "codemode", 1],
+				["input.actions", "codemode", 2],
+				["screen.shot", "codemode", 2],
+			],
+		);
+		const [row] = buildReport(results).arms;
+		assert.equal(row.steps_median, fixture.steps);
+		assert.equal(row.tool_calls_median, fixture.tool_calls);
+		assert.match(reportMarkdown(buildReport(results)), new RegExp(`\\| replay \\| 0 / 3 \\|.*\\| ${fixture.steps} \\| ${fixture.tool_calls} \\|`));
+	} finally {
+		await serve.close();
+	}
+});
+
 test("serve: the step budget is computer calls: a script past it stops the run though it is one tool call; calls past serve's record bound count", async () => {
 	const serve = await fakeServe({ agents: { six } });
 	try {
@@ -301,11 +356,11 @@ test("serve: the step budget is computer calls: a script past it stops the run t
 	} finally {
 		await serve.close();
 	}
-	const bounded = await fakeServe({ agents: { six }, maxCalls: 4 });
+	const bounded = await fakeServe({ agents: { sixOnOneRow }, maxCalls: 4 });
 	try {
 		const backend = withTask(serveBackend({ baseUrl: bounded.baseUrl, token: TOKEN, pollMs: 5 }), bounded);
 		const s = store();
-		const [result] = await runBench({ tasks: fakeTasks("fake.settings.dark-theme"), arms: [arm("six", "six", "code")], seeds: [1], backend, store: s, grade: "never" });
+		const [result] = await runBench({ tasks: fakeTasks("fake.settings.dark-theme"), arms: [arm("sixOnOneRow")], seeds: [1], backend, store: s, grade: "never" });
 		assert.equal(result.outcome, "pass", result.why);
 		assert.equal(result.steps, 6, "four recorded calls and two past serve's bound");
 		const unrecorded = recordOf(s, result.run).filter((entry) => entry.kind === ENTRY.step && entry.data.phase === "agent" && entry.data.method === "unrecorded");
