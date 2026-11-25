@@ -169,6 +169,14 @@ test("content is exempt from a schema's maxProperties and propertyNames: a trigg
   const recursive = { ...COMPANY, $defs: { Name: { anyOf: [{ enum: ["company", "content"] }, { $ref: "#/$defs/Name" }] } }, propertyNames: { $ref: "#/$defs/Name" } };
   assert.deepEqual(inputSchemaIssues(recursive), []);
   // Only schemas are read: an annotation's value that has a $ref key is data, and saves.
+  // A definition inside the named one that nothing refers to never applies, so its reference is never checked.
+  const unused = { ...COMPANY, $defs: { Name: { pattern: "^[a-z]+$", $defs: { Unused: { $ref: "#/properties/company" } } } }, propertyNames: { $ref: "#/$defs/Name" } };
+  assert.deepEqual(inputSchemaIssues(unused), []);
+  assert.deepEqual(said({ company: "Acme" }, inputSchemaOf(unused)), []);
+  // The same definition once a reference names it is followed, and refused.
+  const nested = { ...COMPANY, $defs: { Name: { allOf: [{ $ref: "#/$defs/Name/$defs/Used" }], $defs: { Used: { $ref: "#/properties/company" } } } }, propertyNames: { $ref: "#/$defs/Name" } };
+  assert.deepEqual(inputSchemaIssues(nested).map((i) => [i.field, i.reason]), [["definition.input_schema.propertyNames", "bad_format"]]);
+
   const annotated = { ...COMPANY, propertyNames: { pattern: "^[a-z]+$", examples: [{ $ref: "#/properties/company" }] } };
   assert.deepEqual(inputSchemaIssues(annotated), []);
   assert.deepEqual(said({ company: "Acme" }, inputSchemaOf(annotated)), []);

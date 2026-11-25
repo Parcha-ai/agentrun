@@ -256,12 +256,20 @@ function subschemas(schema: Record<string, unknown>): unknown[] {
   return held;
 }
 
+/** The subschemas that apply to an instance where `schema` does: all of them but its definitions (`$defs`,
+ *  `definitions`), which apply only where a reference names them. */
+const applied = (schema: Record<string, unknown>): unknown[] => {
+  const { $defs: _defs, definitions: _definitions, ...rest } = schema;
+  return subschemas(rest);
+};
+
 /** The first `$ref` that `node` reaches and that names nothing in `doc` (undefined when each one names something): a
  *  JSON Pointer (`#/...`) that `doc` has no value at, an anchor (`#name`) no `$anchor` or `$dynamicAnchor` in it
  *  declares, or any other reference when no `$id` in it could give that reference a target. The compiler takes such a
  *  reference as the schema `false`. A reference that names something is followed into its target (once each: a cycle
  *  ends), so a target that refers on to something the doc lacks is found too. Only schemas are read, by the keywords
- *  that hold them (subschemas). A part under an `$id` of its own is left to the compiler: its references resolve
+ *  that hold them (subschemas); a definition is reached only through a reference that names it, so one nothing names
+ *  is never checked (applied). A part under an `$id` of its own is left to the compiler: its references resolve
  *  against that id. */
 function unresolvedRefs(node: unknown, doc: Json): string | undefined {
   const anchors = new Map<string, unknown>();
@@ -301,7 +309,7 @@ function unresolvedRefs(node: unknown, doc: Json): string | undefined {
       const lost = walk(named.value);
       if (lost !== undefined) return lost;
     }
-    for (const item of subschemas(value)) { const lost = walk(item); if (lost !== undefined) return lost; }
+    for (const item of applied(value)) { const lost = walk(item); if (lost !== undefined) return lost; }
     return undefined;
   };
   return walk(node);
