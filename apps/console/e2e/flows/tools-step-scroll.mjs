@@ -42,7 +42,12 @@ export default {
       check(box && box.y >= 0 && box.y + 20 <= height, `${at}: the first tool card is not in view: ${JSON.stringify(box)}`);
       await page.mouse.move(box.x + box.width / 2, box.y + Math.min(box.height / 2, 20));
       await page.mouse.wheel(0, 600);
-      await page.waitForTimeout(400);
+      // Wait for the step's list to move, up to 5 s: a slow worker scrolls late, never wrong. The checks below then say
+      // what moved instead when it did not.
+      await page.waitForFunction((from) => {
+        const step = [...document.querySelectorAll("section")].find((s) => s.querySelector("h2")?.textContent === "Tools & skills");
+        return (step?.scrollTop ?? 0) > from;
+      }, before.step, { timeout: 5000 }).catch(() => {});
       const after = await where();
       check(after.step > before.step, `${at}: a wheel over a tool card did not scroll the step's list: ${JSON.stringify({ before, after })}`);
       check(after.main === before.main && after.page === before.page, `${at}: a wheel over a tool card scrolled the page: ${JSON.stringify({ before, after })}`);
