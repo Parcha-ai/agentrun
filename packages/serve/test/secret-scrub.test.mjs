@@ -1773,9 +1773,8 @@ test("LVI (11-25 read): every way a line can run an env command is read so, and 
     const out = await gone(text, [seed, region], { command });
     assert.equal(out.text, "[redacted:env-dump 2 lines]", command.slice(0, 80));
   }
-  // Still no dump: an env that runs a command, set with options, an env word as an argument, echo of no variable, a
-  // redirection's `&`.
-  for (const command of ["env FOO=1 npm test", "set -e; make", "set -o pipefail; make", "grep env notes.txt", "echo ok", "make 2>&1 | tee build.log", "export APP_REGION=north && npm test", "make; ls"]) {
+  // Still no dump: set with options, echo of no variable, a redirection's `&`, export of an assignment.
+  for (const command of ["set -e; make", "set -o pipefail; make", "echo ok", "make 2>&1 | tee build.log", "export APP_REGION=north && npm test", "make; ls"]) {
     const out = await scrub(text.replace(seed, "gold"), { mode: "count", command });
     assert.deepEqual(out.cuts, [], `${command}: ${JSON.stringify(out.cuts)}`);
   }
@@ -1791,6 +1790,56 @@ test("LVI (11-25 read): a lone env command's output is one dump too: a value's l
   // Exact: the line after printenv's value is cut with it.
   const lone = await gone(`${seed}\nnext step`, [seed], { command: "printenv APP_SEED" });
   assert.equal(lone.text, "[redacted:env-dump 2 lines]");
+});
+
+test("LVI (11-25 r2): a line where any word prints the environment is a dump, at any depth, behind any wrapper or forwarder", async () => {
+  const seed = "Tallow4quarry62";
+  const region = "basin-orchard-41";
+  const text = `APP_REGION=${region}\nAPP_SEED ${seed}`;
+  for (const command of [
+    // A wrapper's flag that takes no value, a long flag with one.
+    "sudo -n env", "sudo -n printenv APP_SEED", "sudo -i env", "sudo -s env", "sudo -k env", "time -p env", "command -p env", "sudo --user deploy env",
+    // env running the command that prints.
+    "env FOO=1 printenv APP_SEED", "env -i HOME=/x bash -c 'echo $APP_SEED'", "env -- printenv APP_SEED", "env -S 'printenv APP_SEED'",
+    // Shells inside shells, past any depth.
+    `bash -c "bash -c 'bash -c env'"`, `sh -c "sh -c \"sh -c 'sh -c printenv'\""`,
+    // The environment read as a file, by ps or systemd, or by an interpreter.
+    "cat /proc/self/environ", "cat /proc/1/environ", "cat /proc/$$/environ", "strings /proc/self/environ", "tr '\\0' '\\n' < /proc/self/env*",
+    "ps e", "ps eww", "ps auxe", "systemctl show-environment",
+    "node -e 'console.log(process.env)'", "node -p process.env", "python -c 'import os;print(os.environ)'", "python3 -c 'import os; print(os.getenv(\"APP_SEED\"))'", "ruby -e 'p ENV'",
+    // Forwarders: the env command runs elsewhere, its output comes back here.
+    "docker exec c env", "docker inspect c", "kubectl exec p -- env", "ssh host env", "su -c env", "xargs printenv < names", "eval env", "watch env",
+    // Spelled past a reader: an escape, quotes inside the word, no blank before a redirection, a long assignment name.
+    "\\env", 'e"n"v', "env>/tmp/e; cat /tmp/e", `${"A".repeat(200)}=1 printenv APP_SEED`, "set 2>&1", "declare -x",
+    // PowerShell and cmd.
+    "Get-ChildItem env:", "Write-Output $env:APP_SEED", "echo %APP_SEED%", "[Environment]::GetEnvironmentVariables()",
+    // A here-string or here-document expands a variable into its output.
+    'cat <<< "$APP_SEED"',
+    // Over-cuts, pinned so: an env word anywhere is read as the command, quoted or an argument.
+    'echo "a; env"', 'git commit -m "read the `env` var"', "env FOO=1 npm test", "grep env notes.txt",
+  ]) {
+    const out = await gone(text, [seed, region], { command });
+    assert.equal(out.text, "[redacted:env-dump 2 lines]", command.slice(0, 80));
+  }
+  for (const command of ["set -e; make", "set -o pipefail; make", "echo ok", "make 2>&1 | tee build.log", "export APP_REGION=north && npm test", "make; ls", "ls src/env.ts", "cat README.md", "ps aux"]) {
+    const out = await scrub(text.replace(seed, "gold"), { mode: "count", command });
+    assert.deepEqual(out.cuts, [], `${command}: ${JSON.stringify(out.cuts)}`);
+  }
+});
+
+test("LVI (11-25 r2): in a transcript, the output under a prompt line that prints the environment is cut to the next prompt", async () => {
+  const seed = "Tallow4quarry62";
+  // A multi-line value no longer ends env's output: C's value is cut too.
+  const multi = await gone(`$ env\nA=1\nB=l1\nl2\nC=${seed}`, [seed]);
+  assert.equal(multi.text, "$ env\n[redacted:env-dump 4 lines]");
+  // The next prompt ends it; what that command printed is kept.
+  const next = await gone(`$ env\nA=1\nB=l1\nl2\nC=${seed}\n$ ls\nREADME.md`, [seed]);
+  assert.equal(next.text, "$ env\n[redacted:env-dump 4 lines]\n$ ls\nREADME.md");
+  // Any line the command reader reads as a dump, in a transcript.
+  const wrapped = await gone(`$ sudo -n env\nAPP_REGION=north\nAPP_SEED ${seed}`, [seed]);
+  assert.equal(wrapped.text, "$ sudo -n env\n[redacted:env-dump 2 lines]");
+  const value = await gone(`$ printenv APP_SEED\nl1\n${seed}`, [seed]);
+  assert.equal(value.text, "$ printenv APP_SEED\n[redacted:env-dump 2 lines]");
 });
 
 test("LIX: a dotted name is no code evidence alone; a self./this./cls. root, a trailing `;` or an environment root is", async () => {
