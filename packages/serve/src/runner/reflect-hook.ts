@@ -108,7 +108,7 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
     // What the step's model turns cost: the run's spend once it closed less the job's, unknown when either is. Kept with
     // every end once a compile turn was asked; 0 for an end that asked none. The step's only model turn is its compile
     // turn, so this is the compile's spend: it joins the revision it drafts, or the bill's unattributed when it kept no
-    // draft (store-reads/learning.ts compilesOf, learning-cost.ts amortize), never the run's own.
+    // draft (learn/ledger.ts record and summarize), never the run's own.
     let asked = begun;
     const spent = async () => {
       if (!asked) return { answered_at: answeredAt, job_cost_usd: job, look_back_usd: 0 };

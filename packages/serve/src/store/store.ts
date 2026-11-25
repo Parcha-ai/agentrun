@@ -12,6 +12,7 @@ import type { Context } from "@earendil-works/chord/context";
 import type { Storage, StorageWrite } from "@earendil-works/pi-durable";
 import type { JournalPage } from "./journal/storage.js";
 import type { MonidPinBody } from "./agent-body.js";
+import type { LedgerRow, SpendRow } from "../learn/ledger.js";
 
 /** A run's state. queued: a row, no runner yet. running: a runner holds the claim. parked: waiting for a person (an
  *  approval, a raised cap) with no claim held; a command row or its wake_at makes it claimable again. ended, stopped and
@@ -517,6 +518,12 @@ export interface Learning {
   /** The agent's records of `kind` changed in one transaction: `update` reads them all and answers the list they become
    *  (a record with its `seq` kept is that record, one without is added after the others), or undefined for no change. */
   changeRecords<T>(agentId: string, kind: LearningRecordKind, update: (records: readonly LearningRecord[]) => { records: readonly LearningRecordWrite[]; result: T } | { result: T }): Promise<T>;
+  /** Agent `agentId`'s ledger (learn/ledger.ts), in one read (one snapshot of both tables): every run's row its end
+   *  recorded, oldest first, each with the end it was recorded for (`epoch`, its run's epoch then), and every spend row.
+   *  With `runIds`, those runs' rows alone and the spend rows they booked or that audit them (none for none). Written
+   *  only beside a run's end and a heal of its cost (run-patch.ts recordLedger); a purge or a delete of the run takes its
+   *  row and its spend. */
+  ledger(agentId: string, runIds?: readonly string[]): Promise<{ rows: (LedgerRow & { readonly epoch: number })[]; spend: SpendRow[] }>;
 }
 
 /** A learning item: one line of the owner's notes (corrections.md), or one learned workflow's folder. */

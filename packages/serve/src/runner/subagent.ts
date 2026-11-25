@@ -15,7 +15,7 @@ import type { Context } from "@earendil-works/chord/context";
 import { configure, defineTool, type ModelRef, ROOT_CONVERSATION_ID, type ToolRegistration } from "@earendil-works/pi-durable";
 import { HOST_RESULT_MAX_CHARS } from "@parcha/agentrun-kernel";
 import { ASK_TOOL } from "../tools.js";
-import { saveSlots } from "../web-save.js";
+import { slots } from "../slots.js";
 import { durableWait } from "../workflow/pi-versions.js";
 import { HOST_TOOL_OUTPUT } from "./adapters/pi.js";
 import { cutAtLimit } from "./loop-contract.js";
@@ -83,7 +83,7 @@ export function chosenTools(asked: readonly string[], options: Pick<SubagentOpti
 /** The subagent tool: one of the session's own tools (adapters/pi.ts `tools`), so it needs no extension of its own. */
 export function subagentTool(options: SubagentOptions): ToolRegistration {
   // The run's children's slots (SUBAGENT_PARALLEL), handed out in call order.
-  const free = saveSlots(SUBAGENT_PARALLEL);
+  const free = slots(SUBAGENT_PARALLEL);
   return defineTool({
     name: SUBAGENT_TOOL,
     description: `Run a subagent: a fresh conversation that starts with nothing but your prompt, on your own model (or the model tier you name: ${SUBAGENT_TIERS.join(" or ")}), with only the tools you list (a subset of your own), and get its final answer back as text. Write the prompt self-contained: the subagent sees none of your conversation. Several calls in one turn run at once, at most ${SUBAGENT_PARALLEL} at a time; more wait their turn. A subagent cannot start subagents of its own.`,
@@ -123,7 +123,7 @@ export function subagentTool(options: SubagentOptions): ToolRegistration {
       const tools = [...parent.tools, ...parent.deferred.filter((one) => !parent.tools.some((listed) => listed.name === one.name))].filter((registration) => names.has(registration.name));
       const missing = [...names].filter((name) => !tools.some((registration) => registration.name === name));
       if (missing.length) return fail(`subagent: ${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} not bound in this run, so no subagent may have ${missing.length === 1 ? "it" : "them"}. Nothing ran.`);
-      const release = await free.take(context.abortSignal ?? new AbortController().signal);
+      const release = await free.take(context.abortSignal);
       try {
         const child = await api.commit(async (tx) => {
           // The ownership index remembers the child: a rerun of this call reuses it.

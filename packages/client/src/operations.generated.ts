@@ -548,6 +548,10 @@ export type Cost = {
   learning_usd?: number | null;
   tools_usd?: number | null;
   all_in_usd?: number | null;
+  compile_usd?: number | null;
+  followup_usd?: number | null;
+  shadow_usd?: number | null;
+  share_usd?: number | null;
   plan?: {
     requests: number;
     tokens: number;
@@ -2734,6 +2738,11 @@ export type GetLearningCostResponse = {
     cost_upper_bound: boolean;
     learning_usd: number | null;
     total_usd: number | null;
+    compile_usd?: number | null;
+    followup_usd?: number | null;
+    shadow_usd?: number | null;
+    share_usd?: number | null;
+    not_served?: "cost_stop" | "cut" | null;
   }>;
   total_runs: number;
   unknown_cost_runs: number;
@@ -3526,6 +3535,8 @@ export type ListComputersResponse = {
     online: boolean;
     held_by_run: string | null;
     held_until: string | null;
+    held_on: string | null;
+    hold_note: string | null;
     pairing: string;
     created_at: string;
     seen_at: string | null;
@@ -7238,6 +7249,7 @@ export type GetWrappedResponse = {
     sessions: number;
     requests: number;
     tokens: number;
+    sources: Array<string>;
   }>;
   models: Array<{
     model: string;

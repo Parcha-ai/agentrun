@@ -3308,6 +3308,10 @@ class Cost(_CostRequired, total=False):
     learning_usd: float | None
     tools_usd: float | None
     all_in_usd: float | None
+    compile_usd: float | None
+    followup_usd: float | None
+    shadow_usd: float | None
+    share_usd: float | None
     plan: CostPlan
 
 
@@ -4391,7 +4395,7 @@ class GetLearningCostResponse(TypedDict):
     bill: GetLearningCostResponseBill
 
 
-class GetLearningCostResponseRunsItem(TypedDict):
+class _GetLearningCostResponseRunsItemRequired(TypedDict):
     n: int | None
     run_id: str
     started_at: str
@@ -4404,6 +4408,14 @@ class GetLearningCostResponseRunsItem(TypedDict):
     cost_upper_bound: bool
     learning_usd: float | None
     total_usd: float | None
+
+
+class GetLearningCostResponseRunsItem(_GetLearningCostResponseRunsItemRequired, total=False):
+    compile_usd: float | None
+    followup_usd: float | None
+    shadow_usd: float | None
+    share_usd: float | None
+    not_served: Literal["cost_stop", "cut"] | None
 
 
 class GetLearningCostResponseWorkflowsItem(TypedDict):
@@ -5358,6 +5370,8 @@ class ListComputersResponsePairedItem(TypedDict):
     online: bool
     held_by_run: str | None
     held_until: str | None
+    held_on: str | None
+    hold_note: str | None
     pairing: str
     created_at: str
     seen_at: str | None
@@ -11548,6 +11562,7 @@ class GetWrappedResponseHarnessesItem(TypedDict):
     sessions: int
     requests: int
     tokens: int
+    sources: list[str]
 
 
 class GetWrappedResponseModelsItem(TypedDict):
