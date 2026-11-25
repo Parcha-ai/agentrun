@@ -14,6 +14,7 @@ import { container, fakeDocker } from "../../computer/test/fake-docker.mjs";
 import { ofStore, startRunnerProcess } from "../dist/runner/main.js";
 import { openSqliteStore } from "../dist/store/index.js";
 import { startJanitor, sweepServerComputers } from "../dist/workspace/computer-janitor.js";
+import { keptKeyOf, readKept } from "../dist/workspace/computer-kept.js";
 import { fauxLoops, until } from "./runner-support.mjs";
 import { withEnv } from "./support.mjs";
 import { memoryIntervals } from "./memory-intervals.mjs";
@@ -275,4 +276,33 @@ test("a computer the sweep deleted ends its run's interval at the sweep's time; 
   await sweepServerComputers({ store: { ...store(), computerIntervals: intervals }, computers: computers([docker], { DOCKER_KEY: "k" }), now: () => NOW });
   assert.deepEqual((await intervals.forRun("run-mine")).map((row) => [row.providerId, row.endedAt]), [["mine-late", NOW]]);
   assert.deepEqual((await intervals.forRun("run-parked")).map((row) => [row.providerId, row.endedAt]), [["parked-run-out", null]]);
+});
+
+test("the provider sweep marks a kept machine's row ending before it deletes the machine, whichever runner kept it; a row a claim is taking back is left, and its machine with it", async (t) => {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-janitor-kept-"));
+  const real = await openSqliteStore({ dataDir: dir, role: "server" });
+  t.after(async () => {
+    await real.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  // run-mine is over. Its park's machine is pinned to runner-a, whose kept pass leaves the row while runner-a is there,
+  // and whose end never ran (it died first): this server's provider sweep ends the machine.
+  const kept = { provider: "docker", kind: "sandbox", id: "kept-2", name: "kept-2", epoch: 2, until: NOW + 600_000, runner: "runner-a", incarnation: "inc-a" };
+  for (const row of [kept, { ...kept, taking: 3 }]) {
+    await real.settings.put(keptKeyOf("run-mine"), row);
+    const docker = provider("docker", [{ name: "kept-2", labels: labels("run-mine", 2), deadline: new Date(NOW + 3_600_000) }]);
+    /** The row as the sweep's delete finds it. */
+    let atDelete;
+    const release = docker.made.release;
+    docker.made.release = async (ref, how) => ((atDelete = await readKept(real.settings, "run-mine")), release(ref, how));
+    const swept = await sweepServerComputers({ store: { ...store(), settings: real.settings }, computers: computers([docker], { DOCKER_KEY: "k" }), now: () => NOW });
+    if (row.taking === undefined) {
+      assert.deepEqual(atDelete, { ...kept, ending: true }, "its row reads ending before the sweep deletes its machine, so no claim takes it back mid-delete");
+      assert.deepEqual(docker.released, [["kept-2", "delete"]]);
+    } else {
+      assert.deepEqual(docker.released, [], "a claim is taking it back: the sweep leaves its machine");
+      assert.deepEqual(await readKept(real.settings, "run-mine"), row, "and its row as that claim marked it");
+      assert.match(swept[0].swept.ok ? "" : swept[0].swept.error.message, /kept-2: .*a claim is taking it back/, "said in the sweep's words");
+    }
+  }
 });
