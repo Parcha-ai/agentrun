@@ -10,20 +10,25 @@ const server = { name: "gmail", url: "https://mcp.example.test/gmail", auth: { t
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; });
 
-function mount(v2: Parameters<typeof useMcpServers>[0], enabled: boolean, seen: { reload?: () => void; servers?: unknown }) {
-  function Probe({ on }: { on: boolean }) {
-    const [servers, reload] = useMcpServers(v2, on);
-    seen.servers = servers; seen.reload = reload;
-    return null;
-  }
+type Seen = { reload?: () => void; servers?: unknown };
+
+// One Probe for every render, so a second mount re-renders the same hook with new props: turning `on` off and on changes
+// `enabled` on that hook, never mounts a fresh one.
+function Probe({ v2, on, seen }: { v2: Parameters<typeof useMcpServers>[0]; on: boolean; seen: Seen }) {
+  const [servers, reload] = useMcpServers(v2, on);
+  seen.servers = servers; seen.reload = reload;
+  return null;
+}
+
+function mount(v2: Parameters<typeof useMcpServers>[0], enabled: boolean, seen: Seen) {
   root ??= createRoot(document.body.appendChild(document.createElement("div")));
-  return act(async () => root!.render(createElement(Probe, { on: enabled })));
+  return act(async () => root!.render(createElement(Probe, { v2, on: enabled, seen })));
 }
 
 describe("useMcpServers", () => {
   it("reads once enabled, null before, and reads anew when turned off and on", async () => {
     const listMcpServers = vi.fn(async () => ({ servers: [server] }));
-    const seen: { reload?: () => void; servers?: unknown } = {};
+    const seen: Seen = {};
     await mount({ listMcpServers }, false, seen);
     expect(listMcpServers).not.toHaveBeenCalled();
     expect(seen.servers).toBeNull();
@@ -38,7 +43,7 @@ describe("useMcpServers", () => {
   it("says failed, and reload reads again", async () => {
     let fail = true;
     const listMcpServers = vi.fn(async () => { if (fail) throw new Error("offline"); return { servers: [server] }; });
-    const seen: { reload?: () => void; servers?: unknown } = {};
+    const seen: Seen = {};
     await mount({ listMcpServers }, true, seen);
     expect(seen.servers).toBe("failed");
     fail = false;
@@ -49,7 +54,7 @@ describe("useMcpServers", () => {
   it("lets only the newest read land: a slow older answer, its failure most of all, never replaces it", async () => {
     const answers: { ok: (v: { servers: McpServer[] }) => void; no: (e: Error) => void }[] = [];
     const listMcpServers = vi.fn(() => new Promise<{ servers: McpServer[] }>((ok, no) => { answers.push({ ok, no }); }));
-    const seen: { reload?: () => void; servers?: unknown } = {};
+    const seen: Seen = {};
     await mount({ listMcpServers }, true, seen);
     await act(async () => seen.reload!());
     await act(async () => answers[1]!.ok({ servers: [server] }));
@@ -58,7 +63,7 @@ describe("useMcpServers", () => {
   });
 
   it("reads nothing on a server that has no MCP list", async () => {
-    const seen: { reload?: () => void; servers?: unknown } = {};
+    const seen: Seen = {};
     await mount({}, true, seen);
     expect(seen.servers).toBeNull();
   });
