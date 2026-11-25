@@ -46,6 +46,6 @@ export function startSwitches(env: NodeJS.ProcessEnv, { mcpLoopback, webhookPriv
     [BOX_PIDS_ENV]: size(BOX_PIDS_ENV, "How many processes and threads a Docker computer may hold at once, such as 1024. Unset, the Docker provider's default."),
     // Its origins are withheld: every caller of an API-only server is its token, which learns only whether an origin it
     // saves at is listed (the save's 404 or not). A full server holds no list: off.
-    [API_ONLY_MCP_ORIGINS_ENV]: { on: apiOnlyMcpOrigins.length > 0, value: null, allows: "On an API-only server (AGENTRUN_API_ONLY=1), the exact origins (scheme, host and port) its token may save a per_run MCP server at, which keeps no credential: a comma list of http or https origins. Unset, none. The server keeps the list it started with in its store, and each run's claim of a server the token saved checks it. The list itself is never shown here." },
+    [API_ONLY_MCP_ORIGINS_ENV]: { on: apiOnlyMcpOrigins.length > 0, value: null, allows: "On an API-only server (AGENTRUN_API_ONLY=1), the exact origins (scheme, host and port) its token may save a per_run MCP server at, which keeps no credential: a comma list of https origins, or http ones for a loopback host alone (127.0.0.0/8, ::1, localhost), which also needs AGENTRUN_MCP_ALLOW_LOOPBACK=1. Unset, none. The server keeps the list it started with in its store, and each run's claim of a server the token saved checks it. The list itself is never shown here." },
   };
 }

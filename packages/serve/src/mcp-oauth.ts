@@ -8,6 +8,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import dns from "node:dns/promises";
 import net from "node:net";
 import type { OAuthClientMetadata, OAuthClientProvider, OAuthDiscoveryState, OAuthTokens, StoredOAuthClientInformation } from "@modelcontextprotocol/client";
+import { LOOPBACK_HOST } from "./env-switch.js";
 import { ApiError } from "./errors.js";
 import { hostKey } from "./mcp-meta.js";
 import { localAddresses, PRIVATE_HOSTS_PAGE, privateAllowed } from "./mcp-private-hosts.js";
@@ -348,8 +349,8 @@ function registrationUnavailable(url: URL, callback: string): ApiError {
   const message = `${url.host} doesn't let apps register themselves: ${github ? "create an OAuth App on GitHub" : "create an OAuth app with that provider"} and enter its Client ID and Secret here.`;
   return new ApiError("input_invalid", message, { fields: [{ field: "client_id", reason: "registration_unavailable", message }], details: { oauth: { registration: false, callback } } });
 }
-/** A URL's hostname on loopback as written (localhost, 127.0.0.0/8, [::1]). */
-export const LOOPBACK = /^(?:localhost|\[::1\]|127(?:[.]\d{1,3}){3})$/; // key-gate: loopback-rule CIMD is never offered from loopback, and only a loopback MCP server may name loopback endpoints
+/** A URL's hostname on loopback as written (localhost, 127.0.0.0/8, [::1]): env-switch.ts LOOPBACK_HOST, the one rule. */
+export const LOOPBACK = LOOPBACK_HOST; // key-gate: loopback-rule CIMD is never offered from loopback, and only a loopback MCP server may name loopback endpoints
 
 export class McpSignIns {
   /** `pendingStore`: where sign-ins in flight are kept (over store.mcpOauth). `allowed`: the private-network hosts the
