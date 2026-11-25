@@ -202,7 +202,7 @@ test("the stand-ins keep macOS's rule, the one a status check in a home of its o
   const m = mac();
   const login = PLACES["AgentRun's own folder"](m);
   await asServerOf(m, () => WAYS['the sign-in this host starts'](m, login));
-  const asked = (home) => JSON.parse(spawnSync(m.cli, ['auth', 'status', '--json'], { env: { PATH: m.path, ...claude.claudeSignInEnv(login), HOME: home }, encoding: 'utf8' }).stdout).loggedIn;
+  const asked = (home) => JSON.parse(spawnSync(m.cli, ['auth', 'status', '--json'], { env: { PATH: m.path, USER: ACCOUNT, ...claude.claudeSignInEnv(login), HOME: home }, encoding: 'utf8' }).stdout).loggedIn;
   assert.equal(asked(scratch()), false, "an empty home: no login keychain, so no tokens");
   assert.equal(asked(m.home), true, "the person's home");
 });
