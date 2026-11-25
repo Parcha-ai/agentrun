@@ -38,6 +38,8 @@ import {
 	checkBrowser,
 	createUncertain,
 	DEFAULT_CONFIRM,
+	convergedBrowser,
+	type HeldBrowser,
 	heldBrowser,
 	defaultSleep,
 	idProblem,
@@ -57,7 +59,7 @@ import {
 	vendorFailure,
 	withoutCreateLabel,
 } from "./browser.js";
-import { CreateRequests, otherSpecWords } from "./create-requests.js";
+import { CreateRequests, endedWords, labelsDiffer, otherSpecWords } from "./create-requests.js";
 import { httpsBase } from "./hosted/rest.js";
 import type { KindCapabilities } from "./kinds.js";
 import {
@@ -112,6 +114,9 @@ const metadataLabels = (held: unknown): Record<string, string> => Object.fromEnt
 /** userMetadata as the labels list and attach show: without the provider's create label. */
 const fromMetadata = (held: unknown): Record<string, string> => withoutCreateLabel(metadataLabels(held));
 
+/** A session as its create label finds it: its id, when Browserbase made it, and its labels. */
+const heldOf = (s: BrowserbaseSession): HeldBrowser => ({ id: s.id, ...(s.createdAt ?? s.startedAt ? { createdAt: (s.createdAt ?? s.startedAt) as string } : {}), labels: fromMetadata(s.userMetadata) });
+
 /** Why labels cannot ride a Browserbase session's userMetadata, in words naming the label; undefined when they can. */
 export function browserbaseLabelsProblem(labels: unknown): string | undefined {
 	const problem = labelsProblem(labels);
@@ -132,6 +137,8 @@ export interface BrowserbaseSession {
 	connectUrl?: string;
 	userMetadata?: Record<string, unknown>;
 	expiresAt?: string;
+	/** When Browserbase made the session. */
+	createdAt?: string;
 	/** When the session started and ended, as Browserbase records them (no end while it runs). */
 	startedAt?: string;
 	endedAt?: string;
@@ -415,7 +422,7 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 		if (signal?.aborted) return fail("aborted", "create was aborted before Browserbase was called");
 		const held = await this.#sessions({ [CREATE_LABEL]: request }, signal);
 		if (!held.ok) return held;
-		const found = heldBrowser(spec.labels ?? {}, held.value.map((s) => ({ id: s.id, labels: fromMetadata(s.userMetadata) })));
+		const found = heldBrowser(spec.labels ?? {}, held.value.map(heldOf));
 		if (found !== undefined) {
 			if (found.differ.length > 0) return fail("exists", otherSpecWords(`${request} (session ${found.id})`, "was made", found.differ));
 			this.#requestOf.set(found.id, request);
@@ -453,6 +460,9 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 			return vendorFail("browserbase",`Browserbase POST /v1/sessions answered with no session id, so there is no session to connect to; ${await this.#recover(written)}`);
 		}
 		this.#requests.made(request);
+		// Another process's create of this request may have made one too (#converge): the older is answered.
+		const converged = await this.#converge(spec, request, made, signal);
+		if (converged !== undefined) return converged;
 		this.#requestOf.set(made.id, request);
 		const unusable = cdpUrlProblem(made.connectUrl, NAME, CDP_DOMAIN);
 		if (unusable !== undefined) {
@@ -462,6 +472,31 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 		}
 		this.#urls.set(made.id, made.connectUrl as string);
 		return ok(refOf(made));
+	}
+
+	/**
+	 * The one session a request keeps (convergedBrowser): the request's create label listed again once Browserbase made
+	 * mine. Undefined when mine is the oldest (or the listing fails: the create goes on with its own). Else mine is
+	 * released, never under the caller's signal, and the older answered: refused exists when it has ended by then, or when
+	 * its labels are another spec's.
+	 */
+	async #converge(spec: ComputerSpec, request: string, mine: BrowserbaseSession, signal?: AbortSignal): Promise<Result<CreatedComputer> | undefined> {
+		const listed = await this.#sessions({ [CREATE_LABEL]: request }, signal);
+		if (!listed.ok) return undefined;
+		const kept = convergedBrowser(listed.value.map(heldOf), heldOf(mine));
+		if (kept === "mine") return undefined;
+		const released = await this.#releaseSession(mine.id);
+		if (!released.ok) return fail(released.error.code, `${request} keeps the session ${kept.id}, the older of its two, and the session ${mine.id} made for it could not be released (${released.error.message})`);
+		const alive = await this.#alive(kept.id, signal);
+		if (!alive.ok) return alive;
+		if (!alive.value) {
+			this.#requests.end(request);
+			return fail("exists", endedWords(request));
+		}
+		const differ = labelsDiffer(spec.labels ?? {}, kept.labels, "read back");
+		if (differ.length > 0) return fail("exists", otherSpecWords(`${request} (session ${kept.id})`, "was made", differ));
+		this.#requestOf.set(kept.id, request);
+		return ok(refOf({ id: kept.id }));
 	}
 
 	/** A new context, a profile's pointer: one POST /v1/contexts, never retried. */
@@ -698,6 +733,13 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 		// The request's session is ended here: a later create of it is refused exists, never made again.
 		const request = this.#requestOf.get(id);
 		if (request !== undefined) this.#requests.end(request);
+		const released = await this.#releaseSession(id, signal);
+		if (released.ok) this.#requestOf.delete(id);
+		return released;
+	}
+
+	/** Asks Browserbase to release the session and waits until it reads as ended; the request it was made for is not ended. */
+	async #releaseSession(id: string, signal?: AbortSignal): Promise<Result<void>> {
 		const released = await releaseConfirmed({
 			request: async () => {
 				try {
@@ -711,10 +753,7 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 			sleep: this.#sleep,
 			stillRunning: `Browserbase session ${id} still running after a release request`,
 		});
-		if (released.ok) {
-			this.#urls.delete(id);
-			this.#requestOf.delete(id);
-		}
+		if (released.ok) this.#urls.delete(id);
 		return released;
 	}
 

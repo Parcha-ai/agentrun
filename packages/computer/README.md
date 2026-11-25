@@ -2589,9 +2589,12 @@ JSON.
 Each create writes one more label beside the spec's, `agentrun.create` (`CREATE_LABEL`), whose value is the request's
 name, `computer-<12 hex of sha256(requestId)>`. Before it makes a browser, create lists the running and starting
 browsers with that label: one with the spec's labels is answered, so a retried create, in this process or another,
-makes no second browser, and one with other labels is refused `exists`. The browser's own options (viewport, stealth,
-profile) are not read back from the vendor, so a create from another process compares the labels alone. A browser
-released here leaves its request refused `exists`. A create whose outcome is unknown (its reply lost, cut short, answered 5xx or with no browser, or the caller's signal
+makes no second browser, and one with other labels is refused `exists`; where it finds several, it takes the oldest (by
+the time the vendor made each, then id). Two processes whose creates of one request both find nothing make two
+browsers, so after the vendor's answer a create lists the label again: where an older browser of the request is
+there, it releases its own and answers the older, refused `exists` when the older has ended by then, and the oldest
+keeps its own. The browser's own options (viewport, stealth, profile) are not read back from the vendor, so a create
+from another process compares the labels alone. A browser released here leaves its request refused `exists`. A create whose outcome is unknown (its reply lost, cut short, answered 5xx or with no browser, or the caller's signal
 aborted it) never sends a second create: it finds the browsers carrying that label as list does, in every state not
 ended, under a signal of its own bounded at `RECOVER_MS`, releases each, and its failure says so; that request is then
 refused `exists`. A 4xx refusal made nothing, so nothing is looked for. The label is the provider's own: `check()` refuses it in a spec, and no list or attach shows it.

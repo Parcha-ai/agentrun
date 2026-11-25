@@ -103,15 +103,41 @@ export const withoutCreateLabel = (labels: Record<string, string>): Record<strin
 	return rest;
 };
 
+/** A browser a create label found: its id, when the vendor made it (an ISO time, where it says), and its labels. */
+export interface HeldBrowser {
+	id: string;
+	createdAt?: string;
+	labels: Record<string, string>;
+}
+
+/**
+ * The order a request's browsers are read in (heldBrowser, a create's converge): the oldest first, by the time the
+ * vendor made each, then by id. The same browsers give the same order in every process.
+ */
+export const oldestBrowserFirst = (a: HeldBrowser, b: HeldBrowser): number => String(a.createdAt ?? "").localeCompare(String(b.createdAt ?? "")) || a.id.localeCompare(b.id);
+
 /**
  * The browser a vendor holds for a create's request (provider.md, Idempotent create), among those its create label finds
- * (found, each with its labels as list shows them): undefined when there is none, so create makes it, else the first by
- * id, with how its labels differ from the ones asked (labelsDiffer; empty when it is this spec's). A browser's own options
- * are not read back from the vendor, so a create from another process compares the labels alone.
+ * (found, each with its labels as list shows them): undefined when there is none, so create makes it, else the oldest
+ * (oldestBrowserFirst), with how its labels differ from the ones asked (labelsDiffer; empty when it is this spec's). A
+ * browser's own options are not read back from the vendor, so a create from another process compares the labels alone.
  */
-export function heldBrowser(asked: Record<string, string>, found: ReadonlyArray<{ id: string; labels: Record<string, string> }>): { id: string; differ: string[] } | undefined {
-	const first = [...found].sort((a, b) => a.id.localeCompare(b.id))[0];
+export function heldBrowser(asked: Record<string, string>, found: ReadonlyArray<HeldBrowser>): { id: string; differ: string[] } | undefined {
+	const first = [...found].sort(oldestBrowserFirst)[0];
 	return first === undefined ? undefined : { id: first.id, differ: labelsDiffer(asked, first.labels, "read back") };
+}
+
+/**
+ * Where a create that made a browser stands among its request's (provider.md, Idempotent create). Two creates of one
+ * request in two processes can both find no browser by the create label and both make one: CreateRequests holds within
+ * one provider alone. So after the vendor's answer the label is listed again (listed; mine, made just now, added when it
+ * is not listed yet): "mine" when mine is the oldest, so the create answers it; else the older, which the create
+ * answers in place of its own once it has released its own. Every process picks the same one from the same listing.
+ */
+export function convergedBrowser(listed: ReadonlyArray<HeldBrowser>, mine: HeldBrowser): "mine" | HeldBrowser {
+	const holders = listed.some((one) => one.id === mine.id) ? [...listed] : [...listed, { ...mine, createdAt: mine.createdAt ?? new Date().toISOString() }];
+	const kept = holders.sort(oldestBrowserFirst)[0] as HeldBrowser;
+	return kept.id === mine.id ? "mine" : kept;
 }
 
 /**

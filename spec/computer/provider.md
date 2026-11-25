@@ -94,7 +94,8 @@ taken and reads that container, and the phone harness reads its ledger by name a
 the `Idempotency-Key`. Orgo lists the workspace's computers before it makes one and takes the oldest whose name begins
 with the request's, and lists them again after Orgo's answer and once its computer is up, deleting its own where an
 older one of the request is there and answering that one, as the hosted adapter converges; Browserbase and Kernel list the running and starting browsers by the create label before they make
-one; the local browser makes the request's directory under its root with `mkdir`, which one create alone wins, and
+one and again after the vendor's answer, releasing their own where an older one of the request is there and answering
+that one; the local browser makes the request's directory under its root with `mkdir`, which one create alone wins, and
 reads the browser in a directory already there.
 
 `provider.create-retried` creates twice with one id and expects one computer; `provider.create-after-release` releases

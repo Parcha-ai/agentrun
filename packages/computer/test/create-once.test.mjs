@@ -206,6 +206,87 @@ test("orgo: two provider instances whose creates of one request start together a
 	okOf(await one.release(kept, "delete"), "release");
 });
 
+/** The two browser vendors, as the tests of two processes on one vendor read them. */
+const CLOUD_BROWSERS = {
+	browserbase: {
+		post: "/v1/sessions",
+		/** Every session the fake made, in the order it made them. */
+		ids: (fake) => [...fake.sessions.keys()],
+		live: (fake, id) => fake.sessions.get(id).status === "RUNNING",
+		/** Ends a session as Browserbase does at its timeout. */
+		expire: (fake, id) => {
+			fake.sessions.get(id).status = "COMPLETED";
+		},
+	},
+	kernel: {
+		post: "/browsers",
+		ids: (fake) => [...fake.browsers.keys()],
+		live: (fake, id) => fake.browsers.get(id).deletedAt === undefined,
+		expire: (fake, id) => {
+			fake.browsers.get(id).deletedAt = new Date().toISOString();
+		},
+	},
+};
+
+/** A vendor's fetch whose creates (POST to `post`) wait until `count` have asked, then go on in the order they asked. */
+const createsTogether = (fetch, post, count) => {
+	const waiting = [];
+	return async (input, init = {}) => {
+		if ((init.method ?? "GET") === "POST" && new URL(String(input)).pathname === post && waiting.length < count) {
+			await new Promise((resolve) => {
+				waiting.push(resolve);
+				if (waiting.length === count) for (const go of waiting) go();
+			});
+		}
+		return fetch(input, init);
+	};
+};
+
+for (const [id, cloud] of Object.entries(CLOUD_BROWSERS)) {
+	const vendor = VENDORS[id];
+
+	test(`${id}: two provider instances whose creates of one request both find nothing and both make a browser answer one, the older, and release the newer`, async () => {
+		const fake = vendor.vendor();
+		const shared = { ...fake, fetch: createsTogether(fake.fetch, cloud.post, 2) };
+		const [one, two] = [await vendor.make(shared), await vendor.make(shared)];
+		const requestId = requestOf(`${id}-both`);
+		const [a, b] = await Promise.all([one.create(vendor.spec(), { requestId }), two.create(vendor.spec(), { requestId })]);
+		const kept = okOf(a, "the first create");
+		assert.deepEqual(refOf(okOf(b, "the second create")), refOf(kept), "both answer one browser");
+		assert.equal(vendor.made(fake), 2, "both made one");
+		const [older, newer] = cloud.ids(fake);
+		assert.equal(kept.id, older, "the browser answered is the older, the first the vendor made");
+		assert.equal(cloud.live(fake, older), true, "the older runs");
+		assert.equal(cloud.live(fake, newer), false, "the newer is released");
+		okOf(await one.release(kept, "delete"), "release");
+	});
+
+	test(`${id}: a create whose browser is the newer, the older ended before it is answered, releases its own and is refused exists`, async () => {
+		const fake = vendor.vendor();
+		const requestId = requestOf(`${id}-gone`);
+		// The other instance's browser is listed when this create looks again, and ended before it is answered.
+		let ended = false;
+		const shared = {
+			...fake,
+			fetch: createsTogether(async (input, init = {}) => {
+				const answer = await fake.fetch(input, init);
+				// The newer's release (Browserbase's POST, Kernel's DELETE, on the browser's own path) ends the older.
+				if (!ended && (init.method ?? "GET") !== "GET" && /\/(sessions|browsers)\/[^/]+$/.test(new URL(String(input)).pathname)) {
+					ended = true;
+					cloud.expire(fake, cloud.ids(fake)[0]);
+				}
+				return answer;
+			}, cloud.post, 2),
+		};
+		const [one, two] = [await vendor.make(shared), await vendor.make(shared)];
+		const [, b] = await Promise.all([one.create(vendor.spec(), { requestId }), two.create(vendor.spec(), { requestId })]);
+		assert.equal(b.ok, false, "the newer's create, the older gone");
+		assert.equal(b.error.code, "exists");
+		assert.match(b.error.message, /was made for this request and has ended: create with a new request id/);
+		assert.equal(cloud.live(fake, cloud.ids(fake)[1]), false, "the newer is released");
+	});
+}
+
 test("a create with no request id is refused invalid on each, before any vendor call", async () => {
 	for (const [id, vendor] of Object.entries(VENDORS)) {
 		const fake = vendor.vendor();
