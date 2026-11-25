@@ -760,3 +760,41 @@ test("an SDK start names every run whose file it delivers: a DELETE of the run t
   assert.equal(fresh.status, 201, JSON.stringify(fresh.body));
   assert.doesNotMatch(JSON.stringify(fresh.body.learning), /READMEWORD/, "a new start is given none of it");
 });
+
+// A server before learning rows pinned a start's workflows by the save each was read at (`learning_commits`), never by
+// the runs that wrote them, so an inbox it wrote can't say whether a purged run wrote its text.
+test("an SDK start pinned before learning rows (its inbox names no writers) never answers its workflow text: its receipt sent again is 409 not_continuable, and any run's DELETE empties the inbox", async (t) => {
+  const { api, store } = await serve(t, { runner: false });
+  const id = "sdk-legacy";
+  const mark = "LEGACYMARK";
+  const tool = { name: "mcp:backend/status", description: "Read release status.", input_schema: { type: "object" }, permission: "allow", price_usd: 0 };
+  const body = { runtime: "claude-agent-sdk", input: "Check release status.", instructions: "Use the backend tools.", workflow_tools: [tool] };
+  const flow = JSON.stringify({ v: 2, name: "status", schemas: { Input: { type: "object" }, Answer: { type: "object", description: `Release status, ${mark}.`, properties: { ready: { type: "boolean" } }, required: ["ready"] } }, input: { schemaId: "Input" }, output: { schemaId: "Answer", path: "answer" }, root: { node: "call", label: "status", via: "tool", tool: tool.name, args: {}, out: "Answer", as: "answer", deadline_s: 5 } });
+  assert.equal((await api("POST", "/agents", { definition: { id, name: id, instructions: body.instructions, sdk: { runtime: body.runtime }, learning: true, tools: [] } })).status, 201);
+  assert.equal((await api("POST", `/agents/${id}/sdk-runs`, body, { "Idempotency-Key": "first" })).status, 201);
+  await endedRuns(api, store, id, ["legacy-writer", "bystander"], false);
+  const merge = await learned(store, id, (learning) => learningCommit(learning, { runId: "legacy-writer", reason: "It learned status.", files: [{ path: "workflows/status/workflow.json", text: flow }, { path: "workflows/status/README.md", text: "---\nname: status\ndescription: Read release status.\n---\n" }] }));
+  await putPromotions(store, id, [recordOf("status", digestOf(flow), "promote", merge)]);
+  const inboxes = async () => JSON.stringify((await store.settings.all({ prefix: "sdk-run:" })).map((row) => row.value));
+  const pinned = await api("POST", `/agents/${id}/sdk-runs`, body, { "Idempotency-Key": "pinned" });
+  assert.equal(pinned.status, 201, JSON.stringify(pinned.body));
+  assert.deepEqual(pinned.body.learning.workflows.map(({ workflow }) => digestOf(workflow)), [digestOf(flow)], "the start pins the champion, its text carrying the mark");
+  // The inbox as main's server wrote it: the save each workflow was read at, and no writers.
+  const key = `sdk-run:${pinned.body.run_id}`;
+  const { learning_writers: writers, ...rest } = await store.settings.get(key);
+  assert.deepEqual(writers, ["legacy-writer"]);
+  await store.settings.put(key, { ...rest, learning_commits: { status: merge } });
+  assert.match(await inboxes(), new RegExp(mark));
+  const again = async () => {
+    const res = await api("POST", `/agents/${id}/sdk-runs`, body, { "Idempotency-Key": "pinned" });
+    return { status: res.status, code: res.body?.error?.code, marked: JSON.stringify(res.body).includes(mark) };
+  };
+  const refused = { status: 409, code: "not_continuable", marked: false };
+  assert.deepEqual(await again(), refused, "the receipt sent again can't check its writers, so it is refused, none of its text in the answer");
+  assert.equal((await api("DELETE", "/runs/bystander")).status, 204);
+  assert.doesNotMatch(await inboxes(), new RegExp(mark), "a DELETE of a run it may not name empties the inbox: one of its unknown writers may be the run");
+  assert.deepEqual(await again(), refused, "the emptied inbox's receipt is refused still");
+  const fresh = await api("POST", `/agents/${id}/sdk-runs`, body, { "Idempotency-Key": "fresh" });
+  assert.equal(fresh.status, 201, JSON.stringify(fresh.body));
+  assert.deepEqual(fresh.body.learning.workflows.map(({ workflow }) => digestOf(workflow)), [digestOf(flow)], "a new start pins the champion again, its writer named");
+});

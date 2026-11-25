@@ -157,8 +157,8 @@ test("a run that sends no model key (a --faux runner's, a faux-pinned one, a hel
   const subagent = { kind: "agentic", body: { tools: ["subagent"], modelTiers: { fast: "openai/gpt-6.1-sol" } } };
   const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "run-child-held-faux-"));
   t.after(() => rmSync(data, { recursive: true, force: true }));
-  const sha = await landWorkflows(data, "agent-own", [{ name: "on-strong", description: "Answers a question", workflow: strongFlow }]);
-  await promoteChecked(store.settings, "agent-own", [{ name: "on-strong", workflow: strongFlow }]);
+  const sha = await landWorkflows(store, "agent-own", [{ name: "on-strong", description: "Answers a question", workflow: strongFlow }]);
+  await promoteChecked(store, "agent-own", [{ name: "on-strong", workflow: strongFlow }]);
   const learning = { input: { content: "Hello." }, learning: startAt(sha) };
   for (const [where, env, own] of [["off faux, unpinned and not held", {}, {}], ...SENDS_NO_MODEL_KEY]) {
     // The subagent's run on a host that names no tier: its fast tier alone routes a model.

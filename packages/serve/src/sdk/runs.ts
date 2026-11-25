@@ -80,6 +80,8 @@ export type SdkInbox = {
   /** The runs whose text learning_workflows and learning_check's draft are, every file's writer (a README.md's as well
    *  as a workflow.json's): a receipt sent again after one of them is purged answers 410 purged (receipt). */
   learning_writers?: string[];
+  /** Legacy: a server before learning rows wrote this (the save each workflow was read at) and no learning_writers. */
+  learning_commits?: Record<string, string>;
   /** The learned workflow a learned_workflow start names, by its call's id as stored, where its input is stored withheld (a held
    *  value split across its arguments, withheldParts): the parent check of a callback nested in it reads its name here
    *  (checkToolParents). Only a name of learning_workflows, never what the caller wrote otherwise. */
@@ -166,18 +168,27 @@ export async function sdkInbox(store: Pick<Store, "settings">, runId: string): P
   return row as unknown as SdkInbox;
 }
 
+/** An inbox a server before learning rows wrote: it holds learning and names no writers (a start now always names them,
+ *  none too), so whether a purged run wrote its text can't be known. Its receipt is refused (receipt). */
+const unwritten = (inbox: SdkInbox): boolean =>
+  inbox.learning_writers === undefined && (inbox.learning_commits !== undefined || !!inbox.learning_workflows?.length || !!inbox.learning_check);
+
 /** What every SDK run's inbox holds of run `runId`'s text, gone (its purge): an inbox whose workflows or check draft it
- *  wrote (`learning_writers` names it) keeps none of them, its writers kept, so its receipt answers 410 purged. Run after
- *  the run's purge committed, and a start checks its writers after its inbox is written (start), so one of the two
- *  always sees the other: no inbox keeps a purged run's workflow text. */
+ *  wrote (`learning_writers` names it) keeps none of them, its writers kept, so its receipt answers 410 purged. An inbox
+ *  that names no writers (unwritten) is emptied by any run's purge, since the run may be one of them, its
+ *  learning_commits kept, so its receipt is refused still. Run after the run's purge committed, and a start checks its
+ *  writers after its inbox is written (start), so one of the two always sees the other: no inbox keeps a purged run's
+ *  workflow text. */
 export async function forgetSdkCopies(store: Pick<Store, "settings">, runId: string): Promise<void> {
   for (const row of await store.settings.all({ prefix: keyOf("") })) {
     for (let value = row.value, retry = 0; retry < 20; retry++) {
       if (!isObject(value)) break;
       const inbox = value as unknown as SdkInbox;
-      if (!inbox.learning_writers?.includes(runId) || (!inbox.learning_workflows?.length && !inbox.learning_check)) break;
+      if (!inbox.learning_workflows?.length && !inbox.learning_check) break;
+      const legacy = unwritten(inbox);
+      if (!legacy && !inbox.learning_writers?.includes(runId)) break;
       const { learning_check: _check, ...rest } = inbox;
-      if (await store.settings.replaceIf(row.key, value, { ...rest, learning_workflows: [] })) break;
+      if (await store.settings.replaceIf(row.key, value, { ...rest, learning_workflows: [], ...(legacy ? { learning_commits: inbox.learning_commits ?? {} } : {}) })) break;
       value = await store.settings.get(row.key);
     }
   }
@@ -451,7 +462,8 @@ export class SdkRuns {
           expires_at: now + (cli ? SDK_MAX_OPEN_MS : SDK_OPEN_MS),
           batches: [],
           learning_workflows: workflows,
-          ...(writers.length ? { learning_writers: writers } : {}),
+          // Named whenever it holds learning, none too: an inbox without the key is an earlier server's (unwritten).
+          ...(workflows.length || check ? { learning_writers: writers } : {}),
           ...(check ? { learning_check: check } : {}),
           ...(redacted ? { check_redacted: true } : {}),
           ...(cli && cleanedInput !== input ? { evidence_incomplete: true } : {}),
@@ -499,6 +511,11 @@ export class SdkRuns {
     const launch = (await this.store.runs.launch(runId)).body as unknown as RunLaunch;
     const inbox = await sdkInbox(this.store, runId);
     const workflows = inbox.learning_workflows ?? [];
+    if (unwritten(inbox))
+      throw new ApiError(
+        "not_continuable",
+        "This SDK start was pinned before a server upgrade, so the runs that wrote its learning can't be checked. Start a new run with a new Idempotency-Key.",
+      );
     // A start sent again answers the receipt it pinned, never a workflow a purged run wrote: 410 purged, as its file read.
     const purged = [...(await purgedRows(this.store, inbox.learning_writers ?? [])).values()][0];
     if (purged) throw purgedRun(purged);
