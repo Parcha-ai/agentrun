@@ -2,7 +2,7 @@
 // copies it into its dist and a fresh checkout's `npm ci && npm run build` serves it. It installs the console's
 // dependencies when they are not the ones its lockfile names (npm's own record of what it installed,
 // node_modules/.package-lock.json, read against the lockfile), and skips the build when the console's dist was built from
-// the same inputs: its sources, index.html and share.html, its configs, its lockfile and the package sources it imports (the DSL's, the
+// the same inputs: its sources, index.html, its configs, its lockfile and the package sources it imports (the DSL's, the
 // timeline library's, serve's tool-name grammar, pi-browser's core), hashed (a hash, not file times, so a branch switch or a touched file that did
 // not change never fools it).
 // `--stamp`: only record the inputs' hash in dist, after the console's own `npm run build` (CI's checks shard and the
@@ -17,7 +17,7 @@ import { npmSpawnSync } from './npm-command.mjs';
 
 /** The console's build inputs, below the repository's root: with its own, the sources it imports through its aliases
  *  (vite.config.ts): the DSL's, the timeline library's, serve's tool-name grammar and pi-browser's core. */
-const INPUTS = ['apps/console/src', 'apps/console/index.html', 'apps/console/share.html', 'apps/console/package.json', 'apps/console/package-lock.json', 'apps/console/tsconfig.json', 'apps/console/vite.config.ts', 'apps/console/third-party-notices.mjs', 'apps/console/credential-gate.mjs', 'apps/console/tailwind.config.ts', 'apps/console/postcss.config.js', 'packages/dsl/src', 'packages/serve/src/timeline', 'packages/serve/src/tool-names.ts', 'packages/web/src/text-urls.ts', 'packages/pi-browser/src/core'];
+const INPUTS = ['apps/console/src', 'apps/console/index.html', 'apps/console/package.json', 'apps/console/package-lock.json', 'apps/console/tsconfig.json', 'apps/console/vite.config.ts', 'apps/console/third-party-notices.mjs', 'apps/console/credential-gate.mjs', 'apps/console/tailwind.config.ts', 'apps/console/postcss.config.js', 'packages/dsl/src', 'packages/serve/src/timeline', 'packages/serve/src/tool-names.ts', 'packages/web/src/text-urls.ts', 'packages/pi-browser/src/core'];
 export const HASH_FILE = '.build-hash';
 
 const filesUnder = (path) => (statSync(path).isDirectory() ? readdirSync(path).sort().flatMap((name) => filesUnder(join(path, name))) : [path]);

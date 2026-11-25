@@ -57,10 +57,7 @@ export default defineConfig({
   resolve: { alias },
   // The server serves scripts, styles and fonts; its CSP also permits data images. Keep the small coding-agent and harness
   // icons in the bundle so their marks work with existing servers, without widening their asset allowlist.
-  // Two pages: the console (index.html) and the share page (share.html: one run's share bundle, served at /share/<run>
-  // by the owner's server), sharing the hashed assets under assets/. share.html imports nothing of the console's
-  // sign-in or settings, so its chunks hold none of it.
-  build: { outDir: "dist", rollupOptions: { input: { index: fileURLToPath(new URL("./index.html", import.meta.url)), share: fileURLToPath(new URL("./share.html", import.meta.url)) } }, assetsInlineLimit: (file) => ["coding-agents", "harnesses"].some(dir => file.replaceAll("\\", "/").includes(`/src/assets/${dir}/`)) },
+  build: { outDir: "dist", assetsInlineLimit: (file) => ["coding-agents", "harnesses"].some(dir => file.replaceAll("\\", "/").includes(`/src/assets/${dir}/`)) },
   // css: tokens.css is read as text (`?raw`) by the design-system test and stories; every other stylesheet stays a stub.
   test: { environment: "jsdom", include: ["src/**/*.test.ts", "src/**/*.test.tsx"], css: { include: [/\.css\?raw$/] }, ...(workers ? { maxWorkers: workers } : {}), ...(projects ? { projects } : {}) },
 });

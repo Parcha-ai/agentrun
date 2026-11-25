@@ -37,16 +37,6 @@ const CONSOLE_SEGMENT = /^[A-Za-z0-9_-][A-Za-z0-9._-]*$/;
 /** Addresses the console had before it took "/", and the old page's setup and sign-in, which the printed setup link
  *  still names: each sends the browser to "/", which keeps the link's #code. */
 const MOVED = new Set(["/console", "/console/", "/setup", "/sign-in"]);
-/** The share preview's addresses (the console's second entry, share.html): the page at /share/<run>, and the console's
- *  assets under /share/assets/, where the page's relative URLs land. */
-const SHARE = "/share/";
-/** A run's id as the share page's address names it: one segment, never a dot segment, a trailing slash allowed. */
-const SHARE_RUN = /^[A-Za-z0-9_-][A-Za-z0-9._-]*\/?$/;
-/** The share page's answer to a browser without this server's session: a fixed page under the CSP, never share.html. */
-const SIGN_IN_FIRST = `<!doctype html>
-<html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><meta name="robots" content="noindex" /><title>Sign in first · AgentRun</title></head>
-<body><main><h1>Sign in to this server first</h1><p>A share preview shows what a run's share would publish, and only this server's owner may read it. Sign in at <a href="/">the console</a>, or open the link this server printed when it started, then open this page again.</p></main></body></html>
-`;
 
 const digest = (text: string) => createHash("sha256").update(text).digest();
 const same = (given: string, expected: string) => timingSafeEqual(digest(given), digest(expected));
@@ -154,52 +144,23 @@ async function file(req: IncomingMessage, res: ServerResponse, raw: string, dir:
   send(req, res, status, type, await readFile(real), { "cache-control": rel.startsWith("assets/") ? "public, max-age=31536000, immutable" : "no-store" });
 }
 
-async function answer(req: IncomingMessage, res: ServerResponse, raw: string, server: PageServer, held: boolean): Promise<void> {
+async function answer(req: IncomingMessage, res: ServerResponse, raw: string, server: PageServer): Promise<void> {
   if (req.method !== "GET" && req.method !== "HEAD") return refuse(req, res, new ApiError("method_not_allowed", `the console answers GET and HEAD; ${req.method} is not one`, {}, { allow: "GET, HEAD" }));
   const dir = server.console ?? CONSOLE_DIR;
-  if (raw.startsWith(SHARE)) return share(req, res, raw, dir, server, held);
   if (MOVED.has(raw)) return redirect(res, `/${(req.url ?? "").slice(raw.length)}`);
   if (raw !== "/") return file(req, res, raw, dir, raw.slice(1));
-  const given = launch(req, res, raw, server, raw);
-  if (given === "answered") return;
-  return file(req, res, raw, dir, "index.html", given === "wrong" ? 401 : 200);
-}
-
-/** The printed link's code in a page's address (`raw`: `/`, or `/share/<run>` the CLI opens). Without accounts, a right
- *  code gives this browser a console session (ConsoleSessions) and a redirect to the same page without it; "answered".
- *  The token is for scripts and the CLI: a token in the address signs nothing in, here or with an owner, and leaves it
- *  (the same address without it, no cookie). With an owner the console is the owner's session alone, so a code leaves
- *  the same way. A wrong code is "wrong" and sets nothing (the page answers 401); none is "none". `where` names the page
- *  in the failure log. */
-function launch(req: IncomingMessage, res: ServerResponse, raw: string, server: PageServer, where: string): "answered" | "wrong" | "none" {
+  // Without accounts, the printed link's launch code gives this browser a console session (ConsoleSessions). The token
+  // is for scripts and the CLI: a token in the address signs nothing in, here or with an owner, and leaves it (the same
+  // address without it, no cookie). With an owner the console is the owner's session alone.
   const url = new URL(req.url ?? "/", "http://serve");
-  const without = () => (url.searchParams.delete("token"), url.searchParams.delete("launch"), `${raw}${url.searchParams.size ? `?${url.searchParams}` : ""}`);
+  const without = () => (url.searchParams.delete("token"), url.searchParams.delete("launch"), `/${url.searchParams.size ? `?${url.searchParams}` : ""}`);
   const given = url.searchParams.get("launch");
-  if (url.searchParams.has("token") || (server.owner && given !== null)) return redirect(res, without()), "answered";
-  if (given === null) return "none";
+  if (url.searchParams.has("token") || (server.owner && given !== null)) return redirect(res, without());
   // A code holds no "+", but a space in the link is one that was not encoded all the same.
-  const id = server.sessions?.open(given) ?? server.sessions?.open(given.replaceAll(" ", "+"));
-  if (id !== undefined) return redirect(res, without(), { "set-cookie": `${cookieName(req)}=${id}; HttpOnly; SameSite=Strict; Path=/${overHttps(req) ? "; Secure" : ""}` }), "answered";
-  server.authFailed?.(where, "wrong_launch_code");
-  return "wrong";
-}
-
-/** The share preview (share.html) at /share/<run>, the owner's alone: a browser without this server's session (`held`:
- *  the owner's signed-in session with accounts, the printed link's without) gets SIGN_IN_FIRST, a 401, and so does a
- *  wrong launch code; a right one opens the session here as on `/` (launch). The page reads the run's export with that
- *  session (GET /v2/runs/<run>/export) and nothing else. Its assets are the console's, public. */
-async function share(req: IncomingMessage, res: ServerResponse, raw: string, dir: string, server: PageServer, held: boolean): Promise<void> {
-  const rest = raw.slice(SHARE.length);
-  if (rest.startsWith("assets/")) return file(req, res, raw, dir, rest);
-  if (!SHARE_RUN.test(rest)) return refuse(req, res, new ApiError("not_found", `no page ${raw}: a share preview is /share/<run id>`));
-  // The CLI opens /share/<run>?launch=<code> when it knows the code: the same session as `/?launch=`, landing here.
-  const given = launch(req, res, raw, server, "/share");
-  if (given === "answered") return;
-  if (given === "wrong" || !held) {
-    if (given === "none") server.authFailed?.("/share", "no_session");
-    return send(req, res, 401, HTML, SIGN_IN_FIRST);
-  }
-  return file(req, res, raw, dir, "share.html");
+  const id = given === null ? undefined : server.sessions?.open(given) ?? server.sessions?.open(given.replaceAll(" ", "+"));
+  if (id !== undefined) return redirect(res, without(), { "set-cookie": `${cookieName(req)}=${id}; HttpOnly; SameSite=Strict; Path=/${overHttps(req) ? "; Secure" : ""}` });
+  if (given !== null) server.authFailed?.(raw, "wrong_launch_code");
+  return file(req, res, raw, dir, "index.html", given === null ? 200 : 401);
 }
 
 /** The requests the owner's password session sends from the page (a write only from this server's own origin, with a
@@ -216,8 +177,7 @@ const consoleSessions = new WeakSet<IncomingMessage>();
 export const byConsoleSession = (req: IncomingMessage): boolean => consoleSessions.has(req);
 
 /**
- * Answers the console's paths ("/" and its /assets/*, the addresses that moved to "/", and the share preview under
- * /share/), and returns true; returns false for every other path. On a /v2 path with no Authorization header, the browser's cookie
+ * Answers the console's paths ("/" and its /assets/*, and the addresses that moved to "/"), and returns true; returns false for every other path. On a /v2 path with no Authorization header, the browser's cookie
  * becomes the Bearer header for a GET or HEAD, and for any other method only when the request's Origin is this server's
  * own origin and its body is application/json, or the request is a PUT or POST to a route that takes bytes, with any
  * content type.
@@ -236,10 +196,10 @@ export function answerPage(req: IncomingMessage, res: ServerResponse, raw: strin
     }
     return false;
   }
-  if (raw !== "/" && !raw.startsWith("/assets/") && !MOVED.has(raw) && !raw.startsWith(SHARE)) return false;
+  if (raw !== "/" && !raw.startsWith("/assets/") && !MOVED.has(raw)) return false;
   // Every page answer (the console, its assets, its redirects) at an https public address: HSTS.
   for (const [name, value] of Object.entries(hstsHeaders(server.publicUrl))) res.setHeader(name, value);
-  answer(req, res, raw, server, held).catch(() => {
+  answer(req, res, raw, server).catch(() => {
     if (!res.headersSent) refuse(req, res, new ApiError("internal", "the console could not be read"));
     else res.destroy();
   });
