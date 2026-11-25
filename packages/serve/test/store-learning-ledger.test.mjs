@@ -27,7 +27,8 @@ const { keepResetAt } = await import("../dist/learn/promote.js");
 const C = "c".repeat(16);
 const D = "d".repeat(16);
 const AT = "2026-11-24T00:00:00.000Z";
-const SERVED = { path: "workflow", workflow: "answer", workflow_digest: C };
+/** A run the platform's call of `answer` at C served (its record's call, as the money rule counts it). */
+const SERVED = { path: "workflow", workflow: "answer", workflow_digest: C, workflow_calls: [{ workflow: "answer", digest: C, caller: "platform", outcome: "answered", usd: 0.05 }] };
 const KEPT = { meters: { tools: 0, tokens: 0.1, browser: { usd: 0, seconds: 0 }, others: 0, known: { tokens: 0.1, browser: 0, others: 0 } }, spend: { usd: 0.1, basis: "list" }, learning: { state: "dropped", reason: null } };
 /** A kept round `n`: its job's cost as it answered, its compile turn's (look_back_usd), and the draft it kept. */
 const kept = (n, job, look, extra = {}) => ({ table: "learning_proposals", row: { round: n, turn: {}, proposal: { state: "dropped", reason: "empty", detail: "d", answered_at: AT, job_cost_usd: job, look_back_usd: look, ...extra } } });
@@ -61,6 +62,19 @@ test("an end records its ledger row at its run's end (its epoch after that end),
   assert.deepEqual(scoped.rows.map((row) => row.runId).sort(), ["r-compile", "r-cut"], "the rows of the runs asked for alone");
   assert.deepEqual(scoped.spend.map((one) => [one.runId, one.kind, one.round, one.digest, one.usd]), [["r-compile", "compile", 1, C, 0.3]]);
   assert.deepEqual((await store.learning.ledger("agent-1", [])).rows, [], "no run asked for: none");
+});
+
+test("an end records its run's learned workflow calls on its ledger row, the agent's own as well as the platform's, each checked as read; a run that called none keeps none", async (t) => {
+  const { store, end } = await ledgerStore(t);
+  const calls = [
+    { workflow: "answer", digest: C, caller: "platform", outcome: "handed_back", usd: 0.25 },
+    { workflow: "answer", digest: D, caller: "agent", outcome: "answered", usd: null },
+  ];
+  await end("r-called", 1, { path: "handed_back", workflow: "answer", workflow_digest: C, workflow_calls: [...calls, { workflow: "answer", caller: "agent" }] });
+  await end("r-none", 1, { path: "agent" });
+  const byId = new Map((await store.learning.ledger("agent-1")).rows.map((row) => [row.runId, row]));
+  assert.deepEqual(byId.get("r-called").workflowCalls, calls, "each call as its end wrote it, one off its shape left out");
+  assert.deepEqual(byId.get("r-none").workflowCalls, []);
 });
 
 test("a run's end again writes its spend rows anew, none left from the end before; healCost records its row again; a purge takes its row and every spend row it booked or that audits it", async (t) => {
