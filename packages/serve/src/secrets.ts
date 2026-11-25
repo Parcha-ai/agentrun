@@ -266,15 +266,65 @@ const AUTH_SCHEME = /^[A-Za-z][\w.+-]*(?:\s+|%20)/;
 /** The auth schemes a backend's header writes before its credential, in any case, under any header name. */
 const KNOWN_SCHEME = /^(?:bearer|basic|api-?key|api-?token|token|sentry|splunk|geniekey)(?:\s+|%20)/i;
 
-/** The words of a header's or an endpoint's query parameter's name that say its value is a credential
- *  (`authorization`, `x-sentry-auth`, `x-api-key`, `access_token`, `apiKey`, `X-Amz-Signature`): a name is split at
- *  each non-alphanumeric and at each lower-to-upper case change, and a word counts when it is one of CREDENTIAL_WORDS
- *  or ends in one of CREDENTIAL_ENDING's (a lowercase compound: `accesstoken`, `writekey`, `clientsecret`). A word that
- *  only starts like one says nothing (`authority`, `keyspace`). */
-const CREDENTIAL_WORDS = new Set(["authorization", "auth", "key", "apikey", "token", "secret", "password", "passwd", "pwd", "sig", "signature", "credential", "credentials"]);
-const CREDENTIAL_ENDING = /(?:key|token|secret|password|auth|sig|signature|credentials?)$/;
+/** Whether a header's or an endpoint's query parameter's name says its value is a credential (`authorization`,
+ *  `x-sentry-auth`, `x-api-key`, `access_token`, `apiKey2`, `X-Amz-Signature`, `sessionid`): a name is split at each
+ *  non-alphanumeric and at each lower-to-upper case change, a word's trailing digits are dropped (`key2` is `key`), and
+ *  a word counts when it is one of CREDENTIAL_WORDS, ends in one of CREDENTIAL_ENDINGS (`accesstoken`, `dbpasswd`),
+ *  starts with one of CREDENTIAL_STARTS and is more than its plural (`tokenvalue`, `passwordhash`; never `tokens`), or
+ *  ends in `key` after one of KEY_KINDS (`writekey`, `datadogapikey`; never `routingkey`). `auth`, `key`, `sig` and
+ *  `session` start no compound, so a word that only starts like one says nothing (`authority`, `keyspace`,
+ *  `sessions`). */
+const CREDENTIAL_WORDS = new Set(["authorization", "auth", "key", "apikey", "token", "secret", "password", "passwd", "pwd", "sig", "signature", "credential", "credentials", "jwt", "session"]);
+const CREDENTIAL_ENDINGS = ["token", "secret", "password", "passwd", "pwd", "auth", "authorization", "sig", "signature", "credential", "credentials", "jwt", "sessionid"];
+const CREDENTIAL_STARTS = ["token", "secret", "password", "passwd", "jwt"];
+const KEY_KINDS = ["api", "access", "secret", "private", "write", "read", "client", "auth", "signing", "session", "master", "license", "ingest", "insert", "subscription", "service", "app", "encryption"];
+const credentialWord = (word: string): boolean => {
+  const bare = word.replace(/\d+$/, "");
+  return CREDENTIAL_WORDS.has(bare)
+    || CREDENTIAL_ENDINGS.some((ending) => bare.endsWith(ending))
+    || CREDENTIAL_STARTS.some((start) => bare.startsWith(start) && bare.length > start.length + 1)
+    || KEY_KINDS.some((kind) => bare.endsWith(`${kind}key`));
+};
 const credentialNamed = (name: string): boolean =>
-  name.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9]+/).some((word) => CREDENTIAL_WORDS.has(word) || CREDENTIAL_ENDING.test(word));
+  name.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9]+/).some(credentialWord);
+
+/** A URL inside a header value (a DSN, a relay's address): a scheme, `://`, then up to a space, `;`, `,` or a quote. */
+const URL_IN_TEXT = /[A-Za-z][\w+.-]*:\/\/[^\s;,"']+/g;
+
+/** The credentials a URL writes into itself (`text`, one URL): its user and password, and the value of each query
+ *  parameter whose name says it is one (credentialNamed), each as written and decoded; none when `text` is no URL. */
+const urlCredentials = (text: string): string[] => {
+  let url: URL;
+  try {
+    url = new URL(text.trim());
+  } catch {
+    return [];
+  }
+  // A query writes a space as `+`; a user and password do not.
+  const query = url.search.slice(1).split("&").flatMap((pair) => {
+    const at = pair.indexOf("=");
+    const name = pair.slice(0, Math.max(at, 0)).replace(/\+/g, " ");
+    const value = pair.slice(at + 1);
+    return at > 0 && credentialNamed(decoded(name) ?? name) ? [value, decoded(value.replace(/\+/g, " ")) ?? value] : [];
+  });
+  return [...[url.username, url.password].flatMap((value) => [value, decoded(value) ?? value]), ...query];
+};
+
+/** The credentials a header value carries inside it: the user, password and key parameters of each URL in it
+ *  (urlCredentials: a DSN's `https://<key>@host/1`), and, outside its URLs, the value of each `name=value` pair whose
+ *  name says it is a credential (credentialNamed: a cookie's `session=<token>`, sentry's `sentry_key=<key>`), pairs
+ *  split at `;`, `&` and spaces, each as written and decoded. A pair named like no credential (`theme=dark`) is not
+ *  taken, nor a value of only `=` (a base64 credential's padding, read as a pair). */
+const innerCredentials = (value: string): string[] => [
+  ...(value.match(URL_IN_TEXT) ?? []).flatMap(urlCredentials),
+  ...value.replace(URL_IN_TEXT, " ").split(/[;&\s]+/).flatMap((pair) => {
+    const at = pair.indexOf("=");
+    if (at <= 0) return [];
+    const name = pair.slice(0, at);
+    const inner = pair.slice(at + 1).replace(/^"(.*)"$/, "$1");
+    return /[^=]/.test(inner) && credentialNamed(decoded(name) ?? name) ? [inner, decoded(inner) ?? inner] : [];
+  }),
+];
 
 /** The OTLP exporter's header values `env` names (OTEL_EXPORTER_OTLP_HEADERS and OTEL_EXPORTER_OTLP_TRACES_HEADERS: a
  *  tracing backend's key is one), at any length (keptSecrets floors them for the held list; otlpHeaderCut does not),
@@ -285,8 +335,9 @@ const credentialNamed = (name: string): boolean =>
  *  scheme (KNOWN_SCHEME), each of those without its first word (AUTH_SCHEME), the credential alone, as an error may
  *  quote it. For the held list, any other header's value is held whole, never its tail alone; for the cut (`held`
  *  false), every value is taken without any first word too, since cutting more of the tracer's own lines costs
- *  nothing. A part whose name can't be decoded is held. Commas split the variable, so a comma inside a value must be
- *  written `%2C`. */
+ *  nothing. Under any header, each credential a value carries inside it (innerCredentials: a credential-named
+ *  `name=value` pair's value, a URL's user, password and key parameters) is taken alone too. A part whose name can't
+ *  be decoded is held. Commas split the variable, so a comma inside a value must be written `%2C`. */
 export const otlpHeaderValues = (env: NodeJS.ProcessEnv, held: boolean): string[] =>
   [env.OTEL_EXPORTER_OTLP_HEADERS, env.OTEL_EXPORTER_OTLP_TRACES_HEADERS].flatMap((text) =>
     (text ?? "").split(",").flatMap((part) => {
@@ -300,29 +351,14 @@ export const otlpHeaderValues = (env: NodeJS.ProcessEnv, held: boolean): string[
       const property = written.indexOf(";");
       const forms = [written, ...(property >= 0 ? [written.slice(0, property).trim()] : [])].flatMap((value) => [value, decoded(value) ?? value]);
       const named = credentialNamed(name);
-      return forms.flatMap((value) => [value, ...(!held || named || KNOWN_SCHEME.test(value) ? [value.replace(AUTH_SCHEME, "")] : [])]);
+      return forms.flatMap((value) => [value, ...(!held || named || KNOWN_SCHEME.test(value) ? [value.replace(AUTH_SCHEME, "")] : []), ...innerCredentials(value)]);
     })).filter((value) => value.trim() !== "");
 
 /** The credentials the OTLP endpoints `env` names write into their URLs (OTEL_EXPORTER_OTLP_ENDPOINT and
- *  OTEL_EXPORTER_OTLP_TRACES_ENDPOINT): a user and password, and the value of each query parameter whose name says it is
- *  one (credentialNamed), each as written and decoded. An exporter's error may quote the URL it posted to. */
+ *  OTEL_EXPORTER_OTLP_TRACES_ENDPOINT; urlCredentials): a user and password, and the value of each query parameter
+ *  whose name says it is one, each as written and decoded. An exporter's error may quote the URL it posted to. */
 export const otlpEndpointValues = (env: NodeJS.ProcessEnv): string[] =>
-  [env.OTEL_EXPORTER_OTLP_ENDPOINT, env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT].flatMap((text) => {
-    let url: URL;
-    try {
-      url = new URL((text ?? "").trim());
-    } catch {
-      return [];
-    }
-    // A query writes a space as `+`; a user and password do not.
-    const query = url.search.slice(1).split("&").flatMap((pair) => {
-      const at = pair.indexOf("=");
-      const name = pair.slice(0, Math.max(at, 0)).replace(/\+/g, " ");
-      const value = pair.slice(at + 1);
-      return at > 0 && credentialNamed(decoded(name) ?? name) ? [value, decoded(value.replace(/\+/g, " ")) ?? value] : [];
-    });
-    return [...[url.username, url.password].flatMap((value) => [value, decoded(value) ?? value]), ...query];
-  }).filter((value) => value.trim() !== "");
+  [env.OTEL_EXPORTER_OTLP_ENDPOINT, env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT].flatMap((text) => urlCredentials(text ?? "")).filter((value) => value.trim() !== "");
 
 /** Every OTLP credential `env` names: its header values (otlpHeaderValues, a cut-only header's only when not `held`) and
  *  its endpoints' (otlpEndpointValues). */
