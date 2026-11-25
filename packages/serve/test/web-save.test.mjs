@@ -445,7 +445,7 @@ test("a slot is freed on every failing path: a refused type, an error status, a 
     }, (a) => /already holds/.test(a.refused)],
   ];
   mkdirSync(join(work, "media"), { recursive: true });
-  const unwritable = { ...ws, stat: (path) => ws.stat(path), write: async () => { throw new Error("the disk is full"); } };
+  const unwritable = { ...ws, stat: (path) => ws.stat(path), writeNew: async () => { throw new Error("the disk is full"); } };
   for (const [name, path, response, expected] of failing) {
     const net = held();
     const saving = webSave({ url: "https://cdn.example/f", path }, ws, { ...net, slots });
