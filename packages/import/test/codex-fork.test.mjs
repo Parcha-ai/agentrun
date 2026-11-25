@@ -198,16 +198,21 @@ test("parseHome with a state: a fork whose copy was still open when the last pas
   assert.equal(totals(again).find((line) => line.id === FORK).calls, 1, "the fork's own request alone");
 });
 
-/** How many times `file` is read from its start (lines.ts streams a read's body through createReadStream) during `run`. */
-async function readsFromStart(t, file, run) {
-  const fs = createRequire(import.meta.url)("node:fs");
-  const stream = t.mock.method(fs, "createReadStream");
+/** How many times the line reader reads `file` during a pass with `state`: each of its reads opens the file once
+ *  (lines.ts readLines), whoever asked for it, so a read made inside the Codex reader counts as one parseHome made. */
+async function readsOf(t, home, state, file) {
+  const fsp = createRequire(import.meta.url)("node:fs/promises");
+  const open = fsp.open;
+  let reads = 0;
+  const mocked = t.mock.method(fsp, "open", function (path, ...args) {
+    if (path === file && /\breadLines\b/.test(new Error().stack ?? "")) reads += 1;
+    return open.call(this, path, ...args);
+  });
   syncBuiltinESMExports();
   try {
-    const out = await run();
-    return { out, reads: stream.mock.calls.filter((call) => call.arguments[0] === file && call.arguments[1]?.fd !== undefined && call.arguments[1].start === 0).length };
+    return { out: await pass(home, state), reads };
   } finally {
-    stream.mock.restore();
+    mocked.mock.restore();
     syncBuiltinESMExports();
   }
 }
@@ -233,7 +238,7 @@ for (const how of ["a new file in its place", "truncated and written again"]) {
       const text = rewritten(head);
       assert.equal(Buffer.byteLength(text), (await stat(file)).size, "the same length");
       await rewrite(file, text);
-      const { out, reads } = await readsFromStart(t, file, () => pass(home, state));
+      const { out, reads } = await readsOf(t, home, state, file);
       return { again: totals(out), fresh: totals(await pass(home)), reads };
     };
     const fork = await scenario(meta(FORK, 20, { forked_from_id: PARENT }));
@@ -242,7 +247,8 @@ for (const how of ["a new file in its place", "truncated and written again"]) {
     assert.deepEqual(fork.again.find((line) => line.id === FORK).tokens, { input: 9, output: 4, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0 });
     // A rollout that is no fork, rewritten the same way: what any reader that starts over costs.
     const plain = await scenario(meta(CHILD.replace(/c$/, "f"), 20));
-    assert.equal(fork.reads, plain.reads, "a fork that starts over is read from its start as often as any rollout that does");
+    assert.ok(plain.reads > 0, "the probe sees the reads");
+    assert.equal(fork.reads, plain.reads, "a fork that starts over is read as often as any rollout that does");
   });
 }
 
@@ -259,4 +265,32 @@ test("a fork rewritten in place, read from its cursor, starts over with its copy
   assert.equal(next.resumed, false);
   assert.equal(next.sessions[0].requests.length, (await READERS.codex.read({ file })).sessions[0].requests.length);
   assert.equal(next.sessions[0].requests.length, 2, "the fork's two own requests, the copy left to the parent");
+});
+
+test("parseHome with a state: a fork's parent restored, or removed, between passes totals as a fresh pass", async (t) => {
+  for (const how of ["restored", "removed"]) {
+    const home = await tempHome(t);
+    const parent = rollout(home, PARENT);
+    if (how === "removed") await writeJsonl(parent, parentLines());
+    await writeJsonl(rollout(home, FORK), [meta(FORK, 20, { forked_from_id: PARENT }), ...replayed(), ...ownTurn()]);
+    const state = {};
+    await pass(home, state);
+    // The fork unchanged; its parent back from an archive, or archived.
+    if (how === "restored") await writeJsonl(parent, parentLines());
+    else await rm(parent);
+    const again = await pass(home, state);
+    assert.deepEqual(totals(again), totals(await pass(home)), how);
+    assert.equal(totals(again).find((line) => line.id === FORK).calls, how === "restored" ? 1 : 4, `${how}: the copy counts in one place`);
+  }
+});
+
+test("a fork's parent with a line longer than the read's maxLine ends the read with LineTooLong, before the line is parsed", async (t) => {
+  const home = await tempHome(t);
+  const [head, ...rest] = parentLines();
+  const long = { timestamp: at(0), type: "event_msg", payload: { type: "agent_reasoning", text: "x".repeat(8_000) } };
+  await writeJsonl(rollout(home, PARENT), [head, long, ...rest]);
+  const file = await writeJsonl(rollout(home, FORK), [meta(FORK, 20, { forked_from_id: PARENT }), ...replayed(), ...ownTurn()]);
+  await assert.rejects(READERS.codex.read({ file }, undefined, { maxLine: 4_000 }), { name: "LineTooLong" });
+  // With no bound (parseHome's own thread), the parent is read and the copy is its.
+  assert.equal((await READERS.codex.read({ file })).sessions[0].requests.length, 1);
 });

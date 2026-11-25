@@ -1,10 +1,8 @@
 // Codex: ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl. A subagent's thread names its parent in its session_meta.
-import { createReadStream } from "node:fs";
 import { open, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import { createInterface } from "node:readline";
 import { addRequest, setUsage } from "../counts.js";
-import { type FileCursor, type LineSource, lineReader, type ReadContext, resumes } from "../lines.js";
+import { type FileCursor, type LineSource, LineTooLong, lineReader, type ReadContext, resumes } from "../lines.js";
 import { entries, type Locator, type Reader, rememberUser } from "../reader.js";
 import { argsOf, effortOf, isObject, str, textOf, timeOf } from "../text.js";
 import type { Answer, Turn } from "../types.js";
@@ -20,6 +18,7 @@ import { normalizeUsage } from "../usage.js";
 type Own = {
   forkedFrom?: Set<string>;
   replay?: Replay | null;
+  looked?: Looked;
   events: boolean;
   held: { index: number; turn: Turn }[];
   open?: Answer;
@@ -238,6 +237,8 @@ function readRecord(value: Record<string, unknown>, at: number, { state, keep, a
  *  the last skipped one left; `open`, whether the file ended before its copy's end could be known, so a read of more of it
  *  finds the copy again (codex.read). */
 type Replay = { skip: [number, number][]; until: number; seen: number; total?: string; open: boolean };
+/** The parent a fork's read looked for, and the rollout it read for it: null when there was none to read. */
+type Looked = { parent: string; path: string | null };
 
 const usageFields = ["input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens", "reasoning_output_tokens", "total_tokens"] as const;
 
@@ -282,45 +283,78 @@ function copiedLength(parent: string[], child: string[]): number {
   return Math.max(prefix, matched);
 }
 
-/** A rollout's lines, parsed, each record that is a JSON object. Its file is closed however the reading stops. */
-async function* recordsOf(file: string): AsyncGenerator<Record<string, unknown>> {
-  const input = createReadStream(file, { highWaterMark: 1 << 20 });
-  const lines = createInterface({ input, crlfDelay: Number.POSITIVE_INFINITY });
-  try {
-    for await (const line of lines) {
-      let value: unknown;
-      try {
-        value = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      if (isObject(value)) yield value;
+/** A rollout's lines, parsed, each record that is a JSON object. A line longer than `maxLine` bytes ends the reading with
+ *  LineTooLong before it is decoded, as the line reader's does (a read pool's worker bounds its heap so). Its file is
+ *  closed however the reading stops. */
+async function* recordsOf(file: string, maxLine = Number.POSITIVE_INFINITY): AsyncGenerator<Record<string, unknown>> {
+  const handle = await open(file, "r");
+  const parsed = (bytes: Buffer): Record<string, unknown> | undefined => {
+    try {
+      const value: unknown = JSON.parse(bytes.toString("utf8"));
+      return isObject(value) ? value : undefined;
+    } catch {
+      return undefined;
     }
+  };
+  try {
+    const buffer = Buffer.allocUnsafe(1 << 20);
+    let rest: Buffer[] = [];
+    let restBytes = 0;
+    let offset = 0;
+    for (let at = 0; ; ) {
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, at);
+      if (!bytesRead) break;
+      at += bytesRead;
+      const chunk = buffer.subarray(0, bytesRead);
+      let from = 0;
+      for (let nl = chunk.indexOf(10); nl !== -1; nl = chunk.indexOf(10, from)) {
+        if (restBytes + nl - from > maxLine) throw new LineTooLong(file, offset, restBytes + nl - from, maxLine);
+        const whole = rest.length ? Buffer.concat([...rest, chunk.subarray(from, nl)]) : chunk.subarray(from, nl);
+        rest = [];
+        restBytes = 0;
+        offset += whole.length + 1;
+        from = nl + 1;
+        const value = parsed(whole);
+        if (value) yield value;
+      }
+      if (from < chunk.length) {
+        restBytes += chunk.length - from;
+        if (restBytes > maxLine) throw new LineTooLong(file, offset, restBytes, maxLine);
+        // A copy: the buffer is read into again.
+        rest.push(Buffer.from(chunk.subarray(from)));
+      }
+    }
+    const last = rest.length ? parsed(Buffer.concat(rest)) : undefined;
+    if (last) yield last;
   } finally {
-    lines.close();
-    input.destroy();
+    await handle.close();
   }
 }
 
 /** A rollout's first line as a JSON object, read alone (up to 16 MiB), so a rollout that is no fork is not streamed for
- *  it. */
-async function firstRecord(file: string): Promise<Record<string, unknown> | undefined> {
+ *  it. Longer than `maxLine` bytes, it ends the read with LineTooLong before it is decoded. */
+async function firstRecord(file: string, maxLine = Number.POSITIVE_INFINITY): Promise<Record<string, unknown> | undefined> {
   const handle = await open(file, "r");
   try {
     const chunks: Buffer[] = [];
+    let bytes = 0;
     for (let position = 0; position < 16 * 1024 * 1024; ) {
       const chunk = Buffer.alloc(64 * 1024);
       const { bytesRead } = await handle.read(chunk, 0, chunk.length, position);
       if (bytesRead === 0) break;
       const end = chunk.subarray(0, bytesRead).indexOf(10);
       chunks.push(chunk.subarray(0, end === -1 ? bytesRead : end));
+      bytes += end === -1 ? bytesRead : end;
+      if (bytes > maxLine) throw new LineTooLong(file, 0, bytes, maxLine);
       if (end !== -1) break;
       position += bytesRead;
     }
-    const value: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-    return isObject(value) ? value : undefined;
-  } catch {
-    return undefined;
+    try {
+      const value: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      return isObject(value) ? value : undefined;
+    } catch {
+      return undefined;
+    }
   } finally {
     await handle.close();
   }
@@ -329,14 +363,14 @@ async function firstRecord(file: string): Promise<Record<string, unknown> | unde
 /** The parent's usages, each with its time, as its rollout holds them: the last few read kept, as a parent's forks are
  *  read one after another. */
 const parentUsages = new Map<string, { mark: string; uses: string[]; ats: (number | undefined)[] }>();
-async function usagesOf(file: string): Promise<{ uses: string[]; ats: (number | undefined)[] }> {
+async function usagesOf(file: string, maxLine?: number): Promise<{ uses: string[]; ats: (number | undefined)[] }> {
   const stats = await stat(file);
   const mark = `${stats.size}:${stats.mtimeMs}`;
   const kept = parentUsages.get(file);
   if (kept?.mark === mark) return kept;
   const out = { mark, uses: [] as string[], ats: [] as (number | undefined)[] };
   const last: { total?: string } = {};
-  for await (const value of recordsOf(file)) {
+  for await (const value of recordsOf(file, maxLine)) {
     const use = usageOf(value, last);
     if (use === undefined) continue;
     out.uses.push(use);
@@ -393,22 +427,31 @@ async function parentFile(file: string, parent: string, lookups?: Map<string, un
   return (await index).get(parent)?.find((path) => path !== file);
 }
 
+/** The rollout parentFile finds for `parent` now, when it is there to read; else null. */
+async function parentNow(file: string, parent: string, lookups?: Map<string, unknown>): Promise<string | null> {
+  const path = await parentFile(file, parent, lookups);
+  return path ? stat(path).then(() => path, () => null) : null;
+}
+
 /** The parent's history `file` copied in, when it is a fork that did: read before the fork's own lines, so its records
- *  read as copies (record). */
-async function forkReplay(file: string, lookups?: Map<string, unknown>): Promise<Replay | null> {
-  const first = await firstRecord(file);
+ *  read as copies (record). And the parent it looked for, when it did, so a read going on from its cursor can tell
+ *  whether that parent has come or gone since. Lines past `maxLine` bytes, in the fork or its parent, end it with
+ *  LineTooLong. */
+async function forkReplay(file: string, lookups?: Map<string, unknown>, maxLine?: number): Promise<{ replay: Replay | null; looked?: Looked }> {
+  const first = await firstRecord(file, maxLine);
   const payload = isObject(first?.payload) ? first.payload : undefined;
-  if (first?.type !== "session_meta" || !payload) return null;
+  if (first?.type !== "session_meta" || !payload) return { replay: null };
   const own = str(payload.id)?.trim() || undefined;
   const spawn = isObject(payload.source) && isObject(payload.source.subagent) && isObject(payload.source.subagent.thread_spawn) ? payload.source.subagent.thread_spawn : undefined;
   const spawnedBy = str(spawn?.parent_thread_id);
   const parent = str(payload.forked_from_id) ?? spawnedBy;
   // A rollout that names its history's base reads it by reference, copying none; one named <thread>_<rollout> whose
   // id is the thread goes on with that thread, as no fork.
-  if (!parent || payload.history_base !== undefined) return null;
+  if (!parent || payload.history_base !== undefined) return { replay: null };
   const named = /-([0-9a-f-]{36})_([0-9a-f-]{36})\.jsonl$/i.exec(basename(file));
-  if (named && named[1] !== named[2] && own === named[1]) return null;
-  const records = recordsOf(file);
+  if (named && named[1] !== named[2] && own === named[1]) return { replay: null };
+  const records = recordsOf(file, maxLine);
+  let looked: Looked | undefined;
   try {
     await records.next();
     const forkedAt = timeOf(first.timestamp);
@@ -418,7 +461,13 @@ async function forkReplay(file: string, lookups?: Map<string, unknown>): Promise
       const path = await parentFile(file, parent, lookups);
       // A parent gone or unreadable by the time it is read (the walk's index is the import's, listed once) is one the
       // import does not count: the fork's copy is the only count of that history, as when there is no parent.
-      const parentRead = path ? await usagesOf(path).catch(() => undefined) : undefined;
+      const parentRead = path
+        ? await usagesOf(path, maxLine).catch((error: unknown) => {
+            if (error instanceof LineTooLong) throw error;
+            return undefined;
+          })
+        : undefined;
+      looked = { parent, path: parentRead ? path! : null };
       if (!parentRead) return (stream = []);
       const { uses, ats } = parentRead;
       const cut = forkedAt === undefined ? -1 : ats.findIndex((t) => t !== undefined && t > forkedAt);
@@ -475,8 +524,9 @@ async function forkReplay(file: string, lookups?: Map<string, unknown>): Promise
       if (copied) skip.push([0, copied]);
     }
     if (foreign !== undefined && boundary !== undefined && boundary > foreign) skip.push([foreign, boundary]);
-    if (!skip.length && !ended) return null;
-    return { skip, until: skip.length ? Math.max(...skip.map(([, to]) => to)) - 1 : -1, seen: 0, open: ended };
+    const found = looked ? { looked } : {};
+    if (!skip.length && !ended) return { replay: null, ...found };
+    return { replay: { skip, until: skip.length ? Math.max(...skip.map(([, to]) => to)) - 1 : -1, seen: 0, open: ended }, ...found };
   } finally {
     await records.return(undefined);
   }
@@ -593,12 +643,15 @@ export const codex: Reader<"codex", FileCursor> = {
   parentOf,
   async read(locator, cursor, options) {
     const fresh = async () => {
-      const replay = await forkReplay(locator.file, options?.lookups);
-      return replay ? lineReader({ ...spec, start: () => ({ ...spec.start(), replay }) }).read(locator, undefined, options) : lines.read(locator, undefined, options);
+      const { replay, looked } = await forkReplay(locator.file, options?.lookups, options?.maxLine);
+      return replay || looked ? lineReader({ ...spec, start: () => ({ ...spec.start(), replay, ...(looked ? { looked } : {}) }) }).read(locator, undefined, options) : lines.read(locator, undefined, options);
     };
     if (!cursor || !(await resumes(spec, locator.file, cursor, options))) return fresh();
-    const copyOpen = (cursor.state as { own?: Own }).own?.replay?.open === true;
-    if (copyOpen && (await stat(locator.file)).size > cursor.offset) return fresh();
+    const own = (cursor.state as { own?: Own }).own;
+    if (own?.replay?.open === true && (await stat(locator.file)).size > cursor.offset) return fresh();
+    // The parent its last read looked for come or gone since (restored from an archive, archived): what the fork copied
+    // counts in one place again, as a read from its start would have it.
+    if (own?.looked && (await parentNow(locator.file, own.looked.parent, options?.lookups)) !== own.looked.path) return fresh();
     // Rewritten between the check and this read, the line reader starts over without the copy and says so (resumed
     // false): the caller reads again from nothing (parseHome), and that read is fresh.
     return lines.read(locator, cursor, options);
