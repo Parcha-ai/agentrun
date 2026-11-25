@@ -398,7 +398,7 @@ test("the server's relay hop carries a paired box's token only as its SHA-256: t
   assert.ok(sent[LIVE_PROOF_HEADER], "with the proof that binds it");
 });
 
-test("a relay refusal the box is answered names no internal host or port: the 503's words and headers carry only the box, the run and the runner, while the server's line keeps where it dialed", { timeout: 60_000 }, async (t) => {
+test("a relay refusal the box is answered names no internal host or port: the 503's words and headers carry only the box, the run and the runner, and so does the box's hold note (what GET /v2/computers shows and the waiting claim fails with), while the server's line keeps where it dialed", { timeout: 60_000 }, async (t) => {
   const { data, lines, api, address } = await relayServer(t);
   const side = await runnerSide(t, data);
   const { computer, token } = await pairedBox(api, address);
@@ -416,6 +416,9 @@ test("a relay refusal the box is answered names no internal host or port: the 50
   assert.equal(refused.body, `${NAME} (${computer}) for run run-c: runner runner-c, which holds it, did not answer`);
   const said = `${refused.body}\n${JSON.stringify(refused.headers)}`;
   assert.doesNotMatch(said, new RegExp(`127\\.0\\.0\\.1|:${port}\\b|ECONNREFUSED`), `no host, port or socket error text: ${said}`);
+  const note = String(pairedRow((await api("GET", "/computers")).body, computer)?.hold_note);
+  assert.doesNotMatch(note, new RegExp(`127\\.0\\.0\\.1|:${port}\\b|ECONNREFUSED`), `the hold note names no host, port or socket error text: ${note}`);
+  assert.equal(note, refused.body, "the hold note says what the box was told");
   await until(async () => lines.find((line) => line.includes("computer_relay_refused") && line.includes("run-c")), Boolean, "the server's refusal line");
   assert.match(lines.find((line) => line.includes("computer_relay_refused") && line.includes("run-c")), new RegExp(`127\\.0\\.0\\.1:${port}`), "the server's line keeps where it dialed");
 });
