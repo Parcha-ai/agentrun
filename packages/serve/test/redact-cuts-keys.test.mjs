@@ -3,6 +3,9 @@
 // for one run, or one store (one owner), is served to another; and only what a reader is shown is kept, by digest,
 // never a text the run wrote.
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
@@ -11,7 +14,7 @@ import { storeOn, T0 } from "./store-helpers.mjs";
 
 const { servedTimelineRows } = await import("../dist/run-timeline-served.js");
 const { timelineOverStore } = await import("../dist/store-view.js");
-const { cutsKeptOf, rowCutsOnce, servedSince } = await import("../dist/store-reads/journal.js");
+const { cutBudget, cutsKeptOf, forgetServedAnswers, rowCutsOnce, servedSince } = await import("../dist/store-reads/journal.js");
 
 // Held values of 24 characters in no secret's shape, made at runtime.
 const KEY = ["Zq8V", "bN3x", "LmT6", "pR2w", "Yk9H", "sD4f"].join("");
@@ -157,6 +160,14 @@ test("texts and held values that differ only in a lone surrogate are kept apart:
     assert.equal(cut, `note ${lone[i]} [redacted]`, `text ${i} is cut as itself, never as another's kept cut`);
     assert.equal(held, withheldWhole(text, [KEY]));
   }
+  // What was kept is a copy of each cut (no slice of the text it was cut of), its lone surrogates as written.
+  const plain = lone.map((s) => `plain ${s} words`);
+  for (const text of plain) redact(text);
+  for (const [i, text] of plain.entries()) {
+    const before = cutPasses.count;
+    assert.equal(redact(text), text, `kept text ${i} reads back unit for unit`);
+    assert.equal(cutPasses.count - before, 0, `kept text ${i} is read from what was kept`);
+  }
   // The held set's key is the values' JSON, where a lone surrogate is escaped as written: two sets that differ only in
   // one miss each other.
   const cutOf = (values) => {
@@ -166,4 +177,47 @@ test("texts and held values that differ only in a lone surrogate are kept apart:
   };
   assert.deepEqual(cutOf([`${KEY}\ud800`]), { out: `said [redacted] and ${KEY}\ud801`, passes: 1 });
   assert.deepEqual(cutOf([`${KEY}\ud801`]), { out: `said ${KEY}\ud800 and [redacted]`, passes: 1 }, "a set that differs only in a lone surrogate is its own set");
+});
+
+test("what is kept costs the heap what is counted: no kept cut holds the raw text it was cut of, or the values it was cut by", { timeout: 120_000 }, async () => {
+  // A child with --expose-gc (fixtures/cut-heap-child.mjs): 100 outputs of about 1 MiB, each cut to its head, and 12 value
+  // sets each holding a value of 512 KiB; collected, the heap grows by no more than a small multiple of what the cache
+  // counts, and a fixed allowance for the rest of the child.
+  const child = fileURLToPath(new URL("./fixtures/cut-heap-child.mjs", import.meta.url));
+  const { stdout } = await promisify(execFile)(process.execPath, ["--expose-gc", child], { maxBuffer: 1 << 20 });
+  const ALLOWANCE = 4 * 1024 * 1024;
+  for (const { name, growth, counted, texts } of JSON.parse(stdout)) {
+    assert.ok(texts > 0, `${name}: the cache kept cuts`);
+    assert.ok(growth <= 3 * counted + ALLOWANCE, `${name}: the heap grew ${(growth / 1048576).toFixed(1)} MiB for ${texts} kept cuts counted at ${(counted / 1024).toFixed(0)} KiB (at most 3x that and ${ALLOWANCE / 1048576} MiB)`);
+  }
+});
+
+test("past the bound the least recently used cut goes first: a cut read again is kept over one only written", (t) => {
+  const store = {};
+  store.origin = store;
+  const budget = cutBudget.bytes;
+  t.after(() => { cutBudget.bytes = budget; });
+  const texts = Array.from({ length: 6 }, (_, i) => `row ${i} plain words`);
+  const passesOf = (values, text) => {
+    const before = cutPasses.count;
+    rowCutsOnce(store, "run-1", { values }, servedSince(store)).redact(text);
+    return cutPasses.count - before;
+  };
+  // Every text costs the same: room for four.
+  assert.equal(passesOf([KEY], texts[0]), 1);
+  const each = cutsKeptOf(store).bytes;
+  cutBudget.bytes = 4 * each + Math.floor(each / 2);
+  for (const text of texts.slice(1, 4)) assert.equal(passesOf([KEY], text), 1);
+  assert.equal(passesOf([KEY], texts[0]), 0, "row 0 read again, from what was kept");
+  assert.equal(passesOf([KEY], texts[4]), 1, "a fifth: one must go");
+  assert.equal(passesOf([KEY], texts[0]), 0, "row 0, the first written but read since, stays");
+  assert.equal(passesOf([KEY], texts[1]), 1, "row 1, the least recently used, went");
+  // Across sets: a set read again is kept over one written after it.
+  forgetServedAnswers(store, "run-1");
+  for (const text of texts.slice(0, 2)) assert.equal(passesOf([KEY], text), 1);
+  for (const text of texts.slice(2, 4)) assert.equal(passesOf([LATER], text), 1);
+  assert.equal(passesOf([KEY], texts[0]), 0, "the first set read again");
+  assert.equal(passesOf([KEY, LATER], texts[4]), 1, "a third set: one text must go");
+  assert.equal(passesOf([KEY], texts[0]), 0, "the first set, read since the second was written, keeps its row");
+  assert.equal(passesOf([LATER], texts[2]), 1, "the second set, the least recently used, lost its oldest row");
 });
