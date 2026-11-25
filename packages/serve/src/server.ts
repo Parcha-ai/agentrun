@@ -1520,7 +1520,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // not (its runners on other hosts, AGENTRUN_RUNNER_HOSTS), so the tick runs on both. It does nothing while no computer
   // is paired; with a runner beside it, nothing past its one read of the routes while no route row is there and no box
   // is relayed (computer-attach.ts tick).
-  // The ticks still running, so a failed start waits them out before its store closes.
+  // The ticks still running, so a failed start and close() wait them out before the store closes.
   const routeTicks = new Set<Promise<void>>();
   const routeTick = options.apiOnly !== true
     ? setInterval(() => {
@@ -7326,6 +7326,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // An upgraded socket is no connection closeAllConnections ends, and server.close waits for it.
     viewers.close();
     clearInterval(routeTick);
+    // A tick already running reads the store: waited out here, before the store closes below.
+    await Promise.all(routeTicks);
     await attach.close();
     await new Promise((done) => (server.close(done), server.closeAllConnections()));
     // No request is left to use a key: its last-use writes end before the store they write to closes.

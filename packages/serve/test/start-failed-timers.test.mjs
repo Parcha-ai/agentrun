@@ -4,7 +4,8 @@
 // partway through a start; a start that failed after one of the last three once left it running for the life of the
 // process, the route tick failing on the closed store every second, and the uploads' sweep was cleared only after the
 // store's close. Counted through the process's own setInterval and clearInterval and the store
-// connection's close, in the order they ran, never by waiting for a tick.
+// connection's close, in the order they ran, never by waiting for a tick. A route tick still running as a failed start
+// stops, or as a server closes, is waited out before the store closes.
 import assert from "node:assert/strict";
 import { createServer } from "node:net";
 import { join } from "node:path";
@@ -100,6 +101,18 @@ test("a route tick still running as a failed start stops is waited out before it
   const lines = [];
   await intervalsOf(t, () => assert.rejects(startServe({ data, faux: FAUX, port: taken.address().port, log: (line) => void lines.push(line) }), (error) => error.code === "EADDRINUSE"), { tickAsCleared: true });
   // Its two reads, one after the other, both land before the store's close begins: neither finds the store closed.
+  await new Promise((go) => setImmediate(go));
+  assert.deepEqual(lines.filter((line) => line.includes("computer_route_tick_failed")), []);
+});
+
+test("a route tick still running as a server closes is waited out before its store closes: it never reads a closed store", async (t) => {
+  const data = join(await scratch(t), "agents");
+  await withPaired(data);
+  const lines = [];
+  await intervalsOf(t, async () => {
+    const server = await startServe({ data, faux: FAUX, port: 0, log: (line) => void lines.push(line) });
+    await server.close();
+  }, { tickAsCleared: true });
   await new Promise((go) => setImmediate(go));
   assert.deepEqual(lines.filter((line) => line.includes("computer_route_tick_failed")), []);
 });
