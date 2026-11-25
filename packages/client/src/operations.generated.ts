@@ -7891,7 +7891,149 @@ export function resources(call: Call) {
       /** Import explicitly selected, redacted past sessions without running or learning from them (POST /connectors/{connector_id}/targets/{target_id}/history). */
       importRemoteHistory: (connectorId: string, targetId: string, body: ImportRemoteHistoryBody, options?: RequestOptions): Promise<ImportRemoteHistoryResponse> => call("importRemoteHistory", [connectorId, targetId], body, undefined, options),
       /** Import a selected source reference or reserve a setup-only deployment without native execution (POST /connectors/{connector_id}/import). */
-      importRemoteTarget: (connectorId: string, body: ImportRemoteTargetBody, options?: RequestOptions): Promise<ImportRemoteTargetResponse> => call("importRemoteTarget", [connectorId], body, undefined, options),
+      importRemoteTarget: ((connectorId: string, body: ImportRemoteTargetBody, options?: RequestOptions): Promise<ImportRemoteTargetResponse> => call("importRemoteTarget", [connectorId], body, undefined, options)) as {
+        <B extends ImportRemoteTargetBody>(connectorId: string, body: B, options?: RequestOptions): Promise<B extends {
+  target_id: string;
+  name?: string;
+  target: {
+    runtime: "claude-code" | "codex";
+    project: string;
+    selector: {
+      kind: "project" | "agent" | "profile";
+      name?: string;
+    };
+    machine_id: string;
+    version: string | null;
+    model: string | null;
+    fingerprint: string;
+    configuration: Array<{
+      path: string;
+      sha256: string;
+    }>;
+    skills: Array<string>;
+    mcp_servers: Array<string>;
+    state: "needs_verification" | "needs_attention" | "ready";
+    issues: Array<string>;
+    capabilities: {
+      launch: boolean;
+      learning: boolean;
+      workflows: false;
+      approval: "native" | "unavailable";
+      usage: boolean;
+    };
+    connected: boolean;
+    verified_at?: string;
+    remote?: {
+      connector_id: string;
+      target_id: string;
+    };
+  };
+  history_only?: boolean;
+  deployment?: false;
+  cli_adoption?: {
+    connection_id: string;
+    credential_epoch: string;
+    proof: string;
+  };
+} ? {
+  agent_id: string;
+  native: {
+    runtime: "claude-code" | "codex";
+    project: string;
+    selector: {
+      kind: "project" | "agent" | "profile";
+      name?: string;
+    };
+    machine_id: string;
+    version: string | null;
+    model: string | null;
+    fingerprint: string;
+    configuration: Array<{
+      path: string;
+      sha256: string;
+    }>;
+    skills: Array<string>;
+    mcp_servers: Array<string>;
+    state: "needs_verification" | "needs_attention" | "ready";
+    issues: Array<string>;
+    capabilities: {
+      launch: boolean;
+      learning: boolean;
+      workflows: false;
+      approval: "native" | "unavailable";
+      usage: boolean;
+    };
+    connected: boolean;
+    verified_at?: string;
+    remote?: {
+      connector_id: string;
+      target_id: string;
+    };
+  };
+} : B extends {
+  target_id: string;
+  name?: string;
+  target: {
+    runtime: "claude-code" | "codex" | "pi";
+    project: string;
+    selector: {
+      kind: "project" | "agent" | "profile";
+      name?: string;
+    };
+    machine_id: string;
+    version: string | null;
+    model: string | null;
+    fingerprint: string;
+    configuration: Array<{
+      path: string;
+      sha256: string;
+    }>;
+    skills: Array<string>;
+    mcp_servers: Array<string>;
+    state: "needs_verification" | "needs_attention" | "ready";
+    issues: Array<string>;
+    capabilities: {
+      launch: boolean;
+      learning: boolean;
+      workflows: false;
+      approval: "native" | "unavailable";
+      usage: boolean;
+    };
+    sync_only: true;
+    connected?: boolean;
+  };
+  deployment: true;
+} ? {
+  agent_id: string;
+  target: {
+    runtime: "claude-code" | "codex" | "pi";
+    project: string;
+    selector: {
+      kind: "project" | "agent" | "profile";
+      name?: string;
+    };
+    machine_id: string;
+    version: string | null;
+    model: string | null;
+    fingerprint: string;
+    configuration: Array<{
+      path: string;
+      sha256: string;
+    }>;
+    skills: Array<string>;
+    mcp_servers: Array<string>;
+    state: "needs_verification" | "needs_attention" | "ready";
+    issues: Array<string>;
+    capabilities: {
+      launch: boolean;
+      learning: boolean;
+      workflows: false;
+      approval: "native" | "unavailable";
+      usage: boolean;
+    };
+  };
+} : ImportRemoteTargetResponse>;
+      },
       /** List remote source machines and imported agent targets (GET /connectors). */
       listRemoteConnectors: (options?: RequestOptions): Promise<ListRemoteConnectorsResponse> => call("listRemoteConnectors", [], undefined, undefined, options),
       /** Renew active source leases and claim one command without replay (POST /connectors/{connector_id}/poll). */

@@ -265,13 +265,17 @@ test("a missing or incompatible destination capability refuses before reading th
   }
 });
 
-test("a changed source grant retains pending bytes, and a different serving snapshot is never reported deployed", async t => {
+test("a resumed source grant requeues the confirmed snapshot without changing identity, and a different serving snapshot is never reported deployed", async t => {
   const local = setup(t), peer = destination({ loseUpload: true });
   await assert.rejects(deployCapturedSetup(local.ctx, captured(), target, { fetch: peer.fetch }), e => e.code === 1);
   peer.state.generation = "another-generation";
-  await assert.rejects(deployCapturedSetup(local.ctx, captured(), target, { fetch: peer.fetch }), e => e.code === 2);
-  assert.equal(peer.seen.filter(x => x.path.endsWith("/sync")).length, 1);
-  assert.equal(peer.seen.some(x => x.path.endsWith("/move")), false);
+  assert.equal(await deployCapturedSetup(local.ctx, captured(), target, { fetch: peer.fetch }), 0);
+  const uploads = peer.seen.filter(x => x.path.endsWith("/sync"));
+  assert.equal(uploads.length, 2);
+  assert.equal(uploads[1].body.generation, "another-generation");
+  assert.equal(uploads[1].body.sequence, 1);
+  assert.deepEqual(uploads[1].body.snapshot, snapshot());
+  assert.equal(peer.seen.filter(x => x.path.endsWith("/import")).length, 1, "the resumed grant keeps the connected agent identity");
   const stale = setup(t), stalePeer = destination({ staleCurrent: true });
   await assert.rejects(deployCapturedSetup(stale.ctx, captured(), target, { fetch: stalePeer.fetch }), e => e.code === 1);
   assert.equal(stale.output().out, "");

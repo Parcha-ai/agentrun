@@ -214,6 +214,10 @@ export function operationsOf(doc) {
         },
         answers: Object.entries(op.responses ?? {}).filter(([status]) => /^2/.test(status)).flatMap(([, response]) => Object.keys(deref(doc, response)?.content ?? {})),
         answer: answerOf(doc, op),
+        // A request union whose response union has the same semantic branches can name the response branch for each
+        // request branch. The TypeScript client returns the narrower answer for a branch-shaped body and the union
+        // answer for a union body.
+        clientResponseVariants: op['x-agentrun-client-response-variants'],
         // It also documents 204 (no body): a client's answer is the body or nothing, never the body alone.
         ...(Object.hasOwn(op.responses ?? {}, '204') ? { noContent: true } : {}),
         // The headers a success answers with, as the document declares them (ETag, Location): a client returns the ones

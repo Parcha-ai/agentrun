@@ -37,6 +37,7 @@ test('remote target deployment keeps the established import flags on its native 
     { name: 'name', type: 'string', required: false },
     { name: 'history_only', type: 'boolean', required: false },
   ]);
+  assert.deepEqual(operation[0].clientResponseVariants, [0, 1], 'the client keeps each request variant tied to its response variant');
 });
 
 test('object alternatives expose only compatible flags, union literals, and require only common fields', () => {

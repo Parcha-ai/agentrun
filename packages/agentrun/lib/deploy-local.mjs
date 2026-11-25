@@ -297,8 +297,15 @@ export async function deployCapturedSetup(ctx, captured, target, { fetch: fetche
     if (!grantOK(grant)) throw ctx.cli.fail(1, "The destination did not confirm this exact source's setup grant.");
     if (!grant.enabled) return blocked(ctx, target, { state: "paused", blockers: [{ code: "sync_paused", message: "Source sync is paused in the console. Resume it there before deploying." }] }, state.agent_id, wire.scrub);
     let pending = held.pending();
-    if (pending && (pending.generation !== grant.generation || canonical(pending.snapshot?.source) !== canonical(source)
-      || !Number.isSafeInteger(pending.sequence) || pending.sequence < 0 || !DIGEST.test(pending.snapshot?.digest))) throw ctx.cli.fail(2, "The pending snapshot belongs to a different source grant or is invalid. It was retained for review.");
+    if (pending && (canonical(pending.snapshot?.source) !== canonical(source) || !Number.isSafeInteger(pending.sequence)
+      || pending.sequence < 0 || !DIGEST.test(pending.snapshot?.digest))) throw ctx.cli.fail(2, "The pending snapshot belongs to a different source or is invalid. It was retained for review.");
+    // Pausing and resuming source sync creates a new grant generation. The confirmed grant above still owns this agent
+    // and exact source, so replace the stale request atomically with the snapshot this command just captured and the
+    // person confirmed. No request from the old grant is replayed.
+    if (pending && pending.generation !== grant.generation) {
+      if (grant.sequence >= Number.MAX_SAFE_INTEGER - 1) throw ctx.cli.fail(2, "The source sequence is exhausted; its journal was preserved.");
+      pending = { generation: grant.generation, sequence: grant.sequence + 1, snapshot }; held.queue(pending);
+    }
     for (let attempt = 0; attempt < 2; attempt++) {
       if (!pending && grant.snapshot === snapshot.digest && grant.attempt?.digest === snapshot.digest) break;
       if (!pending) {
