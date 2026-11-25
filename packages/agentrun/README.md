@@ -26,10 +26,12 @@ It downloads a Node.js from nodejs.org: the newest release on the major line of 
 later security releases come with the next install. It checks the download against that release's `SHASUMS256.txt`
 and installs it and AgentRun under `~/.agentrun` (`node/`, `lib/`, `bin/agentrun`). Any other Node, nvm or Homebrew is
 left alone, and nothing needs sudo. When no line in your shell's startup file puts `~/.agentrun/bin` on `PATH`, it adds
-one and says so. Then it starts AgentRun as a service of your user, a LaunchAgent on macOS or a systemd user unit on
-Linux, which starts again at login and after a crash and logs to `~/.agentrun/logs/agentrun.log`. Where there is no
-service manager (a container, say), it starts AgentRun in the background, logging to the same file. It runs until the
-machine or container stops, and `agentrun stop` stops it (a SIGTERM, then a SIGKILL to the launcher and its server
+one and says so. Then it starts AgentRun. On a terminal it first asks whether to make it a service of your user, a
+LaunchAgent on macOS or a systemd user unit on Linux, which starts again at login and after a crash and logs to
+`~/.agentrun/logs/agentrun.log`. The answer is No unless you say yes, and then AgentRun runs in the background, logging
+to the same file. With no terminal to ask on, or its output captured (CI, a script, an agent's shell), it installs the
+service without asking; `--service` and `--no-service` choose without the question. Where there is no service manager (a
+container, say), it starts AgentRun in the background. In the background it runs until the machine or container stops, and `agentrun stop` stops it (a SIGTERM, then a SIGKILL to the launcher and its server
 after 45 seconds). Either way the installer returns once AgentRun answers, and prints its address. `sh -s -- --no-start`
 installs only, `--version V` installs another version, `--node-version V` installs that Node.js (at least the floor),
 and `--service` fails where there is no service manager. Running it again upgrades, or installs an older version, and

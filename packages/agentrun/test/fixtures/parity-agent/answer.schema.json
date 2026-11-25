@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "answer.schema.json",
+  "title": "Digest or triage",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["kind", "summary", "sources"],
+  "properties": {
+    "kind": { "type": "string", "enum": ["digest", "triage"], "description": "which skill wrote the answer" },
+    "summary": { "type": "string", "description": "the digest, or what the event is and what to do about it, in at most five lines" },
+    "sources": { "type": "array", "items": { "type": "string" }, "description": "where each fact came from: a URL, a file path or \"event\"" }
+  }
+}

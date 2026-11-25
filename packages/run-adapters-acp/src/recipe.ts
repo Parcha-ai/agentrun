@@ -17,8 +17,9 @@ export type AcpRefusal = { readonly says: string; readonly code: string; readonl
 export const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:/=,[\]-]{0,199}$/;
 /** A refusal's code: capitals, digits and `_`. */
 const CODE = /^[A-Z][A-Z0-9_]{1,63}$/;
-/** A sign-in method's id as an agent lists one in authMethods (`gemini-api-key`). */
-const AUTH_METHOD = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+/** A sign-in method's id as an agent lists one in authMethods (`gemini-api-key`): the one definition, a serve recipe's
+ *  keyMethod included. */
+export const AUTH_METHOD = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 export interface AcpRecipe {
   /** The harness's id: the adapter's. */

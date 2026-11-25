@@ -168,6 +168,9 @@ export function provenFor(req: Pick<IncomingMessage, "headers">, live: Pick<Runn
 /** How far a relay's proof's time may be from the runner's clock: the one hop's time, and no more. */
 export const RELAY_PROOF_MS = 10_000;
 
+/** How long the server waits for a runner's attach listener to take a relayed dial. */
+export const RELAY_CONNECT_MS = 10_000;
+
 /** What a relay's proof binds: the machine's token (its SHA-256), the runner its row names, and that runner's
  *  incarnation. A viewer's id has no newline, so no relay subject is ever a viewer's. */
 export type RelayTo = { readonly tokenSha256: string; readonly runner: string; readonly incarnation: string };
