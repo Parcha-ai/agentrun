@@ -550,11 +550,16 @@ one off.
 ## Sandbox
 
 A sandbox agent's `bash` runs in a box, a machine apart from this server. Docker is the default box and the only one offered
-with no setup: a Docker container made for each run, which binds the run's `work/` and nothing else. A Daytona or Modal box
-runs on a computer from that provider, offered once `AGENTRUN_BOXES` lists it and the keys its computer provider needs are
-set (the environment, or Settings → Computers). No box holds a key. A Docker box on Linux reaches the package registries
-and GitHub through a proxy, and nothing else; so does a Daytona or Modal box, through the egress proxy its computer's
-init starts, and capabilities say so in its `places.boxes` entry. Its `read`, `write` and `edit` work on that same `work/`: on this server, where the box binds it and this server
+with no setup: a Docker container made for each run, which binds the run's `work/` and nothing else. Every other provider
+whose sandbox can hold the run's folder is a box too: `daytona`, `modal`, `e2b`, `agent37`, `morph`, `cloudflare`, `fly`,
+`boxd` and `groundbox`. Such a box runs on a sandbox computer from that provider, offered once `AGENTRUN_BOXES` lists it
+and the keys its computer provider needs are set (the environment, or Settings → Computers): `AGENTRUN_BOXES=docker,e2b`
+with `E2B_API_KEY` set offers both. A box is a provider that serves a sandbox, takes the run's folder (a bind, an Archil
+mount or a synced folder), starts with no image named and keeps to the allow-list or has no network; Orgo (desktops), the
+phone, the hosted browsers and smol cloud (whose disk sits where the folder would) are not. No box holds a key. A Docker
+box on Linux reaches the package registries and GitHub through a proxy, and nothing else; so does a vendor's box, through
+the egress proxy its computer's init starts, and capabilities say so in its `places.boxes` entry (`none` for boxd, whose
+computers have no network). Its `read`, `write` and `edit` work on that same `work/`: on this server, where the box binds it and this server
 holds directory handles (Docker on Linux), else in the box. The agent's loop, its log, its model calls and every key stay
 on the server. An agent says so in its [place](#place); the server says which boxes it has (`places.boxes` in its capabilities); [a run in a Docker
 box](#a-run-in-a-docker-box) is what the container gets; [the box's image](#the-boxs-image) is what it starts from.
@@ -956,9 +961,13 @@ the run's end with what is on it. `computer_screenshot`'s `save_as` (a path rela
 saves the screenshot into the run's files through the run's own file writer, on any computer; a path outside the folder
 is refused in words before the computer is asked. A screenshot with `save_as` is a file written, so `write`'s setting holds
 it too, after the kind's deny: the stricter decides (`write` set to deny refuses it before the computer is asked, set to
-ask puts it to a person); one with no `save_as` is held to the kind's setting alone. On a desktop or a phone the run's folder is not mounted in (one with
-`exec: false`, or a provider that mounts none), the model is told this once in the run, as the server's note, after a
-due cap wrap-up.
+ask puts it to a person); one with no `save_as` is held to the kind's setting alone. `save_as` needs `write` among the
+agent's tools: an agent not given `write` is not offered it, and the gate refuses one anyway whatever `write`'s setting
+says. A script's `computer.files.write` needs `write` among the agent's tools the same way. `save_as` is offered only
+where the gate would let a save through: not with `write` set to deny, nor set to ask on a server where no one can
+approve. On a desktop or a phone the run's folder is not mounted in (one with `exec: false`, or a provider that mounts
+none), the model is told this once in the run, as the server's note, after a due cap wrap-up; a run whose saves the
+gate would refuse is told instead that screenshots can't be saved to the run's files.
 
 A kind with no provider, a provider that does not serve the kind, or a provider whose required keys are not saved is
 refused before anything starts, in words that name the fix in Settings → Computers. A Docker computer needs a Docker
@@ -1797,10 +1806,12 @@ gateway and no restart: `GET /api/tags` for the tags, `POST /api/show` for each 
 is `ollama/<tag>` in `harnesses[].models` and `harnesses[].free_models` for pi and for every harness on a wire the
 route translates, and the console names it
 `<tag> · local (Ollama)`, on a run's page too (from the run's `tokens` usage line, `provider` `ollama` and `model` the
-tag), so a run on the default says which model it ran on. An embedding model is left out. A model pulled or an Ollama started after the server shows in capabilities
+tag), so a run on the default says which model it ran on. An embedding model is left out. A model pulled after the server shows in capabilities
 within half a minute (the listing is kept that long, and asked again behind the next answer). A down or stuck Ollama
-lists no models and slows nothing: the listing has 2 seconds in all, follows no redirect, and keeps the models shown
-before its deadline. A run never waits on the listing: one on `ollama/<tag>` asks that model's `/api/show` alone (10
+slows nothing: the listing has 2 seconds in all and follows no redirect. A listing that fails is never kept as one:
+past its deadline or with an answer of the wrong shape, the models listed before it stay; refused (Ollama is not
+running), none do. Either way Ollama is asked again behind the next answer, so an Ollama that comes back or starts
+after the server shows in the answer after that. A run never waits on the listing: one on `ollama/<tag>` asks that model's `/api/show` alone (10
 seconds), and a run on any other model, a key's default included, never asks Ollama.
 
 - Where: `OLLAMA_HOST`, read as the ollama CLI reads it. Unset, 127.0.0.1:11434, but only on one owner's own server

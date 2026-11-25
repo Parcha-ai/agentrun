@@ -23,7 +23,7 @@ import { type ClientKind, dialAt, issuerOf, LOOPBACK, MAX_PENDING, MCP_SETTINGS_
 import { type Cleanup, cleanupOf, COMPOSIO_KEY_ENV, COMPOSIO_ORIGIN, composioAccountKey, composioEnvKey, composioKeyFromEnv, composioMadeKey, type ComposioMade, composioPerRun, droppedOf, madeToWrite, recordedMade, releasedOf, storedMade } from "./composio-made.js";
 import { asking, COMPOSIO_PER_RUN, COMPOSIO_OWNERS_USER_WORDS, COMPOSIO_USER, COMPOSIO_USER_ID, composioAccount, composioAccountBoundWords, type ComposioAccount, type ComposioControl, composioListingAddress, composioListsAccount, composioServerId } from "./composio-preset.js";
 import { mcpSourceKey, type RecordedRow, recordedForAnother, savedByToken, sourceOf, type SourceRecord, sourceToWrite, standInGiven, storedSource, toolkitGiven } from "./mcp-sources.js";
-import { handedNoSealKey, SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
+import { SEAL_KEY_ENV, sealKeyIn } from "./tool-keys.js";
 import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN, githubMcpUrl } from "./github.js";
 import { serverGate, type ToolSettingsMap } from "./tool-plane.js";
 import { toolEffect } from "./tool-gate.js";
@@ -155,12 +155,7 @@ export class McpServersOverStore {
   constructor(private readonly store: McpServersStore, private readonly env: NodeJS.ProcessEnv, private readonly version: string, private readonly network: OAuthNetwork = systemNetwork) {
     // The server never starts without a seal key (seal-key.ts bootSealKey), so there is no keyless registry: every
     // credential is kept sealed under it.
-    const handed = env[SEAL_KEY_ENV];
-    const sealKey = sealKeyOf(handed);
-    if (!sealKey) {
-      const handedWhy = handedNoSealKey(handed);
-      throw new Error(`MCP servers' credentials are kept under the server's seal key (${SEAL_KEY_ENV}), and ${handedWhy ? `${handedWhy}: the server does not start with it` : "none was handed over: the server does not start without one"}.`);
-    }
+    const sealKey = sealKeyIn(env[SEAL_KEY_ENV], "MCP servers' credentials");
     this.sealKey = sealKey;
     this.signIns = new McpSignIns(network, pendingOverStore(store, sealKey), () => privateOAuthHosts(store));
   }
