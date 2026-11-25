@@ -314,6 +314,42 @@ test("a run's end whose mark comes late leaves a later claim's keep as that clai
   }
 });
 
+test("a run's end whose kept-row mark the store fails tries it again, and deletes the kept machine only once its row reads ending; marked on no try, that machine is left for its row's time, said in the log", { timeout: 60_000 }, async (t) => {
+  const run = await opened(t);
+  const computers = { kinds: KINDS, providers: { docker: () => run.docker.provider() } };
+  const kept = { provider: "docker", kind: "sandbox", id: "c2", name: "c2", epoch: 2, until: Date.now() + KEEP_MS, runner: "runner-a", incarnation: "inc-a" };
+  /** How many of the next marks the store fails. */
+  let fails = 0;
+  const bound = (target) => (name) => (typeof target[name] === "function" ? target[name].bind(target) : target[name]);
+  const flaky = new Proxy(run.server.settings, {
+    get: (target, name) => (name === "replaceIf" ? async (...args) => {
+      if (fails > 0) {
+        fails -= 1;
+        throw new Error("the store did not answer");
+      }
+      return target.replaceIf(...args);
+    } : bound(target)(name)),
+  });
+  const store = new Proxy(run.server, { get: (target, name) => (name === "settings" ? flaky : bound(target)(name)) });
+  for (const [failing, then] of [[2, "taken"], [Number.POSITIVE_INFINITY, "never"]]) {
+    run.docker.held.clear();
+    for (const epoch of [1, 2]) run.docker.held.set(`c${epoch}`, { ref: { id: `c${epoch}`, name: `c${epoch}` }, labels: { "agentrun.run": RUN, "agentrun.epoch": String(epoch) } });
+    await run.server.settings.put(keptKeyOf(RUN), kept);
+    fails = failing;
+    const logged = [];
+    await runEndComputers({ store, computers, log: (line) => logged.push(line), retryMs: 50 })({ runId: RUN, epoch: 3 });
+    fails = 0;
+    if (then === "taken") {
+      assert.deepEqual(await readKept(run.server.settings, RUN), { ...kept, ending: true }, "the mark, tried again, reads ending");
+      assert.deepEqual(run.docker.left(), [], "and then the kept machine is deleted with the rest");
+    } else {
+      assert.deepEqual(run.docker.left(), ["c2@2"], "a row never marked ending: its machine is left for the row's time, so no claim attaches a machine being deleted");
+      assert.deepEqual(await readKept(run.server.settings, RUN), kept, "its row as its park wrote it");
+      assert.ok(logged.some((line) => line.includes("could not be marked ending") && line.includes("the store did not answer") && line.includes("c2")), `said in the log: ${JSON.stringify(logged)}`);
+    }
+  }
+});
+
 test("a run whose only claim ends it lets its own sandbox go at its end, and the run's end asks the provider nothing more", { timeout: 120_000 }, async (t) => {
   const run = await opened(t);
   await run.start("runner-a");
