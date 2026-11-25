@@ -53,7 +53,7 @@ parentPort!.on("message", async ({ id, source, locator }: PoolAsk) => {
     },
   } as unknown as Set<string>;
   try {
-    const result = await reader.read(locator, undefined, { turns: false, totals: true, seen, maxLine });
+    const result = await reader.read(locator, undefined, { turns: false, totals: true, seen, maxLine, dropsCursor: true });
     settle();
     const counts = result.sessions.flatMap(({ counts }) => (counts ? [counts.model.buffer, counts.values.buffer, counts.has.buffer] : [])) as ArrayBuffer[];
     parentPort!.postMessage({ id, ok: true, sessions: result.sessions, mine, missed }, [...new Set([...buffers(mine), ...buffers(missed), ...counts])]);

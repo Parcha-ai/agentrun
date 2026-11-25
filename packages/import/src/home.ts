@@ -447,7 +447,7 @@ async function readSource(home: string, source: string, readers: Readers, env: E
           return made.sessions;
         }
       }
-      const result = await reader.read(locator, cursor, { turns: false, totals: true, seen }).catch((error: unknown) => void unread.push({ locator, error }));
+      const result = await reader.read(locator, cursor, { turns: false, totals: true, seen, dropsCursor: !kept }).catch((error: unknown) => void unread.push({ locator, error }));
       if (!result) {
         // A locator read before that cannot be read now gives up its cursor and the records it held, as a fresh pass
         // would hold none of them: the next pass reads it from its start. A locator that found them already read (a

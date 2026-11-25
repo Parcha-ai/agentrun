@@ -124,7 +124,7 @@ const overlay = (base: Set<string>): Set<string> => {
 };
 
 /** One session file of `spec`'s source, read from its start or from `cursor`. */
-async function readLines<S extends string, O>(spec: LineSource<S, O>, file: string, cursor: FileCursor | undefined, { turns: keep = true, totals: asked = false, seen, keepsCursor = true, maxLine = Infinity }: ReadOptions = {}): Promise<ReadResult<S, FileCursor>> {
+async function readLines<S extends string, O>(spec: LineSource<S, O>, file: string, cursor: FileCursor | undefined, { turns: keep = true, totals: asked = false, seen, keepsCursor = true, dropsCursor = false, maxLine = Infinity }: ReadOptions = {}): Promise<ReadResult<S, FileCursor>> {
   const { source } = spec;
   const totals = asked && !keep && spec.totals === true;
   const handle = await open(file, "r");
@@ -223,7 +223,7 @@ async function readLines<S extends string, O>(spec: LineSource<S, O>, file: stri
     const mark = await markOf(handle, offset);
     let session = finish(spec, file, state, context);
     if (!keep) {
-      kept = { ...kept, session: withoutText(kept.session), own: spec.forget ? spec.forget(kept.own) : kept.own, ...(kept.counts ? { counts: trimmed(kept.counts) } : {}) };
+      kept = { ...kept, session: withoutText(kept.session), own: spec.forget ? spec.forget(kept.own) : kept.own, ...(kept.counts ? { counts: dropsCursor ? kept.counts : trimmed(kept.counts) } : {}) };
       if (resumed) session = withoutText(session);
     }
     return { sessions: [{ locator: { file }, session, requests: state.answers, ...(state.counts ? { counts: state.counts } : {}) }], cursor: { source, dev: stats.dev, ino: stats.ino, offset, mark, keep, ...(totals ? { totals } : {}), state: kept as ReadState }, read, resumed };
