@@ -503,10 +503,10 @@ export interface Learning {
   /** One save, in one transaction: refused as stale unless the agent's newest version is `base`, as already done when a
    *  save with its merge key is there, and as refused when its seed is not held. */
   save(agentId: string, save: LearningSaveInput): Promise<LearningSaved>;
-  /** Run `runId`'s learning gone, every agent's: the item versions it wrote (a person's change of its text with them),
-   *  its grades, its audits, and the promotions and audits of each workflow version it wrote. Its saves stay as facts with
-   *  no text (their merge keys still taken). Idempotent. */
-  purgeRun(runId: string): Promise<void>;
+  /** Run `runId`'s learning gone from its agent `agentId`'s (no other agent's row is touched): the item versions it
+   *  wrote (a person's change of its text with them), its grades, its audits, and the promotions and audits of each
+   *  workflow version it wrote. Its saves stay as facts with no text (their merge keys still taken). Idempotent. */
+  purgeRun(agentId: string, runId: string): Promise<void>;
   /** The agent's learning gone: items, saves and records. Its runs and what they cost stay. */
   reset(agentId: string): Promise<void>;
   /** Every learning row of the agent gone, its reset's included: its delete. */

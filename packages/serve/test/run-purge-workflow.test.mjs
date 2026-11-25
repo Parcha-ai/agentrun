@@ -506,7 +506,7 @@ test("rows: a purge takes out every version of what the purged run wrote: a work
   await putLearning(store, "agent-one", { ...flow("w", "ALPHA"), "corrections.md": "- ALPHA line from the owner" }, { runId: wordRun("ALPHA") });
   await putLearning(store, "agent-one", { ...flow("y", "BRAVO"), ...flow("x", "BRAVO"), "corrections.md": "- ALPHA line from the owner\n- BRAVO line from the owner" }, { runId: wordRun("BRAVO") });
   await putLearning(store, "agent-one", flow("x", "CHARLIE"), { runId: wordRun("CHARLIE") });
-  await store.learning.purgeRun(wordRun("BRAVO"));
+  await store.learning.purgeRun("agent-one", wordRun("BRAVO"));
   assert.doesNotMatch(await learningText(store, "agent-one"), /BRAVO/);
   const { view, text } = await learningAt(store, "agent-one");
   assert.deepEqual(view.workflows.map(({ name, run }) => [name, run]), [["w", wordRun("ALPHA")], ["x", wordRun("CHARLIE")]]);
@@ -520,20 +520,20 @@ test("rows: a purge gives back the version before the purged run's revision: A's
   const store = await rowsOn(t);
   await putLearning(store, "agent-one", flow("x", "ALPHA"), { runId: wordRun("ALPHA") });
   await putLearning(store, "agent-one", { ...flow("x", "BRAVO"), ...flow("y", "BRAVO") }, { runId: wordRun("BRAVO") });
-  await store.learning.purgeRun(wordRun("BRAVO"));
+  await store.learning.purgeRun("agent-one", wordRun("BRAVO"));
   const { view, text } = await learningAt(store, "agent-one");
   assert.deepEqual(view.workflows.map(({ name, run }) => [name, run]), [["x", wordRun("ALPHA")]]);
   for (const [path, body] of Object.entries(flow("x", "ALPHA"))) assert.equal(text(path), body, path);
   const before = await heldOf(store, "agent-one");
-  await store.learning.purgeRun(wordRun("BRAVO"));
+  await store.learning.purgeRun("agent-one", wordRun("BRAVO"));
   assert.deepEqual(await heldOf(store, "agent-one"), before, "a purge again changes nothing");
 });
 
 test("rows: a run whose merge wrote back an older run's bytes keeps them through two purges: A v1, B v2, C v1, purge B then A: C's v1 stays, its writer C", async (t) => {
   const store = await rowsOn(t);
   for (const [word, said] of [["ALPHA", "ALPHA"], ["BRAVO", "BRAVO"], ["CHARLIE", "ALPHA"]]) await putLearning(store, "agent-one", flow("x", said), { runId: wordRun(word) });
-  await store.learning.purgeRun(wordRun("BRAVO"));
-  await store.learning.purgeRun(wordRun("ALPHA"));
+  await store.learning.purgeRun("agent-one", wordRun("BRAVO"));
+  await store.learning.purgeRun("agent-one", wordRun("ALPHA"));
   const { view, text } = await learningAt(store, "agent-one");
   for (const [path, body] of Object.entries(flow("x", "ALPHA"))) assert.equal(text(path), body, path);
   assert.deepEqual(view.workflows.map(({ name, run }) => [name, run]), [["x", wordRun("CHARLIE")]]);
@@ -544,7 +544,7 @@ test("rows: a purge takes the purged run's README.md out of a later run's versio
   await putLearning(store, "agent-one", flow("x", "BRAVO"), { runId: wordRun("BRAVO") });
   const charlie = flow("x", "CHARLIE")["workflows/x/workflow.json"];
   await putLearning(store, "agent-one", { "workflows/x/workflow.json": charlie }, { runId: wordRun("CHARLIE") });
-  await store.learning.purgeRun(wordRun("BRAVO"));
+  await store.learning.purgeRun("agent-one", wordRun("BRAVO"));
   assert.doesNotMatch(await learningText(store, "agent-one"), /BRAVO/, "the purged run's README.md is in no version");
   assert.equal((await learningAt(store, "agent-one")).text("workflows/x/workflow.json"), charlie, "the later run's workflow.json stays");
 });
@@ -556,7 +556,7 @@ test("rows: a purge takes out only the purged run's line: the same words another
   await putLearning(store, "agent-one", { "corrections.md": "- ALPHA line from the owner\n- the same words twice\n- the same words twice\n- KEPT line from the owner" }, { runId: "run_kept" });
   // The owner moves the purged run's line below the kept run's own.
   await putLearning(store, "agent-one", { "corrections.md": "- ALPHA line from the owner\n- the same words twice\n- KEPT line from the owner\n- the same words twice" }, { person: "edited" });
-  await store.learning.purgeRun("run_gone");
+  await store.learning.purgeRun("agent-one", "run_gone");
   const lines = (await learningAt(store, "agent-one")).text("corrections.md").split("\n").filter(Boolean);
   assert.equal(lines.filter((line) => line === "- the same words twice").length, 1, `the kept run's copy stays: ${JSON.stringify(lines)}`);
   assert.ok(lines.includes("- ALPHA line from the owner") && lines.includes("- KEPT line from the owner"), JSON.stringify(lines));

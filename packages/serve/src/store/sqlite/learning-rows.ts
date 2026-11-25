@@ -49,20 +49,21 @@ async function atSave(db: Reader, agentId: string, save: LearningSave): Promise<
   return { save, items, history };
 }
 
-/** Run `runId`'s learning rows gone, inside the caller's transaction (its purge, its delete): the promotions and audits
- *  of each workflow version it wrote that no other version holds, its grades and audits, the item versions it wrote,
- *  and its saves' words (each save's version, id and merge key stay), a person's save that changed only its text (an
- *  approve of its draft, a removal of its line) with them: that save's words name what the run wrote. */
-export async function dropRunLearning(tx: SqliteExecutor, runId: string): Promise<void> {
-  await tx.run(`DELETE FROM learning_records WHERE kind IN ('promotion', 'audit')
+/** Run `runId`'s learning rows gone from its agent `agentId`'s, inside the caller's transaction (its purge, its
+ *  delete), every statement scoped to that agent: the promotions and audits of each workflow version it wrote that no
+ *  other version holds, its grades and audits, the item versions it wrote, and its saves' words (each save's version, id
+ *  and merge key stay), a person's save that changed only its text (an approve of its draft, a removal of its line)
+ *  with them: that save's words name what the run wrote. */
+export async function dropRunLearning(tx: Tx, agentId: string, runId: string): Promise<void> {
+  await tx.run(`DELETE FROM learning_records WHERE agent_id = ? AND kind IN ('promotion', 'audit')
     AND EXISTS (SELECT 1 FROM learning_items i WHERE i.agent_id = learning_records.agent_id AND i.kind = 'workflow' AND i.name = learning_records.workflow AND i.digest = learning_records.digest AND i.by_run = ?)
-    AND NOT EXISTS (SELECT 1 FROM learning_items j WHERE j.agent_id = learning_records.agent_id AND j.kind = 'workflow' AND j.name = learning_records.workflow AND j.digest = learning_records.digest AND (j.by_run IS NULL OR j.by_run <> ?))`, runId, runId);
-  await tx.run("DELETE FROM learning_records WHERE run_id = ?", runId);
-  await tx.run(`UPDATE learning_saves SET kind = 'purged', by_run = NULL, change = '{}' WHERE kind = 'person'
+    AND NOT EXISTS (SELECT 1 FROM learning_items j WHERE j.agent_id = learning_records.agent_id AND j.kind = 'workflow' AND j.name = learning_records.workflow AND j.digest = learning_records.digest AND (j.by_run IS NULL OR j.by_run <> ?))`, agentId, runId, runId);
+  await tx.run("DELETE FROM learning_records WHERE agent_id = ? AND run_id = ?", agentId, runId);
+  await tx.run(`UPDATE learning_saves SET kind = 'purged', by_run = NULL, change = '{}' WHERE agent_id = ? AND kind = 'person'
     AND EXISTS (SELECT 1 FROM learning_items i WHERE i.agent_id = learning_saves.agent_id AND i.version = learning_saves.version AND i.by_run = ?)
-    AND NOT EXISTS (SELECT 1 FROM learning_items j WHERE j.agent_id = learning_saves.agent_id AND j.version = learning_saves.version AND (j.by_run IS NULL OR j.by_run <> ?))`, runId, runId);
-  await tx.run("DELETE FROM learning_items WHERE by_run = ?", runId);
-  await tx.run("UPDATE learning_saves SET kind = 'purged', by_run = NULL, change = '{}' WHERE by_run = ?", runId);
+    AND NOT EXISTS (SELECT 1 FROM learning_items j WHERE j.agent_id = learning_saves.agent_id AND j.version = learning_saves.version AND (j.by_run IS NULL OR j.by_run <> ?))`, agentId, runId, runId);
+  await tx.run("DELETE FROM learning_items WHERE agent_id = ? AND by_run = ?", agentId, runId);
+  await tx.run("UPDATE learning_saves SET kind = 'purged', by_run = NULL, change = '{}' WHERE agent_id = ? AND by_run = ?", agentId, runId);
 }
 
 /** Every learning row of agent `agentId` gone, inside the caller's transaction (a reset, its purge, its delete). */
@@ -155,7 +156,10 @@ export function learningRows(db: StoreConnection, now: () => number): Rows {
       }
       return { saved: { version, id, at, by: input.by, reason: input.reason, files: [...input.files], mergeKey: input.mergeKey ?? null } };
     }),
-    purgeRun: (runId) => db.transaction((tx) => dropRunLearning(tx, runId)),
+    purgeRun: (agentId, runId) => db.transaction(async (tx) => {
+      await d.lockKey(tx, `learning:${agentId}`);
+      await dropRunLearning(tx, agentId, runId);
+    }),
     reset: (agentId) => db.transaction(async (tx) => {
       await d.lockKey(tx, `learning:${agentId}`);
       await dropAgentLearning(tx, agentId);

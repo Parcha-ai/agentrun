@@ -714,7 +714,7 @@ async function dropLedger(tx: SqliteExecutor, runId: string): Promise<void> {
 
 /** A run's content in every table that keeps it by the run's id, gone: what a run's purge (Runs.purge) and its delete
  *  (Runs.remove) both drop. A table added for a run's content goes here, so neither path leaves it behind. */
-async function dropRunContent(tx: SqliteExecutor, runId: string): Promise<void> {
+async function dropRunContent(tx: Tx, runId: string): Promise<void> {
   for (const table of PI_TABLES) await tx.run(`DELETE FROM ${table} WHERE run_id = ?`, runId);
   await tx.run("DELETE FROM commands WHERE run_id = ?", runId);
   await tx.run("DELETE FROM run_origins WHERE run_id = ?", runId);
@@ -729,8 +729,13 @@ async function dropRunContent(tx: SqliteExecutor, runId: string): Promise<void> 
   await tx.run("DELETE FROM hand_backs WHERE run_id = ?", runId);
   // Its claims' attempts: what each cost is in its tombstone's money, and no read of a purged run splits it.
   await tx.run("DELETE FROM run_attempts WHERE run_id = ?", runId);
-  // What it learned and what its agent's learning kept of it (learning-rows.ts dropRunLearning).
-  await dropRunLearning(tx, runId);
+  // What it learned and what its agent's learning kept of it (learning-rows.ts dropRunLearning), its agent's alone,
+  // under the lock a save of that agent's learning takes.
+  const agentId = (await tx.get<{ agent_id: string }>("SELECT agent_id FROM runs WHERE id = ?", runId))?.agent_id;
+  if (agentId !== undefined) {
+    await tx.dialect.lockKey(tx, `learning:${agentId}`);
+    await dropRunLearning(tx, agentId, runId);
+  }
 }
 
 /** An agent's own rows no tombstone keeps (its learning, its saved sign-ins and their tombstones), gone: what an agent's

@@ -195,7 +195,7 @@ test("a purge takes the purged run's line out of every version and diff; another
   assert.equal((await putCorrections(learning, { text: text.replace(`- ${shared}\n`, ""), ifMatch: etagOf(view.corrections.oid) })).ok, true);
   const later = (await merge(learning, { runId: "run_later", correction: shared })).commit;
   const gone = await store.learning.saveOf(AGENT, { mergeKey: "run_gone" });
-  await store.learning.purgeRun("run_gone");
+  await store.learning.purgeRun(AGENT, "run_gone");
   // Every version before the later run's merge, the purged one's own among them, holds none of the words.
   const laterVersion = (await store.learning.saveOf(AGENT, { id: later })).version;
   const before = [gone.id, ...(await store.learning.saves(AGENT, { limit: 100 })).saves.filter((one) => one.version < laterVersion).map((one) => one.id)];
@@ -222,7 +222,7 @@ test("a purge takes out only the purged run's copy of a line: one its owner remo
   const view = await readView(learning);
   assert.equal((await putCorrections(learning, { text: (await corrections(learning)).replace(`- ${shared}\n`, ""), ifMatch: etagOf(view.corrections.oid) })).ok, true);
   await merge(learning, { runId: "run_later", correction: shared });
-  await store.learning.purgeRun("run_gone");
+  await store.learning.purgeRun(AGENT, "run_gone");
   assert.equal(await corrections(learning), `- ALPHA line from the owner\n- ${shared}\n`);
   const diff = await runMergeOf(learning, "run_later");
   assert.deepEqual(diff.files.map((file) => [file.path, file.patch.includes(`+- ${shared}`)]), [["corrections.md", true]]);
@@ -238,7 +238,7 @@ test("a purge takes the purged run's workflows out of every version: one it alon
   assert.equal((await putCorrections(learning, { text: `${await corrections(learning)}- a hand line\n`, ifMatch: etagOf(view.corrections.oid) })).ok, true);
   const charlie = (await merge(learning, { runId: "run_charlie", files: flow("x", "CHARLIE") })).commit;
   const alphaBefore = (await runMergeOf(learning, "run_alpha")).files;
-  await store.learning.purgeRun("run_bravo");
+  await store.learning.purgeRun(AGENT, "run_bravo");
   assert.doesNotMatch(await everything(store), /BRAVO/);
   assert.deepEqual(await workflows(learning), [["w", "run_alpha"], ["x", "run_charlie"]]);
   assert.match((await readAt(learning, charlie)).text("workflows/x/README.md"), /CHARLIE/);
@@ -256,7 +256,7 @@ test("a purge gives back the workflow the purged run revised: A's version again 
   const alpha = (await merge(learning, { runId: "run_alpha", files: flow("x", "ALPHA") })).commit;
   const bravo = (await merge(learning, { runId: "run_bravo", files: [...flow("x", "BRAVO"), ...flow("y", "BRAVO")] })).commit;
   const v1 = ["workflows/x/README.md", "workflows/x/workflow.json"].map((path) => readAt(learning, alpha).then((read) => read.text(path)));
-  await store.learning.purgeRun("run_bravo");
+  await store.learning.purgeRun(AGENT, "run_bravo");
   assert.doesNotMatch(await everything(store), /BRAVO/);
   for (const at of [bravo, (await readView(learning)).main]) {
     const read = await readAt(learning, at);
@@ -276,7 +276,7 @@ test("a purge takes a person's change of the purged run's workflow with it (stil
     assert.equal(item.status, "pending");
     assert.equal((await changeWorkflow(store, AGENT, item.file, { action: "approve", ifMatch: etagOf(item.oid), refuse: [] })).status, 200);
   }
-  await store.learning.purgeRun("run_bravo");
+  await store.learning.purgeRun(AGENT, "run_bravo");
   assert.doesNotMatch(await everything(store), /BRAVO/);
   assert.deepEqual((await readView(learning)).workflows.map(({ name, status, run }) => [name, status, run]), [["x", "active", "run_alpha"]]);
   assert.deepEqual((await store.learning.saves(AGENT)).saves.map((save) => save.by.person ?? save.by.run), ["approved", "run_alpha"], "the log shows neither of B's saves");
@@ -295,8 +295,8 @@ test("a purge takes the purged run's grades, and the promotions and audits of th
   }
   await store.learning.addRecord(AGENT, "grade", { runId: "run_bravo", workflow: null, digest: null, data: { run: "run_bravo", label: "BRAVO grade words" } });
   await store.learning.addRecord(AGENT, "grade", { runId: "run_alpha", workflow: null, digest: null, data: { run: "run_alpha" } });
-  await store.learning.purgeRun("run_bravo");
-  await store.learning.purgeRun("run_bravo");
+  await store.learning.purgeRun(AGENT, "run_bravo");
+  await store.learning.purgeRun(AGENT, "run_bravo");
   assert.doesNotMatch(await everything(store), /BRAVO/);
   assert.deepEqual((await store.learning.records(AGENT, "promotion")).map((one) => one.workflow), ["x"]);
   assert.deepEqual((await store.learning.records(AGENT, "audit")).map((one) => one.workflow), ["x"]);
@@ -312,7 +312,7 @@ test("a purge keeps the promotion of a digest another run also wrote (changed th
   await merge(learning, { runId: "run_charlie", files: same });
   const digest = (await store.learning.versions(AGENT, "workflow", "x"))[0].digest;
   await store.learning.addRecord(AGENT, "promotion", { runId: null, workflow: "x", digest, data: { workflow: "x", digest } });
-  await store.learning.purgeRun("run_charlie");
+  await store.learning.purgeRun(AGENT, "run_charlie");
   assert.equal((await store.learning.records(AGENT, "promotion")).length, 1, "run_alpha's version holds the digest");
   assert.deepEqual(await workflows(learning), [["x", "run_bravo"]]);
 });
