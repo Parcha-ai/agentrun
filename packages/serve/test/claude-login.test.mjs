@@ -304,7 +304,7 @@ test("claudeLoginServed: one rule for the routes and for capabilities: none whil
 test("API-only serves no login path under another route's name: no pattern on its list matches a login route's method and path", async () => {
   const { ROUTES } = await import("../dist/server.js");
   const { servedApiOnly } = await import("../dist/api-only.js");
-  const paths = { getClaudeLogin: "/settings/claude-login", turnOnClaudeLogin: "/settings/claude-login", turnOffClaudeLogin: "/settings/claude-login", startClaudeLogin: "/settings/claude-login/login" };
+  const paths = { getClaudeLogin: "/settings/claude-login", turnOnClaudeLogin: "/settings/claude-login", turnOffClaudeLogin: "/settings/claude-login", startClaudeLogin: "/settings/claude-login/login", signOutClaudeLogin: "/settings/claude-login/sign-out" };
   assert.deepEqual(Object.keys(paths).sort(), [...CLAUDE_LOGIN_ROUTES].sort());
   for (const [name, path] of Object.entries(paths)) {
     const route = ROUTES.find((r) => r.name === name);
