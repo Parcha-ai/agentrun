@@ -7,6 +7,7 @@ import { agentHash } from "@/components/AgentPage";
 import { agentsList, recorded } from "@/fixtures";
 import type { Agent } from "@/lib/agentForm";
 import { runLabel } from "@/lib/format";
+import { queryPlaygroundHref } from "@/lib/playgroundRoutes";
 import type { Run, TimelinePage } from "@/lib/v2";
 import { servedKey } from "@/test/keys";
 import { pick, wordsOf } from "@/test/picker";
@@ -50,6 +51,13 @@ describe("route", () => {
   it("keeps the scope of a read-only query playground link", () => {
     expect(route("#/playground?operation=list-runs&agent=agent%20two&status=failed&archived=true")).toEqual({ section: "playground", operation: "list-runs", playgroundAgent: "agent two", status: "failed", archived: true });
   });
+  it("keeps the runs list's source in a Query playground link, as in the runs address", () => {
+    expect(queryPlaygroundHref(undefined, { source: "claude-code", status: "failed" })).toBe("#/playground?operation=list-runs&status=failed&source=claude-code");
+    expect(queryPlaygroundHref("calc", { source: "claude-code" })).toBe("#/playground?operation=list-runs&agent=calc");
+    expect(route("#/playground?operation=list-runs&source=claude-code")).toEqual({ section: "playground", operation: "list-runs", source: "claude-code" });
+    expect(route("#/playground?operation=list-runs&agent=calc&source=codex")).toEqual({ section: "playground", operation: "list-runs", playgroundAgent: "calc" });
+    expect(route("#/playground?operation=list-runs&source=Bad%20Name")).toEqual({ section: "playground", operation: "list-runs" });
+  });
   it("opens the triggers list, a new schedule, a new webhook, one trigger, and a schedule's editor at their own addresses", () => {
     expect(route("#/triggers")).toEqual({ section: "triggers" });
     expect(route("#/triggers/new")).toEqual({ section: "triggers", trigger: null, kind: "schedule" });
@@ -74,6 +82,15 @@ describe("route", () => {
     expect(route("#/runs?status=sleeping&archived=yes")).toEqual({ section: "runs" });
     expect(runsHash({ runsOf: "calc", status: "failed", archived: true })).toBe("#/runs?agent=calc&status=failed&archived=true");
     for (const f of [{}, { status: "failed" as const }, { archived: true }, { runsOf: "c a", status: "completed" as const, archived: true }]) expect(route(runsHash(f))).toEqual({ section: "runs", ...f });
+  });
+  it("keeps the runs list's source in the address: the runs imported from one source, or live; an agent's list has none, a bad name is dropped", () => {
+    expect(route("#/runs?source=claude-code")).toEqual({ section: "runs", source: "claude-code" });
+    expect(route("#/runs?source=live&status=failed")).toEqual({ section: "runs", status: "failed", source: "live" });
+    expect(route("#/runs?agent=calc&source=codex")).toEqual({ section: "runs", runsOf: "calc" });
+    expect(route("#/runs?source=Claude%20Code")).toEqual({ section: "runs" });
+    expect(runsHash({ status: "failed", source: "codex" })).toBe("#/runs?status=failed&source=codex");
+    expect(runsHash({ runsOf: "calc", source: "codex" })).toBe("#/runs?agent=calc");
+    expect(route(runsHash({ source: "pi", archived: true }))).toEqual({ section: "runs", archived: true, source: "pi" });
   });
   it("opens an agent's page at its address, and its editor under /edit; a new agent and the archived list are unchanged", () => {
     expect(route("#/agents/x")).toEqual({ section: "agents", agent: "x" });
