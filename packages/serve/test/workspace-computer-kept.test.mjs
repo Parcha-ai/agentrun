@@ -756,6 +756,136 @@ test("a claim that can't reach a kept machine pinned to another runner puts its 
   await resumed.release();
 });
 
+/** Fails the next `times` writes of a kept row marked ending (a give-back's), as a store that does not answer them:
+ *  Infinity fails every one. Answers the restore. */
+function failEndingWrites(one, times) {
+  const { settings } = one.store;
+  const { putIfAbsent, replaceIf } = settings;
+  let left = times;
+  const fails = (value) => value?.ending === true && left > 0 && ((left -= 1), true);
+  settings.putIfAbsent = async (key, value, ...rest) => {
+    if (fails(value)) throw new Error("the store did not answer");
+    return putIfAbsent(key, value, ...rest);
+  };
+  settings.replaceIf = async (key, was, value, ...rest) => {
+    if (fails(value)) throw new Error("the store did not answer");
+    return replaceIf(key, was, value, ...rest);
+  };
+  return () => Object.assign(settings, { putIfAbsent, replaceIf });
+}
+
+/** The vendor's next attach waits until `release()`: `reached` resolves once one is waiting. Later ones answer at once. */
+function holdNextAttach(one) {
+  const attach = one.account.provider.attach;
+  let release;
+  const gate = new Promise((resolve) => (release = resolve));
+  let reachedIt;
+  const reached = new Promise((resolve) => (reachedIt = resolve));
+  let next = true;
+  one.account.provider.attach = async (...args) => {
+    if (next) {
+      next = false;
+      reachedIt();
+      await gate;
+    }
+    return attach(...args);
+  };
+  return { reached, release: () => release() };
+}
+
+// A claim that takes a kept row back marks it taking instead of removing it: the row is there until the claim either
+// holds the machine (the mark taken off) or goes on without it (the mark turned ending). A give-back the store fails is
+// tried again; one that never lands leaves the row marked taking, which is ended at its time as any row, so the machine
+// is never left running with no row to end it.
+test("a claim that can't reach a kept machine pinned to another runner tries its give-back again when the store fails it: the row reads ending, said so, and that runner's end at its time ends the machine", async () => {
+  const key = keptKeyOf("run-1");
+  const one = await server(SANDBOX);
+  await (await one.claim(3, {}, { holder: RUNNER_A })).park("approval");
+  const atPark = await readKept(one.store.settings, "run-1");
+  const written = await one.store.settings.get(key);
+  const onA = one.account.computers.get("c1");
+  one.account.computers.delete("c1");
+  one.clock.now = T0 + 60_000;
+  const restore = failEndingWrites(one, 1);
+  const resumed = await one.claim(5, { hadComputer: async () => true }, { holder: RUNNER_B }, { live: async () => [{ ...RUNNER_A, refused: "draining" }] });
+  restore();
+  one.account.computers.set("c1", onA);
+  assert.equal(JSON.stringify(await one.store.settings.get(key)), JSON.stringify({ ...written, ending: true }), "the give-back, tried again, put the row back marked ending");
+  assert.deepEqual(resumed.replaced, { kind: "sandbox", folderKept: false, elsewhere: true }, "said that runner ends it, its row there to end");
+  const ended = [];
+  assert.equal(await endKept(one.store.settings, "run-1", atPark, async () => void ended.push(atPark.id)), true, "runner-a's end at its time finds its row");
+  assert.deepEqual(ended, ["c1"]);
+  await resumed.release();
+});
+
+test("a give-back the store never takes leaves the row marked taking, never gone: the new machine's words say neither that runner ends it nor that it is gone, and that runner's end at its time still ends the machine", async () => {
+  const key = keptKeyOf("run-1");
+  const one = await server(SANDBOX);
+  await (await one.claim(3, {}, { holder: RUNNER_A })).park("approval");
+  const atPark = await readKept(one.store.settings, "run-1");
+  const written = await one.store.settings.get(key);
+  const onA = one.account.computers.get("c1");
+  one.account.computers.delete("c1");
+  one.clock.now = T0 + 60_000;
+  const restore = failEndingWrites(one, Infinity);
+  const resumed = await one.claim(5, { hadComputer: async () => true }, { holder: RUNNER_B }, { live: async () => [{ ...RUNNER_A, refused: "draining" }] });
+  restore();
+  one.account.computers.set("c1", onA);
+  assert.equal(JSON.stringify(await one.store.settings.get(key)), JSON.stringify({ ...written, taking: 5 }), "the row is there, marked taking by the claim at epoch 5");
+  assert.deepEqual(resumed.replaced, { kind: "sandbox", folderKept: false }, "its give-back never landed: no word of who ends it");
+  const ended = [];
+  assert.equal(await endKept(one.store.settings, "run-1", atPark, async () => void ended.push(atPark.id)), true, "runner-a's end at its time ends a row marked taking");
+  assert.deepEqual(ended, ["c1"]);
+  assert.equal((await readKept(one.store.settings, "run-1")).ended, true);
+  await resumed.release();
+});
+
+test("a give-back late past a later claim's park: that park never writes over the row marked taking, so the give-back still marks it ending and the keeper's end finds it", async () => {
+  const key = keptKeyOf("run-1");
+  const refusing = { live: async () => [{ ...RUNNER_A, refused: "draining" }] };
+  const one = await server(SANDBOX);
+  await (await one.claim(3, {}, { holder: RUNNER_A })).park("approval");
+  const atPark = await readKept(one.store.settings, "run-1");
+  const written = await one.store.settings.get(key);
+  const onA = one.account.computers.get("c1");
+  one.account.computers.delete("c1");
+  one.clock.now = T0 + 60_000;
+  // runner-b's attach of runner-a's container hangs; its lease lapses, and runner-c claims, makes c2 and parks.
+  const held = holdNextAttach(one);
+  const reaching = one.claim(5, { hadComputer: async () => true }, { holder: RUNNER_B }, refusing);
+  await held.reached;
+  const later = await one.claim(7, {}, { holder: { runner: "runner-c", incarnation: "inc-c" } }, refusing);
+  assert.equal(await later.park("approval"), false, "runner-c's park keeps nothing over a row another claim is taking back");
+  held.release();
+  const resumed = await reaching;
+  one.account.computers.set("c1", onA);
+  assert.equal(JSON.stringify(await one.store.settings.get(key)), JSON.stringify({ ...written, ending: true }), "runner-b's late give-back marked runner-a's row ending");
+  assert.ok(deletes(one.account).includes("c2"), "runner-c's own sandbox went at its park, as at the run's end");
+  const ended = [];
+  assert.equal(await endKept(one.store.settings, "run-1", atPark, async () => void ended.push(atPark.id)), true, "runner-a's end at its time finds its row");
+  assert.deepEqual(ended, ["c1"]);
+  await resumed.release();
+});
+
+test("a keeper's end at its time, come while a claim is reaching the machine, ends it: that claim then never uses it, and goes on on a new one said lapsed", async () => {
+  const one = await server(SANDBOX);
+  await (await one.claim(3, {}, { holder: RUNNER_A })).park("approval");
+  const atPark = await readKept(one.store.settings, "run-1");
+  one.clock.now = T0 + 60_000;
+  const held = holdNextAttach(one);
+  const reaching = one.claim(5, { hadComputer: async () => true }, { holder: RUNNER_B }, { live: async () => [{ ...RUNNER_A, refused: "draining" }] });
+  await held.reached;
+  one.clock.now = atPark.until;
+  const ended = [];
+  assert.equal(await endKept(one.store.settings, "run-1", atPark, async () => void ended.push(atPark.id)), true, "runner-a's end finds the row a claim is taking back, and ends it");
+  held.release();
+  const resumed = await reaching;
+  assert.deepEqual(ended, ["c1"]);
+  assert.deepEqual(creates(one.account), ["c1", "c2"], "the claim went on on a new sandbox");
+  assert.equal(resumed.replaced?.lapsed, true, `said lapsed: ${JSON.stringify(resumed.replaced)}`);
+  await resumed.release();
+});
+
 /** The store's next clock read waits until `release()`: `reached` resolves once a read is waiting. Later reads answer
  *  at once. */
 function holdNextClock(one) {
