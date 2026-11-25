@@ -248,6 +248,31 @@ test("a sign-out where one removal fails still drops the runner's token reader, 
   assert.equal(out.login.state, "off");
 });
 
+for (const [step, broken, why] of [
+  ["the pinned CLI's lookup", { pinned: async () => { throw new Error("the pinned CLI's lookup broke"); } }, "the pinned CLI's lookup broke"],
+  ["the harness's load", { claude: async () => { throw new Error("the harness's load broke"); } }, "the harness's load broke"],
+]) {
+  test(`a sign-out where ${step} throws still removes the folder, the signed-in note and the token reader, turns the mode off and has the server reread the keys, and answers confirmed false in words naming the CLI step's failure`, async (t) => {
+    const r = await rig(t, { signedIn: true });
+    const folder = signedInAt(r.data);
+    assert.equal((await login.claudeLoginView(r.deps)).state, "signed_in");
+    assert.equal(answers(r.data).length, 1, "a signed-in note is kept for the login");
+    const reader = loginTokensFor({ dir: folder, profiles: join(folder, "anthropic") }, () => {});
+    let rereads = 0;
+    const out = await login.signOutClaudeLogin({ ...r.deps, ...broken, changed: async () => void rereads++ });
+    assert.equal(out.confirmed, false, JSON.stringify(out));
+    assert.ok(out.message?.includes(why), `the words name the CLI step's failure: ${out.message}`);
+    assert.match(out.message, /Keychain/);
+    assert.deepEqual(r.logouts, [], "no CLI sign-out ran");
+    assert.equal(existsSync(folder), false, "the folder is removed all the same");
+    assert.deepEqual(answers(r.data), [], "the signed-in note is removed all the same");
+    assert.notEqual(loginTokensFor({ dir: folder, profiles: join(folder, "anthropic") }, () => {}), reader, "the runner's token reader for the folder is dropped all the same");
+    assert.equal(rereads, 1, "the server rereads the keys all the same");
+    assert.equal(r.rows.has(CLAUDE_LOGIN_SETTING), false, "the mode is off");
+    assert.equal(out.login.state, "off");
+  });
+}
+
 /** A folder outside the test's data dir with a credentials file in it, and the CLI's older lock beside it, for `<data>/claude-login` to link to. */
 async function elsewhereFolder(t) {
   const elsewhere = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-sign-out-elsewhere-"));
