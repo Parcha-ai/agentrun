@@ -623,6 +623,15 @@ switch (args[0]) {
 		writeFileSync(`${state}.next`, JSON.stringify(all));
 		renameSync(`${state}.next`, state);
 	};
+	/** Puts containers (and volumes) on the fake host as Docker would have made them meanwhile: a create another process
+	 *  finished while a caller was between its calls. */
+	const add = (containers = [], volumes = []) => {
+		for (const [file, more] of [[state, containers], [volumeState, volumes]]) {
+			if (more.length === 0) continue;
+			writeFileSync(`${file}.next`, JSON.stringify([...JSON.parse(readFileSync(file, "utf8")), ...more]));
+			renameSync(`${file}.next`, file);
+		}
+	};
 	// The host the provider looks at for a container's signs is a clean fake root, so these tests run the same inside a
 	// container; egressOptions.hostRoot replaces it.
 	const hostRoot = join(dir, "host-root");
@@ -632,7 +641,7 @@ switch (args[0]) {
 	/** lateRun's marks: whether the daemon's late create has begun, and the container it made (its name), if it did. */
 	const late = () => ({ started: existsSync(join(dir, "late-started")), committed: existsSync(join(dir, "late-committed")) ? readFileSync(join(dir, "late-committed"), "utf8").replace(/^\//, "") : undefined });
 	const runHeld = () => existsSync(join(dir, "run-held"));
-	return { provider: new DockerProvider(options), options, calls, names, volumeNames, networkNames, alter, daemonPath, bound, cache, program, proceed, started, late, runHeld };
+	return { provider: new DockerProvider(options), options, calls, names, volumeNames, networkNames, alter, add, daemonPath, bound, cache, program, proceed, started, late, runHeld };
 }
 
 /** The docker calls that delete computer `name` with nothing else of its own: look for its egress proxy by its label and

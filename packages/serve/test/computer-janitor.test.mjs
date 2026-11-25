@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { allowed, container, fakeDocker } from "../../computer/test/fake-docker.mjs";
+import { allowed, container, fakeDocker, idOf, proxyReport } from "../../computer/test/fake-docker.mjs";
 import { ofStore, startRunnerProcess } from "../dist/runner/main.js";
 import { runHash } from "@parcha/agentrun-computer";
 import { openSqliteStore } from "../dist/store/index.js";
@@ -318,6 +318,68 @@ test("the leftover sweep is asked for this server's alone: a run of this store (
   const swept = await sweepServerComputers({ store: { ...store(), settings, agents }, computers: computers([orgo], { ORGO_KEY: "k" }), now: () => NOW });
   assert.deepEqual(swept, [{ provider: "orgo", swept: { ok: true, value: { deleted: [], kept: 0, leftovers: ["run-label", "run-hash", "agent-here"] } } }]);
   assert.equal(asked.length, 1);
+});
+
+/** Parts of Docker computer `name` with its computer gone, made long ago, each carrying `labels`: a leftover by every
+ *  rule but whose it is. */
+const leftoverOf = (name, labels) => {
+  const made = allowed({ name, allow: ["pypi.org"], labels });
+  return { containers: made.containers.filter((one) => one.Name !== `/${name}`), volumes: made.volumes };
+};
+/** A container and a volume named as computer `name`'s proxy, with no label of ours. */
+const lookalikeOf = (name) => ({ containers: [proxyReport({ id: idOf(`${name}-egress`), name: `${name}-egress`, labels: {}, cmd: [] })], volumes: [{ Name: `${name}-egress`, Labels: {} }] });
+const ANOTHER_SERVER = "ffffffffffff";
+const ownedBy = (server) => ({ "agentrun.owner": "agent:agent-1", "agentrun.owner-server": server });
+/** What may be deleted (1) and (2): of these, only `mine` is this server's. */
+const notMine = (run) => ({
+  bare: leftoverOf("computer-0000000000a1", {}),
+  lookalike: lookalikeOf("computer-0000000000a2"),
+  otherRun: leftoverOf("computer-0000000000a3", { ...labels("run-of-another-server", 1), ...ownedBy(ANOTHER_SERVER) }),
+  myRunOtherOwner: leftoverOf("computer-0000000000a4", { ...labels(run, 1), ...ownedBy(ANOTHER_SERVER) }),
+});
+const KEPT = ["computer-0000000000a1-egress", "computer-0000000000a2-egress", "computer-0000000000a3-egress", "computer-0000000000a4-egress"];
+/** Whether computer `name`'s proxy and volume are both gone from the fake host. */
+const goneFrom = (fake, name) => !fake.names().includes(`${name}-egress`) && !fake.volumeNames().includes(`${name}-egress`);
+const partsOfAll = (...sets) => ({ containers: sets.flatMap((one) => one.containers), volumes: sets.flatMap((one) => one.volumes) });
+
+test("what may be deleted (1, 2): the runner's start never removes a part with neither label, one named like a proxy without ours, another server's run, or this store's run under another server's owner", { skip: !existsSync(DAEMON) && "no computerd-linux-amd64: run npm run build:daemon -w @parcha/agentrun-computer (CI's build job does)" }, async (t) => {
+  const dir = dataDir(t);
+  const server = await openSqliteStore({ dataDir: dir, role: "server" });
+  t.after(() => server.close());
+  await server.agents.create({ id: "agent-1", name: "Agent one" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer." } });
+  // run-over: this store's, ended, so no claim will take it; its own orphan shows the start's sweep ran.
+  await server.runs.create({ id: "run-over", agentId: "agent-1", revisionId: "rev-1" });
+  assert.deepEqual(await server.runs.failUnclaimed("ended for the test"), ["run-over"]);
+  const others = notMine("run-over");
+  const fake = fakeDocker(partsOfAll(...Object.values(others), leftoverOf("computer-0000000000a5", labels("run-over", 1))));
+  withEnv(t, { PATH: `${dirname(fake.program)}${delimiter}${process.env.PATH}`, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["AGENTRUN_SERVE_FAUX"]);
+  const said = [];
+  const runner = await startRunnerProcess({ dataDir: dir, name: "runner-docker", janitor: true, warn: (line) => said.push(line) });
+  t.after(() => runner.close());
+  await until(async () => goneFrom(fake, "computer-0000000000a5"), "the start's sweep of docker", 30_000).catch((error) => assert.fail(`${error.message}; said: ${said.join(" | ")}`));
+  assert.deepEqual(fake.names().sort(), KEPT);
+  assert.deepEqual(fake.volumeNames().sort(), KEPT);
+});
+
+test("what may be deleted (1, 2): the janitor's interval sweeps never remove them either", { skip: !existsSync(DAEMON) && "no computerd-linux-amd64: run npm run build:daemon -w @parcha/agentrun-computer (CI's build job does)" }, async (t) => {
+  const fake = fakeDocker(partsOfAll(...Object.values(notMine("run-mine")), leftoverOf("computer-0000000000a5", labels("run-mine", 1))));
+  const settings = { putIfAbsent: async () => ({ v: 1, id: "0123456789ab" }), get: async () => undefined, all: async () => [] };
+  const agents = { get: async () => undefined, list: async () => [] };
+  const said = [];
+  const janitor = startJanitor({ store: { ...store(), settings, agents }, computers: computers([{ made: fake.provider }], { DOCKER_KEY: "k" }), env: {}, log: (line) => said.push(line), everyMs: 20, now: () => NOW });
+  t.after(() => janitor.close());
+  await janitor.first;
+  await until(async () => goneFrom(fake, "computer-0000000000a5"), "the start's sweep", 30_000);
+  assert.ok(goneFrom(fake, "computer-0000000000a5"), `the start's sweep removed this server's orphan; said: ${said.join(" | ")}`);
+  // Another orphan of this server's run, left after the start: the interval's sweep removes it, and nothing else.
+  fake.add(...Object.values(leftoverOf("computer-0000000000a6", labels("run-mine", 1))));
+  await until(async () => goneFrom(fake, "computer-0000000000a6"), "the interval's sweep", 30_000);
+  // And one more interval after it.
+  const sweeps = () => fake.calls().filter((args) => args[0] === "ps" && args.includes("label=agentrun.computer.egress")).length;
+  const seen = sweeps();
+  await until(async () => sweeps() > seen, "one more interval", 30_000);
+  assert.deepEqual(fake.names().sort(), KEPT);
+  assert.deepEqual(fake.volumeNames().sort(), KEPT);
 });
 
 test("a computer the sweep deleted ends its run's interval at the sweep's time; one whose delete failed stays open (computer-intervals.ts)", async () => {
