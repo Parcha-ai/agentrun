@@ -68,6 +68,15 @@ test("a call's $ is exact or unknown, never a guess: a paid request named under 
   assert.equal(workflowCallsOf([kept("c1", { ended: "complete" })])[0].usd, null, "no start: no window");
 });
 
+test("on pi a call's window opens at the answer that asked for it and closes at its tool result; an answer that asked for two is no window of one", () => {
+  const asked = (...ids) => ({ kind: "pi.assistant", conversationId: ROOT, model: [{ role: "assistant", content: ids.map((id) => ({ type: "toolCall", id, name: "learned_workflow", arguments: {} })) }] });
+  const result = (id) => ({ kind: "pi.tool-result", conversationId: ROOT, model: [{ role: "toolResult", toolCallId: id }] });
+  const one = [...booked(1, 1), asked("c1"), ...node(2, 0.25), kept("c1", { ended: "complete" }), result("c1"), ...booked(3, 2)];
+  assert.equal(workflowCallsOf(one)[0].usd, 0.25, "the node's request alone: not the answer that asked, nor the one after");
+  const two = [...booked(1, 1), asked("c1", "r1"), ...node(2, 0.25), kept("c1", { ended: "complete" }), result("c1"), result("r1")];
+  assert.equal(workflowCallsOf(two)[0].usd, null);
+});
+
 test("the platform's call ends as its WORKFLOW_FIRST entry says; one a crash cut before its record is that entry's alone, its cost unknown", () => {
   const served = (outcome) => ({ kind: WORKFLOW_FIRST, conversationId: ROOT, data: { workflow: "a", digest: D, revision: "s", call: WORKFLOW_FIRST_CALL, outcome } });
   // Its workflow completed, and its answer could not be shaped to the agent's schema: handed back.

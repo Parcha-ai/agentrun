@@ -86,8 +86,9 @@ test("a promoted workflow the money rule stopped reads stopped, never serving, i
   };
   await end(0.1, { path: "agent" });
   // Ten served runs each: `dear` at $0.50 a run against $0.10 by hand (over the line), `cheap` at $0.01 (under it).
-  for (let i = 0; i < 10; i += 1) await end(0.5, { path: "workflow", workflow: "dear", workflow_digest: "f".repeat(16) });
-  for (let i = 0; i < 10; i += 1) await end(0.01, { path: "workflow", workflow: "cheap", workflow_digest: "9".repeat(16) });
+  const served = (workflow, digest) => ({ path: "workflow", workflow, workflow_digest: digest, workflow_calls: [{ workflow, digest, caller: "platform", outcome: "answered", usd: null }] });
+  for (let i = 0; i < 10; i += 1) await end(0.5, served("dear", "f".repeat(16)));
+  for (let i = 0; i < 10; i += 1) await end(0.01, served("cheap", "9".repeat(16)));
 
   const cost = await api("GET", "/agents/costly/learning/cost");
   assert.equal(cost.status, 200, JSON.stringify(cost.body));

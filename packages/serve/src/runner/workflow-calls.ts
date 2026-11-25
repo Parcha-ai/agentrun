@@ -23,15 +23,31 @@ const outcomeOf = (ended: unknown): WorkflowCallOutcome => (ended === "complete"
 /** Whether call `id` is `callId` itself or a call nested in it (`callId/...`). */
 const within = (id: string, callId: string) => id === callId || id.startsWith(`${callId}/`);
 
-/** What call `callId` booked (runner/metrics.ts callCostOf), over the window from its start to the later of its end and
- *  its record (`recordAt`); null when the window is not its alone: no start, or another call (none of its own) started
- *  within it or still open at its start (a nesting tool's, or the call it runs inside, is its own). Never a guess: a
- *  cost that can't be told apart is unknown. */
+/** The toolCall ids a pi answer (`pi.assistant`, its message the entry's model[0]) asked for: pi keeps no call start of
+ *  a tool the model called, only the answer that asked for it and the tool result after. */
+const piCallsOf = (entry: EntryLike): string[] => {
+  if (entry.kind !== "pi.assistant") return [];
+  const content = (entry.model?.[0] as { content?: unknown } | undefined)?.content;
+  return Array.isArray(content) ? content.flatMap((block: { type?: unknown; id?: unknown }) => (block?.type === "toolCall" && typeof block.id === "string" ? [block.id] : [])) : [];
+};
+const piResultOf = (entry: EntryLike): string | undefined => {
+  const id = entry.kind === "pi.tool-result" ? (entry.model?.[0] as { toolCallId?: unknown } | undefined)?.toolCallId : undefined;
+  return typeof id === "string" ? id : undefined;
+};
+
+/** What call `callId` booked (runner/metrics.ts callCostOf), over the window from its start (its call start entry, or on
+ *  pi the answer that asked for it) to the later of its end (its call end, or pi's tool result) and its record
+ *  (`recordAt`); null when the window is not its alone: no start, a pi answer that asked for another call beside it, or
+ *  another call (none of its own) started within it or still open at its start (a nesting tool's, or the call it runs
+ *  inside, is its own). Never a guess: a cost that can't be told apart is unknown. */
 function callUsdOf(entries: readonly EntryLike[], callId: string, recordAt: number): number | null {
-  const from = entries.findIndex((entry) => entry.kind === KINDS.callStart && callIdOf(entry) === callId);
+  const started = entries.findIndex((entry) => entry.kind === KINDS.callStart && callIdOf(entry) === callId);
+  const asked = started < 0 ? entries.findIndex((entry) => piCallsOf(entry).includes(callId)) : -1;
+  const from = started >= 0 ? started : asked;
   if (from < 0 || from > recordAt) return null;
-  const start = entries[from]!.data as CallStartData;
-  const to = Math.max(recordAt, entries.findLastIndex((entry) => entry.kind === KINDS.callEnd && callIdOf(entry) === callId));
+  if (asked >= 0 && piCallsOf(entries[asked]!).length > 1) return null;
+  const start = (started >= 0 ? entries[from]!.data : {}) as CallStartData;
+  const to = Math.max(recordAt, entries.findLastIndex((entry) => (entry.kind === KINDS.callEnd && callIdOf(entry) === callId) || piResultOf(entry) === callId));
   // A call that holds this one (a nesting tool's: its id a prefix of this one's, or the harness's own call it runs in).
   const holds = (id: string) => callId.startsWith(`${id}/`) || start.parent === id || start.parentCallId === id;
   const open = new Set<string>();
