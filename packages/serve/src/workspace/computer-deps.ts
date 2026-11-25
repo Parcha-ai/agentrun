@@ -312,11 +312,18 @@ export const computerReplacedNote = ({ kind, folderKept }: Replaced): string => 
 /** What the run's model is told, once in its run, when its desktop or phone holds none of the run's files (no folder of
  *  the run's is mounted in it: RunTools.apart), labelled as the server's (SERVER_NOTE_LABEL): what it saves on the
  *  computer never reaches the user and goes with the computer, so it keeps what the user should get in the run's files;
- *  `screenshot`, the run has computer_screenshot, whose save_as saves the screen there. `outlives`: the computer is a
+ *  `screenshot`, the run has computer_screenshot, whose save_as saves the screen there. `writes`: the run's gate lets it
+ *  write a file (RunGate.writeBar: write given, not denied, and not an ask no one can approve); without it the run is
+ *  told a screenshot can't be saved to its files, and no save_as
+ *  or file tool is promised (bash may still be offered, so nothing more is claimed). `outlives`: the computer is a
  *  person's paired one or the agent's own (ClaimComputer.outlives), never deleted when the run ends, so what is saved on
  *  it stays there. */
-export const computerFilesNote = ({ kind, screenshot, outlives }: { readonly kind: "desktop" | "phone"; readonly screenshot: boolean; readonly outlives?: boolean }): string =>
-  `${SERVER_NOTE_LABEL}this ${kind}'s own disk is not this run's files: nothing saved on the ${kind} reaches the user, and ${outlives ? `it stays on the ${kind} after the run ends` : "it is deleted when the run ends"}. Keep anything the user should get in the run's files, the folder your file tools work on${screenshot ? "; computer_screenshot with save_as saves the screen there as a PNG" : ""}.`;
+export const computerFilesNote = ({ kind, screenshot, writes, outlives }: { readonly kind: "desktop" | "phone"; readonly screenshot: boolean; readonly writes: boolean; readonly outlives?: boolean }): string => {
+  const keep = writes
+    ? `Keep anything the user should get in the run's files, the folder your file tools work on${screenshot ? "; computer_screenshot with save_as saves the screen there as a PNG" : ""}.`
+    : "Screenshots can't be saved to the run's files here (write isn't offered): put what you found in your answer.";
+  return `${SERVER_NOTE_LABEL}this ${kind}'s own disk is not this run's files: nothing saved on the ${kind} reaches the user, and ${outlives ? `it stays on the ${kind} after the run ends` : "it is deleted when the run ends"}. ${keep}`;
+};
 
 /** The claim's computer as the runner's specs call it: what the run's launch lets the computer reach (its box_allow),
  *  read from the launch row when the store has one and the claim does not say, then computerForClaim. */

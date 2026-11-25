@@ -19,6 +19,7 @@ import { HELD_COMMANDS } from "../computer-held.js";
 import { HAND_BACK } from "./hand-back.js";
 import { KINDS, withdrawnAnswers } from "./journal-kinds.js";
 import { journalEntries } from "./journal-reader.js";
+import { type BoundTimer, REAL_TIMER } from "./loop.js";
 import { type Claim, ClaimRefused, type Command, type Journal, type Loop, type LoopEnd, type LoopFactory, stopEnd, type StopReason } from "./loop-contract.js";
 import { FrameTooLarge } from "./run-channel.js";
 import { isFenced, type RunnerStore } from "./store-port.js";
@@ -183,7 +184,7 @@ export interface RunnerOptions {
   claimGate?: (fresh: boolean) => Promise<string | undefined>;
   /** For tests: the claim deadline's clock (the deadline a claim not renewed in time is lost at, and the time its claimed
    *  until is reckoned from). Default: the real one. Nothing else in the runner reads it. */
-  clock?: { now(): number; setTimeout(fn: () => void, ms: number): unknown; clearTimeout(handle: unknown): void };
+  clock?: BoundTimer & { now(): number };
 }
 
 /** A runner's memory budget and its runs' weights, in MiB (RunnerOptions.memory). `weigh` answers each id it is given; an
@@ -305,7 +306,7 @@ export function startRunner(options: RunnerOptions): Runner {
     redact: given = processSecretRedactor(),
     now = Date.now,
     onBeat = () => {},
-    clock = { now: () => Date.now(), setTimeout: (fn: () => void, ms: number) => setTimeout(fn, ms), clearTimeout: (handle: unknown) => clearTimeout(handle as NodeJS.Timeout) },
+    clock = { now: () => Date.now(), ...REAL_TIMER },
   } = options;
   // The one instance every run's loop gets (LoopDeps.redact), able to hold what each claim opens from the store
   // (redact.ts holdClaimed): a stored key is cut wherever a key of the runner's environment is.

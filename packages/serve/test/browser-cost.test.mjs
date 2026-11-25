@@ -1099,7 +1099,7 @@ test("through the API, live: each browser call's row carries its charge as it ru
   let after = 0;
   const served = [];
   const read = async () => {
-    const { status, body: page } = await api.fresh("GET", `/runs/${runId}/timeline?${new URLSearchParams({ ...(after ? { after: String(after) } : {}), wait_ms: "500" })}`);
+    const { status, body: page } = await api("GET", `/runs/${runId}/timeline?${new URLSearchParams({ ...(after ? { after: String(after) } : {}), wait_ms: "500" })}`);
     assert.equal(status, 200, JSON.stringify(page));
     if (page.reset) view.clear();
     for (const row of page.rows) (view.set(row.id, row), served.push(row));

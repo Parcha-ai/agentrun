@@ -45,7 +45,7 @@ function tracked(/** @type {import("@parcha/agentrun-kernel").AgentAdapter} */ a
 
 /** @param {import("@parcha/agentrun-serve/conformance").ConformanceSetup} setup */
 function spec(setup) {
-  const { script, tools, hooks, agentId } = setup;
+  const { script, tools, hooks, agentId, endOfRun } = setup;
   // One folder per loop: a resume on another runner opens the session from the run's journal, not from this folder.
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "harness-module-conformance-"));
   dirs.push(dir);
@@ -53,6 +53,7 @@ function spec(setup) {
   /** @type {import("@parcha/agentrun-serve/conformance").AdapterRunSpec} */
   const run = {
     ...(agentId ? { agentId } : {}),
+    ...(endOfRun ? { endOfRun } : {}),
     adapter: tracked(acpAdapter({ recipe, sessionsDir: join(dir, "sessions") })),
     facts: FACTS,
     record: "loop",

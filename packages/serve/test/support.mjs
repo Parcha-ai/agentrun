@@ -601,9 +601,7 @@ function read({ status, headers, text }) {
 }
 
 export function client(baseUrl, token, { owner = false } = {}) {
-  /** A plain read with the token: no owner's session and no guard of api's. */
-  const fresh = async (method, path) => read(await alone(`${baseUrl}${path}`, { method, headers: token ? { authorization: `Bearer ${token}` } : {} }));
-  return Object.assign(api, { fresh });
+  return api;
   /** `raiseCheck: false`: no raise guard read after this request (raisedReadsQueued), for a test whose server goes away
    *  once the raise is answered. */
   async function api(method, path, body, headers = {}, { raiseCheck = true } = {}) {
@@ -843,14 +841,16 @@ export async function whenFree(send) {
 export const retried = (api) => (...args) => whenFree(() => api(...args));
 
 /** Apply timeline pages from `after` the way a client must (drop, then upsert), until the run's status is in `until`: an end
- *  once its page is final, any other status on the first page that leaves no change behind it. */
-export async function follow(api, runId, until, { after = 0, deadlineMs = 30_000 } = {}) {
+ *  once its page is final, any other status on the first page that leaves no change behind it. `done(rows, page)`: and
+ *  until the rows so far say what the case waits on (a run that is not final, such as one paused, may say its status
+ *  before every row behind it is written); it reads on, on the same long poll, until they do. */
+export async function follow(api, runId, until, { after = 0, deadlineMs = 30_000, done = () => true } = {}) {
   const view = new Map();
   const pages = [];
   const end = Date.now() + deadlineMs;
+  const rowsNow = () => [...view.values()].sort((a, b) => a.seq - b.seq);
   for (;;) {
-    // Each long poll on a connection of its own: a loaded machine's pooled socket closing under it is not the run's state.
-    const { status, body: page } = await (api.fresh ?? api)("GET", `/runs/${runId}/timeline?${new URLSearchParams({ ...(after ? { after: String(after) } : {}), wait_ms: "2000" })}`);
+    const { status, body: page } = await api("GET", `/runs/${runId}/timeline?${new URLSearchParams({ ...(after ? { after: String(after) } : {}), wait_ms: "2000" })}`);
     assert.equal(status, 200, JSON.stringify(page));
     pages.push(page);
     if (page.reset) view.clear();
@@ -860,11 +860,10 @@ export async function follow(api, runId, until, { after = 0, deadlineMs = 30_000
     // A page's status and its rows are read together, so a page with no more to come has every row up to that status. A
     // second, empty page to confirm it would only return when its long poll runs out.
     const settled = ["completed", "failed", "cancelled"].includes(page.status) ? page.final : !page.has_more;
-    if (until.includes(page.status) && settled) break;
-    assert.ok(Date.now() < end, `the run did not reach ${until.join("|")}: last ${page.status}/${page.state}`);
+    if (until.includes(page.status) && settled && done(rowsNow(), page)) break;
+    assert.ok(Date.now() < end, `the run did not reach ${until.join("|")}${until.includes(page.status) && settled ? " with the rows the case waits on" : ""}: last ${page.status}/${page.state}`);
   }
-  const rows = [...view.values()].sort((a, b) => a.seq - b.seq);
-  return { rows, pages, after, last: pages.at(-1) };
+  return { rows: rowsNow(), pages, after, last: pages.at(-1) };
 }
 
 /** An OpenAI Responses endpoint on loopback: every turn answers `text` and reports `tokens` input and output tokens.

@@ -110,15 +110,19 @@ test("a phone run is still held to the stricter key: desktop set to deny refuses
 const op = (name, args) => ["computer_op", { op: name, args }];
 test("a script's computer_op is decided as the run's own bash, write and read are, on every harness: a deny, a read-only policy, the default, and the kind's deny first", async () => {
   const held = [op("shell.run", { command: "ls" }), op("processes.start", { command: ["sleep", "1"] }), op("files.write", { path: "/workspace/a", data: "x" }), op("files.read", { path: "/workspace/a" }), op("files.list", { path: "/workspace" }), op("files.stat", { path: "/workspace/a" })];
+  const tools = ["bash", "read", "write"];
   for (const harness of ["pi", "claude-agent", "codex", "opencode"]) {
-    const denied = runnerGate({ harness, settings: { bash: { permission: "deny" }, write: { permission: "deny" }, read: { permission: "deny" } } });
+    const denied = runnerGate({ harness, tools, settings: { bash: { permission: "deny" }, write: { permission: "deny" }, read: { permission: "deny" } } });
     for (const [tool, args] of held) {
       const decided = await denied.decide(tool, args);
       assert.ok(typeof decided === "object" && "deny" in decided, `${harness} ${args.op} is refused: ${JSON.stringify(decided)}`);
     }
     // An op no tool of the run's runs (the apps, raw input) is the kind's alone.
     assert.equal(await denied.decide(...op("apps.list", {})), "allow", `${harness}: apps.list is the kind's`);
-    for (const [tool, args] of held) assert.equal(await runnerGate({ harness }).decide(tool, args), "allow", `${harness} ${args.op}: the default allows`);
+    for (const [tool, args] of held) assert.equal(await runnerGate({ harness, tools }).decide(tool, args), "allow", `${harness} ${args.op}: the default allows`);
+    // files.write needs write among the agent's tools, whatever write's setting says.
+    const unwritten = await runnerGate({ harness, tools: ["bash", "read"] }).decide(...op("files.write", { path: "/workspace/a", data: "x" }));
+    assert.match(unwritten.deny ?? "", /not given write/, `${harness}: ${JSON.stringify(unwritten)}`);
   }
   const readOnly = runnerGate({ overrides: { bash: { policy: "read-only" } } });
   assert.equal(await readOnly.decide(...op("shell.run", { command: "ls" })), "allow");
