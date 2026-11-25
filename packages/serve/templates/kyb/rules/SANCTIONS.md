@@ -151,6 +151,10 @@ saved once stays in `lists/` for every later grep.
 PLC, LLP, LP, GmbH, AG, S.A., S.A.S., S.R.L., B.V., N.V., JSC, OOO, PJSC, Co., Company). Keep distinctive words such as
 Holding, Group, International, Trading, Bank: they are compared, but they don't make a match on their own.
 
+**A name with another in brackets is both names.** An entry written `ADF (Allied Democratic Forces)`, or with a former
+or translated name in brackets, has the name outside the brackets and the one inside: compare the subject's name with
+each on its own, as if each were the entry's name. The same holds for a name in brackets in the subject's.
+
 **Match types:**
 - `exact`: the normalised name equals the entry's normalised primary name.
 - `alias`: it equals one of the entry's strong aliases (OFAC `ALT.CSV` aka, fka, nka; a UK alias that is not `Low
