@@ -1,8 +1,10 @@
 // Claude Code's login on this machine as claude-agent's model source: a person's own Claude plan, used by the pinned
-// Claude Code CLI as that CLI always uses it. AgentRun never reads, copies, stores, proxies or relays the login or a
-// browser code: the CLI keeps it in its own files and calls Anthropic with it itself (the harness's login.ts). This
-// server only tells the CLI where its login is, asks it for its status (`claude auth status`), and keeps one setting: that
-// the owner turned the mode on, where the login is, and on which machine.
+// Claude Code CLI as that CLI always uses it. AgentRun never copies, stores, proxies or relays the login or a browser
+// code: the CLI keeps it in its own files and calls Anthropic with it itself (the harness's login.ts). This server tells
+// the CLI where its login is, asks it for its status (`claude auth status`), and keeps one setting: that the owner turned
+// the mode on, where the login is, and on which machine. Where each run is a user of its own, the runner reads AgentRun's
+// own login folder, renews it there in the CLI's place, with the CLI's own request and lock, and a run gets only its
+// access token (claude-login-token.ts).
 //
 // One switch (AGENTRUN_CLAUDE_CODE_LOGIN): unset, the mode is there only on a server that listens on loopback, so a
 // server bound past it (0.0.0.0 in a container, a hosted service) has it off with nothing to set; `off` or `on` says so
@@ -14,7 +16,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { accessSync, chmodSync, closeSync, constants, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { delimiter, dirname, isAbsolute, join } from "node:path";
-import type { ClaudeAgentLogin, ClaudeLoginStatus } from "@parcha/agentrun-harness-claude";
+import type { ClaudeAgentLogin, ClaudeLoginStatus, ClaudeLoginToken } from "@parcha/agentrun-harness-claude";
 import { facts as claudeFacts } from "@parcha/agentrun-harness-claude/facts";
 import { registerSecretWrite } from "./secret-writes.js";
 import type { ClaudeSignIns, SignInView } from "./claude-sign-in.js";
@@ -267,9 +269,16 @@ export function loginOf(setting: Setting | undefined, data: string, env: Readonl
 
 const LOGIN = Symbol.for("agentrun.claude-login");
 
+/** A login as a run holds it: its two directories, or, in a run's own process under a user of its own, its runner's
+ *  reader of its access token (held.ts claudeLogin). */
+export type RunLogin = ClaudeAgentLogin | ClaudeLoginToken;
+
+/** Whether `login` is a reader of its access token, not its directories. */
+export const loginByToken = (login: RunLogin): login is ClaudeLoginToken => typeof (login as { token?: unknown }).token === "function";
+
 /** `env` carrying `login` (none: carrying none), as an enumerable symbol property: a spread keeps it, a spawn never sees
- *  it (it is no variable), and it holds only two directory names. */
-export function withClaudeLogin<T extends object>(env: T, login: ClaudeAgentLogin | undefined): T {
+ *  it (it is no variable), and it holds two directory names or a token reader, never a token. */
+export function withClaudeLogin<T extends object>(env: T, login: RunLogin | undefined): T {
   if (login) Object.defineProperty(env, LOGIN, { value: Object.freeze({ ...login }), enumerable: true, configurable: true, writable: false });
   else delete (env as Record<symbol, unknown>)[LOGIN];
   return env;
@@ -283,9 +292,9 @@ export function envAtPlace<T extends object>(env: T, place: { readonly mode: str
 }
 
 /** The login `env` carries, unless the switch is off. */
-export function claudeLoginOf(env: NodeJS.ProcessEnv): ClaudeAgentLogin | undefined {
+export function claudeLoginOf(env: NodeJS.ProcessEnv): RunLogin | undefined {
   if (claudeLoginOff(env)) return undefined;
-  return (env as Record<symbol, ClaudeAgentLogin | undefined>)[LOGIN];
+  return (env as Record<symbol, RunLogin | undefined>)[LOGIN];
 }
 
 /** Whether `harness` runs on the login `env` carries. */

@@ -16,8 +16,7 @@
 //     model goes on the person's plan, from the CLI itself, with no key of ours and no proxy (`login`).
 import type { HarnessWire as Wire, Wire as ModelWire } from "@parcha/agentrun-kernel";
 import { CredentialUnavailable, ROUTE_ORIGIN } from "@parcha/agentrun-kernel/host";
-import type { ClaudeAgentLogin } from "@parcha/agentrun-harness-claude";
-import { CLAUDE_LOGIN_PROVIDER, onClaudeLogin, claudeLoginOf, loginServes } from "./claude-login.js";
+import { CLAUDE_LOGIN_PROVIDER, onClaudeLogin, claudeLoginOf, loginServes, type RunLogin } from "./claude-login.js";
 import { chooseModel, FAUX_ENV, hostModel, MODEL_PROVIDER, type ModelNeeds, type ModelRef, ollamaWouldRun, START_OLLAMA } from "./model.js";
 import { modelWire, routed, routedId, translatesOnto, WIRES, wireOf } from "./wires.js";
 import { modelFormWhy } from "./model-form.js";
@@ -150,7 +149,7 @@ export function anthropicModelId(model: ModelRef): string {
  *  attempt it was made for, as LiteLLM's spend-logs metadata); none on any other endpoint. */
 /** `fetch`: the route's own, for a model it translates onto the wire (routedProvider): the harness's proxy forwards
  *  with it, to `origin` (ROUTE_ORIGIN), and nothing goes to the network but what the route sends. */
-export type Provider = { origin: string; credential: () => string | Promise<string>; auth: "bearer" | "x-api-key"; modelId: string; priceModel: ModelRef; billing?: "plan"; refused?: (credential: string) => Promise<void>; login?: ClaudeAgentLogin; headers?: Readonly<Record<string, string>>; fetch?: typeof fetch };
+export type Provider = { origin: string; credential: () => string | Promise<string>; auth: "bearer" | "x-api-key"; modelId: string; priceModel: ModelRef; billing?: "plan"; refused?: (credential: string) => Promise<void>; login?: RunLogin; headers?: Readonly<Record<string, string>>; fetch?: typeof fetch };
 
 /** The provider of a held run its model kept from running at its create (run-launch.ts hold.refused), on pi and on every
  *  CLI harness's proxy: its model's route chooses no model and reads no key, so a host with no key for its model still

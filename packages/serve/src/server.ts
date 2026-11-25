@@ -991,7 +991,7 @@ const GATEWAY_VARS = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL_GATEWAY_IDS", "AGENT_
  *  saved key is one of those; the rest of the environment is the server's start's), and the models the Ollama here
  *  listed when last asked (ollamaListing). Held to tell whether a write, or a new listing, needs the offers probed again,
  *  never shown. */
-const offersInputs = (env: NodeJS.ProcessEnv): readonly (string | undefined)[] => [...SECRET_NAMES.filter((name) => !TOOL_FIELDS.includes(name)).map((name) => env[name]), ...GATEWAY_VARS.map((name) => env[name]), planOf(env)?.state, planOf(env)?.models.join(" "), claudeLoginOf(env)?.dir, ollamaListing(env)];
+const offersInputs = (env: NodeJS.ProcessEnv): readonly (string | undefined)[] => [...SECRET_NAMES.filter((name) => !TOOL_FIELDS.includes(name)).map((name) => env[name]), ...GATEWAY_VARS.map((name) => env[name]), planOf(env)?.state, planOf(env)?.models.join(" "), ...[claudeLoginOf(env)].map((login) => (login && "dir" in login ? login.dir : undefined)), ollamaListing(env)];
 
 /** A sign-in step's answer; its refusal (a stale or bad pasted address, no sign-in waiting, OpenAI's no) a 400 in words. */
 async function planStep<T>(step: () => Promise<T>): Promise<T> {
