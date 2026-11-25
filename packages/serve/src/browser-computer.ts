@@ -275,20 +275,17 @@ export async function releaseOlderBrowsers(
 
 /** A Browserbase connect URL moved onto the credential proxy that fronts its sockets: only `*.browserbase.com` hosts, with
  *  the signing query kept. The signing key goes to the proxy, so its base takes the rule of a URL a key goes to (keyBase),
- *  over https or wss: one it refuses throws in those words, never falling back to Browserbase's own host. */
+ *  over https or wss: one it refuses throws in those words, never falling back to Browserbase's own host. Another browser's
+ *  session never goes to the proxy, so its attach never reads the setting. */
 export function rewriteConnectUrl(connectUrl: string, connectBaseUrl: string | undefined): string {
   if (!connectBaseUrl) return connectUrl;
+  const url = URL.canParse(connectUrl) ? new URL(connectUrl) : undefined;
+  if (!url || !/(?:^|\.)browserbase\.com$/i.test(url.hostname)) return connectUrl;
   const target = new URL(keyBase(connectBaseUrl, "BROWSERBASE_CONNECT_BASE_URL", ["https:", "wss:"]));
-  try {
-    const url = new URL(connectUrl);
-    if (!/(?:^|\.)browserbase\.com$/i.test(url.hostname)) return connectUrl;
-    url.protocol = target.protocol;
-    url.host = target.host;
-    url.pathname = target.pathname.replace(/\/$/, "") + url.pathname;
-    return url.toString();
-  } catch {
-    return connectUrl;
-  }
+  url.protocol = target.protocol;
+  url.host = target.host;
+  url.pathname = target.pathname.replace(/\/$/, "") + url.pathname;
+  return url.toString();
 }
 
 /** A run's browser over `provider`, a browser computer provider (the plane's vendor, or a test's stand-in), as the claim
