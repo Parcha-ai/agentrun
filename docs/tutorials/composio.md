@@ -30,8 +30,8 @@ jq -n --arg p "$PASSWORD" '{password: $p}' | curl -sS -c jar.txt -X POST "$BASE/
 
 ## 1. Add your key and pick a toolkit
 
-In **Settings → MCP servers → Add from Composio**, paste your Composio API key, type a toolkit's slug (`hackernews`)
-and press **Load actions**.
+In **Settings → MCP servers → Add from Composio**, paste your Composio API key, press **Load toolkits**, pick a
+toolkit (`Hacker News · hackernews`) and press **Load actions**.
 
 <p align="center">
   <img alt="The Add from Composio form: the Composio API key field, masked, and the toolkit hackernews" src="../assets/tutorials/composio-1-key.png" width="100%">
@@ -48,13 +48,17 @@ curl -sS -b jar.txt -X POST "$BASE/v2/settings/mcp-servers/composio/tools" -H "o
 The answer lists the toolkit's actions (`tools`, each with its `slug`) and `no_auth`, which is `true` when the toolkit
 needs no account.
 
+`POST $BASE/v2/settings/mcp-servers/composio/toolkits` with `{"api_key": ...}` lists the toolkits the picker offers
+(`toolkits`, each with its `slug` and `name`).
+
 </details>
 
 ## 2. Connect the account
 
 A toolkit that acts as you (`github`, `slack`, `gmail`) needs your account on Composio. When you save one, the console
 gives you a link to Composio's page to connect it. `hackernews` skips this step. The GitHub trigger in step 4 needs a
-connected GitHub account, so add `github` the same way now and open the link.
+connected GitHub account, so add `github` the same way now and open the link. Once you have connected it, press the
+server's **Refresh**: its row then says `connected` and which account (the label Composio gives it).
 
 <p align="center">
   <img alt="After saving the github toolkit: Saved. Its tools need your github account: connect it on Composio, then refresh the server. A link reads Connect your github account" src="../assets/tutorials/composio-2-connect.png" width="100%">
