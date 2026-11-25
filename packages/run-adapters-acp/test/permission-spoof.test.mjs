@@ -125,7 +125,7 @@ for (const [style, title, recipeOver] of [
   ['goose-1.59', 'agentrun: write · proof.txt', { allowFile: undefined }],
   ['goose', 'agentrun__write', { allowFile: undefined }],
   ['cursor', 'agentrun-write: write', { quirks: undefined }],
-  // agy is given our server under its start's own name (agentrun and 16 hex digits), which its title carries.
+  // agy is given our server under its start's own name (agentrun and 8 hex digits), which its title carries.
   ['antigravity', 'Run mcp_agentrun<start>_write', { quirks: undefined }],
 ]) {
   test(`a recipe without the title tie never answers allow_once on the title: ${JSON.stringify(title)} (${style}) asks the host's gate, journaled; a deny answers reject_once`, async (t) => {
@@ -142,7 +142,7 @@ for (const [style, title, recipeOver] of [
     await session.send('go');
     assert.equal((await session.turnEnd()).status, 'completed');
     assert.deepEqual(asked.map((c) => c.tool), ['acp_other'], 'the host gate was asked about the request');
-    const titled = new RegExp(`^${title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace('<start>', '[0-9a-f]{16}')}$`);
+    const titled = new RegExp(`^${title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace('<start>', '[0-9a-f]{8}')}$`);
     assert.match(String(asked[0].args.title), titled);
     assert.deepEqual(fakeEvents(recipe).filter((e) => e.type === 'permission').map((e) => e.kind), ['reject_once']);
     assert.equal(ran, 0, 'refused at the protocol, so the agent never made the call');
@@ -154,7 +154,7 @@ for (const [style, title, recipeOver] of [
 // agy names a call `mcp_<server>_<tool>`, one _ between them: a server named agentrun_look with a tool up would spell
 // our look_up under a server named agentrun. So under a recipe whose prefix joins by one character (agy's
 // `mcp_agentrun_`) our server goes by a name of its start's own, which no server set up before the start can spell.
-test("under agy's recipe the agent is given our MCP server under a name of its start's own, agentrun and 16 hex digits; under Goose's and Cursor's, agentrun", async (t) => {
+test("under agy's recipe the agent is given our MCP server under a name of its start's own, agentrun and 8 hex digits; under Goose's and Cursor's, agentrun", async (t) => {
   const given = [];
   for (const style of ['antigravity', 'antigravity', 'goose-1.59', 'cursor']) {
     const recipe = fakeRecipe(scratch(), { script: [{ say: 'hi' }], style });
@@ -163,11 +163,33 @@ test("under agy's recipe the agent is given our MCP server under a name of its s
     assert.equal((await session.turnEnd()).status, 'completed');
     given.push(fakeEvents(recipe).filter((e) => e.type === 'new').map((e) => e.names));
   }
-  assert.match(given[0][0]?.[0] ?? '', /^agentrun[0-9a-f]{16}$/);
-  assert.match(given[1][0]?.[0] ?? '', /^agentrun[0-9a-f]{16}$/);
+  assert.match(given[0][0]?.[0] ?? '', /^agentrun[0-9a-f]{8}$/);
+  assert.match(given[1][0]?.[0] ?? '', /^agentrun[0-9a-f]{8}$/);
   assert.notEqual(given[0][0][0], given[1][0][0], 'a fresh name at each start');
   assert.deepEqual(given[2], [['agentrun']]);
   assert.deepEqual(given[3], [['agentrun']]);
+});
+
+// agy caps a tool's name at 64 characters, and names ours mcp_agentrun<8 hex>_<tool> (21 + the tool's own): a tool of
+// ours longer than 43 could never be called, so under agy's recipe such a start is refused, naming the tool; Goose's
+// and Cursor's name ours without the per-start name, and start.
+test("under agy's recipe a tool of ours named longer than 43 characters refuses the start, naming it; 43 starts, and Goose and Cursor start with either", async (t) => {
+  const fits = 'a'.repeat(43);
+  const over = 'b'.repeat(44);
+  for (const [style, name, starts] of [['antigravity', fits, true], ['antigravity', over, false], ['goose-1.59', over, true], ['cursor', over, true]]) {
+    const recipe = fakeRecipe(scratch(), { script: [{ say: 'hi' }], style });
+    const { session } = await openSession(t, recipe, { tools: [tool(name, () => 'found')] });
+    await session.send('go');
+    const end = await session.turnEnd();
+    const label = `${style} ${name.length}`;
+    assert.equal(end.status, starts ? 'completed' : 'failed', `${label}: ${end.error ?? ''}`);
+    assert.equal(fakeEvents(recipe).some((e) => e.type === 'start'), starts, label);
+    if (!starts) {
+      assert.match(end.error, /at most 64 characters in all, so a tool's own name may be at most 43/, end.error);
+      assert.ok(end.error.includes(JSON.stringify(over)), end.error);
+      assert.match(end.error, /the agent was not started$/, end.error);
+    }
+  }
 });
 
 for (const [how, declares] of [

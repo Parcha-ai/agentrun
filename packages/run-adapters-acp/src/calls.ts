@@ -62,10 +62,22 @@ export function joinsByOne(announces: AcpAnnounces | undefined): boolean {
 }
 
 /** The name our MCP server is given to the agent under at one start: under a recipe whose prefix joins by one character
- *  (joinsByOne), `agentrun` and 16 random hex digits, no `_` or `-`, which no server set up before the start can spell;
- *  under any other, `agentrun`. */
+ *  (joinsByOne), `agentrun` and 8 random hex digits, no `_` or `-`, which no server set up before the start can spell
+ *  (8, not more: each of our tools is named with it, under the agent's cap, TOOL_NAME_CAP); under any other, `agentrun`. */
 export function mcpServerName(announces: AcpAnnounces | undefined): string {
-  return joinsByOne(announces) ? `${MCP_SERVER}${randomBytes(8).toString("hex")}` : MCP_SERVER;
+  return joinsByOne(announces) ? `${MCP_SERVER}${randomBytes(4).toString("hex")}` : MCP_SERVER;
+}
+
+/** The most characters a tool's name may hold where the agent names it (agy's, as the model APIs' tool names: 64). */
+export const TOOL_NAME_CAP = 64;
+
+/** Of `tools`, those whose name as the agent names them at this start (`announces` as announcesAt reads them: its prefix
+ *  and the tool's name) is longer than TOOL_NAME_CAP. Only a prefix is counted; a recipe that reads the tool's name
+ *  from a field of its own with the server beside it (Cursor's) names none. */
+export function namesTooLong(announces: AcpAnnounces | undefined, tools: Iterable<string>): string[] {
+  if (announces?.prefix === undefined || announces.server !== undefined) return [];
+  const prefix = announces.prefix;
+  return [...tools].filter((tool) => prefix.length + tool.length > TOOL_NAME_CAP);
 }
 
 /** The recipe's `announces` as one start reads them, our MCP server given to the agent as `server` (mcpServerName): its
@@ -181,6 +193,16 @@ function announcedArgs(update: { rawInput?: unknown }, announces: AcpAnnounces |
   return Object.fromEntries(Object.entries(args).filter(([name, value]) => !(extras.includes(name) && typeof value === "string")));
 }
 
+/** Add announced call `update` of `tool` to `calls` by its arguments (announcedArgs). Where the tool's schema declares
+ *  one of the extras (`kept`), the agent may have added its own (agy's toolSummary beside a call that sent none, the
+ *  field being optional) or passed the call's: which, only the MCP call's arguments say. So it is kept under both forms,
+ *  with that extra and without, and the first MCP call either form matches takes it (CallIds.add `also`). */
+function addAnnounced(calls: CallIds, update: AcpCallUpdate, announces: AcpAnnounces | undefined, tool: string, kept: ReadonlySet<string> | undefined): void {
+  const args = announcedArgs(update, announces, kept);
+  const bare = kept?.size ? announcedArgs(update, announces) : args;
+  calls.add(update.toolCallId, tool, args, bare === args ? undefined : bare);
+}
+
 /** An agent's update about one of its calls, as the adapter reads it. */
 export interface AcpCallUpdate {
   readonly toolCallId: string;
@@ -195,7 +217,7 @@ const hasEffects = (kind: unknown): boolean => typeof kind === "string" && NATIV
  *  own; one it names as ours is kept as that tool; one it names nothing for is matched by its arguments alone, except
  *  one with no arguments on a recipe whose field names calls, which waits for the update that names it. On a recipe
  *  without the field, one reporting no input at all is kept as a call that names nothing (CallIds.add). `declared`: for
- *  each tool, the recipe's extras its input schema declares (declaresProperty), kept in its arguments. */
+ *  each tool, the recipe's extras its input schema declares (declaresProperty), matched with and without (addAnnounced). */
 export function announceCall(calls: CallIds, update: AcpCallUpdate, announces: AcpAnnounces | undefined, tools: ReadonlySet<string>, declared?: ReadonlyMap<string, ReadonlySet<string>>): void {
   if (hasEffects(update.kind)) return;
   const tool = announcedTool(update, announces, tools);
@@ -209,7 +231,8 @@ export function announceCall(calls: CallIds, update: AcpCallUpdate, announces: A
   // Named by nothing, on a recipe that names its calls, with input that is no argument object: its field never named
   // it, so it is the agent's own.
   if (tool === undefined && announces && !isPlain(raw)) return;
-  calls.add(update.toolCallId, tool, tool === undefined ? update.rawInput : announcedArgs(update, announces, declared?.get(tool)));
+  if (tool === undefined) calls.add(update.toolCallId, undefined, update.rawInput);
+  else addAnnounced(calls, update, announces, tool, declared?.get(tool));
 }
 
 /** A tool_call_update naming a call its tool_call left unnamed with no input (Cursor's MCP calls: a tool_call titled
@@ -222,7 +245,7 @@ export function nameCall(calls: CallIds, update: AcpCallUpdate, announces: AcpAn
   if (!calls.held(update.toolCallId) || hasEffects(update.kind)) return;
   const tool = announcedTool(update, announces, tools);
   if (typeof tool !== "string") return;
-  calls.add(update.toolCallId, tool, announcedArgs(update, announces, declared?.get(tool)));
+  addAnnounced(calls, update, announces, tool, declared?.get(tool));
 }
 
 /** The key of an announcement that names no tool and reports no input (CallIds.add). */
@@ -234,8 +257,9 @@ export class CallIds {
   private readonly waiting = new Map<string, ((id: string) => void)[]>();
   private readonly used = new Set<string>();
   private readonly tools = new Map<string, string>();
-  /** The key each announcement still waiting for its MCP call is kept under. */
-  private readonly keyOf = new Map<string, string>();
+  /** The keys each announcement still waiting for its MCP call is kept under: one, or two where its arguments may be
+   *  read with or without an extra (add's `also`). */
+  private readonly keyOf = new Map<string, readonly string[]>();
   /** The calls announced naming no tool and reporting no input, held for the update that names them (hold). */
   private readonly unnamed = new Set<string>();
 
@@ -257,42 +281,51 @@ export class CallIds {
    *  never keeps one elsewhere) is the last an MCP call takes, of any tool, when nothing else matches it: nothing names
    *  it and nothing ties it, and its MCP call would otherwise run under an id of the adapter's, counted a second time
    *  against a plan's limit and memoized under a key a resume never asks again. Until its call ends (settle). A tool
-   *  named for an id already announced without one (a call the agent named in a later update) keys it again. */
-  add(id: string, tool: string | undefined, input: unknown): void {
+   *  named for an id already announced without one (a call the agent named in a later update) keys it again. `also`:
+   *  the same call's arguments read another way (addAnnounced: without an extra its tool's schema declares), under
+   *  which it is kept too; the first MCP call either matches takes it, and it is gone from both. */
+  add(id: string, tool: string | undefined, input: unknown, also?: unknown): void {
     if (this.used.has(id)) return;
     if (tool !== undefined) this.unnamed.delete(id);
     if (tool !== undefined && !this.tools.has(id)) this.tools.set(id, tool);
     // An announced call with input is matched only by that input (and its tool, where the field named one), so it never
     // takes an MCP call with other arguments that is waiting for its own announcement.
-    const key = isPlain(input) ? `${tool ?? ""}\0${canonical(input)}` : `${tool ?? ""}\0*`;
+    const keyFor = (args: unknown) => (isPlain(args) ? `${tool ?? ""}\0${canonical(args)}` : `${tool ?? ""}\0*`);
+    const keys = [...new Set([keyFor(input), ...(also === undefined ? [] : [keyFor(also)])])];
     const before = this.keyOf.get(id);
-    if (before === key) return;
-    if (before !== undefined) {
-      const list = this.seen.get(before) ?? [];
+    if (before && before.length === keys.length && before.every((key, i) => key === keys[i])) return;
+    this.unlist(id);
+    for (const key of keys) {
+      const waiter = this.waiting.get(key)?.shift();
+      if (waiter) {
+        this.used.add(id);
+        waiter(id);
+        return;
+      }
+    }
+    for (const key of keys) {
+      const list = this.seen.get(key) ?? [];
+      list.push(id);
+      this.seen.set(key, list);
+    }
+    this.keyOf.set(id, keys);
+  }
+
+  /** `id` out of every list it is kept in (keyOf), waiting for its MCP call no more. */
+  private unlist(id: string): void {
+    for (const key of this.keyOf.get(id) ?? []) {
+      const list = this.seen.get(key) ?? [];
       const at = list.indexOf(id);
       if (at >= 0) list.splice(at, 1);
     }
-    const waiter = this.waiting.get(key)?.shift();
-    if (waiter) {
-      this.keyOf.delete(id);
-      this.used.add(id);
-      waiter(id);
-      return;
-    }
-    const list = this.seen.get(key) ?? [];
-    list.push(id);
-    this.seen.set(key, list);
-    this.keyOf.set(id, key);
+    this.keyOf.delete(id);
   }
 
   /** The agent's call `id` ended (completed or failed) with no MCP call having taken it: an announcement that names
    *  nothing and reports nothing is dropped, so a call of the agent's own never takes a later MCP call's id. */
   settle(id: string): void {
-    if (this.keyOf.get(id) !== NOTHING) return;
-    const list = this.seen.get(NOTHING) ?? [];
-    const at = list.indexOf(id);
-    if (at >= 0) list.splice(at, 1);
-    this.keyOf.delete(id);
+    if (this.keyOf.get(id)?.[0] !== NOTHING) return;
+    this.unlist(id);
   }
 
   /** Whether the agent announced `id` (matched or not). */
@@ -316,7 +349,7 @@ export class CallIds {
       for (const key of from) {
         const id = this.seen.get(key)?.shift();
         if (id) {
-          this.keyOf.delete(id);
+          this.unlist(id);
           this.used.add(id);
           return id;
         }

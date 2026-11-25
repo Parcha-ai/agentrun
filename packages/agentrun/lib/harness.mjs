@@ -18,10 +18,6 @@ import { join, resolve } from "node:path";
 /** The harnesses this command installs by name: antigravity by the recipe AgentRun ships (the ACP package's). */
 const INSTALLABLE = ["goose", "cursor", "antigravity"];
 
-/** A recipe as given (--recipe): passed to the server as it is, from this directory, which resolves it (serve's
- *  resolveRecipe): a file, or the name of a recipe AgentRun ships, which a file of that name here refuses. */
-const recipeOf = (given) => given;
-
 /** A variable named like a credential (a KEY, TOKEN, SECRET, PASSWORD or CREDENTIAL(S) segment). */
 const KEY_NAMED = /(?:^|_)(?:KEY|TOKEN|TOKENS|SECRET|PASSWORD|CREDENTIALS?)(?:_|$)/i;
 
@@ -55,7 +51,7 @@ export const HARNESS_INSTALL = {
     const launcher = await launcherOf(cli, "installs a harness");
     // No key reaches the install: every variable named like one is left out of its environment.
     const keyless = Object.fromEntries(Object.entries(env).filter(([key]) => !KEY_NAMED.test(key)));
-    const which = values.recipe === undefined ? [name] : ["--recipe", recipeOf(values.recipe)];
+    const which = values.recipe === undefined ? [name] : ["--recipe", values.recipe];
     return spawnSync(launcher, ["install-harness", ...which, "--data", dataOf(values, env)], { stdio: "inherit", env: keyless }).status ?? 1;
   },
 };
@@ -75,7 +71,7 @@ export const HARNESS_SIGN_IN = {
     // The agent prints where to sign in on this terminal itself, and keeps its sign-in in its own folder: no key is
     // needed, so none reaches it.
     const keyless = Object.fromEntries(Object.entries(env).filter(([key]) => !KEY_NAMED.test(key)));
-    return spawnSync(launcher, ["sign-in-harness", "--recipe", recipeOf(values.recipe), "--data", dataOf(values, env)], { stdio: "inherit", env: keyless }).status ?? 1;
+    return spawnSync(launcher, ["sign-in-harness", "--recipe", values.recipe, "--data", dataOf(values, env)], { stdio: "inherit", env: keyless }).status ?? 1;
   },
 };
 
@@ -123,7 +119,7 @@ export const HARNESS_CHECK = {
   async run({ values, env, cli }) {
     if (values.recipe === undefined) throw cli.fail(2, "agentrun harness-check needs --recipe FILE.");
     const launcher = await launcherOf(cli, "checks a harness");
-    const flags = ["--recipe", recipeOf(values.recipe), "--data", dataOf(values, env)];
+    const flags = ["--recipe", values.recipe, "--data", dataOf(values, env)];
     if (values.model !== undefined) flags.push("--model", values.model);
     if (values.report !== undefined) flags.push("--report", resolve(values.report));
     if (values.cap !== undefined) flags.push("--cap", values.cap);
