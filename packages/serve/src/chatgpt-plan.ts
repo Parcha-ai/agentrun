@@ -188,10 +188,35 @@ function unspent(error: unknown): boolean {
 
 /** The renewals in flight in this process, by the refresh token they spend: two readers of one sign-in share one. */
 const flights = new Map<string, Promise<string>>();
-/** The renewals in flight in this process against each store (by its sealed keys), for a stop to drain (renewalsEnded). */
-const storeFlights = new WeakMap<object, Set<Promise<string>>>();
-/** How long a stop waits for a renewal in flight (renewalsEnded, by the server): OpenAI's answer and the write back. */
+/** Each store's renewals in this process (by its sealed keys): those in flight, for its stop to drain, and whether its
+ *  stop has begun (stopRenewals), from which no reader on it starts one. */
+const storeRenewals = new WeakMap<object, { flights: Set<Promise<string>>; stopping: boolean }>();
+const renewalsOf = (store: ChatGPTPlanDeps["store"]): { flights: Set<Promise<string>>; stopping: boolean } => {
+  let of = storeRenewals.get(store.sealedKeys);
+  if (!of) storeRenewals.set(store.sealedKeys, (of = { flights: new Set(), stopping: false }));
+  return of;
+};
+/** How long a stop waits for a renewal in flight (stopRenewals): OpenAI's answer and the write back, for a refresh sent
+ *  before the stop began (none is sent after it: renewUnder). */
 export const RENEWAL_DRAIN_MS = REFRESH_CALL_MS + STORE_WRITE_DEADLINE_MS;
+
+/** A store's stop in this process (the server's, a runner's beside it or of its own), called as it begins and awaited
+ *  before `store.close()`: from now no reader on the store starts a renewal, and this resolves once those out have ended,
+ *  saved or not, or `ms` has gone. So a refresh token OpenAI spent leaves its new pair saved, never lost to the close. */
+export function stopRenewals(store: ChatGPTPlanDeps["store"], ms = RENEWAL_DRAIN_MS): Promise<void> {
+  const of = renewalsOf(store);
+  of.stopping = true;
+  if (of.flights.size === 0) return Promise.resolve();
+  let timer: NodeJS.Timeout | undefined;
+  const ended = Promise.allSettled([...of.flights]).then(() => undefined);
+  return Promise.race([ended, new Promise<void>((done) => (timer = setTimeout(done, ms)))]).finally(() => clearTimeout(timer));
+}
+
+/** A store fault's class for the log (one of the store's own, else "other"), never its words. */
+const faultClass = (error: unknown): string => {
+  const name = (error as Error | undefined)?.name;
+  return typeof name === "string" && /^Store[A-Za-z]+$/.test(name) ? name : "other";
+};
 
 /** `answered`: OpenAI answered the code with a credential, which is being kept: past the wait, so its end is no timeout. */
 type Pending = { abort: AbortController; state: string; authorizeUrl: string; expiresAt: number; paste: (url: string) => void; result: Promise<void>; timer: NodeJS.Timeout; answered?: boolean };
@@ -641,9 +666,9 @@ export class ChatGPTPlan implements PlanReader {
     const key = row.credential.refresh;
     let flight = flights.get(key);
     if (!flight) {
-      // Its server stopping: a renewal started now could spend the refresh token and lose the pair with the store closed.
-      if (this.#closed) throw new PlanUnavailable(RENEW_LATER);
-      const ours = this.storeFlights();
+      // Its store stopping: a renewal started now could spend the refresh token and lose the pair with the store closed.
+      if (this.stopping()) throw new PlanUnavailable(RENEW_LATER);
+      const ours = renewalsOf(this.#deps.store).flights;
       const started: Promise<string> = this.renew(key).finally(() => {
         flights.delete(key);
         ours.delete(started);
@@ -655,19 +680,10 @@ export class ChatGPTPlan implements PlanReader {
     return flight;
   }
 
-  /** This store's renewals in flight in this process. */
-  private storeFlights(): Set<Promise<string>> {
-    const of = this.#deps.store.sealedKeys;
-    let set = storeFlights.get(of);
-    if (!set) storeFlights.set(of, (set = new Set()));
-    return set;
-  }
-
-  /** Resolves once every renewal in flight in this process against this plan's store has ended, saved or not: a server's
-   *  stop waits for it (bounded by RENEWAL_DRAIN_MS) before the store closes, so a refresh token OpenAI has spent never
-   *  leaves its new pair unsaved. close() first, so none starts meanwhile. */
-  renewalsEnded(): Promise<void> {
-    return Promise.allSettled([...this.storeFlights()]).then(() => undefined);
+  /** Whether this plan starts no renewal: it is closed (the server's, at its stop), or its store's stop began here
+   *  (stopRenewals: every reader on it, a runner's included). */
+  private stopping(): boolean {
+    return this.#closed || renewalsOf(this.#deps.store).stopping;
   }
 
   /** Whether `row`'s access token may be sent as it is: OpenAI has not refused it here, and it has more than 5 minutes left. */
@@ -703,12 +719,12 @@ export class ChatGPTPlan implements PlanReader {
       if (row.lease && row.lease.until > at) {
         if (row.credential.access !== this.#refusedAccess && row.credential.expires > this.now()) return row.credential.access;
         // Past the bound, or its server stopping: a wait on another holder's renewal never holds a stop's drain.
-        if (this.now() > giveUp || this.#closed) throw new PlanUnavailable(RENEW_LATER);
+        if (this.now() > giveUp || this.stopping()) throw new PlanUnavailable(RENEW_LATER);
         await sleep(LEASE_WAIT_MS);
         continue;
       }
-      // Its server stopped while it read: no lease is taken, so no refresh token is spent past the stop.
-      if (this.#closed) throw new PlanUnavailable(RENEW_LATER);
+      // Its store's stop began while it read: no lease is taken, so no refresh token is spent past the stop.
+      if (this.stopping()) throw new PlanUnavailable(RENEW_LATER);
       const leased: Row = { ...row, lease: { holder, until: at + REFRESH_LEASE_MS } };
       // Changed since it was read (a peer leased or renewed it, or the owner signed in again): read it again.
       const mine = await this.swap(bytes, leased);
@@ -722,6 +738,12 @@ export class ChatGPTPlan implements PlanReader {
   private async renewUnder(row: Row, bytes: Uint8Array): Promise<string> {
     const { lease: _, ...bare } = row;
     const { openaiProvider } = await import("@earendil-works/pi-ai/providers/openai");
+    // Its store's stop began while the lease was taken (a write that can take the store's whole deadline): the refresh
+    // token is never sent past the stop, so the drain waits only on refreshes sent before it, and the lease goes back.
+    if (this.stopping()) {
+      await this.swap(bytes, bare).catch(() => undefined);
+      throw new PlanUnavailable(RENEW_LATER);
+    }
     let next: Credential;
     try {
       next = (await openaiProvider().auth.oauth!.refresh(bare.credential, AbortSignal.timeout(REFRESH_CALL_MS))) as Credential;
@@ -749,11 +771,12 @@ export class ChatGPTPlan implements PlanReader {
       saved = await this.swap(bytes, renewed);
     } catch (error) {
       // The write back faulted. Refused unsent (the store closed): no row holds the new pair, so it is revoked, never
-      // left live and saved nowhere. Any other fault leaves its outcome unknown: the row may hold the pair now, and
-      // revoking it would end the sign-in it holds, so it is kept and said in the log.
-      if (error instanceof StoreClosed) await this.revoke(renewed.credential);
-      else this.#deps.log?.({ chatgpt: "renewed_pair_unsaved", write: "unknown" });
-      throw new PlanUnavailable(RENEW_LATER);
+      // left live and saved nowhere. Any other fault (busy, a deadline): the row read back says how it ended.
+      if (error instanceof StoreClosed) {
+        await this.revoke(renewed.credential);
+        throw new PlanUnavailable(RENEW_LATER);
+      }
+      saved = await this.readBack(bytes, renewed, error);
     }
     if (saved) {
       this.wrote(renewed);
@@ -763,6 +786,33 @@ export class ChatGPTPlan implements PlanReader {
     // holds it but this renewal, so it is revoked here, never handed out. One OpenAI doesn't confirm is carried.
     if (!(await this.revoke(renewed.credential))) await this.carry(renewed.credential);
     return this.adopt();
+  }
+
+  /** A write back of `renewed` over this holder's lease (sealed as `leased`) that faulted with `fault`, not StoreClosed:
+   *  the row read back says how it ended. It holds the new pair: saved (its bytes). It is still the lease: nothing landed,
+   *  so it is written again. Anything else: the lease lost (none), as a compare-and-set that lost. Only a read back (or a
+   *  write again) that faults too leaves the outcome unknown: the row may hold the pair, so it is kept, never revoked,
+   *  and the log says so with the fault's class (never its words). */
+  private async readBack(leased: Uint8Array, renewed: Row, fault: unknown): Promise<Uint8Array | undefined> {
+    const unknown = (error: unknown): never => {
+      this.#deps.log?.({ chatgpt: "renewed_pair_unsaved", write: "unknown", reason: faultClass(error) });
+      throw new PlanUnavailable(RENEW_LATER);
+    };
+    let now: { row: Row; bytes: Uint8Array } | undefined;
+    try {
+      now = await this.readSealed();
+    } catch {
+      return unknown(fault);
+    }
+    if (now?.row.credential.refresh === renewed.credential.refresh) return now.bytes;
+    if (!now || !Buffer.from(now.bytes).equals(Buffer.from(leased))) return undefined;
+    try {
+      return await this.swap(leased, renewed);
+    } catch (error) {
+      if (!(error instanceof StoreClosed)) return unknown(error);
+      await this.revoke(renewed.credential);
+      throw new PlanUnavailable(RENEW_LATER);
+    }
   }
 
   /** A pair this holder got and could not save (a renewal whose write back lost: renewUnder), whose revocation OpenAI
@@ -776,7 +826,8 @@ export class ChatGPTPlan implements PlanReader {
       const now = await this.readSealed();
       if (!now) return;
       if (now.row.lease && now.row.lease.until > (await this.storeNow())) {
-        if (this.now() > giveUp) {
+        // Past the bound, or its store stopping (a wait here would outlast the stop's drain).
+        if (this.now() > giveUp || this.stopping()) {
           this.#deps.log?.({ chatgpt: "renewed_pair_unsaved" });
           return;
         }
@@ -854,7 +905,7 @@ export class ChatGPTPlan implements PlanReader {
 
   /** Stops the sign-in waiting, at the server's close. Resolves once every sign-in cancelled (by this, a newer start, a
    *  sign-out or its 10 minutes) has ended, whatever its end said in the log. From here this plan (the server's) starts
-   *  no renewal; one already out is waited for by renewalsEnded. */
+   *  no renewal; one already out is waited for by its store's stop (stopRenewals). */
   close(): Promise<void> {
     this.#closed = true;
     this.cancel();

@@ -26,6 +26,7 @@ import { dockerPathsForRuns } from "../box-paths.js";
 import { COMPOSIO_KEY_ENV } from "../composio-made.js";
 import { hostCommandRefusals } from "../computers.js";
 import { hostAddressesOnce } from "../docker-host-addresses.js";
+import { stopRenewals } from "../chatgpt-plan.js";
 import { claimInstallsStopped } from "../harness-install.js";
 import { HARNESS_MODULES_ENV, HARNESS_MODULES_SETTING, HARNESS_RECIPES_ENV, HARNESS_RECIPES_SETTING, HARNESS_TABLE_ENV, harnessModulesEnv, harnessModulesOf, harnessRecipesEnv, harnessRecipesOf, harnessTable } from "../harness-table.js";
 import { DEFAULT_PORT, maxRunsOf } from "../host.js";
@@ -358,6 +359,9 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
   const close = () =>
     (closing ??= (async () => {
       floor.stop();
+      // From here its claims' readers start no ChatGPT renewal on its store; one OpenAI is answering saves its new pair
+      // before the store closes (awaited last, bounded by RENEWAL_DRAIN_MS from now: inside the close's own bound).
+      const renewalsStopped = stopRenewals(store);
       // The janitor's sweep is cut and waited for on its own bound, beside the runner's close, never before it.
       await Promise.all([janitor?.close(), runner.close()]);
       // Its relay after its runs: a run's release revokes its machine's token through it. Then its word that it is
@@ -366,6 +370,7 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
       await kept.close();
       // A first-use install its claims started, stopped as they let go: its npm ends before this process can.
       await claimInstallsStopped();
+      await renewalsStopped;
       await store.close();
       held.release();
     })());
