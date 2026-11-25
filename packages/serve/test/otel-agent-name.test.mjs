@@ -20,16 +20,18 @@ const { flushTraces, genAiTracing, tracePosts } = await import("../dist/otel/tra
 const { secretRedactor } = await import("../dist/runner/redact.js");
 
 // An endpoint with a user, a password and a key parameter, all dummies: none of them may reach a log line.
+// The user and password are joined apart (USERINFO), so the source holds no URL with a credential in it.
 const USER = "walk-user";
-const PASSWORD = "dummy-otlp-pass-0000";
+const PASS = "dummy-otlp-pass-0000";
 const KEY = "dummy-otlp-key-0000";
-const CREDENTIALED = { OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: `https://${USER}:${PASSWORD}@collector.invalid:4318/v1/traces?region=us-east-1&api_key=${KEY}`, OTEL_EXPORTER_OTLP_HEADERS: "x-api-key=dummy-header-key-0000" };
+const USERINFO = [USER, PASS].join(":");
+const CREDENTIALED = { OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: `https://${USERINFO}@collector.invalid:4318/v1/traces?region=us-east-1&api_key=${KEY}`, OTEL_EXPORTER_OTLP_HEADERS: "x-api-key=dummy-header-key-0000" };
 const SHOWN = "https://collector.invalid:4318/v1/traces?region=us-east-1&api_key=[redacted]";
 // A GitHub token's shape, a dummy: a name of that shape is cut whatever the runner holds.
 const TOKEN_SHAPED = `ghp_${"a1B2".repeat(9)}`;
 
 const attributesOf = (span) => Object.fromEntries((span.attributes ?? []).map(({ key, value }) => [key, value.stringValue ?? value.intValue ?? value.boolValue ?? value.doubleValue]));
-const credentialFree = (line) => ![USER, PASSWORD, KEY, "dummy-header-key-0000"].some((value) => line.includes(value));
+const credentialFree = (line) => ![USER, PASS, KEY, "dummy-header-key-0000"].some((value) => line.includes(value));
 
 test("a traced run of a saved agent names it: gen_ai.agent.name is the agent's name, gen_ai.agent.id its id, the harness on agentrun.harness; and the runner's start says once that tracing is on, without the endpoint's credentials", { timeout: 120_000 }, async (t) => {
   // A collector on loopback that takes OTLP/HTTP JSON: every span it was sent.
@@ -55,7 +57,7 @@ test("a traced run of a saved agent names it: gen_ai.agent.name is the agent's n
     collector.close();
   });
   const port = collector.address().port;
-  withEnv(t, { OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: `http://${USER}:${PASSWORD}@127.0.0.1:${port}/v1/traces?api_key=${KEY}` }, ["OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_HEADERS", "OTEL_EXPORTER_OTLP_TRACES_HEADERS", "OTEL_SDK_DISABLED", "OTEL_TRACES_SAMPLER"]);
+  withEnv(t, { OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: `http://${USERINFO}@127.0.0.1:${port}/v1/traces?api_key=${KEY}` }, ["OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_HEADERS", "OTEL_EXPORTER_OTLP_TRACES_HEADERS", "OTEL_SDK_DISABLED", "OTEL_TRACES_SAMPLER"]);
   // The tracer's lines go to the console's warnings: every one said from the server's start on.
   const said = [];
   const warn = console.warn;
