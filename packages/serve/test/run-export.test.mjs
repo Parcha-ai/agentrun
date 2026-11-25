@@ -251,16 +251,19 @@ test("files: which files are carried, and at which index, is decided with no res
 });
 
 test("files: a restore that puts a carried file over a cap is refused 400, never a file moved in or out", async () => {
-  const mail = `reach someone.with.a.rather.long.name.${hex("mail", 8)}@sample-mail.zz\n`;
-  const { doc: seen } = await build({ files: [textFile("c/mail.txt", mail)] });
-  const cut = seen.files[0];
-  assert.ok(cut.bytes < Buffer.byteLength(mail), "the marker is shorter than the address");
+  // A long address (its marker shorter) and a private one (its marker longer): cut, the file is no longer than it was read;
+  // with the address restored, the private one's marker makes it longer.
+  const mail = `reach someone.with.a.rather.long.name.${hex("mail", 8)}@sample-mail.zz at 10.4.5.6\n`; // key-gate: denylist a synthetic private address the export cuts as personal
+  const files = () => [textFile("c/mail.txt", mail)];
+  const caps = { fileBytes: Buffer.byteLength(mail) };
+  const { doc: seen } = await build({ caps, files: files() });
+  assert.deepEqual(seen.files.map((file) => file.path), ["c/mail.txt"], "it fits, cut");
   const pick = cutsAt(seen, "/files/0/content").find((c) => c.rule === "email");
   assert.ok(pick, JSON.stringify(seen.cuts));
-  const caps = { fileBytes: cut.bytes };
-  const { doc: capped } = await build({ caps, files: [textFile("c/mail.txt", mail)] });
-  assert.deepEqual(capped.files.map((file) => file.path), ["c/mail.txt"], "it fits, cut");
-  await assert.rejects(build({ caps, files: [textFile("c/mail.txt", mail)], restore: [pick.id] }), (error) => error instanceof ApiError && error.status === 400 && /over the share caps/.test(error.message) && !error.message.includes("c/mail.txt"));
+  await assert.rejects(build({ caps, files: files(), restore: [pick.id] }), (error) => error instanceof ApiError && error.status === 400 && /over the share caps/.test(error.message) && !error.message.includes("c/mail.txt"));
+  // Under the default caps the same restore is taken.
+  const { doc } = await build({ files: files(), restore: [pick.id] });
+  assert.ok(doc.files[0].content.includes("@sample-mail.zz"));
 });
 
 test("a document over its cap is refused 413 export_too_large, never truncated", async () => {
