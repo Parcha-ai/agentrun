@@ -350,7 +350,7 @@ test("(10) a partial grade ({answer: 42} of the agent's {answer, sure, why}): ea
 test("(11) a grade given between the replays' end and the check's settle: each input is judged on what its fast model was asked (no grade then), so the verdict stands and the revision promotes; the grade counts from the next check", { timeout: 300_000 }, async (t) => {
   const w = await world(t, { learning: { compile_after: 3 }, prior: 3 });
   const ids = undrawn("graded-late");
-  await landRevision(w.dir, answerFlow(REVISED), ids[0]);
+  await landRevision(w.server, answerFlow(REVISED), ids[0]);
   await w.start(ids[0], "Question 10");
   const replays = await w.replaysEnded(3);
   for (const row of replays) assert.equal(row.metrics?.replay?.compared?.graded, null, `${row.id}: its verdict says no grade was there when it was asked`);
@@ -366,7 +366,7 @@ test("(11) a grade given between the replays' end and the check's settle: each i
 test("(12) a draft equal to the agent's answer, no grade when its replays ended, then a correction before the settle: each replay keeps that it was judged with no grade (no model asked), and the check promotes on that; the correction counts from the next check", { timeout: 300_000 }, async (t) => {
   const w = await world(t, { learning: { compile_after: 3 }, prior: 3, says: JSON.stringify({ answer: 42, sure: true }) });
   const ids = undrawn("equal-late");
-  await landRevision(w.dir, answerFlow(REVISED), ids[0]);
+  await landRevision(w.server, answerFlow(REVISED), ids[0]);
   await w.start(ids[0], "Question 10");
   const replays = await w.replaysEnded(3);
   for (const row of replays) assert.equal(row.metrics?.replay?.compared?.graded, null, `${row.id}: its record says it was judged with no grade`);
