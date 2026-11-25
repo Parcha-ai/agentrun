@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { container, fakeDocker } from "../../computer/test/fake-docker.mjs";
+import { allowed, container, fakeDocker } from "../../computer/test/fake-docker.mjs";
 import { ofStore, startRunnerProcess } from "../dist/runner/main.js";
 import { openSqliteStore } from "../dist/store/index.js";
 import { startJanitor, sweepServerComputers } from "../dist/workspace/computer-janitor.js";
@@ -258,6 +258,39 @@ test("the runner's own composition sweeps Docker past a labelled container made 
   await until(async () => said.some((line) => line.includes("docker")), "the start's sweep of docker");
   assert.deepEqual(said.filter((line) => line.includes("docker")), ["the computer janitor ended docker's computers past their deadline: computer-0000000000aa"]);
   assert.deepEqual(fake.names(), ["computer-0000000000dd"]);
+});
+
+test("the runner's start removes the egress proxies and volumes this server's runs left with no computer: never another server's, never a live computer's", { skip: !existsSync(DAEMON) && "no computerd-linux-amd64: run npm run build:daemon -w @parcha/agentrun-computer (CI's build job does)" }, async (t) => {
+  const dir = dataDir(t);
+  const server = await openSqliteStore({ dataDir: dir, role: "server" });
+  t.after(() => server.close());
+  await server.agents.create({ id: "agent-1", name: "Agent one" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer." } });
+  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
+  // Another runner holds run-1 at its claim's epoch, working on its computer D; E is an earlier claim's.
+  const [claim] = await server.runs.claimMany("runner-other", 1, { leaseMs: 600_000 });
+  const PAST_ISO = new Date(Date.now() - 60_000).toISOString();
+  // Each proxy and volume as create made them, with the computer's spec labels (its run and epoch). B: this server's
+  // run, its computer gone (a teardown that ended before its proxy). C: the same, of a run of another server on this
+  // Docker host. D: this server's live computer, with its proxy. E: this server's computer past its deadline, which the
+  // sweep ends as before (its line says the start's sweep ran).
+  const partsOf = (name, run) => {
+    const made = allowed({ name, allow: ["pypi.org"], labels: labels(run, 1) });
+    return { containers: made.containers.filter((one) => one.Name !== `/${name}`), volumes: made.volumes };
+  };
+  const B = partsOf("computer-0000000000bb", "run-1");
+  const C = partsOf("computer-0000000000cc", "run-of-another-server");
+  const D = allowed({ name: "computer-0000000000dd", allow: ["pypi.org"], labels: labels("run-1", claim.epoch) });
+  const fake = fakeDocker({
+    containers: [...B.containers, ...C.containers, ...D.containers, container({ name: "computer-0000000000ee", labels: labels("run-1", 0), deadline: PAST_ISO })],
+    volumes: [...B.volumes, ...C.volumes, ...D.volumes],
+  });
+  withEnv(t, { PATH: `${dirname(fake.program)}${delimiter}${process.env.PATH}`, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["AGENTRUN_SERVE_FAUX"]);
+  const said = [];
+  const runner = await startRunnerProcess({ dataDir: dir, name: "runner-docker", janitor: true, warn: (line) => said.push(line) });
+  t.after(() => runner.close());
+  await until(async () => said.some((line) => line.includes("past their deadline: computer-0000000000ee")), "the start's sweep of docker").catch((error) => assert.fail(`${error.message}; said: ${said.join(" | ")}`));
+  assert.deepEqual(fake.names().sort(), ["computer-0000000000cc-egress", "computer-0000000000dd", "computer-0000000000dd-egress"]);
+  assert.deepEqual(fake.volumeNames().sort(), ["computer-0000000000cc-egress", "computer-0000000000dd-egress"]);
 });
 
 test("a computer the sweep deleted ends its run's interval at the sweep's time; one whose delete failed stays open (computer-intervals.ts)", async () => {

@@ -176,7 +176,7 @@ export function egressVolume({ computer, deadline = new Date(Date.now() + 600_00
  * daemon's hello; `arch` is the architecture docker info reports, and `info` is merged over the rest of what it reports
  * (every limit enforced, seccomp builtin, no AppArmor); `vanish` names are listed by ps but gone by inspect; `noDaemon`
  * makes exec fail as when the daemon is missing; `user` is the provider's user option; `hold` names steps ("inspect",
- * "info", "hello", "logs") that wait, once called, until `proceed(step)`; "run" is a docker run that never answers, cut
+ * "info", "hello", "logs", "ps") that wait, once called, until `proceed(step)`; "run" is a docker run that never answers, cut
  * off before Docker looked at the name (`runHeld()` says it began). `desktop` is the provider's desktop option; `display`
  * is what the daemon's display does once process.start runs its X server: "up" (hello reports kind desktop and the
  * display's groups from then on), "exits" (the server ends at once, saying why on stderr), "never", or "stalls" (the
@@ -444,33 +444,48 @@ switch (args[0]) {
 		if (missing) noSuch(missing);
 	}); break;
 	case "ps": {
-		const names = args.includes("{{.Names}}");
-		for (const c of load()) {
-			if (hasLabels(c.Config.Labels)) process.stdout.write((names || config.vanish.includes(c.Name.slice(1)) ? c.Name.slice(1) : c.Id) + "\\n");
-		}
+		// hold "ps": a list that answers only once proceed("ps") is called, so a test can look between a caller's calls.
+		held("ps", () => {
+			const names = args.includes("{{.Names}}");
+			for (const c of load()) {
+				if (hasLabels(c.Config.Labels)) process.stdout.write((names || config.vanish.includes(c.Name.slice(1)) ? c.Name.slice(1) : c.Id) + "\\n");
+			}
+		});
 		break;
 	}
 	case "stop": case "rm": {
-		if (config.gone) noSuch(args.at(-1));
-		const all = load();
-		const found = find(all, args.at(-1));
-		// config.removing: a container another removal of which is under way, which Docker refuses to remove twice.
-		const removing = found && args[0] === "rm" ? Object.entries(config.removing).find(([ending]) => found.Name.endsWith(ending)) : undefined;
-		if (removing) {
-			if (found.RemovalEnds === undefined) {
-				found.RemovalEnds = removing[1] === null ? null : Date.now() + removing[1];
-				Object.assign(found.State, { Running: false, Status: "removing" });
-				save(all);
+		// Each container named, as Docker's CLI takes several: every one is asked, the ones it could not end are said on
+		// stderr, and the call exits 1 when any was.
+		const keys = args.slice(1).filter((arg) => !arg.startsWith("--"));
+		let failed = false;
+		for (const key of keys) {
+			if (config.gone) {
+				process.stderr.write("Error response from daemon: No such container: " + key + "\\n");
+				failed = true;
+				continue;
 			}
-			process.stderr.write("Error response from daemon: removal of container " + args.at(-1) + " is already in progress\\n");
-			process.exit(1);
+			const all = load();
+			const found = find(all, key);
+			// config.removing: a container another removal of which is under way, which Docker refuses to remove twice.
+			const removing = found && args[0] === "rm" ? Object.entries(config.removing).find(([ending]) => found.Name.endsWith(ending)) : undefined;
+			if (removing) {
+				if (found.RemovalEnds === undefined) {
+					found.RemovalEnds = removing[1] === null ? null : Date.now() + removing[1];
+					Object.assign(found.State, { Running: false, Status: "removing" });
+					save(all);
+				}
+				process.stderr.write("Error response from daemon: removal of container " + key + " is already in progress\\n");
+				failed = true;
+				continue;
+			}
+			// The computer's own init (config.computerd), and every process it started, end with it.
+			if (found?.Computerd && !(args[0] === "rm" && config.sticky.some((ending) => found.Name.endsWith(ending)))) { try { process.kill(found.Computerd.pid, "SIGTERM"); } catch {} }
+			// config.sticky: name endings of containers rm never removes, ones Docker keeps (a daemon stuck in its removal).
+			if (args[0] === "rm" && !(found && config.sticky.some((ending) => found.Name.endsWith(ending)))) save(all.filter((c) => c !== found));
+			else if (found) { Object.assign(found.State, { Running: false, Status: "exited" }); save(all); }
+			process.stdout.write(key + "\\n");
 		}
-		// The computer's own init (config.computerd), and every process it started, end with it.
-		if (found?.Computerd && !(args[0] === "rm" && config.sticky.some((ending) => found.Name.endsWith(ending)))) { try { process.kill(found.Computerd.pid, "SIGTERM"); } catch {} }
-		// config.sticky: name endings of containers rm never removes, ones Docker keeps (a daemon stuck in its removal).
-		if (args[0] === "rm" && !(found && config.sticky.some((ending) => found.Name.endsWith(ending)))) save(all.filter((c) => c !== found));
-		else if (found) { Object.assign(found.State, { Running: false, Status: "exited" }); save(all); }
-		process.stdout.write(args.at(-1) + "\\n");
+		if (failed) process.exit(1);
 		break;
 	}
 	case "image": {
