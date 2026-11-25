@@ -105,8 +105,12 @@ export function notASealKey(text: string): string {
   return `is not 32 bytes in base64 (43 characters, or 44 ending in =; it has ${length}${length === 43 || length === 44 ? ", but not in that form" : ""})`;
 }
 
-/** For a reader that got no seal key from `text` (sealKeyOf): "the one handed is not …" when one was handed (not blank),
- *  else undefined, so the reader says none was. The words every such refusal uses, by length, never the value. */
-export function handedNoSealKey(text: string | undefined): string | undefined {
-  return text?.trim() ? `the one handed ${notASealKey(text)}` : undefined;
+/** The seal key `handed` (SEAL_KEY_ENV's value) gives, for a reader of `what` kept under it; else one refusal, every
+ *  reader's: the one handed by its length (notASealKey), never its value, or that none was. In production the start boots
+ *  the key first (seal-key.ts bootSealKey), which refuses a malformed one itself; this is each reader's own guard.
+ *  `Refused`: the error a caller's own refusals are (a runner's RunnerRefused); `none`: what to do when none was handed. */
+export function sealKeyIn(handed: string | undefined, what: string, { Refused = Error, none = "start the server, which makes or opens it" }: { Refused?: new (message: string) => Error; none?: string } = {}): Buffer {
+  const key = sealKeyOf(handed);
+  if (key) return key;
+  throw new Refused(`${what} are kept under the server's seal key (${SEAL_KEY_ENV}), and ${handed?.trim() ? `the one handed ${notASealKey(handed)}` : `none was handed: ${none}`}`);
 }
