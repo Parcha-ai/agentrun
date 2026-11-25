@@ -537,8 +537,12 @@ export interface LearningItem {
   readonly version: number;
   /** Null: the item is gone at this version. */
   readonly body: string | null;
-  /** The run whose text it is: the run whose merge wrote it, kept by a person's change of it; null for a person's own. */
+  /** The run whose text it is: a note's, the run whose merge wrote it, kept by a person's change of it (null: a
+   *  person's own); a workflow's, its workflow.json's writer (`writers`). */
   readonly byRun: string | null;
+  /** A workflow's writer of each of its files, by path: the run whose merge changed the file to its text (a merge that
+   *  gives it unchanged, and a person's edit of it, keep the writer before; null: a person's own file). Null for a note. */
+  readonly writers: Readonly<Record<string, string | null>> | null;
   readonly change: LearningChangeKind;
   readonly person: boolean;
   /** A note's place among the notes. */

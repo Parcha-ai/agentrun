@@ -219,10 +219,13 @@ export const HAND_BACKS_KEPT_MS = 24 * 60 * 60_000;
  *    change; `purged`, a purged run's), who saved it and why (`change`: its reason and the paths it changed), and a
  *    run's merge key (one merge a run's round). A purged run's save keeps its version, id and merge key (a seed read
  *    from it stays held, and the round never merges again) and loses its words (`by_run`, `change`).
- *  - learning_items: each item's versions, never updated: a note (one line of corrections.md, `pos` its place) or a
+ *  - learning_items: each item's versions, never updated by a save (a run's purge rewrites the workflow versions that
+ *    held its files): a note (one line of corrections.md, `pos` its place) or a
  *    workflow (its folder's files as one JSON object of path to text, `digest` its workflow.json's). The item at a
- *    version is its newest row at or before it; a null body is gone. `by_run`: the run whose text it is (a person's
- *    change of a run's workflow keeps it), so a run's purge deletes its rows and the version before serves again.
+ *    version is its newest row at or before it; a null body is gone. A workflow's `writers`: each file's writer, the run
+ *    whose merge changed it to its text (a merge that gives a file unchanged, and a person's edit of it, keep the writer
+ *    before; null: a person's own file), so a run's purge takes each file it wrote back to its text before, file by
+ *    file. `by_run`: a note's run; a workflow's, its workflow.json's writer (what its promotions are of).
  *  - learning_records: the agent's promotion records, grades and audit rows, each its data whole, never trimmed; its
  *    run, workflow and digest read out for a purge.
  *  In STORE_DDL, and made at a server open on a store an earlier build of this version made. */
@@ -252,6 +255,7 @@ export const LEARNING_ROWS: readonly string[] = [
     person INTEGER NOT NULL,
     pos INTEGER NOT NULL,
     digest TEXT,
+    writers TEXT,
     at INTEGER NOT NULL,
     PRIMARY KEY (agent_id, kind, name, version)
   ) STRICT`,

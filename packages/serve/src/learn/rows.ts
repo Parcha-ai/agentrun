@@ -7,7 +7,7 @@
 import { createHash } from "node:crypto";
 import type { LearningAt, LearningItem, LearningItemWrite, LearningSave, Store } from "../store/store.js";
 import { CORRECTIONS_FILE } from "./corrections.js";
-import { learnedFront, learnedStatus, retiredFrom, WORKFLOW_NAME, WORKFLOWS_DIR } from "./workflow-draft.js";
+import { learnedFront, learnedStatus, retiredFrom, WORKFLOW_NAME, WORKFLOWS_DIR, workflowRunOf } from "./workflow-draft.js";
 
 /** A diff's file whose patch is larger than this is withheld as too large. */
 export const PATCH_CAP = 64 * 1024;
@@ -36,6 +36,7 @@ export function folderOf(path: string): string | undefined {
 }
 const keyFile = (name: string) => `${WORKFLOWS_DIR}/${name}/README.md`;
 const viewFile = (name: string) => `${WORKFLOWS_DIR}/${name}/workflow.json`;
+
 const byBytes = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 const iso = (ms: number) => new Date(ms).toISOString();
 
@@ -305,21 +306,23 @@ function itemsFor(at: LearningAt | undefined, read: LearningRead, change: Learni
     while (i < old.length || j < lines.length) {
       if (i < old.length && j < lines.length && old[i]!.body === lines[j]) {
         const note = old[i]!;
-        if (note.pos !== j) items.push({ kind: "note", name: note.name, body: note.body, byRun: note.byRun, change: note.change, person: note.person, pos: j, digest: null });
+        if (note.pos !== j) items.push({ kind: "note", name: note.name, body: note.body, byRun: note.byRun, change: note.change, person: note.person, pos: j, digest: null, writers: null });
         i++, j++;
       } else if (j < lines.length && (i >= old.length || lcs[i * width + j + 1]! >= lcs[(i + 1) * width + j]!)) {
-        items.push({ kind: "note", name: `${version}.${j}`, body: lines[j]!, byRun: run ?? null, change: kind, person, pos: j, digest: null });
+        items.push({ kind: "note", name: `${version}.${j}`, body: lines[j]!, byRun: run ?? null, change: kind, person, pos: j, digest: null, writers: null });
         j++;
       } else {
         const note = old[i]!;
-        items.push({ kind: "note", name: note.name, body: null, byRun: note.byRun, change: kind, person, pos: note.pos, digest: null });
+        items.push({ kind: "note", name: note.name, body: null, byRun: note.byRun, change: kind, person, pos: note.pos, digest: null, writers: null });
         i++;
       }
     }
   }
-  // Each workflow touched: a run's merge writes it whole (its folder is the files the run gives, so no version of a run's
-  // holds another run's text, and a purge of either takes only its own); a person's change keeps its files as they are,
-  // with the writes and deletes in its folder. Gone when none is left.
+  // Each workflow touched: a run's merge writes it whole (its folder is the files the run gives); a person's change keeps
+  // its files as they are, with the writes and deletes in its folder. Gone when none is left. Each file keeps its writer
+  // (LearningItem.writers): the run whose merge changed it to its text. A file given as it is (a run's merge that copies
+  // it unchanged), and a person's edit of a file, keep the writer before; a run's change of it is the run's; a person's
+  // new file is no run's. So a purge takes back only the files the run wrote, each to its text before.
   const names = new Set([...writes.keys(), ...deletes].map(folderOf).filter((name): name is string => name !== undefined));
   for (const name of [...names].sort(byBytes)) {
     const now = at?.items.find((item) => item.kind === "workflow" && item.name === name);
@@ -333,10 +336,18 @@ function itemsFor(at: LearningAt | undefined, read: LearningRead, change: Learni
     files.push(...changed);
     const kept = Object.keys(next).sort(byBytes);
     const json = next[viewFile(name)];
+    const before = now?.writers ?? {};
+    const writerOf = (path: string): string | null => {
+      const was = Object.hasOwn(files0, path) ? (before[path] ?? null) : null;
+      if (Object.hasOwn(files0, path) && files0[path] === next[path]) return was;
+      return run ?? was;
+    };
+    const writers = Object.fromEntries(kept.map((path) => [path, writerOf(path)]));
     items.push({
       kind: "workflow", name, body: kept.length ? JSON.stringify(Object.fromEntries(kept.map((path) => [path, next[path]!]))) : null,
-      // A person's change of a run's workflow is still that run's text: a purge of the run takes both.
-      byRun: run ?? now?.byRun ?? null, change: kind, person, pos: 0, digest: json === undefined ? null : digestOf(json),
+      // The workflow's run is its workflow.json's writer (what its promotions are of); its README.md's when it has none.
+      byRun: workflowRunOf(name, writers), change: kind, person, pos: 0, digest: json === undefined ? null : digestOf(json),
+      writers: kept.length ? writers : null,
     });
   }
   return { items, files: files.sort(byBytes) };

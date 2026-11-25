@@ -794,12 +794,13 @@ test("a run's purge scrubs its text from its agent's learning rows: its workflow
   assert.deepEqual([keptGraded.status, keptGraded.body.feedback], [200, "correction"], JSON.stringify(keptGraded.body));
   assert.equal((await ended(api, kept)).view.learning?.state, "merged");
   const path = "workflows/answer/workflow.json";
-  const readmeOf = (name) => ({ path: `workflows/${name}/README.md`, text: `---\nname: ${name}\ndescription: Answers a question; use when asked\n---\n` });
+  const readmeOf = (name, how = "") => ({ path: `workflows/${name}/README.md`, text: `---\nname: ${name}\ndescription: Answers a question${how}; use when asked\n---\n` });
   const v1 = JSON.stringify(answerFlow("Answer the question."));
   const v2 = JSON.stringify(answerFlow("Answer the question, in whole numbers."));
   const solo = JSON.stringify(answerFlow("Answer the question alone."));
   const merge = await learned(store, "keeper", (learning) => learningCommit(learning, { runId: gone, round: 7, reason: `It learned from ${mark}.`, files: [{ path, text: v1 }, readmeOf("answer"), { path: "workflows/solo/workflow.json", text: solo }, readmeOf("solo")] }));
-  await learned(store, "keeper", (learning) => learningCommit(learning, { runId: kept, round: 7, reason: "It answers in whole numbers.", files: [{ path, text: v2 }, readmeOf("answer")] }));
+  // Its own README.md too: a file given as the version before held it stays that version's writer's (the purged run's).
+  await learned(store, "keeper", (learning) => learningCommit(learning, { runId: kept, round: 7, reason: "It answers in whole numbers.", files: [{ path, text: v2 }, readmeOf("answer", " in whole numbers")] }));
   const digestOf = (text) => createHash("sha256").update(text).digest("hex").slice(0, 16);
   const [digest, soloDigest] = [digestOf(v1), digestOf(solo)];
   const record = (workflow, at) => ({ workflow, digest: at, at: new Date().toISOString(), decided: "promote", reason: "checked: promoted", commit: merge });

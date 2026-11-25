@@ -5,9 +5,10 @@
 -- learning_saves: each save of an agent's learning, one version, its random id (what a run's seed and the log name),
 -- its kind (init, run, person, purged), who saved it and why (`change`), and a run's merge key (one merge a run's
 -- round). A purged run's save keeps its version, id and merge key and loses its words.
--- learning_items: each item's versions, never updated: a note (one line of corrections.md, `pos` its place) or a
--- workflow (its files as one JSON object, `digest` its workflow.json's). The item at a version is its newest row at or
--- before it; a null body is gone. `by_run`: the run whose text it is, so a run's purge deletes its rows.
+-- learning_items: each item's versions, never updated by a save: a note (one line of corrections.md, `pos` its place)
+-- or a workflow (its files as one JSON object, `digest` its workflow.json's, `writers` each file's writing run). The
+-- item at a version is its newest row at or before it; a null body is gone. `by_run`: a note's run, a workflow's
+-- workflow.json's writer. A run's purge deletes its notes and takes each workflow file it wrote back to its text before.
 -- learning_records: the agent's promotion records, grades and audit rows, each its data whole; its run, workflow and
 -- digest read out for a purge.
 -- Made only where missing, so a store whose record of this file was lost applies it again unharmed.
@@ -38,6 +39,7 @@ CREATE TABLE IF NOT EXISTS learning_items (
   person BIGINT NOT NULL,
   pos BIGINT NOT NULL,
   digest TEXT COLLATE "C",
+  writers TEXT COLLATE "C" CHECK (writers IS NULL OR writers::json IS NOT NULL),
   at BIGINT NOT NULL,
   PRIMARY KEY (agent_id, kind, name, version)
 );

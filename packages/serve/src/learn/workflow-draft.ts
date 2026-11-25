@@ -10,6 +10,16 @@ export const WORKFLOWS_DIR = "workflows";
 /** A workflow's name: lowercase letters, digits, dashes and underscores, at most 64, starting with a letter or digit. */
 export const WORKFLOW_NAME = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
+/** A learned workflow's run (Store LearningItem.byRun) from its files' writers (LearningItem.writers): its
+ *  workflow.json's (what its promotions are of), else its README.md's, else none. */
+export function workflowRunOf(name: string, writers: Readonly<Record<string, string | null>>): string | null {
+  for (const file of ["workflow.json", "README.md"]) {
+    const path = `${WORKFLOWS_DIR}/${name}/${file}`;
+    if (Object.hasOwn(writers, path)) return writers[path] ?? null;
+  }
+  return null;
+}
+
 /** A workflow's `workflow.json` or its `README.md`, by the folder it names. */
 export type LearnedPlace = { readonly kind: "workflow" | "readme"; readonly name: string };
 const PLACES: readonly (readonly [RegExp, LearnedPlace["kind"]])[] = [
