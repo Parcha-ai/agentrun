@@ -2720,10 +2720,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   stops.push(async () => triggers.close());
   // The firing loop runs against the server's own opened store: due firings start their runs through the run write half,
   // times missed while it was down are recorded, and the timer is armed for the next. (A test may inject its own store.)
-  void triggers.start().catch((error: Error) => void process.stderr.write(`agentrun-serve: the triggers' start: ${error.message}\n`));
-  // The App's installations repaired from GitHub's own, once, as the server starts: events missed while it was down. It
-  // never rejects, and close (or a start that fails) aborts it and waits for it before it closes.
-  void githubConnect.reconcile((detail) => triggers.turnOff("github", detail), { force: true });
+  // A share host runs none of them: a data folder it reuses may hold enabled schedules and feeds, whose runs it can
+  // neither run nor answer for, and it reads no GitHub installation.
+  if (!options.shareHost) {
+    void triggers.start().catch((error: Error) => void process.stderr.write(`agentrun-serve: the triggers' start: ${error.message}\n`));
+    // The App's installations repaired from GitHub's own, once, as the server starts: events missed while it was down.
+    // It never rejects, and close (or a start that fails) aborts it and waits for it before it closes.
+    void githubConnect.reconcile((detail) => triggers.turnOff("github", detail), { force: true });
+  }
 
   // Setup's import of this machine's sessions: offered by a server on this machine only (no public address, listening
   // on loopback), counted once (a listing, no transcript kept), run once, each on a worker thread (import-worker.ts) so
