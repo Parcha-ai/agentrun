@@ -447,10 +447,10 @@ const afterEmpty = (value: string): string[] => {
 };
 
 /** The value of each `name=value` pair of `text` split at `breaks` whose name says it is a credential (credentialNamed),
- *  out of any quotes around it, raw or written `%22` or `%27`, as written and decoded. A name is what follows the last `/`, `?`, `#` or `:` before its
- *  `=` (a URL's query or fragment, `https://relay/v1?region=us`, names `region`). A value whose part before its first
- *  `;` is empty, as written or decoded (`token=;<key>` read whole, `token=%3B<key>`), is taken after that `;` too
- *  (afterEmpty). A value of only `=`, `;` and quotes, as written or decoded (a base64 credential's padding read as a
+ *  out of any quotes around it, raw or written `%22` or `%27`, as written and decoded. A name is what follows the last
+ *  `/`, `?`, `#` or `:` before its `=` (a URL's query or fragment, `https://relay/v1?region=us`, names `region`). A
+ *  value whose part before its first `;` is empty, as written or decoded (`token=;<key>` read whole, `token=%3B<key>`),
+ *  is taken after that `;` too (afterEmpty). A value of only `=`, `;` and quotes, as written or decoded (a base64 credential's padding read as a
  *  pair, `token=;` before a space, a lone `'` or its `%27`), is not taken: otlpHeaderCut has no length floor, and it
  *  would cut that character everywhere in the tracer's lines. */
 const pairValues = (text: string, breaks: RegExp): string[] =>
@@ -459,7 +459,7 @@ const pairValues = (text: string, breaks: RegExp): string[] =>
     if (at <= 0) return [];
     const name = pair.slice(0, at).split(/[/?#:]/).at(-1) ?? "";
     if (!credentialNamed(decoded(name) ?? name)) return [];
-    const inner = pair.slice(at + 1).replace(/^(["']|%22|%27)(.*)\1$/i, "$2");
+    const inner = pair.slice(at + 1).replace(/^(["']|%22|%27)(.*)\1$/, "$2");
     return [inner, ...afterEmpty(inner)]
       .flatMap((value) => [value, decoded(value) ?? value])
       .concat(afterEmpty(decoded(inner) ?? inner))
