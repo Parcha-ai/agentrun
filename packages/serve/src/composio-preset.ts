@@ -273,9 +273,10 @@ const labelOf = (account: Json): string | undefined =>
   accountLabel(account.alias) ?? (isObject(account.state) && isObject(account.state.val) ? accountLabel(account.state.val.displayName) : undefined) ?? accountLabel(account.word_id);
 
 /** The connected accounts of `of.user` for `of.toolkit` under `of.auth_config` (under every config where none is named;
- *  ACTIVE ones alone with `active`), as Composio lists them now: only one it names as that user's. One with no user_id
- *  (a field Composio's docs say it will stop answering) is not: nothing says whose it is, so it is never counted. None,
- *  unasked, for a user that is no Composio user id (COMPOSIO_USER_ID): a blank one Composio may read as every user. */
+ *  ACTIVE ones alone with `active`), as Composio lists them now: only those Composio names as that user's. One with no
+ *  user_id (a field Composio's docs say it will stop answering) is never kept, though Composio was asked for this user's
+ *  alone: nothing says whose it is, so the user connects one again. None, unasked, for a user that is no Composio user id
+ *  (COMPOSIO_USER_ID): a blank one Composio may read as every user. */
 export async function accountsUnder(ask: Ask, of: { user: string; toolkit: string; auth_config?: string }, active = false): Promise<Json[]> {
   if (!COMPOSIO_USER_ID.test(of.user)) return [];
   const enc = encodeURIComponent;
@@ -285,8 +286,7 @@ export async function accountsUnder(ask: Ask, of: { user: string; toolkit: strin
 }
 
 /** The account of a saved Composio server's user for its toolkit, under its auth config (accountsUnder), as Composio
- *  lists it now: only an account Composio names as that user's counts, so one with no user_id neither connects the
- *  server nor gives a label. `unknown`, unasked, for a user that is no one Composio user (empty, which Composio
+ *  lists it now: one Composio names as that user's (accountsUnder), which gives its labels too. `unknown`, unasked, for a user that is no one Composio user (empty, which Composio
  *  reads as every user). */
 export async function composioAccount(ask: Ask, of: { user: string; toolkit: string; auth_config: string }): Promise<ComposioAccount> {
   if (!COMPOSIO_USER_ID.test(of.user)) return { state: "unknown" };

@@ -78,7 +78,7 @@ test("--help and -h print the usage to stdout and exit 0; a bad argument is stil
     for (const args of [[flag], ["/nowhere", flag, "--known-answer"]]) {
       const result = run(...args);
       assert.equal(result.status, 0, result.stderr);
-      assert.match(result.stdout, /^usage: agentrun-import <home> \[--sources claude-code,codex,pi,opencode\] \[--threads N\] \[--read-ahead BYTES\[k\|m\|g\]\] --known-answer\n/);
+      assert.match(result.stdout, /^usage: agentrun-import <home> \[--sources claude-code,codex,pi,opencode,copilot\] \[--threads N\] \[--read-ahead BYTES\[k\|m\|g\]\] --known-answer\n/);
       assert.equal(result.stderr, "");
     }
   }
@@ -100,7 +100,7 @@ test("without pi-ai the CLI fails at startup, loudly: it never prints lines that
 });
 
 test("the sources are a registry: each reader names its source, its harness and its name, and reads its own files", () => {
-  assert.deepEqual(SOURCES, ["claude-code", "codex", "pi", "opencode"]);
+  assert.deepEqual(SOURCES, ["claude-code", "codex", "pi", "opencode", "copilot"]);
   for (const source of SOURCES) {
     const reader = READERS[source];
     assert.equal(reader.source, source);
