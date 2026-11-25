@@ -183,6 +183,8 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
       return { agent: r.body, etag: r.etag };
     },
     listRevisions: (id: string, cursor?: string | null) => call<{ revisions: { revision: string; version: number; current: boolean; note: string | null; created_at: string; kind: string; definition: Definition }[]; next_cursor: string | null }>("GET", `${agent(id)}/revisions${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
+    /** The complete immutable skill file set for the revision being edited. */
+    getRevisionSkills: (id: string, revision: string) => call<{ revision: string; skills: Record<string, string> }>("GET", `${agent(id)}/revisions/${encodeURIComponent(revision)}/skills`),
     setCurrent: async (id: string, revision: string) => { const r = await call<Agent>("POST", `${agent(id)}/current`, { body: { revision } }); created.delete(id); return r; },
     archiveAgent: (id: string) => call<Agent>("POST", `${agent(id)}/archive`, { body: {} }),
     unarchiveAgent: (id: string) => call<Agent>("POST", `${agent(id)}/unarchive`, { body: {} }),

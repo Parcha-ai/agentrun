@@ -4868,6 +4868,12 @@ export type SetCurrentBody = {
 };
 export type SetCurrentResponse = Agent;
 
+/** Read all skill files saved with one agent revision (GET /agents/{agent_id}/revisions/{revision}/skills). */
+export type GetRevisionSkillsResponse = {
+  revision: string;
+  skills: Record<string, string>;
+};
+
 /** Archive the run: hidden from the lists, kept with its history (POST /runs/{run_id}/archive). */
 export type ArchiveRunResponse = Record<string, unknown>;
 
@@ -7665,6 +7671,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   getObservations: {"method":"GET","path":"/observations","pathParams":[],"multiSegment":[],"query":["days","session_id"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listRevisions: {"method":"GET","path":"/agents/{agent_id}/revisions","pathParams":["agent_id"],"multiSegment":[],"query":["limit","cursor"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   setCurrent: {"method":"POST","path":"/agents/{agent_id}/current","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  getRevisionSkills: {"method":"GET","path":"/agents/{agent_id}/revisions/{revision}/skills","pathParams":["agent_id","revision"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   archiveRun: {"method":"POST","path":"/runs/{run_id}/archive","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   cancelRun: {"method":"POST","path":"/runs/{run_id}/cancel","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   callRunComputer: {"method":"POST","path":"/runs/{run_id}/computer/call","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -8032,6 +8039,8 @@ export function resources(call: Call) {
       list: (agentId: string, params?: ListRevisionsParams, options?: RequestOptions): Promise<ListRevisionsResponse> => call("listRevisions", [agentId], undefined, params, options),
       /** Make one of the agent's revisions current again (POST /agents/{agent_id}/current). */
       setCurrent: (agentId: string, body: SetCurrentBody, options?: RequestOptions): Promise<SetCurrentResponse> => call("setCurrent", [agentId], body, undefined, options),
+      /** Read all skill files saved with one agent revision (GET /agents/{agent_id}/revisions/{revision}/skills). */
+      skills: (agentId: string, revision: string, options?: RequestOptions): Promise<GetRevisionSkillsResponse> => call("getRevisionSkills", [agentId, revision], undefined, undefined, options),
     },
     runs: {
       /** Archive the run: hidden from the lists, kept with its history (POST /runs/{run_id}/archive). */

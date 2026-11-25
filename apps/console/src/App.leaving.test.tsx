@@ -100,9 +100,9 @@ async function open(hash: string, { strict = false } = {}) {
       el!.dispatchEvent(new Event("input", { bubbles: true }));
     });
   };
-  const sidebar = (label: string) => [...host.querySelectorAll('nav[aria-label="Navigation"] button')].find((b) => b.textContent?.trim() === (label === "Agents" ? "Connected agents" : label));
-  // The editor's own steps (its step rail), apart from the sidebar, which has a Settings of its own on every server.
-  const step = (label: RegExp) => [...host.querySelectorAll("main ol button")].find((b) => label.test(b.textContent?.trim() ?? ""));
+  const sidebar = (label: string) => [...host.querySelectorAll('nav[aria-label="Navigation"] button')].find((b) => b.textContent?.trim() === label);
+  // The editor's own sections or creation steps, apart from the server navigation.
+  const step = (label: RegExp) => [...host.querySelectorAll('main ol button, nav[aria-label="Agent settings sections"] ul button')].find((b) => label.test(b.textContent?.trim() ?? ""));
   const instructions = () => host.querySelector<HTMLTextAreaElement>("#agent-instructions");
   // Whether a tab close or reload is asked about: the page's beforeunload handler cancels the event.
   const unloadAsks = () => { const e = new Event("beforeunload", { cancelable: true }); window.dispatchEvent(e); return e.defaultPrevented; };
@@ -184,10 +184,10 @@ describe("App, leaving the agent editor with unsaved changes", () => {
   it("never asks for the editor's own steps", async () => {
     const page = await editing();
     await page.type(page.instructions(), "Answer, then check the sum.");
-    expect(page.step(/Settings/)).toBeTruthy();
-    expect(page.step(/Context/)).toBeTruthy();
-    await page.click(page.step(/Settings/));
-    await page.click(page.step(/Context/));
+    expect(page.step(/Model & runtime/)).toBeTruthy();
+    expect(page.step(/General/)).toBeTruthy();
+    await page.click(page.step(/Model & runtime/));
+    await page.click(page.step(/General/));
     expect(confirms).toEqual([]);
     expect(page.instructions()?.value).toBe("Answer, then check the sum.");
   });
@@ -210,9 +210,9 @@ describe("App, leaving the agent editor with nothing unsaved", () => {
     expect(confirms).toEqual([]);
   });
 
-  it("opens the new-agent handoff without creating an agent, and leaves its empty brief freely", async () => {
+  it("opens the new-agent editor without creating an agent and leaves its clean form freely", async () => {
     const page = await open("#/agents/new");
-    await page.wait(() => !!page.host.querySelector('textarea[placeholder]'), "the brief composer");
+    await page.wait(() => !!page.host.querySelector("#agent-name"), "the new agent form");
     expect(asked.filter((request) => request === "POST /v2/agents")).toEqual([]);
     await page.click(page.sidebar("Agents"));
     await page.wait(() => location.hash === "#/agents", "the connected agents list");
@@ -230,22 +230,31 @@ describe("App, leaving the agent editor with nothing unsaved", () => {
     expect(confirms).toEqual([]);
   });
 
-  it("opens a blank create request from the new-agent page without sending it", async () => {
-    const page = await open("#/agents/new");
-    const blank = () => [...page.host.querySelectorAll("a")].find((link) => link.textContent === "start from a blank agent");
-    await page.wait(() => !!blank(), "the blank request link");
+  it("opens the blank editor from Agents without creating an agent", async () => {
+    const page = await open("#/agents");
+    const blank = () => [...page.host.querySelectorAll("a")].find((link) => link.textContent?.trim() === "New agent");
+    await page.wait(() => !!blank(), "the blank editor link");
     await page.click(blank());
-    await page.wait(() => !!page.host.querySelector('[aria-label="Name"]'), "the create request form");
-    expect(location.hash).toContain("operation=create-agent");
+    await page.wait(() => !!page.host.querySelector('#agent-name'), "the new agent form");
+    expect(location.hash).toBe("#/agents/new?editor=true");
     expect(asked.filter((request) => request === "POST /v2/agents")).toEqual([]);
     expect(confirms).toEqual([]);
   });
 
-  it("builds the handoff under StrictMode without posting a definition", async () => {
+  it("guards a new draft under StrictMode and leaves freely after it is restored", async () => {
     const page = await open("#/agents/new", { strict: true });
-    await page.wait(() => !!page.host.querySelector('textarea[placeholder]'), "the brief composer");
-    await page.type(page.host.querySelector('textarea[placeholder]'), "Answer carefully.");
-    expect(page.host.querySelector('textarea[readonly]')?.textContent).toContain("Answer carefully.");
+    await page.wait(() => !!page.host.querySelector("#agent-name"), "the new agent form");
+    const initial = page.instructions()!.value;
+    await page.type(page.instructions(), "Answer carefully.");
+    expect(page.unloadAsks()).toBe(true);
+    await page.click(page.sidebar("Agents"));
+    expect(confirms).toEqual([LEAVE]);
+    expect(page.instructions()?.value).toBe("Answer carefully.");
+    await page.type(page.instructions(), initial);
+    expect(page.unloadAsks()).toBe(false);
+    await page.click(page.sidebar("Agents"));
+    await page.wait(() => location.hash === "#/agents", "back on the agents list");
+    expect(confirms).toEqual([LEAVE]);
     expect(asked.filter((request) => request === "POST /v2/agents")).toEqual([]);
   });
 });
@@ -426,11 +435,11 @@ describe("App, creating through the API playground", () => {
 // Two more ways the editor holds unsaved changes, pinned against the one guard: a typed default spend cap, and an edit
 // left for the focused-tool address (#/agents/<id>/edit?tool=<name>), which opens the editor afresh.
 describe("App, the guard on a typed cap and on the focused-tool address", () => {
-  const rail = (page: Awaited<ReturnType<typeof open>>, label: RegExp) => [...page.host.querySelectorAll("main ol button")].find((b) => label.test(b.textContent ?? ""));
+  const rail = (page: Awaited<ReturnType<typeof open>>, label: RegExp) => [...page.host.querySelectorAll('main ol button, nav[aria-label="Agent settings sections"] ul button')].find((b) => label.test(b.textContent ?? ""));
 
   it("a typed default spend cap asks before leaving; Cancel keeps it", async () => {
     const page = await editing();
-    await page.click(rail(page, /Settings/));
+    await page.click(rail(page, /Model & runtime/));
     const cap = () => page.host.querySelector<HTMLInputElement>("#agent-max-cost");
     await page.wait(() => !!cap(), "the cap field");
     await page.type(cap(), "2.5");

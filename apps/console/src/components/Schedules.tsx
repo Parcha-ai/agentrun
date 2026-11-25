@@ -113,7 +113,7 @@ function ScheduleList({ v2, go, agentName, every, now, failuresToPause, noAddres
   const startsOf = (t: Trigger) => (t.target.kind === "start_run" ? t.target.agent_id : null);
   const { asks, outcome } = useAskingTools(v2, (triggers ?? []).flatMap((t) => startsOf(t) ?? []));
   return (
-    // The page's frame is every list page's (Connected agents, Runs): a header bar with the place's icon and name in caps
+    // The page's frame is every list page's (Agents, Runs): a header bar with the place's icon and name in caps
     // and its actions at the right, the main one last, then the content.
     <section className="flex min-h-full flex-col" aria-label="Triggers">
       <header className={cn(pageToolbarClass, "flex-wrap justify-between gap-3 px-5")}>

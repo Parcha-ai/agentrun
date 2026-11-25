@@ -108,7 +108,7 @@ describe("AgentEditor, an agent's tool settings", () => {
     const agent: Agent = { ...base, definition: { ...base.definition, model: "anthropic/claude-sonnet-5" } };
     const page = await open(agent);
     expect(page.row("web_search")!.textContent).toContain("pi: native");
-    await page.click(/Harness, thinking and model/);
+    await page.click(/Model & runtime/);
     const model = page.host.querySelector<HTMLInputElement>('input[placeholder="provider/model"]')!;
     await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(model, "openai/gpt-x"); model.dispatchEvent(new Event("input", { bubbles: true })); });
     await page.click(/What this agent can do/);

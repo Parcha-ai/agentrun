@@ -2866,6 +2866,29 @@ export const COMMANDS = [
   },
   {
     "command": [
+      "revisions",
+      "skills"
+    ],
+    "operationId": "getRevisionSkills",
+    "method": "GET",
+    "path": "/agents/{agent_id}/revisions/{revision}/skills",
+    "pathParams": [
+      "agent_id",
+      "revision"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Read all skill files saved with one agent revision"
+  },
+  {
+    "command": [
       "runs",
       "archive"
     ],

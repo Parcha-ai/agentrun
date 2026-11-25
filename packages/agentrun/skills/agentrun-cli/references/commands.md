@@ -985,6 +985,12 @@ Route: `POST /agents/{agent_id}/current`.
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
+### `agentrun revisions skills AGENT_ID REVISION`
+
+Read all skill files saved with one agent revision.
+
+Route: `GET /agents/{agent_id}/revisions/{revision}/skills`.
+
 ## runs
 
 ### `agentrun runs archive RUN_ID`
