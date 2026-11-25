@@ -13,6 +13,9 @@ import { test } from "node:test";
 import { SECRET_NAMES } from "../dist/secrets.js";
 import { PROVIDER_KEYS } from "../dist/model.js";
 import { keyShaped } from "../dist/secret-cut.js";
+import { BOX_IDS } from "../dist/place-offers.js";
+import { providerOptions } from "../dist/computer-keys.js";
+import { computerProviderMakers } from "../dist/workspace/computer-providers.js";
 import { TOOL_FIELDS } from "../dist/tool-keys.js";
 import { toolKeysOverStore } from "../dist/tool-keys-store.js";
 import { ARCHIL_API_KEY_ENV } from "../dist/workspace/archil-key.js";
@@ -41,9 +44,12 @@ const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pat
 const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
 const FAUX_PARALLEL = new URL("./fixtures/faux-parallel.mjs", import.meta.url).pathname;
 const CONFINED = existsSync("/usr/bin/setpriv");
-/** The server's own: its tokens (the token and the token list), the seal key its tool keys are kept under, and a vendor's
- *  box's keys (two boxes' here), which only its computer providers read. */
-const SERVER_ONLY = ["AGENTRUN_TOKEN", "AGENTRUN_TOKENS", "AGENTRUN_API_KEY", "AGENTRUN_SEAL_KEY", "AGENTRUN_STORE_URL", "DAYTONA_API_KEY", "MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET"];
+/** Every box's keys, read from the descriptors of the providers that are boxes (place-offers.ts BOX_IDS): each key its
+ *  descriptor declares that is named like a key (not DAYTONA_API_URL or FLY_APP), which only its computer provider reads. */
+const BOX_KEYS = BOX_IDS.flatMap((id) => COMPUTER_PROVIDERS.find((entry) => entry.id === id).keys.map((key) => key.name)).filter(keyShaped);
+/** The server's own: its tokens (the token and the token list), the seal key its tool keys are kept under, and the boxes'
+ *  keys. */
+const SERVER_ONLY = ["AGENTRUN_TOKEN", "AGENTRUN_TOKENS", "AGENTRUN_API_KEY", "AGENTRUN_SEAL_KEY", "AGENTRUN_STORE_URL", ...BOX_KEYS];
 /** Every secret serve and a run's process read: each must be on the launcher's list. */
 /** The decision keys: held by the server like the rest, and handed to a workflow run's process only on its decision
  *  descriptor, for its decision provider (decisions.ts), never with the run's secrets. */
@@ -304,6 +310,36 @@ test("every computer provider's key and Archil's account key is on the launcher'
   for (const name of serverOnly) {
     assert.equal(env[name], undefined, `a run's environment has no ${name}`);
     assert.ok(!Object.values(env).includes(valueOf(name)), `no value in a run's environment is ${name}'s`);
+  }
+});
+
+// A provider's URL (CLOUDFLARE_RELAY_URL, DAYTONA_API_URL) is not named like a key, so it is on no list of secrets: it stays
+// where the server was started and a run's process may read it. So it must hold no credential: the provider serve makes
+// from it refuses one with a user or password, a query or a fragment, or plain http, and its words never echo one.
+test("a computer provider's URL holds no credential: serve's maker refuses one with a user, a password, a query or a fragment, and its words name the origin alone", async () => {
+  const makers = computerProviderMakers({ env: {} });
+  const urls = COMPUTER_PROVIDERS.flatMap((entry) => entry.keys.filter((key) => /_URL$/.test(key.name) && !keyShaped(key.name)).map((key) => ({ entry, key })));
+  assert.ok(urls.some(({ key }) => key.name === "CLOUDFLARE_RELAY_URL"), `the Cloudflare relay's URL is one: ${urls.map(({ key }) => key.name).join(", ")}`);
+  for (const { entry, key } of urls) {
+    // Its required keys, and the URL.
+    const made = (url) => {
+      const keys = Object.fromEntries(entry.keys.filter((one) => one.required || one.name === key.name).map((one) => [one.name, one.name === key.name ? url : "fake-test-key"]));
+      const options = providerOptions(entry.id, keys);
+      assert.ok(options.ok, `${entry.id}: ${JSON.stringify(options)}`);
+      return makers[entry.id](options.options, {});
+    };
+    await made("https://relay.example.com");
+    // A user and password set on the URL at run time, as the repo's other credential URLs in tests are.
+    const login = new URL("https://relay.example.com");
+    login.username = "user";
+    login.password = "not-a-secret";
+    for (const url of [login.href, "https://relay.example.com/?token=not-a-secret-q", "https://relay.example.com/#not-a-secret-f", "http://relay.example.com"]) {
+      await assert.rejects(made(url), (error) => {
+        assert.match(error.message, /takes no user or password|takes no query or fragment|must be https/, `${key.name}=${url}`);
+        assert.ok(!/not-a-secret/.test(error.message), `${key.name}: the words echo no credential: ${error.message}`);
+        return true;
+      }, `${key.name}=${url} is refused`);
+    }
   }
 });
 

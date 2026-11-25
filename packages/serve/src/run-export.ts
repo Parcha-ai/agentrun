@@ -15,13 +15,15 @@
 import { createHash } from "node:crypto";
 import { packageSha256 } from "./agent-package.js";
 import { ApiError } from "./errors.js";
-import { SHARE_RUN_FIELDS } from "./scrub-command.js";
 import { type Cut, SCRUB_RULES, scrub, type ScrubOptions, type ScrubResult } from "./secret-cut.js";
 import { type CallContext, callContexts, effectContext, rowOutput } from "./share-context.js";
 import { WITHHELD_SIGN_IN } from "./run-view.js";
+import { cutFileText } from "./run-file-cut.js";
 import { stable } from "./validate.js";
 
-export { SHARE_RUN_FIELDS };
+/** The run view's fields a share carries (share-design §1, the `run` allowlist, store-view.ts viewOfRun); every other
+ *  field is dropped. `imported_from` carries its `source` alone. */
+export const SHARE_RUN_FIELDS = ["kind", "status", "state", "title", "created_at", "ended_at", "result", "error", "review", "cost", "stopped_for", "budget_refused_calls", "effort", "approvals"] as const;
 
 export const SHARE_FORMAT = "agentrun.share/1";
 /** The scrubber's version as the bundle names it: its interface (tl-share's CONTRACT-scrub-beta1.md). */
@@ -180,7 +182,12 @@ export async function exportBundle(input: ExportInput): Promise<{ body: string; 
   const caps: ExportCaps = { ...EXPORT_CAPS, ...input.caps };
   const cutPass: CutScrub = input.scrub ?? ((text, opts) => scrub(text, opts));
   const restore = new Set(input.restore);
-  const { carried, omitted } = await filesOf(input.files, input.filesTruncated, input.filesUncounted === true, caps);
+  // Each file's path and text as the served cut read shows them (listRunFiles' `name` under cut=run, cutRunFile's text),
+  // before the scrubber reads them: a held value the scrubber's own reading misses (wrapped over line breaks, re-encoded)
+  // is withheld there. A census-cut run carries no file at all (filesOf), so no census applies here.
+  const listed = await filesOf(input.files, input.filesTruncated, input.filesUncounted === true, caps);
+  const carried = listed.carried.map((file) => ({ path: cutFileText(file.path, input.held), content: cutFileText(file.content, input.held) }));
+  const omitted = listed.omitted.map((one) => (one.what === "file" ? { ...one, path: cutFileText(one.path, input.held) } : one));
   const kind = String(input.view.kind);
   // What is cut: everything that came from the run. The format and source are this server's own words.
   const parts: Record<string, unknown> = {

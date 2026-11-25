@@ -1,0 +1,269 @@
+[
+ {
+  "op": "search",
+  "answer": {
+   "provider": "parallel",
+   "objective": "widgets delaware",
+   "queries": [
+    "widgets delaware"
+   ],
+   "results": [
+    {
+     "url": "https://registry.example/widgets",
+     "title": "",
+     "snippet": "See the registry entry for Widgets, Inc. … Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under…",
+     "published": "2026-10-01"
+    },
+    {
+     "url": "https://result.example/2",
+     "title": "Result 2 for widgets delaware",
+     "snippet": "Excerpt 2."
+    },
+    {
+     "url": "https://result.example/3",
+     "title": "Result 3 for widgets delaware",
+     "snippet": "Excerpt 3."
+    },
+    {
+     "url": "https://result.example/4",
+     "title": "Result 4 for widgets delaware",
+     "snippet": "Excerpt 4."
+    }
+   ]
+  },
+  "text": "{\"provider\":\"parallel\",\"objective\":\"widgets delaware\",\"queries\":[\"widgets delaware\"],\"results\":[{\"url\":\"https://registry.example/widgets\",\"title\":\"\",\"snippet\":\"See the registry entry for Widgets, Inc. … Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under…\",\"published\":\"2026-10-01\"},{\"url\":\"https://result.example/2\",\"title\":\"Result 2 for widgets delaware\",\"snippet\":\"Excerpt 2.\"},{\"url\":\"https://result.example/3\",\"title\":\"Result 3 for widgets delaware\",\"snippet\":\"Excerpt 3.\"},{\"url\":\"https://result.example/4\",\"title\":\"Result 4 for widgets delaware\",\"snippet\":\"Excerpt 4.\"}]}\nCite the URL of each result you rely on.",
+  "receipt": {
+   "op": "search",
+   "asked": "widgets delaware",
+   "queries": [
+    "widgets delaware"
+   ],
+   "provider": "parallel",
+   "tries": [
+    {
+     "provider": "parallel",
+     "outcome": "ok",
+     "ms": 0
+    }
+   ],
+   "classifier": "off",
+   "wall": {
+    "verdict": "unjudged"
+   },
+   "injection": "unjudged",
+   "out": {
+    "bytes": 3527,
+    "chars": 3523
+   },
+   "cost": {
+    "usd": 0.001,
+    "lines": [
+     {
+      "name": "Parallel's search",
+      "by": "parallel",
+      "usd": 0.001,
+      "basis": "Parallel's list price for a fast search"
+     }
+    ]
+   }
+  }
+ },
+ {
+  "op": "search",
+  "answer": {
+   "error": "web_search needs an objective"
+  },
+  "text": "{\"error\":\"web_search needs an objective\"}",
+  "receipt": {
+   "op": "search",
+   "asked": "   ",
+   "queries": [],
+   "provider": null,
+   "tries": [],
+   "classifier": "off",
+   "wall": {
+    "verdict": "unjudged"
+   },
+   "injection": "unjudged",
+   "out": {
+    "bytes": 41,
+    "chars": 41
+   },
+   "cost": {
+    "usd": 0,
+    "lines": []
+   }
+  }
+ },
+ {
+  "op": "fetch",
+  "answer": {
+   "ok": true,
+   "url": "http://public.example/",
+   "status": 200,
+   "title": "Read by Parallel",
+   "text": "# Read by Parallel\n\nThe page at http://public.example/, with [a link](https://other.example/y#top) and [another](/relative).",
+   "chars": 124,
+   "links": [
+    "http://public.example/",
+    "https://other.example/y"
+   ],
+   "via": "parallel"
+  },
+  "text": "{\"ok\":true,\"url\":\"http://public.example/\",\"status\":200,\"title\":\"Read by Parallel\",\"text\":\"# Read by Parallel\\n\\nThe page at http://public.example/, with [a link](https://other.example/y#top) and [another](/relative).\",\"chars\":124,\"links\":[\"http://public.example/\",\"https://other.example/y\"],\"via\":\"parallel\"}",
+  "receipt": {
+   "op": "fetch",
+   "asked": "http://public.example/",
+   "provider": "parallel",
+   "tries": [
+    {
+     "provider": "parallel",
+     "outcome": "ok"
+    }
+   ],
+   "classifier": "off",
+   "wall": {
+    "verdict": "unjudged"
+   },
+   "injection": "unjudged",
+   "out": {
+    "bytes": 308,
+    "chars": 308
+   },
+   "cost": {
+    "usd": 0.001,
+    "lines": [
+     {
+      "name": "Parallel's extract",
+      "by": "parallel",
+      "usd": 0.001,
+      "basis": "Parallel's list price for one URL"
+     }
+    ]
+   }
+  }
+ },
+ {
+  "op": "fetch",
+  "answer": {
+   "ok": true,
+   "url": "http://public.example/",
+   "status": 200,
+   "title": "Read by Parallel",
+   "text": "Parallel\n\nThe page at http://public.example/, with [a link](https://other.example/y#top) and [another](/relative).",
+   "chars": 114,
+   "original_chars": 124,
+   "offset": 10,
+   "links": [],
+   "via": "parallel"
+  },
+  "text": "{\"ok\":true,\"url\":\"http://public.example/\",\"status\":200,\"title\":\"Read by Parallel\",\"text\":\"Parallel\\n\\nThe page at http://public.example/, with [a link](https://other.example/y#top) and [another](/relative).\",\"chars\":114,\"original_chars\":124,\"offset\":10,\"links\":[],\"via\":\"parallel\"}\nCharacters 10-124 of 124: the end of the page.",
+  "receipt": {
+   "op": "fetch",
+   "asked": "http://public.example/",
+   "provider": "parallel",
+   "tries": [],
+   "classifier": "off",
+   "wall": {
+    "verdict": "unjudged"
+   },
+   "injection": "unjudged",
+   "out": {
+    "bytes": 328,
+    "chars": 328
+   },
+   "cost": {
+    "usd": 0,
+    "lines": []
+   },
+   "cache": "hit"
+  }
+ },
+ {
+  "op": "fetch",
+  "answer": {
+   "ok": false,
+   "url": "http://evil.example/",
+   "status": 0,
+   "title": "",
+   "text": "",
+   "links": [],
+   "refused": "refused: evil.example is not a public host",
+   "via": "direct",
+   "parallel": "not tried: the URL did not pass the public-host guard"
+  },
+  "text": "{\"ok\":false,\"url\":\"http://evil.example/\",\"status\":0,\"title\":\"\",\"text\":\"\",\"links\":[],\"refused\":\"refused: evil.example is not a public host\",\"via\":\"direct\",\"parallel\":\"not tried: the URL did not pass the public-host guard\"}\nParallel was picked for web_fetch and gave no page (not tried: the URL did not pass the public-host guard); this one was fetched directly.",
+  "receipt": {
+   "op": "fetch",
+   "asked": "http://evil.example/",
+   "provider": null,
+   "tries": [
+    {
+     "provider": "parallel",
+     "outcome": "error",
+     "error": "not tried: the URL did not pass the public-host guard",
+     "failure": {
+      "class": "refused",
+      "code": "GUARD",
+      "message": "not tried: the URL did not pass the public-host guard"
+     }
+    },
+    {
+     "provider": "direct",
+     "outcome": "error",
+     "error": "refused: evil.example is not a public host",
+     "failure": {
+      "class": "refused",
+      "code": "GUARD",
+      "message": "refused: evil.example is not a public host"
+     }
+    }
+   ],
+   "classifier": "off",
+   "wall": {
+    "verdict": "unjudged"
+   },
+   "injection": "unjudged",
+   "out": {
+    "bytes": 360,
+    "chars": 360
+   },
+   "cost": {
+    "usd": 0,
+    "lines": []
+   }
+  }
+ },
+ {
+  "op": "fetch",
+  "answer": {
+   "ok": false,
+   "url": "http://public.example/",
+   "status": 0,
+   "title": "",
+   "text": "",
+   "links": [],
+   "error": "max_chars must be at least 200 (it was 10)"
+  },
+  "text": "{\"ok\":false,\"url\":\"http://public.example/\",\"status\":0,\"title\":\"\",\"text\":\"\",\"links\":[],\"error\":\"max_chars must be at least 200 (it was 10)\"}",
+  "receipt": {
+   "op": "fetch",
+   "asked": "http://public.example/",
+   "provider": null,
+   "tries": [],
+   "classifier": "off",
+   "wall": {
+    "verdict": "unjudged"
+   },
+   "injection": "unjudged",
+   "out": {
+    "bytes": 139,
+    "chars": 139
+   },
+   "cost": {
+    "usd": 0,
+    "lines": []
+   }
+  }
+ }
+]
