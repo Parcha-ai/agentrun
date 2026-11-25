@@ -268,12 +268,12 @@ const zipWith = <K, V>(keys: readonly K[], values: readonly V[]): [K, V][] => ke
 
 /** What summarize reads of agent `agentId` (LedgerRead, its revisions aside), over `listed` (its runs, as runs.list read
  *  them): the ledger rows of its ended runs that do a job or check one (neither imported nor archived, no workflow
- *  revision's run, no shadow), a run that does not learn on the `agent` path, each with the workflow name its launch
+ *  revision's run, no shadow), each on the path its end wrote, each with the workflow name its launch
  *  offered; every spend row; each run's audit shadow (open or ended); and the runs on no named disk (learn/learning-of.ts:
  *  one on a named disk learns nothing and serves nothing). Each ended run has its row: its end wrote it, or the server's
  *  open (run-patch.ts backfillLedger) for one an earlier build ended; none is recorded here. `runIds`: the runs whose
  *  ledger is read (Learning.ledger), the agent's every run when absent. `named` false: no workflow name is read for the
- *  series' rows (a launch's learning start is read only for a row whose end named no path). */
+ *  series' rows (no launch is read). */
 async function ledgerReadOf(store: Store, agentId: string, listed: readonly RunRecord[], records: RunRecords, { runIds, named = true }: { readonly runIds?: readonly string[]; readonly named?: boolean } = {}): Promise<Omit<LedgerRead, "revisions">> {
   const byId = new Map(listed.map((run) => [run.id, run]));
   const { recorded, spend } = await ledgerRowsOf(store, agentId, runIds);
@@ -281,16 +281,15 @@ async function ledgerReadOf(store: Store, agentId: string, listed: readonly RunR
   const revisionIds = [...new Set(ended.map((run) => run.revisionId))];
   const kinds = new Map(zipWith(revisionIds, await inBatches(revisionIds, async (id) => (await store.agents.revision(id))?.kind)));
   const jobs = ended.filter((run) => kinds.get(run.revisionId) !== "workflow");
-  // Its launch's learning start: the workflow names it offered, and, for a row whose end named no path, whether it learns.
-  const starts = await inBatches(jobs, async (run) => (named || recorded.get(run.id)!.path === null ? learningStartOfRun(records, run.id) : undefined));
+  // Its launch's learning start: the workflow names it offered. A row's path is as its end wrote it (learn/ledger.ts
+  // record: a run that does not learn and names none is the agent's), the one by-hand rule Learning.byHandBefore reads too.
+  const starts = await inBatches(jobs, async (run) => (named ? learningStartOfRun(records, run.id) : undefined));
   const offered = new Map<string, readonly string[] | undefined>();
   const rows: LedgerRow[] = [];
   const shadows = new Map<string, Shadow>();
   const learning = new Set<string>();
   for (const [run, started] of zipWith(jobs, starts)) {
-    const row = recorded.get(run.id)!;
-    // A run that does not learn names no path: it is the agent's. One that learns and names none is unknown.
-    rows.push(row.path === null && !started ? { ...row, path: "agent" } : row);
+    rows.push(recorded.get(run.id)!);
     if (named) offered.set(run.id, started?.workflows);
     if (run.disk === null) learning.add(run.id);
     const shadow = shadowOf(byId, run.id);

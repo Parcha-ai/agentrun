@@ -110,6 +110,8 @@ test("a run that ended with no ledger row (a build before the ledger ended it) i
   const db = await raw(file);
   await db.run("DELETE FROM learning_ledger WHERE run_id IN (?, ?)", "r1", "r2");
   await db.run("DELETE FROM learning_spend WHERE run_id IN (?, ?)", "r1", "r2");
+  // As an earlier build left the store: ended runs with no row, the ledger never marked whole.
+  await db.run("UPDATE store_meta SET ledger_backfilled = 0 WHERE singleton = 1");
   await db.close();
   await pastRunsOverStore(store, "agent-1");
   assert.deepEqual((await store.learning.ledger("agent-1", ["r1", "r2"])).rows, [], "a read records neither");
@@ -246,6 +248,17 @@ test("a store the ledger's first release left: its wrong rows are recorded again
   await db.close();
   const { store: reopened } = await storeOn(t, { file, clock });
   assert.deepEqual(await figures(reopened), now, "every wrong row recorded again from its run, as its end writes it");
+});
+
+test("Postgres migration 0030 repairs the same rows, before it drops their epoch, and makes the same by-hand index and mark", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const { LEARNING_LEDGER_BY_HAND, LEARNING_LEDGER_REPAIR } = await import("../dist/store/schema.js");
+  const flat = (sql) => sql.replace(/\s+/g, " ").trim();
+  const text = flat(await readFile(new URL("../dist/store/postgres/migrations/0030_learning_ledger_epoch.sql", import.meta.url), "utf8"));
+  const at = (sql) => text.indexOf(`${flat(sql)};`);
+  for (const sql of LEARNING_LEDGER_REPAIR) assert.ok(at(sql) >= 0 && at(sql) < text.indexOf("DROP COLUMN epoch"), sql);
+  assert.ok(at(LEARNING_LEDGER_BY_HAND.replace(" IF NOT EXISTS", "")) >= 0, LEARNING_LEDGER_BY_HAND);
+  assert.ok(text.includes("ADD COLUMN ledger_backfilled"));
 });
 
 test("the read before the window walks the by-hand index (learning_ledger_by_hand): no sort of the agent's ledger, whatever its size", sqliteOnly("SQLite's query plan"), async (t) => {

@@ -1200,6 +1200,8 @@ test("the cost page and the launch's money rule read one window: the newest runs
   try {
     // run-0 the newest; the three older ones are served runs of one digest, the newest of them at 0.9, the oldest two at 0.1.
     ids.forEach((id, i) => db.prepare("UPDATE runs SET state = 'ended', started_at = ?, ended_at = ?, cost_usd = ?, metrics = ? WHERE id = ?").run(at - i * 60_000, at - i * 60_000 + 1_000, i === 0 ? 0.9 : 0.1, JSON.stringify({ path: "handed_back", workflow: "answer", workflow_digest: DIGEST, learned_revision: "s" }), id));
+    // As an earlier build ended them: the ledger not marked whole.
+    db.prepare("UPDATE store_meta SET ledger_backfilled = 0 WHERE singleton = 1").run();
   } finally {
     db.close();
   }

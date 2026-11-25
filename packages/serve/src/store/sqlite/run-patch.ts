@@ -14,6 +14,15 @@ import { auditOfLaunch, learnsOfLaunch, record } from "../../learn/ledger.js";
  *  list of runs names. */
 export const NOT_A_LEARNING_RUN = "id NOT IN (SELECT learning_run_id FROM learning_proposals WHERE learning_run_id IS NOT NULL)";
 
+/** Learning.byHandBefore on both stores (agent, the window's oldest run's start and id, how many): the agent's newest
+ *  rows on the `agent` path (the one by-hand rule, learn/ledger.ts record) before that run, of a known cost, on no named
+ *  disk, neither imported, archived, purged nor a learning run. It walks schema.ts LEARNING_LEDGER_BY_HAND newest first
+ *  and stops at `limit`: no sort of the agent's ledger. */
+export const BY_HAND_BEFORE = `SELECT l.run_id, l.started_at, l.job_usd FROM learning_ledger l JOIN runs ON runs.id = l.run_id
+  WHERE l.agent_id = ? AND l.path = 'agent' AND (l.started_at, l.run_id) < (?, ?) AND l.cost = 'known' AND l.job_usd IS NOT NULL
+    AND runs.${NOT_A_LEARNING_RUN} AND runs.disk IS NULL AND runs.imported_from IS NULL AND runs.archived_at IS NULL AND runs.purged_at IS NULL
+  ORDER BY l.started_at DESC, l.run_id DESC LIMIT ?`;
+
 
 /** The lock a write of a run's sign_in_handed and a sign-in's forget both take (Dialect.lockKey): the forget's check of
  *  the running runs' hashes and a launch's write of them are serialized, as SQLite's one writer serializes them. */
@@ -149,21 +158,27 @@ export async function recordLedger(tx: Pick<SqliteExecutor, "run" | "all" | "get
 /** A final run with no ledger row, not purged (its purge took its row): one an earlier build ended. */
 const UNRECORDED = `state IN (${FINAL_STATES.map((state) => `'${state}'`).join(", ")}) AND purged_at IS NULL AND NOT EXISTS (SELECT 1 FROM learning_ledger WHERE learning_ledger.run_id = runs.id)`;
 
+/** How many runs backfillLedger records in one transaction. */
+const BACKFILL_PAGE = 64;
+
 /** Records every final run that has no ledger row (UNRECORDED), as its end would have (recordLedger), at a server's open
- *  on either store: by id, a page at a time, each run in its own transaction and read again in it. Once it is done no
- *  reader records one: each end, heal and import writes its own. */
-export async function backfillLedger(connection: Pick<StoreConnection, "all" | "transaction">, now: () => number): Promise<void> {
+ *  on either store: by id, BACKFILL_PAGE runs a transaction, each read again in it, so a stop partway keeps each page it
+ *  committed and the next open records the rest. Then it marks the ledger whole (store_meta.ledger_backfilled), and no
+ *  later open reads the runs again: each end, heal and import writes its own row, and no reader records one. */
+export async function backfillLedger(connection: Pick<StoreConnection, "all" | "get" | "transaction">, now: () => number): Promise<void> {
+  if (Number((await connection.get<{ whole: number }>("SELECT ledger_backfilled AS whole FROM store_meta WHERE singleton = 1"))?.whole) === 1) return;
   for (let after = ""; ;) {
-    const page = await connection.all<{ id: string }>(`SELECT id FROM runs WHERE id > ? AND ${UNRECORDED} ORDER BY id LIMIT 64`, after);
-    if (page.length === 0) return;
-    for (const { id } of page) {
-      await connection.transaction(async (tx) => {
+    const page = await connection.all<{ id: string }>(`SELECT id FROM runs WHERE id > ? AND ${UNRECORDED} ORDER BY id LIMIT ${BACKFILL_PAGE}`, after);
+    if (page.length === 0) break;
+    await connection.transaction(async (tx) => {
+      for (const { id } of page) {
         const row = await tx.get<RunRecord>(`SELECT ${RUN_COLUMNS} FROM runs WHERE id = ? AND ${UNRECORDED}`, id);
         if (row) await recordLedger(tx, runOf(row), now());
-      });
-    }
+      }
+    });
     after = page.at(-1)!.id;
   }
+  await connection.transaction((tx) => tx.run("UPDATE store_meta SET ledger_backfilled = 1 WHERE singleton = 1").then(() => undefined));
 }
 
 /** The one reopen a run that ended may take (runs.reopen, and a run's end with a person's message waiting): back to running
