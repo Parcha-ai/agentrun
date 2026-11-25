@@ -47,11 +47,12 @@ export const BIG_FILE = 64 * 2 ** 20;
  *  memory. */
 export const READ_AHEAD_BYTES = 2 ** 30;
 
-/** The container's memory limit: process.constrainedMemory(), or the lowest memory.max of this process's cgroup v2 and
- *  every cgroup above it when that is lower. Node reads only the process's own cgroup (the lower of its memory.max and
- *  memory.high, libuv 1.52): a container whose process sits in /init.scope (memory.max "max") under a namespace root of
- *  4 GiB had no limit by Node, and the pool was sized for the host's 810 GB. A level whose memory.max is "max", missing (the host's root cgroup has none) or not a number sets
- *  nothing; cgroup v1 (no "0::" line), no /proc/self/cgroup (not Linux), a path outside the mount, or any error give
+/** The container's memory limit: process.constrainedMemory(), or the lowest memory.max or memory.high of this process's
+ *  cgroup v2 and every cgroup above it when that is lower. Node reads only the process's own cgroup (the lower of its
+ *  memory.max and memory.high, libuv 1.52); this takes the same rule up the tree. A container whose process sits in
+ *  /init.scope (memory.max "max") under a namespace root of 4 GiB had no limit by Node, and the pool was sized for the
+ *  host's 810 GB. A file that is "max", missing (the host's root cgroup has neither) or not a number sets nothing;
+ *  cgroup v1 (no "0::" line), no /proc/self/cgroup (not Linux), a path outside the mount, or any error give
  *  `constrained` as it is. Synchronous: read while the pool is sized, a few small files. */
 export function constrainedMemory(root = "/sys/fs/cgroup", self = "/proc/self/cgroup", constrained = process.constrainedMemory()): number {
   try {
@@ -61,15 +62,17 @@ export function constrainedMemory(root = "/sys/fs/cgroup", self = "/proc/self/cg
     if (parts.includes("..")) return constrained;
     let lowest = constrained > 0 ? constrained : Infinity;
     for (let depth = parts.length; depth >= 0; depth -= 1) {
-      let max: string;
-      try {
-        max = readFileSync(join(root, ...parts.slice(0, depth), "memory.max"), "utf8").trim();
-      } catch {
-        continue;
+      for (const file of ["memory.max", "memory.high"]) {
+        let value: string;
+        try {
+          value = readFileSync(join(root, ...parts.slice(0, depth), file), "utf8").trim();
+        } catch {
+          continue;
+        }
+        if (!/^\d+$/.test(value)) continue;
+        const bytes = Number(value);
+        if (bytes > 0 && bytes < lowest) lowest = bytes;
       }
-      if (!/^\d+$/.test(max)) continue;
-      const bytes = Number(max);
-      if (bytes > 0 && bytes < lowest) lowest = bytes;
     }
     return lowest === Infinity ? constrained : lowest;
   } catch {

@@ -15,14 +15,17 @@ const NO_LIMIT = 2 ** 64; // what process.constrainedMemory() returns when its o
 const { constrainedMemory } = poolModule;
 
 /** A fake cgroup v2 mount and /proc/self/cgroup: `levels` maps a cgroup path ("" for the root) to its memory.max
- *  (undefined: no file), `self` is /proc/self/cgroup's text. */
+ *  (undefined: no file) or to { max, high } (memory.max and memory.high, each undefined for no file), `self` is
+ *  /proc/self/cgroup's text. */
 async function tree(levels, self) {
   const dir = await mkdtemp(join(tmpdir(), "cgroup-memory-"));
   const root = join(dir, "sys-fs-cgroup");
   await mkdir(root, { recursive: true });
-  for (const [path, max] of Object.entries(levels)) {
+  for (const [path, level] of Object.entries(levels)) {
     await mkdir(join(root, path), { recursive: true });
+    const { max, high } = level !== null && typeof level === "object" ? level : { max: level };
     if (max !== undefined) await writeFile(join(root, path, "memory.max"), `${max}\n`);
+    if (high !== undefined) await writeFile(join(root, path, "memory.high"), `${high}\n`);
   }
   const proc = join(dir, "proc-self-cgroup");
   await writeFile(proc, self);
@@ -50,6 +53,21 @@ test("a limit two levels up, between levels set to max, is used", async () => {
     assert.equal(constrainedMemory(t.root, t.proc, NO_LIMIT), 6 * GiB);
   } finally {
     await t.done();
+  }
+});
+
+test("a memory.high on an ancestor below its memory.max is used, as libuv does for the leaf", async () => {
+  const t = await tree({ "": { max: 4 * GiB, high: 3 * GiB }, "init.scope": { max: "max", high: "max" } }, "0::/init.scope\n");
+  try {
+    assert.equal(constrainedMemory(t.root, t.proc, NO_LIMIT), 3 * GiB, "the root's memory.high");
+  } finally {
+    await t.done();
+  }
+  const mid = await tree({ "": undefined, a: { max: "max", high: 5 * GiB }, "a/b": { max: 6 * GiB, high: "max" } }, "0::/a/b\n");
+  try {
+    assert.equal(constrainedMemory(mid.root, mid.proc, NO_LIMIT), 5 * GiB, "a parent's memory.high below the leaf's memory.max");
+  } finally {
+    await mid.done();
   }
 });
 
