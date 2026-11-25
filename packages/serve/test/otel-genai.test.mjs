@@ -329,6 +329,15 @@ test("a runner error line holds no OTLP header value: each one is a held secret,
   assert.match(lines[0], /^\[otel\] a trace export failed; its spans were dropped: 401: Authorization: (Bearer )?\[redacted\]$/);
 });
 
+test("every OTLP header value is held but a standard one's: an unknown name's at any length, and Content-Type's application/json is not", () => {
+  const short = `hc${"7"}x1`;
+  const long = `honeycomb-${"dummy"}-team-3310`;
+  const env = { ...ON, OTEL_EXPORTER_OTLP_HEADERS: `x-honeycomb-team=${short},Content-Type=application/json`, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Honeycomb-Team=${long},accept=application/x-protobuf,User-Agent=agentrun-otel,content-encoding=gzip` };
+  const values = runnerSecrets(env);
+  for (const value of [short, long]) assert.ok(values.includes(value), `${value} (under x-honeycomb-team) is held`);
+  for (const value of ["application/json", "application/x-protobuf", "agentrun-otel", "gzip"]) assert.equal(values.includes(value), false, `${value} (a standard header's) is not held`);
+});
+
 test("no span carries content, even with OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT=true: no message, prompt, argument or result", async (t) => {
   const before = process.env.OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT;
   process.env.OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT = "true";
