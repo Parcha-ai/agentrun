@@ -43,7 +43,13 @@ test("the server in Mode 2 by its environment: a disk-free runner that holds the
   assert.equal(await diskFreeRefusal(store, dataDir(t), ARCHIL_ENV, "postgres"), undefined);
   const words = await diskFreeRefusal(store, dataDir(t), {}, "postgres");
   assert.equal(words, DISK_FREE_NO_ARCHIL);
-  assert.match(words, new RegExp(`${ARCHIL_SETTINGS_ENV.region} and ${ARCHIL_SETTINGS_ENV.s3Url}`));
+  assert.match(words, new RegExp(`the server's ${ARCHIL_SETTINGS_ENV.region} \\(and ${ARCHIL_SETTINGS_ENV.s3Url} and ${ARCHIL_SETTINGS_ENV.image} when the server has them\\)`));
+});
+
+test("the server in Mode 2 by a known region alone in its environment (its S3 URL the region's): a runner given the region claims, one without it claims nothing", async (t) => {
+  const store = storeWith({ [RUN_ENV_KEY]: { v: 1, names: [ARCHIL_SETTINGS_ENV.region] } });
+  assert.equal(await diskFreeRefusal(store, dataDir(t), { [ARCHIL_SETTINGS_ENV.region]: REGION }, "postgres"), undefined);
+  assert.equal(await diskFreeRefusal(store, dataDir(t), {}, "postgres"), DISK_FREE_NO_ARCHIL);
 });
 
 test("the server in Mode 2 by saved settings: a disk-free runner claims with no Archil settings of its own", async (t) => {
