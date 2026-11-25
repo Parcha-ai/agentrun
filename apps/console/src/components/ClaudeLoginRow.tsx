@@ -48,12 +48,12 @@ export function ClaudeLoginRow({ v2, writable, whyNot = "sign_in", onChange, ava
   const asked = useRef(0);
   const writing = useRef(false);
   const reading = useRef(false);
-  // Switched off (capabilities changed): the row goes, a sign-in it waited for is dropped, no read starts, and a read
-  // still out never puts the row back.
+  // Switched off (capabilities changed): the row goes, a sign-in it waited for is dropped, no read starts, and a read or
+  // write still out never puts the row back, nor its error (the bump of `asked`).
   const availableNow = useRef(available);
   availableNow.current = available;
   useEffect(() => {
-    if (!available) { asked.current++; setView(null); return; }
+    if (!available) { asked.current++; setView(null); setProblem(null); return; }
     let live = true;
     v2.claudeLogin().then((body) => { if (live) setView(claudeLoginView(body)); }, () => { if (live) setView(null); });
     return () => { live = false; };
@@ -64,7 +64,7 @@ export function ClaudeLoginRow({ v2, writable, whyNot = "sign_in", onChange, ava
     const n = ++asked.current;
     v2.claudeLogin().then((body) => {
       const next = claudeLoginView(body);
-      if (n === asked.current && next && availableNow.current) setView(next);
+      if (n === asked.current && next) setView(next);
     }, () => {}).finally(() => { reading.current = false; });
   };
 
@@ -94,14 +94,16 @@ export function ClaudeLoginRow({ v2, writable, whyNot = "sign_in", onChange, ava
   const act = async (write: () => Promise<ClaudeLoginView>, changes: boolean) => {
     setProblem(null); setBusy(true);
     writing.current = true;
-    asked.current++;
+    // The row switched off while this write was out bumps `asked` (as it drops a read's answer), so neither its answer
+    // nor its failure lands after.
+    const n = ++asked.current;
     try {
       const next = claudeLoginView(await write());
-      if (availableNow.current) setView(next);
+      if (n === asked.current) setView(next);
       if (changes) onChange?.();
       return true;
     } catch (e) {
-      setProblem(words(e));
+      if (n === asked.current) setProblem(words(e));
       return false;
     } finally {
       asked.current++;

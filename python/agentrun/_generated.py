@@ -80,6 +80,7 @@ __all__ = [
     "CapabilitiesStoreSchema",
     "CapabilitiesSwitchesValue",
     "CapabilitiesToolsItem",
+    "CapabilitiesToolsItemHeldItem",
     "CapabilitiesToolsItemResolves",
     "CapabilitiesToolsItemWhy",
     "CapabilitiesWorkflows",
@@ -8856,6 +8857,7 @@ class CapabilitiesToolsItem(_CapabilitiesToolsItemRequired, total=False):
     default_provider: str
     resolves: CapabilitiesToolsItemResolves
     why: CapabilitiesToolsItemWhy
+    held: list[CapabilitiesToolsItemHeldItem]
     ask_needs: Literal["password"]
     key: Literal["parallel", "monid", "browserbase", "kernel", "typesafe", "anthropic", "openai", "particle", "openrouter"]
 
@@ -8864,6 +8866,14 @@ CapabilitiesToolsItemResolves = TypedDict("CapabilitiesToolsItemResolves", {"pi"
 
 
 CapabilitiesToolsItemWhy = TypedDict("CapabilitiesToolsItemWhy", {"pi": "str", "claude-agent": "str", "codex": "str", "opencode": "str"})
+
+
+class CapabilitiesToolsItemHeldItem(TypedDict):
+    provider: str
+    tool: Literal["search", "fetch", "key"]
+    kind: Literal["quota", "rate"]
+    until: str
+    words: str
 
 
 class CapabilitiesWorkflows(TypedDict):

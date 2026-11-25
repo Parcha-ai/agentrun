@@ -237,6 +237,13 @@ export interface components {
         codex: string;
         opencode: string;
       };
+      held?: {
+        provider: string;
+        tool: "search" | "fetch" | "key";
+        kind: "quota" | "rate";
+        until: string;
+        words: string;
+      }[];
       permission: "allow" | "ask" | "deny";
       default_permission: "allow" | "ask" | "deny";
       permissions: ("allow" | "ask" | "deny")[];

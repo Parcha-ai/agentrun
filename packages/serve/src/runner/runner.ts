@@ -31,7 +31,7 @@ import { keptBy, readKept } from "../workspace/computer-kept.js";
 import { cutDeep, heldRedactor, processSecretRedactor, type Redact } from "./redact.js";
 import { type LiveTickerOptions, withLiveTicker } from "./live-ticker.js";
 import { keepPresence, type Presence } from "./presence.js";
-import { flushTraces } from "../otel/tracer.js";
+import { flushTraces, genAiTracing } from "../otel/tracer.js";
 
 /** Tries of the re-read after a claim or release commit was answered Unanswered (the commit may have landed). */
 const UNKNOWN_READS = 5;
@@ -311,6 +311,9 @@ export function startRunner(options: RunnerOptions): Runner {
   // The one instance every run's loop gets (LoopDeps.redact), able to hold what each claim opens from the store
   // (redact.ts holdClaimed): a stored key is cut wherever a key of the runner's environment is.
   const redact = heldRedactor(given);
+  // The process's tracing, made at its runner's start rather than at its first claim: on, it says so then, and where its
+  // spans go (otel/tracer.ts); off (no OTLP endpoint), nothing of OpenTelemetry loads and nothing is said.
+  void genAiTracing().catch(() => undefined);
   /** The first try whose wait is the cap (endRefused): 7 with the defaults (5 s × 2^6 = 320 s, over the 300 s cap). */
   const endRetryCapFrom = 1 + Math.ceil(Math.log2(endRetryCapMs / endRetryBackoffMs));
   const beat = () => {
