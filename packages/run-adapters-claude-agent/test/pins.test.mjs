@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { chmodSync, closeSync, existsSync, mkdtempSync, openSync, readFileSync, readSync, rmSync, truncateSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { after, test } from 'node:test';
 import { CLAUDE_AGENT_CLI_VERSION, CLAUDE_AGENT_PACKAGE, CLAUDE_AGENT_SDK_INSTALL, CLAUDE_AGENT_SDK_VERSION, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, claudeAgentAdapter, claudeAgentExecutable, verifyClaudeAgent, verifyClaudeAgentCli, verifyClaudeAgentCliAsync } from '@parcha/agentrun-harness-claude';
 import { fakeSdk } from '@parcha/agentrun-harness-claude/testing';
@@ -181,4 +182,103 @@ test("the pinned CLI is found beside the adapter's install, whatever the process
   } finally {
     rmSync(elsewhere, { recursive: true, force: true });
   }
+});
+
+// A login handed as its token alone (login.ts ClaudeLoginToken) stands on three things of the pinned pair, none in the
+// SDK's types: the SDK takes a getOAuthToken callback and answers the CLI's oauth_token_refresh ask with it; the CLI reads
+// CLAUDE_CODE_OAUTH_TOKEN with no refresh token and no end (so it never renews); and the CLI's own write of a login,
+// which a host's runner reads (test/fixtures/credentials-cli-2.1.286.json is that shape, its values fake). Static reads
+// of the installed pin, a chunk at a time (the CLI is a single ~240 MB file); no run of it and no model call.
+
+/** The installed SDK's sdk.mjs, or none where the SDK is not installed. */
+function installedSdk() {
+  try {
+    return readFileSync(fileURLToPath(import.meta.resolve('@anthropic-ai/claude-agent-sdk')), 'utf8');
+  } catch {
+    return undefined;
+  }
+}
+
+/** Which of `patterns` the file at `path` holds, read 16 MiB at a time with an overlap no match here spans. */
+function holds(path, patterns) {
+  const found = new Set();
+  const chunk = 16 * 2 ** 20;
+  const overlap = 4096;
+  const buffer = Buffer.alloc(chunk + overlap);
+  const fd = openSync(path, 'r');
+  try {
+    let carried = 0;
+    for (;;) {
+      const read = readSync(fd, buffer, carried, chunk, null);
+      if (read === 0) break;
+      const total = carried + read;
+      const text = buffer.toString('latin1', 0, total);
+      for (const [name, pattern] of Object.entries(patterns)) if (!found.has(name) && pattern.test(text)) found.add(name);
+      // The last bytes read are carried to the front, so a match across two reads is whole in the next.
+      carried = Math.min(overlap, total);
+      buffer.copy(buffer, 0, total - carried, total);
+    }
+  } finally {
+    closeSync(fd);
+  }
+  return found;
+}
+
+test('the pinned SDK takes getOAuthToken and answers the CLI\'s oauth_token_refresh ask with the host\'s token, or none', { skip: !installedSdk() && 'the pinned SDK is not installed here' }, () => {
+  const sdk = installedSdk();
+  assert.match(sdk, /getOAuthToken:[\w$]+/, 'query() reads getOAuthToken from its options');
+  assert.match(sdk, /subtype==="oauth_token_refresh"\)\{[\s\S]{0,200}?this\.getOAuthToken\(\{signal:[\w$]+[\s\S]{0,200}?\?\?null;[\s\S]{0,120}?\{accessToken:[\w$]+\}/, 'the ask is answered with the callback\'s token, null when it gives none');
+});
+
+test('the pinned CLI reads CLAUDE_CODE_OAUTH_TOKEN with no refresh token and no end, keeps its login in .credentials.json, and writes it in the fixture\'s fields', { skip: !claudeAgentExecutable() && 'no pinned CLI installed here' }, () => {
+  const fixture = JSON.parse(readFileSync(new URL('./fixtures/credentials-cli-2.1.286.json', import.meta.url), 'utf8'));
+  const fields = Object.keys(fixture.claudeAiOauth);
+  assert.deepEqual(fields, ['accessToken', 'refreshToken', 'expiresAt', 'refreshTokenExpiresAt', 'scopes', 'subscriptionType', 'rateLimitTier', 'clientId']);
+  const write = new RegExp(`return\\{${fields.map((field) => `${field}:[^,{}]+`).join(',')}\\}`);
+  const found = holds(claudeAgentExecutable(), {
+    envToken: /if\([\w$]+\.CLAUDE_CODE_OAUTH_TOKEN\)return\{accessToken:[\w$]+\.CLAUDE_CODE_OAUTH_TOKEN,refreshToken:null,expiresAt:null/,
+    storage: /storagePath:[\w$]+\([\w$]+,"\.credentials\.json"\)/,
+    write,
+    writes: /claudeAiOauth:[\w$]+\([\w$]+\.claudeAiOauth,/,
+  });
+  assert.deepEqual([...found].sort(), ['envToken', 'storage', 'write', 'writes'], 'the pinned CLI still reads the token alone, and keeps and writes its login as the fixture says');
+});
+
+// A host that renews a login in the CLI's place (serve's claude-login-token.ts) does it with the pinned CLI's own request,
+// lock and write back, which the adapter states once (src/login-refresh.ts, exported as CLAUDE_LOGIN_REFRESH and from
+// /facts as loginRefresh). Each of them is read here in the installed CLI, so a repin that changes any fails this test
+// rather than a host's renewal at a person's login.
+const { CLAUDE_LOGIN_REFRESH } = await import('@parcha/agentrun-harness-claude');
+const { loginRefresh } = await import('@parcha/agentrun-harness-claude/facts').catch(() => ({}));
+const literal = (text) => text.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+
+test('the login renewal the adapter states is the pinned CLI\'s own: its token URL and client id, its JSON refresh body and answer, its scopes, its two refresh locks, its write back at 0600 and its 5-minute margin', { skip: !claudeAgentExecutable() && 'no pinned CLI installed here' }, () => {
+  assert.equal(typeof CLAUDE_LOGIN_REFRESH, 'object', 'the adapter states the CLI\'s login renewal (src/login-refresh.ts CLAUDE_LOGIN_REFRESH)');
+  assert.equal(loginRefresh, CLAUDE_LOGIN_REFRESH, 'the same facts from /facts, which a host reads without loading the SDK');
+  const { tokenUrl, clientId, scopes, lockName, legacyLockSuffix, lockStaleMs, lockUpdateMs } = CLAUDE_LOGIN_REFRESH;
+  assert.ok(Object.isFrozen(CLAUDE_LOGIN_REFRESH) && Object.isFrozen(scopes));
+  assert.deepEqual([...scopes], ['user:profile', 'user:inference', 'user:sessions:claude_code', 'user:mcp_servers', 'user:file_upload', 'user:plugins'], 'the CLI\'s default scopes, plugins included, in its order');
+  const id = '[\\w$]+';
+  const found = holds(claudeAgentExecutable(), {
+    // Its production OAuth config: the token URL, and the client id in the same object.
+    config: new RegExp(`TOKEN_URL:"${literal(tokenUrl)}",[^{}]{0,1200}?CLIENT_ID:"${literal(clientId)}"`),
+    // Its refresh request: this body, as JSON, to that URL; the login's own client id, else the config's.
+    body: new RegExp(`\\{grant_type:"refresh_token",refresh_token:${id},client_id:${id}\\?\\?${id}\\(\\)\\.CLIENT_ID,scope:${id}\\.join\\(" "\\)\\}`),
+    post: new RegExp(`\\.post\\(${id}\\(\\)\\.TOKEN_URL,${id},\\{headers:\\{"Content-Type":"application\\/json"\\},timeout:\\d+`),
+    // Its answer: the token, a new refresh token or the one sent, the seconds to its end, and the scopes granted.
+    answer: new RegExp(`\\{access_token:${id},refresh_token:${id}=${id},expires_in:${id}\\}=${id}`),
+    answerRefreshEnd: new RegExp(`${id}\\.refresh_token_expires_in`),
+    // Its scopes: the three literal ones in the default list, and the three named constants beside them.
+    scopeList: new RegExp(`${id}=\\[${id},${id},"${scopes.slice(2, 5).join('","')}"\\]`),
+    scopeNames: new RegExp(`="${literal(scopes[1])}",${id}="${literal(scopes[0])}",${id}="${literal(scopes[5])}"`),
+    // Its refresh lock in the credentials directory (proper-lockfile's options), and the older one beside its real path.
+    lock: new RegExp(`lockfilePath:${id}\\(${id},"${literal(lockName)}"\\),realpath:!1,stale:${lockStaleMs},update:${lockUpdateMs}`),
+    legacyLock: new RegExp(`\`\\$\\{await ${id}\\(${id}\\)\\.catch\\(\\(\\)=>${id}\\)\\}${literal(legacyLockSuffix)}\``),
+    // Its write back: the answer's fields over the file's, a refresh end it does not give kept, at mode 0600.
+    merge: new RegExp(`refreshTokenExpiresAt:${id}\\.refreshTokenExpiresAt\\?\\?${id}\\?\\.refreshTokenExpiresAt`),
+    mode0600: new RegExp(`,384\\),await ${id}\\(${id},384\\)`),
+    // Its margin: a token with less than 5 minutes left is expired to it.
+    margin: new RegExp(`${id}\\+300000>=${id}`),
+  });
+  assert.deepEqual([...found].sort(), ['answer', 'answerRefreshEnd', 'body', 'config', 'legacyLock', 'lock', 'margin', 'merge', 'mode0600', 'post', 'scopeList', 'scopeNames'], 'the pinned CLI still renews a login as the adapter states');
 });

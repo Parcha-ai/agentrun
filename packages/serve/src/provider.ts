@@ -16,8 +16,7 @@
 //     model goes on the person's plan, from the CLI itself, with no key of ours and no proxy (`login`).
 import type { HarnessWire as Wire, Wire as ModelWire } from "@parcha/agentrun-kernel";
 import { CredentialUnavailable, ROUTE_ORIGIN } from "@parcha/agentrun-kernel/host";
-import type { ClaudeAgentLogin } from "@parcha/agentrun-harness-claude";
-import { CLAUDE_LOGIN_PROVIDER, onClaudeLogin, claudeLoginOf } from "./claude-login.js";
+import { CLAUDE_LOGIN_PROVIDER, onClaudeLogin, claudeLoginOf, loginServes, type RunLogin } from "./claude-login.js";
 import { chooseModel, FAUX_ENV, hostModel, MODEL_PROVIDER, type ModelNeeds, type ModelRef, ollamaWouldRun, START_OLLAMA } from "./model.js";
 import { modelWire, routed, routedId, translatesOnto, WIRES, wireOf } from "./wires.js";
 import { modelFormWhy } from "./model-form.js";
@@ -153,7 +152,7 @@ export function anthropicModelId(model: ModelRef): string {
  *  attempt it was made for, as LiteLLM's spend-logs metadata); none on any other endpoint. */
 /** `fetch`: the route's own, for a model it translates onto the wire (routedProvider): the harness's proxy forwards
  *  with it, to `origin` (ROUTE_ORIGIN), and nothing goes to the network but what the route sends. */
-export type Provider = { origin: string; credential: () => string | Promise<string>; auth: "bearer" | "x-api-key"; modelId: string; priceModel: ModelRef; billing?: "plan"; refused?: (credential: string) => Promise<void>; login?: ClaudeAgentLogin; headers?: Readonly<Record<string, string>>; fetch?: typeof fetch };
+export type Provider = { origin: string; credential: () => string | Promise<string>; auth: "bearer" | "x-api-key"; modelId: string; priceModel: ModelRef; billing?: "plan"; refused?: (credential: string) => Promise<void>; login?: RunLogin; headers?: Readonly<Record<string, string>>; fetch?: typeof fetch };
 
 /** The provider of a held run its model kept from running at its create (run-launch.ts hold.refused), on pi and on every
  *  CLI harness's proxy: its model's route chooses no model and reads no key, so a host with no key for its model still
@@ -217,15 +216,20 @@ export function providerFor(wire: Wire, env: NodeJS.ProcessEnv, model: ModelRef,
     // A model of serve's gateway that the gateway takes on Messages (a Claude model, model.ts gatewayWire): the gateway's
     // own route, as on Responses. No harness of this wire chooses one (claude-agent's model is never the gateway's).
     if (model.provider === MODEL_PROVIDER && env.AGENT_MODEL_BASE_URL) return gatewayProvider(env, model);
+    // Claude Code's login on this machine, turned on here: a model it runs (loginServes: Anthropic's own) goes on it,
+    // whatever key is set. Any other, Anthropic's through OpenRouter included, goes on its provider's key below. The
+    // refusal's offer to move a box agent to the runner (loginOnRunnerOnly) asks the same rule.
+    const login = loginServes(named) && onClaudeLogin(env, who) ? claudeLoginOf(env) : undefined;
+    if (login) {
+      const own = anthropicModelId(model);
+      return { origin: ANTHROPIC_ORIGIN, credential: () => "", auth: "x-api-key", modelId: own, priceModel: { provider: CLAUDE_LOGIN_PROVIDER, modelId: own }, billing: "plan", login };
+    }
     if (model.provider === "openrouter" && model.modelId.startsWith("anthropic/")) {
       const own = anthropicModelId({ provider: "anthropic", modelId: model.modelId.slice("anthropic/".length) });
       return { origin: OPENROUTER_BASE, credential: openRouterKey(env, who, named), auth: "bearer", modelId: own, priceModel: { provider: "openrouter", modelId: `anthropic/${openRouterName(own)}` } };
     }
     if (model.provider !== "anthropic") throw new HarnessUnavailable(`${who} runs Anthropic models; the run's model is ${named}.`);
     const own = anthropicModelId(model);
-    // Claude Code's login on this machine, turned on here: claude-agent's Anthropic model goes on it, whatever key is set.
-    const login = onClaudeLogin(env, who) ? claudeLoginOf(env) : undefined;
-    if (login) return { origin: ANTHROPIC_ORIGIN, credential: () => "", auth: "x-api-key", modelId: own, priceModel: { provider: CLAUDE_LOGIN_PROVIDER, modelId: own }, billing: "plan", login };
     if (openRouterOnly(wire, env)) return { origin: OPENROUTER_BASE, credential: openRouterKey(env, who, named), auth: "bearer", modelId: own, priceModel: { provider: "openrouter", modelId: `anthropic/${openRouterName(own)}` } };
     // The endpoint first: one it refuses is the reason, and no key would fix it (no `keys`). An endpoint the host names
     // takes Anthropic's key alone: OpenRouter's never goes there.

@@ -69,6 +69,14 @@ export interface Held {
   projectCheckpoint(signal?: AbortSignal): Promise<ProjectCheckpoint>;
   /** The ChatGPT sign-in's reader (chatgpt-plan.ts planReaderOf), for a run whose models reach the plan; else none. */
   plan(): Promise<PlanReader | undefined>;
+  /** Claude Code's login on this machine, for a claim of a run that goes on it (claude-login.ts loginForRun, the
+   *  claim's own harness and place, and no model key of its own): its access token alone, read by the runner at each ask
+   *  and renewed by it when near its end (claude-login-token.ts LoginTokens), which throws in words where there is none
+   *  to hand; `refused(sent)` tells the runner Anthropic refused `sent` (the CLI's 401), so the next ask renews it. Else
+   *  none, and the claim does not go on the login: the one answer to that, since the process can read neither the
+   *  setting's machine id nor the login's folder. A claim on a login other than AgentRun's own folder is refused
+   *  (LOGIN_NOT_HANDED). */
+  claudeLogin(): Promise<{ token(): Promise<string>; refused(sent: string): Promise<void> } | undefined>;
   /** Whether a browser sign-in handed to the run reads back here (sign-ins-store.ts handedSignInReadsBack). */
   signInReadsBack(): Promise<boolean>;
   /** The run's browser sign-in for vendor `resolution` (sign-ins-store.ts runSignIn). */
@@ -81,10 +89,11 @@ export interface Held {
    *  out and its launch's payload names the pull request. Its mint makes a token of that repository alone, contents
    *  read, whatever the process names; its MCP mints on the runner (mcp). */
   githubAppAccess(): Promise<GithubAppAccessAt | undefined>;
-  /** Every saved model key, for a run whose routes have no revision to scope them by (a subagent's tiers, a learning run's
- *  grade, an SDK run's); a replay's or an audit's grader gets its fast model's provider's key alone, none when its revision
- *  names agree_on or has no fast model. */
-  savedModelKeys(): Promise<Record<string, string>>;
+  /** The saved model keys of the models of the claim's subagent tiers (claim-secrets.ts subagentTierKeys asks): an agentic
+   *  run granted the subagent tool gets its routed tiers' keys; a replay's or an audit's grader, its fast tier's key alone
+   *  (none when its revision names agree_on or routes no fast tier). None to any other run, to one that holds a model key
+   *  of its own, or to a held run its model kept from running. */
+  subagentTierKeys(): Promise<Record<string, string>>;
   /** The model keys the host's models of `tiers` need (claim-secrets.ts tierModelKeys), the plan's reader with them: of
    *  the tiers the claim's learned workflows name, as the runner chose them (learnedFirst), alone. */
   tierModelKeys(tiers: readonly Tier[]): Promise<{ readonly keys: Record<string, string>; readonly plan?: PlanReader }>;

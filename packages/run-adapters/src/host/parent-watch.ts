@@ -5,6 +5,7 @@
 // host, is gone. With `--term-grace <ms>` it also kills the command (SIGKILL) when it outlasts a TERM passed on by
 // that long.
 import { spawn } from "node:child_process";
+import { termGraceOf } from "./parent-death.js";
 
 // `--term-grace`: a host that ends this child with TERM, and SIGKILL after a wait of its own sent to this process
 // alone (startClaudeLogin's 5 s), asks for a grace shorter than that wait, since its SIGKILL would leave a child still
@@ -15,8 +16,9 @@ const [parentArg, ...rest] = process.argv.slice(2);
 const parent = Number(parentArg);
 const graceAsked = rest[0] === "--term-grace";
 const graceArg = graceAsked ? rest[1] : undefined;
-// A positive whole number of milliseconds a timer can wait (longer ones fire at once).
-const termGraceMs = graceArg !== undefined && /^[1-9]\d*$/.test(graceArg) && Number(graceArg) <= 2_147_483_647 ? Number(graceArg) : undefined;
+// A positive whole number of milliseconds a timer can wait (longer ones fire at once), by the rule parentWatched reads
+// a caller's grace by.
+const termGraceMs = graceArg === undefined ? undefined : termGraceOf(graceArg);
 const [separator, command, ...args] = graceAsked ? rest.slice(2) : rest;
 if (!Number.isSafeInteger(parent) || parent < 1 || (graceAsked && termGraceMs === undefined) || separator !== "--" || !command) {
   process.stderr.write("usage: parent-watch.js <parent pid> [--term-grace <ms>] -- <command> [args...]\n");
