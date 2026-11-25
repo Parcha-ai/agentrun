@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { locatorSize, READERS, readSession } from "../dist/index.js";
-import { openCodeFiles } from "../dist/readers/opencode.js";
+import { openCodeFiles, withDb } from "../dist/readers/opencode.js";
 import { tempHome } from "./fixtures.mjs";
 import { buildLegacy, buildV1, buildV2, T0, V2_MESSAGES, V2_PARTS, v1Fork } from "./fixtures/opencode/fixture.mjs";
 
@@ -550,4 +550,21 @@ test("a read that fails partway adds nothing to the import's `seen`: the session
   const again = (await reader.read({ file: db, id: "ses_C" }, undefined, { seen })).sessions[0];
   assert.equal(again.requests.length, whole, "no request of its own taken for a copy");
   assert.ok(seen.size > 0, "a read that ends clean adds its own");
+});
+
+test("every query of one read sees the database as its first did: a row OpenCode writes between two of them is in neither", async (t) => {
+  const home = await tempHome(t);
+  const file = join(home, "opencode.db");
+  // OpenCode's own connection, open in WAL mode throughout (its -wal and -shm there), writing as the read goes on.
+  const writer = new DatabaseSync(file);
+  t.after(() => writer.close());
+  writer.exec("PRAGMA journal_mode = WAL; CREATE TABLE message (id TEXT); INSERT INTO message VALUES ('m1');");
+  const counts = await withDb(file, (db) => {
+    const first = db.all("SELECT count(*) AS n FROM message")[0].n;
+    writer.exec("INSERT INTO message VALUES ('m2')");
+    return [first, db.all("SELECT count(*) AS n FROM message")[0].n];
+  });
+  assert.deepEqual(counts, [1, 1]);
+  // The next read sees it.
+  assert.equal(await withDb(file, (db) => db.all("SELECT count(*) AS n FROM message")[0].n), 2);
 });

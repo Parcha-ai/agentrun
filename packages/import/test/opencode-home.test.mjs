@@ -156,3 +156,20 @@ test("a 1.x fork in a home's totals: its 30 copied requests count in its source 
   assert.deepEqual(again, await parseHome(home, { sources: ["opencode"], catalog: false, env: {} }));
   assert.deepEqual([byId(again).ses_F.tokens, byId(again).ses_F.calls, byId(again).ses_F.cost], [tokens(700, 6), 3, 0.625]);
 });
+
+test("a message deleted from a fork's source: a pass from parseHome's state totals as a fresh one, the fork's copy of it now the fork's", async (t) => {
+  const home = await tempHome(t);
+  const file = join(home, DATA, "opencode.db");
+  await buildV1(file, v1Fork());
+  const state = {};
+  await parseHome(home, { sources: ["opencode"], catalog: false, env: {}, state });
+  // msg_S1 (its 2 requests: input 1 and 2) goes from ses_S; the fork's copy of it (msg_F01) stays.
+  const db = new DatabaseSync(file);
+  db.prepare("DELETE FROM part WHERE message_id = 'msg_S1'").run();
+  db.prepare("DELETE FROM message WHERE id = 'msg_S1'").run();
+  db.prepare("UPDATE session SET time_updated = ? WHERE id = 'ses_S'").run(T0 + 250_000);
+  db.close();
+  const fresh = byId(await parseHome(home, { sources: ["opencode"], catalog: false, env: {} }));
+  assert.deepEqual([fresh.ses_S.calls, fresh.ses_F.calls], [38, 4], "the copy is the fork's own once its source holds it no more");
+  assert.deepEqual(byId(await parseHome(home, { sources: ["opencode"], catalog: false, env: {}, state })), fresh);
+});

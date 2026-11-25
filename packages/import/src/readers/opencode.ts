@@ -403,8 +403,9 @@ function v2Session(reading: Reading, rows: Row[], parts: Map<string, unknown[]>,
   return reading.done();
 }
 
-/** An open database, read-only; `read` the bytes of the `data` the queries have returned so far. */
-type Db = { all(sql: string, ...params: (string | number)[]): Row[]; close(): void; read(): number };
+/** An open database, read-only; `read` the bytes of the `data` the queries have returned so far; `exec` a statement
+ *  that returns no rows (BEGIN, COMMIT). */
+type Db = { all(sql: string, ...params: (string | number)[]): Row[]; exec(sql: string): void; close(): void; read(): number };
 /** What says whether OpenCode has a database open, and whether it wrote to it: the file's own stat, and its -wal and
  *  -shm (made as a connection opens it in WAL mode, removed as the last one closes). */
 const lookAt = async (file: string) => ({
@@ -428,6 +429,7 @@ const SQLITE_OPEN_URI = 0x40;
 async function openDb(file: string, closed: boolean): Promise<Db> {
   let query: (sql: string, params: (string | number)[]) => Row[];
   let close: () => void;
+  let exec: (sql: string) => void;
   const url = pathToFileURL(resolve(file));
   url.searchParams.set("immutable", "1");
   if (process.versions.bun) {
@@ -435,11 +437,13 @@ async function openDb(file: string, closed: boolean): Promise<Db> {
     const db = closed ? new Database(url.href, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI) : new Database(file, { readonly: true });
     db.query(BUSY_PRAGMA).all();
     query = (sql, params) => db.query(sql).all(...params);
+    exec = (sql) => void db.query(sql).all();
     close = () => db.close();
   } else {
     const { DatabaseSync } = (await import(NODE_SQLITE)) as typeof import("node:sqlite");
     const db = new DatabaseSync(closed ? url : file, { readOnly: true, timeout: BUSY_MS });
     query = (sql, params) => db.prepare(sql).all(...params) as Row[];
+    exec = (sql) => db.exec(sql);
     close = () => db.close();
   }
   let bytes = 0;
@@ -449,20 +453,28 @@ async function openDb(file: string, closed: boolean): Promise<Db> {
       for (const row of rows) if (typeof row.data === "string") bytes += Buffer.byteLength(row.data);
       return rows;
     },
+    exec,
     close,
     read: () => bytes,
   };
 }
 
-/** `use` of `file` open (openDb), then closed. Opened immutable, the read assumed nothing changed: one OpenCode opened
- *  or wrote meanwhile (its -wal or -shm there now, or the file's size, time or inode another) fails, never a clean read:
- *  the import names it and reads it again next time. */
-async function withDb<T>(file: string, use: (db: Db) => T): Promise<T> {
+/** `use` of `file` open (openDb), then closed, every query of it in one read transaction: with OpenCode writing to it
+ *  (its -wal there), each one reads the database as the first one did, never a message without the parts OpenCode wrote
+ *  with it. Opened immutable, the read assumed nothing changed: one OpenCode opened or wrote meanwhile (its -wal or -shm
+ *  there now, or the file's size, time or inode another) fails, never a clean read: the import names it and reads it
+ *  again next time. */
+export async function withDb<T>(file: string, use: (db: Db) => T): Promise<T> {
   const before = await lookAt(file);
   const db = await openDb(file, !before.owned);
   let out: T;
   try {
-    out = use(db);
+    db.exec("BEGIN");
+    try {
+      out = use(db);
+    } finally {
+      db.exec("COMMIT");
+    }
   } finally {
     db.close();
   }
@@ -831,7 +843,11 @@ export const opencode: Reader<"opencode", OpenCodeCursor> = {
     const context = contextOf(seen, resumed ? cursor.owned : [], await latestOf(file));
     const result = (stamp: string, sessions: Found[], read: number): ReadResult<"opencode", OpenCodeCursor> => {
       if (resumed && cursor.stamp === stamp) return { sessions: structuredClone(cursor.sessions), cursor, read: 0, resumed };
-      return { sessions, cursor: { source: "opencode", dev: stats.dev, ino: stats.ino, keep, stamp, sessions: keep ? structuredClone(sessions) : sessions.map(withoutText), owned: [...context.owned] }, read, resumed };
+      // A record its last read held that this one does not (OpenCode deleted or changed a message): a copy of it a fork
+      // holds was the record's copy, counted nowhere, and a fresh read counts it there. Not resumed: the caller reads the
+      // source again from nothing (parseHome's readSource), as a fresh read would.
+      const lost = resumed && [...context.before].some((key) => !context.owned.has(key));
+      return { sessions, cursor: { source: "opencode", dev: stats.dev, ino: stats.ino, keep, stamp, sessions: keep ? structuredClone(sessions) : sessions.map(withoutText), owned: [...context.owned] }, read, resumed: resumed && !lost };
     };
     if (id === undefined && isStorage(file)) {
       const stamp = await storageStamp(file);
