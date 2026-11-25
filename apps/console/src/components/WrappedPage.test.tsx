@@ -2,7 +2,7 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WrappedPage } from "./WrappedPage";
-import { WRAPPED_CARDS, type CardRenderer } from "@/lib/wrappedCards";
+import { noCards, WRAPPED_CARDS, type CardRenderer } from "@/lib/wrappedCards";
 import { route } from "@/App";
 import { ClientError, type Client } from "@/lib/client";
 import type { Wrapped } from "@/lib/v2";
@@ -133,10 +133,21 @@ describe("WrappedPage", () => {
     for (const c of WRAPPED_CARDS) for (const f of c.reads) expect(known).toContain(f);
   });
 
-  it("shows no cards section, and no empty box, with the default renderer", async () => {
-    await mount(async () => YEAR);
+  it("draws the cover, split, hours and summary cards as images by default, and none of the cards that wait on more", async () => {
+    await mount(async () => YEAR, vi.fn(), 2025);
+    const alts = [...document.querySelectorAll("[data-cards] img")].map((img) => img.getAttribute("alt") ?? "");
+    expect(alts.map((alt) => alt.split(". ")[1])).toEqual(["Your 2025 in agents", "Where your tokens went", "When your agents work", "2025 in agents"]);
+    for (const img of document.querySelectorAll("[data-cards] img")) expect(img.getAttribute("src")?.startsWith("data:image/svg+xml;")).toBe(true);
+  });
+
+  it("shows no cards section, and no empty box, when the renderer draws none or the year has no sessions", async () => {
+    await mount(async () => YEAR, vi.fn(), 2025, noCards);
     expect(document.querySelector("[data-cards]")).toBeNull();
     expect(document.body.textContent).not.toContain("Cards");
+    document.body.innerHTML = "";
+    await mount(async () => ({ ...YEAR, sessions: 0 }), vi.fn(), 2025);
+    expect(document.body.textContent).toContain("6.3M tokens");
+    expect(document.querySelector("[data-cards]")).toBeNull();
   });
 
   it("calls an injected renderer for each of the nine cards, in order, with the body, and shows what it returns", async () => {
