@@ -28,7 +28,7 @@ const opens = (host: ToolHost): boolean => host.store !== undefined && (host.sea
 const accountOf = async (host: ToolHost): Promise<OpenedAccount | undefined> => (host.sealKey ? openAccount(host.store!, host.sealKey) : held()?.emailAccount());
 import { EMAIL_ANSWER_MAX_CHARS, emailError, emailText } from "./answer.js";
 import { archiveDescription, EMAIL_ADDRESS, EMAIL_DESCRIPTIONS, EMAIL_DRAFT, EMAIL_FILE, EMAIL_READ, EMAIL_SEARCH, EMAIL_SEND, fileDescription, LIMIT_DEFAULT, LIMIT_MAX, OUTSIDE_THREAD, SEND_CAP, type ServerKind } from "./names.js";
-import { composed, foundOf, type ImapSession, inThread, involves, MailError, type MailHead, type MailMessage, neverSentTo, READ_BYTES, readOf, SEARCH_BYTES, SENT_HEADER, smtpSend, TOOL_SOCKET_TIMEOUT_MS, withImap } from "./mail.js";
+import { addressKey, composed, foundOf, type ImapSession, inThread, involves, MailError, type MailHead, type MailMessage, neverSentTo, READ_BYTES, readOf, SEARCH_BYTES, SENT_HEADER, smtpSend, TOOL_SOCKET_TIMEOUT_MS, withImap } from "./mail.js";
 
 export { EMAIL_DRAFT, EMAIL_FILE, EMAIL_READ, EMAIL_SCOPES, EMAIL_SEARCH, EMAIL_SEND, OUTSIDE_THREAD, SCOPED_TOOLS, SEND_CAP, sendSummary } from "./names.js";
 
@@ -72,7 +72,7 @@ const messageId = (value: string) => {
   return id.startsWith("<") ? id : `<${id}>`;
 };
 
-/** The message a thread run started from: who sent it (its From's address, lowercased), its Message-ID, and where the
+/** The message a thread run started from: who sent it (its From's address, as compared: addressKey), its Message-ID, and where the
  *  trigger found it (the mailbox, its UIDVALIDITY, the UID). */
 export type ThreadRoot = { from: string; message_id: string; mailbox: string; uidvalidity: string; uid: number };
 
@@ -87,7 +87,7 @@ export function threadRootOf(attrs: Readonly<Record<string, unknown>> | undefine
   const { from, message_id, mailbox, uidvalidity, uid } = attrs ?? {};
   const named = (value: unknown): value is string => typeof value === "string" && value.trim() !== "";
   if (!named(from) || !named(message_id) || !named(mailbox) || !named(uidvalidity) || !named(uid) || !/^[1-9]\d{0,15}$/.test(uid)) return null;
-  return { from: from.trim().toLowerCase(), message_id, mailbox, uidvalidity, uid: Number(uid) };
+  return { from: addressKey(from), message_id, mailbox, uidvalidity, uid: Number(uid) };
 }
 
 /** The scope of `tool`'s calls in the run `host` binds for: the agent's `scope: "mailbox"` reads the whole account; a run
@@ -126,7 +126,7 @@ async function located(session: ImapSession, root: ThreadRoot | null): Promise<T
 }
 
 /** Whether `head` is `root`'s message: its Message-ID, from its sender. */
-const isRoot = (head: MailHead, root: ThreadRoot) => head.message_id === root.message_id && head.from.trim().toLowerCase() === root.from;
+const isRoot = (head: MailHead, root: ThreadRoot) => head.message_id === root.message_id && addressKey(head.from) === root.from;
 
 /** `root`'s message where the trigger found it, when it is still there. */
 async function recorded(session: ImapSession, root: ThreadRoot): Promise<MailHead | undefined> {
@@ -193,17 +193,17 @@ class Mail {
     return found.filter((uid) => inside.has(uid));
   }
 
-  /** The thread's people, lowercased: the account's own address and every From, To and Cc of the thread's messages (those
+  /** The thread's people, as compared (addressKey): the account's own address and every From, To and Cc of the thread's messages (those
    *  `allows` takes), across the account's mailboxes; undefined when the run reads the whole account. */
   async people(session: ImapSession): Promise<Set<string> | undefined> {
     const ids = await this.thread(session);
     if (!ids) return undefined;
-    const people = new Set([this.account.address.trim().toLowerCase()]);
+    const people = new Set([addressKey(this.account.address)]);
     if (!ids.size) return people;
     for (const path of await session.searchable()) {
       await session.open(path);
       for (const head of await session.heads(path, await session.uids(session.threadQuery([...ids])))) {
-        if (inThread(head, ids) && (await this.allows(session, head))) for (const one of [head.from, ...head.to, ...head.cc]) people.add(one.trim().toLowerCase());
+        if (inThread(head, ids) && (await this.allows(session, head))) for (const one of [head.from, ...head.to, ...head.cc]) people.add(addressKey(one));
       }
     }
     return people;
@@ -402,10 +402,10 @@ export async function sendAsks(args: Record<string, unknown>, ctx: AskContext): 
   return why.length ? why.join("; ") : undefined;
 }
 
-/** The recipients of a send's arguments (to and cc), lowercased, once each; none when they don't read. */
+/** The recipients of a send's arguments (to and cc), as compared (addressKey), once each; none when they don't read. */
 function recipientsOf(args: Record<string, unknown>): string[] {
   const list = (value: unknown) => (typeof value === "string" ? [value] : Array.isArray(value) ? value.filter((one): one is string => typeof one === "string") : []);
-  return [...new Set([...list(args.to), ...list(args.cc)].map((one) => one.trim().toLowerCase()))];
+  return [...new Set([...list(args.to), ...list(args.cc)].map(addressKey))];
 }
 
 /** On a run a trigger started (host.startedBy: a schedule, a webhook, an email, any source), the recipients of the send
@@ -423,15 +423,18 @@ async function newWords(ctx: AskContext, args: Record<string, unknown>): Promise
   let recipients: string[];
   try {
     const letter = letterOf(args);
-    recipients = [...new Set([...letter.to, ...letter.cc].map((one) => one.toLowerCase()))];
+    recipients = [...new Set([...letter.to, ...letter.cc].map(addressKey))];
   } catch {
     return undefined;
   }
   try {
     const account = await accountOf(host);
-    // No account, or one a template eval's run may not open: the send itself is refused in its own words.
-    if (!account || !fakeHeld(host, account)) return undefined;
-    const known = new Set([account.address.trim().toLowerCase(), ...starter, ...(await ctx.made(EMAIL_SEND)).flatMap((one) => (isObject(one) ? recipientsOf(one) : []))]);
+    // No account when the send is checked: the tool opens the account again when it runs, so one saved in between would
+    // let the send out unchecked. It asks, saying so (fail closed).
+    if (!account) throw new MailError("missing", NO_ACCOUNT);
+    // One a template eval's run may not open: the send itself is refused in its own words.
+    if (!fakeHeld(host, account)) return undefined;
+    const known = new Set([addressKey(account.address), ...starter, ...(await ctx.made(EMAIL_SEND)).flatMap((one) => (isObject(one) ? recipientsOf(one) : []))]);
     const unknown = recipients.filter((one) => !known.has(one));
     if (!unknown.length) return undefined;
     const never = await withImap(account, (session) => neverSentTo(session, unknown, account.address), { socketTimeoutMs: TOOL_SOCKET_TIMEOUT_MS });
@@ -448,7 +451,7 @@ async function outsideWords(host: ToolHost, args: Record<string, unknown>): Prom
   let recipients: string[];
   try {
     const letter = letterOf(args);
-    recipients = [...new Set([...letter.to, ...letter.cc].map((one) => one.toLowerCase()))];
+    recipients = [...new Set([...letter.to, ...letter.cc].map(addressKey))];
   } catch {
     return undefined;
   }

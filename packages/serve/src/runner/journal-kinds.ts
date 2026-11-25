@@ -314,7 +314,8 @@ export interface AnswerData {
 
 /** The calls of a tool a run's journal shows (toolCalls): `ran`, the ids run to a good end, and `unnamed`, those pi
  *  recorded with no id; `ended`, every id with a result of any kind (done, an error, a refusal or a deny); `args`, each
- *  call's arguments by its id, as its start (a CLI's) or its model's tool call (pi's) wrote them. */
+ *  call's arguments by its id, for the calls run to a good end: those its start (a CLI's) or its model's tool call (pi's)
+ *  wrote last before that end, never a later one reusing the id. */
 export type ToolCalls = { readonly ran: ReadonlySet<string>; readonly unnamed: number; readonly ended: ReadonlySet<string>; readonly args: ReadonlyMap<string, unknown> };
 
 /** The calls of `tool` `entries` show: a CLI's (agentrun.call.start and its end) and pi's (a pi.tool-result of it), each
@@ -324,26 +325,33 @@ export function toolCalls(entries: readonly { readonly kind: string; readonly da
   const ran = new Set<string>();
   const ended = new Set<string>();
   const args = new Map<string, unknown>();
+  // Each id's latest arguments not yet run: those a good end then fixes as the call's own. A call reusing an id that
+  // already ran changes nothing, and one whose id a refused or denied call had reads its own.
+  const asked = new Map<string, unknown>();
+  const done = (id: string) => {
+    ran.add(id);
+    if (!args.has(id) && asked.has(id)) args.set(id, asked.get(id));
+  };
   let unnamed = 0;
   for (const entry of entries) {
     if (entry.kind === KINDS.callStart && (entry.data as CallStartData).tool === tool) {
       started.add((entry.data as CallStartData).callId);
-      args.set((entry.data as CallStartData).callId, (entry.data as CallStartData).input);
+      asked.set((entry.data as CallStartData).callId, (entry.data as CallStartData).input);
     } else if (entry.kind === "pi.assistant") {
       const content = (entry.model as { content?: unknown }[] | undefined)?.[0]?.content;
       for (const block of Array.isArray(content) ? (content as { type?: unknown; id?: unknown; name?: unknown; arguments?: unknown }[]) : []) {
-        if (block?.type === "toolCall" && block.name === tool && typeof block.id === "string" && block.id) args.set(block.id, block.arguments);
+        if (block?.type === "toolCall" && block.name === tool && typeof block.id === "string" && block.id) asked.set(block.id, block.arguments);
       }
     } else if (entry.kind === KINDS.callEnd && started.has((entry.data as CallEndData).callId)) {
       ended.add((entry.data as CallEndData).callId);
-      if ((entry.data as CallEndData).status === "done") ran.add((entry.data as CallEndData).callId);
+      if ((entry.data as CallEndData).status === "done") done((entry.data as CallEndData).callId);
     } else if (entry.kind === "pi.tool-result") {
       const result = (entry.model as { toolName?: unknown; toolCallId?: unknown; isError?: unknown }[] | undefined)?.[0];
       if (result?.toolName !== tool) continue;
       const id = typeof result.toolCallId === "string" && result.toolCallId ? result.toolCallId : undefined;
       if (id) ended.add(id);
       if (result.isError === true) continue;
-      if (id) ran.add(id);
+      if (id) done(id);
       else unnamed++;
     }
   }

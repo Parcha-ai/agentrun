@@ -292,6 +292,40 @@ test("a message in Sent that carries \\Draft is no send: its address is still ne
   assert.equal(faux.sent().length, 0);
 });
 
+test("only ASCII letters fold in the compare: Sent to kim@example.com doesn't make \\u212Aim@example.com (a KELVIN SIGN, which Unicode lowercases to k) written to, so the send asks naming it", { timeout: 150_000 }, async (t) => {
+  const ctx = await served(t);
+  const faux = await mailbox(t);
+  faux.seed({ mailbox: "Sent", from: ADDRESS, to: ["kim@example.com"], subject: "Kim", text: "Kim.", flags: ["\\Seen"] });
+  await saved(ctx.api, faux);
+  const kelvin = "Kim@example.com";
+  const runId = await scheduled(ctx, "kelvin", [send([kelvin])]);
+  asks(await settled(ctx.api, runId), `${kelvin}${NEVER}`);
+  assert.equal(faux.sent().length, 0);
+});
+
+test("an account with no Sent folder asks, saying the recipients couldn't be checked because it has none", { timeout: 150_000 }, async (t) => {
+  const ctx = await served(t);
+  const faux = await mailbox(t, { layout: "no-sent" });
+  await saved(ctx.api, faux);
+  const runId = await scheduled(ctx, "nosent", [send(["someone3@example.com"])]);
+  asks(await settled(ctx.api, runId), /^its recipients couldn't be checked against this account's sent mail \(This account has no Sent folder\.\)$/);
+  assert.equal(faux.sent().length, 0);
+});
+
+test("a send checked while no account is saved asks, so an account saved before it runs can't let it out unasked", { timeout: 150_000 }, async (t) => {
+  const ctx = await served(t);
+  const faux = await mailbox(t);
+  const runId = await scheduled(ctx, "early", [send(["someone3@example.com"])]);
+  const now = await settled(ctx.api, runId);
+  asks(now, /^its recipients couldn't be checked against this account's sent mail \(This server has no email account: save one in Settings → Email\.\)$/);
+  // Saved after the check: only the person's approval lets the send out.
+  await saved(ctx.api, faux);
+  assert.equal(faux.sent().length, 0);
+  assert.equal(await ctx.decide(runId, now.pending.id, "allow"), 204);
+  await follow(ctx.api, runId, ["completed"], { deadlineMs: 55_000 });
+  assert.deepEqual(faux.sent().map((m) => m.to), [["someone3@example.com"]]);
+});
+
 test("a message in Sent from someone else is no send of this account's: its address is still never written to, and only it is named beside one the account did write to", { timeout: 150_000 }, async (t) => {
   const ctx = await served(t);
   const faux = await mailbox(t);

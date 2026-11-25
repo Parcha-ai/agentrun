@@ -99,9 +99,12 @@ const INBOX_LABEL = "\\Inbox";
 const ALL_MAIL = "[Gmail]/All Mail";
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
+/** A layout: a plain account's, Gmail's, or a plain account's with no Sent folder at all. */
+type Layout = "standard" | "gmail" | "no-sent";
 /** The folders of a layout: a plain account's (Drafts, Sent, Trash at the top), or Gmail's (under [Gmail]/, each with its
- *  special-use flag, its sent folder "Sent Mail"). */
-function layoutOf(layout: "standard" | "gmail"): { name: string; flags: string[]; selectable?: false }[] {
+ *  special-use flag, its sent folder "Sent Mail"); "no-sent", the plain one without Sent. */
+function layoutOf(layout: Layout): { name: string; flags: string[]; selectable?: false }[] {
+  if (layout === "no-sent") return layoutOf("standard").filter((box) => box.name !== "Sent");
   if (layout === "gmail") {
     return [
       { name: "INBOX", flags: [] },
@@ -259,7 +262,7 @@ const literal = (text: string) => `{${Buffer.byteLength(text, "utf8")}}${CRLF}${
  *  layout's server says X-GM-EXT-1. `now`: its clock. `slowInReplyTo`: a search by HEADER In-Reply-To is never answered,
  *  as Gmail's on a large mailbox (it indexes Message-ID and References, not In-Reply-To). `password`: the one it signs in
  *  with (default a fresh random one). */
-export async function startEmailFaux(options: { imapPort?: number; smtpPort?: number; layout?: "standard" | "gmail"; now?: () => Date; slowInReplyTo?: boolean; password?: string } = {}): Promise<EmailFaux> {
+export async function startEmailFaux(options: { imapPort?: number; smtpPort?: number; layout?: Layout; now?: () => Date; slowInReplyTo?: boolean; password?: string } = {}): Promise<EmailFaux> {
   // Its clock: a seeded message's default date and an appended one's arrival (a template eval case's `now`, else the real one).
   const now = options.now ?? (() => new Date());
   const user = "agent@faux.example";

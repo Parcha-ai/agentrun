@@ -64,6 +64,10 @@ export function mailError(error: unknown, endpoint: Endpoint, protocol: "IMAP" |
   return new MailError("failed", `${endpoint.host} (${protocol}) answered: ${clip(words, 300)}`);
 }
 
+/** An address as two are compared: trimmed, its ASCII letters lowercased and nothing else. JS toLowerCase folds U+212A
+ *  KELVIN SIGN to "k" and U+212B ANGSTROM SIGN to "å", so two addresses SMTP keeps apart would compare equal. */
+export const addressKey = (address: string): string => address.trim().replace(/[A-Z]+/g, (letters) => letters.toLowerCase());
+
 const clip = (text: string, n: number) => (text.length <= n ? text : `${text.slice(0, n - 1)}…`);
 /** `text` with every copy of `password` taken out. */
 const scrub = (text: string, password: string) => (password ? text.split(password).join("[password]") : text);
@@ -150,11 +154,11 @@ async function headOf(row: Pick<FetchMessageObject, "uid" | "internalDate" | "si
   return { uid: row.uid, mailbox, size: typeof row.size === "number" ? row.size : 0, ...head };
 }
 
-/** The bare addresses, lowercased, of the From and of the To, Cc and Bcc of a message's header fields (`headers`, as
+/** The bare addresses, as compared (addressKey), of the From and of the To, Cc and Bcc of a message's header fields (`headers`, as
  *  fetched), parsed as every address header is: display names, groups and encoded words read. */
 async function addressesOf(headers: Buffer | undefined): Promise<{ from: string[]; recipients: Set<string> }> {
   const parsed = await simpleParser(Buffer.concat([headers ?? Buffer.alloc(0), Buffer.from("\r\n")]), { skipImageLinks: true, skipTextLinks: true });
-  const bare = (one: AddressObject | AddressObject[] | undefined) => addresses(one).map((a) => a.address.trim().toLowerCase());
+  const bare = (one: AddressObject | AddressObject[] | undefined) => addresses(one).map((a) => addressKey(a.address));
   return { from: bare(parsed.from), recipients: new Set([parsed.to, parsed.cc, parsed.bcc].flatMap(bare)) };
 }
 
@@ -174,8 +178,8 @@ export async function neverSentTo(session: ImapSession, addresses: readonly stri
 
 /** Whether `address` (bare, any case) is one of `m`'s From, To or Cc. */
 export const involves = (m: Pick<MailMessage, "from" | "to" | "cc">, address: string): boolean => {
-  const wanted = address.trim().toLowerCase();
-  return wanted !== "" && [m.from, ...m.to, ...m.cc].some((one) => one.trim().toLowerCase() === wanted);
+  const wanted = addressKey(address);
+  return wanted !== "" && [m.from, ...m.to, ...m.cc].some((one) => addressKey(one) === wanted);
 };
 
 /** The payload's fields (a trigger's firing, a read's message). */
@@ -267,8 +271,8 @@ export class ImapSession {
    *  data@b.com); each candidate's From, To, Cc and Bcc (BODY.PEEK of those fields, never a body) and flags are then read
    *  and parsed, newest first, SENT_HITS_MAX at most. Past those with no match: MailError `failed`, saying how many. */
   async holdsTo(path: string, address: string, own: string): Promise<boolean> {
-    const wanted = address.trim().toLowerCase();
-    const self = own.trim().toLowerCase();
+    const wanted = addressKey(address);
+    const self = addressKey(own);
     const hits = (await this.uids({ or: [{ to: wanted }, { cc: wanted }, { bcc: wanted }] })).reverse();
     const read = hits.slice(0, SENT_HITS_MAX);
     for (let at = 0; at < read.length; at += SENT_HITS_BATCH) {
