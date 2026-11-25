@@ -497,34 +497,90 @@ export function errorCut(mode: "error" | "events" | "as-is", forms: readonly str
   };
 }
 
+/** A whole server-sent event, as the format reads one
+ *  (https://html.spec.whatwg.org/multipage/server-sent-events.html#event-stream-interpretation): `text`, its lines as they
+ *  came joined with a line feed (whatever ended them), and `data`, its `data:` lines' values (the one space after the
+ *  colon dropped), which the format joins with a line feed. An event longer than its reader's limit has no text and no
+ *  data: it is read past whole, never in part. */
+export interface StreamEvent {
+  text?: string;
+  data: string[];
+}
+
+/** Reads a stream's whole events from its pieces as they come: lines end in LF, CRLF or a bare CR (a CRLF split between
+ *  two pieces is one line end), and a blank line ends an event, never a line alone, so an event whose data spans several
+ *  lines, or several pieces part way through a line, is read once it is whole. `max`: the most of an event kept. */
+export function eventReader(max: number): { push(text: string): StreamEvent[] } {
+  const breaks = /\r\n|\r|\n/g;
+  /** The event's whole lines, and their length with their line ends (past `max`: Infinity, and its lines dropped). */
+  let lines: string[] = [];
+  let size = 0;
+  /** The line coming: what of it is kept, and its length, which tells a blank line. */
+  let line = "";
+  let lineChars = 0;
+  /** That the last piece ended on a CR: a LF the next one begins with is that CR's line end, not a line of its own. */
+  let afterCr = false;
+  const ended = (): StreamEvent | undefined => {
+    const blank = lineChars === 0;
+    if (!blank && size !== Infinity) {
+      lines.push(line);
+      size += line.length + 1;
+    }
+    line = "";
+    lineChars = 0;
+    if (!blank) return undefined;
+    const event = size === Infinity ? { data: [] } : lines.length ? { text: lines.join("\n"), data: lines.filter((each) => each.startsWith("data:")).map((each) => each.slice(5).replace(/^ /, "")) } : undefined;
+    lines = [];
+    size = 0;
+    return event;
+  };
+  return {
+    push(text) {
+      const out: StreamEvent[] = [];
+      let at = afterCr && text.startsWith("\n") ? 1 : 0;
+      afterCr = false;
+      while (at < text.length) {
+        breaks.lastIndex = at;
+        const found = breaks.exec(text);
+        const end = found ? found.index : text.length;
+        lineChars += end - at;
+        if (size !== Infinity) {
+          line += text.slice(at, end);
+          if (size + line.length > max) {
+            size = Infinity;
+            lines = [];
+            line = "";
+          }
+        }
+        if (!found) break;
+        at = end + found[0].length;
+        if (found[0] === "\r" && at === text.length) afterCr = true;
+        const event = ended();
+        if (event) out.push(event);
+      }
+      return out;
+    },
+  };
+}
+
 function eventCounter<K extends string>(readers: Record<K, ((event: string) => number) | undefined>): { push(text: string): void; bytes(of: K): number } {
   const keys = (Object.keys(readers) as K[]).filter((key) => readers[key] !== undefined);
   const sums = Object.fromEntries(keys.map((key) => [key, 0])) as Record<K, number>;
-  let pending = "";
-  /** A "\r" the last piece ended on: the first half of a "\r\n" the next piece ends. */
-  let cr = "";
+  const events = eventReader(EVENT_MAX_CHARS);
   return {
     push(text) {
       if (!keys.length) return;
-      // A line end split between pieces ("\r" here, "\n" in the next) is joined before "\r\n" becomes "\n", or the two
-      // events around a split blank line would read as one, which no policy can parse.
-      let piece = cr + text;
-      cr = piece.endsWith("\r") ? "\r" : "";
-      if (cr) piece = piece.slice(0, -1);
-      pending += piece.replace(/\r\n/g, "\n");
-      for (let at = pending.indexOf("\n\n"); at >= 0; at = pending.indexOf("\n\n")) {
-        const event = pending.slice(0, at);
-        pending = pending.slice(at + 2);
+      for (const event of events.push(text)) {
+        if (event.text === undefined) continue;
         for (const key of keys) {
           try {
-            const n = readers[key]!(event);
+            const n = readers[key]!(event.text);
             if (typeof n === "number" && Number.isFinite(n) && n > 0) sums[key] += n;
           } catch {
             // An event the policy cannot read carries nothing it counts.
           }
         }
       }
-      if (pending.length > EVENT_MAX_CHARS) pending = "";
     },
     bytes: (of) => sums[of] ?? 0,
   };
@@ -1575,16 +1631,27 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       }
     };
     /** Whether this proxy had aborted the request when the answer's first error event was read (undefined: none read
-     *  yet). Each line is read here before its client is written it, so an error read before the abort is the
-     *  provider's own (a refusal, an overload) that its client then read and left on: no stop. One read after the abort
-     *  may be the abort's own end of the stream (a route's "aborted" event), or a refusal raced by the hang-up: a stop. */
+     *  yet). Each event is read here whole (eventReader) before its client is written the blank line that ends it, and a
+     *  client acts on an event only once that line ends it, so an error read before the abort is the provider's own (a
+     *  refusal, an overload) that its client then read and left on: no stop. One read after the abort may be the
+     *  abort's own end of the stream (a route's "aborted" event), or a refusal raced by the hang-up: a stop. */
     let errorReadAborted: boolean | undefined;
-    /** The answer's stops, read from what has come of it so far: its content-filter stop, and its cut. And whether its
-     *  first error event came before this proxy's abort. */
+    /** The answer's stops, read from what has come of it so far: its content-filter stop, and its cut. */
     const tellStops = (text: string): void => {
-      if (errorReadAborted === undefined && text.includes("error") && streamErrorOf(text) !== undefined) errorReadAborted = controller.signal.aborted;
       tellFiltered(text);
       tellCut(text);
+    };
+    /** The answer's events, whole, at most a window of each: what tellEvent reads. */
+    const events = eventReader(USAGE_WINDOW);
+    /** One whole event of a successful answer: whether it is the provider's error, read by streamErrorOf as the booking
+     *  reads the answer's end, so the two never disagree on an event, and whether this proxy had aborted then. And when its
+     *  data came on several lines, its stops, from its data on one `data:` line (a space where the format joins with a
+     *  line feed: JSON reads both alike): a policy reads each `data:` line on its own, and no one line of such an event
+     *  holds it. */
+    const tellEvent = (event: StreamEvent): void => {
+      if (event.text === undefined) return;
+      if (errorReadAborted === undefined && event.text.includes("error") && streamErrorOf(event.text) !== undefined) errorReadAborted = controller.signal.aborted;
+      if (event.data.length > 1) tellStops([...event.text.split("\n").filter((each) => !each.startsWith("data:")), `data: ${event.data.join(" ")}`].join("\n"));
     };
     try {
       // From here a paid request may be paid, so every way out below books it exactly once.
@@ -1726,6 +1793,8 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
               line = "";
             }
           }
+          // Then each event this piece ends, whole: an error event, and a stop whose data spans several lines.
+          if (upstream.ok) for (const event of events.push(text)) tellEvent(event);
           // A whole JSON body (no event stream) may be printed across lines, so no one line holds its stop: while it fits the
           // window, it is read whole at each piece that may close it (ends in "}"), which is a few pieces, never one each.
           if (wholeBody === undefined && text.trimStart() !== "") wholeBody = (tail + text).trimStart().startsWith("{");
