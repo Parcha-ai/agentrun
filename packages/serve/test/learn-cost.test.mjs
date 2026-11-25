@@ -14,6 +14,7 @@ import { seedOf } from "../dist/learning.js";
 import { CHEAPER_AFTER_RUNS, costCsv, costSummary } from "../dist/learning-cost.js";
 import { figuresOf, record, summarize } from "../dist/learn/ledger.js";
 import { runPathOf } from "../dist/runner/learning-end.js";
+import { workflowDigest } from "../dist/runner/workflow-first.js";
 import { servingReplayOf } from "../dist/store-reads/learning.js";
 import { git, resnap, savedOf } from "./learn-support.mjs";
 import { agent, answerFlow, follow, serve, storeRun } from "./support.mjs";
@@ -140,12 +141,12 @@ test("the summary carries the serving promotion's replay as it is given", () => 
 });
 
 test("the serving promotion's check: the champion of the workflow the newest served run ran, the share of its inputs that said what the agent said, against the agent's own 100%", () => {
-  const check = (alone, agreed, n = 40) => ({ compile_after: 20, agree_min: 0.8, alone_min: 0.5, attempt: 1, n, agreed, alone, of: [] });
+  const check = (alone, agreed, n = 40, joint = true) => ({ compile_after: 20, agree_min: 0.8, alone_min: 0.5, attempt: 1, n, agreed, alone, agent_agreed: alone, joint, of: [] });
   const rec = (digest, decided, extra = {}) => ({ workflow: "classify", digest, at: "2026-11-12T00:00:00Z", decided, reason: "r", ...extra });
   const runs = series([["agent", 0.9], ["workflow", 0.1], ["handed_back", 0.5]]);
   assert.deepEqual(servingReplayOf([rec("d1", "promote", { check: check(38, 33) })], runs), { n: 40, workflow_pct: 86.8, agent_pct: 100, cleared: true, agreed: 33, alone: 38, agree_min: 0.8 });
-  assert.deepEqual(servingReplayOf([rec("d1", "promote", { check: check(20, 12) })], runs), { n: 40, workflow_pct: 60, agent_pct: 100, cleared: false, agreed: 12, alone: 20, agree_min: 0.8 }, "cleared only when its agreement reaches agree_min");
-  assert.deepEqual(servingReplayOf([rec("d1", "promote", { check: { ...check(38, 33), agent_agreed: 30 } })], runs), { n: 40, workflow_pct: 86.8, agent_pct: 78.9, cleared: true, agreed: 33, alone: 38, agree_min: 0.8 }, "the agent's share right on every field at once, on the same inputs and known answers (30 of 38): a record before it was counted said 100");
+  assert.deepEqual(servingReplayOf([rec("d1", "promote", { check: check(20, 12, 40, false) })], runs), { n: 40, workflow_pct: 60, agent_pct: 100, cleared: false, agreed: 12, alone: 20, agree_min: 0.8 }, "cleared: the check's own joint verdict");
+  assert.deepEqual(servingReplayOf([rec("d1", "promote", { check: { ...check(38, 33), agent_agreed: 30 } })], runs), { n: 40, workflow_pct: 86.8, agent_pct: 78.9, cleared: true, agreed: 33, alone: 38, agree_min: 0.8 }, "the agent's share right on every field at once, on the same inputs and known answers (30 of 38)");
   assert.equal(servingReplayOf([rec("d1", "promote", { check: check(0, 0, 0) })], runs), null, "promoted on a dry run: no inputs checked");
   assert.equal(servingReplayOf([rec("d1", "promote")], runs), null, "no check kept");
   assert.equal(servingReplayOf([rec("d1", "promote", { check: check(38, 33) }), rec("d1", "hold", { check: check(10, 2) })], runs), null, "held: nothing serves");
@@ -256,7 +257,10 @@ test("GET /agents/{id}/learning/cost: the agent's runs in order, by hand until a
   assert.deepEqual(body.summary, { ...EMPTY, ...PRICED, takeover: { n: 3, run_id: alone }, before: { runs: 2, mean_usd: before }, after: { runs: 2, mean_usd: after }, hand_backs: { ran: 2, back: 1, cut: 0 }, replay });
   assert.ok(body.runs.every((run) => run.cost_upper_bound === false), "no run's stored cost is a bound");
   assert.deepEqual([body.total_runs, body.unknown_cost_runs, body.unknown_path_runs], [4, 0, 0], "every run that learns ended with its path");
-  assert.deepEqual(body.workflows, [], "the money rule holds a workflow that ran first; the agent calling one is the agent's own run");
+  // The money rule holds a workflow to every run that called it, the agent's own call too: `alone` called answer (its one
+  // call that ran a workflow; `back` named one it has not, which ran none).
+  const digest = workflowDigest({ workflow: JSON.stringify(answerFlow()) });
+  assert.deepEqual(body.workflows.map(({ workflow, digest: at, served }) => [workflow, at, served.runs]), [["answer", digest, 1]], "the agent's own call counts on its served side");
 
   const last = await cost("?limit=2");
   assert.deepEqual(last.runs.map((run) => run.n), [3, 4], "the latest runs, each keeping its number");

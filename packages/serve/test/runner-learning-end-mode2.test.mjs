@@ -95,7 +95,7 @@ async function mode2End(t, { moveOn }) {
   const endOfRun = learningEndOfRun(launch, { store, data: local, env: {}, learningFolder });
   const spec = piAdapterSpec({ script: [{ say: "42" }, { say: DRAFT }], tools: {}, hooks: quiet });
   const createLoop = (deps) => {
-    const job = createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), agentId: "agent-1", input: launch.input.content }))({ ...deps, endOfRun });
+    const job = createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), agentId: "agent-1", input: launch.input.content, ...(endOfRun ? { endOfRun } : {}) }))(deps);
     let mine = false;
     let release;
     const parked = new Promise((resolve) => (release = resolve));

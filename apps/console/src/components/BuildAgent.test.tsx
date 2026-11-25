@@ -78,6 +78,8 @@ describe("Build agent page", () => {
   it("starts with the composer and every server template, including custom packages", async () => {
     await mount();
     expect(host.querySelector("h1")?.textContent).toBe("What do you want to build?");
+    // The editor, creating, is where a Decision or a Workflow agent is made: Build links it.
+    expect(host.querySelector('a[href="#/agents/new?editor"]')?.textContent).toBe("set one up in the editor");
     expect(host.querySelector<HTMLTextAreaElement>('textarea[placeholder]')?.value).toBe("");
     expect(button("Build an agent")).toBeDefined();
     expect(host.querySelectorAll("article")).toHaveLength(7);
@@ -350,7 +352,7 @@ describe("Build agent page, the Tools step", () => {
     expect(posts.map((p) => p.path)).toEqual(["/v2/agents"]);
     expect(posts[0].body.definition.tools, "the created agent's tools").toEqual(["mcp:gmail/GMAIL_SEND_EMAIL", "web_fetch"]);
     await act(async () => button("Build an agent").click());
-    expect(copied.mock.calls.at(-1)![0], "the coding agent is told the picked tools").toContain("mcp:gmail/GMAIL_SEND_EMAIL");
+    expect(copied.mock.calls.at(-1)![0], "the coding agent gets the draft that was picked, tools and place in it").toBe(buildAgentPrompt(origin, "Answer my email.", parseAgentDraft(draft)!));
   });
 
   it("puts where it runs, picked in the same step, on the created agent's request body", async () => {

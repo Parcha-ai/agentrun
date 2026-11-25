@@ -1,17 +1,28 @@
 /// <reference types="vitest/config" />
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
-import { defineConfig } from "vite";
-import { devProxy } from "./src/lib/devProxy";
+import { defineConfig, type Plugin } from "vite";
+import { devProxy, ownRequest } from "./src/lib/devProxy";
 import { credentialGate } from "./credential-gate.mjs";
 import { thirdPartyNotices } from "./third-party-notices.mjs";
 
 // The console builds to static files with relative URLs, so AgentRun Server can serve them from any path.
-// `npm run dev` proxies /v2 and the public setup skill as src/lib/devProxy.ts says: to the AgentRun Server AGENTRUN_URL
-// names, else the one on this machine at serve's default port, with AGENTRUN_TOKEN on API requests alone.
+// `npm run dev` proxies /v2 and the public setup skill as src/lib/devProxy.ts says: to the AgentRun Server
+// AGENTRUN_BASE_URL names, else the one on this machine at serve's default port, with a key on the page's own API
+// requests alone (AGENTRUN_API_KEY for a named server, else AGENTRUN_TOKEN for a server on this machine).
 
-const proxy = devProxy(process.env);
-const v2 = proxy["/v2"];
+type Said = { kind: "info" | "warn"; words: string };
+/** What the dev proxy had to say when it was set up (where it proxies and with which variable's key, or a token it did
+ *  not send), said once the dev or preview server is there to say it. */
+const devProxyNotes = (notes: readonly Said[]): Plugin => {
+  const say = (logger: { info(words: string): void; warn(words: string): void }) => { for (const { kind, words } of notes) logger[kind](words); };
+  return {
+    name: "agentrun-dev-proxy-notes",
+    apply: "serve",
+    configureServer(server) { say(server.config.logger); },
+    configurePreviewServer(server) { say(server.config.logger); },
+  };
+};
 // A cap on the test workers from VITEST_MAX_WORKERS, for a machine shared with other work. Vitest reads the variable too,
 // but with parseInt, which takes "4x" as 4 and drops "x" without a word. Unset or empty keeps vitest's own default of a
 // worker per core. Anything but a whole number is refused, as pi-browser's TEST_CONCURRENCY is: a cap that was asked for
@@ -35,29 +46,49 @@ const alias = {
 // keeps the unit configuration below and no projects.
 const projects = process.env.VITEST_STORYBOOK === "true" ? [(await import("./.storybook/vitest.project")).storybookProject(alias)] : undefined;
 
-export default defineConfig({
-  base: "./",
-  // THIRD-PARTY-NOTICES.txt beside index.html: the licenses of what the bundle holds (third-party-notices.mjs). Then the
-  // credential gate (credential-gate.mjs), last: the build fails when the bundle, the notices included, holds a credential.
-  plugins: [react(), thirdPartyNotices(), credentialGate()],
-  server: {
-    proxy: {
-      ...proxy,
-      "/v2": {
-        ...v2,
-        // Without a token the console signs in like the served page: the server takes a cookie write only from its own
-        // origin, so a request from this dev server's own origin is sent as the server's (as the serve dev kit's proxy does).
-        configure: (proxy) => proxy.on("proxyReq", (req, incoming) => {
-          const host = incoming.headers.host;
-          if (host && incoming.headers.origin === `http://${host}`) req.setHeader("origin", new URL(v2.target).origin);
-        }),
+export default defineConfig(({ command, mode }) => {
+  // The proxy and its variables are a server's alone: `npm run dev`, a preview, and the one the proxy's own test starts.
+  // A build, Vitest's own load of this file (mode "test") and Storybook read none of them, so a variable left in a shell
+  // stops none of the three; a server refuses one it cannot use (devProxy), by name. Storybook builds its own server
+  // block and never took this proxy, so it is not told of one.
+  const notes: Said[] = [];
+  const proxy = command === "serve" && mode !== "test" && process.env.STORYBOOK !== "true" ? devProxy(process.env, (kind, words) => notes.push({ kind, words })) : undefined;
+  const v2 = proxy?.["/v2"];
+  return {
+    base: "./",
+    // THIRD-PARTY-NOTICES.txt beside index.html: the licenses of what the bundle holds (third-party-notices.mjs). Then the
+    // credential gate (credential-gate.mjs), last: the build fails when the bundle, the notices included, holds a credential.
+    plugins: [react(), devProxyNotes(notes), thirdPartyNotices(), credentialGate()],
+    server: proxy && v2 ? {
+      // The page that can act with the key is not shown inside another site's page, as the served console is not
+      // (frame-ancestors in packages/serve/src/page.ts): a click meant for that site never lands on this one.
+      headers: { "content-security-policy": "frame-ancestors 'self'" },
+      proxy: {
+        ...proxy,
+        "/v2": {
+          ...v2,
+          // The key rides only on the page's own requests and a command line's (ownRequest): another site's page, which
+          // reaches this port as the console does, goes on without it. Without a key the console signs in like the served
+          // page: the server takes a cookie write only from its own origin, so a request from this dev server's own
+          // origin is sent as the server's (as the serve dev kit's proxy does).
+          // No WebSocket is proxied (`ws` is not set). One that were would take the same key in its handshake and tell
+          // `proxyReqWs`, which nothing here hears: turn `ws` on only with the same check there.
+          configure: (proxy) => proxy.on("proxyReq", (req, incoming) => {
+            const host = incoming.headers.host;
+            if (v2.headers.authorization && !ownRequest(incoming.headers)) req.removeHeader("authorization");
+            if (host && incoming.headers.origin === `http://${host}`) req.setHeader("origin", new URL(v2.target).origin);
+          }),
+        },
       },
-    },
-  },
-  resolve: { alias },
-  // The server serves scripts, styles and fonts; its CSP also permits data images. Keep the small coding-agent and harness
-  // icons in the bundle so their marks work with existing servers, without widening their asset allowlist.
-  build: { outDir: "dist", assetsInlineLimit: (file) => ["coding-agents", "harnesses"].some(dir => file.replaceAll("\\", "/").includes(`/src/assets/${dir}/`)) },
-  // css: tokens.css is read as text (`?raw`) by the design-system test and stories; every other stylesheet stays a stub.
-  test: { environment: "jsdom", include: ["src/**/*.test.ts", "src/**/*.test.tsx"], css: { include: [/\.css\?raw$/] }, ...(workers ? { maxWorkers: workers } : {}), ...(projects ? { projects } : {}) },
+    } : {},
+    resolve: { alias },
+    // The server serves scripts, styles and fonts; its CSP also permits data images. Keep the small coding-agent and harness
+    // icons in the bundle so their marks work with existing servers, without widening their asset allowlist.
+    // Two pages: the console (index.html) and the share page (share.html: one run's share bundle, served at /share/<run>
+    // by the owner's server), sharing the hashed assets under assets/. share.html imports nothing of the console's
+    // sign-in or settings, so its chunks hold none of it.
+    build: { outDir: "dist", rollupOptions: { input: { index: fileURLToPath(new URL("./index.html", import.meta.url)), share: fileURLToPath(new URL("./share.html", import.meta.url)) } }, assetsInlineLimit: (file) => ["coding-agents", "harnesses"].some(dir => file.replaceAll("\\", "/").includes(`/src/assets/${dir}/`)) },
+    // css: tokens.css is read as text (`?raw`) by the design-system test and stories; every other stylesheet stays a stub.
+    test: { environment: "jsdom", include: ["src/**/*.test.ts", "src/**/*.test.tsx"], css: { include: [/\.css\?raw$/] }, ...(workers ? { maxWorkers: workers } : {}), ...(projects ? { projects } : {}) },
+  };
 });

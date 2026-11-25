@@ -81,8 +81,10 @@ test("an answer one character past a timeline row's cap (2001) is served whole b
   assert.equal(answer, `On ${content}: done.`);
 });
 
-test("a workflow's output carrying a held key in a string field is served with it redacted, the record's shape kept", { timeout: 60_000 }, async (t) => {
-  withEnv(t, { AGENT_MODEL: "openai/gpt-6.1-sol", OPENAI_API_KEY: CUT_KEY }, NAMES);
+// A workflow whose output is { note: "kept <held key> here", n: 7 }, run on a server whose environment adds `vars`: the
+// run as GET /runs/{id} serves it.
+async function keyedRun(t, vars = {}) {
+  withEnv(t, { AGENT_MODEL: "openai/gpt-6.1-sol", OPENAI_API_KEY: CUT_KEY, ...vars }, [...NAMES, "OTEL_EXPORTER_OTLP_HEADERS", "OTEL_EXPORTER_OTLP_TRACES_HEADERS"]);
   const { api } = await serve(t);
   const flow = {
     v: 2, name: "keyed",
@@ -98,9 +100,19 @@ test("a workflow's output carrying a held key in a string field is served with i
   const started = await api("POST", "/agents/keyed/runs", { input: { question: "x" } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   await follow(api, started.body.run_id, ["completed"], { deadlineMs: 50_000 });
-  const run = (await api("GET", `/runs/${started.body.run_id}`)).body;
+  return (await api("GET", `/runs/${started.body.run_id}`)).body;
+}
+
+test("a workflow's output carrying a held key in a string field is served with it redacted, the record's shape kept", { timeout: 60_000 }, async (t) => {
+  const run = await keyedRun(t);
   noKey(JSON.stringify(run), "the run");
   assert.deepEqual(run.result.output, { note: "kept [redacted] here", n: 7 });
+});
+
+test("a short OTLP header value (X-Scope-OrgID=7) is held by no list: a workflow's output number 7 is served as 7, never \"[redacted]\"", { timeout: 60_000 }, async (t) => {
+  const run = await keyedRun(t, { OTEL_EXPORTER_OTLP_HEADERS: "X-Scope-OrgID=7" });
+  noKey(JSON.stringify(run), "the run");
+  assert.deepEqual(run.result.output, { note: "kept [redacted] here", n: 7 }, `the served output keeps its number: ${JSON.stringify(run.result.output)}`);
 });
 
 test("a workflow output carrying a held key as a property name, nested too, is served with no piece of it", { timeout: 60_000 }, async (t) => {

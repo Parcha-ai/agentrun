@@ -485,11 +485,14 @@ export interface Learning {
    *  row keeps the grade's spend as its cost. One still waiting for its grade is none of them. */
   spend(window: { from: number; to: number }): Promise<LearningSpend[]>;
   /** Agent `agentId`'s ledger (learn/ledger.ts), in one read (one snapshot of both tables): every run's row its end
-   *  recorded, oldest first, each with the end it was recorded for (`epoch`, its run's epoch then), and every spend row.
-   *  With `runIds`, those runs' rows alone and the spend rows they booked or that audit them (none for none). Written
-   *  only beside a run's end and a heal of its cost (run-patch.ts recordLedger); a purge or a delete of the run takes its
-   *  row and its spend. */
-  ledger(agentId: string, runIds?: readonly string[]): Promise<{ rows: (LedgerRow & { readonly epoch: number })[]; spend: SpendRow[] }>;
+   *  recorded, oldest first, and every spend row. With `runIds`, those runs' rows alone and the spend rows they booked or
+   *  that audit them (none for none). Written only beside a run's end and a heal of its cost (run-patch.ts recordLedger);
+   *  a purge or a delete of the run takes its row and its spend. */
+  ledger(agentId: string, runIds?: readonly string[]): Promise<{ rows: LedgerRow[]; spend: SpendRow[] }>;
+  /** Agent `agentId`'s newest `limit` ledger rows on the `agent` path at a known cost, of runs before run `before` in
+   *  runs.list's order (started_at, then id), on no named disk, neither imported nor archived, newest first: the money
+   *  rule's by-hand side read past its window (store-reads/learning.ts pastRunsRead). One read. */
+  byHandBefore(agentId: string, before: { readonly id: string; readonly startedAt: number }, limit: number): Promise<{ readonly id: string; readonly startedAt: number; readonly jobUsd: number }[]>;
 }
 
 /** One run's learning end as GET /usage's learning meter counts it (Learning.spend). */
@@ -1282,14 +1285,22 @@ export type McpServerWrite = { name: string; url: string; auth: string; protocol
  *  `of` is the row's created_at). An owner's save drops the mark in the transaction that writes its row (McpOwnersMark),
  *  so a write that needs the mark never lands over the owner's save, whenever that save lands. The write that needs it
  *  takes the server's lock first, so on Postgres its statement reads the record as the owner's committed transaction left
- *  it. */
-export type McpTokensMark = { readonly record: string };
+ *  it. `made`: the token's first save of the name, whose record (`made` of the row written) is written at `record` in the
+ *  transaction that writes the row, so no reader ever finds the token's new row without its mark. */
+export type McpTokensMark = { readonly record: string; readonly made?: (row: { createdAt: number }) => unknown };
 
 /** The owner's write over a saved server's row: in the transaction that writes the row, and only once the row is written,
  *  the setting at `record` (the server's source record) loses the API token's mark (`by`) when it still says the token
  *  saved that very row. A write refused (no row) leaves the record as it was, so a refused owner's save never takes the
  *  server from the token; one that lands makes it the owner's with no moment between its row and its record. */
 export type McpOwnersMark = { readonly record: string };
+
+/** A row as a rewrite read it (Mcp.rewrite): its sealed credential, its address, its auth type and its last edit
+ *  (updatedAt). The rewrite lands only while the row still has all four, so it never writes back anything it read (an
+ *  address, an auth type, prices) over a save made since, even one that kept the address, auth type and credential. Every
+ *  save moves updatedAt past the row's own, even within its millisecond; a write that passes updatedAt (a refresh) keeps
+ *  the one it read. */
+export type McpRewriteSeen = { readonly sealed: Uint8Array | null; readonly url: string; readonly auth: string; readonly updatedAt: number };
 
 export interface Mcp {
   /** The server's write: the server's row, inserted or replaced by name (its first save's time kept). An owner's save
@@ -1303,14 +1314,16 @@ export interface Mcp {
    *  token's mark (McpTokensMark), in the same statement. `owns`: the owner's write, which drops the token's mark in the
    *  same transaction once the row is written (McpOwnersMark). */
   putIfCredential(server: McpServerWrite, expected: McpCredentialMark, tokens?: McpTokensMark, owns?: McpOwnersMark): Promise<McpServerRow | undefined>;
-  /** An owner's rewrite of a row it read, its credential kept as it is (a tools refresh, a save that sends no new
-   *  credential): the listing, prices, url and times written by a compare-and-set on the CREDENTIAL, iff the row is still
-   *  saved and its sealed value is still `seen` (the one the owner read). The credential's columns (sealed, token_until,
+  /** A rewrite of a row it read, its credential kept as it is (a tools refresh, a save that sends no new credential): the
+   *  listing, prices, url and times written by a compare-and-set on the row as `seen` (McpRewriteSeen), iff the row is
+   *  still saved, its sealed value is still the one read, it is still at the address and of the auth type read, and no
+   *  save has edited it since (its updated_at the one read). The credential's columns (sealed, token_until,
    *  credential_changed_at) and any refresh lease are left as they are, so a runner's refresh in flight still keeps its
-   *  set. undefined, writing nothing, when the credential changed meanwhile (a refresh kept a rotated set) or the row went:
-   *  the caller reads it again and re-applies its change onto the fresh row, a bounded few times. `owns`: as
-   *  putIfCredential's, the token's mark dropped in the same transaction once the row is written. */
-  rewrite(server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; listedAt?: number; updatedAt?: number }, seen: Uint8Array | null, owns?: McpOwnersMark): Promise<McpServerRow | undefined>;
+   *  set. undefined, writing nothing, when the credential changed meanwhile (a refresh kept a rotated set), a save landed
+   *  (one with no credential leaves the sealed column as it was, and may keep the address and auth type too), or the row
+   *  went: the caller reads it again and re-applies its change onto the fresh row while it still holds, a bounded few
+   *  times. `owns`: as putIfCredential's, the token's mark dropped in the same transaction once the row is written. */
+  rewrite(server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; listedAt?: number; updatedAt?: number }, seen: McpRewriteSeen, owns?: McpOwnersMark): Promise<McpServerRow | undefined>;
   /** Deletes the row, answering what it held as it went (McpRemoved); undefined when there was none. */
   remove(name: string): Promise<McpRemoved | undefined>;
   /** remove(), only while the server's credential is still `expected` (its mark as the remover read it), compared and
@@ -1360,8 +1373,10 @@ export interface Settings {
   /** Saves `value` under `key` only when the key has no row yet; the value saved after (this one, or the one there before).
    *  With `capacity`, count and insert share a namespace lock and transaction across store handles. Every raw key under
    *  the exact prefix counts, without decoding values. An existing key wins even at capacity; undefined means a new key
-   *  was refused. The nonempty prefix must contain the key, and limit must be a positive safe integer. */
-  putIfAbsent(key: string, value: unknown, capacity?: { readonly prefix: string; readonly limit: number }): Promise<unknown>;
+   *  was refused. The nonempty prefix must contain the key, and limit must be a positive safe integer. With `claim`,
+   *  holds the run's shared row lock and checks its epoch/lease in the same transaction as the insert, as replaceIf
+   *  does: a stale claim throws Fenced and nothing is written. */
+  putIfAbsent(key: string, value: unknown, capacity?: { readonly prefix: string; readonly limit: number }, claim?: Claim): Promise<unknown>;
   /** Saves `value` under `key` only while its row still holds `was` (as get read it), in one statement: a compare-and-set,
    *  so of two writers that read one row only one replaces it. True when it was replaced; false, with nothing written,
    *  when the row changed since or is gone. With `claim`, holds the run's shared row lock and checks its epoch/lease in
@@ -1629,13 +1644,22 @@ export interface RunCapacity {
  *  put removes every row older than this. */
 export const RUNNER_ROWS_KEPT_MS = 24 * 60 * 60_000;
 
-/** How old a runner's row can be and still count as there, on the store's clock (runner/presence.ts PRESENCE_STALE_MS:
- *  three renewals missed). The claim rule reads it for a kept computer's pin. */
+/** How old a runner's row can be and still count as there, on the store's clock: three of its renewals missed
+ *  (runner/presence.ts PRESENCE_RENEW_MS). Every reader of who is there uses it, the claim rule's kept computer pin
+ *  included. */
 export const RUNNER_STALE_MS = 30_000;
 
 /** The settings key prefix of the computers kept at a run's park, one row per run (workspace/computer-kept.ts). A row
  *  whose computer is pinned to the runner that kept it (its `runner` and `incarnation`) holds the run for that runner in
- *  the claim rule, while that runner is there under that incarnation and the keep lasts. */
+ *  the claim rule, while that runner is there under that incarnation and the keep lasts.
+ *
+ *  "There", for a pinned row's runner, means one thing everywhere: its runners row seen within RUNNER_STALE_MS on the
+ *  store's clock, under the incarnation the row names, refusing claims or not. That runner holds the machine: no other
+ *  runner's janitor ends its row (computer-kept.ts heldElsewhere, in sweepKept), and a claim that took the row and could
+ *  not reach the machine puts the row back (computer-for-claim.ts reattach), so that runner's own end finds it.
+ *  The claim rule (sqlite/store.ts keptElsewhere) alone asks one thing more, that it is claiming (`refused` null): a
+ *  refusing runner would make the answer wait the whole keep for nothing, and its row is given back marked ending, so it
+ *  still ends its machine. */
 export const KEPT_PREFIX = "computer_kept:";
 
 /** Every runner's word that it is there (runner/presence.ts). */

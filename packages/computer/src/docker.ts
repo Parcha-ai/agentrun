@@ -57,6 +57,7 @@ import {
 	egressVolumeArgs,
 	hostAddresses,
 	MAX_ALLOW,
+	NO_CONFIG_PROXY,
 	policyWords,
 	RELAY_FLAG,
 } from "./docker/egress.js";
@@ -83,7 +84,8 @@ import {
 	type ReleaseHow,
 	runLifetimeMs,
 } from "./provider.js";
-import { type ComputerErrorCode, failFor, ok, type Result, vendorFail } from "./result.js";
+import { type ComputerError, type ComputerErrorCode, failFor, ok, type Result, vendorFail } from "./result.js";
+import { OWNER_LABEL, OWNER_SERVER_LABEL } from "./labels.js";
 import { CreateRequests, endedWords, otherSpecWords } from "./create-requests.js";
 import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "./screen-watch.js";
 import { countTested } from "./test-connection.js";
@@ -155,6 +157,18 @@ export interface DockerProviderOptions {
 	 *  where the daemon is, its config and credential helpers, PATH and HOME) and nothing else, so no key the host holds
 	 *  reaches docker or what it starts. The provider reads no environment: without env, docker starts with none. */
 	env?: HostEnv;
+	/**
+	 * For tests: the bound, in ms, on the clean-up after a create that failed or was cut off, and on waiting for a removal
+	 * Docker says is already under way (a release's, a stop's, a sweep's): past it, the container still there is the
+	 * failure, in words naming this bound. Default 10 s. A test of a removal that never ends sets it short.
+	 */
+	settleMs?: number;
+	/**
+	 * For tests: how long, in ms, the looks after a docker run cut off before its own exit must find nothing in a row
+	 * before what it may have made counts as gone, so a create Docker finishes a moment after the abort is still seen.
+	 * Default 3 s. One as long as settleMs leaves nothing confirmed gone: that create's answer then says so.
+	 */
+	settleQuietMs?: number;
 }
 
 
@@ -254,9 +268,9 @@ const REQUEST_WAIT_MS = 120_000;
 const REQUEST_POLL_MS = 500;
 /** After a docker run cut off before its own exit: how long, at most, the leftovers are removed and looked for again,
  *  how often, and for how long in a row the looks must find none of them before they count as gone (#settle). */
-const SETTLE_MS = 10_000;
+export const SETTLE_MS = 10_000;
 const SETTLE_EVERY_MS = 500;
-const SETTLE_QUIET_MS = 3_000;
+export const SETTLE_QUIET_MS = 3_000;
 /** The label naming which create made a computer's container: after its own docker run failed or was cut off, a create
  *  removes the container it made, never one another create of the same request made under the name. */
 const ATTEMPT_LABEL = "agentrun.computer.attempt";
@@ -266,15 +280,22 @@ const ASKED_LABEL = "agentrun.computer.labels";
 /** What #settle reads of each container it looks for: its id, its name, and its labels (whose attempt it is). */
 const SETTLE_FORMAT = '{"Id":{{json .Id}},"Name":{{json .Name}},"Config":{"Labels":{{json .Config.Labels}}}}';
 
+/** The bounds of #settle: its whole bound and its quiet window, in ms (the settleMs and settleQuietMs options). */
+export interface SettleBounds {
+	settleMs: number;
+	quietMs: number;
+}
+
 /**
- * Why #settle could not show its leftovers gone within SETTLE_MS, in words that always name them: `there`, what its
- * last look still found; or, when the last look found none but the quiet window was not complete, every name it
- * checked (`checked`), which could not be confirmed gone. Exported for its test.
+ * Why #settle could not show its leftovers gone within its bound (`bounds`, the defaults unless the provider was given
+ * its own), in words that always name them: `there`, what its last look still found; or, when the last look found none
+ * but the quiet window was not complete, every name it checked (`checked`), which could not be confirmed gone. Exported
+ * for its test.
  */
-export function settleWords(checked: readonly string[], there: readonly string[]): string {
-	if (there.length > 0) return `${there.join(" and ")} ${there.length === 1 ? "was" : "were"} still there ${SETTLE_MS / 1000} s after docker run was cut off`;
+export function settleWords(checked: readonly string[], there: readonly string[], bounds: SettleBounds = settleBoundsOf({})): string {
+	if (there.length > 0) return `${there.join(" and ")} ${there.length === 1 ? "was" : "were"} still there ${bounds.settleMs / 1000} s after docker run was cut off`;
 	const named = checked.length > 0 ? checked.join(" and ") : "what docker run may have made";
-	return `${named} could not be confirmed gone within ${SETTLE_MS / 1000} s after docker run was cut off: the last look found none, but not for ${SETTLE_QUIET_MS / 1000} s in a row`;
+	return `${named} could not be confirmed gone within ${bounds.settleMs / 1000} s after docker run was cut off: the last look found none, but not for ${bounds.quietMs / 1000} s in a row`;
 }
 
 /** Only the fields hostOf reads, as JSON. */
@@ -316,6 +337,8 @@ export class DockerProvider implements ComputerProvider {
 	readonly #desktop: Required<DockerDesktopOptions> | undefined;
 	readonly #image: ImageSource;
 	readonly #egress: { image: string; hint?: string; readyMs: number; hostAddresses?: string[]; hostRoot: string };
+	/** The settleMs and settleQuietMs options: #settle's bounds; settleMs also bounds each removal #gone waits for. */
+	readonly #settleBounds: SettleBounds;
 	/** Each create in flight, and the names of the computers this provider deleted (create-requests.ts). */
 	readonly #requests = new CreateRequests();
 	/** Why this provider's own interfaces are not the Docker host's, in words, or none: read once, for the first allowlist
@@ -342,7 +365,7 @@ export class DockerProvider implements ComputerProvider {
 	/** The host as docker info first read it: a host's enforcement does not change under a running provider. */
 	#host: DockerHost | undefined;
 
-	constructor({ daemonPath, daemonCache, docker = "docker", user, desktop, egress, image = { recipe: DOCKER_RECIPE }, volume, env }: DockerProviderOptions) {
+	constructor({ daemonPath, daemonCache, docker = "docker", user, desktop, egress, image = { recipe: DOCKER_RECIPE }, volume, env, settleMs, settleQuietMs }: DockerProviderOptions) {
 		this.#daemonPath = resolve(daemonPath);
 		this.#daemonCache = resolve(daemonCache ?? defaultDaemonCache());
 		this.#volume = volume === undefined ? undefined : volumeOf(volume);
@@ -357,6 +380,7 @@ export class DockerProvider implements ComputerProvider {
 		this.#image = image;
 		this.#desktop = desktop === undefined ? undefined : desktopOf(desktop);
 		this.#egress = egressOptionsOf(egress ?? {});
+		this.#settleBounds = settleBoundsOf({ settleMs, settleQuietMs });
 		const given = user === undefined ? defaultUser() : userOf(user);
 		if (given === undefined) throw new Error(`the provider's user ${JSON.stringify(user)} must be ${USER_FORM}`);
 		if (given.startsWith("0:")) throw new Error(`the provider's user ${user} is root; a computer runs as root only when its spec asks for user "0"`);
@@ -657,6 +681,7 @@ export class DockerProvider implements ComputerProvider {
 		const memoryMb = spec.memoryMb ?? DEFAULT_MEMORY_MB;
 		args.push("--user", user, "--env", `HOME=${WORK}`);
 		if (this.#desktop) args.push("--env", `DISPLAY=${this.#desktop.display}`);
+		args.push(...NO_CONFIG_PROXY);
 		for (const [path, options] of Object.entries(tmpfsOf(user, memoryMb))) args.push("--tmpfs", `${path}:${options}`);
 		args.push("--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", String(spec.pids ?? DEFAULT_PIDS));
 		// Not the daemon's defaults, which a host may set to shareable IPC or, on cgroup v1, the host's cgroup namespace.
@@ -757,14 +782,14 @@ export class DockerProvider implements ComputerProvider {
 	 * After a `docker run` that did not end with an exit of the CLI's own (it was aborted, or the CLI could not be run):
 	 * the CLI client is gone, but the Docker daemon may still finish making the container a moment later, after a single
 	 * `docker rm` found nothing, and leave it Created. So the containers and volumes named are removed by name, then
-	 * inspected, again and again SETTLE_EVERY_MS apart, until the looks have found none of them for SETTLE_QUIET_MS in a
-	 * row (a create that lands a second after the abort is still seen), on a bound of their own (SETTLE_MS), never the
-	 * caller's signal, which has already ended. Undefined when they are gone; else what is still there, or could not be
-	 * confirmed gone, in words (settleWords). A create later than that is the janitor's: sweepLeftovers takes it at the
-	 * next sweep, past #leftoverGraceMs, which stays the backstop.
+	 * inspected, again and again SETTLE_EVERY_MS apart, until the looks have found none of them for the quiet window
+	 * (settleQuietMs, default SETTLE_QUIET_MS) in a row (a create that lands a second after the abort is still seen), on a
+	 * bound of their own (settleMs, default SETTLE_MS), never the caller's signal, which has already ended. Undefined when
+	 * they are gone; else what is still there, or could not be confirmed gone, in words (settleWords). A create later than
+	 * that is the janitor's: sweepLeftovers takes it at the next sweep, past #leftoverGraceMs, which stays the backstop.
 	 */
 	async #settle(containers: string[], volumes: string[], attempt: string): Promise<string | undefined> {
-		const bound = AbortSignal.timeout(SETTLE_MS);
+		const bound = AbortSignal.timeout(this.#settleBounds.settleMs);
 		// Only what that create made (ATTEMPT_LABEL) is removed and waited for: a container or a volume another create of the
 		// request made under the name is not this create's leftover.
 		const mine = (reports: DockerInspect[]) => reports.filter((one) => one.Config?.Labels?.[ATTEMPT_LABEL] === attempt);
@@ -794,11 +819,11 @@ export class DockerProvider implements ComputerProvider {
 			if (there.length > 0) quietSince = undefined;
 			else {
 				quietSince ??= Date.now();
-				if (Date.now() - quietSince >= SETTLE_QUIET_MS) return undefined;
+				if (Date.now() - quietSince >= this.#settleBounds.quietMs) return undefined;
 			}
 			await sleep(SETTLE_EVERY_MS, undefined, { signal: bound }).catch(() => undefined);
 		}
-		return settleWords(checked, there);
+		return settleWords(checked, there, this.#settleBounds);
 	}
 
 	/** Deletes a computer whose create was aborted after docker run; the delete itself is not signalled. */
@@ -1209,31 +1234,46 @@ export class DockerProvider implements ComputerProvider {
 
 	/**
 	 * The janitor's second pass (sweep calls it after the computers): every egress proxy container and egress volume
-	 * labelled EGRESS_LABEL, and with all of `labels`, whose deadline label has passed (or is missing or unreadable, fail
-	 * closed), or whose computer is gone and that is older than a create could take (#leftoverGraceMs: one under way has
-	 * made its proxy before its computer, and pulled both images before either, so no pull happens in between). Each is
-	 * removed by what its label found, a proxy before its volume, never by a name alone. Returns the names removed, a
-	 * volume's as "<name> (volume)".
+	 * labelled EGRESS_LABEL, and with all of `labels`, whose computer is not there, read by its name right before that
+	 * part's removal, and that is past its deadline label (or the label is missing or unreadable, fail closed) or older
+	 * than a create could take (#leftoverGraceMs). Per part, in this order: its labels and age; then `mine`, when given
+	 * (serve's: a run of its own store that no claim holds); then its computer, by name (there, or a read that fails,
+	 * keeps the part); then its removal by what its label found, a proxy before its volume, never by a name alone.
+	 * `mine` comes before the computer so a create under the caller's claim that finishes between the two reads is seen:
+	 * once the caller says no claim holds the run, nothing at that claim makes the computer, and a later claim's computer
+	 * has another name. A part with an owner label is never removed: Docker makes no agent's computer (no persistence),
+	 * so that label is a caller's, never a run's leftover. Returns the names removed, a volume's as "<name> (volume)".
 	 */
-	async sweepLeftovers({ labels = {}, now = new Date(), signal }: { labels?: Record<string, string>; now?: Date; signal?: AbortSignal } = {}): Promise<Result<string[]>> {
+	async sweepLeftovers({ labels = {}, now = new Date(), signal, mine }: { labels?: Record<string, string>; now?: Date; signal?: AbortSignal; mine?: (labels: Record<string, string>) => boolean | Promise<boolean> } = {}): Promise<Result<string[]>> {
 		const problem = filterProblem(labels);
 		if (problem) return fail("invalid", problem);
 		const filters = [`label=${EGRESS_LABEL}`, ...Object.entries(labels).map(([key, value]) => `label=${key}=${value}`)].flatMap((filter) => ["--filter", filter]);
 		const lines = (stdout: string) => stdout.split("\n").map((line) => line.trim()).filter(Boolean);
-		const alive = await this.#run(["ps", "-a", "--no-trunc", "--filter", `label=${COMPUTER_LABEL}=1`, "--format", "{{.Names}}"], signal);
-		if (!alive.ok) return alive;
-		if (alive.value.exitCode !== 0) return vendorFail("docker",`docker ps failed: ${alive.value.stderr.trim()}`);
-		const computers = new Set(lines(alive.value.stdout).filter((name) => NAME.test(name)));
 		const at = now.getTime();
 		const grace = this.#leftoverGraceMs();
-		const leftover = (labelsOf: Record<string, string> | null | undefined, created: unknown) => {
+		// The computer a part was made for, when its labels and age allow it to be a leftover at all.
+		const candidate = (labelsOf: Record<string, string> | null | undefined, created: unknown): string | undefined => {
 			const owner = labelsOf?.[EGRESS_LABEL];
+			if (typeof owner !== "string" || !NAME.test(owner)) return undefined;
+			if (labelsOf?.[OWNER_LABEL] !== undefined || labelsOf?.[OWNER_SERVER_LABEL] !== undefined) return undefined;
 			const deadline = Date.parse(labelsOf?.[DEADLINE_LABEL] ?? "");
-			if (typeof owner !== "string" || !NAME.test(owner)) return false;
-			if (Number.isNaN(deadline) || deadline <= at) return true;
-			if (computers.has(owner)) return false;
+			if (Number.isNaN(deadline) || deadline <= at) return owner;
 			const made = typeof created === "string" ? Date.parse(created) : Number.NaN;
-			return Number.isNaN(made) || at - made > grace;
+			return Number.isNaN(made) || at - made > grace ? owner : undefined;
+		};
+		// The caller's, when it says whose are its own: by the labels the leftover carries.
+		const owned = async (labelsOf: Record<string, string> | null | undefined) => mine === undefined || (await mine({ ...(labelsOf ?? {}) })) === true;
+		// Whether computer `name` is gone, read now: a container of that name, or a read that fails, says it is not.
+		const gone = async (name: string): Promise<Result<boolean>> => {
+			const found = await this.#inspect([name], signal);
+			if (!found.ok) return signal?.aborted ? found : ok(false);
+			return ok(found.value.length === 0);
+		};
+		// A part to remove: a candidate, the caller's, and its computer gone, read in that order.
+		const removable = async (labelsOf: Record<string, string> | null | undefined, created: unknown): Promise<Result<boolean>> => {
+			const computer = candidate(labelsOf, created);
+			if (computer === undefined || !(await owned(labelsOf))) return ok(false);
+			return gone(computer);
 		};
 		const removed: string[] = [];
 		const ps = await this.#run(["ps", "-a", "--no-trunc", ...filters, "--format", "{{.ID}}"], signal);
@@ -1244,10 +1284,13 @@ export class DockerProvider implements ComputerProvider {
 			const found = await this.#inspect(ids.slice(from, from + INSPECT_BATCH), signal);
 			if (!found.ok) return found;
 			for (const proxy of found.value) {
-				if (!leftover(proxy.Config?.Labels, (proxy as { Created?: unknown }).Created) || typeof proxy.Id !== "string") continue;
+				if (typeof proxy.Id !== "string") continue;
+				const take = await removable(proxy.Config?.Labels, (proxy as { Created?: unknown }).Created);
+				if (!take.ok) return take;
+				if (!take.value) continue;
 				const ran = await this.#run(["rm", "--force", proxy.Id], signal);
 				if (!ran.ok) return ran;
-				const gone = await this.#gone(ran.value, proxy.Id, `docker rm of the egress proxy ${nameOf(proxy)}`, AbortSignal.timeout(SETTLE_MS), signal);
+				const gone = await this.#gone(ran.value, proxy.Id, `docker rm of the egress proxy ${nameOf(proxy)}`, AbortSignal.timeout(this.#settleBounds.settleMs), signal);
 				if (!gone.ok) return gone;
 				removed.push(nameOf(proxy));
 			}
@@ -1266,7 +1309,10 @@ export class DockerProvider implements ComputerProvider {
 				} catch {
 					return vendorFail("docker",`docker volume inspect wrote a line that is not JSON: ${line.slice(0, 200)}`);
 				}
-				if (typeof volume.Name !== "string" || !leftover(volume.Labels, volume.CreatedAt)) continue;
+				if (typeof volume.Name !== "string") continue;
+				const take = await removable(volume.Labels, volume.CreatedAt);
+				if (!take.ok) return take;
+				if (!take.value) continue;
 				const ran = await this.#run(["volume", "rm", "--force", volume.Name], signal);
 				if (!ran.ok) return ran;
 				if (ran.value.exitCode !== 0) return vendorFail("docker",`docker volume rm ${volume.Name} failed: ${ran.value.stderr.trim()}`);
@@ -1320,12 +1366,12 @@ export class DockerProvider implements ComputerProvider {
 	/**
 	 * An allowlist proxy and its volume that one create made for a computer it never ran: each only when it carries that
 	 * create's attempt (ATTEMPT_LABEL) with the computer's egress label, found by both as release finds a proxy, the
-	 * proxy removed by its id. One another create of the request made stays. Bounded by SETTLE_MS, never the caller's
+	 * proxy removed by its id. One another create of the request made stays. Bounded by settleMs, never the caller's
 	 * signal, which may have ended.
 	 */
 	async #removeProxy(name: string, attempt: string): Promise<Result<void>> {
 		const proxy = egressNameOf(name);
-		const bound = AbortSignal.timeout(SETTLE_MS);
+		const bound = AbortSignal.timeout(this.#settleBounds.settleMs);
 		const filters = ["--filter", `label=${EGRESS_LABEL}=${name}`, "--filter", `label=${ATTEMPT_LABEL}=${attempt}`];
 		const lines = (text: string) => text.split("\n").map((line) => line.trim()).filter(Boolean);
 		const found = await this.#run(["ps", "-a", "--no-trunc", ...filters, "--format", "{{.ID}}"], bound);
@@ -1372,52 +1418,82 @@ export class DockerProvider implements ComputerProvider {
 	 * What one create made under the name, removed after its computer's docker run failed or was cut off: the container
 	 * that carries its attempt (ATTEMPT_LABEL), and the allowlist proxy and volume it made (#removeProxy). A container
 	 * another create of the request made under the name, in another process or before this one, is left as it is, with
-	 * its proxy and volume: true then. The look is bounded (SETTLE_MS), never the caller's signal, which may have ended.
+	 * its proxy and volume: true then. The look is bounded (settleMs), never the caller's signal, which may have ended.
 	 */
 	async #removeAttempt(name: string, attempt: string): Promise<Result<boolean>> {
-		const found = await this.#inspect([name], AbortSignal.timeout(SETTLE_MS));
+		const found = await this.#inspect([name], AbortSignal.timeout(this.#settleBounds.settleMs));
 		if (!found.ok) return found;
 		const report = found.value.find((one) => nameOf(one) === name);
 		const mine = report?.Config?.Labels?.[ATTEMPT_LABEL] === attempt;
 		// By the id looked at, never by the name, which another create may hold by the time rm runs.
+		// The proxy and volume go whether or not the computer could be removed: the computer's failure is the answer.
+		let computer: Result<void> = ok(undefined);
 		if (mine) {
-			const bound = AbortSignal.timeout(SETTLE_MS);
+			const bound = AbortSignal.timeout(this.#settleBounds.settleMs);
 			const removed = await this.#run(["rm", "--force", "--volumes", String(report.Id)], bound);
-			if (!removed.ok) return removed;
-			const gone = await this.#gone(removed.value, String(report.Id), `docker rm ${name}`, bound);
-			if (!gone.ok) return gone;
+			computer = removed.ok ? await this.#gone(removed.value, String(report.Id), `docker rm ${name}`, bound) : removed;
 		}
 		const proxy = await this.#removeProxy(name, attempt);
+		if (!computer.ok) return computer;
 		return proxy.ok ? ok(report !== undefined && !mine) : proxy;
 	}
 
-	/** release's work, which create also does for what it made before its computer ran (its request is not spent). */
+	/**
+	 * release's work, which create also does for what it made before its computer ran (its request is not spent). Its
+	 * egress proxies are found by their label first, and a delete removes the computer and them in one docker rm, which
+	 * Docker's CLI sends together: a teardown cut off once that call is made (its process ended) leaves no proxy running
+	 * without its computer, and one cut off before it leaves both, for the janitor. A container that call did not remove
+	 * is asked again alone and waited for (#gone). Neither part's failure keeps the other from being removed (a computer
+	 * whose removal fails still has its proxy and volume removed): the first failure, the computer's before its proxy's,
+	 * is the answer. A stop stops the computer, then its proxies, the same way.
+	 */
 	async #remove(ref: ComputerRef, how: "stop" | "delete"): Promise<Result<void>> {
-		const args = how === "stop" ? ["stop", ref.name] : ["rm", "--force", "--volumes", ref.name];
-		const ran = await this.#run(args);
-		if (!ran.ok) return ran;
-		const gone = await this.#gone(ran.value, ref.name, `docker ${args[0]} ${ref.name}`, AbortSignal.timeout(SETTLE_MS));
-		if (!gone.ok) return gone;
 		const label = `label=${EGRESS_LABEL}=${ref.name}`;
+		const lines = (text: string) => text.split("\n").map((line) => line.trim()).filter(Boolean);
 		const proxies = await this.#run(["ps", "-a", "--no-trunc", "--filter", label, "--format", "{{.ID}}"]);
-		if (!proxies.ok) return proxies;
-		if (proxies.value.exitCode !== 0) return vendorFail("docker",`docker ps for ${ref.name}'s egress proxy failed: ${proxies.value.stderr.trim()}`);
-		for (const id of proxies.value.stdout.split("\n").map((line) => line.trim()).filter(Boolean)) {
-			const ended = await this.#run(how === "stop" ? ["stop", id] : ["rm", "--force", id]);
-			if (!ended.ok) return ended;
-			const gone = await this.#gone(ended.value, id, `docker ${how === "stop" ? "stop" : "rm"} of ${ref.name}'s egress proxy`, AbortSignal.timeout(SETTLE_MS));
-			if (!gone.ok) return gone;
+		const listed: Result<string[]> = !proxies.ok ? proxies : proxies.value.exitCode !== 0 ? vendorFail("docker", `docker ps for ${ref.name}'s egress proxy failed: ${proxies.value.stderr.trim()}`) : ok(lines(proxies.value.stdout));
+		const ids = listed.ok ? listed.value : [];
+		const proxyWords = `${ref.name}'s egress proxy`;
+		// Every failure, in the order met: the first is the answer.
+		const failures: ComputerError[] = [];
+		const add = (result: Result<unknown>) => {
+			if (!result.ok) failures.push(result.error);
+		};
+		const parts = (verb: string): [string, string][] => [[ref.name, `docker ${verb} ${ref.name}`], ...ids.map((id): [string, string] => [id, `docker ${verb} of ${proxyWords}`])];
+		if (how === "delete") {
+			const all = await this.#run(["rm", "--force", "--volumes", ref.name, ...ids]);
+			if (!all.ok) add(all);
+			// Each one that call did not remove, asked again alone: one gone answers No such container, one whose removal is
+			// under way is waited for, and any other answer is its failure in words.
+			else if (all.value.exitCode !== 0) {
+				for (const [key, what] of parts("rm")) {
+					const again = await this.#run(["rm", "--force", ...(key === ref.name ? ["--volumes"] : []), key]);
+					const gone = again.ok ? await this.#gone(again.value, key, what, AbortSignal.timeout(this.#settleBounds.settleMs)) : again;
+					add(gone);
+				}
+			}
+		} else {
+			for (const [key, what] of parts("stop")) {
+				const ran = await this.#run(["stop", key]);
+				const gone = ran.ok ? await this.#gone(ran.value, key, what, AbortSignal.timeout(this.#settleBounds.settleMs)) : ran;
+				add(gone);
+			}
 		}
-		if (how === "stop") return ok(undefined);
-		const volumes = await this.#run(["volume", "ls", "--filter", label, "--format", "{{.Name}}"]);
-		if (!volumes.ok) return volumes;
-		if (volumes.value.exitCode !== 0) return vendorFail("docker",`docker volume ls for ${ref.name}'s egress volume failed: ${volumes.value.stderr.trim()}`);
-		for (const volume of volumes.value.stdout.split("\n").map((line) => line.trim()).filter(Boolean)) {
-			const removed = await this.#run(["volume", "rm", "--force", volume]);
-			if (!removed.ok) return removed;
-			if (removed.value.exitCode !== 0) return vendorFail("docker",`docker volume rm ${volume} failed: ${removed.value.stderr.trim()}`);
+		add(listed);
+		if (how === "delete") {
+			const volumes = await this.#run(["volume", "ls", "--filter", label, "--format", "{{.Name}}"]);
+			if (!volumes.ok) add(volumes);
+			else if (volumes.value.exitCode !== 0) add(vendorFail("docker", `docker volume ls for ${ref.name}'s egress volume failed: ${volumes.value.stderr.trim()}`));
+			else {
+				for (const volume of lines(volumes.value.stdout)) {
+					const removed = await this.#run(["volume", "rm", "--force", volume]);
+					if (!removed.ok) add(removed);
+					else if (removed.value.exitCode !== 0) add(vendorFail("docker", `docker volume rm ${volume} failed: ${removed.value.stderr.trim()}`));
+				}
+			}
 		}
-		return ok(undefined);
+		const [first] = failures;
+		return first === undefined ? ok(undefined) : { ok: false, error: first };
 	}
 
 	/**
@@ -1425,17 +1501,18 @@ export class DockerProvider implements ComputerProvider {
 	 * or "No such container". "Removal of container ... is already in progress" means another removal of it is under way,
 	 * so it is going away: it is looked for, SETTLE_EVERY_MS apart, until it is gone (ok), the caller's `signal` aborts
 	 * (aborted), or `bound` runs out with it still there (a failure that names it). Every other answer is the failure it is.
+	 * `bound` is the settleMs bound every caller passes (default SETTLE_MS), which the failure's words name: never a time
+	 * measured here, which a late wake-up would overstate.
 	 */
 	async #gone(ran: Ran, key: string, what: string, bound: AbortSignal, signal?: AbortSignal): Promise<Result<void>> {
 		if (ran.exitCode === 0 || noSuchContainer(ran.stderr)) return ok(undefined);
 		if (!removalUnderWay(ran.stderr)) return vendorFail("docker", `${what} failed: ${ran.stderr.trim()}`);
-		const from = Date.now();
 		const either = signal ? AbortSignal.any([signal, bound]) : bound;
 		for (;;) {
 			const look = await this.#inspect([key], either, "{{json .Id}}");
 			if (look.ok && look.value.length === 0) return ok(undefined);
 			if (signal?.aborted) return fail("aborted", `${what} was aborted while docker was still removing ${key}`);
-			if (bound.aborted) return vendorFail("docker", `${what} failed: docker answered that the removal of ${key} was already in progress, and it was still there ${Math.round((Date.now() - from) / 1000)} s later`);
+			if (bound.aborted) return vendorFail("docker", `${what} failed: docker answered that the removal of ${key} was already in progress, and it was still there when the ${this.#settleBounds.settleMs / 1000} s bound ran out`);
 			if (!look.ok) return look;
 			await sleep(SETTLE_EVERY_MS, undefined, { signal: either }).catch(() => undefined);
 		}
@@ -1505,6 +1582,18 @@ function infoOf(report: DockerInspect, proxy: DockerInspect | null | undefined, 
 
 /** The longest delay Node's timers, and so AbortSignal.timeout, hold: 2^31 - 1 ms. */
 const MAX_TIMER_MS = 2_147_483_647;
+
+/**
+ * The settleMs and settleQuietMs options as #settle's bounds, with their defaults (SETTLE_MS, SETTLE_QUIET_MS), or a throw
+ * in words: each is a whole number of milliseconds above 0 that a timer can hold. The one place the defaults are applied:
+ * the constructor and settleWords both read it. Exported for its test, which reads the defaults instead of waiting them out.
+ */
+export function settleBoundsOf({ settleMs = SETTLE_MS, settleQuietMs = SETTLE_QUIET_MS }: Pick<DockerProviderOptions, "settleMs" | "settleQuietMs">): SettleBounds {
+	for (const [name, ms] of [["settleMs", settleMs], ["settleQuietMs", settleQuietMs]] as const) {
+		if (!Number.isSafeInteger(ms) || ms <= 0 || ms > MAX_TIMER_MS) throw new Error(`the provider's ${name} must be a whole number of milliseconds above 0 and at most ${MAX_TIMER_MS}, not ${ms}`);
+	}
+	return { settleMs, quietMs: settleQuietMs };
+}
 
 /** The egress options with their defaults, or a throw in words. */
 function egressOptionsOf({ image = EGRESS_IMAGE, hint, readyMs = EGRESS_READY_MS, hostAddresses: given, hostRoot = "/" }: DockerEgressOptions): {

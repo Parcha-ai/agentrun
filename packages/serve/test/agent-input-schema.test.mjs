@@ -4,7 +4,7 @@
 // fields as one fenced json block under the line "Input:", on pi, claude-agent and codex alike.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { inputIssues, inputSchemaOf, DEFAULT_INPUT_SCHEMA } from "../dist/validate.js";
+import { inputIssues, inputSchemaIssues, inputSchemaOf, DEFAULT_INPUT_SCHEMA } from "../dist/validate.js";
 import { inputMessage } from "../dist/run-manifest.js";
 import { agent, flowAgent, follow, serve } from "./support.mjs";
 import { schedule } from "./trigger-support.mjs";
@@ -47,6 +47,14 @@ test("an agentic definition keeps its input_schema: it reads back, an edit that 
   assert.deepEqual(await refused({ type: "object", properties: { content: { type: "number" } } }), [["definition.input_schema.properties.content", "bad_format"]], "content is reserved: a string");
   assert.deepEqual(await refused({ type: "object", properties: { country: { type: "string", pattern: "(" } } }), [["definition.input_schema", "bad_format"]], "it compiles");
   assert.deepEqual(await refused({ type: "object", description: "x".repeat(64 * 1024) }), [["definition.input_schema", "too_long"]]);
+  // propertyNames is checked against the input's own fields with the schema's definitions alone (X_OWN_FIELDS): a
+  // reference to anything else compiled in the schema as written, then failed every run's start with a 500.
+  const NAMED = { type: "object", properties: { name: { type: "string", pattern: "^[a-z]+$" } } };
+  assert.deepEqual(await refused({ ...NAMED, propertyNames: { $ref: "#/properties/name" } }), [["definition.input_schema.propertyNames", "bad_format"]], "propertyNames names its definitions");
+  const defined = await api("POST", "/agents", agent("named", { input_schema: { ...NAMED, $defs: { Name: { pattern: "^[a-z]+$" } }, propertyNames: { $ref: "#/$defs/Name" } } }));
+  assert.equal(defined.status, 201, JSON.stringify(defined.body));
+  const started = await api("POST", "/agents/named/runs", { input: { name: "acme", content: "Go." } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
   const onFlow = await api("POST", "/agents", flowAgent("flow", undefined, { input_schema: SUBJECT }));
   assert.deepEqual([onFlow.status, onFlow.body.error.fields.map((f) => [f.field, f.reason])], [422, [["definition.input_schema", "not_allowed"]]], "a workflow keeps its own schema");
 });
@@ -123,6 +131,55 @@ test("the schema in force: content is reserved as a string; with no field of its
   assert.deepEqual(inputIssues({ company: "x", topics: [1] }, inForce).map((i) => [i.field, i.reason]), [["input.topics.0", "wrong_type"]]);
   assert.deepEqual(inputIssues({ company: "x" }, inForce, "target.input"), []);
   assert.deepEqual(inputIssues({}, inForce, "target.input").map((i) => i.field), ["target.input.company"]);
+});
+
+test("content is exempt from a schema's maxProperties and propertyNames: a trigger's message and its additions never push an input over them", () => {
+  const COMPANY = { type: "object", required: ["company"], properties: { company: { type: "string" }, note: { type: "string" } } };
+  const capped = inputSchemaOf({ ...COMPANY, maxProperties: 1 });
+  const said = (input, schema) => inputIssues(input, schema).map((i) => [i.field, i.reason]);
+  assert.deepEqual(said({ company: "Acme" }, capped), []);
+  assert.deepEqual(said({ company: "Acme", content: "" }, capped), [], "a blank message beside the field the cap allows");
+  assert.deepEqual(said({ company: "Acme", content: "A webhook fired." }, capped), []);
+  assert.deepEqual(said({ company: "Acme", note: "x" }, capped), [["input", "too_many"]], "the schema's own fields still meet its cap");
+  assert.deepEqual(said({ company: "Acme", note: "x", content: "" }, capped), [["input", "too_many"]]);
+  const named = inputSchemaOf({ ...COMPANY, propertyNames: { enum: ["company"] } });
+  assert.deepEqual(said({ company: "Acme", content: "" }, named), [], "content is a name the schema always takes");
+  assert.deepEqual(said({ company: "Acme", note: "x", content: "" }, named), [["input.note", "not_an_option"], ["input", "invalid"]], "a name the schema refuses is still refused, once");
+  const patterned = inputSchemaOf({ ...COMPANY, propertyNames: { pattern: "^c[a-z]+y$" } });
+  assert.deepEqual(said({ company: "Acme", content: "x" }, patterned), []);
+  assert.deepEqual(said({ company: "Acme", cash: "x" }, patterned), [["input.cash", "bad_format"], ["input", "invalid"]]);
+  assert.deepEqual(inputIssues({ company: "Acme", note: "x" }, capped, "target.input").map((i) => [i.field, i.message]), [["target.input", "target.input must not have more than 1 properties"]], "said at the input, in the schema's own number");
+  assert.deepEqual(inputSchemaOf(COMPANY), { ...COMPANY, properties: { ...COMPANY.properties, content: { type: "string" } } }, "a schema with neither keeps its shape");
+  // The save's check is the run's: a reference propertyNames can't resolve among the definitions is refused before any run.
+  const outside = { ...COMPANY, propertyNames: { $ref: "#/properties/company" } };
+  assert.deepEqual(inputSchemaIssues(outside).map((i) => [i.field, i.reason]), [["definition.input_schema.propertyNames", "bad_format"]]);
+  assert.match(inputSchemaIssues(outside)[0].message, /^definition\.input_schema\.propertyNames is checked against the input's own fields beside the schema's \$defs and definitions alone: /);
+  for (const [where, at] of [["$defs", "#/$defs/Name"], ["definitions", "#/definitions/Name"]]) {
+    assert.deepEqual(inputSchemaIssues({ ...COMPANY, [where]: { Name: { enum: ["company"] } }, propertyNames: { $ref: at } }), []);
+    const referenced = inputSchemaOf({ ...COMPANY, [where]: { Name: { enum: ["company"] } }, propertyNames: { $ref: at } });
+    assert.deepEqual(said({ company: "Acme" }, referenced), [], `propertyNames by ${at} still resolves`);
+    assert.deepEqual(said({ company: "Acme", content: "" }, referenced), []);
+    assert.deepEqual(said({ company: "Acme", note: "x" }, referenced).map(([field]) => field), ["input.note", "input"]);
+  }
+  // A reference is followed into what it names: a definition that refers on to the input's properties is refused too.
+  const through = { ...COMPANY, $defs: { Name: { $ref: "#/properties/company" } }, propertyNames: { $ref: "#/$defs/Name" } };
+  assert.deepEqual(inputSchemaIssues(through).map((i) => [i.field, i.reason]), [["definition.input_schema.propertyNames", "bad_format"]]);
+  assert.match(inputSchemaIssues(through)[0].message, /"#\/properties\/company" names nothing there/);
+  // A definition that refers to itself is read once: the save ends, and the schema is kept.
+  const recursive = { ...COMPANY, $defs: { Name: { anyOf: [{ enum: ["company", "content"] }, { $ref: "#/$defs/Name" }] } }, propertyNames: { $ref: "#/$defs/Name" } };
+  assert.deepEqual(inputSchemaIssues(recursive), []);
+  // Only schemas are read: an annotation's value that has a $ref key is data, and saves.
+  // A definition inside the named one that nothing refers to never applies, so its reference is never checked.
+  const unused = { ...COMPANY, $defs: { Name: { pattern: "^[a-z]+$", $defs: { Unused: { $ref: "#/properties/company" } } } }, propertyNames: { $ref: "#/$defs/Name" } };
+  assert.deepEqual(inputSchemaIssues(unused), []);
+  assert.deepEqual(said({ company: "Acme" }, inputSchemaOf(unused)), []);
+  // The same definition once a reference names it is followed, and refused.
+  const nested = { ...COMPANY, $defs: { Name: { allOf: [{ $ref: "#/$defs/Name/$defs/Used" }], $defs: { Used: { $ref: "#/properties/company" } } } }, propertyNames: { $ref: "#/$defs/Name" } };
+  assert.deepEqual(inputSchemaIssues(nested).map((i) => [i.field, i.reason]), [["definition.input_schema.propertyNames", "bad_format"]]);
+
+  const annotated = { ...COMPANY, propertyNames: { pattern: "^[a-z]+$", examples: [{ $ref: "#/properties/company" }] } };
+  assert.deepEqual(inputSchemaIssues(annotated), []);
+  assert.deepEqual(said({ company: "Acme" }, inputSchemaOf(annotated)), []);
 });
 
 test("a required text field left empty is said as missing, in a missing field's words; an optional one or a list's item keeps its length issue", () => {
@@ -203,4 +260,15 @@ test("a trigger's start_run target is checked against the agent's input schema w
   // A trigger's message is its own row (origin trigger), never a person's user_message.
   const first = rows.find((row) => row.origin === "trigger")?.text;
   assert.match(first, /^Check them\.\n\n\(Started by hand from the schedule "nightly" at [^)]*\)\.?\n\nInput:\n```json\n\{\n {2}"company": "Stripe, Inc\."\n\}\n```$/, first);
+  // A schema capping its input at one field takes that field beside content: a trigger's line rides in content.
+  assert.equal((await api("POST", "/agents", agent("kyb-capped", { input_schema: { ...SUBJECT, maxProperties: 1 } }))).status, 201);
+  const capped = (input) => ({ ...body(input), target: { ...body(input).target, agent_id: "kyb-capped" } });
+  const one = await api("POST", "/triggers", capped({ content: "", company: "Stripe, Inc." }));
+  assert.equal(one.status, 201, JSON.stringify(one.body));
+  const two = await api("POST", "/triggers", capped({ content: "", company: "Stripe, Inc.", limit: 3 }));
+  assert.deepEqual([two.status, fields(two.body)], [422, [["target.input", "too_many"]]], "its own fields still meet the cap");
+  const firedCapped = await api("POST", `/triggers/${one.body.id}/fire`, undefined, { "idempotency-key": "capped-1" });
+  assert.equal(firedCapped.status, 202, JSON.stringify(firedCapped.body));
+  const capRows = (await follow(api, firedCapped.body.run_id, ["completed"], { deadlineMs: 55_000 })).rows;
+  assert.match(capRows.find((row) => row.origin === "trigger")?.text ?? "", /^\(Started by hand from the schedule "nightly" at [^)]*\)\.?\n\nInput:\n```json\n\{\n {2}"company": "Stripe, Inc\."\n\}\n```$/);
 });

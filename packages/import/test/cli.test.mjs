@@ -47,6 +47,15 @@ test("--known-answer prints one line per session, sorted by key, with the agreed
   for (const leak of [PROMPT, "Fixture answer", "/work/fixture", dir, SESSION, "thread-1", "pi-session-1"]) assert.ok(!result.stdout.includes(leak), `prints ${leak}`);
 });
 
+test("a source named twice in --sources is read once: each session prints one line", async (t) => {
+  const dir = await home(t);
+  const once = run(dir, "--sources", "codex", "--known-answer");
+  const twice = run(dir, "--sources", "codex,codex", "--known-answer");
+  assert.equal(twice.status, 0, twice.stderr);
+  assert.equal(twice.stdout.trim().split("\n").length, 1);
+  assert.equal(twice.stdout, once.stdout);
+});
+
 test("--sources picks the sources; an unknown one, or no --known-answer, is a usage error", async (t) => {
   const dir = await home(t);
   const only = run(dir, "--sources", "pi,codex", "--known-answer");
@@ -78,7 +87,7 @@ test("--help and -h print the usage to stdout and exit 0; a bad argument is stil
     for (const args of [[flag], ["/nowhere", flag, "--known-answer"]]) {
       const result = run(...args);
       assert.equal(result.status, 0, result.stderr);
-      assert.match(result.stdout, /^usage: agentrun-import <home> \[--sources claude-code,codex,pi,opencode\] \[--threads N\] \[--read-ahead BYTES\[k\|m\|g\]\] --known-answer\n/);
+      assert.match(result.stdout, /^usage: agentrun-import <home> \[--sources claude-code,codex,pi,opencode,copilot\] \[--threads N\] \[--read-ahead BYTES\[k\|m\|g\]\] --known-answer\n/);
       assert.equal(result.stderr, "");
     }
   }
@@ -100,7 +109,7 @@ test("without pi-ai the CLI fails at startup, loudly: it never prints lines that
 });
 
 test("the sources are a registry: each reader names its source, its harness and its name, and reads its own files", () => {
-  assert.deepEqual(SOURCES, ["claude-code", "codex", "pi", "opencode"]);
+  assert.deepEqual(SOURCES, ["claude-code", "codex", "pi", "opencode", "copilot"]);
   for (const source of SOURCES) {
     const reader = READERS[source];
     assert.equal(reader.source, source);

@@ -33,7 +33,7 @@ import type { Store } from "../store/index.js";
 import { SERVER_NOTE_LABEL } from "@parcha/agentrun-kernel/kernel/cap";
 import type { PairedRelay } from "./attached-computers.js";
 import { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type ComputerRun, type ComputerSaid, type KeptKind, type OpenComputerView, type Replaced } from "./computer-for-claim.js";
-import { computerLapsedWords, computerLostWords, KEEP_WORDS } from "./computer-kept.js";
+import { computerHeldWords, computerLapsedWords, computerLostWords, KEEP_WORDS } from "./computer-kept.js";
 import { storeLedger } from "./computer-ledger.js";
 import { computerProviderFactories, computerProviderMakers, type ProviderLoad } from "./computer-providers.js";
 import { aLabel, type ComputerSettingKind, type KindRegistry, needsNetwork, noNetworkRefusal, type ProviderEntry, vendorNetworkOnly } from "./resolve-computer.js";
@@ -269,12 +269,14 @@ export const computerStartingWords = ({ provider, kind }: Pick<ComputerSaid, "pr
 
 /** The run's timeline phase once its claim's computer is connected (computerForClaim's onConnected): what it says it
  *  is, in its hello's own facts, such as "The phone is ready: Android 15 (arm64), from Phone harness." A computer that
- *  replaced an earlier claim's (`replaced`) says it is a new one, never why the old one went (a lost runner, a crash, a
- *  server's stop, a park: the words fit each), and, where the run's folder is on Archil and mounted in it
- *  (`folderKept`), that the folder is kept. The one kept through the run's park (`kept`) says it is the same; a new one
- *  after a kept one's time passed (`replaced.lapsed`) says why first, as does one after a kept one pinned to a runner
- *  that was gone by the resume (`replaced.lost`, computerLostWords), and one after the kept one's provider refused to
- *  attach it again (`replaced.refused`, in the provider's words). */
+ *  replaced an earlier claim's (`replaced`) says it is a new one and the one before is gone with what was on it, never
+ *  why the old one went (a lost runner, a crash, a server's stop, a park: the words fit each), and, where the run's
+ *  folder is on Archil and mounted in it (`folderKept`), that the folder is kept. The one kept through the run's park
+ *  (`kept`) says it is the same; a new one after a kept one's time passed (`replaced.lapsed`) says why first, as does
+ *  one after a kept one pinned to a runner that was gone by the resume (`replaced.lost`, computerLostWords), or still
+ *  there and ending it itself (`replaced.elsewhere`, computerHeldWords), and one after the kept one's provider refused
+ *  to attach it again (`replaced.refused`, in the provider's words). Where that runner is still there, the one before
+ *  runs until its end, so the words say only that nothing on it comes with the new one, never that it is gone. */
 export const computerReadyWords = ({ provider, kind, hello, replaced, kept }: ComputerSaid): string => {
   const ready = `The ${kind} is ready: ${[OS_NAMES[hello.os] ?? hello.os, hello.osVersion].filter(Boolean).join(" ")} (${hello.arch}), from ${provider}.`;
   if (kept) return `${ready} It's the same ${kind}, as the wait left it.`;
@@ -283,10 +285,14 @@ export const computerReadyWords = ({ provider, kind, hello, replaced, kept }: Co
     ? ` The ${kind} kept before could not be taken back: ${replaced.refused.replace(/[.!?]+$/, "")}.`
     : replaced.lost
       ? ` ${computerLostWords(kind)}`
-      : replaced.lapsed
-        ? ` ${computerLapsedWords(kind)}`
-        : "";
-  return `${ready}${why} It's a new ${kind}: the one before is gone, with what was on it.${replaced.folderKept ? " The run folder is kept." : ""}`;
+      : replaced.elsewhere
+        ? ` ${computerHeldWords(kind)}`
+        : replaced.lapsed
+          ? ` ${computerLapsedWords(kind)}`
+          : "";
+  // Another runner still holds the one before and ends it: still there for now, so never said gone.
+  const before = replaced.elsewhere ? "; nothing on the one before comes with it." : ": the one before is gone, with what was on it.";
+  return `${ready}${why} It's a new ${kind}${before}${replaced.folderKept ? " The run folder is kept." : ""}`;
 };
 
 /** The run's timeline phase as its run parks with its computer kept (ClaimComputer.keeps), such as "The desktop is kept
@@ -301,6 +307,22 @@ export const computerReplacedNote = ({ kind, folderKept }: Replaced): string => 
   const gone = `${SERVER_NOTE_LABEL}your computer was replaced. The earlier one is gone, with its`;
   if (kind !== "sandbox") return `${gone} screen and refs. Look at the screen again before acting.${folderKept ? " The run folder is kept." : ""}`;
   return `${gone} files and processes. ${folderKept ? "The run folder is kept; anything outside it is gone." : "Check its files again before relying on them."}`;
+};
+
+/** What the run's model is told, once in its run, when its desktop or phone holds none of the run's files (no folder of
+ *  the run's is mounted in it: RunTools.apart), labelled as the server's (SERVER_NOTE_LABEL): what it saves on the
+ *  computer never reaches the user and goes with the computer, so it keeps what the user should get in the run's files;
+ *  `screenshot`, the run has computer_screenshot, whose save_as saves the screen there. `writes`: the run's gate lets it
+ *  write a file (RunGate.writeBar: write given, not denied, and not an ask no one can approve); without it the run is
+ *  told a screenshot can't be saved to its files, and no save_as
+ *  or file tool is promised (bash may still be offered, so nothing more is claimed). `outlives`: the computer is a
+ *  person's paired one or the agent's own (ClaimComputer.outlives), never deleted when the run ends, so what is saved on
+ *  it stays there. */
+export const computerFilesNote = ({ kind, screenshot, writes, outlives }: { readonly kind: "desktop" | "phone"; readonly screenshot: boolean; readonly writes: boolean; readonly outlives?: boolean }): string => {
+  const keep = writes
+    ? `Keep anything the user should get in the run's files, the folder your file tools work on${screenshot ? "; computer_screenshot with save_as saves the screen there as a PNG" : ""}.`
+    : "Screenshots can't be saved to the run's files here (write isn't offered): put what you found in your answer.";
+  return `${SERVER_NOTE_LABEL}this ${kind}'s own disk is not this run's files: nothing saved on the ${kind} reaches the user, and ${outlives ? `it stays on the ${kind} after the run ends` : "it is deleted when the run ends"}. ${keep}`;
 };
 
 /** The claim's computer as the runner's specs call it: what the run's launch lets the computer reach (its box_allow),

@@ -87,7 +87,7 @@ const searching = {
   output: { schemaId: "Answer", path: "answer" },
   root: { node: "agent", label: "look", instructions: "Search, then answer.", tools: ["web_search"], out: "Answer", as: "answer" },
 };
-const SCRIPT = [{ call: "web_search", args: { query: "agentrun", n: 3 } }, { call: "submit", args: { answer: 42 } }];
+const SCRIPT = [{ call: "web_search", args: { objective: "agentrun", n: 3 } }, { call: "submit", args: { answer: 42 } }];
 
 test("on the runner: a model node's web_search let through on one claim, its claim lapsed while the search was out, run again by the next claim with web_search now denied, reads RAN_UNKNOWN", { timeout: 60_000 }, async (t) => {
   const clock = { now: T0 };

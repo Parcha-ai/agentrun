@@ -90,12 +90,14 @@ function webRead(tool: string, text: string): { read: Obj; end: number } | undef
   return isObj(read) ? { read, end } : undefined;
 }
 
-/** Whether `text`, a web call's output, is withheld whole: `holds` (key-refusal.ts withheldWhole) finds a held value in
- *  its JSON's strings joined by line breaks (false for an output that is not a web call's JSON). They are read in the
- *  order the output is written back in (stringsOf) and, where that differs, in the order it was written (writtenStrings).
- *  Every reader asks this first: the runner before it stores the answer (answersCut), a timeline before its row shows.
- *  Each string is cut on its own wherever the output is shown, and no view joins across the JSON's punctuation between
- *  two strings, so a held value split across two of them is found only here. */
+/** Whether `text`, a web call's output, is withheld whole: `holds` (key-refusal.ts withheldWhole) reads the output as it
+ *  came, through the matcher's join view (redact/match.ts joinOf: a JSON text's strings joined), then its JSON's strings
+ *  joined by line breaks with the lines after the JSON, once its values alone and once with each property name before its
+ *  value. They are read in the order the output is written back in (stringsOf) and, where that differs, in the order it
+ *  was written (writtenStrings). Every reader asks this first: the runner before it stores the answer (answersCut), a
+ *  timeline before its row shows. Each string is cut on its own wherever the output is shown, so a held value split across
+ *  two of them, or across a property name and its value, is found only here. False for an output that is not a web
+ *  call's JSON. */
 export function webHeld(tool: string, text: string, holds: WebHolds): boolean {
   const web = webRead(tool, text);
   return web ? heldIn(web, text, holds) : false;
@@ -103,6 +105,7 @@ export function webHeld(tool: string, text: string, holds: WebHolds): boolean {
 
 /** webHeld of an output already read (webRead). */
 function heldIn(web: { read: Obj; end: number }, text: string, holds: WebHolds): boolean {
+  if (holds(text, [text])) return true;
   const after = web.end < 0 ? [] : [text.slice(web.end + 1)];
   const line = web.end < 0 ? text : text.slice(0, web.end);
   const asked = (strings: readonly string[]): boolean => {

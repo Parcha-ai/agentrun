@@ -1,4 +1,4 @@
-// Synthetic Claude Code, Codex, pi and OpenCode sessions, written as each tool writes its JSONL (OpenCode: its SQLite
+// Synthetic Claude Code, Codex, pi, OpenCode and Copilot CLI sessions, written as each tool writes its JSONL (OpenCode: its SQLite
 // database), for the importer's tests. Every
 // value is invented: the projects are under the test's own scratch home, the ids are made up, and no line comes from a
 // real transcript.
@@ -221,7 +221,7 @@ const plus = (a, b) => Object.fromEntries(Object.keys(a).map((key) => [key, a[ke
  *  `thenModel` (else `model`). Each request's usage is in a token_count event (the first one written twice), with `usage: "records"`
  *  also in a token_usage_record (the first one written twice), with `usage: "none"` in neither. With `failing`, the first
  *  request also runs two calls that fail: one whose output says so, one whose completed item does, after its output. */
-export function codexSession(home, cwd, n, { prompt = "Run the tests.", output = "2 passed", subagent = false, parent = sessionId(n + 1000), aborted = false, events = true, then, model = "gpt-sol-6.1", thenModel = model, usage = "token_count", failing = false, provider = "openai" } = {}) {
+export function codexSession(home, cwd, n, { prompt = "Run the tests.", output = "2 passed", subagent = false, parent = sessionId(n + 1000), forkedFrom, aborted = false, events = true, then, model = "gpt-sol-6.1", thenModel = model, usage = "token_count", failing = false, provider = "openai" } = {}) {
   const id = sessionId(n);
   const text = (value) => ({ type: "input_text", text: value });
   const requests = [codexUsage(900, 600, 40, 10), codexUsage(1000, 900, 25, 5), codexUsage(1200, 1000, 10, 0)];
@@ -271,6 +271,7 @@ export function codexSession(home, cwd, n, { prompt = "Run the tests.", output =
       payload: {
         id,
         cwd,
+        ...(forkedFrom ? { forked_from_id: forkedFrom } : {}),
         timestamp: at(0),
         model_provider: provider,
         cli_version: events ? "0.99.0" : "0.150.0",
@@ -449,6 +450,32 @@ export function piSession(home, cwd, n, { prompt = "Read the notes.", output = "
   ];
   const dir = `--${cwd.replace(/^\//, "").replaceAll("/", "-")}--`;
   return writeSession(join(home, ".pi", "agent", "sessions", dir, `2026-10-20T09-00-00-000Z_${id}.jsonl`), records, { fresh });
+}
+
+/** A Copilot CLI session in `cwd`, as the CLI writes ~/.copilot/session-state/<id>/events.jsonl: a question, a bash call
+ *  and its output, an answer, and the shutdown the process writes as it exits. Copilot writes no request's tokens: the
+ *  shutdown holds each model's for the process (its input holding the cache read and write), unless `shutdown: false`. */
+export function copilotSession(home, cwd, n, { prompt = "Check the build.", output = "build ok", model = "claude-sonnet-5", shutdown = true, chunked = false } = {}) {
+  const id = sessionId(n);
+  const ev = (i, type, data) => ({ type, data, id: `${id}-e${i}`, parentId: i ? `${id}-e${i - 1}` : null, timestamp: at(i) });
+  const records = [
+    ev(0, "session.start", { sessionId: id, version: 1, producer: "copilot-agent", copilotVersion: "1.0.40", startTime: at(0), selectedModel: model, reasoningEffort: "medium", context: { cwd } }),
+    ev(1, "user.message", { content: prompt }),
+    ev(2, "assistant.message", { messageId: `${id}-m1`, model, content: "", toolRequests: [{ toolCallId: "call_1", name: "bash", arguments: { command: "npm run build" } }] }),
+    ev(3, "tool.execution_start", { toolCallId: "call_1", toolName: "bash", arguments: { command: "npm run build" } }),
+    ev(4, "tool.execution_complete", { toolCallId: "call_1", success: true, result: { content: output } }),
+    // `chunked`: the answer split in two messages of one model call (its chunks), each with a messageId of its own.
+    ...(chunked
+      ? [
+          ev(5, "assistant.message", { messageId: `${id}-m2`, model, content: "The build says:", apiCallId: `${id}-call2`, chunkIndex: 0, chunkCount: 2 }),
+          ev(6, "assistant.message", { messageId: `${id}-m3`, model, content: `${output}.`, apiCallId: `${id}-call2`, chunkIndex: 1, chunkCount: 2 }),
+        ]
+      : [ev(5, "assistant.message", { messageId: `${id}-m2`, model, content: `The build says: ${output}.` })]),
+    ...(shutdown
+      ? [ev(chunked ? 7 : 6, "session.shutdown", { shutdownType: "routine", totalPremiumRequests: 1, totalApiDurationMs: 4000, sessionStartTime: Date.parse(at(0)), codeChanges: { linesAdded: 0, linesRemoved: 0, filesModified: [] }, modelMetrics: { [model]: { requests: { count: 2, cost: 1 }, usage: { inputTokens: 1500, outputTokens: 60, cacheReadTokens: 1000, cacheWriteTokens: 200, reasoningTokens: 10 } } } })]
+      : []),
+  ];
+  return writeSession(join(home, ".copilot", "session-state", id, "events.jsonl"), records);
 }
 
 /** A Claude Code subagent's session under parent session `n`, as the CLI writes it in <session id>/subagents/: its

@@ -317,7 +317,7 @@ for (const harness of ["claude-agent", "codex"]) {
     const { rows } = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 55_000 });
     const results = toolResults(rows);
     assert.equal(results.length, 1, JSON.stringify(results));
-    assert.match(results[0][0], /\{"provider":"parallel","query":"widgets delaware","results":\[\{"url":"https:\/\/registry\.example\/widgets"/, "Parallel's results");
+    assert.match(results[0][0], /\{"provider":"parallel","objective":"widgets delaware","queries":\["widgets delaware"\],"results":\[\{"url":"https:\/\/registry\.example\/widgets"/, "Parallel's results");
     const sent = (await readFile(calls, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
     assert.deepEqual(sent.map((call) => [call.path, call.authorized, call.queries]), [["/v1/search", true, ["widgets delaware"]]], "on the key the server handed the run");
     assert.deepEqual(paidOf(data, run.body.run_id), [["paid:Parallel's search", 0.001]], "the search's fee, booked once on the run's one ledger, as on pi");
