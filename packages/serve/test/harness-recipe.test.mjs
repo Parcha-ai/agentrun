@@ -142,6 +142,24 @@ const BROKEN = [
   ["its own id: an id the server's harness table already has (cursor)", RECIPE_CODES.invalid, () => recipeOf(undefined, { id: "cursor" })],
 ];
 
+test("a recipe's quirks.callNames names the one form its agent's calls of our tools are read in (goose, cursor or agy), and reaches the adapter's recipe; any other is refused", async () => {
+  const { acpRecipeFor } = await import("../dist/harness-recipe-entry.js");
+  const release = { url: "https://releases.example.invalid/agent.tar.bz2", sha256: "0".repeat(64), cmd: "agent" };
+  for (const callNames of ["goose", "cursor", "agy"]) {
+    const parsed = parseRecipe(JSON.stringify(recipeOf(undefined, { quirks: { callNames } })));
+    assert.deepEqual(parsed.quirks, { callNames });
+    assert.deepEqual(acpRecipeFor(parsed, "/bin/agent", release, { on: "keys" }).quirks, { callNames }, callNames);
+  }
+  const both = parseRecipe(JSON.stringify(recipeOf(undefined, { quirks: { callNames: "agy", mcpCall: "mint" } })));
+  assert.deepEqual(acpRecipeFor(both, "/bin/agent", release, { on: "keys" }).quirks, { callNames: "agy", mcpCall: "mint" });
+  assert.equal(acpRecipeFor(parseRecipe(JSON.stringify(recipeOf())), "/bin/agent", release, { on: "keys" }).quirks, undefined, "none declared: none passed");
+  for (const callNames of ["Agy", "mcp", "", 1, ["agy"], null]) {
+    const refused = refusalOf(recipeOf(undefined, { quirks: { callNames } }));
+    assert.equal(refused.code, RECIPE_CODES.invalid, JSON.stringify(callNames));
+    assert.match(refused.message, /callNames/);
+  }
+});
+
 test("a recipe is refused under every id the server's harness table already has, and every reserved one", async () => {
   const { BUILTIN_HARNESS_IDS } = await import("../dist/harness-table.js");
   const { HARNESS_ID_PATTERN, RESERVED_HARNESS_IDS } = await import("../dist/harness.js");
@@ -985,6 +1003,8 @@ test("the Antigravity recipe loads under the five rules: agy CLI 1.5.14, each pl
   // SQLite files in .gemini/antigravity-cli/conversations, which a new process loads from there).
   assert.deepEqual(recipe.declares, { load: true, mcp: "stdio" });
   assert.deepEqual(recipe.state, [".gemini/antigravity-cli/conversations"]);
+  // agy names a call of our tool `mcp_agentrun_<tool>`: the adapter reads that form under this recipe alone.
+  assert.deepEqual(recipe.quirks, { callNames: "agy" });
 });
 
 test("AgentRun never reads, refreshes or sends an agent's sign-in, and has no usage reader: no harness source or ACP adapter source names a credential file or Google's account and quota APIs", () => {
