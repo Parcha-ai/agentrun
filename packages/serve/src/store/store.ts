@@ -188,6 +188,8 @@ export interface ListedFilter {
   readonly agentId?: string;
   readonly revisionId?: string;
   readonly labels?: RunLabels;
+  /** Only runs imported from this source (imported_from.source), or with "live" the runs not imported. */
+  readonly source?: string;
   readonly archived: boolean;
   readonly status?: string;
   /** Only runs still going (no settled status on the row) whose listing is behind. */

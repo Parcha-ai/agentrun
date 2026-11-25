@@ -19,8 +19,6 @@ import { mediaSeconds, voiceSeconds } from "./media-duration.js";
 import { SAVE_MAX_BYTES, type SaveSlots, SERVER_SLOTS } from "./web-save.js";
 import { micro } from "./micro.js";
 
-/** In whole millionths of a dollar, so a sum of prices is the price. */
-
 /** The host of fal's hosted MCP server (its key endpoint /mcp and its sign-in endpoint /mcp-relay). */
 export const FAL_MCP_HOST = "mcp.fal.ai";
 /** A pin's `meter` for a fal server. */
@@ -199,10 +197,12 @@ type Tier = { rate: number; words: string } | { why: string };
  *    (get_pricing's) and $0.20 at 720p. Their resolution has no default (their OpenAPI).
  *  An endpoint not listed here is priced at get_pricing's one rate, whatever its settings, unless it falls in a family
  *  fal bills by its settings (TIERED_FAMILIES): there only ONE_RATE's endpoints are, and any other is unpriceable. */
-type Tiers = { base: number; rate: (input: Record<string, unknown>) => Tier; perUnitUsd?: (input: Record<string, unknown>) => { usd: number; words: string } | { why: string } | undefined };
+/** `unit`: the unit get_pricing stated `base` in when the rates were decided; a rate in another is not one of these. */
+type Tiers = { base: number; unit: string; rate: (input: Record<string, unknown>) => Tier; perUnitUsd?: (input: Record<string, unknown>) => { usd: number; words: string } | { why: string } | undefined };
 /** A rate set by one setting: `rates` by value. */
-const byOne = (field: string, base: number, rates: ReadonlyMap<unknown, number>, fallback?: unknown): Tiers => ({
+const byOne = (unit: string, field: string, base: number, rates: ReadonlyMap<unknown, number>, fallback?: unknown): Tiers => ({
   base,
+  unit,
   rate: (input) => {
     const setting = settingOf(input, field, [...rates.keys()], fallback);
     return "why" in setting ? setting : { rate: rates.get(setting.value)!, words: setting.words };
@@ -214,6 +214,7 @@ const audio = (off: number, on: number) => ({ off, on });
  *  audio (on by default). */
 const veo = (base: number, rates: Readonly<Record<string, { off: number; on: number }>>): Tiers => ({
   base,
+  unit: "seconds",
   rate: (input) => {
     const sound = settingOf(input, "generate_audio", [true, false], true);
     if ("why" in sound) return sound;
@@ -231,6 +232,7 @@ const VEO31_LITE = veo(0.05, { "720p": audio(0.03, 0.05), "1080p": audio(0.05, 0
  *  no rate for voice control. */
 const kling = (base: number, page: { off: number; on: number; voice?: number }, floor = 0): Tiers => ({
   base,
+  unit: "seconds",
   rate: (input) => {
     const sound = settingOf(input, "generate_audio", [true, false], true);
     if ("why" in sound) return sound;
@@ -245,17 +247,17 @@ const kling = (base: number, page: { off: number; on: number; voice?: number }, 
     return { rate: held(sound.value ? page.on : page.off), words: sound.words };
   },
 });
-const IDEOGRAM_V3 = byOne("rendering_speed", 0.03, new Map([["TURBO", 0.03], ["BALANCED", 0.06], ["QUALITY", 0.09]]), "BALANCED");
+const IDEOGRAM_V3 = byOne("images", "rendering_speed", 0.03, new Map([["TURBO", 0.03], ["BALANCED", 0.06], ["QUALITY", 0.09]]), "BALANCED");
 /** A web search's charge, per unit: $0.015 when enable_web_search is true (its default is false). */
 const webSearch = (input: Record<string, unknown>): { usd: number; words: string } | { why: string } | undefined => {
   const search = settingOf(input, "enable_web_search", [true, false], false);
   return "why" in search ? search : search.value ? { usd: 0.015, words: "a web search" } : undefined;
 };
-const NANO_BANANA_PRO: Tiers = { ...byOne("resolution", 0.15, new Map([["1K", 0.15], ["2K", 0.15], ["4K", 0.3]]), "1K"), perUnitUsd: webSearch };
+const NANO_BANANA_PRO: Tiers = { ...byOne("images", "resolution", 0.15, new Map([["1K", 0.15], ["2K", 0.15], ["4K", 0.3]]), "1K"), perUnitUsd: webSearch };
 /** Nano Banana 2: by its resolution, plus a web search's charge and high thinking's ($0.002, thinking_level "high"; none
  *  for "minimal" or none, its default), each per unit. */
 const NANO_BANANA_2: Tiers = {
-  ...byOne("resolution", 0.08, new Map([["0.5K", 0.06], ["1K", 0.08], ["2K", 0.12], ["4K", 0.16]]), "1K"),
+  ...byOne("images", "resolution", 0.08, new Map([["0.5K", 0.06], ["1K", 0.08], ["2K", 0.12], ["4K", 0.16]]), "1K"),
   perUnitUsd: (input) => {
     const search = webSearch(input);
     if (search && "why" in search) return search;
@@ -267,10 +269,10 @@ const NANO_BANANA_2: Tiers = {
 };
 const KLING_PRO = kling(0.14, { off: 0.112, on: 0.168, voice: 0.196 }, 0.14);
 const KLING_STANDARD = kling(0.14, { off: 0.084, on: 0.126, voice: 0.154 }, 0.14);
-const FABRIC = byOne("resolution", 0.08, new Map([["480p", 0.08], ["720p", 0.15]]));
+const FABRIC = byOne("seconds", "resolution", 0.08, new Map([["480p", 0.08], ["720p", 0.15]]));
 const RATE_TIERS: ReadonlyMap<string, Tiers> = new Map<string, Tiers>([
   ...["", "/edit", "/remix", "/reframe", "/replace-background", "/generate-transparent"].map((variant) => [`fal-ai/ideogram/v3${variant}`, IDEOGRAM_V3] as const),
-  ...["", "/edit", "/remix"].map((variant) => [`fal-ai/ideogram/character${variant}`, byOne("rendering_speed", 0.05, new Map([["TURBO", 0.1], ["BALANCED", 0.15], ["QUALITY", 0.2]]), "BALANCED")] as const),
+  ...["", "/edit", "/remix"].map((variant) => [`fal-ai/ideogram/character${variant}`, byOne("images", "rendering_speed", 0.05, new Map([["TURBO", 0.1], ["BALANCED", 0.15], ["QUALITY", 0.2]]), "BALANCED")] as const),
   ...["", "/image-to-video", "/first-last-frame-to-video", "/reference-to-video"].map((variant) => [`fal-ai/veo3.1${variant}`, VEO31] as const),
   ["fal-ai/veo3.1/extend-video", veo(0.4, { "720p": audio(0.2, 0.4) })],
   ...["/fast", "/fast/image-to-video", "/fast/first-last-frame-to-video", "/fast/reference-to-video"].map((variant) => [`fal-ai/veo3.1${variant}`, VEO31_FAST] as const),
@@ -283,7 +285,7 @@ const RATE_TIERS: ReadonlyMap<string, Tiers> = new Map<string, Tiers>([
   ["fal-ai/kling-video/v3/standard/image-to-video", KLING_STANDARD],
   ["fal-ai/kling-video/v3/standard/text-to-video", KLING_STANDARD],
   ["fal-ai/kling-video/v3/4k/image-to-video", kling(0.42, { off: 0.42, on: 0.42 })],
-  ["fal-ai/sync-lipsync/v2", byOne("model", 3, new Map([["lipsync-2", 3], ["lipsync-2-pro", 5]]), "lipsync-2")],
+  ["fal-ai/sync-lipsync/v2", byOne("minutes", "model", 3, new Map([["lipsync-2", 3], ["lipsync-2-pro", 5]]), "lipsync-2")],
   ["fal-ai/nano-banana-pro", NANO_BANANA_PRO],
   ["fal-ai/nano-banana-pro/edit", NANO_BANANA_PRO],
   ["fal-ai/gemini-3-pro-image-preview", NANO_BANANA_PRO],
@@ -291,7 +293,7 @@ const RATE_TIERS: ReadonlyMap<string, Tiers> = new Map<string, Tiers>([
   ...["fal-ai/nano-banana-2", "fal-ai/nano-banana-2/edit", "fal-ai/gemini-3.1-flash-image-preview", "fal-ai/gemini-3.1-flash-image-preview/edit"].map((endpoint) => [endpoint, NANO_BANANA_2] as const),
   ["veed/fabric-1.0", FABRIC],
   ["veed/fabric-1.0/text", FABRIC],
-  ["veed/fabric-1.0/fast", byOne("resolution", 0.1, new Map([["480p", 0.1], ["720p", 0.2]]))],
+  ["veed/fabric-1.0/fast", byOne("seconds", "resolution", 0.1, new Map([["480p", 0.1], ["720p", 0.2]]))],
 ]);
 /** The families fal bills by their settings: an endpoint is in one when it is the family's id or under it. Ideogram v4's
  *  pages (read 2026-11-23 13:13Z) bill by rendering_speed and megapixels, and get_pricing (13:20:43Z) states most of
@@ -323,7 +325,7 @@ export function decidedRates(): { families: string[]; tiered: string[]; oneRate:
 
 /** The rate a job of `endpoint` is billed at, against get_pricing's (in `unit`): `ratio`, its tier's rate over the rate
  *  get_pricing states (RATE_TIERS), `perUnitUsd` a charge added to each unit's price, and `words` the settings they came from (none at
- *  get_pricing's own rate); or `unknown`, why it can't be known. 1 and nothing for an endpoint with one rate; unknown for
+ *  get_pricing's own rate); or `unknown`, why it can't be known (get_pricing stating it in another unit than its tiers' among them). 1 and nothing for an endpoint with one rate; unknown for
  *  an endpoint in a family fal bills by its settings whose rate is not decided here (TIERED_FAMILIES). */
 export function rateOf(endpoint: string, unit: string, input: unknown): { ratio: number; perUnitUsd: number; words: string[] } | { unknown: string } {
   const tiers = RATE_TIERS.get(endpoint);
@@ -333,6 +335,8 @@ export function rateOf(endpoint: string, unit: string, input: unknown): { ratio:
     if (family && !ONE_RATE.has(endpoint)) return { unknown: `fal bills ${family} by its settings and ${endpoint} has no rate decided here` };
     return { ratio: 1, perUnitUsd: 0, words: [] };
   }
+  // The ratios and the model page's rates hold only in the unit they were decided in: per second, minute or image.
+  if (unit !== tiers.unit) return { unknown: `get_pricing states ${endpoint} per ${oneOf(unit)}, and its rates were decided per ${oneOf(tiers.unit)}` };
   if (!isObject(input)) return { ratio: 1, perUnitUsd: 0, words: [] };
   const bills = `fal bills ${endpoint} per ${oneOf(unit)} at a rate`;
   const tier = tiers.rate(input);

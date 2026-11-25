@@ -1704,9 +1704,29 @@ nothing.
 A check where the CLI answered nothing that reads as a status gets the same. Any other failure of the check, such as no CLI at
 its path, fails the run at once in the check's own words. It never switches to a key. The run books its tokens and no dollars (`cost.plan`, `on: "claude_code"`), and the plan's own limits
 apply. Only a run in a runner place, on the machine the mode was turned on for, goes on the login. A run placed in a
-sandbox, or on another machine, uses the keys. The login is the server's user's, so a run on it needs runs under that
-user: where each run is a user of its own (the image, `run_isolation: "uid"`), a claude-agent run that would go on the
-login fails at its claim and says so. Set `AGENTRUN_RUN_USER=same`, or give the run a `model_key`.
+sandbox, or on another machine, uses the keys. The login is the server's user's. Where each run is a user of its own
+(the image, `run_isolation: "uid"`), a run on AgentRun's own login folder gets the login's access token alone in
+`CLAUDE_CODE_OAUTH_TOKEN`: never the folder and never the refresh token, so its CLI never renews the login. The runner
+reads the token from the folder at the run's start and again whenever Anthropic refuses it mid-run, so a renewal the
+person's own Claude Code wrote there is picked up. The runner renews the login itself, in the CLI's place: when a token
+has less than five minutes left, and after Anthropic refuses one mid-run. It sends the pinned CLI's own refresh request,
+holds the CLI's own refresh lock on the folder (so a renewal by the CLI or another runner is taken and nothing is sent
+twice), and writes the answer back to the folder's `.credentials.json` alone, atomically at mode 0600, every other field
+kept. It holds that lock as the CLI does, by the mtime it set: a lock another holder took over while the runner was
+paused is never touched or removed, and the runner sends nothing under it. If the write back fails, the runner keeps the
+new pair in memory: each later ask gets its token, sends nothing (the old refresh token is spent and is never sent
+again) and tries the write again, under the same refresh lock and after reading the file again, so a newer pair another
+holder wrote there is kept. Once that token has less than five minutes left and is still unsaved, the run fails
+in words that say the renewal could not be saved and what to fix. A held token Anthropic refuses is never handed again:
+the ask fails while the pair is unsaved, and once it is saved the runner renews from it. One ask sends at most one renewal and nothing retries it. A renewal that fails, a refresh token Anthropic refused
+included, fails the run at its start in words that say to open Claude Code once to renew it, and mid-run ends the turn
+in the same words (or, with no failure to tell, words that say to run the claude CLI once on this login to renew it).
+No token is in the runner's log or in any error, and each token handed is cut from the run's journal, messages and rows
+as the runner writes them. A command the run's CLI starts can read the token,
+as the run's own user can. Under per-run users, a run on this machine's own Claude Code login (`~/.claude`, or the `CLAUDE_CONFIG_DIR` AgentRun was started with) fails at its
+claim and says so, and so does any login run while another runner on the same data folder runs its login runs under
+the server's user (its CLI renews the folder's login itself), naming that runner. Set `AGENTRUN_RUN_USER=same`, or give
+the run a `model_key`.
 
 The mode exists only on a server that listens on loopback (a local install, or one behind a local proxy). A server
 bound to any other address, such as all interfaces in a container or on a hosting service, has it off
@@ -3412,7 +3432,7 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `DELETE /runs/{id}` | This server's own route (`x-agentrun-serve: "purge/1"`): [purges](#purging-a-run-or-an-agent-made-here) a run that is not live, its cost kept in every total. `204`, again on a second `DELETE`; a live run is `409 run_not_final`, and every route of a purged run is `410 purged`. |
 | `DELETE /agents/{id}/sign-ins/{key}` | This server's own route (`x-agentrun-serve: "signins/1"`): forgets one of the agent's [saved sign-ins](#saved-sign-ins), at its vendor and here. `409 sign_in_held` while a run holds its save lease, or while a run it was handed is still going. |
 | `POST /agents/{id}/runs`, `GET /agents/{id}/runs` | A run of the current revision, or of `revision`. An agentic run's input is `{content: string}`; a workflow run's is what its workflow's input schema takes. `file_ids` names [uploaded](#uploads) files, copied into the run's `work/inputs/` before it starts and named in its first message. `labels` (this server's own, `runlabels/1`) is the caller's map of its own strings for the run: at most 16 keys, each 1 to 63 letters, digits, `.`, `_`, `-` or `/` starting with a letter or a digit, each value 1 to 256 characters with no control character; kept as given, served as `labels` on every read of the run (`{}` when none), never read by the server otherwise, so no place for a secret. The agent's runs, newest first; `label` filters them as `GET /runs` does. |
-| `GET /runs` | Every agent's runs, newest first, a page of at most 100; `agent`, `revision` and `status` narrow it, `label=<key>:<value>` (`runlabels/1`, split at the first `:`, once per request) keeps the runs holding that label, and `archived=true` lists only archived ones. A failed run's summary carries its `error`, and a waiting run's its `pending`. |
+| `GET /runs` | Every agent's runs, newest first, a page of at most 100; `agent`, `revision` and `status` narrow it, `label=<key>:<value>` (`runlabels/1`, split at the first `:`, once per request) keeps the runs holding that label, `source=<name>` (`runsource/1`, once per request) keeps the runs imported from that source (its name as `imported_from.source` holds it: `claude-code`, `codex`, ...) and `source=live` the runs made here, not imported, and `archived=true` lists only archived ones. A failed run's summary carries its `error`, and a waiting run's its `pending`. |
 | `GET /runs/{id}` | The run: its revision, kind, status, state, result, error, `pending` (this server's own, `pending/1`: what a waiting run waits on, by `kind`: `{kind: "question", question, asked_at}` for a question it asked a person; `approval` for a tool call held for a person's approval, with the tool, its arguments and its price; `budget` for a run paused at its cap ([a run paused at its cap](#a-run-paused-at-its-cap)); `{kind: "browser", instruction, completion_condition, asked_at, expires_at}` for its agent's ask for the owner in its browser; or `{kind: "computer", computer: "desktop" \| "phone", instruction, completion_condition, asked_at, expires_at}` for its agent's ask for the owner on its desktop or phone; else null, a stopped turn's included) and cost (`basis` `reported`, `estimate` or `unpriced`, with its model requests' `tokens`: [A run's cost](#a-runs-cost-its-tokens-and-its-basis); $0 before its first model request, a cancelled run's included). |
 | `GET /runs/{id}/timeline` | JSON pages with the change-number cursor (`after`, `next_after`, `reset`, `drop`, `has_more`, `final`, `wait_ms` long poll, and this server's own `limit`, 1 to 500 rows a page, default 500), or server-sent events with `Accept: text/event-stream` (`id` is the cursor, `Last-Event-ID` resumes). Rows sort by `seq`; the usage row (`Cost so far`), the run's running total, is always the last row, and moves to the end when a row comes after it. Beside the rows, `in_flight`: what a live run waits on now, each model request sent and not answered (from its booking's `runner.request`, stamped `at` when it left) and each tool call not returned, from when it was sent; empty once the run is final. A request sent or answered is a change of the page, as a row is. |
 | `POST /runs/{id}/messages` | To an agentic run: `steer` while the agent works, `answer` when it asked the person, `follow_up` after a stop or after it completed: a completed run opens again, the same run on its own session and store, takes a place under `--max-runs` (it waits for one when none is free), and completes again. A failed or cancelled run, an archived run and a run of an archived agent are `409 not_continuable` (a run of an agent [being deleted](#deleting-an-agent-another-system-owns), `409 agent_not_runnable`); a workflow run takes none (`501`). |
@@ -3629,29 +3649,21 @@ serves these routes alone:
 
   The names route above is the listing: there is no list or read of a server's address, auth or tools here. The
   generic save (`PUT /settings/mcp-servers/{name}`) is a `404` unless the operator names the MCP origins it may save at,
-  so by default the token saves no server at an address or with headers of its own. The preview, refresh, sign-in, Composio tool listing and every other MCP settings route stay refused. On the full
-  server the token's `api_key_env` is `403`, as `api_key` is: the owner's session saves a Composio server there either
-  way;
-- a per_run MCP server's save at an origin the operator names, for a backend whose runs each bring their own
-  credential for a gateway it runs (such as a loopback forwarder): `AGENTRUN_API_ONLY_MCP_ORIGINS`, comma-separated
-  origins (`https://mcp.example.com`), a plain setting. With it, the token's `PUT /settings/mcp-servers/{name}` saves
-  `"auth": {"type": "per_run"}` at one of those origins, a new name or over a server the token saved that seals no
-  credential, and each run hands its own credential in `mcp_auth`. A body that sends a credential (a bearer token, or
-  headers with any other auth type) is `403`, as is a save over a server saved any other way or one that seals a
-  credential. A per_run body at any other origin, any other auth type, and a Composio server's name (its own route
-  saves it) are this profile's `404`. Each refusal comes before anything is sent to the address. The list is no secret
-  from the token: a save at a guessed origin answers whether it is listed (the `404`, or a save or a listing's failure
-  at that address), while capabilities (`switches`) say only whether the list is set, never its origins.
-  `AGENTRUN_MCP_ALLOW_LOOPBACK=1` is still needed for a loopback origin. Unset or blank, the save is a `404` as before;
-  an entry that is not an http or https origin alone, a wildcard, or plain http to a host other than a loopback one
-  (127.0.0.1, ::1, localhost), stops the start, naming the entry by its place. The list holds past
-  the save: drop an origin and restart, and a per_run server the token saved there is refused at a run's start, at
-  an agent's save and at the next call of a run already going, and nothing is sent to it. Unset, the list is empty, so
-  a per_run server the token saved with API-only off is refused until its origin is listed: list it before upgrading,
-  or re-save it from the owner's signed-in session with API-only off, which makes it the owner's and leaves the save
-  closed. The start logs one line (`api_only_mcp_off_list`) with the count and names of the servers off the list,
-  never their addresses, and nothing when there are none. A server saved from the owner's signed-in session (which an
-  API-only server doesn't serve) is the owner's, whenever it was saved, and the list does not govern it;
+  so by default the token saves no server at an address or with headers of its own. The preview, refresh, sign-in,
+  Composio tool listing and every other MCP settings route stay refused. On the full server the token's `api_key_env`
+  is `403`, as `api_key` is: the owner's session saves a Composio server there either way;
+- a per_run MCP server's save at an origin the operator names: `AGENTRUN_API_ONLY_MCP_ORIGINS`, comma-separated
+  http(s) origins (`https://mcp.example.com`), a plain setting. With it, the token's `PUT /settings/mcp-servers/{name}`
+  saves `"auth": {"type": "per_run"}` at a listed origin, and each run hands its own credential in `mcp_auth`. A body
+  that carries a credential, or a save over a server the token did not save or one that seals a credential, is `403`;
+  any other origin or auth type, or a Composio server's name, is `404`. A wildcard, an entry that is not an http(s)
+  origin alone, or plain http to a host other than a loopback one (127.0.0.1, ::1, localhost) stops the start, and a
+  loopback origin also needs `AGENTRUN_MCP_ALLOW_LOOPBACK=1`. The list holds past
+  the save: a per_run server the token saved at an origin not listed is refused, and nothing is sent to it. Unset, the
+  list is empty, so on an upgrade list each such server's origin first, or re-save it from the owner's signed-in
+  session with API-only off; the start names the servers off the list in one log line (`api_only_mcp_off_list`), never
+  their addresses. A server the owner's session saved is not governed by the list, and its runs' `mcp_auth` still
+  goes there;
 - a run's desktop or phone, for a backend that shows its user the live view and lets them take over: see below.
 
 Here a run's computer routes take the server's token. `POST /runs/{id}/computer/viewer` mints a 5-minute link on
