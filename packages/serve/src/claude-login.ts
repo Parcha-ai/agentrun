@@ -626,6 +626,22 @@ export async function claudeLoginView(deps: ClaudeLoginDeps): Promise<ClaudeLogi
   }
 }
 
+/** What AgentRun's own login folder (`<data>/claude-login`) leads to where it is a link (the link's text); else
+ *  undefined, a folder or nothing there. */
+function loginFolderLink(data: string): string | undefined {
+  const dir = agentRunLoginDir(data);
+  try {
+    return lstatSync(dir, { throwIfNoEntry: false })?.isSymbolicLink() ? readlinkSync(dir) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Why a turn-on is refused where AgentRun's own login folder (`dir`) is a link (to `to`). A sign-out removes that folder
+ *  whole, so it is one AgentRun keeps itself, and no link leads a sign-out into a folder elsewhere. */
+export const loginFolderIsLink = (dir: string, to: string): string =>
+  `AgentRun's own Claude login folder ${dir} is a link (to ${to}). AgentRun keeps its login in a folder of its own, which a sign-out removes whole, so it never follows a link there: remove the link, then turn it on again.`;
+
 /** PUT /settings/claude-login: turned on, refused in one line where more than one person can start runs. A turn-on that
  *  moves the login to another place first ends a sign-in this server started that still waits: its CLI signs in at the
  *  old place, which the login no longer reads. One at the same place leaves it waiting, as it still signs in there. */
@@ -656,6 +672,8 @@ export async function turnOnClaudeLogin(deps: ClaudeLoginDeps, body: unknown): P
       if (refused) throw new ClaudeLoginRefused("forbidden", refused);
       const at = loginAt(asked.place, deps.data, deps.env, deps.uid);
       if (at.refused !== undefined) throw new ClaudeLoginRefused("forbidden", at.refused);
+      const linked = asked.place === "agentrun" ? loginFolderLink(deps.data) : undefined;
+      if (linked !== undefined) throw new ClaudeLoginRefused("forbidden", loginFolderIsLink(agentRunLoginDir(deps.data), linked));
       // Its folders still to make are made here (madeLogin), so a sign-in from the line shown finds them made 0700.
       const login = madeLogin(at, asked.place, deps);
       const setting = settingFor(asked.place, deps.data);
@@ -707,6 +725,8 @@ export type ClaudeLoginSignOut = { confirmed: boolean; message?: string; login: 
  *  the CLI's older lock beside it), with the login's signed-in note (noteAnswer) and this process's token reader of it
  *  (claude-login-token.ts forgetLoginTokens). Each removal stands alone: one that fails is named in the answer
  *  (signOutLeft, `confirmed` false), and the others, the reader's drop and the server's reread of the keys still happen.
+ *  Where the folder is a link (put there after the turn-on, which refuses one), the link alone is removed: no CLI runs
+ *  through it, nothing it leads to is touched, and the answer names it.
  *  Runs already going are left as a turn-off leaves them: each keeps the token its CLI holds, and fails in
  *  LOGIN_SIGNED_OUT's words at its next read of the login; one claimed on it and not yet started is refused at its start
  *  (claude-login-token.ts LOGIN_CHANGED_SINCE_CLAIM). A login on this machine's own folder (`machine`) is the person's:
@@ -730,8 +750,17 @@ export async function signOutClaudeLogin(deps: ClaudeLoginDeps): Promise<ClaudeL
       deps.saved(undefined);
       off = true;
       const dir = agentRunLoginDir(deps.data);
-      if (!existsSync(dir)) return;
+      const linked = loginFolderLink(deps.data);
+      if (linked === undefined && !existsSync(dir)) return;
       try {
+        if (linked !== undefined) {
+          // A link put there after the turn-on (which refuses one, loginFolderIsLink): the link alone goes, no CLI runs
+          // through it, and nothing it leads to is touched.
+          signedOut = false;
+          remove("the link", dir, { force: true });
+          left.push(`${linked}, where the link ${dir} led, left as it was`);
+          return;
+        }
         const { login } = loginAt("agentrun", deps.data, deps.env, deps.uid);
         const cli = loginCli(await deps.pinned(), deps.env);
         signedOut = login && cli ? await (await deps.claude()).claudeLogout(cli, login, pathOf(deps.env)) : false;
