@@ -90,6 +90,7 @@ import { answerAsServed } from "../answer-json.js";
 import type { ClaimMcp } from "./mcp-run.js";
 import { type RequestFigures, reserveFor, stepAndAnswerFor, wrappingUp, wrapUpText } from "../wrap-up.js";
 import { LEARNED_CARD_FIELDS, LEARNED_CLIP, LEARNED_WORKFLOW_TOOL, learnedApprovedTools } from "../learned-workflow.js";
+import { LEARNED_NODES } from "../learned-nodes.js";
 import { warnHoldShort } from "../print.js";
 import { type FeedbackData, feedbackAsk, feedbackOf, jobEndOpen, pendingFeedbackOf } from "./feedback-round.js";
 import { handbackText, servedAnswerOf, servedAnswerText, WORKFLOW_FIRST, WORKFLOW_FIRST_CALL, type WorkflowFirst, type WorkflowFirstData, type WorkflowRevise } from "./workflow-first.js";
@@ -2996,6 +2997,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             else await rec.person(spec.input);
           }
           let answer: { text: string; isError: boolean };
+          // Refused at its gate, on this claim or the one before: it ran nothing.
+          let refused = ended?.status === "refused";
           if (ended) answer = recorded(ended);
           else {
             const verdict = await preIntentGate(spec, hooks, wrapUpRefusal, (asked) => rec.park(asked.callId, asked.tool, asked.args ?? {}, false))(call, context);
@@ -3006,6 +3009,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               if (rec.unsentParked().includes(WORKFLOW_FIRST_CALL)) await rec.end(WORKFLOW_FIRST_CALL, "refused", verdict.deny);
               else await rec.refused(WORKFLOW_FIRST_CALL, LEARNED_WORKFLOW_TOOL, args, false, verdict.deny);
               answer = { text: verdict.deny, isError: true };
+              refused = true;
             } else {
               // A CLI's record takes the call's start and end inside the wrapper; pi's step record here.
               if (!record) await rec.start(WORKFLOW_FIRST_CALL, LEARNED_WORKFLOW_TOOL, args, false);
@@ -3018,8 +3022,12 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           answer = taken(answer);
           const outcome = answer.isError ? "handed_back" : "answered";
           const data: WorkflowFirstData = { workflow: first.name, digest: first.digest, ...(first.promotion !== undefined ? { promotion: first.promotion } : {}), revision: first.revision, call: WORKFLOW_FIRST_CALL, outcome };
+          // A call refused at its gate keeps its record as one the tool refused does (learned-nodes.ts LEARNED_NODES
+          // `refused`): no workflow ran it, so the money rule charges none and the run names none.
+          const refusal = refused ? { call: WORKFLOW_FIRST_CALL, workflow: first.name, digest: first.digest, caller: "platform", nodes: [], ended: "failed", refused: true } : undefined;
           await on.commit(async (tx) => {
             if (outcome === "answered") await tx.appendEntry(theRoot.id, { kind: KINDS.message, data: { role: "model", text: answer.text, at: now() } as unknown as JsonValue });
+            if (refusal) await tx.appendEntry(theRoot.id, { kind: LEARNED_NODES, data: refusal as unknown as JsonValue });
             await tx.appendEntry(theRoot.id, { kind: WORKFLOW_FIRST, data: data as unknown as JsonValue });
           }, context);
           return outcome === "answered" ? { outcome, text: answer.text } : job(answer.text);
