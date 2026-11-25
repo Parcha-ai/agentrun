@@ -400,8 +400,10 @@ notes, its grades and audits, and in every version of each workflow, each file i
 person's edit of that text with it; a file it deleted there again), so a later run's copy of its bytes goes too and a
 later run's own change of a file stays. A person's retire, and a person's restore, of a version that held its text
 stays on the version that comes back, so the owner's newest decision stands; a person's approve does not (it approved
-the run's text, and the text that comes back is one the owner never approved). The promotion and audit records of each
-digest no version holds after go. Its saves stay as facts with no words (their merge keys still taken), and so does a
+the run's text, and the text that comes back is one the owner never approved: it comes back held, and its owner
+approves it again). The promotion and audit records of each digest no version holds after go, and so do the run's own
+records (its grades, a failed draft's hold); every other promotion's copies of the run (a check's or an audit's
+disagreement naming it) are blanked, its decision, numbers and run ids kept. Its saves stay as facts with no words (their merge keys still taken), and so does a
 person's save left with no item. No other save, a run's or a person's, names a path only it wrote (no version holds it
 after) in its files, its file or its reason, nor a workflow gone with it in its reason.
 
@@ -413,17 +415,24 @@ plus one, in the purge's transaction and under the agent's learning lock, as eve
 - a run's merge read at a save before the purge (its seed, or the save its compile turn read a workflow at) is refused
   whole, nothing written, its learning dropped `purged_since_seed`. The purge rewrote what that run started from in
   place, so a file it gives back unchanged from its seed can't be told apart from the purged run's bytes. Purges are
-  rare; losing such a run's learning is the safe side. A run seeded after the purge merges as ever;
+  rare; losing such a run's learning is the safe side. A run seeded after the purge merges as ever, and so does a merge
+  that gives no file (an owner's correction alone: its line is the owner's new words, appended to the newest
+  corrections.md, and copies nothing from the seed);
 - every promotion and audit record write checks, in its own transaction (under the agent's records lock, which the purge
   takes before it changes a version), that a version of its workflow still holds its digest, and every record write
   that its run is not purged; if not, it writes nothing (`LearningRecordRefused`; a promotion's write is not won). A
-  failed draft's record, whose digest is its run's and is held by no version, is the one exception. A grade checks its
+  failed draft's record, whose digest is its run's and is held by no version, is the one exception to the digest check;
+  it is written as its run's, so it goes with its run's purge and a write after that purge writes nothing. A promotion
+  written is kept with each purged run's copies blanked and with its `commit` a save that holds its digest. A grade checks its
   run alone, never its digest: the purge keeps a live run's grade whatever revision served it, so a later grade of that
   run is kept the same way;
 - a promotion the purge keeps (another run's version holds its digest) is moved to the save of the newest version that
   holds it when the save it named holds it no more: a shared champion goes on serving;
 - a reader that reads a text and its writer apart (an SDK start's workflows and the runs its receipt names) reads both
-  again when the newest save moved between them, so it never delivers the purged run's text as no run's.
+  again when a purge save landed between them (a normal save rewrites nothing it read), so it never delivers the purged
+  run's text as no run's;
+- an SDK run's inbox keeps the workflows its start delivered: a run's DELETE empties every inbox whose writers name it,
+  after its purge commits, and a start checks its writers after its inbox is written, so none keeps the purged text.
 
 A purge that finds nothing of the run's (a run that learned nothing, a second purge) changes no row and adds no save.
 An agent's reset, its delete and its purge take the agent's learning lock and then its records lock, the order a run's
