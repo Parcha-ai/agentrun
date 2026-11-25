@@ -81,6 +81,13 @@ describe("ShareView over the golden bundle", () => {
     expect(host.querySelector("header p.font-mono .redaction")?.textContent).toBe("[redacted:email]");
   });
 
+  it("draws markers as chips in a failed run's error and in a JSON output, as everywhere else", () => {
+    const failed = { ...bundle, run: { ...bundle.run, status: "failed", error: { code: "run_failed", message: "Could not mail [redacted:email]" }, result: { output: { contact: "[redacted:email]", count: 2 } } } } as ShareBundle;
+    const { host } = mount({ bundle: failed });
+    const chips = [...host.querySelector('[role="tabpanel"]')!.querySelectorAll(".redaction")].map((c) => c.textContent);
+    expect(chips).toEqual(["[redacted:email]", "[redacted:email]"]);
+  });
+
   it("lists the cuts by kind with their counts; a restore switch for each label or personal cut and for no other", () => {
     const { host } = mount();
     const panel = host.querySelector<HTMLElement>('[aria-label="Cuts"]')!;
