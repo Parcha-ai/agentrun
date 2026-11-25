@@ -113,12 +113,13 @@ const SECRET_NAME = /(?:^|_)(?:KEY|TOKEN|SECRET|PASSWORD)$/i;
  *  the environment once handed over, so a scan of process.env alone sees none of them), and beside it the key a person
  *  saved under that name on the server `stored` reads for (a run that names its tool is handed it), and the value of
  *  every other key, token, secret or password `env` names, and each OTLP header value (otlpHeaderValues). One shorter
- *  than the checker's MIN_SECRET, whitespace aside, matches too much text by chance to be refused, and is left out. */
+ *  than the checker's MIN_SECRET, whitespace aside, matches too much text by chance to be refused, and is left out, but
+ *  an OTLP header value, held at any length (keptSecrets). */
 export const hostSecrets = (env: NodeJS.ProcessEnv, stored?: StoredKeys): string[] => {
   // AGENTRUN_TOKENS's each secret too, not only the list whole (api-token.ts secretValues).
-  const held = [...SECRET_NAMES.flatMap((name) => [...secretValues(name, secret(name) ?? ""), stored?.(name) ?? ""]), ...mcpSecretValues(mcpCredentials()), ...otlpHeaderValues(env), ...sealKeys.keys(), ...heldTokens];
+  const held = [...SECRET_NAMES.flatMap((name) => [...secretValues(name, secret(name) ?? ""), stored?.(name) ?? ""]), ...mcpSecretValues(mcpCredentials()), ...sealKeys.keys(), ...heldTokens];
   const named = Object.entries(env).filter(([name]) => SECRET_NAME.test(name) && !SECRET_NAMES.includes(name)).map(([, value]) => value ?? "");
-  return [...new Set([...held, ...named])].filter((value) => value.replace(/\s+/g, "").length >= MIN_SECRET);
+  return keptSecrets([...held, ...named], env);
 };
 
 /** The seal keys this process's open stores were booted with (seal-key.ts bootSealKey), by how many hold each: several
@@ -238,13 +239,30 @@ export function mcpCredentials(): Record<string, { url: string; headers?: Record
   }
 }
 
+/** The OTLP header names whose value is not held (otlpHeaderValues), matched in any case: the standard headers that say
+ *  how a body is sent, which carry no key. Every other header's value is held, an unknown name's too: a name not on this
+ *  list never means its value is safe. */
+export const OTLP_PLAIN_HEADERS: readonly string[] = ["content-type", "accept", "content-encoding", "user-agent"];
+
 /** The OTLP exporter's header values `env` names (OTEL_EXPORTER_OTLP_HEADERS and OTEL_EXPORTER_OTLP_TRACES_HEADERS: a
- *  tracing backend's key is one): each as sent and as written (percent-encoded), and a `Bearer` one's token alone. */
+ *  tracing backend's key is one), each held at any length, but those of a header OTLP_PLAIN_HEADERS names: each as sent
+ *  and as written (percent-encoded), and a `Bearer` one's token alone. A part whose name can't be decoded is held. */
 export const otlpHeaderValues = (env: NodeJS.ProcessEnv): string[] =>
-  [env.OTEL_EXPORTER_OTLP_HEADERS, env.OTEL_EXPORTER_OTLP_TRACES_HEADERS].flatMap((text) => {
-    const written = (text ?? "").split(",").flatMap((part) => (part.indexOf("=") > 0 ? [part.slice(part.indexOf("=") + 1).trim()] : []));
-    return [...Object.values(keyValues(text)), ...written].flatMap((value) => [value, value.replace(/^Bearer(?:\s+|%20)/i, "")]);
-  });
+  [env.OTEL_EXPORTER_OTLP_HEADERS, env.OTEL_EXPORTER_OTLP_TRACES_HEADERS].flatMap((text) =>
+    (text ?? "").split(",").flatMap((part) => {
+      const at = part.indexOf("=");
+      if (at <= 0) return [];
+      const [sent] = Object.entries(keyValues(part));
+      if (sent && OTLP_PLAIN_HEADERS.includes(sent[0].toLowerCase())) return [];
+      return [...(sent ? [sent[1]] : []), part.slice(at + 1).trim()].flatMap((value) => [value, value.replace(/^Bearer(?:\s+|%20)/i, "")]);
+    })).filter((value) => value.trim() !== "");
+
+/** `values` as a cut holds them: each MIN_SECRET long or more, whitespace aside (a shorter one matches too much text by
+ *  chance to be refused), and every OTLP header value `env` names (otlpHeaderValues) at any length. */
+export const keptSecrets = (values: readonly string[], env: NodeJS.ProcessEnv): string[] => {
+  const headers = new Set(otlpHeaderValues(env));
+  return [...new Set([...values, ...headers])].filter((value) => headers.has(value) || value.replace(/\s+/g, "").length >= MIN_SECRET);
+};
 
 /** Every header value of `credentials`: what a secret scan refuses. */
 export const mcpSecretValues = (credentials: Record<string, { headers?: Record<string, string> }>): string[] =>

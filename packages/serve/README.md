@@ -264,8 +264,10 @@ not on chat spans yet: the usage a run's requests are booked with does not count
 receive these settings: no `OTEL_*` variable reaches a run's harness, tools or computer, and a run in a process of its
 own (under `agentrun-serve runner`) sends its trace to its runner, which exports it. The runner reads what that process
 sends as untrusted: every string is cut as a name the model wrote, a provider or host that loses its shape is dropped,
-and a request's or turn's end takes only a value the runner knows. Each OTLP header value is a secret
-the runner holds, cut from its logs and from what a run writes. Spans are sent in the background, so a run's end never waits on
+and a request's or turn's end takes only a value the runner knows. Every OTLP header value is a secret
+the runner holds, at any length and under any name, an unknown one too, but the value of a `Content-Type`, `Accept`,
+`Content-Encoding` or `User-Agent` header. It is cut from the runner's logs and from what a run writes, as every held
+value of 8 characters or more is. Spans are sent in the background, so a run's end never waits on
 the collector; a server or runner that stops waits at most 3 s to send what is left, and a collector that is down
 costs one log line and the dropped spans. Unset, or with `OTEL_SDK_DISABLED=true`, no OpenTelemetry code loads and
 nothing is sent.
