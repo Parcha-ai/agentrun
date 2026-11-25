@@ -570,6 +570,7 @@ __all__ = [
     "GetTemplateResponseTemplateComputerHereComputer",
     "GetTemplateResponseTemplateMcpItem",
     "GetTemplateResponseTemplateMcpItemToolsItem",
+    "GetTemplateResponseTemplateMcpItemToolsItemFile",
     "GetTemplateResponseTemplateMcpItemToolsItemPinValue",
     "GetTemplateResponseTemplateModel",
     "GetTemplateResponseTemplateModelChoicesItem",
@@ -669,6 +670,7 @@ __all__ = [
     "ImportTemplateResponseTemplateComputerHereComputer",
     "ImportTemplateResponseTemplateMcpItem",
     "ImportTemplateResponseTemplateMcpItemToolsItem",
+    "ImportTemplateResponseTemplateMcpItemToolsItemFile",
     "ImportTemplateResponseTemplateMcpItemToolsItemPinValue",
     "ImportTemplateResponseTemplateModel",
     "ImportTemplateResponseTemplateModelChoicesItem",
@@ -820,6 +822,7 @@ __all__ = [
     "ListTemplatesResponseTemplatesItemComputerHereComputer",
     "ListTemplatesResponseTemplatesItemMcpItem",
     "ListTemplatesResponseTemplatesItemMcpItemToolsItem",
+    "ListTemplatesResponseTemplatesItemMcpItemToolsItemFile",
     "ListTemplatesResponseTemplatesItemMcpItemToolsItemPinValue",
     "ListTemplatesResponseTemplatesItemModel",
     "ListTemplatesResponseTemplatesItemModelChoicesItem",
@@ -1181,6 +1184,11 @@ __all__ = [
     "SetSourceSyncResponseToolConnectionsItemCandidatesItem",
     "SignIn",
     "SignOutChatGPTResponse",
+    "SignOutClaudeLoginResponse",
+    "SignOutClaudeLoginResponseLogin",
+    "SignOutClaudeLoginResponseLoginAccount",
+    "SignOutClaudeLoginResponseLoginMachine",
+    "SignOutClaudeLoginResponseLoginSignIn",
     "SkillFileInfo",
     "SkillFiles",
     "SlackResource",
@@ -6744,6 +6752,59 @@ class SignOutChatGPTResponse(_SignOutChatGPTResponseRequired, total=False):
     message: str
 
 
+class _SignOutClaudeLoginResponseRequired(TypedDict):
+    confirmed: bool
+    login: SignOutClaudeLoginResponseLogin
+
+
+class SignOutClaudeLoginResponse(_SignOutClaudeLoginResponseRequired, total=False):
+    message: str
+
+
+class _SignOutClaudeLoginResponseLoginRequired(TypedDict):
+    state: Literal["off", "other_machine", "refused", "signed_in", "signed_out", "no_cli", "unknown"]
+    place: Literal["agentrun", "machine"]
+    command: str
+    can_start: bool
+    folder: str
+    machine: SignOutClaudeLoginResponseLoginMachine
+
+
+class SignOutClaudeLoginResponseLogin(_SignOutClaudeLoginResponseLoginRequired, total=False):
+    refused: str
+    account: SignOutClaudeLoginResponseLoginAccount
+    sign_in: SignOutClaudeLoginResponseLoginSignIn
+
+
+class SignOutClaudeLoginResponseLoginAccount(TypedDict, total=False):
+    method: str
+    email: str
+    organization: str
+    plan: str
+
+
+class _SignOutClaudeLoginResponseLoginMachineRequired(TypedDict):
+    folder: str
+    source: Literal["CLAUDE_CONFIG_DIR", "default"]
+
+
+class SignOutClaudeLoginResponseLoginMachine(_SignOutClaudeLoginResponseLoginMachineRequired, total=False):
+    credentials: str
+
+
+class _SignOutClaudeLoginResponseLoginSignInRequired(TypedDict):
+    state: Literal["waiting", "signed_in", "timed_out", "failed", "not_started"]
+    started_at: str
+    limit_ms: int
+
+
+class SignOutClaudeLoginResponseLoginSignIn(_SignOutClaudeLoginResponseLoginSignInRequired, total=False):
+    ended_at: str
+    exit_code: int
+    signal: str
+    error: str
+
+
 class StartChatGPTSignInResponse(TypedDict):
     authorize_url: str
     expires_at: str
@@ -9548,10 +9609,16 @@ class _GetTemplateResponseTemplateMcpItemToolsItemRequired(TypedDict):
 
 class GetTemplateResponseTemplateMcpItemToolsItem(_GetTemplateResponseTemplateMcpItemToolsItemRequired, total=False):
     pin: dict[str, str | float | bool | None | list[str | float | bool | None] | GetTemplateResponseTemplateMcpItemToolsItemPinValue]
+    file: GetTemplateResponseTemplateMcpItemToolsItemFile
 
 
 class GetTemplateResponseTemplateMcpItemToolsItemPinValue(TypedDict):
     keys: list[str]
+
+
+class GetTemplateResponseTemplateMcpItemToolsItemFile(TypedDict):
+    folder: str
+    show: list[str]
 
 
 class _GetTemplateResponseTemplateBudgetRequired(TypedDict):
@@ -9694,10 +9761,16 @@ class _ImportTemplateResponseTemplateMcpItemToolsItemRequired(TypedDict):
 
 class ImportTemplateResponseTemplateMcpItemToolsItem(_ImportTemplateResponseTemplateMcpItemToolsItemRequired, total=False):
     pin: dict[str, str | float | bool | None | list[str | float | bool | None] | ImportTemplateResponseTemplateMcpItemToolsItemPinValue]
+    file: ImportTemplateResponseTemplateMcpItemToolsItemFile
 
 
 class ImportTemplateResponseTemplateMcpItemToolsItemPinValue(TypedDict):
     keys: list[str]
+
+
+class ImportTemplateResponseTemplateMcpItemToolsItemFile(TypedDict):
+    folder: str
+    show: list[str]
 
 
 class _ImportTemplateResponseTemplateBudgetRequired(TypedDict):
@@ -9821,10 +9894,16 @@ class _ListTemplatesResponseTemplatesItemMcpItemToolsItemRequired(TypedDict):
 
 class ListTemplatesResponseTemplatesItemMcpItemToolsItem(_ListTemplatesResponseTemplatesItemMcpItemToolsItemRequired, total=False):
     pin: dict[str, str | float | bool | None | list[str | float | bool | None] | ListTemplatesResponseTemplatesItemMcpItemToolsItemPinValue]
+    file: ListTemplatesResponseTemplatesItemMcpItemToolsItemFile
 
 
 class ListTemplatesResponseTemplatesItemMcpItemToolsItemPinValue(TypedDict):
     keys: list[str]
+
+
+class ListTemplatesResponseTemplatesItemMcpItemToolsItemFile(TypedDict):
+    folder: str
+    show: list[str]
 
 
 class _ListTemplatesResponseTemplatesItemBudgetRequired(TypedDict):
@@ -12110,6 +12189,7 @@ OPERATIONS: dict[str, Operation] = {
     "saveModelGateway": Operation(method="PUT", path="/settings/model-gateway", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=("base_url", "ids", "models.default", "models.fast", "models.strong"), tagged=False),
     "scanForSuggestions": Operation(method="POST", path="/suggestions/scans", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "signOutChatGPT": Operation(method="DELETE", path="/settings/chatgpt", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "signOutClaudeLogin": Operation(method="POST", path="/settings/claude-login/sign-out", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "startChatGPTSignIn": Operation(method="POST", path="/settings/chatgpt/sign-in", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "startClaudeLogin": Operation(method="POST", path="/settings/claude-login/login", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "startMcpOAuth": Operation(method="POST", path="/settings/mcp-servers/{name}/oauth/start", path_params=("name",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=("url", "scopes.[]", "client_id"), tagged=False),
@@ -12698,6 +12778,10 @@ class LocalResource(Group):
     def sign_out_chat_gpt(self, *, timeout: float | None = None) -> SignOutChatGPTResponse:
         """Sign out of ChatGPT: the session revoked at OpenAI, then forgotten here (DELETE /settings/chatgpt)."""
         return self._call("signOutChatGPT", (), None, None, timeout=timeout)
+
+    def sign_out_claude_login(self, *, timeout: float | None = None) -> SignOutClaudeLoginResponse:
+        """Sign out of Claude Code's login on this machine: AgentRun's own login removed, the mode off (POST /settings/claude-login/sign-out)."""
+        return self._call("signOutClaudeLogin", (), None, None, timeout=timeout)
 
     def start_chat_gptsign_in(self, *, timeout: float | None = None) -> StartChatGPTSignInResponse:
         """Start signing in with ChatGPT: the link to open (POST /settings/chatgpt/sign-in)."""

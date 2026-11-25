@@ -157,7 +157,7 @@ import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from 
 import { isSecretWriteOperation, type SecretRequest, secretPageFor, secretsWritableFields, secretWriteRefusal, secretWriterFacts, writesSecretFor, writesSecretsAllowed } from "./secret-writes.js";
 import { ChatGPTPlan, planOf, PlanSignInRefused, SIGN_OUT_UNCONFIRMED, withPlan } from "./chatgpt-plan.js";
 import { modelGatewayRoute, readSavedGateway, type SavedGateway, withSavedGateway } from "./model-gateway.js";
-import { CLAUDE_LOGIN_ROUTES, LOGIN_REFUSES_API_KEYS, oneOwnerDeps, ClaudeLoginRefused, claudeLoginOf, claudeLoginRouteOff, claudeLoginServed, claudeLoginSwitchedOff, claudeLoginSetting, claudeLoginView, type ClaudeLoginDeps, dropRefusedLogin, envAtPlace, LOGIN_HARNESS, loginOf, loginOnRunnerOnly, loopback, startLoginHere, turnOffClaudeLogin, turnOnClaudeLogin, withClaudeLogin } from "./claude-login.js";
+import { CLAUDE_LOGIN_ROUTES, LOGIN_REFUSES_API_KEYS, oneOwnerDeps, ClaudeLoginRefused, claudeLoginOf, claudeLoginRouteOff, claudeLoginServed, claudeLoginSwitchedOff, claudeLoginSetting, claudeLoginView, type ClaudeLoginDeps, dropRefusedLogin, envAtPlace, LOGIN_HARNESS, loginOf, loginOnRunnerOnly, loopback, signOutClaudeLogin, startLoginHere, turnOffClaudeLogin, turnOnClaudeLogin, withClaudeLogin } from "./claude-login.js";
 import { ClaudeSignIns } from "./claude-sign-in.js";
 import { bootSealKey, parametersDigest, withSealKey } from "./seal-key.js";
 import { ServerLockHeldError, takeServerLock } from "./server-lock.js";
@@ -841,6 +841,7 @@ export const ROUTES: readonly Route[] = [
   { method: "PUT", pattern: /^\/settings\/claude-login$/, name: "turnOnClaudeLogin" },
   { method: "DELETE", pattern: /^\/settings\/claude-login$/, name: "turnOffClaudeLogin" },
   { method: "POST", pattern: /^\/settings\/claude-login\/login$/, name: "startClaudeLogin" },
+  { method: "POST", pattern: /^\/settings\/claude-login\/sign-out$/, name: "signOutClaudeLogin" },
   // The model gateway saved in the console (model-gateway.ts): its save, removal and test the owner's session's alone.
   { method: "GET", pattern: /^\/settings\/model-gateway$/, name: "getModelGateway" },
   { method: "PUT", pattern: /^\/settings\/model-gateway$/, name: "saveModelGateway" },
@@ -1357,8 +1358,9 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   // One server per data root: the store's owner lock (StoreOwned), then the data root's own (server-lock.ts), both taken
   // when startHolding opens the store; a data directory an earlier version wrote is refused there too
   // (StoreFromEarlierVersion), in words, to start fresh. No oldHomes/oldLayout checks, no migration.
-  // What a start that fails stops: the webhook deliveries it began, which would write the next server's outbox, and the
-  // store handle it opened.
+  // What a start that fails stops: first the timers it set (each put at the front, so none ticks on a closing store), then
+  // the rest in the order they began: the store handle it opened, its locks, and the webhook deliveries it began, which
+  // would write the next server's outbox.
   const stops: Array<() => Promise<void>> = [];
   try {
     return await startHolding(options, data, { maxRuns, minFreeBytes, learning, boxAllow, templates, ollamaHost }, stops);
@@ -1521,10 +1523,24 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // not (its runners on other hosts, AGENTRUN_RUNNER_HOSTS), so the tick runs on both. It does nothing while no computer
   // is paired; with a runner beside it, nothing past its one read of the routes while no route row is there and no box
   // is relayed (computer-attach.ts tick).
+  // The ticks still running, so a failed start and close() wait them out before the store closes.
+  const routeTicks = new Set<Promise<void>>();
   const routeTick = options.apiOnly !== true
-    ? setInterval(() => void attach.tick().catch((error: unknown) => attachLog("computer_route_tick_failed", { error: error instanceof Error ? error.message : String(error) })), PAIRED_ROUTE_MS)
+    ? setInterval(() => {
+      const ticked: Promise<void> = attach.tick()
+        .catch((error: unknown) => attachLog("computer_route_tick_failed", { error: error instanceof Error ? error.message : String(error) }))
+        .finally(() => void routeTicks.delete(ticked));
+      routeTicks.add(ticked);
+    }, PAIRED_ROUTE_MS)
     : undefined;
   routeTick?.unref();
+  // A start that fails after this point clears it as the close does. Each timer's stop goes first (unshift), ahead of
+  // the store's close: a failed start stops its timers and waits out their ticks and sweeps, then closes the store, so
+  // no tick or sweep ever reads a store that is closing.
+  stops.unshift(async () => {
+    clearInterval(routeTick);
+    await Promise.all(routeTicks);
+  });
   // This server's own key on every environment it reads its secrets from, so a reader opens what this store holds with the
   // key checked against it, never another data directory's that this process booted too (secrets.ts holds one made key).
   const own = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => withSealKey(env, seal.text);
@@ -2246,7 +2262,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     };
     const uploadsTimer = setInterval(sweepUploads, UPLOAD_SWEEP_EVERY_MS);
     uploadsTimer.unref();
-    stops.push(async () => {
+    stops.unshift(async () => {
       clearInterval(uploadsTimer);
       await sweeping;
     });
@@ -2319,6 +2335,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   };
   const refusedTimer = setInterval(() => void sweepRefused(), REFUSED_SWEEP_MS);
   refusedTimer.unref();
+  stops.unshift(async () => {
+    refusedStopped = true;
+    clearInterval(refusedTimer);
+    await refusedSweep;
+  });
   // The runner beside this server, when its run isolation was refused (cli.ts): its word, kept in this store until the stop.
   let refusedBeside: Presence | undefined;
   const sourceWorkspaces = { data, sealKey, env: withSecrets(process.env, "own"), ...(options.archilControl ? { control: options.archilControl } : {}) };
@@ -2366,6 +2387,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   };
   const localSourceTimer = setInterval(() => void sweepLocalSources(), 30_000);
   localSourceTimer.unref();
+  // As close() does: aborted first, so a sync in flight stops instead of being waited out.
+  stops.unshift(async () => {
+    stopping.abort();
+    clearInterval(localSourceTimer);
+    await localSourceSweep;
+  });
   const startDeps: StartDeps = {
     project: { ...sourceProjects, place: async given => {
       try { return await sourceProjects.place(given); }
@@ -6216,6 +6243,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const { revoked } = await plan.signOut();
         return send(res, 200, revoked ? { revoked } : { revoked, message: SIGN_OUT_UNCONFIRMED });
       }
+      // Its sign-out (claude-login.ts signOutClaudeLogin): AgentRun's own login removed, the mode off; this machine's own
+      // login refused in words.
+      case "signOutClaudeLogin":
+        try {
+          return send(res, 200, await signOutClaudeLogin(loginDeps()), { "cache-control": "no-store" });
+        } catch (error) {
+          if (error instanceof ClaudeLoginRefused) throw new ApiError(error.code, error.message);
+          throw error;
+        }
       // Claude Code's login on this machine (claude-login.ts): only its status is read, by asking the CLI.
       case "getClaudeLogin":
       case "turnOnClaudeLogin":
@@ -7332,6 +7368,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // An upgraded socket is no connection closeAllConnections ends, and server.close waits for it.
     viewers.close();
     clearInterval(routeTick);
+    // A tick already running reads the store: waited out here, before the store closes below.
+    await Promise.all(routeTicks);
     await attach.close();
     await new Promise((done) => (server.close(done), server.closeAllConnections()));
     // No request is left to use a key: its last-use writes end before the store they write to closes.
