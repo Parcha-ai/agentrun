@@ -36,7 +36,7 @@ export function McpToolPicker({ servers, tools, harness, harnesses, filter, onCh
     </div>
   );
   if (!servers) return granted.length ? <p className="mt-3 font-mono text-small text-muted-foreground">Reading the MCP servers...</p> : null;
-  if (!servers.length && !staleGrants(tools, servers).length) return <p className="mt-3 text-small text-muted-foreground">No MCP server is saved: add one in Settings → MCP servers to grant its tools.</p>;
+  if (!servers.length && !staleGrants(tools, servers).length) return <p className="mt-3 text-small text-muted-foreground">No MCP server is saved: add one in <a href="#/settings/mcp" className="underline underline-offset-2">Settings → MCP servers</a> to grant its tools.</p>;
   return (
     <div className="mt-4 space-y-4">
       {notHere}
