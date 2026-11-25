@@ -751,6 +751,30 @@ test("the capabilities say whether this server has a public address Composio can
   assert.ok(!JSON.stringify(caps).includes("agentrun.example.com"), "the address itself is not answered");
 });
 
+test("a saved Composio server's own routes send Composio no user: its events, its triggers, the subscription's rotate and delete, and the server's delete in the project's turn each ask by the key alone", async (t) => {
+  const s = await setup(t);
+  // What each route asked Composio, apart from the trigger's own create and delete, which send the server's user.
+  const routed = [];
+  const route = async (step, ...args) => {
+    const from = s.composio.calls.length;
+    const res = await s.api(...args);
+    routed.push(...s.composio.calls.slice(from).map((call) => ({ step, ...call })));
+    return res;
+  };
+  const one = (await s.api("POST", "/triggers", issueTrigger())).body;
+  assert.ok(one.id, JSON.stringify(one));
+  assert.equal((await route("events", "GET", "/settings/mcp-servers/gh/composio/events")).status, 200);
+  assert.equal((await route("triggers", "GET", "/settings/mcp-servers/gh/composio/triggers")).status, 200);
+  assert.equal((await route("rotate", "POST", "/settings/mcp-servers/gh/composio/rotate-secret")).status, 200);
+  assert.equal((await s.api("DELETE", `/triggers/${one.id}`)).status, 204);
+  assert.equal((await route("forget", "DELETE", "/settings/mcp-servers/gh/composio/subscription")).status, 200);
+  assert.ok((await route("delete", "DELETE", "/settings/mcp-servers/gh")).status < 300);
+  // Each route asked Composio something, so none of the checks below holds by asking nothing.
+  assert.deepEqual([...new Set(routed.map(({ step }) => step))], ["events", "triggers", "rotate", "forget", "delete"], `each route asked Composio: ${JSON.stringify(routed.map(({ step, method, path }) => `${step} ${method} ${path}`))}`);
+  const sentUser = routed.filter(({ query, body }) => Object.hasOwn(query ?? {}, "user_id") || Object.hasOwn(query ?? {}, "user_ids") || JSON.stringify(body ?? {}).includes('"user_id"'));
+  assert.deepEqual(sentUser.map(({ step, method, path }) => `${step} ${method} ${path}`), [], "no route sends Composio a user_id, in its query or its body");
+});
+
 test("rotate keeps the new secret: the old one signs nothing from then on; the subscription is deleted only once no trigger uses it", async (t) => {
   const s = await setup(t);
   const one = (await s.api("POST", "/triggers", issueTrigger())).body;
