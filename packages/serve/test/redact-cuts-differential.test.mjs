@@ -201,7 +201,7 @@ async function inMemory(script) {
   for (const [step, { held, write }] of script.steps.entries()) {
     await run.write(write);
     const shaped = piShaped(entries);
-    const followed = timelineOf(shaped, rowCutsOnce(store, `run-${script.seed}`, [...held], servedSince(store)));
+    const followed = timelineOf(shaped, rowCutsOnce(store, `run-${script.seed}`, { values: [...held] }, servedSince(store)));
     const fresh = timelineOf(shaped, { redact: (text) => redacted(text, held), holds: (text) => withheldWhole(text, held) });
     log.sync(followed);
     client.apply(log.page(client.after, 10_000));
@@ -316,7 +316,7 @@ test("what a store's readers keep of their cuts is bounded in bytes: past the bu
   cutBudget.bytes = 64 * 1024;
   const value = "Zq8VbN3xLmT6pR2wYk9HsD4f";
   const texts = Array.from({ length: 200 }, (_, i) => `${i} ${"words of a row ".repeat(20)}${i % 7 === 0 ? value : ""}`);
-  const cut = rowCutsOnce(store, "run-x", [value], servedSince(store));
+  const cut = rowCutsOnce(store, "run-x", { values: [value] }, servedSince(store));
   for (const text of texts) cut.redact(text);
   const kept = cutsKeptOf(store);
   assert.ok(kept.bytes <= cutBudget.bytes, `kept ${kept.bytes} bytes, over the budget of ${cutBudget.bytes}`);
