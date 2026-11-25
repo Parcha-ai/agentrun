@@ -44,7 +44,8 @@ const { heldRefusedRoute } = await import("../dist/runner/adapter-run-spec.js");
 const { cliRunSpecFromLaunch } = await import("../dist/runner/cli-run-spec.js");
 const { claimSecrets, MODEL_KEY_NAMES } = await import("../dist/runner/claim-secrets.js");
 const { childLoops, heldFor } = await import("../dist/runner/run-child-host.js");
-const { launchBody } = await import("../dist/run-launch.js");
+const { launchBody, readLaunchBody } = await import("../dist/run-launch.js");
+const { heldRoute } = await import("../dist/computer-held-routes.js");
 const { saveGateway } = await import("../dist/model-gateway.js");
 const { claudeOf, codexOf, opencodeOf, CODEX_STANDIN_ENV, OPENCODE_STANDIN_ENV } = await import("../dist/adapters.js");
 const { openSqliteStore, sealMcpCredential } = await import("../dist/store/index.js");
@@ -412,6 +413,28 @@ test("a message to a held run its model kept from running is refused in its crea
   await assert.rejects(message(store, moment(), "Go on.", { answers: false, queue: async () => assert.fail("a trigger's steer is never queued") }), refused, "a trigger's message_run (trigger-targets.ts), through the same message()");
 });
 
+test("a launch row whose hold.refused can't be read (corrupt, or written by another version) is still held: its start and messages are refused, and its claim is laid no model key", async () => {
+  // Each a refusal no reader can use: not an object, and one short of the fields a refusal carries. Its words are never
+  // echoed: a row is not a place to read from, and what it holds may not be words at all.
+  const RAW = "not-a-secret-raw-refusal";
+  for (const refusedRow of [RAW, { message: 42, note: RAW }, { message: RAW, fields: "none", details: {} }]) {
+    const body = { input: { content: "Do the task." }, title: "t", place: { mode: "runner" }, hold: { minutes: 5, refused: refusedRow } };
+    const what = JSON.stringify(refusedRow);
+    const read = readLaunchBody(body);
+    assert.ok(read?.hold?.refused, `a hold.refused that can't be read is a refusal still, never none: ${what}`);
+    assert.match(read.hold.refused.message, /hold\.refused/, `its words name the field that can't be read: ${what}`);
+    assert.ok(!read.hold.refused.message.includes(RAW) && !JSON.stringify(read.hold.refused).includes(RAW), `and never what it holds: ${what}`);
+    const store = { runners: { live: async () => [] }, runs: { launch: async () => ({ body }) } };
+    const notRunnable = (error) => error instanceof ApiError && error.code === "agent_not_runnable" && !error.message.includes(RAW);
+    await assert.rejects(heldRoute("startRun", "run-1", {}, store), notRunnable, `its start is refused: ${what}`);
+    const moment = { id: "run-1", agentId: "agent-1", kind: "agentic", harness: "pi", cancelled: false, terminal: false, working: false, awaitingAnswer: false, steers: true, paused: false };
+    await assert.rejects(message(store, moment, "Go on."), notRunnable, `and a message is: ${what}`);
+    const deps = { store: { sealedKeys: { get: async () => undefined }, settings: { get: async () => undefined } }, env: { OPENROUTER_API_KEY: HOST_MODEL_KEY } };
+    const claimed = await claimSecrets(deps, { kind: "agentic", body: { model: MODEL, tools: [] } }, read);
+    assert.equal(claimed.OPENROUTER_API_KEY, undefined, `its claim is laid no model key: ${what}`);
+  }
+});
+
 test("a grade's feedback round never opens a held run its model kept from running", async () => {
   const of = (hold) => {
     const reopened = [];
@@ -506,6 +529,21 @@ test("claim secrets (claimSecrets): a held run its model kept from running is la
   const held = await claimSecrets(deps, revision, { plane, hold: { minutes: 5, refused: REFUSAL } });
   assert.equal(held.OPENROUTER_API_KEY, undefined, "a held run its model kept from running is laid no model key: its model runs nowhere");
   assert.equal(held.PARALLEL_API_KEY, HOST_TOOL_KEY, "its tool's key is laid as any claim's is");
+});
+
+test("claim secrets (claimSecrets) on a runner holding the seal key: a held run its model kept from running opens no saved model key at all, not one it then drops; the same run not held opens its model's", async () => {
+  // The store's saved keys, as a runner reads them: each read is a sealed key opened with the seal key, if saved. None is
+  // saved here, so each read is counted by name and nothing is opened.
+  const reads = [];
+  const deps = { store: { sealedKeys: { get: async (name) => (reads.push(name), undefined) }, settings: { get: async () => undefined } }, sealKey: Buffer.alloc(32, 7), env: {} };
+  const revision = { kind: "agentic", body: { model: MODEL, tools: ["web_search"] } };
+  const plane = { web_search: "parallel", web_fetch: "parallel" };
+  await claimSecrets(deps, revision, { plane });
+  assert.ok(reads.includes("OPENROUTER_API_KEY"), `a claim of the run, not held, reads its model's saved key: ${JSON.stringify(reads)}`);
+  reads.length = 0;
+  await claimSecrets(deps, revision, { plane, hold: { minutes: 5, refused: REFUSAL } });
+  assert.deepEqual(reads.filter((name) => MODEL_KEY_NAMES.includes(name)), [], `a held run its model kept from running reads no saved model key: ${JSON.stringify(reads)}`);
+  assert.ok(reads.includes("PARALLEL_API_KEY"), `its tool's saved key is read as any claim's is: ${JSON.stringify(reads)}`);
 });
 
 /** A gateway's key saved in the console (model-gateway.ts saveGateway), a test's: never a real one. */
