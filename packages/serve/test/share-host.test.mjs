@@ -535,7 +535,8 @@ test("a share host sends nothing a reused data folder left queued, but still hol
   const set = await before.api("PUT", "/settings/webhook", { url: hook.url });
   assert.equal(set.status, 201);
   // The signing key alone, as it is pasted: no key format names it, only the host's held values do.
-  const bare = set.body.secret.slice("whsec_".length);
+  assert.match(set.body.signing_secret, /^whsec_/);
+  const bare = set.body.signing_secret.slice("whsec_".length);
   await before.store.channels.post({ id: "msg_left_queued", channel: "webhook-out", moment: "run.ended", body: '{"type":"run.ended"}', nextAt: 0 });
   await before.stop();
   const host = await shareHost(t, { data: before.data, webhookPrivateTargets: true });
