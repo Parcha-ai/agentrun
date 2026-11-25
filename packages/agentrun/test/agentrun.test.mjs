@@ -5,7 +5,7 @@
 // exec of the packed package runs this bin.
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough, Writable } from "node:stream";
@@ -161,22 +161,42 @@ test("the server is this package's one dependency, at the exact version of the s
   assert.equal(start.OWN_SPEC, `@parcha/agentrun@${VERSION}`, "what the server is told started it, so its hints name this command");
 });
 
+// The server's refusals name the command that started it (AGENTRUN_INSTALLED_COMMAND): the installer's, which the person's
+// login shell has, when that command runs this very copy; npx's otherwise. Only the launcher knows which, from where it
+// runs: an inherited value (a server's run that starts npx @parcha/agentrun) never stands.
+test("started by the installer's command, the server is told that command's path; started any other way, it is told none", { timeout: 30_000 }, async (t) => {
+  const installed = await throughStub(t, [], {}, { installed: true });
+  assert.equal(installed.installed, realpathSync(join(installed.dir, "root", "bin", "agentrun")), installed.err);
+  const npx = await throughStub(t, [], { AGENTRUN_INSTALLED_COMMAND: "/opt/agentrun/bin/agentrun" });
+  assert.equal(npx.installed, null, "an inherited value is dropped");
+  const replaced = await throughStub(t, [], {}, { installed: true, shim: "#!/bin/sh\nexec '/opt/node/bin/node' '/opt/agentrun/lib/0.0.1/node_modules/@parcha/agentrun/bin/agentrun.mjs' \"$@\"\n" });
+  assert.equal(replaced.installed, null, "a command that runs another copy (an upgrade's) is not this copy's");
+});
+
 // The command passes its arguments through: the server's CLI picks the port and opens the browser.
 // A stand-in server installed beside a copy of this package records what it was started with.
 // `mode` is the stub launcher's (0o644: a launcher that can't be run). The command runs in the stub's own folder, so a
 // relative --data lands there. `fileBlocks` caps the size of any file the command writes (`ulimit -f`, 512-byte blocks), as
 // a full disk or a quota does. `running(child)`, when given, runs once the command has printed its line, before the test
-// sends it the SIGTERM.
-async function throughStub(t, args, env = {}, { mode = 0o755, fileBlocks, running } = {}) {
+// sends it the SIGTERM. `installed` lays the copy out as install.sh does (<root>/lib/<version>/node_modules, its command at
+// <root>/bin/agentrun running this copy's bin), with `shim` as that command's text when given.
+async function throughStub(t, args, env = {}, { mode = 0o755, fileBlocks, running, installed = false, shim } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "agentrun-stub-"));
   removeAtEnd(dir);
-  for (const part of ["bin", "lib", "package.json"]) cpSync(join(PACKAGE, part), join(dir, "pkg", part), { recursive: true });
-  const serve = join(dir, "pkg", "node_modules", "@parcha", "agentrun-serve");
+  const root = join(dir, "root");
+  const pkg = installed ? join(root, "lib", VERSION, "node_modules", "@parcha", "agentrun") : join(dir, "pkg");
+  for (const part of ["bin", "lib", "package.json"]) cpSync(join(PACKAGE, part), join(pkg, part), { recursive: true });
+  const serve = installed ? join(pkg, "..", "agentrun-serve") : join(pkg, "node_modules", "@parcha", "agentrun-serve");
   mkdirSync(join(serve, "launcher"), { recursive: true });
   writeFileSync(join(serve, "package.json"), JSON.stringify({ name: "@parcha/agentrun-serve", version: SERVE_VERSION }));
+  if (installed) {
+    mkdirSync(join(root, "bin"), { recursive: true });
+    const text = shim ?? `#!/bin/sh\n# AgentRun ${VERSION} on its own Node.js, written by the AgentRun installer (https://agentrun.ai/install).\nexec '${process.execPath}' '${join(pkg, "bin", "agentrun.mjs")}' "$@"\n`;
+    writeFileSync(join(root, "bin", "agentrun"), text, { mode: 0o755 });
+  }
   const served = join(dir, "served.json");
   writeFileSync(join(serve, "launcher", "agentrun-serve"), `#!${process.execPath}
-require("node:fs").writeFileSync(${JSON.stringify(served)}, JSON.stringify({ args: process.argv.slice(2), npx: process.env.AGENTRUN_NPX_PACKAGE, model: process.env.AGENT_MODEL ?? null, public: process.env.AGENTRUN_PUBLIC_URL ?? null, proxies: process.env.AGENTRUN_TRUSTED_PROXIES ?? null, pid: process.pid }));
+require("node:fs").writeFileSync(${JSON.stringify(served)}, JSON.stringify({ args: process.argv.slice(2), npx: process.env.AGENTRUN_NPX_PACKAGE, installed: process.env.AGENTRUN_INSTALLED_COMMAND ?? null, model: process.env.AGENT_MODEL ?? null, public: process.env.AGENTRUN_PUBLIC_URL ?? null, proxies: process.env.AGENTRUN_TRUSTED_PROXIES ?? null, pid: process.pid }));
 if (process.argv[2] === "import") process.exit(0);
 // STUB_FAIL: print why and exit before any "Open " line; STUB_OPEN: the URL its "Open " line names; STUB_SIGTERM=die: no
 // handler, so a SIGTERM ends it by the signal, as a real server's can.
@@ -217,12 +237,15 @@ else if (process.env.STUB_HANG) {
   // STUB_AFTER: lines on stdout (split at "|") a moment after it has started, as a server's log lines come; with
   // STUB_AFTER_EXIT, it exits right after them.
   // STUB_AFTER_EXIT=<n>: n KiB of other lines before them, so the pipe still holds the last ones as it exits.
-  if (process.env.STUB_AFTER) setTimeout(() => {
+  // STUB_AFTER_REPEAT=<n>: the lines n times over. STUB_AFTER_WHEN=<path>: printed once that file exists, not before.
+  const after = () => {
     if (process.env.STUB_AFTER_EXIT) for (let i = 0; i < Number(process.env.STUB_AFTER_EXIT); i++) console.log("x".repeat(1023));
-    for (const line of process.env.STUB_AFTER.split("|")) console.log(line);
+    for (let n = 0; n < Number(process.env.STUB_AFTER_REPEAT ?? 1); n++) for (const line of process.env.STUB_AFTER.split("|")) console.log(line);
     // Its writes queue while the pipe is full: it exits once they are all in the pipe, so the last are still unread.
     if (process.env.STUB_AFTER_EXIT) process.stdout.write("", () => process.exit(0));
-  }, 200);
+  };
+  const when = process.env.STUB_AFTER_WHEN;
+  if (process.env.STUB_AFTER) setTimeout(function wait() { if (when && !require("node:fs").existsSync(when)) return setTimeout(wait, 50); after(); }, 200);
   // STUB_STDERR_AFTER: a line on stderr every 50 ms once it has started, as a server's warnings come.
   if (process.env.STUB_STDERR_AFTER) setInterval(() => console.error("agentrun-serve: a warning (stub)"), 50);
   if (process.env.STUB_SIGTERM !== "die") process.on("SIGTERM", () => process.exit(0));
@@ -232,7 +255,7 @@ else if (process.env.STUB_HANG) {
   const launcher = join(serve, "launcher", "agentrun-serve");
   chmodSync(launcher, mode);
   const { home, env: base } = bare(t);
-  const bin = join(dir, "pkg", "bin", "agentrun.mjs");
+  const bin = join(pkg, "bin", "agentrun.mjs");
   const command = fileBlocks === undefined ? [process.execPath, [bin, ...args]] : ["/bin/sh", ["-c", `ulimit -f ${fileBlocks} && exec "$0" "$@"`, process.execPath, bin, ...args]];
   const child = spawn(...command, { cwd: dir, env: { ...base, ...env }, stdio: ["ignore", "pipe", "pipe"] });
   const exited = new Promise((resolve) => child.on("exit", resolve));
@@ -903,18 +926,19 @@ test("the setup skill asks where AgentRun should run before any install, with a 
 });
 // The server runs an agent whose tools need no shell (`tools: []`) on the runner, and never asks an unlisted gateway model
 // to stop reasoning, so the first agent's definition names neither a place nor a thinking level. With no tools named it
-// would get bash and the Docker box, and wait for a container. A local model reaches a service through
-// `service install --env`; only Ollama has been walked.
-test("the setup skill's model step offers ChatGPT, a capped key, then a local Ollama model on the service, and its first agent is the template's alone", () => {
+// would get bash and the Docker box, and wait for a container. A local model is Ollama's, which the server lists itself
+// (serve's ollama-provider.ts): the service is told only where Ollama listens, and never given a key or a gateway for it.
+test("the setup skill's model step offers ChatGPT, a capped key, then a local Ollama model the server lists itself, and its first agent is the template's alone", () => {
   const skill = setupSkill();
   const model = skillSection(skill, "6. Connect a model");
   assert.match(model, /Never start a model download\./);
   assert.match(model, /offer it only when a model with tool calling is already pulled/);
+  assert.match(model, /Ollama must be running \(`ollama serve`, or its app\)\. AgentRun lists its\s+models itself, with no key, no gateway and no restart/);
+  assert.match(model, /`inkling-2-mini` \(it needs Ollama 0\.40\.17 or later\)/);
   const [install] = shellBlocks(model);
-  assert.equal(install, "~/.agentrun/bin/agentrun service install --env AGENT_MODEL_BASE_URL=http://localhost:11434/v1 --env AGENT_MODEL_GATEWAY_IDS=bare --env AGENT_MODEL=<tag> --env AGENT_MODEL_PRICE=0,0,0 --env AGENT_MODEL_API_KEY=none\n");
-  // A server that holds no key for its gateway refuses a run that brings none (model_key_required): Ollama takes no key,
-  // so the service sends `none`, in the service and in front of `sh` alike.
-  assert.match(model, /\| AGENT_MODEL_API_KEY=none AGENT_MODEL_BASE_URL=http:\/\/localhost:11434\/v1\s+AGENT_MODEL_GATEWAY_IDS=bare AGENT_MODEL=<tag> AGENT_MODEL_PRICE=0,0,0 sh/);
+  assert.equal(install, "~/.agentrun/bin/agentrun service install --env OLLAMA_HOST=<host:port>\n");
+  assert.match(model, /\| OLLAMA_HOST=<host:port> sh/);
+  assert.doesNotMatch(model, /AGENT_MODEL_API_KEY|AGENT_MODEL_BASE_URL|11434\/v1/, "no gateway in front of Ollama, and no key for it");
   assert.doesNotMatch(skill, /LM Studio|localhost:1234/);
   // Yes, only me (step 3) survives the model's restart: the service keeps what service install --env saved, and a
   // background start keeps only what its line sets, so the line carries both switches.
@@ -1285,16 +1309,7 @@ test("a sign-in's authorize code is said only when it is one OpenAI's authorize 
 test("started, the start log keeps the server's line of a ChatGPT sign-in that did not finish, its code whole; the terminal says it as other, and no other line is kept", { timeout: 60_000 }, async (t) => {
   const failed = "at=2026-11-24T00:00:00.000Z event=chatgpt chatgpt=sign_in_failed reason=authorize_Call_admin_now";
   const request = "at=2026-11-24T00:00:00.000Z event=request route=/v2/agents status=200";
-  let told = "";
-  const run = await throughStub(t, ["--no-open"], { STUB_AFTER: `${request}|${failed}` }, {
-    running: async (child) => {
-      child.stderr.on("data", (chunk) => (told += chunk));
-      for (let i = 0; !/authorize_other/.test(told); i++) {
-        assert.ok(i < 100, `the terminal said the sign-in's failure: ${told}`);
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      }
-    },
-  });
+  const run = await throughStub(t, ["--no-open"], { STUB_AFTER: `${request}|${failed}` }, { running: (child) => toldBy(child, /authorize_other/) });
   assert.equal(run.code, 0, run.err);
   assert.doesNotMatch(run.err, /Call_admin_now/, "the terminal never says a code a local sender chose");
   const log = readFileSync(startLog(run.home), "utf8");
@@ -1309,6 +1324,90 @@ test("started, a server's last line before it exits is kept in the start log: a 
   assert.equal(run.code, 0, run.err);
   assert.ok(readFileSync(startLog(run.home), "utf8").split("\n").includes(failed), run.err);
   assert.match(run.err, /\(authorize_other\)/, "the terminal said it too");
+});
+
+/** Resolves once `child`'s stderr has said `pattern` `times` times, however long that takes (the test's own timeout bounds
+ *  it); rejects, with what it said, if its stderr closes first. */
+function toldBy(child, pattern, times = 1) {
+  return new Promise((resolve, reject) => {
+    let told = "";
+    const count = new RegExp(pattern.source, "g");
+    const heard = (chunk) => {
+      told += chunk;
+      if ((told.match(count) ?? []).length < times) return;
+      child.stderr.off("data", heard);
+      resolve();
+    };
+    child.stderr.on("data", heard);
+    child.stderr.once("close", () => reject(new Error(`the terminal said ${pattern} fewer than ${times} times: ${told.slice(-400)}`)));
+  });
+}
+
+test("started, the start log keeps a line only in the server's exact shape of a sign-in's failure: one with its fields among other text is not kept", { timeout: 60_000 }, async (t) => {
+  const failed = "at=2026-11-24T00:00:00.000Z event=chatgpt chatgpt=sign_in_failed reason=token_400_invalid_grant";
+  const forged = [
+    "at=2026-11-24T00:00:00.000Z event=chatgpt chatgpt=sign_in_failed reason=token_400_x extra=more_text_after_it",
+    "Open http://127.0.0.1:7399/first event=chatgpt chatgpt=sign_in_failed reason=x",
+    'at=2026-11-24T00:00:00.000Z event=chatgpt chatgpt=sign_in_failed reason="two words"',
+    // Any text with no space in it parked where the time goes.
+    "at=parked_text_where_the_time_goes event=chatgpt chatgpt=sign_in_failed reason=x",
+    "at=2026-11-24T00:00:00.000Zparked event=chatgpt chatgpt=sign_in_failed reason=x",
+  ];
+  const run = await throughStub(t, ["--no-open"], { STUB_AFTER: [...forged, failed].join("|") }, { running: (child) => toldBy(child, /token_400_invalid_grant/) });
+  assert.equal(run.code, 0, run.err);
+  const log = readFileSync(startLog(run.home), "utf8");
+  assert.ok(log.split("\n").includes(failed), log);
+  for (const line of forged) assert.ok(!log.includes(line), `not kept: ${line}\n${log}`);
+});
+
+test("started, the start log keeps at most 64 KiB of the server's lines after the start, and says it kept no more", { timeout: 60_000 }, async (t) => {
+  const failed = "at=2026-11-24T00:00:00.000Z event=chatgpt chatgpt=sign_in_failed reason=token_400_invalid_grant";
+  const run = await throughStub(t, ["--no-open"], { STUB_AFTER: failed, STUB_AFTER_REPEAT: "2000" }, { running: (child) => toldBy(child, /token_400_invalid_grant/, 2000) });
+  assert.equal(run.code, 0, run.err);
+  const log = readFileSync(startLog(run.home), "utf8");
+  const kept = log.split("\n").filter((line) => line === failed);
+  assert.ok(kept.length > 500, `the first lines are kept: ${kept.length}`);
+  assert.ok(kept.length * (failed.length + 1) <= 64 * 1024, `at most 64 KiB of them: ${kept.length}`);
+  assert.match(log, /the start log keeps no more of the server's lines past 64 KiB\n$/);
+});
+
+test("started, the start log's 64 KiB after the start are bytes: lines with characters past ASCII never take it past them", { timeout: 60_000 }, async (t) => {
+  const failed = "at=2026-11-24T00:00:00.000Z event=chatgpt chatgpt=sign_in_failed reason=token_400_invalid_grant";
+  // Its time in full-width digits: three bytes each in UTF-8, one UTF-16 unit.
+  const wide = "at=２０２６-１１-２４T００:００:００.０００Z event=chatgpt chatgpt=sign_in_failed reason=token_400_wide";
+  const run = await throughStub(t, ["--no-open"], { STUB_AFTER: `${wide}|${failed}`, STUB_AFTER_REPEAT: "1000" }, { running: (child) => toldBy(child, /token_400_/, 2000) });
+  assert.equal(run.code, 0, run.err);
+  const log = readFileSync(startLog(run.home));
+  const banner = log.indexOf("at=");
+  assert.ok(log.length - banner <= 64 * 1024 + 128, `at most 64 KiB, and the line saying so, after the start: ${log.length - banner} bytes`);
+  assert.match(log.toString("utf8"), /the start log keeps no more of the server's lines past 64 KiB\n$/);
+});
+
+test("two starts on one data folder: the first's line after the second began the log is added at its end, never over it or past NULs", { timeout: 60_000 }, async (t) => {
+  const data = mkdtempSync(join(tmpdir(), "agentrun-data-"));
+  removeAtEnd(data);
+  const go = `${data}-go`;
+  removeAtEnd(go);
+  const failed = "at=2026-11-24T00:00:00.000Z event=chatgpt chatgpt=sign_in_failed reason=token_400_invalid_grant";
+  // The first start's banner is longer than the second's, so its log's offset is past what the second wrote.
+  const first = await throughStub(t, ["--no-open", "--data", data], { STUB_OPEN: "http://127.0.0.1:7399/a-longer-address-only-the-first-start-names/", STUB_AFTER: failed, STUB_AFTER_WHEN: go }, {
+    running: async (child) => {
+      const said = toldBy(child, /token_400_invalid_grant/);
+      const second = await throughStub(t, ["--no-open", "--data", data], {}, {
+        running: async () => {
+          writeFileSync(go, "");
+          await said;
+        },
+      });
+      assert.equal(second.code, 0, second.err);
+    },
+  });
+  assert.equal(first.code, 0, first.err);
+  const log = readFileSync(join(data, "start.log"), "utf8");
+  assert.doesNotMatch(log, /\0/, JSON.stringify(log));
+  assert.doesNotMatch(log, /a-longer-address/, "the second start began the log afresh");
+  assert.match(log, /^agentrun-serve on .*\nOpen http:\/\/127\.0\.0\.1:7399\/\n/, JSON.stringify(log));
+  assert.ok(log.split("\n").includes(failed), JSON.stringify(log));
 });
 
 test("started, the bin says a refused request on stderr; stdout stays the one running line", { timeout: 120_000 }, async (t) => {

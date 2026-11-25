@@ -38,6 +38,16 @@ export const EGRESS_LABEL = "agentrun.computer.egress";
 /** Where the computer mounts the volume, read-only, and the proxy's socket in it: what init's relay connects to. */
 export const EGRESS_MOUNT = "/opt/agentrun/egress";
 export const EGRESS_SOCKET = `${EGRESS_MOUNT}/egress.sock`;
+
+/**
+ * `docker run`'s `--env` for the proxy variables, each set empty: the docker CLI fills in each one a run does not set
+ * itself from config.json's `proxies` (DOCKER_CONFIG, else HOME's .docker), so without these a computer, and its
+ * proxy, would hold the host's docker proxy, a credential in its URL included. A fenced computer's programs get their
+ * proxy from init's relay alone.
+ */
+export const NO_CONFIG_PROXY: readonly string[] = Object.freeze(
+	["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "FTP_PROXY", "ftp_proxy", "NO_PROXY", "no_proxy", "ALL_PROXY", "all_proxy"].flatMap((name) => ["--env", `${name}=`]),
+);
 /** Init's flag for the relay: computerd init --egress <socket>. */
 export const RELAY_FLAG = "--egress";
 /** The most entries of each kind an allowlist holds: Docker's own bound, so the list fits one argv element. */
@@ -233,6 +243,7 @@ export function egressRunArgs({ name, user, image, allow, local, deadline, code,
 	const args = ["run", "--detach", "--name", proxy, "--label", `${EGRESS_LABEL}=${name}`, "--label", `${DEADLINE_LABEL}=${deadline}`];
 	for (const [key, value] of Object.entries(labels)) args.push("--label", `${key}=${value}`);
 	args.push("--user", user, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--ipc", "private", "--cgroupns", "private");
+	args.push(...NO_CONFIG_PROXY);
 	const memory = `${PROXY_MEMORY_MB}m`;
 	args.push("--pids-limit", String(PROXY_PIDS), "--memory", memory, "--memory-swap", memory);
 	args.push("--cpu-period", String(PROXY_CPU_PERIOD_US), "--cpu-quota", String(PROXY_CPU_QUOTA_US), "--ulimit", `nofile=${PROXY_NOFILE}:${PROXY_NOFILE}`);

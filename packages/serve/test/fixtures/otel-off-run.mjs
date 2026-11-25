@@ -62,6 +62,6 @@ const row = await until(async () => {
 await runner.close();
 const off = [...loaded];
 const { InMemorySpanExporter } = await import("@opentelemetry/sdk-trace");
-await genAiTracing({ OTEL_EXPORTER_OTLP_ENDPOINT: "http://otlp.invalid:4318" }, { exporter: new InMemorySpanExporter() });
+await genAiTracing({ OTEL_EXPORTER_OTLP_ENDPOINT: "http://otlp.invalid:4318" }, { exporter: new InMemorySpanExporter(), log: () => {} });
 console.log(JSON.stringify({ state: row.state, loaded: off, loadedOn: [...new Set(loaded.slice(off.length))] }));
 process.exit(0);

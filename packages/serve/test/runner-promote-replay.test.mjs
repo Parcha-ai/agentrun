@@ -38,7 +38,7 @@ const { promotionsOf, recordPromotion, servingOf } = await import("../dist/learn
 const { replayView } = await import("../dist/runner/promotion.js");
 const { learningWorkspace } = await import("../dist/workspace/index.js");
 const { learningCommit } = await import("../dist/learn/commit.js");
-const { workflowDigest } = await import("../dist/runner/workflow-first.js");
+const { PAST_RUNS, workflowDigest } = await import("../dist/runner/workflow-first.js");
 const { seedOf } = await import("../dist/learning.js");
 
 const SEAL_KEY = Buffer.alloc(32, 7);
@@ -138,12 +138,20 @@ async function holdingProxy(t, origin, held) {
  *  `says`, before `flows` landed in its learning folder, and a runner claiming every run from its stored launch. The
  *  node submits `submit(requestText)` ({answer: 42, sure: true} by default). `hold`: a model request whose body it
  *  matches is held until its run is cancelled or `proxy.release()`. */
-async function world(t, { prior = 6, learning = true, says = AGENT_SAYS, flows = FLOWS, submit, hold, env = {}, runsCreate } = {}) {
+async function world(t, { prior = 6, learning = true, says = AGENT_SAYS, flows = FLOWS, submit, hold, env = {}, runsCreate, pastUnread = false } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-promote-replay-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const opened = await openSqliteStore({ dataDir: dir, role: "runner" });
   // `runsCreate(create, run, launch)`: the runner's runs.create, in its place (a test's interleave before a create).
-  const runs = runsCreate && { ...opened.runs, create: (run, launch) => runsCreate(opened.runs.create, run, launch) };
+  // `pastUnread`: the money rule's read of the agent's past runs fails on the runner (it fails closed).
+  const runs = (runsCreate || pastUnread) && new Proxy(opened.runs, { get: (target, key) => {
+    if (key === "create" && runsCreate) return (run, launch) => runsCreate(opened.runs.create, run, launch);
+    if (key === "list" && pastUnread) return async (filter) => {
+      if (filter?.limit === PAST_RUNS) throw new Error("the past runs could not be read");
+      return target.list(filter);
+    };
+    return typeof target[key] === "function" ? target[key].bind(target) : target[key];
+  } });
   const store = runs ? new Proxy(opened, { get: (target, key) => (key === "runs" ? runs : typeof target[key] === "function" ? target[key].bind(target) : target[key]) }) : opened;
   const gw = await startFauxGateway({
     call: ({ body }) => (offers(body, "submit") && !hasResult(body) ? { name: "submit", input: { value: submit ? submit(JSON.stringify(body)) : { answer: 42, sure: true } } } : undefined),
@@ -237,11 +245,23 @@ test("a new digest is checked before it serves: the agent takes the run meanwhil
   assert.equal(gw.requests.filter((request) => !isNode(request)).length, agentRequests, "no agent request for the served run");
   const records = await promotionsOf(server.settings, "agent-1");
   assert.deepEqual(records.map(({ decided }) => [decided]), [["replaying"], ["promote"]]);
-  const { check } = records[1];
-  assert.deepEqual({ ...check, of: [...check.of].sort() }, { compile_after: 20, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 6, agreed: 6, alone: 6, of: PRIORS, cost_usd: check.cost_usd, outcomes: { answered: 6, handed_back: 0, failed: 0, skipped_write: 0 } });
+  const { fields, ...check } = records[1].check;
+  assert.deepEqual({ ...check, of: [...check.of].sort() }, { compile_after: 20, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 6, agreed: 6, alone: 6, agent_agreed: 6, joint: true, of: PRIORS, cost_usd: check.cost_usd, outcomes: { answered: 6, handed_back: 0, failed: 0, skipped_write: 0 } });
   assert.ok(check.cost_usd > 0, "what the check cost is on its record");
-  assert.equal(records[1].reason, "checked on 6 of the agent's inputs: answered 6 alone (100.0%, the bar 70.0%), and 6 of those said what the agent said (100.0%, the bar 80.0%): promoted");
+  assert.deepEqual(Object.entries(fields).map(([name, one]) => [name, one.n, one.workflow_right, one.known, one.pass]), [["answer", 6, 6, "agent", true]], "the whole answer, judged against the agent's own");
   assert.equal(records[1].digest, DIGEST);
+});
+
+// The money rule takes a workflow off a learning run's own tool (workflow-first.ts toolStopsOf), failing closed when the
+// agent's past runs can't be read; a replay runs its revision whatever that read says (it serves no one, and is checked).
+test("a replay runs its revision whatever the money rule can read: with the agent's past runs unreadable, each replay answers alone", { timeout: 180_000 }, async (t) => {
+  const { start, replaysEnded } = await world(t, { pastUnread: true });
+  const first = await start("run-1", "What is six times seven");
+  assert.equal(first.metrics?.path, "agent", JSON.stringify(first.metrics));
+  for (const row of await replaysEnded(6)) {
+    assert.equal(row.state, "ended", JSON.stringify(row));
+    assert.deepEqual([row.metrics?.path, row.metrics?.replay?.outcome], ["replay", "answered"], JSON.stringify(row.metrics));
+  }
 });
 
 test("a check the workflow hands back on every input is held (it would never answer alone); its escalate on a draft stays hard in the replay, and no agent turn ran in it", { timeout: 180_000 }, async (t) => {
@@ -271,7 +291,8 @@ test("a check whose answers differ from the agent's holds the digest: the next r
   const decided = (await heldThenRevisionFailed(server)).at(-1);
   assert.deepEqual({ decided: decided.decided, n: decided.check.n, alone: decided.check.alone, agreed: decided.check.agreed }, { decided: "hold", n: 6, alone: 6, agreed: 0 });
   assert.deepEqual(decided.check.disagreements.map((one) => [one.agent, one.draft]), decided.check.disagreements.map(() => [AGENT_SAYS, JSON.stringify({ answer: 41, sure: true })]));
-  assert.match(decided.reason, /answered 6 alone \(100\.0%, the bar 70\.0%\), and 0 of those said what the agent said \(0\.0%, the bar 80\.0%\): held/);
+  assert.deepEqual([decided.check.fields.answer.workflow_right, decided.check.fields.answer.pass], [0, false]);
+  assert.deepEqual(decided.check.disagreements.map((one) => one.fields), decided.check.disagreements.map(() => ["answer"]), "each disagreement names the field it had wrong");
   assert.ok(logs.some((line) => line.includes(`answer at ${DIGEST} held:`)), logs.join("\n"));
 });
 
@@ -329,7 +350,7 @@ test("a check whose launch was interrupted after 1 of its 20 runs, decided past 
   const decided = (await heldThenRevisionFailed(server)).at(-1);
   assert.deepEqual({ decided: decided.decided, n: decided.check.n, alone: decided.check.alone, agreed: decided.check.agreed }, { decided: "hold", n: 20, alone: 1, agreed: 1 }, JSON.stringify(decided));
   assert.equal(decided.check.disagreements.filter((one) => one.failed).length, 19, "each one never created is a failed input");
-  assert.match(decided.reason, /^checked on 20 of the agent's inputs: answered 1 alone \(5\.0%, the bar 70\.0%\), and 1 of those said what the agent said \(100\.0%, the bar 80\.0%\) \(19 never started by the check's deadline/);
+  assert.match(decided.reason, /^checked on 20 of the agent's inputs: answered 1 alone \(5\.0%, the bar 70\.0%\); .* \(19 never started by the check's deadline/);
   assert.equal(await server.runs.get(missing[0]), undefined, "past its deadline nothing is created for it");
   // Carried from #3032 (PRRT_kwDOUmdVMs64NjVq): the outcomes are the check's rows, so they add up to its n: the 19 never
   // created are failed, on the record and over v2's replay read.

@@ -112,6 +112,7 @@ describe("route", () => {
     expect(route("#/agents/x/learning")).toEqual({ section: "agents", agent: "x", tab: "learning" });
     expect(route("#/agents/x/edit")).toEqual({ section: "agents", agent: "x", edit: true });
     expect(route("#/agents/new")).toEqual({ section: "agents", agent: null });
+    expect(route("#/agents/new?editor")).toEqual({ section: "agents", agent: null, edit: true });
     expect(route("#/agents?archived=true")).toEqual({ section: "agents", archived: true });
     expect(route("#/agents")).toEqual({ section: "agents", archived: false });
   });
@@ -567,7 +568,7 @@ describe("App, archiving a run and filtering the runs list", () => {
 });
 
 describe("App, an agent's address", () => {
-  it("opens the agent's page, and /edit opens its editor", async () => {
+  it("opens the agent's page, and /edit opens its settings", async () => {
     const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
     const calc = { agent_id: "calc", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Calc", instructions: "Answer.", harness: "pi", skills: [], tools: [] } };
     vi.stubGlobal("fetch", async (url: string) => {
@@ -592,7 +593,36 @@ describe("App, an agent's address", () => {
     const saveButton = () => [...host.querySelectorAll("button")].find((b) => /^(Save revision|Saved)/.test(b.textContent?.trim() ?? ""));
     await wait(() => !!saveButton());
     expect(saveButton()).toBeTruthy();
+    expect(host.querySelector('header[aria-label="Agent toolbar"] button[aria-label="Agent settings"]')).toBeNull();
     expect(host.querySelector('[role="tab"]')).toBeNull();
+    expect(host.querySelector('nav[aria-label="Agent settings sections"] [aria-current="page"]')?.textContent?.trim()).toMatch(/^General/);
+  });
+
+  it("opens the editor creating, blank, after an agent named new's editor: it never keeps that agent", async () => {
+    const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    const named = { agent_id: "new", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Calc", instructions: "Answer.", harness: "pi", skills: [], tools: [] } };
+    vi.stubGlobal("fetch", async (url: string) => {
+      const path = new URL(url, "http://serve.test").pathname;
+      if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true, secrets_writable: true });
+      if (path === "/v2/capabilities") return json(200, { models: { source: "providers", ready: true }, harnesses: [{ id: "pi", available: true }] });
+      if (path === "/v2/agents") return json(200, { agents: [named], next_cursor: null });
+      if (path === "/v2/agents/new") return json(200, named);
+      if (path === "/v2/agents/new/runs" || path === "/v2/agents/new/revisions") return json(200, { runs: [], revisions: [], next_cursor: null });
+      return json(404, { error: { code: "not_found", message: path, retryable: false } });
+    });
+    location.hash = "#/agents/new/edit";
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(App)));
+    const wait = async (ok: () => boolean) => { const end = Date.now() + 4000; while (!ok() && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 25)); }); };
+    const name = () => host.querySelector<HTMLInputElement>("#agent-name");
+    await wait(() => name()?.value === "Calc");
+    expect(name()?.readOnly).toBe(true);
+    await act(async () => { location.hash = "#/agents/new?editor"; window.dispatchEvent(new HashChangeEvent("hashchange")); });
+    await wait(() => name()?.value === "");
+    expect(name()?.value).toBe("");
+    expect(name()?.readOnly).toBe(false);
+    expect([...host.querySelectorAll("h1")].map((h) => h.textContent)).toContain("New agent");
   });
 });
 
@@ -831,7 +861,7 @@ describe("App, the no-model bar", () => {
     expect(asked.filter((a) => a === "GET /v2/capabilities").length).toBeGreaterThanOrEqual(2);
   });
 
-  it("sits above the run request panels, leaving their footer in view, and is absent from the build page", async () => {
+  it("sits above the run request panels, leaving their footer in view, and is absent from the new-agent editor", async () => {
     serve(() => ({ source: "providers", default: null, ready: false, needs: "key" }), true, undefined, agentsList());
     const host = await mount("#/playground");
     const request = () => host.querySelector('section[aria-label="Request"]');
@@ -841,10 +871,21 @@ describe("App, the no-model bar", () => {
     expect(bar(host)!.compareDocumentPosition(request()!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(bar(host)!.parentElement!.className.split(" ")).toEqual(expect.arrayContaining(["flex", "flex-col", "min-h-0"]));
     expect(request()!.querySelector("footer")!.className.split(" ")).toContain("shrink-0");
-    // Describing an agent or handing it to a local coding agent needs no model key on this server.
+    // Configuring an agent or handing it to a local coding agent needs no model key on this server.
     await act(async () => { location.hash = "#/agents/new"; });
-    await until(() => !!host.textContent?.includes("What do you want to build?"));
+    await until(() => !!host.querySelector("#agent-name"));
     expect(bar(host)).toBeNull();
+  });
+
+  it("opens the shared editor directly and keeps the legacy creation link", async () => {
+    serve(() => ({ source: "providers", default: null, ready: false, needs: "key" }), true, undefined, agentsList());
+    const host = await mount("#/agents/new");
+    await until(() => !!host.querySelector("#agent-name"));
+    await act(async () => { location.hash = "#/agents/new?editor"; });
+    const heading = () => [...host.querySelectorAll("h1")].map((h) => h.textContent);
+    await until(() => heading().includes("New agent"));
+    expect(host.textContent).not.toContain("What do you want to build?");
+    expect(host.querySelector("#agent-name")).not.toBeNull();
   });
 
   it("reads the capabilities again on its own while no model is ready, and stops once one is", async () => {

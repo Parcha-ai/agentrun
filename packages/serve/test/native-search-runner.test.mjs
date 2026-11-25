@@ -18,7 +18,7 @@ const SEARCH_TOOL = "web_search_20250305";
 const script = ({ body }) => {
   const offers = (body?.tools ?? []).some((tool) => tool?.name === "web_search" && tool?.type !== SEARCH_TOOL);
   const answered = (body?.messages ?? []).some((m) => Array.isArray(m.content) && m.content.some((b) => b?.type === "tool_result"));
-  return offers && !answered ? { name: "web_search", input: { query: "the answer" } } : undefined;
+  return offers && !answered ? { name: "web_search", input: { objective: "the answer" } } : undefined;
 };
 
 /** A provider on loopback: a request offering the hosted search tool is answered as Anthropic's search (faux-upstream),

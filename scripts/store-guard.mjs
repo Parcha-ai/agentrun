@@ -9,6 +9,8 @@
 //   sees that.
 // - A name read off a module by a computed key (durable[name], const { [key]: S } = …) is not seen; a string key
 //   (durable["SqliteStorage"]) is.
+// - A module named through a variable is seen when the variable is a const holding the name as one string
+//   (const NODE_SQLITE = "node:sqlite"; import(NODE_SQLITE)); one built from parts, a let, or a parameter is not.
 import ts from "typescript";
 
 /** SQL as a statement, not as a word in prose: a keyword with what makes it a statement after it, in any case and over
@@ -26,9 +28,9 @@ export const SQL = new RegExp(
   "i",
 );
 
-/** The modules a SQLite driver comes from, each with every subpath, whatever is taken from it: node's, better-sqlite3,
- *  sqlite3, chord's sqlite and pi-durable's storage/sqlite (its openers, its database, its migrations). */
-const DRIVER = /^(?:node:sqlite|better-sqlite3|sqlite3|@earendil-works\/chord\/sqlite|@earendil-works\/pi-durable\/storage\/sqlite)(?:\/.*)?$/;
+/** The modules a SQLite driver comes from, each with every subpath, whatever is taken from it: node's, Bun's,
+ *  better-sqlite3, sqlite3, chord's sqlite and pi-durable's storage/sqlite (its openers, its database, its migrations). */
+const DRIVER = /^(?:node:sqlite|bun:sqlite|better-sqlite3|sqlite3|@earendil-works\/chord\/sqlite|@earendil-works\/pi-durable\/storage\/sqlite)(?:\/.*)?$/;
 /** pi-durable's other modules: a driver only by its SqliteStorage, named, or read off a namespace or an import(). */
 const PI_DURABLE = /^@earendil-works\/pi-durable(?:\/.*)?$/;
 
@@ -49,6 +51,11 @@ function stringsOf(file) {
   return out;
 }
 
+/** The strings in `source` (a file's text) that hold SQL. */
+export function sqlStringsIn(source, fileName = "source.ts") {
+  return stringsOf(parse(source, fileName)).filter((text) => SQL.test(text));
+}
+
 /** Whether `source` (a file's text) writes SQL in a string. */
 export function sqlIn(source, fileName = "source.ts") {
   return stringsOf(parse(source, fileName)).some((text) => SQL.test(text));
@@ -57,10 +64,26 @@ export function sqlIn(source, fileName = "source.ts") {
 /** node:module, where createRequire comes from. */
 const NODE_MODULE = /^(?:node:)?module$/;
 
+/** The consts in `file` that hold one string (a string literal, or a template with no substitution), by name. */
+function stringConsts(file) {
+  const out = new Map();
+  const walk = (node) => {
+    if (ts.isVariableDeclarationList(node) && node.flags & ts.NodeFlags.Const)
+      for (const declaration of node.declarations) if (ts.isIdentifier(declaration.name) && declaration.initializer && ts.isStringLiteralLike(declaration.initializer)) out.set(declaration.name.text, declaration.initializer.text);
+    ts.forEachChild(node, walk);
+  };
+  walk(file);
+  return out;
+}
+
 /** The SQLite drivers `source` takes: each driver module it imports, exports from, import()s or requires (createRequire's
- *  too) for a value (a type is no driver), and pi-durable's SqliteStorage, by name or read off a namespace import or an
- *  import() of it. */
+ *  too) for a value (a type is no driver), named as a string or through a const holding one, and pi-durable's
+ *  SqliteStorage, by name or read off a namespace import or an import() of it. */
 export function driversIn(source, fileName = "source.ts") {
+  const file = parse(source, fileName);
+  const consts = stringConsts(file);
+  /** The module a call's first argument names: a string, or a const holding one. */
+  const named = (node) => (ts.isStringLiteralLike(node) ? node.text : ts.isIdentifier(node) ? consts.get(node.text) : undefined);
   const found = new Set();
   /** pi-durable modules taken whole (a namespace, an import() or a require): SqliteStorage may be read off them. */
   const whole = new Set();
@@ -111,9 +134,9 @@ export function driversIn(source, fileName = "source.ts") {
       if (NODE_MODULE.test(node.moduleSpecifier.text) && bindings && ts.isNamedImports(bindings)) {
         for (const element of bindings.elements) if ((element.propertyName ?? element.name).text === "createRequire") makers.add(element.name.text);
       }
-    } else if (ts.isCallExpression(node) && node.arguments.length > 0 && ts.isStringLiteralLike(node.arguments[0])) {
+    } else if (ts.isCallExpression(node) && node.arguments.length > 0 && named(node.arguments[0]) !== undefined) {
       const callee = node.expression;
-      if (callee.kind === ts.SyntaxKind.ImportKeyword || (ts.isIdentifier(callee) && requires.has(callee.text)) || isCreateRequire(callee)) take(node.arguments[0].text, null);
+      if (callee.kind === ts.SyntaxKind.ImportKeyword || (ts.isIdentifier(callee) && requires.has(callee.text)) || isCreateRequire(callee)) take(named(node.arguments[0]), null);
     } else if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && isCreateRequire(node.initializer)) {
       requires.add(node.name.text);
     } else if (readsStorage(node)) {
@@ -121,7 +144,7 @@ export function driversIn(source, fileName = "source.ts") {
     }
     ts.forEachChild(node, walk);
   };
-  walk(parse(source, fileName));
+  walk(file);
   if (readsSqliteStorage) for (const specifier of whole) found.add(`${specifier} SqliteStorage`);
   return [...found].sort();
 }

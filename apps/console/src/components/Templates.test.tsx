@@ -8,6 +8,7 @@ import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
 import { ClientError } from "@/lib/client";
 import type { MarketplaceList, TemplateView, Trigger } from "@/lib/v2";
 import { firstPicker, optionsOf, pick, picker, valueOf } from "@/test/picker";
+import { expectPinnedBar } from "@/test/pageFrame";
 
 // The server's templates (GET /v2/templates) and applying one (POST /v2/templates/{name}/apply): the list says what each
 // needs; the Apply screen takes its parameters and the owner's consent, one tick per MCP tool, none ticked until the owner
@@ -113,6 +114,16 @@ async function open(name?: string, fake: Fake = {}) {
 }
 
 describe("the Templates page", () => {
+  it("keeps its bar in view, on the list and on a template's page: what is under it scrolls in one box", async () => {
+    const list = await open();
+    expect(expectPinnedBar(list.host).querySelectorAll("article")).toHaveLength(2);
+    act(() => root!.unmount());
+    // A template's own page (#/templates/<name>), not the API playground's apply.
+    const one = await open(REVIEWER.name, { playground: false });
+    expectPinnedBar(one.host);
+    expect(one.host.querySelector("header nav[aria-label=Breadcrumb]")).not.toBeNull();
+  });
+
   it("lists each template with its name, version, description and what it needs", async () => {
     const t = await open();
     const cards = [...t.host.querySelectorAll("article")];

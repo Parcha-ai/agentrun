@@ -36,7 +36,7 @@ import { bootSealKey } from "../seal-key.js";
 import { handedSecret, SECRET_NAMES, secret } from "../secrets.js";
 import { migrationsIn, openStore, RunnerBelowFloor, SchemaVersionUnknown, type Store, StoreAwaitsServer, storePlace, storeTarget } from "../store/index.js";
 import { SCHEMA_VERSION } from "../store/schema.js";
-import { SEAL_KEY_ENV, sealKeyOf } from "../tool-keys.js";
+import { SEAL_KEY_ENV, sealKeyIn } from "../tool-keys.js";
 import { LAUNCH_HOOK_SECRET_ENV } from "../trigger-launch-hook.js";
 import { FAUX_BROWSER_ENV } from "../tools.js";
 import { claimViewOpener } from "../computer-live.js";
@@ -156,8 +156,9 @@ export async function openRunnerStore(dataDir: string, env: NodeJS.ProcessEnv, w
  *  tokens (the token and the token list) and API key, the seal key (the runner holds it as its sealKey), the store's connection (its URL holds a
  *  database password), the launch hook's signing secret (the server's alone), and the Composio account key, which the
  *  runner's claim alone reads (composio-made.ts composioEnvKey) and sends only as a granted Composio server's MCP header.
- *  And every OpenTelemetry setting (OTEL_*: OTEL_EXPORTER_OTLP_HEADERS holds a backend's key): a run's process is handed
- *  them on its pipe (secrets.ts OTEL_PAIR), never in an environment, so no harness, tool or computer of a run has them. */
+ *  And every OpenTelemetry setting (OTEL_*: OTEL_EXPORTER_OTLP_HEADERS holds a backend's key): a run's process is never
+ *  handed them, in an environment or on its pipe. It posts its trace over its channel and the runner exports it
+ *  (otel/tracer.ts postedTracing, tracePosts), so no harness, tool or computer of a run has them. */
 const RUNNER_ONLY = (name: string): boolean => name === "AGENTRUN_TOKEN" || name === "AGENTRUN_TOKENS" || name === "AGENTRUN_API_KEY" || name === SEAL_KEY_ENV || name === LAUNCH_HOOK_SECRET_ENV || name === COMPOSIO_KEY_ENV || name.startsWith("AGENTRUN_STORE_") || name.startsWith("OTEL_");
 
 /** A run's environment as the runner hands its loops (AdapterSpecDeps.env): this process's, less the runner's own
@@ -201,8 +202,7 @@ export function besideRunEnv(env: NodeJS.ProcessEnv, switches: NodeJS.ProcessEnv
  *  journal, the seal key and the model route. `booted`: the seal key startRunnerProcess booted against the store (else
  *  this process's, as it was handed or booted). Refused in words with no seal key. */
 export function runnerLoop(store: Store, dataDir: string, env: NodeJS.ProcessEnv = process.env, booted?: Buffer, isolation?: RunIsolation, dial?: HostedDial, paired?: PairedRelay): RunnerParts {
-  const sealKey = booted ?? sealKeyOf(secret(SEAL_KEY_ENV) ?? env[SEAL_KEY_ENV]);
-  if (!sealKey) throw new RunnerRefused(`A runner needs the server's seal key (${SEAL_KEY_ENV}): start it through the server's launcher, which hands it over.`);
+  const sealKey = booted ?? sealKeyIn(secret(SEAL_KEY_ENV) ?? env[SEAL_KEY_ENV], "a runner's secrets", { Refused: RunnerRefused, none: "start the runner through the server's launcher, which hands it over" });
   const runs = runEnv(env);
   // The run's computer at its claim, composed once (runnerComputers): none for the runner's place, a box's computer by the
   // agent's setting, its keys read from the run environment first, then the store's sealed rows; a Docker computer's
@@ -327,13 +327,15 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
     // The janitor sweeps with the computers the loop composed, never a second composition. Its lines are the runner's
     // warnings, said where the runner says its others (warn: stderr unless a test gives its own).
     // It sweeps as this runner (its name and its presence's incarnation): a computer kept at a park pinned to another
-    // runner still there is that runner's to end (computer-kept.ts sweepKept).
-    if (options.janitor && typeof parts !== "function") janitor = startJanitor({ store, computers: parts.computers, env: parts.env, log: warn, self: { runner: name, incarnation } });
+    // runner still there is that runner's to end (computer-kept.ts sweepKept). The seal key is the claims' too: it opens
+    // the Archil key a kept computer's mount credential is removed with.
+    if (options.janitor && typeof parts !== "function") janitor = startJanitor({ store, computers: parts.computers, env: parts.env, sealKey: seal.key, log: warn, self: { runner: name, incarnation } });
     // Before it claims: the scratch folders of runs that ended after their runner died (scratch-sweep.ts), said as warnings.
     await sweepEndedScratch(store, options.dataDir, { log: warn });
-    // A run's end lets go of what its earlier claims' computers left, with the same computers (run-end-computers.ts), as
-    // this runner, as the janitor sweeps: a computer kept pinned to another runner still keeping it is that runner's.
-    const runEnded = projectRunEnded(store, typeof parts !== "function" ? runEndComputers({ store, computers: parts.computers, log: warn, self: () => ({ runner: name, incarnation }) }) : undefined);
+    // A run's end lets go of what its earlier claims' computers left, with the same computers (run-end-computers.ts),
+    // and with the janitor's environment and seal key, so a machine kept on Archil it deletes has its mount credential
+    // removed.
+    const runEnded = projectRunEnded(store, typeof parts !== "function" ? runEndComputers({ store, computers: parts.computers, log: warn, env: parts.env, sealKey: seal.key }) : undefined);
     runner = startRunner({
       store,
       createLoop,
@@ -622,7 +624,7 @@ export async function runnerMain(argv: readonly string[], given: NodeJS.ProcessE
   try {
     holds = runnerHolds(args, env);
     // The Archil settings an operator sets, read by every run's claim here as the server reads them (archil-settings.ts):
-    // one of the region and S3 URL without the other, or a value the server would refuse, stops this start as it stops
+    // one set without the region, or a value the server would refuse, stops this start as it stops
     // the server's.
     archilSettingsFromEnv(env);
   } catch (error) {

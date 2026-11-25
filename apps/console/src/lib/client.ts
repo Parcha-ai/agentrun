@@ -8,28 +8,12 @@ import type { AgentLearning, Corrections, LearningChange, LearningDiff, Learning
 import type { ComposioToolkit, ComposioTools, McpAuth, McpPreview, McpRefresh, McpServer } from "./mcp";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, ApiKeyMade, ApiKeys, Wrapped, Capabilities, HarnessKeys, HarnessOfferView, ChatGPTSignOut, ChatGPTStart, ChatGPTView, ClaudeLoginView, ModelGateway, ModelGatewayBody, ModelGatewayTest, EmailAccount, EmailAccountBody, EmailTest, EmailTestBody, Firing, GitHubConnectStart, GitHubDisconnected, GitHubRepositories, GitHubStatus, ScanStarted, Suggestion, SuggestionCreated, SuggestionDetail, SuggestionsList, InputIssue, McpPrivateHosts, MarketplaceList, TemplateApplied, TemplateApply, TemplateImported, TemplateView, RaiseAnswer, GradeAnswer, GradeBody, Run, RunComputer, RunningComputers, RunLearningRead, LearningAudits, LearningCost, LearningLoop, Promotions, WorkflowRevisions, ReplayStarted, ReplayRead, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, RunTrace, RunUsage, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolSettings, Trigger, TriggerCreate, TriggerDeleted, TriggerInput, TriggerMade, TriggerSecret, TriggerUpdated, ComposioEvents, ComposioTriggers, Slack, SlackAttempt, SlackBody, Webhook, WebhookAttempt, WebhookRotated, WebhookSaved, Archil, ArchilBody, ArchilTest, Computers, ComputerChoices, ComputerKeysBody, ComputerProvider, ComputerTest, Pairing } from "./v2";
+import type { ApiError, ApiKeyMade, ApiKeys, Wrapped, Capabilities, HarnessKeys, HarnessOfferView, ChatGPTSignOut, ChatGPTStart, ChatGPTView, ClaudeLoginSignOut, ClaudeLoginView, ModelGateway, ModelGatewayBody, ModelGatewayTest, EmailAccount, EmailAccountBody, EmailTest, EmailTestBody, Firing, GitHubConnectStart, GitHubDisconnected, GitHubRepositories, GitHubStatus, ScanStarted, Suggestion, SuggestionCreated, SuggestionDetail, SuggestionsList, InputIssue, McpPrivateHosts, MarketplaceList, TemplateApplied, TemplateApply, TemplateImported, TemplateView, RaiseAnswer, GradeAnswer, GradeBody, Run, RunComputer, RunningComputers, RunLearningRead, LearningAudits, LearningCost, LearningLoop, Promotions, WorkflowRevisions, ReplayStarted, ReplayRead, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, RunTrace, RunUsage, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolSettings, Trigger, TriggerCreate, TriggerDeleted, TriggerInput, TriggerMade, TriggerSecret, TriggerUpdated, ComposioEvents, ComposioTriggers, Slack, SlackAttempt, SlackBody, Webhook, WebhookAttempt, WebhookRotated, WebhookSaved, Archil, ArchilBody, ArchilTest, Computers, ComputerChoices, ComputerKeysBody, ComputerProvider, ComputerTest, Pairing } from "./v2";
 
-/** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
-/** A refusal's issue at one field, as the server names it (with its `fix`, when it says one). Its `reason` is any string, as
- *  ApiError's `code` is: the server also sends reasons its document does not list yet (an MCP server's `url` "redirect"). */
-export type FieldIssue = InputIssue;
-
-export class ClientError extends Error {
-  /** A 422's issues, by field, as the server names them. */
-  fields?: FieldIssue[];
-  /** A retryable refusal's wait before asking again, when the server named one (a busy store). */
-  retryAfterMs?: number;
-  /** What the server says beyond the message (`error.details`): a 409 `agent_not_runnable` names the box it lacks. */
-  details?: Record<string, unknown>;
-  /** A learning write the server's checks refused (400): each check it fails, printable. */
-  problems?: LearningProblem[];
-  constructor(readonly status: number, readonly code: string, message: string, readonly retryable = false, readonly requestId?: string) {
-    super(message);
-    this.name = "ClientError";
-  }
-  toApiError(): ApiError { return { code: this.code, message: this.message, retryable: this.retryable, request_id: this.requestId, ...(this.details ? { details: this.details } : {}) }; }
-}
+// The refusal type lives in its own module (clientError.ts), so a page that only reads a refusal (the share page, through
+// the Timeline) loads none of the client's routes.
+export { ClientError, type FieldIssue } from "./clientError";
+import { ClientError, type FieldIssue } from "./clientError";
 
 /** A failed request as a page says it: a refusal as the server's `code: message`, any other failure by its message. */
 export const problemOf = (e: unknown) => (e instanceof ClientError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e));
@@ -199,6 +183,8 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
       return { agent: r.body, etag: r.etag };
     },
     listRevisions: (id: string, cursor?: string | null) => call<{ revisions: { revision: string; version: number; current: boolean; note: string | null; created_at: string; kind: string; definition: Definition }[]; next_cursor: string | null }>("GET", `${agent(id)}/revisions${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
+    /** The complete immutable skill file set for the revision being edited. */
+    getRevisionSkills: (id: string, revision: string) => call<{ revision: string; skills: Record<string, string> }>("GET", `${agent(id)}/revisions/${encodeURIComponent(revision)}/skills`),
     setCurrent: async (id: string, revision: string) => { const r = await call<Agent>("POST", `${agent(id)}/current`, { body: { revision } }); created.delete(id); return r; },
     archiveAgent: (id: string) => call<Agent>("POST", `${agent(id)}/archive`, { body: {} }),
     unarchiveAgent: (id: string) => call<Agent>("POST", `${agent(id)}/unarchive`, { body: {} }),
@@ -331,6 +317,8 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     turnOffClaudeLogin: () => call<ClaudeLoginView>("DELETE", "/settings/claude-login"),
     /** Starts the CLI's own sign-in on the server's machine, which opens a browser there. */
     startClaudeLogin: () => call<ClaudeLoginView>("POST", "/settings/claude-login/login"),
+    /** Signs out of AgentRun's own login and turns the mode off: whether the CLI confirmed its own sign-out, and the view. */
+    signOutClaudeLogin: () => call<ClaudeLoginSignOut>("POST", "/settings/claude-login/sign-out"),
     /** The model gateway in force: the environment's, the one saved here, or none. Never its key. */
     modelGateway: () => call<ModelGateway>("GET", "/settings/model-gateway"),
     /** Saves the gateway and puts it in force, with no restart. */
@@ -445,9 +433,9 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** A change that moves a Composio server off Composio answers `composio` beside it: what it removed there. */
     saveMcpServer: (name: string, url: string, auth: McpAuth, kind: { toolkit?: string | null } = {}) => call<McpServer & { composio?: { removed: boolean; note: string } }>("PUT", mcpServer(name), { body: { url, auth, ...kind } }),
     /** The Composio preset: a toolkit's actions, for the picker (the owner's session alone; the key goes to Composio). */
-    composioTools: (api_key: string, toolkit: string) => call<ComposioTools>("POST", "/settings/mcp-servers/composio/tools", { body: { api_key, toolkit } }),
+    composioTools: (api_key: string, toolkit: string, signal?: AbortSignal) => call<ComposioTools>("POST", "/settings/mcp-servers/composio/tools", { body: { api_key, toolkit }, signal }),
     /** The Composio preset's toolkit picker: the toolkits Composio offers, by name (the owner's session alone). */
-    composioToolkits: (api_key: string) => call<{ toolkits: ComposioToolkit[] }>("POST", "/settings/mcp-servers/composio/toolkits", { body: { api_key } }),
+    composioToolkits: (api_key: string, signal?: AbortSignal) => call<{ toolkits: ComposioToolkit[] }>("POST", "/settings/mcp-servers/composio/toolkits", { body: { api_key }, signal }),
     /** Has Composio make a managed MCP server for the chosen actions and saves it as an MCP server; `connect_url` when the
      *  toolkit needs the person's account connected; `not_served` names chosen actions Composio's server left out. */
     saveComposioServer: (name: string, api_key: string, toolkit: string, tools: string[]) => call<{ server: McpServer; connect_url?: string; not_served?: string[]; composio?: { removed: boolean; note: string } }>("PUT", `${mcpServer(name)}/composio`, { body: { api_key, toolkit, tools } }),

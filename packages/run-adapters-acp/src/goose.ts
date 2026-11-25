@@ -2,8 +2,12 @@
 // it on a pinned binary. Written for AgentRun.
 //
 // What the recipe holds was measured on Goose 1.59.2 over ACP:
-//  - `goose acp` in a private HOME, provider `anthropic` in approve mode (every tool call asks permission, and the
-//    adapter answers allow_once or reject_once, never an `always`); session naming and the keyring off;
+//  - `goose acp` in a private HOME, provider `anthropic` in approve mode: a call of one of Goose's own tools asks
+//    permission (the host's gate answers it, allow_once or reject_once, never an `always`), and a call of ours asks
+//    nothing, since `$HOME/.config/goose/permission.yaml`, the recipe's allowFile written at each start, allows each of
+//    the run's tools by its name (`agentrun__<name>`), which approve mode reads before it asks; our tools' gate is the
+//    host's, at the MCP call. The recipe declares no title tie (quirks.permissionTie), so every request Goose does make
+//    goes to the host's gate. Session naming and the keyring off;
 //  - every bundled extension off in `$HOME/.config/goose/config.yaml`, which leaves the model our MCP server's tools
 //    (`agentrun__<name>`) and `load_skill`, which Goose always offers. ACP's `_meta.enabledExtensions: []` is not used:
 //    it drops our MCP server too;

@@ -614,6 +614,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           try {
             const result = await running;
             const images = (result.images ?? []).map((image) => ({ type: 'image' as const, data: image.data, mimeType: image.mimeType }));
+            // The tool's structured content is not passed on: the pinned CLI replaces an MCP answer's content with
+            // JSON.stringify(structuredContent), so sending both would hide the tool's text from the model.
             return { content: [{ type: 'text' as const, text: result.text }, ...images], ...(result.isError ? { isError: true } : {}) };
           } catch (err) {
             // The barrier timed out (nothing ran), or the drive stopped (the bridge halted it).

@@ -4,10 +4,10 @@
 // count, a file name, a duration, another service's status) is no refused key, and the error is left as it is.
 import { DEFAULT_HARNESS } from "./harness.js";
 import { harnessOf } from "./harness-table.js";
-import { cutSecrets, endsInScheme, redactSecrets, secretShapes, valueLeft, valueMatcher } from "./learn/secrets.js";
+import { cutSecrets, endsInScheme, foldsHeld, redactSecrets, secretShapes, valueLeft, valueMatcher } from "./learn/secrets.js";
 import { hostModel, MODEL_KEYS } from "./model.js";
 import { modelWire, openRouterOnly, WIRES } from "./provider.js";
-import { jsonEscapeAt, privateKeyEnd, scanned, squeeze, type Span } from "./redact/match.js";
+import { entityAt, jsonEscapeAt, privateKeyEnd, scanned, squeeze, type Span } from "./redact/match.js";
 import { savedGatewayIn } from "./model-gateway.js";
 
 /** The key a run's model requests carry, and who reads it: a provider's (saved in Settings → Model keys, or set where
@@ -52,6 +52,10 @@ function detailOf(rest: string): string {
   return (text.split(/(?<=[.!?])\s/)[0] ?? "").slice(0, 200).replace(/[.\s]+$/, "");
 }
 
+/** How many texts redacted and withheldWhole have read in this process: a test reads it to see a read of a run's rows
+ *  cut only the texts an earlier read had not (store-reads/journal.ts rowCutsOnce). */
+export const cutPasses = { count: 0 };
+
 /** The most of a run's error or a tool's output serve ever shows: a Timeline row's text, cut at 2000 characters
  *  (`CAPS.text` in timeline/; a summary and a tool result's preview at 500), which the error box reads too. */
 const SHOWN = 2000;
@@ -66,6 +70,7 @@ const SHOWN = 2000;
  *  error costs no more to redact than a short one, whatever it holds. `shown`: a head of another length, for a reader
  *  that is shown more. */
 export function redacted(text: string, secrets: readonly string[], shown = SHOWN): string {
+  cutPasses.count++;
   const longest = secrets.reduce((most, value) => Math.max(most, value.length), 0);
   const window = shown + 6 * longest + 16;
   if (text.length <= window) return redactSecrets(text, secrets, Buffer.byteLength(text));
@@ -128,9 +133,12 @@ export function redactedCall(text: string, secrets: readonly string[], shown: nu
 
 /** Whether redactSecrets withholds `text` whole: it holds a held value or a secret shape no cut in place takes (split by
  *  whitespace, encoded, written as JSON's \uXXXX escapes). Read whole, never in pieces: the caller bounds what it reads
- *  (a web call's strings, joined: timeline calls.holds). */
-export function withheldWhole(text: string, secrets: readonly string[]): boolean {
-  return redactSecrets(text, secrets, Number.POSITIVE_INFINITY) === "[redacted]";
+ *  (a call's arguments or a web call's output: TimelineOptions.holds). `held`: spans of `text` cut in place beside its
+ *  own finds, so a value read wholly inside one of them is taken there (sdk/runs.ts withheldParts: a part withheld by
+ *  itself). */
+export function withheldWhole(text: string, secrets: readonly string[], held: readonly (readonly [number, number])[] = []): boolean {
+  cutPasses.count++;
+  return redactSecrets(text, secrets, Number.POSITIVE_INFINITY, held) === "[redacted]";
 }
 
 /** Whether the text a reader is about to be shown (`shown`, what the caller returns) holds a held value, or the joined
@@ -166,6 +174,7 @@ type Read = { text: string; cuts: readonly Span[] };
  *  Each piece is redacted, then shown as `show` makes it: `out` is what the pieces show, the pass reads them unshown. */
 function inPieces(text: string, secrets: readonly string[], enough = Number.POSITIVE_INFINITY, show: (piece: string) => string = (piece) => piece): { out: string; seen: Seen; short: boolean } {
   const hold = 6 * secrets.reduce((most, value) => Math.max(most, value.length), 0) + 16;
+  const fold = foldsHeld(secrets);
   const out: string[] = [];
   const shapes: string[] = [];
   const reads: Read[] = [];
@@ -189,8 +198,8 @@ function inPieces(text: string, secrets: readonly string[], enough = Number.POSI
       // The run is shown as "[redacted]": its head is read, covered, for the rest of a value split before it, and its
       // tail (tailOf: `hold` characters the matcher sees, at most a piece), covered too, for the head of a value whose
       // rest comes after it. One read, the two joined by a line break, as each piece is one.
-      const head = peek(text, start, hold);
-      const tail = head === undefined ? undefined : tailOf(text, start, to, hold);
+      const head = peek(text, start, hold, fold);
+      const tail = head === undefined ? undefined : tailOf(text, start, to, hold, fold);
       if (head === undefined || tail === undefined) unread = true;
       else {
         shapes.push(`${redactSecrets(head, secrets, Buffer.byteLength(head))}[redacted]`);
@@ -219,7 +228,7 @@ function inPieces(text: string, secrets: readonly string[], enough = Number.POSI
     const space = run ? text.slice(from, from + ANSWER_PIECE).search(/\s/) : 0;
     scanned.chars += space < 0 ? Math.min(ANSWER_PIECE, text.length - from) : space + 1;
     const runTo = from + (space < 0 ? ANSWER_PIECE : space);
-    const ahead = peek(text, from, hold);
+    const ahead = peek(text, from, hold, fold);
     if (ahead === undefined) unread = true;
     else {
       const rest = runTo > from + ahead.length ? text.slice(from, runTo) : ahead;
@@ -243,40 +252,43 @@ function inPieces(text: string, secrets: readonly string[], enough = Number.POSI
 }
 
 /** text from `from` on, as far as `count` characters the matcher sees (all of it, if it holds fewer), each run of
- *  whitespace in it one space. The matcher reads "+" as a space and decodes percent-encoded bytes and JSON's escapes
- *  (one level and two, as the JSON view reads them), so a "+", an encoded byte and an escape that decodes to whitespace
+ *  whitespace in it one space. The matcher reads "+" as a space and decodes percent-encoded bytes, JSON's escapes (one
+ *  level and two, as the JSON view reads them) and HTML's numeric character references, so a "+", an encoded byte, an
+ *  escape and a reference that decode to whitespace
  *  count no more than whitespace does, and any other escape counts as what the view keeps of the character it decodes
- *  to. A character that renders as nothing (a zero-width space, a soft hyphen) counts as nothing too: the views drop it.
- *  Padding of any of them never hides the rest of a value split before it. Undefined, so the caller withholds the text,
- *  when that takes more than a piece of text (a run of whitespace counted as one): no redaction pass reads more than a
- *  piece. */
-function peek(text: string, from: number, count: number): string | undefined {
-  const read = visible(text, from, count, text.length);
+ *  to. A character that renders as nothing (a zero-width space, a soft hyphen) or a combining mark counts as nothing
+ *  too: the views drop it. So does a quote or JSON's punctuation ("{", "}", "[", "]", ",", ":"), which the join view
+ *  drops between a text's strings, and, with `fold` (a held value folds: learn/secrets.ts foldsHeld), a separator ("-",
+ *  "_", ":", "."), which the fold view drops. Padding of any of them never hides the rest of a value split before it.
+ *  Undefined, so the caller withholds the text, when that takes more than a piece of text (a run of whitespace counted
+ *  as one): no redaction pass reads more than a piece. */
+function peek(text: string, from: number, count: number, fold: boolean): string | undefined {
+  const read = visible(text, from, count, text.length, fold);
   return read.span > ANSWER_PIECE ? undefined : read.parts.join("");
 }
 
 /** The end of the run text[start, to) the pass reads for the head of a value whose rest comes after the run: as few of
  *  its last characters as hold `count` characters the matcher sees (at most a piece's worth), counted as peek counts
- *  them, so padding the views read as nothing (whitespace, a zero-width space, a soft hyphen, an escape or encoded bytes
- *  that decode to either) between that head and the run's end never pushes the head out of it. Read forward from a
- *  start moved back from `to`, twice as far each time, so it reads at most two pieces in all. Undefined, so the caller
- *  withholds the text, when that takes more than a piece of text. */
-function tailOf(text: string, start: number, to: number, count: number): string | undefined {
+ *  them (with `fold` as peek's), so padding the views read as nothing (whitespace, a zero-width space, a soft hyphen, a
+ *  quote or JSON's punctuation, a separator a folded value drops, an escape, a character reference or encoded bytes
+ *  that decode to any of them) between that head and the run's end never pushes the head out of it. Read forward from
+ *  a start moved back from `to`, twice as far each time, so it reads at most two pieces in all. Undefined, so the
+ *  caller withholds the text, when that takes more than a piece of text. */
+function tailOf(text: string, start: number, to: number, count: number, fold: boolean): string | undefined {
   const want = Math.min(count, ANSWER_PIECE);
   for (let width = Math.min(want, to - start); ; width = Math.min(2 * width, ANSWER_PIECE, to - start)) {
     const from = to - width;
-    if (from === start || visible(text, from, want, to).found >= want) return text.slice(from, to);
+    if (from === start || visible(text, from, want, to, fold).found >= want) return text.slice(from, to);
     if (width >= ANSWER_PIECE) return undefined;
   }
 }
 
 /** text[from, to) read as peek says, until `count` characters the matcher sees are found or the read passes a piece
  *  of text (`span`, a run of whitespace counted as one): what it read, as peek returns it, and how many it found. */
-function visible(text: string, from: number, count: number, to: number): { parts: string[]; found: number; span: number } {
+function visible(text: string, from: number, count: number, to: number, fold: boolean): { parts: string[]; found: number; span: number } {
   const parts: string[] = [];
   let span = 0;
   let found = 0;
-  let escape: { char: string; end: number } | undefined;
   for (let at = from; at < to && found < count && span <= ANSWER_PIECE; ) {
     SPACES.lastIndex = at;
     let end = SPACES.test(text) ? SPACES.lastIndex : at;
@@ -285,13 +297,21 @@ function visible(text: string, from: number, count: number, to: number): { parts
       span++;
     } else {
       while (end - at <= ANSWER_PIECE && end + 3 <= to && text[end] === "%" && HEX_PAIR.test(text.slice(end + 1, end + 3))) end += 3;
-      if (end > at) found += squeeze(Buffer.from(text.slice(at, end).replaceAll("%", ""), "hex").toString("utf8")).length;
-      else if (text[at] === "\\" && (escape = jsonEscapeAt(text, at)) !== undefined) {
-        end = escape.end;
-        found += squeeze(escape.char).length;
-      } else {
-        end = at + 1;
-        if (text[at] !== "+") found += squeeze(text[at]!).length;
+      if (end > at) found += kept(Buffer.from(text.slice(at, end).replaceAll("%", ""), "hex").toString("utf8"), fold);
+      else {
+        // A character past U+FFFF is read whole, its two UTF-16 units as they are or as two escapes, as the views gather
+        // it before they squeeze it: a combining mark past U+FFFF is then dropped as the views drop it, where each of
+        // its halves alone would count as one.
+        let read = charAt(text, at);
+        end = read.end;
+        if (end < to && HIGH(read.char)) {
+          const low = charAt(text, end);
+          if (LOW(low.char)) {
+            read = { char: read.char + low.char, end: low.end, raw: false };
+            end = low.end;
+          }
+        }
+        if (!(read.raw && read.char === "+")) found += kept(read.char, fold);
       }
       parts.push(text.slice(at, end));
       span += end - at;
@@ -302,8 +322,29 @@ function visible(text: string, from: number, count: number, to: number): { parts
   }
   return { parts, found, span };
 }
+/** The character text[at] starts, as the views read it: a JSON escape's (jsonEscapeAt) or a character reference's
+ *  (entityAt), else the UTF-16 unit itself (`raw`), and where it ends. */
+function charAt(text: string, at: number): { char: string; end: number; raw: boolean } {
+  let escape: { char: string; end: number } | undefined;
+  if ((text[at] === "\\" && (escape = jsonEscapeAt(text, at)) !== undefined) || (text[at] === "&" && (escape = entityAt(text, at)) !== undefined))
+    return { ...escape, raw: false };
+  return { char: text[at]!, end: at + 1, raw: true };
+}
+const HIGH = (char: string): boolean => char.length === 1 && char.charCodeAt(0) >= 0xd800 && char.charCodeAt(0) <= 0xdbff;
+const LOW = (char: string): boolean => char.length === 1 && char.charCodeAt(0) >= 0xdc00 && char.charCodeAt(0) <= 0xdfff;
 const SPACES = /\s+/y;
 const HEX_PAIR = /^[0-9A-Fa-f]{2}$/;
+/** What every view drops between a text's strings: a quote and JSON's punctuation (the join view). */
+const JOIN_DROPS = new Set(['"', "{", "}", "[", "]", ",", ":"]);
+/** What the fold view drops: the separators of a hex identifier. */
+const FOLD_DROPS = new Set(["-", "_", ":", "."]);
+/** How many characters the views keep of `chars` at the least (peek): squeezed, less each the join view drops, and,
+ *  with `fold`, each the fold view drops. */
+function kept(chars: string, fold: boolean): number {
+  let count = 0;
+  for (const char of squeeze(chars)) if (!JOIN_DROPS.has(char) && !(fold && FOLD_DROPS.has(char))) count += char.length;
+  return count;
+}
 
 /** Where the piece of `text` read from `from` ends: at its last whitespace before ANSWER_PIECE characters; with none, at
  *  runCut's place, else at the next whitespace (a run read as one, or unread past ANSWER_PIECE). Never inside a private
@@ -425,6 +466,23 @@ export function redactedOutput(value: unknown, secrets: readonly string[]): unkn
     return new Set(entries.map(([key]) => key)).size === entries.length ? Object.fromEntries(entries) : "[redacted]";
   }
   return value;
+}
+
+/** `value` as redactedOutput cuts it, read whole first: an object or an array whose JSON holds a held value no cut in
+ *  place takes (withheldWhole, whose join view reads its strings joined: one split across two of its fields, or across a
+ *  property name and its value) is withheld whole, as "[redacted]", as a call's arguments are (timeline.ts argsOf). A
+ *  bigint is read as its digits; a value JSON cannot write is withheld. */
+export function redactedOutputWhole(value: unknown, secrets: readonly string[]): unknown {
+  if (value !== null && typeof value === "object") {
+    let json: string;
+    try {
+      json = JSON.stringify(value, (_key, item: unknown) => (typeof item === "bigint" ? item.toString() : item));
+    } catch {
+      return "[redacted]";
+    }
+    if (withheldWhole(json, secrets)) return "[redacted]";
+  }
+  return redactedOutput(value, secrets);
 }
 
 /** What a thinking or text block may show while it streams: what has streamed so far,

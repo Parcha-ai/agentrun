@@ -16,13 +16,11 @@
 // erased with that end, and revoked by its caller) or tied to no run, with no key to spend, is skipped or refused in words.
 import { ApiError, type InputIssue } from "./errors.js";
 import { handedSecretOf } from "./handed-secret.js";
-import { PLAN_PROVIDER } from "./chatgpt-plan.js";
-import { DEFAULT_HARNESS } from "./harness.js";
-import { harnessOf } from "./harness-table.js";
-import { FAUX_ENV, GATEWAY_KEY_ENV, hostModel, MODEL_PROVIDER, PROVIDER_KEYS } from "./model.js";
+import { isLoopbackName } from "./host-check.js";
+import { OLLAMA_DEFAULT_HOST, OLLAMA_PORT } from "./ollama-provider.js";
+import { FAUX_ENV, GATEWAY_KEY_ENV, MODEL_PROVIDER, PROVIDER_KEYS } from "./model.js";
 import { gatewayBase } from "./provider.js";
 import type { RunLaunch } from "./run-launch.js";
-import { modelWire, WIRES } from "./wires.js";
 
 /** The longest model key a run takes: a header value, never a document. */
 export const MAX_MODEL_KEY_CHARS = 4096;
@@ -66,38 +64,41 @@ export function modelKeyOf(value: unknown, issues: InputIssue[]): string | undef
   return wrong ? void issues.push(wrong) : value;
 }
 
+/** Whether the model gateway `env` names (AGENT_MODEL_BASE_URL) is on this machine: maybe an Ollama reached as a gateway,
+ *  which AgentRun lists itself with no key once the gateway is removed. */
+export function gatewayOnThisMachine(env: NodeJS.ProcessEnv): boolean {
+  const origin = runModelOrigin(env);
+  return origin !== undefined && isLoopbackName(new URL(origin).hostname);
+}
+
+/** The move off a gateway on this machine (`env`), in words, or "" where the gateway is elsewhere or there is none.
+ *  `env` is the server's: its OLLAMA_HOST is the Ollama it lists (server.ts sets the default address there on one owner's
+ *  own machine), so where it is unset (a shared server naming none) or is the default while the gateway is on another
+ *  port (an Ollama on a port of its own), the move adds OLLAMA_HOST, or Ollama is lost with the gateway. */
+export function gatewayMove(env: NodeJS.ProcessEnv): string {
+  if (!gatewayOnThisMachine(env)) return "";
+  const origin = new URL(runModelOrigin(env)!);
+  const port = origin.port || (origin.protocol === "https:" ? "443" : "80");
+  const ollamaHost = env.OLLAMA_HOST?.trim();
+  const host = !ollamaHost || (ollamaHost === OLLAMA_DEFAULT_HOST && port !== OLLAMA_PORT);
+  return ` The model gateway at AGENT_MODEL_BASE_URL is on this machine: if it is Ollama, remove AGENT_MODEL_BASE_URL${host ? " and set OLLAMA_HOST=<host:port> (Ollama's address)" : ""}; AgentRun lists Ollama itself, and the model is picked as ollama/<tag>.`;
+}
+
 /** 422 model_key_required: a run start, or a message that would start a turn, with no model key to spend: none handed,
- *  none the run holds, and none the server holds for its route. */
-export const modelKeyRequired = (message: boolean): ApiError =>
-  new ApiError("model_key_required", `This server holds no model key for this run's model (AGENT_MODEL_API_KEY is not set and none is saved in Settings → Model keys), so each run's caller brings its own: send model_key with ${message ? "a message that starts a turn" : "the run"}, a key for the model gateway at AGENT_MODEL_BASE_URL (such as a LiteLLM virtual key) minted for ${message ? "that turn" : "this run"}.`, { fields: [{ field: "model_key", reason: "missing", message: "model_key is required here: the server holds no model key for this run's model." }] });
+ *  none the run holds, and none the server holds for its route. Where the gateway is on this machine (`env`), the words
+ *  name the move off it as well (gatewayMove): a service that reached Ollama through AGENT_MODEL_BASE_URL with
+ *  AGENT_MODEL_API_KEY=none gets this once that key is gone. */
+export const modelKeyRequired = (message: boolean, env?: NodeJS.ProcessEnv): ApiError =>
+  new ApiError("model_key_required", `This server holds no model key for this run's model (AGENT_MODEL_API_KEY is not set and none is saved in Settings → Model keys), so each run's caller brings its own: send model_key with ${message ? "a message that starts a turn" : "the run"}, a key for the model gateway at AGENT_MODEL_BASE_URL (such as a LiteLLM virtual key) minted for ${message ? "that turn" : "this run"}.${env ? gatewayMove(env) : ""}`, { fields: [{ field: "model_key", reason: "missing", message: "model_key is required here: the server holds no model key for this run's model." }] });
 
 /** What of a run says where its model requests go: its kind and its launch's pinned model. */
 export type ModelKeyTarget = { readonly kind: "agentic" | "workflow" | string; readonly model?: { readonly provider: string; readonly modelId: string } | undefined; readonly native?: boolean };
 
 /** A created run's ModelKeyTarget: its revision's kind and its launch's pinned model. A held run its model kept from
- *  running (run-launch.ts hold.refused) pins none, so it is keyed by its revision's model as named (heldKeyModel): a
- *  gateway server with no key refuses it at its create as it refuses any run there. */
-export function keyTargetOf(env: NodeJS.ProcessEnv, launch: Pick<RunLaunch, "model" | "native" | "hold" | "harness">, revision: { readonly kind: string; readonly body: unknown }): ModelKeyTarget {
-  const named = revision.kind === "agentic" ? (revision.body as { model?: unknown } | null)?.model : undefined;
-  const model = launch.model ?? (launch.hold?.refused ? heldKeyModel(env, launch.harness ?? DEFAULT_HARNESS, typeof named === "string" ? named : undefined) : undefined);
-  return { kind: revision.kind, ...(model ? { model } : {}), native: Boolean(launch.native) };
-}
-
-/** The model a run on `harness` of `ref` (its revision's; none, the host's default for the harness) is keyed by, read
- *  from the name alone (no model resolved, no key read): on the gateway, pi's model and a model on a wire the gateway
- *  serves are the gateway's (model.ts chooseModel, wires.ts WIRES), a ChatGPT plan's excepted; else the provider the
- *  name gives. None on a harness billed to its own plan, or for a name with no provider.
- *  It mirrors the router's gateway rule by name, so it moves with it: model.ts chooseModel (a ChatGPT plan's name goes to
- *  the plan, any other on AGENT_MODEL_BASE_URL to MODEL_PROVIDER), provider.ts modelOn (a harness on its own plan, no
- *  modelWire, chooses none) and wires.ts WIRES[wire].gateway (which CLI wires the gateway serves). A change to which
- *  names or wires go to the gateway there must be made here too, or a held run is checked for the wrong key. */
-function heldKeyModel(env: NodeJS.ProcessEnv, harness: string, ref: string | undefined): ModelKeyTarget["model"] {
-  const wire = harnessOf(env, harness)?.facts?.wire;
-  if (wire && !modelWire(wire)) return undefined;
-  const named = ref ?? hostModel(env, "default", harness);
-  if (env.AGENT_MODEL_BASE_URL && !named?.startsWith(`${PLAN_PROVIDER}/`) && (!wire || WIRES[wire].gateway)) return { provider: MODEL_PROVIDER, modelId: named ?? "" };
-  const slash = named?.indexOf("/") ?? -1;
-  return named && slash > 0 ? { provider: named.slice(0, slash), modelId: named.slice(slash + 1) } : undefined;
+ *  running (run-launch.ts hold.refused) pins none and makes no model call: no key is required for it, and one handed
+ *  with it is refused as never used (modelKeyMisfit). */
+export function keyTargetOf(launch: Pick<RunLaunch, "model" | "native">, revision: { readonly kind: string }): ModelKeyTarget {
+  return { kind: revision.kind, ...(launch.model ? { model: launch.model } : {}), native: Boolean(launch.native) };
 }
 
 /** The variables a run's model route reads its key from when that route goes to the model gateway (a workflow's model

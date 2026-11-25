@@ -216,7 +216,103 @@ export function inputSchemaIssues(schema: unknown, at = "definition.input_schema
   const content = isObject(schema.properties) ? schema.properties.content : undefined;
   if (content !== undefined && !(isObject(content) && content.type === "string")) return [issue(`${at}.properties.content`, "bad_format", `${at}.properties.content is {type: "string"}: content is reserved for the run's message`)];
   const compiled = schemaCheck(schema);
-  return "why" in compiled ? [issue(at, "bad_format", `${at} ${compiled.why}`)] : [];
+  if ("why" in compiled) return [issue(at, "bad_format", `${at} ${compiled.why}`)];
+  // What a run's start checks, checked here: the schema in force, and its own fields' schema (X_OWN_FIELDS), whose
+  // propertyNames sees the schema's $defs and definitions alone. A reference that names anything else compiles to a
+  // schema that refuses every name, so every run that gives a field of its own would be refused.
+  const inForce = inputSchemaOf(schema);
+  const forced = schemaCheck(inForce);
+  if ("why" in forced) return [issue(at, "bad_format", `${at} ${forced.why}`)];
+  const own = ownFieldsSchema(inForce);
+  if (own === undefined) return [];
+  const names = `${at}.propertyNames`;
+  const said = `${names} is checked against the input's own fields beside the schema's $defs and definitions alone:`;
+  const lost = unresolvedRefs(own.propertyNames, own);
+  if (lost !== undefined) return [issue(names, "bad_format", `${said} its $ref ${JSON.stringify(lost)} names nothing there`, `Move what ${lost} names under ${at}.$defs and refer to it as #/$defs/<name>.`)];
+  const ownCompiled = schemaCheck(own);
+  return "why" in ownCompiled ? [issue(names, "bad_format", `${said} ${ownCompiled.why}`)] : [];
+}
+
+/** The schema inputIssues checks an input's own fields against, content left out (X_OWN_FIELDS): the schema in force's
+ *  maxProperties and propertyNames, beside what a reference in them may name: its definitions, its id and its dialect.
+ *  Undefined when it has neither. */
+function ownFieldsSchema(inForce: Json): Json | undefined {
+  const own = inForce[X_OWN_FIELDS];
+  if (!isObject(own)) return undefined;
+  const targets = Object.fromEntries(Object.entries(inForce).filter(([key]) => key === "definitions" || (key.startsWith("$") && key !== "$ref")));
+  return { ...targets, type: "object", ...own };
+}
+
+/** The schemas a schema holds, by the keywords that hold one (a single schema, a list of them or a map of them); an
+ *  annotation's value (`examples`, `default`, `const`, `enum`, an extension's own data) is data, never a schema. */
+const ONE_SCHEMA = ["not", "if", "then", "else", "items", "additionalItems", "contains", "additionalProperties", "propertyNames", "unevaluatedItems", "unevaluatedProperties", "contentSchema"];
+const SCHEMA_LISTS = ["allOf", "anyOf", "oneOf", "prefixItems", "items"];
+const SCHEMA_MAPS = ["properties", "patternProperties", "$defs", "definitions", "dependentSchemas", "dependencies"];
+function subschemas(schema: Record<string, unknown>): unknown[] {
+  const held: unknown[] = [];
+  for (const key of ONE_SCHEMA) if (isObject(schema[key])) held.push(schema[key]);
+  for (const key of SCHEMA_LISTS) if (Array.isArray(schema[key])) held.push(...(schema[key] as unknown[]));
+  for (const key of SCHEMA_MAPS) if (isObject(schema[key])) held.push(...Object.values(schema[key] as Record<string, unknown>));
+  return held;
+}
+
+/** The subschemas that apply to an instance where `schema` does: all of them but its definitions (`$defs`,
+ *  `definitions`), which apply only where a reference names them. */
+const applied = (schema: Record<string, unknown>): unknown[] => {
+  const { $defs: _defs, definitions: _definitions, ...rest } = schema;
+  return subschemas(rest);
+};
+
+/** The first `$ref` that `node` reaches and that names nothing in `doc` (undefined when each one names something): a
+ *  JSON Pointer (`#/...`) that `doc` has no value at, an anchor (`#name`) no `$anchor` or `$dynamicAnchor` in it
+ *  declares, or any other reference when no `$id` in it could give that reference a target. The compiler takes such a
+ *  reference as the schema `false`. A reference that names something is followed into its target (once each: a cycle
+ *  ends), so a target that refers on to something the doc lacks is found too. Only schemas are read, by the keywords
+ *  that hold them (subschemas); a definition is reached only through a reference that names it, so one nothing names
+ *  is never checked (applied). A part under an `$id` of its own is left to the compiler: its references resolve
+ *  against that id. */
+function unresolvedRefs(node: unknown, doc: Json): string | undefined {
+  const anchors = new Map<string, unknown>();
+  let ids = false;
+  const scan = (value: unknown): void => {
+    if (!isObject(value)) return;
+    for (const key of ["$anchor", "$dynamicAnchor"]) if (typeof value[key] === "string") anchors.set(value[key] as string, value);
+    if (typeof value.$id === "string") ids = true;
+    subschemas(value).forEach(scan);
+  };
+  scan(doc);
+  const at = (pointer: string): { found: boolean; value?: unknown } => {
+    let here: unknown = doc;
+    for (const raw of pointer.split("/").slice(1)) {
+      const part = decodeURIComponent(raw).replace(/~1/g, "/").replace(/~0/g, "~");
+      if (Array.isArray(here) && /^(0|[1-9]\d*)$/.test(part) && Number(part) < here.length) here = here[Number(part)];
+      else if (isObject(here) && Object.hasOwn(here, part)) here = here[part];
+      else return { found: false };
+    }
+    return { found: true, value: here };
+  };
+  /** What `ref` names: found, with its target when this doc holds it (none for a reference an `$id` resolves). */
+  const target = (ref: string): { found: boolean; value?: unknown } => {
+    if (!ref.startsWith("#")) return { found: ids };
+    const fragment = ref.slice(1);
+    if (fragment === "") return { found: true, value: doc };
+    if (fragment.startsWith("/")) return at(fragment);
+    return anchors.has(fragment) ? { found: true, value: anchors.get(fragment) } : { found: false };
+  };
+  const seen = new Set<unknown>();
+  const walk = (value: unknown): string | undefined => {
+    if (!isObject(value) || typeof value.$id === "string" || seen.has(value)) return undefined;
+    seen.add(value);
+    if (typeof value.$ref === "string") {
+      const named = target(value.$ref);
+      if (!named.found) return value.$ref;
+      const lost = walk(named.value);
+      if (lost !== undefined) return lost;
+    }
+    for (const item of applied(value)) { const lost = walk(item); if (lost !== undefined) return lost; }
+    return undefined;
+  };
+  return walk(node);
 }
 
 /**
@@ -224,19 +320,30 @@ export function inputSchemaIssues(schema: unknown, at = "definition.input_schema
  * is always taken, as text: a run's message, which a follow-up and a trigger's line add to. It is required when the
  * schema has no field of its own, as an agent with no schema requires it. A schema whose own fields are all optional
  * (a template's `pr_number`, given by hand and left out of a trigger's runs) leaves `required` empty: a run gives
- * content or one of those fields, which inputIssues checks, so an input that says nothing is still refused.
+ * content or one of those fields, which inputIssues checks, so an input that says nothing is still refused. Neither the
+ * schema's maxProperties nor its propertyNames counts content (X_OWN_FIELDS).
  */
 export function inputSchemaOf(schema: unknown): Json {
   if (!isObject(schema)) return DEFAULT_INPUT_SCHEMA;
   const properties = isObject(schema.properties) ? schema.properties : {};
   const required = Array.isArray(schema.required) ? schema.required.filter((key): key is string => typeof key === "string") : [];
   const ownOptional = required.length === 0 && Object.keys(properties).some((key) => key !== "content");
+  const { maxProperties, propertyNames, ...rest } = schema;
+  const own: Json = { ...(maxProperties === undefined ? {} : { maxProperties }), ...(propertyNames === undefined ? {} : { propertyNames }) };
   return {
-    ...schema,
+    ...rest,
     properties: { ...properties, content: properties.content ?? { type: "string" } },
     required: required.some((key) => key !== "content") || ownOptional ? required : [...new Set([...required, "content"])],
+    ...(Object.keys(own).length ? { [X_OWN_FIELDS]: own } : {}),
   };
 }
+
+/**
+ * Where the schema in force keeps its schema's maxProperties and propertyNames (inputSchemaOf), which count and name the
+ * input's own fields: content is always taken (a trigger's line, its event and a schedule's last answer ride in it), so
+ * inputIssues checks these two against the input without it. A JSON Schema can't leave one property out of them.
+ */
+export const X_OWN_FIELDS = "x-own-fields";
 
 /** Each JSON Schema keyword's issue reason (InputIssue.reason): a keyword not named here is `invalid`. */
 const KEYWORD_REASON: Record<string, string> = {
@@ -258,18 +365,28 @@ export function inputIssues(input: Json, schema: Json, at = "input"): InputIssue
     out.push(issue(path, reason, message, fix));
   };
   // The schema in force compiles: a save checks it (inputSchemaIssues).
-  const compiled = schemaCheck(schema);
-  if ("why" in compiled) throw new Error(`the input schema ${compiled.why}`);
-  for (const error of compiled.validator.Errors(input)[1]) {
-    const where = [at, ...error.instancePath.split("/").slice(1).map((part) => part.replace(/~1/g, "/").replace(/~0/g, "~"))].join(".");
-    const params = error.params as Record<string, unknown>;
-    if (error.keyword === "required") for (const key of (params.requiredProperties as string[] | undefined) ?? []) add(`${where}.${key}`, "missing", `${where}.${key} is required`);
-    else if (error.keyword === "additionalProperties") for (const key of (params.additionalProperties as string[] | undefined) ?? []) add(`${where}.${key}`, "not_allowed", `${where} keeps no field ${key}`, `Remove ${where}.${key}.`);
-    // A closed object's own refusal of each extra property, said once above by its name.
-    else if (error.keyword === "boolean" && error.schemaPath.endsWith("/additionalProperties")) continue;
-    // A required text sent empty is one left blank (a form sends it so): said as a missing one is, never as its length.
-    else if (error.keyword === "minLength" && emptyRequired(input, schema, error.instancePath, error.schemaPath)) add(where, "missing", `${where} is required`);
-    else add(where, KEYWORD_REASON[error.keyword] ?? "invalid", `${where} ${error.message}`);
+  const report = (against: Json, value: Json) => {
+    const compiled = schemaCheck(against);
+    if ("why" in compiled) throw new Error(`the input schema ${compiled.why}`);
+    for (const error of compiled.validator.Errors(value)[1]) {
+      const where = [at, ...error.instancePath.split("/").slice(1).map((part) => part.replace(/~1/g, "/").replace(/~0/g, "~"))].join(".");
+      const params = error.params as Record<string, unknown>;
+      if (error.keyword === "required") for (const key of (params.requiredProperties as string[] | undefined) ?? []) add(`${where}.${key}`, "missing", `${where}.${key} is required`);
+      else if (error.keyword === "additionalProperties") for (const key of (params.additionalProperties as string[] | undefined) ?? []) add(`${where}.${key}`, "not_allowed", `${where} keeps no field ${key}`, `Remove ${where}.${key}.`);
+      // A closed object's own refusal of each extra property, said once above by its name.
+      else if (error.keyword === "boolean" && error.schemaPath.endsWith("/additionalProperties")) continue;
+      // A required text sent empty is one left blank (a form sends it so): said as a missing one is, never as its length.
+      else if (error.keyword === "minLength" && emptyRequired(input, schema, error.instancePath, error.schemaPath)) add(where, "missing", `${where} is required`);
+      else add(where, KEYWORD_REASON[error.keyword] ?? "invalid", `${where} ${error.message}`);
+    }
+  };
+  report(schema, input);
+  // Its maxProperties and propertyNames meet the input's own fields, content left out (X_OWN_FIELDS), beside what a
+  // reference in them may name: the schema's definitions, its id and its dialect.
+  const own = ownFieldsSchema(schema);
+  if (own !== undefined && isObject(input)) {
+    const { content: _content, ...ownFields } = input;
+    report(own, ownFields);
   }
   // A schema in force that requires nothing (inputSchemaOf: its own fields all optional) takes content or one of them:
   // an input naming none says nothing, said at content, with the fields that would do instead.

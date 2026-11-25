@@ -13,8 +13,8 @@ import { main } from "../dist/conformance/cli.js";
 import { checkExecStream, EXEC_STREAM_CHECKS, EXEC_STREAM_FACTS, formatExecStream, PID_STATE_SCRIPT, randomText, readFacts, tcpListeners, textProblem } from "../dist/conformance/exec-stream.js";
 import { fakeExecHost } from "./fake-exec-host.mjs";
 
-/** Short bounds: the no-timeout check sleeps 2 s, each step waits at most 3 s, the large payload is 1 MiB, stdout is left unread 200 ms. */
-const QUICK = { longMs: 2_000, stepMs: 3_000, largeBytes: 1024 * 1024, largeMs: 20_000, unreadMs: 200 };
+/** Short bounds: the no-timeout check sleeps 1 s, each step waits at most 3 s, the large payload is 1 MiB, stdout is left unread 200 ms. */
+const QUICK = { longMs: 1_000, stepMs: 3_000, largeBytes: 1024 * 1024, largeMs: 20_000, unreadMs: 200 };
 
 async function run(options = {}, checkOptions = {}) {
 	const host = fakeExecHost(options);
@@ -28,8 +28,22 @@ async function run(options = {}, checkOptions = {}) {
 
 const failed = (report) => report.checks.filter((check) => check.status === "fail").map((check) => check.id);
 
+/** One run on an exec that breaks nothing, made once and read by each test about it: which check each exec call was. */
+let good;
+const goodRun = () =>
+	(good ??= (async () => {
+		const host = fakeExecHost();
+		const ended = [];
+		try {
+			const report = await checkExecStream(host, "machine-1", { ...QUICK, onCheck: (check) => ended.push({ id: check.id, calls: host.calls.length }) });
+			return { report, host, ended };
+		} finally {
+			host.stopAll();
+		}
+	})());
+
 test("a live, two-way exec that keeps text intact, with no timeout, passes every check, and the pre-check calls exec alone", async () => {
-	const { report, host } = await run();
+	const { report, host } = await goodRun();
 	assert.deepEqual(failed(report), [], formatExecStream(report));
 	assert.equal(report.pass, true);
 	assert.deepEqual(
@@ -43,14 +57,8 @@ test("a live, two-way exec that keeps text intact, with no timeout, passes every
 test("every command the pre-check starts, each check's and the probe's, stays at or under 32 KiB of argv, so a vendor with a 64 KiB cap runs it", async () => {
 	// The size as a vendor counts it: each argument's UTF-8 bytes, summed, no separator. Modal refuses 64 KiB or more.
 	const size = (argv) => argv.reduce((sum, word) => sum + Buffer.byteLength(word, "utf8"), 0);
-	const host = fakeExecHost();
-	const ended = [];
-	try {
-		const report = await checkExecStream(host, "machine-1", { ...QUICK, onCheck: (check) => ended.push({ id: check.id, calls: host.calls.length }) });
-		assert.equal(report.pass, true, formatExecStream(report));
-	} finally {
-		host.stopAll();
-	}
+	const { report, host, ended } = await goodRun();
+	assert.equal(report.pass, true, formatExecStream(report));
 	const over = host.calls.flatMap((call, i) => {
 		const by = ended.find((check) => i < check.calls)?.id ?? "the capability probe";
 		return size(call.argv) > 32 * 1024 ? [`${by} starts ${size(call.argv)} bytes of argv`] : [];
@@ -99,7 +107,8 @@ test("an exec that decodes each piece of output as text on its own fails stdout-
 });
 
 test("an exec that holds output until the process exits fails stdout-live in those words", async () => {
-	const { byId } = await run({ bufferOutput: true });
+	// large, unread here, would otherwise wait out QUICK's 20 s for output that comes only at the exit.
+	const { byId } = await run({ bufferOutput: true }, { largeMs: 3_000 });
 	assert.equal(byId["stdout-live"].status, "fail");
 	assert.match(byId["stdout-live"].words, /holds output until the process exits/);
 	assert.equal(byId["stdin-live"].status, "fail");
@@ -167,7 +176,8 @@ test("large stopped by the caller during a write its deadline bounds says it was
 });
 
 test("an exec that holds stdin until end() fails stdin-live, and names stdin since output streams", async () => {
-	const { byId } = await run({ holdStdin: true });
+	// large, unread here, would otherwise wait out QUICK's 20 s for writes held until an end() it never makes.
+	const { byId } = await run({ holdStdin: true }, { largeMs: 3_000 });
 	assert.equal(byId["stdout-live"].status, "pass");
 	assert.equal(byId["stdin-live"].status, "fail");
 	assert.match(byId["stdin-live"].words, /holds stdin until end\(\)/);
@@ -182,7 +192,7 @@ test("an exec that merges stderr into stdout fails stderr", async () => {
 });
 
 test("an exec with a command timeout fails no-timeout", async () => {
-	const { byId } = await run({ commandTimeoutMs: 1_000 });
+	const { byId } = await run({ commandTimeoutMs: 500 });
 	assert.equal(byId["no-timeout"].status, "fail");
 	assert.match(byId["no-timeout"].words, /command timeout/);
 });
@@ -268,7 +278,7 @@ function shadowed(host, programs) {
 const factsOf = (report) => Object.fromEntries(report.facts.map((fact) => [fact.id, fact]));
 
 test("after the checks, the report carries what the machine offers, read through exec: this machine's uid, arch, kernel and listeners", async () => {
-	const { report } = await run();
+	const { report } = await goodRun();
 	assert.equal(report.pass, true);
 	assert.equal(report.factsProblem, undefined);
 	assert.deepEqual(
@@ -362,7 +372,9 @@ test("the CLI's --exec-stream builds the host with the module's createHost and r
 			module,
 			`import { fakeExecHost } from ${JSON.stringify(new URL("./fake-exec-host.mjs", import.meta.url).href)};
 export const given = [];
-export function createHost(options) { given.push(options); return fakeExecHost(options.broken ? { tty: true } : {}); }
+// A broken host's exec refuses at once: every check fails in no time, where a slow one would run --quick's full bounds.
+const refusing = { descriptor: { id: "refusing" }, exec: async () => { throw new Error("no such machine"); } };
+export function createHost(options) { given.push(options); return options.broken ? refusing : fakeExecHost(); }
 `,
 		);
 		const output = (into) => ({ write: (text, done) => (into.push(text), done?.()) });
@@ -377,7 +389,8 @@ export function createHost(options) { given.push(options); return fakeExecHost(o
 		assert.ok(Date.now() - started < 60_000, "--quick does not sleep 75 s");
 		const broken = [];
 		assert.equal(await main(["--provider", module, "--exec-stream", "--machine", "box-7", "--quick"], { stdout: output(broken), stderr: output([]), providerOptions: { env: {}, broken: true } }), 1);
-		assert.match(broken.join(""), /✗ stdout-text +U\+000A \(at byte 12\) came back on stdout as 0d 0a/);
+		assert.match(broken.join(""), /✗ stdout-text +.*failed: no such machine\n/);
+		assert.match(broken.join(""), /\nexec FAIL: 10 of 10 checks failed/);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}

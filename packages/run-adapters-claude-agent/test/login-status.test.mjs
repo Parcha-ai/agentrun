@@ -13,7 +13,7 @@ import { createHash } from 'node:crypto';
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync, writeSync } from 'node:fs';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { createServer } from 'node:net';
-import { homedir, tmpdir } from 'node:os';
+import { homedir, tmpdir, userInfo } from 'node:os';
 import { isAbsolute, join, relative } from 'node:path';
 import { after, test } from 'node:test';
 import * as claude from '@parcha/agentrun-harness-claude';
@@ -253,7 +253,8 @@ test("every place's status check runs in the person's real home, never one under
       assert.ok(secure === '' || outside(tmp, secure), `${platform} ${where}: the credentials dir ${secure} is never the copy's`);
       // Every place, AgentRun's own included: the config dir is the copy, and the rest is a run's (claudeLoginEnv).
       assert.ok(seen.env.CLAUDE_CONFIG_DIR && !outside(tmp, seen.env.CLAUDE_CONFIG_DIR), `${platform} ${where}: the config dir is the copy, under the check's folder`);
-      assert.deepEqual(placeVars(seen.env), { HOME: home, ...claude.claudeLoginEnv(login, platform), CLAUDE_CONFIG_DIR: seen.env.CLAUDE_CONFIG_DIR }, `${platform} ${where}: a run's variables, in the person's home, on a copy`);
+      // As the user the server runs as (USER and LOGNAME): on macOS the account the login's Keychain item is under.
+      assert.deepEqual(placeVars(seen.env), { HOME: home, USER: userInfo().username, LOGNAME: userInfo().username, ...claude.claudeLoginEnv(login, platform), CLAUDE_CONFIG_DIR: seen.env.CLAUDE_CONFIG_DIR }, `${platform} ${where}: a run's variables, in the person's home, as the server's user, on a copy`);
     }
   }
   // A login made with no home of either kind: the server's own (os.homedir()).

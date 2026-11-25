@@ -126,6 +126,13 @@ export const accountRowSecrets = (plain: string): string[] => {
  *  connection (a call itself goes by the server's X-GM-EXT-1). */
 export const isGmailAccount = (account: Pick<EmailAccount, "preset" | "imap">): boolean => account.preset === "gmail" || /(^|\.)gmail\.com$/i.test(account.imap.host);
 
+/** The authserv-id Gmail's receiving servers write on the Authentication-Results they put on every message they take in. */
+export const GMAIL_AUTHSERV_ID = "mx.google.com";
+/** The authserv-id (RFC 8601) the account's provider's receiving servers write on their own Authentication-Results, the
+ *  only ones a starter's DMARC pass is read from (authentication.ts dmarcPassed): Gmail's (isGmailAccount). Undefined for
+ *  any other provider, whose id isn't known here, so no message there carries a verdict (fail closed). */
+export const authservIdOf = (account: Pick<EmailAccount, "preset" | "imap">): string | undefined => (isGmailAccount(account) ? GMAIL_AUTHSERV_ID : undefined);
+
 /** The account's public part as kept now, never its password; undefined when none is kept or it does not open. */
 export async function keptAccount(store: AccountStore, sealKey: Buffer, account = DEFAULT_ACCOUNT): Promise<EmailAccount | undefined> {
   const opened = await openAccount(store, sealKey, account);

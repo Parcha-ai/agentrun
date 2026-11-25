@@ -11,9 +11,10 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { create, DaytonaProvider } from "../dist/daytona.js";
 import { dialLaunch } from "../dist/hosted/scripts.js";
-import { AttachHub, checkLifetime, DAYTONA, kindRefusals, MACHINE_TOKEN_SOURCE, MemoryMachineTokens, mountsOf } from "../dist/index.js";
+import { AttachHub, checkLifetime, DAYTONA, kindRefusals, MACHINE_TOKEN_SOURCE, MemoryMachineTokens, mountsOf, readFile } from "../dist/index.js";
 import { bootDial, desktopOverDial, dialServer } from "./fake-dial-host.mjs";
 import { fakeHost } from "./fake-host.mjs";
+import { refusesHttp } from "./https-refusal.mjs";
 
 const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 const KEY = "daytona_fake_computer_key_0123456789";
@@ -41,7 +42,7 @@ const EGRESS = "192.0.2.40:18100:42050";
 function fakeHostFor(provider) {
 	const fake = fakeHost({ descriptor: provider.host.descriptor, facts: { ...provider.host.facts }, box: { reached: [] } });
 	for (const call of ["create", "get", "list", "delete", "exec", "upload", "errorCode"]) provider.host[call] = fake.host[call].bind(fake.host);
-	return { host: provider.host, rootRuns: fake.rootRuns };
+	return { host: provider.host, rootRuns: fake.rootRuns, fake };
 }
 
 const stray = [];
@@ -176,8 +177,8 @@ test("the constructor refuses what it cannot run with, in words", () => {
 	const make = (options) => () => new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch: async () => assert.fail("no request"), ...options });
 	assert.throws(make({ apiKey: "" }), /the Daytona API key, is required/);
 	assert.throws(() => create({ daemonPath: DAEMON }), /options\.apiKey/);
-	for (const apiUrl of ["http://api.daytona.test/api", "http://127.0.0.1:3000/api", "http://localhost:3000/api"]) assert.throws(make({ apiUrl }), /^Error: the Daytona API URL must be https, so the key never crosses in the clear: http:$/, apiUrl);
-	assert.throws(make({ apiUrl: "api.daytona.test" }), /^Error: the Daytona API URL is not a URL: "api\.daytona\.test"$/);
+	for (const apiUrl of ["http://api.daytona.test/api", "http://127.0.0.1:3000/api", "http://localhost:3000/api"]) assert.throws(make({ apiUrl }), refusesHttp("the Daytona API URL", apiUrl, KEY));
+	assert.throws(make({ apiUrl: "api.daytona.test" }), /^Error: the Daytona API URL is not a URL$/);
 	assert.throws(make({ daemonUser: "0:0" }), /root/);
 	assert.throws(make({ daemonUser: "1000:0" }), /root's group/);
 	for (const daemonUser of ["00:1000", "000:000", "1000:00", "0:01000"]) assert.throws(make({ daemonUser }), /root or in root's group/, daemonUser);
@@ -488,8 +489,74 @@ test("a redirect is never followed, and a toolbox URL that is not https is refus
 	const { rec, provider } = setup({ [`GET /api/sandbox/${sb.id}`]: { body: sb } });
 	const connected = await provider.connect(REF);
 	assert.equal(connected.error?.code, "vendor");
-	assert.match(connected.error.message, /not https/);
+	assert.match(connected.error.message, /the toolbox URL Daytona gave for \S+ must be https, so the key never crosses in the clear: http:/);
 	assert.deepEqual([...new Set(rec.requests.map((r) => r.host))], ["api.daytona.test"], "nothing went to the toolbox");
+});
+
+test("download: GET files/download on the sandbox's toolbox, the path a query, the bytes as they come with the key; a refusal throws in Daytona's words", async () => {
+	const bytes = Buffer.from([0, 1, 2, 255, 10, 13, 0]);
+	const requests = [];
+	const fetch = async (url, init = {}) => {
+		const at = new URL(url);
+		requests.push({ method: init.method, host: at.host, path: at.pathname, query: at.searchParams.get("path"), headers: init.headers ?? {} });
+		if (at.pathname === `/api/sandbox/${REF.id}`) return Response.json(sandbox());
+		if (at.pathname === `/toolbox/${REF.id}/files/download` && at.searchParams.get("path") === "/run/agentrun-read/a b") return new Response(bytes, { headers: { "content-type": "application/octet-stream" } });
+		if (at.pathname === `/toolbox/${REF.id}/files/download`) return Response.json({ statusCode: 404, message: "file not found" }, { status: 404 });
+		return Response.json({ statusCode: 401, message: "Invalid credentials" }, { status: 401 });
+	};
+	const provider = new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch, timeouts: TIMEOUTS });
+	assert.equal(typeof provider.host.download, "function", "a Daytona host on connect exec has download");
+	const got = await provider.host.download(REF.id, "/run/agentrun-read/a b", { timeoutMs: 1_000 });
+	assert.equal(Buffer.compare(Buffer.from(got), bytes), 0, "the bytes, binary as they are");
+	const download = requests.find((r) => r.path.endsWith("/files/download"));
+	assert.deepEqual([download.method, download.host, download.path, download.query], ["GET", "proxy.daytona.test", `/toolbox/${REF.id}/files/download`, "/run/agentrun-read/a b"]);
+	assert.equal(new Headers(download.headers).get("authorization"), `Bearer ${KEY}`);
+	await assert.rejects(provider.host.download(REF.id, "/run/agentrun-read/gone", { timeoutMs: 1_000 }), (error) => {
+		assert.equal(error.code, "not_found");
+		assert.match(error.message, /file not found/);
+		return true;
+	});
+});
+
+test("a read past one chunk on a Daytona computer comes through the toolbox's files/download, not the bridge: the bridge carries the first chunk alone (the host's other calls played by the adapter's fake host)", async () => {
+	const chunk = 512 * 1024;
+	const big = Buffer.alloc(2 * chunk + 3);
+	for (let i = 0; i < big.length; i++) big[i] = i % 251;
+	const downloads = [];
+	let fake;
+	const fetch = async (url, init = {}) => {
+		const at = new URL(url);
+		const sandboxAt = /^\/api\/sandbox\/([^/]+)$/.exec(at.pathname);
+		if (init.method === "GET" && sandboxAt) return Response.json(sandbox({ id: sandboxAt[1] }));
+		const fileAt = /^\/toolbox\/([^/]+)\/files\/download$/.exec(at.pathname);
+		if (init.method === "GET" && fileAt) {
+			const path = at.searchParams.get("path");
+			downloads.push(path);
+			const bytes = fake.machines.get(fileAt[1])?.files.get(path);
+			return bytes ? new Response(bytes) : Response.json({ statusCode: 404, message: "file not found" }, { status: 404 });
+		}
+		return assert.fail(`no other request to Daytona: ${init.method} ${at.pathname}`);
+	};
+	const provider = new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch, timeouts: { ...TIMEOUTS, listedStableMs: 0 } });
+	({ fake } = fakeHostFor(provider));
+	const made = await provider.create(SPEC, { requestId: "r-big-read" });
+	assert.equal(made.ok, true, made.ok ? "" : `${made.error.code}: ${made.error.message}`);
+	const m = fake.machines.get(made.value.id);
+	m.files.set("/work/big.bin", big);
+	const connected = await provider.connect({ id: made.value.id, name: made.value.name });
+	assert.equal(connected.ok, true, connected.ok ? "" : `${connected.error.code}: ${connected.error.message}`);
+	const before = fake.requests.length;
+	const read = await readFile(connected.value.client, "/work/big.bin");
+	assert.equal(read.ok, true, read.ok ? "" : `${read.error.code}: ${read.error.message}`);
+	assert.equal(Buffer.compare(Buffer.from(read.value), big), 0, "every byte, in order");
+	const bridged = fake.requests.slice(before).filter((r) => r.method === "files.read" && r.params.path === "/work/big.bin");
+	assert.deepEqual(bridged.map((r) => r.params.offset), [0], "the bridge carried the first chunk alone");
+	assert.equal(downloads.length, 1, "one download");
+	assert.match(downloads[0], /^\/run\/agentrun-read\/[0-9a-f]{32}$/, "of the copy made as the daemon's user");
+	// Its removal never holds up the read: a moment for it to run.
+	for (let i = 0; i < 100 && m.files.has(downloads[0]); i++) await new Promise((done) => setTimeout(done, 5));
+	assert.equal(m.files.has(downloads[0]), false, "the copy is removed");
+	await connected.value.close();
 });
 
 test("network(): refuses a form Daytona never makes, with refused and no request: a Daytona computer's network is fixed at create (the read is the adapter's probe from inside)", async () => {
@@ -767,6 +834,7 @@ test("connect dial: create sends the boot env as the sandbox's env, AGENTRUN_ATT
 	assert.equal(provider.host.facts.connect, "dial");
 	assert.equal(provider.host.exec, undefined, "no exec");
 	assert.equal(provider.host.upload, undefined, "no upload");
+	assert.equal(provider.host.download, undefined, "no download");
 	const made = await provider.create({ ...SPEC, image: "agentrun-archil-0123456789ab" }, { requestId: "r-dial" });
 	assert.equal(made.error?.code, "invalid", "a create Daytona refused made nothing");
 	const body = posted(rec);
@@ -957,6 +1025,42 @@ test("connect dial: dialLog is one read of agentrun-dial's command's log, the to
 	await down.host.create(dialRequest(), { timeoutMs: 2_000 });
 	await assert.rejects(down.host.dialLog(REF.id, { timeoutMs: 2_000 }));
 	assert.equal(setup().provider.host.dialLog, undefined, "a host on exec has no dialLog");
+});
+
+test("connect dial: dialExit reads agentrun-dial's command in its session, undefined while it runs; redial starts it once more in a session of its own, by dialLaunch's line, and dialLog and dialExit read that one", async () => {
+	const SESSION = `/toolbox/${REF.id}/process/session/agentrun-dial`;
+	const AGAIN = `/toolbox/${REF.id}/process/session/agentrun-dial-2`;
+	let exited;
+	const { host, rec, seen } = dialDaytona({
+		routes: {
+			[`GET ${SESSION}`]: () => ({ body: { sessionId: "agentrun-dial", commands: [{ id: "cmd-other", exitCode: 0 }, { id: "cmd-dial", command: "...", ...(exited === undefined ? {} : { exitCode: exited }) }] } }),
+			[`POST ${AGAIN}/exec`]: ({ body }) => {
+				seen.push(`exec again ${body.command}`);
+				return { body: { cmdId: "cmd-again" } };
+			},
+			[`GET ${AGAIN}`]: { body: { sessionId: "agentrun-dial-2", commands: [{ id: "cmd-again" }] } },
+			[`GET ${AGAIN}/command/cmd-again/logs`]: { text: "\x01\x01\x01second start\n" },
+		},
+	});
+	assert.equal(typeof host.dialExit, "function");
+	assert.equal(await host.dialExit(REF.id, { timeoutMs: 2_000 }), undefined, "no start by this host");
+	await assert.rejects(host.redial(REF.id, { timeoutMs: 2_000 }), /no agentrun-dial was started in the sandbox/);
+	await host.create(dialRequest(), { timeoutMs: 2_000 });
+	assert.equal(await host.dialExit(REF.id, { timeoutMs: 2_000 }), undefined, "it runs");
+	exited = 3;
+	assert.equal(await host.dialExit(REF.id, { timeoutMs: 2_000 }), 3, "its own command's exit, not another's");
+	await host.redial(REF.id, { timeoutMs: 2_000 });
+	assert.ok(seen.includes("session agentrun-dial-2"), seen.join(", "));
+	const line = seen.find((one) => one.startsWith("exec again "))?.slice("exec again ".length);
+	const firstLine = rec.requests.find((r) => r.method === "POST" && r.path === `${SESSION}/exec`)?.body.command;
+	assert.equal(line, firstLine, "the line create's start ran");
+	assert.ok(line.endsWith("exec /usr/local/bin/agentrun-dial"), line);
+	assert.ok(!line.includes(DIAL_TOKEN), "the token is on no command line");
+	assert.equal(await host.dialExit(REF.id, { timeoutMs: 2_000 }), undefined, "the second start runs");
+	assert.equal(await host.dialLog(REF.id, { timeoutMs: 2_000 }), "second start\n");
+	assert.ok(rec.requests.every((r) => r.method !== "DELETE"));
+	assert.equal(setup().provider.host.dialExit, undefined, "a host on exec has no dialExit");
+	assert.equal(setup().provider.host.redial, undefined, "nor redial");
 });
 
 test("connect dial: no Archil mount, no GPU and not Daytona's default snapshot, each refused in words; labels refused as on exec; no value but exec or dial", () => {

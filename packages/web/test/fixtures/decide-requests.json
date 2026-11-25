@@ -1,0 +1,96 @@
+{
+ "sift": {
+  "query": "widgets delaware",
+  "task": "Where is Widgets, Inc. registered?",
+  "hits": [
+   {
+    "url": "https://registry.example/widgets",
+    "title": "",
+    "snippet": "Widgets, Inc. is registered in Delaware.",
+    "published": "2026-10-01"
+   },
+   {
+    "url": "https://result.example/2",
+    "title": "Result 2",
+    "snippet": "Excerpt 2."
+   }
+  ],
+  "request": {
+   "label": "web_search sift",
+   "kind": "sift",
+   "state": {
+    "query": "widgets delaware",
+    "task": "Where is Widgets, Inc. registered?",
+    "results": {
+     "r1": {
+      "url": "https://registry.example/widgets",
+      "title": "",
+      "snippet": "Widgets, Inc. is registered in Delaware.",
+      "published": "2026-10-01"
+     },
+     "r2": {
+      "url": "https://result.example/2",
+      "title": "Result 2",
+      "snippet": "Excerpt 2."
+     }
+    }
+   },
+   "questions": {
+    "r1": {
+     "type": "noul",
+     "instructions": "Does search result r1 hold, or point to, information the request needs? The request is the state's task when it gives one, else its query.",
+     "criteria": {
+      "true": "it holds or points to information the request needs",
+      "false": "it is off the request's topic, or holds nothing the request needs"
+     }
+    },
+    "r2": {
+     "type": "noul",
+     "instructions": "Does search result r2 hold, or point to, information the request needs? The request is the state's task when it gives one, else its query.",
+     "criteria": {
+      "true": "it holds or points to information the request needs",
+      "false": "it is off the request's topic, or holds nothing the request needs"
+     }
+    }
+   }
+  }
+ },
+ "judge": {
+  "url": "https://registry.example/widgets",
+  "task": "Where is Widgets, Inc. registered?",
+  "passages": [
+   "Home | About | Contact\n\n",
+   "Widgets, Inc. is registered in Delaware under file 1234567."
+  ],
+  "request": {
+   "label": "web_fetch passages",
+   "kind": "judge",
+   "state": {
+    "url": "https://registry.example/widgets",
+    "task": "Where is Widgets, Inc. registered?",
+    "passages": {
+     "p1": "Home | About | Contact\n\n",
+     "p2": "Widgets, Inc. is registered in Delaware under file 1234567."
+    }
+   },
+   "questions": {
+    "p1": {
+     "type": "noul",
+     "instructions": "Does passage p1 of the page hold information the task needs?",
+     "criteria": {
+      "true": "it states facts, figures, names or dates the task needs, or context needed to read them",
+      "false": "it is navigation, boilerplate, or text the task does not need"
+     }
+    },
+    "p2": {
+     "type": "noul",
+     "instructions": "Does passage p2 of the page hold information the task needs?",
+     "criteria": {
+      "true": "it states facts, figures, names or dates the task needs, or context needed to read them",
+      "false": "it is navigation, boilerplate, or text the task does not need"
+     }
+    }
+   }
+  }
+ }
+}

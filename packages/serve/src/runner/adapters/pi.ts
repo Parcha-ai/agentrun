@@ -664,8 +664,10 @@ function piTool(tool: HostTool, io: PiSessionIO, attemptOf: (callId: string) => 
       const images = (answer.images ?? []).map((image) => ({ type: "image" as const, data: image.data, mimeType: image.mimeType }));
       // A nested call's (its id `<callId>/<key>`) value in the result's details (which the model never reads), recorded
       // with it: what tools_call or a script reads (piNested). A call the model made itself keeps its result as it was.
-      const value = answer.structured !== undefined && api.callId.includes("/") ? { details: { [HOST_VALUE]: answer.structured } } : {};
-      return { output: [{ type: "text" as const, text: answer.text }, ...images], ...(answer.isError ? { isError: true } : {}), ...value } as never;
+      // A nesting tool that ended at a refused nested call (a script stopped there) carries the refusal mark, as the
+      // nested call's result does (refusalWords): its rows read refused, never as a call that ran and failed.
+      const details = { ...(answer.structured !== undefined && api.callId.includes("/") ? { [HOST_VALUE]: answer.structured } : {}), ...(answer.refused && answer.isError ? { [CALL_REFUSED]: true } : {}) };
+      return { output: [{ type: "text" as const, text: answer.text }, ...images], ...(answer.isError ? { isError: true } : {}), ...(Object.keys(details).length ? { details } : {}) } as never;
     },
   });
 }

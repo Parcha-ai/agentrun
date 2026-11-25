@@ -1,6 +1,7 @@
 // One usage shape for every source: `input` is the input neither read from nor written to the cache. Each provider's
 // counts below are worked by hand.
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 import { normalizeUsage, otelUsage, parseHome, priceRequests, readSession } from "../dist/index.js";
 import { codexAnswer, codexContext, codexFile, codexMeta, codexTokens, codexUser, openaiUsage, tempHome, writeJsonl } from "./fixtures.mjs";
@@ -32,6 +33,29 @@ test("pi: already split, taken as written", () => {
   assert.deepEqual(normalizeUsage("pi", { input: 10, output: 20, cacheRead: 30, cacheWrite: 40, cacheWrite1h: 15 }), { input: 10, output: 20, cacheRead: 30, cacheWrite: 40, cacheWrite1h: 15 });
   // A 1h part over the whole write is dropped, never trusted.
   assert.deepEqual(normalizeUsage("pi", { input: 1, output: 2, cacheRead: 0, cacheWrite: 4, cacheWrite1h: 9 }), { input: 1, output: 2, cacheRead: 0, cacheWrite: 4 });
+});
+
+test("OpenCode: input leaves the cache out, output leaves the reasoning out (added back); a total says when output held it", () => {
+  // 20 out + 5 reasoning: 25, 5 of it reasoning.
+  assert.deepEqual(normalizeUsage("opencode", { input: 100, output: 20, reasoning: 5, cache: { read: 0, write: 200 } }), { input: 100, output: 25, cacheRead: 0, cacheWrite: 200, reasoning: 5 });
+  // An older OpenCode: total 1000 - 100 in - 600 read = 300, the output as written, not 300 + 200.
+  assert.deepEqual(normalizeUsage("opencode", { total: 1000, input: 100, output: 300, reasoning: 200, cache: { read: 600, write: 0 } }), { input: 100, output: 300, cacheRead: 600, cacheWrite: 0, reasoning: 200 });
+  // A newer one whose total holds the reasoning beside the output: the same 40 + 10.
+  assert.deepEqual(normalizeUsage("opencode", { total: 580, input: 30, output: 40, reasoning: 10, cache: { read: 500, write: 0 } }), { input: 30, output: 50, cacheRead: 500, cacheWrite: 0, reasoning: 10 });
+  // All nought (a request cut before its usage came), or a count that is no count: no usage.
+  assert.equal(normalizeUsage("opencode", { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }), undefined);
+  assert.equal(normalizeUsage("opencode", { input: 1, output: -1 }), undefined);
+});
+
+test("OpenCode before 1.3.16 wrote output with its reasoning in it: a session's version says so where no total does", () => {
+  const tokens = { input: 100, output: 20, reasoning: 5, cache: { read: 0, write: 200 } };
+  // 1.3.15 and older (AI SDK 5, and 6 until anomalyco/opencode#21047): output 20 holds the 5.
+  for (const version of ["0.15.0", "1.2.27", "1.3.15", "v1.3.3"]) assert.deepEqual(normalizeUsage("opencode", tokens, { version }), { input: 100, output: 20, cacheRead: 0, cacheWrite: 200, reasoning: 5 }, version);
+  // 1.3.16 on: output leaves it out, so 20 + 5. No version, or one that is none, reads as today's.
+  for (const version of ["1.3.16", "1.4.0", "1.19.5", "2.3.2", "1.10.0", undefined, "dev"]) assert.deepEqual(normalizeUsage("opencode", tokens, { version }), { input: 100, output: 25, cacheRead: 0, cacheWrite: 200, reasoning: 5 }, String(version));
+  // A total says it whatever the version: 580 - 30 - 500 = 50.
+  const totalled = { total: 580, input: 30, output: 40, reasoning: 10, cache: { read: 500, write: 0 } };
+  for (const version of ["1.2.0", "1.19.5"]) assert.equal(normalizeUsage("opencode", totalled, { version }).output, 50, version);
 });
 
 test("OpenRouter: prompt_tokens holds its cached and cache-written tokens, so input is the difference; reasoning is a subset of completion_tokens", () => {
@@ -108,4 +132,22 @@ test("priceRequests prices each request at its own provider's catalog entry, a 1
   assert.equal(await priceRequests([{ model: "p/m1" }], catalog), undefined);
   // A request of no tokens costs nothing at any price.
   assert.equal(await priceRequests([{ model: "q/unlisted", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }], catalog), 0);
+});
+
+test("a pi-ai that fails to load fails the price with its reason: never a cost of null that says nothing why", () => {
+  const index = new URL("../dist/index.js", import.meta.url).href;
+  // A loader hook that makes every @earendil-works/pi-ai specifier unresolvable, as a broken install.
+  const hooks = `data:text/javascript,${encodeURIComponent('export async function resolve(s, c, next) { if (s.startsWith("@earendil-works/pi-ai")) { const e = new Error("Cannot find package " + s); e.code = "ERR_MODULE_NOT_FOUND"; throw e; } return next(s, c); }')}`;
+  const register = `data:text/javascript,${encodeURIComponent(`import { register } from "node:module"; register(${JSON.stringify(hooks)}, ${JSON.stringify(index)});`)}`;
+  const script = `
+    const { builtinCatalog, priceRequests } = await import(${JSON.stringify(index)});
+    const catalog = new Map([["m1", [{ provider: "p", cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } }]]]);
+    for (const call of [() => priceRequests([{ model: "p/m1", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } }], catalog), () => builtinCatalog()])
+      console.log(await call().then((value) => "resolved " + value, (error) => "rejected " + error.message));
+  `;
+  const result = spawnSync(process.execPath, ["--import", register, "--input-type=module", "-e", script], { encoding: "utf8", env: { PATH: process.env.PATH } });
+  assert.equal(result.status, 0, result.stderr);
+  const lines = result.stdout.trim().split("\n");
+  assert.equal(lines.length, 2);
+  for (const line of lines) assert.match(line, /^rejected Cannot find package @earendil-works\/pi-ai/);
 });

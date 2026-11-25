@@ -14,6 +14,7 @@ import type { InputIssue } from "./errors.js";
 import { envValue, type KeyEnv } from "./key-meta.js";
 import type { Settings } from "./store/index.js";
 import { pinnedImage } from "./workspace/archil-disk.js";
+import { ARCHIL_CONTROL_URLS } from "./workspace/archil-mount-credential.js";
 
 /** The settings key the Archil configuration lives under in store.settings. */
 export const ARCHIL_SETTINGS_KEY = "archil";
@@ -34,16 +35,27 @@ export const DEFAULT_ARCHIL_EXEC_IMAGE = "buildpack-deps@sha256:4f34e1d673fdb653
 export interface ArchilSettings {
   /** The account key's region: the control plane every disk is made, read and minted on. */
   readonly region: string;
-  /** The region's S3 endpoint (the disks' file API). */
+  /** The region's S3 endpoint (the disks' file API): the one given, else the region's (regionS3Url). */
   readonly s3Url: string;
   /** A pinned image for the disk's exec, when the owner set one; absent, DEFAULT_ARCHIL_EXEC_IMAGE. */
   readonly image?: string;
 }
 
+/** The S3 endpoint of each region serve knows: its control plane's host (ARCHIL_CONTROL_URLS, Archil's SDK's own table)
+ *  with its leading `control.` made `s3.`, as the SDK derives it (`disk` 1.12.0, src/regions.ts deriveS3BaseUrl). */
+export const ARCHIL_S3_URLS: Readonly<Record<string, string>> = Object.freeze(Object.fromEntries(
+  Object.entries(ARCHIL_CONTROL_URLS).map(([region, control]) => [region, control.replace(/^https:\/\/control\./, "https://s3.")])));
+
+/** Region `region`'s S3 endpoint, or undefined when serve doesn't know the region. */
+export const regionS3Url = (region: string): string | undefined => (Object.hasOwn(ARCHIL_S3_URLS, region) ? ARCHIL_S3_URLS[region] : undefined);
+
+/** The known regions, as a refusal names them: "a, b and c". */
+const KNOWN_REGIONS = Object.keys(ARCHIL_S3_URLS).join(", ").replace(/, ([^,]+)$/, " and $1");
+
 /** The environment variable that sets each field, for a server whose operator sets Mode 2 where it is started (a headless
- *  deploy, where no owner's session can save it). The region and S3 URL are both set or neither; the image is optional. */
+ *  deploy, where no owner's session can save it). The region is required; the S3 URL only for a region serve doesn't know
+ *  (regionS3Url), and one given for a known region is used over the region's; the image is optional. */
 export const ARCHIL_SETTINGS_ENV = { region: "AGENTRUN_ARCHIL_REGION", s3Url: "AGENTRUN_ARCHIL_S3_URL", image: "AGENTRUN_ARCHIL_IMAGE" } as const;
-const REQUIRED = ["region", "s3Url"] as const;
 
 /** The Archil settings in the server's environment are not whole or not right: the start stops, in these words. */
 export class ArchilSettingsEnvInvalid extends Error {
@@ -53,11 +65,18 @@ export class ArchilSettingsEnvInvalid extends Error {
 const nonEmpty = (value: unknown): value is string => typeof value === "string" && value.trim() !== "";
 
 /** What is wrong with each settings field given, by the one rule the PUT and the environment share: a region, an https
- *  S3 URL, and an image, when given, pinned by digest. Empty when every field is right. */
+ *  S3 URL (left out, the region's, for a region serve knows), and an image, when given, pinned by digest. Empty when every
+ *  field is right. */
 export function archilSettingsIssues(given: Readonly<Record<string, unknown>>): InputIssue[] {
   const issues: InputIssue[] = [];
-  if (!nonEmpty(given.region)) issues.push({ field: "region", reason: "required", message: "region is the account key's Archil region, a non-empty string" });
-  if (!nonEmpty(given.s3Url) || !URL.canParse(given.s3Url) || new URL(given.s3Url).protocol !== "https:") issues.push({ field: "s3Url", reason: "invalid", message: "s3Url is the region's S3 endpoint, an https URL" });
+  const region = nonEmpty(given.region) ? given.region.trim() : undefined;
+  if (region === undefined) issues.push({ field: "region", reason: "required", message: "region is the account key's Archil region, a non-empty string" });
+  const known = region === undefined ? undefined : regionS3Url(region);
+  if (given.s3Url === undefined) {
+    if (region !== undefined && known === undefined) issues.push({ field: "s3Url", reason: "required", message: `s3Url is needed for the region ${region}: serve knows the S3 URL of ${KNOWN_REGIONS} only, so give this region's https S3 URL` });
+  } else if (!nonEmpty(given.s3Url) || !URL.canParse(given.s3Url) || new URL(given.s3Url).protocol !== "https:") {
+    issues.push({ field: "s3Url", reason: "invalid", message: `s3Url is the region's S3 endpoint, an https URL${known === undefined ? "" : `: for ${region} it is ${known}`}` });
+  }
   if (given.image !== undefined) {
     try {
       pinnedImage({ baseImage: given.image });
@@ -68,15 +87,19 @@ export function archilSettingsIssues(given: Readonly<Record<string, unknown>>): 
   return issues;
 }
 
-/** The settings of fields archilSettingsIssues found right. */
-export const archilSettingsOf = (given: Readonly<Record<string, unknown>>): ArchilSettings => ({
-  region: (given.region as string).trim(), s3Url: given.s3Url as string,
-  ...(given.image !== undefined ? { image: given.image as string } : {}),
-});
+/** The settings of fields archilSettingsIssues found right: an S3 URL left out is the region's. */
+export function archilSettingsOf(given: Readonly<Record<string, unknown>>): ArchilSettings {
+  const region = (given.region as string).trim();
+  return { region, s3Url: given.s3Url !== undefined ? (given.s3Url as string) : regionS3Url(region)!, ...(given.image !== undefined ? { image: given.image as string } : {}) };
+}
 
-/** The Archil settings the server's environment sets, or undefined when it sets none of ARCHIL_SETTINGS_ENV. One required
- *  variable without the other, or a value the PUT would refuse, is ArchilSettingsEnvInvalid naming each variable, never a
- *  half-configured Mode 2. The environment is passed in: process.env is never read here. */
+/** Where settings' S3 URL came from: "region" when it is the region's own (regionS3Url), else "given". */
+export const s3UrlFromOf = (settings: ArchilSettings): "region" | "given" => (settings.s3Url === regionS3Url(settings.region) ? "region" : "given");
+
+/** The Archil settings the server's environment sets, or undefined when it sets none of ARCHIL_SETTINGS_ENV. A variable
+ *  set without the region, or a value the PUT would refuse (no S3 URL for a region serve doesn't know), is
+ *  ArchilSettingsEnvInvalid naming each variable, never a half-configured Mode 2. The environment is passed in:
+ *  process.env is never read here. */
 export function archilSettingsFromEnv(env: KeyEnv): ArchilSettings | undefined {
   const given: Record<string, string> = {};
   for (const [field, name] of Object.entries(ARCHIL_SETTINGS_ENV)) {
@@ -85,9 +108,8 @@ export function archilSettingsFromEnv(env: KeyEnv): ArchilSettings | undefined {
   }
   const set = Object.keys(given);
   if (set.length === 0) return undefined;
-  const missing = REQUIRED.filter((field) => given[field] === undefined).map((field) => ARCHIL_SETTINGS_ENV[field]);
   const named = set.map((field) => ARCHIL_SETTINGS_ENV[field as keyof typeof ARCHIL_SETTINGS_ENV]);
-  if (missing.length) throw new ArchilSettingsEnvInvalid(`This server is started with ${named.join(", ")} but not ${missing.join(", ")}: set ${REQUIRED.map((field) => ARCHIL_SETTINGS_ENV[field]).join(" and ")} together to keep run folders on Archil (Mode 2), or none of them.`);
+  if (given.region === undefined) throw new ArchilSettingsEnvInvalid(`This server is started with ${named.join(", ")} but not ${ARCHIL_SETTINGS_ENV.region}: set ${ARCHIL_SETTINGS_ENV.region} (and ${ARCHIL_SETTINGS_ENV.s3Url} for a region other than ${KNOWN_REGIONS}) to keep run folders on Archil (Mode 2), or none of them.`);
   const issues = archilSettingsIssues(given);
   if (issues.length) throw new ArchilSettingsEnvInvalid(`This server's Archil settings in its environment are not right: ${issues.map((issue) => issue.message.replace(/^\w+/, ARCHIL_SETTINGS_ENV[issue.field as keyof typeof ARCHIL_SETTINGS_ENV])).join("; ")}.`);
   return archilSettingsOf(given);

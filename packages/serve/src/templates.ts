@@ -24,6 +24,7 @@ import { isPinKeys, type PinKeys, type PinScalar, type PinValue } from "./tool-g
 import { formatToolName, isMcpName, isMonidName, MCP_SERVER_NAME, MCP_TOOL_NAME, mcpToolName, MONID_NAME_WORDS, parseToolName } from "./tool-names.js";
 import { pinIssues, sortedPin } from "./tool-plane.js";
 import { BASH_POLICIES, type BashPolicy } from "./bash-read-only.js";
+import { type FileSetting, fileIssues } from "./filed-tool.js";
 import { BOUND_TOOLS, toolOf } from "./tools.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { MOVE_FIELD } from "./trigger-composio.js";
@@ -110,8 +111,11 @@ const WHOLE = /^\$\{parameters\.([^}]*)\}$/;
  *  sets a permission: an apply's `grants`, the owner's ticks, grant the tools, and each call follows this server's tool settings
  *  (a write asks unless the owner allowed it there, a read follows the server's Allow reads, approvals never lifts an ask). `pin`, by tool: the arguments each of its calls must carry (a value, or
  *  `${parameters.<name>}`), which apply writes as the tool's pin in the agent's tool settings, so a send goes only to the
- *  destination the owner set. */
-export type McpNeed = { source: McpSource; toolkit: string; tools: string[]; required: boolean; reason?: string; allow: string[]; pin: Record<string, Record<string, PinValue>> };
+ *  destination the owner set. `file`, by tool: where each of its answers is filed whole in the run's files and the paths of it
+ *  the tool's result shows (filed-tool.ts), which apply writes as the tool's file setting in the agent's tool settings, so
+ *  the tool's result is a summary, never the answer (the model's own file tools can still open the folder). Absent when
+ *  the package files none. */
+export type McpNeed = { source: McpSource; toolkit: string; tools: string[]; required: boolean; reason?: string; allow: string[]; pin: Record<string, Record<string, PinValue>>; file?: Record<string, FileSetting> };
 /** One of a package's model choices (manifest `model.choices`): a model and the harness it runs on, which an owner picks
  *  by `id` at install (apply's overrides.choice) in place of the package's tier and preference. `label` names it on the
  *  install form; `warning`, shown there word for word beside it; `note`, a setup line; `secrets`, the keys only this
@@ -413,6 +417,23 @@ function pinOf(pin: unknown, server: string, tools: readonly string[], at: strin
     const issues = pinIssues(args, `${at}.${tool}`, mcpToolName(server, tool));
     for (const issue of issues) bad(issue.message);
     if (!issues.length) out[tool] = args as Record<string, PinValue>;
+  }
+  return out;
+}
+
+/** An mcp entry's `file` read: by tool, each one of the entry's `tools`, its setting checked by the one rule every file
+ *  setting is (filed-tool.ts fileIssues). Each problem is told through `bad`; a tool whose setting reads is kept. */
+function fileOf(file: unknown, tools: readonly string[], at: string, bad: (message: string) => void): Record<string, FileSetting> {
+  const out: Record<string, FileSetting> = {};
+  if (!isObject(file)) return bad(`${at} is {<tool>: {folder, show}}, by the entry's tools: each answer of the tool is filed whole in that folder of the run's files, and the tool's result shows only the values at the show paths and the answer's shape`), out;
+  for (const [tool, setting] of Object.entries(file)) {
+    if (!tools.includes(tool)) {
+      bad(`${at}.${tool}: ${tool} is not one of this entry's tools (${tools.join(", ")}): a file setting files the answers of a tool the package lists`);
+      continue;
+    }
+    const issues = fileIssues(setting, `${at}.${tool}`);
+    for (const issue of issues) bad(issue.message);
+    if (!issues.length) out[tool] = { folder: (setting as FileSetting).folder, show: [...(setting as FileSetting).show] };
   }
   return out;
 }
@@ -734,20 +755,22 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
     const names = isObject(need) && Array.isArray(need.tools) ? need.tools : [];
     const allow = isObject(need) && need.allow !== undefined ? need.allow : [];
     const pin = isObject(need) && need.pin !== undefined ? need.pin : {};
+    const file = isObject(need) && need.file !== undefined ? need.file : undefined;
     const reason = isObject(need) ? need.reason : undefined;
-    const ok = isObject(need) && !unknownFields(need, ["source", "toolkit", "tools", "required", "reason", "allow", "pin"]).length && (MCP_SOURCES as readonly unknown[]).includes(need.source) && typeof need.toolkit === "string" && MCP_SERVER_NAME.test(need.toolkit)
+    const ok = isObject(need) && !unknownFields(need, ["source", "toolkit", "tools", "required", "reason", "allow", "pin", "file"]).length && (MCP_SOURCES as readonly unknown[]).includes(need.source) && typeof need.toolkit === "string" && MCP_SERVER_NAME.test(need.toolkit)
       && names.length > 0 && names.every((tool) => typeof tool === "string" && MCP_TOOL_NAME.test(tool)) && new Set(names).size === names.length && (need.required === undefined || typeof need.required === "boolean")
       && (reason === undefined || (typeof reason === "string" && reason.trim() !== "" && reason.length <= MAX_REASON && !/[\r\n]/.test(reason)))
       && Array.isArray(allow) && allow.every((tool) => names.includes(tool)) && new Set(allow).size === allow.length;
     // A toolkit is held to the MCP server name rule (tool-names.ts), so mcp:<toolkit>/<tool> inside the package is a catalog
     // name every place that checks one (an agent's grant, a tool setting, a learned workflow) takes.
     if (isObject(need) && need.toolkit !== undefined && (typeof need.toolkit !== "string" || !MCP_SERVER_NAME.test(need.toolkit))) bad(MANIFEST, `mcp[${i}].toolkit ${JSON.stringify(need.toolkit)} is not a toolkit name: ${MCP_SERVER_NAME.source}, the MCP server name rule, since the package names its tools mcp:<toolkit>/<tool>`);
-    else if (!ok) bad(MANIFEST, `mcp[${i}] is {source: ${MCP_SOURCES.join(" | ")}, toolkit: the toolkit its tools come from, the name the package calls them by (mcp:<toolkit>/<tool>, ${MCP_SERVER_NAME.source}), tools: its tool names (${MCP_TOOL_NAME.source}), none twice, required?: true or false, reason?: one line of at most ${MAX_REASON} characters on why the agent needs them, allow?: the tools of its tools it asks the owner to allow, pin?: {<tool>: {<argument>: <value>}}}`);
+    else if (!ok) bad(MANIFEST, `mcp[${i}] is {source: ${MCP_SOURCES.join(" | ")}, toolkit: the toolkit its tools come from, the name the package calls them by (mcp:<toolkit>/<tool>, ${MCP_SERVER_NAME.source}), tools: its tool names (${MCP_TOOL_NAME.source}), none twice, required?: true or false, reason?: one line of at most ${MAX_REASON} characters on why the agent needs them, allow?: the tools of its tools it asks the owner to allow, pin?: {<tool>: {<argument>: <value>}}, file?: {<tool>: {folder, show}}}`);
     else if (need.source === "github" && need.toolkit !== "github") bad(MANIFEST, `mcp[${i}]: a github source's toolkit is github (GitHub's MCP server), not ${need.toolkit as string}`);
     else if (mcp.some((m) => m.toolkit === need.toolkit)) bad(MANIFEST, `mcp[${i}]: the toolkit ${need.toolkit as string} is listed twice: its tools are all mcp:${need.toolkit as string}/<tool>, so they are one entry`);
     else {
       const pinned = pinOf(pin, need.toolkit as string, names as string[], `mcp[${i}].pin`, (message) => bad(MANIFEST, message));
-      mcp.push({ source: need.source as McpSource, toolkit: need.toolkit as string, tools: names as string[], required: need.required === true, ...(typeof reason === "string" ? { reason } : {}), allow: allow as string[], pin: pinned });
+      const filed = file === undefined ? undefined : fileOf(file, names as string[], `mcp[${i}].file`, (message) => bad(MANIFEST, message));
+      mcp.push({ source: need.source as McpSource, toolkit: need.toolkit as string, tools: names as string[], required: need.required === true, ...(typeof reason === "string" ? { reason } : {}), allow: allow as string[], pin: pinned, ...(filed && Object.keys(filed).length ? { file: filed } : {}) });
     }
   }
   // A policy by tool: bash's alone (bash-read-only.ts), on a package that grants bash or names no tools (a new agent's
@@ -1126,7 +1149,7 @@ export function packageView(p: Package) {
     // A workflow package's file: its agent is that workflow (the read answers it whole, as `workflow`).
     workflow: p.workflowFile ?? null,
     harness: p.harness ?? null, model: modelView(p.model), effort: p.effort ?? null, tools: p.tools ?? null, tool_policy: p.toolPolicy ?? null, computer: p.computer ?? null, needs: p.needs ?? null, checkout: p.checkout ?? null,
-    mcp: p.mcp.map(({ source, toolkit, tools, required, reason, allow, pin }) => ({ source, toolkit, required, reason: reason ?? null, tools: tools.map((name) => ({ name, tool: mcpToolName(toolkit, name), asks: allow.includes(name) ? "allow" : "ask", ...(Object.hasOwn(pin, name) ? { pin: pin[name]! } : {}) })) })), parameters: p.parameters, input_schema: p.inputSchema ?? null, secrets: p.secrets,
+    mcp: p.mcp.map(({ source, toolkit, tools, required, reason, allow, pin, file }) => ({ source, toolkit, required, reason: reason ?? null, tools: tools.map((name) => ({ name, tool: mcpToolName(toolkit, name), asks: allow.includes(name) ? "allow" : "ask", ...(Object.hasOwn(pin, name) ? { pin: pin[name]! } : {}), ...(file && Object.hasOwn(file, name) ? { file: file[name]! } : {}) })) })), parameters: p.parameters, input_schema: p.inputSchema ?? null, secrets: p.secrets,
     budget: p.budget ?? null, learning: p.learning ?? false, approvals_default: p.approvals ?? "ask", triggers: p.triggers, skills: Object.keys(p.skills).filter((path) => /^[^/]+\/SKILL\.md$/.test(path)).map((path) => path.slice(0, -"/SKILL.md".length)), evals: p.evals,
   };
 }
@@ -1392,7 +1415,7 @@ export function compiled(p: Package, parameters: Json, chosen: { harness?: strin
   const named = own && (p.tools || own.length) ? own : undefined;
   const tools = granted.length ? [...(named ?? (pick ? [] : chosen.defaultTools)), ...granted] : named;
   // No permission for a tick: a grant is no allow (this server's tool settings decide). Only a pin, or a pin's empty fill's deny.
-  const settings: Record<string, { permission?: "deny"; pin?: Record<string, PinValue>; policy?: BashPolicy }> = {};
+  const settings: Record<string, { permission?: "deny"; pin?: Record<string, PinValue>; policy?: BashPolicy; file?: FileSetting }> = {};
   // A tool's policy (bash's read-only), written as its setting, whatever its permission: never one an apply grants. With
   // a picked computer, only where the agent's tools hold bash: none for a bash the computer dropped, or never gave.
   if (p.toolPolicy && (!pick || tools?.includes("bash"))) settings.bash = { ...settings.bash, policy: p.toolPolicy.bash };
@@ -1403,6 +1426,9 @@ export function compiled(p: Package, parameters: Json, chosen: { harness?: strin
       unpinned.push({ tool: name, parameters: empty });
     } else settings[name] = { ...settings[name], pin: sortedPin(pin) as Record<string, PinValue> };
   }
+  // A tool's file setting, written as the package states it, ticked or not (it holds once the tool is granted later), as
+  // a pin is: the tool's result is a summary of each answer, never the answer.
+  for (const { server, file } of chosen.mcp) for (const [tool, setting] of Object.entries(file ?? {})) settings[mcpToolName(server, tool)] = { ...settings[mcpToolName(server, tool)], file: { folder: setting.folder, show: [...setting.show] } };
   // A workflow package's agent is its workflow, each placeholder in its text filled as the instructions' are: a workflow
   // revision keeps no instructions, model, skills or tools of its own (its nodes carry theirs, and its run binds the tools
   // they name: tools.ts grantedTools), so its definition is the workflow, the budget and the approvals alone.
