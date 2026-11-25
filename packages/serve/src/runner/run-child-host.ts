@@ -1371,11 +1371,14 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
         const heldSide = heldFor({ ...deps, env: claimEnv }, { claim, run: runRow, launch, revision, claimed: gatewayKey ? withGatewayKey(claimed, gatewayKey) : claimed, signal: loopDeps.signal, login, ...(loopDeps.incarnation ? { incarnation: loopDeps.incarnation } : {}) }, cut, log, bigs);
         // The run's trace: its process posts each call of it (tracer.ts postedTracing), and this runner's tracing makes the
         // spans and exports them in the background. No exporter, flush or OTLP setting is ever the process's, so neither
-        // its exit nor this claim's release waits on a collector.
-        const tracing = await (options.tracing ?? genAiTracing()).catch(() => undefined);
-        // Its agent is the one this runner reads from the store, never one the process posts.
-        const traced = tracing ? tracePosts(tracing, claim.runId, cut, await agentOfRun(deps.store.agents, runRow.agentId)) : undefined;
+        // its exit nor this claim's release waits on a collector. Made inside the claim's cleanup, so nothing it waits on
+        // can keep the slot.
+        let traced: ReturnType<typeof tracePosts> | undefined;
         try {
+          const tracing = await (options.tracing ?? genAiTracing()).catch(() => undefined);
+          // Its agent is the one this runner reads from the store, never one the process posts; a read that fails is the
+          // agent's id alone (agentOfRun).
+          traced = tracing ? tracePosts(tracing, claim.runId, cut, await agentOfRun(deps.store.agents, runRow.agentId)) : undefined;
           let extra: Record<string, string> = {};
           let argv = [...(options.argv ?? childArgv())];
           // A claim that resumes a run whose last runner ended before giving its folders back finds them its last slot's,
@@ -1413,7 +1416,8 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
           const bound: Bound = { claim, agentId: runRow.agentId, revisionId: runRow.revisionId };
           channel.expose("store", (method, args) => storeCall(deps.store, method, args, bound, log));
           channel.expose("journal", journalTarget(loopDeps.journal(claim), cut));
-          if (traced) channel.expose("trace", (method, args) => traced.post(method, args));
+          const posts = traced;
+          if (posts) channel.expose("trace", (method, args) => posts.post(method, args));
           channel.expose("held", (method, args) => {
             // Its own members alone: a name of Object's prototype (constructor, toString) is no call of Held.
             const fn = Object.hasOwn(heldSide.held, method) ? (heldSide.held as unknown as Record<string, (...a: unknown[]) => unknown>)[method] : undefined;

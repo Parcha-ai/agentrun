@@ -108,9 +108,15 @@ export interface AgentOfRun {
 }
 
 /** The agent of a run whose row names agent `agentId`, read from `agents` (a store's Agents). Every run has one: an
- *  inline run (POST /runs) writes its agent's row, with its name, before the run. */
+ *  inline run (POST /runs) writes its agent's row, with its name, before the run. A read that fails is the id alone: a
+ *  trace's name never fails a run, nor keeps a claim from its cleanup. */
 export async function agentOfRun(agents: { get(id: string): Promise<{ readonly name: string } | undefined> }, agentId: string): Promise<AgentOfRun> {
-  const row = await agents.get(agentId);
+  let row: { readonly name: string } | undefined;
+  try {
+    row = await agents.get(agentId);
+  } catch {
+    // The store could not be read: the run's row still holds the id.
+  }
   return { id: agentId, ...(row ? { name: row.name } : {}) };
 }
 
