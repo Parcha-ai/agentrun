@@ -62,7 +62,7 @@ import { isWebHostTool } from "../tool-list.js";
 import { hostToolOf } from "../host-tools.js";
 import { ASK_TOOL, askPerson } from "../tools.js";
 import { fakedPlane } from "../web-fake.js";
-import { type ClaimModelKey, claimModelEnv, claimModelKey, claimSecrets, claimSpendOff, holdRunKey, keyedAtClaim, hostDecisionKeys, keysOver, learnedDecisionKeys, tierModelKeys, underClaimed, withoutModelKeys } from "./claim-secrets.js";
+import { type ClaimModelKey, claimModelEnv, claimModelKey, claimSecrets, claimSpendOff, holdRunKey, keyedAtClaim, hostDecisionKeys, learnedDecisionKeys, tierModelKeys, underClaimed, withoutModelKeys } from "./claim-secrets.js";
 import { claimMetering, mcpWhereHeld } from "./mcp-run.js";
 import { held as runnerSeam, heldSignInReads } from "./held.js";
 import { DECISION_PROVIDER_KEYS, TOOL_PLANE_ENV } from "../tool-plane.js";
@@ -195,7 +195,7 @@ export async function cliCapModel(entry: HarnessEntry & { facts: AdapterFacts },
 export function cliRunEnv(env: NodeJS.ProcessEnv | undefined, data: string, claimed: NodeJS.ProcessEnv = {}, plane?: RunLaunch["plane"], runKey?: ClaimModelKey, claim?: Pick<Claim, "runId" | "turn" | "attempt">): NodeJS.ProcessEnv {
   // A run with its own model key: that key alone, in the variables its route sends (claimModelEnv, never enumerable), and
   // the claim's request metadata beside it (request-metadata.ts, never enumerable either).
-  const out = claimModelEnv(env ?? {}, claimed, runKey, claim);
+  const out = claimModelEnv(env ?? {}, [claimed], runKey, claim);
   Object.defineProperty(out, DATA_ENV, { value: data, enumerable: true, writable: true, configurable: true });
   delete out[TOOL_PLANE_ENV];
   if (plane && Object.keys(plane).length) Object.defineProperty(out, TOOL_PLANE_ENV, { value: JSON.stringify(plane), enumerable: true, writable: true, configurable: true });
@@ -366,7 +366,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // Before the session opens: a refusal (a granted tool its pin does not hold, a pinned meta tool) ends the run in its words.
   // A credential the claim opens mid-run (a GitHub App token, a saved or per_run server's) joins the run's redactors.
   const hold = (values: string[]) => { for (const redact of [...(run.redact ? [heldRedactor(run.redact)] : []), cut]) redact.hold(values); };
-  const mcp = await mcpWhereHeld({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => runFolder(deps.data, runRow.agentId, claim.runId), launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, ...claimMetering(deps, runRow.agentId, launch) });
+  const mcp = await mcpWhereHeld({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => runFolder(deps.data, runRow.agentId, claim.runId), launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, ...claimMetering(deps, web, launch) });
   // The claim's MCP goes to the loop, which lets it go; a build that throws lets it go itself.
   holds.hold({ passed: mcp });
 
@@ -535,7 +535,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     await planBeforeRun(env, chosen.model);
     if (login && entry.priceModel(env, chosen.model).provider === CLAUDE_LOGIN_PROVIDER) {
       const claude = await import("@parcha/agentrun-harness-claude");
-      await loginBeforeRun(login, loginCli(claudeCliIn(installDirOf(deps.data, name!), claude.claudeAgentPlatform()), env), (cli, at) => claude.claudeLoginStatus(cli, at, env.PATH ? { path: env.PATH } : {}));
+      await loginBeforeRun(login, loginCli(claudeCliIn(installDirOf(deps.data, name!), claude.claudeAgentPlatform()), env), (cli, at) => claude.claudeLoginStatus(cli, at, env.PATH ? { path: env.PATH } : {}), { data: deps.data });
     }
   }
   // The CLI's own process (the Claude CLI, Codex, OpenCode) starts under the no_new_privs pi's commands start under
@@ -728,7 +728,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       // A run with its own model key: these tiers carry that key too, and no saved key is read.
       const tierKeys = keyed ? {} : await tierModelKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, learnedTiers(workflows));
       for (const redact of new Set([held, cut])) holdClaimed(redact, tierKeys);
-      const modelEnv = claimModelEnv(deps.env, keysOver(claimed, tierKeys), runKey, claim);
+      const modelEnv = claimModelEnv(deps.env, [tierKeys, claimed], runKey, claim);
       const tiers = new Map<string, LearnedTier>();
       for (const [tier, routed] of await learnedTierRoutes(workflows, modelEnv, (tier) => deps.routeOf(undefined, modelEnv, tier, PI_WIRES, undefined, cut))) {
         if ("why" in routed) tiers.set(tier, { why: routed.why });

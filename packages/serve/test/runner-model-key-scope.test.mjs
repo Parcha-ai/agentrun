@@ -25,7 +25,7 @@ const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
 const { claimSecrets, withModelKeys, withoutModelKeys } = await import("../dist/runner/claim-secrets.js");
 const { putSealedKey } = await import("../dist/server-keys.js");
 const { routeOf } = await import("../dist/runner/model-route.js");
-const { graderRouteOf, modelAskOf, PI_WIRES } = await import("../dist/runner/adapter-run-spec.js");
+const { graderRouteOf, modelAskOf, PI_WIRES, subagentTierRoutes } = await import("../dist/runner/adapter-run-spec.js");
 const { heldRedactor, secretRedactor } = await import("../dist/runner/redact.js");
 
 const KEY = randomBytes(32);
@@ -168,4 +168,15 @@ test("a grader's route reads the claim's model key by name, with no saved key be
   const deps = { store: { sealedKeys: { get: async () => undefined } }, sealKey: undefined, env: {}, routeOf: async (_model, env) => ((seen = env.OPENAI_API_KEY), { model: "openai/gpt-6.1-sol" }) };
   await graderRouteOf({ modelTiers: { fast: "openai/gpt-6.1-sol" } }, false, undefined, claimed, heldRedactor(secretRedactor([])), () => {}, deps);
   assert.equal(seen, OPENAI_SAVED, "the grader's route env holds the claim's model key");
+});
+
+test("a subagent tier's route reads the claim's model key by name, with no saved key beside it", async (t) => {
+  const store = await storeWith(t, { OPENAI_API_KEY: OPENAI_SAVED });
+  const claimed = await claimSecrets({ store, sealKey: KEY, env: {} }, { kind: "agentic", body: { tools: [] } }, { plane: {}, model: { provider: "openai", modelId: "gpt-6.1-sol" } });
+  const seen = [];
+  // No seal key: subagentTierRoutes opens no saved key here, so the claim's is the one each tier's route can read.
+  const deps = { store: { sealedKeys: { get: async () => undefined } }, sealKey: undefined, env: {}, routeOf: async (_model, env, tier) => (seen.push([tier, env.OPENAI_API_KEY]), { model: "openai/gpt-6.1-sol" }) };
+  const { routes } = await subagentTierRoutes({ modelTiers: { strong: "openai/gpt-6.1-sol" } }, false, undefined, claimed, heldRedactor(secretRedactor([])), deps);
+  assert.equal(routes.size, 1, "the strong tier is routed");
+  assert.deepEqual(seen, [["strong", OPENAI_SAVED]], "the strong tier's route env holds the claim's model key");
 });
