@@ -55,7 +55,7 @@ async function open(server: McpServer, toolSettings?: Record<string, unknown>, s
   act(() => root!.render(createElement(AgentEditPage, { v2: createClient({ fetch }), caps: CAPS, gates: toolGates(GATES), agentId: "triage", go: () => {} })));
   const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
   await settle();
-  await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent?.includes("Tools & skills"))!.click(); });
+  await act(async () => { [...host.querySelectorAll<HTMLButtonElement>('nav[aria-label="Agent settings sections"] ul button')].find((b) => b.textContent?.trim().startsWith("Tools"))!.click(); });
   await settle();
   const row = (name: string) => host.querySelector<HTMLTableRowElement>(`table[aria-label="This agent's tool settings"] tr[data-tool="${name}"]`);
   const control = (name: string) => row(name)?.querySelector<HTMLElement>(`[aria-label="${name} permission"]`) ?? null;

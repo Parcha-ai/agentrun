@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { editBody } from "@/lib/agentForm";
 import { ClientError, createClient, follow } from "@/lib/client";
 import { createDemoFetch, DEMO_REFUSAL, demoCapabilities } from "./backend";
 import { AGENTS, heroes, history } from "./tale";
@@ -79,15 +80,73 @@ describe("demo mode's backend", () => {
     const made = await v2.createAgent({ definition: { version: 1, name: "Invoice Matcher", description: "Matches invoices to orders.", instructions: "Match them.", harness: "pi", skills: [], tools: ["read"] } });
     expect(made).toMatchObject({ agent_id: "invoice-matcher", kind: "agentic", revisions: 1, definition: { name: "Invoice Matcher", tools: ["read"] } });
     expect((await v2.listAgents()).agents.at(-1)?.agent_id).toBe("invoice-matcher");
-    const edited = await v2.updateDefinition("invoice-matcher", { definition: { description: "Matches each invoice to its order." }, note: "Clearer" }, null);
+    const edited = await v2.updateDefinition("invoice-matcher", { definition: { ...made.definition, description: "Matches each invoice to its order." }, note: "Clearer" }, null);
     expect(edited.agent).toMatchObject({ revisions: 2, definition: { description: "Matches each invoice to its order.", instructions: "Match them." } });
     expect((await v2.listRevisions("invoice-matcher")).revisions.map((r) => [r.version, r.note, r.current])).toEqual([[2, "Clearer", true], [1, null, false]]);
     // A story's agent takes an edit too, and keeps its earlier revisions.
-    expect((await v2.updateDefinition("refund-desk", { definition: { description: "Decides refunds." } }, null)).agent.revisions).toBe(4);
+    expect((await v2.updateDefinition("refund-desk", { definition: { ...(await v2.getAgent("refund-desk")).agent.definition, description: "Decides refunds." } }, null)).agent.revisions).toBe(4);
     const { run } = await v2.startRun("invoice-matcher", { input: { content: "Match invoice 12" } }, "key-9");
     now.ms += 60_000;
     expect((await v2.getRun(run.run_id)).result?.final_answer).toMatch(/Demo mode calls no model/);
     expect(asked).toEqual([]);
+  });
+
+  it("keeps complete skill files by revision and refuses stale edits without touching the server", async () => {
+    const { v2, asked } = demo();
+    const files = { "review/SKILL.md": "Review the change.", "review/rules.md": "Keep the evidence." };
+    const made = await v2.createAgent({ definition: { version: 1, name: "Skill demo", instructions: "Review.", skills: ["review"], tools: [] }, skills: files });
+    expect(await v2.getRevisionSkills(made.agent_id, made.revision!)).toEqual({ revision: made.revision, skills: files });
+    const saved = await v2.updateDefinition(made.agent_id, { definition: made.definition, skills: { ...files, "review/SKILL.md": "Read the rules first." } }, made.home_etag);
+    expect((await v2.getRevisionSkills(made.agent_id, saved.agent.revision!)).skills).toEqual({ ...files, "review/SKILL.md": "Read the rules first." });
+    expect((await v2.getRevisionSkills(made.agent_id, made.revision!)).skills).toEqual(files);
+    await expect(v2.updateDefinition(made.agent_id, { definition: made.definition, skills: {} }, made.home_etag)).rejects.toMatchObject({ status: 412 });
+    await expect(v2.getRevisionSkills("refund-desk", made.revision!)).rejects.toMatchObject({ status: 404 });
+    await v2.setCurrent(made.agent_id, made.revision!);
+    const renamed = await v2.updateDefinition(made.agent_id, { definition: { ...made.definition, description: "Keep the current files." } }, made.home_etag);
+    expect((await v2.getRevisionSkills(made.agent_id, renamed.agent.revision!)).skills).toEqual(files);
+    const empty = await v2.updateDefinition(made.agent_id, { definition: { ...renamed.agent.definition, skills: [] }, skills: {} }, renamed.etag);
+    expect((await v2.getRevisionSkills(made.agent_id, empty.agent.revision!)).skills).toEqual({});
+    expect(asked).toEqual([]);
+  });
+
+  it("clears removed optional settings after saving and reopening, while preserving the original revision", async () => {
+    const { v2, asked, now } = demo();
+    const made = await v2.createAgent({ definition: { version: 1, name: "Reset settings", instructions: "Review.", harness: "pi", model: "test/model", thinking: "high", skills: [], tools: ["read"] } });
+    const body = editBody(made, { thinking: undefined, model: "" }, "Use model defaults");
+    expect(body.definition).not.toHaveProperty("thinking");
+    expect(body.definition).not.toHaveProperty("model");
+    await v2.updateDefinition(made.agent_id, body, made.home_etag);
+    const reopened = (await v2.getAgent(made.agent_id)).agent;
+    expect(reopened.definition).not.toHaveProperty("thinking");
+    expect(reopened.definition).not.toHaveProperty("model");
+    expect(reopened.definition).toMatchObject({ instructions: "Review.", harness: "pi", tools: ["read"] });
+    const { run } = await v2.startRun(made.agent_id, { input: { content: "Review the change." } }, "reset-model");
+    now.ms += 60_000;
+    expect((await v2.runUsage(run.run_id)).lines).toEqual(expect.arrayContaining([expect.objectContaining({ provider: "anthropic", model: "claude-sonnet-5-5" })]));
+    await v2.setCurrent(made.agent_id, made.revision!);
+    expect((await v2.getAgent(made.agent_id)).agent.definition).toMatchObject({ thinking: "high", model: "test/model" });
+    const restored = await v2.startRun(made.agent_id, { input: { content: "Review again." } }, "restored-model");
+    now.ms += 60_000;
+    expect((await v2.runUsage(restored.run.run_id)).lines).toEqual(expect.arrayContaining([expect.objectContaining({ provider: "test", model: "model" })]));
+    expect(asked).toEqual([]);
+  });
+
+  it.each(["save", "restore"] as const)("keeps past run model labels when an agent revision changes through %s", async action => {
+    const { v2, now } = demo();
+    const first = await v2.createAgent({ definition: { version: 1, name: "Model history", instructions: "Review.", harness: "pi", model: "first/model-one", skills: [], tools: [] } });
+    const second = await v2.updateDefinition(first.agent_id, { definition: { ...first.definition, model: "second/model-two" } }, first.home_etag);
+    const { run } = await v2.startRun(first.agent_id, { input: { content: "Review." } }, "historical-model");
+    now.ms += 60_000;
+    const usage = await v2.runUsage(run.run_id), trace = await v2.runTrace(run.run_id);
+    expect(usage.lines).toEqual(expect.arrayContaining([expect.objectContaining({ provider: "second", model: "model-two" })]));
+    expect(trace.spans).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "model", name: "model-two" })]));
+    if (action === "restore") await v2.setCurrent(first.agent_id, first.revision!);
+    else await v2.updateDefinition(first.agent_id, { definition: { ...second.agent.definition, model: "third/model-three" } }, second.etag);
+    expect(await v2.runUsage(run.run_id)).toEqual(usage);
+    expect(await v2.runTrace(run.run_id)).toEqual(trace);
+    const next = await v2.startRun(first.agent_id, { input: { content: "Review again." } }, "next-model");
+    now.ms += 60_000;
+    expect((await v2.runUsage(next.run.run_id)).lines).toEqual(expect.arrayContaining([expect.objectContaining(action === "restore" ? { provider: "first", model: "model-one" } : { provider: "third", model: "model-three" })]));
   });
 
   it("lists connected Claude Code and Codex agents beside the server's own, ready to run", async () => {
@@ -410,7 +469,7 @@ describe("demo mode's writes", () => {
     const { v2 } = demo();
     const first = (await v2.listRevisions("refund-desk")).revisions.at(-1)!;
     await v2.setCurrent("refund-desk", first.revision);
-    await v2.updateDefinition("refund-desk", { definition: { description: "Decides refunds, quoting the policy line." } }, null);
+    await v2.updateDefinition("refund-desk", { definition: { ...(await v2.getAgent("refund-desk")).agent.definition, description: "Decides refunds, quoting the policy line." } }, null);
     const revisions = (await v2.listRevisions("refund-desk")).revisions;
     expect(revisions[0]).toMatchObject({ current: true });
     expect((await v2.getAgent("refund-desk")).agent.definition.description).toBe("Decides refunds, quoting the policy line.");

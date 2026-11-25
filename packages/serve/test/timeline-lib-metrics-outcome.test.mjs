@@ -25,7 +25,7 @@ test("a call is counted failed by the rule its row reads: an error, or a result 
 });
 
 test("serve's web tools by the same rule: a page followed by a line for the model, and a search that answers {error}, read as failed", () => {
-  const skipped = "\nParallel was picked for web_fetch and gave no page (not tried: this run holds no Parallel key); this one was fetched directly.";
+  const skipped = "\nParallel gave no page (not tried: this run holds no Parallel key); this one was fetched directly.";
   const unfetched = JSON.stringify({ ok: false, url: "https://down.example/", status: 0, error: "the host did not answer", via: "direct", parallel: "not tried: this run holds no Parallel key" }) + skipped;
   const fetched = JSON.stringify({ ok: true, url: "https://example.com/", status: 200, title: "Example Domain", text: "Example", links: [], via: "direct", parallel: "Parallel answered 500" }) + skipped;
   const unsearched = JSON.stringify({ error: "web_search does not run here: no native search for codex yet" });
