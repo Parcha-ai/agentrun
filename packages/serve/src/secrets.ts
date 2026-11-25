@@ -420,11 +420,12 @@ const urlSpans = (value: string): { start: number; end: number }[] => {
 
 /** The breaks between a header value's `name=value` pairs: `;`, `&`, a comma (or its `%2C`) and spaces; and, for a
  *  second, finer read, also `?`, `#` and `/`, so a pair inside a URL that is itself a pair's value
- *  (`upstream=https://relay/v1#access_token=<token>`) or a path's segment stands alone; and two whole reads, which keep
+ *  (`upstream=https://relay/v1#access_token=<token>`) or a path's segment stands alone; and three whole reads, which keep
  *  a raw `;` in a value: all but `;` (LIST_BREAK), so a credential with a `;` in a list joined by `%2C`, the usual way to
  *  write one (`api_key=<key;rest>%2Cregion=us`), is held as itself, and `&` and spaces alone (WHOLE_BREAK), so one with
  *  a comma in it too (`api_key=<key;rest%2Cmore>&region=us`) is held whole, and again at their `%26` and `%20`
- *  (ENCODED_BREAK), so that key before an encoded `&` or space is held as written too, not only decoded. All are held:
+ *  (ENCODED_BREAK), so that key before an encoded `&` or space is held as written too, not only decoded; a text with
+ *  neither (ENCODED_SEEN) splits there as at WHOLE_BREAK, so that read is skipped for it. All are held:
  *  every redactor matches a held value exactly, so the longer reading of any never covers a line quoting the key alone.
  *  WHOLE_BREAK also holds a value with the comma that ends it (sentry's `sentry_key=<key>%2C`); the others hold the value
  *  alone. */
@@ -433,6 +434,7 @@ const PIECE_BREAK = /[;&,\s?#/]+|%2C/i;
 const LIST_BREAK = /[&,\s]+|%2C/i;
 const WHOLE_BREAK = /[&\s]+/;
 const ENCODED_BREAK = /[&\s]+|%26|%20/i;
+const ENCODED_SEEN = /%26|%20/i;
 
 /** What a credential's value whose part before its first `;` is empty (`;<key>`) holds after that `;`, whole and up to
  *  its next `;`, as a reader that skips an empty part reads it; nothing for any other value. */
@@ -478,7 +480,7 @@ const innerCredentials = (value: string): string[] => {
       ...pairValues(text, PIECE_BREAK),
       ...pairValues(text, LIST_BREAK),
       ...pairValues(text, WHOLE_BREAK),
-      ...pairValues(text, ENCODED_BREAK),
+      ...(ENCODED_SEEN.test(text) ? pairValues(text, ENCODED_BREAK) : []),
       ...urlSpans(text).flatMap(({ start, end }) => urlCredentials(text, start, end, queriesRead)),
     ];
   };
