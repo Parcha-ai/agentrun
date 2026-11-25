@@ -176,8 +176,11 @@ function localAccounts(): boolean {
 /** A whole decimal id from an account file's field, else undefined (an empty field is no id). */
 const idOf = (field: string | undefined): number | undefined => (field !== undefined && /^\d+$/.test(field) ? Number(field) : undefined);
 
-/** A group file's password fields that are no password: `x` (it is in the shadow file, which only root reads), `!` and
- *  `*` (locked), and none. Any other is one, and newgrp lets anyone who knows it into the group. */
+/** A group file's password fields that give the group no password there: `x`, `!` and `*` (locked), and none. Any other
+ *  is one, and newgrp lets anyone who knows it into the group. `x` says only that the group's password, if it has one,
+ *  is in /etc/gshadow, with the members newgrp lets in without it; a server without privileges cannot read that file,
+ *  so this check does not, and a password or member gpasswd sets there is not seen (gpasswd -r and gpasswd -d remove
+ *  them). */
 const NO_GROUP_PASSWORD: ReadonlySet<string> = new Set(["x", "!", "*", ""]);
 
 /** The words a group-writable folder's refusal ends in where its group would be the user's private one but for a password
