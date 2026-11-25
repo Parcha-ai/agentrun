@@ -288,47 +288,107 @@ const credentialWord = (word: string): boolean => {
 const credentialNamed = (name: string): boolean =>
   name.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9]+/).some(credentialWord);
 
-/** A URL inside a header value (a DSN, a relay's address): a scheme, `://`, its user and password whole when it writes
- *  them (group 1: up to the last `@` before a space, a `"`, or the `/`, `?`, `#` or `\` that ends its authority, as a
- *  URL parser reads it, so a password with `;`, `&`, `=` or `,` in it is not cut short), then up to a space, `;`, `,` or
- *  a quote. */
-const URL_IN_TEXT = /[A-Za-z][\w+.-]*:\/\/(?:([^\s"/?#\\]*)@)?[^\s;,"']+/g;
+/** Where a URL starts: a scheme, then `://`. */
+const URL_START = /[A-Za-z][\w+.-]*:\/\//;
 
-/** The credentials a URL writes into itself (`text`, one URL): its user and password, and the value of each query
- *  parameter whose name says it is one (credentialNamed), each as written and decoded; none when `text` is no URL. */
+/** A URL as RFC 3986 reads it (`text`, one URL, from its scheme to its end): its authority, up to the first `/`, `?` or
+ *  `#`; each reading of its userinfo, the RFC's first (everything before the authority's last `@`, so a password's `;`,
+ *  `&`, `=`, `,`, `'` or raw `@` stays in it), then, when the authority holds more than one `@`, each shorter one, up to
+ *  an earlier `@` (a URL with no closing mark, followed by a pair holding an `@`, `...@relay.invalid&contact=ops@team`,
+ *  reads too long a userinfo, and a redactor holding an extra candidate is safe where missing one leaks); its host, what
+ *  follows the last `@`; its path, up to a `?` or `#`; and its query, from the first `?` to a `#`. Undefined when `text`
+ *  is no URL. */
+const urlParts = (text: string): { readings: string[]; host: string; path: string; query: string } | undefined => {
+  const scheme = URL_START.exec(text);
+  if (!scheme || scheme.index !== 0) return undefined;
+  const rest = text.slice(scheme[0].length);
+  const authority = rest.slice(0, rest.search(/[/?#]|$/));
+  const after = rest.slice(authority.length);
+  const ats = [...authority.matchAll(/@/g)].map((at) => at.index);
+  return {
+    readings: ats.map((at) => authority.slice(0, at)).reverse(),
+    host: authority.slice((ats.at(-1) ?? -1) + 1),
+    path: after.slice(0, after.search(/[?#]|$/)),
+    query: /^[^?#]*\?([^#]*)/.exec(after)?.[1] ?? "",
+  };
+};
+
+/** A user or password as a URL parser writes it back (a client's error may quote the URL it parsed): `;`, `=`, `@`, `:`
+ *  and the like percent-encoded. */
+const asParsed = (part: string): string => {
+  const url = new URL("http://host.invalid");
+  url.password = part;
+  return url.password;
+};
+
+/** The credentials a URL writes into itself (`text`, one URL, urlParts): the user and password of its userinfo (before
+ *  its first `:` and after it), each as written, decoded and as a parser writes it back, the RFC's reading at any length
+ *  and each shorter reading's only at MIN_SECRET or more (so a short piece of a password, `pa` of `pa@ss...`, cuts no
+ *  ordinary word), and the value of each query parameter whose name says it is one (credentialNamed), as written and
+ *  decoded; none when `text` is no URL. */
 const urlCredentials = (text: string): string[] => {
-  let url: URL;
-  try {
-    url = new URL(text.trim());
-  } catch {
-    return [];
-  }
+  const url = urlParts(text.trim());
+  if (!url) return [];
+  const userinfo = url.readings.flatMap((reading, at) => {
+    const colon = reading.indexOf(":");
+    const parts = (colon < 0 ? [reading] : [reading.slice(0, colon), reading.slice(colon + 1)]).flatMap((part) => [part, decoded(part) ?? part, asParsed(part)]);
+    return at === 0 ? parts : parts.filter((part) => part.replace(/\s+/g, "").length >= MIN_SECRET);
+  });
   // A query writes a space as `+`; a user and password do not.
-  const query = url.search.slice(1).split("&").flatMap((pair) => {
+  const query = url.query.split("&").flatMap((pair) => {
     const at = pair.indexOf("=");
     const name = pair.slice(0, Math.max(at, 0)).replace(/\+/g, " ");
     const value = pair.slice(at + 1);
     return at > 0 && credentialNamed(decoded(name) ?? name) ? [value, decoded(value.replace(/\+/g, " ")) ?? value] : [];
   });
-  return [...[url.username, url.password].flatMap((value) => [value, decoded(value) ?? value]), ...query];
+  return [...userinfo, ...query];
+};
+
+/** Each URL inside a header value (a DSN, a relay's address) as the span of text it takes: from its scheme to the quote
+ *  that closes it when a `'` or `"` opens it (comes right before its scheme and is closed later), else to the first
+ *  space or quote. Read inside that span alone (urlParts), a quoted URL's userinfo never runs past its closing quote to
+ *  a later `@`, and an unquoted one's runs past any `;`, `&`, `=` or `,`. */
+const urlSpans = (value: string): { start: number; end: number }[] => {
+  const spans: { start: number; end: number }[] = [];
+  const start = new RegExp(URL_START.source, "g");
+  for (let found = start.exec(value); found; found = start.exec(value)) {
+    const open = value[found.index - 1];
+    const from = found.index + found[0].length;
+    const closing = open === "'" || open === '"' ? value.indexOf(open, from) : -1;
+    const end = closing >= 0 ? closing : from + value.slice(from).search(/[\s'"]|$/);
+    spans.push({ start: found.index, end });
+    start.lastIndex = end;
+  }
+  return spans;
 };
 
 /** The credentials a header value carries inside it: the user, password and key parameters of each URL in it
- *  (urlCredentials: a DSN's `https://<key>@host/1`, a relay's whole `user:pa;ss`), and, outside its URLs or inside a
- *  URL's user and password, the value of each `name=value` pair whose name says it is a credential (credentialNamed: a
- *  cookie's `session=<token>`, sentry's `sentry_key=<key>`), pairs split at `;`, `&` and spaces, each as written and
- *  decoded. A pair named like no credential (`theme=dark`) is not taken, nor a value of only `=` (a base64 credential's
- *  padding, read as a pair). */
-const innerCredentials = (value: string): string[] => [
-  ...(value.match(URL_IN_TEXT) ?? []).flatMap(urlCredentials),
-  ...value.replace(URL_IN_TEXT, (_url, userinfo: string | undefined) => ` ${userinfo ?? ""} `).split(/[;&\s]+/).flatMap((pair) => {
-    const at = pair.indexOf("=");
-    if (at <= 0) return [];
-    const name = pair.slice(0, at);
-    const inner = pair.slice(at + 1).replace(/^"(.*)"$/, "$1");
-    return /[^=]/.test(inner) && credentialNamed(decoded(name) ?? name) ? [inner, decoded(inner) ?? inner] : [];
-  }),
-];
+ *  (urlSpans, urlCredentials: a DSN's `https://<key>@host/1`, a relay's whole `user:pa;ss`), and, outside its URLs or
+ *  inside a URL's userinfo (its RFC reading), host or path segments, the value of each `name=value` pair whose name
+ *  says it is a credential (credentialNamed: a cookie's `session=<token>`, sentry's `sentry_key=<key>`, a path's
+ *  `;jsessionid=<id>`), pairs split at `;`, `&` and spaces, each as written and decoded. A pair named like no
+ *  credential (`theme=dark`) is not taken, nor a value of only `=` (a base64 credential's padding, read as a pair). */
+const innerCredentials = (value: string): string[] => {
+  const spans = urlSpans(value);
+  let outside = "";
+  let from = 0;
+  for (const { start, end } of spans) {
+    const url = urlParts(value.slice(start, end));
+    outside += `${value.slice(from, start)} ${url ? [url.readings[0] ?? "", url.host, url.path.replace(/\//g, " ")].join(" ") : ""} `;
+    from = end;
+  }
+  outside += value.slice(from);
+  return [
+    ...spans.flatMap(({ start, end }) => urlCredentials(value.slice(start, end))),
+    ...outside.split(/[;&\s]+/).flatMap((pair) => {
+      const at = pair.indexOf("=");
+      if (at <= 0) return [];
+      const name = pair.slice(0, at);
+      const inner = pair.slice(at + 1).replace(/^"(.*)"$/, "$1");
+      return /[^=]/.test(inner) && credentialNamed(decoded(name) ?? name) ? [inner, decoded(inner) ?? inner] : [];
+    }),
+  ];
+};
 
 /** The OTLP exporter's header values `env` names (OTEL_EXPORTER_OTLP_HEADERS and OTEL_EXPORTER_OTLP_TRACES_HEADERS: a
  *  tracing backend's key is one), at any length (keptSecrets floors them for the held list; otlpHeaderCut does not),
