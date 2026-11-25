@@ -47,6 +47,7 @@ export function devProxy(env: DevProxyEnv, note: DevProxyNote = () => {}): DevPr
   const target = env.AGENTRUN_BASE_URL ? devServerOf(env.AGENTRUN_BASE_URL) : LOCAL_SERVER;
   const local = LOOPBACK.has(new URL(target).hostname);
   const from = env.AGENTRUN_BASE_URL && env.AGENTRUN_API_KEY ? "AGENTRUN_API_KEY" : local && env.AGENTRUN_TOKEN ? "AGENTRUN_TOKEN" : undefined;
+  if (env.AGENTRUN_API_KEY && !env.AGENTRUN_BASE_URL) note("info", "AGENTRUN_API_KEY is not sent: it goes to the server AGENTRUN_BASE_URL names, and none is named.");
   if (from) note("info", `Proxying /v2 to ${target} with ${from}.`);
   else if (env.AGENTRUN_TOKEN) note("warn", `AGENTRUN_TOKEN is not sent to ${target}: it goes only to a server on this machine. Set AGENTRUN_API_KEY for this server.`);
   else if (env.AGENTRUN_BASE_URL) note("info", `Proxying /v2 to ${target} with no key.`);
@@ -60,7 +61,10 @@ export function devProxy(env: DevProxyEnv, note: DevProxyNote = () => {}): DevPr
  *  the key rides on. Any page open in the developer's browser reaches this port as freely as the console does, and a
  *  server takes some writes a page can send with no preflight (an upload). A browser says where a request came from:
  *  Sec-Fetch-Site on every request, Origin on a write. One from another site, or from another page on this machine, goes
- *  on without the key, and the server answers it as it answers anyone. */
+ *  on without the key, and the server answers it as it answers anyone.
+ *  What this does not decide: a name that only resolves to this machine is turned away earlier, by Vite's own host check
+ *  (its default `allowedHosts`), which this relies on. A request that says neither header counts as own: besides a
+ *  command line, that is a read from a browser too old to send Sec-Fetch-Site, whose answer the other site cannot read. */
 export function ownRequest(headers: { host?: string; origin?: string; "sec-fetch-site"?: string | string[] }): boolean {
   const site = headers["sec-fetch-site"];
   if (site !== undefined) return site === "same-origin" || site === "none";

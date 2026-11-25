@@ -79,7 +79,8 @@ describe("devProxy", () => {
   it("keeps AGENTRUN_API_KEY here when no address names its server: a shell that exports it for the CLI signs in on the page as before", () => {
     expect(v2({ AGENTRUN_API_KEY: KEY })).toEqual({ target: LOCAL, changeOrigin: true, headers: {} });
     expect(v2({ AGENTRUN_API_KEY: KEY, AGENTRUN_TOKEN: TOKEN }).headers).toEqual({ authorization: `Bearer ${TOKEN}` });
-    expect(said({ AGENTRUN_API_KEY: KEY })).toEqual([]);
+    expect(said({ AGENTRUN_API_KEY: KEY })).toEqual(["info: AGENTRUN_API_KEY is not sent: it goes to the server AGENTRUN_BASE_URL names, and none is named."]);
+    expect(said({ AGENTRUN_API_KEY: KEY, AGENTRUN_TOKEN: TOKEN })).toEqual(["info: AGENTRUN_API_KEY is not sent: it goes to the server AGENTRUN_BASE_URL names, and none is named.", `info: Proxying /v2 to ${LOCAL} with AGENTRUN_TOKEN.`]);
   });
 
   it("a host that only looks like this machine gets no token", () => {

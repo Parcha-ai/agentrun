@@ -47,11 +47,12 @@ const alias = {
 const projects = process.env.VITEST_STORYBOOK === "true" ? [(await import("./.storybook/vitest.project")).storybookProject(alias)] : undefined;
 
 export default defineConfig(({ command, mode }) => {
-  // The proxy and its variables are a server's alone: `npm run dev`, a preview, Storybook's dev server, and the one the
-  // proxy's own test starts. A build and Vitest's own load of this file (mode "test") read none of them, so a variable
-  // left in a shell stops neither; a server refuses one it cannot use (devProxy), by name.
+  // The proxy and its variables are a server's alone: `npm run dev`, a preview, and the one the proxy's own test starts.
+  // A build, Vitest's own load of this file (mode "test") and Storybook read none of them, so a variable left in a shell
+  // stops none of the three; a server refuses one it cannot use (devProxy), by name. Storybook builds its own server
+  // block and never took this proxy, so it is not told of one.
   const notes: Said[] = [];
-  const proxy = command === "serve" && mode !== "test" ? devProxy(process.env, (kind, words) => notes.push({ kind, words })) : undefined;
+  const proxy = command === "serve" && mode !== "test" && process.env.STORYBOOK !== "true" ? devProxy(process.env, (kind, words) => notes.push({ kind, words })) : undefined;
   const v2 = proxy?.["/v2"];
   return {
     base: "./",
@@ -59,6 +60,9 @@ export default defineConfig(({ command, mode }) => {
     // credential gate (credential-gate.mjs), last: the build fails when the bundle, the notices included, holds a credential.
     plugins: [react(), devProxyNotes(notes), thirdPartyNotices(), credentialGate()],
     server: proxy && v2 ? {
+      // The page that can act with the key is not shown inside another site's page, as the served console is not
+      // (frame-ancestors in packages/serve/src/page.ts): a click meant for that site never lands on this one.
+      headers: { "content-security-policy": "frame-ancestors 'self'" },
       proxy: {
         ...proxy,
         "/v2": {
@@ -67,9 +71,11 @@ export default defineConfig(({ command, mode }) => {
           // reaches this port as the console does, goes on without it. Without a key the console signs in like the served
           // page: the server takes a cookie write only from its own origin, so a request from this dev server's own
           // origin is sent as the server's (as the serve dev kit's proxy does).
+          // No WebSocket is proxied (`ws` is not set). One that were would take the same key in its handshake and tell
+          // `proxyReqWs`, which nothing here hears: turn `ws` on only with the same check there.
           configure: (proxy) => proxy.on("proxyReq", (req, incoming) => {
             const host = incoming.headers.host;
-            if (!ownRequest(incoming.headers)) req.removeHeader("authorization");
+            if (v2.headers.authorization && !ownRequest(incoming.headers)) req.removeHeader("authorization");
             if (host && incoming.headers.origin === `http://${host}`) req.setHeader("origin", new URL(v2.target).origin);
           }),
         },

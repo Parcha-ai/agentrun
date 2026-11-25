@@ -11,7 +11,7 @@ const configFile = `${root}/vite.config.ts`;
 const devServer = (more: Parameters<typeof createServer>[0] = {}) => createServer({ root, configFile, logLevel: "silent", server: { host: "127.0.0.1", port: 0, hmr: false, watch: null }, ...more });
 
 // Each test names every variable the dev proxy reads, so the shell that runs the suite decides nothing.
-beforeEach(() => { for (const name of ["AGENTRUN_BASE_URL", "AGENTRUN_API_KEY", "AGENTRUN_TOKEN", "AGENTRUN_URL"]) vi.stubEnv(name, ""); });
+beforeEach(() => { for (const name of ["AGENTRUN_BASE_URL", "AGENTRUN_API_KEY", "AGENTRUN_TOKEN", "AGENTRUN_URL", "STORYBOOK"]) vi.stubEnv(name, ""); });
 afterEach(() => vi.unstubAllEnvs());
 
 it("fetches a development handoff's matching skill through the actual Vite server, preserving API proxy auth and origin; another site's request goes on without the key", async () => {
@@ -37,6 +37,8 @@ it("fetches a development handoff's matching skill through the actual Vite serve
     dev = await devServer();
     await dev.listen();
     const origin = `http://127.0.0.1:${(dev.httpServer!.address() as AddressInfo).port}`;
+    // The page that can act with the key says no other site may show it in a frame.
+    expect((await fetch(`${origin}/`)).headers.get("content-security-policy")).toBe("frame-ancestors 'self'");
     const skillUrl = buildAgentPrompt(origin).match(/https?:\/\/[^\s]+\/skills\/agentrun-serve\/SKILL\.md/)![0];
     expect(new URL(skillUrl).origin).toBe(origin);
     const response = await fetch(skillUrl);
@@ -99,4 +101,8 @@ it("the dev server refuses the older AGENTRUN_URL by name; a build and a test ru
     const loaded = await loadConfigFromFile(env, configFile, root, "silent");
     expect(loaded?.config.server?.proxy, `${env.command} in ${env.mode}`).toBeUndefined();
   }
+  // Nor does Storybook, which builds its own server block and never took this proxy: its process says who it is.
+  vi.stubEnv("STORYBOOK", "true");
+  const storybook = await loadConfigFromFile({ command: "serve", mode: "development" }, configFile, root, "silent");
+  expect(storybook?.config.server?.proxy).toBeUndefined();
 });
