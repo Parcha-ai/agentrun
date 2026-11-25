@@ -171,6 +171,7 @@ export async function supervise(dir: string, out: (line: SupervisorLine) => void
 	const stderr = openSync(join(dir, CHROME_LOG), "a", 0o600);
 	try {
 		const args = [...record.args, ...chromeFence(`http://${RELAY_HOST}:${relayPort}`), `--user-data-dir=${profile}`, "--remote-debugging-port=0", "--remote-debugging-address=127.0.0.1", "about:blank"]; // key-gate: loopback-rule the local Chrome's DevTools socket listens on loopback alone
+		// Chrome inherits this process's environment, which the provider cut to what Chrome reads (local-chrome.ts chromeEnv).
 		child = spawn(record.executablePath, args, {
 			stdio: ["ignore", "ignore", stderr],
 			detached: true,

@@ -4,8 +4,8 @@
 // still queued fail in its words while a run a runner claimed is left to it.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { keepPresence, PRESENCE_STALE_MS, refusedEnd, refusedEndMessage, runnersRefused } from "../dist/runner/presence.js";
-import { RUNNER_ROWS_KEPT_MS } from "../dist/store/store.js";
+import { keepPresence, refusedEnd, refusedEndMessage, runnersRefused } from "../dist/runner/presence.js";
+import { RUNNER_ROWS_KEPT_MS, RUNNER_STALE_MS } from "../dist/store/store.js";
 import { queued, storeOn, T0 } from "./store-helpers.mjs";
 
 const WORDS = "AGENTRUN_RUN_USER=bogus is not a setting this runner knows: set AGENTRUN_RUN_USER=same.";
@@ -51,14 +51,14 @@ test("no runner can take a run only while every runner still there refused, and 
   assert.equal(await runnersRefused(store.runners), `No runner of this server can take a run: ${WORDS}`, "the same words once");
   await store.runners.put({ runner: "claims", incarnation: "1", refused: null });
   assert.equal(await runnersRefused(store.runners), undefined, "one runner that claims is enough");
-  // The runner that claims stops saying it is there (it died): past PRESENCE_STALE_MS it no longer counts.
-  clock.now = at(PRESENCE_STALE_MS);
+  // The runner that claims stops saying it is there (it died): past RUNNER_STALE_MS it no longer counts.
+  clock.now = at(RUNNER_STALE_MS);
   await store.runners.renew("refuses", "1", null);
   await store.runners.renew("refuses-too", "1", null);
-  clock.now = at(PRESENCE_STALE_MS + 1);
+  clock.now = at(RUNNER_STALE_MS + 1);
   assert.equal(await runnersRefused(store.runners), `No runner of this server can take a run: ${WORDS}`);
   // And refusing runners that died count for nothing either: no runner is there.
-  clock.now = at(2 * PRESENCE_STALE_MS + 1);
+  clock.now = at(2 * RUNNER_STALE_MS + 1);
   assert.equal(await runnersRefused(store.runners), undefined);
 });
 

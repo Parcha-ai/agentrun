@@ -30,6 +30,8 @@ export const gooseFacts: AdapterFacts = Object.freeze<AdapterFacts>({
   thinking: Object.freeze(["high"] as const),
   // Its model is Anthropic's, on its own settings, never the gateway's default for the other harnesses.
   ownModel: true,
+  // Its proxy forwards with the fetch it is handed: a model the route translates onto its wire runs on it.
+  forwardsRoute: true,
   // Anthropic's ids hold no dot; OpenRouter names the same models with dots (anthropic/claude-sonnet-5.5).
   normalizeModel: (model: { provider: string; modelId: string }) => (model.provider === "anthropic" ? { ...model, modelId: model.modelId.replaceAll(".", "-") } : model),
   // Installed by its owner, never on first use: the archive the pin names, its digests checked (serve's harness-archive.ts).

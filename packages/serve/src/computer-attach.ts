@@ -40,8 +40,8 @@ import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { dialHost, LIVE_PROOF_HEADER, type LiveReach, RELAY_CONNECT_MS, relayProof } from "./live-reach.js";
 import { peerKey } from "./owner.js";
 import { registerNotSecretWrite } from "./secret-writes.js";
-import { liveRelays, PRESENCE_STALE_MS } from "./runner/presence.js";
-import type { MintedTokenRow, MintedTokens, PairedComputerRow, PairedComputers, Runners } from "./store/index.js";
+import { liveRelays } from "./runner/presence.js";
+import { type MintedTokenRow, type MintedTokens, type PairedComputerRow, type PairedComputers, RUNNER_STALE_MS, type Runners } from "./store/index.js";
 import { pairedOf, PAIRED_ID_PREFIX, RUNNER_APART_WORDS, servesNoKind } from "./workspace/attached-computers.js";
 import { allRoutes, EMPTY_ROUTE, notAttachedWords, PAIRED_BRING_MS, replaceRoute, ROUTE_COMES_BACK, type Route, type RouteSettings, routeKeyOf, routeRestartedWords, seeRoute } from "./workspace/paired-route.js";
 
@@ -654,7 +654,7 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
     };
     if (options.relay === undefined) return refuse(`runner ${runner} ${target.whose}, and this server relays no dial to a runner`);
     const at = (await liveRelays(options.relay.runners)).find((row) => row.runner === runner);
-    if (at === undefined) return refuse(`runner ${runner}, which ${target.whose}, is not running now (no attach listener of its has said it is there for ${PRESENCE_STALE_MS / 1000} s): ${target.gone}`, true);
+    if (at === undefined) return refuse(`runner ${runner}, which ${target.whose}, is not running now (no attach listener of its has said it is there for ${RUNNER_STALE_MS / 1000} s): ${target.gone}`, true);
     if (at.incarnation !== target.incarnation) return refuse(target.restarted, true);
     const host = dialHost(at.host, options.relay.reach);
     if (host === undefined) return refuse(`runner ${runner}, which ${target.whose}, answers at ${at.host}, which is not one of this server's runners' hosts (AGENTRUN_RUNNER_HOSTS)`);

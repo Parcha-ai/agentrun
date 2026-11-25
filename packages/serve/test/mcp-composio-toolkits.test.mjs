@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { startFakeComposio } from "./fixtures/fake-composio.mjs";
-import { secretWritePath, serve, serverLog, storeBytes } from "./support.mjs";
+import { clientOwnerSession, secretWritePath, serve, serverLog, storeBytes } from "./support.mjs";
 
 secretWritePath(["POST"], /^\/settings\/mcp-servers\/composio\/toolkits$/);
 secretWritePath(["PUT"], /^\/settings\/mcp-servers\/[^/]+\/composio$/);
@@ -13,11 +13,11 @@ secretWritePath(["PUT"], /^\/settings\/mcp-servers\/[^/]+\/composio$/);
 const ADD = { slug: "add", name: "Add", description: "Add two numbers." };
 const TOOLKITS = { github: { name: "GitHub", no_auth: false, tools: [ADD] }, gmail: { name: "Gmail", no_auth: false, tools: [ADD] }, hackernews: { name: "Hacker News", no_auth: true, tools: [ADD] } };
 
-async function setup(t, options = {}) {
+async function setup(t, options = {}, control = {}) {
   const composio = await startFakeComposio({ toolkits: TOOLKITS, ...options });
   t.after(() => composio.close());
   const log = serverLog(t);
-  const server = await serve(t, { composioControl: { baseUrl: composio.baseUrl } });
+  const server = await serve(t, { composioControl: { baseUrl: composio.baseUrl, ...control } });
   return { composio, log, server, api: server.api };
 }
 
@@ -120,13 +120,58 @@ test("the toolkits listing ends on a cursor Composio repeats, after the page tha
   assert.deepEqual(res.body.toolkits, [{ slug: "github", name: "GitHub" }]);
 });
 
-test("the toolkits listing reads at most so many bytes of Composio's answers, then refuses in words", async (t) => {
-  // Three pages of 3 MiB each: over the 8 MiB the listing reads in all.
-  const s = await setup(t, { toolkitsPage: 1, toolkitsPad: 3 * 1024 * 1024 });
+test("a Composio answer over 4 MiB is refused in words, unread, and no page is asked for after it", async (t) => {
+  const s = await setup(t, { toolkitsPage: 1, toolkitsPad: 5 * 1024 * 1024 });
   const res = await s.api("POST", "/settings/mcp-servers/composio/toolkits", { api_key: s.composio.apiKey });
-  assert.equal(res.status, 424, `the answers over the cap are refused: ${res.status}`);
-  assert.match(res.body.error.message, /Composio's answers while listing the toolkits were over 8 MiB: no toolkit was listed\./);
-  assert.ok(s.composio.to("/api/v3/toolkits", "GET").length <= 3, "no page is asked for after the cap");
+  assert.equal(res.status, 424, `the answer over the cap is refused: ${res.status}`);
+  assert.match(res.body.error.message, /Composio's answer while listing the toolkits was over 4 MiB: no toolkit was listed\./);
+  assert.equal(s.composio.to("/api/v3/toolkits", "GET").length, 1, "the first page alone was asked for");
+});
+
+test("the toolkits listing has one deadline for every page: a page Composio holds past it is cut, in words, and nothing is listed", async (t) => {
+  // The deadline is the test's own signal, so the page is held past it without a clock.
+  const deadline = new AbortController();
+  const s = await setup(t, { toolkitsPage: 1 }, { listDeadline: () => deadline.signal });
+  const held = s.composio.hold("/api/v3/toolkits", "GET");
+  t.after(() => held.release());
+  const listing = s.api("POST", "/settings/mcp-servers/composio/toolkits", { api_key: s.composio.apiKey });
+  await held.reached;
+  deadline.abort();
+  held.release();
+  const res = await listing;
+  assert.equal(res.status, 424, `the listing is cut at its deadline: ${res.status} ${JSON.stringify(res.body)}`);
+  assert.match(res.body.error.message, /Composio did not answer while listing the toolkits: no toolkit was listed\./);
+});
+
+test("the toolkits listing takes its deadline once, for all its pages, not one for each page", async (t) => {
+  let asked = 0;
+  const s = await setup(t, { toolkitsPage: 1 }, { listDeadline: () => (asked++, new AbortController().signal) });
+  const res = await s.api("POST", "/settings/mcp-servers/composio/toolkits", { api_key: s.composio.apiKey });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(res.body.toolkits.length, Object.keys(TOOLKITS).length, "every page was listed, one toolkit a page");
+  assert.equal(asked, 1, `one deadline for the ${Object.keys(TOOLKITS).length} pages`);
+});
+
+test("a toolkits listing the console stops (Cancel, a key edit) stops at Composio too: no page is asked for after it", async (t) => {
+  const s = await setup(t, { toolkitsPage: 1 });
+  const held = s.composio.hold("/api/v3/toolkits", "GET");
+  t.after(() => held.release());
+  const session = await clientOwnerSession(s.server);
+  const stop = new AbortController();
+  const listing = fetch(`${s.server.baseUrl}/settings/mcp-servers/composio/toolkits`, {
+    method: "POST", signal: stop.signal,
+    headers: { "content-type": "application/json", cookie: session.cookie, origin: session.origin },
+    body: JSON.stringify({ api_key: s.composio.apiKey }),
+  }).catch((error) => error);
+  await held.reached;
+  stop.abort();
+  assert.equal((await listing)?.name, "AbortError", "the console's request was stopped");
+  // The server sees the connection close before the held page is let go.
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  held.release();
+  const asked = () => s.composio.to("/api/v3/toolkits", "GET").length;
+  for (let waited = 0; waited < 1500 && asked() === 1; waited += 50) await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(asked(), 1, `no page after the stopped one is asked for: ${asked()} pages were`);
 });
 
 test("an account of another Composio user under the same auth config is never the server's: not connected, and no label shown or kept", async (t) => {
@@ -141,6 +186,29 @@ test("an account of another Composio user under the same auth config is never th
   assert.notEqual(res.body.server.composio_account?.state, "connected", "another user's account does not connect this server's");
   assert.equal(res.body.server.composio_account?.labels, undefined, "no label of another user's account is shown");
   assert.ok(!storeBytes(s.server.data).includes("other@example.com"), "nor kept");
+});
+
+test("an account a refresh kept before the user filter (0.1.0-beta.57 and beta.58 took any ACTIVE account) is never shown: the server says no account until a refresh since then", async (t) => {
+  const s = await setup(t, { active: ["gmail"] });
+  assert.equal((await s.api("PUT", "/settings/mcp-servers/gmail/composio", { api_key: s.composio.apiKey, toolkit: "gmail", tools: ["add"] })).status, 200);
+  assert.equal((await s.api("POST", "/settings/mcp-servers/gmail/refresh")).status, 200);
+  // The row as those releases wrote it: the same server, toolkit, user and auth config, connected and labelled with
+  // another user's email, and nothing else.
+  const stored = await s.server.store.settings.get("mcp.composio-account/gmail");
+  const { of, user, toolkit, auth_config, checked_at } = stored;
+  await s.server.store.settings.put("mcp.composio-account/gmail", { of, user, toolkit, auth_config, state: "connected", labels: ["other.person@example.com"], checked_at });
+  const read = (await s.api("GET", "/settings/mcp-servers")).body.servers.find((server) => server.name === "gmail");
+  assert.ok(read, "the list has the server");
+  assert.equal(read.composio_account, undefined, `an account kept before the user filter is not shown: ${JSON.stringify(read.composio_account)}`);
+  const one = await s.api("GET", "/settings/mcp-servers/gmail");
+  assert.equal(one.status, 200, JSON.stringify(one.body));
+  assert.ok(!JSON.stringify(one.body).includes("other.person@example.com"), "nor on the server's own read");
+
+  // A refresh reads it again, for the server's user alone, and the server says its account once more.
+  const again = await s.api("POST", "/settings/mcp-servers/gmail/refresh");
+  assert.equal(again.status, 200, JSON.stringify(again.body));
+  assert.equal(again.body.server.composio_account?.state, "connected", "a refresh since the filter is shown");
+  assert.ok(!JSON.stringify(again.body).includes("other.person@example.com"));
 });
 
 for (const [what, made, says] of [["empty", { user: "" }, "says unknown"], ["per-run", { user: "per_run", per_run: true }, "shows no account: each run names its own"]]) {
@@ -172,8 +240,8 @@ test("a server saved before per-run mode for a Composio user literally named per
   assert.ok(listed.length > 0 && listed.every((call) => call.query.user_ids === "per_run"), `its accounts were asked for as the user per_run: ${JSON.stringify(listed.map((call) => call.query))}`);
 });
 
-test("an account Composio answers with no user_id, under the user asked for, still connects the server", async (t) => {
-  // Composio's docs mark the listing's user_id deprecated, to be dropped: only one that names another user is refused.
+test("an account Composio answers with no user_id still connects the server, but shows no label: only one named as the server's user's does", async (t) => {
+  // Composio's docs mark the listing's user_id deprecated, to be dropped: without it, nothing says whose account it is.
   const accounts = {};
   const s = await setup(t, { accounts });
   assert.equal((await s.api("PUT", "/settings/mcp-servers/gmail/composio", { api_key: s.composio.apiKey, toolkit: "gmail", tools: ["add"] })).status, 200);
@@ -181,5 +249,19 @@ test("an account Composio answers with no user_id, under the user asked for, sti
   accounts.gmail = [{ id: "ca_connected02", user: null, status: "ACTIVE", auth_config: config, shown: { alias: "person@example.com" } }];
   const res = await s.api("POST", "/settings/mcp-servers/gmail/refresh");
   assert.equal(res.status, 200, JSON.stringify(res.body));
-  assert.deepEqual({ state: res.body.server.composio_account?.state, labels: res.body.server.composio_account?.labels }, { state: "connected", labels: ["person@example.com"] });
+  assert.deepEqual({ state: res.body.server.composio_account?.state, labels: res.body.server.composio_account?.labels }, { state: "connected", labels: undefined });
+  assert.ok(!storeBytes(s.server.data).includes("person@example.com"), "nor is its label kept");
+  // Named as the server's user's, its label shows.
+  accounts.gmail = [{ id: "ca_connected02", status: "ACTIVE", auth_config: config, shown: { alias: "person@example.com" } }];
+  const named = await s.api("POST", "/settings/mcp-servers/gmail/refresh");
+  assert.deepEqual(named.body.server.composio_account?.labels, ["person@example.com"]);
+});
+
+test("a save never takes an account Composio answers as another user's as the server's: it makes the connect link", async (t) => {
+  // A Composio that answers every user's accounts under the config, whatever user_ids names.
+  const s = await setup(t, { ignoreUserIds: true, authConfigs: { gmail: [{ id: "ac_managed", is_composio_managed: true }] }, accounts: { gmail: [{ id: "ca_other02", user: "someone-else", status: "ACTIVE", auth_config: "ac_managed" }] } });
+  const saved = await s.api("PUT", "/settings/mcp-servers/gmail/composio", { api_key: s.composio.apiKey, toolkit: "gmail", tools: ["add"] });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  assert.equal(saved.body.connect_url, "https://connect.composio.test/link/ac_managed", "the server's user has no account: the save answers the link to connect one");
+  assert.deepEqual(s.composio.to("/api/v3/connected_accounts/link").map((call) => call.body), [{ auth_config_id: "ac_managed", user_id: "agentrun" }]);
 });

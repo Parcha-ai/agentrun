@@ -144,6 +144,15 @@ test("capabilities say why each web tool resolves as it does on each harness, on
   assert.equal(caps.tools.filter((tool) => tool.why).length, 3, "web_search, web_fetch and browser, where resolves is");
 });
 
+// QA: the browser runs only on the runner, which the server refused at the save and never said beforehand, so the
+// console's Tools step could not say it. Capabilities mark each runner-only tool, as they mark each sandbox-only one.
+test("capabilities mark the runner-only tools runner_only (the browser, and only it), each one the save refuses in a sandbox place", () => {
+  const view = toolsView({});
+  assert.deepEqual(view.filter((tool) => tool.runner_only).map((tool) => tool.name), ["browser"], "the browser alone is runner-only");
+  assert.deepEqual(view.filter((tool) => tool.runner_only === true).map((tool) => tool.name), Object.entries(TOOLS).filter(([, entry]) => entry.runnerOnly).map(([name]) => name), "every tool the table marks runnerOnly, and no other");
+  assert.equal(view.find((tool) => tool.name === "bash").runner_only, undefined, "a sandbox-only tool is not runner-only");
+});
+
 test("with no box on the server, a sandbox-only tool reads unavailable for that reason, and each web tool keeps its resolves and its why beside it", () => {
   const noBox = "no box is set up on this server: docker is unavailable (not enabled on this server)";
   const each = (text) => ({ pi: text, "claude-agent": text, codex: text, opencode: text });

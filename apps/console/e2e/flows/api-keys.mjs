@@ -39,7 +39,7 @@ export default {
       await made.waitFor();
       const key = (await made.locator("code").textContent()) ?? "";
       check(/^ar_key_[A-Za-z0-9_-]{43}$/.test(key), "the page shows no key where the new one should be");
-      check(((await made.getByLabel("Environment variables").textContent()) ?? "") === `AGENTRUN_URL=${origin}\nAGENTRUN_API_KEY=${key}`, "the environment lines are not this server's address and the new key");
+      check(((await made.getByLabel("Environment variables").textContent()) ?? "") === `AGENTRUN_BASE_URL=${origin}/v2\nAGENTRUN_API_KEY=${key}`, "the environment lines are not this server's API address and the new key");
       keys[theme] = key;
       await shoot(`api-keys-${theme}-1440-made.png`);
 

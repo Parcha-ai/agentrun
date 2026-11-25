@@ -132,7 +132,7 @@ async function loopOn(deps: AdapterSpecDeps, harness: string, launch: RunLaunch,
     return createAdapterLoop((claim, adapterRun) =>
       entry?.facts && entry.adapter
         ? cliRunSpecFromLaunch(launch, adapterRun, deps, claim)
-        : adapterRunSpecFromLaunch(launch, adapterRun, deps, claim, runner), deps.modelRetry ?? {});
+        : adapterRunSpecFromLaunch(launch, adapterRun, deps, claim, runner), { ...deps.modelRetry, ...(deps.tracing ? { tracing: deps.tracing } : {}) });
   }
   return undefined;
 }
