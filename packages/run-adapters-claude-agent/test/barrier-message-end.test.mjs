@@ -67,6 +67,7 @@ async function batchTurn(t, batch) {
   const provider = await fakeAnthropic({ reply: () => ({ text: 'ok' }) });
   t.after(() => provider.close());
   const ended = [];
+  const events = [];
   const adapter = claudeAgentAdapter({
     model: 'claude-test',
     provider: { origin: provider.url, credential: () => 'provider-secret' },
@@ -82,7 +83,7 @@ async function batchTurn(t, batch) {
   const ran = [];
   const submit = { name: 'submit', description: 'Submit a job.', inputSchema: { type: 'object', properties: { q: { type: 'string' } } }, replay: 'never', call: async (args) => (ran.push(args), { text: 'submitted' }) };
   const store = memorySessionStore();
-  const io = { writer: await store.open('s1'), models: { beforeRequest: async () => ({ turn: 0 }), afterRequest: async () => {} }, signal: new AbortController().signal, dir: scratch(), onEvent: () => {} };
+  const io = { writer: await store.open('s1'), models: { beforeRequest: async () => ({ turn: 0 }), afterRequest: async () => {} }, signal: new AbortController().signal, dir: scratch(), onEvent: (event) => events.push(event) };
   const session = await adapter.open({ key: 's1', label: 'root', system: [], tools: [submit], context: 'fresh' }, io);
   try {
     let end;
@@ -93,7 +94,7 @@ async function batchTurn(t, batch) {
     turn.catch(() => {});
     while (end === undefined && clock.now() < LIMIT_MS) await clock.advance(STEP_MS);
     await turn;
-    return { end, ran, ended: ended.sort((a, b) => a.index - b.index) };
+    return { end, ran, events, ended: ended.sort((a, b) => a.index - b.index) };
   } finally {
     await session.close();
   }
@@ -129,4 +130,14 @@ test('a short message of one call behaves as before: it runs, and a lost line is
   assert.match(lost.ended[0].text, REFUSED);
   assert.ok(lost.ended[0].at >= 200 + BARRIER_MS && lost.ended[0].at <= 200 + BARRIER_MS + STEP_MS, `refused at ${lost.ended[0].at} ms`);
   assert.equal(lost.ran.length, 0);
+});
+
+test("a call the CLI refuses itself early in a long message is still shown to the host once its answer is in the log", async (t) => {
+  // The CLI answers block 1 itself (a tool the session doesn't have) at 1.3 s; its answer is mirrored with the message, at 15.6 s.
+  const { end, events, ended } = await batchTurn(t, { n: 12, gapMs: 1300, refused: [1] });
+  assert.equal(end.status, 'completed');
+  assert.equal(ended.length, 11, 'the other calls ran');
+  const shown = events.filter((event) => event.type === 'tool_end' && event.isError && !ended.some((call) => call.id === event.callId));
+  assert.equal(shown.length, 1, 'the refused call is shown to the host as a call that failed');
+  assert.equal(shown[0].name, 'submit');
 });

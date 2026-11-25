@@ -54,6 +54,8 @@ import type { ClaudeAgentSdk } from '../harness.js';
  *   its call, which starts as its block ends, as Claude Code runs it. As the
  *   real mirror does, the message's transcript lines reach the session store
  *   only once the message ends; those of the blocks in `lost` (from 1) never.
+ *   The blocks in `refused` the CLI answers itself as its block ends, a
+ *   tool the session doesn't have, as Claude Code does: no call is made.
  */
 
 interface FakeTool {
@@ -463,7 +465,7 @@ export function fakeSdk(fake: FakeSdkOptions = {}): FakeSdk {
           }
           const batching = /^batch (.*)$/s.exec(command);
           if (batching) {
-            const spec = JSON.parse(batching[1]!) as { n: number; gapMs: number; tool: string; args: unknown; lost?: number[] };
+            const spec = JSON.parse(batching[1]!) as { n: number; gapMs: number; tool: string; args: unknown; lost?: number[]; refused?: number[] };
             const sleep = fake.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
             const event = (ev: Record<string, unknown>) => ({ type: 'stream_event', parent_tool_use_id: null, event: ev });
             const tool = (await tools).get(spec.tool);
@@ -480,6 +482,12 @@ export function fakeSdk(fake: FakeSdkOptions = {}): FakeSdk {
               const a = entry('assistant', { message: { role: 'assistant', content: [block] } });
               if (!spec.lost?.includes(index)) lines.push(a);
               yield { type: 'assistant', parent_tool_use_id: null, uuid: a.uuid, session_id: sessionId, message: a.message };
+              if (spec.refused?.includes(index)) {
+                const r = entry('user', { message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, is_error: true, content: `<tool_use_error>Error: No such tool available: ${block.name}</tool_use_error>` }] } });
+                lines.push(r);
+                yield { type: 'user', parent_tool_use_id: null, message: r.message };
+                continue;
+              }
               running.push(
                 (async () => {
                   const result = tool ? await tool.handler(spec.args, { _meta: { 'claudecode/toolUseId': id } }) : { content: [{ type: 'text', text: `no tool ${spec.tool}` }], isError: true };
