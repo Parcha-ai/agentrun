@@ -304,12 +304,14 @@ test("claudeLoginServed: one rule for the routes and for capabilities: none whil
 test("API-only serves no login path under another route's name: no pattern on its list matches a login route's method and path", async () => {
   const { ROUTES } = await import("../dist/server.js");
   const { servedApiOnly } = await import("../dist/api-only.js");
-  const paths = { getClaudeLogin: "/settings/claude-login", turnOnClaudeLogin: "/settings/claude-login", turnOffClaudeLogin: "/settings/claude-login", startClaudeLogin: "/settings/claude-login/login" };
-  assert.deepEqual(Object.keys(paths).sort(), [...CLAUDE_LOGIN_ROUTES].sort());
-  for (const [name, path] of Object.entries(paths)) {
-    const route = ROUTES.find((r) => r.name === name);
-    assert.ok(route?.pattern.test(path), `${name} answers ${path}`);
-    assert.equal(servedApiOnly(ROUTES, route.method, `/v2${path}`), false, `${route.method} /v2${path} is refused on API-only before routing`);
+  // The router's own login routes, found by their path, so a route added under it can't be left off CLAUDE_LOGIN_ROUTES.
+  const login = ROUTES.filter((r) => r.pattern.source.includes("claude-login"));
+  assert.deepEqual(login.map((r) => r.name).sort(), [...CLAUDE_LOGIN_ROUTES].sort(), "CLAUDE_LOGIN_ROUTES names every route under /settings/claude-login");
+  for (const route of login) {
+    // Each pattern is a literal path; one with a parameter in it fails the next line and needs its path given by hand.
+    const path = route.pattern.source.replace(/^\^|\$$/g, "").replaceAll("\\/", "/");
+    assert.ok(route.pattern.test(path), `${route.name} answers ${path}`);
+    for (const mcpSave of [false, true]) assert.equal(servedApiOnly(ROUTES, route.method, `/v2${path}`, mcpSave), false, `${route.method} /v2${path} is refused on API-only before routing (MCP save ${mcpSave ? "on" : "off"})`);
   }
 });
 
