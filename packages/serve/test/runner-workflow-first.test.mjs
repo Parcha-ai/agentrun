@@ -45,6 +45,7 @@ const { LEARNED_WORKFLOW_TOOL } = await import("../dist/learned-workflow.js");
 const { runTimeline, runEntries, runReflect } = await import("../dist/store-reads/journal.js");
 const { said } = await import("../dist/learning-words.js");
 const { agentCostOverStore, pastRunsOverStore } = await import("../dist/store-reads/learning.js");
+const { record } = await import("../dist/learn/ledger.js");
 const { viewOverStore } = await import("../dist/store-view.js");
 const { LEARNED_CLIP } = await import("../dist/learned-workflow.js");
 const { COST_WINDOW, costLineOf, overLine, workflowCostsOf, fits, workflowDigest, workflowFirstOf, pathMetrics, servedOf, WORKFLOW_FIRST } = await import("../dist/runner/workflow-first.js");
@@ -206,7 +207,16 @@ async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION 
   const runsOf = { ...store.runs, list: async (filter) => [...(pastFromSecondClaim && claims < 1 ? [] : past), ...(await store.runs.list(filter))] };
   for (const key of Object.getOwnPropertyNames(Object.getPrototypeOf(store.runs) ?? {})) if (typeof store.runs[key] === "function" && key !== "list" && key !== "constructor") runsOf[key] = store.runs[key].bind(store.runs);
   // `keptBefore`: earlier runs' kept learning, newest first (learning_proposals), laid before the store's own the same way.
+  // The ledger holds the rows their ends wrote (learn/ledger.ts record over each run and its kept round).
+  const laidLedger = (agentId, runIds) => (pastFromSecondClaim && claims < 1 ? [] : past)
+    .filter((run) => run.agentId === agentId && (runIds === undefined || runIds.includes(run.id)))
+    .map((run) => record({ id: run.id, agentId: run.agentId, startedAt: run.startedAt, costUsd: run.costUsd, costAtMostUsd: run.costAtMostUsd, metrics: run.metrics, rounds: earlier.filter((one) => one.runId === run.id).map((one) => ({ round: one.round ?? 1, proposal: one.proposal })) }));
   const learningOf = {
+    ledger: async (agentId, runIds) => {
+      const own = await store.learning.ledger(agentId, runIds);
+      const laid = laidLedger(agentId, runIds);
+      return { rows: [...laid.map((one) => one.row), ...own.rows], spend: [...laid.flatMap((one) => one.spend), ...own.spend] };
+    },
     proposal: async (runId, round) => earlier.find((one) => one.runId === runId) ?? (await store.learning.proposal(runId, round)),
     proposals: async (agentId, options) => [...earlier.filter((one) => one.agentId === agentId), ...(await store.learning.proposals(agentId, options))],
     kept: async (agentId) => {
@@ -1173,7 +1183,7 @@ test("a claim that dies after the workflow handed the job back: the next claim s
 
 test("the cost page and the launch's money rule read one window: the newest runs since the reset, both sides over the same runs", async (t) => {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-workflow-first-cost-"));
-  const store = await openSqliteStore({ dataDir: dir, role: "server" });
+  let store = await openSqliteStore({ dataDir: dir, role: "server" });
   t.after(async () => {
     await store.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
@@ -1185,7 +1195,7 @@ test("the cost page and the launch's money rule read one window: the newest runs
     ids.push(`run-${i}`);
     await store.runs.create({ id: `run-${i}`, agentId: "agent-1", revisionId: "rev-1" });
   }
-  await store.flush?.();
+  await store.close();
   const db = new DatabaseSync(join(dir, "store.sqlite"), { timeout: 5_000 });
   try {
     // run-0 the newest; the three older ones are served runs of one digest, the newest of them at 0.9, the oldest two at 0.1.
@@ -1193,6 +1203,8 @@ test("the cost page and the launch's money rule read one window: the newest runs
   } finally {
     db.close();
   }
+  // Ended with no ledger row: the server's open records each (run-patch.ts backfillLedger).
+  store = await openSqliteStore({ dataDir: dir, role: "server" });
   const { workflows, summary } = await agentCostOverStore(store, "agent-1");
   const past = await pastRunsOverStore(store, "agent-1");
   assert.deepEqual(workflowCostsOf(past), workflows, "the launch's money rule reads what the cost page shows");

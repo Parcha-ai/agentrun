@@ -43,7 +43,7 @@ const seqOf = (cursor: RunChangeCursor): number => {
 import { cleanText, type Dialect, settledBody } from "../dialect.js";
 import { inMemory } from "./memory.js";
 import { Connection, DEFAULT_BUSY_TIMEOUT_MS, type SqliteExecutor, type SqliteValue, type Statement, type StoreConnection, type Tx } from "./connection.js";
-import { applyRunPatch, EXACT_COST_USD, NOT_A_LEARNING_RUN, recordLedger, refuseLeftovers, REOPEN_SET, reopenableWhere, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
+import { applyRunPatch, backfillLedger, EXACT_COST_USD, NOT_A_LEARNING_RUN, recordLedger, refuseLeftovers, REOPEN_SET, reopenableWhere, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
 import { launchDiskOf, readableJson,readLaunch, readLearningStarts, readSeededBefore, readUsageMetadata, writeLaunch, writeLaunchSealed } from "./run-launch.js";
 import { canonical } from "../agent-body.js";
 import type { LedgerRow, SpendRow } from "../../learn/ledger.js";
@@ -620,6 +620,8 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
         if (found !== 14) await connection.write(purgeUpgrade(await named("runs"), await named("agents")).map((sql) => ({ sql })), { full: true });
         await connection.write(diskUpgrade(await named("runs")).map((sql) => ({ sql })), { full: true });
       }
+      // Every run an earlier build ended gets its ledger row once, here, on the schema this build reads.
+      await backfillLedger(connection, options.now ?? Date.now);
     }
   } catch (error) {
     await connection.close().catch(() => undefined);
@@ -3038,7 +3040,10 @@ class SqliteStore implements Store {
       );
       await writeLaunch(tx, run.id, run.launch, at);
       await new RunStorage(this.#db, { runId: run.id, epoch: 0 }, this.#now).applyIn(tx, run.transcript, row!.inserted_rowid ?? "this-transaction");
-      return runOf(row!);
+      // Its ledger row, as an end writes one (applyRunPatch), in this same commit.
+      const imported = runOf(row!);
+      if (FINAL_STATES.includes(imported.state)) await recordLedger(tx, imported, at);
+      return imported;
     });
   }
 
