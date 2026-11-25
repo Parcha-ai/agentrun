@@ -8,7 +8,9 @@ import { buildAgentPrompt } from "./codingAgentPrompts";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const configFile = `${root}/vite.config.ts`;
-const devServer = (more: Parameters<typeof createServer>[0] = {}) => createServer({ root, configFile, logLevel: "silent", server: { host: "127.0.0.1", port: 0, hmr: false, watch: null }, ...more });
+// preTransformRequests off: a page asked for here is answered and nothing more. Left on, Vite goes on to transform the
+// whole console behind it, and closing the server waits for that, seconds on a busy machine.
+const devServer = (more: Parameters<typeof createServer>[0] = {}) => createServer({ root, configFile, logLevel: "silent", server: { host: "127.0.0.1", port: 0, hmr: false, watch: null, preTransformRequests: false }, ...more });
 
 // Each test names every variable the dev proxy reads, so the shell that runs the suite decides nothing.
 beforeEach(() => { for (const name of ["AGENTRUN_BASE_URL", "AGENTRUN_API_KEY", "AGENTRUN_TOKEN", "AGENTRUN_URL", "STORYBOOK"]) vi.stubEnv(name, ""); });
@@ -38,7 +40,9 @@ it("fetches a development handoff's matching skill through the actual Vite serve
     await dev.listen();
     const origin = `http://127.0.0.1:${(dev.httpServer!.address() as AddressInfo).port}`;
     // The page that can act with the key says no other site may show it in a frame.
-    expect((await fetch(`${origin}/`)).headers.get("content-security-policy")).toBe("frame-ancestors 'self'");
+    const page = await fetch(`${origin}/`);
+    expect(page.headers.get("content-security-policy")).toBe("frame-ancestors 'self'");
+    await page.text();
     const skillUrl = buildAgentPrompt(origin).match(/https?:\/\/[^\s]+\/skills\/agentrun-serve\/SKILL\.md/)![0];
     expect(new URL(skillUrl).origin).toBe(origin);
     const response = await fetch(skillUrl);
