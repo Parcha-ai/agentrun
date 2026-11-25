@@ -1,9 +1,9 @@
 // A run's code reaches the key of the tool it is given and nothing else the server holds. The server is started by its
 // launcher with every secret it names set to a canary (the seal key a key it takes, the token list an id and a
-// 32-character secret); a pi run of a revision on an OpenAI model that names a monid tool answers, through the faux model
+// 32-character secret); a pi run of a revision on an OpenAI model that names web_search answers, through the faux model
 // (fixtures/faux-custody.mjs), which secrets the process its loop runs in answers secret(name) for. Its process answers
-// monid's key alone: no model provider's key (the faux model it runs on sends none, so not its revision's model's
-// either), never the server's token, its token list, its API key or its seal key, nor a box's.
+// Parallel's key alone, the one its web_search runs on: no model provider's key (the faux model it runs on sends none, so
+// not its revision's model's either), never the server's token, its token list, its API key or its seal key, nor a box's.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -52,7 +52,7 @@ async function launched(t) {
 
 test("a faux run's process answers secret(name) for its tool's key alone: no model provider's key, never the server's token, token list, API key or seal key, nor a box's key", { timeout: 120_000 }, async (t) => {
   const api = await launched(t);
-  assert.equal((await api("POST", "/agents", { definition: { id: "custody", version: 1, name: "custody", instructions: "Answer.", skills: [], tools: ["monid:faux/person/enrich"], model: "openai/gpt-6.1-sol" } })).status, 201);
+  assert.equal((await api("POST", "/agents", { definition: { id: "custody", version: 1, name: "custody", instructions: "Answer.", skills: [], tools: ["web_search"], model: "openai/gpt-6.1-sol" } })).status, 201);
   const { status, body: run } = await api("POST", "/agents/custody/runs", { input: { content: "Report." } });
   assert.equal(status, 202, JSON.stringify(run));
   let view;
@@ -61,8 +61,8 @@ test("a faux run's process answers secret(name) for its tool's key alone: no mod
   }
   const { handed } = JSON.parse(view.result.final_answer);
   const held = Object.entries(handed).filter(([, digest]) => digest !== "none").map(([name]) => name);
-  assert.ok(held.includes("MONID_API_KEY"), "the run's process holds the key of the tool it is given");
+  assert.ok(held.includes("PARALLEL_API_KEY"), "the run's process holds the key of the tool it is given");
   assert.deepEqual(held.filter((name) => MODEL_KEY_NAMES.includes(name)), [], "a faux run's process holds a model provider's key, which its model never sends");
   assert.deepEqual(held.filter((name) => SERVER_ONLY.includes(name)), [], "a run's code reads the server's own secrets through secret()");
-  assert.deepEqual(held, ["MONID_API_KEY"], "a faux run's process holds its tool's key alone");
+  assert.deepEqual(held, ["PARALLEL_API_KEY"], "a faux run's process holds its tool's key alone");
 });
