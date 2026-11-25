@@ -33,7 +33,7 @@ const cutId = (n) => `c_${sha256Of(`cut-${n}`).slice(0, 16)}`;
 
 /** A synthetic agentrun.share/1 bundle of run `run`. `planted` stands in for a run's words: the CLI prints none of the
  *  bundle's text, so it must show up in no output. Its body as served and its sha256. */
-function bundleOf(run, planted, { tamper = false, restored = [] } = {}) {
+function bundleOf(run, planted, { tamper = false, restored = [], omitted = [{ what: "file", path: "out/shot.png", why: "binary" }, { what: "recordings", why: "never" }] } = {}) {
   const content = `# Report\n\n${planted}\n`;
   const cut = (n, kind, rule, restorable) => ({ id: cutId(n), at: "/rows/0/text", start: 4 * n, end: 4 * n + 3, rule, kind, restorable, shape: `${planted}[3]` });
   const doc = {
@@ -44,7 +44,7 @@ function bundleOf(run, planted, { tamper = false, restored = [] } = {}) {
     rows: [{ kind: "message", text: `The report says ${planted}.` }],
     graph: null,
     files: [{ path: "out/report.md", bytes: Buffer.byteLength(content), sha256: sha256Of(content), encoding: "utf8", content }],
-    omitted: [{ what: "file", path: "out/shot.png", why: "binary" }, { what: "recordings", why: "never" }],
+    omitted,
     cuts: [cut(1, "label", "pg-password", true), cut(2, "label", "pg-password", true), cut(3, "personal", "home-path", true), cut(4, "format", "anthropic-key", false), cut(5, "held", "held-value", false)],
     restored,
   };
@@ -259,6 +259,21 @@ test("share --out writes the bundle's bytes as served (0600), refuses a file tha
   assert.equal(previewed.code, 0, previewed.err);
   assert.deepEqual(readFileSync(both), Buffer.from(body));
   assert.deepEqual(previewed.opened, [["xdg-open", fake.page]]);
+});
+
+test("share --dry-run prints an omitted path with a restored value in it masked: the restore is for the page, never the terminal", async (t) => {
+  const run = `run_share_${nonce()}`;
+  const person = `someone.${nonce()}@sample-mail.zz`;
+  const path = `out/${person}.png`;
+  const omitted = [{ what: "file", path, why: "binary" }, { what: "recordings", why: "never" }];
+  const restored = [{ id: cutId(6), at: "/omitted/0/path", start: 4, end: 4 + person.length, rule: "email", kind: "personal" }];
+  const { body } = bundleOf(run, "synthetic", { omitted, restored });
+  const fake = await fakeServer(t, run, sendBundle(body));
+  const result = await share([run, "--dry-run", "--restore", cutId(6)], { data: fake.data });
+  assert.equal(result.code, 0, result.err);
+  assert.ok(!result.out.includes(person) && !result.err.includes(person), "the restored value is in no output");
+  assert.deepEqual(JSON.parse(result.out).omitted[0], { what: "file", path: "out/[redacted:email].png", why: "binary" });
+  assert.match(result.err, /Omitted: out\/\[redacted:email\]\.png \(binary\)/);
 });
 
 test("share --restore passes the ids as ?restore=; a refusal (400) is printed plainly and nothing is written or opened", async (t) => {
