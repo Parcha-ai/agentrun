@@ -78,8 +78,7 @@ export interface Held {
    *  here, at the start, and is refused in fixed words (claude-login-token.ts LOGIN_CHANGED_SINCE_CLAIM, no folder in
    *  them) when that read names none or another folder, never left to a model key. A claim on a login other than
    *  AgentRun's own folder is refused at the claim (run-child-host.ts staysInRunner, LOGIN_MACHINE_NEEDS_SERVER_USER),
-   *  before this is asked; the runner refuses it here too (LOGIN_NOT_HANDED) only when handed a claim read that check did
-   *  not make. */
+   *  before this is asked. */
   claudeLogin(): Promise<{ token(): Promise<string>; refused(sent: string): Promise<void> } | undefined>;
   /** Whether a browser sign-in handed to the run reads back here (sign-ins-store.ts handedSignInReadsBack). */
   signInReadsBack(): Promise<boolean>;

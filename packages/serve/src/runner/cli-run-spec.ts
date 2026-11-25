@@ -279,9 +279,7 @@ async function rmEmptyParents(parents: readonly string[]): Promise<void> {
  *  server's data folder (claude-login.ts machineId), which the run's user can neither read nor make there. The runner's
  *  answer is the one decision (none: not on the login). A
  *  claim on a login other than AgentRun's own folder never gets this far: the claim itself is refused (staysInRunner,
- *  in LOGIN_MACHINE_NEEDS_SERVER_USER's words). The runner's claudeLogin refuses such a login again, in
- *  LOGIN_NOT_HANDED's words, only when it is handed a claim read that check did not make. A run in the runner itself (a
- *  seal key) reads the setting here. */
+ *  in LOGIN_MACHINE_NEEDS_SERVER_USER's words). A run in the runner itself (a seal key) reads the setting here. */
 export async function runLoginOf(deps: Pick<CliSpecDeps, "store" | "data" | "env" | "sealKey">, keyed: boolean, name: string | undefined, place: { readonly mode: string }, hold: (values: string[]) => void): Promise<RunLogin | undefined> {
   if (keyed) return undefined;
   if (deps.sealKey) return loginForRun(deps.store.settings, deps.data, deps.env ?? {}, name, place);

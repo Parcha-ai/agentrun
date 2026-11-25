@@ -75,7 +75,7 @@ import { isWorkflowRevision } from "./workflow-loop.js";
 import type { ClaudeAgentLogin } from "@parcha/agentrun-harness-claude";
 import { loginForRun } from "../claude-login.js";
 import { harnessOfBody } from "../harness.js";
-import { agentRunLogin, LOGIN_CHANGED_SINCE_CLAIM, LOGIN_NOT_HANDED, loginRunnerInProcess, loginTokensFor } from "../claude-login-token.js";
+import { agentRunLogin, LOGIN_CHANGED_SINCE_CLAIM, loginRunnerInProcess, loginTokensFor } from "../claude-login-token.js";
 import { logLine } from "../print.js";
 import type { Held, HeldComputerAsk } from "./held.js";
 import { heardComputerHold } from "./computer-journal.js";
@@ -768,16 +768,14 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     // place), and the login is handed only when both reads name the same folder: a turn-off, or a move to another folder,
     // between the claim and the start refuses the start in LOGIN_CHANGED_SINCE_CLAIM's fixed words (no folder in them),
     // never a start on a login the setting no longer names nor a fall to a model key the run was not claimed on. Nothing
-    // else of the claim is read again. A login other than AgentRun's own folder was refused at the claim (staysInRunner,
-    // LOGIN_MACHINE_NEEDS_SERVER_USER); one handed here by a claim read that check did not make is refused again in
-    // LOGIN_NOT_HANDED's words, never left to a model key. The process reads no setting or machine id.
+    // else of the claim is read again. A run with a model key of its own, and a login other than AgentRun's own folder,
+    // were each decided at the claim (staysInRunner: no login read for the one, LOGIN_MACHINE_NEEDS_SERVER_USER for the
+    // other), so neither reaches here on a login. The process reads no setting or machine id.
     claudeLogin: async () => {
-      if (await runKeyed()) return undefined;
       const at = reads.login;
       if (!at) return undefined;
       const now = await loginForRun(store.settings, deps.data, deps.env ?? {}, harnessOfBody(launch), launch.place);
       if (now?.dir !== at.dir) throw new ClaimRefused(LOGIN_CHANGED_SINCE_CLAIM);
-      if (!agentRunLogin(at, deps.data)) throw new ClaimRefused(LOGIN_NOT_HANDED);
       const carry = cut.carry;
       if (!carry) throw new ClaimRefused("This runner has no redactor that can cut the login's token from what its run writes, so it hands none.");
       // Each renewal's outcome on the runner's log, in the server's line (print.ts logLine) under event claude_login:
