@@ -160,9 +160,12 @@ describe("the story", () => {
   });
   it("a champion the money rule stopped: the takeover stage says it no longer runs first", () => {
     const took = { corrections: 3,runs: 4, workflows: [{ name: "sort-invoice", status: "serving" }] };
-    const stopped = { ...cost({ takeover: { n: 2, run_id: "r2" } }), workflows: [{ workflow: "sort-invoice", digest: "a".repeat(16), state: "needs_revision", served: null, by_hand: null, unknown_cost_runs: 0 }] } as LearningCost;
+    const stopped = { ...cost({ takeover: { n: 2, run_id: "r2" } }), workflows: [{ workflow: "sort-invoice", digest: "a".repeat(16), state: "needs_revision", reason: "over_line", served: null, by_hand: null, unknown_cost_runs: 0 }] } as LearningCost;
     const stage = storyOf({ ...base, ...took, cost: stopped, promotions: [record({})], serving: [{ workflow: "sort-invoice", digest: "a".repeat(16), replaying: null, state: "serving", check: null, audit: null, audits_off: null, not_auditable: 0, champion: null }] }).find((s) => s.key === "took_over")!;
     expect([stage.value, stage.detail, stage.state]).toEqual(["Run 2", "revision aaaaaaa no longer runs first: it cost as much as the agent by hand; the agent takes its runs", "warn"]);
+    const unpriced = { ...stopped, workflows: [{ ...stopped.workflows[0]!, reason: "no_by_hand_cost" as const }] };
+    const said = storyOf({ ...base, ...took, cost: unpriced, promotions: [record({})], serving: [{ workflow: "sort-invoice", digest: "a".repeat(16), replaying: null, state: "serving", check: null, audit: null, audits_off: null, not_auditable: 0, champion: null }] }).find((s) => s.key === "took_over")!;
+    expect(said.detail).toBe("revision aaaaaaa no longer runs first: no run by hand has a known cost to hold it to; the agent takes its runs");
     const before = storyOf({ ...base, corrections: 3, cost: { ...stopped, summary: cost({}).summary }, promotions: [record({})], serving: [{ workflow: "sort-invoice", digest: "a".repeat(16), replaying: null, state: "serving", check: null, audit: null, audits_off: null, not_auditable: 0, champion: null }] }).find((s) => s.key === "took_over")!;
     expect([before.value, before.state]).toEqual(["Stopped", "warn"]);
   });
