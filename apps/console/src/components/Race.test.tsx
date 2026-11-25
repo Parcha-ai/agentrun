@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Race } from "./Race";
 import { LANE_WAIT_MS } from "@/lib/race";
 import type { Run, TimelinePage, TimelineRow } from "@/lib/v2";
+import { expectPinnedBar } from "@/test/pageFrame";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: ReturnType<typeof createRoot> | undefined;
@@ -45,6 +46,12 @@ async function render(v2: unknown, label = "bench", rereadMs?: number) {
 }
 
 describe("Race: the runs one race:<label> label groups, side by side", () => {
+  it("keeps the Race bar in view, with lanes or none yet: the lanes scroll in the one box under it", async () => {
+    const { v2 } = server([run("r1", { race: "bench", lane: "1", harness: "pi", model: "anthropic/claude-sonnet-5-5" })]);
+    expect(expectPinnedBar(await render(v2)).querySelector("[data-race-lane='r1']")).toBeTruthy();
+    act(() => root!.unmount());
+    expect(expectPinnedBar(await render(server([]).v2, "empty")).textContent).toContain("No run carries the label");
+  });
   it("shows its lanes in lane order, each named by its harness and model, linking to its run", async () => {
     const { v2, listed } = server([run("r2", { race: "bench", lane: "2", harness: "codex", model: "openai/gpt-6.1-sol" }), run("r1", { race: "bench", lane: "1", harness: "pi", model: "anthropic/claude-sonnet-5-5" })]);
     const host = await render(v2);
