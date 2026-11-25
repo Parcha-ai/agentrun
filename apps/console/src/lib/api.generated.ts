@@ -3350,9 +3350,14 @@ export interface operations {
         paused: boolean;
         startedAt: string;
         endedAt: string | null;
+        withheld?: true;
       };
       workflow: Record<string, unknown>;
-      graph: Record<string, unknown>;
+      graph: {
+        nodes: Record<string, unknown>[];
+        edges: Record<string, unknown>[];
+        withheld?: true;
+      };
       nodes: Record<string, {
         status: "pending" | "working" | "done" | "failed" | "stopped" | "escalated" | "not_run" | "needs_review";
         startedAt?: string;
