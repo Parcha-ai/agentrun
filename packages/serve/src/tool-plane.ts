@@ -255,7 +255,7 @@ const nativeWhy = (input: ResolveInput): string => (input.facts?.webSearch ? own
 /** Keyless Firecrawl in a sentence, as web_search and web_fetch use it. web_fetch's says plainly that each URL leaves
  *  the server, and how to keep it here. */
 const FIRECRAWL_SEARCH = "Firecrawl's free keyless search, no key, keyless Exa behind it";
-export const FIRECRAWL_FETCH = "Firecrawl's free keyless fetch, no key, the guarded direct fetch behind it. web_fetch sends each URL to Firecrawl's keyless service (never a private or local one); set PARALLEL_API_KEY or choose kernel to fetch directly";
+export const FIRECRAWL_FETCH = "Firecrawl's free keyless fetch, no key, the guarded direct fetch behind it. web_fetch sends each URL to Firecrawl's keyless service (never a private or local one); choose kernel to fetch directly";
 
 /** The resolutions of web_search the run's own web_search runs (web-run.ts webOf), where Jev ranks the results: native
  *  only where it is the model provider's hosted search (pi's), never a harness's own search inside its CLI. */

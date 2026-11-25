@@ -142,7 +142,7 @@ test("capabilities say why each web tool resolves as it does on each harness, on
   const direct = { AGENT_MODEL: "anthropic/claude-sonnet-5-5" };
   const gateway = { ...direct, AGENT_MODEL_BASE_URL: "https://gateway.example/v1" };
   const claudeKeyless = "Firecrawl's free keyless search, no key, keyless Exa behind it; Claude's own search is an explicit pick";
-  const fetchKeyless = "Firecrawl's free keyless fetch, no key, the guarded direct fetch behind it. web_fetch sends each URL to Firecrawl's keyless service (never a private or local one); set PARALLEL_API_KEY or choose kernel to fetch directly";
+  const fetchKeyless = "Firecrawl's free keyless fetch, no key, the guarded direct fetch behind it. web_fetch sends each URL to Firecrawl's keyless service (never a private or local one); choose kernel to fetch directly";
   assert.deepEqual(why(direct), { web_fetch: each(fetchKeyless), web_search: { pi: "Firecrawl's free keyless search, no key, keyless Exa behind it; Anthropic's hosted search is an explicit pick", "claude-agent": claudeKeyless, codex: "Firecrawl's free keyless search, no key, keyless Exa behind it; Codex's own search is an explicit pick", opencode: "OpenCode's model requests carry no provider-hosted tool; Firecrawl's free keyless search, no key, keyless Exa behind it" } });
   assert.deepEqual(why({ AGENT_MODEL: "openai/gpt-6.1-sol" }).web_search.pi, "Firecrawl's free keyless search, no key, keyless Exa behind it; OpenAI's hosted search is an explicit pick");
   assert.deepEqual(why({ AGENT_MODEL: "openai/gpt-6.1-sol" }, { web_search: { provider: "native" } }).web_search.pi, "OpenAI's hosted search, for openai/gpt-6.1-sol", "native picked: the hosted search, for its model");
@@ -185,7 +185,7 @@ test("with no box on the server, a sandbox-only tool reads unavailable for that 
   assert.deepEqual(boxless.filter((tool) => tool.reason === noBox).map((tool) => tool.name), ["bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list"], "only the sandbox-only tools: bash and the background tools");
   const keyless = "Firecrawl's free keyless search, no key, keyless Exa behind it";
   assert.deepEqual(boxless.filter((tool) => tool.resolves && tool.name !== "browser").map((tool) => [tool.name, tool.available, tool.resolves, tool.why]), [
-    ["web_fetch", true, each("firecrawl-keyless"), each("Firecrawl's free keyless fetch, no key, the guarded direct fetch behind it. web_fetch sends each URL to Firecrawl's keyless service (never a private or local one); set PARALLEL_API_KEY or choose kernel to fetch directly")],
+    ["web_fetch", true, each("firecrawl-keyless"), each("Firecrawl's free keyless fetch, no key, the guarded direct fetch behind it. web_fetch sends each URL to Firecrawl's keyless service (never a private or local one); choose kernel to fetch directly")],
     ["web_search", true, { pi: "firecrawl-keyless", "claude-agent": "firecrawl-keyless", codex: "firecrawl-keyless", opencode: "firecrawl-keyless" }, { pi: `no model is named, so there is no hosted search; ${keyless}`, "claude-agent": `${keyless}; Claude's own search is an explicit pick`, codex: `${keyless}; Codex's own search is an explicit pick`, opencode: `OpenCode's model requests carry no provider-hosted tool; ${keyless}` }],
   ], "no box takes a web tool away, or the words for how it resolves");
   assert.equal(toolsView({}).find((tool) => tool.name === "bash").available, true, "where a box can run it, bash is available");
