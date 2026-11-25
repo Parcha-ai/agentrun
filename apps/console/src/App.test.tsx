@@ -112,6 +112,7 @@ describe("route", () => {
     expect(route("#/agents/x/learning")).toEqual({ section: "agents", agent: "x", tab: "learning" });
     expect(route("#/agents/x/edit")).toEqual({ section: "agents", agent: "x", edit: true });
     expect(route("#/agents/new")).toEqual({ section: "agents", agent: null });
+    expect(route("#/agents/new?editor")).toEqual({ section: "agents", agent: null, edit: true });
     expect(route("#/agents?archived=true")).toEqual({ section: "agents", archived: true });
     expect(route("#/agents")).toEqual({ section: "agents", archived: false });
   });
@@ -845,6 +846,17 @@ describe("App, the no-model bar", () => {
     await act(async () => { location.hash = "#/agents/new"; });
     await until(() => !!host.textContent?.includes("What do you want to build?"));
     expect(bar(host)).toBeNull();
+  });
+
+  it("opens the editor, creating, from Build's link: the one place a Decision or a Workflow agent is made", async () => {
+    serve(() => ({ source: "providers", default: null, ready: false, needs: "key" }), true, undefined, agentsList());
+    const host = await mount("#/agents/new");
+    await until(() => !!host.querySelector('a[href="#/agents/new?editor"]'));
+    await act(async () => { location.hash = "#/agents/new?editor"; });
+    const heading = () => [...host.querySelectorAll("h1")].map((h) => h.textContent);
+    await until(() => heading().includes("New agent"));
+    expect(host.textContent).not.toContain("What do you want to build?");
+    expect(host.querySelector("#agent-name")).not.toBeNull();
   });
 
   it("reads the capabilities again on its own while no model is ready, and stops once one is", async () => {
