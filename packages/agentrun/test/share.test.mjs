@@ -6,6 +6,7 @@
 // nothing opens. Synthetic data only.
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
+import * as fs from "node:fs";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -95,11 +96,11 @@ const ioOf = () => {
 
 /** `agentrun share ...` as the CLI runs it (its flags, its target, its client), with the opener injected: `opened` is
  *  every [command, ...args] it was asked to launch. A display is set unless `env` says otherwise. */
-async function share(argv, { data, env = { DISPLAY: ":0" }, platform = "linux" } = {}) {
+async function share(argv, { data, env = { DISPLAY: ":0" }, platform = "linux", files } = {}) {
   const opened = [];
   const launch = async (command, args) => (opened.push([command, ...args]), true);
   const { io, out, err } = ioOf();
-  const code = await runLocal(shareOf({ launch, platform }), ["share", ...argv, "--data", data], { XDG_CONFIG_HOME: fresh(), ...env }, io);
+  const code = await runLocal(shareOf({ launch, platform, ...(files ? { files } : {}) }), ["share", ...argv, "--data", data], { XDG_CONFIG_HOME: fresh(), ...env }, io);
   return { code, out: out.join(""), err: err.join(""), opened };
 }
 
@@ -274,6 +275,27 @@ test("share --dry-run prints an omitted path with a restored value in it masked:
   assert.ok(!result.out.includes(person) && !result.err.includes(person), "the restored value is in no output");
   assert.deepEqual(JSON.parse(result.out).omitted[0], { what: "file", path: "out/[redacted:email].png", why: "binary" });
   assert.match(result.err, /Omitted: out\/\[redacted:email\]\.png \(binary\)/);
+});
+
+test("share --out that fails partway (a full disk) leaves no file behind, so the same command can run again; a file already there is never removed", async (t) => {
+  const run = `run_share_${nonce()}`;
+  const { body } = bundleOf(run, "synthetic");
+  const fake = await fakeServer(t, run, sendBundle(body));
+  const dir = fresh();
+  const file = join(dir, "bundle.json");
+  // A disk that takes 10 bytes and then is full.
+  const full = { ...fs, writeSync: (fd, buffer, offset, length) => { fs.writeSync(fd, buffer, offset, Math.min(length, 10)); throw Object.assign(new Error("no space left on device"), { code: "ENOSPC" }); } };
+  const failed = await share([run, "--out", file], { data: fake.data, files: full });
+  assert.equal(failed.code, 1, failed.err);
+  assert.match(failed.err, /Cannot write .* \(ENOSPC\)\. Nothing was written or opened/);
+  assert.equal(existsSync(file), false, "the part written is gone");
+  const again = await share([run, "--out", file], { data: fake.data });
+  assert.equal(again.code, 0, again.err);
+  assert.deepEqual(readFileSync(file), Buffer.from(body));
+  // A file that was there before is left as it was.
+  const kept = await share([run, "--out", file], { data: fake.data, files: full });
+  assert.equal(kept.code, 2, kept.err);
+  assert.deepEqual(readFileSync(file), Buffer.from(body));
 });
 
 test("share --restore passes the ids as ?restore=; a refusal (400) is printed plainly and nothing is written or opened", async (t) => {
