@@ -435,9 +435,10 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     const turn = cur?.turn;
     if (!cur || !turn || turn.stop.signal.aborted) return turn?.limitHit ? choose("reject_once") : cancelled;
     if (turn.limitHit) return choose("reject_once");
-    // Our own tool, on a recipe that declares the title tie (quirks.permissionTie, Cursor's alone): the gate is the
-    // bridge's, asked at the MCP call itself, so the request is allowed once, never always. Cursor needs it: its
-    // allowlist with allow: [] (which keeps it from writing files unasked) asks for every MCP call, ours included. The
+    // Our own tool, on a recipe that declares the title tie (quirks.permissionTie: Cursor's and Antigravity's): the gate
+    // is the bridge's, asked at the MCP call itself, so the request is allowed once, never always. Cursor needs it: its
+    // allowlist with allow: [] (which keeps it from writing files unasked) asks for every MCP call, ours included, and
+    // agy asks for every MCP call. The
     // title is the agent's text, so the tie takes both: a request whose kind has no effects of its own and whose title
     // names our tool, for a call the recipe's announces field named as that same tool under the request's own id (a
     // title never sets that: CallIds.announced comes from the field alone). Without the

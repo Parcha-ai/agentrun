@@ -99,8 +99,10 @@ export interface Recipe {
    *  (Goose's `.config/goose/permission.yaml`, `goose-permission`): the agent runs our tools without asking. */
   readonly allowFile?: { readonly path: string; readonly form: string };
   /** Where the agent's tool_call names which tool it calls, each a dotted path into it: `tool` (with `server`, our
-   *  tool's own name; without, `agentrun__<tool>`), `server` (must be `agentrun`), `args` (default rawInput). A call it
-   *  names as another tool is the agent's own; absent, calls are matched to MCP calls by their arguments alone. */
+   *  tool's own name; without, `<prefix><tool>`), `server` (must be `agentrun`), `prefix` (without `server`: default
+   *  `agentrun__`, agy's `mcp_agentrun_`; it names our server), `args` (default rawInput), and `extras`, fields beside
+   *  the arguments the MCP call never carries (agy's `toolSummary`), left out when they hold text. A call it names as
+   *  another tool is the agent's own; absent, calls are matched to MCP calls by their arguments alone (AcpAnnounces). */
   readonly announces?: { readonly tool: string; readonly server?: string; readonly prefix?: string; readonly args?: string; readonly extras?: readonly string[] };
   readonly state: readonly string[];
   readonly declares: { readonly load: boolean; readonly mcp: "http" | "stdio" };

@@ -4,7 +4,8 @@
 //    the arguments' canonical JSON, first in first out, as OpenCode's calls are matched to the model's: the call runs
 //    under the agent's own id, which is the memo key a resumed session asks under again. Which tool an announcement
 //    names is read from the field its recipe declares (AcpAnnounces: Goose's `_meta.goose.toolCall.toolName`, Cursor's
-//    rawInput), never from its title: a call that field names as another tool is the agent's own and never takes an id.
+//    rawInput, agy's `name` after its `mcp_agentrun_` prefix, with agy's toolSummary left out of the arguments as an
+//    extra), never from its title: a call that field names as another tool is the agent's own and never takes an id.
 //    One the field names nothing for is matched by its arguments alone.
 //  - A permission request for one of the agent's own tools (a shell, an edit) is the host gate's call. Its id is made from
 //    what a second request for the same call after a resume says the same: the open turn, the tool's title, kind and input,
@@ -62,7 +63,9 @@ const AGY_NAME = new RegExp(`^(?:Run )?mcp_${MCP_SERVER}_(.+)$`);
  *    `mcp_agentrun_`). It names our server (ANNOUNCES_PREFIX), so a name without it is never ours.
  *  - `args`: the call's arguments (default `rawInput`).
  *  - `extras`: fields the agent writes beside the call's arguments that the MCP call never carries (agy's
- *    `toolSummary`, its model's line about the call), left out before the arguments are matched when they hold text. */
+ *    `toolSummary`, its model's line about the call), left out before the arguments are matched when they hold text. A tool of ours with a
+ *    text argument of that name loses it too: its call never matches its arguments, waits CALL_ID_WAIT_MS and takes the
+ *    oldest call of its tool, so two in flight can swap ids (custody only: a call's permission never reads extras). */
 export interface AcpAnnounces {
   readonly tool: string;
   readonly server?: string;

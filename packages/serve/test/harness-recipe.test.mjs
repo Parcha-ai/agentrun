@@ -169,7 +169,7 @@ test("the loader refuses a recipe with the title tie and no announces field, in 
   assert.deepEqual(parseRecipe(JSON.stringify(recipeOf(undefined, TIED))).quirks, { permissionTie: "title" }, "with the field it loads");
 });
 
-test("the loader refuses an announces path that starts at the update's title, toolCallId, kind or status: one through them would let a title name a call again", () => {
+test("the loader refuses an announces path that starts at the update's title, toolCallId, kind, status, rawOutput, content, locations or sessionUpdate: one through them would let a title name a call again", () => {
   // Before: any dotted path loaded, so `{ "tool": "title" }` named a call by a title of exactly `agentrun__write`.
   for (const said of [{ tool: "title" }, { tool: "title.text" }, { tool: "toolCallId" }, { tool: "toolCallId.x" }, { tool: "kind.name" }, { tool: "status" }, { tool: "rawInput.toolName", server: "kind" }, { tool: "rawInput.toolName", args: "status" }]) {
     const refused = refusalOf(recipeOf(undefined, { announces: said }));

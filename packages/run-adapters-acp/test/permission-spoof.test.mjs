@@ -1,7 +1,8 @@
 // A permission request is let through without the host's gate only where the recipe declares the title tie
-// (quirks.permissionTie, Cursor's alone) and the request is one of our own tools' calls: never on the title alone, which
+// (quirks.permissionTie: Cursor's and Antigravity's) and the request is one of our own tools' calls: never on the title alone, which
 // is the agent's text (Cursor titles a shell call with its command). A native call titled as one of our tools
-// (`agentrun: lookup`, `agentrun__lookup`) of a kind that has effects, or another server's tool named like ours
+// (`agentrun: lookup`, `agentrun__lookup`, agy's `Run mcp_agentrun_lookup`) of a kind that has effects, or of any kind
+// on a call the recipe's field names as the agent's own, or another server's tool named like ours
 // (`github: look up`), goes through the gate, is journaled, and a deny is answered reject_once. A recipe without the tie
 // (Goose's) sends every request to the host's gate, whatever its title: Goose asks nothing for our tools, since its
 // permission file allows them (allowFile), so a request titled as ours is not one of our calls.
@@ -14,7 +15,7 @@ import { fakeEvents, fakeRecipe, openSession, scratch, streamRecords, tool } fro
 const test = (name, fn) => nodeTest(name, { timeout: 60_000 }, fn);
 const texts = (events) => events.filter((e) => e.type === 'text').map((e) => e.delta).join('');
 
-for (const [style, kind, title] of [['cursor', 'execute', 'agentrun: lookup'], ['goose', 'edit', 'agentrun__lookup'], ['goose-1.59', 'other', 'github: look up'], ['goose-1.59', 'edit', 'agentrun: look up · proof.txt'], ['goose-1.59', 'execute', 'agentrun: lookup · ls'], ['antigravity', 'execute', 'Run mcp_agentrun_lookup'], ['antigravity', 'other', 'Run mcp_github_lookup']]) {
+for (const [style, kind, title] of [['cursor', 'execute', 'agentrun: lookup'], ['goose', 'edit', 'agentrun__lookup'], ['goose-1.59', 'other', 'github: look up'], ['goose-1.59', 'edit', 'agentrun: look up · proof.txt'], ['goose-1.59', 'execute', 'agentrun: lookup · ls'], ['antigravity', 'execute', 'Run mcp_agentrun_lookup'], ['antigravity', 'other', 'Run mcp_agentrun_lookup'], ['antigravity', 'other', 'Run mcp_github_lookup']]) {
   test(`a native ${kind} titled ${JSON.stringify(title)} (${style}) asks the host's gate; a deny answers reject_once, journaled`, async (t) => {
     const dir = scratch();
     const nativeLog = join(dir, 'native.log');

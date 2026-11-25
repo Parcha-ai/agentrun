@@ -15,7 +15,7 @@ entries.
   `allow_once` or `reject_once`, never an `allow_always`, and never trusts the status ACP reports. The host's tools ask
   nothing: a recipe's `allowFile` (Goose's `.config/goose/permission.yaml`) lists them for the agent at each start, and
   the gate asks at the MCP call. A recipe that declares `quirks.permissionTie: "title"` (Cursor's, whose allowlist asks
-  for every MCP call) has its request for one of the host's announced calls answered `allow_once` without the gate.
+  for every MCP call, and Antigravity's, since agy asks for every MCP call) has its request for one of the host's announced calls answered `allow_once` without the gate.
 - An agent's `tool_call` is matched to the MCP call it makes by the tool and the arguments. Which tool it names is read
   from the field its recipe's `announces` declares (Goose's `_meta.goose.toolCall.toolName`, Cursor's `rawInput`, agy's `name`),
   never from its title; a call that field names as another tool is the agent's own.
