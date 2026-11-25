@@ -252,6 +252,8 @@ function hostOver(rows, turnOver, { waitMs = 5_000, flips = {} } = {}) {
     get origin() {
       return this;
     },
+    // No run here started learning work (learning-work.ts learningChildrenOf): the purge has none to end first.
+    settings: { get: async () => undefined },
     runs: {
       get: async (id) => {
         reads[id] = (reads[id] ?? 0) + 1;

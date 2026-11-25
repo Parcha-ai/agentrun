@@ -274,9 +274,11 @@ export type Summarized = { runs: CostRun[]; summary: CostSummary; bill: Omit<Bil
  *  its workflow at its digest; a replay on a run's own key is that run's learning, its `check_usd`), whether or not a record names it or the records were trimmed: one no record names follows the ones that do,
  *  at `compileAfter`, `checking` while it is its workflow's newest spend, else `stopped`. It is spread over its first K
  *  served runs (amortize). What no run carries is the booked total less every run's all-in, unknown while any run's
- *  figures are. */
+ *  figures are. A replay on a run's own key, like a shadow, is no run of the series: its cost is that run's, counted
+ *  once. */
 export function summarize(read: LedgerRead): Summarized {
-  const ordered = read.rows.filter((row) => row.path !== null && row.path !== "audit").sort((a, b) => a.startedAt - b.startedAt || (a.runId < b.runId ? -1 : a.runId > b.runId ? 1 : 0));
+  const paidByRun = new Set(read.spend.filter(ownCheck).map((one) => one.runId));
+  const ordered = read.rows.filter((row) => row.path !== null && row.path !== "audit" && !paidByRun.has(row.runId)).sort((a, b) => a.startedAt - b.startedAt || (a.runId < b.runId ? -1 : a.runId > b.runId ? 1 : 0));
   const unknownPath = read.rows.filter((row) => row.path === null).length;
   const place = new Map(ordered.map((row, at) => [row.runId, at]));
   const learns = (runId: string) => place.has(runId) && (read.learning?.has(runId) ?? true);

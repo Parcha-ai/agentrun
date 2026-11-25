@@ -113,6 +113,7 @@ test("summarize: a check's replays on a run's own key are that run's learning, n
   assert.deepEqual([r2.check_usd, r2.learning_usd, r2.all_in_usd, r2.series_learning_usd], [0.2, 0.2, 1.2, 0.5], "r2's own-key check is its learning");
   const series = out.runs.find((run) => run.run_id === "r2");
   assert.deepEqual([series.check_usd, series.learning_usd, series.total_usd], [0.2, 0.5, 1.5], "and its series row's");
+  assert.deepEqual(out.runs.filter((run) => run.run_id.startsWith("keyed-")), [], "like a shadow, no run of the series: counted once, on r2");
   assert.equal(out.bill.booked_usd, 3.15);
   const carried = [...out.figures.values()].reduce((total, one) => total + Math.round(one.all_in_usd * 1e6), 0);
   assert.equal(carried + Math.round(out.bill.unattributed_usd * 1e6), Math.round(out.bill.booked_usd * 1e6), "Σ all_in + unattributed = booked");

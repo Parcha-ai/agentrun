@@ -1804,7 +1804,7 @@ const COST_RUN = closedWith({
 });
 const LEARNING_COST = closed({
   agent: { type: "string" },
-  runs: { type: "array", items: COST_RUN, description: "The agent's agentic runs that ended (completed, stopped or failed), oldest first: the last `limit` of them, each keeping its number (a replay has none). A run still at work, an imported or archived run, a workflow revision's run and a run whose path is not known (`unknown_path_runs`) are left out; a run's grade is no run here, and its cost is that run's `learning_usd`." },
+  runs: { type: "array", items: COST_RUN, description: "The agent's agentic runs that ended (completed, stopped or failed), oldest first: the last `limit` of them, each keeping its number (a replay has none). A run still at work, an imported or archived run, a workflow revision's run and a run whose path is not known (`unknown_path_runs`) are left out; a run's grade is no run here, and its cost is that run's `learning_usd`. A replay a run started on its own model key (`model_key`) is no run here either: its cost is that run's `check_usd`, counted once." },
   total_runs: { ...COUNT, description: "How many runs the series counts in all, `limit` aside." },
   unknown_cost_runs: { ...COUNT, description: "How many of them have no known all-in cost (`total_usd` null)." },
   unknown_path_runs: { ...COUNT, description: "How many runs that learn ended with no path on their record (their end could not read their cost and path in time, or no runner wrote their end): left out of `runs`, `total_runs` and `summary`, never counted as `agent` runs at $0." },
