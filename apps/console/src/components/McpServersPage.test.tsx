@@ -8,6 +8,7 @@ import { type McpServer, PREVIEW_SCOPE_NOTE } from "@/lib/mcp";
 import { SERVER_DENY } from "@/lib/toolSettings";
 import recorded from "@/fixtures/mcp.requests.json";
 import { optionsOf, pick, picker, valueOf } from "@/test/picker";
+import { searchPicker, searchPick, shownIn } from "@/test/search-picker";
 
 // Settings → MCP servers over /v2/settings/mcp-servers: add a server, preview its tools, save it; each refusal in plain
 // words; OAuth's sign-in and its way back; the saved list with each credential's state, refresh and delete. A credential
@@ -842,6 +843,26 @@ describe("Settings → MCP servers, the Composio preset", () => {
     await p.click(/^Load actions$/);
     expect(s.writes()[1]).toEqual({ method: "POST", path: TOOLS_PATH, body: { api_key: KEY, toolkit: "gmail" } });
     expect(document.body.innerHTML).not.toContain(KEY);
+  });
+
+  it("narrows the toolkit list to the toolkits whose slug or name has the words typed, case aside, and picking one loads its actions", async () => {
+    const many = [...TOOLKITS, ...Array.from({ length: 300 }, (_, i) => ({ slug: `app_${i}`, name: `Application ${i}` }))];
+    const s = server([[]], (c) => (c.path === TOOLKITS_PATH ? json(200, { toolkits: many }) : answer(c)));
+    const p = await open(s.v2);
+    await p.click(/^Add from Composio$/);
+    await p.type("composio-key", KEY);
+    await p.click(/^Load toolkits$/);
+    const field = searchPicker(p.host, "Toolkit");
+    expect(field, "the toolkit is a search box to type in").not.toBeNull();
+    expect((await shownIn(field!, "gma")).options.map((o) => o.value), "typing gma leaves Gmail alone").toEqual(["gmail"]);
+    expect((await shownIn(field!, "SLACK")).options.map((o) => o.value), "by slug, case aside").toEqual(["slack"]);
+    expect((await shownIn(field!, "git hub")).options.map((o) => o.value), "by name, every word").toEqual(["github"]);
+    expect((await shownIn(field!, "application 29")).options.map((o) => o.value), "by name among hundreds").toContain("app_29");
+    expect((await shownIn(field!, "no-such-kit")).options).toEqual([]);
+    await searchPick(field!, "gmail", "gma");
+    expect(field!.getAttribute("data-value"), "picking it sets the toolkit").toBe("gmail");
+    await p.click(/^Load actions$/);
+    expect(s.writes().at(-1)).toEqual({ method: "POST", path: TOOLS_PATH, body: { api_key: KEY, toolkit: "gmail" } });
   });
 
   it("a typed slug still loads actions after the list failed", async () => {
