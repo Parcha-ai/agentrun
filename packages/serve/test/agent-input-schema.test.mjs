@@ -161,6 +161,17 @@ test("content is exempt from a schema's maxProperties and propertyNames: a trigg
     assert.deepEqual(said({ company: "Acme", content: "" }, referenced), []);
     assert.deepEqual(said({ company: "Acme", note: "x" }, referenced).map(([field]) => field), ["input.note", "input"]);
   }
+  // A reference is followed into what it names: a definition that refers on to the input's properties is refused too.
+  const through = { ...COMPANY, $defs: { Name: { $ref: "#/properties/company" } }, propertyNames: { $ref: "#/$defs/Name" } };
+  assert.deepEqual(inputSchemaIssues(through).map((i) => [i.field, i.reason]), [["definition.input_schema.propertyNames", "bad_format"]]);
+  assert.match(inputSchemaIssues(through)[0].message, /"#\/properties\/company" names nothing there/);
+  // A definition that refers to itself is read once: the save ends, and the schema is kept.
+  const recursive = { ...COMPANY, $defs: { Name: { anyOf: [{ enum: ["company", "content"] }, { $ref: "#/$defs/Name" }] } }, propertyNames: { $ref: "#/$defs/Name" } };
+  assert.deepEqual(inputSchemaIssues(recursive), []);
+  // Only schemas are read: an annotation's value that has a $ref key is data, and saves.
+  const annotated = { ...COMPANY, propertyNames: { pattern: "^[a-z]+$", examples: [{ $ref: "#/properties/company" }] } };
+  assert.deepEqual(inputSchemaIssues(annotated), []);
+  assert.deepEqual(said({ company: "Acme" }, inputSchemaOf(annotated)), []);
 });
 
 test("a required text field left empty is said as missing, in a missing field's words; an optional one or a list's item keeps its length issue", () => {

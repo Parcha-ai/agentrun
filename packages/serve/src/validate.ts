@@ -243,45 +243,65 @@ function ownFieldsSchema(inForce: Json): Json | undefined {
   return { ...targets, type: "object", ...own };
 }
 
-/** The first `$ref` in `node` that names nothing in `doc` (undefined when each one names something): a JSON Pointer
- *  (`#/...`) that `doc` has no value at, an anchor (`#name`) no `$anchor` or `$dynamicAnchor` in it declares, or any
- *  other reference when no `$id` in it could give that reference a target. The compiler takes such a reference as the
- *  schema `false`. A part of `node` under an `$id` of its own is left to the compiler: its references resolve against
- *  that id. */
+/** The schemas a schema holds, by the keywords that hold one (a single schema, a list of them or a map of them); an
+ *  annotation's value (`examples`, `default`, `const`, `enum`, an extension's own data) is data, never a schema. */
+const ONE_SCHEMA = ["not", "if", "then", "else", "items", "additionalItems", "contains", "additionalProperties", "propertyNames", "unevaluatedItems", "unevaluatedProperties", "contentSchema"];
+const SCHEMA_LISTS = ["allOf", "anyOf", "oneOf", "prefixItems", "items"];
+const SCHEMA_MAPS = ["properties", "patternProperties", "$defs", "definitions", "dependentSchemas", "dependencies"];
+function subschemas(schema: Record<string, unknown>): unknown[] {
+  const held: unknown[] = [];
+  for (const key of ONE_SCHEMA) if (isObject(schema[key])) held.push(schema[key]);
+  for (const key of SCHEMA_LISTS) if (Array.isArray(schema[key])) held.push(...(schema[key] as unknown[]));
+  for (const key of SCHEMA_MAPS) if (isObject(schema[key])) held.push(...Object.values(schema[key] as Record<string, unknown>));
+  return held;
+}
+
+/** The first `$ref` that `node` reaches and that names nothing in `doc` (undefined when each one names something): a
+ *  JSON Pointer (`#/...`) that `doc` has no value at, an anchor (`#name`) no `$anchor` or `$dynamicAnchor` in it
+ *  declares, or any other reference when no `$id` in it could give that reference a target. The compiler takes such a
+ *  reference as the schema `false`. A reference that names something is followed into its target (once each: a cycle
+ *  ends), so a target that refers on to something the doc lacks is found too. Only schemas are read, by the keywords
+ *  that hold them (subschemas). A part under an `$id` of its own is left to the compiler: its references resolve
+ *  against that id. */
 function unresolvedRefs(node: unknown, doc: Json): string | undefined {
-  const anchors = new Set<string>();
+  const anchors = new Map<string, unknown>();
   let ids = false;
   const scan = (value: unknown): void => {
-    if (Array.isArray(value)) return value.forEach(scan);
     if (!isObject(value)) return;
-    for (const key of ["$anchor", "$dynamicAnchor"]) if (typeof value[key] === "string") anchors.add(value[key] as string);
+    for (const key of ["$anchor", "$dynamicAnchor"]) if (typeof value[key] === "string") anchors.set(value[key] as string, value);
     if (typeof value.$id === "string") ids = true;
-    Object.values(value).forEach(scan);
+    subschemas(value).forEach(scan);
   };
   scan(doc);
-  const at = (pointer: string): boolean => {
+  const at = (pointer: string): { found: boolean; value?: unknown } => {
     let here: unknown = doc;
     for (const raw of pointer.split("/").slice(1)) {
       const part = decodeURIComponent(raw).replace(/~1/g, "/").replace(/~0/g, "~");
       if (Array.isArray(here) && /^(0|[1-9]\d*)$/.test(part) && Number(part) < here.length) here = here[Number(part)];
       else if (isObject(here) && Object.hasOwn(here, part)) here = here[part];
-      else return false;
+      else return { found: false };
     }
-    return true;
+    return { found: true, value: here };
   };
-  const named = (ref: string): boolean => {
-    if (!ref.startsWith("#")) return ids;
+  /** What `ref` names: found, with its target when this doc holds it (none for a reference an `$id` resolves). */
+  const target = (ref: string): { found: boolean; value?: unknown } => {
+    if (!ref.startsWith("#")) return { found: ids };
     const fragment = ref.slice(1);
-    return fragment === "" || (fragment.startsWith("/") ? at(fragment) : anchors.has(fragment));
+    if (fragment === "") return { found: true, value: doc };
+    if (fragment.startsWith("/")) return at(fragment);
+    return anchors.has(fragment) ? { found: true, value: anchors.get(fragment) } : { found: false };
   };
+  const seen = new Set<unknown>();
   const walk = (value: unknown): string | undefined => {
-    if (Array.isArray(value)) {
-      for (const item of value) { const lost = walk(item); if (lost !== undefined) return lost; }
-      return undefined;
+    if (!isObject(value) || typeof value.$id === "string" || seen.has(value)) return undefined;
+    seen.add(value);
+    if (typeof value.$ref === "string") {
+      const named = target(value.$ref);
+      if (!named.found) return value.$ref;
+      const lost = walk(named.value);
+      if (lost !== undefined) return lost;
     }
-    if (!isObject(value) || typeof value.$id === "string") return undefined;
-    if (typeof value.$ref === "string" && !named(value.$ref)) return value.$ref;
-    for (const item of Object.values(value)) { const lost = walk(item); if (lost !== undefined) return lost; }
+    for (const item of subschemas(value)) { const lost = walk(item); if (lost !== undefined) return lost; }
     return undefined;
   };
   return walk(node);
