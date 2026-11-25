@@ -3,11 +3,12 @@ import { ProblemCard } from "@/components/Problem";
 import { ListSkeleton } from "@/components/Skeleton";
 import { Button } from "@/components/ui";
 import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
-import type { Client } from "@/lib/client";
+import { type Client, ClientError } from "@/lib/client";
 import { compact, dollars } from "@/lib/format";
 import { type Problem, problem } from "@/lib/problem";
 import { cn } from "@/lib/utils";
 import type { Wrapped } from "@/lib/v2";
+import { type CardRenderer, noCards, WRAPPED_CARDS } from "@/lib/wrappedCards";
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const card = "border bg-card p-4";
@@ -34,23 +35,34 @@ function Bars({ values, labels, label }: { values: readonly number[]; labels: re
 }
 
 /** One share of a total: a name, its figure and a bar. */
-function Share({ name, figure, part, of }: { name: string; figure: string; part: number; of: number }) {
+function Share({ name, figure, part, of, children }: { name: string; figure: string; part: number; of: number; children?: React.ReactNode }) {
   return (
     <li className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1">
       <span className="truncate font-mono text-body">{name}</span>
       <span className="font-mono text-body tabular-nums text-muted-foreground">{figure}</span>
       <div className="col-span-2 h-1 bg-muted"><div className="h-full bg-primary" style={{ width: `${of > 0 ? Math.max(1, (part / of) * 100) : 0}%` }} /></div>
+      {children}
     </li>
   );
 }
 
+/** problem()'s words, with a refusal's own: the server names why it will not read this machine's files (a public URL, more
+ *  than one caller, a Postgres store, the API-only profile), and no sign-in changes that. */
+function wrappedProblem(e: unknown): Problem {
+  const said = problem(e, "your year");
+  if (!(e instanceof ClientError) || e.status !== 403) return said;
+  return { ...said, why: e.message, next: "Wrapped reads this machine's own session files, so it opens only on one owner's server started here, at the address it printed.", said: undefined };
+}
+
+/** A model's price, by its own requests: whole, the priced part of them, or none known. */
+const priceOf = (m: Wrapped["models"][number]) => (m.unpriced_requests >= m.requests && m.requests > 0 ? "no known price" : `${dollars(m.cost_usd)}${m.unpriced_requests > 0 ? " priced only" : ""}`);
 const hours = (ms: number) => `${(ms / 3_600_000).toFixed(1)} h`;
 const monthOf = (day: string) => Number(day.slice(5, 7)) - 1;
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 /** Wrapped: a year of the work under this machine's session files, as the server counted it (GET /v2/wrapped). Numbers
  *  and names only; each section is plain, and a year with nothing in it says so. */
-export function WrappedPage({ v2, year, go }: { v2: Client; year?: number; go: (hash: string) => void }) {
+export function WrappedPage({ v2, year, go, cards = noCards }: { v2: Client; year?: number; go: (hash: string) => void; cards?: CardRenderer }) {
   const now = new Date().getFullYear();
   const shown = year ?? now;
   const [data, setData] = useState<Wrapped | null>(null);
@@ -58,10 +70,17 @@ export function WrappedPage({ v2, year, go }: { v2: Client; year?: number; go: (
   const [tries, setTries] = useState(0);
   useEffect(() => {
     const abort = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
     setData(null);
     setError(null);
-    v2.wrapped(shown, abort.signal).then(setData, (e: unknown) => { if (!abort.signal.aborted) setError(problem(e, "your year")); });
-    return () => abort.abort();
+    const ask = () => v2.wrapped(shown, abort.signal).then(setData, (e: unknown) => {
+      if (abort.signal.aborted) return;
+      // A long home: the server goes on reading and says when to ask again. The skeleton stays until the year comes.
+      if (e instanceof ClientError && e.status === 503) return void (timer = setTimeout(ask, e.retryAfterMs ?? 5_000));
+      setError(wrappedProblem(e));
+    });
+    void ask();
+    return () => { abort.abort(); clearTimeout(timer); };
   }, [v2, shown, tries]);
   const to = (y: number) => go(`#/wrapped?year=${y}`);
 
@@ -71,6 +90,13 @@ export function WrappedPage({ v2, year, go }: { v2: Client; year?: number; go: (
   const modelTokens = data ? data.models.reduce((n, m) => n + m.tokens, 0) : 0;
   const harnessTokens = data ? data.harnesses.reduce((n, h) => n + h.tokens, 0) : 0;
 
+  const drawn = data ? WRAPPED_CARDS.map((card) => ({ card, node: cards(card, data) })).filter((c) => c.node !== null && c.node !== undefined && c.node !== false) : [];
+  const shownCards = drawn.length > 0 && (
+    <section className={card} aria-labelledby="w-cards" data-cards>
+      <h2 id="w-cards" className={heading}>Cards</h2>
+      <div className="mt-3 grid gap-4 md:grid-cols-2">{drawn.map(({ card: c, node }) => <div key={c.id}>{node}</div>)}</div>
+    </section>
+  );
   const unread = data && data.unread_files > 0 && (
     <p className="border border-warning bg-card p-3 font-sans text-small text-warning-text" role="status" data-unread>
       {data.unread_files.toLocaleString("en-US")} session {data.unread_files === 1 ? "file" : "files"} could not be read, so these numbers may be incomplete.
@@ -140,10 +166,21 @@ export function WrappedPage({ v2, year, go }: { v2: Client; year?: number; go: (
                 <h2 id="w-who" className={heading}>Harnesses and models</h2>
                 <div className="mt-3 grid gap-6 md:grid-cols-2">
                   <ul className="grid content-start gap-3" aria-label="Harnesses">
-                    {data.harnesses.map((h) => <Share key={h.harness} name={h.harness} figure={`${compact(h.tokens)} · ${h.sessions} sessions`} part={h.tokens} of={harnessTokens} />)}
+                    {data.harnesses.map((h) => (
+                      <Share key={h.harness} name={h.harness} figure={`${compact(h.tokens)} · ${h.sessions} sessions`} part={h.tokens} of={harnessTokens}>
+                        <p className="col-span-2 flex flex-wrap gap-x-3 font-mono text-small text-muted-foreground">
+                          {h.sources.map((source) => {
+                            const runs = data.imported.find((i) => i.source === source)?.runs ?? 0;
+                            return runs > 0
+                              ? <a key={source} className="underline underline-offset-2 hover:text-foreground" href={`#/runs?source=${encodeURIComponent(source)}`}>{source}: {runs.toLocaleString("en-US")} runs</a>
+                              : <span key={source}>{source}: not imported yet · <span className="text-foreground">agentrun-serve import</span></span>;
+                          })}
+                        </p>
+                      </Share>
+                    ))}
                   </ul>
                   <ul className="grid content-start gap-3" aria-label="Models">
-                    {data.models.map((m) => <Share key={m.model} name={m.model} figure={`${compact(m.tokens)} · ${dollars(m.cost_usd)}${data.unpriced_requests > 0 ? " priced only" : ""}`} part={m.tokens} of={modelTokens} />)}
+                    {data.models.map((m) => <Share key={m.model} name={m.model} figure={`${compact(m.tokens)} · ${priceOf(m)}`} part={m.tokens} of={modelTokens} />)}
                   </ul>
                 </div>
               </section>
@@ -162,6 +199,7 @@ export function WrappedPage({ v2, year, go }: { v2: Client; year?: number; go: (
                 </div>
               </section>
               {importedSection}
+              {shownCards}
             </div>
           )}
       </div>

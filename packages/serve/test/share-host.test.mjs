@@ -15,7 +15,8 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, readdirSync, statSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { request } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -32,7 +33,7 @@ async function portProbe(url) {
 const { exportBundle } = await import("../dist/run-export.js");
 const { packageSha256 } = await import("../dist/agent-package.js");
 const { stable } = await import("../dist/validate.js");
-const { checkShareBundle, screenShare, SHARE_QUOTA, SHARE_STRINGS, SHARE_HOST_CSP, SHARE_HOST_ROUTES } = await import("../dist/share-host.js");
+const { checkShareBundle, screenShare, ShareStore, SHARE_QUOTA, SHARE_STRINGS, SHARE_HOST_CSP, SHARE_HOST_ROUTES } = await import("../dist/share-host.js");
 const { SHARE_HOST_ENV, switchFrom } = await import("../dist/env-switch.js");
 const { banner } = await import("../dist/print.js");
 const { startServe } = await import("../dist/server.js");
@@ -463,9 +464,23 @@ test("the sha256 is checked: a tampered digest, a file whose digest or size is w
   assert.deepEqual(sharesIn(s.shares), []);
 });
 
+/** A workflow run's graph as the export carries it: the route's fields, its run's ids dropped. */
+const GRAPH = {
+  run: { status: "completed", paused: false, startedAt: "2026-01-02T03:04:05.000Z", endedAt: "2026-01-02T03:04:06.000Z" },
+  workflow: null,
+  graph: { nodes: [{ path: "step", kind: "agent" }], edges: [] },
+  nodes: { step: { status: "done" } },
+  decisions: [],
+  effects: [],
+  totals: { cost_usd: null, decisions: 0, effects: 0, elapsed_ms: 1000 },
+};
+
 test("the bundle's shape is checked: its format, its closed keys at each level the host reads, and the export's caps", async () => {
   const doc = JSON.parse(await bundleOf());
   assert.equal(checkShareBundle(resigned(doc)).sha256, doc.sha256);
+  // A workflow's graph as its route serves it (graph-view.ts) is taken; one the page cannot draw is refused.
+  const graphed = { ...structuredClone(doc), graph: GRAPH };
+  assert.equal(checkShareBundle(resigned(graphed)).sha256, JSON.parse(resigned(graphed)).sha256);
   const refused = {
     format: (d) => (d.format = "agentrun.share/2"),
     extraTop: (d) => (d.exported_by = "someone"),
@@ -481,6 +496,13 @@ test("the bundle's shape is checked: its format, its closed keys at each level t
     omittedField: (d) => d.omitted.push({ what: "file", path: "x", why: "binary", bytes: 3 }),
     rowsNotArray: (d) => (d.rows = {}),
     graphNotObject: (d) => (d.graph = "x"),
+    graphEmpty: (d) => (d.graph = {}),
+    graphNoNodes: (d) => (d.graph = { ...GRAPH, nodes: undefined }),
+    graphFlowNoEdges: (d) => (d.graph = { ...GRAPH, graph: { nodes: [] } }),
+    graphFlowNode: (d) => (d.graph = { ...GRAPH, graph: { nodes: [null], edges: [] } }),
+    graphRunStatus: (d) => (d.graph = { ...GRAPH, run: { paused: false } }),
+    graphDecisions: (d) => (d.graph = { ...GRAPH, decisions: {} }),
+    graphTotals: (d) => (d.graph = { ...GRAPH, totals: { decisions: 0 } }),
     tooManyFiles: (d) => (d.files = Array.from({ length: 201 }, (_, i) => ({ path: `f${i}`, bytes: 0, sha256: fileSha(`f${i}`, ""), encoding: "utf8", content: "" }))),
     fileTooLarge: (d) => {
       const content = "a".repeat(256 * 1024 + 1);
@@ -494,6 +516,38 @@ test("the bundle's shape is checked: its format, its closed keys at each level t
   }
   assert.throws(() => checkShareBundle("not json"), (error) => error.status === 400);
   assert.throws(() => checkShareBundle("[]"), (error) => error.status === 400);
+});
+
+test("a share host fires nothing a reused data folder holds: its triggers never start, so no clock is read and nothing armed", async (t) => {
+  const asked = [];
+  const triggerClock = { now: () => (asked.push("now"), Date.now()), arm: (_fire, ms) => (asked.push(`arm ${ms}`), { clear() {} }) };
+  const s = await shareHost(t, { triggerClock });
+  assert.equal((await send(s.port, { path: "/r/v2/health" })).status, 200);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.deepEqual(asked, [], "no schedule or feed runs on a share host");
+});
+
+test("a deleted share's bytes go even when its delete was cut short: a second delete, and the next start, finish it", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "share-store-"));
+  const body = await bundleOf();
+  const store = new ShareStore(dir);
+  const meta = await store.create("tok_a", body, JSON.parse(body).sha256, SHARE_QUOTA);
+  await store.delete(meta.id, "tok_a");
+  assert.equal(existsSync(join(dir, meta.id, "bundle.json")), false);
+  // As if the bytes' removal failed, or the process stopped, after the tombstone was written.
+  await writeFile(join(dir, meta.id, "bundle.json"), body);
+  await store.delete(meta.id, "tok_a");
+  assert.equal(existsSync(join(dir, meta.id, "bundle.json")), false, "a second delete removes them");
+
+  await writeFile(join(dir, meta.id, "bundle.json"), body);
+  // A share whose create stopped between its bytes and its meta: bytes nothing names.
+  const orphan = "a".repeat(26);
+  await mkdir(join(dir, orphan), { mode: 0o700 });
+  await writeFile(join(dir, orphan, "bundle.json"), body);
+  const restarted = new ShareStore(dir);
+  assert.equal((await restarted.get(meta.id))?.deleted_at !== undefined, true, "the tombstone still answers 410");
+  assert.equal(existsSync(join(dir, meta.id, "bundle.json")), false, "the next start removes a tombstone's bytes");
+  assert.equal(existsSync(join(dir, orphan)), false, "and a share folder with no meta");
 });
 
 test("a body over the cap is 413 before it is read, and stores nothing", async (t) => {

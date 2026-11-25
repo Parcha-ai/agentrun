@@ -94,19 +94,6 @@ import { warnHoldShort } from "../print.js";
 import { type FeedbackData, feedbackAsk, feedbackOf, jobEndOpen, pendingFeedbackOf } from "./feedback-round.js";
 import { handbackText, servedAnswerOf, servedAnswerText, WORKFLOW_FIRST, WORKFLOW_FIRST_CALL, type WorkflowFirst, type WorkflowFirstData, type WorkflowRevise } from "./workflow-first.js";
 
-/** What a session's requests were charged (sessionSpendOf's figures of those answered, a crash's cut one at its hold among
- *  them), never one still in flight at its hold. Null: one charged has no figure. */
-function chargedOf(records: readonly SessionRecord[]): number | null {
-  const read = sessionSpendOf(records);
-  let usd = 0;
-  for (const figure of read.figures) {
-    if (!read.answered.has(figure.turn)) continue;
-    if (figure.usd === null) return null;
-    usd += figure.usd;
-  }
-  return usd;
-}
-
 /** The end of a harness's own call (Claude Code's WebSearch) the gate held and then let run: the host ran nothing of it,
  *  and the harness's next call runs it. */
 export const OWN_TOOL_RELEASED = "Allowed after it waited; the agent's own tool runs it on its next call.";
@@ -209,9 +196,8 @@ export interface AdapterRunSpec {
   readonly workflowRevise?: WorkflowRevise;
   /** The run's end-of-run step, when its spec builds one (over the per-claim resources it holds, its Archil claim among
    *  them): it wins over LoopDeps.endOfRun and is asked where that one is, in the end turn while the claim is held, before
-   *  a tool host's beforeRelease and the run's release, its rows in the end's commit. `null`: the run takes none, and
-   *  LoopDeps.endOfRun is not asked either (a held run its model kept from running). */
-  readonly endOfRun?: EndOfRunTurn | null;
+   *  a tool host's beforeRelease and the run's release, its rows in the end's commit. */
+  readonly endOfRun?: EndOfRunTurn;
   /** What the claim laid of the run's learning seed (runner/learning-seed.ts): the learned workflows it was given, by
    *  name. The loop writes it on the root (KINDS.learningLaid) as this claim opens. Absent for a run that does not
    *  learn. */
@@ -1977,12 +1963,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           let others = beside;
           for (const key of await sessions.keys()) {
             if (key === spec.session.key) continue;
-            const spent = settled ? chargedOf(await sessions.read(key)) : sessionSpendOf(await sessions.read(key)).spentUsd;
+            const read = sessionSpendOf(await sessions.read(key));
+            const spent = settled ? read.chargedUsd : read.spentUsd;
             if (spent === null) return undefined;
             others += spent;
           }
           if (settled) {
-            const own = chargedOf(await sessions.read(spec.session.key));
+            const own = sessionSpendOf(await sessions.read(spec.session.key)).chargedUsd;
             return own === null ? undefined : overCapEnd(others + own, cap);
           }
           // Its model session read as the cap reads it (the kernel's overCapOf: a request cut by a crash at its hold plus its
@@ -3878,9 +3865,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     };
   }
 
-  /** The run's end-of-run step: its spec's (AdapterRunSpec.endOfRun) when it has one, none when its spec says none (null),
-   *  else the loop's deps'. */
-  const stepOf = (spec: AdapterRunSpec): EndOfRunTurn | undefined => (spec.endOfRun === null ? undefined : spec.endOfRun ?? deps.endOfRun);
+  /** The run's end-of-run step: its spec's (AdapterRunSpec.endOfRun) when it has one, else the loop's deps'. */
+  const stepOf = (spec: AdapterRunSpec): EndOfRunTurn | undefined => spec.endOfRun ?? deps.endOfRun;
 
   /** The end-of-run step (stepOf: the spec's, else LoopDeps.endOfRun), asked once: the rows to stage with the end; `stopped` when a person's stop
    *  came during it; `interrupted` when the claim was lost or the runner is closing (no end is written, and the next claim

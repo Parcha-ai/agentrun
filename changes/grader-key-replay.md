@@ -1,5 +1,0 @@
----
-packages: @parcha/agentrun-serve
-kind: fix
----
-A replay or audit run in a process of its own now grades on the saved key of its grader's provider. Its grader runs on the fast tier (the revision's `modelTiers.fast`, else `AGENT_MODEL_FAST`), which can be another provider's model than the agent's, with that provider's key saved in Settings → Model keys alone. The run's process asks its runner for saved keys, and the runner answered only a subagent's, a learning run's or an SDK run's ask, so a replay of an Anthropic agent whose fast tier is OpenAI's found no OpenAI key, logged "learning: no grader route (No OpenAI key here …)", and compared the answers whole. The runner now answers a replay's and an audit's ask with that one provider's saved keys and no other (through a model gateway, the gateway's key alone), filtered on the runner, since the agent's tools run in the run's process tree. A replay or audit of a revision with no fast tier, or one that names `agree_on`, gets none (a revision that grants the subagent tool keeps the subagent path's keys, unchanged), and a run whose launch brings its own model key still gets none of the server's keys.
