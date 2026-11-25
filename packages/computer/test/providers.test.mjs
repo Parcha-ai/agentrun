@@ -204,6 +204,12 @@ test("every provider's descriptor declares network beside mounts: the network fo
 	assert.deepEqual(index.descriptorOf("orgo").network, ["none"]);
 });
 
+test("at most one provider's descriptor sets defaultBox, the box a new agent that names no place is given, and only as true: a second would leave which box that is to the registry's order", () => {
+	const defaults = index.DESCRIPTORS.filter((descriptor) => "defaultBox" in descriptor);
+	assert.ok(defaults.length <= 1, `one default box at most: ${defaults.map((descriptor) => descriptor.id).join(", ")}`);
+	for (const descriptor of defaults) assert.equal(descriptor.defaultBox, true, `${descriptor.id}'s defaultBox is true or absent`);
+});
+
 test("whether a provider's machines dial the server is its descriptor's connect, read by connectOf without building one, and is what its built host's facts.connect says", async () => {
 	const { connectOf, descriptorOf } = index;
 	// Read from the descriptors alone: Fly and Cloudflare always dial; E2B, Daytona and Modal dial where their connect

@@ -100,8 +100,9 @@ function refusedNotForPlace(answer) {
 }
 /** A definition as a person writes one first: a name and instructions, no place and no tools. */
 const fresh = (id) => ({ definition: { id, name: id, instructions: "Probe." } });
-/** Why an agent with no place and a shell is refused where no Docker box is set up (no box is, here). */
-const NAME_A_BOX = "name a box: this server has no Docker box for a new agent. Set place to {mode: sandbox, box: <none is set up>}, or to {mode: runner} to run without a shell.";
+/** Why an agent with no place and a shell is refused where no Docker box is set up (no box is, here): with why, in the
+ *  words AGENTRUN_BOXES=none gives Docker's box. */
+const NAME_A_BOX = "name a box: this server has no Docker box for a new agent. Set place to {mode: sandbox, box: <none is set up>}, or to {mode: runner} to run without a shell. docker: not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker.";
 
 // A run in the Docker box starts a computer: computerDocker gives it a fake computerd, so its bash and background tools run.
 test("a new agent on a server with docker can start a command in the background and read its output, with no tools named", { timeout: 120_000, skip: NO_DAEMON }, async (t) => {

@@ -10,19 +10,24 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { DESCRIPTORS } from "@parcha/agentrun-computer";
 import { boxesLine, defaultPlaceOf, newAgentPlace, noBoxRefusal, placesOf } from "../dist/place.js";
+import { DOCKER_JOIN_GROUP } from "../dist/place-offers.js";
 import { agent, flowAgent, serve } from "./support.mjs";
 
 const NONE_WORDS = "name a box: this server has no Docker box for a new agent. Set place to {mode: sandbox, box: <none is set up>}, or to {mode: runner} to run without a shell.";
+/** What to set, the refusal's fix: never why Docker's box is not here. */
+const NONE_FIX = NONE_WORDS.slice(NONE_WORDS.indexOf("Set place"));
+/** The words a test server (AGENTRUN_BOXES=none) refuses in: why Docker's box is not here kept, as its offer says it. */
+const SERVER_WORDS = `${NONE_WORDS} docker: not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker.`;
 const plain = (id, extra = {}) => ({ definition: { id, name: id, instructions: "Answer.", ...extra } });
 const flags = (tool) => ({ bash: { sandboxOnly: true }, browser: { runnerOnly: true } })[tool];
 
 /** The refusal a create or an edit gets: 422 under definition.place, in the words, its fix what to set (no example
  *  place picked for it). */
-function refusedForPlace(said, words = NONE_WORDS) {
+function refusedForPlace(said, words = SERVER_WORDS, fix = NONE_FIX) {
   assert.equal(said.status, 422, JSON.stringify(said.body));
   assert.equal(said.body.error.code, "input_invalid");
   assert.equal(said.body.error.message, words);
-  assert.deepEqual(said.body.error.fields.map((one) => [one.field, one.reason, one.message, one.fix]), [["definition.place", "missing", words, words.slice(words.indexOf("Set place"))]]);
+  assert.deepEqual(said.body.error.fields.map((one) => [one.field, one.reason, one.message, one.fix]), [["definition.place", "missing", words, fix]]);
 }
 
 test("the default box is the one box whose provider descriptor says so (defaultBox), Docker's, read from the descriptor, never named in serve", () => {
@@ -39,7 +44,7 @@ test("the default box is the descriptor's default box (Docker's): with Docker do
   ];
   const fresh = newAgentPlace(registry);
   assert.equal("place" in fresh, false, "never the first box that answers");
-  assert.equal(fresh.reason, "name a box: this server has no Docker box for a new agent. Set place to {mode: sandbox, box: <one of: daytona, e2b>}, or to {mode: runner} to run without a shell.");
+  assert.equal(fresh.reason, "name a box: this server has no Docker box for a new agent. Set place to {mode: sandbox, box: <one of: daytona, e2b>}, or to {mode: runner} to run without a shell. docker: Docker isn't running on this machine.");
   assert.equal(fresh.why, "Docker isn't running on this machine");
   assert.deepEqual(defaultPlaceOf("agentic", ["bash"], registry, flags), { mode: "runner" }, "a revision with bash and no place resolves to no other box");
   assert.equal(newAgentPlace([]).reason, NONE_WORDS, "no box at all: none is set up");
@@ -49,7 +54,7 @@ test("the default box is the descriptor's default box (Docker's): with Docker do
 test("default_place per mode: Docker's box where it is here; with no Docker, null and the refusal's words where the runner has no shell (Mode 1), the runner where it has one (Mode 2), with no default_reason", () => {
   const docker = [{ id: "docker", available: true }];
   const noDocker = [{ id: "docker", available: false, reason: "Docker isn't running on this machine" }, { id: "e2b", available: true }];
-  const NAMED = "name a box: this server has no Docker box for a new agent. Set place to {mode: sandbox, box: <one of: e2b>}, or to {mode: runner} to run without a shell.";
+  const NAMED = "name a box: this server has no Docker box for a new agent. Set place to {mode: sandbox, box: <one of: e2b>}, or to {mode: runner} to run without a shell. docker: Docker isn't running on this machine.";
   for (const shell of [false, true]) {
     const withDocker = placesOf(docker, "none", shell);
     assert.deepEqual(withDocker.default_place, { mode: "sandbox", box: "docker" });
@@ -79,7 +84,7 @@ test("with no Docker box, a new agent that names no place and no tools, or a too
   // Mode 1 (the runner has no shell): capabilities say there is no default place, in the refusal's words.
   const { places } = (await api("GET", "/capabilities")).body;
   assert.equal(places.default_place, null);
-  assert.equal(places.default_reason, NONE_WORDS);
+  assert.equal(places.default_reason, SERVER_WORDS);
   refusedForPlace(await api("POST", "/agents", plain("plain")));
   assert.equal((await api("GET", "/agents/plain")).status, 404, "nothing saved");
   refusedForPlace(await api("POST", "/agents", plain("shell", { tools: ["read", "bash"] })));
@@ -116,4 +121,31 @@ test("with no Docker box, a workflow, a definition that names its place (the run
   // A box this server does not have, named: saved with its warning, as before (place.test.mjs).
   const boxed = await api("POST", "/agents", plain("boxed", { place: { mode: "sandbox", box: "docker" } }));
   assert.equal(boxed.status, 201, JSON.stringify(boxed.body));
+});
+
+test("the refusal keeps why Docker's box is not here, in its offer's own words with their fix (the docker group), after what to set; the fix is what to set alone; with no offer of Docker's box, no why", () => {
+  const registry = [{ id: "docker", available: false, reason: DOCKER_JOIN_GROUP }];
+  const issue = noBoxRefusal(undefined, registry, flags, false);
+  assert.equal(issue?.message, `${NONE_WORDS} docker: ${DOCKER_JOIN_GROUP}.`);
+  assert.equal(issue?.fix, NONE_FIX, "the fix names a place: never Docker's words");
+  assert.equal(placesOf(registry, "none", false).default_reason, issue.message, "capabilities say the words the create is refused in");
+  assert.equal(newAgentPlace(registry).why, DOCKER_JOIN_GROUP, "and the probe's words alone, as Mode 2's words use them");
+  assert.equal(noBoxRefusal(undefined, [], flags, false)?.message, NONE_WORDS, "no offer of Docker's box: nothing of Docker's to keep");
+  assert.equal(noBoxRefusal(undefined, registry, flags, true), undefined, "Mode 2: never refused for its place");
+});
+
+test("with no Docker box (Mode 1), a definition with no place, bash and the browser is refused at bash in words that say no place runs both: never sent to name a box, which refuses the browser", { timeout: 60_000 }, async (t) => {
+  const { api } = await serve(t);
+  const both = await api("POST", "/agents", plain("both", { tools: ["read", "bash", "browser"] }));
+  assert.equal(both.status, 422, JSON.stringify(both.body));
+  assert.deepEqual(both.body.error.fields.map((one) => [one.field, one.reason, one.message, one.fix]), [["definition.tools[1]", "not_an_option", 'bash runs only in a box, and browser never runs in one, so no place runs this agent with both: remove "bash" from definition.tools to keep it on the runner, or remove "browser" and name a box.', 'Remove "bash" from definition.tools.']]);
+  assert.equal((await api("GET", "/agents/both")).status, 404, "nothing saved");
+  // The first way out saves: the runner, without bash.
+  const runner = await api("POST", "/agents", plain("both", { tools: ["read", "browser"] }));
+  assert.equal(runner.status, 201, JSON.stringify(runner.body));
+  // An edit to the same tools is refused alike; the agent keeps its revision.
+  const edit = await api("PUT", "/agents/both/definition", { definition: { instructions: "Answer.", tools: ["read", "bash", "browser"] } });
+  assert.equal(edit.status, 422, JSON.stringify(edit.body));
+  assert.deepEqual(edit.body.error.fields.map((one) => [one.field, one.reason]), [["definition.tools[1]", "not_an_option"]]);
+  assert.equal((await api("GET", "/agents/both")).body.revision, runner.body.revision);
 });

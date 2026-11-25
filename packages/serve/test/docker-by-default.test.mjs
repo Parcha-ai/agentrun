@@ -54,6 +54,9 @@ async function noDocker(t) {
 
 /** Why a new agent that names no place is refused where no Docker box is set up (and no other box is). */
 const NAME_A_BOX = "name a box: this server has no Docker box for a new agent. Set place to {mode: sandbox, box: <none is set up>}, or to {mode: runner} to run without a shell.";
+/** The same, with why Docker's box is not here, in its offer's own words (`why`: its probe's, with their fix), as the
+ *  refusal and default_reason keep them. */
+const nameABox = (why) => `${NAME_A_BOX} docker: ${why}.`;
 const placesOf = async (api) => (await api("GET", "/capabilities")).body.places;
 const dockerOf = (places) => places.boxes.find((box) => box.id === "docker");
 /** A definition as a person writes one first: a name and instructions, no place and no tools. */
@@ -107,11 +110,11 @@ test("with AGENTRUN_BOXES not set and no docker command on PATH, a new agent tha
   const places = await placesOf(server.api);
   assert.deepEqual(dockerOf(places), { id: "docker", available: false, state: "unavailable", reason: NO_DOCKER });
   assert.equal(places.default_place, null);
-  assert.equal(places.default_reason, NAME_A_BOX);
+  assert.equal(places.default_reason, nameABox(NO_DOCKER));
   assert.equal(server.boxesLine, `Boxes: none, so a new agent must name its place: a box, or the runner. ${NO_DOCKER}.`);
   const refused = await server.api("POST", "/agents", fresh("plain"));
   assert.equal(refused.status, 422, JSON.stringify(refused.body));
-  assert.equal(refused.body.error.message, NAME_A_BOX);
+  assert.equal(refused.body.error.message, nameABox(NO_DOCKER));
   const made = await server.api("POST", "/agents", { definition: { ...fresh("plain").definition, tools: [] } });
   assert.equal(made.status, 201, JSON.stringify(made.body));
   assert.equal("place" in made.body.definition, false);
@@ -266,7 +269,11 @@ test("a refused docker socket's reason is the one capabilities and the banner sa
   const places = await placesOf(server.api);
   const reason = dockerOf(places).reason;
   assert.ok([NOT_IN_GROUP, JOIN_GROUP].includes(reason), reason);
-  assert.equal(places.default_reason, NAME_A_BOX);
+  // The group's fix (usermod, then a restart) is in the refusal's words too, not only in capabilities and the banner.
+  assert.equal(places.default_reason, nameABox(reason));
+  const refused = await server.api("POST", "/agents", fresh("plain"));
+  assert.equal(refused.status, 422, JSON.stringify(refused.body));
+  assert.deepEqual(refused.body.error.fields.map((one) => [one.field, one.reason, one.message]), [["definition.place", "missing", nameABox(reason)]]);
   assert.equal(server.boxesLine, `Boxes: none, so a new agent must name its place: a box, or the runner. ${reason}.`);
   withEnv(t, { AGENTRUN_BOXES: "docker" });
   const listed = await serve(t, { faux: PROBE });
@@ -294,7 +301,7 @@ for (const value of ["", "none", " none "]) {
     assert.ok(places.boxes.every((box) => !box.available), JSON.stringify(places.boxes));
     assert.equal(dockerOf(places).reason, NOT_ENABLED);
     assert.equal(places.default_place, null);
-    assert.equal(places.default_reason, NAME_A_BOX);
+    assert.equal(places.default_reason, nameABox(NOT_ENABLED));
     assert.deepEqual(docker.calls(), [], "no docker command ran");
     assert.ok(server.boxesLine.startsWith("Boxes: none is ready, so sandbox agents do not run here."), server.boxesLine);
   });

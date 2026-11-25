@@ -18,6 +18,8 @@ import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 import { test } from "node:test";
 import { asOwner, scratch, SECRET_WRITE_PATHS, serve, withEnv } from "./support.mjs";
+import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
+import { twoToolPackage } from "./fixtures/two-tool-template.mjs";
 import { NO_DOCKER_HERE } from "../dist/place-offers.js";
 
 const { blockersOf } = await import("../dist/runnable.js");
@@ -486,20 +488,92 @@ test("a template that grants bash applies in Mode 2, its agent on the runner wit
   assert.match(refused.body.error.message, /^name a box: this server has no Docker box for a new agent\. /);
 });
 
-// A template apply that names no tools compiles them where it runs (server.ts applyWith: a box's shell tools only where
-// Docker's box is here), so on Mode 1 with no Docker its agent gets no shell and keeps the runner, as before: it is no
-// create that would get a box. An apply's grants are the package's MCP tools alone (templates.ts applyBodyOf), so none
-// can bring a shell tool in.
-test("a template that names no tools applies in Mode 1 with no Docker as before: no place, no tools; an apply's grants never carry a shell tool", async (t) => {
+// A template apply whose package names no tools and no computer list makes the agent POST /agents makes of a definition
+// that names no tools: where Docker's box is here, the box and its shell tools (beside the MCP tools the apply ticks);
+// where it is not and the runner has no shell (Mode 1), the same refusal, 422 at definition.place, never an agent saved
+// on the runner; in Mode 2, the runner, as before. A package that names its tools ([] included) or its computer list
+// applies as before. An apply's grants are the package's MCP tools alone (templates.ts applyBodyOf), so none brings a
+// shell tool in. `agentrun deploy` applies the same way (packages/agentrun deploy.test).
+const PLAIN = "---\nname: plain-reader\nversion: 1.0.0\ndescription: Answers.\n---\nAnswer.\n";
+/** A templates folder holding `packages`, each name's agent.md. */
+async function templatesOf(t, packages) {
   const templates = join(await scratch(t), "templates");
-  await mkdir(join(templates, "plain-reader"), { recursive: true });
-  await writeFile(join(templates, "plain-reader", "agent.md"), "---\nname: plain-reader\nversion: 1.0.0\ndescription: Answers.\n---\nAnswer.\n");
-  const mode1 = await server(t, { archil: false, templates });
-  const applied = await mode1("POST", "/templates/plain-reader/apply", {});
+  for (const [name, manifest] of Object.entries(packages)) {
+    await mkdir(join(templates, name), { recursive: true });
+    await writeFile(join(templates, name, "agent.md"), manifest);
+  }
+  return templates;
+}
+/** The fake MCP server saved on `api` as `fake`, the server two-tool-template.mjs's package uses. */
+async function fakeSaved(t, api) {
+  const fake = await startFakeMcp();
+  t.after(() => fake.close());
+  const saved = await api("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" }, toolkit: "fake" });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+}
+/** The applied agent's place, computer and tools. */
+const madeOf = async (api, applied) => {
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
-  const made = (await mode1("GET", `/agents/${applied.body.agent_id}`)).body.definition;
-  assert.deepEqual([made.place, made.computer, made.tools], [undefined, undefined, []], JSON.stringify(made));
+  const made = (await api("GET", `/agents/${applied.body.agent_id}`)).body.definition;
+  return [made.place, made.computer, made.tools];
+};
+/** A 422 at definition.place (missing), in the name-a-box words, with no agent made. */
+async function refusedForPlace(api, said) {
+  assert.equal(said.status, 422, JSON.stringify(said.body));
+  assert.deepEqual(said.body.error.fields.map((one) => [one.field, one.reason]), [["definition.place", "missing"]]);
+  assert.match(said.body.error.message, /^name a box: this server has no Docker box for a new agent\. Set place to /);
+  assert.deepEqual((await api("GET", "/agents")).body.agents, [], "nothing made");
+}
+
+test("Mode 1 with no Docker: a template apply of a package that names no tools and no computer is refused as POST /agents refuses that create, 422 at definition.place, nothing made; a grant of bash is still refused at the grant", async (t) => {
+  const templates = await templatesOf(t, { "plain-reader": PLAIN });
+  const mode1 = await server(t, { archil: false, templates });
+  await refusedForPlace(mode1, await mode1("POST", "/templates/plain-reader/apply", {}));
   const granted = await mode1("POST", "/templates/plain-reader/apply", { grants: ["bash"] });
   assert.equal(granted.status, 422, JSON.stringify(granted.body));
   assert.deepEqual(granted.body.error.fields.map((one) => [one.field, one.reason]), [["grants.0", "not_allowed"]]);
+});
+
+test("Mode 1 with no Docker: the same apply that ticks the package's MCP tools is refused alike: its grants are no tools it named", async (t) => {
+  const templates = join(await scratch(t), "templates");
+  twoToolPackage(templates, "two-tools", undefined, undefined, { bare: true });
+  const mode1 = await server(t, { archil: false, templates });
+  await fakeSaved(t, mode1);
+  await refusedForPlace(mode1, await mode1("POST", "/templates/two-tools/apply", { grants: ["mcp:fake/add"] }));
+});
+
+test("with Docker answering, the same applies get Docker's box and its shell tools, the ticked MCP tool beside them, as before", async (t) => {
+  const templates = await templatesOf(t, { "plain-reader": PLAIN });
+  twoToolPackage(templates, "two-tools", undefined, undefined, { bare: true });
+  const docker = await server(t, { archil: false, docker: true, templates });
+  await fakeSaved(t, docker);
+  const BOX = { mode: "sandbox", box: "docker" };
+  const [place, , tools] = await madeOf(docker, await docker("POST", "/templates/plain-reader/apply", {}));
+  assert.deepEqual([place, tools.includes("bash")], [BOX, true], JSON.stringify(tools));
+  const [ticked, , mcp] = await madeOf(docker, await docker("POST", "/templates/two-tools/apply", { grants: ["mcp:fake/add"] }));
+  assert.deepEqual([ticked, mcp.includes("bash"), mcp.includes("mcp:fake/add")], [BOX, true, true], JSON.stringify(mcp));
+});
+
+test("Mode 2: the same applies keep the runner, as before: no place, no tools, or the ticked MCP tool alone", async (t) => {
+  const templates = await templatesOf(t, { "plain-reader": PLAIN });
+  twoToolPackage(templates, "two-tools", undefined, undefined, { bare: true });
+  const mode2 = await server(t, { archil: true, templates });
+  await fakeSaved(t, mode2);
+  assert.deepEqual(await madeOf(mode2, await mode2("POST", "/templates/plain-reader/apply", {})), [undefined, undefined, []]);
+  assert.deepEqual(await madeOf(mode2, await mode2("POST", "/templates/two-tools/apply", { grants: ["mcp:fake/add"] })), [undefined, undefined, ["mcp:fake/add"]]);
+});
+
+test("Mode 1 with no Docker: a package that names its tools ([] included) or its computer list applies as before, on the runner", async (t) => {
+  const templates = await templatesOf(t, {
+    "no-tools": PLAIN.replace("name: plain-reader", "name: no-tools").replace("---\nAnswer", "tools: []\n---\nAnswer"),
+    "file-tools": PLAIN.replace("name: plain-reader", "name: file-tools").replace("---\nAnswer", "tools: [read, write]\n---\nAnswer"),
+    "shell-or-none": PLAIN.replace("name: plain-reader", "name: shell-or-none").replace("---\nAnswer", "computer: [shell, none]\n---\nAnswer"),
+  });
+  const mode1 = await server(t, { archil: false, templates });
+  assert.deepEqual(await madeOf(mode1, await mode1("POST", "/templates/no-tools/apply", {})), [undefined, undefined, []]);
+  assert.deepEqual(await madeOf(mode1, await mode1("POST", "/templates/file-tools/apply", {})), [undefined, undefined, ["read", "write"]]);
+  const fallback = await mode1("POST", "/templates/shell-or-none/apply", {});
+  const [place, computer] = await madeOf(mode1, fallback);
+  assert.deepEqual([place, computer], [{ mode: "runner" }, { kind: "none" }], JSON.stringify(fallback.body));
+  assert.deepEqual(fallback.body.warnings.filter((one) => one.field === "computer").map((one) => one.reason), ["not_set_up_here"], "its list's fallback is said, as before");
 });

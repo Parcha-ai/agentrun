@@ -16,6 +16,8 @@ import { jsonLines, scratch, serve, withEnv } from "./support.mjs";
 
 /** Why a new agent that names no place, computer or tools is refused where Docker is not offered (and no other box is). */
 const NAME_A_BOX = "name a box: this server has no Docker box for a new agent. Set place to {mode: sandbox, box: <none is set up>}, or to {mode: runner} to run without a shell.";
+/** The same, with why Docker's box is not here, in its offer's own words (`why`), as the refusal keeps them. */
+const nameABox = (why) => `${NAME_A_BOX} docker: ${why}.`;
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAKE = new URL("./fixtures/fake-docker.mjs", import.meta.url).pathname;
@@ -144,7 +146,7 @@ test("the server in a container with no named data volume: a run naming a Docker
   // An agent that names no place, computer or tools is refused, as where there is no Docker: it names a box or the runner.
   const unplaced = await api("POST", "/agents", { definition: { id: "plain", name: "plain", instructions: "Answer." } });
   assert.equal(unplaced.status, 422, JSON.stringify(unplaced.body));
-  assert.equal(unplaced.body.error.message, NAME_A_BOX);
+  assert.equal(unplaced.body.error.message, nameABox(IN_COMPOSE));
   // One that names its tools, none a shell: the runner, with no default tools.
   const plain = await api("POST", "/agents", { definition: { id: "plain", name: "plain", instructions: "Answer.", tools: [] } });
   assert.equal(plain.status, 201, JSON.stringify(plain.body));
@@ -491,7 +493,7 @@ test("a server with no computerd build for its Docker's architecture: Docker isn
   const inBox = await api("POST", "/agents/boxed-place/runs", { input: { content: "Probe." } });
   assert.equal(inBox.status, 409, JSON.stringify(inBox.body));
   assert.ok(JSON.stringify(inBox.body.error).includes(NO_DAEMON(builds)), JSON.stringify(inBox.body));
-  assert.equal((await api("POST", "/agents", { definition: { id: "plain", name: "plain", instructions: "Answer." } })).body.error?.message, NAME_A_BOX);
+  assert.equal((await api("POST", "/agents", { definition: { id: "plain", name: "plain", instructions: "Answer." } })).body.error?.message, nameABox(NO_DAEMON(builds)));
   const plain = await api("POST", "/agents", { definition: { id: "plain", name: "plain", instructions: "Answer.", tools: [] } });
   assert.equal(plain.status, 201, JSON.stringify(plain.body));
   assert.equal((await api("GET", "/agents/plain")).body.place?.mode ?? "runner", "runner");
