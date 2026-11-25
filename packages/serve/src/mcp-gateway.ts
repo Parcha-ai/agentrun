@@ -206,8 +206,10 @@ export interface McpGatewayOptions {
   pin: McpPin;
   credentials: McpCredentials;
   /** The run's Workspace, where an answer too long for the model is filed (the run's process still hands its folder's
-   *  path). */
-  work: () => Workspace | string;
+   *  path in Mode 1). Read only when a call's answer files something, and awaited: a host may open the Workspace then,
+   *  once, rather than for every claim (run-child-host.ts). A Workspace that cannot be opened files nothing, as a write
+   *  that fails does. */
+  work: () => Workspace | string | Promise<Workspace>;
   /** For tests: the fetch the upstream client sends with. */
   fetch?: typeof fetch;
   /** For tests: the bound on one call (CALL_MS) and on a server's first connection (CONNECT_MS). */
@@ -356,10 +358,10 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     const other = blocks.length - texts.length;
     if (text.length <= MCP_CLIP && other === 0) return text;
     const name = `${tool}-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`;
-    if (other === 0) return filedAnswer(() => workspaceAt(options.work()), `evidence/mcp/${server}`, name, text, MCP_CLIP);
+    if (other === 0) return filedAnswer(async () => workspaceAt(await options.work()), `evidence/mcp/${server}`, name, text, MCP_CLIP);
     const head = text.length > MCP_CLIP ? `${text.slice(0, MCP_CLIP)}\n[cut at ${MCP_CLIP} of ${text.length} characters; ` : `${text}\n[${other} block${other > 1 ? "s" : ""} that ${other > 1 ? "are" : "is"} not text; `;
     try {
-      await workspaceAt(options.work()).write(`evidence/mcp/${server}/${name}.json`, clean(JSON.stringify(result)));
+      await workspaceAt(await options.work()).write(`evidence/mcp/${server}/${name}.json`, clean(JSON.stringify(result)));
     } catch (error) {
       // The Workspace's code and the port's line for it, never the error's message, which names paths.
       return `${head}the whole answer could not be saved (${workspaceErrorWords(error) ?? (error as { code?: string })?.code ?? "write failed"})]`;
@@ -383,7 +385,7 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     if (!found.length) return;
     let work: Workspace;
     try {
-      work = workspaceAt(options.work());
+      work = workspaceAt(await options.work());
     } catch {
       return;
     }

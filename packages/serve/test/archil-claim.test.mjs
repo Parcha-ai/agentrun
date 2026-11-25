@@ -245,6 +245,21 @@ test("archil claim: a claim that attached the desktop a park kept takes on its c
   assert.deepEqual(fake.requests.slice(2).map((one) => [one.method, one.query.identifier]), [["GET", undefined], ["DELETE", "tok-1"]], "one read of the run's users, no second read: the inherited user is long listed");
 });
 
+test("archil claim: a claim that took on a parked credential and parks again, whose remove Archil refuses: its revoke rejects in Archil's words, and a later revoke removes it", async (t) => {
+  let refuse = false;
+  const { fake, mount } = await controlOn(t, { answer: ({ method }) => (refuse && method === "DELETE" ? { status: 500, body: { error: "Archil is down" } } : undefined) });
+  const parked = await claimOf({ mount });
+  assert.equal(await parked.claim.token(), TOKEN);
+  const resumed = await claimOf({ mount: { ...mount, epoch: 5 } });
+  resumed.claim.inherit();
+  refuse = true;
+  await assert.rejects(resumed.claim.revoke(), /Archil is down/, "a remove refused is the revoke's failure, not a credential left to its ttl unsaid");
+  assert.deepEqual([...fake.users.values()].map((one) => one.nickname), ["agentrun:run-1:3"], "still at Archil");
+  refuse = false;
+  await resumed.claim.revoke();
+  assert.deepEqual([...fake.users.keys()], [], "the revoke after the refusal tries again");
+});
+
 test("archil claim: a lost claim removes the run's mount credential at once, not at its ttl", async (t) => {
   const { fake, mount } = await controlOn(t);
   const controller = new AbortController();

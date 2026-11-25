@@ -281,6 +281,8 @@ export async function parseHome(home: string, { sources = SOURCES, readers = REA
     }
     state.read = 0;
   }
+  // What readers look up once for this import (a Codex fork's parent anywhere in its sessions), shared by its files.
+  const lookups = new Map<string, unknown>();
   // Requests are priced as they are read once the prices are in hand: at once when the caller handed them in (or none),
   // else loaded when a session is read that the totals will price, as they would load them. A requests sink takes each
   // request with its time, so with one every part keeps its requests (Unpriced) to the totals.
@@ -315,14 +317,14 @@ export async function parseHome(home: string, { sources = SOURCES, readers = REA
   for (const source of sources) {
     let read;
     try {
-      read = await readSource(home, source, readers, env, state, pricer, whole, ahead.get(source));
+      read = await readSource(home, source, readers, env, state, lookups, pricer, whole, ahead.get(source));
     } catch (error) {
       if (!(error instanceof Inexact)) throw error;
       // Tokens that cannot be summed as read: the source again, each request's tokens kept to the totals.
       if (state) (state.sources ??= {})[source] = undefined;
       // The pool's reads of this source left untaken would hold the read-ahead for nothing.
       pool?.drop(ahead.get(source)?.ids ?? []);
-      read = await readSource(home, source, readers, env, state, pricer, true);
+      read = await readSource(home, source, readers, env, state, lookups, pricer, true);
     }
     const { tops, children, unread } = read;
     for (const part of [...tops, ...children]) readKeys.add(sessionKey(source, part.read.session.id));
@@ -347,7 +349,7 @@ export async function parseHome(home: string, { sources = SOURCES, readers = REA
       if (!(error instanceof Inexact)) throw error;
       // As a source read above: again, each request's tokens kept to the totals.
       if (state) (state.sources ??= {})[source] = undefined;
-      read = await readSource(home, source, readers, env, state, pricer, true);
+      read = await readSource(home, source, readers, env, state, lookups, pricer, true);
       own(true);
     }
     out.push(...(await totalsOf(home, source, read.tops, read.children, pricer, priceWith, calculateCost, requests)));
@@ -376,7 +378,7 @@ async function listSource(home: string, source: string, readers: Readers, env: E
   return { listed, childList };
 }
 
-async function readSource(home: string, source: string, readers: Readers, env: Env | undefined, state: HomeState | undefined, pricer: Pricer, whole: boolean, listing?: Listing): Promise<{ tops: Part[]; children: (Part & { of: Locator })[]; unread: { locator: Locator; error: unknown }[] }> {
+async function readSource(home: string, source: string, readers: Readers, env: Env | undefined, state: HomeState | undefined, lookups: Map<string, unknown>, pricer: Pricer, whole: boolean, listing?: Listing): Promise<{ tops: Part[]; children: (Part & { of: Locator })[]; unread: { locator: Locator; error: unknown }[] }> {
   const reader = readerOf(source, readers);
   // The pool's listing, when parseHome read this source ahead (pool.ts); each read is taken below in order, or made again.
   const { listed, childList, reads: ahead } = listing ?? (await listSource(home, source, readers, env));
@@ -431,7 +433,7 @@ async function readSource(home: string, source: string, readers: Readers, env: E
           return made.sessions;
         }
       }
-      const result = await reader.read(locator, cursor, { turns: false, totals: true, seen }).catch((error: unknown) => void unread.push({ locator, error }));
+      const result = await reader.read(locator, cursor, { turns: false, totals: true, seen, lookups }).catch((error: unknown) => void unread.push({ locator, error }));
       if (!result) {
         // A locator read before that cannot be read now gives up its cursor and the records it held, as a fresh pass
         // would hold none of them: the next pass reads it from its start. A locator that found them already read (a

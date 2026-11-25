@@ -99,9 +99,11 @@ export function CostChart({ data, on, width: fixed, promotions = [], execution =
     data.unknown_cost_runs ? `${data.unknown_cost_runs === 1 ? "1 run's" : `${data.unknown_cost_runs} runs'`} cost is not known: left out.` : null,
     // A run whose end could not say which path it took or what it cost: left out, never drawn as the agent's at $0.
     data.unknown_path_runs ? `${data.unknown_path_runs === 1 ? "1 run's" : `${data.unknown_path_runs} runs'`} path and cost are not known: left out.` : null,
-    // A learned workflow the money rule stopped: why it no longer runs first (both sides all-in, learning included), and
-    // what comes next (the stop asks for no new version).
-    ...data.workflows.filter((w) => w.state === "needs_revision" && w.served && w.by_hand).map((w) => `${w.workflow} no longer runs first: ${level(w.served!.mean_usd)} a run all-in over its newest ${w.served!.runs} priced runs, at or over ${level(w.by_hand!.mean_usd)} a run by hand.${w.unknown_cost_runs ? ` ${w.unknown_cost_runs === 1 ? "1 run" : `${w.unknown_cost_runs} runs`} of unknown cost left out.` : ""} The agent takes its runs; a new version runs first again.`),
+    // A learned workflow the money rule stopped: why it no longer runs first (`reason`), and what comes next. Over the
+    // line: both sides all-in, learning included, and a new version runs first again. No by-hand cost to hold it to: no
+    // price is said, and it runs first again once a run by hand has a known cost and it costs less.
+    ...data.workflows.filter((w) => w.state === "needs_revision" && w.reason === "over_line" && w.served && w.by_hand).map((w) => `${w.workflow} no longer runs first: ${level(w.served!.mean_usd)} a run all-in over its newest ${w.served!.runs} priced runs, at or over ${level(w.by_hand!.mean_usd)} a run by hand.${w.unknown_cost_runs ? ` ${w.unknown_cost_runs === 1 ? "1 run" : `${w.unknown_cost_runs} runs`} of unknown cost left out.` : ""} The agent takes its runs; a new version runs first again.`),
+    ...data.workflows.filter((w) => w.state === "needs_revision" && w.reason === "no_by_hand_cost").map((w) => `${w.workflow} doesn't run first: no run by hand has a known cost to hold it to. The agent takes its runs; once one does and the workflow costs less, it runs first again.`),
   ].filter((n): n is string => !!n);
 
   if (points.length < 2) {

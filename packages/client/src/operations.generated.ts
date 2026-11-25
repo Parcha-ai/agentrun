@@ -181,7 +181,7 @@ export type DefinitionInput = {
     mode: "runner";
   } | {
     mode: "sandbox";
-    box: "docker" | "modal" | "daytona";
+    box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "boxd" | "groundbox";
   };
   computer?: {
     kind: "none" | "sandbox" | "desktop" | "phone" | "browser";
@@ -521,6 +521,14 @@ export type RunSummary = {
     digest: string | null;
     repick: "found" | "missed" | null;
   } | null;
+  workflow_calls?: Array<{
+    workflow: string;
+    digest: string;
+    caller: "platform" | "agent";
+    outcome: "answered" | "handed_back" | "failed" | "refused";
+    usd: number | null;
+  }> | null;
+  first_choice?: "served" | "replay" | "replay_missing" | "none_laid" | "off" | "none_fit" | "many_fit" | "not_promoted" | "champion_misfit" | "many_champions" | "cost_stop" | "no_by_hand_cost" | "past_unread" | "held" | null;
 };
 
 export type RunStatus = "queued" | "working" | "paused" | "input_required" | "completed" | "failed" | "cancelled";
@@ -736,7 +744,7 @@ export type Run = {
     mode: "runner";
   } | {
     mode: "sandbox";
-    box: "docker" | "modal" | "daytona";
+    box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "boxd" | "groundbox";
   };
   computer?: {
     kind: "sandbox" | "desktop" | "phone" | "browser";
@@ -824,6 +832,14 @@ export type Run = {
     digest: string | null;
     repick: "found" | "missed" | null;
   } | null;
+  workflow_calls?: Array<{
+    workflow: string;
+    digest: string;
+    caller: "platform" | "agent";
+    outcome: "answered" | "handed_back" | "failed" | "refused";
+    usd: number | null;
+  }> | null;
+  first_choice?: "served" | "replay" | "replay_missing" | "none_laid" | "off" | "none_fit" | "many_fit" | "not_promoted" | "champion_misfit" | "many_champions" | "cost_stop" | "no_by_hand_cost" | "past_unread" | "held" | null;
 };
 
 export type RunResult = {
@@ -1090,7 +1106,7 @@ export type Capabilities = {
   places: {
     modes: Array<"runner" | "sandbox">;
     boxes: Array<{
-      id: "docker" | "modal" | "daytona";
+      id: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "boxd" | "groundbox";
       available: boolean;
       state: "ready" | "unavailable";
       reason?: string;
@@ -1102,7 +1118,7 @@ export type Capabilities = {
       mode: "runner";
     } | {
       mode: "sandbox";
-      box: "docker" | "modal" | "daytona";
+      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "boxd" | "groundbox";
     };
     default_reason?: string;
     allow: Array<string>;
@@ -2859,6 +2875,7 @@ export type GetLearningCostResponse = {
     workflow: string;
     digest: string;
     state: "serving" | "needs_revision";
+    reason: "over_line" | "no_by_hand_cost" | null;
     served: {
       runs: number;
       mean_usd: number;
@@ -3355,7 +3372,7 @@ export type GetChatGPTSignInResponse = {
 
 /** Claude Code's login on this machine: on or off, and what its CLI says of it (GET /settings/claude-login). */
 export type GetClaudeLoginResponse = {
-  state: "off" | "other_machine" | "signed_in" | "signed_out" | "no_cli" | "unknown";
+  state: "off" | "other_machine" | "refused" | "signed_in" | "signed_out" | "no_cli" | "unknown";
   place: "agentrun" | "machine";
   command: string;
   can_start: boolean;
@@ -4210,7 +4227,7 @@ export type StartChatGPTSignInResponse = {
 
 /** Start the Claude Code CLI's own sign-in on this machine (POST /settings/claude-login/login). */
 export type StartClaudeLoginResponse = {
-  state: "off" | "other_machine" | "signed_in" | "signed_out" | "no_cli" | "unknown";
+  state: "off" | "other_machine" | "refused" | "signed_in" | "signed_out" | "no_cli" | "unknown";
   place: "agentrun" | "machine";
   command: string;
   can_start: boolean;
@@ -4319,7 +4336,7 @@ export type TestWorkspaceArchilResponse = {
 
 /** Turn off Claude Code's login on this machine (DELETE /settings/claude-login). */
 export type TurnOffClaudeLoginResponse = {
-  state: "off" | "other_machine" | "signed_in" | "signed_out" | "no_cli" | "unknown";
+  state: "off" | "other_machine" | "refused" | "signed_in" | "signed_out" | "no_cli" | "unknown";
   place: "agentrun" | "machine";
   command: string;
   can_start: boolean;
@@ -4353,7 +4370,7 @@ export type TurnOnClaudeLoginBody = {
   only_me: true;
 };
 export type TurnOnClaudeLoginResponse = {
-  state: "off" | "other_machine" | "signed_in" | "signed_out" | "no_cli" | "unknown";
+  state: "off" | "other_machine" | "refused" | "signed_in" | "signed_out" | "no_cli" | "unknown";
   place: "agentrun" | "machine";
   command: string;
   can_start: boolean;
@@ -4782,6 +4799,12 @@ export type SetCurrentBody = {
 };
 export type SetCurrentResponse = Agent;
 
+/** Read all skill files saved with one agent revision (GET /agents/{agent_id}/revisions/{revision}/skills). */
+export type GetRevisionSkillsResponse = {
+  revision: string;
+  skills: Record<string, string>;
+};
+
 /** Archive the run: hidden from the lists, kept with its history (POST /runs/{run_id}/archive). */
 export type ArchiveRunResponse = Record<string, unknown>;
 
@@ -4829,6 +4852,59 @@ export type CreateRunComputerViewerResponse = {
 
 /** Purge a run's content and keep its cost (DELETE /runs/{run_id}). */
 
+/** An ended run as a share bundle, every string cut (GET /runs/{run_id}/export). */
+export interface GetRunExportParams {
+  restore?: string;
+}
+export type GetRunExportResponse = {
+  format: "agentrun.share/1";
+  sha256: string;
+  source: {
+    agentrun: string;
+    scrubber: {
+      version: number;
+      rules: string;
+    };
+  };
+  agent: {
+    name: string;
+    kind: "agentic" | "workflow";
+  };
+  run: Record<string, unknown>;
+  rows: Array<Record<string, unknown>>;
+  graph: Record<string, unknown> | null;
+  files: Array<{
+    path: string;
+    bytes: number;
+    sha256: string;
+    encoding: "utf8";
+    content: string;
+  }>;
+  omitted: Array<{
+    what: "file" | "files" | "recordings";
+    path?: string;
+    why: "binary" | "too_large" | "over_total" | "over_count" | "unreadable" | "list_truncated" | "uncounted" | "never";
+  }>;
+  cuts: Array<{
+    id: string;
+    at: string;
+    start: number;
+    end: number;
+    rule: string;
+    kind: "format" | "held" | "dump" | "label" | "personal" | "jev";
+    restorable: boolean;
+    shape: string;
+  }>;
+  restored: Array<{
+    id: string;
+    at: string;
+    start: number;
+    end: number;
+    rule: string;
+    kind: "label" | "personal" | "jev";
+  }>;
+};
+
 /** The files the run wrote (GET /runs/{run_id}/files). */
 export interface ListRunFilesParams {
   cut?: "run";
@@ -4868,9 +4944,15 @@ export type GetRunGraphResponse = {
     paused: boolean;
     startedAt: string;
     endedAt: string | null;
+    withheld?: true;
   };
   workflow: Record<string, unknown>;
-  graph: Record<string, unknown>;
+  graph: {
+    nodes: Array<Record<string, unknown>>;
+    edges: Array<Record<string, unknown>>;
+    withheld?: true;
+    [key: string]: unknown;
+  };
   nodes: Record<string, {
     status: "pending" | "working" | "done" | "failed" | "stopped" | "escalated" | "not_run" | "needs_review";
     startedAt?: string;
@@ -7520,6 +7602,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   getObservations: {"method":"GET","path":"/observations","pathParams":[],"multiSegment":[],"query":["days","session_id"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listRevisions: {"method":"GET","path":"/agents/{agent_id}/revisions","pathParams":["agent_id"],"multiSegment":[],"query":["limit","cursor"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   setCurrent: {"method":"POST","path":"/agents/{agent_id}/current","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  getRevisionSkills: {"method":"GET","path":"/agents/{agent_id}/revisions/{revision}/skills","pathParams":["agent_id","revision"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   archiveRun: {"method":"POST","path":"/runs/{run_id}/archive","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   cancelRun: {"method":"POST","path":"/runs/{run_id}/cancel","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   callRunComputer: {"method":"POST","path":"/runs/{run_id}/computer/call","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -7527,6 +7610,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   createInlineRun: {"method":"POST","path":"/runs","pathParams":[],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   createRunComputerViewer: {"method":"POST","path":"/runs/{run_id}/computer/viewer","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   deleteRun: {"method":"DELETE","path":"/runs/{run_id}","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
+  getRunExport: {"method":"GET","path":"/runs/{run_id}/export","pathParams":["run_id"],"multiSegment":[],"query":["restore"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listRunFiles: {"method":"GET","path":"/runs/{run_id}/files","pathParams":["run_id"],"multiSegment":[],"query":["cut"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getRun: {"method":"GET","path":"/runs/{run_id}","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   gradeRun: {"method":"PUT","path":"/runs/{run_id}/grade","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -7886,6 +7970,8 @@ export function resources(call: Call) {
       list: (agentId: string, params?: ListRevisionsParams, options?: RequestOptions): Promise<ListRevisionsResponse> => call("listRevisions", [agentId], undefined, params, options),
       /** Make one of the agent's revisions current again (POST /agents/{agent_id}/current). */
       setCurrent: (agentId: string, body: SetCurrentBody, options?: RequestOptions): Promise<SetCurrentResponse> => call("setCurrent", [agentId], body, undefined, options),
+      /** Read all skill files saved with one agent revision (GET /agents/{agent_id}/revisions/{revision}/skills). */
+      skills: (agentId: string, revision: string, options?: RequestOptions): Promise<GetRevisionSkillsResponse> => call("getRevisionSkills", [agentId, revision], undefined, undefined, options),
     },
     runs: {
       /** Archive the run: hidden from the lists, kept with its history (POST /runs/{run_id}/archive). */
@@ -7902,6 +7988,8 @@ export function resources(call: Call) {
       createRunComputerViewer: (runId: string, body?: CreateRunComputerViewerBody, options?: RequestOptions): Promise<CreateRunComputerViewerResponse> => call("createRunComputerViewer", [runId], body, undefined, options),
       /** Purge a run's content and keep its cost (DELETE /runs/{run_id}). */
       delete: (runId: string, options?: RequestOptions): Promise<void> => call("deleteRun", [runId], undefined, undefined, options),
+      /** An ended run as a share bundle, every string cut (GET /runs/{run_id}/export). */
+      export: (runId: string, params?: GetRunExportParams, options?: RequestOptions): Promise<GetRunExportResponse> => call("getRunExport", [runId], undefined, params, options),
       /** The files the run wrote (GET /runs/{run_id}/files). */
       files: (runId: string, params?: ListRunFilesParams, options?: RequestOptions): Promise<ListRunFilesResponse> => call("listRunFiles", [runId], undefined, params, options),
       /** One run (GET /runs/{run_id}). */

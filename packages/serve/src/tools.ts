@@ -40,7 +40,7 @@ import { fetchFor, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
 import { searchFor, type SearchOn, WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
 import { fakeFetch, fakeSaveOptions, fakeSearch, type WebFake } from "./web-fake.js";
 import { LENGTH_TYPES, SAVE_MAX_BYTES, type SaveSlots, WEB_SAVE_TOOL, webSaveTool } from "./web-save.js";
-import { browserNeeds, explainsView, isUnavailable, NO_PARALLEL_KEY, type Pickable, PICKABLE, planeOf, type Plane, PROVIDERS, type Resolution, serverGate, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
+import { browserNeeds, DEFAULT_BROWSER_VENDOR, explainsView, isUnavailable, NO_PARALLEL_KEY, type Pickable, PICKABLE, planeOf, type Plane, PROVIDERS, type Resolution, serverGate, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import type { DenyFrom, SettingFrom } from "./tool-gate.js";
 import { fauxFetch, PARALLEL_KEY_ENV } from "./decisions.js";
 import { keyNeeded } from "./key-words.js";
@@ -203,8 +203,10 @@ function installTool(host: Pick<ToolHost, "install">, name: string, tool: ToolRe
 export type EffectRun = { signal: AbortSignal; env: NodeJS.ProcessEnv; work: string; complete?: Complete; ledger?: Ledger; search?: SearchOn };
 
 /** What a tool's own ask (ToolEntry.asks) reads: the run's host, and how many calls of a tool the run has run to a good
- *  end, from the run's record (its journal), so a pause and a new host count them all. */
-export type AskContext = { readonly host: ToolHost; ran(tool: string): Promise<number> };
+ *  end, from the run's record (its journal), so a pause and a new host count them all; `made`, the arguments of those
+ *  calls (each one whose arguments the record names), with those of the calls the gate let through that have no result
+ *  yet. */
+export type AskContext = { readonly host: ToolHost; ran(tool: string): Promise<number>; made(tool: string): Promise<readonly unknown[]> };
 
 export type ToolEntry = {
   /** One line, for capabilities. */
@@ -451,7 +453,7 @@ const browserTool: ToolEntry = {
     // The agent's computer, where it is a browser, wins over the plane's pick: the run's sessions are that provider's,
     // opened through the claim, with no saved sign-in or plane check of their own.
     const computer = host.browserComputer;
-    const planeVendor: string = planeOf(host.env).browser ?? "browserbase";
+    const planeVendor: string = planeOf(host.env).browser ?? DEFAULT_BROWSER_VENDOR;
     const vendor = computer?.provider ?? planeVendor;
     const planeRefused = !computer && isUnavailable(planeVendor as Resolution) ? new BrowserFailureError(browserFailure("browser_unavailable", `The browser does not run here: ${whyUnavailable(planeVendor)}.`)) : undefined;
     // The run's saved sign-in: on the runner (one process, many claims) read from the store under this run's own claim
@@ -486,7 +488,7 @@ const browserTool: ToolEntry = {
         })();
     const refused = "refused" in made ? made.refused : undefined;
     const parts = {
-      provider: "browser" in made ? claimBrowserProvider(made.browser, { headless: true, ...(host.env.BROWSERBASE_CONNECT_BASE_URL ? { connectBaseUrl: host.env.BROWSERBASE_CONNECT_BASE_URL } : {}), ...(kept ? { signIn: { name: SIGN_IN_KEY, pointer: kept.ref } } : {}) }) : undefined,
+      provider: "browser" in made ? claimBrowserProvider(made.browser, { headless: true, ...(kept ? { signIn: { name: SIGN_IN_KEY, pointer: kept.ref } } : {}) }) : undefined,
       driver: stand ? stand.driver : cdpDriver(),
     };
     // The save flag every session carries is this launch's (asHanded), never the one stored with its conversation.

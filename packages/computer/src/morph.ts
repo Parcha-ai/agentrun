@@ -514,15 +514,14 @@ export class MorphProvider extends HostedProvider {
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, the Morph API key, is required: the provider reads no environment, so the caller passes it");
 		if (typeof (ssh2 as { Client?: unknown } | null)?.Client !== "function") throw new Error("options.ssh2 must be the ssh2 package (its Client class): the host installs it, as it does for Agent37");
 		if (typeof fetcher !== "function") throw new Error("options.fetch must be a function, as the global fetch is");
-		const api = new URL(httpsBase(apiUrl, "the Morph API URL"));
-		if (api.search !== "" || api.hash !== "") throw new Error(`the Morph API URL takes no query or fragment, as ${DEFAULT_API_URL} has none: ${api.protocol}//${api.host}`);
+		const api = httpsBase(apiUrl, "the Morph API URL");
 		if (typeof sshHost !== "string" || !(DOMAIN.test(sshHost) || isIP(sshHost) !== 0)) throw new Error(`sshHost must be a host name such as ${DEFAULT_SSH_HOST}, not ${JSON.stringify(sshHost)}`);
 		if (!Number.isSafeInteger(sshPort) || sshPort < 1 || sshPort > 65_535) throw new Error(`sshPort must be a TCP port, not ${JSON.stringify(sshPort)}`);
-		super(new MorphHost({ apiKey, ssh2, fetch: fetcher, apiUrl: api.href.replace(/\/+$/, ""), sshHost, sshPort }), { ...rest, timeouts });
+		super(new MorphHost({ apiKey, ssh2, fetch: fetcher, apiUrl: api, sshHost, sshPort }), { ...rest, timeouts });
 	}
 }
 
 /** The account a key reaches, in words, for the sweep's scope: the key's sha256 prefix, never the key. */
 export function accountOf(apiKey: string, apiUrl: string = DEFAULT_API_URL): string {
-	return `the Morph account of the key sha256:${createHash("sha256").update(apiKey, "utf8").digest("hex").slice(0, 12)} at ${apiUrl.replace(/\/+$/, "")}`;
+	return `the Morph account of the key sha256:${createHash("sha256").update(apiKey, "utf8").digest("hex").slice(0, 12)} at ${httpsBase(apiUrl, "the Morph API URL")}`;
 }

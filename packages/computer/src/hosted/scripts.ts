@@ -113,6 +113,30 @@ export const INIT_LOG = `${SOCKET_DIR}-init.log`;
  */
 const START_SCRIPT = ["# agentrun-computer: start", "l=$1; shift", ROOT, `exec $p sh -c 'umask 077; exec >"$0" 2>&1 </dev/null; setsid "$@" &' "$l" "$@"`].join("\n");
 
+/** Where read-stage leaves its copies: a directory root's alone (0700) in /run, which no other user can write. */
+export const READ_COPIES = `${SOCKET_DIR}-read`;
+
+/**
+ * read-stage: [uid, gid, path, copy]. Copies path to copy, the file opened as uid:gid with no supplementary groups, as
+ * the daemon opens it (setpriv, util-linux), so the copy holds only what the daemon's user can read; root writes the copy
+ * under umask 077 in its directory, READ_COPIES. A copy that fails is removed, and the script fails: where setpriv is
+ * missing or takes no --reuid, every copy fails, and the daemon reads the file.
+ */
+const READ_STAGE_SCRIPT = [
+	"# agentrun-computer: read-stage",
+	ROOT,
+	`exec $p sh -c 'umask 077; mkdir -p "\${3%/*}" && chmod 0700 "\${3%/*}" && setpriv --reuid="$0" --regid="$1" --clear-groups -- cat -- "$2" >"$3" || { rm -f -- "$3"; exit 1; }' "$@"`,
+].join("\n");
+
+/** read-unstage: [copy]. Removes a copy read-stage made. */
+const READ_UNSTAGE_SCRIPT = ["# agentrun-computer: read-unstage", ROOT, 'exec $p rm -f -- "$1"'].join("\n");
+
+/** The read-stage argv: path copied to copy, read as uid:gid. */
+export const readStage = (uid: string, gid: string, path: string, copy: string): string[] => argvOf(READ_STAGE_SCRIPT, [uid, gid, path, copy]);
+
+/** The read-unstage argv: copy removed. */
+export const readUnstage = (copy: string): string[] => argvOf(READ_UNSTAGE_SCRIPT, [copy]);
+
 /**
  * The session buses a vendor's own processes leave in /tmp (Daytona's D-Bus, /tmp/dbus-Y8OW6E3FDx), which no network
  * namespace cuts: every child host's create closes them to the computer's user before init starts. The window

@@ -64,7 +64,9 @@ test("with no key, web_search and web_fetch resolve to keyless Firecrawl on ever
   // The privacy line, where the resolution is shown.
   const fetchWhy = explainCapability("web_fetch", { ...base, harness: "pi" }).why;
   assert.match(fetchWhy, /web_fetch sends each URL to Firecrawl's keyless service/);
-  assert.match(fetchWhy, /set PARALLEL_API_KEY or choose kernel to fetch directly/);
+  // A Parallel key now sends each URL to Parallel's extract (auto on a keyed server), so the way to fetch directly is kernel.
+  assert.match(fetchWhy, /choose kernel to fetch directly/);
+  assert.doesNotMatch(fetchWhy, /PARALLEL_API_KEY/, "the keyless fetch's why never advises a key that sends each URL to Parallel");
   assert.equal(explainCapability("web_fetch", { ...base, harness: "pi", pick: "kernel" }).resolves, "kernel");
   assert.equal(explainCapability("web_fetch", { ...base, harness: "pi", parallelKey: true, pick: "firecrawl-keyless" }).resolves, "firecrawl-keyless", "a pick of Firecrawl is Firecrawl, key or not");
   assert.equal(explainCapability("web_search", { ...base, harness: "pi", parallelKey: true, pick: "exa-keyless" }).resolves, "exa-keyless");

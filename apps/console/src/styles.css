@@ -37,6 +37,9 @@
 @layer components {
   /* Mono caps: buttons, tabs, chips and small labels. */
   .caps { @apply font-mono uppercase tracking-[0.06em]; }
+  /* A cut value's marker (the scrubber's `[redacted:<rule>]`, lib/redaction.tsx): a muted chip in the line, its words
+     kept, so it reads as a cut and never as words the run wrote. */
+  .redaction { @apply whitespace-nowrap border border-dashed border-border-strong px-1 font-mono text-[0.85em] text-muted-foreground; box-decoration-break: clone; }
   .report h1 { @apply mb-10 border-b-[3px] border-foreground pb-5 text-display font-semibold leading-tight; }
   .report h2 { @apply mb-4 mt-10 border-b pb-3 text-xl font-semibold; }
   .report h3 { @apply mb-2 mt-6 text-base font-semibold; }
