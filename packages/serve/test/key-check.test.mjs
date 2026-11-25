@@ -243,11 +243,10 @@ test("a base URL a key may not go to is never sent the key: one with a user or p
   const { checkKey } = await import("../dist/key-check.js");
   const key = fake();
   // The credentialed URL is made at run time, so no source line holds a URL with a password in it.
-  const credentialed = new URL("https://gateway.example");
-  credentialed.username = "agent";
-  credentialed.password = "not-a-secret";
+  const FAKE = "not-a-secret";
+  const credentialed = "https://agent:" + FAKE + "@gateway.example";
   for (const [id, variable] of [["browserbase", "BROWSERBASE_BASE_URL"], ["kernel", "KERNEL_BASE_URL"], ["typesafe", "TYPESAFE_BASE_URL"], ["anthropic", "ANTHROPIC_BASE_URL"]]) {
-    for (const url of [credentialed.href, "https://gateway.example/?key=not-a-secret", "https://gateway.example/#not-a-secret", "http://gateway.example"]) {
+    for (const url of [credentialed, "https://gateway.example/?key=not-a-secret", "https://gateway.example/#not-a-secret", "http://gateway.example"]) {
       const fetcher = recorder(json(200, {}));
       const { at, ...outcome } = await checkKey({ id, label: ROWS[id] }, key, { [variable]: url }, fetcher);
       assert.equal(fetcher.sent.length, 0, `${id} at ${url}: the key was sent`);

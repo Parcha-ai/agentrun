@@ -213,11 +213,10 @@ test("a vendor call that fails before an answer says only which vendor and the e
 
 test("a vendor's base URL its key may not go to is never sent the key: one with a user or password, a query, a fragment or plain http is refused by its variable's name, in words that hold neither the password nor the query", async () => {
   // The credentialed URL is made at run time, so no source line holds a URL with a password in it.
-  const credentialed = new URL("https://vendor.example");
-  credentialed.username = "agent";
-  credentialed.password = "not-a-secret";
+  const FAKE = "not-a-secret";
+  const credentialed = "https://agent:" + FAKE + "@vendor.example";
   for (const [vendor, variable, keyName] of [["kernel", "KERNEL_BASE_URL", "KERNEL_API_KEY"], ["browserbase", "BROWSERBASE_BASE_URL", "BROWSERBASE_API_KEY"]]) {
-    for (const url of [credentialed.href, "https://vendor.example/?key=not-a-secret", "https://vendor.example/#not-a-secret", "http://vendor.example"]) {
+    for (const url of [credentialed, "https://vendor.example/?key=not-a-secret", "https://vendor.example/#not-a-secret", "http://vendor.example"]) {
       const asked = [];
       const fake = async (to) => (asked.push(String(to)), Response.json({ id: "ctx-1", name: "x" }));
       const vendors = vendorsOver(() => ({ [keyName]: "fake-test-key", BROWSERBASE_PROJECT_ID: "proj-1", [variable]: url }), async () => fake);
