@@ -72,6 +72,8 @@ function noPosts(t) {
  *  `asked`: the URLs the renewal named; `posts`: what reached the endpoint. */
 async function tokenEndpoint(t, answer) {
   const posts = [];
+  /** Woken at each post: `posted()` waits on them. */
+  const waiters = [];
   const server = createServer((request, response) => {
     // A probe of the loopback port (a bare GET /) is no post of the renewal's: never parsed or counted.
     if (stranger(request, response)) return;
@@ -81,6 +83,7 @@ async function tokenEndpoint(t, answer) {
     request.on("end", async () => {
       const post = { method: request.method, path: request.url, headers: request.headers, body: JSON.parse(body) };
       posts.push(post);
+      for (const waiter of waiters.splice(0)) waiter();
       const { status = 200, json, text, headers = {} } = await answer(post, posts.length);
       response.writeHead(status, { "content-type": json === undefined ? "text/plain" : "application/json", ...headers });
       response.end(json === undefined ? (text ?? "") : JSON.stringify(json));
@@ -97,15 +100,31 @@ async function tokenEndpoint(t, answer) {
     asked.push(String(url));
     return realFetch(`http://127.0.0.1:${port}${new URL(url).pathname}`, init);
   };
-  return { posts, asked, fetch };
+  /** Settles once `count` posts have reached the endpoint (at once if they already have). */
+  const posted = async (count = 1) => {
+    while (posts.length < count) await new Promise((resolve) => waiters.push(resolve));
+  };
+  return { posts, asked, fetch, posted };
 }
 
-/** Waits until `ready()` holds, 5 s at most. */
-async function until(ready, what) {
-  for (let waited = 0; !ready(); waited += 20) {
-    if (waited > 5_000) assert.fail(`waited 5 s for ${what}`);
-    await sleep(20);
-  }
+/** Another holder's lock mtime: a fixed whole second (2100-01-01) that no mtime a runner sets in a test reaches, so even
+ *  a filesystem that keeps seconds alone tells the two apart, however long the test runs. Never read off the clock, and
+ *  in the future, so the lock is always fresh (its age is under the 60 s stale time). */
+const otherHoldersSecond = () => new Date(Date.UTC(2100, 0, 1));
+
+/** A flag a test sets from a seam, and a wait on it: `set()` marks it and wakes `reached()`, which settles once it is
+ *  set (at once if it already is). No polling and no clock. */
+function mark() {
+  let set = false;
+  let wake;
+  const woken = new Promise((resolve) => (wake = resolve));
+  return {
+    get done() {
+      return set;
+    },
+    set: () => ((set = true), wake()),
+    reached: () => woken,
+  };
 }
 
 /** Every file under `dir`, by its path from `dir`, to its content's hash: what a renewal may have made or changed. */
@@ -269,7 +288,7 @@ test("two asks under the margin at once post one renewal (one in flight per refr
   const other = new tokens.LoginTokens({ login, now: () => now, fetch: endpoint.fetch });
   const asks = [one.token(), one.token(), other.token()];
   for (const ask of asks) ask.catch(() => undefined);
-  await until(() => endpoint.posts.length === 1, "the renewal's post");
+  await endpoint.posted(1);
   await sleep(200);
   answer();
   assert.deepEqual(await Promise.all(asks), [fresh, fresh, fresh]);
@@ -503,11 +522,11 @@ test("a holder whose locks are taken over while its post is out (paused past the
   });
   const asked = new tokens.LoginTokens({ login, now: () => now, fetch: endpoint.fetch }).token();
   asked.catch(() => undefined);
-  await until(() => endpoint.posts.length === 1, "the old holder's post");
+  await endpoint.posted(1);
   assert.ok(locks.every((lock) => existsSync(lock)), "the old holder holds both locks while it posts");
   // Another runner finds both stale (the old holder paused past 60 s) and takes them over. Its mtime is a whole second
   // away from any the old holder set, so a filesystem that keeps seconds alone still tells them apart.
-  const taken = new Date(Math.ceil(Date.now() / 1000) * 1000 + 2_000);
+  const taken = otherHoldersSecond();
   for (const lock of locks) takeOver(lock, taken);
   answer();
   assert.equal(await asked, next.access, "the answer is handed");
@@ -527,9 +546,9 @@ test("a holder whose locks are taken over before its post (paused past the 60 s 
   write(oauthOf(fake("access-old"), now + 60_000));
   const [current, legacy] = [join(login.dir, ".oauth_refresh.lock"), `${realpathSync(login.dir)}.lock`];
   const endpoint = await tokenEndpoint(t, () => ({ json: { access_token: fake("access-new"), expires_in: 3600 } }));
-  const taken = new Date(Math.ceil(Date.now() / 1000) * 1000 + 2_000);
+  const taken = otherHoldersSecond();
   let takenOver = false;
-  let heartbeats = 0;
+  const heartbeat = mark();
   /** What the old holder did to a lock once it was another's: a touch or a removal. */
   const after = [];
   // The renewal's lock operations (its file ops seam), each the real one. The old holder pauses as it sets its mtime on
@@ -538,7 +557,7 @@ test("a holder whose locks are taken over before its post (paused past the 60 s 
   const lockFs = {
     mkdir: (path) => fsp.mkdir(path),
     stat: (path) => {
-      if (takenOver && path === current) heartbeats += 1;
+      if (takenOver && path === current) heartbeat.set();
       return fsp.stat(path);
     },
     utimes: async (path, atime, mtime) => {
@@ -552,7 +571,7 @@ test("a holder whose locks are taken over before its post (paused past the 60 s 
       takeOver(current, taken);
       takeOver(legacy, taken);
       takenOver = true;
-      await until(() => heartbeats >= 1, "the old holder's heartbeat after the takeover");
+      await heartbeat.reached();
     },
     // A removal of either lock counts; anything else the holder removes beside them is no lock.
     rm: (path, options) => {
@@ -769,7 +788,7 @@ test("a runner takes a stale lock over only while it is the lock it inspected: o
   utimesSync(current, dead, dead);
   const endpoint = await rotatingEndpoint(t, new Map([[old.refresh, next]]));
   // The CLI's lock, made in the dead one's place: a whole second away from any mtime the runner sets.
-  const theirs = new Date(Math.ceil(Date.now() / 1000) * 1000 + 2_000);
+  const theirs = otherHoldersSecond();
   let inspected = false;
   let theyHold = false;
   let decide;
@@ -1009,7 +1028,7 @@ test("a runner's takeover mark is removed only while it is still that runner's: 
     utimes: async (path, atime, mtime) => {
       await fsp.utimes(path, atime, mtime);
       if (path !== current || theirs) return;
-      theirs = new Date(Math.ceil(Date.now() / 1000) * 1000 + 2_000);
+      theirs = otherHoldersSecond();
       rmSync(mark, { recursive: true });
       mkdirSync(mark);
       utimesSync(mark, theirs, theirs);
@@ -1086,7 +1105,7 @@ test("a runner whose touch of its new lock finds it gone never removes what is a
     throw new Error("no request leaves a test");
   };
   // The CLI's lock: a whole second away from any mtime the runner sets.
-  const theirs = new Date(Math.ceil(Date.now() / 1000) * 1000 + 2_000);
+  const theirs = otherHoldersSecond();
   /** The error the runner's touch met. */
   let touch;
   const lockFs = {
@@ -1349,7 +1368,7 @@ test("a runner whose touch of its new lock finds it gone waits for the holder th
     throw new Error("no request leaves a test");
   };
   // The CLI's lock: a whole second away from any mtime the runner sets.
-  const theirs = new Date(Math.ceil(Date.now() / 1000) * 1000 + 2_000);
+  const theirs = otherHoldersSecond();
   /** The error the runner's touch met. */
   let touch;
   let wrote = false;
@@ -1398,13 +1417,10 @@ test("on a filesystem that keeps whole seconds alone, a runner's own lock and ta
   write(oauthOf(old.access, now + 60_000, old.refresh));
   const [current, legacy] = [join(login.dir, ".oauth_refresh.lock"), `${realpathSync(login.dir)}.lock`];
   const endpoint = await rotatingEndpoint(t, new Map([[old.refresh, next]]));
-  // The wall clock the locks are timed on, the test's: the real one, never on a whole second, so a mtime the runner
-  // sets is never a whole second and only the whole-second rule can take a seconds-only read of it as the runner's own.
-  const real = Date.now;
-  t.mock.method(Date, "now", () => {
-    const at = real();
-    return at % 1000 === 0 ? at + 1 : at;
-  });
+  // The wall clock the locks are timed on, the test's, fixed: 400 ms into a second, so a mtime the runner sets is never a
+  // whole second and only the whole-second rule can take a seconds-only read of it as the runner's own.
+  const wall = 1_900_000_000_400;
+  t.mock.method(Date, "now", () => wall);
   /** Each mtime the runner set, by path, and each of its reads of the lock in the folder: what it set, what it read. */
   const sets = new Map();
   const reads = [];
@@ -1629,10 +1645,10 @@ test("an ask that reads the old pair while the renewal that rotated its refresh 
   // Anthropic has answered the post of the old refresh token with a new one (the old one is spent): the renewal's next
   // read of the file, its save's, waits until the test lets it go, the file still holding the old pair.
   let holdNext = false;
-  let saving = false;
+  const saving = mark();
   let letGo;
   const held = new Promise((resolve) => (letGo = resolve));
-  let reads = 0;
+  let otherRead;
   const fetch = async (url, init) => {
     const answer = await endpoint.fetch(url, init);
     if (JSON.parse(init.body).refresh_token === old.refresh) holdNext = true;
@@ -1641,21 +1657,26 @@ test("an ask that reads the old pair while the renewal that rotated its refresh 
   const readFile = async (path) => {
     if (holdNext) {
       holdNext = false;
-      saving = true;
+      saving.set();
       await held;
-    } else reads++;
-    return fsp.readFile(path, "utf8");
+      return fsp.readFile(path, "utf8");
+    }
+    const text = await fsp.readFile(path, "utf8");
+    otherRead?.set();
+    return text;
   };
   const renew = tokens.renewLogin({ fetch, now: () => now, lockFs: { readFile } });
   const first = new tokens.LoginTokens({ login, now: () => now, renew });
   const other = new tokens.LoginTokens({ login, now: () => now, renew });
   const renewing = first.token();
   renewing.catch(() => undefined);
-  await until(() => saving, "the save's read of the file, after the post");
-  const readsBefore = reads;
+  await saving.reached();
+  otherRead = mark();
   const asked = other.token().catch((error) => error.message);
-  await until(() => reads > readsBefore, "the other ask's read of the file");
-  await sleep(100);
+  // The other ask's renewal has read the file (the old pair). What it does next, to joining the renewal in flight on its
+  // refresh token, is no I/O: it has done so by the next turn of the event loop.
+  await otherRead.reached();
+  await new Promise((resolve) => setImmediate(resolve));
   letGo();
   assert.equal(await asked, next.access, "an ask that read the old pair while the renewal that spent its refresh token was saving the new pair joins that renewal and is handed the new token, never refused in LOGIN_RUNNING_OUT's words");
   assert.equal(await renewing, next.access, "the renewal's own ask is handed the new token");
@@ -1687,8 +1708,8 @@ test("an ask whose read of the file starts before a renewal that rotated its ref
   // The other ask's read of the file, the next one, starts while the save waits, and is let go only once the renewal has
   // settled (its flight gone), the file still holding the old pair.
   let posted = false;
-  let saving = false;
-  let otherReading = false;
+  const saving = mark();
+  const otherReading = mark();
   let letSaveGo;
   let letOtherGo;
   const saveHeld = new Promise((resolve) => (letSaveGo = resolve));
@@ -1699,13 +1720,13 @@ test("an ask whose read of the file starts before a renewal that rotated its ref
     return answer;
   };
   const readFile = async (path) => {
-    if (posted && !saving) {
-      saving = true;
+    if (posted && !saving.done) {
+      saving.set();
       await saveHeld;
       throw Object.assign(new Error(`EIO: i/o error, read '${path}'`), { code: "EIO" });
     }
-    if (saving && !otherReading) {
-      otherReading = true;
+    if (saving.done && !otherReading.done) {
+      otherReading.set();
       await otherHeld;
     }
     return fsp.readFile(path, "utf8");
@@ -1715,9 +1736,9 @@ test("an ask whose read of the file starts before a renewal that rotated its ref
   const other = new tokens.LoginTokens({ login, now: () => now, renew });
   const renewing = first.token();
   renewing.catch(() => undefined);
-  await until(() => saving, "the save's read of the file, after the post");
+  await saving.reached();
   const asked = other.token().catch((error) => error.message);
-  await until(() => otherReading, "the other ask's read of the file, before the renewal holds its pair");
+  await otherReading.reached();
   letSaveGo();
   assert.equal(await renewing, next.access, "the renewal's own ask is handed the new token, its save failed");
   letOtherGo();

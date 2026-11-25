@@ -26,11 +26,30 @@ const refusedWith = (code) => async () => { throw Object.assign(new TypeError('f
 /** A response whose body starts, then fails. */
 const cut = (status) => async () => new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('data: {"delta":"hi"}\n\n')); c.error(new Error('cut')); } }), { status, headers: { 'content-type': 'text/event-stream' } });
 
+/** A booking's model hooks with the request's end watched: `ends` gets each end as the proxy says it, and `settled`
+ *  settles once the booking's afterRequest has run for it (its figure booked), so a test reads the booking then, never
+ *  on a poll of the store. */
+function watched(models) {
+  const ends = [];
+  let done;
+  const settled = new Promise((resolve) => (done = resolve));
+  const hooks = { ...models, afterRequest: async (usage, ticket, ended) => {
+    ends.push(ended);
+    try {
+      return await models.afterRequest(usage, ticket, ended);
+    } finally {
+      done();
+    }
+  } };
+  return { hooks, ends, settled };
+}
+
 /** One request through the proxy into the runner's booking (holding HOLD for it), with `fetch` as the provider; the store,
  *  for a later process to read. */
 async function booked(t, fetch, store = memorySessionStore()) {
   const booking = await modelPortFor(await store.open('chat:b'), { key: 'chat:b', beforeRequest: () => ({ holdUsd: HOLD }) });
-  const p = await startModelProxy({ policy, model: 'session-model', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks: booking.models, price: () => 0.001, log: () => {}, fetch }, KEY);
+  const { hooks, settled } = watched(booking.models);
+  const p = await startModelProxy({ policy, model: 'session-model', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks, price: () => 0.001, log: () => {}, fetch }, KEY);
   t.after(() => p.close());
   const { hostname, port } = new URL(p.url);
   await new Promise((resolve) => {
@@ -38,7 +57,7 @@ async function booked(t, fetch, store = memorySessionStore()) {
     req.on('error', resolve);
     req.end('{}');
   });
-  for (let i = 0; i < 200 && !(await store.read('chat:b')).some((r) => r.kind === RUNNER_RECORDS.turn); i++) await new Promise((r) => setTimeout(r, 10));
+  await settled;
   return { booking, store };
 }
 const later = async (store) => (await modelPortFor(await store.open('chat:b'), { key: 'chat:b', beforeRequest: () => ({ holdUsd: HOLD }) })).spentUsd();
@@ -124,7 +143,8 @@ test("a request its client stops part way books what its content streamed and th
   const stoppedUsd = (tokens) => (tokens + 1_024) * 10 / 1e6;
   const store = memorySessionStore();
   const booking = await modelPortFor(await store.open('chat:b'), { key: 'chat:b', beforeRequest: () => ({ holdUsd: HOLD, stoppedUsd }) });
-  const p = await startModelProxy({ policy: summarized, model: 'session-model', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks: booking.models, price: () => 0.001, log: () => {}, fetch: async (_url, init) => new Response(new ReadableStream({
+  const { hooks, settled } = watched(booking.models);
+  const p = await startModelProxy({ policy: summarized, model: 'session-model', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks, price: () => 0.001, log: () => {}, fetch: async (_url, init) => new Response(new ReadableStream({
     start(c) { c.enqueue(new Uint8Array(stream)); init.signal.addEventListener('abort', () => c.error(new Error('aborted')), { once: true }); },
   }), { status: 200, headers: { 'content-type': 'text/event-stream' } }) }, KEY);
   t.after(() => p.close());
@@ -139,7 +159,7 @@ test("a request its client stops part way books what its content streamed and th
     req.on('error', resolve);
     req.end('{}');
   });
-  for (let i = 0; i < 200 && !(await store.read('chat:b')).some((r) => r.kind === RUNNER_RECORDS.turn); i++) await new Promise((r) => setTimeout(r, 10));
+  await settled;
   const content = Buffer.byteLength(summary) + Buffer.byteLength(text);
   const want = stoppedUsd(content + Math.max(0, HIDDEN - Buffer.byteLength(summary)));
   assert.ok(want < HOLD && stream.length !== content, 'the case tells the figures apart: within the hold, and the wire is not the content');
@@ -153,8 +173,7 @@ test("a request its client stops part way books what its content streamed and th
 async function hungUpOnRoute(t, first, onAbort) {
   const store = memorySessionStore();
   const booking = await modelPortFor(await store.open('chat:b'), { key: 'chat:b', beforeRequest: () => ({ holdUsd: HOLD }) });
-  const ends = [];
-  const hooks = { ...booking.models, afterRequest: async (usage, ticket, ended) => { ends.push(ended); return booking.models.afterRequest(usage, ticket, ended); } };
+  const { hooks, ends, settled } = watched(booking.models);
   const p = await startModelProxy({ policy, model: 'session-model', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks, price: () => 0.001, log: () => {}, fetch: async (_url, init) => new Response(new ReadableStream({
     start(c) {
       c.enqueue(new TextEncoder().encode(first));
@@ -172,7 +191,7 @@ async function hungUpOnRoute(t, first, onAbort) {
     req.on('error', resolve);
     req.end('{}');
   });
-  for (let i = 0; i < 200 && !(await store.read('chat:b')).some((r) => r.kind === RUNNER_RECORDS.turn); i++) await new Promise((r) => setTimeout(r, 10));
+  await settled;
   return { ends, spent: booking.spentUsd(), store };
 }
 
