@@ -883,8 +883,10 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     ...(heldComputer ? { held: heldComputer } : {}),
     // The run's Archil mount credential is revoked at its end on every outcome, even with no computer (idempotent with
     // the computer's release). A run that minted none revokes nothing. At a park, a desktop or a phone is kept for the
-    // resume instead, its mount credential with it, as the pi spec's; one the gate turned off is not, nor said to be.
+    // resume instead, its mount credential with it, as the pi spec's, said once its row is written; one the gate turned
+    // off is not, nor said to be.
     keptWords: () => (computer.keeps === undefined || gate.computerOff() ? undefined : computerKeptWords(computer.keeps)),
+    ...(computer.keeps && computer.keepRow ? { keep: () => computer.keepRow!() } : {}),
     release: (how) => holds.release(how),
     ...(movedProject ? { projectCheckpoint: projectCheckpointForRun({ store: deps.store, agentId: runRow.agentId, claim, launch, tools, computer,
       workspace: { data: deps.data, sealKey: deps.sealKey, env: deps.env, control: { ...deps.mountControl, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) } },

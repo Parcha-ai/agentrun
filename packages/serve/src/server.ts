@@ -35,7 +35,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { Duplex } from "node:stream";
 import type { AddressInfo } from "node:net";
 import proxyaddr from "proxy-addr";
-import { API_ONLY_HOOKED_KINDS, apiOnlyMcpSave, apiOnlyRefusal, apiOnlyTriggerSkipped, servedApiOnly } from "./api-only.js";
+import { API_ONLY_HOOKED_KINDS, API_ONLY_ROUTES, apiOnlyMcpSave, apiOnlyRefusal, apiOnlyTriggerSkipped, servedApiOnly } from "./api-only.js";
 import { API_ONLY_MCP_ORIGINS_ENV, apiOnlyMcpOriginsFrom, RUN_KEYS_ENV } from "./env-switch.js";
 import { holdApiOnlyMcpOrigins, offApiOnlyMcpServers } from "./mcp-api-only-origins.js";
 import { declaredKeys, keysOwed, keysOwedRefusal, type RunKeys, runKeysOf, runKeysTriggerSkipped, undeclaredKeys, withCarried } from "./run-keys.js";
@@ -152,7 +152,7 @@ import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from 
 import { isSecretWriteOperation, type SecretRequest, secretPageFor, secretsWritableFields, secretWriteRefusal, secretWriterFacts, writesSecretFor, writesSecretsAllowed } from "./secret-writes.js";
 import { ChatGPTPlan, planOf, PlanSignInRefused, SIGN_OUT_UNCONFIRMED, withPlan } from "./chatgpt-plan.js";
 import { modelGatewayRoute, readSavedGateway, type SavedGateway, withSavedGateway } from "./model-gateway.js";
-import { CLAUDE_LOGIN_ROUTES, LOGIN_REFUSES_API_KEYS, oneOwnerDeps, ClaudeLoginRefused, claudeLoginOf, claudeLoginRouteOff, claudeLoginSwitchedOff, claudeLoginSetting, claudeLoginView, type ClaudeLoginDeps, dropRefusedLogin, envAtPlace, homeOf, LOGIN_HARNESS, loginOf, loginOnRunnerOnly, loopback, startLoginHere, turnOffClaudeLogin, turnOnClaudeLogin, withClaudeLogin } from "./claude-login.js";
+import { CLAUDE_LOGIN_ROUTES, LOGIN_REFUSES_API_KEYS, oneOwnerDeps, ClaudeLoginRefused, claudeLoginOf, claudeLoginRouteOff, claudeLoginServed, claudeLoginSwitchedOff, claudeLoginSetting, claudeLoginView, type ClaudeLoginDeps, dropRefusedLogin, envAtPlace, homeOf, LOGIN_HARNESS, loginOf, loginOnRunnerOnly, loopback, startLoginHere, turnOffClaudeLogin, turnOnClaudeLogin, withClaudeLogin } from "./claude-login.js";
 import { ClaudeSignIns } from "./claude-sign-in.js";
 import { bootSealKey, parametersDigest, withSealKey } from "./seal-key.js";
 import { ServerLockHeldError, takeServerLock } from "./server-lock.js";
@@ -285,6 +285,14 @@ const MAX_WAIT_MS = 25_000;
 const HANDED_FIXED = ["revision", "hold", "hold_minutes"] as const;
 /** How often the server fails the runs still queued while no runner here can take them (runner/presence.ts). */
 const REFUSED_SWEEP_MS = 2_000;
+/** How long the server's stop waits for a ChatGPT sign-in it cancelled to end (ChatGPTPlan.close): one past its code's
+ *  exchange saves its row before the store closes; one OpenAI holds longer does not hold the stop. */
+const PLAN_CLOSE_MS = 2_000;
+/** The ChatGPT sign-ins `plan` cancels, ended, or `ms` gone. */
+const planClosed = (plan: ChatGPTPlan, ms: number): Promise<void> => {
+  let timer: NodeJS.Timeout | undefined;
+  return Promise.race([plan.close(), new Promise<void>((done) => (timer = setTimeout(done, ms)))]).finally(() => clearTimeout(timer));
+};
 const PAGE_ROWS = 500;
 const FILE_LIST_CAP = 2_000;
 /** Where the stop's lines go (ServeOptions.notice). Best-effort: a notice that throws never stops a close or a start. */
@@ -317,7 +325,7 @@ export type ServeOptions = {
   openSetup?: boolean;
   /** With accounts: the address people open (AGENTRUN_PUBLIC_URL), which the printed setup link uses. */
   publicUrl?: string;
-  /** The home whose Claude Code, Codex and pi sessions setup offers to import and GET /v2/wrapped reads (default this
+  /** The home whose Claude Code, Codex, pi, OpenCode and Copilot CLI sessions setup offers to import and GET /v2/wrapped reads (default this
    *  user's), and the temp directory whose projects setup leaves out (default the OS's). */
   sessionsHome?: { home: string; temp?: string };
   /** How long GET /v2/wrapped waits for its read of `sessionsHome`'s home before it answers 503 with a retry, while the
@@ -480,6 +488,8 @@ export type ServeOptions = {
   /** For tests: the attach socket's liveness timing (computer-attach.ts AttachTiming), a relayed dial's included; the
    *  protocol's by default. */
   attachTiming?: AttachTiming;
+  /** For tests: how long the stop waits for a ChatGPT sign-in it cancelled to end (PLAN_CLOSE_MS by default). */
+  planCloseMs?: number;
   /** The most runs at once (default: AGENTRUN_MAX_RUNS, else as many pi runs as this host's memory holds: host.ts),
    *  beside the memory each run's harness reserves; over either, 429. */
   maxRuns?: number;
@@ -1481,7 +1491,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // process of its own made is relayed to that runner's attach listener the same way (dial-relay.ts).
   const reach = liveReachOf(process.env, seal.key);
   // A runner in a process of its own that relays its dials (dial-relay.ts): one whose attach listener said it is there
-  // within PRESENCE_STALE_MS on the store's clock (liveRelays), at a host this server dials.
+  // within RUNNER_STALE_MS on the store's clock (liveRelays), at a host this server dials.
   const relayedNow = async (): Promise<boolean> => (await liveRelays(store.runners)).some((row) => dialHost(row.host, reach) !== undefined);
   const attachLog = (event: string, fields: Record<string, string>) => (log ? log(logLine(event, fields)) : void process.stderr.write(`agentrun-serve: ${logLine(event, fields)}\n`));
   const attach = createAttachRoutes({
@@ -1549,6 +1559,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const mcpServers = mcpServersOverStore(store, own(withSecrets(base, "own")), VERSION);
   if (options.githubMcpOrigin) mcpServers.appOrigin = options.githubMcpOrigin;
   if (options.composioMcpOrigin) mcpServers.composioOrigin = options.composioMcpOrigin;
+  if (options.composioControl) mcpServers.composioControl = options.composioControl;
   mcpServers.standIns = options.mcpStandIns === true;
   // The saved MCP servers' metadata (their addresses and the tools they list), a snapshot the checks read in step (which
   // servers are saved, a workflow's grants, the template apply): the server is the one writer of these rows (a save,
@@ -1590,11 +1601,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // where it is signed in. A sign-in, a sign-out or an expiry it sees makes the reading again, as a key's save does.
   const plan = new ChatGPTPlan({ store, sealKey: seal.key, log: (fields) => (log ? log(logLine("chatgpt", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("chatgpt", fields)}\n`)), changed: () => keysChanged() });
   await plan.load();
-  stops.push(async () => void plan.close());
+  stops.push(() => planClosed(plan, options.planCloseMs ?? PLAN_CLOSE_MS));
   // Claude Code's login on this machine (claude-login.ts): env carries where it is while the owner has it on, so
   // claude-agent's model checks see a model without a key. Unset, its switch follows the listen address: there on
   // loopback, off past it. A setting kept where the mode is now off or refused goes first.
   const loginOff = claudeLoginSwitchedOff(base, options.host ?? DEFAULT_HOST);
+  // The routes' gate and capabilities' features.claude_login, from one rule (claude-login.ts claudeLoginServed).
+  const loginServed = claudeLoginServed(loginOff, options.apiOnly ? API_ONLY_ROUTES : undefined);
   // The API keys made in the console (api-keys.ts), read once here: this process is the store's one server, so the keys
   // it holds are the store's. No value is kept, so none joins the server's secrets: a key in a text is cut by its shape
   // (redact/match.ts).
@@ -4872,7 +4885,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (!matching.length) throw new ApiError("not_found", path.startsWith("/v2/") ? `no route /v2${path}: /v2 is in it twice. A path an answer gives (upload.url, a Location) starts at the server's root: send it to the server's address, not after the /v2 base.` : `no route ${path}`);
     const found = matching.find((r) => r.method === req.method || (req.method === "HEAD" && r.method === "GET"));
     if (!found) throw new ApiError("method_not_allowed", `${req.method} is not a method of ${path}`, {}, { allow: [...new Set(matching.map((r) => r.method))].join(", ") });
-    if (CLAUDE_LOGIN_ROUTES.has(found.name) && loginOff) throw new ApiError("not_found", claudeLoginRouteOff(found.name, loginOff));
+    if (CLAUDE_LOGIN_ROUTES.has(found.name) && !loginServed) throw new ApiError("not_found", loginOff ? claudeLoginRouteOff(found.name, loginOff) : apiOnlyRefusal(`/v2${path}`));
     if (found.name === "getCapabilities") {
       // features.computers: the computer kinds this server offers now (computers.ts), read at each answer, since turning
       // Archil on or off, or saving a key, changes them. So does a shell on the runner (bash on Archil's serverless exec
@@ -4890,11 +4903,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const state = await store.schemaState?.().catch(() => undefined);
       const storeSchema = state ? { store_schema: { version: state.version, runner_floor: state.runnerFloor, known: state.known } } : {};
       // features.harness_keys.kept names which harness ids still have keys stored: the owner's session or a holder of
-      // the server's token reads it; a caller with neither (this route answers before any bearer check) reads none.
+      // the server's token reads it; a caller with neither (this route answers before any bearer check) reads none. A
+      // bearer this server does not take still gets the answer, and the auth_failed line any other route writes for it.
       const keptShown = byOwnerSession(req) || bearer(req.headers.authorization, req);
+      if (!keptShown && req.headers.authorization !== undefined) authFailed(`/v2${path}`, "wrong_token");
       const keptCap = { ...answer.features.harness_keys, kept: keptShown ? answer.features.harness_keys.kept : [] };
       // features.api_keys.routes: false on an API-only server, which serves none of the keys' routes and reads no key.
-      return send(res, 200, { ...answer, ...storeSchema, runner_refused: runnerRefused, features: { ...answer.features, harness_keys: keptCap, computers: await computerCapabilities(computersOf()), triggers: { ...answer.features.triggers, public_url: Boolean(options.publicUrl) }, claude_login: !loginOff && !options.apiOnly, api_keys: { ...answer.features.api_keys, routes: !options.apiOnly } } });
+      return send(res, 200, { ...answer, ...storeSchema, runner_refused: runnerRefused, features: { ...answer.features, harness_keys: keptCap, computers: await computerCapabilities(computersOf()), triggers: { ...answer.features.triggers, public_url: Boolean(options.publicUrl) }, claude_login: loginServed, api_keys: { ...answer.features.api_keys, routes: !options.apiOnly } } });
     }
     if (found.name === "getOpenapi") return send(res, 200, servedOpenapi(openapi, ownerCookieName(req)));
     // With accounts off there is no owner, and the console still asks whether it may save a secret: secret-writes.ts'
@@ -5648,7 +5663,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           },
           computer: () => (viewed ? { kind: viewed } : computerOf(kept, env, family, own)),
           session: (kind) => sessionIn(kind, entries, run.terminal || (parked && kind !== "browser")),
-          lapsed: async (kind) => (parked ? lapsedOf(kind, await readKept(store.settings, run.id).catch(() => undefined), Date.now()) : undefined),
+          // The keep's `until` is on the store's clock (computer-kept.ts Kept.until), so its lapse is judged on it; a
+          // clock or a row that can't be read says nothing.
+          lapsed: async (kind) => {
+            if (!parked) return undefined;
+            const at = await store.sealedKeys.clock().catch(() => undefined);
+            return at === undefined ? undefined : lapsedOf(kind, await readKept(store.settings, run.id).catch(() => undefined), at);
+          },
           hold: () => hold,
           // A going run's browser let go while it waited for its person: the Screen tab says so, with when. One settings
           // row (browser-wait-ended.ts), never the run's journal: this is read on every Screen poll.
@@ -6039,7 +6060,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "getMcpServer":
         return send(res, 200, await mcpServers.get(id));
       case "previewMcpServer":
-        return send(res, 200, await mcpServers.preview(await bodyOf(req), stopping.signal));
+        // The API token's preview, as the gate reads a token's save: a server it saved is previewed at its shown address.
+        return send(res, 200, await mcpServers.preview(await bodyOf(req), stopping.signal, req.headers.authorization !== undefined && !mayHoldSecrets(req)));
       case "saveMcpServer": {
         const body = await bodyOf(req);
         const preset = await mcpServers.composioPreset(id);
@@ -6072,10 +6094,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, over.note ? { ...saved, composio: over.note } : saved);
       }
       // Composio makes the managed MCP server; what is kept is the ordinary MCP save, so the key is a sealed header.
-      case "listComposioTools":
-        return send(res, 200, await composioTools(await bodyOf(req), options.composioControl ?? {}, stopping.signal), { "cache-control": "no-store" });
-      case "listComposioToolkits":
-        return send(res, 200, await composioToolkits(await bodyOf(req), options.composioControl ?? {}, stopping.signal), { "cache-control": "no-store" });
+      // A listing stops at Composio when the console stops asking (Cancel, a key edit: the response closes), or the server
+      // stops.
+      case "listComposioTools": {
+        const done = new AbortController();
+        res.once("close", () => done.abort());
+        return send(res, 200, await composioTools(await bodyOf(req), options.composioControl ?? {}, AbortSignal.any([stopping.signal, done.signal])), { "cache-control": "no-store" });
+      }
+      case "listComposioToolkits": {
+        const done = new AbortController();
+        res.once("close", () => done.abort());
+        return send(res, 200, await composioToolkits(await bodyOf(req), options.composioControl ?? {}, AbortSignal.any([stopping.signal, done.signal])), { "cache-control": "no-store" });
+      }
       case "saveComposioServer": {
         // The name is checked before Composio is called: a refused name leaves nothing made there.
         mcpNameOf(id);
@@ -6106,7 +6136,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "deleteComposioSubscription":
         return send(res, 200, await composioTriggers.forget(id), { "cache-control": "no-store" });
       case "refreshMcpServer": {
-        const refreshed = await mcpServers.refresh(id, stopping.signal, options.composioControl ?? {});
+        const refreshed = await mcpServers.refresh(id, stopping.signal);
         await refreshMcpMeta();
         return send(res, 200, refreshed);
       }
@@ -7071,8 +7101,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     closing = true;
     stopping.abort();
     clearInterval(localSourceTimer);
-    // Cancel a pending ChatGPT callback without signing out or changing the saved credential (not waited for).
-    void plan.close();
+    // Cancel a pending ChatGPT callback without signing out or changing the saved credential. One past its code's
+    // exchange is waited for a short while (planClosed), so its row lands before the store closes.
+    const planStopped = planClosed(plan, options.planCloseMs ?? PLAN_CLOSE_MS);
     // The CLI's sign-in still waiting for its browser ends with the server, which forgets it: left running, its CLI would
     // keep the browser's callback port from the next server's sign-in. Awaited until its process is gone.
     const signInStopped = claudeSignIns.close();
@@ -7095,6 +7126,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await schemaSealed;
     await installStopped;
     await signInStopped;
+    await planStopped;
     await observationStopped;
     await localSourceSweep;
     // The ends' follower stops before the webhooks it feeds and the store it reads.

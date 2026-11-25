@@ -1,8 +1,8 @@
 # @parcha/agentrun-import
 
-Reads the coding-agent sessions under a home (Claude Code, Codex, pi) into one Session shape: normalized token usage,
-subagents counted under their parent, and byte-offset cursors so a second pass reads only what was appended. AgentRun's
-server imports past sessions through it.
+Reads the coding-agent sessions under a home (Claude Code, Codex, pi, OpenCode, GitHub Copilot CLI) into one Session shape: normalized token
+usage, subagents counted under their parent, and cursors so a second pass reads only what changed. AgentRun's server
+imports past sessions through it.
 
 ## Totals for a home
 
@@ -14,19 +14,23 @@ const sessions = await parseHome(homedir(), { sources: ["claude-code", "codex"] 
 ```
 
 - `key` is the sha256 (hex) of the session's file path relative to the home, `"/"` between its parts, with `#<id>` after
-  it for a file that holds many sessions. Lines come sorted by key.
+  it for a file that holds many sessions (an OpenCode database: `.local/share/opencode/opencode.db#ses_…`). Lines come
+  sorted by key.
 - `tokens.input` is the input neither read from nor written to the cache, for every source (see `normalizeUsage`).
-- `cost` is USD: the source's own when it wrote one (Claude Code's `cost-state`, pi's per-request cost), else the
-  requests at pi-ai's list prices (a dependency, loaded on the first price), else `null`.
+- `cost` is USD: the source's own when it wrote one (Claude Code's `cost-state`, pi's and OpenCode's per-request cost,
+  an OpenCode subagent's added to its parent's), else the requests at pi-ai's list prices (a dependency, loaded on the
+  first price), else `null`.
 - `turns` counts the person's messages; `calls` the model requests, its subagents' with them, each once.
 - `state: {}` handed to each call keeps cursors between calls: the second call reads only the bytes appended since, and
   returns what a fresh call would. When a file holding a copied record now comes before the file it counts in (an append
   moved the original after its resumed copy, or a new file sorts before one it shares records with), that source is read
   again from the start. The state holds counts, record ids and paths, never a prompt, title, working directory or
   answer; a file that fails to read gives up what it held and is read from its start next time.
-- `failures: []` collects each file its reader could not read (`{ key, file, source, error }`) while the rest are
-  totalled; without it, parseHome throws `ReadFailures`. An unreadable file is never taken for an empty one.
-- `env` names where a source keeps its own directory (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`); without it the home's.
+- `failures: []` collects each file its reader could not read (`{ key, file, source, error }`; an OpenCode database
+  that does not open, for each session it lists or as itself when it lists none) while the rest are totalled; without
+  it, parseHome throws `ReadFailures`. An unreadable file is never taken for an empty one.
+- `env` names where a source keeps its own directory (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `COPILOT_HOME`, OpenCode's `XDG_DATA_HOME` and
+  `OPENCODE_DB`); without it the home's.
 - `threads` reads the files on that many worker threads (default: the cores the process may run on, at most 8; `1`
   reads them in order on the calling thread; at most 64). A read is kept only when it is the one the import's order would make; any
   other file is read again in order, so the totals are the same whatever the count. A call with a `state`, or with
@@ -40,6 +44,11 @@ const sessions = await parseHome(homedir(), { sources: ["claude-code", "codex"] 
 
   On a 73.7 GB home, 8 threads took 90.9 s (median of 5) at a peak of 1.83 GiB, and 1 thread 441.1 s at 1.05 GiB
   (x1); with `readAhead` at 256 MiB, 8 threads took 136.5 s (x1). Measured on a loaded machine (load 17 to 45).
+- A request two sources wrote is counted once. OpenCode's claude-agent provider runs Claude Code, which writes each
+  request into its own session file too; OpenCode names that session on the request (`mirrors`). When the same call
+  reads that Claude Code session (serve's import: or its store holds it), the request counts there and not in the OpenCode session (tokens, calls and cost),
+  request by request: one OpenCode session can mix claude-agent requests with other providers'. When it does not, the
+  request counts in OpenCode's.
 
 ## A year of work
 
@@ -63,7 +72,7 @@ calls at once hold two pools' memory.
 ## Known answer
 
 ```sh
-node dist/cli.js <home> [--sources claude-code,codex,pi] [--threads N] [--read-ahead BYTES[k|m|g]] --known-answer
+node dist/cli.js <home> [--sources claude-code,codex,pi,opencode,copilot] [--threads N] [--read-ahead BYTES[k|m|g]] --known-answer
 ```
 
 One JSONL line per session, sorted by key: `{key, source, tokens: {input, output, cacheRead, cacheWrite, cacheWrite1h},
@@ -77,19 +86,49 @@ CLI as it is; the library loads it only to price.
 
 ## Usage
 
-`normalizeUsage(format, raw)` reads one request's usage as `"anthropic"`, `"openai"` or `"pi"` writes it:
+`normalizeUsage(format, raw, options?)` reads one request's usage as `"anthropic"`, `"openai"`, `"pi"`, `"opencode"` or `"copilot"` writes it:
 
 | Source | `input` | `cacheWrite1h` | `reasoning` |
 | --- | --- | --- | --- |
 | Anthropic | `input_tokens` (already excludes the cache) | `cache_creation.ephemeral_1h_input_tokens` | |
 | OpenAI, Codex | `input_tokens - cached_input_tokens` | | `reasoning_output_tokens` (part of `output`) |
 | pi | `input` | `cacheWrite1h` | |
+| OpenCode | `input` (already excludes the cache; `cache.read`, `cache.write`) | | `reasoning`, added to `output` |
+| Copilot CLI | `inputTokens - cacheReadTokens - cacheWriteTokens` | | `reasoningTokens` (part of `output`) |
 
 A Claude Code session's id is its file's name (`<id>.jsonl`): a resumed session's file is its own session, and a
 record copied into it from an earlier file counts only in that file; a file holding nothing but copies is no session.
 Codex sessions sum each request's `last_token_usage`, never `total_token_usage`. Claude Code writes one line per content
 block of a response, each with the response's usage: a request (`message.id`, `requestId`) counts once, at its last
-line's usage.
+line's usage. OpenCode's `output` leaves the reasoning out, so `output` is `output + reasoning`. An OpenCode before
+1.3.16 (`options.version`, the session's `version`) wrote it in `output` already, so its `output` stays as written; where
+a step records `total`, `output` is what the total leaves after the input and the cache, whatever the version. Each
+step of an OpenCode message is one request, at its `step-finish` part's usage (the message keeps only the last step's).
+
+### GitHub Copilot CLI
+
+Sessions are `$COPILOT_HOME/session-state/<id>/events.jsonl` (`~/.copilot` without `COPILOT_HOME`), and an older CLI's
+`session-state/<id>.jsonl`. Each model call is one request, keyed by its first `assistant.message`'s `messageId`; a
+response split into chunks (each chunk a message with its own `messageId`, the call's `apiCallId` the same) is one. Each
+event counts once by its `id` and each message once by its `messageId`, across files too: a copied session adds no
+request, and its copied shutdown no tokens. A rotated journal's `checkpoint: true` records are copies. A user message
+is the person's unless a subagent, autopilot, a skill or another agent wrote it. A session's id is its `session.start`
+`sessionId`, else `copilotSessionId(file)`: the folder's name, or the older flat file's.
+
+Copilot writes no request's tokens to disk: `assistant.usage` is ephemeral. Its tokens are the `modelMetrics` of the
+`session.shutdown` each CLI process writes as it exits, per model, subagents included. A CLI that keeps its accounting
+across processes (`session.usage_checkpoint`, a shutdown with `usageAccountingWatermarks`) writes the session's whole
+total there, so a shutdown counts only what it adds to the ones before it; an older CLI's counts its own process. A
+model's tokens go on the last request of that model since the process started or resumed the session, or on a request
+of their own when there is none (a compaction's model). That model's other requests in the process are `folded` into
+it: zeros, known, never unknown. So:
+
+- A session with no shutdown (still running, killed, or left with `/new`) has tokens 0 and cost `null`.
+- Copilot bills premium requests and AI credits and writes no dollar cost. `cost` is the catalog's list price of the
+  requests that carry the tokens, and `null` when a request's tokens are unknown or its model is not in the catalog.
+- `events.N.jsonl` archives (written only with `COPILOT_SESSION_EVENT_LOG_ROTATION_BYTES`) and the pre-0.0.342
+  `history-session-state` folder are not read. A rotated session's tokens still come whole from its last shutdown;
+  the requests in its archives are not counted.
 
 ## Readers
 
@@ -105,6 +144,8 @@ type Reader<S extends string, C> = {
   read(locator: Locator, cursor?: C, options?: { turns?: boolean; totals?: boolean; seen?: Set<string> }): Promise<{ sessions: SessionRead<S>[]; cursor: C; read: number; resumed: boolean }>;
   order?(a, b): number;
   children?(home: string, env?: Env): Promise<{ locator: Locator; of: Locator }[]>;
+  stat?(locator: Locator): Promise<{ bytes: number; mtimeMs: number; parent?: string } | null>;
+  parentOf?(locator: Locator): Promise<string | undefined>;
 };
 ```
 
@@ -112,7 +153,22 @@ The cursor is the reader's own: hand it back to the same reader for the same loc
 with `lineReader` from a per-record function; its cursor is the file's device and inode, the byte after the last whole
 line read, and the read's state. A file replaced or truncated since is read from its start, and a last line with no
 newline yet is read but not consumed. A source that keeps many sessions in one file (a SQLite database) implements
-`discover` and `read` itself and returns one locator per session, with its `id`.
+`discover` and `read` itself and returns one locator per session, with its `id`, and `stat`: the session's own size and
+last write, which a caller's size caps and "still being written" check go by (`locatorSize`; without `stat`, the file's).
+
+OpenCode is that source. Its sessions are in `$XDG_DATA_HOME/opencode` (`~/.local/share/opencode`): `opencode*.db` (1.x
+and 2.x schemas; a 2.x session wins over the 1.x copy beside it), the database `OPENCODE_DB` names, and the JSON
+`storage/` OpenCode kept before SQLite. A locator is `{ file: <db>, id: <session id> }`, or a storage session's own
+JSON file; each session is listed once, from the database that wrote it last (its rows' latest `time_updated`; a tie,
+the first database). Its cursor is the file's device and inode
+and a stamp of the session's rows (each table's row count and latest `time_updated`): an unchanged session is not read
+again, a changed one is read again whole, a replaced database from its start. A fork's rows copied from its source
+session count nothing. A 2.x fork marks them. A 1.x fork (OpenCode's `fork()` copies each message under a new id, its
+time, tokens and cost as they were) and a 2.x row with no mark are told by a fingerprint: a request's time, step, model,
+tokens and cost as written, a prompt's time and text. `order` reads a home's sessions oldest first, so a source comes
+before its forks, and the cursor keeps the fingerprints its read took, so a session read again is no copy of itself.
+A row time past now reads as its database's last write (its file's or its `-wal`'s, never past now): the same at each look, so the session ages out as its file does. A `turns: false` read keeps a request's error as `failed`, never its text. A database session's `stat` is the bytes of its messages' and parts' `data` and the latest
+`time_updated` of its rows; a storage session's, its files' together. It reads SQLite with `node:sqlite` under Node and `bun:sqlite` under Bun, read-only, waiting up to 5 s on a write lock.
 
 With `turns: false`, `totals: true` asks for only what `parseHome` totals: each session read then has `counts` set and
 `requests` empty. Only a `lineReader` whose source sets `totals: true` (one that sets no turn's model, usage or time after
@@ -140,5 +196,11 @@ for (const locator of await reader.discover(home)) {
 }
 ```
 
-`readSession(locator, source)`, `sessionLocators(home, source)`, `inOrder(locators, source)` and
-`childrenOf(home, source)` are what serve's import reads through.
+`readSession(locator, source)`, `sessionLocators(home, source)`, `inOrder(locators, source)` (each locator with its
+`locatorSize`; one whose size query throws is kept, marked `failed`, for the caller to read or report), `locatorSize(locator, source)` (null when the session is gone, any other error thrown), `locatorParent(locator, source)` and `childrenOf(home, source)` are what
+serve's import reads through. `locatorParent` names the session a subagent ran under without reading the subagent: the
+`parent` its reader's `stat` gives (an OpenCode row's), else its reader's `parentOf`. Codex's reads a rollout's first
+line, `session_meta`, 256 KiB at a time and never past 64 MiB: a first line longer than that names no parent. serve uses it to tie a subagent over the cap to its run, which
+it then holds back. The
+mirror rule is one export for both callers: `mirroredIn(counted)` over the `sessionKey(source, id)` of the sessions
+counted, and `ownRequests(requests, cost, mirrored)` for a session's own requests and cost.

@@ -13,7 +13,7 @@ import { SECRET_NAMES, withoutSecrets } from "../dist/secrets.js";
 test("no name a computer provider is handed of serve's environment, or hands a child of it, is one serve keeps from a child", () => {
   const lists = [
     ...computer.PROVIDERS.filter((entry) => entry.hostEnv).map((entry) => [`${entry.id}'s hostEnv`, entry.hostEnv]),
-    ...["BASE_ENV_NAMES", "DOCKER_ENV_NAMES", "CHROME_ENV_NAMES"].map((list) => [list, computer[list]]),
+    ...["BASE_ENV_NAMES", "DOCKER_ENV_NAMES", "CHROME_ENV_NAMES", "ADB_ENV_NAMES"].map((list) => [list, computer[list]]),
   ];
   for (const [what, names] of lists) {
     assert.ok(Array.isArray(names) && names.length > 0, `@parcha/agentrun-computer gives no ${what}`);

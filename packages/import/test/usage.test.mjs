@@ -34,6 +34,29 @@ test("pi: already split, taken as written", () => {
   assert.deepEqual(normalizeUsage("pi", { input: 1, output: 2, cacheRead: 0, cacheWrite: 4, cacheWrite1h: 9 }), { input: 1, output: 2, cacheRead: 0, cacheWrite: 4 });
 });
 
+test("OpenCode: input leaves the cache out, output leaves the reasoning out (added back); a total says when output held it", () => {
+  // 20 out + 5 reasoning: 25, 5 of it reasoning.
+  assert.deepEqual(normalizeUsage("opencode", { input: 100, output: 20, reasoning: 5, cache: { read: 0, write: 200 } }), { input: 100, output: 25, cacheRead: 0, cacheWrite: 200, reasoning: 5 });
+  // An older OpenCode: total 1000 - 100 in - 600 read = 300, the output as written, not 300 + 200.
+  assert.deepEqual(normalizeUsage("opencode", { total: 1000, input: 100, output: 300, reasoning: 200, cache: { read: 600, write: 0 } }), { input: 100, output: 300, cacheRead: 600, cacheWrite: 0, reasoning: 200 });
+  // A newer one whose total holds the reasoning beside the output: the same 40 + 10.
+  assert.deepEqual(normalizeUsage("opencode", { total: 580, input: 30, output: 40, reasoning: 10, cache: { read: 500, write: 0 } }), { input: 30, output: 50, cacheRead: 500, cacheWrite: 0, reasoning: 10 });
+  // All nought (a request cut before its usage came), or a count that is no count: no usage.
+  assert.equal(normalizeUsage("opencode", { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }), undefined);
+  assert.equal(normalizeUsage("opencode", { input: 1, output: -1 }), undefined);
+});
+
+test("OpenCode before 1.3.16 wrote output with its reasoning in it: a session's version says so where no total does", () => {
+  const tokens = { input: 100, output: 20, reasoning: 5, cache: { read: 0, write: 200 } };
+  // 1.3.15 and older (AI SDK 5, and 6 until anomalyco/opencode#21047): output 20 holds the 5.
+  for (const version of ["0.15.0", "1.2.27", "1.3.15", "v1.3.3"]) assert.deepEqual(normalizeUsage("opencode", tokens, { version }), { input: 100, output: 20, cacheRead: 0, cacheWrite: 200, reasoning: 5 }, version);
+  // 1.3.16 on: output leaves it out, so 20 + 5. No version, or one that is none, reads as today's.
+  for (const version of ["1.3.16", "1.4.0", "1.19.5", "2.3.2", "1.10.0", undefined, "dev"]) assert.deepEqual(normalizeUsage("opencode", tokens, { version }), { input: 100, output: 25, cacheRead: 0, cacheWrite: 200, reasoning: 5 }, String(version));
+  // A total says it whatever the version: 580 - 30 - 500 = 50.
+  const totalled = { total: 580, input: 30, output: 40, reasoning: 10, cache: { read: 500, write: 0 } };
+  for (const version of ["1.2.0", "1.19.5"]) assert.equal(normalizeUsage("opencode", totalled, { version }).output, 50, version);
+});
+
 test("OpenRouter: prompt_tokens holds its cached and cache-written tokens, so input is the difference; reasoning is a subset of completion_tokens", () => {
   // 2000 in: 1500 read from the cache, 100 written to it, 400 neither. 300 out, 120 of them reasoning: output stays 300.
   const raw = { prompt_tokens: 2000, completion_tokens: 300, total_tokens: 2300, prompt_tokens_details: { cached_tokens: 1500, cache_write_tokens: 100 }, completion_tokens_details: { reasoning_tokens: 120 } };

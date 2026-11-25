@@ -141,6 +141,8 @@ export interface ClaimComputer {
   release(): Promise<void>;
   /** The release at the run's park, which keeps the computer it `keeps` (computer-for-claim.ts ClaimComputer.park). */
   park?(): Promise<boolean>;
+  /** The park's keep written before the run's timeline says it (computer-for-claim.ts ClaimComputer.keepRow). */
+  keepRow?(): Promise<boolean>;
 }
 /** The one shared claim-time computer every spec takes (computer-for-claim.ts), passed in by the runner: the composer's
  *  (workspace/computer-deps.ts computerDepsFrom), or a test's stand-in. */
@@ -236,6 +238,9 @@ export interface AdapterSpecDeps {
    *  on purpose does not wait out MODEL_RETRY's two and a half minutes. No environment variable, flag or setting maps onto
    *  it; absent, MODEL_RETRY and MODEL_STREAM. */
   readonly modelRetry?: Pick<AdapterLoopOptions, "retry" | "stream">;
+  /** The runs' GenAI tracing (AdapterLoopOptions.tracing): in a run's own process, the one posted to its runner
+   *  (run-child.ts); absent, this process's own. */
+  readonly tracing?: AdapterLoopOptions["tracing"];
   /** web_save's download slots (ToolHost.saveSlots): in a run's own process, its runner's (run-child.ts). */
   readonly saveSlots?: SaveSlots;
 }
@@ -1090,9 +1095,11 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // The run's Archil mount credential is revoked at its end on every outcome, even with no computer (the computer's
     // release revokes it too; revoke is idempotent, so a second call is a no-op). A run that minted none revokes nothing.
     // At a park, a desktop or a phone is kept for the resume instead (spec-holds.ts SpecHolds.release `parked`), its mount
-    // credential with it, and the run's timeline is told so. A computer the gate turned off is not kept (spec-holds.ts
-    // Held.computerOff), so the timeline says nothing of keeping it.
+    // credential with it, and the run's timeline is told so once its row is written (keep: a park that keeps nothing
+    // says nothing of a keep). A computer the gate turned off is not kept (spec-holds.ts Held.computerOff), so the
+    // timeline says nothing of keeping it and no row is written.
     keptWords: () => (computer.keeps === undefined || gate.computerOff() ? undefined : computerKeptWords(computer.keeps)),
+    ...(computer.keeps && computer.keepRow ? { keep: () => computer.keepRow!() } : {}),
     release: (how) => holds.release(how),
     ...(movedProject ? { projectCheckpoint: projectCheckpointForRun({ store: deps.store, agentId: runRow.agentId, claim, launch, tools, computer,
       workspace: { data: deps.data, sealKey: deps.sealKey, env: deps.env, control: { ...deps.mountControl, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) } },

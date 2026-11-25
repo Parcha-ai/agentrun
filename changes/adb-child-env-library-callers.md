@@ -2,4 +2,4 @@
 packages: @parcha/agentrun-computer
 kind: breaking
 ---
-A library caller of the phone harness provider that gives `adb` as a path, or not at all, must now pass `env` with PATH and HOME (serve does). Without it, adb starts with no environment: a bare `adb` is found only on the default path (`/usr/bin:/bin`), and adb finds no home for its keys. Pass `env`, or give `adb` as a transport (`adbCli(path, { env })`).
+A library caller of `adbCli()`, or of the phone provider with its `adb` option as a path or left out, must now pass `env` (serve does). Without it, adb starts with no environment at all: a bare `adb` is found only on the default path (`/usr/bin:/bin`). Pass `env`, or give adb's absolute path.

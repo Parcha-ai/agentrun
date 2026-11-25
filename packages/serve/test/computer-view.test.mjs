@@ -35,14 +35,23 @@ test("none's session is read for the computer's own kind", async () => {
   assert.deepEqual(asked, ["desktop"]);
 });
 
-test("a parked run's desktop or phone kept at its park says nothing while kept; past its time, or its end begun, ended in the timeout's words; a sandbox's row or none says nothing", () => {
+test("a parked run's desktop or phone kept at its park says nothing while kept; past its time ended in the timeout's words; its end begun before its time, not kept, with no reason and no time to come; a sandbox's row or none says nothing", () => {
   const until = Date.parse("2026-11-15T12:10:00.000Z");
   const row = { provider: "e2b", kind: "desktop", id: "c1", name: "c1", epoch: 3, until };
   assert.equal(lapsedOf("desktop", row, until - 1), undefined, "kept: the run's timeline says until when");
   const lapsed = { at: "2026-11-15T12:10:00.000Z", why: "The desktop wasn't kept: 10 minutes passed. A new one starts when the run goes on." };
   assert.deepEqual(lapsedOf("desktop", row, until), lapsed);
-  assert.deepEqual(lapsedOf("desktop", { ...row, ending: true }, until - 1), lapsed);
-  assert.deepEqual(lapsedOf("desktop", { ...row, ended: true }, until - 1), lapsed);
+  // Ending or ended before its time: a claim that could not reach it gave its row back so, or a park that kept nothing
+  // marked it so (another runner's, still there). Its 10 minutes did not pass, and nothing happens at its `until`: not
+  // kept, said with no reason, at the time it is read.
+  const early = until - 4 * 60_000;
+  const unkept = { at: new Date(early).toISOString(), why: "The desktop wasn't kept. A new one starts when the run goes on." };
+  assert.deepEqual(lapsedOf("desktop", { ...row, ending: true }, early), unkept, "ending before its time: no '10 minutes passed', no time to come");
+  assert.deepEqual(lapsedOf("desktop", { ...row, ended: true }, early), unkept, "ended before its time: the same");
+  assert.ok(Date.parse(lapsedOf("desktop", { ...row, ending: true }, early).at) <= early, "never a time still to come");
+  // Once its time has passed, ending or ended reads as lapsed, at its time.
+  assert.deepEqual(lapsedOf("desktop", { ...row, ending: true }, until), lapsed, "ending past its time: the timeout's words");
+  assert.deepEqual(lapsedOf("desktop", { ...row, ended: true }, until + 60_000), lapsed, "ended past its time: the same");
   assert.equal(lapsedOf("desktop", undefined, until), undefined);
   assert.equal(lapsedOf("desktop", { ...row, kind: "sandbox" }, until), undefined, "a sandbox's row: no screen to say it of");
 });
