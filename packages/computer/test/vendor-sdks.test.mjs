@@ -155,3 +155,13 @@ test("an SDK that is installed but fails to load is that failure, not an install
 	const { load } = installedWithoutSdks(t, { ssh2: { "package.json": JSON.stringify({ name: "ssh2", version: "1.17.0", main: "index.js" }), "index.js": 'throw new Error("ssh2 failed to load its binding");\n' } });
 	await assert.rejects((await load("agent37.js")).create({ apiKey: "fake-test-key", sshKey: "fake-test-key" }), /ssh2 failed to load its binding/);
 });
+
+test("an installed SDK that imports a module that is not there is that module's error, never an install step for the SDK", async (t) => {
+	const { load } = installedWithoutSdks(t, { e2b: { "package.json": JSON.stringify({ name: "e2b", version: "2.63.0", type: "module", main: "index.js" }), "index.js": 'import "e2b-missing-dependency";\nexport class Sandbox {}\n' } });
+	await assert.rejects((await load("e2b.js")).create({ apiKey: "fake-test-key" }), (error) => {
+		assert.equal(error.code, "ERR_MODULE_NOT_FOUND", "the module's own error");
+		assert.match(error.message, /e2b-missing-dependency/, "it names the module that is missing");
+		assert.doesNotMatch(error.message, /npm install/, "e2b is installed: no install step");
+		return true;
+	});
+});
