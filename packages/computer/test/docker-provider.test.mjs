@@ -10,6 +10,9 @@ import { checkLifetime, computerNameFor, PROVIDERS } from "../dist/index.js";
 import { PROTOCOL_VERSION } from "../dist/protocol.js";
 import { container, fakeDocker, idOf, removal, valuesOf, VERSION } from "./fake-docker.mjs";
 
+/** Each proxy variable `docker run` sets empty, so the docker CLI fills none in from config.json's proxies. */
+const NO_PROXY_ENV = ["HTTP_PROXY=", "http_proxy=", "HTTPS_PROXY=", "https_proxy=", "FTP_PROXY=", "ftp_proxy=", "NO_PROXY=", "no_proxy=", "ALL_PROXY=", "all_proxy="];
+
 const SPEC = { image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" };
 let requests = 0;
 /** A create's context: a new request each time. */
@@ -150,7 +153,7 @@ test("create() runs a hardened container with the daemon as its first process an
 		"a home the computer's user can write, half its memory, and init's socket directory, the user's alone, 1 MiB",
 	);
 	assert.deepEqual(valuesOf(run, "--workdir"), ["/work"]);
-	assert.deepEqual(valuesOf(run, "--env"), ["HOME=/work"]);
+	assert.deepEqual(valuesOf(run, "--env"), ["HOME=/work", ...NO_PROXY_ENV]);
 	assert.deepEqual(inspect.slice(0, 1), ["inspect"]);
 	assert.equal(inspect.at(-1), name);
 	assert.deepEqual(info.slice(0, 2), ["info", "--format"]);
@@ -586,7 +589,7 @@ test("desktop: create() gives the daemon DISPLAY, starts the X server through th
 	const result = await provider.create(SPEC, req());
 	assert.equal(result.ok, true, JSON.stringify(result));
 	const run = runOf(calls());
-	assert.deepEqual(valuesOf(run, "--env"), ["HOME=/work", "DISPLAY=:0"]);
+	assert.deepEqual(valuesOf(run, "--env"), ["HOME=/work", "DISPLAY=:0", ...NO_PROXY_ENV]);
 	assert.deepEqual(run.slice(-4, -2), ["debian:bookworm-slim", "init"], "computerd is still the first process; it starts nothing itself");
 	assert.deepEqual(started(), [{ argv: XVFB }], "the X server is one process in the daemon's table, started as any program is");
 	const connected = await provider.connect(result.value);
@@ -599,7 +602,7 @@ test("desktop: the display and the X server's argv are options", async () => {
 	const server = ["Xvfb", ":5", "-screen", "0", "800x600x24", "-nolisten", "tcp"];
 	const { provider, calls, started } = fakeDocker({ desktop: { display: ":5", server } });
 	assert.equal((await provider.create(SPEC, req())).ok, true);
-	assert.deepEqual(valuesOf(runOf(calls()), "--env"), ["HOME=/work", "DISPLAY=:5"]);
+	assert.deepEqual(valuesOf(runOf(calls()), "--env"), ["HOME=/work", "DISPLAY=:5", ...NO_PROXY_ENV]);
 	assert.deepEqual(started(), [{ argv: server }]);
 });
 

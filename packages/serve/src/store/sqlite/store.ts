@@ -1831,7 +1831,8 @@ class SqliteStore implements Store {
       const left = sealed !== null && typeof tokenLeftMs === "number" && Number.isFinite(tokenLeftMs) ? tokenLeftMs : null;
       const stamp = clock();
       // updated_at defaults to now (a save or a sign-in); a refresh passes the kept one so it is not read as an edit.
-      // listed_at is the tools' listing time, now unless given.
+      // listed_at is the tools' listing time, now unless given. A save's moves past the row's own, in the statement that
+      // writes it (lastEdit), even within its millisecond: a refresh that read the row compares it, and must see the save.
       const updated = updatedAt ?? at;
       const listed = listedAt ?? at;
       // The credential's own time: now for a put that writes one, unless the caller says it kept the sealed one (its
@@ -1843,7 +1844,7 @@ class SqliteStore implements Store {
       const statement = expected !== undefined && expected !== null
         ? {
           sql: `UPDATE mcp_servers SET url = ?, auth = ?, protocol = ?, tools = ?, prices = ?, server_info = ?, instructions = ?, sealed = ?, refresh_holder = NULL, refresh_until = NULL,
-              updated_at = ?, listed_at = ?, credential_changed_at = ?, token_until = ${stamp.sql} + ${d.bigintParam}
+              updated_at = ${lastEdit(updatedAt, "?")}, listed_at = ?, credential_changed_at = ?, token_until = ${stamp.sql} + ${d.bigintParam}
             WHERE name = ? AND auth = ? AND sealed IS ${expected.sealed ? "NOT NULL" : "NULL"} AND ${expected.changedAt === null ? "credential_changed_at IS NULL" : "credential_changed_at = ?"}${tokens ? ` AND ${tokensMarked}` : ""}
             RETURNING ${mcpServerColumnsAt(stamp)}`,
           params: [...values, updated, listed, credentialAt, ...stamp.params, left, name, expected.auth, ...(expected.changedAt === null ? [] : [expected.changedAt]), ...(tokens ? [tokens.record] : []), ...stamp.params],
@@ -1851,7 +1852,7 @@ class SqliteStore implements Store {
         : {
           sql: `INSERT INTO mcp_servers (name, url, auth, protocol, tools, prices, server_info, instructions, sealed, created_at, updated_at, listed_at, credential_changed_at, token_until) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${stamp.sql} + ${d.bigintParam})
             ON CONFLICT (name) DO UPDATE SET url = excluded.url, auth = excluded.auth, protocol = excluded.protocol, tools = excluded.tools,
-              prices = excluded.prices, server_info = excluded.server_info, instructions = excluded.instructions, sealed = excluded.sealed, refresh_holder = NULL, refresh_until = NULL, updated_at = excluded.updated_at, listed_at = excluded.listed_at, credential_changed_at = excluded.credential_changed_at, token_until = excluded.token_until
+              prices = excluded.prices, server_info = excluded.server_info, instructions = excluded.instructions, sealed = excluded.sealed, refresh_holder = NULL, refresh_until = NULL, updated_at = ${lastEdit(updatedAt, "excluded.updated_at")}, listed_at = excluded.listed_at, credential_changed_at = excluded.credential_changed_at, token_until = excluded.token_until
               ${expected === null ? "WHERE 1 = 0" : ""}
             RETURNING ${mcpServerColumnsAt(stamp)}`,
           params: [name, ...values, at, updated, listed, credentialAt, ...stamp.params, left, ...stamp.params],
@@ -1860,14 +1861,23 @@ class SqliteStore implements Store {
       return written && mcpServerOf(written);
     };
 
+    /** A server row's updated_at as a write sets it to `value` (SQL): kept as given when the caller passes the one it read
+     *  (`given`, a refresh: not an edit), else past the row's own (mcp_servers.updated_at, the row before the write) by at
+     *  least 1 ms, so two saves in one millisecond are still two edits a compare-and-set tells apart. */
+    const lastEdit = (given: number | undefined, value: string) => (given === undefined ? `${d.greatest}(${value}, mcp_servers.updated_at + 1)` : value);
+
     /** `statement`, the write of server `name`'s row, answering the row it wrote (RETURNING): alone, or, when the token's mark
      *  decides it (`tokens`, `owns`), in one transaction under the server's lock (underMcpLock), the owner's dropping the
-     *  mark once its row is written and only then. */
+     *  mark once its row is written and only then, the token's first save writing its record (`tokens.made`) there too. */
     const writeMcpRow = async (name: string, statement: Statement, tokens: McpTokensMark | undefined, owns: McpOwnersMark | undefined): Promise<McpServerRecord | undefined> => {
       if (!tokens && !owns) return (await db.write([statement]))[0]!.rows[0] as McpServerRecord | undefined;
       return underMcpLock(name, async (tx) => {
         const row = (await tx.step(statement)).rows[0] as McpServerRecord | undefined;
         if (row && owns) await dropTokensMark(tx, owns, mcpServerOf(row).createdAt);
+        if (row && tokens?.made) {
+          const encoded = json(tokens.made(mcpServerOf(row)));
+          await tx.run("INSERT INTO settings (key, value, connector_id, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value, connector_id = excluded.connector_id, updated_at = excluded.updated_at", tokens.record, encoded, nativeCommandOwner(tokens.record, encoded), now());
+        }
         return row;
       });
     };
@@ -1880,16 +1890,19 @@ class SqliteStore implements Store {
     this.mcp = {
       put: async (row) => (await putServer(row, undefined))!,
       putIfCredential: (row, expected, tokens, owns) => putServer(row, expected, tokens, owns),
-      // One statement compares the credential and writes, as keepRefreshed: no read between, so a refresh's keep never lands
-      // in a gap and is then written over. The credential's columns and the refresh lease are not in its SET.
+      // One statement compares the row as read (its credential, address, auth type and last edit) and writes, as
+      // keepRefreshed: no read between, so a refresh's keep never lands in a gap and is then written over, and a save with no
+      // credential (the sealed column the same after it), whether it moved the row or only repriced it, is never written
+      // back over: every save moves updated_at, past the row's own even within its millisecond (lastEdit). The credential's
+      // columns and the refresh lease are not in its SET.
       rewrite: async ({ name, url, auth, protocol = null, tools, prices = null, serverInfo = null, instructions = null, listedAt, updatedAt }, seen, owns) => {
         const at = now();
         const stamp = clock();
         const row = await writeMcpRow(name, {
-          sql: `UPDATE mcp_servers SET url = ?, auth = ?, protocol = ?, tools = ?, prices = ?, server_info = ?, instructions = ?, updated_at = ?, listed_at = ?
-            WHERE name = ? AND ${d.nullSafeEquals("sealed")}
+          sql: `UPDATE mcp_servers SET url = ?, auth = ?, protocol = ?, tools = ?, prices = ?, server_info = ?, instructions = ?, updated_at = ${lastEdit(updatedAt, "?")}, listed_at = ?
+            WHERE name = ? AND ${d.nullSafeEquals("sealed")} AND url = ? AND auth = ? AND updated_at = ?
             RETURNING ${mcpServerColumnsAt(stamp)}`,
-          params: [url, auth, protocol, json(tools), json(prices), serverInfo === null ? null : json(serverInfo), instructions, updatedAt ?? at, listedAt ?? at, name, seen, ...stamp.params],
+          params: [url, auth, protocol, json(tools), json(prices), serverInfo === null ? null : json(serverInfo), instructions, updatedAt ?? at, listedAt ?? at, name, seen.sealed, seen.url, seen.auth, seen.updatedAt, ...stamp.params],
         }, undefined, owns);
         return row && mcpServerOf(row);
       },

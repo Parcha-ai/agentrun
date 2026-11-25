@@ -13,7 +13,8 @@ import { homedir, hostname, tmpdir, userInfo } from "node:os";
 import { delimiter, dirname, join, relative } from "node:path";
 import { after, test } from "node:test";
 import * as claude from "@parcha/agentrun-harness-claude";
-import { CLAUDE_LOGIN_ENV, CLAUDE_LOGIN_SETTING, claudeLoginOf, claudeLoginSwitchedOff, claudeLoginView, envAtPlace, LOGIN_ANSWERS_DIR, LOGIN_SIGNED_OUT, LOGIN_UNKNOWN, loginAt, loginBeforeRun, loginForRun, loginOnRunnerOnly, loginServes, settingFor, startLoginHere, turnOffClaudeLogin, turnOnBody, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
+import { API_ONLY_ROUTES } from "../dist/api-only.js";
+import { CLAUDE_LOGIN_ENV, CLAUDE_LOGIN_ROUTES, CLAUDE_LOGIN_SETTING, claudeLoginOf, claudeLoginServed, claudeLoginSwitchedOff, claudeLoginView, envAtPlace, LOGIN_ANSWERS_DIR, LOGIN_SIGNED_OUT, LOGIN_UNKNOWN, loginAt, loginBeforeRun, loginForRun, loginOnRunnerOnly, loginServes, settingFor, startLoginHere, turnOffClaudeLogin, turnOnBody, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
 import { ClaudeSignIns } from "../dist/claude-sign-in.js";
 import { MODEL_KEYS, hostModel } from "../dist/model.js";
 import { providerFor } from "../dist/provider.js";
@@ -238,12 +239,27 @@ test("the switch, unset, follows the listen address: 0.0.0.0 has the mode off, 1
   assert.match(whyNotOneOwner({ apiOnly: false, tokens: 2 }), /more than one person/);
 });
 
-test("an API-only server serves no claude-login route, and its capabilities say so", { timeout: 120_000 }, async (t) => {
+test("capabilities' claude_login is what the routes do: true where GET /settings/claude-login answers, false where it is 404 (loopback, switched off, API-only)", { timeout: 180_000 }, async (t) => {
   withEnv(t, {}, MODEL_VARS);
-  const server = await serve(t, { faux: undefined, runner: false, apiOnly: true });
-  const get = (path) => fetch(`${server.url}/v2${path}`, { headers: { authorization: `Bearer ${server.token}` } });
-  assert.equal((await get("/settings/claude-login")).status, 404);
-  assert.equal((await (await get("/capabilities")).json()).features.claude_login, false);
+  for (const [label, env, options] of [["loopback", undefined, {}], [`${CLAUDE_LOGIN_ENV}=off`, "off", {}], ["API-only", undefined, { apiOnly: true }]]) {
+    if (env === undefined) delete process.env[CLAUDE_LOGIN_ENV];
+    else process.env[CLAUDE_LOGIN_ENV] = env;
+    const server = await serve(t, { faux: undefined, runner: false, ...options });
+    const get = (path) => fetch(`${server.url}/v2${path}`, { headers: { authorization: `Bearer ${server.token}` } });
+    const answered = (await get("/settings/claude-login")).status !== 404;
+    const said = (await (await get("/capabilities")).json()).features.claude_login;
+    assert.equal(said, answered, `${label}: capabilities say ${said}, the route ${answered ? "answers" : "is 404"}`);
+    assert.equal(answered, label === "loopback", label);
+    await server.stop();
+  }
+  delete process.env[CLAUDE_LOGIN_ENV];
+});
+
+test("claudeLoginServed: one rule for the routes and for capabilities: none while switched off, on API-only only what its route list serves", () => {
+  assert.equal(claudeLoginServed(undefined, undefined), true);
+  assert.equal(claudeLoginServed(`${CLAUDE_LOGIN_ENV}=off`, undefined), false);
+  assert.equal(claudeLoginServed(undefined, API_ONLY_ROUTES), false, "API-only serves none of them today");
+  assert.equal(claudeLoginServed(undefined, new Set([...API_ONLY_ROUTES, ...CLAUDE_LOGIN_ROUTES])), true, "an API-only list that served them all would answer");
 });
 
 test("AGENTRUN_CLAUDE_CODE_LOGIN=off: every route is 404 by name, a saved turn-on is dropped at the start, and claude-agent runs on the model keys", { timeout: 180_000 }, async (t) => {

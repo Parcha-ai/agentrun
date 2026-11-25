@@ -349,6 +349,16 @@ test("the test reads no more of the gateway's answer than MAX_TEST_BYTES: a long
   assert.ok(pulled <= MAX_TEST_BYTES + 4 * chunk.byteLength, `read ${pulled} bytes`);
 });
 
+test("an answer whose body breaks off while it is read is read as none: the test says so in words, and never throws", async () => {
+  const { testGateway } = await import("../dist/model-gateway.js");
+  const body = new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode('{"data": [')); controller.error(new Error("the connection dropped")); } });
+  const fetch = async () => new Response(body, { status: 200, headers: { "content-type": "application/json" } });
+  const store = { settings: { get: async () => undefined }, sealedKeys: { get: async () => undefined } };
+  const answer = await testGateway({ store, sealKey: Buffer.alloc(32), env: {}, changed: async () => {}, fetch }, { base_url: "https://gateway.example", api_key: CANARY });
+  assert.equal(answer.ok, false);
+  assert.match(answer.why, /is not JSON/);
+});
+
 test("a run in the runner holds the saved gateway's key, as its claim read it, in its one redactor before its loop starts: a reply that echoes it is cut though the store holds another by then", async () => {
   const { resolveRunnerLoop } = await import("../dist/runner/harness-loops.js");
   const { SAVED_GATEWAY_ENV } = await import("../dist/model-gateway.js");

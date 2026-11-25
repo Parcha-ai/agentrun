@@ -57,6 +57,7 @@ import {
 	egressVolumeArgs,
 	hostAddresses,
 	MAX_ALLOW,
+	NO_CONFIG_PROXY,
 	policyWords,
 	RELAY_FLAG,
 } from "./docker/egress.js";
@@ -657,6 +658,7 @@ export class DockerProvider implements ComputerProvider {
 		const memoryMb = spec.memoryMb ?? DEFAULT_MEMORY_MB;
 		args.push("--user", user, "--env", `HOME=${WORK}`);
 		if (this.#desktop) args.push("--env", `DISPLAY=${this.#desktop.display}`);
+		args.push(...NO_CONFIG_PROXY);
 		for (const [path, options] of Object.entries(tmpfsOf(user, memoryMb))) args.push("--tmpfs", `${path}:${options}`);
 		args.push("--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", String(spec.pids ?? DEFAULT_PIDS));
 		// Not the daemon's defaults, which a host may set to shareable IPC or, on cgroup v1, the host's cgroup namespace.

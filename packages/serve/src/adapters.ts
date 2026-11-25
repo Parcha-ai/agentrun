@@ -248,7 +248,20 @@ export type ConfineChild = (child: Readonly<{ command: string; args: string[] }>
  *  which its own check took: skills.ts), and the run's clock when a template eval case sets one (claude-agent's turn date
  *  reads it; absent, the real clock). `heldRefusal`: the words a held run's model was refused in at its create
  *  (run-launch.ts hold.refused): its provider is the stand-in that refuses every request in them (providerOf). */
-export type AdapterNeeds = { model: ModelRef; models: { getModel(provider: string, id: string): { cost?: Partial<ModelCost> } | undefined }; confine?: ConfineChild; skills?: readonly SkillFiles[]; unpriced?: ReadonlySet<string>; now?: () => Date; zone?: string; heldRefusal?: string };
+export type AdapterNeeds = { model: ModelRef; models: { getModel(provider: string, id: string): { cost?: Partial<ModelCost>; contextWindow?: number; maxTokens?: number } | undefined }; confine?: ConfineChild; skills?: readonly SkillFiles[]; unpriced?: ReadonlySet<string>; now?: () => Date; zone?: string; heldRefusal?: string };
+
+/** The limits of a model the route translates onto a harness's wire (`provider.fetch`: provider.ts routedProvider), for
+ *  an adapter that takes them: its window and its most output tokens, from the model's pi-ai entry in the run's models
+ *  (`needs.models`), the entry the route's own model is. Its window is what every request asks Ollama for
+ *  (options.num_ctx: ollama-provider.ts contextOf, at most 64k), and its output ceiling half that, at most 16,384. None
+ *  for a model not routed, or one with no entry: its adapter's own defaults. */
+export function routedLimits(provider: Pick<Provider, "fetch">, needs: AdapterNeeds): { contextWindow?: number; maxOutputTokens?: number } {
+  if (!provider.fetch) return {};
+  const entry = needs.models.getModel(needs.model.provider, needs.model.modelId);
+  const whole = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+  const [window, ceiling] = [entry?.contextWindow, entry?.maxTokens];
+  return { ...(whole(window) ? { contextWindow: window } : {}), ...(whole(ceiling) ? { maxOutputTokens: ceiling } : {}) };
+}
 
 /** Where a run's adapter sends its model's requests (providerFor), or, for a held run its model kept from running at its
  *  create, the stand-in (heldRefusedProvider): no key is read, and its proxy refuses every request in the create's words,
@@ -455,7 +468,9 @@ export async function codexOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load:
   // On a ChatGPT plan: the plan's rules on its route (no output limit, no input count), billed to it, never priced here.
   const provider = providerOf(codexFacts.wire, env, needs, codexFacts.id);
   const plan = provider.billing === "plan";
-  return codex.codexAdapter({ model: provider.modelId, provider: { origin: provider.origin, credential: provider.credential, ...(plan ? { plan } : {}), ...(provider.refused ? { refused: provider.refused } : {}) }, price: plan ? () => null : priceOf({ ...needs, model: provider.priceModel }), log: harnessLog(codexFacts.id, env), ...(nativeOptions(codexFacts, env).webSearch === "live" ? { webSearch: "live" as const } : {}), ...(needs.confine ? { confine: needs.confine } : {}), ...(needs.skills?.length ? { skills: needs.skills } : {}), ...(standIn ? { standIn } : binary ? { binary } : {}) });
+  // A model the route translates onto the wire (an Ollama model): both of its proxies forward with the route's own fetch,
+  // Codex's live web search, which the translation cannot run, is not offered, and its window and output ceiling are the route's (routedLimits).
+  return codex.codexAdapter({ model: provider.modelId, provider: { origin: provider.origin, credential: provider.credential, ...(plan ? { plan } : {}), ...(provider.refused ? { refused: provider.refused } : {}) }, price: plan ? () => null : priceOf({ ...needs, model: provider.priceModel }), log: harnessLog(codexFacts.id, env), ...routedLimits(provider, needs), ...(provider.fetch ? { fetch: provider.fetch } : nativeOptions(codexFacts, env).webSearch === "live" ? { webSearch: "live" as const } : {}), ...(needs.confine ? { confine: needs.confine } : {}), ...(needs.skills?.length ? { skills: needs.skills } : {}), ...(standIn ? { standIn } : binary ? { binary } : {}) });
 }
 
 /** opencode's adapter, from `load` (this server's own, src/harness-opencode; a test gives its own). Its model goes where
@@ -482,7 +497,9 @@ export async function opencodeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, lo
   // adapter reads: each SKILL.md goes as servedSkill writes it (its name and description, as a prompt reads them, on one
   // line each), so a CRLF file or a folded description is listed by its own words.
   const skills = needs.skills && servedSkills(needs.skills);
-  return opencode.openCodeAdapter({ model: provider.modelId, provider: { origin: provider.origin, credential: provider.credential }, price: priceOf({ ...needs, model: provider.priceModel }), log: harnessLog(openCodeFacts.id, env), ...(needs.confine ? { confine: needs.confine } : {}), ...(skills?.length ? { skills } : {}), ...(standIn ? { standIn } : {}) });
+  // A model the route translates onto the wire (an Ollama model): its proxies forward with the route's own fetch, and its
+  // window and output ceiling are the route's (routedLimits).
+  return opencode.openCodeAdapter({ model: provider.modelId, provider: { origin: provider.origin, credential: provider.credential }, price: priceOf({ ...needs, model: provider.priceModel }), log: harnessLog(openCodeFacts.id, env), ...routedLimits(provider, needs), ...(provider.fetch ? { fetch: provider.fetch } : {}), ...(needs.confine ? { confine: needs.confine } : {}), ...(skills?.length ? { skills } : {}), ...(standIn ? { standIn } : {}) });
 }
 
 /** Why `harness` cannot run here, or undefined when it can (its entry's refusal): its package and pins, its provider, and

@@ -131,8 +131,8 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	// Local Chrome reads where Chrome is from the server's own environment: the names its findChrome reads, then what
 	// Chrome itself reads (PATH first), which its supervisor and Chrome hold and nothing else.
 	// By the namespace, so a package without the lists fails here, in words, and not at the import.
-	const { CHROME_ENV_NAMES, DOCKER_ENV_NAMES } = computer;
-	assert.ok(Array.isArray(CHROME_ENV_NAMES) && Array.isArray(DOCKER_ENV_NAMES), "the package exports the names Chrome and docker read (CHROME_ENV_NAMES, DOCKER_ENV_NAMES)");
+	const { ADB_ENV_NAMES, CHROME_ENV_NAMES, DOCKER_ENV_NAMES } = computer;
+	assert.ok(Array.isArray(ADB_ENV_NAMES) && Array.isArray(CHROME_ENV_NAMES) && Array.isArray(DOCKER_ENV_NAMES), "the package exports the names adb, Chrome and docker read (ADB_ENV_NAMES, CHROME_ENV_NAMES, DOCKER_ENV_NAMES)");
 	assert.deepEqual(extra["local-chrome"].hostEnv, [...CHROME_ENV, ...CHROME_ENV_NAMES]);
 	assert.equal(CHROME_ENV_NAMES[0], "PATH");
 	// Docker's CLI is handed what it reads of the server's environment, and nothing else.
@@ -141,7 +141,7 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	assert.deepEqual(extra.browserbase.hostEnv, ["BROWSERBASE_BASE_URL", "BROWSERBASE_CONNECT_BASE_URL"]);
 	assert.deepEqual(extra.kernel.hostEnv, ["KERNEL_BASE_URL"]);
 	// The phone harness reads the APKs every phone installs, each pinned by its sha256: the operator's setting.
-	assert.deepEqual(extra["phone-harness"].hostEnv, ["PHONE_HARNESS_APKS"]);
+	assert.deepEqual(extra["phone-harness"].hostEnv, ["PHONE_HARNESS_APKS", ...ADB_ENV_NAMES]);
 	// Orgo offers its Linux desktop; its Windows and macOS desktops are parked, each with why, and offered by no
 	// configuration.
 	assert.deepEqual(extra.orgo.parked.map((one) => one.image), ["windows", "macos"]);
