@@ -2,9 +2,6 @@ import { cliLearningOf } from "@/lib/cliLearning";
 import { Archive, ArrowLeft, ArrowRight, Check, Eye, FileText, History, Monitor, Settings, TriangleAlert, Workflow, Wrench } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { LearningField } from "@/components/LearningSwitch";
-import { ListFilter } from "@/components/ListFilter";
-import { matchesFilter } from "@/lib/filter";
-import { McpToolPicker, mcpShownCount } from "@/components/McpToolPicker";
 import { MonidGrants, monidCards } from "@/components/MonidGrants";
 import { ComputerSetting } from "@/components/ComputerSetting";
 import { PlaceSetting } from "@/components/PlaceSetting";
@@ -12,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Field, Input, Textarea } from "@/components/ui/field";
 import { Chip } from "@/components/ui/chip";
 import { ConfirmDialog } from "@/components/ui/dialog";
-import { BuiltInToolCards } from "@/components/BuiltInToolCards";
+import { ToolPicker } from "@/components/ToolPicker";
 import { AgentToolSettings } from "@/components/ToolSettings";
 import { WorkflowEditor } from "@/components/WorkflowEditor";
 import { CodingAgentAction } from "@/components/CodingAgentAction";
@@ -157,8 +154,6 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   const [toolsTouched, setToolsTouched] = useState(false);
   // Whether the last computer picked was refused because no tools are listed yet (computerFields answered null).
   const [toolsUnread, setToolsUnread] = useState(false);
-  // The Tools step's filter box: it hides cards (built-in and MCP), never unticks one.
-  const [toolQuery, setToolQuery] = useState("");
   // The server's tools can arrive after the form opens (capabilities answer late): a new agent's untouched tools follow.
   // So can its places: a new agent with no place yet takes the served default then; a place the person picked stays.
   const toolsKey = caps.tools.map((t) => `${t.name}:${t.available}:${(t.harnesses ?? []).join("+")}`).join(",");
@@ -210,15 +205,6 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   const workflow = agent?.kind === "workflow";
   // A new agent made from a starter (Decision, Workflow): a workflow revision, so no instructions, tools, thinking or model.
   const starting = creating && isStarter(f.harness);
-  // The built-in tools offered: a call-only one to a workflow, or to an agent that names it.
-  const offeredTools = caps.tools.filter((t) => workflow || !t.call_only || f.tools?.includes(t.name));
-  // The built-in tools a filter keeps: what the Tools step draws and counts, one rule for both.
-  // ask_person first: the one tool that lets the agent stop and ask you, which Tool approvals below is not.
-  const builtIns = (query: string) => offeredTools.filter((t) => matchesFilter(query, t.name, t.blurb, t.summary))
-    .sort((a, b) => Number(b.name === "ask_person") - Number(a.name === "ask_person"));
-  const toolCount = (query: string) => builtIns(query).length
-    + (caps.mcp && !workflow ? mcpShownCount(mcpServers ?? null, f.tools ?? [], query) : 0)
-    + (!workflow ? monidCards(f.tools ?? [], monidSeen, query).length : 0);
   // What a new agent still needs before Create is on.
   const createNeeds = [...(!f.name?.trim() ? ["Give the agent a name to create it."] : []), ...(!workflow && !starting && !f.instructions?.trim() ? ["Write its instructions to create it."] : [])];
   // The agent's approvals as the form has them: changed here, else the definition's, else ask (the server's default).
@@ -251,8 +237,6 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   const steps = STEPS.filter((s) => !(creating && s.id === "history") && (s.id !== "workflow" || workflow) && !(starting && s.id === "tools") && (s.id !== "computer" || (!workflow && !starting && !!(caps.computers || caps.places))));
   // A step this agent or server has none of (the Computer step on a server that lists no places) opens the first one.
   const step: Step = steps.some((s) => s.id === chosen) ? chosen : steps[0]!.id;
-  // Counted only while the Tools step shows: it scans every MCP tool, and the other steps re-render on each keystroke.
-  const shownTools = step === "tools" ? toolCount(toolQuery) : 0;
   const at = steps.findIndex((s) => s.id === step);
   const save = async () => {
     if (!onSave) return;
@@ -435,20 +419,14 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
           {step === "tools" && (
             <div className="space-y-6">
               <Field group label="Tools" note="On by default: the tools this agent's harness runs on this server. Untick one to take it away." error={fieldError("tools")} warning={fieldWarning("tools")}>
-                {/* A filter over the built-in tools and every MCP server's (a GitHub server lists hundreds): a card it hides stays as it was. */}
-                <ListFilter value={toolQuery} onChange={setToolQuery} label="Filter tools" placeholder="Filter by name or description" shown={shownTools} total={toolCount("")} className="mb-3" />
-                {toolQuery.trim() && !shownTools && <p className="mb-3 font-mono text-body text-muted-foreground">No tool matches “{toolQuery.trim()}”.</p>}
-                {/* Columns by a minimum width: as many as fit, one card a row in a narrow pane (a phone on its side). */}
-                {/* Every collapsed card one height, top-aligned: one card's Details grows it alone, never its row. */}
-                <ul className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,18rem),1fr))] items-start gap-2">
-                  <BuiltInToolCards shown={builtIns(toolQuery)} offers={caps.tools} tools={f.tools ?? []} harness={f.harness ?? "pi"} place={f.place ?? placeOf(d?.place)} places={caps.places}
-                    workflow={workflow} mcpHarnesses={caps.mcpHarnesses} choices={providerChoices} gates={permissionGates} granted={agent?.tools} settings={f.tool_settings ?? d?.tool_settings ?? {}}
-                    onChange={(tools) => { setToolsTouched(true); set({ tools }); }} />
-                  {/* The MCP and monid groups span the whole row: each lays out its own cards in the same columns. */}
-                  {caps.mcp && !workflow && <li className="col-span-full"><McpToolPicker servers={mcpServers} tools={f.tools ?? []} harness={f.harness ?? "pi"} harnesses={caps.mcpHarnesses} filter={toolQuery} onRetry={onRetryMcp} onChange={(tools) => { setToolsTouched(true); set({ tools }); }} /></li>}
-                  {/* monid's endpoints, granted by name (a workflow's nodes bind none): each grant the agent has, and a field for another. */}
-                  {!workflow && <li className="col-span-full"><MonidGrants tools={f.tools ?? []} listed={monidSeen} filter={toolQuery} notes={monidWarnings.map(({ grant, warning }) => ({ grant, message: warning.message }))} refused={monidRefused} onChange={(tools) => { setMonidSeen((seen) => [...new Set([...seen, ...tools.filter(isMonidName)])]); setToolsTouched(true); set({ tools }); }} /></li>}
-                </ul>
+                <ToolPicker offers={caps.tools} tools={f.tools ?? []} harness={f.harness ?? "pi"} place={f.place ?? placeOf(d?.place)} places={caps.places} workflow={workflow}
+                  mcp={!!caps.mcp} servers={mcpServers} mcpHarnesses={caps.mcpHarnesses} choices={providerChoices} gates={permissionGates} granted={agent?.tools} settings={f.tool_settings ?? d?.tool_settings ?? {}}
+                  onRetry={onRetryMcp} onChange={(tools) => { setToolsTouched(true); set({ tools }); }}
+                  extra={workflow ? undefined : {
+                    count: (query) => monidCards(f.tools ?? [], monidSeen, query).length,
+                    // monid's endpoints, granted by name (a workflow's nodes bind none): each grant the agent has, and a field for another.
+                    render: (query) => <li className="col-span-full"><MonidGrants tools={f.tools ?? []} listed={monidSeen} filter={query} notes={monidWarnings.map(({ grant, warning }) => ({ grant, message: warning.message }))} refused={monidRefused} onChange={(tools) => { setMonidSeen((seen) => [...new Set([...seen, ...tools.filter(isMonidName)])]); setToolsTouched(true); set({ tools }); }} /></li>,
+                  }} />
                 {/* Quiet, here only: an agent can be given no web tool on purpose (one that works on files). */}
                 {!workflow && !reachesWeb(f.tools ?? []) && (
                   <p className="mt-2 font-mono text-small text-muted-foreground">This agent can't reach the web: {webHere.length ? `tick ${webHere.join(" or ")} in Tools.` : `${f.harness ?? "pi"} runs no web tool on this server.`}</p>
