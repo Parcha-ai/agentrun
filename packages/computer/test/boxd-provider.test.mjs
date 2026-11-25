@@ -403,6 +403,21 @@ test("prepareImage: a desktop's snapshot the org has is answered by its name, wi
 	assert.deepEqual([pending.rec.calls.map(([call]) => call), told], [["snapshots.get", "snapshots.get"], []]);
 });
 
+test("prepareImage: the desktop recipe adds what boxd's own image lacks: Mousepad and xfce4-terminal from Ubuntu, Firefox ESR from Mozilla's APT repository with its signing key pinned by sha256, each program and desktop file checked", async () => {
+	const { rec, provider } = setup({ kind: "desktop" }, building());
+	assert.equal((await provider.prepareImage()).ok, true);
+	const { command } = rec.calls.find(([call]) => call === "streamExec")[2];
+	assert.ok(!command.slice("sudo -n sh -c '".length, -1).includes("'"), "the recipe holds no single quote, so its quoting is one pair");
+	const key = "/etc/apt/keyrings/packages.mozilla.org.asc";
+	assert.ok(command.includes(`curl -fsSL https://packages.mozilla.org/apt/repo-signing-key.gpg -o ${key}`), "Mozilla's signing key, fetched");
+	assert.ok(command.includes(`echo "3ecc63922b7795eb23fdc449ff9396f9114cb3cf186d6f5b53ad4cc3ebfbb11f  ${key}" | sha256sum -c --quiet -`), "and held to the key whose fingerprint is 35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3");
+	assert.ok(command.includes(`deb [signed-by=${key}] https://packages.mozilla.org/apt mozilla main`), "the repository signed by that key alone");
+	assert.ok(command.indexOf("sha256sum -c") < command.indexOf("mozilla main"), "the key is checked before apt reads anything it signs");
+	assert.match(command, /apt-get install -y -qq --no-install-recommends mousepad xfce4-terminal firefox-esr >\/dev\/null/);
+	assert.match(command, /for x in mousepad xfce4-terminal firefox-esr; do command -v "\$x"/);
+	assert.match(command, /for app in org\.xfce\.mousepad xfce4-terminal firefox-esr; do test -f "\/usr\/share\/applications\/\$app\.desktop"/);
+});
+
 test("prepareImage: a desktop's snapshot is built once from boxd's own image: the recipe as root, the capture, the build machine deleted and gone", async () => {
 	const { rec, provider } = setup({ kind: "desktop" }, building());
 	const told = [];
