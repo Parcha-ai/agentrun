@@ -23,6 +23,8 @@ const untouched = new Proxy({}, { get: (_, name) => { throw new Error(`the store
 const claim = { runId: "run-unheld", epoch: 1, runner: "runner-unheld" };
 const launch = { plane: { tools: [] }, model: "not-a-model" };
 const plain = (text) => text;
+/** The saved gateway's key, long enough for a redactor to hold. */
+const GATEWAY_KEY = `saved-gateway-${"k".repeat(24)}`;
 
 for (const [name, redact] of [["none", undefined], ["a plain function that holds nothing", plain]]) {
   test(`an adapter loop given ${name} as its redactor throws at its making, before it reads its deps`, () => {
@@ -61,7 +63,7 @@ for (const [name, redact] of [["none", undefined], ["a plain function that holds
   });
 
   test(`a loop over the saved gateway given ${name} as its redactor throws at its making, before the loop it wraps is made`, () => {
-    const env = savedGatewayMarked({ AGENTRUN_MODEL_GATEWAY_SAVED: "1", AGENT_MODEL_API_KEY: "a-saved-gateway-key-0123456789" });
+    const env = savedGatewayMarked({ AGENTRUN_MODEL_GATEWAY_SAVED: "1", AGENT_MODEL_API_KEY: GATEWAY_KEY });
     assert.throws(() => holdingGatewayKey(() => assert.fail("the wrapped loop was made"), env)(loopDepsWith(redact)), UNHELD);
   });
 
