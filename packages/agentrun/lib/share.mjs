@@ -75,9 +75,20 @@ function launchCodeOf(cli, data, origin) {
   return url.origin === origin && code ? code : undefined;
 }
 
-/** The summary of a bundle: counts and kinds, the paths it left out (already cut), never a word of the run. */
+/** `text`, the string at `at` in a bundle, with each value a restore put back there (its `restored` records) cut again,
+ *  as `[redacted:<rule>]`: a restore is for the page and the share, never the terminal. */
+function masked(text, at, restored) {
+  const spans = restored.filter((record) => record?.at === at && Number.isInteger(record.start) && Number.isInteger(record.end) && record.start >= 0 && record.start <= record.end && record.end <= text.length);
+  let out = text;
+  for (const record of spans.sort((a, b) => b.start - a.start)) out = `${out.slice(0, record.start)}[redacted:${String(record.rule)}]${out.slice(record.end)}`;
+  return out;
+}
+
+/** The summary of a bundle: counts and kinds, the paths it left out (already cut, and any restored value in one cut
+ *  again), never a word of the run. */
 function summaryOf(run, bundle, bytes) {
   const cuts = Array.isArray(bundle.cuts) ? bundle.cuts : [];
+  const restored = Array.isArray(bundle.restored) ? bundle.restored : [];
   const counts = new Map();
   for (const cut of cuts) counts.set(String(cut?.kind), (counts.get(String(cut?.kind)) ?? 0) + 1);
   return {
@@ -86,8 +97,8 @@ function summaryOf(run, bundle, bytes) {
     sha256: bundle.sha256,
     bytes: bytes.length,
     cuts: { total: cuts.length, restorable: cuts.filter((cut) => cut?.restorable === true).length, by_kind: Object.fromEntries([...counts].sort(([a], [b]) => (a < b ? -1 : 1))) },
-    restored: Array.isArray(bundle.restored) ? bundle.restored.length : 0,
-    omitted: (Array.isArray(bundle.omitted) ? bundle.omitted : []).map((entry) => ({ what: entry?.what, ...(typeof entry?.path === "string" ? { path: entry.path } : {}), why: entry?.why })),
+    restored: restored.length,
+    omitted: (Array.isArray(bundle.omitted) ? bundle.omitted : []).map((entry, index) => ({ what: entry?.what, ...(typeof entry?.path === "string" ? { path: masked(entry.path, `/omitted/${index}/path`, restored) } : {}), why: entry?.why })),
   };
 }
 
