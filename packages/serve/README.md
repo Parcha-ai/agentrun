@@ -274,8 +274,9 @@ its first word is held too when that word is a known auth scheme (`Bearer`, `Bas
 and any query parameter named like a credential, and, inside any header's value, the value of each `name=value` pair
 named like a credential, read over the whole value as written, a URL's query and fragment included (a cookie's
 `session=<token>`, `https://relay/v1?region=us;session=<token>`, `#access_token=<token>`; pairs split at `;`, `&`, a
-comma or its `%2C`, and spaces, again at `?`, `#` and `/` too, and again at all but `;`, so `api_key=<key;rest>` holds
-the whole key; a value in quotes is held without them; `theme=dark` is not held), and the user, password and
+comma or its `%2C`, and spaces, again at `?`, `#` and `/` too, and again at `&` and spaces alone, so
+`api_key=<key;rest%2Cmore>` holds the whole key; a value whose part before its first `;` is empty, `token=;<key>`, is
+held after that `;` too; a value in quotes is held without them; `theme=dark` is not held), and the user, password and
 credential-named query parameters of every URL in it, one inside another's query or path too, scheme-relative
 (`//<key>@host`) or with its slashes escaped (`https:\/\/`). A URL's query, an endpoint's too, is read split at `&`
 alone and again at `&` and `;`, so `?api_key=<key;rest>` holds the whole key and `?region=us;session=<token>` the
