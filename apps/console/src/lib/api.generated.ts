@@ -2940,6 +2940,7 @@ export interface operations {
         workflow: string;
         digest: string;
         state: "serving" | "needs_revision";
+        reason: "over_line" | "no_by_hand_cost" | null;
         served: {
           runs: number;
           mean_usd: number;

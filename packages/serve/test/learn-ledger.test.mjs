@@ -151,6 +151,19 @@ test("pastRunsOf: a served run cut at its cap reads at its bound on the served s
   assert.deepEqual(workflowCostsOf(past).map((one) => one.state), ["needs_revision"]);
 });
 
+test("pastRunsOf: a served run cut at its cap whose shadow is at work is unknown on the served side, left out of its mean and counted, as any run of unknown cost", () => {
+  const served = { path: "workflow", workflow: "answer", workflow_digest: C };
+  // One run by hand at $1, 10 served at $0.10, then the newest served run cut at a $5 bound with its audit's shadow at work.
+  const ends = [
+    { id: "h1", costUsd: 1 },
+    ...Array.from({ length: 11 }, (_, i) => ({ id: `s${String(i).padStart(2, "0")}`, metrics: served, ...(i === 10 ? { costAtMostUsd: 5 } : { costUsd: 0.1 }) })),
+  ].map((end, at) => ({ ...end, startedAt: at }));
+  const out = summarize({ rows: ends.map((end) => record(endOf(end)).row), spend: [], shadows: new Map([["s10", "open"]]), revisions: [], compileAfter: 2 });
+  const listed = ends.map((end) => ({ id: end.id, startedAt: end.startedAt, disk: null, costAtMostUsd: end.costAtMostUsd ?? null, metrics: end.metrics ?? { path: "agent" } })).reverse();
+  const line = costLineOf(pastRunsOf(out, listed, () => true), "answer", C);
+  assert.deepEqual([line.served, line.unknown_runs], [{ runs: 10, mean_usd: 0.1 }, 1], "the cut run with its shadow at work: unknown, left out and counted");
+});
+
 const LEARNS = { input: { content: "What is 1 plus 41?" }, title: "t", place: { mode: "runner" }, learning: { given: [], seed: "a".repeat(40), section: "", seedNotes: 0, workflows: ["answer"] } };
 
 test("GET /agents/{id}/learning/cost and GET /runs/{id} read one ledger: each run's job $ and learning parts agree, and every run's all-in and the unattributed are the booked total", async (t) => {

@@ -12,7 +12,7 @@ import { watchCommandsAt, wakeCommands } from "../command-wake.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { JOURNAL_FIRST_ID, RunStorage } from "../journal/storage.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
-import { COMMANDS_ONE_ANSWER, COMPUTER_INTERVALS, COMPUTER_INTERVALS_ADDED, COMPUTER_INTERVALS_RUN, DDL, diskUpgrade, HAND_BACKS, HAND_BACKS_AT, HAND_BACKS_KEPT_MS, HAND_BACKS_RUN, IMPORTED_TEMPLATES, LEARNING_LEDGER, LEARNING_LEDGER_AGENT, LEARNING_LEDGER_EPOCH, LEARNING_SPEND, LEARNING_SPEND_AGENT, LEARNING_SPEND_OF_RUN, listingUpgrade, MINTED_TOKENS, purgeUpgrade, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUN_ATTEMPTS, RUNNERS, RUNNERS_ADDED, RUN_LAUNCH_CENSUS, RUN_LAUNCH_CENSUS_ERASED, RUN_LAUNCH_CENSUS_ERASED_MADE, RUN_LAUNCH_CENSUS_SETTLE, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, TRIGGERS_TEMPLATE_ID } from "../schema.js";
+import { COMMANDS_ONE_ANSWER, COMPUTER_INTERVALS, COMPUTER_INTERVALS_ADDED, COMPUTER_INTERVALS_RUN, DDL, diskUpgrade, HAND_BACKS, HAND_BACKS_AT, HAND_BACKS_KEPT_MS, HAND_BACKS_RUN, IMPORTED_TEMPLATES, LEARNING_LEDGER, LEARNING_LEDGER_AGENT, LEARNING_LEDGER_BY_HAND, LEARNING_LEDGER_EPOCH, LEARNING_LEDGER_REPAIR, LEARNING_SPEND, LEARNING_SPEND_AGENT, LEARNING_SPEND_OF_RUN, listingUpgrade, MINTED_TOKENS, purgeUpgrade, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUN_ATTEMPTS, RUNNERS, RUNNERS_ADDED, RUN_LAUNCH_CENSUS, RUN_LAUNCH_CENSUS_ERASED, RUN_LAUNCH_CENSUS_ERASED_MADE, RUN_LAUNCH_CENSUS_SETTLE, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, STORE_META_LEDGER_BACKFILLED, TRIGGERS_TEMPLATE_ID } from "../schema.js";
 import {
   ActiveRuns, AgentArchived, AgentDeleting, AgentPurged, CommandTaken, ExternalBodyConflict, Fenced, FiringMoved, RunFinal, RunPurged, RunsMadeFromLeft, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreAwaitsServer, StoreBusy, StoreConstraint, StoreFromEarlierVersion, TriggerFull, TriggersLeft, UPLOAD_PREFIX, type AgentRow, type Agents,
   type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
@@ -43,7 +43,7 @@ const seqOf = (cursor: RunChangeCursor): number => {
 import { cleanText, type Dialect, settledBody } from "../dialect.js";
 import { inMemory } from "./memory.js";
 import { Connection, DEFAULT_BUSY_TIMEOUT_MS, type SqliteExecutor, type SqliteValue, type Statement, type StoreConnection, type Tx } from "./connection.js";
-import { applyRunPatch, backfillLedger, EXACT_COST_USD, NOT_A_LEARNING_RUN, recordLedger, refuseLeftovers, REOPEN_SET, reopenableWhere, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
+import { applyRunPatch, backfillLedger, BY_HAND_BEFORE, EXACT_COST_USD, NOT_A_LEARNING_RUN, recordLedger, refuseLeftovers, REOPEN_SET, reopenableWhere, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
 import { launchDiskOf, readableJson,readLaunch, readLearningStarts, readSeededBefore, readUsageMetadata, writeLaunch, writeLaunchSealed } from "./run-launch.js";
 import { canonical } from "../agent-body.js";
 import type { LedgerRow, SpendRow } from "../../learn/ledger.js";
@@ -547,6 +547,7 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     // a runner waits for the server that adds the tables (STORE_DDL at its start), and drops the `epoch` an earlier build
     // kept on the ledger (LEARNING_LEDGER_EPOCH), which this build's end does not write.
     const ledgerColumns = new Set((await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('learning_ledger')")).map((column) => column.name));
+    const metaColumns = new Set((await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('store_meta')")).map((column) => column.name));
     if (role === "runner" && (await connection.all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name IN ('learning_ledger', 'learning_spend')")).length < 2) {
       throw new StoreAwaitsServer("write each run's learning ledger row and spend at its end (learning_ledger, learning_spend)");
     }
@@ -587,10 +588,15 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
         { sql: COMPUTER_INTERVALS_RUN },
         // Nor any claim's turn and attempt (schema.ts RUN_ATTEMPTS): a claim made before it has no row.
         { sql: RUN_ATTEMPTS },
-        // Nor any learning ledger (schema.ts LEARNING_LEDGER, LEARNING_SPEND), or one with each row's `epoch`, dropped.
-        ...(ledgerColumns.has("epoch") ? [{ sql: LEARNING_LEDGER_EPOCH }] : []),
+        // Nor any learning ledger (schema.ts LEARNING_LEDGER, LEARNING_SPEND), or one with each row's `epoch`: the rows that
+        // release could leave wrong are deleted (LEARNING_LEDGER_REPAIR) and the backfill below records them again, then
+        // the epoch is dropped. Nor the mark that every ended run has its row (STORE_META_LEDGER_BACKFILLED), nor the
+        // by-hand index (LEARNING_LEDGER_BY_HAND).
+        ...(metaColumns.has("ledger_backfilled") ? [] : [{ sql: STORE_META_LEDGER_BACKFILLED }]),
+        ...(ledgerColumns.has("epoch") ? [...LEARNING_LEDGER_REPAIR.map((sql) => ({ sql })), { sql: "UPDATE store_meta SET ledger_backfilled = 0 WHERE singleton = 1" }, { sql: LEARNING_LEDGER_EPOCH }] : []),
         { sql: LEARNING_LEDGER },
         { sql: LEARNING_LEDGER_AGENT },
+        { sql: LEARNING_LEDGER_BY_HAND },
         { sql: LEARNING_SPEND },
         { sql: LEARNING_SPEND_AGENT },
         { sql: LEARNING_SPEND_OF_RUN },
@@ -2120,14 +2126,7 @@ class SqliteStore implements Store {
         };
       },
       byHandBefore: async (agentId, before, limit) => {
-        const rows = await db.all<{ run_id: string; started_at: number | string; job_usd: number }>(
-          `SELECT l.run_id, runs.started_at, l.job_usd FROM learning_ledger l JOIN runs ON runs.id = l.run_id
-             WHERE l.agent_id = ? AND l.path = 'agent' AND l.cost = 'known' AND l.job_usd IS NOT NULL AND runs.${NOT_A_LEARNING_RUN}
-               AND runs.disk IS NULL AND runs.imported_from IS NULL AND runs.archived_at IS NULL AND runs.purged_at IS NULL
-               AND (runs.started_at < ? OR (runs.started_at = ? AND runs.id < ?))
-             ORDER BY runs.started_at DESC, runs.id DESC LIMIT ?`,
-          agentId, before.startedAt, before.startedAt, before.id, limit,
-        );
+        const rows = await db.all<{ run_id: string; started_at: number | string; job_usd: number }>(BY_HAND_BEFORE, agentId, before.startedAt, before.id, limit);
         return rows.map((row) => ({ id: row.run_id, startedAt: Number(row.started_at), jobUsd: Number(row.job_usd) }));
       },
     };

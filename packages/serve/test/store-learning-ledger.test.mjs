@@ -6,7 +6,11 @@
 //   - a run's end again (after a reopen) writes its spend rows anew, none left from the end before; healCost records the
 //     row again with the healed cost; a purge takes the run's row and every spend row it booked or that audits it;
 //   - a run that ended with no row is recorded once, at the server's open (run-patch.ts backfillLedger), at the figures
-//     its end would have written; no read records one;
+//     its end would have written, a page at a time; an open after a stop partway records the rest, and once the ledger
+//     is marked whole (store_meta.ledger_backfilled) no open reads the runs again; no read records one;
+//   - a store the ledger's first release left has its wrong rows recorded again at the open that drops their epoch (a
+//     shadow with no path or audit spend, a stale row, an unknown cost its run now has, a run by hand with no path);
+//   - the read before the window (Learning.byHandBefore) walks the by-hand index, no sort of the agent's rows;
 //   - a cancel that wins an end keeping its job's end (keepsEnd) moves its ended_at after its row is written: the row
 //     is read as written, no round read again;
 //   - the money rule's read at a claim (pastRunsOverStore) is bounded: the agent's newest PAST_RUNS runs on no named disk,
@@ -16,9 +20,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { agentWithRevision, storeOn, T0 } from "./store-helpers.mjs";
-import { raw } from "./store-target.mjs";
+import { raw, sqliteOnly } from "./store-target.mjs";
 
 const { agentCostOverStore, pastRunsOverStore, runAllInOverStore } = await import("../dist/store-reads/learning.js");
+const { BY_HAND_BEFORE } = await import("../dist/store/sqlite/run-patch.js");
 const { PAST_RUNS, workflowCostsOf } = await import("../dist/runner/workflow-first.js");
 const { keepResetAt } = await import("../dist/learn/promote.js");
 
@@ -31,14 +36,16 @@ const KEPT = { meters: { tools: 0, tokens: 0.1, browser: { usd: 0, seconds: 0 },
 const kept = (n, job, look, extra = {}) => ({ table: "learning_proposals", row: { round: n, turn: {}, proposal: { state: "dropped", reason: "empty", detail: "d", answered_at: AT, job_cost_usd: job, look_back_usd: look, ...extra } } });
 
 /** A store with agent-1 and its revision, and `end`: run `id` made and ended at the clock's next second, its row's cost
- *  `costUsd` and its metrics, with `also`'s rows; on a named disk with `disk`; an audit's shadow with `audit`. */
+ *  `costUsd` and its metrics, with `also`'s rows; on a named disk with `disk`; an audit's shadow with `audit`; a launch
+ *  that learns with `learns`. */
 async function ledgerStore(t) {
   const clock = { now: T0 };
   const { store, file } = await storeOn(t, { clock });
   await agentWithRevision(store, "agent-1", "rev-1");
-  const end = async (id, costUsd, metrics = { path: "agent" }, { also = [], disk, audit } = {}) => {
+  const end = async (id, costUsd, metrics = { path: "agent" }, { also = [], disk, audit, learns } = {}) => {
     clock.now += 1_000;
-    await store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "q" }, title: "t", place: { mode: "runner" }, ...(disk ? { archil_disk: { disk_id: disk, kind: "launch" } } : {}), ...(audit ? { audit } : {}) } });
+    const learning = learns ? { learning: { given: [], seed: "a".repeat(40), section: "", seedNotes: 0 } } : {};
+    await store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "q" }, title: "t", place: { mode: "runner" }, ...(disk ? { archil_disk: { disk_id: disk, kind: "launch" } } : {}), ...(audit ? { audit } : {}), ...learning } });
     const claim = await store.claim(id, "runner-a", { leaseMs: 60_000 });
     clock.now += 1_000;
     await store.runs.update(claim, { state: "ended", costUsd, metrics }, also.length ? { also } : undefined);
@@ -103,6 +110,8 @@ test("a run that ended with no ledger row (a build before the ledger ended it) i
   const db = await raw(file);
   await db.run("DELETE FROM learning_ledger WHERE run_id IN (?, ?)", "r1", "r2");
   await db.run("DELETE FROM learning_spend WHERE run_id IN (?, ?)", "r1", "r2");
+  // As an earlier build left the store: ended runs with no row, the ledger never marked whole.
+  await db.run("UPDATE store_meta SET ledger_backfilled = 0 WHERE singleton = 1");
   await db.close();
   await pastRunsOverStore(store, "agent-1");
   assert.deepEqual((await store.learning.ledger("agent-1", ["r1", "r2"])).rows, [], "a read records neither");
@@ -186,6 +195,20 @@ test("once the newest PAST_RUNS runs hold no run by hand, the money rule holds t
   assert.deepEqual((await agentCostOverStore(store, "agent-1")).workflows.map((one) => one.state), ["needs_revision"], "the cost page says the same");
 });
 
+test("one by-hand rule in the window and before it: a run whose end named no path is the agent's when its launch does not learn (its row says agent), unknown when it does", async (t) => {
+  const { store, end } = await ledgerStore(t);
+  for (let at = 0; at < 10; at++) await end(`h${String(at).padStart(2, "0")}`, 1, {});
+  // Newer than those, nearer the window: runs that learn whose end named no path, at $9. Never the agent's by hand.
+  for (let at = 0; at < 3; at++) await end(`l${at}`, 9, {}, { learns: true });
+  const rows = new Map((await store.learning.ledger("agent-1")).rows.map((row) => [row.runId, row.path]));
+  assert.deepEqual([rows.get("h00"), rows.get("l0")], ["agent", null], "the row says it: agent for a launch that does not learn, null for one that does");
+  for (let at = 0; at < PAST_RUNS; at++) await end(`s${String(at).padStart(3, "0")}`, 0.1, SERVED);
+  for (let at = 0; at < 10; at++) await end(`x${String(at).padStart(2, "0")}`, 2, SERVED);
+  const past = await pastRunsOverStore(store, "agent-1");
+  assert.deepEqual(past.by_hand, { runs: 10, mean_usd: 1 }, "the 10 by hand before the window, as the window would read them; the runs that learn left out");
+  assert.deepEqual((await agentCostOverStore(store, "agent-1")).workflows.map((one) => one.state), ["needs_revision"]);
+});
+
 test("a shadow that failed before its end wrote its metrics books its cost at its end, on the run its launch audits", async (t) => {
   const { store, end } = await ledgerStore(t);
   await end("s1", 0.1, SERVED);
@@ -194,4 +217,84 @@ test("a shadow that failed before its end wrote its metrics books its cost at it
   assert.deepEqual(ledger.rows.filter((row) => row.runId === "audit.s1").map((row) => row.path), ["audit"]);
   assert.deepEqual(ledger.spend.map((one) => [one.runId, one.kind, one.ofRun, one.usd]), [["audit.s1", "audit", "s1", 0.05]]);
   assert.equal((await runAllInOverStore(store, "s1")).shadow_usd, 0.05);
+});
+
+test("a store the ledger's first release left: its wrong rows are recorded again at the server's open that drops their epoch, at the figures their ends write now", sqliteOnly("a SQLite store with each ledger row's epoch; Postgres repairs in migration 0030"), async (t) => {
+  const { store, file, clock, end } = await ledgerStore(t);
+  await end("h1", 1, {});
+  await end("h2", 1);
+  await end("s1", 0.1, SERVED);
+  await end("audit.s1", 0.05, {}, { audit: { of: "s1", workflow: "answer", digest: C } });
+  await end("s2", 0.1, SERVED);
+  await end("audit.s2", 0.05, {}, { audit: { of: "s2", workflow: "answer", digest: C } });
+  const figures = async (on) => ({ ledger: await on.learning.ledger("agent-1"), s1: await runAllInOverStore(on, "s1"), past: await pastRunsOverStore(on, "agent-1") });
+  const now = await figures(store);
+  assert.deepEqual(now.past.by_hand, { runs: 2, mean_usd: 1 });
+  await store.close();
+  const db = await raw(file);
+  // The store as that release left it: each row's epoch (its run's then), no whole-ledger mark, no by-hand index.
+  await db.run("ALTER TABLE learning_ledger ADD COLUMN epoch INTEGER");
+  await db.run("UPDATE learning_ledger SET epoch = (SELECT epoch FROM runs WHERE runs.id = learning_ledger.run_id)");
+  if ((await db.all("SELECT name FROM pragma_table_info('store_meta')")).some((column) => column.name === "ledger_backfilled")) await db.run("ALTER TABLE store_meta DROP COLUMN ledger_backfilled");
+  await db.run("DROP INDEX IF EXISTS learning_ledger_by_hand");
+  // And the rows it could write wrong: a shadow that failed first, with no path and no audit spend; a run by hand whose
+  // end named no path; an unknown cost its run has now (a heal its reader then recorded on read); a row an end wrote
+  // before the run ended again (its epoch behind its run's); an audit's shadow on another path.
+  await db.run("UPDATE learning_ledger SET path = NULL WHERE run_id IN ('audit.s1', 'h1')");
+  await db.run("DELETE FROM learning_spend WHERE run_id = 'audit.s1'");
+  await db.run("UPDATE learning_ledger SET cost = 'unknown', job_usd = NULL WHERE run_id = 'h2'");
+  await db.run("UPDATE learning_ledger SET job_usd = 9, epoch = epoch - 1 WHERE run_id = 's2'");
+  await db.run("UPDATE learning_ledger SET path = 'agent' WHERE run_id = 'audit.s2'");
+  await db.close();
+  const { store: reopened } = await storeOn(t, { file, clock });
+  assert.deepEqual(await figures(reopened), now, "every wrong row recorded again from its run, as its end writes it");
+});
+
+test("Postgres migration 0030 repairs the same rows, before it drops their epoch, and makes the same by-hand index and mark", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const { LEARNING_LEDGER_BY_HAND, LEARNING_LEDGER_REPAIR } = await import("../dist/store/schema.js");
+  const flat = (sql) => sql.replace(/\s+/g, " ").trim();
+  const text = flat(await readFile(new URL("../dist/store/postgres/migrations/0030_learning_ledger_epoch.sql", import.meta.url), "utf8"));
+  const at = (sql) => text.indexOf(`${flat(sql)};`);
+  for (const sql of LEARNING_LEDGER_REPAIR) assert.ok(at(sql) >= 0 && at(sql) < text.indexOf("DROP COLUMN epoch"), sql);
+  assert.ok(at(LEARNING_LEDGER_BY_HAND.replace(" IF NOT EXISTS", "")) >= 0, LEARNING_LEDGER_BY_HAND);
+  assert.ok(text.includes("ADD COLUMN ledger_backfilled"));
+});
+
+test("the read before the window walks the by-hand index (learning_ledger_by_hand): no sort of the agent's ledger, whatever its size", sqliteOnly("SQLite's query plan"), async (t) => {
+  const { store, file, end } = await ledgerStore(t);
+  for (let at = 0; at < 10; at++) await end(`h${String(at).padStart(2, "0")}`, 1);
+  for (let at = 0; at < PAST_RUNS; at++) await end(`s${String(at).padStart(3, "0")}`, 0.1, SERVED);
+  assert.deepEqual((await pastRunsOverStore(store, "agent-1")).by_hand, { runs: 10, mean_usd: 1 }, "the window full: the 10 by hand before it");
+  await store.close();
+  const db = await raw(file);
+  await db.exec("ANALYZE");
+  const plan = (await db.all(`EXPLAIN QUERY PLAN ${BY_HAND_BEFORE}`, "agent-1", T0, "s000", 10)).map((row) => row.detail);
+  await db.close();
+  assert.ok(plan.some((step) => step.includes("USING INDEX learning_ledger_by_hand")), plan.join("\n"));
+  assert.ok(!plan.some((step) => step.includes("TEMP B-TREE")), plan.join("\n"));
+});
+
+test("the server's open records the runs with no row a page at a time and marks the ledger whole: an open after a stop partway records the rest, once; an open after that reads no run again", async (t) => {
+  const { store, file, clock, end } = await ledgerStore(t);
+  for (let at = 0; at < 70; at++) await end(`r${String(at).padStart(2, "0")}`, 1);
+  const whole = (await store.learning.ledger("agent-1")).rows;
+  await store.close();
+  let db = await raw(file);
+  // A stop partway through the first backfill: a page recorded, the rest not, the ledger not marked whole.
+  await db.run("DELETE FROM learning_ledger WHERE run_id >= ?", "r40");
+  await db.run("UPDATE store_meta SET ledger_backfilled = 0 WHERE singleton = 1");
+  await db.close();
+  let { store: again } = await storeOn(t, { file, clock });
+  assert.deepEqual((await again.learning.ledger("agent-1")).rows, whole, "the rest recorded at the next open");
+  await again.close();
+  ({ store: again } = await storeOn(t, { file, clock }));
+  assert.deepEqual((await again.learning.ledger("agent-1")).rows, whole, "an open again changes nothing");
+  await again.close();
+  db = await raw(file);
+  assert.equal(Number((await db.get("SELECT ledger_backfilled AS whole FROM store_meta WHERE singleton = 1")).whole), 1, "marked whole");
+  await db.run("DELETE FROM learning_ledger WHERE run_id = ?", "r00");
+  await db.close();
+  ({ store: again } = await storeOn(t, { file, clock }));
+  assert.deepEqual((await again.learning.ledger("agent-1", ["r00"])).rows, [], "marked whole: no open reads the runs again");
 });

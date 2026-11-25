@@ -127,19 +127,23 @@ export function costLineOf(past: PastRuns, name: string, digest: string): { serv
 export const overLine = (line: ReturnType<typeof costLineOf>): boolean =>
   line.served.runs >= COST_WINDOW && line.by_hand !== null && line.served.mean_usd !== null && line.served.mean_usd >= line.by_hand.mean_usd;
 
+/** Why the money rule stops a workflow from running first, as workflowFirstOf decides at a claim: `over_line` (overLine),
+ *  or `no_by_hand_cost`, COST_WINDOW served runs and no run by hand of a priced cost to hold them to (none, or each one's
+ *  cost unknown or only a bound): the agent takes the run, never one served unchecked. Null: it serves. */
+export type CostStopReason = "over_line" | "no_by_hand_cost";
+export const stopReasonOf = (line: ReturnType<typeof costLineOf>): CostStopReason | null =>
+  overLine(line) ? "over_line" : line.served.runs >= COST_WINDOW && line.by_hand === null ? "no_by_hand_cost" : null;
+
 /** The money rule's decision over the agent's runs (`past`, store-reads/learning.ts pastRunsOverStore): whether it stops a
- *  workflow at a digest from running first (overLine, or COST_WINDOW served runs with no by-hand cost to hold them to),
- *  as workflowFirstOf decides at a claim. Each workflow's state (learn/promote.ts servingStateOf) folds it in at its
- *  champion's digest. */
-export const costStopOf = (past: PastRuns): CostStop => (workflow, digest) => {
-  const line = costLineOf(past, workflow, digest);
-  return overLine(line) || (line.served.runs >= COST_WINDOW && line.by_hand === null);
-};
+ *  workflow at a digest from running first (stopReasonOf). Each workflow's state (learn/promote.ts servingStateOf) folds
+ *  it in at its champion's digest. */
+export const costStopOf = (past: PastRuns): CostStop => (workflow, digest) => stopReasonOf(costLineOf(past, workflow, digest)) !== null;
 
 /** Each learned workflow that has served one of the agent's runs (`past`) first, at the digest its newest served run
  *  ran, with the money rule's two sides there, the runs they left out for an unknown all-in, and where it stands:
- *  `serving`, or `needs_revision` once over the line (overLine). What the agent's cost per run shows its owner. */
-export function workflowCostsOf(past: PastRuns): { workflow: string; digest: string; state: "serving" | "needs_revision"; served: Mean | null; by_hand: Mean | null; unknown_cost_runs: number }[] {
+ *  `serving`, or `needs_revision` with why once the money rule stops it (stopReasonOf, the launch's decision). What the
+ *  agent's cost per run shows its owner. */
+export function workflowCostsOf(past: PastRuns): { workflow: string; digest: string; state: "serving" | "needs_revision"; reason: CostStopReason | null; served: Mean | null; by_hand: Mean | null; unknown_cost_runs: number }[] {
   const newest = new Map<string, string>();
   for (const run of [...past.runs].sort((a, b) => b.startedAt - a.startedAt)) {
     const m = pathFields(run.metrics);
@@ -147,7 +151,8 @@ export function workflowCostsOf(past: PastRuns): { workflow: string; digest: str
   }
   return [...newest].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([workflow, digest]) => {
     const line = costLineOf(past, workflow, digest);
-    return { workflow, digest, state: overLine(line) ? "needs_revision" : "serving", served: line.served.runs ? (line.served as Mean) : null, by_hand: line.by_hand, unknown_cost_runs: line.unknown_runs };
+    const reason = stopReasonOf(line);
+    return { workflow, digest, state: reason ? "needs_revision" : "serving", reason, served: line.served.runs ? (line.served as Mean) : null, by_hand: line.by_hand, unknown_cost_runs: line.unknown_runs };
   });
 }
 

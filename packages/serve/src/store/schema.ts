@@ -265,9 +265,29 @@ export const LEARNING_LEDGER = `CREATE TABLE IF NOT EXISTS learning_ledger (
     cost TEXT NOT NULL CHECK (cost IN ('known', 'unknown', 'at_most'))
   ) STRICT`;
 export const LEARNING_LEDGER_AGENT = "CREATE INDEX IF NOT EXISTS learning_ledger_agent ON learning_ledger (agent_id)";
+/** The agent's rows by path, newest first: what the read before the money rule's window walks (run-patch.ts
+ *  BY_HAND_BEFORE), a few rows whatever the agent's history. In STORE_DDL, and made at every server open. */
+export const LEARNING_LEDGER_BY_HAND = "CREATE INDEX IF NOT EXISTS learning_ledger_by_hand ON learning_ledger (agent_id, path, started_at, run_id)";
 /** The `epoch` an earlier build of this version kept on each ledger row (the run's epoch at the end that wrote it),
  *  dropped at a server open where present; a runner waits while it is there (postgres 0030_learning_ledger_epoch.sql). */
 export const LEARNING_LEDGER_EPOCH = "ALTER TABLE learning_ledger DROP COLUMN epoch";
+/** The rows the ledger's first release (the build with LEARNING_LEDGER_EPOCH) could leave wrong once no reader corrects
+ *  them: a row whose end named no path (a run by hand it left null, a shadow that failed first, with no audit spend), one
+ *  behind its run's epoch (an end of an earlier runner after it), an unknown cost its run has now, and an audit's shadow
+ *  on another path. Their rows and spend rows are deleted, before the epoch is, and the open's backfill records them
+ *  again from their runs (run-patch.ts backfillLedger). The same statements as postgres 0030_learning_ledger_epoch.sql. */
+const WRONG_LEDGER_ROWS = `SELECT l.run_id FROM learning_ledger l JOIN runs ON runs.id = l.run_id
+    WHERE l.path IS NULL OR l.epoch <> runs.epoch OR (l.cost = 'unknown' AND runs.cost_usd IS NOT NULL)
+      OR (substr(l.run_id, 1, 6) = 'audit.' AND l.path <> 'audit')`;
+export const LEARNING_LEDGER_REPAIR: readonly string[] = [
+  `DELETE FROM learning_spend WHERE run_id IN (${WRONG_LEDGER_ROWS})`,
+  `DELETE FROM learning_ledger WHERE run_id IN (${WRONG_LEDGER_ROWS})`,
+];
+/** Whether every final run not purged has its ledger row (1), which backfillLedger writes once it has recorded the last:
+ *  no later open reads the runs again. 0 on a store with runs no server recorded yet. In STORE_DDL, and added at a server
+ *  open to a store an earlier build of this version made. */
+const LEDGER_BACKFILLED = "ledger_backfilled INTEGER NOT NULL DEFAULT 0 CHECK (ledger_backfilled IN (0, 1))";
+export const STORE_META_LEDGER_BACKFILLED = `ALTER TABLE store_meta ADD COLUMN ${LEDGER_BACKFILLED}`;
 /** Each learning cost, by the revision it is for (learn/ledger.ts SpendRow): a compile turn (`round`, the round that asked
  *  it), a check's replay run or an audit's shadow run (round 0, `of_run` the run it audits), with its $ (null: unknown).
  *  Written with its run's ledger row, replaced whole each time; gone with its run's purge or delete, and with the purge
@@ -403,7 +423,8 @@ export const STORE_DDL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS store_meta (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     schema_version INTEGER NOT NULL,
-    flushes INTEGER NOT NULL DEFAULT 0
+    flushes INTEGER NOT NULL DEFAULT 0,
+    ${LEDGER_BACKFILLED}
   ) STRICT`,
 
   // Agents and their revisions. A revision made from a template keeps its package: {name, version (SemVer), source
@@ -763,6 +784,7 @@ export const STORE_DDL: readonly string[] = [
   RUN_ATTEMPTS,
   LEARNING_LEDGER,
   LEARNING_LEDGER_AGENT,
+  LEARNING_LEDGER_BY_HAND,
   LEARNING_SPEND,
   LEARNING_SPEND_AGENT,
   LEARNING_SPEND_OF_RUN,

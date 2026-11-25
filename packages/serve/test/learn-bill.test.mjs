@@ -454,3 +454,41 @@ test("money rule, the view's read: past runs it can't read, or 10 served runs an
   await end("agent-2", "a2-served-10", 0.5, SERVED_C);
   assert.equal((await costStopOverStore(store, "agent-2"))("answer", C), true, "10 served runs and no run by hand: stopped, never serving unchecked");
 });
+
+test("money rule, the cost page: a workflow a launch stops reads needs_revision with why (over_line, or no_by_hand_cost when no run by hand has a priced cost), never serving", async (t) => {
+  const clock = { now: Date.parse(at(0)) };
+  const { store } = await storeOn(t, { clock });
+  const agents = ["over", "none", "unpriced", "under"];
+  for (const agent of agents) await store.agents.create({ id: agent, name: "Learns" }, { id: `rev-${agent}`, kind: "agentic", body: { instructions: "Go.", learning: true } });
+  let minute = 0;
+  const end = async (agentId, id, cost, metrics) => {
+    clock.now = Date.parse(at((minute += 1)));
+    await store.runs.create({ id, agentId, revisionId: `rev-${agentId}` }, { body: LEARNS });
+    const claim = await store.claim(id, "runner-a", { leaseMs: 60_000 });
+    await store.runs.update(claim, { state: "ended", costUsd: cost, metrics });
+  };
+  const SERVED_C = { path: "workflow", workflow: "answer", workflow_digest: C };
+  // over: by hand at $1, served at $2. none: served only. unpriced: its runs by hand of unknown cost. under: served at $0.50.
+  for (let i = 1; i <= 3; i++) {
+    await end("over", `over-hand-${i}`, 1, { path: "agent" });
+    await end("unpriced", `unpriced-hand-${i}`, null, { path: "agent" });
+    await end("under", `under-hand-${i}`, 1, { path: "agent" });
+  }
+  for (let i = 1; i <= 10; i++) {
+    await end("over", `over-served-${i}`, 2, SERVED_C);
+    await end("none", `none-served-${i}`, 0.5, SERVED_C);
+    await end("unpriced", `unpriced-served-${i}`, 0.5, SERVED_C);
+    await end("under", `under-served-${i}`, 0.5, SERVED_C);
+  }
+  const shown = [];
+  for (const agent of agents) {
+    const [one] = (await agentCostOverStore(store, agent)).workflows;
+    shown.push([agent, one.state, one.reason, one.by_hand, one.unknown_cost_runs, (await costStopOverStore(store, agent))("answer", C)]);
+  }
+  assert.deepEqual(shown, [
+    ["over", "needs_revision", "over_line", { runs: 3, mean_usd: 1 }, 0, true],
+    ["none", "needs_revision", "no_by_hand_cost", null, 0, true],
+    ["unpriced", "needs_revision", "no_by_hand_cost", null, 3, true],
+    ["under", "serving", null, { runs: 3, mean_usd: 1 }, 0, false],
+  ], "the cost page and a launch agree: stopped with why, serving only under a priced by-hand cost");
+});

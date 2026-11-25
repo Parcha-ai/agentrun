@@ -1058,8 +1058,8 @@ test("costLineOf: the newest 10 served runs at the digest against the by-hand si
   // What the agent's cost per run shows its owner: each workflow at its newest digest, over the line or not.
   const ONE = { runs: 1, mean_usd: 0.2 };
   const over = [...Array.from({ length: 10 }, (_, i) => served(i, 0.5)), run(10, { path: "agent" }, 0.2), served(11, 0.1, { workflow_digest: "old" })];
-  assert.deepEqual(workflowCostsOf(pastOf(over, ONE, 0)), [{ workflow: "answer", digest: "d", state: "needs_revision", served: { runs: 10, mean_usd: 0.5 }, by_hand: ONE, unknown_cost_runs: 0 }]);
-  assert.deepEqual(workflowCostsOf(pastOf([run(0, { path: "workflow", workflow: "answer", workflow_digest: "new" }, null), ...over], ONE, 0)), [{ workflow: "answer", digest: "new", state: "serving", served: null, by_hand: ONE, unknown_cost_runs: 1 }], "a new digest starts from zero; its unknown run counted");
+  assert.deepEqual(workflowCostsOf(pastOf(over, ONE, 0)), [{ workflow: "answer", digest: "d", state: "needs_revision", reason: "over_line", served: { runs: 10, mean_usd: 0.5 }, by_hand: ONE, unknown_cost_runs: 0 }]);
+  assert.deepEqual(workflowCostsOf(pastOf([run(0, { path: "workflow", workflow: "answer", workflow_digest: "new" }, null), ...over], ONE, 0)), [{ workflow: "answer", digest: "new", state: "serving", reason: null, served: null, by_hand: ONE, unknown_cost_runs: 1 }], "a new digest starts from zero; its unknown run counted");
   assert.equal(workflowCostsOf(pastOf([...Array.from({ length: 10 }, (_, i) => served(i, 0.1)), run(10, { path: "agent" }, 0.2)], ONE, 0))[0].state, "serving", "under the line");
 });
 
@@ -1200,6 +1200,8 @@ test("the cost page and the launch's money rule read one window: the newest runs
   try {
     // run-0 the newest; the three older ones are served runs of one digest, the newest of them at 0.9, the oldest two at 0.1.
     ids.forEach((id, i) => db.prepare("UPDATE runs SET state = 'ended', started_at = ?, ended_at = ?, cost_usd = ?, metrics = ? WHERE id = ?").run(at - i * 60_000, at - i * 60_000 + 1_000, i === 0 ? 0.9 : 0.1, JSON.stringify({ path: "handed_back", workflow: "answer", workflow_digest: DIGEST, learned_revision: "s" }), id));
+    // As an earlier build ended them: the ledger not marked whole.
+    db.prepare("UPDATE store_meta SET ledger_backfilled = 0 WHERE singleton = 1").run();
   } finally {
     db.close();
   }
