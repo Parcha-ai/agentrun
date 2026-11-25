@@ -286,3 +286,26 @@ test("saveOnce, which web_save shares: a file made between its check and its cre
   assert.deepEqual(saved, { held: "file" }, "what is there is reported held");
   assert.equal(await readFile(join(dir, "media/clip.mp3"), "utf8"), "FIRST", "and kept");
 });
+
+test("a Workspace that cannot create without replacing files nothing: the call works, nothing is written, and saveOnce is refused", async (t) => {
+  const id = "01a1fb41-3c4d-7e5f-8a6b-7c8d9e0f1a2b";
+  const writes = [];
+  // A Workspace with write but no writeNew (as a backend whose create can replace is): its write is recorded, never used.
+  const replacing = (dir) => {
+    const real = localWorkspace(dir);
+    return new Proxy(real, {
+      get(target, key) {
+        if (key === "writeNew") return undefined;
+        if (key === "write") return async (path, data) => (writes.push(path), target.write(path, data));
+        const value = Reflect.get(target, key, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+  };
+  const run = await runOn(t, () => ({ all_terminal: true, jobs: [completed(0, id, voiceResult(2))] }), { wrap: replacing });
+  await run.wait();
+  assert.deepEqual(await tree(run.work), [], "nothing is filed");
+  assert.deepEqual(writes, [], "and no write that could replace was made");
+  await assert.rejects(saveOnce(replacing(run.work), "media/x.mp3", "x"), (error) => error.code === "REFUSED");
+  assert.deepEqual(writes, [], "saveOnce never falls back to write");
+});
