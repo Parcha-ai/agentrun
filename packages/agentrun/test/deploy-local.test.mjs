@@ -33,7 +33,7 @@ function setup(t) {
 }
 function destination({ loseUpload = false, loseRegistration = false, blocker = false, capability = { version: 1, runtimes: ["claude-code", "codex", "pi"] }, staleCurrent = false, clock = { now: NOW } } = {}) {
   const seen = [], state = { generation: "generation", sequence: -1, enabled: true, agent_id: "remote-existing", source: snapshot().source };
-  let moved = false, uploaded = false, registered = false;
+  let moved = false, currentSnapshot, uploaded = false, registered = false;
   const call = async (path, init = {}) => {
     const body = init.body === undefined ? undefined : JSON.parse(init.body);
     seen.push({ path: new URL(path).pathname, method: init.method, body, auth: new Headers(init.headers).get("authorization") });
@@ -45,15 +45,16 @@ function destination({ loseUpload = false, loseRegistration = false, blocker = f
       if (loseRegistration && !registered) { registered = true; throw new Error("connection reset"); }
       value = { connector: { id: "connector", capabilities: { observe: true, native_execution: false, history_import: false, config_sync: true } }, credential: `${CONNECTOR}-${clock.now}`, credential_expires_at: new Date(clock.now + 30 * DAY).toISOString() };
     }
-    else if (route.endsWith("/import")) value = { agent_id: "remote-existing" };
-    else if (route.endsWith("/sync/grant")) value = state;
+    else if (route.endsWith("/import")) { state.target_id = body.target_id; value = { agent_id: "remote-existing" }; }
+    else if (route.endsWith("/sync/grant")) { if (moved && currentSnapshot !== state.snapshot) currentSnapshot = state.snapshot; value = state; }
     else if (route.endsWith("/sync")) {
       if (state.sequence === body.sequence) assert.equal(state.attempt.digest, body.snapshot.digest);
       Object.assign(state, { sequence: body.sequence, snapshot: body.snapshot.digest, attempt: { digest: body.snapshot.digest, blockers: [] } });
       if (loseUpload && !uploaded) { uploaded = true; throw new Error("connection reset"); }
       value = state;
-    } else if (route.endsWith("/source/move")) { moved = true; value = { source: { moved: true }, agent: { agent_id: state.agent_id } }; }
-    else if (route.endsWith("/source")) value = { enabled: true, moved, state: blocker ? "needs_attention" : moved ? "moved" : "ready", snapshot: state.snapshot, current_snapshot: moved ? staleCurrent ? "b".repeat(64) : state.snapshot : undefined, blockers: blocker ? [{ code: "model", message: "Choose a destination model." }] : [] };
+    } else if (route.endsWith("/source/move")) { moved = true; currentSnapshot = staleCurrent ? "b".repeat(64) : state.snapshot; value = { source: { moved: true }, agent: { agent_id: state.agent_id } }; }
+    else if (route.endsWith("/source")) value = { enabled: true, moved, state: blocker ? "needs_attention" : moved ? "moved" : "ready", snapshot: state.snapshot, current_snapshot: moved ? currentSnapshot : undefined,
+      connection: { connector_id: "connector", target_id: state.target_id ?? "target" }, blockers: blocker ? [{ code: "model", message: "Choose a destination model." }] : [] };
     else if (route === "/agents/remote-existing") value = { agent_id: "remote-existing", console_url: "https://console.example/#/agents/remote-existing", revision: "revision" };
     else throw Error("Unexpected request " + route);
     return new Response(JSON.stringify(value), { status: 200, headers: { "content-type": "application/json" } });
@@ -240,6 +241,14 @@ test("deploying an already connected agent moves that exact identity without enr
   assert.equal(await deployConnected(local.ctx, "remote-existing", target, { fetch: peer.fetch }), 0);
   assert.equal(JSON.parse(local.output().out).agent_id, "remote-existing");
   assert.equal(peer.seen.some(x => x.path.includes("connectors")), false);
+
+  const connected = setup(t), updating = destination();
+  assert.equal(await deployCapturedSetup(connected.ctx, captured(), target, { fetch: updating.fetch }), 0);
+  updating.state.snapshot = "c".repeat(64);
+  connected.clear();
+  assert.equal(await deployConnected(connected.ctx, "remote-existing", target, { fetch: updating.fetch }), 0);
+  assert.equal(JSON.parse(connected.output().out).snapshot, "c".repeat(64));
+  assert.equal(updating.seen.filter(x => x.path.endsWith("/sync/grant")).length, 2, "the saved connector retries applying the newer snapshot");
 });
 
 test("a missing or incompatible destination capability refuses before reading the local setup", async t => {

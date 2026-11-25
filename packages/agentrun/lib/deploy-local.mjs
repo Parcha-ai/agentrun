@@ -209,6 +209,30 @@ function journal(ctx, source, base, workspace = null) {
   } catch (error) { close(); throw error; }
 }
 
+function savedConnector(ctx, agentId, connection, wire) {
+  const root = journalRoot(ctx);
+  if (!existsSync(root)) return undefined;
+  const rootInfo = lstatSync(root);
+  if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink() || (rootInfo.mode & 0o077) || (process.getuid && rootInfo.uid !== process.getuid()))
+    throw ctx.cli.fail(2, "The deployment journal directory must be private and owned by this user.");
+  const matches = [];
+  for (const name of readdirSync(root)) {
+    const dir = join(root, name), file = join(dir, "state.json");
+    let dirInfo, fileInfo;
+    try { dirInfo = lstatSync(dir); fileInfo = lstatSync(file); } catch (error) { if (error.code === "ENOENT") continue; throw error; }
+    if (!dirInfo.isDirectory() || dirInfo.isSymbolicLink() || (dirInfo.mode & 0o077) || (process.getuid && dirInfo.uid !== process.getuid()))
+      continue;
+    if (!fileInfo.isFile() || fileInfo.isSymbolicLink() || fileInfo.size > 1024 * 1024 || (fileInfo.mode & 0o077) || (process.getuid && fileInfo.uid !== process.getuid()))
+      continue;
+    let state;
+    try { state = JSON.parse(ctx.cli.privateFile(file)); } catch { continue; }
+    if (state?.version === 1 && state.agent_id === agentId && state.connector_id === connection.connector_id
+        && state.target_id === connection.target_id && wire.tokenOK(state.credential)) matches.push(state.credential);
+  }
+  if (matches.length > 1) throw ctx.cli.fail(2, "More than one private deployment journal owns this connected agent. Review the saved connections before retrying.");
+  return matches[0];
+}
+
 const counts = (snapshot) => ({ files: snapshot.entries.filter(item => item.type === "file").length,
   bytes: snapshot.entries.reduce((n, item) => n + item.bytes, 0), skills: snapshot.skills.length, tools: snapshot.configuration.tools.length });
 function blocked(ctx, target, status, agentId, scrub) {
@@ -314,10 +338,19 @@ async function finish(ctx, agentId, target, wire, { connectOnly = false, digest,
 export async function deployConnected(ctx, agentId, target, { fetch: fetcher } = {}) {
   if (!ID.test(agentId)) throw ctx.cli.fail(2, "--connected requires an existing agent ID.");
   const wire = transport(ctx, target, fetcher);
-  const status = await wire.call("GET", `/agents/${enc(agentId)}/source`);
+  let status = await wire.call("GET", `/agents/${enc(agentId)}/source`);
   if (!["ready", "moved"].includes(status.state) || status.blockers?.length) return blocked(ctx, target, status, agentId, wire.scrub);
   if (ctx.values["dry-run"]) { print(ctx.io, { status: "preview", target: target.base, workspace_id: target.workspace ?? null, agent_id: agentId, state: status.state, snapshot: status.snapshot }); return 0; }
   if (!await confirmation(ctx, `Deploy connected agent ${agentId} into AgentRun Console?`)) return 2;
+  if (status.moved === true && status.current_snapshot !== status.snapshot) {
+    const connection = status.connection;
+    if (!connection || !ID.test(connection.connector_id) || !ID.test(connection.target_id)) throw ctx.cli.fail(2, "The destination did not identify this agent's source connection.");
+    const credential = savedConnector(ctx, agentId, connection, wire);
+    if (!credential) throw ctx.cli.fail(2, "This setup has a newer snapshot waiting to apply. Retry the original --from command on its source machine so its private connection can finish the update.");
+    wire.scrub.add(credential);
+    await wire.call("POST", `/connectors/${enc(connection.connector_id)}/targets/${enc(connection.target_id)}/sync/grant`, {}, credential);
+    status = await wire.call("GET", `/agents/${enc(agentId)}/source`);
+  }
   return finish(ctx, agentId, target, wire, { digest: status.snapshot });
 }
 

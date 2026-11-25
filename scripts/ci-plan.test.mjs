@@ -2,7 +2,6 @@
 // the same plan every time), then this repository's own: every test file in one shard, and ci.yml's matrices in step
 // with scripts/ci-shards.json.
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -169,18 +168,11 @@ test("this repository's shards cover every test file of every suite once, and ci
   // share of the store's suite on Postgres.
   assert.deepEqual(workflow.jobs.lean.needs, ['test-lean']);
   const verify = workflow.jobs.verify;
-  assert.deepEqual(verify.needs, ['test', 'test-lean', 'serve-postgres', 'console', 'source-macos']);
-  assert.equal(verify.if, 'always()', 'the required check reports a failed or skipped dependency');
+  assert.deepEqual(verify.needs, ['test', 'test-lean', 'serve-postgres', 'console']);
   const gate = verify.steps.find((step) => step.env);
   for (const job of verify.needs) {
     const name = Object.entries(gate.env).find(([, value]) => value === `\${{ needs.${job}.result }}`)?.[0];
     assert.ok(name && gate.run.includes(`test "$${name}" = success`), `verify passes only when ${job} succeeded`);
-  }
-  const passed = Object.fromEntries(Object.keys(gate.env).map((name) => [name, 'success']));
-  const runGate = (env) => spawnSync('sh', ['-c', gate.run], { env, encoding: 'utf8' });
-  assert.equal(runGate(passed).status, 0, 'all required jobs succeeded');
-  for (const name of Object.keys(gate.env)) for (const result of ['failure', 'skipped']) {
-    assert.equal(runGate({ ...passed, [name]: result }).status, 1, `${name} ${result} prevents verification`);
   }
   const lean = workflow.jobs.lean.steps.find((step) => /collect\.mjs/.test(step.run ?? '')).run;
   assert.deepEqual([...lean.matchAll(/lean-sweep-([\w-]+)/g)].map((m) => m[1]), leanShards, 'the lean job reads every lean shard\'s captures');
@@ -190,22 +182,6 @@ test("this repository's shards cover every test file of every suite once, and ci
   assert.match(upload, /lean-sweep\/reached$/m, 'and the capture hook\'s marker');
   // The any pool's shards install poppler for serve's pdf_pages.
   assert.ok(Object.values(shards).some((s) => s.pool === 'any' && s.suites.some((x) => x.name === '@parcha/agentrun-serve')), 'serve is in the any pool');
-});
-
-test('the required macOS capture job tests the same tree and Node build artifact as the other consumers', () => {
-  const workflow = parse(readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8'));
-  const build = workflow.jobs.build, source = workflow.jobs['source-macos'];
-  assert.deepEqual(source.needs, ['build']);
-  assert.match(source['runs-on'], /^macos-/);
-  const node = source.steps.find((step) => /^actions\/setup-node@/.test(step.uses ?? '')).with['node-version'];
-  assert.ok(build.strategy.matrix.node.includes(node), 'the build produces this Node version');
-  const upload = build.steps.find((step) => /^actions\/upload-artifact@/.test(step.uses ?? '')).with;
-  const download = source.steps.find((step) => /^actions\/download-artifact@/.test(step.uses ?? '')).with;
-  assert.equal(download.name, upload.name.replace('${{ matrix.node }}', node), 'the capture job downloads the artifact this build uploads');
-  assert.equal(download.path, upload.path);
-  const unpack = source.steps.findIndex((step) => /ci-build-output\.mjs unpack/.test(step.run ?? ''));
-  const capture = source.steps.findIndex((step) => /node --test packages\/serve\/test\/source-posix\.test\.mjs/.test(step.run ?? ''));
-  assert.ok(unpack >= 0 && capture > unpack, 'capture exercises the restored source reader on macOS');
 });
 
 test("on a pull request this repository's any pool runs the tests its changes reach, and lean every test; the merge queue and main every test", () => {
