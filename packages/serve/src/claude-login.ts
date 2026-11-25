@@ -773,16 +773,26 @@ export async function turnOffClaudeLogin(deps: ClaudeLoginDeps): Promise<ClaudeL
   return claudeLoginView(deps);
 }
 
-/** What may remain where the CLI didn't confirm its own sign-out. */
-const KEYCHAIN_MAY_REMAIN = "Claude Code's own sign-out didn't confirm, so on macOS its Keychain item for this login may remain: remove it in Keychain Access (its name starts with \"Claude Code-credentials\").";
+/** What may remain where the CLI didn't confirm its own sign-out (`why`, the CLI's step as it went). */
+const keychainMayRemain = (why: string): string =>
+  `${why}, so on macOS its Keychain item for this login may remain: remove it in Keychain Access (its name starts with "Claude Code-credentials").`;
+const KEYCHAIN_MAY_REMAIN = keychainMayRemain("Claude Code's own sign-out didn't confirm");
+/** The Keychain's words where the CLI's step threw before the CLI ran (`failed`, the error's words), else where it didn't confirm. */
+const keychainWords = (failed: string | undefined): string =>
+  failed === undefined ? KEYCHAIN_MAY_REMAIN : keychainMayRemain(`Claude Code's own sign-out could not run (${failed})`);
 
 /** What a sign-out answers beside `confirmed: false`: the login is gone here, and the CLI said nothing of its own copy. */
 export const LOGIN_SIGN_OUT_UNCONFIRMED = `Signed out here: AgentRun's copy of the login is removed. ${KEYCHAIN_MAY_REMAIN}`;
 
+/** What a sign-out answers beside `confirmed: false` where the CLI's step threw (`failed`, the error's words): the login is
+ *  gone here all the same, and the CLI's own copy may remain. */
+export const signOutCliFailed = (failed: string): string => `Signed out here: AgentRun's copy of the login is removed. ${keychainWords(failed)}`;
+
 /** What a sign-out answers beside `confirmed: false` where some of the login is still there (`left`: each thing, its path
- *  and why), and the Keychain's words too where the CLI didn't confirm its own sign-out (`keychain`). */
-export const signOutLeft = (left: readonly string[], keychain: boolean): string =>
-  `Signed out here, and the mode is off, but some of AgentRun's copy of the login remains: ${left.join("; ")}. Remove it by hand before turning the mode on again.${keychain ? ` ${KEYCHAIN_MAY_REMAIN}` : ""}`;
+ *  and why), and the Keychain's words too where the CLI didn't confirm its own sign-out (`keychain`), naming the CLI
+ *  step's failure where it threw (`failed`). */
+export const signOutLeft = (left: readonly string[], keychain: boolean, failed?: string): string =>
+  `Signed out here, and the mode is off, but some of AgentRun's copy of the login remains: ${left.join("; ")}. Remove it by hand before turning the mode on again.${keychain ? ` ${keychainWords(failed)}` : ""}`;
 
 /** Why a sign-out of this machine's own login (`folder`, the person's `~/.claude` or CLAUDE_CONFIG_DIR) is refused. */
 export const machineSignOutRefused = (folder: string): string =>
@@ -802,6 +812,8 @@ export type ClaudeLoginSignOut = { confirmed: boolean; message?: string; login: 
  *  the CLI's older lock beside it), with the login's signed-in note (noteAnswer) and this process's token reader of it
  *  (claude-login-token.ts forgetLoginTokens). Each removal stands alone: one that fails is named in the answer
  *  (signOutLeft, `confirmed` false), and the others, the reader's drop and the server's reread of the keys still happen.
+ *  So with the CLI's step: a throw finding the CLI or loading the harness is named in the answer (signOutCliFailed), and
+ *  every removal still runs.
  *  Where the folder is a link (put there after the turn-on, which refuses one), the link alone is removed: no CLI runs
  *  through it, nothing it leads to is touched, and the answer names it. Runs already going are left as a turn-off
  *  leaves them: each keeps the token its CLI holds, and fails in
@@ -814,6 +826,7 @@ export type ClaudeLoginSignOut = { confirmed: boolean; message?: string; login: 
 export async function signOutClaudeLogin(deps: ClaudeLoginDeps): Promise<ClaudeLoginSignOut> {
   let off = false;
   let signedOut = true;
+  let cliFailed: string | undefined;
   const left: string[] = [];
   const remove = (what: string, path: string, options: RmOptions) => {
     try {
@@ -841,9 +854,16 @@ export async function signOutClaudeLogin(deps: ClaudeLoginDeps): Promise<ClaudeL
           left.push(`${linked}, where the link ${dir} led, left as it was`);
           return;
         }
-        const { login } = loginAt("agentrun", deps.data, deps.env, deps.uid);
-        const cli = loginCli(await deps.pinned(), deps.env);
-        signedOut = login && cli ? await (await deps.claude()).claudeLogout(cli, login, pathOf(deps.env)) : false;
+        // The CLI's step in its own try: a throw finding the CLI or loading the harness skips no removal below, and the
+        // answer names it.
+        try {
+          const { login } = loginAt("agentrun", deps.data, deps.env, deps.uid);
+          const cli = loginCli(await deps.pinned(), deps.env);
+          signedOut = login && cli ? await (await deps.claude()).claudeLogout(cli, login, pathOf(deps.env)) : false;
+        } catch (error) {
+          signedOut = false;
+          cliFailed = error instanceof Error ? error.message : String(error);
+        }
         let beside = dir;
         try {
           beside = realpathSync(dir);
@@ -860,7 +880,7 @@ export async function signOutClaudeLogin(deps: ClaudeLoginDeps): Promise<ClaudeL
   } finally {
     if (off) await deps.changed();
   }
-  const message = left.length > 0 ? signOutLeft(left, !signedOut) : signedOut ? undefined : LOGIN_SIGN_OUT_UNCONFIRMED;
+  const message = left.length > 0 ? signOutLeft(left, !signedOut, cliFailed) : signedOut ? undefined : cliFailed !== undefined ? signOutCliFailed(cliFailed) : LOGIN_SIGN_OUT_UNCONFIRMED;
   return { confirmed: message === undefined, ...(message ? { message } : {}), login: await claudeLoginView(deps) };
 }
 
