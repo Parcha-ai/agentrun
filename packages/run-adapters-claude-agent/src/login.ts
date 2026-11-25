@@ -1,10 +1,13 @@
 // A person's own Claude Code login on this machine, which a claude-agent session may run on in place of a model key.
 // Written for AgentRun.
 //
-// The pinned CLI keeps the login where it always does, in its own files, and calls Anthropic with it itself. AgentRun
-// never reads, copies, stores or relays its tokens: a session only tells the CLI where its login is (two directories, by
-// environment), and the host asks the CLI whether it is signed in (`claude auth status`), reading nothing but that answer.
-// That check runs the CLI on a private copy of the login's account file (`.claude.json`), which the CLI rewrites on
+// The pinned CLI keeps the login where it always does, in its own files, and calls Anthropic with it itself. A session
+// either tells the CLI where its login is (two directories, by environment), and the host asks the CLI whether it is
+// signed in (`claude auth status`), reading nothing but that answer; or, where the host keeps the login out of the CLI's
+// reach (a run under a user of its own), it is handed the login's access token alone (ClaudeLoginToken), by
+// environment, asked of the host again at each start and when Anthropic refuses it. The CLI never gets a refresh token
+// then, and never renews the login itself: the host does, if anyone (told which token was refused: `refused`).
+// The status check runs the CLI on a private copy of the login's account file (`.claude.json`), which the CLI rewrites on
 // start, so the file (the person's own, or AgentRun's) is only ever opened to read. The copy leaves out the fields that
 // hold secrets (an API key, exported variables, MCP servers' tokens) and lasts the check.
 // The check runs in the person's own home, as does a run on macOS, where the CLI's tokens are in the login keychain.
@@ -33,11 +36,28 @@ export interface ClaudeAgentLogin {
   /** With `secure`: the variable was set and empty, which on macOS names the Keychain item with no suffix, so it goes to
    *  the CLI empty there too. */
   unsuffixed?: boolean;
-  /** The home of the person whose CLI keeps the login, read once by whoever makes the login (serve's loginAt: the
-   *  server's `HOME` when absolute, else `os.homedir()`, as the person's own CLI reads it), so the status check, the
-   *  sign-in and a run on macOS all run in that one home (personHome). With `home`, the same folder. */
+  /** The home of the person whose CLI keeps the login, read once by whoever makes the login (serve's homeOf: the
+   *  server's `HOME` when its user owns it, else that user's own home), so the status check, the sign-in and a run on
+   *  macOS all run in that one home (personHome). With `home`, the same folder. */
   userHome?: string;
 }
+
+/** A login handed to the CLI as its access token alone, by a host that holds the login itself. `token()` is asked at
+ *  each start of the CLI and when Anthropic refuses the token the CLI holds: it answers the login's access token as
+ *  the host reads it now, or throws in words that say what to do. The CLI gets it as CLAUDE_CODE_OAUTH_TOKEN, with no
+ *  refresh token and no login directory. */
+export interface ClaudeLoginToken {
+  token(): Promise<string>;
+  /** Told, before `token()` is asked again, that Anthropic refused `sent` (the CLI's 401): a host that renews the login
+   *  renews it at that ask unless it already holds another token. */
+  refused?(sent: string): Promise<void>;
+}
+
+/** Whether `login` is handed as a token (ClaudeLoginToken), not as its directories. */
+export const loginByToken = (login: ClaudeAgentLogin | ClaudeLoginToken): login is ClaudeLoginToken => typeof (login as { token?: unknown }).token === "function";
+
+/** The words a turn ends in when Anthropic refused the login's access token mid-turn and the host had no newer one. */
+export const LOGIN_TOKEN_REFUSED = "Anthropic refused this machine's Claude login during the run, and no newer token was there: run the claude CLI once on this login to renew it, then start the run again.";
 
 /** `login.secure` as the CLI's variable on `platform` (undefined when it is not set apart): empty on macOS where the
  *  person's own was set and empty. */

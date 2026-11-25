@@ -20,7 +20,7 @@ const YEAR: Wrapped = {
   days: [{ day: "2025-03-02", requests: 100, tokens: 4_000_000 }, { day: "2025-03-03", requests: 200, tokens: 2_300_000 }],
   hours: Array.from({ length: 24 }, (_, h) => (h === 14 ? 120 : h === 9 ? 80 : 4)), weekdays: [0, 200, 100, 0, 0, 0, 0], active_ms: 7_200_000,
   harnesses: [{ harness: "claude-agent", sessions: 10, requests: 250, tokens: 6_000_000, sources: ["claude-code"] }, { harness: "pi", sessions: 2, requests: 50, tokens: 300_000, sources: ["gemini", "pi"] }],
-  models: [{ model: "anthropic/claude-sonnet", requests: 250, tokens: 6_000_000, cost_usd: 40 }, { model: "openai/gpt", requests: 50, tokens: 300_000, cost_usd: 2.5 }],
+  models: [{ model: "anthropic/claude-sonnet", requests: 250, tokens: 6_000_000, cost_usd: 40, unpriced_requests: 3 }, { model: "openai/gpt", requests: 50, tokens: 300_000, cost_usd: 2.5, unpriced_requests: 0 }],
   sources: [{ source: "claude-code", sessions: 10, requests: 250 }, { source: "codex", sessions: 2, requests: 50 }],
   imported: [{ source: "claude-code", runs: 7 }, { source: "gemini", runs: 4 }],
 };
@@ -58,12 +58,15 @@ describe("WrappedPage", () => {
     expect(document.querySelectorAll('[aria-hidden="true"][class*="items-end"]').length).toBe(3);
   });
 
-  it("says a model's cost counts priced requests only when some requests have no known price", async () => {
-    await mount(async () => YEAR, vi.fn(), 2025);
-    expect(document.body.textContent).toContain("$40.00 priced only");
-    document.body.innerHTML = "";
-    await mount(async () => ({ ...YEAR, unpriced_requests: 0 }), vi.fn(), 2025);
-    expect(document.body.textContent).not.toContain("priced only");
+  it("says a model's cost counts priced requests only on the model with unpriced requests, and no price at all on one with none priced", async () => {
+    const models = { ...YEAR, models: [...YEAR.models, { model: "fx/unlisted", requests: 4, tokens: 1_000, cost_usd: 0, unpriced_requests: 4 }] };
+    await mount(async () => models, vi.fn(), 2025);
+    const row = (model: string) => [...document.querySelectorAll('[aria-label="Models"] > li')].find((li) => li.textContent?.includes(model))!.textContent;
+    expect(row("anthropic/claude-sonnet")).toContain("$40.00 priced only");
+    expect(row("openai/gpt")).toContain("$2.50");
+    expect(row("openai/gpt")).not.toContain("priced only");
+    expect(row("fx/unlisted")).toContain("no known price");
+    expect(row("fx/unlisted")).not.toContain("$0.00");
   });
 
   it("lists a source that is only imported (its session files are gone), also in a year with no requests", async () => {
@@ -151,11 +154,49 @@ describe("WrappedPage", () => {
     expect(document.querySelector('[role="status"]')?.textContent).toContain("No coding agent sessions under this machine's home in 2024.");
   });
 
-  it("shows a refusal as a problem with a retry", async () => {
+  it("shows a refusal with the server's own reasons as the why, and a next step that fits Wrapped", async () => {
     let calls = 0;
-    await mount(async () => { calls += 1; throw new ClientError(403, "forbidden", "wrapped reads this machine's own session files"); });
-    expect(document.querySelector('[role="alert"]')?.textContent).toContain("Your year could not be read");
+    const said = "wrapped reads this machine's own session files, so only one owner's server on their own machine, reached by a loopback name, answers it. This one takes more than one API token.";
+    await mount(async () => { calls += 1; throw new ClientError(403, "forbidden", said); });
+    const alert = document.querySelector('[role="alert"]')?.textContent ?? "";
+    expect(alert).toContain("Your year could not be read");
+    expect(alert).toContain("This one takes more than one API token.");
+    expect(alert).not.toContain("Sign in as the server's owner");
     expect(calls).toBe(1);
+  });
+
+  it("keeps reading through a 503 (a long home): the skeleton stays and it asks again after the server's wait, then shows the year", async () => {
+    vi.useFakeTimers();
+    try {
+      let calls = 0;
+      const busy = () => Object.assign(new ClientError(503, "unavailable", "still being read", true), { retryAfterMs: 5_000 });
+      await mount(async () => { calls += 1; if (calls < 3) throw busy(); return YEAR; }, vi.fn(), 2025);
+      expect(document.querySelector('[role="alert"]')).toBeNull();
+      expect(document.body.textContent).toContain("Reading your year");
+      await act(async () => { await vi.advanceTimersByTimeAsync(4_999); });
+      expect(calls).toBe(1);
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+      expect(calls).toBe(2);
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+      expect(calls).toBe(3);
+      expect(document.body.textContent).toContain("6.3M tokens");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops asking again once the page is gone", async () => {
+    vi.useFakeTimers();
+    try {
+      let calls = 0;
+      await mount(async () => { calls += 1; throw Object.assign(new ClientError(503, "unavailable", "still being read", true), { retryAfterMs: 5_000 }); }, vi.fn(), 2025);
+      act(() => root?.unmount());
+      root = undefined;
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(calls).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("goes to the year before, and not past this year", async () => {

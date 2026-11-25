@@ -56,14 +56,14 @@ import { type AgentEntry, type InTurn, agentRevision, agentRevisions, agentView,
 import { WORKFLOW_ADAPTERS } from "./runner/workflow-adapters.js";
 import { DECISION_ADAPTER, decisionsOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV, fauxFetch } from "./decisions.js";
 import { FAUX_EXA_ENV, FAUX_FIRECRAWL_ENV, FAUX_WEB_ENV } from "./web-run.js";
-import { FAUX_MONID_ENV, MONID_KEY_ENV, pinMonid, PRICED_BY_USAGE } from "./monid.js";
+import { FAUX_MONID_ENV, MONID_KEY_ENV, monidReads, pinMonid, PRICED_BY_USAGE } from "./monid.js";
 import { FAUX_BROWSER_ENV, NODE_TOOLS, shellTools, toolingOf, toolOf, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, sentence, unsupported } from "./errors.js";
 import { deref, explain } from "./explain.js";
 import { HOME_HOST_OWNED } from "./files.js";
 import { DATA_ENV, syncDir, TOKEN_FILE, writeDurable } from "./server-fs.js";
 import { homePath, hostOwnedOf, type OwnedReadAt } from "./home-path.js";
-import { asksOllama, chooseModel, EFFORTS, FAUX_ENV, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, unpricedModels, withoutFaux } from "./model.js";
+import { asksOllama, chooseModel, EFFORTS, FAUX_ENV, hostModel, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, unpricedModels, withoutFaux } from "./model.js";
 import { DEFAULT_HARNESS, HARNESSES, type HarnessCapability, harnessOfBody, harnessOffers } from "./harness.js";
 import { HARNESS_MODULES_ENV, HARNESS_MODULES_SETTING, HARNESS_RECIPES_ENV, HARNESS_RECIPES_SETTING, HARNESS_TABLE_ENV, harnessIds, harnessModulesEnv, harnessOf, harnessRecipesEnv, harnessTable, planRecipesOf, recipeHarness, tableIds } from "./harness-table.js";
 import { claudeCliIn, HarnessInstall, type HarnessInstaller, installDirOf, NPM_STOP_GRACE_MS, npmInstall } from "./harness-install.js";
@@ -131,7 +131,7 @@ import { gradeRow, notAuditableOf } from "./runner/audit.js";
 import { namedDisksOf } from "./learn/learning-of.js";
 import { auditsOffWords, auditWriterOf, isShadowRun, readAudits, servingLinesOf, shadowRunId } from "./learn/audit.js";
 import { auditLoopOf, COMPILE_AFTER_MAX } from "./learning-setting.js";
-import { FINAL_STATES, RUN_CHANGES_PAGE, type RunChange, type RunChangeCursor } from "./store/store.js";
+import { FINAL_STATES, type ListedFilter, RUN_CHANGES_PAGE, type RunChange, type RunChangeCursor } from "./store/store.js";
 import { championOf, forgetRunCopies, type Grade, GRADE_SOURCES, GRADES_KEPT, type GradeSource, gradeView, LABEL_MAX, type PromotionRecord, promotionsOf, promotionsShown, type Refused, servingOf, servingStateOf, shownDeep } from "./learn/promote.js";
 import { workflowNodesOf } from "./learn/workflow-nodes.js";
 import { deleteLearning } from "./learn/delete.js";
@@ -152,7 +152,7 @@ import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from 
 import { isSecretWriteOperation, type SecretRequest, secretPageFor, secretsWritableFields, secretWriteRefusal, secretWriterFacts, writesSecretFor, writesSecretsAllowed } from "./secret-writes.js";
 import { ChatGPTPlan, planOf, PlanSignInRefused, SIGN_OUT_UNCONFIRMED, withPlan } from "./chatgpt-plan.js";
 import { modelGatewayRoute, readSavedGateway, type SavedGateway, withSavedGateway } from "./model-gateway.js";
-import { CLAUDE_LOGIN_ROUTES, LOGIN_REFUSES_API_KEYS, oneOwnerDeps, ClaudeLoginRefused, claudeLoginOf, claudeLoginRouteOff, claudeLoginSwitchedOff, claudeLoginSetting, claudeLoginView, type ClaudeLoginDeps, dropRefusedLogin, envAtPlace, LOGIN_HARNESS, loginOf, loginOnRunnerOnly, loopback, startLoginHere, turnOffClaudeLogin, turnOnClaudeLogin, withClaudeLogin } from "./claude-login.js";
+import { CLAUDE_LOGIN_ROUTES, LOGIN_REFUSES_API_KEYS, oneOwnerDeps, ClaudeLoginRefused, claudeLoginOf, claudeLoginRouteOff, claudeLoginSwitchedOff, claudeLoginSetting, claudeLoginView, type ClaudeLoginDeps, dropRefusedLogin, envAtPlace, homeOf, LOGIN_HARNESS, loginOf, loginOnRunnerOnly, loopback, startLoginHere, turnOffClaudeLogin, turnOnClaudeLogin, withClaudeLogin } from "./claude-login.js";
 import { ClaudeSignIns } from "./claude-sign-in.js";
 import { bootSealKey, parametersDigest, withSealKey } from "./seal-key.js";
 import { ServerLockHeldError, takeServerLock } from "./server-lock.js";
@@ -160,8 +160,8 @@ import { recordDataRoot } from "./runner/disk-free.js";
 import { recordRunEnv, runFacingNames } from "./runner/runner-check.js";
 import { DRAIN_TIMEOUT } from "./runner/beside.js";
 import { runnerName } from "./runner/runner.js";
-import { analyticsFilter, analyticsView, statsView } from "./stats.js";
-import { keptReads, within, WRAPPED_WAIT_MS, wrappedView } from "./wrapped.js";
+import { analyticsFilter, analyticsView, statsView, utcOf } from "./stats.js";
+import { loggedReads, within, WRAPPED_WAIT_MS, wrappedView } from "./wrapped.js";
 import { type CostBasis, joinedBasis } from "./runner/metrics.js";
 import { unifiedUsage } from "./unified-usage.js";
 import { agentLoopOverStore } from "./store-reads/loop.js";
@@ -230,6 +230,7 @@ import { COMPUTER_ROUTES, computerHoldOf, computerRoute, runComputerKind } from 
 import { runOver } from "./computer-commands.js";
 import { mintViewerCredential, VIEWER_PARAM, viewerCookie, viewerCredentialFor, viewerCredentialKey, viewerCredentialOf } from "./viewer-credential.js";
 import { ATTACH_PATH, AttachHub, type HostedDial, PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
+import { dockerDaemonOf } from "@parcha/agentrun-computer/docker";
 import { type AttachTiming, createAttachRoutes, liveRelays, pairedView } from "./computer-attach.js";
 import { pairedRefusal, withPaired } from "./workspace/attached-computers.js";
 import { PAIRED_ROUTE_MS, readRoute } from "./workspace/paired-route.js";
@@ -284,6 +285,14 @@ const MAX_WAIT_MS = 25_000;
 const HANDED_FIXED = ["revision", "hold", "hold_minutes"] as const;
 /** How often the server fails the runs still queued while no runner here can take them (runner/presence.ts). */
 const REFUSED_SWEEP_MS = 2_000;
+/** How long the server's stop waits for a ChatGPT sign-in it cancelled to end (ChatGPTPlan.close): one past its code's
+ *  exchange saves its row before the store closes; one OpenAI holds longer does not hold the stop. */
+const PLAN_CLOSE_MS = 2_000;
+/** The ChatGPT sign-ins `plan` cancels, ended, or `ms` gone. */
+const planClosed = (plan: ChatGPTPlan, ms: number): Promise<void> => {
+  let timer: NodeJS.Timeout | undefined;
+  return Promise.race([plan.close(), new Promise<void>((done) => (timer = setTimeout(done, ms)))]).finally(() => clearTimeout(timer));
+};
 const PAGE_ROWS = 500;
 const FILE_LIST_CAP = 2_000;
 /** Where the stop's lines go (ServeOptions.notice). Best-effort: a notice that throws never stops a close or a start. */
@@ -452,6 +461,9 @@ export type ServeOptions = {
   /** Under `faux`: a file read as this server's /proc/self/mountinfo (box-paths.ts), a container's in a test; absent (and
    *  no FAUX_MOUNTINFO_ENV), a faux server is on a host. */
   fauxMountinfo?: string;
+  /** Under `faux`: the directory a Docker computer's computerd build is looked for in at the start (the computer
+   *  package's dockerDaemonOf), in place of that package's own build; absent, a faux server doesn't check for one. */
+  fauxDaemonDir?: string;
   /** For tests: whether Docker's start probe takes this server to be in a container (place-offers.ts containerReason),
    *  in place of its own marks; a faux server's is a host's. */
   probeContainer?: ContainerFacts;
@@ -476,6 +488,8 @@ export type ServeOptions = {
   /** For tests: the attach socket's liveness timing (computer-attach.ts AttachTiming), a relayed dial's included; the
    *  protocol's by default. */
   attachTiming?: AttachTiming;
+  /** For tests: how long the stop waits for a ChatGPT sign-in it cancelled to end (PLAN_CLOSE_MS by default). */
+  planCloseMs?: number;
   /** The most runs at once (default: AGENTRUN_MAX_RUNS, else as many pi runs as this host's memory holds: host.ts),
    *  beside the memory each run's harness reserves; over either, 429. */
   maxRuns?: number;
@@ -991,7 +1005,7 @@ const GATEWAY_VARS = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL_GATEWAY_IDS", "AGENT_
  *  saved key is one of those; the rest of the environment is the server's start's), and the models the Ollama here
  *  listed when last asked (ollamaListing). Held to tell whether a write, or a new listing, needs the offers probed again,
  *  never shown. */
-const offersInputs = (env: NodeJS.ProcessEnv): readonly (string | undefined)[] => [...SECRET_NAMES.filter((name) => !TOOL_FIELDS.includes(name)).map((name) => env[name]), ...GATEWAY_VARS.map((name) => env[name]), planOf(env)?.state, planOf(env)?.models.join(" "), claudeLoginOf(env)?.dir, ollamaListing(env)];
+const offersInputs = (env: NodeJS.ProcessEnv): readonly (string | undefined)[] => [...SECRET_NAMES.filter((name) => !TOOL_FIELDS.includes(name)).map((name) => env[name]), ...GATEWAY_VARS.map((name) => env[name]), planOf(env)?.state, planOf(env)?.models.join(" "), ...[claudeLoginOf(env)].map((login) => (login && "dir" in login ? login.dir : undefined)), ollamaListing(env)];
 
 /** A sign-in step's answer; its refusal (a stale or bad pasted address, no sign-in waiting, OpenAI's no) a 400 in words. */
 async function planStep<T>(step: () => Promise<T>): Promise<T> {
@@ -1519,6 +1533,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // A start that fails aborts it too: what began on it (the host-address read's retry) stops with that start.
   const stopping = new AbortController();
   stops.push(async () => stopping.abort());
+  /** monid's listing and inspects as this server's saves read them: a burst of saves reads each once (monid.ts monidReads). */
+  const monidShared = monidReads();
   /** The after-start seal by the events' schemas (composio-triggers.ts sealMarked), drained by stop. */
   let schemaSealed: Promise<unknown> = Promise.resolve();
   // The start's sweep of ended runs whose stored cost is unknown (cost-heal.ts), once this server listens; stop drains it.
@@ -1584,7 +1600,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // where it is signed in. A sign-in, a sign-out or an expiry it sees makes the reading again, as a key's save does.
   const plan = new ChatGPTPlan({ store, sealKey: seal.key, log: (fields) => (log ? log(logLine("chatgpt", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("chatgpt", fields)}\n`)), changed: () => keysChanged() });
   await plan.load();
-  stops.push(async () => void plan.close());
+  stops.push(() => planClosed(plan, options.planCloseMs ?? PLAN_CLOSE_MS));
   // Claude Code's login on this machine (claude-login.ts): env carries where it is while the owner has it on, so
   // claude-agent's model checks see a model without a key. Unset, its switch follows the listen address: there on
   // loopback, off past it. A setting kept where the mode is now off or refused goes first.
@@ -1614,9 +1630,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // turnOnClaudeLogin, through oneOwnerDeps' `turn`), one at a time: each decides by what the others left once their writes
   // landed or were undone, never by a key taken out for a removal that then fails.
   // The sign-in this server starts, kept for this process (claude-sign-in.ts). Its queue is the one way the login's
-  // setting changes, the drop here included.
+  // setting changes, the drop here included. A server whose user owns no home for the login (homeOf) drops it too.
   const claudeSignIns = new ClaudeSignIns({ limitMs: options.claudeSignInLimitMs });
-  await dropRefusedLogin(claudeSignIns, store.settings, loginOff ?? oneOwner.refused(), (line) => (log ? log(logLine("claude_login", { line })) : void process.stderr.write(`agentrun-serve: ${line}\n`)));
+  await dropRefusedLogin(claudeSignIns, store.settings, loginOff ?? oneOwner.refused() ?? homeOf(base).refused, (line) => (log ? log(logLine("claude_login", { line })) : void process.stderr.write(`agentrun-serve: ${line}\n`)));
   // The status checks' folders a server killed mid-check left in the temporary folder, each with a copy of the account
   // file (the harness's sweepClaudeStatusFolders): this user's alone, and only once the check has ended by the end it
   // wrote in its folder, so a check another server on this host runs now stays. Where the mode is there, as status
@@ -1783,7 +1799,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const fauxDocker = Boolean(options.faux) && options.fauxDocker === true;
   // A faux server's probe is on a host, as its Docker paths are below, so a test reads the same words in a container;
   // `probeContainer` sets it for a test of a real one.
-  const found = await placeOffers(env, { keyOf: keyReader(store, seal.key, env), fauxDocker, ...(options.probeContainer ? { container: options.probeContainer } : options.faux ? { container: { inside: false } } : {}) });
+  // The probe names Docker's architecture too, which says which computerd build a Docker computer binds (below).
+  let dockerArch: string | undefined;
+  const found = await placeOffers(env, { keyOf: keyReader(store, seal.key, env), fauxDocker, dockerArch: (arch) => (dockerArch = arch), ...(options.probeContainer ? { container: options.probeContainer } : options.faux ? { container: { inside: false } } : {}) });
   const docker = found.some((offer) => offer.id === "docker" && offer.available);
   // Under --faux, the mountinfo a test gives (fauxMountinfo, or FAUX_MOUNTINFO_ENV in the process's own environment, which
   // `env` leaves out: a server under test in a container names its own /proc/self/mountinfo there); with none, a faux
@@ -1797,9 +1815,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // A run's Docker computer mounts the run's folder, and the computer's daemon, by this server's paths: as they are on
   // its Docker's own host, or as its named data volume's subpaths from a container of that Docker's (compose.yaml).
   // Any other layout, or a daemon of another machine (DOCKER_HOST, or the current context's endpoint: box-paths.ts
-  // remoteDockerOnce), can't run one, and says so here (dockerComputerRefusal), where capabilities, the run's start
-  // (dockerAnswers) and a place's box check all read it: no run starts only to fail at its create.
-  const dockerElsewhere = fauxDocker || !docker ? undefined : dockerComputerRefusal(dockerPaths, await remoteDockerOnce(env));
+  // remoteDockerOnce), can't run one, and neither can a server with no computerd build for its Docker's architecture as
+  // the probe named it (`npm run build` without `npm run build:daemon`): the computer package's dockerDaemonOf, the file
+  // and words its create() takes. Each says so here (dockerComputerRefusal), where capabilities, the run's start
+  // (dockerAnswers) and a place's box check all read it: no run starts only to fail at its create. A faux server checks
+  // the build only in the directory a test names (fauxDaemonDir); an architecture the probe didn't name is left to create().
+  const daemonDir = options.faux ? options.fauxDaemonDir : undefined;
+  const noDaemon = dockerArch === undefined || (options.faux && daemonDir === undefined) ? undefined : (daemonDir === undefined ? dockerDaemonOf(dockerArch) : dockerDaemonOf(dockerArch, daemonDir)).missing;
+  const dockerUnrunnable = fauxDocker || !docker ? undefined : dockerComputerRefusal(dockerPaths, await remoteDockerOnce(env), noDaemon);
   // From a container, a Docker computer keeps this server's allow-list only knowing the Docker host's own addresses: the
   // union of the read through the socket and AGENTRUN_DOCKER_HOST_ADDRESSES (docker-host-addresses.ts), the same read the
   // runner beside this server takes. Said at the start with what was found; with none, Docker isn't offered, in words.
@@ -1811,13 +1834,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // read's container is removed within the stop's deadline (docker-host-addresses.ts REMOVE_MS).
   const boxesOf = (hostAddresses: { addresses: readonly string[]; why?: string } | undefined): BoxOffer[] => {
     if (hostAddresses) log?.(logLine("docker_host_addresses", { addresses: hostAddresses.addresses.join(",") || "none", ...(hostAddresses.why ? { read: hostAddresses.why } : {}) }));
-    const dockerRefused = dockerElsewhere ?? (hostAddresses && hostAddresses.addresses.length === 0 ? noHostAddresses(hostAddresses.why ?? "the read through Docker's socket found none") : undefined);
+    const dockerRefused = dockerUnrunnable ?? (hostAddresses && hostAddresses.addresses.length === 0 ? noHostAddresses(hostAddresses.why ?? "the read through Docker's socket found none") : undefined);
     // Each box with what it reaches (place-offers.ts withNetworks).
     const offers = withNetworks(found, boxAllow, { ...(dockerRefused !== undefined ? { refused: dockerRefused } : {}), ...(hostAddresses ? { hostAddresses: hostAddresses.addresses } : {}), faux: fauxDocker });
     log?.(logLine("boxes", boxesLog(offers, enabledBoxes(env))));
     return offers;
   };
-  const hostAddresses = dockerElsewhere === undefined && "paths" in dockerPaths && boxAllow !== "none" ? unionOf(await hostAddressesOnce(env), dockerHostAddressesOf(env)) : undefined;
+  const hostAddresses = dockerUnrunnable === undefined && "paths" in dockerPaths && boxAllow !== "none" ? unionOf(await hostAddressesOnce(env), dockerHostAddressesOf(env)) : undefined;
   let boxOffers = boxesOf(hostAddresses);
   const hostRetried: Promise<void> =
     hostAddresses === undefined || hostAddresses.why === undefined
@@ -1895,8 +1918,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       : {
         hostWhy,
         kinds: { SETTING_KINDS, PROVIDERS: COMPUTER_PROVIDERS, servingRefusals },
-        // The one place serve builds a provider (workspace/computer-providers.ts), the claim's makers' own.
-        factories: computerProviderFactories(computerProviderMakers(), (id) => storeLedger(store.computerLedger, id)),
+        // The one place serve builds a provider (workspace/computer-providers.ts), the claim's makers' own, each given the
+        // server's values of the host variables its descriptor reads (Docker's PATH, HOME and DOCKER_HOST, for its test and
+        // an agent computer's release).
+        factories: computerProviderFactories(computerProviderMakers({ env: process.env }), (id) => storeLedger(store.computerLedger, id)),
         answers: dockerAnswers,
       }),
   }));
@@ -2363,15 +2388,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // A live run's model requests sent and not answered (in-flight.ts), from its booking's records in its journal.
     inFlight: async (forStore, runId, context) => modelsInFlight(await runEntries(forStore, runId, context)),
   });
-  /** `text` as a message to run `runId` is written: cut of `handed` (what the message itself hands) and of what the run
-   *  holds now (its turn's end erases those, and a read after it could no longer cut them). A run whose seal doesn't
-   *  open here (its seal key changed or is missing, or what was sealed is damaged or lost) takes no message: 409
-   *  not_continuable, reason withheld (WITHHELD_MESSAGE), and nothing is written, since what it can't read it can't
-   *  cut, and a message written uncut would show those values once the run's end lets its reads go uncut-withheld.
-   *  Read inside the turn that writes the message (runWrite), never before it: a message written first in that turn
-   *  (one that hands a new key) is in the seal read here, so a message that says that key without handing it is cut of
-   *  it too. Both writers of a message read it: a person's (sendMessage) and a trigger's (trigger-targets.ts
-   *  message_run, which skips with those words). */
+  /** `text`, a person's words written into run `runId`, cut of `handed` and of what the run holds now, read inside runWrite:
+   *  a message (sendMessage, and a trigger's message_run) and an approval's note (answerApproval). A seal that doesn't
+   *  open here refuses the words (409 not_continuable, reason withheld, WITHHELD_MESSAGE) and nothing is written: unread
+   *  values can't be cut. */
   async function cutHeld(runId: string, text: string, handed: readonly string[] = []): Promise<string> {
     const held = launchValuesOf(sealKey, runId, (await store.runs.launch(runId)).sealed);
     if (held === "unreadable") throw new ApiError("not_continuable", WITHHELD_MESSAGE, { details: { reason: "withheld" } });
@@ -2797,8 +2817,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       });
     });
   // GET /v2/wrapped's reads of this machine's home (wrapped.ts), each year's on the import worker, so its parsing never holds
-  // up a request; shared and kept as keptReads says. A read the close ended answers `stopped`: a failed read, not kept.
-  const readWrapped = keptReads((year) => onWorker("wrapped", undefined, year).then((answer) => ("wrapped" in answer ? answer : Promise.reject(new Error("the server stopped before this machine's session history was read")))));
+  // up a request; shared and kept as keptReads says. A read the close ended answers `stopped`, a failure like any other. A
+  // failure is logged here, once per read: the ask that started it may have had its 503 long before.
+  const readWrapped = loggedReads(
+    (year) => onWorker("wrapped", undefined, year).then((answer) => ("wrapped" in answer ? answer : Promise.reject(new Error("the server stopped before this machine's session history was read")))),
+    (year, error) => void (closing || process.stderr.write(`agentrun-serve: the read of this machine's session history for ${year} failed: ${error.message}\n`)),
+  );
   // The count of what setup would import: started once (at start, or by the page's first read), read as it stands. One
   // stopped (by close, or by setup) starts again on the next read; one that failed stays failed.
   let count: { state: "counting" } | { state: "counted"; projects: number; sessions: number; candidates: ImportCandidate[] } | { state: "failed" } | undefined;
@@ -3358,9 +3382,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // Claude Code's login on this machine is a runner place's alone: a sandbox run is checked for a key, as it runs.
     const blockers = await blockersOf(withCarried(envAtPlace(env, shape.place), carried), shape, settings.get(), { capped, boxes: boxOffers, computerReady, shellOf, offers, mcp: revision.kind === "agentic" ? pinnedTools : mcpTools, monid, decisionPrice: price });
     if (!blockers.length) return;
-    // Refused for its model in a box while its harness runs on the login at the runner, on a model the login runs: the
-    // words say so, and how to run it there (details.login_on_runner, the console's offer to move it).
-    const runnerOnly = blockers.some((b) => b.field === "definition.model" && b.reason === NOT_SET_UP && !b.unpriced) ? loginOnRunnerOnly(env, shape.harness, shape.kind === "agentic" ? shape.model : undefined, shape.place) : undefined;
+    // An agent refused for its model in a box while its harness runs on the login at the runner, on a model the login
+    // runs: the words say so, and how to run it there (details.login_on_runner, the console's offer to move it). Its
+    // model is the blocker whichever field names it (runnable.ts Blocker.model: an agent that names none is refused on its
+    // harness), and the model it would run on the runner is its own, else the runner's default for its harness
+    // (hostModel: AGENT_MODEL first), so one whose default there is an OpenRouter model is offered no move.
+    const runnerOnly = shape.kind === "agentic" && blockers.some((b) => b.model && b.reason === NOT_SET_UP && !b.unpriced) ? loginOnRunnerOnly(env, shape.harness, shape.model || hostModel(envAtPlace(env, { mode: "runner" }), "default", shape.harness), shape.place) : undefined;
     const message = [...blockers.map((b) => b.message), ...(runnerOnly ? [runnerOnly] : [])].join(" ");
     // Each blocker as a 422 names its issue: its field, reason and message, and the fix when it has one.
     const fields = blockers.map(issueOf);
@@ -3519,7 +3546,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const send = await checkFetch("monid");
     const before = previous?.kind === "agentic" ? { grants: (previous.body as AgenticBody).tools ?? [], pin: previous.monidPin } : undefined;
     // The key as the server reads it (env: what it was started with, its handed secrets and its saved keys).
-    const pinned = await pinMonid(tools, { key: env[MONID_KEY_ENV]?.trim(), fetch: send ?? (async () => { throw new Error("no fake of monid's API under faux"); }), signal: stopping.signal, ...(before ? { previous: before } : {}) });
+    const pinned = await pinMonid(tools, { key: env[MONID_KEY_ENV]?.trim(), fetch: send ?? (async () => { throw new Error("no fake of monid's API under faux"); }), signal: stopping.signal, shared: monidShared, ...(before ? { previous: before } : {}) });
     if (pinned && "refused" in pinned) throw invalid(pinned.refused.map(({ tool, message }) => ({ field: tools.includes(tool) ? `definition.tools[${tools.indexOf(tool)}]` : "definition.tools", reason: "not_an_option", message })));
     return pinned && { monid: pinned.pin, warnings: pinned.warnings.map(({ tool, message }) => ({ field: `definition.tools[${tools.indexOf(tool)}]`, reason: PRICED_BY_USAGE, message })) };
   }
@@ -4357,7 +4384,37 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     return given[0];
   }
 
-  async function runsPage(url: URL, filter: { agent?: string; revision?: string }, origin: string, source?: string) {
+  /** GET /runs' `from` and `to`, each once: ISO instants with a zone (the server reads no time zone of its own), the window
+   *  [from, to) of the runs' starts, in ms. Either one alone; a `from` after `to` is 400, one equal to it an empty window. */
+  function windowParams(url: URL): { startedFrom?: number; startedBefore?: number } {
+    const instant = (name: "from" | "to"): number | undefined => {
+      const given = url.searchParams.getAll(name);
+      if (given.length === 0) return undefined;
+      // As the analytics' bounds read (stats.ts utcOf): an RFC 3339 date-time that exists, to the ms.
+      const iso = given.length === 1 ? utcOf(given[0]!) : undefined;
+      if (iso === undefined) throw new ApiError("bad_request", `${name} is one RFC 3339 date-time with its zone (2026-11-01T00:00:00Z, or an offset such as +01:00), to the millisecond; once`);
+      return Date.parse(iso);
+    };
+    const from = instant("from"), to = instant("to");
+    if (from !== undefined && to !== undefined && from > to) throw new ApiError("bad_request", "from is at or before to: the window [from, to) of the runs' starts");
+    return { ...(from !== undefined ? { startedFrom: from } : {}), ...(to !== undefined ? { startedBefore: to } : {}) };
+  }
+
+  /** GET /runs' `model`, once: a model as a run's metrics name it, `provider/model`. */
+  function modelParam(url: URL): string | undefined {
+    const given = url.searchParams.getAll("model");
+    if (given.length === 0) return undefined;
+    if (given.length > 1 || !/^[^\u0000-\u001f\u007f]{1,256}$/.test(given[0]!)) throw new ApiError("bad_request", "model is one model as a run's metrics name it (provider/model); once");
+    return given[0];
+  }
+
+  /** GET /runs' own filters: `source`, the window (`from`, `to`) and `model`. */
+  function runsOnly(url: URL): Pick<ListedFilter, "source" | "startedFrom" | "startedBefore" | "model"> {
+    const source = sourceParam(url), model = modelParam(url);
+    return { ...(source !== undefined ? { source } : {}), ...windowParams(url), ...(model !== undefined ? { model } : {}) };
+  }
+
+  async function runsPage(url: URL, filter: { agent?: string; revision?: string }, origin: string, only: Pick<ListedFilter, "source" | "startedFrom" | "startedBefore" | "model"> = {}) {
     const limit = limitOf(url.searchParams.get("limit"));
     const offset = cursorOf(url.searchParams.get("cursor"));
     const status = url.searchParams.get("status");
@@ -4371,7 +4428,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // ordered and cut to the page in one query, so a list costs the same at ten runs and at thousands, however long their
     // journals. An audit's shadow run is no row of the list (learn/audit.ts): it is read by id, and its cost is its served
     // run's. A run's archive is its own or its agent's.
-    const where = { ...(filter.agent !== undefined ? { agentId: filter.agent } : {}), ...(filter.revision !== undefined ? { revisionId: filter.revision } : {}), ...(labels ? { labels } : {}), ...(source !== undefined ? { source } : {}), archived };
+    const where = { ...(filter.agent !== undefined ? { agentId: filter.agent } : {}), ...(filter.revision !== undefined ? { revisionId: filter.revision } : {}), ...(labels ? { labels } : {}), ...only, archived };
     // A listing is built by the server's lister (run-listing.ts) once per change, so a list finds it current. One that is
     // behind (a write landed since, or the lister has not reached it since the store was upgraded) is built here, written
     // back, and shown as built: for a status filter, first every run still going whose listing is behind (its row's
@@ -4843,8 +4900,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const state = await store.schemaState?.().catch(() => undefined);
       const storeSchema = state ? { store_schema: { version: state.version, runner_floor: state.runnerFloor, known: state.known } } : {};
       // features.harness_keys.kept names which harness ids still have keys stored: the owner's session or a holder of
-      // the server's token reads it; a caller with neither (this route answers before any bearer check) reads none.
+      // the server's token reads it; a caller with neither (this route answers before any bearer check) reads none. A
+      // bearer this server does not take still gets the answer, and the auth_failed line any other route writes for it.
       const keptShown = byOwnerSession(req) || bearer(req.headers.authorization, req);
+      if (!keptShown && req.headers.authorization !== undefined) authFailed(`/v2${path}`, "wrong_token");
       const keptCap = { ...answer.features.harness_keys, kept: keptShown ? answer.features.harness_keys.kept : [] };
       // features.api_keys.routes: false on an API-only server, which serves none of the keys' routes and reads no key.
       return send(res, 200, { ...answer, ...storeSchema, runner_refused: runnerRefused, features: { ...answer.features, harness_keys: keptCap, computers: await computerCapabilities(computersOf()), triggers: { ...answer.features.triggers, public_url: Boolean(options.publicUrl) }, claude_login: !loginOff && !options.apiOnly, api_keys: { ...answer.features.api_keys, routes: !options.apiOnly } } });
@@ -5434,7 +5493,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "listAllRuns": {
         const agent = url.searchParams.get("agent") ?? undefined;
         const revision = url.searchParams.get("revision") ?? undefined;
-        return send(res, 200, await runsPage(url, { ...(agent ? { agent } : {}), ...(revision ? { revision } : {}) }, linkOrigin(req), sourceParam(url)));
+        return send(res, 200, await runsPage(url, { ...(agent ? { agent } : {}), ...(revision ? { revision } : {}) }, linkOrigin(req), runsOnly(url)));
       }
       case "getRun": {
         const run = await runRead(id, linkOrigin(req));
@@ -5520,7 +5579,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         if (body.decision !== "allow" && body.decision !== "deny") issues.push({ field: "decision", reason: body.decision === undefined ? "missing" : "not_an_option", message: "decision is allow or deny" });
         if (body.note !== undefined && (typeof body.note !== "string" || body.note.length > 2000)) issues.push({ field: "note", reason: "wrong_type", message: "note is a string of at most 2000 characters" });
         if (issues.length) throw invalid(issues);
-        await approve(store, run, decodeURIComponent(second!), body.decision as "allow" | "deny", typeof body.note === "string" && body.note.trim() ? body.note.trim() : undefined, body.confirm_destructive === true);
+        // A note is cut as a message is, in the turn that writes it (cutHeld): refused when the seal does not open here.
+        const note = typeof body.note === "string" && body.note.trim() ? body.note.trim() : undefined;
+        await runWrite(run.agentId, run.id, async () => approve(store, run, decodeURIComponent(second!), body.decision as "allow" | "deny", note === undefined ? undefined : await cutHeld(run.id, note), body.confirm_destructive === true));
         res.writeHead(204, { "cache-control": "no-store", "x-content-type-options": "nosniff" });
         return void res.end();
       }
@@ -5851,7 +5912,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         if (given !== null && !/^[1-9]\d{3}$/.test(given)) throw new ApiError("bad_request", "year is a four-digit year");
         if (year > new Date().getFullYear()) throw new ApiError("bad_request", "year is this year or an earlier one");
         // A long home is read on, shared, past the wait: the answer says when to ask again rather than hold the request.
-        const read = await within(readWrapped(year), options.wrappedWaitMs ?? WRAPPED_WAIT_MS);
+        // A failed read is kept for its minute (keptReads): each ask in it is this 500, the reason in the server's log.
+        const read = await within(readWrapped(year), options.wrappedWaitMs ?? WRAPPED_WAIT_MS).catch(() => {
+          throw new ApiError("internal", `This machine's session history for ${year} could not be read: the server's log says why. Ask again in a minute to read it again.`);
+        });
         if (!read) throw new ApiError("unavailable", `This machine's session history for ${year} is still being read: ask again in a few seconds.`, { retry_after_ms: 5_000 });
         const analytics = await analyticsOverStore(store, { from: new Date(year, 0, 1).toISOString(), to: new Date(year + 1, 0, 1).toISOString() });
         return send(res, 200, wrappedView(read.wrapped, analytics.bySource.filter((g) => g.source !== "live").map((g) => ({ source: g.source, runs: g.runs })), read.unread));
@@ -7019,8 +7083,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     closing = true;
     stopping.abort();
     clearInterval(localSourceTimer);
-    // Cancel a pending ChatGPT callback without signing out or changing the saved credential (not waited for).
-    void plan.close();
+    // Cancel a pending ChatGPT callback without signing out or changing the saved credential. One past its code's
+    // exchange is waited for a short while (planClosed), so its row lands before the store closes.
+    const planStopped = planClosed(plan, options.planCloseMs ?? PLAN_CLOSE_MS);
     // The CLI's sign-in still waiting for its browser ends with the server, which forgets it: left running, its CLI would
     // keep the browser's callback port from the next server's sign-in. Awaited until its process is gone.
     const signInStopped = claudeSignIns.close();
@@ -7043,6 +7108,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await schemaSealed;
     await installStopped;
     await signInStopped;
+    await planStopped;
     await observationStopped;
     await localSourceSweep;
     // The ends' follower stops before the webhooks it feeds and the store it reads.

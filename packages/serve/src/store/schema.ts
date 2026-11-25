@@ -90,9 +90,20 @@ export const TRIGGERS_TEMPLATE_ID = "ALTER TABLE triggers ADD COLUMN template_id
 /** A run's census (RunLaunchRow.census, run-census.ts): in STORE_DDL, and added at a server open to a store an earlier
  *  build of this version made, as RUNS_LABELS is (a run ended before reads as never handed a secret). */
 export const RUN_LAUNCH_CENSUS = `ALTER TABLE run_launch ADD COLUMN ${json("census", true)}`;
-/** Every launch holding sealed bytes when the census was added (RUN_LAUNCH_CENSUS) marked CENSUS_PENDING (store.ts): its
- *  end counts them, or its files read as uncounted. */
-export const RUN_LAUNCH_CENSUS_PENDING = `UPDATE run_launch SET census = '"pending"' WHERE sealed IS NOT NULL AND census IS NULL`;
+/** The census "pending" of 0.1.0-beta.57, which marked a launch holding sealed bytes until an end counted them. This build
+ *  keeps no such state: the server open that makes RUN_LAUNCH_CENSUS_ERASED settles each one left as this build reads it,
+ *  as Postgres migration 0029 does. A launch still holding its sealed bytes gets null (its end counts them), and one an
+ *  end erased gets "unscanned" (nothing counted them, so its files are withheld). */
+export const RUN_LAUNCH_CENSUS_SETTLE = `UPDATE run_launch SET census = CASE WHEN sealed IS NULL THEN '"unscanned"' ELSE NULL END WHERE census = '"pending"'`;
+/** An update that erases a launch's sealed bytes and leaves its census null writes "unscanned", as Postgres migration 0029's
+ *  trigger does. This build's end always names a census when it erases them, so only an end by a runner of
+ *  0.1.0-beta.56 or earlier, still live beside this server, does that: its run's files are withheld, never read cut of
+ *  the server's values alone. */
+export const RUN_LAUNCH_CENSUS_ERASED = `CREATE TRIGGER IF NOT EXISTS run_launch_census_erased AFTER UPDATE OF sealed ON run_launch
+  WHEN OLD.sealed IS NOT NULL AND NEW.sealed IS NULL AND OLD.census IS NULL AND NEW.census IS NULL
+  BEGIN UPDATE run_launch SET census = '"unscanned"' WHERE run_id = NEW.run_id; END`;
+/** Whether the store holds RUN_LAUNCH_CENSUS_ERASED: a store no server of this build opened yet holds none. */
+export const RUN_LAUNCH_CENSUS_ERASED_MADE = `SELECT 1 AS found FROM sqlite_master WHERE type = 'trigger' AND name = 'run_launch_census_erased'`;
 
 /** A template package imported from GitHub (POST /v2/templates/import), by its id (`github:<owner>/<repo>[/<path>]`): its
  *  source as given (ref and all), the full commit SHA read, the GitHub account that publishes it, and its files as read
@@ -839,9 +850,9 @@ export const STORE_DDL: readonly string[] = [
   // written in the same transaction as the queued run, never after. `body` is the launch JSON (run-launch.ts: the first
   // input, title, place, effort, cap, and the trigger and origin that started it); `sealed` holds any secret sealed with
   // the server's key outside the store (AAD run_launch|<run_id>|sealed), or null when the launch holds none. `census` is
-  // null when the launch never held any; "pending" from when it first does until an end counts them; then where in the
-  // run's files they sat when that end erased them (run-census.ts), never the secrets, or "unscanned" when it erased them
-  // with no census made under them (store.ts CENSUS_PENDING, CENSUS_UNSCANNED).
+  // null until an end erases what the launch holds; then where in the run's files they sat when that end erased them
+  // (run-census.ts), never the secrets, or "unscanned" when it erased them with no census made under them (store.ts
+  // CENSUS_UNSCANNED).
   `CREATE TABLE IF NOT EXISTS run_launch (
     run_id TEXT PRIMARY KEY REFERENCES runs (id),
     ${json("body")},

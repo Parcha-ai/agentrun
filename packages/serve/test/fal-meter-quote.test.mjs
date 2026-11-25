@@ -42,7 +42,7 @@ test("a tiered job is held and booked at its tier's rate on fal's model page whe
   near(quote.chargeOf(completed), 0.84, "booked at the rate it was held at");
   near(quote.chargeOf(undefined), 0.84, "a lost reply is booked at its hold");
   assert.match(quote.basis, /\$0\.112/, "the basis gives get_pricing's rate");
-  assert.match(quote.basis, /0\.168/, "and the model page's rate it was held at");
+  assert.match(quote.basis, /get_pricing states \$0\.112, not the \$0\.14 its rates were decided at: held at the model page's \$0\.168 per second/, "and says it was held at the model page's rate, not get_pricing's");
 });
 
 test("a tiered job at the rate the tiers were decided at is held at get_pricing's rate times its ratio, as before", async () => {
@@ -50,6 +50,7 @@ test("a tiered job at the rate the tiers were decided at is held at get_pricing'
   const quote = await falMeter().quote("submit_job", klingJob, pricing(0.14).ask, signal);
   near(quote.holdUsd, 0.84, "$0.14 × 1.2 × 5");
   near(quote.chargeOf(completed), 0.84, "booked the same");
+  assert.doesNotMatch(quote.basis, /its rates were decided at/, "nothing moved, so the basis says nothing about it");
 });
 
 test("a tiered job is held at get_pricing's rate times its ratio when that is more than the model page's rate", async () => {
@@ -58,6 +59,26 @@ test("a tiered job is held at get_pricing's rate times its ratio when that is mo
   const quote = await falMeter().quote("submit_job", klingJob, pricing(0.16).ask, signal);
   near(quote.holdUsd, 0.96, "$0.16 × 1.2 × 5");
   near(quote.chargeOf(completed), 0.96, "booked the same");
+  assert.doesNotMatch(quote.basis, /its rates were decided at/, "held at get_pricing's own rate scaled, so the basis says nothing about the page");
+});
+
+test("a tiered job whose get_pricing states another unit than its rates were decided in can't be priced: nothing held, an accepted one booked as unknown, its media never read", async () => {
+  const { falMeter } = await load();
+  // fal starts stating sync-lipsync v2 per second ($0.05, its $3 a minute) and Nano Banana 2 per megapixel: neither the
+  // ratio nor the model page's rate (per minute, per image) holds in the new unit.
+  for (const [endpoint, unit, input, now, was] of [
+    ["fal-ai/sync-lipsync/v2", "seconds", { video_url: "https://v3.fal.media/files/x/clip.mp4", audio_url: "https://v3.fal.media/files/x/voice.mp3" }, "second", "minute"],
+    // Before, this one was held at $2.72: 17 megapixels at the page's $0.16 an image.
+    ["fal-ai/nano-banana-2", "megapixels", { prompt: "a lighthouse", resolution: "4K", image_size: { width: 4096, height: 4096 } }, "megapixel", "image"],
+  ]) {
+    const read = [];
+    const meter = falMeter({ media: async (url) => { read.push(url); throw new Error("no media in this test"); } });
+    const quote = await meter.quote("submit_job", { endpoint_id: endpoint, input }, pricing(0.05, { unit }).ask, signal);
+    assert.equal(quote.unpriceable, `get_pricing states ${endpoint} per ${now}, and its rates were decided per ${was}`, `${endpoint}: refused under a cap`);
+    assert.equal(quote.holdUsd, 0, `${endpoint}: nothing held`);
+    assert.equal(quote.chargeOf({ structuredContent: { status: "queued", request_id: "req-3", submission_replayed: false, endpoint_id: endpoint } }), null, `${endpoint}: an accepted job is an unknown charge`);
+    assert.deepEqual(read, [], `${endpoint}: no media read for a job that can't be priced`);
+  }
 });
 
 test("a price of $0 on get_pricing is no price: the job can't be priced, and an accepted one is booked as unknown, never $0", async () => {

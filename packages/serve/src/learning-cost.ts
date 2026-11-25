@@ -116,8 +116,8 @@ export const COST_RUNS_DEFAULT = 1000;
 export const COST_RUNS_MAX = 10_000;
 
 /** The serving promotion's check (store-reads/learning.ts servingReplayOf): on `n` inputs, the workflow's agreement and the
- *  agent's own in percent to a tenth, whether it `cleared` the bar (learn/promote.ts checkPasses), and the agreement check
- *  itself: `agreed` of the `alone` inputs it answered alone said what the agent said, against the bar `agree_min` (0-1).
+ *  agent's own in percent to a tenth, whether it `cleared` the bar `agree_min` (learn/field-check.ts check's joint floor), and the agreement check
+ *  itself: `agreed` of the `alone` inputs it answered alone were right on every field, against the bar `agree_min` (0-1).
  *  Passing that bar is all it says: never that the workflow is as accurate as the agent. */
 export type CostReplay = { n: number; workflow_pct: number; agent_pct: number; cleared: boolean; agreed: number; alone: number; agree_min: number };
 

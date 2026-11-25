@@ -1,5 +1,5 @@
 // The Modal host: Modal sandboxes on the VM runtime, and on gVisor for a GPU computer (Modal's one GPU runtime), every
-// call through the host's own Modal JS SDK client, whose types it imports as types only (erased at build: nothing loads at
+// call through Modal's JS SDK client (the `modal` package, this package's optional dependency), whose types it imports as types only (erased at build: nothing loads at
 // import). A Modal sandbox's command is its main process, so computerd is pid1: the sandbox's command is the
 // shared entrypoint, which waits for the daemon and becomes init, and Modal finishes the sandbox when init exits. Modal
 // has no file API, so the daemon goes in through exec's stdin; it has no kill for an exec (one is killed by its pid), and
@@ -19,6 +19,7 @@ import { connectOf, kindRefusal } from "./descriptor.js";
 import { isWhole } from "./hosted/values.js";
 import type { ComputerSpec, GpuSpec, Refusal } from "./provider.js";
 import { type ComputerErrorCode, ok, type Result } from "./result.js";
+import { vendorSdk } from "./vendor-sdk.js";
 
 /**
  * The SDK's own types, imported as types only: erased at build, so nothing loads the SDK from here. The host passes its
@@ -51,8 +52,9 @@ export interface ModalProviderOptions extends Omit<HostedOptions, "desktop" | "m
 /** A GPU as the SDK takes it: the type, then :count past one ("T4", "H100:8"). */
 const modalGpu = ({ type, count }: GpuSpec) => (count === 1 ? type : `${type}:${count}`);
 
-/** The SDK's default server (modal-client@64880502:js/src/config.ts:143). */
-export const MODAL_DEFAULT_SERVER_URL = "https://api.modal.com:443";
+/** The SDK's default server (modal-client@64880502:js/src/config.ts:143, which writes https's own port, :443), as
+ *  httpsBase hands it to the client. */
+export const MODAL_DEFAULT_SERVER_URL = "https://api.modal.com";
 
 /** What modalClient gives the SDK's ModalClient: the token, explicitly, so the SDK fills none of it in. */
 export interface ModalClientParams {
@@ -68,7 +70,7 @@ export interface ModalClientOptions {
 	/** The Modal token's id and secret. Serve passes its MODAL_TOKEN_ID and MODAL_TOKEN_SECRET; the conformance module the token it reads. */
 	tokenId: string;
 	tokenSecret: string;
-	/** The server the token goes to, https alone; default the SDK's, https://api.modal.com:443. */
+	/** The server the token goes to, https alone; default the SDK's, https://api.modal.com. */
 	serverUrl?: string;
 	/** The SDK's ModalClient; imported from the host's modal package by default. */
 	ModalClient?: ModalClientConstructor;
@@ -76,9 +78,6 @@ export interface ModalClientOptions {
 
 /** What create() takes: the provider's options, the client's in place of the SDK. */
 export interface ModalCreateOptions extends Omit<ModalProviderOptions, "sdk">, ModalClientOptions {}
-
-/** Not a literal, so no type checker or bundler resolves the SDK from this package. */
-const MODAL_PACKAGE: string = "modal";
 
 /** The construction now running, or the last one: the next waits for it, so two never overlap. */
 let constructing: Promise<unknown> = Promise.resolve();
@@ -95,8 +94,8 @@ let constructing: Promise<unknown> = Promise.resolve();
  * So this is the library's one touch of the environment, a guard and not a setting (README, Settings): an ambient
  * MODAL_SERVER_URL is refused, and MODAL_SERVER_URL is set to the chosen server only while the client is constructed,
  * and put back after, so no profile can redirect the key. process.env is the whole process's: constructions run one at a
- * time, each waiting for the last, so none sees another's server. The modal package is the host's: it is imported only
- * here.
+ * time, each waiting for the last, so none sees another's server. The modal package, an optional dependency, is loaded
+ * only here.
  */
 export async function modalClient({ tokenId, tokenSecret, serverUrl = MODAL_DEFAULT_SERVER_URL, ModalClient }: ModalClientOptions): Promise<ModalSdk> {
 	if (typeof tokenId !== "string" || tokenId === "" || typeof tokenSecret !== "string" || tokenSecret === "") {
@@ -105,7 +104,7 @@ export async function modalClient({ tokenId, tokenSecret, serverUrl = MODAL_DEFA
 	const server = httpsBase(serverUrl, "the Modal server URL (options.serverUrl)");
 	const ambient = `the Modal provider refuses to start while MODAL_SERVER_URL is set: the SDK would send the key there. Unset it, and pass the server as options.serverUrl if it is not ${MODAL_DEFAULT_SERVER_URL}`;
 	if (process.env.MODAL_SERVER_URL) throw new Error(ambient);
-	const Client = ModalClient ?? ((await import(MODAL_PACKAGE)) as { ModalClient: ModalClientConstructor }).ModalClient;
+	const Client = ModalClient ?? (await vendorSdk<{ ModalClient: ModalClientConstructor }>(MODAL.label, "modal")).ModalClient;
 	// getProfile reads MODAL_SERVER_URL from process.env when the client is constructed (client.ts:123), and the
 	// control-plane client is made then (client.ts:175); afterwards process.env is as it was. One construction at a time.
 	const turn = constructing.then(() => {

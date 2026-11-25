@@ -670,7 +670,11 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
       <div className="mt-1 flex flex-wrap items-center gap-3">
         {applies ? <>
           <Button size="sm" variant="primary" onClick={() => void apply()} disabled={applying || blocked || waiting.length > 0} title={unread ? (serversError ? "The saved MCP servers couldn't be read: try again first" : "Reading the saved MCP servers…") : unpicked.length ? `Pick the server for ${unpicked.join(", ")} first` : reading ? `Reading ${reading.what}…` : undefined}>{applying ? "Applying…" : "Apply"}</Button>
-          {mine.map((a) => <Button key={a.id} size="sm" variant="outline" onClick={() => void apply(a.id)} disabled={applying || blocked || waiting.length > 0} title={`Apply this template onto ${a.name}: a new revision of it, its runs, notes and triggers kept`}>{`Update ${a.name}`}</Button>)}
+          {mine.map((a) => {
+            // Agents this template made keep its name unless renamed: two or more of one name each say their id too.
+            const named = mine.filter((b) => b.name === a.name).length > 1 ? `${a.name} (${a.id})` : a.name;
+            return <Button key={a.id} size="sm" variant="outline" onClick={() => void apply(a.id)} disabled={applying || blocked || waiting.length > 0} title={`Apply this template onto ${named}: a new revision of it, its runs, notes and triggers kept`}>{`Update ${named}`}</Button>;
+          })}
           {!playground && <CodingAgentAction variant="outline" label="Set it up with an agent" disabled={blocked} prompt={runTemplatePrompt(location.origin, t, body)} playgroundHref={templatePlaygroundHref(t, body)} />}
           {waiting.map((r) => held[r.id] === "unmet"
             ? <p key={r.id} role="status" data-requirement={r.id} className="min-w-0 text-body text-warning-text">{r.unmet.before}<a href={r.unmet.href} className="font-mono text-primary-text underline-offset-2 hover:underline">{r.unmet.link}</a>{r.unmet.after}</p>

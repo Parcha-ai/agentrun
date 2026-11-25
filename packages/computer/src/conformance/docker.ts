@@ -36,19 +36,19 @@ export function settingsFromEnv(env: Record<string, string | undefined> = proces
 }
 
 export interface DockerModuleOptions extends Pick<DockerCreateOptions, "docker" | "timeoutMs" | "desktop"> {
-	/** Where the settings are read; default process.env. */
+	/** Where the settings are read, and what each docker call holds the names docker reads of; default process.env. */
 	env?: Record<string, string | undefined>;
 }
 
 /** The provider the CLI runs; throws in words when Docker cannot be asked its architecture, or its daemon is not built. */
 export function createProvider({ env = process.env, ...options }: DockerModuleOptions = {}): Promise<DockerProvider> {
-	return create({ ...settingsFromEnv(env), ...options });
+	return create({ ...settingsFromEnv(env), env, ...options });
 }
 
 /** The same provider with a daemon that reports another version, for the drift.version case. */
 export async function createDriftedProvider({ env = process.env, ...options }: DockerModuleOptions = {}): Promise<DockerProvider> {
-	const daemonPath = await buildDriftDaemon(await dockerArch(options));
-	return create({ ...settingsFromEnv(env), ...options, daemonPath });
+	const daemonPath = await buildDriftDaemon(await dockerArch({ ...options, env }));
+	return create({ ...settingsFromEnv(env), env, ...options, daemonPath });
 }
 
 /**

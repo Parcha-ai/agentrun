@@ -517,7 +517,7 @@ token. The routes are `GET /v2/settings/harness-keys` and `PUT`/`DELETE /v2/sett
 
 Each saved key is bound to the recipe file it was saved for (the file's sha256) and to the seal key it was sealed under.
 A later recipe file that takes the same id, even one naming the same keys, never opens them: the page lists each to
-paste again, with why (`recipe_changed`, `seal_key_changed`, `file_unreadable`). A recipe the server is no longer
+paste again, with why (`recipe_changed`, `not_bound`, `seal_key_changed`, `file_unreadable`). A recipe the server is no longer
 started with keeps its keys sealed, and still cut, but no run gets them. The page lists them under its id, and `DELETE`
 removes each, as it removes a key that its recipe no longer runs on.
 

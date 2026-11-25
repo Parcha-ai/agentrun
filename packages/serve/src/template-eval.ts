@@ -1114,6 +1114,11 @@ export async function waitRun(api: Api, runId: string, deadline: number, signal?
         const waiting = rows.findLast((row) => row.kind === "waiting");
         return { status, rows, waiting: typeof waiting?.summary === "string" ? waiting.summary : "it waits on a person" };
       }
+      // A page that isn't queued shows a runner took the run: a later queued page starts no lapse from before it.
+      if (status !== "queued") {
+        everHeld = true;
+        unheldSince = undefined;
+      }
       if (status === "queued" && (everHeld || Date.now() - started > queueTimeoutMs) && Date.now() - askedAt >= CLAIM_READ_EVERY_MS) {
         askedAt = Date.now();
         const held = await heldNow(api, runId, deadline, signal);
