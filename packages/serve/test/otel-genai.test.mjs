@@ -820,7 +820,7 @@ test("an OTLP endpoint's or header value's credential with a raw ; in it is held
   assert.deepEqual(missed, [], "every credential with a ; is held whole and by its pairs, and cut with nothing after the ; left; region and the ordinary words are not");
 });
 
-test("an OTLP header value of 16 KB holding 8,000 @, or 4,000 URL starts, starts the tracer and cuts an [otel] line in well under a second, and still holds its URL's user as RFC 3986 reads it (before the last @)", () => {
+test("an OTLP header value of 16 KB holding 8,000 @, 4,000 URL starts, or 1,000 URLs each in the last's query, starts the tracer and cuts an [otel] line in well under a second, and still holds its URL's user as RFC 3986 reads it (before the last @)", () => {
   const user = `${"a@".repeat(7999)}a`;
   const header = `X-Upstream=https://${user}@relay.invalid`;
   // In a child bounded by its own timeout, so a reading that grows with the @ count fails here by time, never hangs the file.
@@ -845,16 +845,22 @@ test("an OTLP header value of 16 KB holding 8,000 @, or 4,000 URL starts, starts
     "await genAiTracing(nested, { exporter, log: () => {} });",
     "otlpHeaderCut(nested)(line);",
     "const nestedMs = performance.now() - nestedStarted;",
-    "console.log(JSON.stringify({ ms, held, otel, runner, nestedMs }));",
+    "const queried = { ...on, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Upstream=${'a://h?token=a;b&'.repeat(1000)}` };",
+    "const queriedStarted = performance.now();",
+    "await genAiTracing(queried, { exporter, log: () => {} });",
+    "otlpHeaderCut(queried)(line);",
+    "const queriedMs = performance.now() - queriedStarted;",
+    "console.log(JSON.stringify({ ms, held, otel, runner, nestedMs, queriedMs }));",
     "process.exit(0);",
   ].join("\n");
   const env = { ...process.env, AGENTRUN_TELEMETRY: "0", TRACER_DIST: new URL("../dist/", import.meta.url).href, TRACER_HEADER: header, TRACER_USER: user };
   delete env.NODE_TEST_CONTEXT;
   const child = spawnSync(process.execPath, ["--max-old-space-size=1024", "--input-type=module", "-e", script], { encoding: "utf8", env, timeout: 20_000, maxBuffer: 16 * 1024 * 1024 });
   assert.equal(child.error?.code ?? child.signal ?? child.status, 0, `the tracer started within 20 s and the child ended on its own (stderr: ${(child.stderr ?? "").slice(-300)})`);
-  const { ms, held, otel, runner, nestedMs } = JSON.parse(child.stdout.trim().split("\n").at(-1));
+  const { ms, held, otel, runner, nestedMs, queriedMs } = JSON.parse(child.stdout.trim().split("\n").at(-1));
   assert.ok(ms < 1000, `the tracer started and cut a line in ${Math.round(ms)} ms, under 1 s`);
   assert.ok(nestedMs < 1000, `a 16 KB value of 4,000 URL starts, each inside the last, started the tracer in ${Math.round(nestedMs)} ms, under 1 s`);
+  assert.ok(queriedMs < 1000, `a 16 KB value of 1,000 URLs with a query, each inside the last's query, started the tracer in ${Math.round(queriedMs)} ms, under 1 s`);
   assert.equal(held, true, "the URL's user before the last @ is held");
   assert.equal(otel, "401 from relay: user [redacted]; 2 spans passed", "the [otel] cut takes the user");
   assert.equal(runner.includes("a@a"), false, `the runner's redactor shows no piece of the user (it shows ${runner.slice(0, 80)})`);
