@@ -26,6 +26,8 @@ export function postgresDialect(schema: string, { testClock = false }: { testClo
     jsonNumber: (column, keys) => `(CASE WHEN json_typeof(${column}::json #> ${path(keys)}) = 'number' THEN (${column}::json #>> ${path(keys)})::numeric END)`,
     jsonArrayHas: (column) => `EXISTS (SELECT 1 FROM json_array_elements_text(${column}::json) AS element(value) WHERE element.value = ?)`,
     jsonObjectHas: (column) => `EXISTS (SELECT 1 FROM json_each_text(${column}::json) AS entry(key, value) WHERE entry.key = ? AND entry.value = ?)`,
+    // Not jsonb's ? operator: connection.ts numberParams numbers every bare ? outside quotes as a parameter.
+    jsonObjectHasKey: (column, keys) => `EXISTS (SELECT 1 FROM json_each(${column}::json #> ${path(keys)}) AS entry(key, value) WHERE entry.key = ?)`,
     jsonArrayLength: (column) => `json_array_length(${column}::json)`,
     // Through jsonb, the one place: a body that loses a key is never read for its key order. Every Postgres JSON function
     // decodes the whole document's strings, so a body holding a string jsonb refuses (an escaped NUL, a lone surrogate)

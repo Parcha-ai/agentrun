@@ -27,6 +27,19 @@ const sessions = await parseHome(homedir(), { sources: ["claude-code", "codex"] 
 - `failures: []` collects each file its reader could not read (`{ key, file, source, error }`) while the rest are
   totalled; without it, parseHome throws `ReadFailures`. An unreadable file is never taken for an empty one.
 - `env` names where a source keeps its own directory (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`); without it the home's.
+- `threads` reads the files on that many worker threads (default: the cores the process may run on, at most 8; `1`
+  reads them in order on the calling thread; at most 64). A read is kept only when it is the one the import's order would make; any
+  other file is read again in order, so the totals are the same whatever the count. A call with a `state`, or with
+  readers of its own, reads on the calling thread.
+- `readAhead` caps the bytes of finished reads waiting to be taken (default 1 GiB, or a sixteenth of the memory the
+  process may use, its container's limit when one is set, when that is less: 512 MiB at 8 GiB). Under it, files of 64 MiB and over are read first, largest first, then
+  the rest in order; at it, the threads read only the file the import waits on. It is a cap on finished reads waiting,
+  plus at most one read in flight per thread (one of those can be a giant file), not on the process's memory.
+- `workerOldMb` caps each worker's old generation (default 64). A line over an eighth of it, or a file that runs a worker
+  out of memory, is read on the calling thread instead; past two such losses a thread, the calling thread reads the rest.
+
+  On a 73.7 GB home, 8 threads took 90.9 s (median of 5) at a peak of 1.83 GiB, and 1 thread 441.1 s at 1.05 GiB
+  (x1); with `readAhead` at 256 MiB, 8 threads took 136.5 s (x1). Measured on a loaded machine (load 17 to 45).
 
 ## A year of work
 
@@ -42,17 +55,21 @@ splits: `tokens`, `requests`, `days` (`{day, requests, tokens}`), `hours` (24) a
 `harnesses` and `sources`. A session counts in `sessions` (and its prompts in `turns`) for the year its first request is in.
 `cost` is the catalog's list price of the requests it could price; `unpricedRequests` counts the rest. Like the totals, it
 holds counts, names and times only: no prompt, title, path or project. `parseHome`'s `requests` option is the hook it is
-built on: each session's totals and its requests, as they are totalled.
+built on: each session's totals and its requests, as they are totalled. With it, parseHome keeps every request (its model,
+tokens and time) until its session is totalled; without it, each request is priced as its file is read and only its
+cost is kept. Each call reads with a pool of its own, at the defaults unless `threads` or `readAhead` is passed: two
+calls at once hold two pools' memory.
 
 ## Known answer
 
 ```sh
-node dist/cli.js <home> [--sources claude-code,codex,pi] --known-answer
+node dist/cli.js <home> [--sources claude-code,codex,pi] [--threads N] [--read-ahead BYTES[k|m|g]] --known-answer
 ```
 
 One JSONL line per session, sorted by key: `{key, source, tokens: {input, output, cacheRead, cacheWrite, cacheWrite1h},
 cost, turns, calls}`. Numbers only: no content, title, directory or path is printed. `--help` (`-h`) prints the usage
-and exits 0; a bad argument exits 2. A file that cannot be read prints no answer: one stderr line per such file
+and exits 0; a bad argument exits 2. `--threads` and `--read-ahead` set parseHome's `threads` and `readAhead` (`1`, or
+`256m`, holds less memory); the answer is the same. A file that cannot be read prints no answer: one stderr line per such file
 (`agentrun-import: cannot read <source> <key> (<code>)`) and exit 1. The CLI imports pi-ai statically for its prices:
 a bundle (`bun build --compile`) carries it, prints the same bytes as under Node, and a build or run without pi-ai
 fails instead of pricing nothing. pi-ai is a dependency of the package, so `npx @parcha/agentrun-import` runs the

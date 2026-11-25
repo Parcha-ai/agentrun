@@ -1,0 +1,18 @@
+[
+  {
+    "id": "sonnet-5.5",
+    "harness": "pi",
+    "surface": "code",
+    "model": "openrouter/anthropic/claude-sonnet-5.5",
+    "effort": "medium",
+    "options": { "provider": "e2b" }
+  },
+  {
+    "id": "gpt-6.1-terra",
+    "harness": "pi",
+    "surface": "code",
+    "model": "openrouter/openai/gpt-6.1-terra",
+    "effort": "medium",
+    "options": { "provider": "e2b" }
+  }
+]

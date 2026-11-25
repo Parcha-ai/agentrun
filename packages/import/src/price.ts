@@ -33,23 +33,38 @@ export type CalculateCost = (model: { cost: ModelCost }, usage: Usage & { totalT
 /** A request to price: the model it ran on ("provider/model"), and its tokens. */
 export type Priced = { model?: string; usage?: Usage };
 
+/** pi-ai's calculateCost, loaded; undefined when pi-ai is not installed. */
+export const loadCalculateCost = async (): Promise<CalculateCost | undefined> => (await import("@earendil-works/pi-ai").catch(() => undefined))?.calculateCost as CalculateCost | undefined;
+
+/** What one request costs at `catalog`'s list prices, unrounded: undefined when its tokens are unknown or its provider
+ *  does not list its model; 0 for a request of no tokens, at any price. */
+export function priceRequest({ model, usage }: Priced, catalog: Catalog, calculate: CalculateCost): number | undefined {
+  if (!usage) return undefined;
+  const { input, output, cacheRead, cacheWrite, cacheWrite1h } = usage;
+  if (input + output + cacheRead + cacheWrite === 0) return 0;
+  const at = model?.indexOf("/") ?? -1;
+  const cost = model && at > 0 ? catalog.get(model.slice(at + 1))?.find((entry) => entry.provider === model.slice(0, at))?.cost : undefined;
+  if (!cost) return undefined;
+  const counted = { input, output, cacheRead, cacheWrite, ...(cacheWrite1h !== undefined ? { cacheWrite1h } : {}), totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+  return calculate({ cost }, counted).total;
+}
+
+/** A sum of requests' costs rounded to a millionth of a dollar. */
+export const roundUsd = (usd: number): number => Math.round(usd * 1e6) / 1e6;
+
 /** What `requests` cost at `catalog`'s list prices, each at its own provider's entry for its model, rounded to a
  *  millionth of a dollar: undefined when one request's tokens are unknown or its provider does not list its model (the
  *  request was served at a price no one lists here), or pi-ai is not installed (no `calculateCost` handed in). A provider's $0 entry is $0. A request of
- *  no tokens costs nothing at any price. */
+ *  no tokens costs nothing at any price. The sum is taken in the requests' order, adding a request of no tokens as 0
+ *  (which leaves any sum as it is). */
 export async function priceRequests(requests: readonly Priced[], catalog: Catalog, calculateCost?: CalculateCost): Promise<number | undefined> {
-  const calculate = calculateCost ?? ((await import("@earendil-works/pi-ai").catch(() => undefined))?.calculateCost as CalculateCost | undefined);
+  const calculate = calculateCost ?? (await loadCalculateCost());
   if (!calculate) return undefined;
   let total = 0;
-  for (const { model, usage } of requests) {
-    if (!usage) return undefined;
-    const { input, output, cacheRead, cacheWrite, cacheWrite1h } = usage;
-    if (input + output + cacheRead + cacheWrite === 0) continue;
-    const at = model?.indexOf("/") ?? -1;
-    const cost = model && at > 0 ? catalog.get(model.slice(at + 1))?.find((entry) => entry.provider === model.slice(0, at))?.cost : undefined;
-    if (!cost) return undefined;
-    const counted = { input, output, cacheRead, cacheWrite, ...(cacheWrite1h !== undefined ? { cacheWrite1h } : {}), totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
-    total += calculate({ cost }, counted).total;
+  for (const request of requests) {
+    const usd = priceRequest(request, catalog, calculate);
+    if (usd === undefined) return undefined;
+    total += usd;
   }
-  return Math.round(total * 1e6) / 1e6;
+  return roundUsd(total);
 }

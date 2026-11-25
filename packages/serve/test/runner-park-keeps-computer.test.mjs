@@ -1,7 +1,8 @@
 // A run on a desktop that parks for a tool's approval keeps its desktop (computer-kept.ts), through the runner, the pi
 // spec and the adapter loop as they really run: the park says the desktop is kept for 10 minutes; an approval within
 // them resumes the run on the same desktop (no second create, no replaced row, no server note to the model); one after
-// them resumes on a new desktop, said once with why, the kept one let go; a stop while parked lets it go at once.
+// them resumes on a new desktop, said once with why, the kept one let go; a stop while parked lets it go at once; one a
+// deny turned off before the park is let go at it, never said to be kept.
 //
 // The desktop is --faux's machine (faux-computers.ts) behind a loopback vendor that keeps its computers across claims,
 // as a vendor's account does: nothing is rented. The clock the keep is read by is the test's, the stores' and the runner's alike.
@@ -97,8 +98,10 @@ function fauxVendor() {
 /** run-1 on a desktop whose tools ask (the `desktop` key), run by a runner on the pi spec with a scripted model: a
  *  screenshot, then an answer. Rests parked on the screenshot's ask. With `asks`, the agent's body and the script that
  *  parks it instead (an ask_person). `views`: each live view the claims open, by the closes it gets (a stand-in for
- *  computer-live.ts openComputerView). */
-async function parkedRun(t, { asks, views } = {}) {
+ *  computer-live.ts openComputerView). `turnOff`: once the model's first answer is made, and before the call in it is
+ *  decided, the owner sets the desktop to deny, so that call turns the desktop off for the rest of the run, after the
+ *  claim's spec was built and its desktop started. */
+async function parkedRun(t, { asks, views, turnOff } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-park-keeps-"));
   // The keep's end is stamped and judged on the store's clock, so the test moves the stores' clock and the runner's together.
   const clock = { offset: 0 };
@@ -118,7 +121,18 @@ async function parkedRun(t, { asks, views } = {}) {
   await server.settings.put("approvers", { approvers: true });
   await server.flush?.();
   const requests = [];
-  const route = { model: "faux-1", provider: { api: "anthropic-messages", origin: "https://route.invalid", credential: () => "not-a-secret" }, fetch: scriptedOrigin(asks?.script ?? [{ call: "computer_screenshot", args: {} }, { say: "done" }], requests), price: () => 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 100 };
+  const origin = scriptedOrigin(asks?.script ?? [{ call: "computer_screenshot", args: {} }, { say: "done" }], requests);
+  let denyNext = turnOff === true;
+  const fetch = async (url, init) => {
+    const answer = await origin(url, init);
+    if (denyNext) {
+      denyNext = false;
+      await server.settings.put("tool-settings", { desktop: { permission: "deny" } });
+      await server.flush?.();
+    }
+    return answer;
+  };
+  const route = { model: "faux-1", provider: { api: "anthropic-messages", origin: "https://route.invalid", credential: () => "not-a-secret" }, fetch, price: () => 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 100 };
   const vendor = fauxVendor();
   const computerDeps = { kinds: FAUX.kinds, keyTable: FAUX.keyTable, providers: { "faux-desktop": () => vendor.provider }, spec: () => ({ image: "faux", lifetimeMs: 600_000, network: "open" }), check: { readBackOf }, now,...(views ? { openComputerView: async () => { const closes = []; views.push(closes); return { ok: true, view: { close: (why) => void closes.push(why) } }; } } : {}) };
   const deps = { env: {}, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim, computerDeps };
@@ -134,7 +148,7 @@ async function parkedRun(t, { asks, views } = {}) {
   const records = await journalRecords(server.journal({ runId: RUN, runner: "reader", epoch: row.epoch, until: 0, from: row.state }), ctx);
   const [ask] = records.entries.filter((entry) => entry.kind === "agentrun.ask").map((entry) => entry.data);
   if (!asks) assert.ok(ask, "parked on the screenshot's ask");
-  return { server, vendor, clock, requests, ask };
+  return { server, vendor, clock, requests, ask, entries: records.entries };
 }
 
 /** Until the run ends; its row and its timeline's summaries. */
@@ -235,4 +249,16 @@ test("a park on ask_person closes the desktop's live view saying it waits for an
   await ends(one);
   assert.deepEqual(creates(one.vendor), ["d1"], "the same desktop");
   assert.equal(views.length, 2, "the resume opened the view again");
+});
+
+// The pi spec's kept words are read at the park, never fixed when the spec is built: here the desktop is on when the
+// claim builds the spec, and a deny of one of its calls turns it off before the run parks in the same claim.
+test("a desktop turned off by a deny after its claim started it, then parked on ask_person, is let go at the park, which says nothing of keeping it", { timeout: 120_000 }, async (t) => {
+  const one = await parkedRun(t, { turnOff: true, asks: { body: { tools: ["ask_person"] }, script: [{ call: "computer_screenshot", args: {} }, { call: "ask_person", args: { question: "Which tab?" } }, { say: "done" }] } });
+  assert.deepEqual(creates(one.vendor), ["d1"], "the claim started the desktop before the deny");
+  assert.deepEqual(one.entries.filter((entry) => entry.kind === "agentrun.computer.off").map((entry) => entry.data), [{ computer: "desktop" }], "the deny turned the desktop off");
+  const said = (await runTimeline(one.server, RUN, ctx)).map((entry) => entry.summary ?? "");
+  assert.deepEqual(said.filter((summary) => summary.includes(HOLD)), [], `the park says nothing of keeping it: ${JSON.stringify(said)}`);
+  await deleted(one.vendor, ["d1"], "let go at the park, as at the run's end");
+  assert.equal(await one.server.settings.get(keptKeyOf(RUN)), undefined, "no keep on the server");
 });
