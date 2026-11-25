@@ -169,15 +169,7 @@ export function record(end: RunEnd): { row: LedgerRow; spend: SpendRow[] } {
  *  `ended` once it ended, stopped or failed. A run with none has no entry. */
 export type Shadow = "open" | "ended";
 
-/** A run's figures, every one null when unknown, never $0 for unknown:
- *  - `usd`: the job's own $ (GET /runs/{id} `cost.usd`, the series' `cost_usd`);
- *  - `compile_usd`, `followup_usd`, `shadow_usd`: its own compile turns, the rest of its look-back (its follow-up rounds'
- *    turns) and its audit's shadow run;
- *  - `share_usd`: its share of its revision's compile and check (amortize), 0 for a run that carries none;
- *  - `series_learning_usd` and `series_total_usd`: the cost series' `learning_usd` (its whole look-back and its shadow)
- *    and `total_usd`, the all-in both sides of the money rule read;
- *  - `learning_usd` and `all_in_usd`: GET /runs/{id}'s (its follow-ups, its shadow and its share: its compile turns are
- *    its revision's), 0 for a replay or a shadow run, whose spend is on the runs it serves. */
+/** A run's figures (figuresOf), null when unknown: `series_*` are the cost series', the rest GET /runs/{id}'s. */
 export type RunFigures = {
   readonly usd: number | null;
   readonly compile_usd: number | null;
@@ -242,17 +234,7 @@ export function shadowCostOf(runId: string, audit: ReadonlyMap<string, number | 
  *  spend is spread over (`k`, its check's compile_after) and where it stands. Order is the records'. */
 export type RevisionAt = { readonly workflow: string; readonly digest: string; readonly k: number; readonly state: RevisionSpend["state"] };
 
-/** What summarize reads:
- *  - `rows`, the runs of the series (ended, neither imported nor archived nor purged, no workflow revision's run, no
- *    shadow), any order, each with its path (null: its end named none);
- *  - `spend`, the agent's spend rows: a compile or a check of a run `rows` leaves out is left out as its run is, an
- *    audit's by the run it audits;
- *  - `shadows`, each run's audit shadow by the run it audits;
- *  - `learning`, the runs of `rows` whose spend and service make up a revision's (on no named disk: one on a named disk
- *    learns nothing and serves nothing, learn/learning-of.ts); absent, every one;
- *  - `revisions`, as the records say them; `compileAfter`, the K of a revision no record names;
- *  - `named`, the workflow name a run's series row shows (its row's when absent).
- *  The summary's `replay` is the records' (store-reads/learning.ts servingReplayOf), null here. */
+/** What summarize reads: the series' rows and spend, shadows by audited run, learning runs (absent: all), revisions. */
 export type LedgerRead = {
   readonly rows: readonly LedgerRow[];
   readonly spend: readonly SpendRow[];
