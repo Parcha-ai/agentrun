@@ -1684,11 +1684,14 @@ has the row **Use Claude Code's login on this machine**, over these routes:
   reached through no other user's link or folder, and writable by no one else; a folder on the way may be open to
   all where the sticky bit is set, as on `/tmp`. Else the turn-on and the sign-in answer `403` in words, no run goes
   on the login, and a setting saved before is kept but not used, the start logging why. A folder its group may write
-  in is the user's alone where that group is the user's private one: its primary group, which no other user has as
-  theirs and `/etc/group` lists with no other member, as the user-private groups of Ubuntu and Fedora are, so a
-  umask of 002 under one refuses nothing. Any other group (one shared with other users, one that is not the user's
-  primary group, one `/etc/group` lacks, or account files with a `+` or `-` line, whose members a directory service
-  holds), and a folder anyone may write in, are refused in words that name the folder, its mode and the
+  in is the user's alone where that group is the user's private one, as the local account files alone say:
+  `/etc/nsswitch.conf` takes users and groups from those files only (`files` or `compat` on its `passwd`, `group` and
+  any `initgroups` line), and the group is the user's primary group, which no other user has as theirs and
+  `/etc/group` lists with no other member, so a umask of 002 under one refuses nothing. Any other group (one shared
+  with other users, one that is not the user's primary group, one `/etc/group` lacks, account files with a `+` or `-`
+  line, or a switch that also asks sssd, LDAP, NIS, winbind or systemd's user records, as the `files systemd` of
+  recent Ubuntu, Debian and Fedora installs does, or no switch file: there members can exist that the files do not
+  show), and a folder anyone may write in, are refused in words that name the folder, its mode and the
   `chmod g-w,o-w` that closes it. A folder of the login
   still to make is made by AgentRun at the turn-on and before the CLI's sign-in, 0700 whatever the umask, so the login
   the CLI signs in there is not refused after.
