@@ -111,6 +111,16 @@ test("a short OTLP header value (x-honeycomb-dataset=prod) never makes a local c
   await assert.rejects(captureProject({ workspace: work, baseline: baseline(), exclude, secretValues }), error => error.code === "prerequisite" && !error.message.includes(long));
 });
 
+test("a dataset OTLP header of 8 or more (x-honeycomb-dataset=production) never makes a local capture refuse a project holding production", async t => {
+  const { work } = await fixture(t, "local"); await current(work);
+  await work.write("deploy/production.txt", "Ship the production build.\n");
+  // The values a local source capture is handed (source-sync/local.ts): the runner's held list over the server's env.
+  const secretValues = runnerSecrets({ OTEL_EXPORTER_OTLP_HEADERS: "x-honeycomb-dataset=production" });
+  const after = await captureProject({ workspace: work, baseline: baseline(), exclude, secretValues }).catch(error => error);
+  assert.ok(!(after instanceof Error), `a project holding "production" is captured: ${after?.message}`);
+  assert.equal(bytesOf(after, "project/deploy/production.txt").toString(), "Ship the production build.\n");
+});
+
 test("literal host filenames cannot glob-match and omit another project directory", async t => {
   const { work } = await fixture(t, "local"); await current(work);
   await work.write("inputs/[owned]", "runtime upload\n"); await work.write("inputs/o/kept.txt", "project content\n");

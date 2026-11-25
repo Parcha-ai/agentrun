@@ -391,6 +391,27 @@ test("an OTLP credential is held as an error may quote it: a scheme's credential
   assert.equal(said, `401 from https://${userinfo("[redacted]", "[redacted]")}@collector.invalid/v1/traces?region=us-east-1&api_key=[redacted]: bad credential [redacted], [redacted], [redacted]`);
 });
 
+test("a dataset or tenant OTLP header (x-honeycomb-dataset, x-axiom-dataset, x-scope-orgid) is on no held list at any length, and the tracer's cut still takes it", () => {
+  const env = { ...ON, OTEL_EXPORTER_OTLP_HEADERS: "x-honeycomb-dataset=production,X-Axiom-Dataset=agentrun production", OTEL_EXPORTER_OTLP_TRACES_HEADERS: "X-Scope-OrgID=tenant-production-7" };
+  for (const [list, values] of [["runnerSecrets", runnerSecrets(env)], ["hostSecrets", hostSecrets(env)]]) {
+    for (const value of ["production", "agentrun production", "tenant-production-7"]) assert.equal(values.includes(value), false, `${value} (a dataset or tenant header's) is not held (${list})`);
+  }
+  assert.equal(otlpHeaderCut(env)("404 for dataset production (agentrun production), org tenant-production-7"), "404 for dataset [redacted] ([redacted]), org [redacted]", "the tracer's cut takes each");
+});
+
+test("an unknown OTLP header's spaced value is held whole, never its tail alone; a credential-named header's, or a known auth scheme's, credential is held without its first word too", () => {
+  const env = { ...ON, OTEL_EXPORTER_OTLP_HEADERS: "X-Tenant=acme production-cluster" };
+  for (const [list, values] of [["runnerSecrets", runnerSecrets(env)], ["hostSecrets", hostSecrets(env)]]) {
+    assert.ok(values.includes("acme production-cluster"), `an unknown header's value is held whole (${list})`);
+    assert.equal(values.includes("production-cluster"), false, `an unknown header's tail alone is not held (${list})`);
+  }
+  const [custom, splunk, genie, token] = [`custom-${"dummy"}-cred-5150`, `splunk-${"dummy"}-token-6261`, `genie-${"dummy"}-key-7372`, `token-${"dummy"}-value-8483`];
+  const values = runnerSecrets({ OTEL_EXPORTER_OTLP_HEADERS: `X-Vendor-Auth=Custom ${custom},X-Splunk=Splunk ${splunk},X-Ops=GenieKey%20${genie},X-Custom=token ${token}` });
+  for (const [what, value] of [["a credential-named header's", custom], ["Splunk's", splunk], ["GenieKey's", genie], ["Token's", token]]) {
+    assert.ok(values.includes(value), `${what} credential alone is held`);
+  }
+});
+
 test("a short OTLP header value is cut from the tracer's own error text, at any length; a standard header's value is left as it is", async (t) => {
   const short = `hc${"7"}x1`;
   const env = { ...ON, OTEL_EXPORTER_OTLP_HEADERS: `x-honeycomb-team=${short},Content-Type=application/json`, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `x-team=${short}` };
