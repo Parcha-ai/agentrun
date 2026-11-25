@@ -33,14 +33,16 @@ const KEPT = { meters: { tools: 0, tokens: 0.1, browser: { usd: 0, seconds: 0 },
 const kept = (n, job, look, extra = {}) => ({ table: "learning_proposals", row: { round: n, turn: {}, proposal: { state: "dropped", reason: "empty", detail: "d", answered_at: AT, job_cost_usd: job, look_back_usd: look, ...extra } } });
 
 /** A store with agent-1 and its revision, and `end`: run `id` made and ended at the clock's next second, its row's cost
- *  `costUsd` and its metrics, with `also`'s rows; on a named disk with `disk`; an audit's shadow with `audit`. */
+ *  `costUsd` and its metrics, with `also`'s rows; on a named disk with `disk`; an audit's shadow with `audit`; a launch
+ *  that learns with `learns`. */
 async function ledgerStore(t) {
   const clock = { now: T0 };
   const { store, file } = await storeOn(t, { clock });
   await agentWithRevision(store, "agent-1", "rev-1");
-  const end = async (id, costUsd, metrics = { path: "agent" }, { also = [], disk, audit } = {}) => {
+  const end = async (id, costUsd, metrics = { path: "agent" }, { also = [], disk, audit, learns } = {}) => {
     clock.now += 1_000;
-    await store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "q" }, title: "t", place: { mode: "runner" }, ...(disk ? { archil_disk: { disk_id: disk, kind: "launch" } } : {}), ...(audit ? { audit } : {}) } });
+    const learning = learns ? { learning: { given: [], seed: "a".repeat(40), section: "", seedNotes: 0 } } : {};
+    await store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "q" }, title: "t", place: { mode: "runner" }, ...(disk ? { archil_disk: { disk_id: disk, kind: "launch" } } : {}), ...(audit ? { audit } : {}), ...learning } });
     const claim = await store.claim(id, "runner-a", { leaseMs: 60_000 });
     clock.now += 1_000;
     await store.runs.update(claim, { state: "ended", costUsd, metrics }, also.length ? { also } : undefined);
@@ -289,6 +291,20 @@ test("once the newest PAST_RUNS runs hold no run by hand, the money rule holds t
   assert.deepEqual(past.by_hand, { runs: 10, mean_usd: 1 }, "the 10 by hand before the window");
   assert.deepEqual(workflowCostsOf(past).map((one) => [one.state, one.served, one.by_hand]), [["needs_revision", { runs: 10, mean_usd: 2 }, { runs: 10, mean_usd: 1 }]]);
   assert.deepEqual((await agentCostOverStore(store, "agent-1")).workflows.map((one) => one.state), ["needs_revision"], "the cost page says the same");
+});
+
+test("one by-hand rule in the window and before it: a run whose end named no path is the agent's when its launch does not learn (its row says agent), unknown when it does", async (t) => {
+  const { store, end } = await ledgerStore(t);
+  for (let at = 0; at < 10; at++) await end(`h${String(at).padStart(2, "0")}`, 1, {});
+  // Newer than those, nearer the window: runs that learn whose end named no path, at $9. Never the agent's by hand.
+  for (let at = 0; at < 3; at++) await end(`l${at}`, 9, {}, { learns: true });
+  const rows = new Map((await store.learning.ledger("agent-1")).rows.map((row) => [row.runId, row.path]));
+  assert.deepEqual([rows.get("h00"), rows.get("l0")], ["agent", null], "the row says it: agent for a launch that does not learn, null for one that does");
+  for (let at = 0; at < PAST_RUNS; at++) await end(`s${String(at).padStart(3, "0")}`, 0.1, SERVED);
+  for (let at = 0; at < 10; at++) await end(`x${String(at).padStart(2, "0")}`, 2, SERVED);
+  const past = await pastRunsOverStore(store, "agent-1");
+  assert.deepEqual(past.by_hand, { runs: 10, mean_usd: 1 }, "the 10 by hand before the window, as the window would read them; the runs that learn left out");
+  assert.deepEqual((await agentCostOverStore(store, "agent-1")).workflows.map((one) => one.state), ["needs_revision"]);
 });
 
 test("a shadow that failed before its end wrote its metrics books its cost at its end, on the run its launch audits", async (t) => {
