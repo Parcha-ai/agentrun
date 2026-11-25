@@ -248,12 +248,23 @@ test("a sign-out where one removal fails still drops the runner's token reader, 
   assert.equal(out.login.state, "off");
 });
 
-for (const [step, broken, why] of [
-  ["the pinned CLI's lookup", { pinned: async () => { throw new Error("the pinned CLI's lookup broke"); } }, "the pinned CLI's lookup broke"],
-  ["the harness's load", { claude: async () => { throw new Error("the harness's load broke"); } }, "the harness's load broke"],
+/** `work` once throwing `why`, then as it was: the sign-out's CLI step is its first call, and the answer's view after it reads as before. */
+const throwsOnce = (work, why) => {
+  let thrown = false;
+  return async () => {
+    if (thrown) return work();
+    thrown = true;
+    throw new Error(why);
+  };
+};
+
+for (const [step, key, why] of [
+  ["the pinned CLI's lookup", "pinned", "the pinned CLI's lookup broke"],
+  ["the harness's load", "claude", "the harness's load broke"],
 ]) {
   test(`a sign-out where ${step} throws still removes the folder, the signed-in note and the token reader, turns the mode off and has the server reread the keys, and answers confirmed false in words naming the CLI step's failure`, async (t) => {
     const r = await rig(t, { signedIn: true });
+    const broken = { [key]: throwsOnce(r.deps[key], why) };
     const folder = signedInAt(r.data);
     assert.equal((await login.claudeLoginView(r.deps)).state, "signed_in");
     assert.equal(answers(r.data).length, 1, "a signed-in note is kept for the login");
