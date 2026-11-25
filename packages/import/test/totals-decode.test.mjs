@@ -58,3 +58,15 @@ test("a totals read decodes none of a tool result's text", async (t) => {
     assert.ok(longest < BIG / 16, `${source}: the longest string decoded is ${longest} characters, none of the tool output's ${BODY.length}`);
   }
 });
+
+test("a read with turns, or with turns false and no totals, parses every line whole as before", async (t) => {
+  const home = await tempHome(t);
+  const tool = { ...claudeUser({ uuid: "u2", i: 2, text: [{ type: "tool_result", tool_use_id: "toolu_1", content: BODY }] }) };
+  const cc = await writeJsonl(claudeFile(home), [claudeUser({ uuid: "u1", text: "Fixture prompt.", i: 0 }), tool, claudeAnswer({ uuid: "a2", msg: "msg_2", req: "req_2", usage: anthropicUsage(20, 3), i: 3 })]);
+  const codex = await writeJsonl(codexFile(home), [codexMeta("thread-1"), codexContext(1), codexUser("Fixture prompt.", 2), { type: "response_item", timestamp: at(4), payload: { type: "function_call_output", call_id: "call_1", output: BODY } }]);
+  for (const [source, file] of [["claude-code", cc], ["codex", codex]])
+    for (const options of [{ turns: true }, { turns: true, totals: true }, { turns: false }]) {
+      const { longest } = await longestDecoded(() => READERS[source].read({ file }, undefined, options));
+      assert.ok(longest > BODY.length, `${source} ${JSON.stringify(options)}: the tool output's line is decoded whole (longest ${longest})`);
+    }
+});
