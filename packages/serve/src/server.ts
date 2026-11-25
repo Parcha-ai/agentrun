@@ -325,7 +325,7 @@ export type ServeOptions = {
   openSetup?: boolean;
   /** With accounts: the address people open (AGENTRUN_PUBLIC_URL), which the printed setup link uses. */
   publicUrl?: string;
-  /** The home whose Claude Code, Codex and pi sessions setup offers to import and GET /v2/wrapped reads (default this
+  /** The home whose Claude Code, Codex, pi, OpenCode and Copilot CLI sessions setup offers to import and GET /v2/wrapped reads (default this
    *  user's), and the temp directory whose projects setup leaves out (default the OS's). */
   sessionsHome?: { home: string; temp?: string };
   /** How long GET /v2/wrapped waits for its read of `sessionsHome`'s home before it answers 503 with a retry, while the

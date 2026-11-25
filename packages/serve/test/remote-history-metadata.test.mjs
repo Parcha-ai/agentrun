@@ -7,7 +7,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { syncBuiltinESMExports } from 'node:module';
 import { READERS } from '@parcha/agentrun-import';
 import { scratch } from './support.mjs';
-import { claudeSession, codexSession } from './fixtures/import-sessions.mjs';
+import { claudeSession, codexSession, copilotSession } from './fixtures/import-sessions.mjs';
 import { exportRemoteHistory } from '../dist/import.js';
 import { remoteHistorySessions } from '../dist/native/history.js';
 
@@ -104,3 +104,16 @@ for (const [runtime, makeSession] of [['claude-code', claudeSession], ['codex', 
   const after=statSync(oversized);assert.equal(after.size,before.size);assert.equal(after.mtimeMs,before.mtimeMs);
  });
 }
+
+test('copilot: a session names its project in session.start, and a run the CLI started on another session\'s exit is a child', async t => {
+ const f=await fixture(t),target={...f.target,runtime:'copilot'};
+ const file=copilotSession(f.home,f.project,1);
+ const child=copilotSession(f.home,f.project,2);
+ writeFileSync(child,readFileSync(child,'utf8').replace('"sessionId"','"detachedFromSpawningParentSessionId":"00000000-0000-4000-8000-000000000001","sessionId"'));
+ const old=new Date(Date.now()-3600_000);utimesSync(child,old,old);
+ copilotSession(f.home,join(f.home,'unrelated'),3);
+ const preview=await exportRemoteHistory(target,{...f.options,preview:true});
+ assert.equal(preview.total,1);
+ assert.deepEqual(preview.skipped,[{reason:'Subagent history is not a separate session.',count:1}]);
+ assert.ok(readFileSync(file).length>0);
+});

@@ -20,7 +20,7 @@ import { openSqliteStore } from "../dist/store/index.js";
 import { costOfRun, listRuns } from "../dist/store-reads/runs.js";
 import { runEntries } from "../dist/store-reads/journal.js";
 import { toolKeysOverStore } from "../dist/tool-keys-store.js";
-import { at as minute, claudeSession, claudeSubagent, codexSession, openCodeDb, openCodeV1Db, piSession, sessionId, writeSession } from "./fixtures/import-sessions.mjs";
+import { at as minute, claudeSession, claudeSubagent, codexSession, copilotSession, openCodeDb, openCodeV1Db, piSession, sessionId, writeSession } from "./fixtures/import-sessions.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, client, FAUX, scratch, startServe, triggerStore } from "./support.mjs";
 
@@ -1250,6 +1250,68 @@ test("a pi import keeps each request's usage as pi wrote it, its model, its thin
   });
   assert.deepEqual(answers.map(tokensIn), [["claude-sonnet-5", 100, 400, 30, 20], ["claude-opus-5", 100, 400, 30, 20]]);
   assert.ok(Math.abs(runs[0].costUsd - 0.005) < 1e-12, "its cost as before");
+});
+
+test("a Copilot CLI session imports as a run from copilot: its shutdown's tokens on its model's last request, the request before it folded into it (known, priced with it); with no shutdown, each request unmetered", async (t) => {
+  const { store, runs } = await importedOne(t, (home, project) => {
+    copilotSession(home, project, 40);
+    copilotSession(home, project, 41, { shutdown: false });
+  });
+  assert.deepEqual(runs.map((r) => [r.importedFrom.source, r.importedFrom.session, r.state]), [["copilot", sessionId(40), "completed"], ["copilot", sessionId(41), "completed"]]);
+  const { metrics, answers, kinds } = await metricsOf(store, runs[0].id);
+  assert.deepEqual(kinds, ["pi.user", "pi.assistant", "pi.tool-result", "pi.assistant"]);
+  assert.deepEqual([metrics.requests, metrics.unmetered, metrics.input, metrics.cacheRead, metrics.cacheWrite, metrics.output, metrics.model, metrics.tools], [2, 0, 300, 1000, 200, 60, "github-copilot/claude-sonnet-5", { bash: { calls: 1, errors: 0 } }]);
+  assert.deepEqual(answers.map(tokensIn), [["claude-sonnet-5", 0, 0, 0, 0], ["claude-sonnet-5", 300, 1000, 200, 60]]);
+  // The estimate is the carrier's alone at the catalog's github-copilot/claude-sonnet-5 rates (2, 10, 0.2, 2.5 per
+  // million): 300 * 2 + 60 * 10 + 1000 * 0.2 + 200 * 2.5 = 1900 millionths.
+  const stored = await store.runs.get(runs[0].id);
+  assert.ok(Math.abs(stored.metrics.costUsdEst - 0.0019) < 1e-12, `estimate ${stored.metrics.costUsdEst}`);
+  assert.equal(stored.costUsd, null, "Copilot records no cost: the estimate is read as one");
+  // No shutdown (a killed or still-open process): each request unmetered, never 0 tokens, and no estimate.
+  const none = await metricsOf(store, runs[1].id);
+  assert.deepEqual([none.metrics.requests, none.metrics.unmetered, none.metrics.input, none.metrics.output], [2, 2, 0, 0]);
+  assert.equal((await storedMetrics(store, runs[1].id)).costUsdEst, undefined);
+});
+
+/** Session `n` copied from the Copilot session at `file` (a fork, or a session resumed into a file of its own): a start of
+ *  its own, every other event of the first under its own id, its last message again under a new event id, then a process
+ *  of its own: a prompt, an answer and the shutdown of that process alone (50 in, 6 out). */
+function copilotCopied(file, n) {
+  const [start, ...rest] = readFileSync(file, "utf8").trimEnd().split("\n").map((line) => JSON.parse(line));
+  const id = sessionId(n);
+  const model = start.data.selectedModel;
+  const ev = (i, type, data) => ({ type, data, id: `${id}-e${i}`, parentId: `${id}-e${i - 1}`, timestamp: minute(i) });
+  const last = rest.findLast((r) => r.type === "assistant.message");
+  return writeSession(join(dirname(dirname(file)), id, "events.jsonl"), [
+    { ...start, id: `${id}-e0`, data: { ...start.data, sessionId: id } },
+    ...rest,
+    { ...last, id: `${id}-again` },
+    ev(20, "session.resume", { resumeTime: minute(20), eventCount: rest.length + 2 }),
+    ev(21, "user.message", { content: "And the tests?" }),
+    ev(22, "assistant.message", { messageId: `${id}-m1`, model, content: "They pass." }),
+    ev(23, "session.shutdown", { shutdownType: "routine", totalApiDurationMs: 1000, modelMetrics: { [model]: { requests: { count: 1, cost: 1 }, usage: { inputTokens: 50, outputTokens: 6, cacheReadTokens: 0, cacheWriteTokens: 0 } } } }),
+  ]);
+}
+
+test("a Copilot session a later file copies (a fork's, a resumed session's) counts once when a later import finds the copy: the run held already keeps its events', its chunks' and its shutdown's ids", async (t) => {
+  const root = await scratch(t);
+  const home = join(root, "home");
+  const project = join(home, "code", "metered");
+  mkdirSync(project, { recursive: true });
+  const original = copilotSession(home, project, 47, { chunked: true });
+  const data = join(root, "agents");
+  const store = await openData(data);
+  t.after(async () => await store.close());
+  const opts = { home, env: ENV, temp: join(root, "tmp") };
+  await runImport(store, await planImport(opts, store), opts);
+  const first = (await rowsOf(store)).find((run) => run.importedFrom.session === sessionId(47));
+  assert.deepEqual((({ requests, input, output }) => [requests, input, output])(await storedMetrics(store, first.id)), [2, 300, 60], "the first run's own");
+  copilotCopied(original, 48);
+  await runImport(store, await planImport({ ...opts, all: true }, store), { ...opts, all: true });
+  const later = (await rowsOf(store)).find((run) => run.importedFrom.session === sessionId(48));
+  const counted = await storedMetrics(store, later.id);
+  assert.deepEqual([counted.requests, counted.input, counted.cacheRead, counted.cacheWrite, counted.output, counted.tools], [1, 50, 0, 0, 6, {}], "its own request and its own process's tokens: none of the copy's");
+  assert.deepEqual((await entriesOf(store, later.id)).map((e) => e.kind), ["pi.user", "pi.assistant"], "no copied prompt, chunk or result in its transcript");
 });
 
 test("a session whose source gives no counts imports its requests as unmetered, never as 0 tokens; a Codex request still ends at its call's result", async (t) => {
