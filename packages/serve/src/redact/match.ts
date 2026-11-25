@@ -865,6 +865,16 @@ const PYTHON_ESCAPE: Decoder = {
     return at + 4;
   },
 };
+/** What PYTHON_ESCAPE reads at `at`, where JSON_ESCAPE reads no escape ("\'", "\x" and two hex digits): the character
+ *  it decodes to and where it ends; undefined where it reads none. key-refusal.ts's peek counts an escape by it too, so
+ *  the read past a call's stop counts "\x20" as the view that reads Python's escapes does: a space. */
+export function pythonEscapeAt(text: string, at: number): { char: string; end: number } | undefined {
+  let char = "";
+  const end = PYTHON_ESCAPE.decode(text, at, (decoded) => {
+    char = decoded;
+  });
+  return end < 0 ? undefined : { char, end };
+}
 /** What JSON_ESCAPE reads at `at`: the character the escape there decodes to, through both levels ("" for an escaped
  *  quote, which decodes to nothing), and where it ends; undefined where no escape starts (the "\" is then itself).
  *  key-refusal.ts's peek counts an escape by it, so the read past a call's stop and the JSON view see the same
