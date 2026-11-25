@@ -4,6 +4,7 @@ import { constants } from "node:fs";
 import { dirname, join, resolve, delimiter, basename } from "node:path";
 import { homedir, hostname } from "node:os";
 import { spawn } from "node:child_process";
+import { loginUser } from "@parcha/agentrun-harness-claude/facts";
 import { ApiError } from "../errors.js";
 import { NATIVE_MINIMUM_VERSION, NATIVE_RUNTIME_FACTS, NATIVE_RUNTIMES, NATIVE_CLAUDE_POLICY_UNRESOLVED, NATIVE_CLAUDE_ADDITIONAL_POLICY_UNRESOLVED } from "./runtimes.js";
 export { NATIVE_MINIMUM_VERSION } from "./runtimes.js";
@@ -41,11 +42,22 @@ export async function nativeExecutable(runtime: NativeRuntime, env: NodeJS.Proce
   return null;
 }
 
+/** The environment a native CLI starts with: `env`, with `USER` and `LOGNAME` filled in where it has none (unset or
+ *  empty) by the user this process runs as (loginUser, from the user database). On macOS Claude Code names its Keychain
+ *  item's account by `$USER`, else by its Bun runtime's userInfo, which reads `$USER` too: "unknown" with none. So a
+ *  server started with no USER (a launchd service) would read the person's login under "unknown", where their terminal's
+ *  `claude` never saved it, and say signed out. A USER `env` has is the person's own shell's and is kept as it is. */
+export function nativeSpawnEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const user = loginUser(), filled = { ...env };
+  for (const name of ["USER", "LOGNAME"] as const) if (!filled[name] && user[name]) filled[name] = user[name];
+  return filled;
+}
+
 /** Metadata commands are bounded and never contain a prompt or a launch command. */
 export async function nativeMetadata(binary: string, args: string[], cwd: string, env: NodeJS.ProcessEnv, timeoutMs = 5_000): Promise<{ code: number | null; stdout: string }> {
   return new Promise((resolveResult) => {
     let stdout = "", done = false;
-    const child = spawn(binary, args, { cwd, env, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "ignore"] });
+    const child = spawn(binary, args, { cwd, env: nativeSpawnEnv(env), detached: process.platform !== "win32", stdio: ["ignore", "pipe", "ignore"] });
     const finish = (code: number | null) => { if (done) return; done = true; clearTimeout(timer); resolveResult({code,stdout}); };
     const timer = setTimeout(() => { try { if (child.pid) process.kill(process.platform === "win32" ? child.pid : -child.pid, "SIGKILL"); } catch { /* exited */ } finish(null); }, timeoutMs);
     child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); if (stdout.length > 65_536) { child.kill("SIGKILL"); finish(null); } });

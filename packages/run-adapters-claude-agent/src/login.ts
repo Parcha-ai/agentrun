@@ -12,12 +12,14 @@
 // hold secrets (an API key, exported variables, MCP servers' tokens) and lasts the check.
 // The check runs in the person's own home, as does a run on macOS, where the CLI's tokens are in the login keychain.
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { accessSync, closeSync, constants, mkdtempSync, openSync, readSync, rmSync, statSync } from "node:fs";
 import { type FileHandle, lstat, mkdir, open, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { homedir, tmpdir, userInfo } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import type { ModelPort, ModelUsage } from "@parcha/agentrun-kernel";
 import { parentWatched, type ParentWatch } from "@parcha/agentrun-kernel/host";
+import { loginUser } from "./login-user.js";
 
 /** Where the pinned CLI keeps a login: its credentials file's directory (`CLAUDE_SECURESTORAGE_CONFIG_DIR`) and its
  *  Anthropic profiles (`ANTHROPIC_CONFIG_DIR`). The CLI reads and writes both; nothing else does. */
@@ -44,6 +46,9 @@ export interface ClaudeAgentLogin {
    *  another user's, so the server's user's own home was taken): the line a person runs (loginCommand) then carries
    *  `HOME`, so it signs in where the server reads, never in that terminal's own home. */
   homeApart?: boolean;
+  /** Set only for AgentRun's own login folder (serve's place `agentrun`), which no CLI of the person's uses: the one
+   *  place whose Keychain item left under the account "unknown" is deleted here (dropUnknownItem). */
+  own?: boolean;
 }
 
 /** A login handed to the CLI as its access token alone, by a host that holds the login itself. `token()` is asked at
@@ -347,23 +352,38 @@ async function accountCopy(from: string, to: string): Promise<string> {
  *  session's) it finds no keychain and reads signed out, whatever the variables. */
 export const personHome = (login: ClaudeAgentLogin): string => login.userHome ?? login.home ?? homedir();
 
-/** `USER` and `LOGNAME` for a CLI started on a login, built from nothing (the status check, the sign-in this host starts,
- *  a run): the user this process runs as, as the system has it (`os.userInfo()`, which reads the user database, never
- *  the server's own USER), the user whose home personHome is. On macOS the pinned CLI names its Keychain item's account
- *  by `$USER`, else by its runtime's `os.userInfo().username`; it is a Bun binary, whose userInfo reads `$USER` too and
- *  says "unknown" without it. So a CLI started with no USER saves and reads the login's tokens under the account
- *  "unknown", where the person's own `claude`, run in a terminal that has USER, never looks: it reads signed out while
- *  the badge reads signed in. A user the system cannot name (no entry in its user database) is the server's USER or
- *  LOGNAME, when it has one. */
-export function loginUser(): Record<string, string> {
-  let name: string | undefined;
-  try {
-    name = userInfo().username || undefined;
-  } catch {
-    name = undefined;
-  }
-  name ??= process.env.USER || process.env.LOGNAME || undefined;
-  return name === undefined ? {} : { USER: name, LOGNAME: name };
+/** How long the delete of an "unknown" item may take before it is left (dropUnknownItem). */
+const DROP_MS = 5_000;
+/** The items dropUnknownItem has dealt with in this process, by home and service: each is deleted once. */
+const dropped = new Set<string>();
+
+/** On macOS, at AgentRun's own folder (`own`) alone, delete the login's Keychain item under the account "unknown", which
+ *  a sign-in left there when the CLI was started with no USER (loginUser), and which nothing reads now: `security
+ *  delete-generic-password -a unknown -s <the item's service>`, the service the CLI names from the folder (`Claude
+ *  Code-credentials-<first 8 hex of the folder's sha256>`), in the person's home (personHome), whose login keychain holds
+ *  it. Called once the item under the person's account is there (the sign-in exited 0, a status check read signed in).
+ *  Never at the person's own CLI's places, whose "unknown" item may be theirs, never the item with no suffix, never an
+ *  item of any other account, and never where the user this server runs as is named "unknown" itself. "Not found" is
+ *  done, as is any other end: nothing is thrown, and it is asked once per item in this process. */
+export async function dropUnknownItem(login: ClaudeAgentLogin, options: { path: string; platform?: NodeJS.Platform }): Promise<void> {
+  if ((options.platform ?? process.platform) !== "darwin" || login.own !== true) return;
+  const folder = loginEnv(login, "darwin").CLAUDE_SECURESTORAGE_CONFIG_DIR;
+  const user = loginUser();
+  if (!folder || user.USER === undefined || user.USER === "unknown") return;
+  const service = `Claude Code-credentials-${createHash("sha256").update(folder).digest("hex").slice(0, 8)}`;
+  const HOME = personHome(login);
+  const key = JSON.stringify([HOME, service]);
+  if (dropped.has(key)) return;
+  dropped.add(key);
+  await new Promise<void>((resolve) => {
+    try {
+      const child = spawn("security", ["delete-generic-password", "-a", "unknown", "-s", service], { env: { PATH: options.path, HOME, ...user }, stdio: "ignore", timeout: DROP_MS });
+      child.once("error", () => resolve());
+      child.once("close", () => resolve());
+    } catch {
+      resolve();
+    }
+  });
 }
 
 /** Ask the CLI at `cli` whether it is signed in at `login`: `auth status --json`, with only PATH, the user (loginUser)
@@ -445,6 +465,9 @@ export async function claudeLoginStatus(cli: string, login: ClaudeAgentLogin, op
     const status = parseLoginStatus(stdout.trim());
     // A whole answer written just before the limit still counts.
     if (!status) throw timedOut ? new ClaudeLoginTimedOut(limitMs) : new ClaudeLoginNoStatus();
+    // Signed in: the item under the person's account is there, so one a sign-in left under "unknown" goes (AgentRun's
+    // own folder alone).
+    if (status.signedIn) await dropUnknownItem(login, { path: options.path ?? process.env.PATH ?? "/usr/bin:/bin", ...(options.platform ? { platform: options.platform } : {}) });
     return status;
   } finally {
     rmSync(scratch, { recursive: true, force: true });
@@ -559,8 +582,10 @@ function startable(cli: string, path: string): void {
  *  It dies with this process, as a session's CLI does: started under the kernel's parent watch (parentWatched; `watch`,
  *  by default what this machine supports), so a server that is SIGKILLed, and runs no stop or limit timer, leaves no CLI
  *  waiting on the browser's port. It is not detached: it stays in this process's group, so a terminal's Ctrl-C ends it
- *  with the server as before, and nothing here kills a group, which would take a browser the CLI started with it. */
-export function startClaudeLogin(cli: string, login: ClaudeAgentLogin, options: { timeoutMs?: number; path?: string; display?: Readonly<Record<string, string | undefined>>; watch?: ParentWatch } = {}): ClaudeSignIn {
+ *  with the server as before, and nothing here kills a group, which would take a browser the CLI started with it.
+ *  A sign-in that exits 0 at AgentRun's own folder has the item a sign-in left there under "unknown" deleted before
+ *  `ended` settles (dropUnknownItem). `platform`: the one the CLI runs on, this host's. */
+export function startClaudeLogin(cli: string, login: ClaudeAgentLogin, options: { timeoutMs?: number; path?: string; display?: Readonly<Record<string, string | undefined>>; watch?: ParentWatch; platform?: NodeJS.Platform } = {}): ClaudeSignIn {
   // What a browser needs to open on this desktop, when the server has it.
   const display = Object.fromEntries(["DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "BROWSER"].flatMap((name) => {
     const value = options.display?.[name];
@@ -602,7 +627,13 @@ export function startClaudeLogin(cli: string, login: ClaudeAgentLogin, options: 
     settle(result);
   };
   child.once("error", (error) => finish(ending ? { end: ending } : failed(error)));
-  child.once("close", (code, signal) => finish(ending ? { end: ending } : { end: "exited", code, signal }));
+  child.once("close", (code, signal) => {
+    const result: ClaudeSignInEnd = ending ? { end: ending } : { end: "exited", code, signal };
+    // Signed in: the item under the person's account is there, so one a sign-in left under "unknown" goes first
+    // (AgentRun's own folder alone).
+    if (result.end === "exited" && code === 0) void dropUnknownItem(login, { path, ...(options.platform ? { platform: options.platform } : {}) }).then(() => finish(result));
+    else finish(result);
+  });
   return { ended, stop: () => end("stopped") };
 }
 
