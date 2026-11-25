@@ -35,9 +35,9 @@ async function calls(t, key) {
 }
 
 // `pick`: the server's tool setting for web_fetch, none being auto. With the server's Parallel key, auto is Parallel first.
-for (const [key, pick, mode] of [[true, "parallel", ""], [true, "parallel", "errors"], [true, undefined, ""], [true, "kernel", ""], [false, undefined, ""]]) {
+for (const [key, pick, mode] of [[true, "parallel", ""], [true, "parallel", "errors"], [true, undefined, ""], [true, undefined, "errors"], [true, "kernel", ""], [false, undefined, ""]]) {
   const parallel = key && pick !== "kernel";
-  const what = pick === "parallel" && mode ? "with Parallel picked, when Parallel lists the URL in its errors, fetches directly and says so to the model" : pick === "parallel" ? "with Parallel picked reads through Parallel on the server's key" : pick === "kernel" ? "with the server's Parallel key but the guarded direct fetch picked fetches directly, and no request reaches Parallel" : key ? "with the server's Parallel key and no pick (auto) reads through Parallel first, on the server's key" : "with no Parallel key fetches directly, and no request reaches Parallel";
+  const what = parallel && mode ? `with ${pick ? "Parallel picked" : "the server's Parallel key and no pick (auto)"}, when Parallel lists the URL in its errors, fetches directly and says so to the model, never that Parallel was picked` : pick === "parallel" ? "with Parallel picked reads through Parallel on the server's key" : pick === "kernel" ? "with the server's Parallel key but the guarded direct fetch picked fetches directly, and no request reaches Parallel" : key ? "with the server's Parallel key and no pick (auto) reads through Parallel first, on the server's key" : "with no Parallel key fetches directly, and no request reaches Parallel";
   test(`an agentic run naming web_fetch ${what}`, { timeout: 60_000 }, async (t) => {
     const seen = await calls(t, key);
     process.env[MODE] = mode;
@@ -49,7 +49,7 @@ for (const [key, pick, mode] of [[true, "parallel", ""], [true, "parallel", "err
     const { rows } = await follow(api, started.body.run_id, ["completed"]);
     const results = rows.filter((row) => row.kind === "tool_result").map((row) => row.tool_result_preview);
     assert.equal(results.length, 1, JSON.stringify(results));
-    if (parallel && mode) assert.match(results[0], /"title":"Public page".*"via":"direct","parallel":"listed the URL in errors"\}\nParallel was picked for web_fetch and gave no page \(listed the URL in errors\); this one was fetched directly\.$/s);
+    if (parallel && mode) assert.match(results[0], /"title":"Public page".*"via":"direct","parallel":"listed the URL in errors"\}\nParallel gave no page \(listed the URL in errors\); this one was fetched directly\.$/s, "the fallback line says Parallel gave no page, never that it was picked");
     else assert.match(results[0], parallel ? /"title":"Read by Parallel".*"via":"parallel"\}$/s : /"title":"Public page".*"via":"direct"\}$/s, "no word of Parallel where it read the page or was never asked");
     const { parallel: sent, dialled } = await seen();
     assert.deepEqual(sent.map((call) => [call.path, call.authorized, call.urls]), parallel ? [["/v1/extract", true, [PUBLIC]]] : [], "Parallel's extract asked once on the server's key where web_fetch resolves to Parallel, picked or auto");
