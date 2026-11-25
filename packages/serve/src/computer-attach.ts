@@ -648,13 +648,14 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
   async function relayDial(target: RelayTarget, bearer: string, req: IncomingMessage, socket: Duplex, head: Buffer, deny: (status: string, words?: string) => void): Promise<void> {
     const { runner, named, event } = target;
     // Kept before the answer, so whoever reads the row after the 503 (the waiting create, the box's next dial) reads it.
-    // The box is told `told` where the words name where the runner answers (an internal host and port, a socket's
-    // error): those stay in the log line and on the row.
+    // The box and the row get `told` where the words name where the runner answers (an internal host and port, a
+    // socket's error): the row's words reach a person too (a paired box's hold note, the waiting claim's failure, a
+    // minted machine's create), so those stay in the log line alone.
     const refuse = async (why: string, stale = false, told = why): Promise<void> => {
-      const words = `${target.subject}: ${why}`;
-      log(`${event}_relay_refused`, { ...named, why: words });
-      await target.keep(words, stale).catch((error: unknown) => log(`${event}_relay_refusal_unkept`, { ...named, error: error instanceof Error ? error.message : String(error) }));
-      deny("503 Service Unavailable", `${target.subject}: ${told}`);
+      const said = `${target.subject}: ${told}`;
+      log(`${event}_relay_refused`, { ...named, why: `${target.subject}: ${why}` });
+      await target.keep(said, stale).catch((error: unknown) => log(`${event}_relay_refusal_unkept`, { ...named, error: error instanceof Error ? error.message : String(error) }));
+      deny("503 Service Unavailable", said);
     };
     if (options.relay === undefined) return refuse(`runner ${runner} ${target.whose}, and this server relays no dial to a runner`);
     const at = (await liveRelays(options.relay.runners)).find((row) => row.runner === runner);

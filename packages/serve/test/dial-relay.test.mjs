@@ -421,8 +421,10 @@ test("a real dial provider's create on a runner apart ends at once in the server
   const took = Date.now() - started;
   assert.equal(made.ok, false, "the create fails");
   assert.equal(made.error.code, "refused", made.error.message);
-  assert.match(made.error.message, /the server refused a dial for run run-far \(machine computer-[0-9a-f]{12}\): runner runner-far, which made it, answers at runner-far\.example, which is not one of this server's runners' hosts/);
+  assert.match(made.error.message, /the server refused a dial for run run-far \(machine computer-[0-9a-f]{12}\): runner runner-far, which made it, answers at a host this server does not dial \(AGENTRUN_RUNNER_HOSTS\)/);
+  assert.doesNotMatch(made.error.message, /runner-far\.example/, "the create's error, which the run's failure shows, names no internal host");
   assert.doesNotMatch(made.error.message, MINTED);
+  assert.ok(lines.some((line) => line.includes("machine_relay_refused") && line.includes("runner-far.example")), "the server's line keeps the host");
   assert.ok(took < createMs / 3, `the create ended at the server's refusal, not at createMs: ${took} ms`);
   assert.deepEqual(fake.live(), [], "the machine was deleted");
   assert.ok(lines.some((line) => line.includes("machine_relay_refused") && line.includes("run-far")), lines.join("\n"));
