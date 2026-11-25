@@ -888,16 +888,13 @@ describe("a trigger's typed input and its agent picker", () => {
     expect(calls.filter((c) => c.method === "PATCH").map((c) => c.body)).toEqual([{ name: "kyb nightly" }]);
   });
 
-  it("says on an event trigger's JSON input that the event comes in its content, and not on a schedule's", async () => {
-    const { v2 } = server({ agents });
-    const hook = await open(v2, { trigger: null, kind: "webhook" });
-    await hook.set("agent", "filters");
-    expect(hook.text()).toContain('The event comes in its "content"');
-    act(() => root?.unmount()); document.body.innerHTML = "";
-    const cron = await open(server({ agents }).v2, { trigger: null });
-    await cron.set("agent", "filters");
-    expect(cron.text()).toContain("The agent takes its whole input as JSON");
-    expect(cron.text()).not.toContain('The event comes in its "content"');
+  it("says on a trigger's JSON input that what comes with each run is added to its content", async () => {
+    for (const kind of ["webhook", undefined] as const) {
+      const t = await open(server({ agents }).v2, { trigger: null, ...(kind ? { kind } : {}) });
+      await t.set("agent", "filters");
+      expect(t.text()).toContain('is added to its "content"');
+      act(() => root?.unmount()); document.body.innerHTML = "";
+    }
   });
 
   it("takes an agent's whole input as JSON when its schema can't be shown as fields, and keeps it on an edit", async () => {
