@@ -2341,8 +2341,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }).finally(() => { localSourceBusy = false; });
     return localSourceSweep;
   };
-  const localSourceTimer = setInterval(() => void sweepLocalSources(), 30_000);
-  localSourceTimer.unref();
+  // A share host publishes no agent's sources: a reused folder's agent with source sync on would get new revisions there,
+  // and the host answers none of the routes that show or stop that sync.
+  const localSourceTimer = options.shareHost ? undefined : setInterval(() => void sweepLocalSources(), 30_000);
+  localSourceTimer?.unref();
   const startDeps: StartDeps = {
     project: { ...sourceProjects, place: async given => {
       try { return await sourceProjects.place(given); }
