@@ -165,3 +165,41 @@ test("a run that sends no model key (held, on a --faux runner, faux-pinned) is s
   };
   assert.deepEqual(got, Object.fromEntries(SENDS_NO_MODEL_KEY.map(([where]) => [where, want])), "a run that sends no model key is laid its decision keys alone: its judge's and Parallel's, as plain values, and no model key");
 });
+
+const { planeFor } = await import("../dist/tool-plane.js");
+const OPENROUTER_DUMMY = `not-a-secret-${"openrouter-saved"}`;
+
+test("a run that sends no model key (held, on a --faux runner, faux-pinned) granted web_search, on a server holding only OpenRouter's key or only an OpenRouter gateway's, resolves it to keyless Firecrawl (auto) or to no native search (native) and is laid neither of those keys nor Parallel's; with Parallel's key added, auto resolves to Parallel and is laid Parallel's alone", async (t) => {
+  // The server's keys, as the runner's store and env hold them, and as the plane resolves on them at launch (runs-over-store.ts planeFor, run: true).
+  const servers = {
+    openrouter: { saved: { OPENROUTER_API_KEY: OPENROUTER_DUMMY }, env: {} },
+    gateway: { saved: {}, env: { AGENT_MODEL_BASE_URL: "https://openrouter.ai/api/v1", AGENT_MODEL_API_KEY: GATEWAY_DUMMY } },
+  };
+  const claim = async (server, parallel, pick, env, own) => {
+    const saved = parallel ? { ...server.saved, PARALLEL_API_KEY: PARALLEL_STORE_DUMMY } : server.saved;
+    const store = await storeWith(t, saved);
+    const tooling = { tools: ["web_search"], ...(own.model ? { model: `${own.model.provider}/${own.model.modelId}` } : {}) };
+    const plane = planeFor({ ...server.env, ...saved }, tooling, pick === "auto" ? {} : { web_search: { provider: pick } }, { run: true });
+    const claimed = await claimSecrets({ store, sealKey: KEY, env: { ...server.env, ...env } }, rev(["web_search"]), { plane, ...own });
+    return { web_search: plane.web_search, laid: heldIn(claimed) };
+  };
+  // Off faux, unpinned and not held, the same run is laid the server's model key: the laid set sees these keys when a run sends one.
+  assert.deepEqual(await claim(servers.openrouter, false, "auto", {}, {}), { web_search: "firecrawl-keyless", laid: ["OPENROUTER_API_KEY"] }, "off faux: OpenRouter's key, its model's");
+  assert.deepEqual(await claim(servers.gateway, false, "auto", {}, {}), { web_search: "firecrawl-keyless", laid: ["AGENT_MODEL_API_KEY"] }, "off faux: the gateway's key, its model's");
+  const got = {};
+  const want = {};
+  for (const [where, env, own] of SENDS_NO_MODEL_KEY) {
+    for (const [name, server] of Object.entries(servers)) {
+      for (const parallel of [false, true]) {
+        for (const pick of ["auto", "native"]) {
+          const row = `${where}, ${name}${parallel ? " + Parallel" : ""}, ${pick}`;
+          got[row] = await claim(server, parallel, pick, env, own);
+          // native: pi has no own search; a faux model has no hosted one, nor does a run behind a gateway, nor OpenRouter's default model.
+          const noNative = name === "gateway" ? "unavailable: no native search for pi behind a gateway" : own.model ? "unavailable: no native search for faux/faux-1" : "unavailable: no native search for openrouter/openai/gpt-6.1-sol";
+          want[row] = pick === "native" ? { web_search: noNative, laid: [] } : parallel ? { web_search: "parallel", laid: ["PARALLEL_API_KEY"] } : { web_search: "firecrawl-keyless", laid: [] };
+        }
+      }
+    }
+  }
+  assert.deepEqual(got, want, "no web route of a run that sends no model key spends OpenRouter's key or the gateway's: auto is keyless Firecrawl, or Parallel on Parallel's key alone; native is unavailable");
+});
