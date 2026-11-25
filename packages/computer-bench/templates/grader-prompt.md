@@ -10,7 +10,8 @@ real work. Be exact, not generous.
 - **The checks:** structural checks of the computer's real state, run after the agent stopped and before the computer
   was released (AppleScript, shell reads, file reads, the app's accessibility tree). Each has a status (pass, fail),
   what it read, and why it exists. **The checks say whether they are sufficient**: when they are, they decide alone and
-  you are asked because they failed (or to calibrate them); when they are not, your verdict decides.
+  you are asked because they failed (or to calibrate them); when they are not, your verdict decides a run whose checks
+  pass. A failing check fails the run whatever you say; a pass from you then goes to a person.
 - **The end state:** the front app's accessibility tree after the agent stopped, and the last three screenshots (the
   last is the end state; earlier ones show how it got there).
 - **The agent's last steps:** each protocol call it made, with its route (semantic: pressed through the accessibility

@@ -4,7 +4,7 @@
 // own session (the grader's route, a tier proxy beside the session's) on its own cap, booked as its own spend: a replay's
 // is the check's cost, a shadow's the served run's learning cost. Its verdict is a root entry of the run's journal
 // (KINDS.compared), which pathMetrics keeps on its record (metrics `replay.compared`, `audit.compared`), where the check
-// (runner/promotion.ts decideCheck) and the audit (runner/audit.ts settleAudits) read it, through compareAnswers.
+// (runner/promotion.ts decideCheck) and the audit (runner/audit.ts settleAudits) read it, through checkInputOf.
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { LearningFolder } from "../learn/folder.js";

@@ -146,3 +146,52 @@ test("a request its client stops part way books what its content streamed and th
   assert.equal(Math.round(booking.spentUsd() * 1e9) / 1e9, Math.round(want * 1e9) / 1e9, "the stop's content and its unseen reasoning");
   assert.equal(Math.round((await later(store)) * 1e9) / 1e9, Math.round(want * 1e9) / 1e9, 'read again at the same figure');
 });
+
+/** One request whose client hangs up once it has the answer's first piece (`first`), over a route's own fetch (serve's
+ *  model-route: pi-ai's stream ends on its abort in an error event, and the route closes it cleanly, never throwing):
+ *  on the proxy's abort, the provider's stream writes `onAbort` and ends. What the request was booked at, and its end. */
+async function hungUpOnRoute(t, first, onAbort) {
+  const store = memorySessionStore();
+  const booking = await modelPortFor(await store.open('chat:b'), { key: 'chat:b', beforeRequest: () => ({ holdUsd: HOLD }) });
+  const ends = [];
+  const hooks = { ...booking.models, afterRequest: async (usage, ticket, ended) => { ends.push(ended); return booking.models.afterRequest(usage, ticket, ended); } };
+  const p = await startModelProxy({ policy, model: 'session-model', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks, price: () => 0.001, log: () => {}, fetch: async (_url, init) => new Response(new ReadableStream({
+    start(c) {
+      c.enqueue(new TextEncoder().encode(first));
+      init.signal.addEventListener('abort', () => { c.enqueue(new TextEncoder().encode(onAbort)); c.close(); }, { once: true });
+    },
+  }), { status: 200, headers: { 'content-type': 'text/event-stream' } }) }, KEY);
+  t.after(() => p.close());
+  const { hostname, port } = new URL(p.url);
+  await new Promise((resolve) => {
+    const req = request({ host: hostname, port, method: 'POST', path: '/v1/test', headers: { 'content-type': 'application/json', authorization: `Bearer ${KEY}` } }, (res) => {
+      res.once('data', () => { req.destroy(); resolve(); });
+      res.on('error', resolve);
+      res.on('close', resolve);
+    });
+    req.on('error', resolve);
+    req.end('{}');
+  });
+  for (let i = 0; i < 200 && !(await store.read('chat:b')).some((r) => r.kind === RUNNER_RECORDS.turn); i++) await new Promise((r) => setTimeout(r, 10));
+  return { ends, spent: booking.spentUsd(), store };
+}
+
+test("a route's stream that ends cleanly on the proxy's abort, once its client hung up part way, is a stop: ended stopped, booked at the hold, never an answer", async (t) => {
+  const aborted = 'event: error\ndata: {"type":"error","error":{"type":"aborted","message":"Request was aborted"}}\n\n';
+  const { ends, spent, store } = await hungUpOnRoute(t, 'data: {"delta":"hi"}\n\n', aborted);
+  assert.equal(ends.length, 1, JSON.stringify(ends));
+  assert.equal(ends[0].end, 'stopped', JSON.stringify(ends[0]));
+  assert.equal(spent, HOLD, 'a stop with no price for what streamed: the hold');
+  assert.equal(await later(store), HOLD, 'read again at the hold');
+});
+
+test("an error event the provider's stream ends in, raced by its client hanging up before any content, is the stop's, never a refusal: not booked at $0", async (t) => {
+  // A rate limit in the stream's last event with nothing before it reads as the provider's refusal (booked at nothing),
+  // but its client had left and the proxy had aborted: what ended it is unknown, so it is booked as the stop it is.
+  const refusal = 'data: {"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}\n\n';
+  const { ends, spent } = await hungUpOnRoute(t, 'event: ping\ndata: {"type":"ping"}\n\n', refusal);
+  assert.equal(ends.length, 1, JSON.stringify(ends));
+  assert.equal(ends[0].end, 'stopped', JSON.stringify(ends[0]));
+  assert.notEqual(spent, 0, 'never booked at $0');
+  assert.equal(spent, HOLD);
+});

@@ -6,12 +6,13 @@
 import { sdkOf } from "../sdk/runs.js";
 import { cliLearningOf } from "../store/agent-body.js";
 import { NATIVE_RUNTIME_FACTS } from "../native/runtimes.js";
+import type { Source } from "@parcha/agentrun-import";
 import type { RunRow, Store } from "../store/store.js";
 import { DEFAULT_HARNESS } from "../harness.js";
 import { costOfRun, runReadState } from "./runs.js";
 import { isShadowRun, shadowRunId } from "../learn/audit.js";
 
-export type ImportSource = "claude-code" | "codex" | "pi";
+export type ImportSource = Source;
 /** The states a run's end can have (AnalyticsFilter.pending). */
 export type PendingEnd = "completed" | "escalated" | "failed" | "stopped";
 const PENDING_ENDS: ReadonlySet<string> = new Set<PendingEnd>(["completed", "escalated", "failed", "stopped"]);
