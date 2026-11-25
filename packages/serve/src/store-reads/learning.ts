@@ -539,7 +539,7 @@ export async function runPathOverStore(store: Store, runId: string, started: Run
   // A run that keeps no call record at all (a connected agent's: its SDK runs the workflow, the server keeps its events)
   // names the one its last learned_workflow call asked for by name (callArgsOf).
   const calls = workflowCallsOf(entries);
-  const called = calls.length ? calls.filter((call) => call.caller === "agent").at(-1)?.workflow : [...callArgsOf(entries).values()].findLast((call) => WORKFLOW_CALLS.has(call.tool) && typeof call.args.name === "string")?.args.name;
+  const called = calls.length ? calls.filter((call) => call.caller === "agent" && call.outcome !== "refused").at(-1)?.workflow : [...callArgsOf(entries).values()].findLast((call) => WORKFLOW_CALLS.has(call.tool) && typeof call.args.name === "string")?.args.name;
   return { path, workflow: offeredName(typeof called === "string" ? called : null, started?.workflows) };
 }
 

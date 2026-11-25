@@ -4,13 +4,13 @@
 // metrics keep the calls as `workflow_calls` (workflow-first.ts pathMetrics), which the ledger row and the money rule
 // read: a run that called a workflow counts on its served side whoever called it.
 import { type WorkflowCall, type WorkflowCallOutcome, WORKFLOW_CALLERS, type WorkflowCaller } from "../learning-cost.js";
-import { LEARNED_NODES } from "../learned-nodes.js";
+import { learnedCallEntries } from "../learned-nodes.js";
 import type { EntryLike } from "../timeline/index.js";
 import { type CallStartData, KINDS } from "./journal-kinds.js";
 import { callCostOf } from "./metrics.js";
 import { WORKFLOW_FIRST, WORKFLOW_FIRST_CALL } from "./workflow-first.js";
 
-type CallRecord = { readonly call?: unknown; readonly workflow?: unknown; readonly digest?: unknown; readonly caller?: unknown; readonly ended?: unknown };
+type CallRecord = { readonly call?: unknown; readonly workflow?: unknown; readonly digest?: unknown; readonly caller?: unknown; readonly ended?: unknown; readonly refused?: unknown };
 const dataOf = (entry: EntryLike) => (entry.data ?? {}) as CallRecord;
 const callIdOf = (entry: EntryLike): string | undefined => {
   const id = (entry.data as { callId?: unknown } | undefined)?.callId;
@@ -68,22 +68,23 @@ function callUsdOf(entries: readonly EntryLike[], callId: string, recordAt: numb
 }
 
 /** Each learned workflow call run `entries` show (every conversation's, in log order: store-reads/journal.ts runEntries),
- *  in the order the calls first kept a record, from the newest record each kept (a call run again after a park or a
- *  crash keeps one each time): its workflow, digest and caller, how it ended, and what it booked (callUsdOf). The
+ *  in the order the calls first kept a record, from the record that counts for each (a call run again after a park or a
+ *  crash keeps one each time: learnedCallEntries): its workflow, digest and caller, how it ended, and what it booked (callUsdOf). The
  *  platform's call ends as the run's WORKFLOW_FIRST entry says (its answer shaped, or taken back to the agent); one a
- *  crash cut before its record was kept is that entry's alone, its cost unknown. A record that names no digest or
- *  caller is left out. */
+ *  crash cut before its record was kept is that entry's alone, its cost unknown. A call its record says was refused
+ *  before any node ran (`refused`) is `refused`, whoever called it. A record that names no digest or caller is left out. */
 export function workflowCallsOf(entries: readonly EntryLike[]): WorkflowCall[] {
-  const newest = new Map<string, number>();
-  entries.forEach((entry, at) => {
-    if (entry.kind !== LEARNED_NODES) return;
-    const data = dataOf(entry);
-    if (typeof data.call === "string" && typeof data.workflow === "string" && typeof data.digest === "string" && WORKFLOW_CALLERS.includes(data.caller as WorkflowCaller)) newest.set(data.call, at);
-  });
+  // The record that counts for each call (learned-nodes.ts learnedCallEntries): a rerun refused before any node ran leaves
+  // the attempt that ran standing, as the call's timeline row does.
+  const newest = new Map([...learnedCallEntries(entries)].filter(([, at]) => {
+    const data = dataOf(entries[at]!);
+    return typeof data.workflow === "string" && typeof data.digest === "string" && WORKFLOW_CALLERS.includes(data.caller as WorkflowCaller);
+  }));
   const served = entries.findLast((entry) => entry.kind === WORKFLOW_FIRST && ["answered", "handed_back"].includes(String((entry.data as { outcome?: unknown } | undefined)?.outcome)))?.data as { workflow?: unknown; digest?: unknown; outcome: "answered" | "handed_back" } | undefined;
   const calls = [...newest].map(([call, at]): WorkflowCall => {
     const data = dataOf(entries[at]!);
-    const outcome = call === WORKFLOW_FIRST_CALL && served ? served.outcome : outcomeOf(data.ended);
+    // Refused before any node ran (its record's `refused`): it ran nothing, whatever the run did after.
+    const outcome = data.refused === true ? "refused" : call === WORKFLOW_FIRST_CALL && served ? served.outcome : outcomeOf(data.ended);
     return { workflow: data.workflow as string, digest: data.digest as string, caller: data.caller as WorkflowCaller, outcome, usd: callUsdOf(entries, call, at) };
   });
   if (served && !newest.has(WORKFLOW_FIRST_CALL) && typeof served.workflow === "string" && typeof served.digest === "string") {

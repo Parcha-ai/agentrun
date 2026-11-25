@@ -1361,11 +1361,11 @@ const RUN_PATH: Record<string, Json> = {
         workflow: { type: "string", description: "The learned workflow called, by name." },
         digest: { type: "string", description: "The revision that ran: the first 16 hex of its workflow.json's sha256." },
         caller: { enum: [...WORKFLOW_CALLERS], description: "`platform`: it ran first, before the agent's first turn; `agent`: the agent called it itself." },
-        outcome: { enum: [...WORKFLOW_CALL_OUTCOMES], description: "`answered`; `handed_back`, it escalated, or the platform took its answer back to the agent; `failed`, it threw, was refused or was stopped." },
+        outcome: { enum: [...WORKFLOW_CALL_OUTCOMES], description: "`answered`; `handed_back`, it escalated, or the platform took its answer back to the agent; `failed`, it threw or was stopped; `refused`, it was refused before any node ran (its input, a check, a tool its gate denies) and ran nothing." },
         usd: { type: ["number", "null"], description: "What its nodes' requests booked, in dollars; null when that is not known or can't be told apart from other work of the run (another call ran beside it)." },
       }),
     }, { type: "null" }],
-    description: "Every learned workflow call the run made, in call order, as its end recorded it: the platform's and the agent's own. The money rule counts a run that called a workflow on that workflow's served side, whoever called it. An empty list on an ended run that called none; null where `path` is null.",
+    description: "Every learned workflow call the run made, in call order, as its end recorded it: the platform's and the agent's own. The money rule counts a run that called a workflow on that workflow's served side, whoever called it; a refused call counts on no side. An empty list on an ended run that called none; null where `path` is null.",
     "x-agentrun-serve": "path/1",
   },
   first_choice: {

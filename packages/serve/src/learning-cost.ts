@@ -24,8 +24,9 @@ export type RunPath = (typeof RUN_PATHS)[number];
 export const WORKFLOW_CALLERS = ["platform", "agent"] as const;
 export type WorkflowCaller = (typeof WORKFLOW_CALLERS)[number];
 /** How a learned workflow's call ended: `answered`, `handed_back` (it escalated, or a run served first took its answer
- *  back to the agent), or `failed` (it threw, was refused, or was stopped). */
-export const WORKFLOW_CALL_OUTCOMES = ["answered", "handed_back", "failed"] as const;
+ *  back to the agent), `failed` (it threw, or was stopped), or `refused` (refused before any node ran: its input, a
+ *  check, a tool its gate denies; it ran nothing, so the money rule counts it on no side). */
+export const WORKFLOW_CALL_OUTCOMES = ["answered", "handed_back", "failed", "refused"] as const;
 export type WorkflowCallOutcome = (typeof WORKFLOW_CALL_OUTCOMES)[number];
 /** One call of a learned workflow in a run, as its record keeps it (runner/workflow-calls.ts workflowCallsOf, from the
  *  call's own journal entry): the workflow at its `digest`, who called it, how it ended, and what it booked (`usd`: the

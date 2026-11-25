@@ -101,16 +101,20 @@ export const PAST_RUNS = 500;
 const usd = (value: number) => Math.round(value * 1e6) / 1e6;
 const meanOf = (costs: readonly number[]): Mean | null => (costs.length ? { runs: costs.length, mean_usd: usd(costs.reduce((a, b) => a + b, 0) / costs.length) } : null);
 
+/** The calls a run's record keeps (`metrics.workflow_calls`, learning-cost.ts workflowCallsIn) that ran: one refused
+ *  before any node ran ran nothing, and the money rule charges it nothing. */
+const ranCallsIn = (metrics: unknown) => workflowCallsIn(metrics).filter((call) => call.outcome !== "refused");
+
 /** The money rule's two sides for workflow `name` at `digest`, over the agent's runs (`past`): `served`, the mean all-in
- *  of its newest COST_WINDOW runs that called it at that digest (their record's `workflow_calls`, learning-cost.ts
- *  workflowCallsIn: the platform's call before the agent's first turn or the agent's own, alike) whose all-in is known
+ *  of its newest COST_WINDOW runs that called it at that digest and ran it (their record's `workflow_calls`, ranCallsIn:
+ *  the platform's call before the agent's first turn or the agent's own, alike) whose all-in is known
  *  (the cost page's `after` side reads the same figure); `by_hand`, as given (PastRuns: the job's own $ over the same
  *  runs, never a second baseline here); `unknown_runs`, the runs either side would have read that it left out for an
  *  unknown cost (the cost page's rule: left out and counted). */
 export function costLineOf(past: PastRuns, name: string, digest: string): { served: Mean | { runs: 0; mean_usd: null }; by_hand: Mean | null; unknown_runs: number } {
   const newest = [...past.runs].sort((a, b) => b.startedAt - a.startedAt);
   const known = (run: PastRun) => typeof run.allInUsd === "number" && Number.isFinite(run.allInUsd);
-  const called = (run: PastRun) => workflowCallsIn(run.metrics).some((call) => call.workflow === name && call.digest === digest);
+  const called = (run: PastRun) => ranCallsIn(run.metrics).some((call) => call.workflow === name && call.digest === digest);
   // Newest first, until COST_WINDOW known: an unknown one met before the window filled is one it left out.
   const served: number[] = [];
   let servedUnknown = 0;
@@ -132,14 +136,14 @@ export const overLine = (line: ReturnType<typeof costLineOf>): boolean =>
  *  (learn/promote.ts servingStateOf) folds it in at its champion's digest. */
 export const costStopOf = (past: PastRuns): CostStop => (workflow, digest) => overLine(costLineOf(past, workflow, digest));
 
-/** Each learned workflow one of the agent's runs (`past`) called (its record's `workflow_calls`, whoever called it), at
- *  the digest its newest call ran, with the money rule's two sides there, the runs they left out for an unknown all-in,
- *  and where it stands: `serving`, or `needs_revision` once over the line (overLine). What the agent's cost per run
- *  shows its owner. */
+/** Each learned workflow one of the agent's runs (`past`) called and ran (its record's `workflow_calls`, ranCallsIn,
+ *  whoever called it), at the digest its newest such call ran, with the money rule's two sides there, the runs they left
+ *  out for an unknown all-in, and where it stands: `serving`, or `needs_revision` once over the line (overLine). What
+ *  the agent's cost per run shows its owner. */
 export function workflowCostsOf(past: PastRuns): { workflow: string; digest: string; state: "serving" | "needs_revision"; served: Mean | null; by_hand: Mean | null; unknown_cost_runs: number }[] {
   const newest = new Map<string, string>();
   for (const run of [...past.runs].sort((a, b) => b.startedAt - a.startedAt)) {
-    for (const call of workflowCallsIn(run.metrics).reverse()) if (!newest.has(call.workflow)) newest.set(call.workflow, call.digest);
+    for (const call of ranCallsIn(run.metrics).reverse()) if (!newest.has(call.workflow)) newest.set(call.workflow, call.digest);
   }
   return [...newest].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([workflow, digest]) => {
     const line = costLineOf(past, workflow, digest);

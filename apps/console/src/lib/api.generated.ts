@@ -1060,7 +1060,7 @@ export interface components {
       workflow: string;
       digest: string;
       caller: "platform" | "agent";
-      outcome: "answered" | "handed_back" | "failed";
+      outcome: "answered" | "handed_back" | "failed" | "refused";
       usd: number | null;
     }[] | null;
     first_choice?: "served" | "replay" | "replay_missing" | "none_laid" | "off" | "none_fit" | "many_fit" | "not_promoted" | "champion_misfit" | "many_champions" | "cost_stop" | "held" | null;
@@ -1319,7 +1319,7 @@ export interface components {
       workflow: string;
       digest: string;
       caller: "platform" | "agent";
-      outcome: "answered" | "handed_back" | "failed";
+      outcome: "answered" | "handed_back" | "failed" | "refused";
       usd: number | null;
     }[] | null;
     first_choice?: "served" | "replay" | "replay_missing" | "none_laid" | "off" | "none_fit" | "many_fit" | "not_promoted" | "champion_misfit" | "many_champions" | "cost_stop" | "held" | null;

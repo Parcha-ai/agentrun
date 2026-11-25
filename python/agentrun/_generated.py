@@ -3579,7 +3579,7 @@ class RunSummaryWorkflowCallsItem(TypedDict):
     workflow: str
     digest: str
     caller: Literal["platform", "agent"]
-    outcome: Literal["answered", "handed_back", "failed"]
+    outcome: Literal["answered", "handed_back", "failed", "refused"]
     usd: float | None
 
 
@@ -5849,7 +5849,7 @@ class RunWorkflowCallsItem(TypedDict):
     workflow: str
     digest: str
     caller: Literal["platform", "agent"]
-    outcome: Literal["answered", "handed_back", "failed"]
+    outcome: Literal["answered", "handed_back", "failed", "refused"]
     usd: float | None
 
 
