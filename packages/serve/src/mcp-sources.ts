@@ -33,8 +33,7 @@ export function standInGiven(body: Record<string, unknown>, toolkit: string | nu
   return undefined;
 }
 
-/** The store.settings key a server's record lives under. */
-export const mcpSourceKey = (name: string): string => `mcp.source/${name}`;
+export { mcpSourceKey } from "./store/mcp-record-keys.js";
 
 const GITHUB: SourceRecord = { source: "github", toolkit: "github" };
 const NONE: SourceRecord = { source: "url", toolkit: null };
