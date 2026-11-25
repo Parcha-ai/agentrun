@@ -94,19 +94,6 @@ import { warnHoldShort } from "../print.js";
 import { type FeedbackData, feedbackAsk, feedbackOf, jobEndOpen, pendingFeedbackOf } from "./feedback-round.js";
 import { handbackText, servedAnswerOf, servedAnswerText, WORKFLOW_FIRST, WORKFLOW_FIRST_CALL, type WorkflowFirst, type WorkflowFirstData, type WorkflowRevise } from "./workflow-first.js";
 
-/** What a session's requests were charged (sessionSpendOf's figures of those answered, a crash's cut one at its hold among
- *  them), never one still in flight at its hold. Null: one charged has no figure. */
-function chargedOf(records: readonly SessionRecord[]): number | null {
-  const read = sessionSpendOf(records);
-  let usd = 0;
-  for (const figure of read.figures) {
-    if (!read.answered.has(figure.turn)) continue;
-    if (figure.usd === null) return null;
-    usd += figure.usd;
-  }
-  return usd;
-}
-
 /** The end of a harness's own call (Claude Code's WebSearch) the gate held and then let run: the host ran nothing of it,
  *  and the harness's next call runs it. */
 export const OWN_TOOL_RELEASED = "Allowed after it waited; the agent's own tool runs it on its next call.";
@@ -1221,10 +1208,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
    *  input's user entry left as pi writes it (its submission, which a re-claim answers from, unchanged), so the Timeline
    *  shows the next user entry with exactly this text as "AgentRun: …". Once per follow-up: the marker names its request
    *  id, and a re-claim that finds one under it writes none (a second would stay open, and could take a person's later
-   *  message of the same words for the server's). A CLI's run records its follow-up through its own record, which carries
-   *  the origin itself. */
+   *  message of the same words for the server's). A CLI's run records its follow-up in its own record, written here with
+   *  the origin (once under its request id, as the output retry's is), since the CLI's session keeps no user entry. */
   const markServerFollowUp = async (theHarness: Harness, theRoot: Conversation, text: string, requestId: string): Promise<void> => {
-    if (cliRecord) return;
+    if (cliRecord) return await cliRecord.followUp(text, requestId, CAP_RAISED_ORIGIN);
     const marked = (await entriesOf(gate!.journal, theRoot.id, context)).some((entry) => entry.kind === MESSAGE_ORIGIN && (entry.data as { requestId?: unknown } | undefined)?.requestId === requestId);
     if (marked) return;
     await theHarness.commit((tx) => tx.appendEntry(theRoot.id, { kind: MESSAGE_ORIGIN, data: { origin: CAP_RAISED_ORIGIN, text, requestId } as unknown as JsonValue }), context);
@@ -1976,12 +1963,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           let others = beside;
           for (const key of await sessions.keys()) {
             if (key === spec.session.key) continue;
-            const spent = settled ? chargedOf(await sessions.read(key)) : sessionSpendOf(await sessions.read(key)).spentUsd;
+            const read = sessionSpendOf(await sessions.read(key));
+            const spent = settled ? read.chargedUsd : read.spentUsd;
             if (spent === null) return undefined;
             others += spent;
           }
           if (settled) {
-            const own = chargedOf(await sessions.read(spec.session.key));
+            const own = sessionSpendOf(await sessions.read(spec.session.key)).chargedUsd;
             return own === null ? undefined : overCapEnd(others + own, cap);
           }
           // Its model session read as the cap reads it (the kernel's overCapOf: a request cut by a crash at its hold plus its

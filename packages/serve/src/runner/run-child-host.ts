@@ -35,7 +35,7 @@ import { vendorsOver } from "../sign-ins.js";
 import { decisionProvidersIn, fauxFetch } from "../decisions.js";
 import { DECISION_PROVIDER_KEYS } from "../tool-plane.js";
 import { learningEndOfRun } from "./learning-end.js";
-import { cutDeep, runnerSecrets } from "./redact.js";
+import { cutDeep, type HeldRedact, type Redact, runnerSecrets } from "./redact.js";
 import { storeSecrets } from "./store-secrets.js";
 import { FAUX_ENV, FAUX_PROVIDER, GATEWAY_KEY_ENV } from "../model.js";
 import { SAVED_GATEWAY_ENV, savedGatewayIn } from "../model-gateway.js";
@@ -45,12 +45,15 @@ import { openRunMcpAuth, sealRunMcpAuth } from "../store/seal.js";
 import { runZone } from "../environment.js";
 import { shadowRunId } from "../learn/audit.js";
 import { LEARNING_SCRIPT, learningWorkspace } from "../learn/folder.js";
+import { agreeOnOf } from "../learning-setting.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
 import { archilClaim, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { agentDirName, recordingsFolder, runFolder, scratchFolder } from "../workspace/paths.js";
 import type { Workspace } from "../workspace/workspace.js";
 import { keptKeyOf } from "../workspace/computer-kept.js";
-import { claimModelKey, claimSecrets, claimSpendOff, hostDecisionKeys, learnedDecisionKeys, openRunModelKey, routeModelKeys, savedModelKeys, serverKeyless, tierModelKeys, withoutModelKeys } from "./claim-secrets.js";
+import { waitEndedKey } from "../browser-wait-ended.js";
+import { browserHoldKey } from "../browser-hold.js";
+import { claimModelKey, claimSecrets, claimSpendOff, hostDecisionKeys, learnedDecisionKeys, openRunModelKey, savedModelKeys, serverKeyless, tierModelKeys, withoutModelKeys } from "./claim-secrets.js";
 import { type GithubAppAccessAt, githubAppAccess } from "./github-app.js";
 import { githubPullOf, githubTargetOf } from "../github.js";
 import { isObject } from "../validate.js";
@@ -65,11 +68,14 @@ import type { Compared } from "../learn/promote.js";
 import { learnedFirst, type LearnedFirst } from "./learned-first.js";
 import { workflowsAt } from "./learning-seed.js";
 import { claimMetering, heldMcpOf, mcpForClaim } from "./mcp-run.js";
-import { graderModelOf, learnedTiers, learnsWorkflows, mcpReachOf, type AdapterSpecDeps } from "./adapter-run-spec.js";
+import { learnedTiers, learnsWorkflows, mcpReachOf, type AdapterSpecDeps } from "./adapter-run-spec.js";
 import { createDispatchLoop } from "./dispatch.js";
 import { refuseRecipeTriggerRun, resolveRunnerLoop, withSavedGatewayDeps } from "./harness-loops.js";
 import { isWorkflowRevision } from "./workflow-loop.js";
+import type { ClaudeAgentLogin } from "@parcha/agentrun-harness-claude";
 import { loginForRun } from "../claude-login.js";
+import { agentRunLogin, LOGIN_NOT_HANDED, loginRunnerInProcess, loginTokensFor } from "../claude-login-token.js";
+import { logLine } from "../print.js";
 import type { Held, HeldComputerAsk } from "./held.js";
 import { heardComputerHold } from "./computer-journal.js";
 import { type Claim, type Command, type CommandOutcome, type HeldState, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, type StopReason, ClaimRefused } from "./loop-contract.js";
@@ -79,7 +85,7 @@ import { exposeSaveSlots } from "./save-slots.js";
 import { type RunBigWrites, runBigWrites } from "./big-writes.js";
 import { type SaveSlots, SERVER_SLOTS } from "../web-save.js";
 import { launchOnItsDisk, readLaunchBody, type RunLaunch } from "../run-launch.js";
-import { SUBAGENT_TOOL } from "./subagent.js";
+import { routedSubagentTiers, SUBAGENT_TOOL } from "./subagent.js";
 import type { AlsoRow, JournalReads, Store } from "../store/store.js";
 import type { Tier } from "../model.js";
 import { sourceSyncOf } from "../source-sync/types.js";
@@ -418,14 +424,22 @@ const always: Check = () => true;
  *  its Archil settings (no credential), its MCP hosts and server names, its Claude-login mode and its approvers. */
 const SHARED_SETTINGS: ReadonlySet<string> = new Set(["tool-settings", "archil", "mcp.private_oauth_hosts", "mcp.server_own", "claude_login", "approvers"]);
 
+/** The rows of the claim's own run that its process writes, and removes, itself: its browser's wait that ended
+ *  (browser-wait-ended.ts) and its browser's take (browser-hold.ts), each the run's process's report of its own browser
+ *  to the server's reads. No other row is its to write. */
+const ownWrittenSettings = (bound: Bound): ReadonlySet<string> => new Set([
+  waitEndedKey(bound.claim.runId),
+  browserHoldKey(bound.claim.runId),
+]);
+
 /** The settings of the claim's own run and agent a run's process may read: its run's Archil disk, SDK record, kept
- *  computer and browser wait, and its agent's Archil disk and promotions. Every other row (another run's or agent's) is
- *  not its to read. */
+ *  computer, browser wait and browser take, and its agent's Archil disk and promotions. Every other row (another run's
+ *  or agent's) is not its to read. */
 const ownSettings = (bound: Bound): ReadonlySet<string> => new Set([
   `archil.run.${bound.claim.runId}`,
   `sdk-run:${bound.claim.runId}`,
   keptKeyOf(bound.claim.runId),
-  `browser_wait_ended:${bound.claim.runId}`,
+  ...ownWrittenSettings(bound),
   `archil.agent.${bound.agentId}`,
   `learning.promotions.${bound.agentId}`,
 ]);
@@ -433,6 +447,8 @@ const ownSettings = (bound: Bound): ReadonlySet<string> => new Set([
 /** Whether a run's process may read setting `key`. */
 export const settingReadable = (key: unknown, bound: Bound): boolean => typeof key === "string" && (SHARED_SETTINGS.has(key) || ownSettings(bound).has(key));
 const readableSetting: Check = (args, bound) => settingReadable(args[0], bound);
+/** Whether a run's process may write or remove setting `key`: only its own run's browser rows (ownWrittenSettings). */
+const writableSetting: Check = (args, bound) => typeof args[0] === "string" && ownWrittenSettings(bound).has(args[0]);
 
 /** The store's methods a run's loop calls, each with what binds it to the claim. A method not here is refused, and the
  *  refusal is said on the runner's log. Reads of the claim's run, its launch, its commands and its agent's revisions;
@@ -456,6 +472,8 @@ const STORE_CALLS: ReadonlyMap<string, Check> = new Map<string, Check>([
   ["agents.revision", always],
   ["agents.revisions", ownAgent],
   ["settings.get", readableSetting],
+  ["settings.put", writableSetting],
+  ["settings.remove", writableSetting],
   // Its rows filtered to the readable ones (storeCall).
   ["settings.all", always],
   ["mcp.pin", ownRun],
@@ -594,15 +612,22 @@ interface ClaimReads {
   readonly signal?: AbortSignal;
   /** The runner's presence incarnation (LoopDeps.incarnation): with the claim's runner, who keeps a computer a park pins. */
   readonly incarnation?: string;
+  /** The Claude login the claim read for this run (staysInRunner), handed down as it was read: the run's one read of the
+   *  login's setting, so a turn-on after its claim never moves it onto a login its claim did not check. */
+  readonly login: ClaudeAgentLogin | undefined;
 }
 
 /** The email tools a revision may grant. */
 const grantsEmail = (granted: readonly string[]): boolean => granted.some((tool) => tool.startsWith("email_"));
 
+/** The runner's redactor as the host side of a run's process holds it (LoopDeps.redact): its cut, and the carry of a
+ *  value into what it cuts from the run's journal, which a token the runner hands the run needs (claudeLogin). */
+export type RunnerCut = Redact & Partial<Pick<HeldRedact, "carry">>;
+
 /** Held (held.ts) for one claim, on the runner: each answer the claim's own, read with the runner's seal key from the
  *  runner's own reads of the claim; every argument from the run's process is checked or ignored. `bigs`: the run's pieced
  *  writes (big-writes.ts), let go at the claim's release and, by the caller, when the run's channel ends. */
-export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, reads: ClaimReads, cut: (text: string) => string, log: (line: string) => void, bigs: RunBigWrites = runBigWrites()): { held: Held; inputs(): Promise<void>; release(): Promise<void>; projectEnd?(): Promise<void> } {
+export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, reads: ClaimReads, cut: RunnerCut, log: (line: string) => void, bigs: RunBigWrites = runBigWrites()): { held: Held; inputs(): Promise<void>; release(): Promise<void>; projectEnd?(): Promise<void> } {
   const { claim, run, launch, revision, claimed } = reads;
   const sealKey = deps.sealKey;
   const store = deps.store;
@@ -730,6 +755,35 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       if (!plan) return undefined;
       return { state: plan.state, models: [...plan.models], token: () => plan.token(), refused: (sent: string) => plan.refused(sent), watch: (listener: (tokens: string[]) => void) => plan.watch(listener) };
     },
+    // The claim's own login, as this runner reads the claim (its harness, its place, no model key of its own), whatever
+    // the process names: its access token alone, read again at each ask and renewed here when it must be (near its end,
+    // or refused); never its folder or its refresh token. Each token is carried into the runner's redactor for this run
+    // (redact.ts carry) before it is handed, a renewed one too: model text that repeats it is cut from the run's journal
+    // as the runner writes it (runner.ts fenced), from what it stages and from its rows, as the run's own tool keys are.
+    // This answer is the claim's one decision whether it goes on the login: none, it does not. A login other than
+    // AgentRun's own folder was refused at the claim (staysInRunner, LOGIN_MACHINE_NEEDS_SERVER_USER); one handed here by
+    // a claim read that check did not make is refused again in LOGIN_NOT_HANDED's words, never left to a model key. The
+    // process reads no setting or machine id.
+    claudeLogin: async () => {
+      if (await runKeyed()) return undefined;
+      // The login its claim read (staysInRunner), never a second read of the setting.
+      const at = reads.login;
+      if (!at) return undefined;
+      if (!agentRunLogin(at, deps.data)) throw new ClaimRefused(LOGIN_NOT_HANDED);
+      const carry = cut.carry;
+      if (!carry) throw new ClaimRefused("This runner has no redactor that can cut the login's token from what its run writes, so it hands none.");
+      // Each renewal's outcome on the runner's log, in the server's line (print.ts logLine) under event claude_login:
+      // fixed words, a status and an OAuth error code, never a token.
+      const tokens = loginTokensFor(at, (fields) => log(logLine("claude_login", fields)));
+      return {
+        token: async () => {
+          const token = await tokens.token();
+          carry.call(cut, claim.runId, [token]);
+          return token;
+        },
+        refused: (sent: string) => tokens.refused(sent),
+      };
+    },
     signInReadsBack: () => handedSignInReadsBack(store, sealKey, run),
     runSignIn: (resolution) => {
       const vendorFetch = async () => (claimed[FAUX_ENV] ? fauxFetch(claimed, FAUX_VENDOR_API_ENV) : fetch);
@@ -739,7 +793,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     mcp: (ask) => projectCall(async () => {
       const reach = await mcpReachOf(deps);
       const harness = { commit: (change: (tx: unknown) => Promise<unknown>) => change({ appendEntry: async (_conversation: number, entry: unknown) => void (await ask.appendRoot(dataOnly(entry))) }) };
-      const made = await mcpForClaim({ claim, store, sealKey, grants: granted, harness: harness as never, work: () => runFolder(deps.data, run.agentId, claim.runId), launchInput: launch.input, githubAppAccess: () => github(), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, ...claimMetering(deps, run.agentId, launch) });
+      const made = await mcpForClaim({ claim, store, sealKey, grants: granted, harness: harness as never, work: () => runFolder(deps.data, run.agentId, claim.runId), launchInput: launch.input, githubAppAccess: () => github(), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, ...claimMetering(deps, undefined, launch) });
       if (!made) return undefined;
       releases.push(() => made.release());
       const exposed = heldMcpOf(made, cut);
@@ -767,21 +821,23 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       };
       return { api: access.api, target: bound, mint, ...(access.revoke ? { revoke: access.revoke } : {}), ...(access.same ? { same: access.same } : {}) };
     },
-    savedModelKeys: async () => {
-      // Only a run whose routes have no revision to scope their keys by: a subagent's tiers, a learning run's grade, an SDK
-      // run's grade. And never for a run that holds a key of its own (its launch's, read now): the server's keys are not
-      // its to spend, whatever its process asks; nor for a held run its model kept from running, which routes no model.
-      const reads = !modelRefused && (granted.includes(SUBAGENT_TOOL) || launch.harness === "learning" || launch.sdk !== undefined);
-      // A replay's or an audit's grade (adapter-run-spec.ts graderRouteOf): its fast model may be another provider's than
-      // its agent's, its key saved alone, which the claim's own keys never hold. Least privilege: the agent's tools run in
-      // this process tree, so only that one provider's saved keys (a gateway route's: the gateway's key alone) cross the
-      // pipe, filtered here, never the rest; none when the revision has no fast model, and none for a held run its model
-      // kept from running, which grades nothing.
-      const grades = !modelRefused && (launch.replay !== undefined || launch.audit !== undefined);
+    subagentTierKeys: async () => {
+      // A subagent's tiers alone: an agentic run granted the subagent tool routes each tier its revision's modelTiers or
+      // the host's tier variable names, and no other (adapter-run-spec.ts), so its process is handed those tiers' models'
+      // keys (tierModelKeys, the revision's model of a tier over the host's): never a provider's no tier of it reaches, nor
+      // a key for a tier it routes no model on. A replay's or an audit's grade (adapter-run-spec.ts graderRouteOf) routes
+      // the fast tier of that same answer, whose model may be another provider's than its agent's: its process is handed
+      // that tier's model's key alone (through a gateway, the gateway's), none when the revision names agree_on (no
+      // grader). A learning run's grade and an SDK run's compile turn stay in the runner (runsInRunner): their process
+      // never asks, and gets none. And never for a run that holds a key of its own (its launch's, read now): the server's
+      // keys are not its to spend, whatever its process asks; nor for a held run its model kept from running, which routes
+      // no model and grades nothing.
+      const subagent = !modelRefused && revision.kind === "agentic" && granted.includes(SUBAGENT_TOOL);
+      const grades = !modelRefused && (launch.replay !== undefined || launch.audit !== undefined) && !agreeOnOf((revision.body as { readonly learning?: unknown }).learning)?.length;
+      if (!subagent && !grades) return {};
+      const { tiers, refs } = routedSubagentTiers(revision.body, keys.env ?? {});
       const keyed = await runKeyed();
-      if (!reads && !grades) return {};
-      const saved = stringsOf(keyed ? {} : await savedModelKeys(keys));
-      return reads ? saved : stringsOf(routeModelKeys(saved, keys.env ?? {}, graderModelOf(revision.body as Parameters<typeof graderModelOf>[0], keys.env ?? {})));
+      return stringsOf(keyed ? {} : await tierModelKeys(keys, subagent ? tiers : tiers.filter((tier) => tier === "fast"), refs));
     },
     tierModelKeys: async (tiers) => {
       // The tiers the claim's learned workflows name (learnedTiers), as this runner chose them (learnedFirst below): a
@@ -1060,8 +1116,14 @@ export const childArgv = (): string[] => [process.execPath, "--import", new URL(
  *  connectors, whose rows are the server's. */
 export const runsInRunner = (harness: string, launch: Pick<RunLaunch, "sdk" | "native" | "cli_learning">): boolean => harness === "learning" || Boolean(launch.sdk) || Boolean(launch.native) || Boolean(launch.cli_learning);
 
-/** The words a run on Claude Code's login on this machine is refused in where each run is a user of its own. */
-export const LOGIN_NEEDS_SERVER_USER = `A run on Claude Code's login on this machine needs runs under the server's own user, and this runner runs each run as a user of its own: set ${RUN_USER_ENV}=same, or give the run a model_key.`;
+/** The words a run on this machine's own Claude Code login (the `machine` place: claude-login.ts machineFolder, ~/.claude
+ *  or the server's CLAUDE_CONFIG_DIR) is refused in where each run is a user of its own: only AgentRun's own login folder
+ *  is handed to such a run, as its access token. */
+export const LOGIN_MACHINE_NEEDS_SERVER_USER = `A run on this machine's own Claude Code login (~/.claude, or the CLAUDE_CONFIG_DIR AgentRun was started with) needs runs under the server's own user, and this runner runs each run as a user of its own: switch to AgentRun's own login folder under Settings → Model keys, set ${RUN_USER_ENV}=same, or give the run a model_key.`;
+/** The words a run on the login is refused in where each run is a user of its own while runner `other`, on the same data
+ *  folder, runs its runs on the login in its own process, whose CLI renews the login in that folder itself. */
+export const loginRunnerInProcessWords = (other: string): string =>
+  `This runner runs each run as a user of its own, and runner ${other} on the same data folder runs Claude Code's login runs in its own process, whose CLI renews that login itself: stop ${other}, set ${RUN_USER_ENV}=same on this runner too, or give the run a model_key.`;
 /** The words a run on a harness recipe is refused in where each run is a user of its own (harness-table.ts recipeHarness). */
 export const RECIPE_NEEDS_SERVER_USER = `A run on a harness recipe needs runs under the server's own user, since its install, its check and its owner's sign-in are that user's alone, and this runner runs each run as a user of its own: set ${RUN_USER_ENV}=same on this runner.`;
 export { RECIPE_SIGN_IN_PERSON_ONLY } from "./harness-loops.js";
@@ -1069,29 +1131,40 @@ export { RECIPE_SIGN_IN_PERSON_ONLY } from "./harness-loops.js";
 /** Whether run `runId` stays in its runner's process: runsInRunner's, and a workflow run on a server with a documents
  *  directory (launch.documents), whose reads and writes (a pdf_pages call's pages) are rooted in a folder the server's
  *  user holds and no slot's user is given; its nodes run the server's own tools alone, no agent's code. A run on Claude
- *  Code's login on this machine (claude-login.ts loginForRun) needs the login in the server's own folder, which its CLI
- *  reads and refreshes: where runs are the runner's own user (`process`) it stays in the runner; where each run is a user
- *  of its own (`uid`) it is refused at its claim (ClaimRefused, the run failed in words naming the setting), never run as
- *  the server's user. A run its caller handed a model key (model_key) runs on that key and never on the login
- *  (cli-run-spec.ts), so it is a process of its own like any other. */
-export async function staysInRunner(deps: Pick<AdapterSpecDeps, "store" | "data" | "env" | "sealKey">, harness: string, launch: RunLaunch, runId: string, isolation: RunIsolation): Promise<boolean> {
+ *  Code's login on this machine (claude-login.ts loginForRun), where runs are the runner's own user (`process`), stays in
+ *  the runner, its CLI on the login's folder. Where each run is a user of its own (`uid`), a run on AgentRun's own login
+ *  folder is a process of its own handed the login's access token alone (held.ts claudeLogin, claude-login-token.ts),
+ *  never the folder; it is refused at its claim (ClaimRefused, in words) on this machine's own login (machineFolder), and
+ *  while a `process` runner on the same data folder is live (its CLI renews the folder's login itself). A run its caller
+ *  handed a model key (model_key) runs on that key and never on the login (cli-run-spec.ts), so it is a process of its
+ *  own like any other. A run that is a process of its own is handed the login this claim read (`login`, ClaimReads):
+ *  the one read of the login's setting for its start, so a turn-on landing after it never puts the run on a login whose
+ *  refusals here it was never checked against. */
+export type ClaimPlace = { readonly stays: true } | { readonly stays: false; readonly login: ClaudeAgentLogin | undefined };
+export async function staysInRunner(deps: Pick<AdapterSpecDeps, "store" | "data" | "env" | "sealKey">, harness: string, launch: RunLaunch, runId: string, isolation: RunIsolation): Promise<ClaimPlace> {
   // A recipe's harness reads its install, its check's note and its owner's sign-in, each the server user's alone: never
   // opened to a slot's user (the sign-in least of all), so where each run is a user of its own it is refused here. And a
   // plan-billed one's run that no person started (a schedule's, a trigger's) never runs on its owner's sign-in: only on
   // keys saved for its harness.
   if (isolation.kind === "uid" && recipeHarness(deps.env ?? {}, harness)) throw new ClaimRefused(RECIPE_NEEDS_SERVER_USER);
   await refuseRecipeTriggerRun(deps, harness, launch);
-  if (runsInRunner(harness, launch)) return true;
+  if (runsInRunner(harness, launch)) return STAYS;
   if (launch.documents !== undefined) {
     const run = await deps.store.runs.get(runId);
     const revision = run ? await deps.store.agents.revision(run.revisionId) : undefined;
-    if (revision && isWorkflowRevision(revision)) return true;
+    if (revision && isWorkflowRevision(revision)) return STAYS;
   }
-  if ((await loginForRun(deps.store.settings, deps.data, deps.env ?? {}, harness, launch.place)) === undefined) return false;
-  if ((await openRunModelKey({ store: deps.store, sealKey: deps.sealKey }, runId)) !== undefined) return false;
-  if (isolation.kind === "uid") throw new ClaimRefused(LOGIN_NEEDS_SERVER_USER);
-  return true;
+  const login = await loginForRun(deps.store.settings, deps.data, deps.env ?? {}, harness, launch.place);
+  if (login === undefined) return OFF_LOGIN;
+  if ((await openRunModelKey({ store: deps.store, sealKey: deps.sealKey }, runId)) !== undefined) return OFF_LOGIN;
+  if (isolation.kind !== "uid") return STAYS;
+  if (!agentRunLogin(login, deps.data)) throw new ClaimRefused(LOGIN_MACHINE_NEEDS_SERVER_USER);
+  const other = await loginRunnerInProcess(deps.data, deps.store.runners);
+  if (other !== undefined) throw new ClaimRefused(loginRunnerInProcessWords(other));
+  return { stays: false, login };
 }
+const STAYS: ClaimPlace = { stays: true };
+const OFF_LOGIN: ClaimPlace = { stays: false, login: undefined };
 
 /** The runner's loop factory where each run is a process of its own: a ChildLoop per claim, but for a run that stays in
  *  the runner (staysInRunner). */
@@ -1099,11 +1172,15 @@ export function childLoops(options: ChildLoopsOptions): LoopFactory {
   // Each slot locked on the data directory too: another runner on it whose range overlaps this one's never runs a run
   // on a slot this one holds.
   const slots = options.isolation.kind === "uid" ? new Slots(options.isolation.first, options.isolation.slots, slotLocks(options.deps.data)) : undefined;
-  const own: LoopFactory = (loopDeps) => childLoop(options, slots, loopDeps);
   const here = resolveRunnerLoop(options.deps);
   return createDispatchLoop({
     launchOf: (runId) => options.deps.store.runs.launch(runId),
-    resolve: async (harness, launch, runId) => ((await staysInRunner(options.deps, harness, launch, runId, options.isolation)) ? here(harness, launch, runId) : own),
+    resolve: async (harness, launch, runId) => {
+      const place = await staysInRunner(options.deps, harness, launch, runId, options.isolation);
+      if (place.stays) return here(harness, launch, runId);
+      const own: LoopFactory = (loopDeps) => childLoop(options, slots, loopDeps, place.login);
+      return own;
+    },
   });
 }
 
@@ -1145,9 +1222,10 @@ export function runChannel(socket: Duplex, onClose: (why: Error) => void, gate: 
   return channel;
 }
 
-function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDeps: LoopDeps): Loop {
+/** `login`: the Claude login this run's claim read (staysInRunner), the one its runner hands the run (ClaimReads). */
+function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDeps: LoopDeps, login: ClaudeAgentLogin | undefined): Loop {
   const { deps, isolation } = options;
-  const cut: (text: string) => string = loopDeps.redact ?? ((text) => text);
+  const cut: RunnerCut = loopDeps.redact ?? ((text: string) => text);
   const log = (line: string) => options.log(cut(line));
   let channel: Channel | undefined;
   let child: ChildProcess | undefined;
@@ -1220,10 +1298,10 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
         // host's default's now, where its revision names no model and a key saved since moved that default.
         const claimed = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: claimEnv, redact: loopDeps.redact }, revisionRow as never, launch, claim.runId);
         // A --faux start alone is pinned to the faux model (model.ts chooseModel), which stands in for its revision's and
-        // sends no key: its process is handed its revision's model's key with them, as a run of that model is handed it. A
-        // held run its model kept from running at its create (hold.refused) is laid no model key here either: its model runs
-        // nowhere.
-        const ofRevision: NodeJS.ProcessEnv = launch.model?.provider === FAUX_PROVIDER ? await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: claimEnv, redact: loopDeps.redact }, revisionRow as never, { ...(launch.plane ? { plane: launch.plane } : {}), ...(launch.hold ? { hold: launch.hold } : {}) }) : {};
+        // sends no key: its process is handed its revision's model's key with them, as a run of that model is handed it.
+        // Only on a runner in faux mode too: a faux launch claimed where FAUX_ENV is unset gets no second claim. A held run its
+        // model kept from running at its create (hold.refused) is laid no model key here either: its model runs nowhere.
+        const ofRevision: NodeJS.ProcessEnv = launch.model?.provider === FAUX_PROVIDER && claimEnv[FAUX_ENV] ? await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: claimEnv, redact: loopDeps.redact }, revisionRow as never, { ...(launch.plane ? { plane: launch.plane } : {}), ...(launch.hold ? { hold: launch.hold } : {}) }) : {};
         // A run that holds a model key of its own (model_key, its launch's) spends that key alone: its process is handed
         // none of the server's model keys, as its spec drops them from its tools' (claim-secrets.ts withoutModelKeys).
         // Copies: the runner's own reads (heldFor's `claimed`: what the run's learning must never keep) stay whole.
@@ -1264,7 +1342,7 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
         const tops = runTops(deps.data, runRow.agentId, claim.runId);
         // The run's pieced writes (big-writes.ts): let go when its channel ends, or at the claim's release.
         const bigs = runBigWrites();
-        const heldSide = heldFor({ ...deps, env: claimEnv }, { claim, run: runRow, launch, revision, claimed: gatewayKey ? withGatewayKey(claimed, gatewayKey) : claimed, signal: loopDeps.signal, ...(loopDeps.incarnation ? { incarnation: loopDeps.incarnation } : {}) }, cut, log, bigs);
+        const heldSide = heldFor({ ...deps, env: claimEnv }, { claim, run: runRow, launch, revision, claimed: gatewayKey ? withGatewayKey(claimed, gatewayKey) : claimed, signal: loopDeps.signal, login, ...(loopDeps.incarnation ? { incarnation: loopDeps.incarnation } : {}) }, cut, log, bigs);
         try {
           let extra: Record<string, string> = {};
           let argv = [...(options.argv ?? childArgv())];

@@ -710,7 +710,7 @@ fixtures of every evasion it catches.
 ```ts
 import { DockerProvider } from "@parcha/agentrun-computer/docker";
 
-const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" });
+const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64", env: process.env });
 const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
 if (!made.ok) throw new Error(made.error.message);
 const connected = await docker.connect(made.value);
@@ -917,7 +917,7 @@ Docker): `/workspace` is only the mount.
 import { WORKSPACE } from "@parcha/agentrun-computer";
 import { DockerProvider } from "@parcha/agentrun-computer/docker";
 
-const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" });
+const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64", env: process.env });
 // The run folder must exist, by its canonical path, and be writable by docker.user (below).
 const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none", mount: { kind: "bind", path: "/data/runs/r1/work" } }, { requestId: "r1#3" });
 // In the computer: files.read({ path: `${WORKSPACE}/notes.md` }), exec.run({ argv: ["make"], cwd: WORKSPACE, ... })
@@ -1036,13 +1036,13 @@ no other process to wait on: Docker's own tag is the shared state.
 ```ts
 import { DockerProvider } from "@parcha/agentrun-computer/docker";
 
-const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" }); // image: the default recipe
+const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64", env: process.env }); // image: the default recipe
 const image = await docker.image({ signal });   // built once; one inspect when Docker has it
 if (!image.ok) throw new Error(image.error.message);
 const made = await docker.create({ image: image.value, lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
 ```
 
-- `ensureImage(source, { docker?, signal?, timeoutMs?, onWait? })` (`src/docker/image.ts`) gives the tag. `source` is
+- `ensureImage(source, { docker?, env?, signal?, timeoutMs?, onWait? })` (`src/docker/image.ts`) gives the tag. `source` is
   `{ recipe }`, a Dockerfile with no build context, or `{ image }`, an image by name.
   - A recipe is built with `docker build --quiet --label agentrun.computer.recipe=<sha256> --tag
     agentrun-computer:<first 12 hex digits> -`, the recipe on stdin (`recipeTag(recipe)`, `recipeHash(recipe)`,
@@ -1054,6 +1054,22 @@ const made = await docker.create({ image: image.value, lifetimeMs: 600_000, netw
   image (`DEFAULT_DOCKER_IMAGE`): `python:3.12-slim` pinned by its index digest (`DOCKER_BASE`), with git, curl,
   nodejs, npm, ripgrep and socat from apt. `docker.image({ signal?, timeoutMs?, onWait? })` is `ensureImage` of it with the
   provider's docker CLI. A source that is neither throws at construction, in words.
+- **The docker CLI gets only what it reads.** The provider reads no environment: its `env` option is the host's (serve
+  passes its own values of the docker descriptor's `hostEnv`), and every docker call it makes (`dockerArch`,
+  `ensureImage` and the provider's own, each taking `env` too) is started with the names of it docker reads
+  (`DOCKER_ENV_NAMES`), and none of the rest. Library callers pass `env` (serve does): without it docker gets no
+  environment at all, so a bare `docker` is found only on the default path (`/usr/bin:/bin`), not in `/usr/local/bin` or
+  a snap, and no credential helper is found on PATH; the `docker` option, the CLI's absolute path, is the other way to
+  name it. The names: PATH, HOME, TMPDIR, the
+  locale, `DOCKER_HOST`, `DOCKER_CONTEXT`, `DOCKER_CONFIG` and Docker's TLS, API and buildx settings, ssh's agent socket,
+  `XDG_RUNTIME_DIR` and the proxy (either case), for a daemon or registry that is not local, and the places a pull's
+  credential helper (`docker-credential-<name>` on PATH) looks: the Secret Service's bus, GnuPG's home and agent, an AWS
+  profile, region and config file, gcloud's config. No key passes (`AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`,
+  `AZURE_CLIENT_SECRET`, `DOCKER_CUSTOM_HEADERS`, a content trust passphrase), nor a name shaped as one, a pointer to a
+  credential included (`AWS_SHARED_CREDENTIALS_FILE`, `AWS_WEB_IDENTITY_TOKEN_FILE`,
+  `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`, `GOOGLE_APPLICATION_CREDENTIALS`, `PASSWORD_STORE_DIR`). A helper that
+  signs in from keys in the server's environment (ECR's, with access keys in env) gets none: give it a profile, the
+  default credentials file or a role instead.
 - **The image is an option only; there is no env name for it.** Another image is named with the `image` option, to
   `new DockerProvider(...)` or to `create({ image: { image: "..." } })`. The library reads no environment (see
   [Settings](#settings)), and Docker's conformance module reads no image name either: a `COMPUTER_DOCKER_IMAGE` in its
@@ -1217,7 +1233,7 @@ as a caller's labels, with no code of its own: Docker writes them with `--label`
 import { releaseOlder, runLabels } from "@parcha/agentrun-computer";
 import { DockerProvider } from "@parcha/agentrun-computer/docker";
 
-const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" });
+const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64", env: process.env });
 // A claim at epoch 3 takes the run over: the computers of epochs 1 and 2 go first.
 const older = await releaseOlder(docker, "r1", 3);
 if (!older.ok) throw new Error(older.error.message); // fenced, or a computer that could not be released
@@ -1238,7 +1254,7 @@ vendor's types: the shared adapter's release, a create that deletes its machine,
 ## Modal
 
 ```ts
-import { ModalClient } from "modal"; // the host's own client: this package imports nothing from the SDK
+import { ModalClient } from "modal"; // this package's optional dependency; it imports nothing from the SDK at load
 import { ModalProvider } from "@parcha/agentrun-computer/modal";
 
 const modal = new ModalProvider({
@@ -1871,7 +1887,7 @@ repository's main; the docs were read on 2026-11-05.
 ```ts
 import { providerFor } from "@parcha/agentrun-computer";
 
-// The key is the caller's to pass (serve's E2B_API_KEY), and the e2b package is the host's own (npm e2b 2.63.0).
+// The key is the caller's to pass (serve's E2B_API_KEY); the e2b package (2.63.0) is an optional dependency.
 const e2b = await providerFor("e2b", { apiKey });
 const made = await e2b.create({ image: "desktop", lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
 ```
@@ -1892,8 +1908,10 @@ and its X11 shim drives it. With `kind: "linux"` it is kind `linux` on any templ
 provider, minus the X server, so it costs nothing to offer. A caller that names a template (`create({ image })`) gets
 that one: E2B Desktop's own, `desktop`, still works for kind `desktop`, since computerd needs only Xvfb and xfwm4 from
 it. Every call goes through the host's E2B JS SDK, the `e2b` package's `Sandbox` class, whose types `src/e2b.ts` imports
-as types only (held as `typeof Sandbox` inside, `object` in the published types), so nothing loads from it at import; the package is the host's to install, as
-Modal's is. `@e2b/desktop` is not used: it starts Xvfb and Xfce with `commands.run`, outside computerd's process table
+as types only (held as `typeof Sandbox` inside, `object` in the published types), so nothing loads from it at import. The
+package is one of this package's `optionalDependencies`, pinned exactly, as Modal's, boxd's, ssh2 and Archil's `disk`
+are: a plain `npm install` brings it, and after `npm install --omit=optional` `create` refuses with `E2B needs the e2b
+package: npm install e2b@2.63.0`. `@e2b/desktop` is not used: it starts Xvfb and Xfce with `commands.run`, outside computerd's process table
 and with no bound or abort (`@e2b/desktop@2.5.0` `dist/index.mjs:387-415`), and the provider needs none of its other
 calls.
 
@@ -2158,7 +2176,7 @@ A live run must show:
 ```ts
 import { providerFor } from "@parcha/agentrun-computer";
 
-// Both keys are the caller's to pass (serve's AGENT37_API_KEY and AGENT37_SSH_KEY), and ssh2 is the host's own (npm ssh2 1.17.0).
+// Both keys are the caller's to pass (serve's AGENT37_API_KEY and AGENT37_SSH_KEY); ssh2 (1.17.0) is an optional dependency.
 const agent37 = await providerFor("agent37", { apiKey, sshKey });
 const made = await agent37.create({ image: "agent37-base", lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
 ```
@@ -2312,7 +2330,7 @@ the live runs above.
 ```ts
 import { providerFor } from "@parcha/agentrun-computer";
 
-// The key is the caller's to pass (serve's MORPH_API_KEY), and ssh2 is the host's own.
+// The key is the caller's to pass (serve's MORPH_API_KEY); ssh2 is an optional dependency.
 const morph = await providerFor("morph", { apiKey });
 const box = await morph.prepareImage(); // the box image as a snapshot in the key's account
 const made = await morph.create({ image: box.value, lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
@@ -2586,7 +2604,11 @@ deadline, so the janitor's `sweep` also ends a browser whose supervisor was kill
 
 Finding Chrome: the `executablePath` option, else `PI_BROWSER_CHROME` or `CHROME_PATH` in the `env` option, else the
 first `google-chrome`, `google-chrome-stable`, `chromium` or `chromium-browser` on that env's `PATH`, else the usual
-install places. The library reads no environment of its own: the host passes `env`. With none found, `check()`,
+install places. The library reads no environment of its own: the host passes `env`. Of it, the supervisor and the Chrome
+it starts, and `testConnection()`'s Chrome, hold the names Chrome reads (`CHROME_ENV_NAMES`: PATH, HOME, TMPDIR, the
+locale, the display and `XAUTHORITY`, the XDG directories, fontconfig's files, the session bus, `CHROME_DEVEL_SANDBOX`)
+and nothing else, so no key the host holds reaches Chrome; serve passes its own values of these (the descriptor's
+`hostEnv`). With none found, `check()`,
 `create()` and `testConnection()` say what to install and which setting names one. `testConnection()` starts the Chrome
 once, headless on a blank page with a proxy that reaches nothing, to prove it starts here with its sandbox on. It
 keeps nothing.
@@ -2758,7 +2780,7 @@ through `ui.observe` (`src/conformance/cases/settings.ts`):
 ```ts
 import { providerFor } from "@parcha/agentrun-computer";
 
-// The key is the caller's to pass (serve's BOXD_API_KEY), and the @boxd-sh/sdk package is the host's own (npm 0.3.1).
+// The key is the caller's to pass (serve's BOXD_API_KEY); the @boxd-sh/sdk package (0.3.1) is an optional dependency.
 const boxd = await providerFor("boxd", { apiKey, org: "my-org", region: "fra" });
 const made = await boxd.create({ image: "default", lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
 ```
@@ -2771,7 +2793,7 @@ to a machine, and `src/hosted/provider.ts` does everything that is not boxd's ow
 create, the upload, the install, init's start, the stdio bridge, the probe, the janitor's extend, delete-then-wait-gone,
 the sweep of a create that lands late). Every call goes through the host's boxd TypeScript SDK, the `@boxd-sh/sdk`
 package's `Boxd` class, of which `src/boxd.ts` names only the slice it calls and imports nothing at load. The package is
-the host's to install, as E2B's and Modal's are; this repository pins it as a root devDependency for the live tests.
+an optional dependency, pinned exactly, as E2B's and Modal's are.
 
 ### The desktop snapshot
 
@@ -3282,6 +3304,66 @@ computer's `HOME`, which the provider sets, is a directory its user can write, a
 
 From code: `runConformance(provider, { image, only?, signal?, drifted?, mountFor?, caseTimeoutMs?, cleanupTimeoutMs?,
 fixture?, fetch? })` returns the report, and `formatReport(report)` the text above.
+
+### Provider health: time to interactive (`--tti`, `--burst`)
+
+Whether a provider works today, and how fast, measured through this package's own provider layer. Time to interactive
+(TTI) is the time from a computer's `create` call to the answer of its first command: `create`, `connect` (computerd's
+hello) and one `exec.run`, read on the run's clock; the delete comes after and is not timed. `--tti <n>` makes `n`
+computers one at a time, each deleted before the next; `--burst <n>` makes `n` at once. Either runs alone, or both, the
+burst after. It runs as cases of the conformance runner (`src/conformance/tti.ts`), so a provider the CLI can make gets
+it with nothing more: the module's settings and keys by name, its image, the run's label, the deletes, the sweep and
+the list that shows nothing is left.
+
+```sh
+npm run conformance -w @parcha/agentrun-computer -- --provider daytona --tti 100 --burst 100 [--image <image>] [--json]
+```
+
+```text
+computer tti · daytona · linux, daemon pid1 · image default
+came up: yes
+serial n 100 · ok 100/100 (100%) · median 512 ms · p95 640 ms · p99 702 ms · score 94.28
+burst  n 100 at once · ok 98/100 (98%) · median 830 ms · p95 1410 ms · p99 1630 ms · score 87.27
+  ✗ 2x create failed (limit): ...
+cleanup ✓ 0 left · 200 deleted
+computers alive at once: 100 at most
+tti FAIL: 2 of 200 computers did not come up
+```
+
+(The numbers above show the shape, not a measurement.) `came up` is `yes` when any computer ran its first command, else
+`no` with the first reason one did not. It exits 0 when every computer came up and the run left nothing behind, else 1,
+and 2 on a usage error; `--tti` and `--burst` take `--image` and `--json` and refuse the suite's flags. `--json` prints
+`{ provider, providerVersion, kind, daemonMode, image, command, cameUp, why?, serial?, burst?, pass, cleanup, computers,
+daemons, notes?, providerNotes? }`, each shape `{ n, ok, successRate, ttiMs, stats: { median, p95, p99 }, score, errors:
+[{ words, count }] }`. From code: `measureTti(provider, { image, iterations, burst, clock?, signal? })`, `formatTti`,
+`ttiStats` and `ttiScore`.
+
+The yardstick is ComputeSDK's sandbox benchmark ([computesdk/benchmarks](https://github.com/computesdk/benchmarks), MIT;
+`benchmarks/sandbox/tti.bench.ts`, `scoring.ts`, `src/util/stats.ts`), and three things are theirs as they wrote them:
+TTI from create's call to the first command's success, with destroy left out; the statistics, 5% of the times trimmed
+from each end, the median of the rest, p95 and p99 by nearest rank; and the score, each of median, p95 and p99 as
+`100 * (1 - ms / 10000)` (0 at 10 s or more), weighted 0.6, 0.25 and 0.15, times the success rate. Their board's runs are
+100 computers through 100 slots, all launched at once: `--burst 100`. Where this differs:
+
+- The first command is `echo agentrun` through computerd's `exec.run` (no shell; `cmd.exe /d /c echo agentrun` on
+  Windows), not `node -v`: a run's image need not carry Node.
+- TTI is through this layer, so it holds what a provider does in `create` beyond the vendor's own call (on most remote
+  providers, putting computerd in the machine and starting it) and `connect`'s hello. It is the time an agent waits
+  here, not the vendor's SDK alone.
+- Each computer is made as the suite makes them: the run's label, a 30-minute lifetime, network `none` where the kind
+  requires it, and the module's image (`conformanceImage()`, such as Daytona's `default` snapshot or E2B's `desktop`
+  template) unless `--image` names one. ComputeSDK's sandboxes have an open network and each vendor's default image.
+- One computer has 150 s to come up in all (their bounds: 120 s for create, 30 s for the command), and the clock reads
+  whole milliseconds.
+- The serial shape is their `sequential` one, retired from their board on 2026-08-11; it is kept here because a provider
+  that fails only under a burst is a different finding from one that fails alone.
+- A burst's computers are deleted one after another once the burst ends, outside the time; theirs each destroy its own.
+
+What it cannot drive, and why: a browser (Browserbase, Kernel, local Chrome) runs no command, only CDP, so it is not
+measured (`came up: no: the provider declares no exec`). A dial host (Cloudflare, Fly, and E2B, Modal or Daytona with
+`COMPUTER_<ID>_CONNECT=dial`) makes machines that dial a server the internet reaches, so from this CLI every create is
+refused in words; its Core runs inside `packages/serve/scripts/dial-conformance.mjs`, which has no TTI mode. Archil is a
+mount here, not a computer provider, so there is no Archil sandbox to time.
 
 ## Persistent computers: an agent's own
 

@@ -29,7 +29,7 @@
 // runner in another process may read them between the two writes, or after a write that failed: a pair that does not
 // match is read as a gateway with no key, so a key never goes to an address it was not saved for.
 import { textUpTo } from "./answer-text.js";
-import { gatewayBase, HarnessUnavailable } from "./provider.js";
+import { gatewayBase, HarnessUnavailable, modelGatewayBase } from "./provider.js";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { envValue, type KeyEnv } from "./key-meta.js";
 import { GATEWAY_KEY_ENV, type Tier, TIERS } from "./model.js";
@@ -180,7 +180,7 @@ export function withSavedGateway<E extends NodeJS.ProcessEnv>(env: E, saved: Sav
 
 /** GET /v2/settings/model-gateway. `source`: the gateway in force, the environment's (`env`), the console's (`console`),
  *  or none (`null`: the provider keys are). `set_at_start`: the variables of these fields set where AgentRun starts, which
- *  win, read-only here. `problem`: why the gateway in force runs no model (an address the one rule refuses), else null. */
+ *  win, read-only here. `problem`: why the gateway in force runs no model (an address a run refuses: the one rule, or an API that is no gateway's, modelGatewayBase), else null. */
 export type GatewayView = {
   source: "env" | "console" | null;
   base_url: string | null;
@@ -207,16 +207,23 @@ export type ModelGatewayDeps = {
 /** The variables of the gateway's fields that the environment sets. */
 const setAtStart = (env: KeyEnv): string[] => [BASE_VAR, IDS_VAR, ...TIERS.map((tier) => TIER_VARS[tier]), GATEWAY_KEY_ENV].filter((name) => envValue(env, name) !== undefined);
 
-/** Why `value` may not be the gateway's address (gatewayBase's one rule, under the field's name), or undefined. */
-function baseProblem(field: string, value: string): string | undefined {
+/** Why `value` may not be the gateway's address, under the field's name, or undefined: by `rule`, the one address rule
+ *  (gatewayBase) unless given another. */
+function baseProblem(field: string, value: string, rule: (field: string, value: string) => unknown = gatewayBase): string | undefined {
   try {
-    gatewayBase(field, value);
+    rule(field, value);
     return undefined;
   } catch (error) {
     if (error instanceof HarnessUnavailable) return error.message;
     throw error;
   }
 }
+
+/** The rule a run holds the gateway to (modelGatewayBase: the address rule, and an API that is no gateway's, Particle's). */
+const runRule = (field: string, value: string): string => modelGatewayBase(value, field);
+/** Why a run refuses `value` as the gateway, in a run's words, or null: the view's `problem`, which the console's first
+ *  screen shows, and what a save refuses. */
+const runProblem = (field: string, value: string): string | null => baseProblem(field, value, runRule) ?? null;
 
 const originOf = (base: string): string => new URL(gatewayBase("base_url", base)).origin;
 
@@ -232,7 +239,7 @@ export async function gatewayView({ store, env }: Pick<ModelGatewayDeps, "store"
       models: Object.fromEntries(TIERS.map((tier) => [tier, envValue(env, TIER_VARS[tier]) ?? null])) as Record<Tier, string | null>,
       set_at_start,
       secret: secretMeta(GATEWAY_SECRET, key ? { set: true, source: "env", changedAt: null } : { set: false }),
-      problem: baseProblem(BASE_VAR, base) ?? null,
+      problem: runProblem(BASE_VAR, base),
     };
   }
   const saved = await gatewaySettingOf(store.settings);
@@ -246,7 +253,7 @@ export async function gatewayView({ store, env }: Pick<ModelGatewayDeps, "store"
     models: Object.fromEntries(TIERS.map((tier) => [tier, envValue(env, TIER_VARS[tier]) ?? saved?.models[tier] ?? null])) as Record<Tier, string | null>,
     set_at_start,
     secret,
-    problem: saved ? (baseProblem("base_url", saved.base_url) ?? null) : null,
+    problem: saved ? runProblem("base_url", saved.base_url) : null,
   };
 }
 
@@ -272,7 +279,8 @@ export async function saveGateway(deps: ModelGatewayDeps, body: unknown): Promis
   const base = typeof body.base_url === "string" ? body.base_url.trim() : undefined;
   if (base === undefined || !base) issues.push({ field: "base_url", reason: body.base_url === undefined ? "missing" : "wrong_type", message: "base_url is the gateway's address, such as https://gateway.example/v1" });
   else {
-    const problem = baseProblem("base_url", base);
+    // A run's rule, so nothing is saved that no run could use.
+    const problem = runProblem("base_url", base);
     if (problem) issues.push({ field: "base_url", reason: "invalid", message: problem });
   }
   if (body.api_key !== undefined && body.api_key !== null) {
@@ -337,7 +345,7 @@ export async function testGateway(deps: ModelGatewayDeps, body: unknown, signal?
   const issues: InputIssue[] = unknownFields(given, ["base_url", "api_key"]);
   if (given.base_url !== undefined && (typeof given.base_url !== "string" || !given.base_url.trim())) issues.push({ field: "base_url", reason: "wrong_type", message: "base_url is the gateway's address as text" });
   else if (typeof given.base_url === "string") {
-    const problem = baseProblem("base_url", given.base_url.trim());
+    const problem = runProblem("base_url", given.base_url.trim());
     if (problem) issues.push({ field: "base_url", reason: "invalid", message: problem });
   }
   // null: test with no key (the form's "Use no key"), never the saved one.
@@ -353,7 +361,8 @@ export async function testGateway(deps: ModelGatewayDeps, body: unknown, signal?
   const base = typeof given.base_url === "string" ? given.base_url.trim() : inForce?.base;
   if (base === undefined) return { ok: false, why: "No model gateway is saved here: enter its address to test it." };
   const field = typeof given.base_url === "string" ? "base_url" : inForce!.field;
-  const problem = baseProblem(field, base);
+  // A run's rule, as Save's: an address no run could use is said so, and never asked.
+  const problem = runProblem(field, base);
   if (problem) return { ok: false, why: problem };
   const root = gatewayBase(field, base);
   const sameOrigin = inForce !== undefined && !baseProblem(inForce.field, inForce.base) && new URL(gatewayBase(inForce.field, inForce.base)).origin === new URL(root).origin;

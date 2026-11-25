@@ -32,13 +32,15 @@ for (const need of SQLITE_RUNNER_NEEDS) {
   test(`a file of this version without ${need.table}.${need.columns.join(", ")}: store-schema says the runner waits, as its open refuses it`, async (t) => {
     const dir = await serverMade(t);
     // An earlier build of this version left the file without the column; without the runners table (its relay was in
-    // runner_relays then), hand_backs or run_attempts, which the server makes at its start.
+    // runner_relays then), hand_backs, run_attempts or the learning ledger, which the server makes at its start.
     const db = new DatabaseSync(join(dir, STORE_FILE));
-    if (need.columns.includes("host") || need.table === "hand_backs" || need.table === "run_attempts") db.exec(`DROP TABLE ${need.table}`);
+    if (need.columns.includes("host") || ["hand_backs", "run_attempts", "learning_ledger", "learning_spend"].includes(need.table)) db.exec(`DROP TABLE ${need.table}`);
     else for (const column of need.columns) {
       for (const { name } of db.prepare(`SELECT name FROM pragma_index_list('${need.table}')`).all()) {
         if (db.prepare(`SELECT 1 FROM pragma_index_info('${name}') WHERE name = ?`).get(column) && !name.startsWith("sqlite_autoindex")) db.exec(`DROP INDEX "${name}"`);
       }
+      // A trigger that names the column came with it (schema.ts RUN_LAUNCH_CENSUS_ERASED): an earlier build had none.
+      for (const { name } of db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ? AND sql LIKE ?").all(need.table, `%${column}%`)) db.exec(`DROP TRIGGER "${name}"`);
       db.exec(`ALTER TABLE ${need.table} DROP COLUMN ${column}`);
     }
     db.close();

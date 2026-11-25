@@ -19,6 +19,7 @@ const { childLoops } = await import("../dist/runner/run-child-host.js");
 const { launchBody } = await import("../dist/run-launch.js");
 const { putSealedKey } = await import("../dist/server-keys.js");
 const { MODEL_KEY_NAMES } = await import("../dist/runner/claim-secrets.js");
+const { FAUX_ENV } = await import("../dist/model.js");
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createDispatchLoop } = await import("../dist/runner/dispatch.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
@@ -40,13 +41,13 @@ const DUMP = `const fs = require("node:fs"); const net = require("node:net"); co
 const namesIn = (bytes) => bytes.toString("utf8").split("\0").filter(Boolean).map((pair) => pair.slice(0, pair.indexOf("=")));
 
 /** The key names the process of a run of `revision` launched on `model` is handed by its runner, with `saved` sealed. */
-async function handed(t, { revision, model, saved }) {
+async function handed(t, { revision, model, saved, env = {} }) {
   const { store, dir: data } = await storeOn(t);
   for (const [name, value] of Object.entries(saved)) await putSealedKey(store, SEAL_KEY, name, value);
   await store.agents.create({ id: "agent", name: "Pinned" }, { id: "rev", kind: "agentic", body: { instructions: "Work.", ...revision } });
   await store.runs.create({ id: "run", agentId: "agent", revisionId: "rev" }, { body: launchBody({ input: { content: "Work." }, title: "Work", place: { mode: "runner" }, harness: "pi", model }) });
   const out = join(data, "handed.bin");
-  const deps = { store, data, sealKey: SEAL_KEY, env: {}, computerForClaim: async () => { throw new Error("no computer here"); } };
+  const deps = { store, data, sealKey: SEAL_KEY, env, computerForClaim: async () => { throw new Error("no computer here"); } };
   const loop = childLoops({ deps, isolation: { kind: "process", why: "a test's runner" }, log: () => {}, argv: [process.execPath, "-e", DUMP, out] })({
     signal: new AbortController().signal, journal: (claim) => store.journal(claim), flush: async () => {}, delivered: Promise.resolve(),
   });
@@ -63,9 +64,14 @@ test("a run's process is handed its pinned model's key alone, never the key of t
   assert.ok(moved.includes("MONID_API_KEY"), `its tool's key is on its pipe: ${moved}`);
   assert.deepEqual(modelKeysOf(moved), ["OPENAI_API_KEY"], "its pinned model's key alone, never the host's default's now");
   // A --faux start: pinned to the faux model, which stands in for its revision's (Anthropic's): handed that model's key.
-  const faux = await handed(t, { revision: { model: "anthropic/claude-sonnet-5-5", tools: ["monid:faux/person/enrich"] }, model: { provider: "faux", modelId: "faux-1" }, saved: { ANTHROPIC_API_KEY: ANTHROPIC_SAVED, OPENAI_API_KEY: OPENAI_SAVED, MONID_API_KEY: MONID_SAVED } });
+  const fauxRun = { revision: { model: "anthropic/claude-sonnet-5-5", tools: ["monid:faux/person/enrich"] }, model: { provider: "faux", modelId: "faux-1" }, saved: { ANTHROPIC_API_KEY: ANTHROPIC_SAVED, OPENAI_API_KEY: OPENAI_SAVED, MONID_API_KEY: MONID_SAVED } };
+  const faux = await handed(t, { ...fauxRun, env: { [FAUX_ENV]: "1" } });
   assert.ok(faux.includes("MONID_API_KEY"), `its tool's key is on its pipe: ${faux}`);
   assert.deepEqual(modelKeysOf(faux), ["ANTHROPIC_API_KEY"], "a --faux start's process holds its revision's model's key");
+  // The same faux launch claimed by a runner not in faux mode: no second claim, so no model key beside its tool's.
+  const notFaux = await handed(t, fauxRun);
+  assert.ok(notFaux.includes("MONID_API_KEY"), `its tool's key is on its pipe: ${notFaux}`);
+  assert.deepEqual(modelKeysOf(notFaux), [], "a faux launch on a runner not in faux mode: no revision model's key");
 });
 
 const until = async (done, what, ms = 40_000) => {
