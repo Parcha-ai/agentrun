@@ -12,8 +12,8 @@
 //  - one trace per run: its id is the run id's hash, so every claim of a run (a resume, a takeover) is in one trace, and
 //    the sampler (always parent-based, its root's ratio from OTEL_TRACES_SAMPLER/_ARG) decides once per run, never
 //    splitting a run's spans;
-//  - an export that fails or throws is one log line (cut by the runner's redactor, which holds every OTLP header value,
-//    then of each header value at any length: saidOf), and its spans are dropped: never the run's failure. A run's end never waits on an export: the batch processor sends
+//  - an export that fails or throws is one log line (cut by the runner's redactor, which holds each OTLP header value
+//    of 8 characters or more, then of each header value at any length: saidOf), and its spans are dropped: never the run's failure. A run's end never waits on an export: the batch processor sends
 //    in the background, a run's process never flushes, and only the runner's close flushes once (flushTraces), for at
 //    most FLUSH_MS.
 import { createHash, randomBytes } from "node:crypto";

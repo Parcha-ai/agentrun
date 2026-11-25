@@ -113,8 +113,8 @@ const SECRET_NAME = /(?:^|_)(?:KEY|TOKEN|SECRET|PASSWORD)$/i;
  *  the environment once handed over, so a scan of process.env alone sees none of them), and beside it the key a person
  *  saved under that name on the server `stored` reads for (a run that names its tool is handed it), and the value of
  *  every other key, token, secret or password `env` names, and each OTLP header value (otlpHeaderValues). One shorter
- *  than the checker's MIN_SECRET, whitespace aside, matches too much text by chance to be refused, and is left out, but
- *  an OTLP header value, held at any length (keptSecrets). */
+ *  than the checker's MIN_SECRET, whitespace aside, matches too much text by chance to be refused, and is left out, an
+ *  OTLP header value's too (keptSecrets). */
 export const hostSecrets = (env: NodeJS.ProcessEnv, stored?: StoredKeys): string[] => {
   // AGENTRUN_TOKENS's each secret too, not only the list whole (api-token.ts secretValues).
   const held = [...SECRET_NAMES.flatMap((name) => [...secretValues(name, secret(name) ?? ""), stored?.(name) ?? ""]), ...mcpSecretValues(mcpCredentials()), ...sealKeys.keys(), ...heldTokens];
@@ -245,7 +245,8 @@ export function mcpCredentials(): Record<string, { url: string; headers?: Record
 export const OTLP_PLAIN_HEADERS: readonly string[] = ["content-type", "accept", "content-encoding", "user-agent"];
 
 /** The OTLP exporter's header values `env` names (OTEL_EXPORTER_OTLP_HEADERS and OTEL_EXPORTER_OTLP_TRACES_HEADERS: a
- *  tracing backend's key is one), each held at any length, but those of a header OTLP_PLAIN_HEADERS names: each as sent
+ *  tracing backend's key is one), at any length (keptSecrets floors them for the held list; otlpHeaderCut does not),
+ *  but those of a header OTLP_PLAIN_HEADERS names: each as sent
  *  and as written (percent-encoded), and a `Bearer` one's token alone. A part whose name can't be decoded is held. */
 export const otlpHeaderValues = (env: NodeJS.ProcessEnv): string[] =>
   [env.OTEL_EXPORTER_OTLP_HEADERS, env.OTEL_EXPORTER_OTLP_TRACES_HEADERS].flatMap((text) =>
@@ -257,13 +258,13 @@ export const otlpHeaderValues = (env: NodeJS.ProcessEnv): string[] =>
       return [...(sent ? [sent[1]] : []), part.slice(at + 1).trim()].flatMap((value) => [value, value.replace(/^Bearer(?:\s+|%20)/i, "")]);
     })).filter((value) => value.trim() !== "");
 
-/** `values` as the held list keeps them: each MIN_SECRET long or more, whitespace aside (a shorter one matches too much
- *  text by chance to be refused), and every OTLP header value `env` names (otlpHeaderValues) at any length. Every
- *  redactor still cuts only a value of MIN_SECRET or more; a shorter header value is cut by otlpHeaderCut alone. */
-export const keptSecrets = (values: readonly string[], env: NodeJS.ProcessEnv): string[] => {
-  const headers = new Set(otlpHeaderValues(env));
-  return [...new Set([...values, ...headers])].filter((value) => headers.has(value) || value.replace(/\s+/g, "").length >= MIN_SECRET);
-};
+/** `values` and every OTLP header value `env` names (otlpHeaderValues) as the held list keeps them: each MIN_SECRET long
+ *  or more, whitespace aside. A shorter one matches too much text by chance to be held, and some readers of the list
+ *  have no floor of their own (a number equal to a held value is withheld, key-refusal.ts heldNumber; a source capture
+ *  refuses a path or file holding one), so a short header value is on no held list: otlpHeaderCut alone cuts it, from
+ *  the tracer's own lines. */
+export const keptSecrets = (values: readonly string[], env: NodeJS.ProcessEnv): string[] =>
+  [...new Set([...values, ...otlpHeaderValues(env)])].filter((value) => value.replace(/\s+/g, "").length >= MIN_SECRET);
 
 const CUT = "[redacted]";
 
