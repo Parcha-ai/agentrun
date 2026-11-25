@@ -308,7 +308,16 @@ export const LOGOUT = {
   async run({ values, env, io, cli }) {
     const file = configFileOf(env);
     if (values.share) {
-      const config = configNow(file, cli);
+      // Read strictly: a file refused or unreadable as a config may still hold the share token, so it is said, never
+      // taken for an empty one.
+      const text = cli.privateFile(file);
+      let config;
+      try {
+        config = JSON.parse(text ?? "{}");
+      } catch {
+        config = undefined;
+      }
+      if (config === null || typeof config !== "object" || Array.isArray(config)) throw cli.fail(4, `${file} is not a config file login writes (a JSON object); refusing it. Nothing was removed.`);
       const removed = Object.hasOwn(config, SHARE_ENTRY);
       if (removed) {
         delete config[SHARE_ENTRY];

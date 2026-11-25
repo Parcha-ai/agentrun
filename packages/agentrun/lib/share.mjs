@@ -223,12 +223,15 @@ async function publishTo(cli, io, { host, target, bytes, bundle, summary }) {
   const { id } = answer;
   // The host's URL for it (on its public address), when it is one for this id; else the one its layout makes.
   const url = typeof answer.url === "string" && /^https?:\/\//.test(answer.url) && URL.canParse(answer.url) && new URL(answer.url).pathname.endsWith(`/r/${id}`) && !/[?#]/.test(answer.url) ? answer.url : `${host}/r/${id}`;
+  // Readers get the host's public link; the delete goes to the address that took the upload, which the share login
+  // is kept for (a host's public address may be another, and shareTargetOf takes the login's own address alone).
+  const takeDown = `agentrun share delete ${host}/r/${id}`;
   const lines = linesOf(summary);
-  lines.push(`Shared: ${url}`, `Anyone with the link can open it. Take it down with: agentrun share delete ${url}`);
+  lines.push(`Shared: ${url}`, `Anyone with the link can open it. Take it down with: ${takeDown}`);
   const unchecked = countsLine(answer.restored_unchecked, known);
   if (unchecked) lines.push(`Restores of Jev's cuts the host took unchecked (it runs no Jev), by rule: ${unchecked}.`);
   if (answer.sha256 !== summary.sha256) {
-    lines.push(`The share host names another sha256 for it than the ${summary.sha256} sent: take it down (agentrun share delete ${url}) and ask the host's operator.`);
+    lines.push(`The share host names another sha256 for it than the ${summary.sha256} sent: take it down (${takeDown}) and ask the host's operator.`);
     io.stderr.write(`${lines.join("\n")}\n`);
     client.print({ ...summary, url, id });
     return 1;
