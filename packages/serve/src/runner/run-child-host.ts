@@ -1205,7 +1205,8 @@ export { RECIPE_SIGN_IN_PERSON_ONLY } from "./harness-loops.js";
  *  own like any other. A run that is a process of its own is handed the login this claim read (`login`, ClaimReads): a
  *  claim that read it off is never put on it, so a turn-on landing after it never puts the run on a login whose refusals
  *  here it was never checked against; a claim that read it on has its runner read the setting again at the start
- *  (heldFor claudeLogin), and is refused there, in fixed words, when that read names none or another folder. */
+ *  (heldFor claudeLogin), and is refused there, in fixed words, when that read names none or another folder. A run that
+ *  sends no model key (sendsNoModelKey) reads no login at its claim: it is never handed one, so never refused for one. */
 export type ClaimPlace = { readonly stays: true } | { readonly stays: false; readonly login: ClaudeAgentLogin | undefined };
 export async function staysInRunner(deps: Pick<AdapterSpecDeps, "store" | "data" | "env" | "sealKey">, harness: string, launch: RunLaunch, runId: string, isolation: RunIsolation): Promise<ClaimPlace> {
   // A recipe's harness reads its install, its check's note and its owner's sign-in, each the server user's alone: never
@@ -1220,6 +1221,9 @@ export async function staysInRunner(deps: Pick<AdapterSpecDeps, "store" | "data"
     const revision = run ? await deps.store.agents.revision(run.revisionId) : undefined;
     if (revision && isWorkflowRevision(revision)) return STAYS;
   }
+  // A run that sends no model key (claim-secrets.ts sendsNoModelKey) is handed no login (heldFor claudeLogin), so its claim
+  // reads none: it is never refused for a login it would never be handed.
+  if (sendsNoModelKey(launch, deps.env ?? {})) return OFF_LOGIN;
   const login = await loginForRun(deps.store.settings, deps.data, deps.env ?? {}, harness, launch.place);
   if (login === undefined) return OFF_LOGIN;
   if ((await openRunModelKey({ store: deps.store, sealKey: deps.sealKey }, runId)) !== undefined) return OFF_LOGIN;
