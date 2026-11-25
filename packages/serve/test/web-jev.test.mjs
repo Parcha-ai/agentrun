@@ -29,7 +29,9 @@ const { putSealedKey } = await import("../dist/server-keys.js");
 const FAUX_JEV = new URL("./fixtures/faux-jev-web.mjs", import.meta.url).pathname;
 const FAUX_PARALLEL = new URL("./fixtures/faux-parallel.mjs", import.meta.url).pathname;
 const FAUX_WEB = new URL("./fixtures/faux-web.mjs", import.meta.url).pathname;
-const ON = "Jev (jev-1.14.0) ranks results against the objective, or the query when none is given, on the server's TypeSafe key, billed per request";
+const ON = "Jev (jev-1.14.0) ranks results against the objective, or the query when none is given; each search sends that and each result's URL, title and snippet to TypeSafe, billed per request on the server's TypeSafe key";
+/** What capabilities' why adds for a web_fetch the run's own Web serves, where Jev runs on TypeSafe's key. */
+const FETCH_ON = "a fetch given an objective sends the page's text and the objective to TypeSafe for Jev (jev-1.14.0) to pick its chunks, billed per request on the server's TypeSafe key; a fetch with none sends TypeSafe nothing";
 
 /** A claim's tool environment as the runner hands it: Parallel's key and a plane resolving both web tools to Parallel,
  *  under --faux, with `more` laid over (TypeSafe's key, the off switch). */
@@ -305,6 +307,24 @@ test("capabilities' why says what Jev does with web_search: on with TypeSafe's k
   assert.ok(why({ TYPESAFE_API_KEY: JEV_KEY, AGENTRUN_WEB_JEV_OFF: "1" })[ours].endsWith("; Jev off (AGENTRUN_WEB_JEV_OFF)"));
   assert.doesNotMatch(why({})[ours], /Jev/, "no key: the why is as it was");
   assert.ok(!JSON.stringify(explainsView({ TYPESAFE_API_KEY: JEV_KEY }, {})).includes(JEV_KEY), "the key is in no why");
+});
+
+test("capabilities' why for web_fetch says what goes to TypeSafe where Jev picks its chunks: the page's text and the objective; off, or with no TypeSafe key, it claims none", () => {
+  const why = (env, settings = {}) => explainsView(env, settings).web_fetch.why;
+  const harnesses = Object.keys(why({}));
+  assert.ok(harnesses.length > 0, "capabilities lists harnesses");
+  for (const harness of harnesses) {
+    const on = why({ TYPESAFE_API_KEY: JEV_KEY })[harness];
+    assert.ok(on.endsWith(`; ${FETCH_ON}`), `${harness}: a server holding TypeSafe's key says web_fetch sends the page's text and the objective to TypeSafe: ${on}`);
+    const keyed = why({ TYPESAFE_API_KEY: JEV_KEY, PARALLEL_API_KEY: PARALLEL_KEY })[harness];
+    assert.ok(keyed.startsWith("Parallel's extract") && keyed.endsWith(`; ${FETCH_ON}`), `${harness}: Parallel first, and the same TypeSafe clause: ${keyed}`);
+    const off = why({ TYPESAFE_API_KEY: JEV_KEY, AGENTRUN_WEB_JEV_OFF: "1" })[harness];
+    assert.ok(off.endsWith("; Jev off (AGENTRUN_WEB_JEV_OFF)") && !/TypeSafe for Jev|sends the page/.test(off), `${harness}: Jev off claims nothing goes to TypeSafe: ${off}`);
+    const openRouter = why({ OPENROUTER_API_KEY: JEV_KEY })[harness];
+    assert.ok(openRouter.endsWith("; Jev off: no TypeSafe key") && !/sends the page/.test(openRouter), `${harness}: an OpenRouter key alone: no web Jev: ${openRouter}`);
+    assert.doesNotMatch(why({})[harness], /Jev|TypeSafe/, `${harness}: no key: the why is as it was`);
+    assert.doesNotMatch(why({ TYPESAFE_API_KEY: JEV_KEY }, { web_fetch: { permission: "deny" } })[harness], /TypeSafe/, `${harness}: a denied web_fetch sends nothing, and says nothing of Jev`);
+  }
 });
 
 test("web_search's description says a result may carry relevance and a sift line says how the results were ranked, naming no provider", () => {
