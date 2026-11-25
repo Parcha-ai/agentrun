@@ -370,15 +370,17 @@ const urlCredentials = (text: string, start = 0, end = text.length, queriesRead 
 const urlSpans = (value: string): { start: number; end: number }[] => {
   const spans: { start: number; end: number }[] = [];
   const start = new RegExp(URL_START.source, "g");
-  // The first match of `mark` at or after an index, found once for every index up to it: URLs nested one in the next
-  // share their end, and a search from each would read the rest of the value again.
+  // The first match of `mark` at or after an index, found once for every index from the last one asked up to it: URLs
+  // nested one in the next share their end, and a search from each would read the rest of the value again.
   const nextOf = (mark: RegExp): ((from: number) => number) => {
+    let asked = -1;
     let found = -1;
     return (from) => {
-      if (from > found) {
+      if (from < asked || from > found) {
         mark.lastIndex = from;
         found = mark.exec(value)?.index ?? value.length;
       }
+      asked = from;
       return found;
     };
   };
