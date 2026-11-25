@@ -10,7 +10,7 @@ import { runLearningBody } from "../learning-routes.js";
 import { learningStartOf, learningStartOfStored, readLaunchBody, type RunLaunch, seedFailed } from "../run-launch.js";
 import { said, seedStopped } from "../learning-words.js";
 import { type Impact, type ImpactLearning, learningImpact } from "../learning-run.js";
-import { type Bill, type BillHold, COST_WINDOW, type CostReplay, type CostRun, type CostSummary, JOB_PATHS, RUN_PATHS, type RunPath, SERVED_PATHS } from "../learning-cost.js";
+import { type Bill, type BillHold, COST_WINDOW, type CostReplay, type CostRun, type CostSummary, JOB_PATHS, noiseOff, RUN_PATHS, type RunPath, SERVED_PATHS } from "../learning-cost.js";
 import { type Answered, answeredOf, figuresOf, type LedgerRead, type LedgerRow, record, type RevisionAt, roundsLooked, roundsSpentIn, type RunEnd, type RunFigures, type Shadow, shadowCostOf, shadowSpend, type SpendRow, spendByRun, summarize, type Summarized } from "../learn/ledger.js";
 import { COMPILE_AFTER_DEFAULT } from "../learning-setting.js";
 import { modelsOwn, runPathOf, workflowNameOf } from "../runner/learning-end.js";
@@ -472,7 +472,8 @@ type RunRecord = NonNullable<Awaited<ReturnType<Store["runs"]["get"]>>>;
  *  summarize over `listed`, its runs as runs.list read them, newest first): of its newest PAST_RUNS runs on no named disk
  *  (learn/learning-of.ts: one on a named disk learns nothing), those since its learning's reset (`since`,
  *  learn/compile.ts sinceReset: a workflow before it is not the one it learned after, whatever its name), each series
- *  run among them with its all-in cost as the series reads it (RunFigures.series_total_usd), and the by-hand side over
+ *  run among them with its all-in cost as the series reads it (RunFigures.series_total_usd; a served run cut at its cap,
+ *  at its bound), and the by-hand side over
  *  those same runs: the mean job's own $ (RunFigures.usd: no compile turn, follow-up or shadow) of the ones on the
  *  `agent` path, with the ones its mean left out (cost unknown or only a bound). The served side and the by-hand side
  *  read one set of runs: the cost page and a run's launch read the same window (pastRunsOverStore). */
@@ -480,7 +481,11 @@ export function pastRunsOf(out: Summarized, listed: readonly RunRecord[], since:
   const scope = listed.filter((run) => run.disk === null).slice(0, PAST_RUNS).filter(since);
   const runs = scope.flatMap((run) => {
     const figures = out.figures.get(run.id);
-    return figures ? [{ metrics: run.metrics, startedAt: run.startedAt, allInUsd: figures.series_total_usd }] : [];
+    if (!figures) return [];
+    // A served run cut at its cap reads at its bound with its shadow: it can only overstate the side that stops.
+    const served = SERVED_PATHS.includes((run.metrics as { path?: RunPath } | null)?.path as RunPath);
+    const bound = served && typeof run.costAtMostUsd === "number" && figures.shadow_usd !== null ? noiseOff(run.costAtMostUsd + figures.shadow_usd) : null;
+    return [{ metrics: run.metrics, startedAt: run.startedAt, allInUsd: figures.series_total_usd ?? bound }];
   });
   const ids = new Set(scope.map((run) => run.id));
   const byHand = out.runs.filter((run) => ids.has(run.run_id) && run.path === "agent");
