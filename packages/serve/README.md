@@ -271,21 +271,25 @@ secret the server and the runner hold, under any name, an unknown one too, but t
 its first word is held too when that word is a known auth scheme (`Bearer`, `Basic`, `Api-Key`, `Api-Token`, `Token`,
 `sentry`, `Splunk`, `GenieKey`) or the header is named like a credential (`authorization`, `x-sentry-auth`,
 `x-api-key`); any other header's value is held whole, never its tail alone. So are an OTLP endpoint's user, password
-and any query parameter named like a credential, and, inside any header's value, the user, password and credential-named
-query parameters of a URL (a DSN's `https://<key>@host/1`; a URL in quotes ends at its closing quote, one without
-at the next space or quote, and inside it the user and password are read as RFC 3986 reads them, everything before
-the last `@` of its authority, any `;`, `&`, `=`, `,` or `@` in a password included, each as written and decoded) and
-the value of each `name=value` pair named like a credential (a cookie's
-`session=<token>`; `theme=dark` is not held). A header's, a parameter's or a pair's name is
-split into words at punctuation and at each lower-to-upper case change, a word's trailing digits are dropped (`apiKey2`
-is `api` and `key`), and it is named like a credential when a word is authorization, auth, key, apikey, token, secret,
-password, passwd, pwd, sig, signature, credential, credentials, jwt or session; or ends in token, secret, password,
-passwd, pwd, auth, authorization, sig, signature, credential, credentials, jwt or sessionid; or starts with token,
-secret, password, passwd or jwt and is longer than its plural; or ends in key after api, access, secret, private,
-write, read, client, auth, signing, session, master, license, ingest, insert, subscription, service, app or encryption
-(`api_key`, `access_token`, `apiKey`, `token2`, `accesstoken`, `tokenvalue`, `passwordhash`, `jsessionid` and
-`writekey` are; `authority`, `keyspace`, `tokens`, `sessions`, `sessioncount`, `routingkey`, `sortkey`, `primarykey`,
-`partitionkey` and `cachekey` are not). Commas split the header variables, so write a comma inside a value as `%2C`. The tracer's own `[otel]` lines, where an exporter's error may quote a header it sent or the URL it
+and any query parameter named like a credential, and, inside any header's value, the value of each `name=value` pair
+named like a credential, read over the whole value as written, a URL's query and fragment included (a cookie's
+`session=<token>`, `https://relay/v1?region=us;session=<token>`, `#access_token=<token>`; pairs split at `;`, `&`, a
+comma or its `%2C`, and spaces, and again at `?`, `#` and `/`; a value in quotes is held without them; `theme=dark` is
+not held), and the user, password and credential-named query parameters of every URL in it, one inside another's query
+or path too, scheme-relative (`//<key>@host`) or with its slashes escaped (`https:\/\/`). A URL in quotes ends at its
+closing quote; one without at the next space or quote, and, when that is a quote, it is also read on to the next space,
+since a password may hold a raw `'`. Inside it the user and password are read as RFC 3986 reads them, everything before
+the last `@` of its authority, any `;`, `&`, `=`, `,` or `@` in a password included, and also, a user or password of
+8 characters or more, before its first `@` and up to 14 more `@` (4,096 characters of those at most), each as written
+and decoded. A URL only adds readings: the pair
+read covers its text too. A header's, a parameter's or a pair's name is split into words at punctuation and at each
+lower-to-upper case change, a word's trailing digits are dropped (`apiKey2` is `api` and `key`), and it is named like a
+credential when a word is authorization, auth, key, apikey, token, secret, password, passwd, pwd, sig, signature,
+credential, credentials, jwt or session; or ends in key, token, secret, password, passwd, pwd, auth, authorization,
+sig, signature, credential, credentials, jwt or sessionid; or starts with token, secret, password, passwd or jwt and is
+longer than its plural (`api_key`, `access_token`, `apiKey`, `token2`, `accesstoken`, `tokenvalue`, `passwordhash`,
+`jsessionid`, `writekey` and `hmackey` are; `authority`, `keyspace`, `tokens`, `sessions` and `sessioncount` are not).
+Commas split the header variables, so write a comma inside a value as `%2C`. The tracer's own `[otel]` lines, where an exporter's error may quote a header it sent or the URL it
 posted to, are cut of every such value at any length, a short one too, and of what follows any header value's first
 word, whatever the word and the header's name. A run's process can hold at most 512
 model requests and 512 tool calls open in its runner's trace at once; one started past that has no span. No OpenTelemetry diag logger is set, since the

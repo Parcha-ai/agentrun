@@ -269,48 +269,61 @@ const KNOWN_SCHEME = /^(?:bearer|basic|api-?key|api-?token|token|sentry|splunk|g
 /** Whether a header's or an endpoint's query parameter's name says its value is a credential (`authorization`,
  *  `x-sentry-auth`, `x-api-key`, `access_token`, `apiKey2`, `X-Amz-Signature`, `sessionid`): a name is split at each
  *  non-alphanumeric and at each lower-to-upper case change, a word's trailing digits are dropped (`key2` is `key`), and
- *  a word counts when it is one of CREDENTIAL_WORDS, ends in one of CREDENTIAL_ENDINGS (`accesstoken`, `dbpasswd`),
- *  starts with one of CREDENTIAL_STARTS and is more than its plural (`tokenvalue`, `passwordhash`; never `tokens`), or
- *  ends in `key` after one of KEY_KINDS (`writekey`, `datadogapikey`; never `routingkey`). `auth`, `key`, `sig` and
- *  `session` start no compound, so a word that only starts like one says nothing (`authority`, `keyspace`,
- *  `sessions`). */
+ *  a word counts when it is one of CREDENTIAL_WORDS, ends in one of CREDENTIAL_ENDINGS (`accesstoken`, `dbpasswd`,
+ *  `writekey`, `hmackey`), or starts with one of CREDENTIAL_STARTS and is more than its plural (`tokenvalue`,
+ *  `passwordhash`; never `tokens`). `auth`, `key`, `sig` and `session` start no compound, so a word that only starts like
+ *  one says nothing (`authority`, `keyspace`, `sessions`). */
 const CREDENTIAL_WORDS = new Set(["authorization", "auth", "key", "apikey", "token", "secret", "password", "passwd", "pwd", "sig", "signature", "credential", "credentials", "jwt", "session"]);
-const CREDENTIAL_ENDINGS = ["token", "secret", "password", "passwd", "pwd", "auth", "authorization", "sig", "signature", "credential", "credentials", "jwt", "sessionid"];
+const CREDENTIAL_ENDINGS = ["key", "token", "secret", "password", "passwd", "pwd", "auth", "authorization", "sig", "signature", "credential", "credentials", "jwt", "sessionid"];
 const CREDENTIAL_STARTS = ["token", "secret", "password", "passwd", "jwt"];
-const KEY_KINDS = ["api", "access", "secret", "private", "write", "read", "client", "auth", "signing", "session", "master", "license", "ingest", "insert", "subscription", "service", "app", "encryption"];
 const credentialWord = (word: string): boolean => {
   const bare = word.replace(/\d+$/, "");
   return CREDENTIAL_WORDS.has(bare)
     || CREDENTIAL_ENDINGS.some((ending) => bare.endsWith(ending))
-    || CREDENTIAL_STARTS.some((start) => bare.startsWith(start) && bare.length > start.length + 1)
-    || KEY_KINDS.some((kind) => bare.endsWith(`${kind}key`));
+    || CREDENTIAL_STARTS.some((start) => bare.startsWith(start) && bare.length > start.length + 1);
 };
 const credentialNamed = (name: string): boolean =>
   name.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9]+/).some(credentialWord);
 
-/** Where a URL starts: a scheme, then `://`. */
-const URL_START = /[A-Za-z][\w+.-]*:\/\//;
+/** Where a URL starts: a scheme, then `://`; or `//` alone (a scheme-relative URL, `//<key>@host`) at the start of the
+ *  text or after a space, a quote, `=`, `(`, `,`, `;` or `&`, never inside a path (`/a//b`). A scheme is read at most 32
+ *  characters long, so a long word with no `://` after it costs one short look from each of its letters. */
+const URL_START = /[A-Za-z][\w+.-]{0,31}:\/\/|(?<=^|[\s"'=(,;&])\/\//;
+const URL_HEAD = /(?:[A-Za-z][\w+.-]{0,31}:)?\/\//y;
 
-/** A URL as RFC 3986 reads it (`text`, one URL, from its scheme to its end): its authority, up to the first `/`, `?` or
- *  `#`; each reading of its userinfo, the RFC's first (everything before the authority's last `@`, so a password's `;`,
- *  `&`, `=`, `,`, `'` or raw `@` stays in it), then, when the authority holds more than one `@`, each shorter one, up to
- *  an earlier `@` (a URL with no closing mark, followed by a pair holding an `@`, `...@relay.invalid&contact=ops@team`,
- *  reads too long a userinfo, and a redactor holding an extra candidate is safe where missing one leaks); its host, what
- *  follows the last `@`; its path, up to a `?` or `#`; and its query, from the first `?` to a `#`. Undefined when `text`
- *  is no URL. */
-const urlParts = (text: string): { readings: string[]; host: string; path: string; query: string } | undefined => {
-  const scheme = URL_START.exec(text);
-  if (!scheme || scheme.index !== 0) return undefined;
-  const rest = text.slice(scheme[0].length);
-  const authority = rest.slice(0, rest.search(/[/?#]|$/));
-  const after = rest.slice(authority.length);
+/** How many readings of one URL's userinfo urlParts takes at most, and how many characters its shorter readings (all
+ *  but the RFC's and the first `@`'s) take together at most: a value can hold thousands of `@`, and a reading at each
+ *  would hold, and the [otel] cut compile into one pattern, their count times the value's length. */
+const MAX_READINGS = 16;
+const READINGS_BUDGET = 4096;
+
+/** A URL as RFC 3986 reads it, `text` from `start` (its scheme, or the `//` of a scheme-relative one) to `end`: its
+ *  authority, up to the first `/`, `?` or `#`; the readings of its userinfo, the RFC's first (everything before the
+ *  authority's last `@`, so a password's `;`, `&`, `=`, `,`, `'` or raw `@` stays in it), then, when the authority holds
+ *  more than one `@`, the one up to its first `@` and the next shorter ones, up to MAX_READINGS in all and
+ *  READINGS_BUDGET characters for those after the first two (a URL with no closing mark, followed by a pair holding an
+ *  `@`, `...@relay.invalid&contact=ops@team`, reads too long a userinfo, and a redactor holding an extra candidate is
+ *  safe where missing one leaks); and where its query is, from the first `?` to a `#`. Read in place, never copied to
+ *  `end`: a value of thousands of URLs one inside the next costs each only its authority. Undefined when no URL starts
+ *  at `start`. */
+const urlParts = (text: string, start: number, end: number): { readings: string[]; query: readonly [number, number] } | undefined => {
+  URL_HEAD.lastIndex = start;
+  if (!URL_HEAD.test(text)) return undefined;
+  const from = URL_HEAD.lastIndex;
+  let stop = from;
+  while (stop < end && !"/?#".includes(text[stop])) stop++;
+  const authority = text.slice(from, stop);
   const ats = [...authority.matchAll(/@/g)].map((at) => at.index);
-  return {
-    readings: ats.map((at) => authority.slice(0, at)).reverse(),
-    host: authority.slice((ats.at(-1) ?? -1) + 1),
-    path: after.slice(0, after.search(/[?#]|$/)),
-    query: /^[^?#]*\?([^#]*)/.exec(after)?.[1] ?? "",
-  };
+  const kept = ats.length > 1 ? [ats[ats.length - 1], ats[0]] : ats;
+  let budget = READINGS_BUDGET;
+  for (let next = 1; next < ats.length - 1 && kept.length < MAX_READINGS && ats[next] <= budget; next++) {
+    budget -= ats[next];
+    kept.push(ats[next]);
+  }
+  const mark = text.indexOf("?", stop);
+  const hash = text.indexOf("#", stop);
+  const query = mark >= 0 && mark < end && (hash < 0 || hash > mark) ? [mark + 1, hash >= 0 && hash < end ? hash : end] as const : [0, 0] as const;
+  return { readings: kept.map((at) => authority.slice(0, at)), query };
 };
 
 /** A user or password as a URL parser writes it back (a client's error may quote the URL it parsed): `;`, `=`, `@`, `:`
@@ -321,21 +334,25 @@ const asParsed = (part: string): string => {
   return url.password;
 };
 
-/** The credentials a URL writes into itself (`text`, one URL, urlParts): the user and password of its userinfo (before
- *  its first `:` and after it), each as written, decoded and as a parser writes it back, the RFC's reading at any length
- *  and each shorter reading's only at MIN_SECRET or more (so a short piece of a password, `pa` of `pa@ss...`, cuts no
- *  ordinary word), and the value of each query parameter whose name says it is one (credentialNamed), as written and
- *  decoded; none when `text` is no URL. */
-const urlCredentials = (text: string): string[] => {
-  const url = urlParts(text.trim());
+/** The credentials a URL writes into itself (`text` from `start` to `end`, urlParts): the user and password of its
+ *  userinfo (before its first `:` and after it), each as written, decoded and as a parser writes it back, the RFC's
+ *  reading at any length and each shorter reading's only at MIN_SECRET or more (so a short piece of a password, `pa` of
+ *  `pa@ss...`, cuts no ordinary word), and the value of each query parameter whose name says it is one
+ *  (credentialNamed), the query split at `&` and `;`, as written and decoded; none when no URL starts at `start`. A
+ *  query already in `queriesRead` (several URLs nested in one share it) is not read again. */
+const urlCredentials = (text: string, start = 0, end = text.length, queriesRead = new Set<string>()): string[] => {
+  const url = urlParts(text, start, end);
   if (!url) return [];
   const userinfo = url.readings.flatMap((reading, at) => {
     const colon = reading.indexOf(":");
     const parts = (colon < 0 ? [reading] : [reading.slice(0, colon), reading.slice(colon + 1)]).flatMap((part) => [part, decoded(part) ?? part, asParsed(part)]);
     return at === 0 ? parts : parts.filter((part) => part.replace(/\s+/g, "").length >= MIN_SECRET);
   });
+  const [from, to] = url.query;
+  if (from === to || queriesRead.has(`${from} ${to}`)) return userinfo;
+  queriesRead.add(`${from} ${to}`);
   // A query writes a space as `+`; a user and password do not.
-  const query = url.query.split("&").flatMap((pair) => {
+  const query = text.slice(from, to).split(/[&;]/).flatMap((pair) => {
     const at = pair.indexOf("=");
     const name = pair.slice(0, Math.max(at, 0)).replace(/\+/g, " ");
     const value = pair.slice(at + 1);
@@ -344,50 +361,81 @@ const urlCredentials = (text: string): string[] => {
   return [...userinfo, ...query];
 };
 
-/** Each URL inside a header value (a DSN, a relay's address) as the span of text it takes: from its scheme to the quote
- *  that closes it when a `'` or `"` opens it (comes right before its scheme and is closed later), else to the first
- *  space or quote. Read inside that span alone (urlParts), a quoted URL's userinfo never runs past its closing quote to
+/** Each URL inside a header value (a DSN, a relay's address) as the spans of text it takes, one starting at every
+ *  `scheme://` (URL_START), so a URL inside another's query or path is read too: from its scheme to the quote that
+ *  closes it when a `'` or `"` opens it (comes right before its scheme and is closed later), else to the first space or
+ *  quote, and, when that is a quote, also on to the first space (RFC 3986 allows a raw `'` in a userinfo, so both
+ *  readings are taken). Read inside a span alone (urlParts), a quoted URL's userinfo never runs past its closing quote to
  *  a later `@`, and an unquoted one's runs past any `;`, `&`, `=` or `,`. */
 const urlSpans = (value: string): { start: number; end: number }[] => {
   const spans: { start: number; end: number }[] = [];
   const start = new RegExp(URL_START.source, "g");
+  // The first match of `mark` at or after an index, found once for every index up to it: URLs nested one in the next
+  // share their end, and a search from each would read the rest of the value again.
+  const nextOf = (mark: RegExp): ((from: number) => number) => {
+    let found = -1;
+    return (from) => {
+      if (from > found) {
+        mark.lastIndex = from;
+        found = mark.exec(value)?.index ?? value.length;
+      }
+      return found;
+    };
+  };
+  const nextStop = nextOf(/[\s'"]|$/g);
+  const nextSpace = nextOf(/\s|$/g);
   for (let found = start.exec(value); found; found = start.exec(value)) {
     const open = value[found.index - 1];
     const from = found.index + found[0].length;
     const closing = open === "'" || open === '"' ? value.indexOf(open, from) : -1;
-    const end = closing >= 0 ? closing : from + value.slice(from).search(/[\s'"]|$/);
+    if (closing >= 0) {
+      spans.push({ start: found.index, end: closing });
+      continue;
+    }
+    const end = nextStop(from);
     spans.push({ start: found.index, end });
-    start.lastIndex = end;
+    if (value[end] === "'" || value[end] === '"') spans.push({ start: found.index, end: nextSpace(end) });
   }
   return spans;
 };
 
-/** The credentials a header value carries inside it: the user, password and key parameters of each URL in it
- *  (urlSpans, urlCredentials: a DSN's `https://<key>@host/1`, a relay's whole `user:pa;ss`), and, outside its URLs or
- *  inside a URL's userinfo (its RFC reading), host or path segments, the value of each `name=value` pair whose name
- *  says it is a credential (credentialNamed: a cookie's `session=<token>`, sentry's `sentry_key=<key>`, a path's
- *  `;jsessionid=<id>`), pairs split at `;`, `&` and spaces, each as written and decoded. A pair named like no
- *  credential (`theme=dark`) is not taken, nor a value of only `=` (a base64 credential's padding, read as a pair). */
+/** The breaks between a header value's `name=value` pairs: `;`, `&`, a comma (or its `%2C`) and spaces; and, for a
+ *  second, finer read, also `?`, `#` and `/`, so a pair inside a URL that is itself a pair's value
+ *  (`upstream=https://relay/v1#access_token=<token>`) or a path's segment stands alone. */
+const PAIR_BREAK = /[;&,\s]+|%2C/i;
+const PIECE_BREAK = /[;&,\s?#/]+|%2C/i;
+
+/** The value of each `name=value` pair of `text` split at `breaks` whose name says it is a credential (credentialNamed),
+ *  out of any quotes around it, as written and decoded. A name is what follows the last `/`, `?`, `#` or `:` before its
+ *  `=` (a URL's query or fragment, `https://relay/v1?region=us`, names `region`). A value of only `=` (a base64
+ *  credential's padding, read as a pair) is not taken. */
+const pairValues = (text: string, breaks: RegExp): string[] =>
+  text.split(breaks).flatMap((pair) => {
+    const at = pair.indexOf("=");
+    if (at <= 0) return [];
+    const name = pair.slice(0, at).split(/[/?#:]/).at(-1) ?? "";
+    const inner = pair.slice(at + 1).replace(/^(["'])(.*)\1$/, "$2");
+    return /[^=]/.test(inner) && credentialNamed(decoded(name) ?? name) ? [inner, decoded(inner) ?? inner] : [];
+  });
+
+/** The credentials a header value carries inside it, the union of two reads over the whole value as written: the value
+ *  of each `name=value` pair whose name says it is a credential (pairValues: a cookie's `session=<token>`, sentry's
+ *  `sentry_key=<key>`, a path's `;jsessionid=<id>`, a URL query's or fragment's `session=` or `access_token=`), and the
+ *  user, password and key parameters of each URL in it (urlSpans, urlCredentials: a DSN's `https://<key>@host/1`, a
+ *  relay's whole `user:pa;ss`). A URL only adds readings: the pair read covers its text too. A value that escapes its
+ *  slashes (JSON's `https:\/\/`) is read again with them plain, and what that finds is held both ways. A pair named like
+ *  no credential (`theme=dark`) is not taken. */
 const innerCredentials = (value: string): string[] => {
-  const spans = urlSpans(value);
-  let outside = "";
-  let from = 0;
-  for (const { start, end } of spans) {
-    const url = urlParts(value.slice(start, end));
-    outside += `${value.slice(from, start)} ${url ? [url.readings[0] ?? "", url.host, url.path.replace(/\//g, " ")].join(" ") : ""} `;
-    from = end;
-  }
-  outside += value.slice(from);
-  return [
-    ...spans.flatMap(({ start, end }) => urlCredentials(value.slice(start, end))),
-    ...outside.split(/[;&\s]+/).flatMap((pair) => {
-      const at = pair.indexOf("=");
-      if (at <= 0) return [];
-      const name = pair.slice(0, at);
-      const inner = pair.slice(at + 1).replace(/^"(.*)"$/, "$1");
-      return /[^=]/.test(inner) && credentialNamed(decoded(name) ?? name) ? [inner, decoded(inner) ?? inner] : [];
-    }),
-  ];
+  const read = (text: string): string[] => {
+    const queriesRead = new Set<string>();
+    return [
+      ...pairValues(text, PAIR_BREAK),
+      ...pairValues(text, PIECE_BREAK),
+      ...urlSpans(text).flatMap(({ start, end }) => urlCredentials(text, start, end, queriesRead)),
+    ];
+  };
+  if (!value.includes("\\/")) return read(value);
+  return [...read(value), ...read(value.replace(/\\\//g, "/")).flatMap((found) => [found, found.replace(/\//g, "\\/")])];
 };
 
 /** The OTLP exporter's header values `env` names (OTEL_EXPORTER_OTLP_HEADERS and OTEL_EXPORTER_OTLP_TRACES_HEADERS: a
@@ -422,7 +470,7 @@ export const otlpHeaderValues = (env: NodeJS.ProcessEnv, held: boolean): string[
  *  OTEL_EXPORTER_OTLP_TRACES_ENDPOINT; urlCredentials): a user and password, and the value of each query parameter
  *  whose name says it is one, each as written and decoded. An exporter's error may quote the URL it posted to. */
 export const otlpEndpointValues = (env: NodeJS.ProcessEnv): string[] =>
-  [env.OTEL_EXPORTER_OTLP_ENDPOINT, env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT].flatMap((text) => urlCredentials(text ?? "")).filter((value) => value.trim() !== "");
+  [env.OTEL_EXPORTER_OTLP_ENDPOINT, env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT].flatMap((text) => urlCredentials((text ?? "").trim())).filter((value) => value.trim() !== "");
 
 /** Every OTLP credential `env` names: its header values (otlpHeaderValues, a cut-only header's only when not `held`) and
  *  its endpoints' (otlpEndpointValues). */
