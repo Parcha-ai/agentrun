@@ -307,10 +307,19 @@ const RUN_GRAPH = {
     read_at: { type: "string", format: "date-time", description: "When the view shown was read: the run process's last live view while it goes, else the read itself." },
     run: {
       type: "object", additionalProperties: false, required: ["id", "agent", "revision", "status", "paused", "startedAt", "endedAt"],
-      properties: { id: { type: "string" }, agent: { type: "string" }, revision: { type: "string" }, status: ref("schemas/RunStatus"), paused: { type: "boolean" }, startedAt: { type: "string", format: "date-time" }, endedAt: { type: ["string", "null"], format: "date-time" } },
+      properties: {
+        id: { type: "string" }, agent: { type: "string" }, revision: { type: "string" }, status: ref("schemas/RunStatus"), paused: { type: "boolean" }, startedAt: { type: "string", format: "date-time" }, endedAt: { type: ["string", "null"], format: "date-time" },
+        withheld: { const: true, description: "Present when the run's facts hold a saved secret split across two of them (its agent and its revision): `agent` and `revision` are then \"[redacted]\", and the rest is served as it is." },
+      },
     },
     workflow: { type: "object", description: "The revision's workflow definition." },
-    graph: { type: "object", required: ["nodes", "edges"], description: "The DSL's workflowGraph of the definition: nodes { path, kind, label, via?, changeCheck } and edges { from, to, kind }." },
+    graph: {
+      type: "object", additionalProperties: true, required: ["nodes", "edges"], description: "The DSL's workflowGraph of the definition: nodes { path, kind, label, via?, changeCheck } and edges { from, to, kind }.",
+      properties: {
+        nodes: { type: "array", items: { type: "object" } }, edges: { type: "array", items: { type: "object" } },
+        withheld: { const: true, description: "Present when the graph's words hold a saved secret split across two of them: the graph is then served with no nodes and no edges." },
+      },
+    },
     nodes: {
       type: "object", description: "Each graph node's state, by its path.",
       additionalProperties: {
@@ -560,11 +569,11 @@ const CHATGPT_SIGN_IN = {
 const CLAUDE_LOGIN = {
   type: "object", additionalProperties: false, required: ["state", "place", "command", "can_start", "folder", "machine"],
   properties: {
-    state: { enum: ["off", "other_machine", "signed_in", "signed_out", "no_cli", "unknown"], description: "`off`: not turned on. `other_machine`: turned on for another machine than this server's. Else what the CLI says: `signed_in`, `signed_out`, `no_cli` (no Claude Code CLI here yet: claude-agent's first run installs the pinned one), `unknown` (it gave no answer)." },
+    state: { enum: ["off", "other_machine", "refused", "signed_in", "signed_out", "no_cli", "unknown"], description: "`off`: not turned on. `other_machine`: turned on for another machine than this server's. `refused`: turned on for this machine and kept, but its folders (or the server's home) are ones this server's user may not use, as `refused` says: nothing runs on it and the CLI is not asked; it is used again once they are mended, and DELETE /settings/claude-login removes it as it does any other. Else what the CLI says: `signed_in`, `signed_out`, `no_cli` (no Claude Code CLI here yet: claude-agent's first run installs the pinned one), `unknown` (it gave no answer)." },
     place: { enum: ["agentrun", "machine"], description: "Where the login is: `agentrun`, AgentRun's own directory in its data (the default); `machine`, this machine's own Claude Code login (`machine.folder`), which the owner opts into." },
     command: { type: "string", description: "The line that signs the CLI in at `place`, for a terminal on this machine." },
     can_start: { type: "boolean", description: "Whether POST /settings/claude-login/login can start the CLI's sign-in here: the server is bound to loopback with no public address, so the browser it opens is on this machine." },
-    refused: { type: "string", description: "Why the mode can't be turned on here, in one line: more than one person can start runs on this server." },
+    refused: { type: "string", description: "Why the mode can't be turned on here, or, with state `refused`, why the login kept is not used, in one line: more than one person can start runs on this server, or the login's folders or the server's home are ones its user may not use." },
     account: {
       type: "object", additionalProperties: false,
       properties: { method: { type: "string" }, email: { type: "string" }, organization: { type: "string" }, plan: { type: "string" } },
@@ -4256,7 +4265,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     tool_input: {
       type: "object", additionalProperties: true,
-      description: `On a \`tool_use\` row of a timeline read with \`calls=whole\` alone: the call's arguments as the agent sent them, each string through the run's redaction (a value this server holds, or text shaped like a key, reads \`[redacted]\`). Its names, values and brackets together are cut at ${CALL_RESULT_CHARS} characters, the bound \`tool_result_text\` has, in order, each name and value at least one character and each array or object its two brackets: the name or string that reaches it is cut there, a number, boolean or null that would pass it shows as \`...\`, an array or object then ends with one \`...\` (an item, or a \`...\` name), and a value past it shows as \`...\`. Its URLs keep their query values, as an approval's arguments do. Absent otherwise.`,
+      description: `On a \`tool_use\` row of a timeline read with \`calls=whole\` alone: the call's arguments as the agent sent them, each string through the run's redaction (a value this server holds, or text shaped like a key, reads \`[redacted]\`). Its names, values and brackets together are cut at ${CALL_RESULT_CHARS} characters, the bound \`tool_result_text\` has, in order, each name and value at least one character and each array or object its two brackets: the name or string that reaches it is cut there, a number, boolean or null that would pass it shows as \`...\`, an array or object then ends with one \`...\` (an item, or a \`...\` name), and a value past it shows as \`...\`. Its URLs keep their query values, as an approval's arguments do. Absent when the call's arguments are withheld whole, as they are when a held value is split across two of their strings, or across a property name and its value (the row's \`tool_input_preview\` then reads \`[redacted]\`), and absent otherwise.`,
       "x-agentrun-serve": "callswhole/1",
     },
     tool_result_text: {
