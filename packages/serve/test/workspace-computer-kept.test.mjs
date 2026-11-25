@@ -984,6 +984,21 @@ test("a park on a claim that lost the run keeps nothing and marks nothing: runne
   assert.deepEqual(deletes(none.one.account), ["c2", "c1"], "runner-b's sandbox at its release, runner-a's at its park");
 });
 
+// A take-back on a claim that lost the run: its mark goes under its claim (takeKept's fence), so the store refuses it.
+test("a resume on a claim that lost the run before its take-back takes nothing: the kept row stays as its park wrote it, and the kept machine is never attached by that claim", async () => {
+  const key = keptKeyOf("run-1");
+  const one = await server(SANDBOX);
+  await (await one.claim(3)).park("approval");
+  const written = await one.store.settings.get(key);
+  one.clock.now = T0 + 60_000;
+  // The claim at epoch 5 starts; before it marks the row, the run is claimed again at epoch 6 (its lease ran out).
+  const resuming = one.claim(5, { hadComputer: async () => true });
+  one.store.runs.take("run-1", 6);
+  await resuming.then((claimed) => claimed.release?.(), () => undefined);
+  assert.equal(JSON.stringify(await one.store.settings.get(key)), JSON.stringify(written), "the row as its park wrote it, never marked taking");
+  assert.deepEqual(one.account.calls.filter(([verb, id]) => verb === "attach" && id === "c1"), [], "the kept machine was never attached by the lost claim");
+});
+
 // The keeper's end (endKept) holds the row as its park wrote it. Another claim that went on without the machine may have
 // marked it ending since (restoreKept, keepKept): the end still finishes it, reading it ending. A row taken since, or
 // written over, is another claim's: the end deletes nothing.
