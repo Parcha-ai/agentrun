@@ -56,10 +56,11 @@ function UsageFacts({ usage }: { usage: Omit<ObservedUsage, "status"> & { status
 export function ObservedSessionPage({ v2, sessionId, go }: { v2: Client; sessionId: string; go: (hash: string) => void }) {
   const read = useObservations(v2, { sessionId });
   const session = read.data?.sessions.find((s) => s.id === sessionId);
-  return <section className="flex min-h-full flex-col" aria-label="Connected agent detail">
+  return <section className="flex h-full min-h-0 flex-col" aria-label="Connected agent detail">
     <header className={cn(pageToolbarClass, "flex-wrap gap-2 px-5")}><Button size="icon" variant="ghost" aria-label="Back" title="Back" onClick={() => goBack("#/agents")}><ArrowLeft aria-hidden /></Button><Bot className="size-4" aria-hidden /><strong className="min-w-0 flex-1 truncate text-body">{session?.display_name ?? "Connected agent"}</strong><Button size="icon" aria-label="Refresh agent" disabled={read.loading} onClick={read.refresh}><RefreshCw aria-hidden /></Button>
       {session && <><CodingAgentAction label="Edit agent" prompt={observedAgentPrompt(location.origin, session, "edit")} /><CodingAgentAction variant="primary" label="Run agent" prompt={observedAgentPrompt(location.origin, session, "run")} /></>}
     </header>
+    <div className="min-h-0 flex-1 overflow-auto">
     <main className="mx-auto w-full max-w-page space-y-6 p-5 md:p-8">
       {read.error && <Banner tone="error">Could not read this agent: {read.error}</Banner>}
       {!session ? <p className="text-body text-muted-foreground">{read.loading ? "Loading connected agent…" : read.data ? "This agent was not found." : "Connected agent activity is unavailable on this server."}</p> : <>
@@ -78,5 +79,6 @@ export function ObservedSessionPage({ v2, sessionId, go }: { v2: Client; session
         <section className="space-y-4 border bg-card p-4" aria-label="Session token usage"><h2 className="text-lead font-semibold">Reported token usage · retained session</h2><UsageFacts usage={session.usage} /><p className="text-small text-muted-foreground">Session totals cover retained reports. Input includes cache reads and writes. Missing cache counters are shown as a dash. Activity signals do not establish a completed task or its outcome.</p></section>
       </>}
     </main>
+    </div>
   </section>;
 }

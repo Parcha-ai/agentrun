@@ -91,12 +91,12 @@ export function SuggestionsPage({ v2, repo, go }: { v2: Client; repo?: string; g
     );
 
   return (
-    <section className="flex min-h-full flex-col">
+    <section className="flex h-full min-h-0 flex-col">
       <header className={cn(pageToolbarClass, "flex-wrap gap-2 px-5 md:px-6")}>
         <h1 className={pageTitleClass}><Sparkles className="size-4" aria-hidden />Suggested agents</h1>
         {list && <Button size="sm" variant="ghost" className="ml-auto" onClick={() => { setRound((n) => n + 1); void read(); }} aria-label="Read the suggestions and repositories again"><RefreshCw aria-hidden />Refresh</Button>}
       </header>
-      <div className="p-5 md:p-6">{body}</div>
+      <div className="min-h-0 flex-1 overflow-auto"><div className="p-5 md:p-6">{body}</div></div>
       {creating && <CreateDialog v2={v2} suggestion={creating} onClose={() => setCreating(null)} onCreated={() => void read()} go={go} />}
     </section>
   );

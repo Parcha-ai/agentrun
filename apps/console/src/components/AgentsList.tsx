@@ -36,11 +36,12 @@ export function AgentsList({ agents, archived = false, onArchivedChange, actions
   const incomplete = loading || !!error || !!connected?.error;
   const storageFull = connected?.data?.connectors.some((connector) => connector.storage_full);
   return (
-    <section className="flex min-h-full flex-col">
+    <section className="flex h-full min-h-0 flex-col">
       <header className={cn(pageToolbarClass, "flex-wrap justify-between gap-3 px-5")}>
         <h1 className={pageTitleClass}><Brain className="size-4" aria-hidden />{archived ? "Archived agents" : "Agents"}</h1>
         <div className="ml-auto flex flex-wrap items-center justify-end gap-2">{handoff}{!archived && <a href={newAgentEditorHref()} className={buttonVariants({ size: "sm", variant: "primary" })}><Plus aria-hidden />New agent</a>}</div>
       </header>
+      <div className="min-h-0 flex-1 overflow-auto">
       <div className="p-5 md:p-6">
       <div className="mb-5 flex flex-wrap items-center gap-3">
         <label className={cn(fieldBoxClass, "flex h-control-lg min-w-0 flex-1 items-center gap-3 px-3")}>
@@ -69,6 +70,7 @@ export function AgentsList({ agents, archived = false, onArchivedChange, actions
             {!q && !archived && <p className="mt-4 text-lead text-muted-foreground">Create an agent or connect one you already use. You can also <a className="text-primary-text underline underline-offset-4" href="#/templates">start from a template</a>.</p>}
           </div>
       )}
+      </div>
       </div>
       </div>
     </section>

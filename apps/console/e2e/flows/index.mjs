@@ -52,6 +52,7 @@ import gradeRun from "./grade-run.mjs";
 import toolCards from "./tool-cards.mjs";
 import toolsStepScroll from "./tools-step-scroll.mjs";
 import narrowLayouts from "./narrow-layouts.mjs";
+import topBars from "./top-bars.mjs";
 import eventSearch from "./event-search.mjs";
 import playgroundOperationWidth from "./playground-operation-width.mjs";
 import playgroundAgentWidth from "./playground-agent-width.mjs";
@@ -100,6 +101,7 @@ export const flows = [
   toolCards,
   toolsStepScroll,
   ...narrowLayouts,
+  topBars,
   playgroundOperationWidth,
   playgroundAgentWidth,
   devToolsPanelWidth,

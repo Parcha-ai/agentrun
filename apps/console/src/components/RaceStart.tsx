@@ -104,9 +104,9 @@ export function RaceStart({ v2, harnesses, tools, places, go, label: given }: { 
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
 
   if (runnable.length === 0) return (
-    <div className="flex flex-col">
+    <div className="flex h-full min-h-0 flex-col">
       <div className={cn(pageToolbarClass, "px-5 md:px-8")}><h1 className={pageTitleClass}>New race</h1></div>
-      <p role="status" className="px-5 py-8 text-body text-muted-foreground md:px-8">No harness runs on this server yet, so there is nothing to race. Add a model key in Settings → Model keys.</p>
+      <div className="min-h-0 flex-1 overflow-auto"><p role="status" className="px-5 py-8 text-body text-muted-foreground md:px-8">No harness runs on this server yet, so there is nothing to race. Add a model key in Settings → Model keys.</p></div>
     </div>
   );
 
@@ -171,11 +171,12 @@ export function RaceStart({ v2, harnesses, tools, places, go, label: given }: { 
   };
 
   return (
-    <div className="flex flex-col">
+    <div className="flex h-full min-h-0 flex-col">
       <div className={cn(pageToolbarClass, "gap-3 px-5 md:px-8")}>
         <h1 className={pageTitleClass}>New race</h1>
         <span className="truncate font-mono text-small text-muted-foreground" title={raceFilter(label)}>{label}</span>
       </div>
+      <div className="min-h-0 flex-1 overflow-auto">
       <form className="flex max-w-5xl flex-col gap-6 p-5 md:p-8" onSubmit={(e) => { e.preventDefault(); void start(); }}>
         <p className="text-body text-muted-foreground">Each lane runs the same task on its own harness and model, as an agent and a run of its own, labeled <span className="font-mono text-foreground">{raceFilter(label)}</span>. The race page shows them side by side.</p>
         <Field label="Task" required error={asked && taskMissing ? "Say what every lane does: the task they all run." : undefined}>
@@ -220,6 +221,7 @@ export function RaceStart({ v2, harnesses, tools, places, go, label: given }: { 
           {startedAny && <a className="font-mono text-small text-primary-text hover:underline" href={`#/races/${encodeURIComponent(label)}`}>Watch the race</a>}
         </div>
       </form>
+      </div>
     </div>
   );
 }

@@ -42,8 +42,12 @@ const scanAndCreate = {
     // On a phone (390 px) the page has no sideways scroll: the cards, the evidence and the actions fit; a long line of code
     // scrolls inside its own block.
     await page.setViewportSize({ width: 390, height: 844 });
-    const wide = await page.evaluate(() => ({ doc: document.documentElement.scrollWidth - innerWidth, main: (() => { const m = document.querySelector("main"); return m ? m.scrollWidth - m.clientWidth : 0; })() }));
-    check(wide.doc <= 0 && wide.main <= 0, `at 390 px the page scrolls sideways: ${JSON.stringify(wide)}`);
+    // The page's content scrolls in the pane under its top bar: that pane is measured with the document and the main pane.
+    const wide = await page.evaluate(() => {
+      const over = (el) => (el ? el.scrollWidth - el.clientWidth : 0);
+      return { doc: document.documentElement.scrollWidth - innerWidth, main: over(document.querySelector("main")), pane: over(document.querySelector("main section > header + div")) };
+    });
+    check(wide.doc <= 0 && wide.main <= 0 && wide.pane <= 0, `at 390 px the page scrolls sideways: ${JSON.stringify(wide)}`);
     await shot(page, "2-suggestions-phone");
     await page.setViewportSize({ width: 1440, height: 1000 });
 

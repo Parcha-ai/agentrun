@@ -43,9 +43,9 @@ export function TraceCompare({ v2, ids, now: fixed }: { v2: Pick<Client, "getRun
     </div>
   );
   if (ids.length < MIN_COMPARED) {
-    return <div className="flex flex-col">{bar}<p role="status" className="px-5 py-8 text-body text-muted-foreground md:px-8">This address names {ids.length === 1 ? "one run" : "no run"}. A comparison takes two to four: open a run's Dev tools tab and choose Compare, or open a race.</p></div>;
+    return <div className="flex h-full min-h-0 flex-col">{bar}<div className="min-h-0 flex-1 overflow-auto"><p role="status" className="px-5 py-8 text-body text-muted-foreground md:px-8">This address names {ids.length === 1 ? "one run" : "no run"}. A comparison takes two to four: open a run's Dev tools tab and choose Compare, or open a race.</p></div></div>;
   }
-  if (error) return <div className="flex flex-col">{bar}<ProblemCard className="m-5 md:m-8" problem={problem(error, "the runs to compare")} onRetry={() => setReads((n) => n + 1)} /></div>;
+  if (error) return <div className="flex h-full min-h-0 flex-col">{bar}<div className="min-h-0 flex-1 overflow-auto"><ProblemCard className="m-5 md:m-8" problem={problem(error, "the runs to compare")} onRetry={() => setReads((n) => n + 1)} /></div></div>;
   if (!sides) return <RunSkeleton />;
 
   const pair = sides.length === 2;
@@ -63,8 +63,9 @@ export function TraceCompare({ v2, ids, now: fixed }: { v2: Pick<Client, "getRun
   ));
   const scroll = (label: string) => ({ className: "overflow-x-auto border bg-card", tabIndex: 0, role: "region", "aria-label": label }) as const;
   return (
-    <div className="flex flex-col">
+    <div className="flex h-full min-h-0 flex-col">
       {bar}
+      <div className="min-h-0 flex-1 overflow-auto">
       <div className="space-y-6 p-5 md:p-8">
         {/* A trace is a run's first 2,000 requests and calls: a longer run's figures are of that part, and are said so. */}
         {sides.map((side, i) => partial(side) && (
@@ -134,6 +135,7 @@ export function TraceCompare({ v2, ids, now: fixed }: { v2: Pick<Client, "getRun
             </div>
           </section>
         )}
+      </div>
       </div>
     </div>
   );
