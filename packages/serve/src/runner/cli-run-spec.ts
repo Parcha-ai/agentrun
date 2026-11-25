@@ -868,7 +868,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     ...(computer.replaced ? { computerNote: computerReplacedNote(computer.replaced) } : {}),
     // A desktop or a phone that holds none of the run's files: the model is told once in the run where they are, or, where
     // the gate would refuse a save (RunGate.writeBar), that a screenshot can't be saved to them.
-    ...(tools.apart ? { computerFilesNote: computerFilesNote({ ...tools.apart, writes: gate.writes() }) } : {}),
+    ...(tools.apart ? { computerFilesNote: computerFilesNote({ ...tools.apart, writes: gate.writes(), outlives: computer.outlives === true }) } : {}),
     workRoot: root,
     // Where the CLI works (its working directory, the run's folder to its file tools): what its absolute paths are read
     // against on the run's rows.

@@ -1910,3 +1910,52 @@ test("a computer whose resources the operator priced at $0 is booked at $0 each 
   assert.deepEqual(bookings(admits), [["vcpu", 0], ["memory", 0], ["vcpu", 0], ["memory", 0]], "each stretch booked at $0");
   assert.deepEqual((await intervalsOf(one)).map((row) => row.bookedMs), [345_000], "its time is held by the claim, not unheld");
 });
+
+// A stopped run's end reads the run, marks the kept row ending, then reads the run again (run-end-computers.ts). A
+// follow-up that queued the run again and claimed it between those reads read the row before the mark, so its take-back
+// finds the row ending and fails: the stop's end took the machine from it, well within the keep's 10 minutes. The end's
+// second read sees that later claim and leaves the row ending and the machine to it, and the follow-up's launch lets the
+// machine go (an earlier claim's) and makes a new one. That new one was replaced, never lapsed: no 10 minutes passed.
+// The row is not put back for the follow-up: by the second read its claim may have read the row ending, or failed its
+// take already and gone on to delete the machine at its launch, so a row put back could name a machine being deleted.
+test("a follow-up whose take-back a stopped run's end beat (the end marked the kept row ending between its two reads of the run) gets a new sandbox said replaced, never lapsed, within the keep's time", async () => {
+  const { runEndComputers } = await import("../dist/workspace/run-end-computers.js");
+  const one = await server(SANDBOX);
+  await (await one.claim(3)).park("approval");
+  const atPark = await readKept(one.store.settings, "run-1");
+  one.clock.now = T0 + 60_000;
+  // A person's stop: the claim at epoch 4 ends the run, its end commit moving the epoch to 5. Its run's end has not run.
+  one.store.runs.take("run-1", 4);
+  one.store.runs.set("run-1", "stopped");
+  one.store.runs.end("run-1");
+  const said = [];
+  let reaching;
+  /** The end's reads of the run: after its first, the follow-up claims the run at epoch 7 and reads the kept row, held
+   *  at its clock read just before its take-back. */
+  let reads = 0;
+  const runs = {
+    ...one.store.runs,
+    get: async (id) => {
+      const row = await one.store.runs.get(id);
+      reads += 1;
+      if (reads === 1) {
+        const held = holdNextClock(one);
+        reaching = { held, claim: one.claim(7, { hadComputer: async () => true, onConnected: (words) => void said.push(words) }) };
+        await held.reached;
+        assert.deepEqual(await readKept(one.store.settings, "run-1"), atPark, "the follow-up read the row as the park wrote it");
+      }
+      return row;
+    },
+  };
+  const logged = [];
+  await runEndComputers({ store: { ...one.store, runs }, computers: { kinds: KINDS, providers: {} }, log: (line) => void logged.push(line), retryMs: 50 })({ runId: "run-1", epoch: 4 });
+  assert.deepEqual(logged, ["run run-1's end at claim 4 lets no computer go: a later claim took the run again and may hold one of them, so they are that claim's to let go"], "the end's second read saw the follow-up's claim");
+  assert.deepEqual(await readKept(one.store.settings, "run-1"), { ...atPark, ending: true }, "the end marked the row ending before it");
+  reaching.held.release();
+  const resumed = await reaching.claim;
+  assert.deepEqual(creates(one.account), ["c1", "c2"], "the take-back found the row ending: a new sandbox");
+  assert.deepEqual(deletes(one.account), ["c1"], "the kept one let go at the follow-up's launch, an earlier claim's");
+  assert.deepEqual(resumed.replaced, { kind: "sandbox", folderKept: false }, `replaced, not lapsed: ${JSON.stringify(resumed.replaced)}`);
+  assert.equal(computerReadyWords(said[0]), "The sandbox is ready: Linux (amd64), from Docker. It's a new sandbox: the one before is gone, with what was on it.");
+  await resumed.release();
+});
