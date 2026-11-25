@@ -20,6 +20,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { Context, Span } from "@opentelemetry/api";
 import type { SpanExporter, TracerProvider } from "@opentelemetry/sdk-trace";
+import { keyBase } from "@parcha/agentrun-computer";
 import type { Ended, ModelUsage } from "@parcha/agentrun-kernel";
 import { runnerSecrets, secretRedactor } from "../runner/redact.js";
 import { keyValues, otlpHeaderCut } from "../secrets.js";
@@ -34,10 +35,15 @@ export const FLUSH_MS = 3_000;
 export const OPEN_MAX = 512;
 
 /** The OTLP exporter's settings from `env`, as the spec reads them: the traces endpoint as given, else the endpoint's
- *  /v1/traces; the headers (the traces' over the general ones); the timeout. */
+ *  /v1/traces; the headers (the traces' over the general ones); the timeout. The headers go to the endpoint, so it takes
+ *  the rule of a URL a key goes to (keyBase) over http or https, since OTLP allows both and a collector is often a plain
+ *  http one beside the server: one with a user, a password, a query or a fragment throws in those words, and tracing is
+ *  off (genAiTracing). */
 export function exporterConfig(env: NodeJS.ProcessEnv): { url: string; headers: Record<string, string>; timeoutMillis?: number } {
   const traces = env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT?.trim();
-  const url = traces || `${(env.OTEL_EXPORTER_OTLP_ENDPOINT ?? "").trim().replace(/\/+$/, "")}/v1/traces`;
+  const endpoint = (env.OTEL_EXPORTER_OTLP_ENDPOINT ?? "").trim();
+  keyBase(traces || endpoint, traces ? "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT" : "OTEL_EXPORTER_OTLP_ENDPOINT", ["http:", "https:"]);
+  const url = traces || `${endpoint.replace(/\/+$/, "")}/v1/traces`;
   const timeout = Number(env.OTEL_EXPORTER_OTLP_TRACES_TIMEOUT ?? env.OTEL_EXPORTER_OTLP_TIMEOUT);
   return { url, headers: { ...keyValues(env.OTEL_EXPORTER_OTLP_HEADERS), ...keyValues(env.OTEL_EXPORTER_OTLP_TRACES_HEADERS) }, ...(Number.isFinite(timeout) && timeout > 0 ? { timeoutMillis: timeout } : {}) };
 }

@@ -23,7 +23,7 @@
 // custody ends a create it refused at once.
 import type { AttachTarget, BrowserProvider, LeaseRef, ProviderCaps, RemoteFile, ResourceStatus, SessionSpec } from "@parcha/pi-browser";
 import { BrowserFailureError, browserFailure, cdpCall, type CdpSession } from "@parcha/pi-browser";
-import { BROWSER_IMAGE, type BrowserSpec, type ComputerProvider, isBrowserProvider, PROVIDERS, providerFor, releaseOlder, runLabels } from "@parcha/agentrun-computer";
+import { BROWSER_IMAGE, type BrowserSpec, type ComputerProvider, isBrowserProvider, keyBase, PROVIDERS, providerFor, releaseOlder, runLabels } from "@parcha/agentrun-computer";
 import { KEY_TABLE, providerOptions } from "./computer-keys.js";
 import { claimBrowser } from "./workspace/computer-for-claim.js";
 import { hostEnvOf } from "./workspace/computer-providers.js";
@@ -274,11 +274,12 @@ export async function releaseOlderBrowsers(
 }
 
 /** A Browserbase connect URL moved onto the credential proxy that fronts its sockets: only `*.browserbase.com` hosts, with
- *  the signing query kept. */
+ *  the signing query kept. The signing key goes to the proxy, so its base takes the rule of a URL a key goes to (keyBase),
+ *  over https or wss: one it refuses throws in those words, never falling back to Browserbase's own host. */
 export function rewriteConnectUrl(connectUrl: string, connectBaseUrl: string | undefined): string {
   if (!connectBaseUrl) return connectUrl;
+  const target = new URL(keyBase(connectBaseUrl, "BROWSERBASE_CONNECT_BASE_URL", ["https:", "wss:"]));
   try {
-    const target = new URL(connectBaseUrl);
     const url = new URL(connectUrl);
     if (!/(?:^|\.)browserbase\.com$/i.test(url.hostname)) return connectUrl;
     url.protocol = target.protocol;
