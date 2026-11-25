@@ -33,12 +33,23 @@ test("httpsBase takes an https URL with its trailing slashes stripped, and refus
 	assert.throws(() => httpsBase("http://api.example.test/?key=fake-test-key", "the API URL"), (error) => !error.message.includes("fake-test-key"));
 });
 
-test("httpsBase returns the normalized URL: a lower-case scheme and host, a default port dropped, so a case-sensitive reader of the scheme sees https; the path and query keep their case", () => {
+test("httpsBase refuses a user or password, a query and a fragment, for every provider, in words that give the origin alone", () => {
+	for (const [url, words] of [
+		["https://agentrun@orgo.example/api", "the API URL takes no user or password, since the key goes to it: https://orgo.example"],
+		["https://agentrun:fake-test-key@orgo.example/api", "the API URL takes no user or password, since the key goes to it: https://orgo.example"],
+		["https://api.agent37.com/v1?x=1", "the API URL takes no query or fragment: https://api.agent37.com"],
+		["https://cloud.morph.so/api?key=fake-test-key", "the API URL takes no query or fragment: https://cloud.morph.so"],
+		["https://cloud.morph.so/api#fake-test-key", "the API URL takes no query or fragment: https://cloud.morph.so"],
+	]) assert.throws(() => httpsBase(url, "the API URL"), (error) => error.message === words, url);
+	// An empty query or fragment is none: the base is the origin and path.
+	assert.equal(httpsBase("https://api.example.test/v1/?#", "the API URL"), "https://api.example.test/v1");
+});
+
+test("httpsBase returns the normalized URL: a lower-case scheme and host, a default port dropped, so a case-sensitive reader of the scheme sees https; the path keeps its case", () => {
 	assert.equal(httpsBase("HTTPS://API.EXAMPLE.TEST:443/", "the API URL"), "https://api.example.test");
 	assert.equal(httpsBase("HTTPS://Api.Example.test:8443/v1/", "the API URL"), "https://api.example.test:8443/v1");
-	// Only the scheme and host are case-blind: a path or query is the server's to read, so its case stays.
+	// Only the scheme and host are case-blind: a path is the server's to read, so its case stays.
 	assert.equal(httpsBase("HTTPS://Api.Example.test/V1/Tenant/", "the API URL"), "https://api.example.test/V1/Tenant");
-	assert.equal(httpsBase("HTTPS://Api.Example.test/v1?Region=EU", "the API URL"), "https://api.example.test/v1?Region=EU");
 });
 
 test("httpCode maps a status to one code", () => {

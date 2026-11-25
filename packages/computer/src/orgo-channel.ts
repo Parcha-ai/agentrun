@@ -49,9 +49,9 @@ export interface OrgoRest {
 const codeOfStatus = (status: number): ComputerErrorCode =>
 	status === 401 || status === 403 ? "denied" : status === 404 ? "not_found" : status === 429 ? "limit" : status === 400 || status === 422 ? "invalid" : status === 409 ? "refused" : "vendor";
 
-/** Orgo's REST API with a key: every call bounded, every failure a code and words that never hold the key. */
-export function orgoRest({ apiKey, apiUrl = ORGO_API_URL, fetch: fetcher = globalThis.fetch }: { apiKey: string; apiUrl?: string; fetch?: typeof fetch }): OrgoRest {
-	const base = apiUrl.replace(/\/+$/, "");
+/** Orgo's REST API with a key: every call bounded, every failure a code and words that never hold the key. `apiUrl` is
+ *  httpsBase's answer, as the providers pass it. */
+export function orgoRest({ apiKey, apiUrl: base = ORGO_API_URL, fetch: fetcher = globalThis.fetch }: { apiKey: string; apiUrl?: string; fetch?: typeof fetch }): OrgoRest {
 	const scrub = (text: string) => text.replaceAll(apiKey, "[key]").replace(/\s+/g, " ").slice(0, 300);
 	return {
 		origin: new URL(base).origin,
