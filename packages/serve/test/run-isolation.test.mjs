@@ -231,7 +231,8 @@ test("the store a run's process reaches is bound to its claim: another run's jou
       set: async () => void called.push("settings.set"),
       put: async (key, value) => void (called.push(`settings.put ${key}`), saved.set(key, value)),
       remove: async (key) => void called.push(`settings.remove ${key}`),
-      removeIf: async (key) => (called.push(`settings.remove ${key}`), saved.delete(key)),
+      // Compare-and-delete, as the store's: the row goes only while it is the one read.
+      removeIf: async (key, was) => (called.push(`settings.removeIf ${key}`), JSON.stringify(saved.get(key)) === JSON.stringify(was) && saved.delete(key)),
       get: async (key) => (called.push(`settings.get ${key}`), saved.get(key)),
     },
   };
@@ -258,9 +259,11 @@ test("the store a run's process reaches is bound to its claim: another run's jou
     await call("settings.get", [key]);
     await call("settings.remove", [key]);
   }
-  // Each remove reads the row first: one a later claim wrote is not its to remove.
-  const rowCalls = (key) => [`settings.put ${key}`, `settings.get ${key}`, `settings.get ${key}`, `settings.remove ${key}`];
+  // Each remove reads the row first (one a later claim wrote is not its to remove), then removes it only while it is the
+  // one read.
+  const rowCalls = (key) => [`settings.put ${key}`, `settings.get ${key}`, `settings.get ${key}`, `settings.removeIf ${key}`];
   assert.deepEqual(called.slice(-8), [...rowCalls("browser_hold:run-own"), ...rowCalls("browser_wait_ended:run-own")]);
+  assert.equal(saved.size, 0, "each row removed");
   assert.ok(lines.some((line) => /asked the store for readJournal, which a run's process may not/.test(line)), lines.join("\n"));
   assert.ok(lines.some((line) => /asked for another agent's revision/.test(line)), lines.join("\n"));
 });
@@ -272,7 +275,8 @@ test("a run's process writes its own browser rows only as its claim's: the claim
     settings: {
       put: async (key, value) => void (written.push([key, value]), saved.set(key, value)),
       get: async (key) => saved.get(key),
-      removeIf: async (key) => (written.push([key]), saved.delete(key)),
+      // Compare-and-delete, as the store's: the row goes only while it is the one read.
+      removeIf: async (key, was) => JSON.stringify(saved.get(key)) === JSON.stringify(was) && (written.push([key]), saved.delete(key)),
     },
   };
   const bound = { claim: { runId: "run-own", epoch: 3 }, agentId: "agent-own", revisionId: "rev-own" };

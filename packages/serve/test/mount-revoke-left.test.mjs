@@ -43,3 +43,102 @@ test("a pass over left removes whose Archil never answers ends at one bound, not
   assert.match(failed[1], /4 more left Archil mount credential removes .*next pass/);
   assert.equal(settings.rows.size, 5, "every row left for the next pass");
 });
+
+/** `settings` whose first putIfAbsent of `key` finds `value` written there by another between the leave's read and its
+ *  write, as a claim of the run ending at the same time does. */
+function racing(settings, key, value) {
+  let raced = false;
+  return {
+    ...settings,
+    putIfAbsent: async (at, ...rest) => {
+      if (at === key && !raced) {
+        raced = true;
+        await settings.put(key, value);
+      }
+      return settings.putIfAbsent(at, ...rest);
+    },
+  };
+}
+
+test("a leave writes its row where none is: the epoch, the disk and the time alone", async () => {
+  const settings = memorySettings();
+  await leaveMountRevoke(settings, "run-1", { ...row(3), token: "not-a-secret" });
+  assert.deepEqual(await settings.get(mountRevokeKeyOf("run-1")), row(3));
+});
+
+test("a leave keeps a row a later claim left, whose remove reaches this one's credentials too", async () => {
+  const settings = memorySettings();
+  await settings.put(mountRevokeKeyOf("run-1"), row(5, 2_000));
+  await leaveMountRevoke(settings, "run-1", row(3));
+  assert.deepEqual(await settings.get(mountRevokeKeyOf("run-1")), row(5, 2_000));
+});
+
+test("a leave keeps a row its own epoch left, as written", async () => {
+  const settings = memorySettings();
+  await settings.put(mountRevokeKeyOf("run-1"), row(3, 2_000));
+  await leaveMountRevoke(settings, "run-1", row(3));
+  assert.deepEqual(await settings.get(mountRevokeKeyOf("run-1")), row(3, 2_000));
+});
+
+test("a leave replaces a row an earlier claim left: its remove reaches the earlier one's credentials too", async () => {
+  const settings = memorySettings();
+  await settings.put(mountRevokeKeyOf("run-1"), row(2, 2_000));
+  await leaveMountRevoke(settings, "run-1", row(3));
+  assert.deepEqual(await settings.get(mountRevokeKeyOf("run-1")), row(3));
+});
+
+test("a leave whose write loses to an earlier claim's row, written between its read and its write, replaces it", async () => {
+  const key = mountRevokeKeyOf("run-1");
+  const settings = memorySettings();
+  await leaveMountRevoke(racing(settings, key, row(2, 2_000)), "run-1", row(3));
+  assert.deepEqual(await settings.get(key), row(3));
+});
+
+test("a leave whose write loses to a later claim's row, written between its read and its write, keeps it", async () => {
+  const key = mountRevokeKeyOf("run-1");
+  const settings = memorySettings();
+  await leaveMountRevoke(racing(settings, key, row(5, 2_000)), "run-1", row(3));
+  assert.deepEqual(await settings.get(key), row(5, 2_000));
+});
+
+test("a leave whose row keeps changing under it throws after its tries, in words", async () => {
+  const settings = memorySettings();
+  await settings.put(mountRevokeKeyOf("run-1"), row(2));
+  let tried = 0;
+  const changing = { ...settings, replaceIf: async () => (tried += 1, false) };
+  await assert.rejects(leaveMountRevoke(changing, "run-1", row(3)), /run run-1's Archil mount credential remove could not be left for the janitor: its row kept changing/);
+  assert.equal(tried, 3);
+});
+
+test("a pass removes each row once its remove answers; a refused one stays, said, and the pass goes on to the next", async () => {
+  const settings = memorySettings();
+  await settings.put(mountRevokeKeyOf("run-1"), row(3));
+  await settings.put(mountRevokeKeyOf("run-2"), row(4));
+  const asked = [];
+  const revoke = async (runId, left) => {
+    asked.push([runId, left.epoch, left.disk]);
+    if (runId === "run-1") throw new Error("Archil is down");
+  };
+  const { failed } = await sweepMountRevokes({ settings, revoke, deleteMs: 1_000 });
+  assert.deepEqual(asked, [["run-1", 3, "disk-1"], ["run-2", 4, "disk-1"]]);
+  assert.deepEqual(failed, ["the Archil mount credential of run run-1: Archil is down"]);
+  assert.deepEqual([...settings.rows.keys()], [mountRevokeKeyOf("run-1")], "the refused one stays for the next pass");
+});
+
+test("a row a later claim rewrote while its remove ran stays: only the row read is removed", async () => {
+  const settings = memorySettings();
+  const key = mountRevokeKeyOf("run-1");
+  await settings.put(key, row(3));
+  const revoke = async () => settings.put(key, row(4, 2_000));
+  const { failed } = await sweepMountRevokes({ settings, revoke, deleteMs: 1_000 });
+  assert.deepEqual(failed, []);
+  assert.deepEqual(await settings.get(key), row(4, 2_000), "the later claim's row stays for the next pass");
+});
+
+test("a row that is no left remove is removed, and nothing is asked of Archil for it", async () => {
+  const settings = memorySettings();
+  await settings.put(`${MOUNT_REVOKE_PREFIX}run-1`, { epoch: "3" });
+  const asked = [];
+  const { failed } = await sweepMountRevokes({ settings, revoke: async (runId) => void asked.push(runId), deleteMs: 1_000 });
+  assert.deepEqual([failed, asked, settings.rows.size], [[], [], 0]);
+});
