@@ -31,7 +31,7 @@
 // A runner whose runs on the login stay in its own process (`process` isolation, or none) has its CLI read and renew the
 // same folder. Each runner says on the data folder which it is (sayLoginRunner), and a run under a user of its own is
 // refused while such a runner is there (loginRunnerInProcess).
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { lstat, mkdir, open, readFile, realpath, rename, rm, stat, utimes } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -733,9 +733,10 @@ export function heldTokenLogin(reader: { token(): Promise<string>; refused?(sent
 }
 
 /** Where the runners on a data folder say whether their runs on the login stay in their own process: one file per
- *  runner, by name. */
+ *  runner, named by the sha256 of its whole name, so two names never share a file and no name is a folder (`.`,
+ *  `..`). The file holds the name itself, which loginRunnerInProcess reads. */
 export const loginRunnersDir = (data: string): string => join(data, "claude-login-runners");
-const runnerFile = (data: string, runner: string): string => join(loginRunnersDir(data), runner.replace(/[^A-Za-z0-9._:-]/g, "_"));
+const runnerFile = (data: string, runner: string): string => join(loginRunnersDir(data), createHash("sha256").update(runner, "utf8").digest("hex"));
 
 /** Runner `runner` says, at its start, how its runs on the login run: `process` (in its own process, its CLI on the
  *  login folder), or `uid` (each a user of its own, on a token), which takes back what an earlier start of that name said. */
