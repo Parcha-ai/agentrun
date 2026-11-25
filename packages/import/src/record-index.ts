@@ -210,6 +210,25 @@ export function addAll(into: RecordIndex, from: RecordIndex): void {
   }
 }
 
+/** Whether `into` holds any record of `from`. */
+export function anyIn(into: RecordIndex, from: RecordIndex): boolean {
+  const u = from.uuids;
+  for (let i = 0; i < u.count; i += 1) {
+    const w0 = u.words[i * 4]!;
+    const w1 = u.words[i * 4 + 1]!;
+    const w2 = u.words[i * 4 + 2]!;
+    const w3 = u.words[i * 4 + 3]!;
+    if (findUuid(into.uuids, w0, w1, w2, w3, uuidHash(w0, w1, w2, w3)) !== -1) return true;
+  }
+  const o = from.others;
+  for (let i = 0; i < o.count; i += 1) {
+    const start = i === 0 ? 0 : o.ends[i - 1]!;
+    const end = o.ends[i]!;
+    if (findOther(into.others, o.bytes, start, end, bytesHash(o.bytes, start, end)) !== -1) return true;
+  }
+  return false;
+}
+
 /** Every record of `from` added to `into`, where the two hold no record in common: per kind of key, the table with more
  *  entries keeps its arrays and the other's entries are added to it, so a big read's records are not copied (and held
  *  twice) to join a smaller index. `from` is used up: it holds what `into` held. */
@@ -257,34 +276,6 @@ export function dropOwner(index: RecordIndex, owner: number): void {
   for (let i = 0; i < o.count; i += 1) if (o.owners[i] !== owner) addOther(kept.others, o.bytes, i === 0 ? 0 : o.ends[i - 1]!, o.ends[i]!, o.owners[i]!);
   index.uuids = kept.uuids;
   index.others = kept.others;
-}
-
-/** Each record of `from` packed, in the order taken, until `stop` returns true for one: whether one did. */
-export function someRecord(from: RecordIndex, stop: (key: Packed) => boolean): boolean {
-  const key: Packed = { bytes: new Uint8Array(64), length: 0 };
-  const u = from.uuids;
-  key.bytes[0] = UUID;
-  key.length = 17;
-  for (let i = 0; i < u.count; i += 1) {
-    for (let k = 0; k < 4; k += 1) {
-      const w = u.words[i * 4 + k]!;
-      key.bytes[1 + k * 4] = w & 0xff;
-      key.bytes[2 + k * 4] = (w >>> 8) & 0xff;
-      key.bytes[3 + k * 4] = (w >>> 16) & 0xff;
-      key.bytes[4 + k * 4] = (w >>> 24) & 0xff;
-    }
-    if (stop(key)) return true;
-  }
-  const o = from.others;
-  for (let i = 0; i < o.count; i += 1) {
-    const start = i === 0 ? 0 : o.ends[i - 1]!;
-    const end = o.ends[i]!;
-    if (key.bytes.length < end - start) key.bytes = new Uint8Array((end - start) * 2);
-    key.bytes.set(o.bytes.subarray(start, end));
-    key.length = end - start;
-    if (stop(key)) return true;
-  }
-  return false;
 }
 
 /** Every record of `index` now owned by `owner`. */

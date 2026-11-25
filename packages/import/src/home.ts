@@ -12,8 +12,8 @@ import { READERS, SOURCES, type Source } from "./readers/index.js";
 import { AT, HAS_LONG, HAS_REASONING, HAS_USAGE, STRIDE, USAGE_FIELDS } from "./counts.js";
 import { DROPS_CURSOR, type InternalReadOptions } from "./internal.js";
 import { defaultThreads, MIN_OLD_MB, OLD_MB, type PoolRead, ReadPool, readAheadBytes } from "./pool.js";
-import { addDisjoint, addNew, addRecord, dropOwner, locatorNumber, markOf, ownAll, ownerOf, type RecordIndex, recordIndex, someRecord, undoTo } from "./record-index.js";
-import { type Packed, packed, packInto } from "./record-key.js";
+import { addDisjoint, addNew, addRecord, anyIn, dropOwner, locatorNumber, markOf, ownAll, ownerOf, type RecordIndex, recordIndex, undoTo } from "./record-index.js";
+import { packed, packInto } from "./record-key.js";
 import type { Usage } from "./types.js";
 import { addTokens, noTokens, type Tokens } from "./usage.js";
 
@@ -439,9 +439,8 @@ async function readSource(home: string, source: string, readers: Readers, env: E
       if (pooled) {
         // The pool's read is this one when none of the records it added, or asked for and did not hold, is one read before it.
         const made = await pooled();
-        const held = (record: Packed) => ownerOf(owners, record) !== -1;
-        if (made.ok && !someRecord(made.mine, held) && !someRecord(made.missed, held)) {
-          // None of its records is held (someRecord above): the larger index keeps its arrays, the other's records go in.
+        if (made.ok && !anyIn(owners, made.mine) && !anyIn(owners, made.missed)) {
+          // None of its records is held: the larger index keeps its arrays, the other's records go in.
           ownAll(made.mine, me);
           addDisjoint(owners, made.mine);
           return made.sessions;

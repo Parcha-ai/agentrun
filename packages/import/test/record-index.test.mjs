@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { deserialize, serialize } from "node:v8";
 import { parseHome, READERS } from "../dist/index.js";
-import { addAll, addDisjoint, addNew, addRecord, dropOwner, locatorNumber, markOf, ownerOf, recordIndex, undoTo } from "../dist/record-index.js";
+import { addAll, addDisjoint, addNew, addRecord, anyIn, dropOwner, locatorNumber, markOf, ownerOf, recordIndex, undoTo } from "../dist/record-index.js";
 import { packed, packInto } from "../dist/record-key.js";
 import { anthropicUsage, claudeAnswer, claudeFile, claudeUser, tempHome, writeJsonl } from "./fixtures.mjs";
 
@@ -48,6 +48,21 @@ test("dropOwner removes one owner's records and keeps the rest; addAll adds what
   addAll(index, staged);
   assert.deepEqual([owner(index, uuidKey(1)), owner(index, uuidKey(0)), owner(index, "m:msg_1:req_1")], [a, b, a]);
   assert.deepEqual(index.locators, ["a.jsonl", "b.jsonl"]);
+});
+
+test("anyIn finds a record of one index in another: a uuid's, any other key's, or none", () => {
+  const held = recordIndex(16);
+  for (let i = 0; i < 2000; i += 1) add(held, i % 2 ? uuidKey(i) : `m:msg_${i}:req_${i}`, 0);
+  const asked = (keys) => {
+    const index = recordIndex(16);
+    for (const key of keys) add(index, key, 0);
+    return anyIn(held, index);
+  };
+  assert.equal(asked([]), false, "an empty index");
+  assert.equal(asked([uuidKey(2000), uuidKey(2001), "m:msg_1:req_1", "l:msg_2", "x".repeat(300)]), false, "none held");
+  assert.equal(asked([uuidKey(2001), uuidKey(1999)]), true, "a uuid held, after one not");
+  assert.equal(asked(["l:msg_2", "m:msg_1998:req_1998"]), true, "a message key held, after one not");
+  assert.equal(asked([`u:${"A".repeat(8)}-0000-4000-8000-${"0".repeat(12)}`]), false, "a uuid key of capitals: another shape, not held");
 });
 
 test("undoTo takes out what was added since the mark, and only that: the slots as they were, across the index's growing too", () => {
