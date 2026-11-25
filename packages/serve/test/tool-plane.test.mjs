@@ -84,7 +84,7 @@ test("the resolver: the agent's pick over the server's; auto is agentrun's own s
   }
 });
 
-test("auto where the server holds Parallel's key: the pick, then Parallel, on every harness; native picked is native only and a pick of exa-keyless is Exa; web_fetch is the guarded direct fetch", () => {
+test("auto where the server holds Parallel's key: the pick, then Parallel, on every harness; native picked is native only and a pick of exa-keyless is Exa; web_fetch is Parallel first, the guarded direct fetch behind it", () => {
   const search = (input) => resolveOnBuiltin("web_search", { ...base, parallelKey: true, ...input });
   assert.equal(search({ harness: "pi", model: "google/gemini-2.5-pro" }), "parallel", "a model with no hosted search");
   assert.equal(search({ harness: "pi" }), "parallel", "no model named");
