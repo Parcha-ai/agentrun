@@ -958,8 +958,10 @@ function familiesOf(text: string): Families {
 /** Which join of a JSON text's strings a view reads (joinOf): `nested`, each string's contents, a value's read again for
  *  the strings written in it (JSON in a string); `strings`, each string's contents whole, as JSON.parse gives them;
  *  `quoted`, as `strings`, with a string opened by an apostrophe too and closed by the next one (a Python repr's
- *  {'alice': 'secretpw'}). */
-type JoinKind = "nested" | "strings" | "quoted";
+ *  {'alice': 'secretpw'}); `again`, the text of each value written in quotes that `quoted` reads, read as `quoted` one
+ *  level down, and nothing else (a dict written in a JSON string: a call's arguments); `both`, the `quoted` join then the
+ *  `again` join, each as holds builds it once, the first's closing NUL between them. */
+type JoinKind = "nested" | "strings" | "quoted" | "again" | "both";
 /** A view the whole-text check reads: the text decoded by `decoders`, then squeezed (viewOf), read only where `when`
  *  says the text holds what a decoder decodes (familiesOf). `special`: where viewOf stops to do more than copy. `join`:
  *  the view reads that join of the text's JSON strings (joinOf) in place of the text. */
@@ -992,12 +994,15 @@ const viewSpec = (when: (has: Families) => boolean, decoders: readonly Decoder[]
  *    and JSON's escapes decoded twice, an escaped quote a quote (only where the text has an escaped backslash: otherwise
  *    it reads as the first). Each is read only where the text holds what it decodes;
  *  - for a text with an apostrophe in it, its strings joined whole with an apostrophe opening one too (a Python repr's
- *    single-quoted dict), one level of JSON's escapes decoded. A view of its own, so the views before it read an
- *    apostrophe outside a "..." string as they did; and the same decoded through Python's escapes, where the text holds
- *    one ("\'" in a string with both quotes, "\x41"), beside it, so a backslash read as itself there still is; and
- *    through both levels of them and of JSON's, where the text holds an escaped backslash, with or without one of
- *    Python's (a dict written in a JSON string: "\\'", "\\x41", "\\t"). The quoted join reads a JSON string's text for a
- *    dict written in it too.
+ *    single-quoted dict), one level of JSON's escapes decoded, followed by the again join (the text of each value
+ *    written in quotes, read as the quoted join one level down: a dict written in a JSON string, a call's arguments)
+ *    read the same way (a backslash of the dict's own, written once). A view of its own, so the views before it read an
+ *    apostrophe outside a "..." string as they did; and the quoted join alone decoded through Python's escapes, where
+ *    the text holds one ("\'" in a string with both quotes, "\x41"), beside it, so a backslash read as itself there
+ *    still is; and, where the text holds a quote too, the again join alone through both levels of Python's escapes and
+ *    of JSON's ("\\'", "\\x41", "\\t", "\"", or none). Neither level's parts are read beside the other's, so no held
+ *    value reads across the two. The quoted join is never read through two levels: in a dict escaped once with no JSON
+ *    string around it, "\\t" is a backslash and a "t", and a tab there would be a second decode, not a find.
  *  The decoders of a view decode in one pass: each reads at its own trigger character, so a view costs one read of the
  *  text whatever it decodes. Each view is lowered for hexes and flattened for folded identifiers in holds. */
 const VIEWS: readonly ViewSpec[] = [
@@ -1014,17 +1019,16 @@ const VIEWS: readonly ViewSpec[] = [
   viewSpec((has) => has.quote && has.percent, [PERCENT, JSON_ESCAPE_ONCE], "strings"),
   viewSpec((has) => has.quote && has.plus, [PERCENT, PLUS, JSON_ESCAPE_ONCE], "strings"),
   viewSpec((has) => has.quote && has.deep, [JSON_ESCAPE_QUOTED], "strings"),
-  viewSpec((has) => has.apostrophe, [JSON_ESCAPE_ONCE], "quoted"),
+  viewSpec((has) => has.apostrophe, [JSON_ESCAPE_ONCE], "both"),
   viewSpec((has) => has.apostrophe && has.python, [PYTHON_ESCAPE], "quoted"),
-  viewSpec((has) => has.apostrophe && has.deep, [PYTHON_ESCAPE_TWICE], "quoted"),
+  viewSpec((has) => has.apostrophe && has.quote, [PYTHON_ESCAPE_TWICE], "again"),
 ];
 
 // ---- The join view: a JSON text's strings read joined, so a held value split across two of them reads whole.
 
 /** A stretch of a text the join view reads: a string's contents (a property name's, `name`), or a run of characters
  *  outside any string (a number, a word, a line after the JSON). */
-/** A part of a JSON text (partsOf): `again` on one of a JSON string's text read again for a dict written in it. */
-type Part = { from: number; to: number; name: boolean; again?: true };
+type Part = { from: number; to: number; name: boolean };
 
 /** JSON's punctuation between its values. */
 const STRUCTURE = only("{}[],:");
@@ -1054,14 +1058,11 @@ function unitAt(text: string, at: number, to: number, level: 0 | 1): { char: str
  *  each run of characters outside a string that are neither whitespace nor JSON's punctuation. A string with no closing
  *  quote runs to `to`. Any text is read so, JSON or not: a quote in prose opens a string as one in JSON does. With
  *  `quoted`, an apostrophe opens a string too, closed by the next apostrophe (a quote inside it is text, as an
- *  apostrophe inside a "..." string is), and at level 0 a value written in quotes is also read again at level 1 the same
- *  way (a dict written in a JSON string: a call's arguments), its parts after all of the text's. Each character is read
- *  at most three times (at level 0, at level 1, and in the whitespace after a string looking for a ":"). */
-function partsOf(text: string, from: number, to: number, level: 0 | 1, out: Part[], kind: JoinKind = "nested"): void {
+ *  apostrophe inside a "..." string is), and at level 0, with `written`, the span of each value written in quotes is added
+ *  to it (the again join reads it one level down). Each character is read at most three times (at level 0, at level 1,
+ *  and in the whitespace after a string looking for a ":"). */
+function partsOf(text: string, from: number, to: number, level: 0 | 1, out: Part[], kind: JoinKind = "nested", written?: Span[]): void {
   let bare = -1;
-  // With `quoted` at level 0, each value string's contents, read again at level 1 once the text is read: its parts come
-  // after the text's, so the text's own stay as they are, each beside the one it is beside in the text.
-  const written: [number, number][] = [];
   const endBare = (end: number) => {
     if (bare >= 0) out.push({ from: bare, to: end, name: false });
     bare = -1;
@@ -1099,47 +1100,40 @@ function partsOf(text: string, from: number, to: number, level: 0 | 1, out: Part
     else if (level === 0 && kind === "nested") partsOf(text, end, close, 1, out);
     else {
       out.push({ from: end, to: close, name: false });
-      if (level === 0 && kind === "quoted" && char === '"') written.push([end, close]);
+      if (level === 0 && char === '"') written?.push([end, close]);
     }
     at = after;
   }
   endBare(to);
-  const first = out.length;
-  for (const [start, end] of written) partsOf(text, start, end, 1, out, "quoted");
-  for (let i = first; i < out.length; i++) out[i]!.again = true;
 }
 
 /** `text`'s join of `kind` (JoinKind): its parts (partsOf) read three times over, each time joined, each part followed by a space (gone
  *  from the view, and no escape reads past it): the values and the runs outside strings; the property names; then all
  *  of them. Each pass is closed by a NUL, which the view keeps and no held value holds, so no value reads across two
- *  passes; so are the quoted join's parts read again in a JSON string's text (Part.again) from the rest of their pass. A held value split across two values with a name between them ({"title":"see <H>","snippet":"<R> more"}),
+ *  passes. A held value split across two values with a name between them ({"title":"see <H>","snippet":"<R> more"}),
  *  across two names, across a name and its value, across a quote of JSON written in a string, or across a string and
  *  the line after the JSON reads whole in one of them. A view decodes and squeezes the join as any text (viewOf), each
  *  part's characters keeping their source: with `cuts` (merged spans of `text`), the spans of each part a cut covers
  *  are moved to where the part stands in the join (`cuts` of the join), so a value the finds cut in place in each
  *  string is covered there too. The cuts' cursor only goes forward within a pass: each cut is passed once a pass. A
  *  join is the same for every view that reads it: holds builds each kind once per text. */
-function joinOf(text: string, kind: JoinKind, cuts?: readonly Span[]): { text: string; cuts?: Span[] } {
+function joinOf(text: string, kind: Exclude<JoinKind, "both">, cuts?: readonly Span[]): { text: string; cuts?: Span[] } {
   const parts: Part[] = [];
-  partsOf(text, 0, text.length, 0, parts, kind);
+  if (kind === "again") {
+    // The quoted join's values written in quotes, each read one level down, in the text's order.
+    const written: Span[] = [];
+    partsOf(text, 0, text.length, 0, [], "quoted", written);
+    for (const [start, end] of written) partsOf(text, start, end, 1, parts, "quoted");
+  } else partsOf(text, 0, text.length, 0, parts, kind);
   const pieces: string[] = [];
   const moved: Span[] = [];
   let length = 0;
   const passes: readonly ((part: Part) => boolean)[] = [(part) => !part.name, (part) => part.name, () => true];
   for (const pass of passes) {
     let cut = 0;
-    let again = false;
     for (const part of parts) {
       if (!pass(part)) continue;
       scanned.chars++;
-      // The quoted join's parts read again inside its strings come after the rest (partsOf), from the text's start: a
-      // NUL closes off the rest from them, as one closes a pass, and the cursor starts over there, once a pass.
-      if (part.again && !again) {
-        again = true;
-        pieces.push("\u0000");
-        length++;
-        cut = 0;
-      }
       if (cuts) {
         while (cut < cuts.length && cuts[cut]![1] <= part.from) {
           cut++;
@@ -1161,6 +1155,15 @@ function joinOf(text: string, kind: JoinKind, cuts?: readonly Span[]): { text: s
   // The join written once.
   scanned.chars += length;
   return { text: pieces.join(""), ...(cuts ? { cuts: moved } : {}) };
+}
+
+/** Two joins one after the other (JoinKind `both`), the second's cuts moved past the first; written once. */
+function bothOf(first: { text: string; cuts?: Span[] }, second: { text: string; cuts?: Span[] }): { text: string; cuts?: Span[] } {
+  const text = first.text + second.text;
+  scanned.chars += text.length;
+  if (!first.cuts || !second.cuts) return { text };
+  const at = first.text.length;
+  return { text, cuts: [...first.cuts, ...second.cuts.map(([start, end]): Span => [at + start, at + end])] };
 }
 
 /** `text` as the whole-text check reads it: decoded by `spec`'s decoders, then squeezed (squeeze: NFKC, its whitespace
@@ -1381,9 +1384,9 @@ export function holds(text: string, needles: Needles, { fold = true, cuts }: { f
   if (!needles.plain.length && !needles.hexes.length && !folds.length) return false;
   const has = familiesOf(text);
   const joins = new Map<JoinKind, { text: string; cuts?: Span[] }>();
-  const joinFor = (kind: JoinKind) => {
+  const joinFor = (kind: JoinKind): { text: string; cuts?: Span[] } => {
     let join = joins.get(kind);
-    if (!join) joins.set(kind, (join = joinOf(text, kind, cuts)));
+    if (!join) joins.set(kind, (join = kind === "both" ? bothOf(joinFor("quoted"), joinFor("again")) : joinOf(text, kind, cuts)));
     return join;
   };
   for (const spec of VIEWS) {
