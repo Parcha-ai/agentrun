@@ -153,5 +153,5 @@ export async function hostedSearched(query: string, n: number, ref: string | und
   // Results found, and a later search of the same request failing all the same (too_many_requests after hits): the run
   // gets the results, and the breaker the limit its codes name (no Retry-After reaches here: 60 s).
   const limit = limitOf(read.codes().join(" "));
-  return { answer: { provider: "native", query, results: read.hits().slice(0, n), ...(said ? { text: clip(said, ANSWER_MAX) } : {}) }, ...(limit ? { limit } : {}) };
+  return { answer: { provider: "native", objective: query, queries: [query], results: read.hits().slice(0, n), ...(said ? { text: clip(said, ANSWER_MAX) } : {}) }, ...(limit ? { limit } : {}) };
 }

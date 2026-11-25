@@ -304,12 +304,14 @@ test("claudeLoginServed: one rule for the routes and for capabilities: none whil
 test("API-only serves no login path under another route's name: no pattern on its list matches a login route's method and path", async () => {
   const { ROUTES } = await import("../dist/server.js");
   const { servedApiOnly } = await import("../dist/api-only.js");
-  const paths = { getClaudeLogin: "/settings/claude-login", turnOnClaudeLogin: "/settings/claude-login", turnOffClaudeLogin: "/settings/claude-login", startClaudeLogin: "/settings/claude-login/login" };
-  assert.deepEqual(Object.keys(paths).sort(), [...CLAUDE_LOGIN_ROUTES].sort());
-  for (const [name, path] of Object.entries(paths)) {
-    const route = ROUTES.find((r) => r.name === name);
-    assert.ok(route?.pattern.test(path), `${name} answers ${path}`);
-    assert.equal(servedApiOnly(ROUTES, route.method, `/v2${path}`), false, `${route.method} /v2${path} is refused on API-only before routing`);
+  // The router's own login routes, found by their path, so a route added under it can't be left off CLAUDE_LOGIN_ROUTES.
+  const login = ROUTES.filter((r) => r.pattern.source.includes("claude-login"));
+  assert.deepEqual(login.map((r) => r.name).sort(), [...CLAUDE_LOGIN_ROUTES].sort(), "CLAUDE_LOGIN_ROUTES names every route under /settings/claude-login");
+  for (const route of login) {
+    // Each pattern is a literal path; one with a parameter in it fails the next line and needs its path given by hand.
+    const path = route.pattern.source.replace(/^\^|\$$/g, "").replaceAll("\\/", "/");
+    assert.ok(route.pattern.test(path), `${route.name} answers ${path}`);
+    for (const mcpSave of [false, true]) assert.equal(servedApiOnly(ROUTES, route.method, `/v2${path}`, mcpSave), false, `${route.method} /v2${path} is refused on API-only before routing (MCP save ${mcpSave ? "on" : "off"})`);
   }
 });
 
@@ -1379,11 +1381,11 @@ const literally = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
  *  words name it) neither owns nor would make in a folder it owns. */
 const notOwnFolder = (who, name, folder) => new RegExp(`^Claude Code's login on this machine needs its folders to be this server's user's own: it runs as ${literally(who)}, and ${literally(folder)}, the folder ${name} gives it, is not a folder it owns, nor one it would make in a folder it owns\\. Start the server as the person whose Claude plan it is\\.$`);
 /** The end of the words a folder open to others' writes is refused in: `at`, the folder open so, has `mode`, and the
- *  chmod that closes it. */
-const openTail = (at, mode) => `is open to writes by others than its owner: ${literally(at)} has mode ${(mode & 0o7777).toString(8).padStart(4, "0")}, which its group or anyone may write in\\. Make it writable by its owner alone \\(chmod g-w,o-w ${literally(at)}\\): a umask of 002 makes new folders so\\.$`;
+ *  chmod that closes it; then `more` (a pattern), where the words say more of its group. */
+const openTail = (at, mode, more = "") => `is open to writes by others than its owner: ${literally(at)} has mode ${(mode & 0o7777).toString(8).padStart(4, "0")}, which its group or anyone may write in\\. Make it writable by its owner alone \\(chmod g-w,o-w ${literally(at)}\\): a umask of 002 makes new folders so\\.${more}$`;
 /** The words this machine's login is refused in where `name` gives it `folder`, and `at` on its way (or the folder
- *  itself, or the one it is to be made in) is open to writes by its group or anyone, with `mode`. */
-const openFolder = (who, name, folder, at, mode) => new RegExp(`^Claude Code's login on this machine needs its folders to be this server's user's own: it runs as ${literally(who)}, and ${literally(folder)}, the folder ${name} gives it, ${openTail(at, mode)}`);
+ *  itself, or the one it is to be made in) is open to writes by its group or anyone, with `mode`; `more` as openTail. */
+const openFolder = (who, name, folder, at, mode, more = "") => new RegExp(`^Claude Code's login on this machine needs its folders to be this server's user's own: it runs as ${literally(who)}, and ${literally(folder)}, the folder ${name} gives it, ${openTail(at, mode, more)}`);
 /** The same for the home: `which` is "its HOME" or "that user's own home", `home` the folder named so. */
 const openHome = (who, which, home, at, mode) => new RegExp(`^Claude Code's login on this machine needs a home only this server's user may write in: it runs as ${literally(who)}, and ${which} \\(${literally(home)}\\) ${openTail(at, mode)}`);
 /** Each variable that gives this machine's login a folder: the folder it gives for `value`, and where the login has it. */
@@ -1801,7 +1803,8 @@ const PRIVATE_SKIP = { skip: process.platform === "win32" ? "no uid" : process.g
 /** For test `t`, a folder `open` of the test user's, with a login folder `claude` in it, and stand-in account files in
  *  which `open`'s group is the user's private one (`passwd()`, `groups()`; `more` users, `members` of that group).
  *  `kept(what)` asserts the login is kept with `open` on the way to its folder, as that folder, as the one it is made in
- *  and as the home; `refused(what, mode)` that each refuses it in the open-folder words, `open` at `mode`. */
+ *  and as the home; `refused(what, mode, more)` that each refuses it in the open-folder words, `open` at `mode`, ending
+ *  in `more` (a pattern; none by default). */
 async function privateGroupRig(t) {
   const uid = process.geteuid();
   const name = userInfo().username;
@@ -1830,12 +1833,12 @@ async function privateGroupRig(t) {
     }
     assert.equal(homeOf({ HOME: open }).home, realpathSync(open), `${PRIVATE_WHY}: ${what}, as the home`);
   };
-  const refused = async (what, mode) => {
+  const refused = async (what, mode, more = "") => {
     for (const value of values) {
       const rig = await loginRig(t);
       const asked = [];
       const deps = rig.deps({ env: { ...rig.env, CLAUDE_CONFIG_DIR: value }, claude: async () => askedClaude(asked) });
-      await refusedEverywhere(rig, deps, openFolder(who, "CLAUDE_CONFIG_DIR", value, realpathSync(open), mode), `${what}, CLAUDE_CONFIG_DIR=${value}`);
+      await refusedEverywhere(rig, deps, openFolder(who, "CLAUDE_CONFIG_DIR", value, realpathSync(open), mode, more), `${what}, CLAUDE_CONFIG_DIR=${value}`);
       assert.deepEqual(asked, [], `${what}: the CLI was not asked`);
     }
     assert.notEqual(homeOf({ HOME: open }).home, realpathSync(open), `${what}: not the home`);
@@ -1897,6 +1900,40 @@ test("a folder its group may write in, whose group the account files show as the
       accountsAs(row, { "/etc/passwd": users(passwd()), "/etc/group": groups(), "/etc/nsswitch.conf": nsswitch });
       if (verdict === "kept") await kept(what);
       else await refused(what, 0o775);
+    });
+  }
+});
+
+// What the account files themselves say of the group and the user, read as the system reads them (it skips blanks
+// before an entry and before a number). A group with a password lets anyone who knows it join (newgrp), so it is no
+// one's private group: refused in words that name it and say why. `x` (the password is in the shadow file), `!`, `*` or
+// none are no password. A group's members are named, so a second account with the user's name (blanks before it or
+// not) would be in it too; a second account with the user's uid (an alias, as toor is root's) is that user under
+// another name, whose groups the files may not show; an id with a blank before it is still read as that id. All are
+// refused in the open-folder words. Each row starts from the case that keeps the login, the folder at 0775.
+const passwordWords = (group, gid) => literally(` Its group ${group} (gid ${gid}) would be the server's user's private group, but /etc/group gives it a password, which lets anyone who knows it join the group (newgrp); removing the password (gpasswd -r ${group}) mends that too.`);
+const ACCOUNT_ROWS = [
+  ["a group whose password field is x (in the shadow file)", ({ groups }) => ({ group: groups() }), "kept"],
+  ["a group whose password field is !", ({ name, gid, groups }) => ({ group: groups().replace(`${name}:x:${gid}:`, `${name}:!:${gid}:`) }), "kept"],
+  ["a group whose password field is *", ({ name, gid, groups }) => ({ group: groups().replace(`${name}:x:${gid}:`, `${name}:*:${gid}:`) }), "kept"],
+  ["a group whose password field is empty", ({ name, gid, groups }) => ({ group: groups().replace(`${name}:x:${gid}:`, `${name}::${gid}:`) }), "kept"],
+  ["a group with a password", ({ name, gid, groups }) => ({ group: groups().replace(`${name}:x:${gid}:`, `${name}:$6$salt$hashOfAGroupPassword:${gid}:`) }), "refused", ({ name, gid }) => passwordWords(name, gid)],
+  ["a second account with the user's name, another uid and group", ({ name, other, user, passwd }) => ({ passwd: passwd(user(name, other.uid + 1, other.gid)) }), "refused"],
+  ["a second account with the user's name, after blanks", ({ name, other, user, passwd }) => ({ passwd: passwd(`  ${user(name, other.uid + 1, other.gid)}`) }), "refused"],
+  ["another name with the user's uid (an alias)", ({ uid, other, user, passwd }) => ({ passwd: passwd(user("alias", uid, other.gid)) }), "refused"],
+  ["an alias of the user's uid, a blank before the uid", ({ uid, other, user, passwd }) => ({ passwd: passwd(user("alias", ` ${uid}`, other.gid)) }), "refused"],
+  ["another user whose primary group is the user's, a blank before the gid", ({ gid, other, user, passwd }) => ({ passwd: passwd(user("another", other.uid + 1, ` ${gid}`)) }), "refused"],
+  ["a second entry for the group, a blank before its gid, listing another user", ({ gid, groups }) => ({ group: `${groups()}more:x: ${gid}:other\n` }), "refused"],
+];
+test("a folder its group may write in, whose group the account files would show as the user's private one, still refuses this machine's login where that group has a password (in words naming it), or the files hold a second account with the user's name or uid, or an id after blanks; a group password field of x, !, * or none keeps it", { ...PRIVATE_SKIP, timeout: 120_000 }, async (t) => {
+  const rig = await privateGroupRig(t);
+  chmodSync(rig.open, 0o775);
+  for (const [what, files, verdict, more = () => ""] of ACCOUNT_ROWS) {
+    await t.test(what, async (row) => {
+      const { passwd = rig.passwd(), group = rig.groups() } = files(rig);
+      accountsAs(row, { "/etc/passwd": passwd, "/etc/group": group, "/etc/nsswitch.conf": NSS_FILES });
+      if (verdict === "kept") await rig.kept(what);
+      else await rig.refused(what, 0o775, more(rig));
     });
   }
 });
@@ -2299,6 +2336,36 @@ test("a run whose refresh finds a later hand-over each time it has waited for on
   assert.match(run.body.error.message, /Claude Code's login on this machine was handed over again, or the offers made from it failed, each time this request waited for them, 3 times: ask again/);
   assert.equal(waited, LOGIN_ROUNDS, `the run waited once per look: ${JSON.stringify(whys)}`);
   assert.deepEqual(whys, ["turn", "turn", "turn"], "each wait was logged as one for a turn's making of the offers");
+});
+
+// A refresh's making of the offers can be overtaken with no later hand-over too: a model key saved meanwhile starts a
+// probe of its own (the key is one of the offers' inputs), and the refresh's is dropped as it lands. The hand-over the
+// refresh waited for is then still the latest and did not fail, yet where the key's probe fails (or is still out) the
+// offers held are the ones made before both, from the login as it was. The request must not go on by them: it makes
+// the offers from the login held itself (or waits for the probe out). Here the run's own refresh finds the folder
+// mended and its probe is held; the key's save comes meanwhile, its probe held too and failing, and only then is the
+// refresh's probe let go.
+const OVERTAKEN_BY_KEY_WHY = "a run whose refresh's making of the offers was overtaken by a key save's, which failed, checked the offers made before both";
+test("a run whose refresh's making of the offers is overtaken by a key save's that then fails makes the offers from the login held: it is not refused for a key, and claude-agent is offered", { skip: process.platform === "win32" ? "no modes" : process.geteuid() === 0 ? "root may write anywhere" : false, timeout: 120_000 }, async (t) => {
+  const { api, folder, start } = await mendedLater(t);
+  chmodSync(folder, 0o700);
+  const refreshing = held.hold((env) => claudeLoginOf(env) !== undefined && env.OPENAI_API_KEY === undefined);
+  t.after(() => refreshing.release());
+  const running = start();
+  await refreshing.reached;
+  const saveProbe = held.hold((env) => env.OPENAI_API_KEY !== undefined, new Error("the probe of the offers failed"));
+  t.after(() => saveProbe.release());
+  const saving = api("PUT", "/settings/tool-keys/openai", { values: { OPENAI_API_KEY: "fake-test-key" } });
+  await saveProbe.reached;
+  saveProbe.release();
+  const saved = await saving;
+  assert.equal(saved.status, 500, `the key save's probe failed, so the save fails: ${JSON.stringify(saved.body)}`);
+  refreshing.release();
+  const run = await running;
+  assert.equal(run.status, 202, `${OVERTAKEN_BY_KEY_WHY}: ${JSON.stringify(run.body)}`);
+  assert.equal((await api("POST", `/runs/${run.body.run_id}/cancel`)).status < 300, true);
+  const offer = await offerOf(api);
+  assert.equal(offer.available, true, `claude-agent is offered once the run made the offers from the login held: ${JSON.stringify(offer)}`);
 });
 
 // A template's plan and its apply pick the package's harness by the offers (the first of its list offered here, as a
