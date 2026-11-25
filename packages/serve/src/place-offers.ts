@@ -180,9 +180,10 @@ export async function askDockerDaemon(env: NodeJS.ProcessEnv, signal: AbortSigna
   const absent = (reason: string): DockerDaemon => ({ up: false, absent: true, reason });
   // The box's probe runs once, at the start: each fix takes a restart. Docker is on by default, so its reason is often a
   // first-time user's first read: what is wrong in plain words, what the probe saw, then what to do.
-  // In a container, the fix is its socket or that socket's group (containerReason), never the host's.
-  const inside = containerReason(answer, env, container);
-  if (inside !== undefined) return { up: false, absent: !answer.denied, reason: inside };
+  // In AgentRun's image, a socket that refused this process is that socket's group's to fix (containerReason), never the
+  // host's; a socket that is not there is no daemon, which every reader words as none (noDockerWords).
+  const inside = answer.denied ? containerReason(answer, env, container) : undefined;
+  if (inside !== undefined) return { up: false, absent: false, reason: inside };
   if (answer.failed === "ENOENT") return absent("Docker isn't running on this machine (no docker command on PATH): install or start Docker, then restart AgentRun");
   // Its socket refused this process: the group it lacks, and how to get it without a reboot (the words, never docker's):
   // a restart alone where the group file already lists this user, else joining it first.

@@ -142,7 +142,7 @@ import { REDACTED } from "./secret-cut.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
 const STATUSES = ["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] as const;
 import { runLines } from "./usage-lines.js";
-import { type BoxOffer, boxesByDefault, boxesLog, type ContainerFacts, enabledBoxes, placeOffers, withNetworks } from "./place-offers.js";
+import { type BoxOffer, boxesByDefault, boxesLog, type ContainerFacts, DOCKER_NO_SOCKET, enabledBoxes, placeOffers, withNetworks } from "./place-offers.js";
 import { dockerComputerRefusal, type DockerPaths, dockerPathsOf, FAUX_MOUNTINFO_ENV, remoteDockerOnce } from "./box-paths.js";
 import { dockerDaemonCheck, type DockerDaemon } from "./docker-daemon.js";
 import { type HostRead, hostAddressesOnce, noHostAddresses, retryHostAddresses, unionOf, type Wait } from "./docker-host-addresses.js";
@@ -1909,7 +1909,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const daemon = await dockerDaemon();
       if (!daemon.up || box?.available) return daemon;
     } else if (box?.available) return { up: true };
-    return { up: false, absent: false, reason: box?.reason ?? `${provider} is not a box this server has` };
+    // A container with no Docker socket at the start had no daemon there, as Settings → Computers words none
+    // (noDockerWords, the vendors that fit each kind): not the start's words, which point at that very page.
+    return { up: false, absent: box?.reason === DOCKER_NO_SOCKET, reason: box?.reason ?? `${provider} is not a box this server has` };
   };
   let computerRoutes: ComputerRoutes | undefined;
   // The programs a provider runs on this machine (the phone's adb), looked for on PATH once, at the start, as the boxes
