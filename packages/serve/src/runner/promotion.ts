@@ -643,11 +643,9 @@ export async function decideCheck(deps: DecideDeps, name: string, digest: string
   const record: PromotionRecord = { workflow: name, digest, at: iso(now()), decided: ok ? "promote" : "hold", reason, check, ...seedOf(deps), ...extra };
   // A check that outlives its revision's run: the run's purge never stops it (it replays other runs' inputs), and the
   // purge deletes the revision's rows. No version of the workflow holds the digest then: it is held, never promoted, so
-  // no promotion of the purged run's text lands.
-  const gone = ok && !(await deps.store.learning.versions(deps.agentId, "workflow", name)).some((one) => one.digest === digest);
-  const kept: PromotionRecord = gone ? { ...record, decided: "hold", reason: `${said}: held, never promoted: a purged run wrote this revision, and its text is gone` } : record;
-  const decided = await recordPromotion(deps.store.learning, deps.agentId, kept, still);
-  if (decided.won) deps.log(`workflow-first: ${name} at ${digest} ${kept.decided === "promote" ? "promoted" : "held"}: ${kept.reason}`);
+  // no promotion of the purged run's text lands. Read in the record's own write, so no purge goes between.
+  const decided = await recordPromotion(deps.store.learning, deps.agentId, record, still, `${said}: held, never promoted: a purged run wrote this revision, and its text is gone`);
+  if (decided.won) deps.log(`workflow-first: ${name} at ${digest} ${decided.record?.decided === "promote" ? "promoted" : "held"}: ${decided.record?.reason}`);
   return decided;
 }
 

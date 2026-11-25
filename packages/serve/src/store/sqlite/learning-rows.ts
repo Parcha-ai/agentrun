@@ -133,6 +133,8 @@ async function rewriteWorkflow(tx: Tx, agentId: string, runId: string, name: str
  *  audits; and its saves' words (each save's version, id and merge key stay), a person's save left with no item (an
  *  approve of its draft, a removal of its line) with them: that save's words name what the run wrote. */
 export async function dropRunLearning(tx: Tx, agentId: string, runId: string): Promise<void> {
+  // The records' lock before any version changes: a promotion's write reads its digests under it (changeRecords).
+  await tx.dialect.lockKey(tx, `learning.records:${agentId}`);
   const names = (await tx.all<{ name: string }>(`SELECT DISTINCT i.name FROM learning_items i JOIN learning_saves s ON s.agent_id = i.agent_id AND s.version = i.version
     WHERE i.agent_id = ? AND i.kind = 'workflow' AND (s.by_run = ? OR i.by_run = ?) ORDER BY i.name`, agentId, runId, runId)).map((row) => row.name);
   // The person's saves that wrote a version of the run's text, read before it goes.
@@ -279,10 +281,12 @@ export function learningRows(db: StoreConnection, now: () => number): Rows {
       await insertRecord(tx, agentId, kind, record, seq, at);
       return { seq, runId: record.runId, workflow: record.workflow, digest: record.digest, data: JSON.parse(JSON.stringify(record.data ?? null)) as unknown, at };
     }),
-    changeRecords: (agentId, kind, update) => db.transaction(async (tx) => {
+    changeRecords: (agentId, kind, update, options) => db.transaction(async (tx) => {
       await d.lockKey(tx, `learning.records:${agentId}`);
       const before = await recordsIn(tx, agentId, kind);
-      const answer = update(before);
+      const digests = options?.digestsOf === undefined ? undefined
+        : new Set((await tx.all<{ digest: string }>("SELECT DISTINCT digest FROM learning_items WHERE agent_id = ? AND kind = 'workflow' AND name = ? AND digest IS NOT NULL", agentId, options.digestsOf)).map((row) => row.digest));
+      const answer = update(before, digests);
       if (!("records" in answer)) return answer.result;
       const was = new Map(before.map((one) => [one.seq, one]));
       const kept = new Set<number>();

@@ -501,17 +501,19 @@ const blankedRuns = (record: PromotionRecord | undefined): string[] =>
  *  and of every record kept (`items`: a check across revisions, one at a time, in the same guarded write): so of two
  *  claims deciding at once only the first decision is kept, and only its claim acts on it (Recorded.won). What the one
  *  there now has blanked is blanked in `record` too (forgetRunIn): a record built on a copy read before a run's purge
- *  (a connected agent's next turn, release or decision carries its turns on) never writes that run's text back. One
- *  transaction (Store.learning changeRecords). */
-export function recordPromotion(rows: LearningRecords, agentId: string, record: PromotionRecord, still: (now: PromotionRecord | undefined, items: readonly PromotionRecord[]) => boolean): Promise<Recorded> {
-  return rows.changeRecords<Recorded>(agentId, "promotion", (saved) => {
+ *  (a connected agent's next turn, release or decision carries its turns on) never writes that run's text back. With
+ *  `unheld`, a promote of a digest no version of its workflow holds (a purge took it since its check read it) is kept
+ *  held, `unheld` its reason, read in the same write. One transaction (Store.learning changeRecords). */
+export function recordPromotion(rows: LearningRecords, agentId: string, record: PromotionRecord, still: (now: PromotionRecord | undefined, items: readonly PromotionRecord[]) => boolean, unheld?: string): Promise<Recorded> {
+  return rows.changeRecords<Recorded>(agentId, "promotion", (saved, digests) => {
     const kept0 = saved.filter((one) => DECIDED.includes((one.data as PromotionRecord)?.decided));
     const items = kept0.map((one) => one.data as PromotionRecord);
     const now = promotionOf(items, record.workflow, record.digest);
     if (!still(now, items)) return { result: { record: now, won: false } };
-    const kept = blankedRuns(now).reduce(forgetRunIn, record);
+    const gone = unheld !== undefined && record.decided === "promote" && digests !== undefined && !digests.has(record.digest);
+    const kept = blankedRuns(now).reduce(forgetRunIn, gone ? { ...record, decided: "hold" as const, reason: unheld } : record);
     return { records: [...saved.map((one) => keptWrite(one)), promotionWrite(kept)], result: { record: kept, won: true } };
-  });
+  }, unheld === undefined ? undefined : { digestsOf: record.workflow });
 }
 
 /** How many of a replay's own runs ended each way (a run not ended past its deadline is failed): what each run did. A

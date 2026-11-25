@@ -516,8 +516,10 @@ export interface Learning {
   /** Adds one record of `kind`, after every other. */
   addRecord(agentId: string, kind: LearningRecordKind, record: LearningRecordWrite): Promise<LearningRecord>;
   /** The agent's records of `kind` changed in one transaction: `update` reads them all and answers the list they become
-   *  (a record with its `seq` kept is that record, one without is added after the others), or undefined for no change. */
-  changeRecords<T>(agentId: string, kind: LearningRecordKind, update: (records: readonly LearningRecord[]) => { records: readonly LearningRecordWrite[]; result: T } | { result: T }): Promise<T>;
+   *  (a record with its `seq` kept is that record, one without is added after the others), or undefined for no change.
+   *  With `digestsOf` (a workflow's name), `update` reads too the digests its versions hold, in the same transaction: a
+   *  run's purge takes the records' lock before it changes a version, so none goes between the read and the write. */
+  changeRecords<T>(agentId: string, kind: LearningRecordKind, update: (records: readonly LearningRecord[], digests?: ReadonlySet<string>) => { records: readonly LearningRecordWrite[]; result: T } | { result: T }, options?: { readonly digestsOf?: string }): Promise<T>;
   /** Agent `agentId`'s ledger (learn/ledger.ts), in one read (one snapshot of both tables): every run's row its end
    *  recorded, oldest first, each with the end it was recorded for (`epoch`, its run's epoch then), and every spend row.
    *  With `runIds`, those runs' rows alone and the spend rows they booked or that audit them (none for none). Written
