@@ -11,14 +11,16 @@ export const SDK_MISSING = "sdk_missing";
 /**
  * The SDK package `name` that `vendor`'s provider calls. When it is not installed, an error with code SDK_MISSING whose
  * words name the package and the install step at this package's pin, such as "E2B needs the e2b package: npm install
- * e2b@2.63.0". Any other failure to load it is thrown as it is.
+ * e2b@2.63.0". "Not installed" is read from resolving `name` itself, before it loads: an installed SDK whose own import
+ * fails (a file or a dependency of its own missing) throws that failure as it is, naming the module that is missing.
  */
 export async function vendorSdk<T>(vendor: string, name: string): Promise<T> {
 	try {
-		return (await import(name)) as T;
+		import.meta.resolve(name);
 	} catch (error) {
 		if ((error as { code?: unknown } | null)?.code !== "ERR_MODULE_NOT_FOUND") throw error;
 		const pins = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { optionalDependencies?: Record<string, string> }).optionalDependencies;
 		throw Object.assign(new Error(`${vendor} needs the ${name} package: npm install ${name}@${pins?.[name]}`, { cause: error }), { code: SDK_MISSING });
 	}
+	return (await import(name)) as T;
 }
