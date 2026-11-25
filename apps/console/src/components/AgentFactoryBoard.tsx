@@ -1,6 +1,7 @@
 import { ArrowUpRight, ChevronDown, Factory, LayoutGrid, List, RefreshCw } from "lucide-react";
 import { useId, useState } from "react";
 import { Banner, Button, Chip, Field, pageTitleClass, pageToolbarClass, Picker, Segmented, Spinner, type ChipTone, type PickerOption, type SegmentedOption } from "@/components/ui";
+import { FACTORY_POLL_MS } from "@/lib/factory";
 import { when } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -16,7 +17,7 @@ export type FactoryCard = {
   lane: "waiting" | "working" | "attention" | "unknown";
   stateLabel: string;
   sourceLabel: string;
-  controlLabel: string;
+  controlLabel: FactoryControl;
   repo: string | null;
   githubLinks: { label: string; url: string }[];
   activityAt: string | null;
@@ -56,23 +57,28 @@ const VIEWS: SegmentedOption<FactoryView>[] = [
 ];
 
 const repoValue = (repo: string | null) => repo === null ? "unreported" : `repo:${repo}`;
-const controlValue = (control: string) => `control:${control}`;
+/** Whether this server holds a session and can act on it, or only hears of one something else runs. */
+export type FactoryControl = "Managed" | "Observed";
+const CONTROLS: readonly FactoryControl[] = ["Managed", "Observed"];
+const controlValue = (control: FactoryControl) => `control:${control}`;
 const validTime = (value: string | null): value is string => value !== null && Number.isFinite(Date.parse(value));
+/** A time of day to the second: the board is read again every few seconds, and a minute would look stopped. */
+const toTheSecond = (iso: string) => new Date(iso).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", second: "2-digit" });
 
 /** Selection survives a refresh that removes its last matching run: an explicit zero match is more useful than a
- *  blank picker or silently widening the person's scope. Prefixes keep the filter sentinels apart from source words. */
-function filterOptions(cards: FactoryCard[], repository: string, control: string): { repositories: PickerOption[]; controls: PickerOption[] } {
+ *  blank picker or silently widening the person's scope. Prefixes keep the filter sentinels apart from source words.
+ *  A repository is offered once a loaded session names it. Both controls are always offered: they are the whole set,
+ *  and a list that left out the one no loaded session has would hide that the other kind exists. */
+function filterOptions(cards: FactoryCard[], repository: string): { repositories: PickerOption[]; controls: PickerOption[] } {
   const repos = new Set(cards.map((card) => card.repo).filter((repo): repo is string => repo !== null));
-  const controls = new Set(cards.map((card) => card.controlLabel));
   if (repository.startsWith("repo:")) repos.add(repository.slice(5));
-  if (control.startsWith("control:")) controls.add(control.slice(8));
   return {
     repositories: [
       { value: "all", label: "All repositories" },
       ...[...repos].sort().map((repo) => ({ value: repoValue(repo), label: repo })),
       { value: "unreported", label: "Repository not reported" },
     ],
-    controls: [{ value: "all", label: "All controls" }, ...[...controls].sort().map((label) => ({ value: controlValue(label), label }))],
+    controls: [{ value: "all", label: "All controls" }, ...CONTROLS.map((label) => ({ value: controlValue(label), label }))],
   };
 }
 
@@ -88,7 +94,7 @@ export function AgentFactoryBoard({ cards, review, loading, refreshing, error, u
   const busy = loading || refreshing;
   const hasSnapshot = updatedAt !== null || cards.length > 0 || review.length > 0;
   const available = hasSnapshot || (!loading && !error);
-  const options = filterOptions([...cards, ...review], repository, control);
+  const options = filterOptions([...cards, ...review], repository);
   const matches = (card: FactoryCard) => (repository === "all" || repoValue(card.repo) === repository) && (control === "all" || controlValue(card.controlLabel) === control);
   const shown = cards.filter(matches);
   const shownReview = review.filter(matches);
@@ -100,12 +106,14 @@ export function AgentFactoryBoard({ cards, review, loading, refreshing, error, u
   const clearFilters = () => { setRepository("all"); setControl("all"); };
 
   return (
-    // The page's frame is every list page's (Mission Control, Runs, Triggers): a bar with the place's icon and name in
-    // caps, then the content. Its controls sit with the sessions they act on, at the end of the totals' row.
-    <section className="flex min-h-full flex-col" aria-label="Agent Factory">
+    // The page's frame is Mission Control's and Runs': a bar with the place's icon and name in caps, then the content
+    // in a pane of its own. The bar stays while the sessions scroll under it, so its bottom edge keeps meeting the
+    // edge under the navigation's logo row. Its controls sit with the sessions they act on, at the end of the totals' row.
+    <section className="flex h-full min-h-0 flex-col" aria-label="Agent Factory">
       <header className={cn(pageToolbarClass, "px-5 md:px-6")}>
         <h1 className={pageTitleClass}><Factory className="size-4" aria-hidden />Agent Factory</h1>
       </header>
+      <div className="min-h-0 flex-1 overflow-auto">
       <div className="mx-auto w-full max-w-page-wide space-y-6 p-5 md:p-8">
 
       {error && <Banner tone="error" title={hasSnapshot ? "Could not refresh Agent Factory" : "Could not load Agent Factory"}
@@ -118,8 +126,9 @@ export function AgentFactoryBoard({ cards, review, loading, refreshing, error, u
 
       {available && <>
         {/* The loaded sessions counted once, on one row: each lane's own header counts the cards a filter leaves in it.
-            The row ends with how the sessions are laid out, then Refresh: they keep the first line's right end, and
-            in a narrow row the totals wrap beside them. */}
+            The row ends with how the sessions are laid out, when they were last read, then Refresh: they keep the
+            first line's right end, and in a narrow row the totals wrap beside them. A phone has no room for the time
+            there: the page's last line says it at every width. */}
         <div className="flex items-start gap-x-8">
           <section aria-label="Loaded active session totals" className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-8 gap-y-2">
             <p className="font-mono text-body"><strong className="text-figure font-semibold">{cards.length}</strong> active sessions loaded</p>
@@ -132,6 +141,8 @@ export function AgentFactoryBoard({ cards, review, loading, refreshing, error, u
           </section>
           <div className="ml-auto flex shrink-0 items-center gap-2">
             <Segmented size="sm" name="factory-view" label="View" value={view} onChange={onView} options={VIEWS} />
+            {validTime(updatedAt) && <p title={`Read again every ${FACTORY_POLL_MS / 1000} seconds, and when you come back to this tab`}
+              className="hidden whitespace-nowrap font-mono text-small text-muted-foreground sm:block">Updated <time dateTime={updatedAt}>{toTheSecond(updatedAt)}</time>{error ? " · stale" : ""}</p>}
             <Button size="icon" aria-label="Refresh Agent Factory" disabled={busy} aria-busy={busy} onClick={onRefresh}><RefreshCw className="size-4" aria-hidden /></Button>
           </div>
         </div>
@@ -191,6 +202,7 @@ export function AgentFactoryBoard({ cards, review, loading, refreshing, error, u
           <p>{validTime(updatedAt) ? <>Last successful refresh <time dateTime={updatedAt}>{when(updatedAt)}</time>{error ? " · stale" : ""}</> : "Refresh time not reported"}</p>
         </footer>
       </>}
+      </div>
       </div>
     </section>
   );

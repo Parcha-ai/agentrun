@@ -51,7 +51,7 @@ describe("Agent Factory board", () => {
     expect(bar.querySelectorAll("button, input")).toHaveLength(0);
     // No sentence under the bar: the totals are the page's first line, as a list is on the other pages.
     expect(host.textContent).not.toContain("Sessions reported to this AgentRun server");
-    const row = host.querySelector("header + div")!.firstElementChild!;
+    const row = host.querySelector('[aria-label="Loaded active session totals"]')!.parentElement!;
     expect(row.children).toHaveLength(2);
     // No rule under the row: the filters follow it across the page's own gap.
     expect([...row.classList].filter((name) => name.startsWith("border"))).toEqual([]);
@@ -63,6 +63,51 @@ describe("Agent Factory board", () => {
     expect(controls.firstElementChild?.getAttribute("aria-label")).toBe("View");
     expect(controls.lastElementChild).toBe(refresh());
     expect(refresh().textContent).toBe("");
+  });
+
+  it("keeps the top bar in place: the sessions scroll in a pane of their own under it, as on Mission Control and Runs", () => {
+    const { host } = mount();
+    const frame = host.querySelector('section[aria-label="Agent Factory"]')!;
+    const bar = host.querySelector("header")!;
+    // The frame takes the page's height and never scrolls: its two parts are the bar and the pane under it. A bar that
+    // scrolled with the sessions would leave the edge under the navigation's logo row as soon as the page moved.
+    expect([...frame.children].map((part) => part.tagName)).toEqual(["HEADER", "DIV"]);
+    for (const name of ["flex", "h-full", "min-h-0", "flex-col"]) expect(frame.classList.contains(name), name).toBe(true);
+    expect(frame.classList.contains("min-h-full")).toBe(false);
+    const pane = bar.nextElementSibling!;
+    for (const name of ["min-h-0", "flex-1", "overflow-auto"]) expect(pane.classList.contains(name), name).toBe(true);
+    // Everything under the bar is in that pane, the page's last line included.
+    expect(pane.contains(host.querySelector('[aria-label="Loaded active session totals"]'))).toBe(true);
+    expect(pane.contains(host.querySelector('[aria-label="Active agent sessions"]'))).toBe(true);
+    expect(pane.contains(host.querySelector("footer"))).toBe(true);
+  });
+
+  it("says when the sessions were last read, beside Refresh at the top of the page, and that a failed read left them stale", () => {
+    const { host, refresh, render } = mount();
+    const said = () => refresh().previousElementSibling!;
+    // Between the view switch and Refresh: the time of the read the page shows, to the second, since it is read again
+    // every few seconds; the hover says how often.
+    expect(said().previousElementSibling?.getAttribute("role")).toBe("radiogroup");
+    expect(said().querySelector("time")?.getAttribute("datetime")).toBe(AT);
+    expect(said().textContent).toMatch(/^Updated \d{1,2}:\d{2}:\d{2} [AP]M$/);
+    expect(said().getAttribute("title")).toBe("Read again every 10 seconds, and when you come back to this tab");
+    render({ error: "The server did not answer" });
+    expect(said().textContent).toMatch(/^Updated \d{1,2}:\d{2}:\d{2} [AP]M · stale$/);
+    // Before the first read there is no time to say.
+    render({ error: null, updatedAt: null });
+    expect(refresh().previousElementSibling?.getAttribute("role")).toBe("radiogroup");
+  });
+
+  it("offers both kinds of control in its filter, whichever the loaded sessions have: Observed can be asked for and answered with none", async () => {
+    const { host } = mount({ cards: [card("first", "working"), card("second", "waiting")], review: [] });
+    const options = await optionsOf(picker(host, "Control")!);
+    expect(options.map((option) => option.value)).toEqual(["all", "control:Managed", "control:Observed"]);
+    expect(options.map((option) => option.text)).toEqual(["All controls", "Managed", "Observed"]);
+    await pick(picker(host, "Control")!, "control:Observed");
+    expect(host.querySelector('[aria-label="Matching sessions"]')?.textContent).toBe("0 of 2 loaded active sessions match");
+    expect(host.querySelectorAll("article")).toHaveLength(0);
+    await pick(picker(host, "Control")!, "control:Managed");
+    expect(host.querySelectorAll("article")).toHaveLength(2);
   });
 
   it("shows every supplied active session in its reported lane and keeps terminal review separate", () => {

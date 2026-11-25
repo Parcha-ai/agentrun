@@ -9,15 +9,19 @@ import { check, markExample } from "../harness.mjs";
 const AGENT = "factory-builder";
 const NAME = "ConsoleBuilderAccessibilityAndRepositorySynchronization";
 const ACTIVE = '[aria-label="Active agent sessions"]';
+// The pane under the page's top bar: the sessions scroll in it, the bar stays.
+const PANE = 'section[aria-label="Agent Factory"] > header + div';
 
 /** Measure the rendered boxes, including text that could overflow a correctly sized card. */
-function layout() {
+function layout(paneSelector) {
   const main = document.querySelector("main");
+  const pane = document.querySelector(paneSelector);
   const board = document.querySelector('[aria-label="Active agent sessions"]');
   const edge = main.getBoundingClientRect();
   const wrong = [];
   if (document.documentElement.scrollWidth > innerWidth + 1) wrong.push("the document scrolls horizontally");
   if (main.scrollWidth > main.clientWidth + 1) wrong.push("the main pane scrolls horizontally");
+  if (pane.scrollWidth > pane.clientWidth + 1) wrong.push("the sessions' pane scrolls horizontally");
   for (const el of board.querySelectorAll("section, article, h2, h3, a, p")) {
     const box = el.getBoundingClientRect();
     if (box.left < edge.left - 1 || box.right > Math.min(edge.right, innerWidth) + 1) wrong.push(`${el.tagName} leaves the main pane`);
@@ -67,6 +71,24 @@ export default {
       }
       await page.locator('[aria-label="Loaded active session totals"]').getByText("3 active sessions loaded", { exact: true }).waitFor();
       await page.locator('[data-factory-lane="attention"]').getByText("Which region should I use?").waitFor();
+
+      // The top bar stays while the sessions scroll under it: its bottom edge meets the edge under the navigation's
+      // logo row at rest and after the page has moved. The window is short enough to scroll and still shows the sidebar.
+      await page.setViewportSize({ width: 1280, height: 520 });
+      const edges = () => page.evaluate((pane) => ({
+        logo: document.querySelector("aside > div").getBoundingClientRect().bottom,
+        bar: document.querySelector('section[aria-label="Agent Factory"] > header').getBoundingClientRect().bottom,
+        scrolled: document.querySelector(pane).scrollTop + document.querySelector("main").scrollTop,
+      }), PANE);
+      const rest = await edges();
+      check(rest.logo > 0 && rest.bar === rest.logo, `at rest the top bar must end where the logo row ends: ${JSON.stringify(rest)}`);
+      await page.mouse.move(800, 400);
+      await page.mouse.wheel(0, 120);
+      await page.waitForFunction((pane) => document.querySelector(pane).scrollTop + document.querySelector("main").scrollTop > 0, PANE);
+      const moved = await edges();
+      check(moved.bar === moved.logo, `after a scroll the top bar must still end where the logo row ends: ${JSON.stringify(moved)}`);
+      await page.evaluate((pane) => { document.querySelector(pane).scrollTop = 0; document.querySelector("main").scrollTop = 0; }, PANE);
+      await page.setViewportSize({ width: 1280, height: 1000 });
 
       // The real scoped API and rendered cards agree. A plausible URL and owner-written trigger wrapper cannot
       // manufacture a repository/PR link: trusted positive bindings are covered at the server's GitHub adapter seam.
@@ -120,10 +142,10 @@ export default {
       await rows.nth(2).waitFor();
       for (const width of [1280, 390]) {
         await page.setViewportSize({ width, height: 1000 });
-        const wide = await page.evaluate(() => {
-          const main = document.querySelector("main"), table = document.querySelector('table[aria-label="Active agent sessions"]');
-          return document.documentElement.scrollWidth > innerWidth + 1 || main.scrollWidth > main.clientWidth + 1 || table.getBoundingClientRect().right > main.getBoundingClientRect().right + 1;
-        });
+        const wide = await page.evaluate((paneSelector) => {
+          const main = document.querySelector("main"), pane = document.querySelector(paneSelector), table = document.querySelector('table[aria-label="Active agent sessions"]');
+          return document.documentElement.scrollWidth > innerWidth + 1 || main.scrollWidth > main.clientWidth + 1 || pane.scrollWidth > pane.clientWidth + 1 || table.getBoundingClientRect().right > main.getBoundingClientRect().right + 1;
+        }, PANE);
         check(!wide, `the list at ${width}px must fit its pane`);
       }
       await page.setViewportSize({ width: 1280, height: 1000 });
@@ -143,13 +165,13 @@ export default {
         for (const width of [1280, 1024, 390, 320]) {
           await page.setViewportSize({ width, height: 1000 });
           await page.evaluate(async () => { await document.fonts.ready; await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))); });
-          const measured = await page.evaluate(layout);
+          const measured = await page.evaluate(layout, PANE);
           check(measured.cards === 3, `${theme} at ${width}px: every session remains in the board`);
           check(measured.wrong.length === 0, `${theme} at ${width}px: ${measured.wrong.join(", ")}`);
           if (width >= 1024) check(new Set(measured.laneTops).size === 1, `${theme} at ${width}px: the four lanes must share a desktop row`);
           if (shots) {
             await markExample(page.locator("main"));
-            await page.locator("main").evaluate((el) => { el.scrollTop = 0; });
+            await page.locator(PANE).evaluate((el) => { el.scrollTop = 0; });
             await page.screenshot({ path: join(shots, `agent-factory-${theme.toLowerCase()}-${width}.png`), fullPage: true });
             if (width < 768) {
               const attention = board.locator('[data-factory-lane="attention"] article');
