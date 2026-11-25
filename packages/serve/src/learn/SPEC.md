@@ -398,9 +398,35 @@ workflow is never deleted by a run: a retired one stays and serves no run.
 A run's purge deletes its rows in the same transaction as its own (`Store.learning.purgeRun`), its agent's alone: its
 notes, its grades and audits, and in every version of each workflow, each file it wrote back to its text before (a
 person's edit of that text with it; a file it deleted there again), so a later run's copy of its bytes goes too and a
-later run's own change of a file stays. A person's retire of a version that held its text stays on the version that
-comes back. The promotion and audit records of each digest no version holds after go. Its saves stay as facts with no
-words (their merge keys still taken), and so does a person's save left with no item.
+later run's own change of a file stays. A person's retire, and a person's restore, of a version that held its text
+stays on the version that comes back, so the owner's newest decision stands; a person's approve does not (it approved
+the run's text, and the text that comes back is one the owner never approved). The promotion and audit records of each
+digest no version holds after go. Its saves stay as facts with no words (their merge keys still taken), and so does a
+person's save left with no item. No other save, a run's or a person's, names a path only it wrote (no version holds it
+after) in its files, its file or its reason, nor a workflow gone with it in its reason.
+
+A purge that changed a row is a save too: the host's (kind `purged`, no item, no words) at the agent's newest version
+plus one, in the purge's transaction and under the agent's learning lock, as every save. So:
+
+- a save computed on a version read before the purge (a person's change, a run's merge) is stale, and is computed again
+  on the rewritten rows: none writes the purged text back;
+- a run's merge read at a save before the purge (its seed, or the save its compile turn read a workflow at) is refused
+  whole, nothing written, its learning dropped `purged_since_seed`. The purge rewrote what that run started from in
+  place, so a file it gives back unchanged from its seed can't be told apart from the purged run's bytes. Purges are
+  rare; losing such a run's learning is the safe side. A run seeded after the purge merges as ever;
+- every promotion and audit record write checks, in its own transaction (under the agent's records lock, which the purge
+  takes before it changes a version), that a version of its workflow still holds its digest, and every record write
+  that its run is not purged; if not, it writes nothing (`LearningRecordRefused`; a promotion's write is not won). A
+  failed draft's record, whose digest is its run's and is held by no version, is the one exception. A grade checks its
+  run alone, never its digest: the purge keeps a live run's grade whatever revision served it, so a later grade of that
+  run is kept the same way.
+
+A purge that finds nothing of the run's (a run that learned nothing, a second purge) changes no row and adds no save.
+An agent's reset, its delete and its purge take the agent's learning lock and then its records lock, the order a run's
+purge takes them, so a records write that began before one of them is in before it, never written after.
+
+Notes are the owner's: an owner can edit a run's correction line, and the edit counts as a known answer, the owner's
+own words. A run's purge deletes the run's note rows, never a person's edit of one.
 
 ## The reset
 

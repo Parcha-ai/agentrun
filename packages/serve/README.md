@@ -4110,10 +4110,17 @@ stays in every total.
     blocks go back to the filesystem unwiped. Postgres's own WAL and its archived WAL keep the old values until they are
     recycled or expire, and backups keep them for their retention.
 - Its agent's other runs, and what the agent learned from them, are kept. The run's own learning rows go in the purge's
-  transaction: each line it added to `corrections.md`, each learned workflow version it wrote (a person's approve,
-  retire or restore of one goes with it, being still its text), its grades, and the promotion records and audit rows of
-  the workflow versions it alone wrote. Its saves stay as facts with no words (a version, its id and its merge key, so
-  the run never merges again), and a person's save that changed only its text loses its words too. So the log and a
+  transaction: each line it added to `corrections.md`, each learned workflow version it wrote (a person's approve of one
+  goes with it, being still its text; a person's retire or restore of one stays on the version that comes back), its
+  grades, and the promotion records and audit rows of the workflow versions it alone wrote. Its saves stay as facts with
+  no words (a version, its id and its merge key, so the run never merges again), and a person's save that changed only
+  its text loses its words too; no other save names a file or workflow only it wrote.
+- The purge is a save of the agent's learning (the host's, which the log never shows). A write computed before it (a
+  person's edit, a run's merge) is computed again on what the purge left, so none writes the purged text back. A run of
+  the agent that read its learning before the purge (its seed) has its learning dropped at its end, nothing written
+  (`learning.reason` `purged_since_seed`): the purge changed what it started from, so a file it gives back unchanged
+  can't be told apart from the purged run's. A promotion, audit row or grade written after the purge for what it took
+  (a check of the run's workflow version still replaying, a grade of the purged run) writes nothing. So the log and a
   workflow's revisions leave it out, and `GET /runs/{id}/learning/diff` is `404`. A workflow it revised goes back to the
   version before it, so another run's champion keeps serving; one it wrote new is gone, its file reads `404`. A read at
   an older version id (a champion by its digest, an SDK receipt's pinned save, a later merge's diff) reads the rows as
@@ -4570,7 +4577,7 @@ evidence and the shadow result through the run-scoped SDK credential.
 The run's `learning` (on `GET /runs/{run_id}`, and `{state, reason, detail}` in run lists, the detail cut to 140
 characters and no time) says how it went: `seeded`, then `reflecting` during its end step, and `merged`, or `dropped`
 with a reason from a closed list (`seed_failed`, `no_budget`, `unknown_cost`, `cancelled`, `crashed`, `reflect_failed`,
-`empty`, `checker`, `use`; a run record with any other reason is not counted). It is `null` for a run that does not
+`empty`, `checker`, `use`, `reset`, `purged_since_seed`; a run record with any other reason is not counted). It is `null` for a run that does not
 learn (its agent's `learning` is not true, the server's switch was off when it started, or it is a workflow's or an
 imported run). Its `detail` says the same in a person's words, never the machine's: "Started from 2 corrections.",
 "Keeping what this run learned…", "Learned the workflow sort-invoice. Kept your correction.", "Nothing new to keep from
