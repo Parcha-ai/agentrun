@@ -13,7 +13,6 @@ import { test } from "node:test";
 import { SECRET_NAMES } from "../dist/secrets.js";
 import { PROVIDER_KEYS } from "../dist/model.js";
 import { keyShaped } from "../dist/secret-cut.js";
-import { BOX_KEYS } from "../dist/place-offers.js";
 import { TOOL_FIELDS } from "../dist/tool-keys.js";
 import { toolKeysOverStore } from "../dist/tool-keys-store.js";
 import { ARCHIL_API_KEY_ENV } from "../dist/workspace/archil-key.js";
@@ -42,9 +41,9 @@ const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pat
 const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
 const FAUX_PARALLEL = new URL("./fixtures/faux-parallel.mjs", import.meta.url).pathname;
 const CONFINED = existsSync("/usr/bin/setpriv");
-/** The server's own: its tokens (the token and the token list), the seal key its tool keys are kept under, and the boxes' keys, which only its box
- *  providers read (boxes.ts). */
-const SERVER_ONLY = ["AGENTRUN_TOKEN", "AGENTRUN_TOKENS", "AGENTRUN_API_KEY", "AGENTRUN_SEAL_KEY", "AGENTRUN_STORE_URL", ...BOX_KEYS];
+/** The server's own: its tokens (the token and the token list), the seal key its tool keys are kept under, and a vendor's
+ *  box's keys (two boxes' here), which only its computer providers read. */
+const SERVER_ONLY = ["AGENTRUN_TOKEN", "AGENTRUN_TOKENS", "AGENTRUN_API_KEY", "AGENTRUN_SEAL_KEY", "AGENTRUN_STORE_URL", "DAYTONA_API_KEY", "MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET"];
 /** Every secret serve and a run's process read: each must be on the launcher's list. */
 /** The decision keys: held by the server like the rest, and handed to a workflow run's process only on its decision
  *  descriptor, for its decision provider (decisions.ts), never with the run's secrets. */
@@ -373,9 +372,10 @@ process.stdout.write("AGENTRUN_RUNNER_READY\\n");`;
 test("started by their launchers, the server and the runner hold COMPOSIO_API_KEY in neither environment, nor does a run's process of the same user; a run granted the Composio server's tool still reaches Composio with it", { timeout: 180_000 }, async (t) => {
   const canary = `nak-${process.pid}-${Date.now().toString(36)}`;
   const key = `${canary}-COMPOSIO_API_KEY`;
-  const user = "grep-user-alice-0001";
+  // An API-only run's Composio user is in the token's namespace, its account one Composio lists under it.
+  const user = "agentrun.token.grep-user-alice-0001";
   const account = "ca_alice_gmail_0001";
-  const composio = await startFakeComposio({ apiKey: key, toolkits: { gmail: { no_auth: false, tools: [{ slug: "add", name: "Add", description: "Add two numbers." }] } }, mcpAccounts: { [user]: [account] } });
+  const composio = await startFakeComposio({ apiKey: key, toolkits: { gmail: { no_auth: false, tools: [{ slug: "add", name: "Add", description: "Add two numbers." }] } }, mcpAccounts: { [user]: [account] }, accounts: { gmail: [{ status: "ACTIVE", auth_config: "ac_alice_own", id: account, user }] } });
   t.after(() => composio.close());
   const hold = join(await scratch(t), "held");
   const env = { ...Object.fromEntries(SECRET_NAMES.map((name) => [name, undefined])), AGENTRUN_TOKEN: `${canary}-AGENTRUN_TOKEN-${"t".repeat(16)}`, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), COMPOSIO_API_KEY: key, AGENTRUN_RUN_USER: "same", [HOLD_ENV]: hold };

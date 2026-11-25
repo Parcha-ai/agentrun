@@ -4,12 +4,18 @@
 // front, or a server that took the next free port, a browser sends the port it opened, which is not the server's, and a
 // page that rebound its name gains nothing from any port.
 
-/** The name a Host header gives, lowercased and without its port (an IPv6 address keeps its brackets). Undefined for a
- *  header that is not `name` or `name:port`: no user part, no path, no empty or non-numeric port. */
-export function hostName(header: string | undefined): string | undefined {
+/** A Host header's name, lowercased (an IPv6 address keeps its brackets), and its port when it names one. Undefined for a
+ *  header that is not `name` or `name:port`: no user part, no path, no empty, non-numeric or out-of-range port. */
+function hostParts(header: string | undefined): { name: string; port?: number } | undefined {
   const match = /^(\[[0-9a-f:.]+\]|[a-z0-9._-]+)(?::(\d{1,5}))?$/.exec(String(header ?? "").trim().toLowerCase());
-  return match && (match[2] === undefined || Number(match[2]) <= 65535) ? match[1] : undefined;
+  if (!match) return undefined;
+  if (match[2] === undefined) return { name: match[1] };
+  const port = Number(match[2]);
+  return port <= 65535 ? { name: match[1], port } : undefined;
 }
+
+/** The name a Host header gives, without its port (hostParts). */
+export const hostName = (header: string | undefined): string | undefined => hostParts(header)?.name;
 
 /** Whether a Host name (as hostName gives it) is this machine's own: localhost, an IPv4 loopback address or [::1]. Not a name
  *  an operator allowed (--allow-host, AGENTRUN_PUBLIC_URL): those pass the server's Host check, and a route that reads this
@@ -18,9 +24,8 @@ export const isLoopbackName = (name: string | undefined): boolean => name === "l
 
 /** The port a Host header names (1 to 65535), or undefined for none, or for a header that is not `name` or `name:port`. */
 export function hostPort(header: string | undefined): number | undefined {
-  const match = /^(?:\[[0-9a-f:.]+\]|[a-z0-9._-]+):(\d{1,5})$/.exec(String(header ?? "").trim().toLowerCase());
-  const port = match ? Number(match[1]) : 0;
-  return port >= 1 && port <= 65535 ? port : undefined;
+  const port = hostParts(header)?.port ?? 0;
+  return port >= 1 ? port : undefined;
 }
 
 /** The names a server listening on loopback `host` answers to: this machine's (localhost, 127.0.0.1, [::1], and `host`

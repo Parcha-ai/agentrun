@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { request } from "node:http";
 import { test } from "node:test";
-import { hostName } from "../dist/host-check.js";
+import { hostName, hostPort } from "../dist/host-check.js";
 import { call, serve } from "./support.mjs";
 
 /** A GET to the server at `port` with the Host header `host`, as a browser (`accept: text/html`) or a script sends it. */
@@ -26,6 +26,15 @@ test("a Host header's name is its name without the port, lowercased; anything th
   for (const bad of ["", "evil@localhost:7340", "localhost:7340@evil.example", "localhost:", "localhost:http", "localhost:123456", "local host", "localhost/x", "[::1", undefined]) {
     assert.equal(hostName(bad), undefined, String(bad));
   }
+});
+
+test("a Host header's port is 1 to 65535 when it names one; none, 0 or past the range has none, and neither does a header with no name", () => {
+  assert.equal(hostPort("localhost:7340"), 7340);
+  assert.equal(hostPort("[::1]:9"), 9);
+  assert.equal(hostPort("LocalHost:65535"), 65535);
+  for (const none of ["localhost", "localhost:0", "localhost:65536", "evil@localhost:7340", "localhost:http", undefined]) assert.equal(hostPort(none), undefined, String(none));
+  assert.equal(hostName("localhost:0"), "localhost", "a port of 0 still names the host");
+  assert.equal(hostName("localhost:65536"), undefined);
 });
 
 test("on loopback, this machine's names are served on any port, and a name rebound to this address still is not", async (t) => {
