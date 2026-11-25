@@ -302,7 +302,8 @@ test("amendment 1a: each cut's outStart/outEnd is its replacement's span in the 
   const input = `a ${SK} b PGPASSWORD=s3cretPgPw c\n$ env\nPATH=/a\nHOME=/b\nSHELL=/c\nend`;
   const out = await cutOf(input);
   for (const cut of out.cuts) {
-    const expected = cut.kind === "dump" ? `[redacted:${cut.rule} 3 lines]` : `[redacted:${cut.rule}]`;
+    // `$ env`'s output runs to the next prompt (11-25 r2): its three NAME=value lines and `end`.
+    const expected = cut.kind === "dump" ? `[redacted:${cut.rule} 4 lines]` : `[redacted:${cut.rule}]`;
     assert.equal(out.text.slice(cut.outStart, cut.outEnd), expected);
   }
   const counted = await scrub(input, { mode: "count" });
@@ -1255,7 +1256,9 @@ test("XXVII, XXVIII: a line start under any lead, in any wrapper, opens the conf
           const left = out.ok ? secrets.filter((secret) => out.text.includes(secret)) : ["(failed closed)"];
           if (left.length) misses.push(`${leadName} x ${wrapName} x ${slotName} (${at}): ${left.join(",")}`);
           else if (wrapName !== "raw" && !sameJson(text, out.text)) misses.push(`${leadName} x ${wrapName} x ${slotName} (${at}): the cut output no longer parses as its JSON`);
-          else if (at !== "last line" && at !== "only line" && !out.text.includes("host: db.corp-sample.io")) misses.push(`${leadName} x ${wrapName} x ${slotName} (${at}): cut past its block`);
+          // `$ export -p` is a prompt line whose command prints the environment: its output runs to the next prompt
+          // (11-25 r2), so the line after its block may be cut with it. Pinned exactly in "LVI (11-25 r2): in a transcript".
+          else if (at !== "last line" && at !== "only line" && slotName !== "export -p" && !out.text.includes("host: db.corp-sample.io")) misses.push(`${leadName} x ${wrapName} x ${slotName} (${at}): cut past its block`);
         }
       }
     }
