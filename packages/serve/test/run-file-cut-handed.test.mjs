@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
+import * as handedValues from "../dist/handed-values.js";
 import { WITHHELD_TITLE } from "../dist/run-view.js";
 import { raw } from "./store-target.mjs";
 import { agent, follow, runDir, serve, withEnv } from "./support.mjs";
@@ -298,14 +299,26 @@ test("a message that hands a new model_key mid-turn keeps the one it replaced cu
   assert.deepEqual(await cutRead(run, "both.txt"), [200, "first=[redacted]\nsecond=[redacted]\n"]);
 });
 
-test("a message sealed over a launch whose sealed part doesn't open here keeps the run withheld: what it held is not known", { timeout: 180_000 }, async (t) => {
+test("a message that hands a new key to a run whose launch's sealed part doesn't open here is refused, and the run stays withheld: what it held is not known", { timeout: 180_000 }, async (t) => {
   const run = await liveRun(t, { start: { model_key: KEY } });
   await writeFile(join(run.work, "notes.txt"), `first=${KEY}\n`);
   await damageSeal(run.data, run.runId);
   const sent = await run.api("POST", `/runs/${run.runId}/messages`, { content: "Go on.", model_key: KEY_TWO });
-  assert.equal(sent.status, 202, JSON.stringify(sent.body));
-  assert.deepEqual(await cutRead(run, "notes.txt"), [403, "forbidden"], "a fresh seal is no reason to read the run cut of the new key alone");
+  assert.deepEqual([sent.status, sent.body.error?.details?.reason], [409, "withheld"], JSON.stringify(sent.body));
+  assert.deepEqual(await cutRead(run, "notes.txt"), [403, "forbidden"], "no fresh seal makes the run read cut of the new key alone");
   run.release();
+});
+
+test("a message to a run whose launch's sealed part doesn't open here is refused (409 not_continuable, reason withheld), never written uncut: the key it says is in no command row, nor anywhere the run is served after its end", { timeout: 180_000 }, async (t) => {
+  const run = await liveRun(t, { start: { model_key: KEY } });
+  await damageSeal(run.data, run.runId);
+  const sent = await run.api("POST", `/runs/${run.runId}/messages`, { content: `Use ${KEY} again.` });
+  assert.deepEqual([sent.status, sent.body.error?.code, sent.body.error?.details?.reason], [409, "not_continuable", "withheld"], JSON.stringify(sent.body));
+  assert.equal(sent.body.error.message, handedValues.WITHHELD_MESSAGE);
+  const commands = JSON.stringify((await run.store.commands(run.runId, 0)).map((command) => command.body));
+  assert.equal(commands.includes(KEY), false, `in no command row: ${commands}`);
+  await run.ended();
+  assert.equal((await served(run)).text.includes(KEY), false, "after its end: not in its view, list row or timeline");
 });
 
 test("a file that starts with a byte order mark, or holds one later, is cut at the same bytes after the run's end as while it ran: no end of the key shows", { timeout: 180_000 }, async (t) => {

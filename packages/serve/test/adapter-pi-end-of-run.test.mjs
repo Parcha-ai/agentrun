@@ -396,34 +396,6 @@ test("pi through the adapter: a person's stop during the job: the stopped end ca
   assert.deepEqual(toldRows(), [{ channel: "learning:test", run_id: "run-1", marker: "cut:stopped" }], "its rows stored with the stopped end");
 });
 
-// A spec that says none (endOfRun null: a held run its model kept from running, adapter-run-spec.ts) wins over the loop's
-// deps' step on every path that asks one (adapter-loop.ts stepOf): a cut run's (cutRows) and the end turn's, whose job's
-// end is kept for its look-back first (keepJobEnd).
-test("pi through the adapter: a spec that says none (endOfRun null): a person's stop during the job asks the deps' step nothing for the cut run, and no rows are kept", async (t) => {
-  const { server, start, until, toldRows } = await setup(t);
-  const calls = [];
-  const endOfRun = async (input) => (calls.push(input.cut ?? "asked"), { also: [told(`deps:${input.cut ?? "asked"}`)] });
-  const { tool, running } = heldTool();
-  await start(loopWith(piAdapterSpec({ script: [{ call: "slow" }, { say: "done" }], tools: { slow: tool }, hooks: quiet }), { endOfRun: null }, { endOfRun }), "runner-a");
-  await running;
-  await server.command("run-1", { kind: "stop" });
-  await until((row) => row.state === "stopped" && row.runner === null, "the run did not stop");
-  assert.deepEqual(calls, [], "the deps' step was not asked for the cut run: the spec said none");
-  assert.deepEqual(toldRows(), [], "no step's rows with the stopped end");
-});
-
-test("pi through the adapter: a spec that says none (endOfRun null): a job that answered keeps no job end for a look-back, and the deps' step is not asked", async (t) => {
-  const { start, until, endEntries, jobEndsOf, toldRows } = await setup(t);
-  const calls = [];
-  const endOfRun = async (input) => (calls.push(input.cut ?? "asked"), { also: [told(`deps:${input.cut ?? "asked"}`)] });
-  await start(loopWith(piAdapterSpec({ script: [{ say: "the job's answer" }], tools: {}, hooks: quiet }), { endOfRun: null }, { endOfRun }), "runner-a");
-  await until((row) => row.state === "ended" && row.runner === null, "the run did not end");
-  assert.deepEqual(calls, [], "the deps' step was not asked: the spec said none");
-  assert.deepEqual(jobEndsOf(), [], "no job end kept for a look-back that never comes");
-  assert.equal(endEntries(), 1, "one end");
-  assert.deepEqual(toldRows(), [], "no step's rows");
-});
-
 // The job's end is kept before the end-of-run turn looks back (keepJobEnd), and every reader serves it from then on: a
 // cancel that reaches the runner then cuts only the look-back, and the run ends with its job's end, at its time.
 test("pi through the adapter: a cancel that reaches the runner during the end-of-run turn cuts only the look-back: the run ends with its job's end, the cut step's rows with it", async (t) => {

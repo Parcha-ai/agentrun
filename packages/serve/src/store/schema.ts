@@ -21,7 +21,8 @@
 // added the same way, and so is each runner's word that it is there and whether it refused to claim (runners, RUNNERS),
 // and each computer a run made, from its create to its proven delete (computer_intervals, COMPUTER_INTERVALS). Each runner's
 // version and slots (runners.version, .slots: RUNNERS_ADDED), each hand-back (hand_backs, HAND_BACKS) and each claim of a
-// run with the turn it works and its attempt at it (run_attempts, RUN_ATTEMPTS) are added the same way.
+// run with the turn it works and its attempt at it (run_attempts, RUN_ATTEMPTS) are added the same way, and so is the
+// learning ledger (learning_ledger, learning_spend: LEARNING_LEDGER, LEARNING_SPEND).
 // Conventions: every time is INTEGER epoch milliseconds; JSON is TEXT checked by json_valid; money is REAL US dollars;
 // sealed columns hold ciphertext only (sealed with the server's key outside the store), so the store never sees a secret
 // in the clear. Foreign keys are on (the connection's pragma).
@@ -230,6 +231,47 @@ export const RUN_ATTEMPTS = `CREATE TABLE IF NOT EXISTS run_attempts (
     claimed_at INTEGER NOT NULL,
     PRIMARY KEY (run_id, epoch)
   ) STRICT`;
+
+/** The learning ledger (learn/ledger.ts): one row a run, written by each patch that leaves the run ended (applyRunPatch,
+ *  in that patch's transaction) and by a healed cost: who answered it (`path`, null when its end named none), the
+ *  revision that ran it, why it was not served alone, the job's own $ and its rounds' look-back, and whether its cost is
+ *  known (`cost`), and the end it was written for (`epoch`: the run's epoch after that end, which every end moves).
+ *  Gone with the run's purge or delete (its cost stays on the run's tombstone). Figures only, no run text. In STORE_DDL,
+ *  and made at a server open on a store an earlier build of this version made: a run that ended before it has no row,
+ *  and one a runner of that build ended again has a row for an earlier end; its reader records it from its run row
+ *  either way (store-reads/learning.ts). */
+export const LEARNING_LEDGER = `CREATE TABLE IF NOT EXISTS learning_ledger (
+    run_id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    started_at INTEGER NOT NULL,
+    path TEXT CHECK (path IS NULL OR path IN ('agent', 'handed_back', 'workflow', 'replay', 'audit')),
+    workflow TEXT,
+    digest TEXT,
+    not_served TEXT CHECK (not_served IS NULL OR not_served IN ('cost_stop', 'cut')),
+    job_usd REAL,
+    look_back_usd REAL,
+    cost TEXT NOT NULL CHECK (cost IN ('known', 'unknown', 'at_most')),
+    epoch INTEGER NOT NULL
+  ) STRICT`;
+export const LEARNING_LEDGER_AGENT = "CREATE INDEX IF NOT EXISTS learning_ledger_agent ON learning_ledger (agent_id)";
+/** Each learning cost, by the revision it is for (learn/ledger.ts SpendRow): a compile turn (`round`, the round that asked
+ *  it), a check's replay run or an audit's shadow run (round 0, `of_run` the run it audits), with its $ (null: unknown).
+ *  Written with its run's ledger row, replaced whole each time; gone with its run's purge or delete, and with the purge
+ *  or delete of the run it audits. */
+export const LEARNING_SPEND = `CREATE TABLE IF NOT EXISTS learning_spend (
+    run_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('compile', 'check', 'audit')),
+    round INTEGER NOT NULL CHECK (round >= 0),
+    agent_id TEXT NOT NULL,
+    of_run TEXT,
+    workflow TEXT,
+    digest TEXT,
+    usd REAL,
+    at INTEGER NOT NULL,
+    PRIMARY KEY (run_id, kind, round)
+  ) STRICT`;
+export const LEARNING_SPEND_AGENT = "CREATE INDEX IF NOT EXISTS learning_spend_agent ON learning_spend (agent_id)";
+export const LEARNING_SPEND_OF_RUN = "CREATE INDEX IF NOT EXISTS learning_spend_of_run ON learning_spend (of_run) WHERE of_run IS NOT NULL";
 
 /** Version 13 → 14 on SQLite (the server's open, sqlite/store.ts), given the runs' and the agents' columns now: when each
  *  run and each agent was purged (null: none was), and the version, in one durable write. */
@@ -705,6 +747,11 @@ export const STORE_DDL: readonly string[] = [
   COMPUTER_INTERVALS,
   COMPUTER_INTERVALS_RUN,
   RUN_ATTEMPTS,
+  LEARNING_LEDGER,
+  LEARNING_LEDGER_AGENT,
+  LEARNING_SPEND,
+  LEARNING_SPEND_AGENT,
+  LEARNING_SPEND_OF_RUN,
 
   // An agent's saved browser sign-ins (design 2.1, the browser sign-in rules): one live row per agent and browser provider, its
   // pointer (the vendor's context or profile id) sealed with the store's one rule (store/seal.ts, AAD

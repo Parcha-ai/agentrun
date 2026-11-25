@@ -39,7 +39,7 @@ const { workflowDigest } = await import("../dist/runner/workflow-first.js");
 const { askedForCompile } = await import("../dist/learn/compile.js");
 const { seedOf } = await import("../dist/learning.js");
 const { readAudits, AUDITS_FILE } = await import("../dist/learn/audit.js");
-const { agentCostOverStore, allInOf, shadowSpendOf } = await import("../dist/store-reads/learning.js");
+const { agentCostOverStore, runAllInOverStore } = await import("../dist/store-reads/learning.js");
 const { runTimeline } = await import("../dist/store-reads/journal.js");
 const { viewOverStore } = await import("../dist/store-view.js");
 
@@ -701,9 +701,9 @@ test("(r5) an all-read agent whose owner set web_fetch to ask: the shadow ends p
   assert.ok(!rows.some((row) => /^Ran: web_fetch/.test(row.summary ?? "")), `the gate let nothing through: ${JSON.stringify(rows.map((row) => row.summary))}`);
   // The served run's all-in is known (the shadow's cost booked), so a batch's row on it closes (server.ts batch figures).
   assert.equal(typeof shadow.costUsd, "number", `the shadow's cost is booked: ${shadow.costUsd}`);
-  assert.deepEqual(await shadowSpendOf(w.server, "asked-1"), { open: false, usd: shadow.costUsd });
-  const allIn = await allInOf(w.server, await w.server.runs.get("asked-1"));
-  assert.equal(typeof allIn.total_usd, "number", JSON.stringify(allIn));
+  const allIn = await runAllInOverStore(w.server, "asked-1");
+  assert.equal(allIn.shadow_usd, shadow.costUsd, JSON.stringify(allIn));
+  assert.equal(typeof allIn.all_in_usd, "number", JSON.stringify(allIn));
   // Settled at the next claim: `parked`, no verdict, never counted (hold_disagree 1 would hold on one disagreement).
   const next = await w.start("asked-next", "Question 99");
   const row = (await w.audits()).find((one) => one.run === "asked-1");
@@ -791,16 +791,17 @@ test("(r4) a drawn run whose cap leaves under a run's smallest cap (or a spend n
 
 // Review on #3061 r4 (PRRT_kwDOUmdVMs64QkBr): A8's rule, null while unknown, never $0.
 test("(r4) a served run's all-in is unknown while its shadow is queued or running, never $0; once the shadow ended it is served + shadow", async () => {
-  const { allInOf, shadowSpendOf } = await import("../dist/store-reads/learning.js");
-  const served = { id: "served-1", costUsd: 0.2 };
-  const storeWith = (shadow) => ({ learning: { proposal: async () => undefined }, runs: { get: async (id) => (id === "audit.served-1" ? shadow : undefined) } });
-  for (const state of ["queued", "running"]) {
-    const store = storeWith({ id: "audit.served-1", state, costUsd: 0.1 });
-    assert.deepEqual(await allInOf(store, served), { cost_usd: 0.2, learning_usd: null, total_usd: null }, `${state}: unknown, not the served part`);
-    assert.deepEqual(await shadowSpendOf(store, "served-1"), { open: true, usd: null });
-  }
-  assert.deepEqual(await allInOf(storeWith({ id: "audit.served-1", state: "ended", costUsd: 0.25 }), served), { cost_usd: 0.2, learning_usd: 0.25, total_usd: 0.45 });
-  assert.deepEqual(await allInOf(storeWith(undefined), served), { cost_usd: 0.2, learning_usd: 0, total_usd: 0.2 }, "never drawn: nothing beside it");
+  const { figuresOf, record, shadowCostOf, shadowSpend, spendByRun } = await import("../dist/learn/ledger.js");
+  const { row } = record({ id: "served-1", agentId: "a", startedAt: 0, costUsd: 0.2, costAtMostUsd: null, metrics: { path: "workflow", workflow: "w", workflow_digest: "d".repeat(16) }, rounds: [] });
+  const allInOf = (shadows, spend = []) => {
+    const figures = figuresOf(row, { compile: 0, shadow: shadowCostOf("served-1", spendByRun(spend).audit, shadows), share: 0 });
+    return { cost_usd: figures.usd, learning_usd: figures.series_learning_usd, total_usd: figures.series_total_usd, all_in_usd: figures.all_in_usd };
+  };
+  assert.deepEqual(allInOf(new Map([["served-1", "open"]])), { cost_usd: 0.2, learning_usd: null, total_usd: null, all_in_usd: null }, "queued or running: unknown, not the served part");
+  const ended = shadowSpend({ id: "audit.served-1", agentId: "a", costUsd: 0.25, costAtMostUsd: null }, "served-1");
+  assert.deepEqual(allInOf(new Map([["served-1", "ended"]]), [ended]), { cost_usd: 0.2, learning_usd: 0.25, total_usd: 0.45, all_in_usd: 0.45 });
+  assert.deepEqual(allInOf(new Map([["served-1", "ended"]]), [{ ...ended, usd: null }]), { cost_usd: 0.2, learning_usd: null, total_usd: null, all_in_usd: null }, "ended at an unknown cost: unknown");
+  assert.deepEqual(allInOf(new Map()), { cost_usd: 0.2, learning_usd: 0, total_usd: 0.2, all_in_usd: 0.2 }, "never drawn: nothing beside it");
 });
 
 test('a moved project refuses an auxiliary audit before starting a shadow and preserves its learning configuration', async t => {
