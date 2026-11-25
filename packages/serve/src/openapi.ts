@@ -79,6 +79,7 @@ import { MAX_SHOW_PATHS, MAX_SHOW_SEGMENTS, SHOWN_CHARS } from "./filed-tool.js"
 // (secret-writes.ts registerSecretWrite), so every operation the document marks has its predicate wherever it is read.
 import "./computers.js";
 import { ARCHIL_KEY_NAMES } from "./archil-routes.js";
+import { ARCHIL_S3_URLS } from "./archil-settings.js";
 import { RUN_FILE_CUT_MAX } from "./run-files.js";
 import { ATTACH_HEARTBEAT_MS, ATTACH_IDLE_MS, ATTACH_SUBPROTOCOL, MAX_LINE_BYTES, PAIRING_CODE_PATTERN, PAIRING_CODE_TTL_MS, PROTOCOL_VERSION } from "@parcha/agentrun-computer";
 import { DAEMON_FETCHES_PER_MINUTE, PAIR_TRIES_PER_MINUTE, PAIRED_NAME_MAX } from "./computer-attach.js";
@@ -1343,14 +1344,17 @@ const RUNNING_COMPUTERS = closed({
     description: "The runs still going whose agent has a computer, newest first, each as GET /runs/{run_id} answers it, so each carries its `computer`. A run with no computer, and one that has ended, is not here.",
   },
 });
-/** archil/1: GET, PUT and DELETE /workspace/archil's answer (archil-routes.ts view). */
+/** archil/1: GET, PUT and DELETE /workspace/archil's answer (archil-routes.ts view). archil/2: `regions` and `s3UrlFrom`,
+ *  which a client that validates against archil/1 refuses, so they are a mark of their own. */
 const ARCHIL_VIEW = closedWith({
   on: { type: "boolean", description: "Whether Mode 2 is on: run folders on Archil disks, each agent's own (made on its first run that needs one) unless a run's launch names another. Off, they are on this server's own disk (Mode 1)." },
+  regions: { type: "object", additionalProperties: { type: "string", format: "uri" }, description: `Each Archil region this server knows, with its S3 endpoint (its control plane's host with \`control.\` made \`s3.\`, as Archil's SDK derives it): ${Object.keys(ARCHIL_S3_URLS).join(", ")}. A PUT naming one of them may leave \`s3Url\` out.`, "x-agentrun-serve": "archil/2" },
   secret: { ...SECRET_ITEM("\"workspace:archil\": the Archil account key, which PUT /workspace/archil takes as keys.ARCHIL_API_KEY and the environment variable ARCHIL_API_KEY sets."), description: "The account key as its SecretMeta: never a value." },
 }, {
   source: { enum: ["env", "console"], description: "While on, where the settings come from: `env`, the server's environment (AGENTRUN_ARCHIL_REGION, AGENTRUN_ARCHIL_S3_URL and AGENTRUN_ARCHIL_IMAGE), which wins over saved ones and is changed where the server is started; `console`, saved with PUT /workspace/archil." },
   region: { type: "string", description: "The account key's region: every disk is made, read and minted on its control plane." },
-  s3Url: { type: "string", format: "uri", description: "The region's S3 endpoint (the disks' file API)." },
+  s3Url: { type: "string", format: "uri", description: "The S3 endpoint in force (the disks' file API): the one given, else the region's (`regions`)." },
+  s3UrlFrom: { enum: ["region", "given"], description: "While on, where `s3Url` comes from: `region`, the region's own (`regions`), as saved when the PUT, or the environment, gave none; `given`, another one given.", "x-agentrun-serve": "archil/2" },
   image: { type: "string", description: "The exec image, pinned by digest (`<name>@sha256:<64 hex>`); absent, serve's default (`buildpack-deps:trixie-scm` pinned by digest, git 2.47)." },
 });
 /** archil/1: GET and DELETE /agents/{agent_id}/archil's answer (archil-routes.ts agentView). */
@@ -2845,10 +2849,11 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     put: {
       operationId: "putWorkspaceArchil", tags: ["local"], summary: "Turn Mode 2 on: run folders on Archil disks, one per agent",
-      description: "Replaces the Archil settings (the account key's region and its S3 URL, and an exec image pinned by digest when given) and seals the account key (ARCHIL_API_KEY) under the server's seal key when given; null removes it, and a key not given is kept. There is no server-wide disk: each agent gets its own, made in this region on its first run that uses it (`agentrun-<server id>-i-<agent id>`), and a run may name another (`archil_disk` on its start), so `diskId` is refused. No disk token is kept: a computer's mount credential is minted per run from the account key, so ARCHIL_DISK_TOKEN is refused like any field Archil does not take. Any PUT here is a secret write, whatever its body: it takes the owner's signed-in session, and the API token is 403, since the region and S3 URL say where every run's files go. A field that is not right, or an image not pinned by digest, is 422 input_invalid with its fields, and nothing is saved. While the server's environment sets the settings (GET's `source` is `env`), it is 409 key_set_by_server naming its variables, and nothing is saved. The answer never holds a key.",
+      description: "Replaces the Archil settings (the account key's region; its S3 URL, which for a region this server knows (GET's `regions`) may be left out and is then that region's, and a region it doesn't know needs; and an exec image pinned by digest when given) and seals the account key (ARCHIL_API_KEY) under the server's seal key when given; null removes it, and a key not given is kept. There is no server-wide disk: each agent gets its own, made in this region on its first run that uses it (`agentrun-<server id>-i-<agent id>`), and a run may name another (`archil_disk` on its start), so `diskId` is refused. No disk token is kept: a computer's mount credential is minted per run from the account key, so ARCHIL_DISK_TOKEN is refused like any field Archil does not take. Any PUT here is a secret write, whatever its body: it takes the owner's signed-in session, and the API token is 403, since the region and S3 URL say where every run's files go. A field that is not right, or an image not pinned by digest, is 422 input_invalid with its fields, and nothing is saved. While the server's environment sets the settings (GET's `source` is `env`), it is 409 key_set_by_server naming its variables, and nothing is saved. The answer never holds a key.",
       requestBody: {
         required: true,
-        content: { "application/json": { schema: closedWith({ region: { type: "string", minLength: 1 }, s3Url: { type: "string", format: "uri", pattern: "^https://" } }, {
+        content: { "application/json": { schema: closedWith({ region: { type: "string", minLength: 1 } }, {
+          s3Url: { type: "string", format: "uri", pattern: "^https://", description: "The region's S3 endpoint. Left out for a region this server knows (GET's `regions`), that region's." },
           image: { type: "string", pattern: "^[^\\s@]+@sha256:[0-9a-f]{64}$" },
           keys: { type: "object", additionalProperties: false, properties: Object.fromEntries(ARCHIL_KEY_NAMES.map((name) => [name, { type: ["string", "null"], minLength: 1, "x-agentrun-secret": true }])) },
         }) } },

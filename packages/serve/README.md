@@ -1208,8 +1208,12 @@ passes the binding's conformance cases (below) needs no change here.
 - **Mode 1** (the default): on this server's own disk. Only a provider that binds a folder of this machine can hold
   it, so a sandbox runs on Docker only; a Daytona, Modal, E2B or Agent37 sandbox is refused ("Mode 1 runs a sandbox only on
   Docker").
-- **Mode 2**: on Archil disks. `PUT /v2/workspace/archil` turns it on with the account key, `ARCHIL_API_KEY`, its
-  region and that region's S3 URL (and an exec image pinned by digest, if you want one other than serve's default);
+- **Mode 2**: on Archil disks. `PUT /v2/workspace/archil` turns it on with the account key, `ARCHIL_API_KEY`, and its
+  region (and an exec image pinned by digest, if you want one other than serve's default). For a region serve knows
+  (`aws-us-east-1`, `aws-us-west-2`, `aws-eu-west-1` and `gcp-us-central1`, the regions Archil's SDK names; `GET` lists
+  them in `regions`), the S3 URL is the region's (`https://s3.green.us-east-1.aws.prod.archil.com` for `aws-us-east-1`)
+  and `s3Url` may be left out; one given is used instead, and `GET` says which in `s3UrlFrom`. Any other region needs
+  its `s3Url`;
   `DELETE` turns it off. The default exec image is Docker's `buildpack-deps:trixie-scm` pinned by digest (git 2.47),
   because Archil's own has git 2.34 and a read-only bash policy runs git only at 2.43 or later. An image you name needs
   git 2.43 for that too, and GNU coreutils and perl, as Debian-family images have. A Modal, E2B or Agent37 sandbox
@@ -1232,17 +1236,17 @@ passes the binding's conformance cases (below) needs no change here.
   machine) or null (none).
 
   The PUT is a secret write, so it takes the owner's signed-in session. A server with none to give it (API only, or
-  `AGENTRUN_ACCOUNTS=0` reached beyond loopback) is set where it is started instead: `AGENTRUN_ARCHIL_REGION` and
-  `AGENTRUN_ARCHIL_S3_URL` together, and `AGENTRUN_ARCHIL_IMAGE` for a pinned exec image, with the account key in
-  `ARCHIL_API_KEY`. Each agent's disk is then made on its first run, as with saved settings:
+  `AGENTRUN_ACCOUNTS=0` reached beyond loopback) is set where it is started instead: `AGENTRUN_ARCHIL_REGION`,
+  `AGENTRUN_ARCHIL_S3_URL` for a region serve doesn't know (or to use another endpoint than a known region's), and
+  `AGENTRUN_ARCHIL_IMAGE` for a pinned exec image, with the account key in `ARCHIL_API_KEY`. Each agent's disk is then
+  made on its first run, as with saved settings:
 
   ```sh
-  AGENTRUN_ARCHIL_REGION=aws-us-east-1 AGENTRUN_ARCHIL_S3_URL=https://s3.example.com \
-  ARCHIL_API_KEY=... node packages/serve/dist/cli.js
+  AGENTRUN_ARCHIL_REGION=aws-us-east-1 ARCHIL_API_KEY=... node packages/serve/dist/cli.js
   ```
 
-  Each value is checked as the PUT checks it. One of the region and S3 URL without the other, or a value the PUT would refuse,
-  stops the start, in words naming each variable. Set, they win over saved settings, as `ARCHIL_API_KEY` wins over a
+  Each value is checked as the PUT checks it. A variable set without the region, no S3 URL for a region serve doesn't
+  know, or a value the PUT would refuse, stops the start, in words naming each variable. Set, they win over saved settings, as `ARCHIL_API_KEY` wins over a
   saved key, and nothing is written to the store: `GET /v2/workspace/archil` says `source: "env"` (saved ones say
   `"console"`), and `PUT` and `DELETE` are `409 key_set_by_server`, since they are changed where the server is started.
   Unset, the saved settings, if any, hold again. A runner started on its own (`agentrun-serve runner`) reads them from its

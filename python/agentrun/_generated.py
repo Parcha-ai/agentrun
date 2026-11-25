@@ -5067,6 +5067,7 @@ class DeleteModelGatewayResponseSecret(TypedDict):
 
 class _DeleteWorkspaceArchilResponseRequired(TypedDict):
     on: bool
+    regions: dict[str, str]
     secret: DeleteWorkspaceArchilResponseSecret
 
 
@@ -5074,6 +5075,7 @@ class DeleteWorkspaceArchilResponse(_DeleteWorkspaceArchilResponseRequired, tota
     source: Literal["env", "console"]
     region: str
     s3Url: str
+    s3UrlFrom: Literal["region", "given"]
     image: str
 
 
@@ -5427,6 +5429,7 @@ class GetSuggestionResponseGithub(TypedDict):
 
 class _GetWorkspaceArchilResponseRequired(TypedDict):
     on: bool
+    regions: dict[str, str]
     secret: GetWorkspaceArchilResponseSecret
 
 
@@ -5434,6 +5437,7 @@ class GetWorkspaceArchilResponse(_GetWorkspaceArchilResponseRequired, total=Fals
     source: Literal["env", "console"]
     region: str
     s3Url: str
+    s3UrlFrom: Literal["region", "given"]
     image: str
 
 
@@ -6163,10 +6167,10 @@ class ListSuggestionsResponseSuggestionsItemCreatedPullRequest(TypedDict):
 
 class _PutWorkspaceArchilBodyRequired(TypedDict):
     region: str
-    s3Url: str
 
 
 class PutWorkspaceArchilBody(_PutWorkspaceArchilBodyRequired, total=False):
+    s3Url: str
     image: str
     keys: PutWorkspaceArchilBodyKeys
 
@@ -6177,6 +6181,7 @@ class PutWorkspaceArchilBodyKeys(TypedDict, total=False):
 
 class _PutWorkspaceArchilResponseRequired(TypedDict):
     on: bool
+    regions: dict[str, str]
     secret: PutWorkspaceArchilResponseSecret
 
 
@@ -6184,6 +6189,7 @@ class PutWorkspaceArchilResponse(_PutWorkspaceArchilResponseRequired, total=Fals
     source: Literal["env", "console"]
     region: str
     s3Url: str
+    s3UrlFrom: Literal["region", "given"]
     image: str
 
 
