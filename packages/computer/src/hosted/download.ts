@@ -8,6 +8,7 @@ import { posix } from "node:path";
 import type { MachineHost } from "../host.js";
 import { type ComputerClient, type DaemonMethod, type DaemonMethods, type FilesReadParams, MAX_CHUNK_BYTES } from "../protocol.js";
 import { ok, type Result } from "../result.js";
+import { MAX_READ_BYTES } from "../surface/core.js";
 import { hostCall, runToExit, untilAborted } from "./process.js";
 import { READ_COPIES, readStage, readUnstage } from "./scripts.js";
 
@@ -30,7 +31,8 @@ const copyable = ({ path, length }: FilesReadParams) => path.startsWith("/") && 
 
 /**
  * client, with every files.read past one chunk read from one downloaded copy after its first chunk. A first chunk (offset
- * 0, a whole chunk) whose file runs past it starts the copy; the reads after it, at the offsets the first's reader asks
+ * 0, a whole chunk) whose file runs past it, and is at most the surface's read limit (MAX_READ_BYTES, all a copy holds in
+ * memory), starts the copy; a larger file is the daemon's, chunk by chunk. The reads after it, at the offsets the first's reader asks
  * for, are answered from the copy, as the daemon answers (eof once a read reaches the copy's size), and the copy is let
  * go at its end, at the next first chunk of its path, or at any call of another method, which may change a file. A copy
  * that fails at any step (the daemon's user unread, read-stage refused, the download, a size other than the daemon read)
@@ -84,7 +86,7 @@ export function downloadingClient(host: MachineHost, download: NonNullable<Machi
 				copies.delete(read.path);
 				const first = await client.call(method, params, options);
 				const answer = first.ok ? (first.value as DaemonMethods["files.read"]["result"]) : undefined;
-				if (answer !== undefined && !answer.eof && answer.size > MAX_CHUNK_BYTES && copyable(read)) copies.set(read.path, copyOf(cleaned(read.path), answer.size));
+				if (answer !== undefined && !answer.eof && answer.size > MAX_CHUNK_BYTES && answer.size <= MAX_READ_BYTES && copyable(read)) copies.set(read.path, copyOf(cleaned(read.path), answer.size));
 				return first;
 			}
 			const copying = copies.get(read.path);
