@@ -27,7 +27,7 @@
 // a token. A cancel marks pending approvals canceled. Where no one can approve (accounts off), an ask is refused at once
 // in words, never parked.
 
-import { COMPUTER_OP_TOOL, computerToolDefs, defaultPermissionOf, SHELL_FAMILY, SHELL_WATCHERS, shellPermission, shellToolOf } from "@parcha/agentrun-kernel/kernel";
+import { COMPUTER_OP_TOOL, COMPUTER_TOOLS, computerToolDefs, defaultPermissionOf, hostToolDefs, SHELL_FAMILY, SHELL_WATCHERS, type ShellPlace, shellPermission, shellToolOf } from "@parcha/agentrun-kernel/kernel";
 import { type AdapterFacts, READ_SKILL_FILE } from "@parcha/agentrun-kernel";
 import { COMPUTER_ROOT } from "./workspace/paths.js";
 import type { Workspace } from "./workspace/workspace.js";
@@ -35,7 +35,7 @@ import { META_TOOLS } from "./meta-tool-names.js";
 import { DEFAULT_HARNESS } from "./harness.js";
 import { DECISION_PROVIDER_KEYS, KIND_KEYS, SERVE_OWN_TOOLS, type ToolSettingsRead } from "./tool-plane.js";
 import { asksByDefault, isTableTool, isToolRow, tableTools } from "./tool-list.js";
-import { CANT_BE_CALLED, DENIED_OPENING, deniedText, NOT_RUN, RAN_UNKNOWN, type SettingFrom } from "./refusal-words.js";
+import { CANT_BE_CALLED, computerOffText, computerOffWords, DENIED_OPENING, deniedText, NOT_RUN, RAN_UNKNOWN, type SettingFrom } from "./refusal-words.js";
 import { type Approvals, approvalsOf } from "./approvals.js";
 import { settingOfDefinition } from "./computer-setting.js";
 import { BASH_POLICIES, readOnlyReason, readOnlyText } from "./bash-read-only.js";
@@ -349,8 +349,8 @@ export const permissionOf = (name: string, server: PermissionSettings, agent: Pe
 
 /** An approval's price for the person who answers it: USD where the tool declares one (booked through the spend cap's
  *  paidCall), else "not metered" (an unpriced MCP call, the owner's ruling of 11-04), or "priced by usage" for a monid
- *  endpoint priced by usage: monid estimates its cost only when the call runs, after the person's allow, and its charge
- *  can pass that estimate (runner/monid-run.ts). */
+ *  endpoint priced by usage or a fal job: each is priced only when the call runs, after the person's allow, and its
+ *  charge can pass that estimate (runner/monid-run.ts, fal-price.ts). */
 export type ApprovalPrice = number | "not metered" | "priced by usage";
 
 /** One pending approval, as the run's view shows it (`pending`) and the console's approval card reads it. */
@@ -411,6 +411,29 @@ export function runGate(where: { root: string; work: string; computer?: boolean;
   return new RunGate({ root: where.root, work: where.work, runId, harness: revision.body.harness ?? DEFAULT_HARNESS, ...(where.computer === undefined ? {} : { computer: where.computer }), ...(kind !== undefined ? { kind } : {}), ...(where.effectOf ? { effectOf: where.effectOf } : {}), ...(where.argumentsOf ? { argumentsOf: where.argumentsOf } : {}), facts: where.facts }, serverSettings, (revision.body.toolSettings ?? {}) as PermissionSettings, approvers, approvalsOf(revision.body.approvals));
 }
 
+/** The host tools that run on a computer that holds the run's shell (the kernel registry's, for shell "computer"). */
+const ON_COMPUTER: ReadonlySet<string> = new Set(hostToolDefs({ maxExecS: 600, shell: "computer" }).map((def) => def.name));
+
+/** The tools a run's computer of `kind` serves, by the names its gate decides them by: a desktop's or a phone's own
+ *  (COMPUTER_TOOLS, held to its kind's key), a browser's (its key), and, where the run's shell is on the computer
+ *  (`shell` "computer": a sandbox, a desktop that mounts the run's folder), each host tool the agent grants. */
+export function computerToolsOf(kind: string, granted: readonly string[], shell: ShellPlace): readonly string[] {
+  const own = kind === "desktop" || kind === "phone" ? [...COMPUTER_TOOLS] : kind === "browser" ? ["browser"] : [];
+  return [...own, ...(shell === "computer" ? granted.filter((name) => ON_COMPUTER.has(name)) : [])];
+}
+
+/** The kind of the agent's computer when every tool it serves (computerToolsOf) is set to deny for `revision` under the
+ *  server's `server` settings, as its run's gate reads them: a run of it never starts that computer. Undefined for an agent
+ *  with no computer, one whose computer serves none of its tools, or one any of them is allowed or asked of. `shell`: where
+ *  a run of it has its shell (resolve-computer.ts runShellOf). Settings that do not read deny nothing (the gate asks). */
+export function computerDenied(revision: { kind: string; body: { tools?: readonly string[]; toolSettings?: unknown; harness?: string; approvals?: Approvals; computer?: unknown; place?: unknown } }, shell: ShellPlace, server: ToolSettingsRead): string | undefined {
+  const kind = settingOfDefinition(revision.body)?.computer.kind;
+  if (kind === undefined || kind === "none") return undefined;
+  const tools = computerToolsOf(kind, revision.body.tools ?? [], shell);
+  const gate = runGate({ root: COMPUTER_ROOT, work: COMPUTER_ROOT, computer: shell === "computer", facts: undefined }, "", revision, () => server, true);
+  return tools.length > 0 && tools.every((tool) => gate.policy(tool) === "deny") ? kind : undefined;
+}
+
 /** The top-level arguments the listing of the MCP tool `name` (`mcp:<server>/<tool>`) in the run's pin declares under
  *  its inputSchema's `properties`, the snapshot the run offers the model, never a live listing; undefined for a listing
  *  with no `properties` object (nothing to close a pinned call to) and for any other tool. */
@@ -456,19 +479,61 @@ export class RunGate {
     // call, decided as on a computer, where it runs: a desktop that mounts no folder has a computer to run a command on,
     // so shell.run and processes.start follow bash's one setting alike, as the run's own tools on a computer do. It is a
     // computer tool too: the kind's deny (desktop or phone set to deny) refuses it first, in the kind's words, below.
+    const ran = options.replayed ? "unknown" : "no";
+    // The run's computer once a call of its own tools was refused for a deny is off for the rest of the run: a later call
+    // of them is refused here, short, with no setting read and nothing sent to it (a setting changed since included).
+    const off = this.offRefusal(name, options);
+    if (off) return off;
+    const own = this.computerOwns(name);
     const held = heldAs(name, args);
     if (held && this.policy(name) !== "deny") return this.onComputer().decide(held.tool, held.args, options);
     const key = this.keyOf(name) ?? name;
     const tool = this.askedAs(name);
-    const ran = options.replayed ? "unknown" : "no";
     const verdict = this.policy(name);
-    if (verdict === "deny") return { deny: deniedText(tool, key, this.denyFrom(name), ran) };
+    if (verdict === "deny") {
+      const text = deniedText(tool, key, this.denyFrom(name), ran);
+      if (!own) return { deny: text };
+      // The first such deny says so, once, in its refusal.
+      this.off = true;
+      return { deny: `${text} ${computerOffWords(own)}` };
+    }
     const pinned = this.pinned(key, args, ran);
     if (pinned) return { deny: pinned.text };
     const policed = this.policyRefusal(key, name, args);
     if (policed) return { deny: policed };
     if (verdict === "allow") return "allow";
     return this.approvers ? "ask" : { deny: noApproverText(tool, ran) };
+  }
+
+  /** The refusal of a call of the run's computer's own tools (computerOwns) once that computer is off for the rest of the
+   *  run (computerOff): short, decided with no setting read and nothing sent to it, a setting changed since included.
+   *  Undefined for any other call, or while the computer is on. */
+  offRefusal(name: string, options: { readonly replayed?: boolean } = {}): { deny: string } | undefined {
+    const own = this.off ? this.computerOwns(name) : undefined;
+    return own ? { deny: computerOffText(own, options.replayed ? "unknown" : "no") } : undefined;
+  }
+
+  /** The run's computer's kind once it is off for the rest of the run: by the first deny of a call of its own tools
+   *  (decide, whose refusal says so once), or from a claim's start (turnOff). Undefined while it is on. */
+  get computerOff(): string | undefined {
+    return this.off ? this.where.kind : undefined;
+  }
+
+  /** The run's computer off from this claim's start: an earlier claim's deny turned it off for the run
+   *  (computer-journal.ts computerTurnedOff), so each call of its tools is refused short, never said off again. */
+  turnOff(): void {
+    this.off = true;
+  }
+
+  /** Set by the first deny of a call of the run's computer's own tools (computerOwns), or by turnOff. */
+  private off = false;
+  /** The run's computer kind (where.kind) when `name` is one of that computer's own tools: a desktop's or a phone's
+   *  (KIND_TOOLS), a browser's (held to the browser key). Undefined for any other call, a shell or file tool the computer
+   *  runs included: a deny of one of those leaves the computer's own tools as they are. */
+  private computerOwns(name: string): string | undefined {
+    const kind = this.where.kind;
+    if (kind === "desktop" || kind === "phone") return KIND_TOOLS.has(name) ? kind : undefined;
+    return kind === "browser" && !KIND_TOOLS.has(name) && this.keyOf(name) === "browser" ? kind : undefined;
   }
 
   /** The settings key a call of `name` is held to, the one its refusal and its ask name: a computer tool's is the kind

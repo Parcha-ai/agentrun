@@ -34,7 +34,7 @@ describe("xfwm4 as E2B and Agent37 start it", { skip: LIVE ? false : "set AGENTR
 	let client;
 
 	before(async () => {
-		const built = await ensureImage({ recipe: readFileSync(DOCKERFILE, "utf8") });
+		const built = await ensureImage({ recipe: readFileSync(DOCKERFILE, "utf8") }, { env: process.env });
 		assert.ok(built.ok, built.ok || built.error.message);
 		const arch = docker("version", "--format", "{{.Server.Arch}}").trim();
 		const daemon = fileURLToPath(new URL(`../../dist/computerd-linux-${arch}`, import.meta.url));

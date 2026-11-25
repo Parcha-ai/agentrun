@@ -2,7 +2,7 @@
 import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFileSync, type Stats, statSync } from "node:fs";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { DaemonClient } from "./client.js";
@@ -34,6 +34,7 @@ import {
 	samePolicy,
 	tmpfsOf,
 } from "./docker/inspect.js";
+import { dockerEnv, type HostEnv } from "./child-env.js";
 import { DOCKER_RECIPE, type EnsureImageOptions, ensureImage, type ImageSource, imageSourceProblem } from "./docker/image.js";
 import {
 	ALLOW_PORTS,
@@ -42,12 +43,16 @@ import {
 	EGRESS_IMAGE,
 	EGRESS_LABEL,
 	EGRESS_MOUNT,
+	EGRESS_NETWORK,
 	EGRESS_READY_MS,
 	EGRESS_SOCKET,
+	type DockerNetworkInspect,
 	type EgressCode,
 	egressCode,
 	egressCodeProblem,
 	egressNameOf,
+	egressNetworkArgs,
+	egressNetworkProblem,
 	egressRunArgs,
 	egressVolumeArgs,
 	hostAddresses,
@@ -146,6 +151,10 @@ export interface DockerProviderOptions {
 	 * an older engine is refused by check and create. Without it, every path is bound as it is (src/docker/volume.ts).
 	 */
 	volume?: { name: string; root: string };
+	/** The host's environment variables, of which every docker CLI call holds the names docker reads (DOCKER_ENV_NAMES:
+	 *  where the daemon is, its config and credential helpers, PATH and HOME) and nothing else, so no key the host holds
+	 *  reaches docker or what it starts. The provider reads no environment: without env, docker starts with none. */
+	env?: HostEnv;
 }
 
 
@@ -157,11 +166,12 @@ export interface DockerCreateOptions extends Partial<DockerProviderOptions> {
 
 /**
  * Docker's architecture as `docker version` reports it (amd64, arm64), within timeoutMs, or an error in words. The docker
- * CLI runs with this process's environment, as every call of the provider does, so it asks the Docker the provider uses.
+ * CLI runs with the names of `env` docker reads (dockerEnv), as every call of the provider does, so it asks the Docker the
+ * provider uses.
  */
-export function dockerArch({ docker = "docker", timeoutMs = 30_000 }: Pick<DockerCreateOptions, "docker" | "timeoutMs"> = {}): Promise<string> {
+export function dockerArch({ docker = "docker", timeoutMs = 30_000, env }: Pick<DockerCreateOptions, "docker" | "timeoutMs" | "env"> = {}): Promise<string> {
 	return new Promise((resolve, reject) => {
-		execFile(docker, ["version", "--format", "{{.Server.Arch}}"], { encoding: "utf8", timeout: timeoutMs, killSignal: "SIGKILL" }, (error, stdout, stderr) => {
+		execFile(docker, ["version", "--format", "{{.Server.Arch}}"], { env: dockerEnv(env), encoding: "utf8", timeout: timeoutMs, killSignal: "SIGKILL" }, (error, stdout, stderr) => {
 			if (!error) return resolve(stdout.trim());
 			const killed = error.killed === true && error.signal === "SIGKILL";
 			const why = killed ? `${docker} version did not answer within ${timeoutMs / 1000} s, so it was killed` : (stderr.trim() || error.message).split("\n")[0];
@@ -171,17 +181,27 @@ export function dockerArch({ docker = "docker", timeoutMs = 30_000 }: Pick<Docke
 }
 
 /**
+ * The daemon a Docker computer binds for Docker's architecture `arch` (dockerArch): computerd-linux-<arch> in `dir`,
+ * default this package's own build, and, when no such file is there, why, with the command that builds it. create()
+ * takes its daemon here, and so does a server's start check of Docker, so the two can't disagree.
+ */
+export function dockerDaemonOf(arch: string, dir: string = fileURLToPath(new URL(".", import.meta.url))): { path: string; missing?: string } {
+	const path = join(dir, `computerd-linux-${arch}`);
+	return fileMode(path) === undefined ? { path, missing: `no daemon for Docker's ${arch} at ${path}: run npm run build:daemon -w @parcha/agentrun-computer` } : { path };
+}
+
+/**
  * A DockerProvider from its options alone; it reads no environment. Without options.daemonPath it asks Docker its
- * architecture and takes this package's daemon for it, and says when that daemon is not built. The image is an option
- * too (default the provider's own recipe): no image name is read from the environment.
+ * architecture and takes this package's daemon for it (dockerDaemonOf), and says when that daemon is not built. The image
+ * is an option too (default the provider's own recipe): no image name is read from the environment.
  */
 export async function create(options: DockerCreateOptions = {}): Promise<DockerProvider> {
 	const { timeoutMs, ...given } = options;
 	let daemonPath = given.daemonPath || undefined;
 	if (daemonPath === undefined) {
-		const arch = await dockerArch({ ...(given.docker ? { docker: given.docker } : {}), ...(timeoutMs === undefined ? {} : { timeoutMs }) });
-		daemonPath = fileURLToPath(new URL(`./computerd-linux-${arch}`, import.meta.url));
-		if (fileMode(daemonPath) === undefined) throw new Error(`no daemon for Docker's ${arch} at ${daemonPath}: run npm run build:daemon -w @parcha/agentrun-computer`);
+		const daemon = dockerDaemonOf(await dockerArch({ ...(given.docker ? { docker: given.docker } : {}), ...(given.env ? { env: given.env } : {}), ...(timeoutMs === undefined ? {} : { timeoutMs }) }));
+		if (daemon.missing !== undefined) throw new Error(daemon.missing);
+		daemonPath = daemon.path;
 	}
 	return new DockerProvider({ ...given, daemonPath });
 }
@@ -272,6 +292,10 @@ interface Ran {
 const isNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
 const isWhole = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value);
 const noSuchContainer = (stderr: string) => /no such container/i.test(stderr);
+/** Docker's answer to a docker rm of a container another removal of which is under way: it is going away (#gone). */
+const removalUnderWay = (stderr: string) => /removal of container \S+ is already in progress/i.test(stderr);
+/** Docker's words for a network it does not have: the CLI's "No such network", or the daemon's "network ... not found". */
+const NO_SUCH_NETWORK = /no such network|network \S+ not found/i;
 /** Docker's words for a docker run whose --name another container holds. */
 const nameTaken = (stderr: string) => /Conflict\. The container name "[^"]*" is already in use/.test(stderr);
 const nameOf = (report: DockerInspect) => (report.Name ?? "").replace(/^\//, "");
@@ -286,6 +310,8 @@ export class DockerProvider implements ComputerProvider {
 	/** The volume option: the daemon's staged directory and a run folder are its subpaths (src/docker/volume.ts). */
 	readonly #volume: DockerVolume | undefined;
 	readonly #docker: string;
+	/** Every docker CLI call's whole environment (dockerEnv of the env option). */
+	readonly #env: Record<string, string>;
 	readonly #user: string;
 	readonly #desktop: Required<DockerDesktopOptions> | undefined;
 	readonly #image: ImageSource;
@@ -316,7 +342,7 @@ export class DockerProvider implements ComputerProvider {
 	/** The host as docker info first read it: a host's enforcement does not change under a running provider. */
 	#host: DockerHost | undefined;
 
-	constructor({ daemonPath, daemonCache, docker = "docker", user, desktop, egress, image = { recipe: DOCKER_RECIPE }, volume }: DockerProviderOptions) {
+	constructor({ daemonPath, daemonCache, docker = "docker", user, desktop, egress, image = { recipe: DOCKER_RECIPE }, volume, env }: DockerProviderOptions) {
 		this.#daemonPath = resolve(daemonPath);
 		this.#daemonCache = resolve(daemonCache ?? defaultDaemonCache());
 		this.#volume = volume === undefined ? undefined : volumeOf(volume);
@@ -325,6 +351,7 @@ export class DockerProvider implements ComputerProvider {
 			throw new Error(`${outsideWords(this.#volume, this.#daemonCache, "the provider's daemonCache")}: pass a daemonCache below it`);
 		}
 		this.#docker = docker;
+		this.#env = dockerEnv(env);
 		const unusable = imageSourceProblem(image);
 		if (unusable !== undefined) throw new Error(`the provider's image: ${unusable}`);
 		this.#image = image;
@@ -368,7 +395,7 @@ export class DockerProvider implements ComputerProvider {
 	 * Docker has none; one inspect when it has. Concurrent calls in one process share one build (ensureImage).
 	 */
 	image(options: CallContext & Pick<EnsureImageOptions, "timeoutMs" | "onWait"> = {}): Promise<Result<string>> {
-		return ensureImage(this.#image, { ...options, docker: this.#docker });
+		return ensureImage(this.#image, { ...options, docker: this.#docker, env: this.#env });
 	}
 
 	/** The provider contract's prepareImage (its descriptor declares it): image(), its recipe built or its image pulled. */
@@ -609,7 +636,10 @@ export class DockerProvider implements ComputerProvider {
 		const lifetimeFrom = Date.now();
 		const deadline = new Date(lifetimeFrom + runLifetimeMs(spec)).toISOString();
 		if (allow !== undefined) {
-			// The proxy first, ready before the computer exists: a computer never runs with a network it cannot reach.
+			// The egress bridge first: one of its name this provider did not make is refused before anything is made.
+			const network = await this.#egressNetwork(signal);
+			if (!network.ok) return fail(network.error.code, network.error.message);
+			// The proxy next, ready before the computer exists: a computer never runs with a network it cannot reach.
 			const started = await this.#startEgress(name, user, deadline, allow, spec.labels ?? {}, attempt, signal);
 			if (!started.ok) {
 				// Another create of this request, in another process, runs its proxy: what it makes is the request's.
@@ -828,6 +858,33 @@ export class DockerProvider implements ComputerProvider {
 		}
 	}
 
+	/**
+	 * The bridge every egress proxy is on (EGRESS_NETWORK), made when Docker has none of its name, and read back as the
+	 * one egressNetworkArgs makes: a network of that name made otherwise is refused in words, and nothing is made. Two
+	 * creates that both find none both make it; the one Docker refuses as already there reads it back.
+	 */
+	async #egressNetwork(signal?: AbortSignal): Promise<Result<void>> {
+		const inspect = () => this.#run(["network", "inspect", "--format", "{{json .}}", EGRESS_NETWORK], signal);
+		let found = await inspect();
+		if (!found.ok) return found;
+		if (found.value.exitCode !== 0 && NO_SUCH_NETWORK.test(found.value.stderr)) {
+			const made = await this.#run(egressNetworkArgs(), signal);
+			if (!made.ok) return made;
+			if (made.value.exitCode !== 0 && !/already exists/i.test(made.value.stderr)) return vendorFail("docker", `docker network create ${EGRESS_NETWORK} failed: ${made.value.stderr.trim()}`);
+			found = await inspect();
+			if (!found.ok) return found;
+		}
+		if (found.value.exitCode !== 0) return vendorFail("docker", `docker network inspect ${EGRESS_NETWORK} failed: ${found.value.stderr.trim()}`);
+		let network: DockerNetworkInspect;
+		try {
+			network = JSON.parse(found.value.stdout) as DockerNetworkInspect;
+		} catch {
+			return vendorFail("docker", `docker network inspect ${EGRESS_NETWORK} wrote what is not JSON: ${found.value.stdout.slice(0, 200)}`);
+		}
+		const problem = egressNetworkProblem(network ?? {});
+		return problem === undefined ? ok(undefined) : fail("refused", problem);
+	}
+
 	/** Starts the desktop's X server through the daemon and waits until hello declares the display (startDisplay). */
 	async #startDisplay(ref: ComputerRef, desktop: Required<DockerDesktopOptions>, signal?: AbortSignal): Promise<Result<void>> {
 		const opened = await this.#open(ref, signal);
@@ -979,7 +1036,8 @@ export class DockerProvider implements ComputerProvider {
 		const proxy = await this.#proxyOf(report, signal);
 		if (!proxy.ok) return proxy;
 		const network = networkOf(report, proxy.value, this.#code, this.#hostLocal());
-		if (typeof network !== "string" && "other" in network) found.push(`network: ${network.other}, which this provider never makes`);
+		// Its own words say what is wrong: an old proxy's say what made it and what to do.
+		if (typeof network !== "string" && "other" in network) found.push(`network: ${network.other}`);
 		const deadline = config.Labels?.[DEADLINE_LABEL] ?? "";
 		const at = Date.parse(deadline);
 		if (Number.isNaN(at) || new Date(at).toISOString() !== deadline) {
@@ -1043,7 +1101,7 @@ export class DockerProvider implements ComputerProvider {
 
 	/** One connection to the computer's daemon, after hello, unchecked. */
 	async #open(ref: ComputerRef, signal?: AbortSignal): Promise<Result<ComputerConnection>> {
-		const child = spawn(this.#docker, ["exec", "-i", ref.name, DAEMON_IN_COMPUTER, "stdio"], { stdio: ["pipe", "pipe", "pipe"] });
+		const child = spawn(this.#docker, ["exec", "-i", ref.name, DAEMON_IN_COMPUTER, "stdio"], { env: this.#env, stdio: ["pipe", "pipe", "pipe"] });
 		let stderr = "";
 		child.stderr.on("data", (chunk: Buffer) => {
 			stderr = (stderr + chunk.toString("utf8")).slice(-4096);
@@ -1189,7 +1247,8 @@ export class DockerProvider implements ComputerProvider {
 				if (!leftover(proxy.Config?.Labels, (proxy as { Created?: unknown }).Created) || typeof proxy.Id !== "string") continue;
 				const ran = await this.#run(["rm", "--force", proxy.Id], signal);
 				if (!ran.ok) return ran;
-				if (ran.value.exitCode !== 0 && !noSuchContainer(ran.value.stderr)) return vendorFail("docker",`docker rm of the egress proxy ${nameOf(proxy)} failed: ${ran.value.stderr.trim()}`);
+				const gone = await this.#gone(ran.value, proxy.Id, `docker rm of the egress proxy ${nameOf(proxy)}`, AbortSignal.timeout(SETTLE_MS), signal);
+				if (!gone.ok) return gone;
 				removed.push(nameOf(proxy));
 			}
 		}
@@ -1248,7 +1307,7 @@ export class DockerProvider implements ComputerProvider {
 	/**
 	 * Stops or deletes the computer, then its egress proxy, found by its label (EGRESS_LABEL=<name>), and on delete its
 	 * egress volume, found the same way: a container or volume of the proxy's name without that label is never touched.
-	 * Each is ok when already gone.
+	 * Each is ok when already gone, or once gone when Docker answers that its removal is already in progress (#gone).
 	 */
 	async release(ref: ComputerRef, how: ReleaseHow): Promise<Result<void>> {
 		if (!NAME.test(ref.name)) return fail("invalid", `${ref.name} is not the name of a Docker computer (computer-<12 hex digits>)`);
@@ -1275,7 +1334,8 @@ export class DockerProvider implements ComputerProvider {
 		for (const id of lines(found.value.stdout)) {
 			const container = await this.#run(["rm", "--force", id], bound);
 			if (!container.ok) return container;
-			if (container.value.exitCode !== 0 && !noSuchContainer(container.value.stderr)) return vendorFail("docker", `docker rm ${proxy} failed: ${container.value.stderr.trim()}`);
+			const gone = await this.#gone(container.value, id, `docker rm ${proxy}`, bound);
+			if (!gone.ok) return gone;
 		}
 		const volumes = await this.#run(["volume", "ls", ...filters, "--format", "{{.Name}}"], bound);
 		if (!volumes.ok) return volumes;
@@ -1321,9 +1381,11 @@ export class DockerProvider implements ComputerProvider {
 		const mine = report?.Config?.Labels?.[ATTEMPT_LABEL] === attempt;
 		// By the id looked at, never by the name, which another create may hold by the time rm runs.
 		if (mine) {
-			const removed = await this.#run(["rm", "--force", "--volumes", String(report.Id)], AbortSignal.timeout(SETTLE_MS));
+			const bound = AbortSignal.timeout(SETTLE_MS);
+			const removed = await this.#run(["rm", "--force", "--volumes", String(report.Id)], bound);
 			if (!removed.ok) return removed;
-			if (removed.value.exitCode !== 0 && !noSuchContainer(removed.value.stderr)) return vendorFail("docker", `docker rm ${name} failed: ${removed.value.stderr.trim()}`);
+			const gone = await this.#gone(removed.value, String(report.Id), `docker rm ${name}`, bound);
+			if (!gone.ok) return gone;
 		}
 		const proxy = await this.#removeProxy(name, attempt);
 		return proxy.ok ? ok(report !== undefined && !mine) : proxy;
@@ -1334,7 +1396,8 @@ export class DockerProvider implements ComputerProvider {
 		const args = how === "stop" ? ["stop", ref.name] : ["rm", "--force", "--volumes", ref.name];
 		const ran = await this.#run(args);
 		if (!ran.ok) return ran;
-		if (ran.value.exitCode !== 0 && !noSuchContainer(ran.value.stderr)) return vendorFail("docker",`docker ${args[0]} ${ref.name} failed: ${ran.value.stderr.trim()}`);
+		const gone = await this.#gone(ran.value, ref.name, `docker ${args[0]} ${ref.name}`, AbortSignal.timeout(SETTLE_MS));
+		if (!gone.ok) return gone;
 		const label = `label=${EGRESS_LABEL}=${ref.name}`;
 		const proxies = await this.#run(["ps", "-a", "--no-trunc", "--filter", label, "--format", "{{.ID}}"]);
 		if (!proxies.ok) return proxies;
@@ -1342,7 +1405,8 @@ export class DockerProvider implements ComputerProvider {
 		for (const id of proxies.value.stdout.split("\n").map((line) => line.trim()).filter(Boolean)) {
 			const ended = await this.#run(how === "stop" ? ["stop", id] : ["rm", "--force", id]);
 			if (!ended.ok) return ended;
-			if (ended.value.exitCode !== 0 && !noSuchContainer(ended.value.stderr)) return vendorFail("docker",`docker ${how === "stop" ? "stop" : "rm"} of ${ref.name}'s egress proxy failed: ${ended.value.stderr.trim()}`);
+			const gone = await this.#gone(ended.value, id, `docker ${how === "stop" ? "stop" : "rm"} of ${ref.name}'s egress proxy`, AbortSignal.timeout(SETTLE_MS));
+			if (!gone.ok) return gone;
 		}
 		if (how === "stop") return ok(undefined);
 		const volumes = await this.#run(["volume", "ls", "--filter", label, "--format", "{{.Name}}"]);
@@ -1354,6 +1418,27 @@ export class DockerProvider implements ComputerProvider {
 			if (removed.value.exitCode !== 0) return vendorFail("docker",`docker volume rm ${volume} failed: ${removed.value.stderr.trim()}`);
 		}
 		return ok(undefined);
+	}
+
+	/**
+	 * Whether the docker rm (or stop) that answered `ran` left container `key` gone, `what` naming the call: ok on exit 0
+	 * or "No such container". "Removal of container ... is already in progress" means another removal of it is under way,
+	 * so it is going away: it is looked for, SETTLE_EVERY_MS apart, until it is gone (ok), the caller's `signal` aborts
+	 * (aborted), or `bound` runs out with it still there (a failure that names it). Every other answer is the failure it is.
+	 */
+	async #gone(ran: Ran, key: string, what: string, bound: AbortSignal, signal?: AbortSignal): Promise<Result<void>> {
+		if (ran.exitCode === 0 || noSuchContainer(ran.stderr)) return ok(undefined);
+		if (!removalUnderWay(ran.stderr)) return vendorFail("docker", `${what} failed: ${ran.stderr.trim()}`);
+		const from = Date.now();
+		const either = signal ? AbortSignal.any([signal, bound]) : bound;
+		for (;;) {
+			const look = await this.#inspect([key], either, "{{json .Id}}");
+			if (look.ok && look.value.length === 0) return ok(undefined);
+			if (signal?.aborted) return fail("aborted", `${what} was aborted while docker was still removing ${key}`);
+			if (bound.aborted) return vendorFail("docker", `${what} failed: docker answered that the removal of ${key} was already in progress, and it was still there ${Math.round((Date.now() - from) / 1000)} s later`);
+			if (!look.ok) return look;
+			await sleep(SETTLE_EVERY_MS, undefined, { signal: either }).catch(() => undefined);
+		}
 	}
 
 	/** Inspects containers by name or id, whole or only the fields a format names; one that is gone is left out. */
@@ -1376,7 +1461,7 @@ export class DockerProvider implements ComputerProvider {
 
 	#run(args: string[], signal?: AbortSignal): Promise<Result<Ran>> {
 		return new Promise((done) => {
-			execFile(this.#docker, args, { signal, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }, (error, stdout, stderr) => {
+			execFile(this.#docker, args, { env: this.#env, signal, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }, (error, stdout, stderr) => {
 				if (error === null) return done(ok({ exitCode: 0, stdout, stderr }));
 				if (error.name === "AbortError") return done(fail("aborted", `docker ${args[0]} was aborted`));
 				if (typeof error.code === "number") return done(ok({ exitCode: error.code, stdout, stderr }));

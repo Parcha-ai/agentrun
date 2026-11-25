@@ -254,6 +254,22 @@ registerPlant({
 });
 
 registerPlant({
+  name: "API key",
+  mints: ["createApiKey"],
+  write: async ({ owner, server }) => {
+    // The server makes the value (api-keys.ts): shown once in this answer to the owner's session, kept as a keyed hash.
+    const made = await owner("POST", "/v2/settings/api-keys", { name: "planted" });
+    if (made.status !== 201) throw new Error(`the API key was not made: ${made.status} ${made.text}`);
+    // The key used once, so its request's log line and its last-use write are among what the harness reads.
+    const used = await fetch(`http://127.0.0.1:${server.port}/v2/settings/api-keys`, { headers: { authorization: `Bearer ${made.json.api_key}` } });
+    if (used.status !== 200) throw new Error(`the API key did not open the server: ${used.status}`);
+    const listed = await used.text();
+    if (listed.includes(made.json.api_key)) throw new Error("the list of API keys holds the key it was read with");
+    return [made.json.api_key];
+  },
+});
+
+registerPlant({
   name: "Slack incoming-webhook URL",
   write: async ({ owner, token }) => {
     const secret = `PLANTED${randomBytes(9).toString("hex").toUpperCase()}`.slice(0, 24);

@@ -99,7 +99,10 @@ function secretClient(clientOf, target, io, secrets) {
       }
       const named = typeof code === "string" && /^[a-z_]+$/.test(code) ? ` ${code}` : "";
       const what = response.status === 501 ? "The server does not offer it here" : "The server refused it";
-      client.io.stderr.write(`${what}: ${response.status}${named}. Its answer is not shown, since it could quote the secret sent.\n`);
+      // A 403 is the token refused a secret write (the server's secret-writes.ts): say where one is made, in this CLI's
+      // own words, since the server's are not shown.
+      const where = response.status === 403 ? " A secret is saved, replaced or removed only from the owner's signed-in session in the console; the API token can't write one." : "";
+      client.io.stderr.write(`${what}: ${response.status}${named}. Its answer is not shown, since it could quote the secret sent.${where}\n`);
       return refusalExit(response.status);
     },
   };

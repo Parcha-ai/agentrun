@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { BOXD, kindRefusals } from "../dist/index.js";
 import { providerFor } from "../dist/providers.js";
+import { refusesHttp } from "./https-refusal.mjs";
 
 const { BoxdProvider, boxdDesktopSnapshot, create } = await import("../dist/boxd.js");
 const { BOXD_ENV, settingsFromEnv, conformanceImage, createProvider, createHost, sweepScope } = await import("../dist/conformance/boxd.js");
@@ -111,6 +112,17 @@ test("the constructor refuses a size that is not boxd's and the machine user's u
 	assert.throws(make({ maxLifetimeMs: 31 * 24 * HOUR }), /the longest boxd keeps a computer/);
 	assert.throws(make({ kind: "desktop", vcpu: 4, memory: "16G" }), /a boxd desktop starts from a snapshot, which keeps the size it was captured at/);
 	assert.doesNotThrow(make({ kind: "desktop" }));
+});
+
+test("the API URL is https alone, loopback included, so the key never crosses in the clear: another is refused before any client is made", () => {
+	for (const baseUrl of ["http://boxd.sh:9443", "http://127.0.0.1:9443", "http://[::1]:9443", "http://localhost:9443", "ws://boxd.sh:9443"]) {
+		const rec = recorder();
+		assert.throws(() => new BoxdProvider({ apiKey: KEY, Boxd: rec.Boxd, baseUrl }), refusesHttp("the boxd API URL", baseUrl, KEY));
+		assert.deepEqual(rec.clients, [], baseUrl);
+	}
+	assert.throws(() => new BoxdProvider({ apiKey: KEY, Boxd: recorder().Boxd, baseUrl: "//boxd.sh:9443" }), /the boxd API URL is not a URL/);
+	const { rec } = setup({ baseUrl: "https://boxd.example.test:9443/" });
+	assert.deepEqual(rec.clients.map(({ baseURL }) => baseURL), ["https://boxd.example.test:9443", "https://boxd.example.test:9443"]);
 });
 
 test("capabilities: a child daemon in a microVM, network none, janitor lifetime, delete only, a synced folder, boxd's agent port; desktop too", () => {

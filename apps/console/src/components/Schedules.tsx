@@ -3,8 +3,6 @@ import { ArrowLeft, Blocks, CalendarClock, GitPullRequest, KeyRound, Mail, Pause
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { AcceptEditor, ConditionList, EVENT_HINTS, Said } from "@/components/AcceptEditor";
 import { FieldInput, FieldIssues } from "@/components/FieldInput";
-import { ListFilter } from "@/components/ListFilter";
-import { matchesFilter } from "@/lib/filter";
 import { ProblemCard } from "@/components/Problem";
 import { ListSkeleton } from "@/components/Skeleton";
 import { Button } from "@/components/ui/button";
@@ -14,6 +12,7 @@ import { Field as UiField, formColumnsClass, Input, Textarea } from "@/component
 import type { Agent } from "@/lib/agentForm";
 import { agentsByName } from "@/lib/agents";
 import { Picker } from "@/components/ui/picker";
+import { SearchPicker } from "@/components/ui/search-picker";
 import { ScheduleWhen } from "@/components/ScheduleWhen";
 import { askCue, UnattendedWarning, useAskingTools } from "@/components/UnattendedWarning";
 import { ZonePicker } from "@/components/ZonePicker";
@@ -1006,7 +1005,6 @@ function ComposioForm({ v2, go, noAddress }: { v2: Client; go: (hash: string) =>
   const [tries, setTries] = useState(0);
   const [events, setEvents] = useState<{ server: string; events: ComposioEvent[] } | null>(null);
   // The filter box over the server's events: another server starts it empty.
-  const [eventQuery, setEventQuery] = useState("");
   const [eventsError, setEventsError] = useState<Problem | null>(null);
   const [eventTries, setEventTries] = useState(0);
   const [draft, setDraft] = useState<ComposioDraft>(emptyComposio);
@@ -1041,14 +1039,12 @@ function ComposioForm({ v2, go, noAddress }: { v2: Client; go: (hash: string) =>
   const edit = (next: (d: ComposioDraft) => ComposioDraft) => { setElsewhere(null); setDraft(next); };
   const set = <K extends keyof ComposioDraft>(k: K) => (value: ComposioDraft[K]) => edit((d) => ({ ...d, [k]: value }));
   // Another server or event starts its config and filter afresh.
-  const pickServer = (server: string) => { if (server !== draft.server) setEventQuery(""); edit((d) => (d.server === server ? d : { ...d, server, event: "", config: {}, where: [] })); };
+  const pickServer = (server: string) => { edit((d) => (d.server === server ? d : { ...d, server, event: "", config: {}, where: [] })); };
   const pickEvent = (event: string) => { edit((d) => (d.event === event ? d : { ...d, event, config: {}, where: [] })); setIssues({}); };
   const event = events?.server === draft.server ? events.events.find((e) => e.slug === draft.event) : undefined;
   // The server's events A to Z by the words the list shows (Composio sends them in no order a person reads by), and those
   // the filter box keeps; the picked one stays in the list, so the field still says it while a query hides it.
   const listedEvents = events?.server === draft.server ? [...events.events].sort((a, b) => eventLabel(a).localeCompare(eventLabel(b), undefined, { sensitivity: "base" })) : [];
-  const matchedEvents = listedEvents.filter((e) => matchesFilter(eventQuery, e.name, e.slug, e.description));
-  const keptEvents = listedEvents.filter((e) => e.slug === draft.event || matchedEvents.includes(e));
   const fields: ConfigField[] = configFieldsOf(event?.config, event?.sealed);
   const send = async (body: TriggerCreate) => {
     const shown = new Set(["name", "source.server", "source.event", "source.config", ...fields.map((f) => `source.config.${f.name}`), "target.agent_id", "target.input", "target.max_cost_usd", ...(draft.where.length ? acceptFields([draft.where.length]) : [])]);
@@ -1114,10 +1110,12 @@ function ComposioForm({ v2, go, noAddress }: { v2: Client; go: (hash: string) =>
         </Field>
         {draft.server && (eventsError ? <ProblemCard problem={eventsError} onRetry={() => setEventTries((n) => n + 1)} className="" /> : (
           <div className="space-y-2">
-            {listedEvents.length > 0 && <ListFilter value={eventQuery} onChange={setEventQuery} label="Filter events" placeholder="Filter by name, slug or description" shown={matchedEvents.length} total={listedEvents.length} />}
+            {/* One field: typing in it filters its list by an event's name, slug or description (QA #162: the filter was a box of its own above it). */}
             <Field label="Event" field="source.event" issue={issues["source.event"]}>
-              <Picker name="event" label="Event" className="w-full" value={draft.event} onChange={pickEvent} disabled={!events}
-                options={[{ value: "", label: !events ? "Loading the events" : !listedEvents.length ? "Composio offers no event for this toolkit" : matchedEvents.length ? "Pick an event" : `No event matches “${eventQuery.trim()}”` }, ...keptEvents.map((x) => ({ value: x.slug, label: eventLabel(x) }))]} />
+              <SearchPicker name="event" label="Event" className="w-full" value={draft.event} onChange={pickEvent} disabled={!listedEvents.length}
+                placeholder={events?.server !== draft.server ? "Loading the events" : !listedEvents.length ? "Composio offers no event for this toolkit" : "Search or pick an event"}
+                nothing={(query) => `No event matches “${query}”`}
+                options={listedEvents.map((x) => ({ value: x.slug, label: eventLabel(x), keywords: [x.slug, x.description] }))} />
             </Field>
             {/* Composio writes an event's description in Markdown (lists, ``code``): rendered, never shown as its marks. */}
             {event?.description && <div data-event-description className="report report-sm text-muted-foreground" dangerouslySetInnerHTML={{ __html: markdown(event.description) }} />}
