@@ -13,7 +13,7 @@
 // for a server one person runs: it is refused where more than one person can start runs, `on` included, and the owner
 // confirms they alone run agents here. It runs only in a runner place, on the machine the owner turned it on for.
 import { createHash, randomBytes } from "node:crypto";
-import { accessSync, chmodSync, closeSync, constants, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, closeSync, constants, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, realpathSync, renameSync, type RmOptions, rmSync, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { delimiter, dirname, isAbsolute, join } from "node:path";
 import type { ClaudeAgentLogin, ClaudeLoginStatus, ClaudeLoginToken } from "@parcha/agentrun-harness-claude";
@@ -679,8 +679,16 @@ export async function turnOffClaudeLogin(deps: ClaudeLoginDeps): Promise<ClaudeL
   return claudeLoginView(deps);
 }
 
+/** What may remain where the CLI didn't confirm its own sign-out. */
+const KEYCHAIN_MAY_REMAIN = "Claude Code's own sign-out didn't confirm, so on macOS its Keychain item for this login may remain: remove it in Keychain Access (its name starts with \"Claude Code-credentials\").";
+
 /** What a sign-out answers beside `confirmed: false`: the login is gone here, and the CLI said nothing of its own copy. */
-export const LOGIN_SIGN_OUT_UNCONFIRMED = "Signed out here: AgentRun's copy of the login is removed. Claude Code's own sign-out didn't confirm, so on macOS its Keychain item for this login may remain: remove it in Keychain Access (its name starts with \"Claude Code-credentials\").";
+export const LOGIN_SIGN_OUT_UNCONFIRMED = `Signed out here: AgentRun's copy of the login is removed. ${KEYCHAIN_MAY_REMAIN}`;
+
+/** What a sign-out answers beside `confirmed: false` where some of the login is still there (`left`: each thing, its path
+ *  and why), and the Keychain's words too where the CLI didn't confirm its own sign-out (`keychain`). */
+export const signOutLeft = (left: readonly string[], keychain: boolean): string =>
+  `Signed out here, and the mode is off, but some of AgentRun's copy of the login remains: ${left.join("; ")}. Remove it by hand before turning the mode on again.${keychain ? ` ${KEYCHAIN_MAY_REMAIN}` : ""}`;
 
 /** Why a sign-out of this machine's own login (`folder`, the person's `~/.claude` or CLAUDE_CONFIG_DIR) is refused. */
 export const machineSignOutRefused = (folder: string): string =>
@@ -697,35 +705,54 @@ export type ClaudeLoginSignOut = { confirmed: boolean; message?: string; login: 
  *  the folder, where there is one, so it removes its credentials file and, on macOS, the Keychain item named from the
  *  folder; then the folder is removed whatever the CLI said (credentials, account, profiles, the CLI's refresh lock, and
  *  the CLI's older lock beside it), with the login's signed-in note (noteAnswer) and this process's token reader of it
- *  (claude-login-token.ts forgetLoginTokens). Runs already going are left as a turn-off leaves them: each keeps the token
- *  its CLI holds, and fails in LOGIN_SIGNED_OUT's words at its next read of the login; one claimed on it and not yet
- *  started is refused at its start (claude-login-token.ts LOGIN_CHANGED_SINCE_CLAIM). A login on this machine's own
- *  folder (`machine`) is the person's: refused (machineSignOutRefused), with nothing touched. */
+ *  (claude-login-token.ts forgetLoginTokens). Each removal stands alone: one that fails is named in the answer
+ *  (signOutLeft, `confirmed` false), and the others, the reader's drop and the server's reread of the keys still happen.
+ *  Runs already going are left as a turn-off leaves them: each keeps the token its CLI holds, and fails in
+ *  LOGIN_SIGNED_OUT's words at its next read of the login; one claimed on it and not yet started is refused at its start
+ *  (claude-login-token.ts LOGIN_CHANGED_SINCE_CLAIM). A login on this machine's own folder (`machine`) is the person's:
+ *  refused (machineSignOutRefused), with nothing touched. */
 export async function signOutClaudeLogin(deps: ClaudeLoginDeps): Promise<ClaudeLoginSignOut> {
-  const confirmed = await deps.signIns.serial(async (turn) => {
-    if ((await claudeLoginSetting(deps.settings))?.place === "machine") throw new ClaudeLoginRefused("forbidden", machineSignOutRefused(machineFolder(deps.env, deps.uid).folder));
-    await turn.stop();
-    await deps.settings.remove(CLAUDE_LOGIN_SETTING);
-    deps.saved(undefined);
-    const dir = agentRunLoginDir(deps.data);
-    if (!existsSync(dir)) return true;
-    const { login } = loginAt("agentrun", deps.data, deps.env, deps.uid);
-    const cli = loginCli(await deps.pinned(), deps.env);
-    const signedOut = login && cli ? await (await deps.claude()).claudeLogout(cli, login, pathOf(deps.env)) : false;
-    let beside = dir;
+  let off = false;
+  let signedOut = true;
+  const left: string[] = [];
+  const remove = (what: string, path: string, options: RmOptions) => {
     try {
-      beside = realpathSync(dir);
-    } catch {
-      // The folder as named.
+      rmSync(path, options);
+    } catch (error) {
+      left.push(`${what} ${path} (${(error as NodeJS.ErrnoException).code ?? String(error)})`);
     }
-    rmSync(dir, { recursive: true, force: true });
-    rmSync(`${beside}${loginRefresh.legacyLockSuffix}`, { recursive: true, force: true });
-    rmSync(answerFile(deps.data, { dir, profiles: join(dir, "anthropic") }), { force: true });
-    (await import("./claude-login-token.js")).forgetLoginTokens(dir);
-    return signedOut;
-  });
-  await deps.changed();
-  return { confirmed, ...(confirmed ? {} : { message: LOGIN_SIGN_OUT_UNCONFIRMED }), login: await claudeLoginView(deps) };
+  };
+  try {
+    await deps.signIns.serial(async (turn) => {
+      if ((await claudeLoginSetting(deps.settings))?.place === "machine") throw new ClaudeLoginRefused("forbidden", machineSignOutRefused(machineFolder(deps.env, deps.uid).folder));
+      await turn.stop();
+      await deps.settings.remove(CLAUDE_LOGIN_SETTING);
+      deps.saved(undefined);
+      off = true;
+      const dir = agentRunLoginDir(deps.data);
+      if (!existsSync(dir)) return;
+      try {
+        const { login } = loginAt("agentrun", deps.data, deps.env, deps.uid);
+        const cli = loginCli(await deps.pinned(), deps.env);
+        signedOut = login && cli ? await (await deps.claude()).claudeLogout(cli, login, pathOf(deps.env)) : false;
+        let beside = dir;
+        try {
+          beside = realpathSync(dir);
+        } catch {
+          // The folder as named.
+        }
+        remove("the login's folder", dir, { recursive: true, force: true });
+        remove("the CLI's older lock", `${beside}${loginRefresh.legacyLockSuffix}`, { recursive: true, force: true });
+        remove("the login's signed-in note", answerFile(deps.data, { dir, profiles: join(dir, "anthropic") }), { force: true });
+      } finally {
+        (await import("./claude-login-token.js")).forgetLoginTokens(dir);
+      }
+    });
+  } finally {
+    if (off) await deps.changed();
+  }
+  const message = left.length > 0 ? signOutLeft(left, !signedOut) : signedOut ? undefined : LOGIN_SIGN_OUT_UNCONFIRMED;
+  return { confirmed: message === undefined, ...(message ? { message } : {}), login: await claudeLoginView(deps) };
 }
 
 /** POST /settings/claude-login/login: the CLI's own sign-in, started on this machine, where it opens a browser, with the
