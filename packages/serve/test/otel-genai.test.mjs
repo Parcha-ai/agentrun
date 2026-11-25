@@ -771,6 +771,7 @@ test("an OTLP header value's credential pair is read anywhere in the value, a UR
 const SEMI_PREFIX = `prefix-${"dummy"}`;
 const SEMI_WHOLE = `${SEMI_PREFIX};suffix-${"dummy"}`;
 const SEMI_COMMA = `${SEMI_PREFIX}%2Cmid-${"dummy"};suffix-${"dummy"}`;
+const SEMI_SPACED = `${SEMI_PREFIX}%2Cmid-${"dummy"}%20tail-${"dummy"};suffix-${"dummy"}`;
 const SEMI_ROWS = [
   [
     "an endpoint's credential parameter with a ; in its value",
@@ -848,6 +849,13 @@ const SEMI_ROWS = [
     [SEMI_COMMA, decodeURIComponent(SEMI_COMMA), SEMI_PREFIX],
     ["us-east-1"],
     [`401 from relay: key ${SEMI_COMMA} refused`, "401 from relay: key [redacted] refused"],
+  ],
+  [
+    "a header value's credential pair with a ;, a %2C and a %20 in its value, before an & pair",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=api_key=${SEMI_SPACED}&region=us-east-1` },
+    [SEMI_SPACED, SEMI_PREFIX],
+    ["us-east-1"],
+    [`401 from relay: key ${SEMI_SPACED} refused`, "401 from relay: key [redacted] refused"],
   ],
   [
     "a header value's credential pair whose value starts with a ;",
