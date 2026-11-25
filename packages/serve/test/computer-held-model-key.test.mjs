@@ -542,7 +542,7 @@ async function handedNames(t, { env = {}, hold, before } = {}) {
   await writeFile(script, NAMES_OF_KEYS);
   const deps = { store, data: dir, sealKey: SEAL_KEY, env, computerForClaim: async () => assert.fail("the run names no computer") };
   const loop = childLoops({ deps, isolation: { kind: "process", why: "a test's runner" }, log: () => {}, argv: [process.execPath, script, out] })({
-    signal: new AbortController().signal, journal: (claim) => store.journal(claim), flush: async () => {}, delivered: Promise.resolve(),
+    signal: new AbortController().signal, journal: (claim) => store.journal(claim), flush: async () => {}, delivered: Promise.resolve(), redact: heldRedactor((text) => text),
   });
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
   const ended = await loop.start(claim).then(() => undefined, (error) => error);
