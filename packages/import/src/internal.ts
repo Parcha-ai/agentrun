@@ -10,5 +10,11 @@ import type { ReadOptions } from "./reader.js";
  *  cursor's state then holds the line its offset is before: hand such a cursor to no read. */
 export const DROPS_CURSOR: unique symbol = Symbol("dropsCursor");
 
-/** ReadOptions with this package's own option. */
-export type InternalReadOptions = ReadOptions & { [DROPS_CURSOR]?: boolean };
+/** A read option keyed by a symbol, as DROPS_CURSOR is: true reads a file's next chunk only after this one's lines are
+ *  read, into one buffer. Unset, the next chunk is read while this one's lines are, which pays where a core is spare to
+ *  make the read (parseHome's own thread). The read pool's workers set it: their threads take every core they are given,
+ *  so a read made ahead waits for one, and its chunk lands on another core than the one that reads it. */
+export const NO_READ_AHEAD: unique symbol = Symbol("noReadAhead");
+
+/** ReadOptions with this package's own options. */
+export type InternalReadOptions = ReadOptions & { [DROPS_CURSOR]?: boolean; [NO_READ_AHEAD]?: boolean };

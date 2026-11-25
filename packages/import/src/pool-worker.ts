@@ -6,7 +6,7 @@
 import { parentPort, workerData } from "node:worker_threads";
 import { type Packed, packed, packInto } from "./record-key.js";
 import { addNew, addRecord, ownerOf, recordIndex } from "./record-index.js";
-import { DROPS_CURSOR, type InternalReadOptions } from "./internal.js";
+import { DROPS_CURSOR, type InternalReadOptions, NO_READ_AHEAD } from "./internal.js";
 import { READERS } from "./readers/index.js";
 import type { Locator } from "./reader.js";
 
@@ -54,8 +54,9 @@ parentPort!.on("message", async ({ id, source, locator }: PoolAsk) => {
     },
   } as unknown as Set<string>;
   try {
-    // The cursor is never sent back: the read makes no copy for it.
-    const options: InternalReadOptions = { turns: false, totals: true, seen, maxLine, [DROPS_CURSOR]: true };
+    // The cursor is never sent back: the read makes no copy for it. No read ahead (NO_READ_AHEAD): the pool's workers take
+    // every core it was given.
+    const options: InternalReadOptions = { turns: false, totals: true, seen, maxLine, [DROPS_CURSOR]: true, [NO_READ_AHEAD]: true };
     const result = await reader.read(locator, undefined, options);
     settle();
     const counts = result.sessions.flatMap(({ counts }) => (counts ? [counts.model.buffer, counts.values.buffer, counts.has.buffer] : [])) as ArrayBuffer[];
