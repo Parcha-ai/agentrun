@@ -274,6 +274,29 @@ test("a stopped run's end on another runner deletes a dial machine kept by a liv
   assert.equal((await readKept(run.server.settings, RUN))?.ended, true);
 });
 
+test("a stopped run's end marks its kept row ending before it deletes the machine, whichever runner kept it or claim is taking it back, so a follow-up that queues the run again never takes that machine back mid-delete", { timeout: 60_000 }, async (t) => {
+  const run = await opened(t);
+  assert.equal(await run.server.runners.put({ runner: "runner-a", incarnation: "inc-a", refused: null }), true, "runner-a is there");
+  const kept = { provider: "docker", kind: "sandbox", id: "c2", name: "c2", epoch: 2, until: Date.now() + KEEP_MS, runner: "runner-a", incarnation: "inc-a" };
+  const computers = { kinds: KINDS, providers: { docker: () => run.docker.provider() } };
+  for (const row of [kept, { ...kept, taking: 3 }]) {
+    run.docker.held.set("c2", { ref: { id: "c2", name: "c2" }, labels: { "agentrun.run": RUN, "agentrun.epoch": "2" } });
+    await run.server.settings.put(keptKeyOf(RUN), row);
+    /** The row as the run's end's delete finds it. */
+    let atDelete;
+    const listed = run.docker.provider;
+    run.docker.provider = (...args) => {
+      const provider = listed(...args);
+      return { ...provider, release: async (...rest) => ((atDelete ??= await readKept(run.server.settings, RUN)), provider.release(...rest)) };
+    };
+    await runEndComputers({ store: run.server, computers, log: () => {}, retryMs: 50 })({ runId: RUN, epoch: 3 });
+    run.docker.provider = listed;
+    assert.deepEqual(await readKept(run.server.settings, RUN), { ...kept, ending: true }, `the run is final: ${JSON.stringify(row)} reads ending, so no claim takes its machine back`);
+    assert.deepEqual(atDelete, { ...kept, ending: true }, "marked before the delete");
+    assert.deepEqual(run.docker.left(), [], "and the machine is deleted");
+  }
+});
+
 test("a run whose only claim ends it lets its own sandbox go at its end, and the run's end asks the provider nothing more", { timeout: 120_000 }, async (t) => {
   const run = await opened(t);
   await run.start("runner-a");
