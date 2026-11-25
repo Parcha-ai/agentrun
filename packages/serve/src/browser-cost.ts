@@ -82,6 +82,21 @@ type Booked = { tool: "browser"; charged_by: string; call: string | null; usd: n
  *  refused its reserve (askReserve), so nothing is held for it, and its next charge asks again. */
 type Open = { cid: number; reserve: Hold; at: number; call: string | null; refused?: boolean };
 export { BROWSER_CHARGED };
+/** Each browser step that is owed, by name: booked and held past the cap's rule (kernel/cap port.ts), for money its
+ *  provider is already owed outside any call. The one place this file sets owed (owed-pin.test.mjs pins the list and
+ *  each name's one use): a new owed step is named here, and reviewed there. */
+const OWED = {
+  /** A charge's time, as charged (bookOnLedger): under no call too (a release, its top-up). */
+  charge: { owed: true },
+  /** A kept session's reserve, held from the reopen (its time since its last charge and its next stretch). */
+  reopenReserve: { owed: true },
+  /** That reserve held again at one stretch once its charge booked the time before it. */
+  reserveAgain: { owed: true },
+  /** A delayed release's hold, until its release is billed. */
+  delayedRelease: { owed: true },
+  /** A person's carried time, until the session's next charge books it. */
+  personTime: { owed: true },
+} as const;
 /** The tool a browser step on the run's one ledger names (main's charge's `tool`, the timeline's BROWSER_CHARGE): the run
  *  view folds its charge into its call's row, as main's. */
 const BROWSER_TOOL = "browser";
@@ -235,7 +250,7 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
     // Held at its charge (known: it was billed): a claim lost before its settle leaves it booked at that, never unknown
     // (the kernel's bookCut books an owed step at its hold). A charge of an unknown amount holds nothing.
     const owes = typeof data.usd === "number" && Number.isFinite(data.usd) && data.usd > 0 ? data.usd : 0;
-    const step = paidStep(booking, data.call ?? undefined, { name: "this browser session's time", holdUsd: owes, basis: `${provider}'s session time, billed as it was charged`, by: data.charged_by, tool: BROWSER_TOOL, tag: data.tag, owed: true, ref: chargeRef(data) }, async () => undefined, () => data.usd).then(
+    const step = paidStep(booking, data.call ?? undefined, { name: "this browser session's time", holdUsd: owes, basis: `${provider}'s session time, billed as it was charged`, by: data.charged_by, tool: BROWSER_TOOL, tag: data.tag, ...OWED.charge, ref: chargeRef(data) }, async () => undefined, () => data.usd).then(
       (stepped) => void ("refused" in stepped && log(logLine("browser_spend_unbooked", { said: `a browser charge of ${data.tag} was not booked on the run's ledger (${stepped.refused.slice(0, 200)}): the next claim's reopen books it` }))),
       (error: unknown) => void log(logLine("browser_spend_unbooked", { said: `a browser charge of ${data.tag} was not booked on the run's ledger (${String((error as Error)?.message ?? error).slice(0, 200)}): the next claim's reopen books it` })),
     );
@@ -281,7 +296,7 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
         session.reserve = askReserve(data.tag, `${provider}'s next stretch of session time, asked again once the cap refused it`, data.call === null ? undefined : calls.get(data.call));
       } else if (session.reserve.usd !== stretch) {
         const givenBack = session.reserve.drop();
-        session.reserve = holdOf("this browser session's reserve", stretch, `${provider}'s next stretch of session time, held again once its charge booked the time before it`, { owed: true, tag: data.tag, after: givenBack }).hold;
+        session.reserve = holdOf("this browser session's reserve", stretch, `${provider}'s next stretch of session time, held again once its charge booked the time before it`, { ...OWED.reserveAgain, tag: data.tag, after: givenBack }).hold;
       }
       Object.assign(session, { at: through, call: data.call ?? session.call });
     } else {
@@ -331,7 +346,7 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
       if (!Number.isFinite(at) || record?.spent.final) continue;
       // Its reserve carries the down time, so its calls count what it runs from here (`at` now), not the down time again.
       const now = Date.now();
-      sessions.set(row.tag, { cid: row.conversationId, reserve: holdOf("this browser session's reserve", stretch + usdOf(Math.max(0, now - at) / 1000), `${provider}'s session time since its last charge and its next stretch, held from the reopen`, { owed: true, tag: row.tag }).hold, at: now, call: null });
+      sessions.set(row.tag, { cid: row.conversationId, reserve: holdOf("this browser session's reserve", stretch + usdOf(Math.max(0, now - at) / 1000), `${provider}'s session time since its last charge and its next stretch, held from the reopen`, { ...OWED.reopenReserve, tag: row.tag }).hold, at: now, call: null });
     }
   }
 
@@ -346,7 +361,7 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
       if (rate === 0 || row.state !== "releasing" || row.resourceId !== null || sessions.has(row.tag)) continue;
       const usd = usdOf(CREATE_DEADLINE_S + stretchS);
       take([...calls.values()].find((c) => c.cid === row.conversationId)?.hold, usd);
-      sessions.set(row.tag, { cid: row.conversationId, reserve: holdOf("this browser session's delayed release", usd, `${provider}'s session time for its create's deadline and a stretch, until its release is billed`, { owed: true, tag: row.tag }).hold, at: Date.now(), call: null });
+      sessions.set(row.tag, { cid: row.conversationId, reserve: holdOf("this browser session's delayed release", usd, `${provider}'s session time for its create's deadline and a stretch, until its release is billed`, { ...OWED.delayedRelease, tag: row.tag }).hold, at: Date.now(), call: null });
     }
   }
 
@@ -496,7 +511,7 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
     const from = Math.max(to - seconds * 1000, sessions.get(tag)?.at ?? -Infinity);
     if (!(to > from)) return;
     // Spent at the provider already: held on the run's ledger until a charge books it.
-    const { hold } = holdOf("a person's time in the browser", microUsd(usdOf((to - from) / 1000)), `${provider}'s session time a person used, until the session's next charge books it`, { owed: true, tag });
+    const { hold } = holdOf("a person's time in the browser", microUsd(usdOf((to - from) / 1000)), `${provider}'s session time a person used, until the session's next charge books it`, { ...OWED.personTime, tag });
     carried.set(tag, [...(carried.get(tag) ?? []), { hold, from, to }]);
   }
 
