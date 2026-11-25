@@ -147,7 +147,8 @@ Where a new agent that names no place goes, by mode:
   address, says so: `Boxes: docker (on by default; set AGENTRUN_BOXES to change).`
 - Where it does not, and the runner has no shell (Mode 1), its create is refused, `name a box`: it names a box, or the
   runner (`"place": {"mode": "runner"}`) to run without a shell. That line says why, and `capabilities.places.default_place`
-  is `null`.
+  is `null`. So is `agentrun deploy` of a package that names no `tools` and no `computer` list: name its tools
+  (`tools: []` keeps the runner) or its computer list.
 - In Mode 2, where the runner's shell is Archil's serverless exec, it is not refused: it runs on the runner, as before.
 
 A Docker box's image is built on its first run, which shows that on its timeline. `AGENTRUN_BOXES=none` turns boxes off.

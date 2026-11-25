@@ -145,7 +145,14 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
    *  the runner has a shell that runs others (Mode 2's Archil exec runs bash), it says which. */
   const shellOnRunner = (tool: string, field: string, named: boolean): Blocker => {
     const fresh = newAgentPlace(boxes);
-    if (!named && !runnerShell.size && "reason" in fresh) return { ...noPlaceIssue(boxes), host: false, tool };
+    if (!named && !runnerShell.size && "reason" in fresh) {
+      // A tool the box refuses (the browser) keeps this agent out of every box, so naming one is no way out: its words
+      // say that it is one tool or the other.
+      const boxless = (revision.tools ?? []).filter((one) => toolOf(one)?.runnerOnly);
+      if (!boxless.length) return { ...noPlaceIssue(boxes), host: false, tool };
+      const them = new Intl.ListFormat("en", { type: "conjunction" }).format(boxless.map((one) => `"${one}"`));
+      return { field, reason: "not_an_option", message: `${tool} runs only in a box, and ${boxless.join(", ")} never ${boxless.length > 1 ? "run" : "runs"} in one, so no place runs this agent with both: remove "${tool}" from definition.tools to keep it on the runner, or remove ${them} and name a box.`, fix: `Remove "${tool}" from definition.tools.`, host: false, tool };
+    }
     const where = named ? "this agent's place is the runner" : "this agent names no place, so it runs on the runner";
     const has = runnerShell.size ? `whose shell here runs ${[...runnerShell].join(", ")} alone` : "which has no shell";
     const box = boxAvailability(boxes).find((b) => b.available);

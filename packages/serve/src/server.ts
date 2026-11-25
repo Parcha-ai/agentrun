@@ -3696,16 +3696,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  that names no place is given this server's box (place.ts defaultPlaceOf), stamped on its revision, when it names no
    *  tools (it gets bash) or a tool that needs a shell, and refused where Docker's box is not here and the runner has no
    *  shell (saveable); one whose tools need none, or that names a tool the box refuses (browser), keeps the runner. */
-  async function createAgentOf(body: Json, template?: TemplatePackage): Promise<{ entry: AgentEntry; warnings: InputIssue[] }> {
+  async function createAgentOf(body: Json, template?: TemplatePackage, { toolsUnnamed }: { toolsUnnamed?: boolean } = {}): Promise<{ entry: AgentEntry; warnings: InputIssue[] }> {
     let warnings: InputIssue[] = [];
     const definition = checkDefinitionBody(body, { harnesses });
     const named = Array.isArray(definition.definition.tools) ? definition.definition.tools : [];
     const place = fallbackPlace("agentic", definition.definition.tools === undefined ? NEW_AGENT_TOOLS : named);
     const tools = defaultToolsAt(place);
     const entry = await agents.create(definition, async (revision) => {
-      // A template's apply has compiled its tools where it runs already (applyWith's defaultTools: a box's shell tools only
-      // where Docker's box is here), so its definition is checked by the tools it names.
-      const saved = await saveable(revision, null, { toolsUnnamed: !template && definition.definition.tools === undefined });
+      // A template's apply says whether its package named its tools (applyWith): one that named none, and no computer
+      // list, is the agent that would get Docker's box, whatever its grants compiled to, and is refused where there is none.
+      const saved = await saveable(revision, null, { toolsUnnamed: toolsUnnamed ?? definition.definition.tools === undefined });
       warnings = saved.warnings;
       return saved.stamp;
     }, place.mode === "sandbox" && tools ? { place, tools } : undefined, template);
@@ -4040,7 +4040,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** applyTemplate's work, in its turn on the agent where it has agent_id: prepareApply's reads and checks, then its
    *  writes. */
   async function applyWith(template: Package, body: Json) {
-    const { pkg, onto, saved, mapped, grants, made, emptyFeeds, hostless, unmade, hadByName, remade, resent, removing, digest, origin, warned } = await prepareApply(template, body, { plan: false });
+    const { pkg, onto, saved, mapped, grants, pick, made, emptyFeeds, hostless, unmade, hadByName, remade, resent, removing, digest, origin, warned } = await prepareApply(template, body, { plan: false });
     // A fresh apply of what already made a live agent here (the same package and parameters) still makes one, and says
     // which is there: an apply with its agent_id updates that one instead. Read before this apply's agent is made.
     const twins: InputIssue[] = (await twinsOf(onto, pkg.id, digest))
@@ -4053,7 +4053,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         if (error instanceof ApiError && error.code === "precondition_failed") throw new ApiError("precondition_failed", `The agent ${onto.agent.id} changed while this apply of the ${pkg.name} template read it (an edit, or another apply, wrote a revision): nothing was changed. Apply it with agent_id again to update the agent as it is now.`);
         throw error;
       })
-      : await createAgentOf(made.agent, origin);
+      : await createAgentOf(made.agent, origin, { toolsUnnamed: pkg.tools === undefined && !pick });
     // An update's triggers are reconciled by name with the ones the agent has: the package's trigger of a name the agent
     // has (of the same kind) is changed in place, keeping its id, a feed's seen items, a webhook's secret and whether the
     // owner turned it off (an unmarked one is adopted so, and only so: notOurs above), its settings the package's whole

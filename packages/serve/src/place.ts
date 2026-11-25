@@ -45,8 +45,12 @@ export function placeToName(registry: readonly BoxOffer[]): string {
   return `Set place to {mode: sandbox, box: <${ready.length ? `one of: ${ready.join(", ")}` : "none is set up"}>}, or to {mode: runner} to run without a shell.`;
 }
 
-/** Why such an agent is refused: it names a box (placeToName). */
-export const nameABox = (registry: readonly BoxOffer[]): string => `name a box: this server has no Docker box for a new agent. ${placeToName(registry)}`;
+/** Why such an agent is refused: it names a box (placeToName); and why Docker's box is not here, in the words its offer
+ *  gave (its probe's, with their fix: start Docker, join its group), where it gave some. */
+export const nameABox = (registry: readonly BoxOffer[]): string => {
+  const why = registry.find((offer) => offer.id === DEFAULT_BOX && !offer.available)?.reason;
+  return `name a box: this server has no Docker box for a new agent. ${placeToName(registry)}${why ? ` ${sentence(`${DEFAULT_BOX}: ${why}`)}` : ""}`;
+};
 
 /** The place a new agentic definition that names none is saved with: Docker's box where this server has it; else none,
  *  with `reason`, the words such a definition is refused in (nameABox), and `why` Docker's box is not here, in its probe's

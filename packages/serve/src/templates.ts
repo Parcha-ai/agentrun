@@ -190,7 +190,8 @@ export type Package = {
    *  `choices`, the named models an owner may pick one of at install instead (apply's overrides.choice). */
   model?: { tier: string; prefer?: string; fast?: string; strong?: string; choices?: ModelChoice[] };
   effort?: string;
-  /** Absent, the tools the server gives a new agent that names none. */
+  /** Absent, the tools the server gives a new agent that names none; with no `computer` list either, its apply is the
+   *  create that gets Docker's box, refused where that box is not here and the runner has no shell (server.ts saveable). */
   tools?: string[];
   /** MCP servers by their source and toolkit, and the tools of each the agent is granted. One `required` refuses an apply
    *  on a server that has saved none that matches; any other is skipped there, with a warning. */

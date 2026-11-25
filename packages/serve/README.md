@@ -635,17 +635,21 @@ Where a new agent with no place goes, by mode:
 - **No Docker, and the runner has no shell (Mode 1): refused, `name a box`.** A new agent that would get the box (no
   tools named, or a shell tool) is `422 input_invalid` with `{field: "definition.place", reason: "missing"}`, and so is an
   edit that would save such a revision: `name a box: this server has no Docker box for a new agent. Set place to {mode:
-  sandbox, box: <one of: daytona, e2b>}, or to {mode: runner} to run without a shell.` The words list the boxes this
-  server has (`<none is set up>` when it has none) and its `fix` says the same, so no box is picked for it: the default
-  box is the one whose provider descriptor sets `defaultBox` (Docker's), never another box that answers. `default_place` is `null`, and `default_reason` carries
-  those words.
+  sandbox, box: <one of: daytona, e2b>}, or to {mode: runner} to run without a shell. docker: <why>.` The words list the
+  boxes this server has (`<none is set up>` when it has none), and its `fix` says the same, so no box is picked for it:
+  the default box is the one whose provider descriptor sets `defaultBox` (Docker's), never another box that answers. They
+  end with why Docker's box is not here, in its entry's own words and fix (joining the docker group, say). A template
+  apply, or an `agentrun deploy`, of a package that names no `tools` and no `computer` list is refused the same way,
+  whatever MCP tools it ticks: it is the agent that gets the box where Docker is here. `default_place` is `null`, and
+  `default_reason` carries those words. A definition with no place that names a shell tool and the browser is refused at
+  the shell tool instead: a box refuses the browser, so no place runs both, and the words say to remove one.
 - **No Docker, in Mode 2:** not refused. The runner's shell is Archil's serverless exec, so a new agent with no place
   saves for the runner as before, and `default_place` is `{"mode": "runner"}`, no `default_reason`. A background tool
   still runs in a box alone, so naming one with no place is refused at the tool.
 
-A definition that names its place, the runner included, a workflow, one whose tools need no shell, and a template apply
-(which compiles its tools where it runs, a box's shell tools only where Docker's box is here) save as before in every
-mode.
+A definition that names its place, the runner included, a workflow, and one whose tools need no shell save as before in
+every mode, and so does a package that names its tools (`tools: []` included) or its computer list. An agent saved
+before this change with no place and no tools keeps running on the runner: the store holds its tools as `[]`.
 
 `capabilities.places.default_place` is always sent: the place a new agent with a shell gets here, and where a revision
 that names no place and has a shell tool runs; `null` means no default, so a new agent names its place. It is worked out

@@ -2379,6 +2379,7 @@ const PICK_PACKAGE = `---
 name: on-plan
 version: 1.0.0
 description: Says hi.
+tools: []
 harness: [claude-agent, pi]
 model:
   tier: balanced
