@@ -42,7 +42,31 @@ test('the plan puts the longest units first, each on the shard it lengthens leas
   assert.throws(() => plan(units, 0), /a whole number of shards/);
 });
 
-test("a suite's files in one shard take its longest file or their total over its parallelism, whichever is more", () => {
+test("a node --test suite's files in one shard take as long as node schedules them: sorted, its concurrency at a time", () => {
+  const file = (id, seconds) => ({ ...unit(id, seconds, 'serve', 4), slots: 2 });
+  // A 100 s file that sorts first starts at once and the short ones share the other slot; one that sorts last starts when the
+  // short ones have held both slots for 40 s. The longest-file-or-total-over-parallelism model reads 100 s either way.
+  const short = [1, 2, 3, 4].map((n) => file(`m-${n}`, 20));
+  assert.equal(modelSeconds([file('a-long', 100), ...short]), 2 + 100);
+  assert.equal(modelSeconds([...short, file('z-long', 100)]), 2 + 40 + 100);
+  assert.equal(modelSeconds([...short, file('z-long', 100)].map(({ slots, ...rest }) => rest)), 2 + 100);
+  // Planned: beside a long file that sorts first the short ones cost nothing; beside one that sorts last they do, so one goes
+  // to the other shard.
+  const others = [unit('x', 60, 'other'), unit('y', 50, 'other')];
+  assert.deepEqual(plan([file('a-long', 100), ...short, ...others], 2).map(ids), [['a-long', 'm-1', 'm-2', 'm-3', 'm-4'], ['x', 'y']]);
+  const late = plan([file('z-long', 100), ...short, ...others], 2);
+  assert.deepEqual(late.map(ids), [['m-1', 'm-2', 'm-3', 'z-long'], ['m-4', 'x', 'y']]);
+  assert.deepEqual(late.map((shard) => shard.seconds), [2 + 20 + 100, 2 + 20 + 2 + 110]);
+});
+
+test('a suite takes its script\'s --test-concurrency, or node\'s default on the 4-CPU runners where it sets none', () => {
+  const root = repo('slots', {
+    workspaces: { a: ['a', "node --test --test-concurrency=8 'test/*.test.mjs'", ['test/one.test.mjs']], b: ['b', 'node --test test/*.test.mjs', ['test/b.test.mjs']] },
+  });
+  assert.deepEqual(unitsOf(readSuites(root), readConfig(root).timings).map((u) => [u.id, u.slots]), [['file:packages/a/test/one.test.mjs', 8], ['file:packages/b/test/b.test.mjs', 3]]);
+});
+
+test("a suite node --test does not schedule takes its longest file or its files' total over its parallelism, whichever is more", () => {
   // One suite of parallelism 4: a 100 s file and four 20 s files fit under the long one; a second suite adds its own time.
   const serve = [unit('long', 100, 'serve', 4), ...[1, 2, 3, 4].map((n) => unit(`short-${n}`, 20, 'serve', 4))];
   assert.equal(modelSeconds(serve), 2 + 100);
