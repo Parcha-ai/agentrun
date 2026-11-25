@@ -120,13 +120,14 @@ switch (args[0]) {
     break;
   }
   case "version":
-    // The probe's `{{.Server.Version}}`, and `{{.Server.Arch}}` (amd64, or what `docker-arch` there says) where its format
-    // names it; `{{.Server.APIVersion}}` as Docker Engine 27 gives it, or as `docker-api` there says.
+    // The probe's `{{.Server.Version}}`, and `{{.Server.Arch}}` where its format names it and `docker-arch` there says
+    // one (with none, the version alone, as before: a server then checks no computerd build for it);
+    // `{{.Server.APIVersion}}` as Docker Engine 27 gives it, or as `docker-api` there says.
     if (args.some((arg) => arg.includes("APIVersion"))) done(existsSync(join(state, "docker-api")) ? readFileSync(join(state, "docker-api"), "utf8") : "1.47\n");
     {
-      const arch = existsSync(join(state, "docker-arch")) ? readFileSync(join(state, "docker-arch"), "utf8").trim() : "amd64";
-      const format = args[args.indexOf("--format") + 1];
-      done(`${args.includes("--format") && format.includes("{{.Server.Arch}}") ? format.replaceAll("{{.Server.Version}}", "27.0.0-fake").replaceAll("{{.Server.Arch}}", arch) : "27.0.0-fake"}\n`);
+      const arch = existsSync(join(state, "docker-arch")) ? readFileSync(join(state, "docker-arch"), "utf8").trim() : undefined;
+      const format = args.includes("--format") ? args[args.indexOf("--format") + 1] : "";
+      done(`${arch !== undefined && format.includes("{{.Server.Arch}}") ? format.replaceAll("{{.Server.Version}}", "27.0.0-fake").replaceAll("{{.Server.Arch}}", arch) : "27.0.0-fake"}\n`);
     }
     break;
   case "info": {

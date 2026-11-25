@@ -230,6 +230,7 @@ import { COMPUTER_ROUTES, computerHoldOf, computerRoute, runComputerKind } from 
 import { runOver } from "./computer-commands.js";
 import { mintViewerCredential, VIEWER_PARAM, viewerCookie, viewerCredentialFor, viewerCredentialKey, viewerCredentialOf } from "./viewer-credential.js";
 import { ATTACH_PATH, AttachHub, type HostedDial, PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
+import { dockerDaemonOf } from "@parcha/agentrun-computer/docker";
 import { type AttachTiming, createAttachRoutes, liveRelays, pairedView } from "./computer-attach.js";
 import { pairedRefusal, withPaired } from "./workspace/attached-computers.js";
 import { PAIRED_ROUTE_MS, readRoute } from "./workspace/paired-route.js";
@@ -452,6 +453,9 @@ export type ServeOptions = {
   /** Under `faux`: a file read as this server's /proc/self/mountinfo (box-paths.ts), a container's in a test; absent (and
    *  no FAUX_MOUNTINFO_ENV), a faux server is on a host. */
   fauxMountinfo?: string;
+  /** Under `faux`: the directory a Docker computer's computerd build is looked for in at the start (the computer
+   *  package's dockerDaemonOf), in place of that package's own build; absent, a faux server doesn't check for one. */
+  fauxDaemonDir?: string;
   /** For tests: whether Docker's start probe takes this server to be in a container (place-offers.ts containerReason),
    *  in place of its own marks; a faux server's is a host's. */
   probeContainer?: ContainerFacts;
@@ -1781,7 +1785,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const fauxDocker = Boolean(options.faux) && options.fauxDocker === true;
   // A faux server's probe is on a host, as its Docker paths are below, so a test reads the same words in a container;
   // `probeContainer` sets it for a test of a real one.
-  const found = await placeOffers(env, { keyOf: keyReader(store, seal.key, env), fauxDocker, ...(options.probeContainer ? { container: options.probeContainer } : options.faux ? { container: { inside: false } } : {}) });
+  // The probe names Docker's architecture too, which says which computerd build a Docker computer binds (below).
+  let dockerArch: string | undefined;
+  const found = await placeOffers(env, { keyOf: keyReader(store, seal.key, env), fauxDocker, dockerArch: (arch) => (dockerArch = arch), ...(options.probeContainer ? { container: options.probeContainer } : options.faux ? { container: { inside: false } } : {}) });
   const docker = found.some((offer) => offer.id === "docker" && offer.available);
   // Under --faux, the mountinfo a test gives (fauxMountinfo, or FAUX_MOUNTINFO_ENV in the process's own environment, which
   // `env` leaves out: a server under test in a container names its own /proc/self/mountinfo there); with none, a faux
@@ -1795,9 +1801,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // A run's Docker computer mounts the run's folder, and the computer's daemon, by this server's paths: as they are on
   // its Docker's own host, or as its named data volume's subpaths from a container of that Docker's (compose.yaml).
   // Any other layout, or a daemon of another machine (DOCKER_HOST, or the current context's endpoint: box-paths.ts
-  // remoteDockerOnce), can't run one, and says so here (dockerComputerRefusal), where capabilities, the run's start
-  // (dockerAnswers) and a place's box check all read it: no run starts only to fail at its create.
-  const dockerElsewhere = fauxDocker || !docker ? undefined : dockerComputerRefusal(dockerPaths, await remoteDockerOnce(env));
+  // remoteDockerOnce), can't run one, and neither can a server with no computerd build for its Docker's architecture as
+  // the probe named it (`npm run build` without `npm run build:daemon`): the computer package's dockerDaemonOf, the file
+  // and words its create() takes. Each says so here (dockerComputerRefusal), where capabilities, the run's start
+  // (dockerAnswers) and a place's box check all read it: no run starts only to fail at its create. A faux server checks
+  // the build only in the directory a test names (fauxDaemonDir); an architecture the probe didn't name is left to create().
+  const daemonDir = options.faux ? options.fauxDaemonDir : undefined;
+  const noDaemon = dockerArch === undefined || (options.faux && daemonDir === undefined) ? undefined : (daemonDir === undefined ? dockerDaemonOf(dockerArch) : dockerDaemonOf(dockerArch, daemonDir)).missing;
+  const dockerUnrunnable = fauxDocker || !docker ? undefined : dockerComputerRefusal(dockerPaths, await remoteDockerOnce(env), noDaemon);
   // From a container, a Docker computer keeps this server's allow-list only knowing the Docker host's own addresses: the
   // union of the read through the socket and AGENTRUN_DOCKER_HOST_ADDRESSES (docker-host-addresses.ts), the same read the
   // runner beside this server takes. Said at the start with what was found; with none, Docker isn't offered, in words.
@@ -1809,13 +1820,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // read's container is removed within the stop's deadline (docker-host-addresses.ts REMOVE_MS).
   const boxesOf = (hostAddresses: { addresses: readonly string[]; why?: string } | undefined): BoxOffer[] => {
     if (hostAddresses) log?.(logLine("docker_host_addresses", { addresses: hostAddresses.addresses.join(",") || "none", ...(hostAddresses.why ? { read: hostAddresses.why } : {}) }));
-    const dockerRefused = dockerElsewhere ?? (hostAddresses && hostAddresses.addresses.length === 0 ? noHostAddresses(hostAddresses.why ?? "the read through Docker's socket found none") : undefined);
+    const dockerRefused = dockerUnrunnable ?? (hostAddresses && hostAddresses.addresses.length === 0 ? noHostAddresses(hostAddresses.why ?? "the read through Docker's socket found none") : undefined);
     // Each box with what it reaches (place-offers.ts withNetworks).
     const offers = withNetworks(found, boxAllow, { ...(dockerRefused !== undefined ? { refused: dockerRefused } : {}), ...(hostAddresses ? { hostAddresses: hostAddresses.addresses } : {}), faux: fauxDocker });
     log?.(logLine("boxes", boxesLog(offers, enabledBoxes(env))));
     return offers;
   };
-  const hostAddresses = dockerElsewhere === undefined && "paths" in dockerPaths && boxAllow !== "none" ? unionOf(await hostAddressesOnce(env), dockerHostAddressesOf(env)) : undefined;
+  const hostAddresses = dockerUnrunnable === undefined && "paths" in dockerPaths && boxAllow !== "none" ? unionOf(await hostAddressesOnce(env), dockerHostAddressesOf(env)) : undefined;
   let boxOffers = boxesOf(hostAddresses);
   const hostRetried: Promise<void> =
     hostAddresses === undefined || hostAddresses.why === undefined
