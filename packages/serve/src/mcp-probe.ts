@@ -35,6 +35,9 @@ export const UNUSABLE = {
   blocked: "its sign-in server's address is refused here",
   /** A per_run server's run that was handed no credential for it (mcp_auth), or whose credential was erased at its end. */
   perRunMissing: "this server takes its credential from each run, and this run was handed none: its caller sends one as mcp_auth when it starts the run or sends it a message",
+  /** A per-run Composio server's binding of a Composio user the owner connects here (composio-owners.ts), which the API
+   *  token handed, or which was sealed before the seal marked who handed it. */
+  composioOwnersUser: "the Composio user this run is bound to is one the owner connects on this install, and nothing marks the binding as the owner's: hand mcp_auth again on a message, or start a new run",
 } as const;
 export const REFRESH_MARGIN_MS = 5 * 60_000;
 /** How long an access token given with no expiry is taken to last: it is refreshed within the margin of then. */

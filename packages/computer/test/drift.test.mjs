@@ -354,6 +354,19 @@ test("hello: the provider's version, its kind and exactly its groups, linux, and
 	one(drift(SPEC, inspected(), { ...HELLO, version: "0.0.1" }, EXPECTED), /version 0\.0\.1/);
 });
 
+test("the protocol version rule, written once (helloProblem): 0.2 and every later 0.x work; 0.1 (before 0.2 replaced apps.ui_tree with ui), another major, another shape, a non-string and none are refused, in the words every hello reader says after whoever answered", () => {
+	const { helloProblem } = computer;
+	assert.equal(PROTOCOL_VERSION, "0.2", "the rule below is read against 0.2");
+	for (const same of ["0.2", "0.3", "0.10"]) assert.equal(helloProblem(same, "server"), undefined, `${same}: a minor step only adds`);
+	for (const other of ["0.1", "0.0", "1.0", "1.2", "2", "0.2.0", "v0.2", "", "0."]) assert.equal(helloProblem(other, "server"), `speaks protocol ${other}, and this server 0.2`, other);
+	for (const other of [0.2, 0, ["0", "2"]]) assert.equal(helloProblem(other, "provider"), `speaks protocol ${String(other)}, and this provider 0.2`, String(other));
+	// A hello that names no protocol says so in words, not as a JavaScript value.
+	for (const missing of [undefined, null]) assert.equal(helloProblem(missing, "provider"), "speaks protocol none, and this provider 0.2", String(missing));
+	// The drift list asks the same rule, and says its words after "the daemon".
+	assert.deepEqual(helloDrift({ ...HELLO, protocol: "0.3" }, EXPECTED), [], "0.3");
+	for (const [other, said] of [["0.1", "0\\.1"], ["1.0", "1\\.0"], [undefined, "none"]]) one(helloDrift({ ...HELLO, protocol: other }, EXPECTED), new RegExp(`^hello: the daemon speaks protocol ${said}, and this provider 0\\.2$`));
+});
+
 test("every mismatch is listed, not only the first", () => {
 	const found = drift(
 		SPEC,

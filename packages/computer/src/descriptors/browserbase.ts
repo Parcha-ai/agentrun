@@ -17,5 +17,9 @@ export const BROWSERBASE = defineProvider({
 	hostEnv: ["BROWSERBASE_BASE_URL", "BROWSERBASE_CONNECT_BASE_URL"],
 	capabilities: [{ kind: "browser", groups: ["cdp", "stream"] }],
 	defaultImage: { browser: BROWSER_IMAGE },
+	// A profile is a context, which Browserbase writes back a few seconds after a saving session ends and publishes no
+	// bound for: 10 s, twice the few seconds seen, since a session opened on it too soon starts from what was there
+	// before, and a wait too long only holds the next save back.
+	profiles: { settleMs: 10_000 },
 	load: () => import("../browserbase.js"),
 });

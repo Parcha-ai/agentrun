@@ -171,7 +171,7 @@ test("nothing to sift is not sifted: an error, a failed page, a refused part; th
   const { asked, provider } = fakeProvider();
   const web = fakeWeb({ decider: priced(provider) });
   const empty = await web.search("   ", { task: TASK });
-  assert.deepEqual(empty.answer, { error: "web_search needs a query" });
+  assert.deepEqual(empty.answer, { error: "web_search needs an objective" });
   assert.deepEqual([empty.receipt.classifier.ran, empty.receipt.classifier.skipped], [false, "no results"]);
   const refused = await web.fetch("http://evil.example/", { task: TASK });
   assert.equal(refused.answer.sift, undefined);
@@ -332,7 +332,7 @@ test("a search over the state budget is trimmed: every snippet cut to the longes
   assert.ok(bytesOf(longer.state) > STATE_BUDGET_BYTES, "the longest that fits");
   assert.deepEqual(asked[0].request, siftRequest("widgets", hits.map((hit) => ({ ...hit, snippet: hit.snippet.slice(0, cut[0]) })), TASK));
   assert.deepEqual(got.trimmed, { snippets: 10, to_chars: cut[0] });
-  const { answer, classifier } = await siftSearch(priced(fakeProvider().provider), { provider: "parallel", query: "widgets", results: hits }, { task: TASK });
+  const { answer, classifier } = await siftSearch(priced(fakeProvider().provider), { provider: "parallel", objective: "widgets", queries: ["widgets"], results: hits }, { task: TASK });
   assert.deepEqual([classifier.trimmed, classifier.requests], [{ snippets: 10, to_chars: cut[0] }, 1]);
   assert.deepEqual(answer.results, hits, "the model reads every snippet whole");
   const small = await priced(fakeProvider().provider).sift("widgets", hits.slice(0, 1), TASK, CTX());

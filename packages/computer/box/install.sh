@@ -53,10 +53,10 @@ packages() {
 desktop() {
 	apt-get update -qq
 	DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-		xvfb xfwm4 x11-xserver-utils xfce4-terminal mousepad firefox-esr xdotool fonts-dejavu-core adwaita-icon-theme >/dev/null
+		xvfb xfwm4 x11-xserver-utils xfce4-terminal mousepad firefox-esr thunar xdotool fonts-dejavu-core adwaita-icon-theme >/dev/null
 	rm -rf /var/lib/apt/lists/*
-	for x in Xvfb xfwm4 dbus-run-session xsetroot xfce4-terminal mousepad firefox-esr xdotool; do command -v "$x" >/dev/null || { echo "the image has no $x" >&2; exit 1; }; done
-	for app in org.xfce.mousepad xfce4-terminal firefox-esr; do [ -f "/usr/share/applications/$app.desktop" ] || { echo "the image has no desktop file $app.desktop" >&2; exit 1; }; done
+	for x in Xvfb xfwm4 dbus-run-session xsetroot xfce4-terminal mousepad firefox-esr thunar xdotool; do command -v "$x" >/dev/null || { echo "the image has no $x" >&2; exit 1; }; done
+	for app in org.xfce.mousepad xfce4-terminal firefox-esr thunar; do [ -f "/usr/share/applications/$app.desktop" ] || { echo "the image has no desktop file $app.desktop" >&2; exit 1; }; done
 }
 
 # The root helper, from beside this file.

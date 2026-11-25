@@ -148,7 +148,8 @@ test("with a large file in <files>, a call's 8,000-character argument still show
 
 test("with files and MCP calls, the arguments take half the calls' own room when their results need more than half", () => {
   const file = { name: "big.txt", bytes: 200_000, text: "f".repeat(200_000) };
-  const calls = Array.from({ length: 3 }, (_, i) => ({ tool: "create_issue", arguments: { body: `${"a".repeat(100_000)}END${i}` }, status: "ok", result: `${"r".repeat(4_000)}R${i}` }));
+  // Results of 12,000 each: more than half the calls' room (the arguments' floor ahead of the files makes it larger).
+  const calls = Array.from({ length: 3 }, (_, i) => ({ tool: "create_issue", arguments: { body: `${"a".repeat(100_000)}END${i}` }, status: "ok", result: `${"r".repeat(12_000)}R${i}` }));
   const mcpCalls = Array.from({ length: 3 }, (_, i) => ({ tool: "mcp__crm__lookup", arguments: { note: "m".repeat(100_000), i } }));
   const input = graderInput(GRADER, "File them.", { ...record(calls, [file]), mcpCalls });
   assert.ok(input.length <= GRADER_PROMPT_MAX, String(input.length));
