@@ -420,12 +420,15 @@ const urlSpans = (value: string): { start: number; end: number }[] => {
 
 /** The breaks between a header value's `name=value` pairs: `;`, `&`, a comma (or its `%2C`) and spaces; and, for a
  *  second, finer read, also `?`, `#` and `/`, so a pair inside a URL that is itself a pair's value
- *  (`upstream=https://relay/v1#access_token=<token>`) or a path's segment stands alone; and, for a third, `&` and spaces
- *  alone, so a credential with a raw `;` or a comma in it (`api_key=<key;rest%2Cmore>&region=us`) is held whole too.
- *  That third read also holds a value with the comma that ends it (sentry's `sentry_key=<key>%2C`); the first holds the
- *  value alone. */
+ *  (`upstream=https://relay/v1#access_token=<token>`) or a path's segment stands alone; and two whole reads, which keep
+ *  a raw `;` in a value: all but `;` (LIST_BREAK), so a credential with a `;` in a list joined by `%2C`, the usual way to
+ *  write one (`api_key=<key;rest>%2Cregion=us`), is held as itself, and `&` and spaces alone (WHOLE_BREAK), so one with
+ *  a comma in it too (`api_key=<key;rest%2Cmore>&region=us`) is held whole. Both are held: every redactor matches a held
+ *  value exactly, so the longer reading of either never covers a line quoting the key alone. WHOLE_BREAK also holds a
+ *  value with the comma that ends it (sentry's `sentry_key=<key>%2C`); the others hold the value alone. */
 const PAIR_BREAK = /[;&,\s]+|%2C/i;
 const PIECE_BREAK = /[;&,\s?#/]+|%2C/i;
+const LIST_BREAK = /[&,\s]+|%2C/i;
 const WHOLE_BREAK = /[&\s]+/;
 
 /** The value of each `name=value` pair of `text` split at `breaks` whose name says it is a credential (credentialNamed),
@@ -446,8 +449,8 @@ const pairValues = (text: string, breaks: RegExp): string[] =>
   });
 
 /** The credentials a header value carries inside it, the union of two reads over the whole value as written: the value
- *  of each `name=value` pair whose name says it is a credential (pairValues, at each of PAIR_BREAK, PIECE_BREAK and
- *  WHOLE_BREAK: a cookie's `session=<token>`, sentry's
+ *  of each `name=value` pair whose name says it is a credential (pairValues, at each of PAIR_BREAK, PIECE_BREAK,
+ *  LIST_BREAK and WHOLE_BREAK: a cookie's `session=<token>`, sentry's
  *  `sentry_key=<key>`, a path's `;jsessionid=<id>`, a URL query's or fragment's `session=` or `access_token=`), and the
  *  user, password and key parameters of each URL in it (urlSpans, urlCredentials: a DSN's `https://<key>@host/1`, a
  *  relay's whole `user:pa;ss`). A URL only adds readings: the pair read covers its text too. A value that escapes its
@@ -459,6 +462,7 @@ const innerCredentials = (value: string): string[] => {
     return [
       ...pairValues(text, PAIR_BREAK),
       ...pairValues(text, PIECE_BREAK),
+      ...pairValues(text, LIST_BREAK),
       ...pairValues(text, WHOLE_BREAK),
       ...urlSpans(text).flatMap(({ start, end }) => urlCredentials(text, start, end, queriesRead)),
     ];
