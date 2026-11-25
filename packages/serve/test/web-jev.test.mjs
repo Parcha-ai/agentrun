@@ -151,6 +151,29 @@ test("a Jev request's receipt line is its ledger row: the cost Jev reported belo
   assert.equal(lines[0].basis, "the cost jev reported");
 });
 
+test("a Jev request whose settle fails: the ledger keeps its hold, and so does its receipt line, its basis quoting the cost Jev reported", async (t) => {
+  jevCalls(t);
+  processEnv(t, "AGENTRUN_TEST_FAUX_JEV_COST", "0.000002");
+  const ledger = await toolLedger(1);
+  const jev = [];
+  const paid = {
+    admit: (request) => (request.chargedBy === "jev" && jev.push(request), ledger.admit(request)),
+    settle: (id, usd, options) => (jev.some((hold) => hold.id === id) ? Promise.reject(new Error("the ledger is down")) : ledger.settle(id, usd, options)),
+  };
+  const got = await bookedIn({ call: "test-call", paid }, () => webOf(claimEnv({ TYPESAFE_API_KEY: JEV_KEY })).search("widgets delaware", { n: 4 }));
+  const rows = paidBookings(await ledger.records());
+  const lines = got.receipt.cost.lines.filter((line) => line.by === "jev");
+  assert.equal(lines.length, 1, `one Jev line on the receipt: ${JSON.stringify(got.receipt.cost.lines)}`);
+  assert.equal(jev.length, 1, "one Jev request held");
+  assert.ok(jev[0].holdUsd > 0.000002, `the hold (${jev[0].holdUsd}) is above the reported cost`);
+  assert.deepEqual(rows.filter((row) => row.charged_by === "jev" && row.kind === "agentrun.tool_cost"), [], "no settle landed: no Jev charge row");
+  assert.equal(ledger.heldUsd(), jev[0].holdUsd, "the ledger keeps the Jev hold, and only it");
+  assert.deepEqual(rows.filter((row) => row.charged_by === "jev").map((row) => row.heldUsd), [jev[0].holdUsd], "its one ledger row is the hold");
+  assert.equal(lines[0].usd, ledger.heldUsd(), `the receipt says what the ledger booked, the hold: ${JSON.stringify(lines[0])}`);
+  assert.match(lines[0].basis, /settle failed/, "the basis says the settle failed");
+  assert.match(lines[0].basis, /\$0\.000002 \(the cost jev reported\)/, "and quotes the cost Jev reported");
+});
+
 test("no decider without TypeSafe's key: an OpenRouter key alone, a key only in this process's environment, or AGENTRUN_WEB_JEV_OFF=1", async (t) => {
   const calls = jevCalls(t);
   const plain = (await onLedger(() => search(claimEnv()))).got;
