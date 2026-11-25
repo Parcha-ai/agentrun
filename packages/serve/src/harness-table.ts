@@ -508,8 +508,9 @@ async function gooseLaunch(launch: ModuleLaunch): Promise<AgentAdapter> {
  *  (`ownKeys`), its model one Cursor lists for that key (`cursor/<model-id>`, `cursor/default` for Cursor's own). Listed
  *  only once its owner has installed it (`agentrun harness install cursor`): `missing` is its release, looked up and
  *  verified (harness-cursor.ts cursorMissing), and `beforeStart` checks its launcher and every file beside it again
- *  before each process starts. Stopped by its owner's turn and tool-call limits (cursorLimitsOf), which its card says. */
-function cursorOptions(facts: AdapterFacts): AcpPlanEntryOptions {
+ *  before each process starts. Stopped by its owner's turn and tool-call limits (cursorLimitsOf), which its card says.
+ *  Exported for its tests, which read its recipe on a host with no Cursor release installed. */
+export function cursorOptions(facts: AdapterFacts): AcpPlanEntryOptions {
   /** Cursor's launcher, or the HarnessUnavailable that says why it is not here, with the fix (install, pins) it names. */
   const launcher = async (env: NodeJS.ProcessEnv): Promise<string> => {
     const found = await cursorMissing(env);
