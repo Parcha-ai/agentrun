@@ -62,10 +62,11 @@ export function joinsByOne(announces: AcpAnnounces | undefined): boolean {
 }
 
 /** The name our MCP server is given to the agent under at one start: under a recipe whose prefix joins by one character
- *  (joinsByOne), `agentrun` and 8 random hex digits, no `_` or `-`, which no server set up before the start can spell
- *  (8, not more: each of our tools is named with it, under the agent's cap, TOOL_NAME_CAP); under any other, `agentrun`. */
+ *  (joinsByOne), `ar` and 6 random hex digits, no `_` or `-`, which no server set up before the start can spell; under
+ *  any other, `agentrun`. As long as `agentrun`, no longer: each of our tools is named with it, under the agent's cap
+ *  (TOOL_NAME_CAP), so a tool fits as it would under `agentrun`. */
 export function mcpServerName(announces: AcpAnnounces | undefined): string {
-  return joinsByOne(announces) ? `${MCP_SERVER}${randomBytes(4).toString("hex")}` : MCP_SERVER;
+  return joinsByOne(announces) ? `ar${randomBytes(3).toString("hex")}` : MCP_SERVER;
 }
 
 /** The most characters a tool's name may hold where the agent names it (agy's, as the model APIs' tool names: 64). */
@@ -78,6 +79,13 @@ export function namesTooLong(announces: AcpAnnounces | undefined, tools: Iterabl
   if (announces?.prefix === undefined || announces.server !== undefined) return [];
   const prefix = announces.prefix;
   return [...tools].filter((tool) => prefix.length + tool.length > TOOL_NAME_CAP);
+}
+
+/** The run's notice for the tools `label` (an agent naming ours `<prefix><tool>`) is not given at a start: those
+ *  namesTooLong names, which it could never call. */
+export function toolsLeftOut(label: string, prefix: string, tools: readonly string[]): string {
+  const one = tools.length === 1;
+  return `${label} names each of our tools ${prefix}<tool>, at most ${TOOL_NAME_CAP} characters in all, so a tool's own name may be at most ${TOOL_NAME_CAP - prefix.length}; ${tools.map((tool) => JSON.stringify(tool)).join(", ")} ${one ? "is" : "are"} longer, so ${one ? "it is" : "they are"} left out of the tools it is given at this start`;
 }
 
 /** The recipe's `announces` as one start reads them, our MCP server given to the agent as `server` (mcpServerName): its
