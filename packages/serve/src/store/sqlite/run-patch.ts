@@ -164,14 +164,17 @@ const BACKFILL_PAGE = 64;
 /** Records every final run that has no ledger row (UNRECORDED), as its end would have (recordLedger), at a server's open
  *  on either store: by id, BACKFILL_PAGE runs a transaction, each read again in it, so a stop partway keeps each page it
  *  committed and the next open records the rest. Then it marks the ledger whole (store_meta.ledger_backfilled), and no
- *  later open reads the runs again: each end, heal and import writes its own row, and no reader records one. */
-export async function backfillLedger(connection: Pick<StoreConnection, "all" | "get" | "transaction">, now: () => number): Promise<void> {
+ *  later open reads the runs again: each end, heal and import writes its own row, and no reader records one. Each run's
+ *  row is locked before it is read again (a no-op on SQLite's one writer): on Postgres another server's heal or end of it
+ *  in flight commits first and the read sees its row, so the backfill never writes over it with what it read before. */
+export async function backfillLedger(connection: Pick<StoreConnection, "all" | "dialect" | "get" | "transaction">, now: () => number): Promise<void> {
   if (Number((await connection.get<{ whole: number }>("SELECT ledger_backfilled AS whole FROM store_meta WHERE singleton = 1"))?.whole) === 1) return;
   for (let after = ""; ;) {
     const page = await connection.all<{ id: string }>(`SELECT id FROM runs WHERE id > ? AND ${UNRECORDED} ORDER BY id LIMIT ${BACKFILL_PAGE}`, after);
     if (page.length === 0) break;
     await connection.transaction(async (tx) => {
       for (const { id } of page) {
+        await connection.dialect.lockRow(tx, "runs", "id", id);
         const row = await tx.get<RunRecord>(`SELECT ${RUN_COLUMNS} FROM runs WHERE id = ? AND ${UNRECORDED}`, id);
         if (row) await recordLedger(tx, runOf(row), now());
       }
