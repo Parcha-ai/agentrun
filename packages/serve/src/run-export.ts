@@ -292,20 +292,44 @@ export async function exportBundle(input: ExportInput): Promise<{ body: string; 
   const sha256 = createHash("sha256").update(stable(doc)).digest("hex");
   const body = stable({ ...doc, sha256 });
   if (Buffer.byteLength(body) > caps.documentBytes) throw new ApiError("export_too_large", `This run's bundle is over ${caps.documentBytes} bytes; nothing of it is cut short, so it does not export.`);
-  await readBack(body, input.held, restored.length > 0);
+  await readBack(restored.length ? stable(maskedOf(doc, restored)) : body, input.held);
   return { body, sha256 };
 }
 
-/** The bundle read back as a host reads it: the scrubber's count over its whole text. A cut of a kind that is never
- *  restored (a known format, a held value, a dump) fails the export; so does a restorable one where nothing was restored. */
-async function readBack(body: string, held: readonly string[], restored: boolean): Promise<void> {
+/** `doc` with each restored value cut again, in a copy (its rule's marker in its place, as the cut pass writes it: a label or
+ *  personal cut is never a dump, so never a line count): what the read-back reads when a restore put
+ *  values back. Each restored span alone is let through, never every restorable find of the document (a value the cut
+ *  pass never cuts, an object key, still fails it). */
+function maskedOf(doc: Record<string, unknown>, restored: readonly RestoredRecord[]): Record<string, unknown> {
+  const copy = structuredClone(doc);
+  const byAt = new Map<string, RestoredRecord[]>();
+  for (const record of restored) byAt.set(record.at, [...(byAt.get(record.at) ?? []), record]);
+  for (const [at, records] of byAt) {
+    const parts = at.split("/").slice(1).map((part) => part.replace(/~1/g, "/").replace(/~0/g, "~"));
+    const last = parts.pop();
+    const parent = parts.reduce<unknown>((into, part) => (into as Record<string, unknown> | undefined)?.[part], copy) as Record<string, unknown> | undefined;
+    const text = last === undefined ? undefined : parent?.[last];
+    if (typeof text !== "string" || last === undefined || parent === undefined) throw new ExportFailed("a restored record names no string");
+    let masked = text;
+    for (const record of [...records].sort((a, b) => b.start - a.start)) {
+      const marker = SCRUB_RULES.find((rule) => rule.id === record.rule)?.replacement ?? `[redacted:${record.rule}]`;
+      masked = `${masked.slice(0, record.start)}${marker}${masked.slice(record.end)}`;
+    }
+    parent[last] = masked;
+  }
+  return copy;
+}
+
+/** The bundle read back as a host reads it: the scrubber's count over its whole text, each restored value masked again
+ *  (maskedOf). Any find fails the export: the cut pass left a value. */
+async function readBack(body: string, held: readonly string[]): Promise<void> {
   let found: Cut[];
   try {
     found = (await scrub(body, { mode: "count", held })).cuts;
   } catch {
     throw new ExportFailed("its read-back threw");
   }
-  if (found.some((cut) => !cut.restorable || !restored)) throw new ExportFailed("its read-back found a value the cut pass left");
+  if (found.length) throw new ExportFailed("its read-back found a value the cut pass left");
 }
 
 /** What the export reads of a run, each through the function that serves it (the switch wires the server's own). */
