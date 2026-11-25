@@ -327,6 +327,35 @@ test("a stopped run that a follow-up queues again within the keep's time keeps t
   assert.deepEqual(await readKept(run.server.settings, RUN), { ...pinned, ending: true }, "a machine this end did not delete keeps its row ending");
 });
 
+// The run's end marks its kept row ended once the delete took the machine (finishedKept), and only then removes it
+// (forgetEnded): a row's end is ended before it is gone, never removed straight from ending. Each write the end makes to
+// the row is watched as it lands.
+test("a stopped run's end writes its kept row ending, then ended once the delete took the machine, and removes it only after it reads ended", { timeout: 60_000 }, async (t) => {
+  const run = await opened(t);
+  const computers = { kinds: KINDS, providers: { docker: () => run.docker.provider() } };
+  const kept = { provider: "docker", kind: "sandbox", id: "c2", name: "c2", epoch: 2, until: Date.now() + KEEP_MS };
+  run.docker.held.set("c2", { ref: { id: "c2", name: "c2" }, labels: { "agentrun.run": RUN, "agentrun.epoch": "2" } });
+  await run.server.settings.put(keptKeyOf(RUN), kept);
+  /** The row after each write of the end's that landed, and whether the machine was still there then. */
+  const rows = [];
+  const watched = (write) => async (key, ...args) => {
+    const landed = await run.server.settings[write](key, ...args);
+    if (landed && key === keptKeyOf(RUN)) rows.push({ row: (await readKept(run.server.settings, RUN)) ?? "removed", machine: run.docker.left().length > 0 });
+    return landed;
+  };
+  const settings = new Proxy(run.server.settings, {
+    get: (target, name) => (name === "replaceIf" || name === "removeIf" ? watched(name) : typeof target[name] === "function" ? target[name].bind(target) : target[name]),
+  });
+  const store = new Proxy(run.server, { get: (target, name) => (name === "settings" ? settings : typeof target[name] === "function" ? target[name].bind(target) : target[name]) });
+  await runEndComputers({ store, computers, log: () => {}, retryMs: 50 })({ runId: RUN, epoch: 3 });
+  assert.deepEqual(rows, [
+    { row: { ...kept, ending: true }, machine: true },
+    { row: { ...kept, ended: true }, machine: false },
+    { row: "removed", machine: false },
+  ], "ending before the delete, ended once the machine is gone, then removed");
+  assert.deepEqual(run.docker.left(), []);
+});
+
 test("a run's end whose delete takes the kept machine but not another marks the kept row ended at that machine's own delete, so a follow-up's park keeps its new machine; a kept machine its vendor says is gone, or that a later try's list no longer shows, ends its row the same way", { timeout: 60_000 }, async (t) => {
   const run = await opened(t);
   const computers = { kinds: KINDS, providers: { docker: () => run.docker.provider() } };
