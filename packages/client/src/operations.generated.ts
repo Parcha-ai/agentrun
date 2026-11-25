@@ -1759,31 +1759,24 @@ export type ListLearningPromotionsResponse = {
       agreed?: number;
       alone?: number;
       agent_agreed?: number;
+      joint?: boolean;
       fields?: Record<string, {
         n: number;
         workflow_right: number;
         agent_right: number;
-        known: "label" | "grade" | "agent";
+        known: "grade" | "agent";
         pass: boolean;
         reason: string;
         by: {
-          label?: {
-            n: number;
-            workflow_right: number;
-            agent_right: number;
-            pass: boolean;
-          };
           grade?: {
             n: number;
             workflow_right: number;
             agent_right: number;
-            pass: boolean;
           };
           agent?: {
             n: number;
             workflow_right: number;
             agent_right: number;
-            pass: boolean;
           };
         };
         unjudged?: number;
@@ -1813,7 +1806,7 @@ export type ListLearningPromotionsResponse = {
         fields?: Array<string>;
         expected?: Array<{
           field: string;
-          known: "label" | "grade" | "unknown";
+          known: "grade" | "unknown" | "contradicts";
           value?: string;
         }>;
       }>;
@@ -1824,6 +1817,20 @@ export type ListLearningPromotionsResponse = {
         n: number;
         agreed: number;
         alone: number;
+        agent_agreed: number;
+        fields: Record<string, {
+          grade?: {
+            n: number;
+            workflow_right: number;
+            agent_right: number;
+          };
+          agent?: {
+            n: number;
+            workflow_right: number;
+            agent_right: number;
+          };
+          unjudged?: number;
+        }>;
         of: Array<string>;
         outcomes: {
           answered: number;
@@ -1842,28 +1849,9 @@ export type ListLearningPromotionsResponse = {
           fields?: Array<string>;
           expected?: Array<{
             field: string;
-            known: "label" | "grade" | "unknown";
+            known: "grade" | "unknown" | "contradicts";
             value?: string;
           }>;
-        }>;
-        agent_agreed?: number;
-        fields?: Record<string, {
-          label?: {
-            n: number;
-            workflow_right: number;
-            agent_right: number;
-          };
-          grade?: {
-            n: number;
-            workflow_right: number;
-            agent_right: number;
-          };
-          agent?: {
-            n: number;
-            workflow_right: number;
-            agent_right: number;
-          };
-          unjudged?: number;
         }>;
         fresh_reads?: number;
       };
@@ -1884,6 +1872,7 @@ export type ListLearningPromotionsResponse = {
         agent: string | null;
         draft: string | null;
         graded?: true;
+        expected?: string;
       }>;
       stopped?: true;
     };
@@ -1931,31 +1920,24 @@ export type ListLearningPromotionsResponse = {
         agreed?: number;
         alone?: number;
         agent_agreed?: number;
+        joint?: boolean;
         fields?: Record<string, {
           n: number;
           workflow_right: number;
           agent_right: number;
-          known: "label" | "grade" | "agent";
+          known: "grade" | "agent";
           pass: boolean;
           reason: string;
           by: {
-            label?: {
-              n: number;
-              workflow_right: number;
-              agent_right: number;
-              pass: boolean;
-            };
             grade?: {
               n: number;
               workflow_right: number;
               agent_right: number;
-              pass: boolean;
             };
             agent?: {
               n: number;
               workflow_right: number;
               agent_right: number;
-              pass: boolean;
             };
           };
           unjudged?: number;
@@ -1985,7 +1967,7 @@ export type ListLearningPromotionsResponse = {
           fields?: Array<string>;
           expected?: Array<{
             field: string;
-            known: "label" | "grade" | "unknown";
+            known: "grade" | "unknown" | "contradicts";
             value?: string;
           }>;
         }>;
@@ -1996,6 +1978,20 @@ export type ListLearningPromotionsResponse = {
           n: number;
           agreed: number;
           alone: number;
+          agent_agreed: number;
+          fields: Record<string, {
+            grade?: {
+              n: number;
+              workflow_right: number;
+              agent_right: number;
+            };
+            agent?: {
+              n: number;
+              workflow_right: number;
+              agent_right: number;
+            };
+            unjudged?: number;
+          }>;
           of: Array<string>;
           outcomes: {
             answered: number;
@@ -2014,28 +2010,9 @@ export type ListLearningPromotionsResponse = {
             fields?: Array<string>;
             expected?: Array<{
               field: string;
-              known: "label" | "grade" | "unknown";
+              known: "grade" | "unknown" | "contradicts";
               value?: string;
             }>;
-          }>;
-          agent_agreed?: number;
-          fields?: Record<string, {
-            label?: {
-              n: number;
-              workflow_right: number;
-              agent_right: number;
-            };
-            grade?: {
-              n: number;
-              workflow_right: number;
-              agent_right: number;
-            };
-            agent?: {
-              n: number;
-              workflow_right: number;
-              agent_right: number;
-            };
-            unjudged?: number;
           }>;
           fresh_reads?: number;
         };
@@ -4845,6 +4822,59 @@ export type CreateRunComputerViewerResponse = {
 
 /** Purge a run's content and keep its cost (DELETE /runs/{run_id}). */
 
+/** An ended run as a share bundle, every string cut (GET /runs/{run_id}/export). */
+export interface GetRunExportParams {
+  restore?: string;
+}
+export type GetRunExportResponse = {
+  format: "agentrun.share/1";
+  sha256: string;
+  source: {
+    agentrun: string;
+    scrubber: {
+      version: number;
+      rules: string;
+    };
+  };
+  agent: {
+    name: string;
+    kind: "agentic" | "workflow";
+  };
+  run: Record<string, unknown>;
+  rows: Array<Record<string, unknown>>;
+  graph: Record<string, unknown> | null;
+  files: Array<{
+    path: string;
+    bytes: number;
+    sha256: string;
+    encoding: "utf8";
+    content: string;
+  }>;
+  omitted: Array<{
+    what: "file" | "files" | "recordings";
+    path?: string;
+    why: "binary" | "too_large" | "over_total" | "over_count" | "unreadable" | "list_truncated" | "uncounted" | "never";
+  }>;
+  cuts: Array<{
+    id: string;
+    at: string;
+    start: number;
+    end: number;
+    rule: string;
+    kind: "format" | "held" | "dump" | "label" | "personal" | "jev";
+    restorable: boolean;
+    shape: string;
+  }>;
+  restored: Array<{
+    id: string;
+    at: string;
+    start: number;
+    end: number;
+    rule: string;
+    kind: "label" | "personal" | "jev";
+  }>;
+};
+
 /** The files the run wrote (GET /runs/{run_id}/files). */
 export interface ListRunFilesParams {
   cut?: "run";
@@ -4884,9 +4914,15 @@ export type GetRunGraphResponse = {
     paused: boolean;
     startedAt: string;
     endedAt: string | null;
+    withheld?: true;
   };
   workflow: Record<string, unknown>;
-  graph: Record<string, unknown>;
+  graph: {
+    nodes: Array<Record<string, unknown>>;
+    edges: Array<Record<string, unknown>>;
+    withheld?: true;
+    [key: string]: unknown;
+  };
   nodes: Record<string, {
     status: "pending" | "working" | "done" | "failed" | "stopped" | "escalated" | "not_run" | "needs_review";
     startedAt?: string;
@@ -7543,6 +7579,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   createInlineRun: {"method":"POST","path":"/runs","pathParams":[],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   createRunComputerViewer: {"method":"POST","path":"/runs/{run_id}/computer/viewer","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   deleteRun: {"method":"DELETE","path":"/runs/{run_id}","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
+  getRunExport: {"method":"GET","path":"/runs/{run_id}/export","pathParams":["run_id"],"multiSegment":[],"query":["restore"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listRunFiles: {"method":"GET","path":"/runs/{run_id}/files","pathParams":["run_id"],"multiSegment":[],"query":["cut"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getRun: {"method":"GET","path":"/runs/{run_id}","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   gradeRun: {"method":"PUT","path":"/runs/{run_id}/grade","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -7918,6 +7955,8 @@ export function resources(call: Call) {
       createRunComputerViewer: (runId: string, body?: CreateRunComputerViewerBody, options?: RequestOptions): Promise<CreateRunComputerViewerResponse> => call("createRunComputerViewer", [runId], body, undefined, options),
       /** Purge a run's content and keep its cost (DELETE /runs/{run_id}). */
       delete: (runId: string, options?: RequestOptions): Promise<void> => call("deleteRun", [runId], undefined, undefined, options),
+      /** An ended run as a share bundle, every string cut (GET /runs/{run_id}/export). */
+      export: (runId: string, params?: GetRunExportParams, options?: RequestOptions): Promise<GetRunExportResponse> => call("getRunExport", [runId], undefined, params, options),
       /** The files the run wrote (GET /runs/{run_id}/files). */
       files: (runId: string, params?: ListRunFilesParams, options?: RequestOptions): Promise<ListRunFilesResponse> => call("listRunFiles", [runId], undefined, params, options),
       /** One run (GET /runs/{run_id}). */

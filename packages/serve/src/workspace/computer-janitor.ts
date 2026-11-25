@@ -20,10 +20,11 @@
 // that server's own next sweep.
 //
 // A desktop or a phone kept at a run's park (computer-kept.ts) goes by its own row, on any provider: each sweep ends one
-// past its time or whose run ended, and the janitor wakes again at the earliest time still ahead. One pinned to another
-// runner still there is that runner's (computer-kept.ts heldElsewhere): the kept pass leaves its row. The provider sweep
-// needs no such rule: it ends only a machine past its deadline or whose run is final, which no one uses, and the row's
-// runner then reads it gone and marks its row ended.
+// past its time or whose run ended, with the mount credential of a run folder it held on Archil, and the janitor wakes
+// again at the earliest time still ahead. One pinned to another runner still there is that runner's (computer-kept.ts
+// heldElsewhere): the kept pass leaves its row, its credential with it. The provider sweep needs no such rule: it ends
+// only a machine past its deadline or whose run is final, which no one uses, and the row's runner then reads it gone and
+// marks its row ended.
 //
 // A provider whose sweep fails is logged, once per distinct failure, and the others are swept. It runs only where its
 // start asks for it (the CLI's runner and the runner subcommand), never under --faux, and never two sweeps at once. Its
@@ -34,12 +35,16 @@
 // id, never by its run: it goes only when its agent no longer wants it (ownerGoneOf: gone, archived, or no longer
 // persistent on that provider), never by a deadline. Without the store's settings and agents, none is this server's.
 import { type ComputerInfo, type ComputerProvider, epochOf, ok, ownerOf, RUN_HASH_LABEL, RUN_LABEL, type Result, runHash, sweep, type Swept } from "@parcha/agentrun-computer";
+import { loadArchilSettings } from "../archil-settings.js";
 import { KEY_TABLE, type KeyTable, type ProviderSettings, providerOptions } from "../computer-keys.js";
 import { FAUX_ENV } from "../model.js";
 import { FINAL_STATES, type Store } from "../store/index.js";
 import { deleteUnderHold, ownerGoneOf, serverIdOf, wantsOn } from "./agent-computer.js";
+import { archilApiKey } from "./archil-key.js";
+import { removeRunMountTokens } from "./archil-mount-credential.js";
 import type { ComputerDeps } from "./computer-deps.js";
-import { type KeptHolder, type KeptSweep, sweepKept } from "./computer-kept.js";
+import { type Kept, type KeptHolder, type KeptSweep, sweepKept } from "./computer-kept.js";
+import { MOUNT_TTL_MS } from "./archil-claim.js";
 import { storeLedger } from "./computer-ledger.js";
 import { providerKeys } from "./resolve-computer.js";
 import { intervalWrites } from "./computer-intervals.js";
@@ -56,10 +61,16 @@ export interface JanitorDeps {
   /** The store: whose runs a computer's run label names, and the phone provider's ledger; with `settings` and `agents`,
    *  this server's id and its agents, whose own computers it then sweeps by their owner. */
   readonly store: Pick<Store, "runs" | "computerLedger"> & Partial<Pick<Store, "settings" | "agents" | "computerIntervals" | "runners">> & {
-    /** The store's clock (Store.sealedKeys.clock): the kept pass judges each kept row's `until` by it, the clock it was
-     *  stamped on (computer-kept.ts Kept.until), never this process's. */
-    readonly sealedKeys: Pick<Store["sealedKeys"], "clock">;
+    /** The store's sealed keys: the saved Archil account key the kept pass removes a mount credential with
+     *  (archil-key.ts), and the store's clock (Store.sealedKeys.clock), by which the kept pass judges each kept row's
+     *  `until`, the clock it was stamped on (computer-kept.ts Kept.until), never this process's. */
+    readonly sealedKeys: Store["sealedKeys"];
   };
+  /** The server's seal key, as the runner's claims are handed it: it opens the saved Archil account key (archil-key.ts)
+   *  the kept pass removes a run's mount credential with. Undefined: only an ARCHIL_API_KEY in `env` is had. */
+  readonly sealKey: Buffer | undefined;
+  /** Archil's control plane for that remove, as the claims' mountControl: a test's fake. Absent: the region's own. */
+  readonly mountControl?: { readonly baseUrl?: string; readonly fetch?: typeof fetch };
   /** The runner this janitor sweeps for (its name and presence incarnation): a computer kept at a park pinned to another
    *  runner still there is that runner's to end, never this one's kept pass's (computer-kept.ts sweepKept). Absent:
    *  every pinned row whose runner is there is left. */
@@ -238,12 +249,35 @@ export async function sweepServerComputers(deps: Pick<JanitorDeps, "store" | "co
 
 /** The pass over the desktops and phones kept at a run's park (computer-kept.ts sweepKept): one past its time, or whose
  *  run ended, is ended through its provider, made with this server's keys, whatever its lifetime (a vendor's own end is
- *  hours away); one pinned to another runner still there (the store's runners) is left to that runner. Undefined without
- *  the store's settings, where none is kept. Never throws. */
-export async function sweepKeptComputers(deps: Pick<JanitorDeps, "store" | "computers" | "now" | "self"> & { readonly log?: (line: string) => void }): Promise<KeptSweep | undefined> {
+ *  hours away); one pinned to another runner still there (the store's runners) is left to that runner. One that held the
+ *  run's folder on Archil has the run's mount credentials up to its epoch removed, by name, on the disk its row names
+ *  (the park's), with this server's Archil key read as the claims read it (archil-key.ts): no run lookup, so a run
+ *  deleted since, or an agent whose disk changed, still has it removed. A row that names no disk has none removed, and
+ *  its credential ends at its ttl. Past its keep's time plus MOUNT_TTL_MS no remove is asked: the credential was minted
+ *  before the park, so it has ended at its ttl, and a remove that can never succeed (Archil turned off, its key gone, a
+ *  refusal for good) no longer keeps the row ending and said at every pass. Undefined without the store's settings,
+ *  where none is kept. Never throws. */
+export async function sweepKeptComputers(deps: Pick<JanitorDeps, "store" | "computers" | "env" | "sealKey" | "mountControl" | "now" | "self"> & { readonly log?: (line: string) => void }): Promise<KeptSweep | undefined> {
   const { store, computers } = deps;
   const writes = intervalWrites(store, deps.log, deps.now);
-  if (!store.settings) return undefined;
+  const { settings } = store;
+  if (!settings) return undefined;
+  // Each row's `until` was stamped on the store's clock (computer-kept.ts Kept.until), so it is judged on it: its end and
+  // the give-up of its credential's remove (past `until` plus MOUNT_TTL_MS) alike.
+  let now: number;
+  try {
+    now = await store.sealedKeys.clock();
+  } catch (error) {
+    return { ended: [], failed: [`the store's clock could not be read, so no kept computer's time could be judged this pass: ${error instanceof Error ? error.message : String(error)}`] };
+  }
+  const revokeMount = async (runId: string, kept: Pick<Kept, "epoch" | "until" | "disk">): Promise<void> => {
+    const { disk } = kept;
+    if (disk === undefined || now >= kept.until + MOUNT_TTL_MS) return;
+    const archil = await loadArchilSettings({ settings }, deps.env);
+    if (!archil) throw new Error("its mount credential was not removed: this server's Archil settings are gone");
+    const { value } = await archilApiKey({ env: deps.env, keys: store.sealedKeys, sealKey: deps.sealKey });
+    await removeRunMountTokens({ region: archil.region, key: () => value, disk, ...deps.mountControl }, runId, kept.epoch);
+  };
   const keysOf = providerKeys(computers.kinds, computers.keyOf ?? (async () => undefined));
   const providerOf = async (id: string): Promise<ComputerProvider | undefined> => {
     const make = Object.hasOwn(computers.providers, id) ? computers.providers[id] : undefined;
@@ -251,14 +285,7 @@ export async function sweepKeptComputers(deps: Pick<JanitorDeps, "store" | "comp
     const options = providerOptions(id, await keysOf(id), computers.settings ?? {}, computers.keyTable ?? KEY_TABLE);
     return options.ok ? make(options.options, { ledger: storeLedger(store.computerLedger, id) }) : undefined;
   };
-  // Each row's `until` was stamped on the store's clock (computer-kept.ts Kept.until), so it is judged on it.
-  let now: number;
-  try {
-    now = await store.sealedKeys.clock();
-  } catch (error) {
-    return { ended: [], failed: [`the store's clock could not be read, so no kept computer's time could be judged this pass: ${error instanceof Error ? error.message : String(error)}`] };
-  }
-  return sweepKept({ settings: store.settings, runs: store.runs, now, providerOf, deleted: (provider, id) => writes.ended(provider, id), ...(store.runners ? { runners: store.runners } : {}), ...(deps.self ? { self: deps.self } : {}) });
+  return sweepKept({ settings, runs: store.runs, now, providerOf, deleted: (provider, id) => writes.ended(provider, id), revokeMount, ...(store.runners ? { runners: store.runners } : {}), ...(deps.self ? { self: deps.self } : {}) });
 }
 
 /** The janitor: one sweep now, then one every `everyMs`, never two at once, and a kept pass at the earliest time a kept

@@ -25,7 +25,7 @@ import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { labelsOf } from "./run-labels.js";
 import { harnessOfBody } from "./harness.js";
 import { uuidv7 } from "./ids.js";
-import { redacted, redactedOutput } from "./key-refusal.js";
+import { redacted, redactedOutput, redactedOutputWhole } from "./key-refusal.js";
 import { chooseWorkflows, learnedSection, type LearningMode, learnsOf, RUN_LEARNING_USE, type Seed, type Shown } from "./learning.js";
 import { thinkingLevel } from "./model.js";
 import { type Place, resolvePlace } from "./place.js";
@@ -836,8 +836,9 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   // is not refused: those words ride its hold, for its start to answer (computer-held.ts).
   const modelRefused = await deps.runnable(deps.pinFirst ? await deps.pinFirst(revision) : revision, place, { capped: cap !== undefined, carried, held: hold !== undefined });
   // The title shows on the run's page, the runs list and Mission Control: built from its input as shown, each held value
-  // redacted before a long one is cut (a cut key could no longer be found).
-  const shown = redactedOutput(input, deps.serverSecrets());
+  // redacted before a long one is cut (a cut key could no longer be found). Read whole first (redactedOutputWhole): an input
+  // a held value is split across two fields of is "[redacted]", so a workflow's title is made of none of it.
+  const shown = redactedOutputWhole(input, deps.serverSecrets());
   // A starter's title (a trigger's "<Source> <name>") is shown words too: cut as the input is, then as every title is below.
   const title = given !== undefined ? String(redactedOutput(given, deps.serverSecrets())) : revision.kind === "workflow" ? deps.workflowTitle(entry.agent.name || entry.agent.id, isObject(shown) ? shown : {}) : typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
   // Its tools' providers, resolved before the run exists (tool-plane.ts) and kept in its launch body, so a claim reads them

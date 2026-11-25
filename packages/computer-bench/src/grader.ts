@@ -139,7 +139,8 @@ export function wantsGrader(when: GradeWhen, stage1: Stage1, sufficient: boolean
 /** How a run counts, from both stages. The rules, once:
  *  - the grader never turns a failing check into a pass. Checks failing: fail, sufficient or not. A grader pass or
  *    unknown on it goes to the human queue (a check that fails a right state). The grader reads the agent's own answer,
- *    so an answer could talk it into a pass; the checks read the computer.
+ *    so an answer could talk it into a pass; the checks read the computer. An answer check reads the answer too, so on a
+ *    judged task it matches a value (a count, a name), never prose: a regex misses a right answer worded its own way.
  *  - checks sufficient and passing: pass. The grader never flips a structural pass (judges overestimate), but a
  *    grader fail on it goes to the human queue (a check that passes a wrong state).
  *  - checks not sufficient and passing: the grader's verdict; unknown counts as fail and goes to the human queue, and

@@ -8,7 +8,8 @@
 // three paths; no real Ollama is asked.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { closedPort, fakeOllama, SYNTH_MODELS } from "./fixtures/fake-ollama.mjs";
+import { fakeOllama, SYNTH_MODELS } from "./fixtures/fake-ollama.mjs";
+import { ephemeralLow, freePort } from "./fixtures/ports.mjs";
 import { messagesModule, MESSAGES_MODULE } from "./fixtures/messages-module.mjs";
 import { agent, follow, journalOf, scratch, serve, withEnv } from "./support.mjs";
 
@@ -50,9 +51,40 @@ test("providerModels lists exactly the chat models the Ollama here lists, from /
   assert.deepEqual([plain.cost, tools.cost], [{ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }], "$0");
   assert.ok(await models.getAuth(plain), "keyless: it runs with no key");
 
-  const down = await providerModels({ OLLAMA_HOST: `127.0.0.1:${await closedPort()}` });
+  const down = await providerModels({ OLLAMA_HOST: `127.0.0.1:${await freePort()}` });
   assert.deepEqual(down.getModels("ollama"), [], "nothing listening: no ollama models");
   assert.ok(down.getModels("openai").length > 0, "and every other provider as before");
+});
+
+test("a down address listed first leaves the next port-0 fake Ollama its own listing: the fake's models, asked of it", async (t) => {
+  const down = await providerModels({ OLLAMA_HOST: `127.0.0.1:${await freePort()}` });
+  assert.deepEqual(down.getModels("ollama"), [], "nothing listening: no ollama models");
+  const ollama = await fakeOllama(t);
+  const listed = (await providerModels({ OLLAMA_HOST: ollama.host })).getModels("ollama").map((model) => model.id);
+  assert.deepEqual(listed, [PLAIN, TOOLS], "the fake's own chat models, never a down address's kept []");
+  assert.equal(ollama.got.tags, 1, "the fake was asked");
+});
+
+test("a fake Ollama asked for no port takes one below the ephemeral range that this file never handed out before, so no listen(0) and no earlier fake shares its address", async (t) => {
+  const low = ephemeralLow();
+  const down = await freePort();
+  const ports = [];
+  for (let i = 0; i < 5; i++) {
+    await t.test(`fake ${i}`, async (t2) => ports.push(Number((await fakeOllama(t2)).host.split(":").pop())));
+  }
+  for (const port of ports) assert.ok(port < low, `port ${port} lies below the ephemeral range, from ${low}`);
+  assert.equal(new Set([down, ...ports]).size, ports.length + 1, `every port is new to this file: ${[down, ...ports].join(", ")}`);
+});
+
+test("a fake Ollama with no models, listed and closed, leaves the next fake its own listing: the next fake's models, asked of it", async (t) => {
+  await t.test("the empty fake", async (t2) => {
+    const empty = await fakeOllama(t2, { models: [] });
+    assert.deepEqual((await providerModels({ OLLAMA_HOST: empty.host })).getModels("ollama"), [], "the empty fake lists no model");
+  });
+  const ollama = await fakeOllama(t);
+  const listed = (await providerModels({ OLLAMA_HOST: ollama.host })).getModels("ollama").map((model) => model.id);
+  assert.deepEqual(listed, [PLAIN, TOOLS], "the fake's own chat models, never a closed fake's kept []");
+  assert.equal(ollama.got.tags, 1, "the fake was asked");
 });
 
 test("under the model gateway or the faux model, providerModels never asks Ollama and lists no Ollama model", async (t) => {
@@ -374,7 +406,7 @@ test("an Ollama started after the server, with a model pulled, shows in capabili
   let clock = 1_000_000;
   ollamaClock(() => clock);
   t.after(() => ollamaClock());
-  const port = await closedPort();
+  const port = await freePort();
   const env = { OLLAMA_HOST: `127.0.0.1:${port}` };
   withEnv(t, env);
   const { api } = await serve(t, { faux: undefined });

@@ -10,6 +10,7 @@ import { appendFileSync, chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { runMetricsOf, timelineOf } from "../dist/timeline/index.js";
@@ -3016,4 +3017,59 @@ test("--from opencode: a run whose request ran through a Claude Code session no 
   const run = (await rowsOf(store)).find((r) => r.importedFrom.source === "opencode");
   const { metrics } = await metricsOf(store, run.id);
   assert.deepEqual([metrics.requests, metrics.input, metrics.output], [2, 9, 3], "the request counts in OpenCode");
+});
+
+
+test("a plan and its import list the Codex sessions tree for a missing parent once, however many forks look for it", async (t) => {
+  // Session 10 is a subagent whose parent (session 1010) is in no sessions directory, and its id is no UUIDv7, so the
+  // reader looks for it across the whole tree. Every read of the plan shares one listing of it: three forks of that
+  // parent cost what one does, one listing more than none.
+  const h = home(await scratch(t));
+  const sessions = join(h.at, ".codex", "sessions");
+  const fork = readdirSync(join(sessions, "2026", "10", "20")).find((name) => name.endsWith(`-${sessionId(10)}.jsonl`));
+  const forkFile = join(sessions, "2026", "10", "20", fork);
+  const forkBody = readFileSync(forkFile);
+  const { atime, mtime } = statSync(forkFile);
+  const fs = createRequire(import.meta.url)("node:fs/promises");
+  let runs = 0;
+  const listings = async () => {
+    // Each count into a store of its own, so every fork is imported again: runImport reads them through the plan's lookups.
+    const store = await openData(mkdtempSync(join(h.temp, "agents-")));
+    const readdir = t.mock.method(fs, "readdir");
+    syncBuiltinESMExports();
+    try {
+      runs = (await runImport(store, await planImport(options(h)), options(h))).agents.reduce((n, agent) => n + agent.runs, 0);
+      return readdir.mock.calls.filter((call) => call.arguments[0] === sessions).length;
+    } finally {
+      readdir.mock.restore();
+      syncBuiltinESMExports();
+      await store.close();
+    }
+  };
+  rmSync(forkFile);
+  const none = await listings();
+  // Back as it was, dated as written: a file written in the last minutes is left out as live, and not read.
+  writeFileSync(forkFile, forkBody);
+  utimesSync(forkFile, atime, mtime);
+  const one = await listings();
+  codexSession(h.at, h.site, 11, { subagent: true, parent: sessionId(1010) });
+  codexSession(h.at, h.site, 12, { subagent: true, parent: sessionId(1010) });
+  const three = await listings();
+  const before = runs;
+  // Two user forks of it, each imported as a run of its own: runImport reads them again, through the plan's lookups.
+  codexSession(h.at, h.site, 13, { forkedFrom: sessionId(1010) });
+  codexSession(h.at, h.site, 14, { forkedFrom: sessionId(1010) });
+  const five = await listings();
+  assert.equal(runs, before + 2, "each user fork is a run");
+  // A subagent of one of those runs, read with it (readChildren), and a fork of the missing parent still being written,
+  // read for its parent alone (its run held back): both through the plan's lookups.
+  codexSession(h.at, h.site, 16, { subagent: true, parent: sessionId(13) });
+  const live = codexSession(h.at, h.site, 15, { subagent: true, parent: sessionId(1010) });
+  utimesSync(live, new Date(), new Date());
+  const seven = await listings();
+  assert.equal(runs, before + 2, "the subagent is its run's, and the live fork is no run");
+  assert.equal(one, none + 1, "one fork of a missing parent: one listing of the tree for the whole plan and its import");
+  assert.equal(three, one, "two more forks of the same parent: no more listings");
+  assert.equal(five, one, "two user forks of it, read again by the import: no more listings");
+  assert.equal(seven, one, "a subagent of a fork, and a fork still being written: no more listings");
 });

@@ -366,6 +366,8 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
         if (held && !rt.calls.held(update.toolCallId)) logAnnounced(rt, update);
         // Its status is the agent's word only: what it changes is the mirror of the agent's session store.
         if (update.status !== "completed" && update.status !== "failed") return;
+        // An ended call takes no MCP call's id (CallIds.settle).
+        rt.calls.settle(update.toolCallId);
         mirrorInto(rt, cur.journal);
         void cur.journal.flush().catch(() => {});
         return;
