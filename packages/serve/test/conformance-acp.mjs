@@ -54,7 +54,7 @@ function tracked(adapter) {
 /** The adapter loop's spec for the suite's setup on the fake agent, played as `mode` says. One sessions folder per loop:
  *  a resume on another runner opens the session from the run's journal. */
 export function acpSpec(setup, mode) {
-  const { script, tools, hooks, agentId } = setup;
+  const { script, tools, hooks, agentId, endOfRun } = setup;
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-acp-conformance-"));
   dirs.push(dir);
   const config = join(dir, "fake.json");
@@ -70,6 +70,7 @@ export function acpSpec(setup, mode) {
   };
   return async () => ({
     ...(agentId ? { agentId } : {}),
+    ...(endOfRun ? { endOfRun } : {}),
     adapter: tracked(acpAdapter({ recipe, sessionsDir: join(dir, "sessions") })),
     facts: acpFacts(TEST_ID),
     record: "loop",
