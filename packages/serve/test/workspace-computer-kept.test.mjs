@@ -22,6 +22,7 @@ import { fauxComputers } from "../dist/faux-computers.js";
 import { computerKeptWords, computerReadyWords, computerReplacedNote } from "../dist/workspace/computer-deps.js";
 import { computerLapsedWords, endKept, KEEP_MS, KEPT_DELETE_MS, keptKeyOf, readKept, sweepKept, writeKept } from "../dist/workspace/computer-kept.js";
 import { startJanitor, sweepKeptComputers } from "../dist/workspace/computer-janitor.js";
+import { SpecHolds } from "../dist/runner/spec-holds.js";
 import { ARCHIL_API_KEY_ROW, agentDiskKey, clearArchilSettings, saveArchilSettings } from "../dist/archil-settings.js";
 import { MOUNT_TTL_MS } from "../dist/workspace/archil-claim.js";
 import { StoreLaunchMissing } from "../dist/store/index.js";
@@ -1140,6 +1141,87 @@ test("Mode 2, a kept Archil desktop given back to its runner still there: the gi
   assert.equal((await readKept(one.store.settings, "run-1"))?.ended, true);
   assert.deepEqual(nicknames(archil), ["agentrun:run-1:6", "agentrun:run-2:3"], "the kept machine's credentials went with it; the giving claim's stands");
   await resumed.release();
+});
+
+test("Mode 2, a give-back whose row write fails still leaves the machine to its runner: another runner's janitor leaves it, and the keeper's own pass ends it and removes the credentials up to its park's epoch", async () => {
+  const archil = mountUsers();
+  const one = await server({ mode: 2, archil });
+  await (await one.claim(3)).park();
+  const key = keptKeyOf("run-1");
+  await one.store.settings.put(key, { ...(await one.store.settings.get(key)), ...RUNNER_A });
+  const there = { live: async () => [{ ...RUNNER_A, refused: "draining" }, { ...RUNNER_B, refused: null }] };
+  // The give-back's write of the row fails once, as a store that drops a write does.
+  const settings = one.store.settings;
+  const putIfAbsent = settings.putIfAbsent.bind(settings);
+  let failed = 0;
+  settings.putIfAbsent = async (at, ...rest) => {
+    if (at === key && failed === 0) {
+      failed += 1;
+      throw new Error("the store dropped the write");
+    }
+    return putIfAbsent(at, ...rest);
+  };
+  const onA = one.account.computers.get("c1");
+  one.account.computers.delete("c1");
+  one.clock.now = T0 + 60_000;
+  const resumed = await one.claim(6, { hadComputer: async () => true }, { holder: RUNNER_B }, there);
+  one.account.computers.set("c1", onA);
+  assert.equal(failed, 1, "the give-back's write was the one that failed");
+  assert.equal(resumed.replaced?.elsewhere, true, `given back to runner-a: ${JSON.stringify(resumed.replaced)}`);
+
+  // runner-b's pass: runner-a is there, so its machine is runner-a's to end.
+  one.clock.now = T0 + KEEP_MS + 60_000;
+  assert.deepEqual(await one.janitor({ self: RUNNER_B, runners: there }), { ended: [], failed: [] });
+  assert.deepEqual(deletes(one.account), [], "runner-b deleted nothing");
+  assert.deepEqual(archil.requests, [], "runner-b asked Archil nothing");
+
+  // runner-a's own pass ends the machine the failed give-back would otherwise have left with nothing to end it.
+  const swept = await one.janitor({ self: RUNNER_A, runners: there });
+  assert.deepEqual([swept.ended, swept.failed], [["c1"], []]);
+  assert.deepEqual(deletes(one.account), ["c1"]);
+  assert.deepEqual(nicknames(archil), ["agentrun:run-1:6", "agentrun:run-2:3"], "the kept machine's credentials went with it; the giving claim's stands");
+  await resumed.release();
+});
+
+test("Mode 2, a run's end that keeps nothing, Archil refusing its credential's remove: the janitor's next pass removes it, not its 24-hour ttl, and asks nothing after", async () => {
+  let refuse = false;
+  const archil = archilControlFetch({ answer: ({ method }) => (refuse && method === "DELETE" ? { status: 500, body: { error: "Archil is down" } } : undefined) });
+  const one = await server({ mode: 2, archil });
+  const step = await archilStepOf(one, archil, 3);
+  await step.token();
+  assert.deepEqual(nicknames(archil), ["agentrun:run-1:3"]);
+  const holds = new SpecHolds();
+  const logged = [];
+  holds.logTo((line) => void logged.push(line));
+  holds.hold({ archil: step });
+  refuse = true;
+  await holds.release();
+  assert.ok(logged.some((line) => /mount credential could not be revoked: .*Archil is down/.test(line)), logged.join("\n"));
+  assert.deepEqual(nicknames(archil), ["agentrun:run-1:3"], "still at Archil");
+  refuse = false;
+  one.store.runs.set("run-1", "completed");
+  const swept = await one.janitor();
+  assert.deepEqual(swept.failed, []);
+  assert.deepEqual(nicknames(archil), [], "removed by the janitor's pass");
+  const asked = archil.requests.length;
+  assert.deepEqual((await one.janitor()).failed, []);
+  assert.equal(archil.requests.length, asked, "done: the next pass asks Archil nothing");
+});
+
+test("Mode 2, a run's process whose credential remove failed, its runner's release of the claim: the janitor's next pass removes the credential", async () => {
+  let refuse = true;
+  const archil = archilControlFetch({ answer: ({ method }) => (refuse && method === "DELETE" ? { status: 500, body: { error: "Archil is down" } } : undefined) });
+  const one = await server({ mode: 2, archil });
+  const step = await archilStepOf(one, archil, 3);
+  await step.token();
+  // The run's process's release asked its runner's step to revoke, and Archil refused; then the runner releases the claim.
+  await assert.rejects(step.revoke(), /Archil is down/);
+  step.release();
+  for (let turn = 0; turn < 10; turn += 1) await new Promise((done) => setImmediate(done));
+  refuse = false;
+  const swept = await one.janitor();
+  assert.deepEqual(swept.failed, []);
+  assert.deepEqual(nicknames(archil), [], "removed by the janitor's pass");
 });
 
 /** The store's next clock read waits until `release()`: `reached` resolves once a read is waiting. Later reads answer
