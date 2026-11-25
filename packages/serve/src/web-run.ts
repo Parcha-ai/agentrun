@@ -2,6 +2,7 @@
 // serve's words for a free search's limit, the server's log, and the `--faux` switches that put a test's fakes in each
 // provider's place.
 import { AsyncLocalStorage } from "node:async_hooks";
+import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import type { PublicFetchOptions } from "@parcha/pi-browser";
 import { JEV_PUBLISHED_PRICING, jevProvider } from "@parcha/agentrun-jev";
@@ -39,11 +40,14 @@ export async function fetchOptions(env: NodeJS.ProcessEnv, fauxEnv: string): Pro
   return ((await import(pathToFileURL(faux).href)) as { default: () => Omit<PublicFetchOptions, "maxBytes" | "signal"> }).default();
 }
 
-/** What a provider that takes them is told of the run (Parallel's client_model): the run's model as its bare id, the last
- *  segment of its name, lowercase; nothing where the run names none. No id of the run is given: a tool call carries none. */
+/** What a provider that takes them is told of the run, made once for each run's Web (webOf): `model` (Parallel's
+ *  client_model), the run's model as its bare id, the last segment of its name, lowercase, none where the run names none;
+ *  and `session` (Parallel's session_id, one for a task's Search and Extract, as its guidance asks), 32 random hex
+ *  characters, the same on every search and fetch of this Web and another for each other run's. The session is never
+ *  the run's id or made from it, so nothing of the run reaches the provider. */
 export function clientOf(env: NodeJS.ProcessEnv): WebClient {
   const model = planeOf(env).model?.split("/").pop()?.trim().toLowerCase();
-  return model ? { model } : {};
+  return { ...(model ? { model } : {}), session: randomUUID().replaceAll("-", "") };
 }
 
 /** The run's models a native search goes through, asked when a search runs: ToolHost.search, EffectRun.search. */

@@ -81,8 +81,9 @@ export type SearchOptions = { n?: number; signal?: AbortSignal; breakers?: (name
  *  wants from the page (the tool's objective); `lookingFor`, the same under its older name, read where no objective is
  *  given. With a decider, the answer is the chunks of the whole page most likely to hold it (findInPage), `offset` and
  *  `maxChars` aside; when the step fails, the part asked for, saying the objective was not applied; with no decider, the
- *  part asked for, as with none. Blank: none. */
-export type FetchOptions = Part & GuardOptions & { task?: string; objective?: string; lookingFor?: string };
+ *  part asked for, as with none. Blank: none. `session`: this call's session, told to a provider that takes one in place
+ *  of WebConfig.client's, as SearchOptions.session (a page the run already read is not read again). */
+export type FetchOptions = Part & GuardOptions & { task?: string; objective?: string; lookingFor?: string; session?: string };
 /** `sift`, only when a decider is given: what it did, for the model to read. */
 /** A provider a Web's tool asks: its id, how it is reached (`keyed`, on the run's key; `unkeyed`, a keyed provider the
  *  run holds no key for, so never sent; `keyless`, a service's free use; `none`, neither: the model provider's own search
@@ -257,9 +258,9 @@ export function createWeb(config: WebConfig): Web {
       const receipt: Receipt = { op: "search", asked: ask.objective || said, queries: ask.queries, provider: "error" in answer ? null : answer.provider, tries, classifier, ...unjudged, out: outOf(searchText(answer)), cost: { usd: usd(lines), lines }, ...unsifted(() => searchText(fitSearch(found))) };
       return { answer, receipt };
     },
-    // Only the call's part, resolver, transport, signal, task and objective are read: the guard, its bound, the order
+    // Only the call's part, resolver, transport, signal, task, objective and session are read: the guard, its bound, the order
     // and the readers stay the Web's.
-    async fetch(url, { offset, maxChars, task, objective, lookingFor, lookup, fetchImpl, signal } = {}) {
+    async fetch(url, { offset, maxChars, task, objective, lookingFor, lookup, fetchImpl, signal, session } = {}) {
       const asked = typeof url === "string" ? url : "";
       const lines: Fee[] = [];
       const tries: Try[] = [];
@@ -276,6 +277,7 @@ export function createWeb(config: WebConfig): Web {
           ...(lookup ? { lookup } : {}),
           ...(fetchImpl ? { fetchImpl } : {}),
           ...(signal ? { signal } : {}),
+          ...(session ? { client: { session } } : {}),
           readers: readersOf(),
           pages,
           order: config.order.fetch,

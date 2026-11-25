@@ -34,6 +34,8 @@ export type ProviderParts = {
  *  model that writes the searches and reads their results; `session`, the run's id, the one session of every search the
  *  run makes. */
 export type WebClient = { model?: string; session?: string };
+/** A read's options: the guard's, and `client`, the call's own, each field in place of the Web's where given. */
+export type ReadOptions = GuardOptions & { client?: WebClient };
 
 /** A read that gave no page: in our words, the failure typed (search.ts Failed; a stand-in's may give the words alone),
  *  and the limit it met, if any (for the run's breaker). */
@@ -48,7 +50,7 @@ export type ReadFailed = { error: string; failure?: Failure; limit?: Limit };
  *  undefined. */
 export type ProviderRun = {
   search?(ask: SearchAsk, deadline: AbortSignal, signal?: AbortSignal, bounds?: SearchBounds, client?: WebClient): Promise<Searched>;
-  read?(url: unknown, options: GuardOptions): Promise<Read | Unread | ReadFailed>;
+  read?(url: unknown, options: ReadOptions): Promise<Read | Unread | ReadFailed>;
   unready?(): Failure | undefined;
 };
 
@@ -97,7 +99,7 @@ export function holdingWords({ kind, until }: Holding): string {
 /** A provider's reads behind `breaker`: `held` is why it is not asked now, typed (unready, else the breaker holding it:
  *  its limit's kind, code HELD, and until when, holdingWords), `holding` what holds the breaker, and a failed read's limit
  *  trips the breaker. The fetch's breaker is search's (searchBreaker). */
-export type Reader = { held(): Failure | undefined; holding?(): Holding | undefined; read(url: unknown, options: GuardOptions): Promise<Read | Unread | ReadFailed> };
+export type Reader = { held(): Failure | undefined; holding?(): Holding | undefined; read(url: unknown, options: ReadOptions): Promise<Read | Unread | ReadFailed> };
 export function readerOf(run: ProviderRun, breaker: Breaker): Reader {
   const read = run.read;
   if (!read) throw new Error("readerOf: the provider has no read");
