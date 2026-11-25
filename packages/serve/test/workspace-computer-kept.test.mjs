@@ -442,6 +442,56 @@ test("Mode 2, the parking runner's own timer deletes the kept desktop and Archil
   assert.equal(logged.filter((line) => line.includes("Archil is down")).length, 1, `the timer's failure said: ${JSON.stringify(logged)}`);
 });
 
+test("Mode 2, a resume that took the parked desktop and its mount credential parks again; its timer deletes the desktop and Archil refuses the credential's remove: the row is left ending and said, and the janitor's next pass removes the credential", async (t) => {
+  let refuse = false;
+  const archil = archilControlFetch({ answer: ({ method }) => (refuse && method === "DELETE" ? { status: 500, body: { error: "Archil is down" } } : undefined) });
+  const one = await server({ mode: 2, archil });
+  // Each claim's own Archil step, as archil-claim.ts makes it, over the fake.
+  const mountOf = (epoch) =>
+    archilClaim({
+      settings: { region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" },
+      keys: one.store.sealedKeys,
+      sealKey: one.sealKey,
+      signal: new AbortController().signal,
+      mount: { runId: "run-1", epoch, ttlMs: 86_400_000 },
+      control: { baseUrl: archil.baseUrl, fetch: archil.fetch },
+      run: { agentId: "agent-1", store: one.store },
+      makeDisk: (options) => ({ id: options.disk }),
+    });
+  // Epoch 3 mints its credential and parks, the desktop kept.
+  const parked = await mountOf(3);
+  await parked.token();
+  await (await one.claim(3, { revokeMount: () => parked.revoke(), inheritMount: () => parked.inherit() })).park("approval");
+  // Epoch 5 takes the desktop back and, with it, epoch 3's credential: it mints none of its own.
+  one.clock.now = T0 + 1;
+  const taken = await mountOf(5);
+  let revoked;
+  const logged = [];
+  const resumed = await one.claim(5, { hadComputer: async () => true, revokeMount: () => (revoked = taken.revoke()), inheritMount: () => taken.inherit(), log: (line) => void logged.push(line) });
+  assert.equal(resumed.replaced, undefined, "the kept desktop attached again");
+  assert.deepEqual(nicknames(archil), ["agentrun:run-1:3"], "nothing new minted");
+  refuse = true;
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    assert.equal(await resumed.park("approval"), true, "kept again");
+    t.mock.timers.tick(KEEP_MS);
+  } finally {
+    t.mock.timers.reset();
+  }
+  await revoked?.catch(() => undefined);
+  for (let turn = 0; turn < 10; turn += 1) await new Promise((done) => setImmediate(done));
+  assert.deepEqual(deletes(one.account), ["c1"], "the timer deleted it");
+  const row = await readKept(one.store.settings, "run-1");
+  assert.deepEqual([row?.epoch, row?.ending, row?.ended], [5, true, undefined], "left ending: the janitor's to finish");
+  refuse = false;
+  one.clock.now = T0 + 1 + KEEP_MS;
+  const swept = await one.janitor();
+  assert.deepEqual(nicknames(archil), [], "the taken-on credential removed by the janitor's pass, not left for its 24-hour ttl");
+  assert.deepEqual([swept.ended, swept.failed], [["c1"], []]);
+  assert.equal((await readKept(one.store.settings, "run-1"))?.ended, true);
+  assert.equal(logged.filter((line) => line.includes("Archil is down")).length, 1, `the timer's failure said: ${JSON.stringify(logged)}`);
+});
+
 test("a desktop resumed after 10 minutes is a new one: the kept one let go, said once with why", async () => {
   const one = await server();
   await (await one.claim(3)).park();
