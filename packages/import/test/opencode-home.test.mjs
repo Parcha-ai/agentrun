@@ -82,6 +82,8 @@ test("the mirrored request counts once whatever the sources' order, and a reques
   const lines = await parseHome(home, { sources: ["opencode", "claude-code"], catalog: false, env: {}, requests: (totals, requests) => sunk.set(totals.id, requests) });
   assert.deepEqual(lines, first);
   assert.deepEqual(sunk.get("ses_K").map(({ usage }) => [usage.input, usage.output]), [[5, 1], [6, 1]]);
+  // Each its own model: K4 claude-agent's, K5 the other provider's.
+  assert.deepEqual(sunk.get("ses_K").map(({ model }) => model), ["claude-agent/opus", "anthropic/claude-opus-4-5"]);
   assert.equal(sunk.get("claude-session-1").length, 2);
 });
 
