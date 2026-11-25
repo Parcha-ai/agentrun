@@ -46,7 +46,7 @@ import { runZone } from "../environment.js";
 import { shadowRunId } from "../learn/audit.js";
 import { LEARNING_SCRIPT, learningWorkspace } from "../learn/folder.js";
 import { agreeOnOf } from "../learning-setting.js";
-import { openRunWorkspace } from "../workspace/run-workspace.js";
+import { openedAtUse, openRunWorkspace } from "../workspace/run-workspace.js";
 import { archilClaim, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { agentDirName, recordingsFolder, runFolder, scratchFolder } from "../workspace/paths.js";
 import type { Workspace } from "../workspace/workspace.js";
@@ -823,13 +823,18 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       const harness = { commit: (change: (tx: unknown) => Promise<unknown>) => change({ appendEntry: async (_conversation: number, entry: unknown) => void (await ask.appendRoot(dataOnly(entry))) }) };
       // What the gateway files goes in the run's own files. In Mode 1 that is the run's folder on this machine. In Mode 2
       // it is the run's disk: through the computer this claim made once it mounts the folder (mountedFolder, the computer
-      // answer's), since the mount holds the disk's write delegation; over the disk's file API (opened here, as the archil
-      // answer opens it, let go at the claim's release) when no computer mounts it. work() is read only when a call is
-      // answered (mcp-gateway.ts textOf, fileResults).
+      // answer's), since the mount holds the disk's write delegation; over the disk's file API when no computer mounts it.
+      // That Workspace is opened at the first answer that files something, not at the claim: a claim whose MCP files
+      // nothing opens none (an open lists the run's folder, and makes it when it is missing). It only writes files over the
+      // disk's file API and runs no command, so it sweeps no exec spill folder, at its open or at its end (sweep: false): it
+      // opens mid-run, beside the archil answer's Workspace, whose commands may still be reading their spill files there.
+      // Opened once, and let go at the claim's release; an open that failed is tried again at the next answer. Its release is
+      // registered here, before any open, so an open still running at the release is ended too, and a filing after it opens
+      // nothing (openedAtUse). work() is read only when a call's answer files something (mcp-gateway.ts textOf, fileResults).
       const disk = await archilOf();
-      const ws = disk === undefined ? undefined : await openRunWorkspace({ mode: 2, agentId: run.agentId, runId: claim.runId, archil: disk, log });
-      if (ws) releases.push(() => ws.end());
-      const made = await mcpForClaim({ claim, store, sealKey, grants: granted, harness: harness as never, work: () => (ws === undefined ? runFolder(deps.data, run.agentId, claim.runId) : mountedFolder ?? ws.workspace), launchInput: launch.input, githubAppAccess: () => github(), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, ...claimMetering(deps, undefined, launch) });
+      const overTheDisk = disk === undefined ? undefined : openedAtUse(() => openRunWorkspace({ mode: 2, agentId: run.agentId, runId: claim.runId, archil: disk, sweep: false, log }));
+      if (overTheDisk) releases.push(() => overTheDisk.end());
+      const made = await mcpForClaim({ claim, store, sealKey, grants: granted, harness: harness as never, work: () => (overTheDisk === undefined ? runFolder(deps.data, run.agentId, claim.runId) : mountedFolder ?? overTheDisk.workspace()), launchInput: launch.input, githubAppAccess: () => github(), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, ...claimMetering(deps, undefined, launch) });
       if (!made) return undefined;
       releases.push(() => made.release());
       const exposed = heldMcpOf(made, cut);
