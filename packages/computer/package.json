@@ -117,6 +117,13 @@
     "NOTICE"
   ],
   "sideEffects": false,
+  "optionalDependencies": {
+    "@boxd-sh/sdk": "0.3.1",
+    "disk": "1.12.0",
+    "e2b": "2.63.0",
+    "modal": "0.11.1",
+    "ssh2": "1.17.0"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "build:daemon": "node scripts/build-daemon.mjs",

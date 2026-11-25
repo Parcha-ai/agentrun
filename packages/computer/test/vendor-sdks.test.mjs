@@ -136,7 +136,7 @@ test("with no SDK installed, each provider's create refuses naming its SDK and t
 	const KEY = "fake-test-key";
 	const cases = [
 		["E2B", "e2b", async () => (await load("e2b.js")).create({ apiKey: KEY })],
-		["Modal", "modal", async () => (await load("modal.js")).create({ tokenId: KEY, tokenSecret: KEY })],
+		["Modal", "modal", async () => (await load("modal.js")).create({ tokenId: KEY, tokenSecret: KEY, app: "agentrun" })],
 		["boxd", "@boxd-sh/sdk", async () => (await load("boxd.js")).create({ apiKey: KEY })],
 		["Agent37", "ssh2", async () => (await load("agent37.js")).create({ apiKey: KEY, sshKey: KEY })],
 		["Morph", "ssh2", async () => (await load("morph.js")).create({ apiKey: KEY })],
