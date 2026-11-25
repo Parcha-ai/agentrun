@@ -13,7 +13,7 @@
 // for a server one person runs: it is refused where more than one person can start runs, `on` included, and the owner
 // confirms they alone run agents here. It runs only in a runner place, on the machine the owner turned it on for.
 import { createHash, randomBytes } from "node:crypto";
-import { accessSync, chmodSync, closeSync, constants, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, closeSync, constants, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, renameSync, rmSync, type Stats, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { delimiter, dirname, isAbsolute, join } from "node:path";
 import type { ClaudeAgentLogin, ClaudeLoginStatus, ClaudeLoginToken } from "@parcha/agentrun-harness-claude";
@@ -131,37 +131,78 @@ const absolute = (env: Readonly<Record<string, string | undefined>>, name: strin
   return value && isAbsolute(value) ? value : undefined;
 };
 
-/** Whether `dir` is a folder user `uid` owns. A link there counts by the folder it leads to, and only as a link that
- *  user or root made: another user's could be put back pointing elsewhere once this has looked. This is the one
- *  ownership rule for the login's folders, the home's (homeOf) and those the env gives it (loginRefused). */
-function owns(uid: number, dir: string): boolean {
+/** The most links one path may pass through, as Linux's own limit (past it, ELOOP). */
+const MAX_LINKS = 40;
+
+/** Whether others than its owner may write in a folder: anyone, or, for one of root's, its group too. A folder of the
+ *  user's own may be open to its group (a group of that user alone, where the system gives each user one). */
+const othersWrite = (folder: Stats): boolean => (folder.mode & (folder.uid === 0 ? 0o022 : 0o002)) !== 0;
+const STICKY = 0o1000;
+
+/** `dir` (absolute) walked one name at a time from the root, as the system walks it when the CLI opens it: a link
+ *  followed where it is met, a `..` going up from where the walk is, an empty name (a doubled or trailing slash) or `.`
+ *  staying there, so a link is judged wherever it is on the way, its last name with a trailing slash included. Every
+ *  folder on the way must be user `uid`'s or root's, and none that others may write in (othersWrite) unless the sticky
+ *  bit keeps each entry its maker's (/tmp, say); every link on the way must be one that user or root made. Else another
+ *  user could put a folder or link of theirs in the place of a name after the check has looked, and the CLI would write
+ *  the login there. Gives the folder the walk ends in (`at`) and the names still to make in it (`missing`, none where
+ *  `dir` is there), or undefined where the way fails, or a name past one still to make is `..`. */
+function walk(uid: number, dir: string): { at: string; missing: string[] } | undefined {
+  if (!isAbsolute(dir)) return undefined;
   try {
-    const link = lstatSync(dir);
-    if (!link.isSymbolicLink()) return link.isDirectory() && link.uid === uid;
-    if (link.uid !== uid && link.uid !== 0) return false;
-    const stat = statSync(dir);
-    return stat.isDirectory() && stat.uid === uid;
+    const names = dir.split("/");
+    let at = "/";
+    let links = 0;
+    for (let name = names.shift(); name !== undefined; name = names.shift()) {
+      const folder = lstatSync(at);
+      if (!folder.isDirectory() || (folder.uid !== uid && folder.uid !== 0) || (othersWrite(folder) && (folder.mode & STICKY) === 0)) return undefined;
+      if (name === "" || name === ".") continue;
+      if (name === "..") {
+        at = dirname(at);
+        continue;
+      }
+      const next = join(at, name);
+      const entry = lstatSync(next, { throwIfNoEntry: false });
+      if (entry === undefined) return names.includes("..") ? undefined : { at, missing: [name, ...names].filter((left) => left !== "" && left !== ".") };
+      if (!entry.isSymbolicLink()) {
+        at = next;
+        continue;
+      }
+      if ((entry.uid !== uid && entry.uid !== 0) || ++links > MAX_LINKS) return undefined;
+      const target = readlinkSync(next);
+      if (isAbsolute(target)) at = "/";
+      names.unshift(...target.split("/"));
+    }
+    return { at, missing: [] };
   } catch {
-    return false;
+    // A file where a folder should be, or no way to look: nothing the login may use.
+    return undefined;
   }
+}
+
+/** Whether `dir` (absolute) is a folder user `uid` owns, reached by a way no other user can change (walk), and not one
+ *  others may write in (othersWrite, sticky or not: they could put their files in it). A link there counts by the
+ *  folder it leads to. This is the one ownership rule for the login's folders, the home's (homeOf) and those the env
+ *  gives it (loginRefused). */
+function owns(uid: number, dir: string): boolean {
+  const walked = walk(uid, dir);
+  return walked !== undefined && walked.missing.length === 0 && ownFolder(uid, walked.at);
 }
 
 /** Whether user `uid` owns `dir` (owns), or, where it is not there yet, the nearest folder above it that is: the CLI,
  *  run as that user, makes it there as its own. */
 function ownsOrMakes(uid: number, dir: string): boolean {
-  let at = dir;
-  for (;;) {
-    let there: boolean;
-    try {
-      there = lstatSync(at, { throwIfNoEntry: false }) !== undefined;
-    } catch {
-      // A file where a folder above it should be, or no way to look: nothing the CLI could make.
-      return false;
-    }
-    if (there) return owns(uid, at);
-    const up = dirname(at);
-    if (up === at) return false;
-    at = up;
+  const walked = walk(uid, dir);
+  return walked !== undefined && ownFolder(uid, walked.at);
+}
+
+/** Whether `folder`, where a walk ended (no link), is a folder of user `uid`'s that others may not write in. */
+function ownFolder(uid: number, folder: string): boolean {
+  try {
+    const at = lstatSync(folder);
+    return at.isDirectory() && at.uid === uid && !othersWrite(at);
+  } catch {
+    return false;
   }
 }
 
