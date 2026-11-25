@@ -2,9 +2,11 @@
 // exec off): the model is told so once in the run, as the server's note (the model proxy's, as the replaced computer's
 // note is told), so it never takes a file it saved on the desktop for one the user gets; and computer_screenshot's
 // save_as puts the screen in the run's files. Through the runner, the pi spec and the adapter loop as they really run.
-// A resumed claim (a park on a tool's approval, then the approval) never tells the files note again.
+// A resumed claim (a park on a tool's approval, then the approval) never tells the files note again. A person's own
+// paired desktop is never deleted when the run ends, so its note never says it is.
 //
-// The desktop is --faux's (faux-computers.ts): nothing is rented.
+// The desktop is --faux's (faux-computers.ts): nothing is rented. The paired one is the computer package's fake UI
+// driver on a socket to this process's attach hub.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -12,7 +14,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { readBackOf } from "@parcha/agentrun-computer";
+import { AttachHub, readBackOf } from "@parcha/agentrun-computer";
+import { FakeUiDriver, serveUiSocket } from "@parcha/agentrun-computer/fake-ui-driver";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { closeOpenSessions, scriptedOrigin } from "./conformance-pi-adapter.mjs";
 
@@ -58,8 +61,9 @@ const until = async (done, what, ms = 60_000) => {
 const FAUX_DEPS = { kinds: FAUX.kinds, keyTable: FAUX.keyTable, launch: FAUX.launch, providers: {}, spec: () => ({ image: "faux", lifetimeMs: 600_000, network: "open" }), check: { readBackOf } };
 
 /** run-1 on --faux's desktop, run by a runner on the pi spec with `script` as its model, or with `cli` (`{ env }`) on
- *  opencode's CLI spec; `body`, the agent's. Each pi request's body is kept in `requests`. */
-async function desktopRun(t, { script = [], body = { tools: ["read"] }, approvers = false, cli }) {
+ *  opencode's CLI spec; `body`, the agent's. Each pi request's body is kept in `requests`. `paired`: the agent's
+ *  desktop is instead this paired computer (`{ row, hub }`: its store row, and the hub its socket is on). */
+async function desktopRun(t, { script = [], body = { tools: ["read"] }, approvers = false, cli, paired }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-desktop-files-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -70,14 +74,14 @@ async function desktopRun(t, { script = [], body = { tools: ["read"] }, approver
     await server.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
   });
-  await server.agents.create({ id: "agent-1", name: "Desk" }, { id: "rev-1", kind: "agentic", body: { instructions: "Look.", computer: DESKTOP, ...body } });
+  await server.agents.create({ id: "agent-1", name: "Desk" }, { id: "rev-1", kind: "agentic", body: { instructions: "Look.", computer: paired ? { kind: "desktop", provider: paired.row.id } : DESKTOP, ...body } });
   const model = cli ? { harness: "opencode", model: { provider: "openai", modelId: "gpt-6.1-sol" } } : { harness: "pi", model: { provider: "anthropic", modelId: "claude-sonnet-5.5" } };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Look." }, title: "t", place: { mode: "runner" }, ...model } });
   if (approvers) await server.settings.put("approvers", { approvers: true });
   await server.flush?.();
   const requests = [];
   const route = { model: "faux-1", provider: { api: "anthropic-messages", origin: "https://route.invalid", credential: () => "not-a-secret" }, fetch: scriptedOrigin(script, requests), price: () => 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 100 };
-  const deps = { env: cli?.env ?? {}, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim, computerDeps: FAUX_DEPS };
+  const deps = { env: cli?.env ?? {}, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim, computerDeps: paired ? { ...FAUX_DEPS, attached: { rows: async () => [paired.row], hub: paired.hub } } : FAUX_DEPS };
   runner = startRunner({
     store, name: "runner-a", ...CONFORMANCE_TIMING, leaseMs: 30_000, stopMarginMs: 5_000,
     createLoop: createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: (name, given) => (name === "pi" ? createAdapterLoop((claim, run) => adapterRunSpecFromLaunch(given, run, deps, claim)) : name === "opencode" ? createAdapterLoop((claim, run) => cliRunSpecFromLaunch(given, run, deps, claim)) : undefined) }),
@@ -145,6 +149,42 @@ test("the files note is told once a run: the claim that resumes it after a park 
   assert.equal(count(one.requests, NOTES).reduce((a, b) => a + b, 0), 1, `the files note once in the whole run: ${JSON.stringify(count(one.requests, NOTES))}`);
   const said = (await runTimeline(one.server, RUN, ctx)).map((entry) => entry.summary);
   assert.deepEqual(fileRows(said), [ROW], "its row once");
+});
+
+/** Two ends of one socket, delivering in order (a paired computer's driver on one, the hub on the other). */
+function socketPair() {
+  const ends = [{ text: [], closes: [] }, { text: [], closes: [] }];
+  let closed;
+  const side = (me, peer) => ({
+    send(text) { if (!closed) queueMicrotask(() => peer.text.forEach((listener) => listener(text))); },
+    close(code, reason) {
+      if (closed) return;
+      closed = { code, reason };
+      queueMicrotask(() => [...me.closes, ...peer.closes].forEach((listener) => listener(code, reason)));
+    },
+    onText(listener) { me.text.push(listener); },
+    onClose(listener) { me.closes.push(listener); },
+    get closed() { return closed; },
+  });
+  return [side(ends[0], ends[1]), side(ends[1], ends[0])];
+}
+
+test("a person's own paired desktop, which mounts no folder: the files note says what is saved on it stays there after the run, never that it is deleted when the run ends", { timeout: 120_000 }, async (t) => {
+  const { pairedOf } = await import("../dist/workspace/attached-computers.js");
+  const driver = new FakeUiDriver({ groups: ["screen", "input.pointer", "input.keys", "apps", "ui"] });
+  t.after(() => driver.close());
+  const row = { id: "cmp-0000000000000001", name: "Test box", hello: driver.hello(), driver: "0", labels: { owner: "test" }, pairingId: "p-1", createdAt: 0, seenAt: 0, revokedAt: null };
+  const hub = new AttachHub();
+  const [served, computer] = socketPair();
+  serveUiSocket(driver, computer);
+  assert.equal((await hub.accept(pairedOf(row), served)).ok, true, "the paired desktop is attached");
+  const one = await desktopRun(t, { script: [{ say: "done" }], paired: { row, hub } });
+  const ran = await rests(one, ["ended"]);
+  assert.equal(ran.state, "ended", JSON.stringify(ran));
+  const told = JSON.stringify(one.requests[0]).match(NOTES)?.[0];
+  assert.equal(told, "AgentRun server note: this desktop's own disk is not this run's files: nothing saved on the desktop reaches the user, and it stays on the desktop after the run ends. Keep anything the user should get in the run's files, the folder your file tools work on; computer_screenshot with save_as saves the screen there as a PNG.", "the model is told the paired desktop outlives the run");
+  const said = (await runTimeline(one.server, RUN, ctx)).map((entry) => entry.summary);
+  assert.deepEqual(fileRows(said), ["AgentRun: This desktop's own disk is not this run's files: nothing saved on the desktop reaches the user, and it stays on the desktop after the run ends. Keep anything the user should get in the run's files, the folder your file tools work on; computer_screenshot with save_as saves the screen there as a PNG."], "and the person reading the run is never told their computer is deleted");
 });
 
 test("a CLI harness (opencode) on a desktop that mounts no folder: its first main-model request carries the files note once, and the timeline shows it once", { timeout: 120_000 }, async (t) => {
