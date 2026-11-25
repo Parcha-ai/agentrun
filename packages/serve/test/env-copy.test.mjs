@@ -25,6 +25,7 @@ const TAKES = /from\s+["'](?:\.\.?\/)+(?:secrets|claude-login)\.js["']/;
 const ALLOWED = [
   { file: "secrets.ts", text: "const out: NodeJS.ProcessEnv = { ...env };", why: "withSecrets' own start: the env it is given, before it lays the secrets" },
   { file: "server.ts", text: "const schema = { ...base, properties:", why: "a JSON schema, not an env" },
+  { file: "native/history.ts", text: "{...base,role", why: "a native history turn's common fields, not an env" },
   { file: "import.ts", text: "defaultData({ ...env, HOME: home })", why: "defaultData reads the data folder's variables and HOME, no key" },
   { file: "runner/claim-secrets.ts", text: "const env: NodeJS.ProcessEnv = { ...base };", why: "base is withoutSecrets' cut, plain values; the run's keys are laid on the copy after it" },
   { file: "runner/claim-secrets.ts", text: "withPlan({ ...working }, plan), scoped, revision)", why: "workingEnv's values are plain, enumerable ones" },
