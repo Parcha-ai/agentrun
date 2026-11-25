@@ -8,6 +8,7 @@
 // answer once the link is gone), so a gateway that files nothing at all fails here too.
 import assert from "node:assert/strict";
 import { lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -15,6 +16,8 @@ import { memorySessionStore } from "@parcha/agentrun-kernel/testing";
 import { mcpGateway } from "../dist/mcp-gateway.js";
 import { saveOnce } from "../dist/save-once.js";
 import { localWorkspace } from "../dist/workspace/index.js";
+import { readBackOf } from "@parcha/agentrun-computer";
+import { fakeComputer } from "./workspace-fake-computer.mjs";
 import { bookedIn } from "../dist/paid-calls.js";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 
@@ -70,6 +73,7 @@ async function runOn(t, answer, { wrap } = {}) {
   };
   const work = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "fal-results-"));
   t.after(() => rm(work, { recursive: true, force: true }));
+  const at = wrap ? await wrap(work) : work;
   const store = memorySessionStore();
   const tools = await cap.runCap({ sessions: store, capUsd: () => 5, modelOf: () => undefined }).tools(await store.open(cap.TOOL_SESSION));
   const booked = [];
@@ -80,7 +84,7 @@ async function runOn(t, answer, { wrap } = {}) {
   const gateway = mcpGateway({
     pin: { fal: { url: FAL, tools: [{ name: "wait_for_jobs", inputSchema: { type: "object" } }], meter: "fal" } },
     credentials: { fal: { url: FAL, headers: { authorization: `Bearer ${TOKEN}` } } },
-    work: () => (wrap ? wrap(work) : work),
+    work: () => at,
     commit: () => async (change) => change({ appendEntry: async () => undefined }),
     capped: true,
     fetch: (input, init) => fetch(String(input instanceof Request ? input.url : input).replace(FAL, fake.url), init),
@@ -308,4 +312,21 @@ test("a Workspace that cannot create without replacing files nothing: the call w
   assert.deepEqual(writes, [], "and no write that could replace was made");
   await assert.rejects(saveOnce(replacing(run.work), "media/x.mp3", "x"), (error) => error.code === "REFUSED");
   assert.deepEqual(writes, [], "saveOnce never falls back to write");
+});
+
+test("on a run's files attached in a computer (a Docker box), a completed job is filed through the computer; a file landing before the move is kept, and a sibling is filed", async (t) => {
+  const raced = "01a1fb42-4d5e-7f6a-8b7c-8d9e0f1a2b3c";
+  const sibling = "01a1fb42-4d5e-7f6a-8b7c-8d9e0f1a2b3d";
+  const at = `evidence/fal/${raced}.json`;
+  let computer;
+  const inBox = async (dir) => {
+    computer = fakeComputer(dir, { onMove: ({ to }) => { if (to === `/workspace/${at}`) writeFileSync(join(dir, at), "RACED IN"); } });
+    return localWorkspace(dir).attach(computer, { readBackOf });
+  };
+  const run = await runOn(t, () => ({ all_terminal: true, jobs: [completed(0, raced, voiceResult(3)), completed(1, sibling, voiceResult(2))] }), { wrap: inBox });
+  await run.wait();
+  assert.deepEqual(await filed(run.work, sibling), voiceResult(2), "the sibling is filed, through the computer");
+  assert.ok(computer.calls.some(([method, params]) => method === "files.move" && params.to === `/workspace/evidence/fal/${sibling}.json`), "by its files.move");
+  assert.equal(await readFile(join(run.work, at), "utf8"), "RACED IN", "the file that landed first is kept, never replaced");
+  assert.deepEqual((await tree(run.work)).filter((path) => path.endsWith(".tmp")), [], "no temporary file is left");
 });
