@@ -4,7 +4,7 @@ import type { FoundPage } from "./decide/fetch.js";
 import { unmetered } from "./fees.js";
 import type { Guard, GuardOptions } from "./guard.js";
 import { askedUrl, HTML_READ_CHARS, PAGE_READ_MAX_CHARS, type Page, type Part, partOfRead, type Read, TIMEOUT_MS, type Unread, URL_MAX, withoutCredentials, withoutUserinfo } from "./page.js";
-import { HELD_CODE, holdingWords, type Reader } from "./provider.js";
+import { HELD_CODE, holdingWords, type Reader, type ReadOptions } from "./provider.js";
 import { AHEAD, type AheadProvider, type FetchProvider, providerName, providerOf } from "./providers/registry.js";
 import { type Failure, failure, type Limit, type Try } from "./search.js";
 
@@ -56,7 +56,7 @@ async function passes(url: unknown, guard: Guard | undefined, options: GuardOpti
 
 /** What one read is given: the readers, the order they are asked in, the guard, the check's bound, the log, and where its
  *  turns go. */
-type ReadWith = { readers: Readers; order: readonly FetchProvider[]; guard?: Guard; checkMs: number; options: GuardOptions; log?: WebLog; tries: Try[] };
+type ReadWith = { readers: Readers; order: readonly FetchProvider[]; guard?: Guard; checkMs: number; options: ReadOptions; log?: WebLog; tries: Try[] };
 
 /** The page at `url` read once, by the providers of `order` in turn, each turn recorded in `tries` as it is taken. A
  *  provider that ends the order (the guarded direct fetch) answers whatever it reads. Any other is asked where its reader
@@ -154,7 +154,7 @@ function untilStopped(url: unknown, reading: Promise<WebRead | WebUnread>, signa
  *  (FETCH_ORDER by default; a provider that ends it is made here where no reader is given for it), the run's `pages`,
  *  the `guard`, the guard check's bound (`checkMs`), the `log`, and `tries`, where a read this call starts records its
  *  turns (a call answered from `pages` records none). */
-export type WebFetchOptions = GuardOptions & Part & { readers?: Readers; pages?: Pages; order?: readonly FetchProvider[]; guard?: Guard; checkMs?: number; log?: WebLog; tries?: Try[] };
+export type WebFetchOptions = ReadOptions & Part & { readers?: Readers; pages?: Pages; order?: readonly FetchProvider[]; guard?: Guard; checkMs?: number; log?: WebLog; tries?: Try[] };
 
 /** The page at `url` as read once a run: from `pages`, the run's, where it holds the URL (read, or being read), with no
  *  request of its own; else read once (readOnce), kept there from the read's start. A read that fails leaves `pages`, so
