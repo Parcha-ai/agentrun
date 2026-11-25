@@ -71,6 +71,12 @@ export const pathSegments = (path: string): string[] => path.split(".");
 /** The one name an object literal's prototype setter answers to: never an agree_on segment, nor a key of a grade's
  *  expected answer (server.ts), so no field a check or an audit reads is named by it. Refused on a write and on a read. */
 export const RESERVED_SEGMENT = "__proto__";
+/** Whether `value` holds an own key RESERVED_SEGMENT at any depth (in an object, or one inside an array): a grade's
+ *  expected answer that does is refused. */
+export const holdsReservedKey = (value: unknown): boolean =>
+  Array.isArray(value) ? value.some(holdsReservedKey)
+  : value !== null && typeof value === "object" ? Object.hasOwn(value, RESERVED_SEGMENT) || Object.values(value).some(holdsReservedKey)
+  : false;
 /** What is wrong with one agree_on path, in words, or undefined. */
 function pathIssue(path: string): string | undefined {
   if (path.length > AGREE_ON_PATH_MAX) return `over ${AGREE_ON_PATH_MAX} characters`;
