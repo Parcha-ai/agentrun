@@ -1865,3 +1865,13 @@ test("a held run on a plan-billed recipe that hands a saved key under another na
   assert.ok((await planClaim(t, { over })).adapter, "a run not held builds its adapter, the key handed under the name its agent reads");
   assert.ok((await planClaim(t, { over, hold: HELD })).adapter, "a held run its model kept from running builds its adapter on no key, so it holds its computer");
 });
+
+test("a run's own process, its harness's keys saved and no owner sign-in: a held claim on a plan-billed recipe builds its adapter, so it holds its computer, and one whose recipe is not installed is still refused; the same run not held builds it on the keys its runner hands", { timeout: 60_000 }, async (t) => {
+  assert.ok((await planClaim(t, { perRunProcess: true })).adapter, "a run not held builds its adapter on the keys its runner hands");
+  assert.ok((await planClaim(t, { perRunProcess: true, hold: HELD })).adapter, "a held run its model kept from running asks for no key and builds its adapter, so it holds its computer");
+  await assert.rejects(planClaim(t, { perRunProcess: true, hold: HELD, installed: false }), (error) => {
+    assert.doesNotMatch(error.message, /HARNESS_KEYS_NOT_SAVED/, `a held claim is never refused for its keys: ${error.message}`);
+    assert.match(error.message, /HARNESS_RECIPE_NOT_INSTALLED|not installed/, `a recipe that is not installed is refused whether held or not: ${error.message}`);
+    return true;
+  });
+});
