@@ -40,6 +40,10 @@ export interface ClaudeAgentLogin {
    *  server's `HOME` when its user owns it, else that user's own home), so the status check, the sign-in and a run on
    *  macOS all run in that one home (personHome). With `home`, the same folder. */
   userHome?: string;
+  /** Set where `userHome` is not the home a terminal with the server's env has (serve's homeOf: that env's `HOME` was
+   *  another user's, so the server's user's own home was taken): the line a person runs (loginCommand) then carries
+   *  `HOME`, so it signs in where the server reads, never in that terminal's own home. */
+  homeApart?: boolean;
 }
 
 /** A login handed to the CLI as its access token alone, by a host that holds the login itself. `token()` is asked at
@@ -107,11 +111,12 @@ const FOLDER_VARS = ["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR"] as 
  *  holding '=' as one more variable, so a CLI path holding one (/data/a=b/claude) goes to `sh -c` as its `$0`, single
  *  quoted, which every one of those shells reads alike too. What env skips: a `claude` alias or function of the
  *  person's shell. Elsewhere nothing is cleared, and the line is the variables in front of the CLI, as a shell reads
- *  them (sh, bash, zsh, fish 3.1 and later; not tcsh). `platform`: as signInEnv's. */
+ *  them (sh, bash, zsh, fish 3.1 and later; not tcsh). A login whose home is not the terminal's (`homeApart`) carries
+ *  `HOME` first (personHome), as the sign-in this host starts does. `platform`: as signInEnv's. */
 export const loginCommand = (login: ClaudeAgentLogin, cli = "claude", platform: NodeJS.Platform = process.platform): string => {
-  const env = signInEnv(login, platform);
+  const env = login.homeApart ? { HOME: personHome(login), ...signInEnv(login, platform) } : signInEnv(login, platform);
   const cleared = FOLDER_VARS.filter((name) => !(name in env));
-  const vars = Object.entries(env).filter(([name]) => name !== "HOME").map(([name, value]) => `${name}=${shellWord(value)}`);
+  const vars = Object.entries(env).filter(([name]) => name !== "HOME" || login.homeApart).map(([name, value]) => `${name}=${shellWord(value)}`);
   if (!cleared.length) return [...vars, commandWord(cli), "auth", "login"].join(" ");
   const run = cli.includes("=") ? ["sh", "-c", `'exec "$0" auth login'`, quoted(cli)] : [shellWord(cli), "auth", "login"];
   return ["env", ...cleared.flatMap((name) => ["-u", name]), ...vars, ...run].join(" ");

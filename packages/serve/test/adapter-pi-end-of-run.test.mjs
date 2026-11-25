@@ -74,11 +74,11 @@ async function setup(t, timing = STEADY) {
   return { server, start, until, toldRows, endEntries, entriesOf, endsOf, jobEndsOf, commandsOf };
 }
 
-/** The adapter loop on `spec`, its spec naming the run's agent and carrying `extra` (endPatch, harnessReady), its deps
- *  given `more` (endOfRun, a journal). */
-const loopWith = (spec, extra = {}, more = {}) => {
-  const inner = createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), agentId: "agent-1", ...extra }));
-  return (deps) => inner({ ...deps, ...(typeof more === "function" ? more(deps) : more) });
+/** The adapter loop on `spec`, its spec naming the run's agent and carrying `extra` (endPatch, harnessReady) and the
+ *  end-of-run step `step.endOfRun` (a spec is where a run's step comes from), its deps given `journal(deps)`'s journal. */
+const loopWith = (spec, extra = {}, step = {}, journal) => {
+  const inner = createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), agentId: "agent-1", ...(step.endOfRun ? { endOfRun: step.endOfRun } : {}), ...extra }));
+  return (deps) => inner({ ...deps, ...(journal ? { journal: journal(deps) } : {}) });
 };
 
 /** A tool that runs until its call is aborted, telling the test when it started. */
@@ -209,7 +209,7 @@ test("pi through the adapter: a fenced end writes neither the end nor its patch"
   const { start, until, endsOf } = await setup(t);
   const endPatch = async () => ({ outcome: "escalated", costUsd: 1.25, metrics: { requests: 3 } });
   const refused = { ends: 0 };
-  await start(loopWith(piAdapterSpec({ script: [{ say: "done" }], tools: {}, hooks: quiet }), { endPatch }, (deps) => ({ journal: (claim) => refusingTheEnd(deps.journal(claim), refused) })), "runner-a");
+  await start(loopWith(piAdapterSpec({ script: [{ say: "done" }], tools: {}, hooks: quiet }), { endPatch }, {}, (deps) => (claim) => refusingTheEnd(deps.journal(claim), refused)), "runner-a");
   const row = await until((r) => r.state === "failed" && r.runner === null, "the runner did not end the run failed");
   assert.ok(refused.ends >= 1, `the loop's end was tried and refused: ${refused.ends}`);
   const ends = endsOf();
@@ -325,7 +325,7 @@ test("pi through the adapter: the end and the step's rows land together or not a
     await input.ask("What did you learn?", { origin: "reflect", deadlineMs: 10_000 });
     return { also: [told("kept")] };
   };
-  await start(loopWith(piAdapterSpec({ script: [{ say: "done" }, { say: "a note" }], tools: {}, hooks: quiet }), {}, (deps) => ({ endOfRun, journal: (claim) => refusingAfterEnd(deps.journal(claim)) })), "runner-a");
+  await start(loopWith(piAdapterSpec({ script: [{ say: "done" }, { say: "a note" }], tools: {}, hooks: quiet }), {}, { endOfRun }, (deps) => (claim) => refusingAfterEnd(deps.journal(claim))), "runner-a");
   await until((row) => row.state === "ended" && row.runner === null, "the run did not end");
   assert.equal(endEntries(), 1, "the end is stored");
   assert.deepEqual(toldRows().map((row) => row.marker), ["kept"], "the step's rows are stored with the end, in its one commit");

@@ -36,7 +36,9 @@ import { lstat, readdir, readFile, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { type Env, entries, type Locator, type LocatorSize, type Reader, type ReadResult, rememberUser, type SessionRead } from "../reader.js";
-import { effortOf as effortName, isObject, mostEffortOf, str } from "../text.js";
+import { effortOf as effortName, FAILED, isObject, mostEffortOf, str } from "../text.js";
+
+export { FAILED };
 import { ACTIVE_GAP_MS, type Answer, type Ended, type Mirror, type SessionOf, type Turn } from "../types.js";
 import { normalizeUsage } from "../usage.js";
 
@@ -74,8 +76,6 @@ const modelOf = (provider: unknown, model: unknown): string | undefined => (str(
 /** A request's or prompt's key from what a 1.x fork's copy of it keeps (a request's time, model, raw tokens and cost; a
  *  prompt's time and words): `o:` and a hash, which holds no text. */
 const fingerprint = (fields: unknown[]): string => `o:${createHash("sha256").update(JSON.stringify(fields)).digest("hex").slice(0, 32)}`;
-/** What a request ran without turns keeps of its error: that it failed, never the message (a path, a provider's text). */
-export const FAILED = "failed";
 
 /** One read's sessions' share of the import: the records `seen` before (each a copy), those this read's locator added
  *  before (`before`: its own, read again), those it adds (`owned`: into `seen` only once the read ends clean, commit),
@@ -835,6 +835,8 @@ export const opencode: Reader<"opencode", OpenCodeCursor> = {
    *  session ids descend) holds copies of its source's records, which count in the source. One whose start is not
    *  known comes after, in the listing's order. */
   order: (a, b) => (a.created ?? Number.MAX_SAFE_INTEGER) - (b.created ?? Number.MAX_SAFE_INTEGER),
+  /** A database's locator names its session; a storage file is OpenCode's <id>.json. */
+  idOf: ({ file, id }) => id ?? basename(file, ".json"),
   async read(locator, cursor, { turns: keep = true, seen } = {}): Promise<ReadResult<"opencode", OpenCodeCursor>> {
     const { file, id } = locator;
     const stats = await stat(file);

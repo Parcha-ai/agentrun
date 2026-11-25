@@ -3348,7 +3348,7 @@ export type GetChatGPTSignInResponse = {
 
 /** Claude Code's login on this machine: on or off, and what its CLI says of it (GET /settings/claude-login). */
 export type GetClaudeLoginResponse = {
-  state: "off" | "other_machine" | "signed_in" | "signed_out" | "no_cli" | "unknown";
+  state: "off" | "other_machine" | "refused" | "signed_in" | "signed_out" | "no_cli" | "unknown";
   place: "agentrun" | "machine";
   command: string;
   can_start: boolean;
@@ -4203,7 +4203,7 @@ export type StartChatGPTSignInResponse = {
 
 /** Start the Claude Code CLI's own sign-in on this machine (POST /settings/claude-login/login). */
 export type StartClaudeLoginResponse = {
-  state: "off" | "other_machine" | "signed_in" | "signed_out" | "no_cli" | "unknown";
+  state: "off" | "other_machine" | "refused" | "signed_in" | "signed_out" | "no_cli" | "unknown";
   place: "agentrun" | "machine";
   command: string;
   can_start: boolean;
@@ -4312,7 +4312,7 @@ export type TestWorkspaceArchilResponse = {
 
 /** Turn off Claude Code's login on this machine (DELETE /settings/claude-login). */
 export type TurnOffClaudeLoginResponse = {
-  state: "off" | "other_machine" | "signed_in" | "signed_out" | "no_cli" | "unknown";
+  state: "off" | "other_machine" | "refused" | "signed_in" | "signed_out" | "no_cli" | "unknown";
   place: "agentrun" | "machine";
   command: string;
   can_start: boolean;
@@ -4346,7 +4346,7 @@ export type TurnOnClaudeLoginBody = {
   only_me: true;
 };
 export type TurnOnClaudeLoginResponse = {
-  state: "off" | "other_machine" | "signed_in" | "signed_out" | "no_cli" | "unknown";
+  state: "off" | "other_machine" | "refused" | "signed_in" | "signed_out" | "no_cli" | "unknown";
   place: "agentrun" | "machine";
   command: string;
   can_start: boolean;
@@ -4914,9 +4914,15 @@ export type GetRunGraphResponse = {
     paused: boolean;
     startedAt: string;
     endedAt: string | null;
+    withheld?: true;
   };
   workflow: Record<string, unknown>;
-  graph: Record<string, unknown>;
+  graph: {
+    nodes: Array<Record<string, unknown>>;
+    edges: Array<Record<string, unknown>>;
+    withheld?: true;
+    [key: string]: unknown;
+  };
   nodes: Record<string, {
     status: "pending" | "working" | "done" | "failed" | "stopped" | "escalated" | "not_run" | "needs_review";
     startedAt?: string;
