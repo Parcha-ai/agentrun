@@ -24,3 +24,16 @@ test("a numeric character reference with leading zeros, or with no closing \";\"
   // Control: a reference past U+10FFFF stands for no character, so what follows it is no spelling of the value.
   assert.equal(withheldWhole("&#1114112zqwrtyp", held), false);
 });
+
+test("a held value an HTML escape wrote (&amp;, &lt;, &gt;, &quot;, &apos;) is read as written", () => {
+  for (const [value, spelled] of [
+    ["p&ss1234word", "p&amp;ss1234word"],
+    ["a<b>c\"d'e1234", "a&lt;b&gt;c&quot;d&apos;e1234"],
+    ["a<b>c\"d'e1234", "a&lt;b&gt;c&quot;d&#39;e1234"],
+  ]) {
+    assert.equal(withheldWhole(`see ${spelled} here`, [value]), true, spelled);
+    assert.equal(redacted(`see ${spelled} here`, [value]).includes(spelled.slice(-6)), false, spelled);
+  }
+  // Control: an "&" before a word no escape writes (a URL's query) stays as it is.
+  assert.equal(withheldWhole("see p&ampss1234word here", ["p&ss1234word"]), false);
+});
