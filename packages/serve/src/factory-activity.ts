@@ -95,8 +95,21 @@ export function factoryLastActivity(records: JournalRecords): string | null {
   return latest ? new Date(latest).toISOString() : null;
 }
 
-/** Child identity comes from the durable conversation's ownership edge and its actual subagent tool task. A tool
- * merely named like a child, or a nested SDK tool callback, is not an independent session. */
+/** The call a tool task runs. pi keeps a call the model issued on its assistant entry, which the task names with the
+ * call's id; a call a tool made (tools_call's, a script's) has no such entry, and its nested task holds the call itself. */
+function callOf(input: Record<string, unknown>, entries: ReadonlyMap<number, JournalRecords["entries"][number]>): { id: string; name: unknown; arguments: unknown } | undefined {
+  if (input.kind === "nested") return isObject(input.call) && typeof input.call.id === "string" ? { id: input.call.id, name: input.call.name, arguments: input.call.arguments } : undefined;
+  const { callId, assistant } = input;
+  if (typeof callId !== "string" || typeof assistant !== "number") return undefined;
+  const entry = entries.get(assistant);
+  const content = entry?.model?.[0] && "content" in entry.model[0] ? entry.model[0].content : undefined;
+  const call = Array.isArray(content) ? content.find((block) => isObject(block) && block.type === "toolCall" && block.id === callId) : undefined;
+  return isObject(call) ? { id: callId, name: call.name, arguments: call.arguments } : undefined;
+}
+
+/** Child identity comes from the durable conversation's ownership edge and its actual subagent tool task, whether the
+ * model called subagent itself or through tools_call or a script. A conversation another tool's task owns, however
+ * its arguments read, is not an independent session. */
 export async function factoryChildren(store: Store, runId: string, records: JournalRecords, redact: (text: string) => string): Promise<FactoryChild[]> {
   const journal = store.readJournal(runId);
   const conversations: ConversationRecord[] = [];
@@ -111,16 +124,12 @@ export async function factoryChildren(store: Store, runId: string, records: Jour
   return conversations.flatMap((conversation) => {
     const task = conversation.owner && tasks.get(Number(conversation.owner.taskId));
     if (!task || task.kind !== "pi.tool" || task.state.status === "terminal" || task.state.status === "completing" || !isObject(task.input)) return [];
-    const { callId, assistant } = task.input;
-    if (typeof callId !== "string" || typeof assistant !== "number") return [];
-    const entry = entries.get(assistant);
-    const content = entry?.model?.[0] && "content" in entry.model[0] ? entry.model[0].content : undefined;
-    const call = Array.isArray(content) ? content.find((block) => isObject(block) && block.type === "toolCall" && block.id === callId && block.name === "subagent") : undefined;
-    if (!isObject(call)) return [];
+    const call = callOf(task.input, entries);
+    if (!call || call.name !== "subagent") return [];
     const prompt = isObject(call.arguments) && typeof call.arguments.prompt === "string" ? call.arguments.prompt : null;
     const id = Number(conversation.id);
-    if (!Number.isSafeInteger(id) || id < 0 || redact(callId) !== callId) return [];
-    return [{ id: `${runId}:conversation:${id}`, conversation_id: id, parent_call_id: callId, status: "active" as const, label: prompt === null ? null : redact(prompt).slice(0, 160) }];
+    if (!Number.isSafeInteger(id) || id < 0 || redact(call.id) !== call.id) return [];
+    return [{ id: `${runId}:conversation:${id}`, conversation_id: id, parent_call_id: call.id, status: "active" as const, label: prompt === null ? null : redact(prompt).slice(0, 160) }];
   });
 }
 

@@ -98,6 +98,34 @@ test("only a recorded active durable subagent ownership edge creates a child ide
   assert.deepEqual(await factoryChildren(store, "run-1", records, text => text.replace("call-1", "[redacted]")), []);
 });
 
+test("a subagent started through tools_call or a script is a child too: its nested tool task carries the call, and only a call of subagent counts", async () => {
+  // pi runs a call a tool makes as a nested tool task: its input holds the call itself, with no assistant entry to
+  // read it from. tools_call and a script reach the subagent tool this way from the run's own conversation.
+  const nested = (id, name, prompt, more = {}) => ({ kind: "nested", parent: 10, parentCallId: "call-1", key: id.split("/")[1], call: { type: "toolCall", id, name, arguments: { prompt } }, ...more });
+  const records = {
+    entries: [{ id: 2, model: [{ content: [{ type: "toolCall", name: "tools_call", id: "call-1", arguments: { name: "subagent" } }] }] }],
+    tasks: [
+      { id: 10, kind: "pi.tool", state: { status: "running" }, input: { assistant: 2, callId: "call-1" } },
+      { id: 11, kind: "pi.tool", state: { status: "running" }, input: nested("call-1/0", "subagent", "Check the migration.") },
+      // Another tool's nested call that owns a conversation is no session of its own, whatever its arguments say.
+      { id: 12, kind: "pi.tool", state: { status: "running" }, input: nested("call-1/1", "native.tool", "Reads like a child.") },
+      // A nested subagent call that has ended, and ones whose record is not a call of subagent.
+      { id: 13, kind: "pi.tool", state: { status: "terminal" }, input: nested("call-1/2", "subagent", "Done already.") },
+      { id: 14, kind: "pi.tool", state: { status: "running" }, input: { kind: "nested", parent: 10, parentCallId: "call-1", key: "3" } },
+      { id: 15, kind: "pi.tool", state: { status: "running" }, input: { ...nested("call-1/4", "subagent", "No id."), call: { type: "toolCall", name: "subagent", arguments: { prompt: "No id." } } } },
+      { id: 16, kind: "pi.tool", state: { status: "running" }, input: { ...nested("call-1/5", "subagent", "No prompt."), call: { type: "toolCall", id: "call-1/5", name: "subagent", arguments: {} } } },
+    ],
+  };
+  const conversations = [{ id: 1 }, ...[11, 12, 13, 14, 15, 16].map((taskId, i) => ({ id: 30 + i, owner: { conversationId: 1, taskId } }))];
+  const store = { readJournal: () => ({ scanConversations: async () => ({ items: conversations }) }) };
+  assert.deepEqual(await factoryChildren(store, "run-1", records, text => text), [
+    { id: "run-1:conversation:30", conversation_id: 30, parent_call_id: "call-1/0", status: "active", label: "Check the migration." },
+    { id: "run-1:conversation:35", conversation_id: 35, parent_call_id: "call-1/5", status: "active", label: null },
+  ]);
+  // The nested call's id is shown, so one a secret is in drops the child, as a model-issued call's does.
+  assert.deepEqual((await factoryChildren(store, "run-1", records, text => text.replace("call-1/0", "[redacted]"))).map((child) => child.conversation_id), [35]);
+});
+
 test("scoped summaries retain SDK observer semantics and snapshot lifecycle versions without changing ordinary summaries", async t => {
   const { store, clock } = await storeOn(t);
   await agentWithRevision(store);
