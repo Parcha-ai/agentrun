@@ -8,7 +8,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { dockerArch } from "../dist/docker.js";
+import { create, dockerArch } from "../dist/docker.js";
 import { ensureImage } from "../dist/docker/image.js";
 import { fakeDocker } from "./fake-docker.mjs";
 import { fakeImageDocker } from "./fake-image-docker.mjs";
@@ -88,6 +88,28 @@ test("ensureImage(): docker image inspect and pull, which read the credential he
 	assert.deepEqual(await ensureImage({ image }, { docker: fake.docker, env: hostEnv() }), { ok: true, value: image });
 	assert.ok(fake.envs().some((e) => e.args[0] === "pull"), "the image was pulled");
 	onlyWhatDockerReads(fake.envs(), "ensureImage");
+});
+
+test("create() without daemonPath: the docker version that picks the daemon is started with what docker reads alone, never a key", async () => {
+	const { program, envs } = fakeDocker();
+	// The daemon for the fake's amd64 may not be built here: then create() says so, after the same docker version.
+	const made = await create({ docker: program, env: hostEnv() }).then(
+		() => undefined,
+		(error) => error,
+	);
+	if (made !== undefined) assert.match(made.message, /^no daemon for Docker's amd64 at /, "create() failed for another reason than an unbuilt daemon");
+	assert.deepEqual(envs().map((e) => e.args[0]), ["version"]);
+	onlyWhatDockerReads(envs(), "create() without daemonPath");
+});
+
+test("ensureImage(): a host's content trust settings reach docker pull, so its images' signatures are still checked", async () => {
+	const fake = fakeImageDocker();
+	const image = "registry.example.com/team/box:3";
+	const trust = { DOCKER_CONTENT_TRUST: "1", DOCKER_CONTENT_TRUST_SERVER: "https://notary.example.com" };
+	assert.deepEqual(await ensureImage({ image }, { docker: fake.docker, env: { ...hostEnv(), ...trust } }), { ok: true, value: image });
+	const pulls = fake.envs().filter((e) => e.args[0] === "pull");
+	assert.equal(pulls.length, 1, "the image was pulled");
+	for (const name of Object.keys(trust)) assert.ok(pulls[0].names.includes(name), `${name} was cut from docker pull`);
 });
 
 test("ensureImage(): two calls at once for the same image on two Docker hosts each pull on their own host, never one sharing the other's pull", async () => {

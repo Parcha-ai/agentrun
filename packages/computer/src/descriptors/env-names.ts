@@ -2,8 +2,9 @@
 // the docker CLI's and Chrome's. Here, beside the descriptors, so a descriptor's hostEnv names them and loads no provider
 // code; this file imports nothing.
 //
-// No list names a variable serve's keyShaped() takes for a key's (a segment KEY, TOKEN, SECRET, PASS, CREDENTIAL(S) ...),
-// a pointer to a credential's file included: serve's child-env-names test holds that for every list here.
+// No list names a variable serve's keyShaped() takes for a key's (a segment KEY, TOKEN, SECRET, PASS, CREDENTIAL(S) ...):
+// serve's child-env-names test holds that for every list here. Docker's own credential places stay (DOCKER_CONFIG, a
+// cloud CLI's config file, GnuPG's home), since a pull reads its registry's credentials there.
 
 /** The variables every child reads: where programs and the home and temp directories are, the locale, and Windows' and
  *  macOS's own. */
@@ -17,6 +18,7 @@ export const BASE_ENV_NAMES: readonly string[] = Object.freeze([
 /**
  * The docker CLI's, beside the base (and what it starts: buildx, ssh, a credential helper, which inherit its environment):
  * - the daemon: DOCKER_HOST, DOCKER_CONTEXT, the TLS files, the API version; SSH_AUTH_SOCK for an ssh:// host;
+ * - content trust: DOCKER_CONTENT_TRUST and its server, so a host that verifies its images' signatures still does;
  *   XDG_RUNTIME_DIR for a rootless one; the proxy a TCP daemon or a registry is reached through, in both cases;
  * - its config: DOCKER_CONFIG, else HOME's .docker (config.json, contexts, cli-plugins, buildx), BUILDX_*;
  * - a pull's credentials: the credential helper config.json names (docker-credential-<name>, on PATH) finds them where
@@ -29,6 +31,7 @@ export const BASE_ENV_NAMES: readonly string[] = Object.freeze([
 export const DOCKER_ENV_NAMES: readonly string[] = Object.freeze([
 	...BASE_ENV_NAMES,
 	"DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_CERT_PATH", "DOCKER_TLS", "DOCKER_TLS_VERIFY", "DOCKER_API_VERSION",
+	"DOCKER_CONTENT_TRUST", "DOCKER_CONTENT_TRUST_SERVER",
 	"DOCKER_DEFAULT_PLATFORM", "DOCKER_BUILDKIT", "BUILDX_CONFIG", "BUILDX_BUILDER",
 	"SSH_AUTH_SOCK", "XDG_RUNTIME_DIR", "XDG_CONFIG_HOME",
 	"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "no_proxy", "all_proxy",

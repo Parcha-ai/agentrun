@@ -86,3 +86,25 @@ test("create(): the local browser's supervisor, and the Chrome it starts, hold w
 		await provider.release(created.value, "delete");
 	}
 });
+
+test("given no env, the sandbox check's Chrome and the local browser's supervisor and Chrome start with none of this process's environment", async () => {
+	const checking = recordingChrome();
+	const checked = await checkChrome(checking.program, { uid: process.getuid() });
+	assert.equal(checked.ok, true, JSON.stringify(checked));
+	assert.ok(checking.envs().length > 0, "checkChrome: no Chrome start was recorded");
+	for (const { names } of checking.envs()) assert.deepEqual(names, [], "no env: checkChrome's Chrome was started with this process's environment");
+
+	const chrome = recordingChrome();
+	const provider = new LocalBrowserProvider({ executablePath: chrome.program, root: join(scratch, "no-env"), uid: process.getuid() });
+	const created = await provider.create({ image: "chromium", lifetimeMs: 60_000, network: "open" }, { requestId: "chrome-env-no-env" });
+	assert.equal(created.ok, true, JSON.stringify(created));
+	try {
+		const supervisor = Number(readFileSync(join(provider.root, created.value.id, SUPERVISOR_FILE), "utf8").trim());
+		const held = readFileSync(`/proc/${supervisor}/environ`, "utf8").split("\0").filter(Boolean);
+		assert.deepEqual(held, [], "no env: the supervisor was started with this process's environment");
+		assert.ok(chrome.envs().length > 0, "create: no Chrome start was recorded");
+		for (const { names } of chrome.envs()) assert.deepEqual(names, [], "no env: the local browser's Chrome was started with this process's environment");
+	} finally {
+		await provider.release(created.value, "delete");
+	}
+});
