@@ -1,6 +1,6 @@
 // What a run's trace says of the agent that ran, and what the tracer says in the log. A trace names the agent as the
 // person named it (gen_ai.agent.name) with its id (gen_ai.agent.id), the harness on agentrun.harness; the tracer says
-// once, at the runner's start, that tracing is on and where spans go (no credential of the endpoint), and a collector
+// once, at the runner's start, that tracing is on and where spans go (the endpoint's origin alone), and a collector
 // that keeps failing is one line, then at most one a minute with the count of the failures it did not say.
 //
 // The OpenTelemetry GenAI semantic conventions v0.1.0, pinned:
@@ -26,7 +26,22 @@ const PASS = "dummy-otlp-pass-0000";
 const KEY = "dummy-otlp-key-0000";
 const USERINFO = [USER, PASS].join(":");
 const CREDENTIALED = { OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: `https://${USERINFO}@collector.invalid:4318/v1/traces?region=us-east-1&api_key=${KEY}`, OTEL_EXPORTER_OTLP_HEADERS: "x-api-key=dummy-header-key-0000" };
-const SHOWN = "https://collector.invalid:4318/v1/traces?region=us-east-1&api_key=[redacted]";
+// A line shows the endpoint's origin alone: where spans go, and nothing of its user, password, path, query or fragment.
+const SHOWN = "https://collector.invalid:4318";
+// Endpoints that carry a credential where a line's credential cut looks and where it does not: a user and password, a
+// token parameter, a key parameter beside a plain one, a key as a path segment, a parameter named like no credential,
+// a fragment. Each dummy is joined apart, so the source holds no URL with a credential in it.
+const dummy = (what) => ["dummy", what, "0000", "1111"].join("-");
+const [TOKEN, API_KEY, PATH_KEY, HMAC, FRAGMENT] = [dummy("token"), dummy("api-key"), dummy("path-key"), dummy("hmac"), dummy("fragment")];
+const query = (name, value) => [name, value].join("=");
+const ENDPOINTS = [
+  ["a user and password", `https://${USERINFO}@collector.invalid:4318/v1/traces`],
+  ["a token parameter", `${SHOWN}/v1/traces?${query("token", TOKEN)}`],
+  ["a key parameter beside a plain one", `${SHOWN}/v1/traces?${query("api_key", API_KEY)}&region=us-east-1`],
+  ["a key as a path segment", `${SHOWN}/v1/traces/${PATH_KEY}`],
+  ["a parameter named like no credential", `${SHOWN}/v1/traces?${query("hmac", HMAC)}`],
+  ["a fragment", `${SHOWN}/v1/traces#${FRAGMENT}`],
+];
 // A GitHub token's shape, a dummy: a name of that shape is cut whatever the runner holds.
 const TOKEN_SHAPED = `ghp_${"a1B2".repeat(9)}`;
 
@@ -89,15 +104,15 @@ test("a traced run of a saved agent names it: gen_ai.agent.name is the agent's n
     assert.equal(attributesOf(span)["gen_ai.agent.name"], "billing-helper", `${span.name} names the agent`);
     assert.equal(attributesOf(span)["gen_ai.agent.id"], agentId, `${span.name} carries its id`);
   }
-  // The runner's start said once that tracing is on, and where: the endpoint without its user, password or key.
+  // The runner's start said once that tracing is on, and where: the endpoint's origin alone.
   const on = said.filter((line) => line.startsWith("[otel] tracing is on"));
   assert.equal(on.length, 1, `one line at the start: ${JSON.stringify(said)}`);
-  assert.ok(on[0].includes(`127.0.0.1:${port}/v1/traces`), `it says where spans go: ${on[0]}`);
+  assert.equal(on[0], `[otel] tracing is on: spans export to http://127.0.0.1:${port}`, "it says where spans go, as the endpoint's origin");
   assert.ok(credentialFree(on[0]), `no credential of the endpoint: ${on[0]}`);
   assert.ok(said.every(credentialFree), `no line holds one: ${JSON.stringify(said)}`);
 });
 
-test("tracing on says so once, with the endpoint its spans go to cut of its user, password and key; off (no endpoint, or the SDK disabled) says nothing", async () => {
+test("tracing on says so once, with the origin of the endpoint its spans go to; off (no endpoint, or the SDK disabled) says nothing", async () => {
   const lines = [];
   const tracing = await genAiTracing(CREDENTIALED, { exporter: new InMemorySpanExporter(), log: (line) => lines.push(line) });
   assert.ok(tracing, "on");
@@ -132,6 +147,36 @@ test("a collector that keeps failing is one line with the endpoint and the time,
   await runOnce(26);
   assert.equal(failed().length, 2, `one more failure inside the next minute is not said: ${JSON.stringify(lines)}`);
   assert.ok(lines.every(credentialFree), `no line holds a credential: ${JSON.stringify(lines)}`);
+});
+
+test("the startup line and a failed export's line show the endpoint's origin alone: never its user, password, path, query or fragment, wherever a credential sits in it", async (t) => {
+  const failing = { export: (_spans, done) => done({ code: 1, error: new Error("503 Service Unavailable") }), shutdown: async () => {}, forceFlush: async () => {} };
+  const at = Date.UTC(2026, 10, 25, 7, 1, 31, 465);
+  const linesOf = async (endpoint) => {
+    const lines = [];
+    const tracing = await genAiTracing({ OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: endpoint }, { exporter: failing, log: (line) => lines.push(line), now: () => at });
+    const trace = tracing.open({ startedAt: at });
+    trace.known({ runId: "run-origin", harness: "pi" });
+    await trace.end();
+    return lines;
+  };
+  const hidden = [USER, PASS, TOKEN, API_KEY, PATH_KEY, HMAC, FRAGMENT, "/v1/traces", "region"];
+  // Each endpoint its own subtest, so each says its own failure.
+  for (const [what, endpoint] of ENDPOINTS) {
+    await t.test(what, async () => {
+      const lines = await linesOf(endpoint);
+      assert.deepEqual(lines, [
+        `[otel] tracing is on: spans export to ${SHOWN}`,
+        `[otel] a trace export to ${SHOWN} failed at 2026-11-25T07:01:31.465Z; its spans were dropped: 503 Service Unavailable`,
+      ], `${what}: the origin alone`);
+      assert.ok(lines.every((line) => !hidden.some((value) => line.includes(value))), `${what}: no part of the endpoint past its origin: ${JSON.stringify(lines)}`);
+    });
+  }
+  await t.test("a value that is not a URL is said as that alone, never as written", async () => {
+    const lines = await linesOf(`not a URL ${TOKEN}`);
+    assert.equal(lines[0], "[otel] tracing is on: spans export to an endpoint that is not a URL");
+    assert.ok(lines.every((line) => !line.includes(TOKEN)), JSON.stringify(lines));
+  });
 });
 
 test("a run's process's trace names the agent its runner knows, never one the process posts, and a name of a credential's shape is cut", async () => {

@@ -137,8 +137,8 @@ async function tracedRun(t, { requests = TWO_REQUESTS, extra, redact, facts, exp
   return { spans: exporter.getFinishedSpans?.() ?? [], row, lines: lines.filter((line) => !line.startsWith("[otel] tracing is on: ")) };
 }
 
-/** The first line a failed export says, as a pattern: the endpoint, the time, then `why` (a pattern's source). */
-const failedLine = (why) => new RegExp(`^\\[otel\\] a trace export to http://otlp\\.invalid:4318/v1/traces failed at \\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d\\.\\d{3}Z; its spans were dropped: ${why}$`);
+/** The first line a failed export says, as a pattern: the endpoint's origin, the time, then `why` (a pattern's source). */
+const failedLine = (why) => new RegExp(`^\\[otel\\] a trace export to http://otlp\\.invalid:4318 failed at \\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d\\.\\d{3}Z; its spans were dropped: ${why}$`);
 
 const KINDS = ["INTERNAL", "SERVER", "CLIENT", "PRODUCER", "CONSUMER"];
 /** A trace as a tree of names, kinds, statuses and attributes: children in start order, no ids or times. */
