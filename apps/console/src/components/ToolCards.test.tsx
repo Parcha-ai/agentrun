@@ -249,3 +249,16 @@ describe("an MCP server's tool cards", () => {
     expect([...card("upload_blob").querySelectorAll("[data-more] span")].find((s) => s.textContent?.includes(UNBROKEN))!.classList.contains("[overflow-wrap:anywhere]")).toBe(true);
   });
 });
+
+// With no MCP server saved, the tools step says where one is added, as a link there, not as plain text.
+describe("the MCP tools step with no server saved", () => {
+  it("links Settings → MCP servers", () => {
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(McpToolPicker, { servers: [], tools: [], harness: "pi", filter: "", onChange: () => {} })));
+    expect(host.textContent).toContain("No MCP server is saved: add one in Settings → MCP servers to grant its tools.");
+    const link = host.querySelector("a");
+    expect(link?.getAttribute("href")).toBe("#/settings/mcp");
+    expect(link?.textContent).toBe("Settings → MCP servers");
+  });
+});

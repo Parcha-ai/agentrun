@@ -84,6 +84,17 @@ export function keptReads(read: (year: number) => Promise<WrappedRead>): (year: 
   };
 }
 
+/** keptReads over `read`, with each failed read given to `log` once, as it fails: the ask that started it may have had its
+ *  answer (a 503) long before, and the asks in the minute it is kept get the same failure, not another read or log. */
+export function loggedReads(read: (year: number) => Promise<WrappedRead>, log: (year: number, error: Error) => void): (year: number) => Promise<WrappedRead> {
+  return keptReads((year) =>
+    read(year).catch((error: Error) => {
+      log(year, error);
+      throw error;
+    }),
+  );
+}
+
 /** `read`'s answer if it comes within `ms`, else undefined (the read goes on). */
 export async function within<T>(read: Promise<T>, ms: number): Promise<T | undefined> {
   let timer: NodeJS.Timeout | undefined;

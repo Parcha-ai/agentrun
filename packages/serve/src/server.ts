@@ -56,7 +56,7 @@ import { type AgentEntry, type InTurn, agentRevision, agentRevisions, agentView,
 import { WORKFLOW_ADAPTERS } from "./runner/workflow-adapters.js";
 import { DECISION_ADAPTER, decisionsOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV, fauxFetch } from "./decisions.js";
 import { FAUX_EXA_ENV, FAUX_FIRECRAWL_ENV, FAUX_WEB_ENV } from "./web-run.js";
-import { FAUX_MONID_ENV, MONID_KEY_ENV, pinMonid, PRICED_BY_USAGE } from "./monid.js";
+import { FAUX_MONID_ENV, MONID_KEY_ENV, monidReads, pinMonid, PRICED_BY_USAGE } from "./monid.js";
 import { FAUX_BROWSER_ENV, NODE_TOOLS, shellTools, toolingOf, toolOf, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, sentence, unsupported } from "./errors.js";
 import { deref, explain } from "./explain.js";
@@ -161,7 +161,7 @@ import { recordRunEnv, runFacingNames } from "./runner/runner-check.js";
 import { DRAIN_TIMEOUT } from "./runner/beside.js";
 import { runnerName } from "./runner/runner.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
-import { keptReads, within, WRAPPED_WAIT_MS, wrappedView } from "./wrapped.js";
+import { loggedReads, within, WRAPPED_WAIT_MS, wrappedView } from "./wrapped.js";
 import { type CostBasis, joinedBasis } from "./runner/metrics.js";
 import { unifiedUsage } from "./unified-usage.js";
 import { agentLoopOverStore } from "./store-reads/loop.js";
@@ -370,9 +370,7 @@ export type ServeOptions = {
    *  (the console, sign-in, setup, settings, MCP, triggers, hooks, ...) with a 404 before anything reads the request.
    *  It has no owner: accounts and open setup are off, there being no page to sign in to. */
   apiOnly?: boolean;
-  /** The MCP origins an API-only server's token may save a per_run MCP server at through the generic save
-   *  (AGENTRUN_API_ONLY_MCP_ORIGINS, api-only.ts apiOnlyMcpSave), normalized as the environment's are (a bad entry
-   *  stops the start). None, that save is refused as any route outside the profile's. Read only with apiOnly. */
+  /** AGENTRUN_API_ONLY_MCP_ORIGINS, read as the environment's is (the serve README's API-only section); only with apiOnly. */
   apiOnlyMcpOrigins?: readonly string[];
   /** The launch hook (AGENTRUN_LAUNCH_HOOK_URL and _SECRET, trigger-launch-hook.ts): each trigger firing that would start
    *  a run is handed to the host instead, which starts it through the API. None, firings start their runs here. */
@@ -1249,8 +1247,9 @@ export function whyNotOwnMachine(options: Pick<ServeOptions, "host" | "publicUrl
 
 /** Why `options` on `data` is not one owner's server on their own machine as far as who reaches it goes, each reason in
  *  words: whyNotOwnMachine's facts but its runner's. What may read this machine's own files for whoever asks (GET
- *  /v2/wrapped). */
-export function whyNotOwnersServer(options: Pick<ServeOptions, "host" | "publicUrl" | "apiOnly" | "token" | "tokens">, data: string): string[] {
+ *  /v2/wrapped). `keys`: the live API keys made in the console (api-keys.ts), each one more caller, as a second token is
+ *  (claude-login.ts whyNotOneOwner counts them too); 0 where none can open the server. */
+export function whyNotOwnersServer(options: Pick<ServeOptions, "host" | "publicUrl" | "apiOnly" | "token" | "tokens">, data: string, keys = 0): string[] {
   const host = options.host ?? DEFAULT_HOST;
   // Every token the server takes (acceptedTokens): AGENTRUN_TOKEN's as `default` beside the list's, or else DIR/.token's alone.
   const tokens = (options.token === undefined ? 0 : 1) + (options.tokens?.length ?? 0);
@@ -1259,6 +1258,7 @@ export function whyNotOwnersServer(options: Pick<ServeOptions, "host" | "publicU
     ...(options.publicUrl ? [`has a public address (${options.publicUrl})`] : []),
     ...(options.apiOnly ? ["has no owner (the API-only profile), so anyone with its token starts runs"] : []),
     ...(tokens > 1 ? [`takes ${tokens} API tokens (AGENTRUN_TOKEN and AGENTRUN_TOKENS together), so more than one person starts runs`] : []),
+    ...(keys > 0 ? [`has ${keys === 1 ? "an API key" : `${keys} API keys`} made for apps (Settings → AgentRun API keys), so more than one caller reaches it`] : []),
     ...(storeTarget(data).kind === "sqlite" ? [] : ["keeps its store in Postgres (AGENTRUN_STORE_URL), which servers elsewhere share"]),
   ];
 }
@@ -1519,6 +1519,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // A start that fails aborts it too: what began on it (the host-address read's retry) stops with that start.
   const stopping = new AbortController();
   stops.push(async () => stopping.abort());
+  /** monid's listing and inspects as this server's saves read them: a burst of saves reads each once (monid.ts monidReads). */
+  const monidShared = monidReads();
   /** The after-start seal by the events' schemas (composio-triggers.ts sealMarked), drained by stop. */
   let schemaSealed: Promise<unknown> = Promise.resolve();
   // The start's sweep of ended runs whose stored cost is unknown (cost-heal.ts), once this server listens; stop drains it.
@@ -2799,13 +2801,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // GET /v2/wrapped's reads of this machine's home (wrapped.ts), each year's on the import worker, so its parsing never holds
   // up a request; shared and kept as keptReads says. A read the close ended answers `stopped`, a failure like any other. A
   // failure is logged here, once per read: the ask that started it may have had its 503 long before.
-  const readWrapped = keptReads((year) =>
-    onWorker("wrapped", undefined, year)
-      .then((answer) => ("wrapped" in answer ? answer : Promise.reject(new Error("the server stopped before this machine's session history was read"))))
-      .catch((error: Error) => {
-        if (!closing) process.stderr.write(`agentrun-serve: the read of this machine's session history for ${year} failed: ${error.message}\n`);
-        throw error;
-      }),
+  const readWrapped = loggedReads(
+    (year) => onWorker("wrapped", undefined, year).then((answer) => ("wrapped" in answer ? answer : Promise.reject(new Error("the server stopped before this machine's session history was read")))),
+    (year, error) => void (closing || process.stderr.write(`agentrun-serve: the read of this machine's session history for ${year} failed: ${error.message}\n`)),
   );
   // The count of what setup would import: started once (at start, or by the page's first read), read as it stands. One
   // stopped (by close, or by setup) starts again on the next read; one that failed stays failed.
@@ -3527,7 +3525,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const send = await checkFetch("monid");
     const before = previous?.kind === "agentic" ? { grants: (previous.body as AgenticBody).tools ?? [], pin: previous.monidPin } : undefined;
     // The key as the server reads it (env: what it was started with, its handed secrets and its saved keys).
-    const pinned = await pinMonid(tools, { key: env[MONID_KEY_ENV]?.trim(), fetch: send ?? (async () => { throw new Error("no fake of monid's API under faux"); }), signal: stopping.signal, ...(before ? { previous: before } : {}) });
+    const pinned = await pinMonid(tools, { key: env[MONID_KEY_ENV]?.trim(), fetch: send ?? (async () => { throw new Error("no fake of monid's API under faux"); }), signal: stopping.signal, shared: monidShared, ...(before ? { previous: before } : {}) });
     if (pinned && "refused" in pinned) throw invalid(pinned.refused.map(({ tool, message }) => ({ field: tools.includes(tool) ? `definition.tools[${tools.indexOf(tool)}]` : "definition.tools", reason: "not_an_option", message })));
     return pinned && { monid: pinned.pin, warnings: pinned.warnings.map(({ tool, message }) => ({ field: `definition.tools[${tools.indexOf(tool)}]`, reason: PRICED_BY_USAGE, message })) };
   }
@@ -4357,7 +4355,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     return value === "true";
   }
 
-  async function runsPage(url: URL, filter: { agent?: string; revision?: string }, origin: string) {
+  /** GET /runs' `source`, once: a source's name (claude-code, codex, ...) keeps the runs imported from it, `live` the runs not imported. */
+  function sourceParam(url: URL): string | undefined {
+    const given = url.searchParams.getAll("source");
+    if (given.length === 0) return undefined;
+    if (given.length > 1 || !/^[a-z][a-z0-9-]{0,31}$/.test(given[0]!)) throw new ApiError("bad_request", "source is one source's name (claude-code, codex, ...), or live; once");
+    return given[0];
+  }
+
+  async function runsPage(url: URL, filter: { agent?: string; revision?: string }, origin: string, source?: string) {
     const limit = limitOf(url.searchParams.get("limit"));
     const offset = cursorOf(url.searchParams.get("cursor"));
     const status = url.searchParams.get("status");
@@ -4371,7 +4377,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // ordered and cut to the page in one query, so a list costs the same at ten runs and at thousands, however long their
     // journals. An audit's shadow run is no row of the list (learn/audit.ts): it is read by id, and its cost is its served
     // run's. A run's archive is its own or its agent's.
-    const where = { ...(filter.agent !== undefined ? { agentId: filter.agent } : {}), ...(filter.revision !== undefined ? { revisionId: filter.revision } : {}), ...(labels ? { labels } : {}), archived };
+    const where = { ...(filter.agent !== undefined ? { agentId: filter.agent } : {}), ...(filter.revision !== undefined ? { revisionId: filter.revision } : {}), ...(labels ? { labels } : {}), ...(source !== undefined ? { source } : {}), archived };
     // A listing is built by the server's lister (run-listing.ts) once per change, so a list finds it current. One that is
     // behind (a write landed since, or the lister has not reached it since the store was upgraded) is built here, written
     // back, and shown as built: for a status filter, first every run still going whose listing is behind (its row's
@@ -5434,7 +5440,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "listAllRuns": {
         const agent = url.searchParams.get("agent") ?? undefined;
         const revision = url.searchParams.get("revision") ?? undefined;
-        return send(res, 200, await runsPage(url, { ...(agent ? { agent } : {}), ...(revision ? { revision } : {}) }, linkOrigin(req)));
+        return send(res, 200, await runsPage(url, { ...(agent ? { agent } : {}), ...(revision ? { revision } : {}) }, linkOrigin(req), sourceParam(url)));
       }
       case "getRun": {
         const run = await runRead(id, linkOrigin(req));
@@ -5839,10 +5845,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, await capacityOverStore(store.runners, capacityWindowOf(url)));
       case "getWrapped": {
         // The session files of the machine this server runs on, read for whoever holds a token: only one owner's server on
-        // their own machine answers (whyNotOwnersServer: loopback, no public URL, an owner, one API token, its own SQLite
-        // store). A name an operator allowed (--allow-host) passes the server's Host check for its other routes, but a page
+        // their own machine answers (whyNotOwnersServer: loopback, no public URL, an owner, one API token and no live API key
+        // made in the console, its own SQLite store). Keys are counted at each ask: they are made and revoked while it runs.
+        // Dormant keys (API-only, --harness-sign-in) open nothing, so they are not callers here. A name an operator allowed (--allow-host) passes the server's Host check for its other routes, but a page
         // that rebound one to this address must not read the machine's files: here the Host is a loopback name or address.
-        const notOwn = whyNotOwnersServer(options, data);
+        const notOwn = whyNotOwnersServer(options, data, options.apiOnly === true || options.harnessSignIn === true ? 0 : apiKeys.count);
         if (!isLoopbackName(hostName(req.headers.host))) notOwn.push("was reached at a name that is not this machine's own");
         if (notOwn.length) throw new ApiError("forbidden", `wrapped reads this machine's own session files, so only one owner's server on their own machine, reached by a loopback name, answers it. This one ${notOwn.join("; ")}.`);
         const given = url.searchParams.get("year");

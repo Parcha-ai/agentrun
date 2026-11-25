@@ -8,8 +8,9 @@ import { basename, join } from "node:path";
 import { test } from "node:test";
 import { request } from "node:http";
 import { execFileSync } from "node:child_process";
-import { keptReads, within, wrappedView } from "../dist/wrapped.js";
-import { agent, follow, serve } from "./support.mjs";
+import { keptReads, loggedReads, within, wrappedView } from "../dist/wrapped.js";
+import { randomBytes } from "node:crypto";
+import { agent, call, cookieOf, follow, serve, withEnv } from "./support.mjs";
 
 const WORDS = "Fixture prompt, never reported.";
 const stamp = (iso) => ({ timestamp: iso, sessionId: "00000000-0000-4000-8000-000000000001", cwd: "/work/wrapped-fixture", isSidechain: false });
@@ -146,6 +147,29 @@ test("a server that takes two API tokens does not read the machine's files for e
   assert.match(refused.body.error.message, /takes 2 API tokens/);
 });
 
+// A key made in the console for an app is one more caller, as a second token is (claude-login.ts whyNotOneOwner counts
+// them): while one is live, neither its holder nor the token reads the machine's year, and once it is revoked the owner does.
+test("a server with an API key made in the console does not read the machine's files for anyone: 403 until it is revoked", { timeout: 120_000 }, async (t) => {
+  const home = await homeWith(t);
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
+  const server = await serve(t, { accounts: true, openSetup: true, runner: false, sessionsHome: { home } });
+  const origin = `http://127.0.0.1:${server.port}`;
+  const set = await call(server.port, { method: "POST", path: "/v2/setup", headers: { "content-type": "application/json", origin }, body: { password: "not-a-secret" } });
+  assert.equal(set.status, 201, set.text);
+  const cookie = cookieOf(set);
+  const page = async (method, path, body) => (await call(server.port, { method, path: `/v2${path}`, headers: { cookie, origin, ...(method === "GET" ? {} : { "content-type": "application/json" }) }, body }));
+  const made = await page("POST", "/settings/api-keys", { name: "an app" });
+  assert.equal(made.status, 201, made.text);
+  const byKey = await server.api("GET", "/wrapped?year=2026", undefined, { authorization: `Bearer ${made.json.api_key}` });
+  assert.deepEqual([byKey.status, byKey.body.error?.code], [403, "forbidden"], JSON.stringify(byKey.body));
+  assert.match(byKey.body.error.message, /has an API key made for apps/);
+  assert.equal((await server.api("GET", "/wrapped?year=2026")).status, 403, "the token's own ask too: the key's holder is another caller");
+  assert.equal((await page("DELETE", `/settings/api-keys/${made.json.id}`)).status, 204);
+  const after = await server.api("GET", "/wrapped?year=2026");
+  assert.equal(after.status, 200, JSON.stringify(after.body));
+  assert.equal(after.body.requests, 2);
+});
+
 test("a test's server never reads the runner's HOME: support hands it an empty home, so a sweep of every GET route stays short", { timeout: 120_000 }, async (t) => {
   const home = await homeWith(t);
   const was = process.env.HOME;
@@ -259,6 +283,24 @@ test("keptReads keeps a read that failed for a minute, as it keeps one that read
   assert.equal(calls.length, 2);
   calls[1].resolve(READ);
   assert.equal(await again, READ);
+});
+
+test("loggedReads: an ask answered 503 whose read then fails logs it once, and the asks after it get that failure with no second read", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: new Date(2026, 5, 1).getTime() });
+  const calls = [];
+  const logged = [];
+  const kept = loggedReads((year) => new Promise((resolve, reject) => calls.push({ year, resolve, reject })), (year, error) => logged.push([year, error.message]));
+  const first = within(kept(2026), 15_000);
+  t.mock.timers.tick(15_000);
+  assert.equal(await first, undefined, "the first ask's answer: still being read (the route's 503)");
+  calls[0].reject(new Error("the worker ended (1) with no answer"));
+  await settled();
+  assert.deepEqual(logged, [[2026, "the worker ended (1) with no answer"]], "logged once, though no ask was waiting");
+  t.mock.timers.tick(30_000);
+  await assert.rejects(within(kept(2026), 15_000), /the worker ended/, "the next ask gets the failure (the route's 500)");
+  await assert.rejects(within(kept(2026), 15_000), /the worker ended/);
+  assert.equal(calls.length, 1, "no second read within the minute");
+  assert.equal(logged.length, 1, "and no second log line");
 });
 
 // A read of this year that started before New Year holds the year only up to then: once it is over, that read is still
