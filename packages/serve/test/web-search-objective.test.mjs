@@ -1,7 +1,8 @@
 // web_search asks an objective (a goal in a sentence) and a few short keyword queries; query is deprecated: a model's
 // call must give the objective (pi checks it against the schema), and a call node's query alone is still searched, as the
 // objective and its one query. Parallel is told the run's model as client_model, a bare id, only
-// where the run names one, and no session id (no tool call carries the run's). web_fetch takes an objective, passed to
+// where the run names one, and one random session_id for each run's Web, the same on its search and its extract, never
+// made from the run's id. web_fetch takes an objective, passed to
 // the run's Web. Parallel is the tests' fake (fixtures/faux-parallel-bodies.mjs, which keeps each request's body): no
 // socket leaves this machine and no real key is used.
 import assert from "node:assert/strict";
@@ -16,6 +17,7 @@ import { CANARY } from "./fixtures/faux-parallel.mjs";
 import { FAUX, toolLedger } from "./support.mjs";
 
 const BODIES = new URL("./fixtures/faux-parallel-bodies.mjs", import.meta.url).pathname;
+const FAUX_WEB = new URL("./fixtures/faux-web.mjs", import.meta.url).pathname;
 const OBJECTIVE = "Where Widgets, Inc. is registered and under which file number, from a state registry";
 /** A run whose web_search resolves to Parallel, on the fake, its model `model` where one is named. */
 const envOf = (model) => ({ [TOOL_PLANE_ENV]: JSON.stringify({ web_search: "parallel", web_fetch: "parallel", ...(model ? { model } : {}) }), PARALLEL_API_KEY: CANARY, AGENTRUN_SERVE_FAUX: FAUX, AGENTRUN_SERVE_FAUX_PARALLEL: BODIES });
@@ -63,14 +65,32 @@ test("an agent's search sends Parallel the objective and the queries; a call nod
   searches();
 });
 
-test("Parallel is told the run's model as client_model, its bare id, only where the run names one; never a session_id", async () => {
+test("Parallel is told the run's model as client_model, its bare id, only where the run names one", async () => {
   searches();
   await asked(envOf("anthropic/claude-opus-4-7"), { objective: OBJECTIVE });
   await asked(envOf("openrouter/anthropic/Claude-Sonnet-4-6"), { objective: OBJECTIVE });
   await asked(envOf(), { objective: OBJECTIVE });
   const sent = searches();
   assert.deepEqual(sent.map((body) => body.client_model), ["claude-opus-4-7", "claude-sonnet-4-6", undefined], "the model's last segment, lowercase; none where the run names no model");
-  assert.ok(sent.every((body) => !("session_id" in body)), "no session id is made up");
+});
+
+test("one run's Web tells Parallel one random session_id, 32 hex characters, on its search and its extract alike; another run's Web tells another", async () => {
+  globalThis.fauxParallelBodies = [];
+  const runOf = () => ({ ...envOf("anthropic/claude-opus-4-7"), AGENTRUN_SERVE_FAUX_WEB: FAUX_WEB });
+  const run = runOf();
+  const other = runOf();
+  await asked(run, { objective: OBJECTIVE });
+  const { tools: [fetchTool] } = await TOOLS.web_fetch.bind({ env: run, install() {} });
+  const page = await bookedIn({ call: "call-2", paid: await toolLedger() }, () => fetchTool.execute({ url: "http://public.example/" }, { callId: "call-2" }, {}));
+  await asked(other, { objective: OBJECTIVE });
+  const sent = (globalThis.fauxParallelBodies ?? []).map(({ path, body }) => [path, body.session_id]);
+  globalThis.fauxParallelBodies = [];
+  assert.equal(page.details.via, "parallel", "the run's fetch is Parallel's read");
+  assert.deepEqual(sent.map(([path]) => path), ["/v1/search", "/v1/extract", "/v1/search"], "the run's search and extract, then the other run's search");
+  const [search, extract, another] = sent.map(([, session]) => session);
+  assert.match(String(search), /^[0-9a-f]{32}$/, "a run's session_id is 32 hex characters");
+  assert.equal(extract, search, "the run's extract carries its search's session_id");
+  assert.notEqual(another, search, "another run's Web carries a different session_id");
 });
 
 test("the timeline names a search by its first query, else its objective, else its deprecated query; a fetch still by its url", () => {
