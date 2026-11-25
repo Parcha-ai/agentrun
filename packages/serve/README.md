@@ -3428,9 +3428,29 @@ after asks, saying "this run has sent 5 emails" (the count is the run's own reco
 stops two auto-responders answering each other. On a run an email started whose `email_read` is thread-scoped (no
 `scope: "mailbox"`), a send to anyone outside the thread's people
 (the account's own address and every From, To and Cc of the thread's messages) asks too, naming them ("eve@example.com
-is outside this email's thread"). The pending approval carries the reason as `asks_because`, which the console's card
-says above the call's arguments ("Asks because ..."). With accounts off, where no one can
-approve, such a send is refused in those words.
+is outside this email's thread"). On every run a trigger started (schedule, webhook, Slack, GitHub, Composio, feed or
+email), a send to an address this account has never sent to asks too, naming it ("someone@example.com: this account
+has never sent to them"). Never sent to means no message in the account's own Sent folder (Gmail's Sent Mail), from
+the account's own address and not a draft, has the address in its To, Cc or Bcc: the exact address, blind to the case
+of ASCII letters only (a Unicode look-alike such as the Kelvin sign for K is another address), as far back as Sent
+goes. Some servers (Exchange and Outlook among them) keep no Bcc header on a Sent copy over IMAP, so there an address
+only ever Bcc'd asks. Mail received from someone doesn't count, so a scheduled run replying to a first-time sender asks
+once; nor does a draft or someone else's message in Sent, and `email_file` refuses Sent and Drafts as targets, so a run
+can't file its own evidence there. Once it has made a folder, `email_file` files only into a mailbox the server lists
+by exactly the name given, so a name the server takes as another's (`Sent/` read as Sent) files nothing. Mail sent from a "send as" alias is filed from that alias, so a send to its
+recipients asks. The new-address check never asks about the account's own address or an address the run already sent
+to (unasked or approved). On a thread-scoped email run it doesn't ask about the thread's starter (the From of the
+message that started the run) either, but only when the receiving mail server vouched for that From: the message's
+topmost Authentication-Results header carries the account provider's authserv-id and says `dmarc=pass` with a
+`header.from` equal to the From's domain (case-blind, ASCII letters only). A header lower down may be the sender's own
+and is never read; `dkim=pass` or `spf=pass` alone doesn't count. The provider's authserv-id is known for Gmail
+(`mx.google.com`, by the Gmail preset or an IMAP host under gmail.com) and for no other provider yet, so there the
+starter asks like any new address. A starter with no DMARC pass asks too, since their From may be forged. Anyone else
+that message names, such as a stranger it Cc'd, asks on a reply-all. The 5-send cap still counts
+every send. A Sent folder that can't be read (or none, or no account saved when the send is checked) asks, saying so.
+`scope: "mailbox"` turns the thread ask off and exempts no starter. A playground or API run has neither ask, only the
+cap. The pending approval carries the reason as `asks_because`, which the console's card says above the call's
+arguments ("Asks because ..."). With accounts off, where no one can approve, such a send is refused in those words.
 
 An agent whose definition says `checkout: repository` starts each run in a checkout of the repository the run names: its
 start's `repo`, else the first `https://github.com/<owner>/<repo>` in its first message (a github trigger's run, its

@@ -40,3 +40,29 @@ test("toolCalls: the ids run to a good end, and every id with a result of any ki
   const calls = toolCalls(entries, "email_send");
   assert.deepEqual([[...calls.ran].sort(), [...calls.ended].sort(), calls.unnamed], [["c1", "p1"], ["c1", "c2", "p1", "p2"], 0]);
 });
+
+test("toolCalls: each call's arguments by its id, a CLI's from its start and pi's from its model's tool call, of this tool alone (what email_send's ask reads of the run's earlier sends)", () => {
+  const piAsked = (calls) => ({ kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "text", text: "Sending." }, ...calls.map(([id, name, args]) => ({ type: "toolCall", id, name, arguments: args }))] }] });
+  const entries = [
+    { kind: KINDS.callStart, data: { callId: "c1", tool: "email_send", input: { to: ["ana@example.com"] }, replaySafe: false } }, end("c1"),
+    piAsked([["p1", "email_send", { to: ["bo@example.com"], cc: ["cy@example.com"] }], ["p9", "email_read", { message_id: "<m@example.com>" }]]),
+    piResult("p1"),
+  ];
+  const calls = toolCalls(entries, "email_send");
+  assert.deepEqual(Object.fromEntries(calls.args), { c1: { to: ["ana@example.com"] }, p1: { to: ["bo@example.com"], cc: ["cy@example.com"] } });
+  assert.deepEqual([...calls.ran].sort(), ["c1", "p1"]);
+});
+
+test("toolCalls: a call's arguments are those it ran with: a later tool call reusing its id changes nothing, and a denied call's id reused by one that runs reads the one that ran", () => {
+  const piAsked = (id, args) => ({ kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "toolCall", id, name: "email_send", arguments: args }] }] });
+  const entries = [
+    piAsked("p1", { to: ["ana@example.com"] }), piResult("p1"), // ran with ana
+    piAsked("p1", { to: ["evil@example.com"] }), // the same id again: never ran with evil
+    piAsked("p2", { to: ["mallory@example.com"] }), piResult("p2", "email_send", true), // denied
+    piAsked("p2", { to: ["bo@example.com"] }), piResult("p2"), // the id again, and this one ran
+    start("c1"), { kind: KINDS.callStart, data: { callId: "c1", tool: "email_send", input: { to: ["evil@example.com"] }, replaySafe: false } }, end("c1"),
+    { kind: KINDS.callStart, data: { callId: "c1", tool: "email_send", input: { to: ["evil2@example.com"] }, replaySafe: false } },
+  ];
+  const calls = toolCalls(entries, "email_send");
+  assert.deepEqual(Object.fromEntries(calls.args), { p1: { to: ["ana@example.com"] }, p2: { to: ["bo@example.com"] }, c1: { to: ["evil@example.com"] } });
+});
