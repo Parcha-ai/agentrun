@@ -87,6 +87,31 @@ test("a held value split across two arguments of a call: tool_input is withheld,
   assert.deepEqual(shows(JSON.stringify(named.tool_input ?? {})), []);
 });
 
+test("a calls read that shows arguments as the call came (calls.input): a held value split across two of them withholds tool_input whole, its preview \"[redacted]\"", () => {
+  const read = (args) =>
+    timelineOf([user("Run it."), assistant([call("c1", "write", args)]), result("c1", "write", "ok")], {
+      redact: (part) => redacted(part, SECRETS),
+      holds: (whole) => withheldWhole(whole, SECRETS),
+      calls: {
+        result: CALL_RESULT_CHARS,
+        redact: (part) => redactedCall(part, SECRETS, CALL_RESULT_CHARS, scrubUrls),
+        input: (part, shown) => redactedCall(part, SECRETS, shown),
+      },
+    });
+  // Short strings, and a long write whose head of the value sits past the 2,000 characters a row shows of a string.
+  const long = "x".repeat(2500);
+  for (const args of [{ path: "a.md", content: `see ${HEAD}`, note: REST }, { path: "a.md", content: `${long} ${HEAD}`, note: `${REST} ${long}` }, { path: "a.md", [HEAD]: REST }]) {
+    const rows = read(args);
+    const use = rowOf(rows, "tool_use");
+    assert.equal(use.tool_input, undefined, JSON.stringify(args).slice(0, 80));
+    assert.equal(use.tool_input_preview, "[redacted]");
+    assert.deepEqual(shows(JSON.stringify(rows)), [], JSON.stringify(args).slice(0, 80));
+  }
+  // Control: the value whole in one argument is cut in place, and the long write reads whole past 2,000 characters.
+  const whole = rowOf(read({ path: "a.md", content: `${long} ${KEY} end` }), "tool_use");
+  assert.deepEqual(whole.tool_input, { path: "a.md", content: `${long} [redacted] end` });
+});
+
 test("a read with no calls (the run's view, its Timeline): a held value split across two arguments of a call shows no half in any row, and its preview is \"[redacted]\"", () => {
   const read = (args) =>
     timelineOf([user("Run it."), assistant([call("c1", "bash", args)]), result("c1", "bash", "ok")], {
