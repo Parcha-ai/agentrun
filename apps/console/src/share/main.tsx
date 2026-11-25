@@ -6,7 +6,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { followTheme } from "@/lib/theme";
 import "@/styles.css";
-import { exportSource, runIdOf, shareIdOf, storedSource } from "./bundle";
+import { exportSource, restoreOf, runIdOf, shareIdOf, storedSource } from "./bundle";
 import { HostedSharePage, SharePage } from "./SharePage";
 
 followTheme();
@@ -18,7 +18,7 @@ createRoot(document.getElementById("root")!).render(
     {shareId
       ? <HostedSharePage source={storedSource({ shareId })} />
       : runId
-      ? <SharePage source={exportSource({ runId })} runId={runId} />
+      ? <SharePage source={exportSource({ runId })} runId={runId} restore={restoreOf(window.location.search)} />
       : <main className="p-8 font-mono text-body text-muted-foreground" role="alert">This address names no run. A share preview opens at /share/&lt;run id&gt;.</main>}
   </StrictMode>,
 );

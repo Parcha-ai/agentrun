@@ -142,7 +142,7 @@ describe("AgentEditor, the Model picker", () => {
     return label!.parentElement!.parentElement!;
   };
   const alerts = (host: HTMLElement) => [...modelBox(host).querySelectorAll(':scope > [role="alert"]')].map((e) => e.textContent);
-  const harness = async (host: HTMLElement, id: string) => { await act(async () => { host.querySelector<HTMLInputElement>(`input[type=radio][value="${id}"]`)!.click(); }); };
+  const harness = (host: HTMLElement, id: string) => pick(picker(host, "Runtime")!, id);
 
   it("a refusal said on pi is not shown once the harness is codex, the model the same; back on pi it is", async () => {
     const host = document.body.appendChild(document.createElement("div"));
@@ -189,7 +189,7 @@ describe("AgentEditor, the Model picker", () => {
   it("switching the harness on a new agent changes the list", async () => {
     const page = await open(null);
     expect((await optionsOf(page.model())).map((o) => o.value)).toContain("anthropic/claude-opus-5-5");
-    await act(async () => { page.host.querySelector<HTMLInputElement>('input[type=radio][value="codex"]')!.click(); });
+    await harness(page.host, "codex");
     const after = (await optionsOf(page.model())).map((o) => o.value);
     expect(after).not.toContain("anthropic/claude-opus-5-5");
     expect(after).toContain("openai/gpt-6.1-terra");

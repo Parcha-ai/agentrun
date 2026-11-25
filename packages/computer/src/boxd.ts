@@ -118,17 +118,32 @@ const STATES: Readonly<Record<string, Machine["state"]>> = {
 	...{ hibernated: "stopped", stopped: "stopped", failed: "gone", destroyed: "gone" },
 };
 
+/** Mozilla's APT signing key (fingerprint 35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3), where the recipe keeps it, and its sha256. */
+const MOZILLA_KEY = "/etc/apt/keyrings/packages.mozilla.org.asc";
+const MOZILLA_KEY_SHA256 = "3ecc63922b7795eb23fdc449ff9396f9114cb3cf186d6f5b53ad4cc3ebfbb11f";
+
 /**
- * What a desktop needs that boxd's own image lacks: a stock app, Xfce's text editor (mousepad, from Ubuntu's universe),
- * its desktop file checked, run as root on a build machine of boxd's own image. Xvfb is the image's already. The
- * snapshot's name carries this line's hash, so a new line is a new snapshot.
+ * What a desktop needs that boxd's own image lacks (Xvfb, xdotool and Thunar are the image's already): Xfce's text
+ * editor and terminal (mousepad and xfce4-terminal, from Ubuntu's universe) and Firefox ESR, from Mozilla's APT
+ * repository, since Ubuntu 24.04's firefox is a snap and a microVM runs no snapd. Mozilla's key is held to its sha256
+ * before apt reads anything it signs. Each program and desktop file is checked. Run as root on a build machine of boxd's
+ * own image, with no single quote in it (it goes in one pair). The snapshot's name carries this recipe's hash, so a
+ * new recipe is a new snapshot.
  */
 const DESKTOP_RECIPE = [
 	"set -e",
 	"export DEBIAN_FRONTEND=noninteractive",
 	"apt-get update -qq",
-	"apt-get install -y -qq --no-install-recommends mousepad >/dev/null",
-	'test -f /usr/share/applications/org.xfce.mousepad.desktop || { echo "mousepad brought no org.xfce.mousepad.desktop" >&2; exit 1; }',
+	"apt-get install -y -qq --no-install-recommends ca-certificates curl >/dev/null",
+	"install -d -m 0755 /etc/apt/keyrings",
+	`curl -fsSL https://packages.mozilla.org/apt/repo-signing-key.gpg -o ${MOZILLA_KEY}`,
+	`echo "${MOZILLA_KEY_SHA256}  ${MOZILLA_KEY}" | sha256sum -c --quiet - || { echo "the APT signing key from packages.mozilla.org is not the one this recipe pins" >&2; exit 1; }`,
+	`echo "deb [signed-by=${MOZILLA_KEY}] https://packages.mozilla.org/apt mozilla main" > /etc/apt/sources.list.d/mozilla.list`,
+	'printf "Package: *\\nPin: origin packages.mozilla.org\\nPin-Priority: 1000\\n" > /etc/apt/preferences.d/mozilla',
+	"apt-get update -qq",
+	"apt-get install -y -qq --no-install-recommends mousepad xfce4-terminal firefox-esr >/dev/null",
+	'for x in mousepad xfce4-terminal firefox-esr; do command -v "$x" >/dev/null || { echo "the desktop has no $x" >&2; exit 1; }; done',
+	'for app in org.xfce.mousepad xfce4-terminal firefox-esr; do test -f "/usr/share/applications/$app.desktop" || { echo "the desktop has no desktop file $app.desktop" >&2; exit 1; }; done',
 	"rm -rf /var/lib/apt/lists/*",
 ].join("\n");
 

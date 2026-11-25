@@ -196,7 +196,7 @@ describe("the schedules list", () => {
     expect(s.calls.filter((c) => c.path === "/v2/agents/mailer").length).toBe(1);
     expect(s.calls.filter((c) => c.path === "/v2/agents/triage").length).toBe(1);
   });
-  // The page is framed as every list page is (Connected agents, Runs): a header bar with the place's icon and its name in
+  // The page is framed as every list page is (Agents, Runs): a header bar with the place's icon and its name in
   // caps, and the actions in that bar, the one main action last.
   it("has the list pages' header bar: the navigation's icon, the name in caps, the actions at its right", async () => {
     const t = await open(server({ triggers: [NIGHTLY] }).v2, {});

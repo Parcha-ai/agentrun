@@ -28,7 +28,7 @@ test("Parallel with no settings: the search and extract the web tools have alway
   await w.search("widgets delaware", { n: 3 });
   await w.fetch(PUBLIC);
   assert.deepEqual(sent, [
-    { path: "/v1/search", body: { objective: "widgets delaware", search_queries: ["widgets delaware"], mode: "fast", advanced_settings: { max_results: 3, excerpt_settings: { max_chars_per_result: 3_000 } } } },
+    { path: "/v1/search", body: { objective: "widgets delaware", search_queries: ["widgets delaware"], mode: "fast", advanced_settings: { max_results: 3 } } },
     { path: "/v1/extract", body: { urls: [PUBLIC], advanced_settings: { full_content: { max_chars_per_result: 1_000_001 } } } },
   ]);
   assert.deepEqual(web.PARALLEL_DEFAULTS, { mode: "fast" });
@@ -39,7 +39,7 @@ test("Parallel's settings shape its requests and fee: mode, total excerpt charac
   await w.search("widgets delaware", { n: 3 });
   await w.fetch(PUBLIC);
   assert.deepEqual(sent, [
-    { path: "/v1/search", body: { objective: "widgets delaware", search_queries: ["widgets delaware"], mode: "advanced", max_chars_total: 20_000, advanced_settings: { max_results: 3, excerpt_settings: { max_chars_per_result: 3_000 }, source_policy: { include_domains: [".gov"], exclude_domains: ["spam.gov"], after_date: "2026-01-01" }, fetch_policy: { max_age_seconds: 3_600 } } } },
+    { path: "/v1/search", body: { objective: "widgets delaware", search_queries: ["widgets delaware"], mode: "advanced", max_chars_total: 20_000, advanced_settings: { max_results: 3, source_policy: { include_domains: [".gov"], exclude_domains: ["spam.gov"], after_date: "2026-01-01" }, fetch_policy: { max_age_seconds: 3_600 } } } },
     { path: "/v1/extract", body: { urls: [PUBLIC], advanced_settings: { full_content: { max_chars_per_result: 1_000_001 }, fetch_policy: { max_age_seconds: 3_600 } } } },
   ]);
   assert.deepEqual(fees.map((fee) => fee.usd), [0.005, 0.001], "an advanced search $0.005, an extract $0.001");

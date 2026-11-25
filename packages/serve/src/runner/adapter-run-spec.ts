@@ -78,9 +78,9 @@ import { hashedMcpOf, piShaped } from "../store-reads/journal.js";
 import { replayCallsOver } from "./promotion.js";
 import { type LearnedFirst, learnedFirstWhereHeld } from "./learned-first.js";
 import type { ReplayCalls } from "../learn/replay-calls.js";
-import { pathMetrics, servedOf } from "./workflow-first.js";
+import { servedOf } from "./workflow-first.js";
 import { AUDIT_PARKED, withAudit } from "./audit.js";
-import { runPathOverStore } from "../store-reads/learning.js";
+import { runPathMetricsOverStore } from "../store-reads/learning.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
 import type { ModelRoute, RouteCost } from "./model-route.js";
 import { archilClaim, archilWhereHeld, type ArchilClaimOptions, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
@@ -888,7 +888,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // them (held.ts learnedFirst), over the workflows it reads at the claim's seed itself. A held run its model kept from
   // running takes none of them: it settles no audit and starts no replay run, starts on no workflow, and its tool runs
   // none (so no learned tier is routed, below).
-  const learned: LearnedFirst = audits ? await learnedFirstWhereHeld(deps, { agentId: runRow.agentId, runId: claim.runId, revisionId: runRow.revisionId, kind: revision.kind, outputSchema: (revision.body as { outputSchema?: unknown }).outputSchema, launch, context, log, folder: learningFolder, shown, spendOff: audits.spendOff, admitAuxiliary }, seedLaid?.workflows ?? []) : { choice: {}, workflows: [] };
+  const learned: LearnedFirst = audits ? await learnedFirstWhereHeld(deps, { agentId: runRow.agentId, runId: claim.runId, revisionId: runRow.revisionId, kind: revision.kind, outputSchema: (revision.body as { outputSchema?: unknown }).outputSchema, launch, context, log, folder: learningFolder, shown, spendOff: audits.spendOff, admitAuxiliary }, seedLaid?.workflows ?? []) : { choice: { reason: "held" }, workflows: [] };
   const firstChoice = learned.choice;
   // A replay run's call nodes: reads live through a cache seeded from the graded run's recorded calls, writes only ever
   // answered from that recording (runner/promotion.ts replayCallsOver, learn/replay-calls.ts).
@@ -1090,7 +1090,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     ...(computer.replaced ? { computerNote: computerReplacedNote(computer.replaced) } : {}),
     // A desktop or a phone that holds none of the run's files: the model is told once in the run where they are, or, where
     // the gate would refuse a save (RunGate.writeBar), that a screenshot can't be saved to them.
-    ...(tools.apart ? { computerFilesNote: computerFilesNote({ ...tools.apart, writes: gate.writes() }) } : {}),
+    ...(tools.apart ? { computerFilesNote: computerFilesNote({ ...tools.apart, writes: gate.writes(), outlives: computer.outlives === true }) } : {}),
     workRoot: root,
     // The end's cost: its booking's, by the one rule every reader of an ended run's cost takes (metrics.ts runCostOf):
     // every model request its session's proxy booked (pi's own answers and its side calls: a learned workflow's nodes,
@@ -1105,9 +1105,10 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     endPatch: async () => {
       // The root's entries and every conversation a task of the run owns (a subagent's): a child's requests are the run's.
       const entries = await agentEntriesOf(deps.journal(claim), context);
-      // The path it took and the learned revision it ran on, for a run that learns (workflow-first.ts pathMetrics), by the
-      // one classifier the cost per run reads back (runPathOverStore).
-      const path = pathMetrics(launch, launch.learning ? await runPathOverStore(deps.store, claim.runId, launch.learning, run.redact) : undefined, entries as never);
+      // The path it took, the learned revision it ran on, its learned workflow calls and why its first choice served or
+      // did not, for a run that learns (workflow-first.ts pathMetrics), by the one writer every harness's end calls
+      // (runPathMetricsOverStore).
+      const path = await runPathMetricsOverStore(deps.store, claim.runId, launch, { ...(run.redact ? { redact: run.redact } : {}), choice: firstChoice.reason });
       // A run its learned workflow served first: that call is on the loop's record (no pi answer carries its tokens), so its
       // metrics are its booking's, as a CLI harness's run reads them: the workflow's nodes and the agent's own after a handback.
       // An MCP tool called by a hashed wire name is counted under its catalog name, as its timeline names it.
@@ -1474,10 +1475,10 @@ async function bindNonHandTools(host: ToolHost, kind: string, granted: readonly 
 
   // The browser (tl-browser), on pi's native route: tools.ts's own binding on this run's ToolHost (its store, claim and seal
   // key, its live viewers through the store, its sign-in read under the claim, its money on host.ledger), its vendor the
-  // launch's plane checked again against the keys this claim read from the store, as main's launch hands its process the
-  // plane (runs.ts relaunchPlane). Its durable extension goes to piAdapter (`native`), never wrapped as a HostTool and never
-  // installed here too (piAdapter installs it once); its lifecycle (the Config per conversation, reconcile, the release
-  // drain) through the host's hooks into the spec's lifecycle.
+  // launch's plane (resolved when the run was created, runs-over-store.ts planeFor) checked again against the keys this
+  // claim read from the store (recheckPlane, which keeps the plane's Jev off). Its durable extension goes to piAdapter
+  // (`native`), never wrapped as a HostTool and never installed here too (piAdapter installs it once); its lifecycle (the
+  // Config per conversation, reconcile, the release drain) through the host's hooks into the spec's lifecycle.
   if (browser) {
     const checked = plane ? recheckPlane(plane, host.env) : {};
     const env = { ...host.env };

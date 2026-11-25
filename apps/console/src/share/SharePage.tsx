@@ -64,9 +64,10 @@ export function HostedSharePage({ source }: { source: ShareSource }) {
 
 /** The owner's share preview of one run: its export, drawn by ShareView; each restore switch exports it again with the
  *  ids switched on (the server keeps those cuts' values in place), so the page always shows the bundle the server made.
- *  Any refusal takes the run off the page: an earlier bundle is not the one that would ship. */
-export function SharePage({ source, runId }: { source: ShareSource; runId: string }) {
-  const [restore, setRestore] = useState<readonly string[]>([]);
+ *  Any refusal takes the run off the page: an earlier bundle is not the one that would ship. `restore` is the ids it opens
+ *  with (its address's ?restore=). */
+export function SharePage({ source, runId, restore: opened = [] }: { source: ShareSource; runId: string; restore?: readonly string[] }) {
+  const [restore, setRestore] = useState<readonly string[]>(opened);
   const [attempt, setAttempt] = useState(0);
   const [bundle, setBundle] = useState<ShareBundle | null>(null);
   const [failed, setFailed] = useState<number | null>(null);

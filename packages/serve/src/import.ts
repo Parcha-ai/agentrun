@@ -1304,7 +1304,8 @@ function runTitleOf(session: Pick<Session, "sourceTitle" | "titleText" | "cwd" |
  *  `whsec_` from elsewhere). The per-run door token is gone (the runner cutover deleted it). A sealed value that does not
  *  open is said to `say` (the webhook's secret once, naming the data directory): the import goes on, and does not cut it. */
 export async function ownSecrets(store: { triggerSettings: Pick<Store["triggerSettings"], "get" | "put" | "removeScope">; flush(): Promise<void> }, data: string, env: NodeJS.ProcessEnv, say: (fields: Record<string, string>) => void = () => {}): Promise<string[]> {
-  sealKeyIn(env[SEAL_KEY_ENV], "the server's own secrets");
+  // An import and a scrub run offline: they open the key from the server's data directory, so that is where they point.
+  sealKeyIn(env[SEAL_KEY_ENV], "the server's own secrets", { none: "run it with --data at the server's data directory, which keeps the key" });
   return (await openServerSecretsOverStore(store, data, env, TRIGGER_ADAPTERS, say)).secrets.values();
 }
 

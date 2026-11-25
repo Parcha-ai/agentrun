@@ -7,6 +7,7 @@ import { recordedMade } from "./composio-made.js";
 import { COMPOSIO_LISTING_USER, COMPOSIO_USER, composioAddressUser } from "./composio-preset.js";
 import { savedByToken } from "./mcp-sources.js";
 import { composioAccountKey, composioMadeKey, mcpSourceKey } from "./store/mcp-record-keys.js";
+import type { ComposioBinding } from "./store/seal.js";
 import { isObject } from "./validate.js";
 
 type SavedServers = { mcp: { servers(): Promise<readonly { name: string; url: string; createdAt: number }[]> }; settings: { get(key: string): Promise<unknown> } };
@@ -32,3 +33,7 @@ export async function ownersComposioUsers(store: SavedServers): Promise<Set<stri
 /** Whether `user` is one of the owner's (ownersComposioUsers), in any letter case: a Composio user id that differs only
  *  in case is never taken as another person's. */
 export const ownersUser = (owners: ReadonlySet<string>, user: string): boolean => owners.has(user.toLowerCase());
+
+/** Whether a sealed binding may run now, given the owner's users: one the owner's session handed (`by`) always may; one
+ *  the token handed, or one sealed before the mark (unknown is not the owner's), may not run as an owner's user. */
+export const bindingRuns = (binding: ComposioBinding, owners: ReadonlySet<string>): boolean => binding.by === "owner" || !ownersUser(owners, binding.user_id);
