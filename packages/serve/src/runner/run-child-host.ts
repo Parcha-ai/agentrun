@@ -770,9 +770,10 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     // This answer is the claim's one decision whether it goes on the login: none, it does not. A login other than
     // AgentRun's own folder was refused at the claim (staysInRunner, LOGIN_MACHINE_NEEDS_SERVER_USER); one handed here by
     // a claim read that check did not make is refused again in LOGIN_NOT_HANDED's words, never left to a model key. The
-    // process reads no setting or machine id.
+    // process reads no setting or machine id. None for a run that sends no model key (keyless: a held run, any run on a
+    // --faux runner, a faux-pinned one), whatever its claim read: the login is a model credential like any key.
     claudeLogin: async () => {
-      if (await runKeyed()) return undefined;
+      if (keyless || (await runKeyed())) return undefined;
       // The login its claim read (staysInRunner), never a second read of the setting.
       const at = reads.login;
       if (!at) return undefined;
