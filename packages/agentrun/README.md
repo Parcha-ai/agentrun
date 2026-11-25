@@ -49,11 +49,11 @@ one when the last has run out) until the password is set, the console after. It 
 `agentrun service install [--port N] [--data DIR] [--public-url URL]` installs the service after a `--no-start`. A local
 model needs nothing here: the server lists the models of the Ollama on this machine itself, at its default address
 (port 11434), when it is your own server on your own machine. A server with a public address (`--public-url`,
-`--tailscale`), or more than one API token, asks Ollama only where `OLLAMA_HOST` names it, the default address too. For
+`--tailscale`), or more than one API token, lists Ollama only where `OLLAMA_HOST` names it, the default address too. For
 that, or an Ollama off its default address, `agentrun service install --env OLLAMA_HOST=<host:port>` writes it into the
 service and restarts it, and `--env OLLAMA_CONTEXT_LENGTH=<tokens>` does the same for a lower context than
 65,536; a model gateway's variables (`AGENT_MODEL_BASE_URL`, `AGENT_MODEL_GATEWAY_IDS`, `AGENT_MODEL`, `AGENT_MODEL_PRICE`) go in
-the same way, its key in the console. They stay through restarts, upgrades and later installs, and `--env KEY=` removes one. On a machine
+the same way, its key in the console. They stay through restarts, upgrades and later installs, and `--env KEY=` removes one. A service that reached Ollama through a model gateway (`AGENT_MODEL_BASE_URL` with `AGENT_MODEL_API_KEY=none`) takes the gateway off with `agentrun service install --env AGENT_MODEL_BASE_URL= --env AGENT_MODEL_GATEWAY_IDS= --env AGENT_MODEL= --env AGENT_MODEL_PRICE=` and picks the model as `ollama/<tag>`; `--env` takes no `AGENT_MODEL_API_KEY`. On a machine
 you alone use, `--env AGENTRUN_MCP_ALLOW_LOOPBACK=1 --env AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1` turns on the two start-time
 switches the same way (a switch takes `1` alone). `--env` takes the names `agentrun service install --help` lists, and
 no others: model keys go in the console, never in a service file. The service never sees the shell that installed it, so

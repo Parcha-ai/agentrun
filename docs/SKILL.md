@@ -311,9 +311,9 @@ models itself, with no key, no gateway and no restart: with no model key saved, 
 is the default, and each pulled model is in the console's model list as local (Ollama). A model without tool calling
 takes its tools as text. Ollama models run on the pi harness alone, at $0, with no free-model request limit. The model
 to suggest pulling is `inkling-2-mini` (it needs Ollama 0.40.17 or later); they pull it themselves. AgentRun looks
-at Ollama's default address (port 11434 on the same computer) by itself only on one person's own server on their own machine (the installer's local start). With a
-public address (`--tailscale`, `--public-url`), it lists Ollama only where `OLLAMA_HOST` names it, the default address
-too. There, or where Ollama listens off its default address, the service takes its address as the ollama CLI does, and
+at Ollama's default address (port 11434 on the same computer) by itself only on one person's own server on their own machine (the installer's local start). A server
+with a public address (`--tailscale`, `--public-url`), or more than one API token, lists Ollama only where `OLLAMA_HOST`
+names it, the default address too. There, or where Ollama listens off its default address, the service takes its address as the ollama CLI does, and
 restarts with it:
 
 ```sh

@@ -4225,7 +4225,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       if (handed.model !== undefined) {
         const why = modelKeyMisfit(env, target);
         if (why) throw misfit(why);
-      } else if (serverKeyMissing(env, target)) throw modelKeyRequired(false);
+      } else if (serverKeyMissing(env, target)) throw modelKeyRequired(false, env);
       const origin = runModelOrigin(env);
       return sealRunLaunch(sealKey, runId, { ...(handed.mcp ? { mcp: handed.mcp } : {}), ...(handed.model !== undefined && origin ? { model: { key: handed.model, origin } } : {}), ...(handed.keys ? { keys: handed.keys } : {}) });
     };
@@ -4268,7 +4268,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const mcp = handed.mcp ?? held.mcp;
       const model = handed.model !== undefined && origin ? { key: handed.model, origin } : held.model;
       const keys = handed.keys ?? held.keys;
-      if (!model && needsKey) throw modelKeyRequired(true);
+      if (!model && needsKey) throw modelKeyRequired(true, env);
       const unpaid = owed.length && revision ? keysOwed(revision, env, Object.keys(keys ?? {})) : [];
       if (unpaid.length) throw keysOwedRefusal(unpaid);
       const next = { ...(mcp ? { mcp } : {}), ...(model ? { model } : {}), ...(keys ? { keys } : {}) };

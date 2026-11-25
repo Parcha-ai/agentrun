@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
-import { gatewayKeyNames, modelKeyMisfit, noServerKeyFor, serverKeyMissing, withRunModelKey } from "../dist/run-model-key.js";
+import { gatewayKeyNames, gatewayOnThisMachine, modelKeyMisfit, modelKeyRequired, noServerKeyFor, serverKeyMissing, withRunModelKey } from "../dist/run-model-key.js";
 import { claimModelEnv, claimModelKey, claimSpendOff } from "../dist/runner/claim-secrets.js";
 import { providerFor } from "../dist/provider.js";
 import { openRunLaunch, openRunMcpAuth, sealRunLaunch, sealRunMcpAuth } from "../dist/store/index.js";
@@ -112,4 +112,24 @@ test("spend beside a claimed run (a shadow audit, a replay check, its learning g
   assert.match(keyless("A shadow audit"), /holds none of its own/);
   const served = await claimSpendOff(deps({ ...gateway, AGENT_MODEL_API_KEY: SERVER_KEY }), undefined);
   assert.equal(served("A shadow audit"), undefined);
+});
+
+// A service that reached Ollama as a gateway with AGENT_MODEL_API_KEY=none gets model_key_required once that key is gone:
+// with the gateway on this machine, the words name the move off it; one elsewhere is told only to bring a key.
+test("model_key_required: a gateway on this machine is told to remove AGENT_MODEL_BASE_URL, since AgentRun lists Ollama itself", () => {
+  const MOVE = "remove AGENT_MODEL_BASE_URL; AgentRun lists Ollama itself";
+  for (const base of ["http://localhost:11434/v1", "http://127.0.0.1:11434/v1", "http://[::1]:11434/v1"]) {
+    assert.equal(gatewayOnThisMachine({ AGENT_MODEL_BASE_URL: base }), true, base);
+    for (const message of [false, true]) {
+      const refused = modelKeyRequired(message, { AGENT_MODEL_BASE_URL: base });
+      assert.equal(refused.code, "model_key_required");
+      assert.ok(refused.message.includes(MOVE), refused.message);
+      assert.ok(!refused.message.includes(base), "the address is never in the words");
+    }
+  }
+  for (const env of [{ AGENT_MODEL_BASE_URL: "https://gateway.example.com/v1" }, {}]) {
+    assert.equal(gatewayOnThisMachine(env), false);
+    assert.ok(!modelKeyRequired(false, env).message.includes(MOVE));
+  }
+  assert.ok(!modelKeyRequired(false).message.includes(MOVE), "no env: the words as before");
 });

@@ -138,6 +138,25 @@ export const SERVICE_ENV = {
   DO_NOT_TRACK: null,
 };
 const SERVICE_NAMES = Object.keys(SERVICE_ENV);
+/** The move off a model gateway that was Ollama on this machine (changes' ollama-walks): the gateway's variables
+ *  removed. AgentRun then lists Ollama itself, and the model is picked as ollama/<tag>. */
+export const GATEWAY_REMOVAL = "agentrun service install --env AGENT_MODEL_BASE_URL= --env AGENT_MODEL_GATEWAY_IDS= --env AGENT_MODEL= --env AGENT_MODEL_PRICE=";
+const GATEWAY_LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]); // key-gate: loopback-rule a model gateway on this machine is told it may be Ollama, which AgentRun lists itself
+/** Whether the gateway address `url` (AGENT_MODEL_BASE_URL) is on this machine. */
+const gatewayHere = (url) => {
+  try {
+    const host = new URL(url).hostname;
+    return GATEWAY_LOOPBACK.has(host) || /^127(\.\d{1,3}){3}$/.test(host);
+  } catch {
+    return false;
+  }
+};
+/** What a service with AGENT_MODEL_BASE_URL `url` (none: no gateway) does now that it takes no AGENT_MODEL_API_KEY. The
+ *  key's value is never in it. */
+const keyMove = (url) =>
+  url === undefined
+    ? "AgentRun takes no model key in a service file: a key goes in the console (Settings → Model keys), and Ollama takes none."
+    : `${gatewayHere(url) ? "The model gateway at AGENT_MODEL_BASE_URL is on this machine: remove AGENT_MODEL_BASE_URL; AgentRun lists Ollama itself." : "If the model gateway at AGENT_MODEL_BASE_URL is Ollama, remove AGENT_MODEL_BASE_URL; AgentRun lists Ollama itself."} Run ${GATEWAY_REMOVAL}, start Ollama, and pick the model as ollama/<tag>. A key for any other gateway goes in the console (Settings → Model keys).`;
 /** The usage counts' two switches in SERVICE_ENV, which install also copies from its own shell. */
 const TELEMETRY_NAMES = ["AGENTRUN_TELEMETRY", "DO_NOT_TRACK"];
 
@@ -322,6 +341,17 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
     return manager;
   };
   const installed = () => manager !== undefined && existsSync(manager.file);
+  /** The AGENT_MODEL_BASE_URL a service would have after `sets`: the last one they give (empty: none), else the installed
+   *  service's. */
+  const gatewayOf = (sets) => {
+    const given = sets.findLast((pair) => pair.startsWith("AGENT_MODEL_BASE_URL="));
+    if (given !== undefined) return given.slice("AGENT_MODEL_BASE_URL=".length) || undefined;
+    try {
+      return installed() ? manager.env(readFileSync(manager.file, "utf8")).AGENT_MODEL_BASE_URL : undefined;
+    } catch {
+      return undefined;
+    }
+  };
   const needInstalled = () => {
     if (!installed()) throw fail(3, "AgentRun's service is not installed: agentrun service install installs it.");
     return manager;
@@ -436,6 +466,8 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
         const at = pair.indexOf("=");
         if (at < 1) throw fail(2, `--env takes KEY=VALUE, not ${pair}.`);
         const key = pair.slice(0, at);
+        // AGENT_MODEL_API_KEY=none once reached Ollama through a gateway; its refusal names the move, never the value.
+        if (key === "AGENT_MODEL_API_KEY") throw fail(2, `--env takes no AGENT_MODEL_API_KEY. ${keyMove(gatewayOf(sets))}`);
         if (!Object.hasOwn(SERVICE_ENV, key)) throw fail(2, `--env takes ${SERVICE_NAMES.slice(0, -1).join(", ")} or ${SERVICE_NAMES.at(-1)}, not ${key}: a key goes in the console (Settings → Model keys), never in a service file.`);
         if (/[\0-\x1f]/.test(pair)) throw fail(2, `${key}'s value has a line break or another control character.`);
         const takes = SERVICE_ENV[key];
@@ -453,13 +485,16 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
       if (why !== undefined) throw fail(1, `AgentRun can't run as a service here: ${why}. Start it in a terminal with ${program}.`);
       // An installed service keeps its model variables, its start-time switches and its usage counts' switches; the switches set in this
       // shell reach it (and under CI, AGENTRUN_TELEMETRY=0), then --env KEY=VALUE sets one and KEY= removes it.
-      const model = installed() ? Object.fromEntries(Object.entries(manager.env(readFileSync(manager.file, "utf8"))).filter(([key]) => Object.hasOwn(SERVICE_ENV, key))) : {};
+      const was = installed() ? manager.env(readFileSync(manager.file, "utf8")) : {};
+      const model = Object.fromEntries(Object.entries(was).filter(([key]) => Object.hasOwn(SERVICE_ENV, key)));
       for (const key of TELEMETRY_NAMES) if ((env[key] ?? "") !== "" && !/[\0-\x1f]/.test(env[key])) model[key] = env[key];
       if (env.CI && model.AGENTRUN_TELEMETRY === undefined) model.AGENTRUN_TELEMETRY = "0";
       for (const [key, value] of changes) {
         if (value === "") delete model[key];
         else model[key] = value;
       }
+      // A service from before keeps every variable it may hold but AGENT_MODEL_API_KEY, which is said in one line.
+      if (Object.hasOwn(was, "AGENT_MODEL_API_KEY")) say(`This re-install drops AGENT_MODEL_API_KEY from the service. ${keyMove(model.AGENT_MODEL_BASE_URL)}`);
       // --tailscale, --no-tailscale, --env or --public-url on an installed service changes that only: its data folder, port
       // and public address stay unless named (the installer passes the flag alone). --tailscale names its own address instead.
       if ((tailscale !== undefined || changes.length > 0 || given !== undefined) && installed()) {

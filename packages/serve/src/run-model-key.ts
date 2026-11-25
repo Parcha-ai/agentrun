@@ -16,6 +16,7 @@
 // erased with that end, and revoked by its caller) or tied to no run, with no key to spend, is skipped or refused in words.
 import { ApiError, type InputIssue } from "./errors.js";
 import { handedSecretOf } from "./handed-secret.js";
+import { isLoopbackName } from "./host-check.js";
 import { FAUX_ENV, GATEWAY_KEY_ENV, MODEL_PROVIDER, PROVIDER_KEYS } from "./model.js";
 import { gatewayBase } from "./provider.js";
 import type { RunLaunch } from "./run-launch.js";
@@ -62,10 +63,19 @@ export function modelKeyOf(value: unknown, issues: InputIssue[]): string | undef
   return wrong ? void issues.push(wrong) : value;
 }
 
+/** Whether the model gateway `env` names (AGENT_MODEL_BASE_URL) is on this machine: maybe an Ollama reached as a gateway,
+ *  which AgentRun lists itself with no key once the gateway is removed. */
+export function gatewayOnThisMachine(env: NodeJS.ProcessEnv): boolean {
+  const origin = runModelOrigin(env);
+  return origin !== undefined && isLoopbackName(new URL(origin).hostname);
+}
+
 /** 422 model_key_required: a run start, or a message that would start a turn, with no model key to spend: none handed,
- *  none the run holds, and none the server holds for its route. */
-export const modelKeyRequired = (message: boolean): ApiError =>
-  new ApiError("model_key_required", `This server holds no model key for this run's model (AGENT_MODEL_API_KEY is not set and none is saved in Settings → Model keys), so each run's caller brings its own: send model_key with ${message ? "a message that starts a turn" : "the run"}, a key for the model gateway at AGENT_MODEL_BASE_URL (such as a LiteLLM virtual key) minted for ${message ? "that turn" : "this run"}.`, { fields: [{ field: "model_key", reason: "missing", message: "model_key is required here: the server holds no model key for this run's model." }] });
+ *  none the run holds, and none the server holds for its route. Where the gateway is on this machine (`env`), the words
+ *  name the move off it as well: a service that reached Ollama through AGENT_MODEL_BASE_URL with AGENT_MODEL_API_KEY=none
+ *  gets this once that key is gone. */
+export const modelKeyRequired = (message: boolean, env?: NodeJS.ProcessEnv): ApiError =>
+  new ApiError("model_key_required", `This server holds no model key for this run's model (AGENT_MODEL_API_KEY is not set and none is saved in Settings → Model keys), so each run's caller brings its own: send model_key with ${message ? "a message that starts a turn" : "the run"}, a key for the model gateway at AGENT_MODEL_BASE_URL (such as a LiteLLM virtual key) minted for ${message ? "that turn" : "this run"}.${env && gatewayOnThisMachine(env) ? " The model gateway at AGENT_MODEL_BASE_URL is on this machine: if it is Ollama, remove AGENT_MODEL_BASE_URL; AgentRun lists Ollama itself, and the model is picked as ollama/<tag>." : ""}`, { fields: [{ field: "model_key", reason: "missing", message: "model_key is required here: the server holds no model key for this run's model." }] });
 
 /** What of a run says where its model requests go: its kind and its launch's pinned model. */
 export type ModelKeyTarget = { readonly kind: "agentic" | "workflow" | string; readonly model?: { readonly provider: string; readonly modelId: string } | undefined; readonly native?: boolean };
