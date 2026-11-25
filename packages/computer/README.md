@@ -2432,7 +2432,8 @@ that runs with the same labels, image and sizes (its labels file) is answered, o
 running is refused `exists`, and one still being made is waited for. Two processes whose creates of one request
 both find nothing make two computers, so after Orgo's answer, and again once its computer is up, a create reads the
 workspace once more: where an older computer of the request is there (by `created_at`, then id), it deletes its own
-and answers the older, and the oldest keeps its own. A name Orgo already holds (two creates in the same second) is
+and answers the older, and the oldest keeps its own. A caller's signal that aborts one of those reads deletes the
+create's own computer (not under that signal) and the create is `aborted`. A name Orgo already holds (two creates in the same second) is
 answered the same way. The parked desktops name each computer at random, so a create retried there makes a second
 computer.
 
@@ -2593,7 +2594,8 @@ makes no second browser, and one with other labels is refused `exists`; where it
 the time the vendor made each, then id). Two processes whose creates of one request both find nothing make two
 browsers, so after the vendor's answer a create lists the label again: where an older browser of the request is
 there, it releases its own and answers the older, refused `exists` when the older has ended by then, and the oldest
-keeps its own. The browser's own options (viewport, stealth, profile) are not read back from the vendor, so a create
+keeps its own. A caller's signal that aborts that listing releases the create's own browser (not under that signal)
+and the create is `aborted`. The browser's own options (viewport, stealth, profile) are not read back from the vendor, so a create
 from another process compares the labels alone. A browser released here, or one this provider answered that the vendor
 has ended on its own (its timeout), leaves its request refused `exists`: the provider keeps each request's browser id. A create whose outcome is unknown (its reply lost, cut short, answered 5xx or with no browser, or the caller's signal
 aborted it) never sends a second create: each POST also writes `agentrun.attempt` (`ATTEMPT_LABEL`), a random value of

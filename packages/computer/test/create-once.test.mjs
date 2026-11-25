@@ -399,6 +399,54 @@ test("local-chrome: a directory an earlier create claimed and never finished is 
 	okOf(await provider.release(made, "delete"), "release");
 });
 
+/**
+ * A vendor's fetch that aborts the caller's create (controller) as the `nth` listing (a GET of `listed`) after its POST
+ * is asked: the listing a create runs once the vendor made its computer.
+ */
+const abortingListing = (fetch, post, listed, nth, controller) => {
+	let posted = false;
+	let lists = 0;
+	return async (input, init = {}) => {
+		const method = init.method ?? "GET";
+		const path = new URL(String(input)).pathname;
+		if (method === "POST" && path.endsWith(post)) posted = true;
+		else if (posted && method === "GET" && path.endsWith(listed) && ++lists === nth) controller.abort();
+		return fetch(input, init);
+	};
+};
+
+for (const [id, cloud] of Object.entries(CLOUD_BROWSERS)) {
+	const vendor = VENDORS[id];
+	test(`${id}: a create aborted while it lists the request's browsers after its POST is aborted, and the browser its POST made is released`, async () => {
+		const fake = vendor.vendor();
+		const controller = new AbortController();
+		const provider = await vendor.make({ ...fake, fetch: abortingListing(fake.fetch, cloud.post, cloud.post, 1, controller) });
+		const made = await provider.create(vendor.spec(), { requestId: requestOf(`${id}-aborted`), signal: controller.signal });
+		assert.equal(made.ok, false, "an aborted create");
+		assert.equal(made.error.code, "aborted", made.error.message);
+		assert.equal(vendor.made(fake), 1, "its POST made one");
+		assert.deepEqual(cloud.ids(fake).filter((one) => cloud.live(fake, one)), [], "none is left running");
+	});
+}
+
+for (const [nth, when] of [
+	[1, "after Orgo's answer"],
+	[2, "once its computer is up"],
+]) {
+	test(`orgo: a create aborted while it reads the workspace ${when} is aborted, and the computer it made is deleted`, async () => {
+		const { api, channel } = VENDORS.orgo.vendor();
+		const controller = new AbortController();
+		const provider = await VENDORS.orgo.make({ api: { ...api, fetch: abortingListing(api.fetch, "/computers", `/workspaces/${WORKSPACE}`, nth, controller) }, channel });
+		const requestId = requestOf("orgo-aborted");
+		const made = await provider.create(VENDORS.orgo.spec(), { requestId, signal: controller.signal });
+		assert.equal(made.ok, false, "an aborted create");
+		assert.equal(made.error.code, "aborted", made.error.message);
+		assert.equal(VENDORS.orgo.made({ api }), 1, "its POST made one");
+		assert.deepEqual(orgoHeld(api, requestId).live, [], "none is left");
+		if (nth === 1) assert.deepEqual(channel.calls, [], "nothing is uploaded or run for a caller that is gone");
+	});
+}
+
 test("a create with no request id is refused invalid on each, before any vendor call", async () => {
 	for (const [id, vendor] of Object.entries(VENDORS)) {
 		const fake = vendor.vendor();

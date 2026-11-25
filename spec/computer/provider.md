@@ -95,9 +95,10 @@ hosted adapter lists the name and reads each machine it finds by `get`, Docker's
 taken and reads that container, and the phone harness reads its ledger by name and sends a key derived from the id as
 the `Idempotency-Key`. Orgo lists the workspace's computers before it makes one and takes the oldest whose name begins
 with the request's, and lists them again after Orgo's answer and once its computer is up, deleting its own where an
-older one of the request is there and answering that one, as the hosted adapter converges; Browserbase and Kernel list the running and starting browsers by the create label before they make
+older one of the request is there and answering that one, as the hosted adapter converges, and deleting its own when
+the caller aborts during one of those lists; Browserbase and Kernel list the running and starting browsers by the create label before they make
 one and again after the vendor's answer, releasing their own where an older one of the request is there and answering
-that one; the local browser makes the request's directory under its root with `mkdir`, which one create alone wins, and
+that one, or when the caller aborts during that list; the local browser makes the request's directory under its root with `mkdir`, which one create alone wins, and
 reads the browser in a directory already there.
 
 `provider.create-retried` creates twice with one id and expects one computer; `provider.create-after-release` releases

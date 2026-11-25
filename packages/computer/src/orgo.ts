@@ -504,11 +504,16 @@ export class OrgoProvider implements ComputerProvider {
 	 * is there (the oldest by created_at, then id, the order #held reads), this one is deleted and the older answered
 	 * through #held, as a retry's create answers it. Every process picks the same one from the same listing, so the
 	 * newer creates delete their own and the oldest keeps its. Undefined when this computer is the request's oldest (or
-	 * the listing fails: the create goes on with its own).
+	 * the listing fails: the create goes on with its own); an abort deletes this computer (#abandon, never under the
+	 * caller's signal), and the create is aborted.
 	 */
 	async #converge(spec: ComputerSpec, request: string, labels: Record<string, string>, mine: OrgoComputer, signal?: AbortSignal): Promise<Result<CreatedComputer> | undefined> {
 		const listed = await this.#desktops(signal);
-		if (!listed.ok) return undefined;
+		if (!listed.ok) {
+			if (listed.error.code !== "aborted" && !signal?.aborted) return undefined;
+			// The caller is gone: the computer this POST made is deleted, never under the caller's signal.
+			return this.#abandon({ id: mine.id, name: mine.name }, { code: "aborted", message: "create was aborted" });
+		}
 		const hex = request.slice("computer-".length);
 		const holders = listed.value.filter((one) => nameParts(one.name)?.hex === hex && this.#ours(one) && RUNNING.has(one.status));
 		// Not listed yet, it was made just now: no older than now.

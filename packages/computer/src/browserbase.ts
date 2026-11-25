@@ -491,13 +491,20 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 
 	/**
 	 * The one session a request keeps (convergedBrowser): the request's create label listed again once Browserbase made
-	 * mine. Undefined when mine is the oldest (or the listing fails: the create goes on with its own). Else mine is
+	 * mine. Undefined when mine is the oldest (or the listing fails: the create goes on with its own); an abort releases
+	 * mine, never under the caller's signal, and the create is aborted. Else mine is
 	 * released, never under the caller's signal, and the older answered: refused exists when it has ended by then, or when
 	 * its labels are another spec's.
 	 */
 	async #converge(spec: ComputerSpec, request: string, mine: BrowserbaseSession, signal?: AbortSignal): Promise<Result<CreatedComputer> | undefined> {
 		const listed = await this.#sessions({ [CREATE_LABEL]: request }, signal);
-		if (!listed.ok) return undefined;
+		if (!listed.ok) {
+			if (listed.error.code !== "aborted" && !signal?.aborted) return undefined;
+			// The caller is gone: the session this POST made is released, never under the caller's signal.
+			this.#requests.end(request);
+			const released = await this.#releaseSession(mine.id);
+			return fail("aborted", `create was aborted once Browserbase had made the session ${mine.id}; ${released.ok ? "the session was released" : `the session could not be released (${released.error.message}), and its labels let a sweep find it`}`);
+		}
 		const kept = convergedBrowser(listed.value.map(heldOf), heldOf(mine));
 		if (kept === "mine") return undefined;
 		const released = await this.#releaseSession(mine.id);

@@ -300,13 +300,20 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 
 	/**
 	 * The one browser a request keeps (convergedBrowser): the request's create label listed again once Kernel made mine.
-	 * Undefined when mine is the oldest (or the listing fails: the create goes on with its own). Else mine is deleted,
+	 * Undefined when mine is the oldest (or the listing fails: the create goes on with its own); an abort deletes mine,
+	 * never under the caller's signal, and the create is aborted. Else mine is deleted,
 	 * never under the caller's signal, and the older answered: refused exists when it is gone by then, or when its labels
 	 * are another spec's.
 	 */
 	async #converge(spec: ComputerSpec, request: string, mine: KernelRow, signal?: AbortSignal): Promise<Result<CreatedComputer> | undefined> {
 		const listed = await this.#browsers({ [CREATE_LABEL]: request }, signal);
-		if (!listed.ok) return undefined;
+		if (!listed.ok) {
+			if (listed.error.code !== "aborted" && !signal?.aborted) return undefined;
+			// The caller is gone: the browser this POST made is deleted, never under the caller's signal.
+			this.#requests.end(request);
+			const released = await this.#releaseBrowser(mine.id);
+			return fail("aborted", `create was aborted once Kernel had made the browser ${mine.id}; ${released.ok ? "the browser was released" : `the browser could not be released (${released.error.message}), and its tags let a sweep find it`}`);
+		}
 		const kept = convergedBrowser(listed.value.map(heldOf), heldOf(mine));
 		if (kept === "mine") return undefined;
 		const released = await this.#releaseBrowser(mine.id);
