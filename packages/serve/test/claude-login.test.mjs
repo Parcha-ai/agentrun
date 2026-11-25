@@ -1302,6 +1302,14 @@ const literally = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 /** The words this machine's login is refused in where `name` gives it `folder`, which the server's user (`who`, as the
  *  words name it) neither owns nor would make in a folder it owns. */
 const notOwnFolder = (who, name, folder) => new RegExp(`^Claude Code's login on this machine needs its folders to be this server's user's own: it runs as ${literally(who)}, and ${literally(folder)}, the folder ${name} gives it, is not a folder it owns, nor one it would make in a folder it owns\\. Start the server as the person whose Claude plan it is\\.$`);
+/** The end of the words a folder open to others' writes is refused in: `at`, the folder open so, has `mode`, and the
+ *  chmod that closes it. */
+const openTail = (at, mode) => `is open to writes by others than its owner: ${literally(at)} has mode ${(mode & 0o7777).toString(8).padStart(4, "0")}, which its group or anyone may write in\\. Make it writable by its owner alone \\(chmod g-w,o-w ${literally(at)}\\): a umask of 002 makes new folders so\\.$`;
+/** The words this machine's login is refused in where `name` gives it `folder`, and `at` on its way (or the folder
+ *  itself, or the one it is to be made in) is open to writes by its group or anyone, with `mode`. */
+const openFolder = (who, name, folder, at, mode) => new RegExp(`^Claude Code's login on this machine needs its folders to be this server's user's own: it runs as ${literally(who)}, and ${literally(folder)}, the folder ${name} gives it, ${openTail(at, mode)}`);
+/** The same for the home: `which` is "its HOME" or "that user's own home", `home` the folder named so. */
+const openHome = (who, which, home, at, mode) => new RegExp(`^Claude Code's login on this machine needs a home only this server's user may write in: it runs as ${literally(who)}, and ${which} \\(${literally(home)}\\) ${openTail(at, mode)}`);
 /** Each variable that gives this machine's login a folder: the folder it gives for `value`, and where the login has it. */
 const LOGIN_FOLDER_VARS = [
   ["CLAUDE_CONFIG_DIR", (value) => value, (login) => login.dir],
@@ -1482,6 +1490,63 @@ test("a folder still to make, in a folder others may write in, refuses this mach
   assert.equal(existsSync(value), false);
 });
 
+// A home of the server's user's own that its group or anyone may write in is refused, at either place, in words that say
+// so and name the chmod that closes it, not in words that say it is not the user's. `uid` 0 stands for root: the sticky
+// temporary folder (STICKY) is root's and open to all, and the test user's own home is not root's.
+test("a home its group or anyone may write in refuses the login, at either place, in words that name the open folder, its mode and the chmod that closes it: root, with HOME the sticky temporary folder", { skip: ROOT_LINKS_SKIP, timeout: 60_000 }, async (t) => {
+  const rig = await loginRig(t);
+  const asked = [];
+  const deps = rig.deps({ uid: 0, env: { ...rig.env, HOME: STICKY }, claude: async () => askedClaude(asked) });
+  const why = openHome("uid 0", "its HOME", STICKY, STICKY, lstatSync(STICKY).mode);
+  await refusedEverywhere(rig, deps, why, `root, HOME=${STICKY}`);
+  rig.rows.set(CLAUDE_LOGIN_SETTING, settingFor("agentrun", rig.data));
+  const view = await claudeLoginView(deps);
+  assert.match(view.refused ?? "", why, `AgentRun's own login too: ${JSON.stringify(view)}`);
+  assert.equal(view.state, "off");
+  assert.deepEqual(asked, [], "the CLI was not asked, and no sign-in started");
+});
+
+// A folder of this machine's login still to make is made by AgentRun, 0700 whatever the umask, before the CLI's sign-in
+// and at a turn-on, in the folder the check found the user's own; then checked again, and the CLI gets that check's
+// login. Under a umask of 002 (a group of the user's own, as some distributions give each user) a folder the CLI made
+// would be 0775, open to its group, and the view after the sign-in would refuse the login the CLI just signed in.
+test("a folder of this machine's login still to make is made 0700 before the CLI's sign-in and at a turn-on, whatever the umask, so the view after the sign-in does not refuse the login the CLI signed in there", { skip: process.platform === "win32" ? "no modes" : process.geteuid() === 0 ? "root may write anywhere" : false, timeout: 60_000 }, async (t) => {
+  const was = process.umask(0o002);
+  t.after(() => process.umask(was));
+  const mine = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-make-"));
+  t.after(() => rmSync(mine, { recursive: true, force: true }));
+  const real = realpathSync(mine);
+  const madeBy = [];
+  const cliMakes = {
+    ...askedClaude([]),
+    startClaudeLogin: (_cli, login) => {
+      // The CLI makes its folders as its own mkdir and the umask give them.
+      madeBy.push(login);
+      for (const dir of [login.dir, login.profiles]) mkdirSync(dir, { recursive: true });
+      let end;
+      return { ended: new Promise((resolve) => { end = resolve; }), stop: () => end({ end: "stopped" }) };
+    },
+  };
+  const modes = (...dirs) => dirs.map((dir) => `${dir} ${(lstatSync(dir).mode & 0o777).toString(8)}`);
+  const rig = await loginRig(t);
+  rig.rows.set(CLAUDE_LOGIN_SETTING, settingFor("machine", rig.data));
+  const deps = rig.deps({ env: { ...rig.env, CLAUDE_CONFIG_DIR: join(mine, "config", "to-make"), ANTHROPIC_CONFIG_DIR: join(mine, "profiles", "to-make") }, claude: async () => cliMakes });
+  await startLoginHere(deps);
+  assert.deepEqual(madeBy.map((login) => [login.dir, login.profiles]), [[join(real, "config", "to-make"), join(real, "profiles", "to-make")]]);
+  const made = ["config", join("config", "to-make"), "profiles", join("profiles", "to-make")].map((name) => join(real, name));
+  assert.deepEqual(modes(...made), made.map((dir) => `${dir} 700`), "made 0700 before the CLI started");
+  const after = await claudeLoginView(deps);
+  assert.equal(after.refused, undefined, `the view after the sign-in: ${JSON.stringify(after)}`);
+  assert.equal(after.state, "signed_in");
+
+  const other = await loginRig(t);
+  other.rows.clear();
+  const turned = join(mine, "turned", "on");
+  const view = await turnOnClaudeLogin(other.deps({ env: { ...other.env, CLAUDE_CONFIG_DIR: turned }, claude: async () => askedClaude([]) }), { only_me: true, place: "machine" });
+  assert.equal(view.refused, undefined, JSON.stringify(view));
+  assert.deepEqual(modes(join(real, "turned"), join(real, "turned", "on")), [`${join(real, "turned")} 700`, `${join(real, "turned", "on")} 700`], "a turn-on makes it 0700 too");
+});
+
 // A person's own server, with a link of theirs to a folder of theirs anywhere on the way (a home moved to another disk,
 // say), keeps its login. The login has the real paths, and the CLI gets those: a link changed after the check, by
 // anyone, redirects nothing.
@@ -1600,21 +1665,23 @@ test("the login's folders are walked once for each decision: a link swapped betw
 // another user put a folder or a link of theirs in the place of the next one once the check has looked; one open so as
 // the login folder itself lets them put their files in it, and as the folder the CLI makes the login's in, make that
 // first. All are refused. The sticky bit (as /tmp has it) keeps a folder on the way, but not the login folder itself
-// nor the one it is made in.
-test("a folder its group or anyone may write in, on the way to this machine's login folder with no sticky bit, or as that folder itself or the one it is to be made in, refuses the login in the view, the sign-in, the turn-on and a run; with the sticky bit, one on the way keeps it", { skip: process.platform === "win32" ? "no uid" : process.geteuid() === 0 ? "root may write anywhere" : false, timeout: 60_000 }, async (t) => {
+// nor the one it is made in. The words say which folder is open, its mode, and the chmod that closes it, not that the
+// folder is not the user's (it is): a umask of 002 (a group of the user's own, as some distributions give each user)
+// makes folders 0775, and a volume whose group is set for a pod gives 2775.
+test("a folder its group or anyone may write in, on the way to this machine's login folder with no sticky bit, or as that folder itself or the one it is to be made in, refuses the login in the view, the sign-in, the turn-on and a run, in words that name the open folder, its mode and the chmod that closes it; with the sticky bit, one on the way keeps it", { skip: process.platform === "win32" ? "no uid" : process.geteuid() === 0 ? "root may write anywhere" : false, timeout: 60_000 }, async (t) => {
   const who = `uid ${process.geteuid()} (${userInfo().username})`;
   const mine = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-open-"));
   t.after(() => rmSync(mine, { recursive: true, force: true }));
   const open = join(mine, "open");
   mkdirSync(join(open, "claude"), { recursive: true, mode: 0o700 });
-  for (const mode of [0o777, 0o770]) {
+  for (const mode of [0o777, 0o770, 0o775, 0o2775]) {
     chmodSync(open, mode);
     for (const value of [join(open, "claude"), open, join(open, "still", "to-make")]) {
       const rig = await loginRig(t);
       const asked = [];
       const deps = rig.deps({ env: { ...rig.env, CLAUDE_CONFIG_DIR: value }, claude: async () => askedClaude(asked) });
       const what = `CLAUDE_CONFIG_DIR=${value}, ${open} ${mode.toString(8)}`;
-      await refusedEverywhere(rig, deps, notOwnFolder(who, "CLAUDE_CONFIG_DIR", value), what);
+      await refusedEverywhere(rig, deps, openFolder(who, "CLAUDE_CONFIG_DIR", value, realpathSync(open), mode), what);
       assert.deepEqual(asked, [], `${what}: the CLI was not asked, and no sign-in started`);
     }
   }
