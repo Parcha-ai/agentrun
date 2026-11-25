@@ -1155,17 +1155,21 @@ test("adversarial texts: the characters the shape scanners visit are at most a f
 //   the whitespace after a string), writes its join (2: each character in it at most twice, values then all, or names
 //   then all), and two decoding views over that join (one with "+": 46 each, 92); the strings join, read at level 0
 //   alone (2) and written (2), and four decoding views over it (one level of JSON's escapes alone, with percent, with
-//   percent and "+", and two levels: 46 each, 184); the quoted join (a single-quoted dict's, each JSON string's text read again
-//   one level down for a dict written in it), read at level 0 and 1 (2) and written (4: its parts twice as long as the
-//   text at most), and three decoding views over it (JSON's escapes, Python's where the text holds one, and both at two
-//   levels where it holds an escaped backslash: 92 each, 276); then each searched for 7 plain needles, the hex and
-//   the fold, lowered and flattened, each find checked against the covered stretches (21 each, 42 over a join, 84 over
-//   the quoted one): about 1,251; planCut runs two (the text with its cuts, then the cut text, at most 10/8 as long):
-//   about 2,815;
-// - so planCut is about 2,964; an answer adds its pieces' ends and joins (10), heldIn's check of what it returns (10/8
-//   of a check: 1,564), of the pieces as they came (1,251), and its shape pass (64): about 5,853.
-// That sum takes each stage at its most at once, which no text reaches: a text that builds every view decodes most of
-// itself, so each decoded view is far shorter than the text and its searches read far less.
+//   percent and "+", and two levels: 46 each, 184); the quoted join (a single-quoted dict's), read at level 0 (2) and
+//   written (2), and the again join (each JSON string's text read one level down for a dict written in it), the text
+//   read at level 0 for its strings and they at level 1 (3) and written (2), and the two written once more one after the
+//   other (4); three decoding views over them (JSON's escapes over both: 92; Python's over the quoted join where the
+//   text holds one, and both levels of them over the again join where it holds a quote: 46 each; 184); then each
+//   searched for 7 plain needles, the hex and the fold, lowered and flattened, each find checked against the covered
+//   stretches (21 each, 42 over a join, 84 over the two joins one after the other): about 1,082; planCut runs two (the
+//   text with its cuts, then the cut text, at most 10/8 as long): about 2,435;
+// - so planCut is about 2,584; an answer adds its pieces' ends and joins (10), heldIn's check of what it returns (10/8
+//   of a check: 1,353), of the pieces as they came (1,082), and its shape pass (64): about 5,093.
+// That sum takes each stage at its most at once, and its views are all reachable together: familiesOf reads each family
+// as present or absent, so one closed JSON string holding each of them turns on all sixteen views, and the rest of the
+// text decodes to itself at nearly its whole length in each (the text of DENSE's strings, each block of about 4 KiB
+// headed by one such string). It is the most measured here: 963.0 per character at 128 KiB and 967.8 at 512 KiB,
+// through redactedAnswer; the next most is 439.6.
 // A held value of two lines adds its three parts as forms and plain needles (about 30 more). A held value of k long
 // lines adds k + 1 of each: its work grows with k, linear in the text all the same.
 // WORK stays 1,024, the bound from before the stacked and join views. The most measured, and each text's most, are in
