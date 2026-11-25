@@ -465,12 +465,13 @@ export function whyNotOneOwner(facts: { apiOnly: boolean; tokens: number; keys?:
 /** Why a server with Claude Code's login on makes no API key for an app, in one line: the same rule from the other side. */
 export const LOGIN_REFUSES_API_KEYS = "Claude Code's login on this machine is on, and a Claude plan is one person's: an API key would let an app start runs on it. Turn the login off under Settings → Model keys first.";
 
-/** GET /settings/claude-login. `state`: `off` (not turned on), `other_machine` (turned on for another machine), else
- *  what the CLI says: `signed_in`, `signed_out`, or `no_cli` (no CLI here to ask yet: claude-agent's first run installs
- *  the pinned one), `unknown` (it gave no answer). Never a token: an account's email, organization and plan only when
- *  the CLI says them. */
+/** GET /settings/claude-login. `state`: `off` (not turned on), `other_machine` (turned on for another machine),
+ *  `refused` (turned on for this machine and kept, but its folders are ones this server's user may not use: `refused`
+ *  says why, nothing runs on it, and a turn-off removes it as it does any other), else what the CLI says: `signed_in`,
+ *  `signed_out`, or `no_cli` (no CLI here to ask yet: claude-agent's first run installs the pinned one), `unknown` (it
+ *  gave no answer). Never a token: an account's email, organization and plan only when the CLI says them. */
 export type ClaudeLoginView = {
-  state: "off" | "other_machine" | "signed_in" | "signed_out" | "no_cli" | "unknown";
+  state: "off" | "other_machine" | "refused" | "signed_in" | "signed_out" | "no_cli" | "unknown";
   place: LoginPlace;
   /** The line that signs the CLI in at the login's place, for a terminal on this machine. */
   command: string;
@@ -604,8 +605,9 @@ export async function claudeLoginView(deps: ClaudeLoginDeps): Promise<ClaudeLogi
   if (!setting) return { state: "off", ...base };
   if (!thisMachine(setting, deps.data)) return { state: "other_machine", ...base, can_start: false };
   // Folders the server's user may not use: no login here (loginOf), and the CLI is not asked, since its check runs in
-  // that home, on those folders.
-  if (!login) return { state: "off", ...base };
+  // that home, on those folders. Still turned on (dropRefusedLogin keeps it), so the view says so with why, and the
+  // owner can turn it off.
+  if (!login) return { state: "refused", ...base };
   if (!cli) return { state: "no_cli", ...base };
   try {
     // Asked once: a person waits on this read. Its answer is a run's too (loginBeforeRun), so one who just saw the
@@ -702,7 +704,8 @@ export async function startLoginHere(deps: ClaudeLoginDeps): Promise<ClaudeLogin
  *  reason is logged. One whose folders the server's user may not use (loginRefused with `env`, for the setting's place)
  *  stays, and the reason is logged: every read refuses it in words while they are so (no run, no sign-in, the view's
  *  `refused`), and the person mends that with a chmod or by starting the server as the right user, which a deleted
- *  setting would have turned off for good. A turn on `signIns`' queue, as every change of the setting is. */
+ *  setting would have turned off for good, or turns it off (the view's `refused` state). A turn on `signIns`' queue, as
+ *  every change of the setting is. */
 export async function dropRefusedLogin(signIns: Pick<ClaudeSignIns, "serial">, settings: Pick<Settings, "get" | "remove">, why: string | undefined, env: Readonly<Record<string, string | undefined>>, log: (line: string) => void): Promise<void> {
   await signIns.serial(async () => {
     const setting = await claudeLoginSetting(settings);

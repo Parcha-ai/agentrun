@@ -2786,7 +2786,7 @@ export interface operations {
   getClaudeLogin: {
     body: never;
     answer: {
-      state: "off" | "other_machine" | "signed_in" | "signed_out" | "no_cli" | "unknown";
+      state: "off" | "other_machine" | "refused" | "signed_in" | "signed_out" | "no_cli" | "unknown";
       place: "agentrun" | "machine";
       command: string;
       can_start: boolean;
@@ -6918,7 +6918,7 @@ export interface operations {
   startClaudeLogin: {
     body: never;
     answer: {
-      state: "off" | "other_machine" | "signed_in" | "signed_out" | "no_cli" | "unknown";
+      state: "off" | "other_machine" | "refused" | "signed_in" | "signed_out" | "no_cli" | "unknown";
       place: "agentrun" | "machine";
       command: string;
       can_start: boolean;
@@ -7175,7 +7175,7 @@ export interface operations {
   turnOffClaudeLogin: {
     body: never;
     answer: {
-      state: "off" | "other_machine" | "signed_in" | "signed_out" | "no_cli" | "unknown";
+      state: "off" | "other_machine" | "refused" | "signed_in" | "signed_out" | "no_cli" | "unknown";
       place: "agentrun" | "machine";
       command: string;
       can_start: boolean;
@@ -7209,7 +7209,7 @@ export interface operations {
       only_me: true;
     };
     answer: {
-      state: "off" | "other_machine" | "signed_in" | "signed_out" | "no_cli" | "unknown";
+      state: "off" | "other_machine" | "refused" | "signed_in" | "signed_out" | "no_cli" | "unknown";
       place: "agentrun" | "machine";
       command: string;
       can_start: boolean;

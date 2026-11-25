@@ -1656,8 +1656,9 @@ has the row **Use Claude Code's login on this machine**, over these routes:
   still to make is made by AgentRun at the turn-on and before the CLI's sign-in, 0700 whatever the umask, so the login
   the CLI signs in there is not refused after.
 - `GET /v2/settings/claude-login` says `state`: `off`, `signed_in` (with the `account` the CLI names: method, email,
-  organization, plan), `signed_out`, `no_cli` (claude-agent's first run installs the pinned CLI), `unknown`, or
-  `other_machine`. `folder` is the folder whose login the CLI is asked about, and `machine` is this machine's own
+  organization, plan), `signed_out`, `no_cli` (claude-agent's first run installs the pinned CLI), `unknown`,
+  `other_machine`, or `refused` (turned on and kept, but its folders or the home are refused, `refused` saying why;
+  `DELETE` turns it off, and an API key is made only after that). `folder` is the folder whose login the CLI is asked about, and `machine` is this machine's own
   login folder (`machine.source`: `CLAUDE_CONFIG_DIR` or `default`; `machine.credentials`: the server's
   `CLAUDE_SECURESTORAGE_CONFIG_DIR`, when it sets one). `command` is the line that signs the CLI in at
   the login's place, for a terminal on the server's machine; it is empty where the login's folders are refused, and

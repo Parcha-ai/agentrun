@@ -5025,7 +5025,7 @@ class GetChatGPTSignInResponse(_GetChatGPTSignInResponseRequired, total=False):
 
 
 class _GetClaudeLoginResponseRequired(TypedDict):
-    state: Literal["off", "other_machine", "signed_in", "signed_out", "no_cli", "unknown"]
+    state: Literal["off", "other_machine", "refused", "signed_in", "signed_out", "no_cli", "unknown"]
     place: Literal["agentrun", "machine"]
     command: str
     can_start: bool
@@ -6436,7 +6436,7 @@ class StartChatGPTSignInResponse(TypedDict):
 
 
 class _StartClaudeLoginResponseRequired(TypedDict):
-    state: Literal["off", "other_machine", "signed_in", "signed_out", "no_cli", "unknown"]
+    state: Literal["off", "other_machine", "refused", "signed_in", "signed_out", "no_cli", "unknown"]
     place: Literal["agentrun", "machine"]
     command: str
     can_start: bool
@@ -6583,7 +6583,7 @@ class TestWorkspaceArchilResponseObject2(TypedDict):
 
 
 class _TurnOffClaudeLoginResponseRequired(TypedDict):
-    state: Literal["off", "other_machine", "signed_in", "signed_out", "no_cli", "unknown"]
+    state: Literal["off", "other_machine", "refused", "signed_in", "signed_out", "no_cli", "unknown"]
     place: Literal["agentrun", "machine"]
     command: str
     can_start: bool
@@ -6635,7 +6635,7 @@ class TurnOnClaudeLoginBody(_TurnOnClaudeLoginBodyRequired, total=False):
 
 
 class _TurnOnClaudeLoginResponseRequired(TypedDict):
-    state: Literal["off", "other_machine", "signed_in", "signed_out", "no_cli", "unknown"]
+    state: Literal["off", "other_machine", "refused", "signed_in", "signed_out", "no_cli", "unknown"]
     place: Literal["agentrun", "machine"]
     command: str
     can_start: bool

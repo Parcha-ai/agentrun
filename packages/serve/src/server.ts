@@ -1609,7 +1609,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // since keys are made and revoked while the server runs, and the login's turn-on takes the keys' turn (oneOwnerDeps).
   const oneOwner = oneOwnerDeps({ apiOnly: options.apiOnly === true, tokens: tokens.length, keysDormant: options.harnessSignIn === true }, apiKeys);
   /** Why this server makes no API key now, in words; undefined when it does. The one-owner rule from its other side: a
-   *  recipe on the owner's own sign-in, and Claude Code's login on this machine while it is on, are one person's. */
+   *  recipe on the owner's own sign-in, and Claude Code's login on this machine while it is on, are one person's. A
+   *  login kept while its folders are refused (the view's `refused`) counts as on: a mended folder brings it back with
+   *  no turn-on, so a key made meanwhile would open the person's plan to an app. Its turn-off removes it, and a key then. */
   const apiKeysRefused = async (): Promise<string | undefined> =>
     options.harnessSignIn ? HARNESS_SIGN_IN_REFUSES_API_KEYS : (await claudeLoginSetting(store.settings)) ? LOGIN_REFUSES_API_KEYS : undefined;
   // Making a key, revoking one and turning the login on each take a turn (ApiKeys.inTurn; the login's is taken in
