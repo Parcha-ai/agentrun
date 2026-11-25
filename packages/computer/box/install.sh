@@ -77,8 +77,11 @@ dial() {
 # gives /workspace to init's user (its --user), 0700, where a synced folder's runner pushes the run's folder. A daemon
 # whose sha256 is not AGENTRUN_DAEMON_SHA256 is removed, and nothing runs. With AGENTRUN_ATTACH_EGRESS, the operator's
 # relay (<IPv4>:<port>), the fetch and attach's dial both connect to the relay and speak TLS and HTTP to the URL's host
-# through it, and attach is given it too. Exits 2 for env missing or a malformed relay, 3 when the fetch failed, 4 for
-# a sha256 mismatch, 5 when init never listened, 6 when /workspace was not made init's user's; else it is
+# through it, and attach is given it too. The fetch is tried again, after 1, 2, 4 then 8 s, on a connection that failed
+# (refused, reset, dropped in TLS, timed out) or an HTTP 5xx, for at most FETCH_S seconds, one line on stderr per retry;
+# an HTTP 4xx is the server's refusal and is never tried again. Exits 2 for env missing or a malformed relay, 3 when the
+# fetch failed, 4 for a sha256 mismatch, 5 when init never listened (init is ended first, so agentrun-dial may be
+# started again), 6 when /workspace was not made init's user's, 7 when the server refused the fetch; else it is
 # `computerd attach` and exits as it does.
 set -euf
 DAEMON=/opt/agentrun/computerd
@@ -87,6 +90,8 @@ SOCKET_DIR=/run/agentrun
 INIT_LOG=/run/agentrun-init.log
 WORKSPACE=/workspace
 OWNER=0:0
+FETCH_S=45
+INIT_WAIT_TENTHS=300
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 for v in AGENTRUN_ATTACH_URL AGENTRUN_ATTACH_TOKEN AGENTRUN_DAEMON_URL AGENTRUN_DAEMON_SHA256 AGENTRUN_INIT_ARGS; do
 	eval "[ -n \"\${$v-}\" ]" || { echo "agentrun-dial: $v is not set; the provider's create sets it" >&2; exit 2; }
@@ -117,10 +122,37 @@ chmod 0755 "${DAEMON%/*}"
 # init's socket is root's alone: whoever can connect to it drives the machine.
 chmod 0700 "$SOCKET_DIR"
 rm -f "$DAEMON.part"
-# The token goes to curl on its stdin, never on a command line, which every user may read in /proc.
-printf 'Authorization: Bearer %s\n' "$AGENTRUN_ATTACH_TOKEN" |
-	curl -fsS --connect-timeout 10 --retry 10 --retry-connrefused --retry-max-time 300 $relay -H @- -o "$DAEMON.part" "$AGENTRUN_DAEMON_URL" ||
-	{ echo "agentrun-dial: fetching the daemon from $AGENTRUN_DAEMON_URL${relay:+ through $AGENTRUN_ATTACH_EGRESS} failed" >&2; rm -f "$DAEMON.part"; exit 3; }
+# One try of the fetch: the HTTP status on stdout, 000 when no answer came. The token goes to curl on its stdin, never on
+# a command line, which every user may read in /proc.
+fetch() {
+	printf 'Authorization: Bearer %s\n' "$AGENTRUN_ATTACH_TOKEN" |
+		curl -sS --connect-timeout 10 --speed-limit 1024 --speed-time 30 $relay -H @- -o "$DAEMON.part" -w '%{http_code}' "$AGENTRUN_DAEMON_URL"
+}
+unfetched() {
+	echo "agentrun-dial: fetching the daemon from $AGENTRUN_DAEMON_URL${relay:+ through $AGENTRUN_ATTACH_EGRESS} failed: $1" >&2
+	rm -f "$DAEMON.part"
+	exit "$2"
+}
+began=$(date +%s)
+try=1
+pause=1
+while :; do
+	code=0
+	answer=$(fetch) || code=$?
+	case "$code:$answer" in
+	0:2??) break ;;
+	0:4??) unfetched "the server answered HTTP $answer" 7 ;;
+	0:5??) why="the server answered HTTP $answer" ;;
+	0:*) unfetched "the server answered HTTP $answer" 3 ;;
+	5:* | 6:* | 7:* | 28:* | 35:* | 52:* | 55:* | 56:*) why="curl exit $code" ;;
+	*) unfetched "curl exit $code" 3 ;;
+	esac
+	[ $(($(date +%s) - began + pause)) -le "$FETCH_S" ] || unfetched "$why, after $try tries" 3
+	echo "agentrun-dial: the daemon fetch's try $try failed ($why); trying again in $pause s" >&2
+	sleep "$pause"
+	try=$((try + 1))
+	[ "$pause" -ge 8 ] || pause=$((pause * 2))
+done
 sum=$(sha256sum "$DAEMON.part" | cut -c1-64)
 if [ "$sum" != "$AGENTRUN_DAEMON_SHA256" ]; then
 	rm -f "$DAEMON.part"
@@ -134,10 +166,19 @@ mv -f "$DAEMON.part" "$DAEMON"
 # DISPLAY, the display init's screen and input methods drive, as the provider's exec start gives it.
 env -i PATH="$PATH" HOME="$HOME_DIR" AGENTRUN_COMPUTERD_SOCKET="$SOCKET_DIR/computerd.sock" ${DISPLAY:+DISPLAY="$DISPLAY"} \
 	setsid sh -c 'cd "$HOME" && exec "$@"' sh "$DAEMON" init $AGENTRUN_INIT_ARGS >"$INIT_LOG" 2>&1 </dev/null &
+# setsid in a background job, never its process group's leader, makes init's own session in place: $! leads it.
+init=$!
 i=0
 until [ -S "$SOCKET_DIR/computerd.sock" ]; do
 	i=$((i + 1))
-	[ "$i" -le 300 ] || { echo "agentrun-dial: init did not listen at $SOCKET_DIR/computerd.sock within 30 s; its log:" >&2; cat "$INIT_LOG" >&2; exit 5; }
+	if [ "$i" -gt "$INIT_WAIT_TENTHS" ]; then
+		echo "agentrun-dial: init did not listen at $SOCKET_DIR/computerd.sock within $((INIT_WAIT_TENTHS / 10)).$((INIT_WAIT_TENTHS % 10)) s; its log:" >&2
+		cat "$INIT_LOG" >&2
+		# init's group exists once setsid has run; until then $! is the start itself, ended by its pid alone.
+		kill -s TERM -- "-$init" 2>/dev/null || :
+		kill -s TERM "$init" 2>/dev/null || :
+		exit 5
+	fi
 	sleep 0.1
 done
 # attach's environment: the URL and token alone, and the relay when given (it dials init at its default socket,
@@ -158,7 +199,7 @@ checked() {
 	rm -rf /etc/sudoers /etc/sudoers.d
 	chown root:root "$HELPER" "$DIAL"
 	chmod 0755 "$HELPER" "$DIAL"
-	for x in /usr/bin/archil /usr/bin/awk /usr/bin/realpath /usr/bin/mount /usr/bin/chown /usr/bin/find /usr/bin/id /usr/bin/ls /usr/bin/curl /usr/bin/setsid /usr/bin/sha256sum; do
+	for x in /usr/bin/archil /usr/bin/awk /usr/bin/realpath /usr/bin/mount /usr/bin/chown /usr/bin/find /usr/bin/id /usr/bin/ls /usr/bin/curl /usr/bin/setsid /usr/bin/sha256sum /usr/bin/date; do
 		[ -x "$x" ] || { echo "the image has no $x" >&2; exit 1; }
 	done
 	! command -v sudo >/dev/null 2>&1 || { echo "the image has sudo" >&2; exit 1; }

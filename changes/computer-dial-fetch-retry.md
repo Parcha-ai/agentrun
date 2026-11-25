@@ -1,0 +1,8 @@
+---
+packages: @parcha/agentrun-computer
+kind: fix
+---
+A dial computer (Daytona's `connect: "dial"`, a desktop among them) now survives one dropped connection on its start, fails fast when it can't start, and says why first.
+- `agentrun-dial` (the box image's, `box/install.sh`) tries its daemon fetch again after a connection that failed (refused, reset, dropped during TLS, timed out) or an HTTP 5xx, after 1, 2, 4 then 8 s, for at most 45 s, writing one line per retry. Before, curl's `--retry` left a TLS EOF (exit 35) or a reset (56) untried, so one bad connection through the relay failed the start. An HTTP 4xx is the server's refusal: it now exits 7 at once, never retried. An init that never listens is ended (its process group, and its start by pid while setsid has not yet made the group) before `agentrun-dial` exits 5. Reaching Daytona needs a box snapshot rebuilt from this recipe (`box/build-daytona.py`, a new `agentrun-box-<recipe hash>`).
+- `MachineHost` takes two optional dial members, `dialExit(id)` (agentrun-dial's exit code once it exited) and `redial(id)` (start it once more, as create did); Daytona's host has both. While create waits for a dial machine's socket, the adapter reads `dialExit`: an `agentrun-dial` that exited fails create at once, `refused`, instead of at `createMs`; exit 3 or 5 starts it once more in the same machine, with a create note naming the first exit; one that runs and keeps writing is waited for past `createMs` in steps of up to 30 s, at most twice `createMs`.
+- A dial failure's words lead with what `agentrun-dial` said ("agentrun-dial said: curl: (35) …; computer-… did not dial …"), then the generic hint, so a copy cut short still names the cause.
