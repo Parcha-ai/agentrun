@@ -984,7 +984,9 @@ const RSA_PEM = generateKeyPairSync("rsa", { modulusLength: 4096, privateKeyEnco
 /** The adversarial texts of `size` characters, each with the held values it is read with, each text stressing a stage:
  *  - the shapes' prefixes and runs;
  *  - each view's decoders over a text of nothing but what they decode: percent-encoded bytes, ASCII and not, "+",
- *    JSON's escapes at one level and two (each kind, back to back), a second level that starts and fails, non-ASCII
+ *    JSON's escapes at one level and two (each kind, back to back), a second level that starts and fails, Python's
+ *    escapes ("\'", "\x41") and a single-quoted dict opened and never closed, named and numeric references (a name
+ *    never closed, zeros as long as the text, no ";"), non-ASCII
  *    stretches for NFKC, characters that render as nothing (zero-width spaces, soft hyphens, both between letters);
  *  - the join view over JSON, well formed and malformed: strings never closed, nesting as deep as the text, strings of
  *    nothing but backslashes;
@@ -1023,6 +1025,12 @@ const adversarial = (size) => {
     `"${fill(B, size - 2)}"`, `"${fill(B, size - 1)}`, f(`"${B}${B}${B}"`), f(`"${B}`), f(`"%41+${B}u0041&#65;",`),
     // The strings join's four views at once: a quote, percent, "+", an escaped quote and an escaped backslash.
     f(`"%41+${B}"${B}${B}n&#65;",`), f(`"a+${B}${B}",`),
+    // The quoted joins (a single-quoted dict's, read once as JSON's escapes and once as Python's): a lone apostrophe, a
+    // name and its value opened and never closed, an apostrophe escaped, and Python's escapes back to back.
+    f("'"), f("'a': '"), f(`'${B}`), f(`'a${B}'b${B}x41${B}${B}',`), f(`${B}x4`),
+    // Named and numeric references: whole, a name never closed, a zero, one with no ";", zeros as long as the text, and
+    // "+" in a quoted JSON text with a reference.
+    f("&amp;"), f("&ampx"), f("&#0"), f("&#65"), `&#${fill("0", size - 2)}`, f('"a&#65;+",'),
   ];
   return [
     ...[...shapes, ...views].map((text) => ({ text, values: [CUT_KEY] })),
