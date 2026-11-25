@@ -261,8 +261,9 @@ const literal = (text: string) => `{${Buffer.byteLength(text, "utf8")}}${CRLF}${
 /** Starts the fake account's two servers on loopback. `layout`: the folders it has (default a plain account's); the Gmail
  *  layout's server says X-GM-EXT-1. `now`: its clock. `slowInReplyTo`: a search by HEADER In-Reply-To is never answered,
  *  as Gmail's on a large mailbox (it indexes Message-ID and References, not In-Reply-To). `password`: the one it signs in
- *  with (default a fresh random one). */
-export async function startEmailFaux(options: { imapPort?: number; smtpPort?: number; layout?: Layout; now?: () => Date; slowInReplyTo?: boolean; password?: string } = {}): Promise<EmailFaux> {
+ *  with (default a fresh random one). `trailingDelimiter`: every mailbox name a command gives is read without one
+ *  trailing `/`, as CREATE always reads it, so `Sent/` is Sent (a server that maps a name onto another's). */
+export async function startEmailFaux(options: { imapPort?: number; smtpPort?: number; layout?: Layout; now?: () => Date; slowInReplyTo?: boolean; password?: string; trailingDelimiter?: boolean } = {}): Promise<EmailFaux> {
   // Its clock: a seeded message's default date and an appended one's arrival (a template eval case's `now`, else the real one).
   const now = options.now ?? (() => new Date());
   const user = "agent@faux.example";
@@ -275,7 +276,10 @@ export async function startEmailFaux(options: { imapPort?: number; smtpPort?: nu
   const gmail = options.layout === "gmail";
   const capabilities = gmail ? GMAIL_CAPABILITIES : CAPABILITIES;
   const boxes: Box[] = layoutOf(options.layout ?? "standard").map((box, i) => ({ name: box.name, flags: box.flags, selectable: box.selectable !== false, uidValidity: 1000 + i, uidNext: 1, messages: [] }));
-  const boxNamed = (name: string): Box | undefined => boxes.find((box) => (name.toUpperCase() === "INBOX" ? box.name === "INBOX" : box.name === name));
+  const boxNamed = (given: string): Box | undefined => {
+    const name = options.trailingDelimiter ? given.replace(/\/$/, "") : given;
+    return boxes.find((box) => (name.toUpperCase() === "INBOX" ? box.name === "INBOX" : box.name === name));
+  };
   /** "Drafts" and "Sent" name the layout's special-use folder; any other name its folder. */
   const resolve = (name: string): Box | undefined => {
     const special = { drafts: "\\Drafts", sent: "\\Sent" }[name.replace(/^\\/, "").toLowerCase()];

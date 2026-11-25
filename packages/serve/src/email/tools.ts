@@ -494,8 +494,9 @@ const INBOX_LABEL = "\\Inbox";
 /** The message `id` filed under `to`: a Gmail label (archive: true takes its \Inbox label off too), else a move to the
  *  folder `to`, created if missing, with no archive or archive: true. Never a delete: the trash and junk folders are
  *  refused before anything is touched; and an explicit archive: false never takes mail out of the inbox. Never into Sent
- *  or Drafts either (KEPT, or the folder flagged \Sent or \Drafts): a message filed there would read as the account's
- *  own sent mail to the never-written-to check. */
+ *  or Drafts either (KEPT, or the folder flagged \Sent or \Drafts; and once made, only into a mailbox the server lists
+ *  by exactly that name: listedExactly): a message filed there would read as the account's own sent mail to the
+ *  never-written-to check. */
 async function file(mail: Mail, args: Record<string, unknown>) {
   const id = messageId(text(args, "message_id", 998, true)!);
   const to = text(args, "to", 300, true)!.trim();
@@ -515,6 +516,7 @@ async function file(mail: Mail, args: Record<string, unknown>) {
     const done = (archived: boolean, note?: string) => ({ filed: true, message_id: id, to, archived, subject: found.subject, ...(note ? { note } : {}) });
     if (session.can("X-GM-EXT-1")) {
       await session.ensure(to);
+      await listedExactly(session, to, kept);
       await session.select(found.mailbox);
       await session.label(found.uid, [to]);
       const leaves = args.archive === true && found.mailbox.toUpperCase() === "INBOX";
@@ -525,11 +527,23 @@ async function file(mail: Mail, args: Record<string, unknown>) {
     // does; an explicit archive: false never takes mail out of the inbox.
     if (args.archive === false) throw new BadArgs(FOLDERS_REFUSAL);
     await session.ensure(to);
+    await listedExactly(session, to, kept);
     await session.select(found.mailbox);
     await session.move(found.uid, to);
     // The answer says the move: the model reads the answer, not the timeline.
     return done(true, `moved out of the inbox to ${to}`);
   });
+}
+
+/** Once `to` is made (ImapSession.ensure), that the server lists a mailbox of exactly that name (INBOX in any case), and
+ *  that it is neither Sent nor Drafts, by its flag or as ImapSession.resolve reads them: a server may take a name as
+ *  another's (CREATE may drop a trailing hierarchy delimiter, so `Sent/` is Sent; an alias), and the names alone
+ *  can't say so. Otherwise nothing is filed: `kept()`'s refusal for Sent or Drafts, else one that says the name. */
+async function listedExactly(session: ImapSession, to: string, kept: () => Error): Promise<void> {
+  const box = (await session.mailboxes()).find((one) => one.path === to || (to.toUpperCase() === "INBOX" && one.path.toUpperCase() === "INBOX"));
+  if (!box) throw new MailError("failed", `the mail server lists no mailbox named exactly ${JSON.stringify(to)} once it is made, so nothing was filed: give the folder's name as the server lists it.`);
+  const special = await Promise.all(["Sent", "Drafts"].map((name) => session.resolve(name).catch(() => undefined)));
+  if (box.specialUse === "\\Sent" || box.specialUse === "\\Drafts" || special.includes(box.path)) throw kept();
 }
 
 const STRING = { type: "string" };

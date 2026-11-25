@@ -3217,7 +3217,8 @@ of ASCII letters only (a Unicode look-alike such as the Kelvin sign for K is ano
 goes. Some servers (Exchange and Outlook among them) keep no Bcc header on a Sent copy over IMAP, so there an address
 only ever Bcc'd asks. Mail received from someone doesn't count, so a scheduled run replying to a first-time sender asks
 once; nor does a draft or someone else's message in Sent, and `email_file` refuses Sent and Drafts as targets, so a run
-can't file its own evidence there. Mail sent from a "send as" alias is filed from that alias, so a send to its
+can't file its own evidence there. Once it has made a folder, `email_file` files only into a mailbox the server lists
+by exactly the name given, so a name the server takes as another's (`Sent/` read as Sent) files nothing. Mail sent from a "send as" alias is filed from that alias, so a send to its
 recipients asks. The new-address check never asks about the account's own address or an address the run already sent
 to (unasked or approved). On a thread-scoped email run it doesn't ask about the thread's starter (the From of the
 message that started the run) either, but only when the receiving mail server vouched for that From: the message's

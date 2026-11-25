@@ -163,6 +163,26 @@ test("the Sent and Drafts folders are refused, by name or special use, and nothi
   }
 });
 
+test("a name the server takes as Sent's or Drafts' (Sent/ and Drafts/, a trailing delimiter dropped) is refused once the server lists no mailbox of that exact name, and nothing moves; a folder it lists as named still files", { timeout: 150_000 }, async (t) => {
+  const { api } = await serve(t, { faux: FAUX_EMAIL });
+  const faux = await mailbox(t, { trailingDelimiter: true });
+  faux.seed({ from: "ana@example.com", to: [ADDRESS, "eve@example.com"], subject: "Keep me", messageId: "<s1@example.com>" });
+  await saved(api, faux);
+  assert.equal((await api("POST", "/agents", mailAgent("mapper"))).status, 201);
+  const { saw } = await ran(api, "mapper", [
+    ["email_file", { message_id: "<s1@example.com>", to: "Sent/" }],
+    ["email_file", { message_id: "<s1@example.com>", to: "Drafts/" }],
+    ["email_file", { message_id: "<s1@example.com>", to: "Receipts" }],
+  ]);
+  for (const [i, to] of [[0, "Sent/"], [1, "Drafts/"]]) {
+    assert.equal(String(saw[i]), `email_file: the mail server lists no mailbox named exactly "${to}" once it is made, so nothing was filed: give the folder's name as the server lists it.`, `${to}: ${JSON.stringify(saw[i])}`);
+  }
+  assert.deepEqual([faux.messages("Sent").length, faux.messages("Drafts").length], [0, 0], "nothing was filed into Sent or Drafts");
+  assert.ok(!faux.commands().some((c) => /MOVE .*(Sent|Drafts)\//i.test(c)), faux.commands().join("\n"));
+  assert.equal(saw[2]?.filed, true, `a folder the server lists as named files: ${JSON.stringify(saw[2])}`);
+  assert.deepEqual(faux.messages("Receipts").map((m) => m.messageId), ["<s1@example.com>"]);
+});
+
 test("a run an email started files only within its thread; `scope: \"mailbox\"` on email_file widens it", { timeout: 150_000 }, async (t) => {
   const clock = fakeClock("2026-06-01T00:00:30Z");
   const { api } = await serve(t, { faux: FAUX_EMAIL, triggerClock: clock });
