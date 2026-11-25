@@ -16,9 +16,10 @@
 // run's all-in (its booked cost, the workflow and any handback's agent work together, and every learning round booked
 // for it), and the by-hand cost is the job's own cost of the agent's runs on its own path among the same runs (its newest
 // PAST_RUNS on no named disk since its learning's reset), so a compile turn is never by hand: it is its revision's spend. A run
-// whose cost is unknown is left out of its side's mean and counted, never read as 0. Over that line it stops running
-// first: the agent takes the run, the run's journal keeps why with the two numbers (WORKFLOW_FIRST, outcome
-// needs_revision), and the agent's cost per run shows it stopped. The stop asks for no compile. A new revision of it (a
+// whose cost is unknown is left out of its side's mean and counted, never read as 0. Over that line it stops, whoever
+// made its calls: it no longer runs first, the agent's own learned_workflow tool leaves it out (toolStopsOf), the run's
+// journal keeps why with the two numbers (WORKFLOW_FIRST, outcome needs_revision), and the agent's cost per run shows it
+// stopped. The stop asks for no compile. A new revision of it (a
 // new digest: one its hold asked, or its owner's) serves again from zero. Fewer than
 // COST_WINDOW served runs, or no by-hand cost at all (said in the log): it serves. Past runs it can't read: it fails
 // closed, the agent takes the run (said in the log). Every input is the run record's path
@@ -162,7 +163,8 @@ export function workflowCostsOf(past: PastRuns): { workflow: string; digest: str
  *  `none_fit`, no laid workflow (nor a champion in place of one) takes its input; `many_fit`, more than one laid
  *  workflow does; `not_promoted`, the one that does is not promoted, nor a champion of it; `champion_misfit`, its
  *  champion does not take the input; `many_champions`, more than one champion does; `cost_stop`, the money rule
- *  stopped it (costLineOf); `past_unread`, the money rule could not read the agent's past runs, and fails closed: the
+ *  stopped it (costLineOf), or, nothing else served or stopped first, one the agent's own tool would run (toolStopsOf:
+ *  runner/learned-first.ts); `past_unread`, the money rule could not read the agent's past runs, and fails closed: the
  *  agent takes the run; `held`, a check refused the claim's workflow and nothing serves this claim. */
 export const FIRST_REASONS = ["served", "replay", "replay_missing", "none_laid", "off", "none_fit", "many_fit", "not_promoted", "champion_misfit", "many_champions", "cost_stop", "past_unread", "held"] as const;
 export type FirstReason = (typeof FIRST_REASONS)[number];
@@ -381,10 +383,41 @@ export function firstChoice(facts: FirstFacts): FirstAsk | FirstChosen {
     return done("served", serve);
   }
   if (!overLine(line)) return done("served", serve);
-  const revise = { workflow: chosen.name, digest, served_usd: line.served.mean_usd!, by_hand_usd: line.by_hand.mean_usd, runs: line.served.runs, revision: launch.learning.seed, ...shaped };
+  const { stop, words } = stopOf(chosen.name, digest, line);
+  said.push(`workflow-first: ${words}; it does not run first until a new revision of it; the agent takes this run`);
+  return done("cost_stop", { ...champion, revise: { ...stop, revision: launch.learning.seed, ...shaped } });
+}
+
+/** The money rule's stop of workflow `name` at `digest` over its line (one overLine holds), and the words it is said in. */
+function stopOf(name: string, digest: string, line: ReturnType<typeof costLineOf>): { stop: Revise; words: string } {
+  const stop = { workflow: name, digest, served_usd: line.served.mean_usd!, by_hand_usd: line.by_hand!.mean_usd, runs: line.served.runs };
   const unknown = line.unknown_runs ? ` (${line.unknown_runs} run${line.unknown_runs === 1 ? "" : "s"} of unknown cost left out)` : "";
-  said.push(`workflow-first: ${chosen.name} cost $${revise.served_usd} a run over its last ${revise.runs} served runs, at or over $${revise.by_hand_usd} by hand (served all-in, by hand the job's own, over the same runs)${unknown}; it does not run first until a new revision of it; the agent takes this run`);
-  return done("cost_stop", { ...champion, revise });
+  return { stop, words: `${name} cost $${stop.served_usd} a run over its last ${stop.runs} served runs, at or over $${stop.by_hand_usd} by hand (served all-in, by hand the job's own, over the same runs)${unknown}` };
+}
+
+/** The money rule over the learned workflows a run's own learned_workflow tool runs (`flows`, runner/promotion.ts
+ *  toolFlowsFor), whoever would call them: one over the line at the digest the tool runs (costLineOf over the agent's
+ *  runs, `past`, overLine) leaves the tool (`flows`), and is a stop that asks for its revision (`stops`, Revise), as
+ *  firstChoice's cost_stop is for the platform's call. Past runs it can't read (`unread`) leave the tool none: it fails
+ *  closed, as firstChoice does. `said`: the log lines. Pure. */
+export function toolStopsOf(past: PastRuns | { readonly unread: string }, flows: readonly LearnedWorkflow[]): { flows: LearnedWorkflow[]; stops: Revise[]; said: string[] } {
+  if (!flows.length) return { flows: [], stops: [], said: [] };
+  if ("unread" in past) return { flows: [], stops: [], said: [`workflow-first: the money rule could not read the agent's past runs (${past.unread}); the learned_workflow tool runs none of ${flows.map((one) => one.name).join(", ")}`] };
+  const kept: LearnedWorkflow[] = [];
+  const stops: Revise[] = [];
+  const said: string[] = [];
+  for (const flow of flows) {
+    const digest = workflowDigest(flow);
+    const line = costLineOf(past, flow.name, digest);
+    if (!overLine(line)) {
+      kept.push(flow);
+      continue;
+    }
+    const { stop, words } = stopOf(flow.name, digest, line);
+    stops.push(stop);
+    said.push(`workflow-first: ${words}; the learned_workflow tool leaves it out until a new revision of it`);
+  }
+  return { flows: kept, stops, said };
 }
 
 /** What a run's workflow-first step did, from its root entries (the WORKFLOW_FIRST entry): the workflow, its digest, the

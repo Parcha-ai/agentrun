@@ -190,9 +190,9 @@ export interface AdapterRunSpec {
    *  run once through the session's own learned_workflow tool (its gate, record, ledger and cap), its answer the run's
    *  answer, or its handback the agent's first input. Absent: the agent takes the run from its first turn. */
   readonly workflowFirst?: WorkflowFirst;
-  /** The learned workflow that fits the run but that the money rule stopped from running first (workflow-first.ts
-   *  costLineOf): the loop keeps why on the root (WORKFLOW_FIRST, outcome needs_revision, the two numbers) as the agent
-   *  takes the run. The stop asks for no revision. */
+  /** The learned workflow the money rule stopped (workflow-first.ts costLineOf): one that fits the run, or one the
+   *  agent's own tool would run (toolStopsOf), which its tool then leaves out: the loop keeps why on the root
+   *  (WORKFLOW_FIRST, outcome needs_revision, the two numbers) as the agent takes the run. The stop asks for no compile. */
   readonly workflowRevise?: WorkflowRevise;
   /** The run's end-of-run step, when its spec builds one (over the per-claim resources it holds, its Archil claim among
    *  them): it wins over LoopDeps.endOfRun and is asked where that one is, in the end turn while the claim is held, before
@@ -2957,12 +2957,6 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           memo: async (_key, value) => (typeof value === "function" ? value() : value),
         });
         const serveFirst = async (first: WorkflowFirst): Promise<Served | "park" | undefined> => {
-          // The session's learned_workflow as this loop wraps a tool, but nesting nothing of the harness's: a call a crash
-          // cut is ended interrupted and handed back, never run again (its record's start is not marked `nests`).
-          const bare = spec.session.tools.find((tool) => tool.name === LEARNED_WORKFLOW_TOOL);
-          if (!bare || !tools.some((tool) => tool.name === LEARNED_WORKFLOW_TOOL)) return undefined;
-          const { nests: _nests, ...plain } = bare;
-          const learned = hosted(plain);
           const [on, theRoot, theGate] = [harness!, root!, gate!];
           const args = { name: first.name, input: first.input };
           const call = { callId: WORKFLOW_FIRST_CALL, tool: LEARNED_WORKFLOW_TOOL, args };
@@ -2983,8 +2977,15 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           const recorded = (end: NonNullable<typeof ended>) => ({ text: end.output ?? (end.status === "interrupted" ? endedAnswer(LEARNED_WORKFLOW_TOOL, end).text : ""), isError: end.status !== "done" });
           if (kept?.outcome === "answered") return { outcome: "answered", text: ended?.output ?? "" };
           // Handed back on an earlier claim whose handback never reached the agent (the session is still new): sent now, in
-          // the words that claim would have sent (its why included).
+          // the words that claim would have sent (its why included), with or without the tool now (the money rule may have
+          // taken the workflow off it since: workflow-first.ts toolStopsOf).
           if (kept) return job(ended ? taken(recorded(ended)).text : "");
+          // The session's learned_workflow as this loop wraps a tool, but nesting nothing of the harness's: a call a crash
+          // cut is ended interrupted and handed back, never run again (its record's start is not marked `nests`).
+          const bare = spec.session.tools.find((tool) => tool.name === LEARNED_WORKFLOW_TOOL);
+          if (!bare || !tools.some((tool) => tool.name === LEARNED_WORKFLOW_TOOL)) return undefined;
+          const { nests: _nests, ...plain } = bare;
+          const learned = hosted(plain);
           if (!ended) {
             // A deny before anything is written leaves the run its agent's, as if the workflow were not there.
             const before = await spec.gate?.({ callId: call.callId, tool: call.tool as never, args });
