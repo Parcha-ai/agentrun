@@ -38,6 +38,20 @@ export const recordIndex = (slots = 1024): RecordIndex => ({
   numbers: new Map(),
 });
 
+/** Every typed array `index` holds, its slots' tags with them when its tables have any: what a worker moves to the main
+ *  thread with the index (pool-worker.ts), and what the pool counts it holding (pool.ts). */
+export const indexArrays = ({ uuids, others }: RecordIndex): (Int32Array | Uint8Array | Float64Array)[] => [
+  uuids.slots,
+  uuids.owners,
+  uuids.words,
+  ...(uuids.tags ? [uuids.tags] : []),
+  others.slots,
+  others.owners,
+  others.ends,
+  others.bytes,
+  ...(others.tags ? [others.tags] : []),
+];
+
 /** The number of `locator` in `index`, given one when it has none. */
 export function locatorNumber(index: RecordIndex, locator: string): number {
   let n = index.numbers.get(locator);

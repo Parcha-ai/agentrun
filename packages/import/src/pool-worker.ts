@@ -5,7 +5,7 @@
 // is in mine), so the read is the one it would have made.
 import { parentPort, workerData } from "node:worker_threads";
 import { type Packed, packed, packInto } from "./record-key.js";
-import { addNew, addRecord, ownerOf, recordIndex } from "./record-index.js";
+import { addNew, addRecord, indexArrays, ownerOf, recordIndex } from "./record-index.js";
 import { DROPS_CURSOR, type InternalReadOptions, NO_READ_AHEAD } from "./internal.js";
 import { READERS } from "./readers/index.js";
 import type { Locator } from "./reader.js";
@@ -15,8 +15,9 @@ export type PoolAsk = { id: number; source: string; locator: Locator };
 /** The longest line this worker decodes (pool.ts sets it from the heap cap): a file with a longer one is handed back. */
 const { maxLine } = workerData as { maxLine: number };
 
-const buffers = (index: ReturnType<typeof recordIndex>): ArrayBuffer[] =>
-  [index.uuids.slots, index.uuids.owners, index.uuids.words, index.others.slots, index.others.owners, index.others.ends, index.others.bytes].map((a) => a.buffer as ArrayBuffer);
+/** The index's arrays, moved with the reply rather than copied (its tags too: a copy is made on this thread and again on
+ *  parseHome's, which every read passes through). */
+const buffers = (index: ReturnType<typeof recordIndex>): ArrayBuffer[] => indexArrays(index).map((a) => a.buffer as ArrayBuffer);
 
 parentPort!.on("message", async ({ id, source, locator }: PoolAsk) => {
   const reader = (READERS as Record<string, (typeof READERS)[keyof typeof READERS]>)[source]!;
