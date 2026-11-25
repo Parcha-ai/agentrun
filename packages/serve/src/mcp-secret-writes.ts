@@ -87,9 +87,11 @@ export async function tokenWriteOverRefused(_body: unknown, request: SecretReque
 export const MCP_SECRET_OPERATIONS = ["saveMcpServer", "startMcpOAuth", "putMcpPrivateHosts", "deleteMcpServer"] as const;
 const STORED: Partial<Record<(typeof MCP_SECRET_OPERATIONS)[number], (body: unknown, request: SecretRequest) => Promise<boolean>>> = { saveMcpServer: tokenWriteOverRefused, deleteMcpServer: tokenWriteOverRefused };
 for (const operation of MCP_SECRET_OPERATIONS) registerSecretWrite(operation, (body) => mcpWritesSecret(operation, body), STORED[operation]);
-// The Composio preset takes the owner's API key and seals it as an MCP header: both routes are the owner's session alone,
-// whatever the body (the listing sends the key too, and only the session may type one).
+// The Composio preset takes the owner's API key and seals it as an MCP header: its routes are the owner's session alone,
+// whatever the body (the listings, of a toolkit's actions and of the toolkits, send the key too, and only the session may
+// type one).
 registerSecretWrite("listComposioTools", () => true);
+registerSecretWrite("listComposioToolkits", () => true);
 registerSecretWrite("saveComposioServer", composioSaveSendsKey, composioSaveDropsSecret);
 // A save's body that sends a key's value, or anything but api_key_env alone in its place: a secret written.
 function composioSaveSendsKey(body: unknown): boolean {
@@ -199,4 +201,4 @@ export const mcpSecretPage = (operation: string) => async (body: unknown, reques
 };
 
 for (const operation of ["saveMcpServer", "startMcpOAuth", "listComposioTools", "saveComposioServer"]) registerSecretPage(operation, mcpSecretPage(operation));
-registerSecretPage(["putMcpPrivateHosts", "deleteMcpServer", "rotateComposioSecret", "deleteComposioSubscription"], MCP_PAGE);
+registerSecretPage(["putMcpPrivateHosts", "deleteMcpServer", "rotateComposioSecret", "deleteComposioSubscription", "listComposioToolkits"], MCP_PAGE);

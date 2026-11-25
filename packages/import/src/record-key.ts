@@ -91,9 +91,3 @@ export function packInto(key: string, out: Packed): Packed {
   out.length = 1 + key.length * 2;
   return out;
 }
-
-/** `key` packed, as bytes of its own. */
-export const packKey = (key: string): Uint8Array => {
-  const { bytes, length } = packInto(key, packed());
-  return bytes.slice(0, length);
-};
