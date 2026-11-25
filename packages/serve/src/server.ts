@@ -1520,14 +1520,24 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // not (its runners on other hosts, AGENTRUN_RUNNER_HOSTS), so the tick runs on both. It does nothing while no computer
   // is paired; with a runner beside it, nothing past its one read of the routes while no route row is there and no box
   // is relayed (computer-attach.ts tick).
+  // The ticks still running, so a failed start waits them out before its store closes.
+  const routeTicks = new Set<Promise<void>>();
   const routeTick = options.apiOnly !== true
-    ? setInterval(() => void attach.tick().catch((error: unknown) => attachLog("computer_route_tick_failed", { error: error instanceof Error ? error.message : String(error) })), PAIRED_ROUTE_MS)
+    ? setInterval(() => {
+      const ticked: Promise<void> = attach.tick()
+        .catch((error: unknown) => attachLog("computer_route_tick_failed", { error: error instanceof Error ? error.message : String(error) }))
+        .finally(() => void routeTicks.delete(ticked));
+      routeTicks.add(ticked);
+    }, PAIRED_ROUTE_MS)
     : undefined;
   routeTick?.unref();
   // A start that fails after this point clears it as the close does. Each timer's stop goes first (unshift), ahead of
-  // the store's close: a failed start stops its timers and waits out their sweeps, then closes the store, so no tick or
-  // sweep ever reads a store that is closing.
-  stops.unshift(async () => clearInterval(routeTick));
+  // the store's close: a failed start stops its timers and waits out their ticks and sweeps, then closes the store, so
+  // no tick or sweep ever reads a store that is closing.
+  stops.unshift(async () => {
+    clearInterval(routeTick);
+    await Promise.all(routeTicks);
+  });
   // This server's own key on every environment it reads its secrets from, so a reader opens what this store holds with the
   // key checked against it, never another data directory's that this process booted too (secrets.ts holds one made key).
   const own = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => withSealKey(env, seal.text);
