@@ -70,6 +70,7 @@ export function BuildAgent({ origin, v2, caps }: { origin: string; v2: Pick<Clie
     <header className="text-center">
       <h1 id={`${id}-heading`} className="text-2xl font-semibold leading-tight tracking-tight md:text-display">What do you want to build?</h1>
       <p className="mt-3 text-base text-muted-foreground">Describe your agent, or pick a template to start from.</p>
+      <p className="mt-2 text-small text-muted-foreground">Or <a href="#/agents/new?editor" className="underline underline-offset-2 hover:text-foreground">set one up in the editor</a>: an agent, a Decision or a Workflow, step by step.</p>
     </header>
     <div className="mt-8">
       <div className={cn(fieldBoxClass, "!rounded-composer overflow-hidden bg-card transition-colors")} data-agent-composer>

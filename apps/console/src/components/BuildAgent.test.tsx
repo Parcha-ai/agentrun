@@ -78,6 +78,8 @@ describe("Build agent page", () => {
   it("starts with the composer and every server template, including custom packages", async () => {
     await mount();
     expect(host.querySelector("h1")?.textContent).toBe("What do you want to build?");
+    // The editor, creating, is where a Decision or a Workflow agent is made: Build links it.
+    expect(host.querySelector('a[href="#/agents/new?editor"]')?.textContent).toBe("set one up in the editor");
     expect(host.querySelector<HTMLTextAreaElement>('textarea[placeholder]')?.value).toBe("");
     expect(button("Build an agent")).toBeDefined();
     expect(host.querySelectorAll("article")).toHaveLength(7);

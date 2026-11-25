@@ -3,7 +3,8 @@
 // Its create is not refused for that: a benchmark's held run only calls the computer and lets it go, and never needs the
 // model. The words the create would have said ride the run's launch (hold.refused): its start and every message are
 // refused in them (409 agent_not_runnable), and its computer still takes calls until the release or the hold's lapse.
-// Any other blocker still refuses the create, and so does a model gateway with no key here (422 model_key_required).
+// Any other blocker still refuses the create. On a model gateway with no key here it makes no model call, so it needs no
+// key, and a key handed with it is refused as never used.
 // The create resolves no model for such a run: its launch pins none.
 //
 // Its claim chooses no model and reads no key, on pi (adapter-run-spec.ts) and on every CLI harness (cli-run-spec.ts):
@@ -35,7 +36,7 @@ import { fakeComputer } from "./workspace-fake-computer.mjs";
 const { message, prepareLaunch } = await import("../dist/runs-over-store.js");
 const { openFeedbackRound } = await import("../dist/runner/feedback-round.js");
 const { journalHeld } = await import("../dist/runner/held-run.js");
-const { heldIn } = await import("../dist/computer-held.js");
+const { heldIn, HOLD_MINUTES } = await import("../dist/computer-held.js");
 const { CALL_KIND } = await import("../dist/computer-channel.js");
 const { ApiError } = await import("../dist/errors.js");
 const { routeOf } = await import("../dist/runner/model-route.js");
@@ -43,10 +44,11 @@ const { heldRefusedRoute } = await import("../dist/runner/adapter-run-spec.js");
 const { cliRunSpecFromLaunch } = await import("../dist/runner/cli-run-spec.js");
 const { claimSecrets, MODEL_KEY_NAMES } = await import("../dist/runner/claim-secrets.js");
 const { childLoops, heldFor } = await import("../dist/runner/run-child-host.js");
-const { launchBody } = await import("../dist/run-launch.js");
+const { launchBody, readLaunchBody } = await import("../dist/run-launch.js");
+const { heldRoute } = await import("../dist/computer-held-routes.js");
 const { saveGateway } = await import("../dist/model-gateway.js");
 const { claudeOf, codexOf, opencodeOf, CODEX_STANDIN_ENV, OPENCODE_STANDIN_ENV } = await import("../dist/adapters.js");
-const { openSqliteStore } = await import("../dist/store/index.js");
+const { openSqliteStore, sealMcpCredential } = await import("../dist/store/index.js");
 const { blockersOf } = await import("../dist/runnable.js");
 const { startModelProxy } = await import("@parcha/agentrun-kernel/host");
 
@@ -169,8 +171,10 @@ const loadedSdk = async (version) => ({ sdk: { query() {} }, sdkVersion: version
 /** A claim of an opencode run of the revision model `openai/gpt-6.1-sol` on a runner with no model key, its spec built as
  *  the runner builds a CLI harness's (cli-run-spec.ts cliRunSpecFromLaunch) on the opencode stand-in and no computer (a
  *  runner place). `hold`: the launch's; `extra`: more of its launch (a replay's); `host`: more of the runner's environment,
- *  the runner's model route (`routeOf`, which a CLI run's own model never takes), and `watch`, given the runner's store
- *  before the spec is built. Resolves to the spec; rejects as the claim fails. */
+ *  and the runner's model route (`routeOf`, which a CLI run's own model never takes); `host.body`, more of the revision's
+ *  body (its grants), `host.mcpPin`, the pin its save made, `host.before`, called with the server's store before the run
+ *  is made (a test saves an MCP server there), and `host.watch`, given the runner's store before the spec is built (a
+ *  test watches its reads there). Resolves to the spec; rejects as the claim fails. */
 async function cliClaim(t, hold, extra = {}, host = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "held-model-key-cli-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
@@ -184,7 +188,8 @@ async function cliClaim(t, hold, extra = {}, host = {}) {
     await server.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
   });
-  await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", harness: "opencode", model: "openai/gpt-6.1-sol", tools: ["read"] } });
+  await host.before?.(server);
+  await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", harness: "opencode", model: "openai/gpt-6.1-sol", tools: ["read"], ...host.body }, ...(host.mcpPin ? { mcpPin: host.mcpPin } : {}) });
   const launch = { input: { content: "Do the task." }, title: "t", place: { mode: "runner" }, harness: "opencode", ...(hold ? { hold } : {}), ...extra };
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await server.flush?.();
@@ -357,45 +362,44 @@ test("create (prepareLaunch): a held run whose model was refused resolves no mod
   assert.equal(held.launch.hold?.refused, undefined, "its hold carries no refusal");
 });
 
-test("served, a model gateway with no key here: a held run whose model was refused at its create is still refused 422 model_key_required, in the words any run there gets, and no computer is opened", async (t) => {
+test("served, a model gateway with no key here: a held run whose model was refused at its create opens with no key, and one handed a key is refused as never used", async (t) => {
   const seam = claimSeam();
   // A gateway on loopback that nothing listens on: nothing here asks it. No price is set, so its model has none.
   withEnv(t, {}, ["AGENT_MODEL_PRICE"]);
   const { api } = await keylessServer(t, seam, { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9" });
   assert.equal((await api("POST", "/agents", agent("gw", { model: "agent-model/not-a-catalog-model", computer: SANDBOX }))).status, 201, "the gateway agent saves");
   const input = { content: "Do the task." };
-  const wordsOf = (error) => ({ code: error?.code, message: error?.message, fields: error?.fields });
 
-  // The words: a held run whose model is fine (uncapped, the gateway's model runs unpriced) is refused for the key alone.
+  // A held run whose model is fine (uncapped, the gateway's model runs unpriced) is refused for the key alone.
   const fine = await api("POST", "/agents/gw/runs", { input, hold: true });
   assert.deepEqual([fine.status, fine.body.error?.code], [422, "model_key_required"], `a held run on a gateway with no key is refused at its create: ${JSON.stringify(fine.body)}`);
   // Under a cap the gateway's model has no price: a model blocker. Not held, the run check refuses it, as before.
   const unheld = await api("POST", "/agents/gw/runs", { input, max_cost_usd: 1 });
   assert.deepEqual([unheld.status, unheld.body.error?.code], [409, "agent_not_runnable"], `the cap's unpriced model refuses a run that is not held: ${JSON.stringify(unheld.body)}`);
   assert.match(unheld.body.error.message, /has no price here/, "the refusal is the model's");
-  // Held, that refusal is deferred and the launch pins no model; its revision's model still keys it: 422, as above.
+  // Held, that refusal is deferred and the launch pins no model: the run makes no model call, so it needs no key and opens.
   const refused = await api("POST", "/agents/gw/runs", { input, hold: true, max_cost_usd: 1 });
-  assert.deepEqual([refused.status, refused.body.error?.code], [422, "model_key_required"], `a held run whose model was refused at its create is still refused 422 model_key_required on a gateway with no key: ${JSON.stringify(refused.body)}`);
-  assert.deepEqual(wordsOf(refused.body.error), wordsOf(fine.body.error), "in the same words and fields any run there gets");
-  assert.deepEqual((await api("GET", "/agents/gw/runs")).body.runs, [], "no run was made");
-  assert.equal(seam.count.opened, 0, "no computer was opened for it");
-
-  // Handed a model key, the same held run opens: the key fits the gateway its revision's model goes to. A message to it,
-  // with a key too, is refused in its create's words, never first for the key (its launch pins no model to check it on).
-  const keyed = await api("POST", "/agents/gw/runs", { input, hold: true, max_cost_usd: 1, model_key: GATEWAY_KEY });
-  assert.equal(keyed.status, 202, `a held run handed a key for the gateway opens: ${JSON.stringify(keyed.body)}`);
+  assert.equal(refused.status, 202, `a held run whose model was refused at its create opens on a gateway with no key: ${JSON.stringify(refused.body)}`);
   await seam.claimed;
   // The claim asked for its computer; the owner's call goes through its runner, so its answer comes once the hold is up.
-  const call = await api("POST", `/runs/${keyed.body.run_id}/computer/call`, { method: "files.list", params: { path: "/workspace" } });
-  await withRunRead(api, keyed.body.run_id, () => assert.deepEqual([call.status, call.body.ok], [200, true], `the owner's call reaches the held computer: ${JSON.stringify(call.body)}`));
-  const sent = await api("POST", `/runs/${keyed.body.run_id}/messages`, { content: "Go on.", model_key: GATEWAY_KEY });
-  await withRunRead(api, keyed.body.run_id, () => {
+  const call = await api("POST", `/runs/${refused.body.run_id}/computer/call`, { method: "files.list", params: { path: "/workspace" } });
+  await withRunRead(api, refused.body.run_id, () => assert.deepEqual([call.status, call.body.ok], [200, true], `the owner's call reaches the held computer: ${JSON.stringify(call.body)}`));
+  // A message to it, with a key, is refused in its create's words, never first for the key.
+  const sent = await api("POST", `/runs/${refused.body.run_id}/messages`, { content: "Go on.", model_key: GATEWAY_KEY });
+  await withRunRead(api, refused.body.run_id, () => {
     assert.deepEqual([sent.status, sent.body.error?.code], [409, "agent_not_runnable"], `a message with a key to a held run whose model was refused is refused as its start is: ${JSON.stringify(sent.body)}`);
     assert.equal(sent.body.error.message, unheld.body.error.message, "in the words its create would have given");
   });
-  const release = await api("POST", `/runs/${keyed.body.run_id}/computer/release`, {});
-  await withRunRead(api, keyed.body.run_id, () => assert.deepEqual([release.status, release.body], [200, { held: { state: "released" } }], `its release lets the computer go: ${JSON.stringify(release.body)}`));
+  const release = await api("POST", `/runs/${refused.body.run_id}/computer/release`, {});
+  await withRunRead(api, refused.body.run_id, () => assert.deepEqual([release.status, release.body], [200, { held: { state: "released" } }], `its release lets the computer go: ${JSON.stringify(release.body)}`));
   await seam.released;
+
+  // Handed a model key, the same held run is refused at its create: its launch pins no model, so the key would never be used.
+  const keyed = await api("POST", "/agents/gw/runs", { input, hold: true, max_cost_usd: 1, model_key: GATEWAY_KEY });
+  assert.deepEqual([keyed.status, keyed.body.error?.code, keyed.body.error?.fields?.[0]?.field], [422, "input_invalid", "model_key"], `a held run whose model was refused, handed a model key, is refused for it: ${JSON.stringify(keyed.body)}`);
+  assert.match(keyed.body.error.message, /so its model key would never be used/, "as a key never used");
+  assert.deepEqual((await api("GET", "/agents/gw/runs")).body.runs.map((run) => run.run_id), [refused.body.run_id], "no run was made for it");
+  assert.equal(seam.count.opened, 1, "and no computer was opened for it");
 });
 
 test("a message to a held run its model kept from running is refused in its create's words, whatever the run's state, a trigger's too, and nothing is sent or opened again", async () => {
@@ -407,6 +411,49 @@ test("a message to a held run its model kept from running is refused in its crea
   await assert.rejects(message(store, moment(), "Go on."), refused, "while it waits for its start: a message would be its first turn");
   await assert.rejects(message(store, moment({ terminal: true, terminalKind: "completed" }), "Go on."), refused, "once it ended: a message would open it again (steerOrReopen)");
   await assert.rejects(message(store, moment(), "Go on.", { answers: false, queue: async () => assert.fail("a trigger's steer is never queued") }), refused, "a trigger's message_run (trigger-targets.ts), through the same message()");
+});
+
+test("a launch row whose hold.refused can't be read (corrupt, or written by another version) is still held: its start and messages are refused, and its claim is laid no model key", async () => {
+  // Each a refusal no reader can use: not an object, and one short of the fields a refusal carries. Its words are never
+  // echoed: a row is not a place to read from, and what it holds may not be words at all.
+  const RAW = "not-a-secret-raw-refusal";
+  for (const refusedRow of [RAW, { message: 42, note: RAW }, { message: RAW, fields: "none", details: {} }]) {
+    const body = { input: { content: "Do the task." }, title: "t", place: { mode: "runner" }, hold: { minutes: 5, refused: refusedRow } };
+    const what = JSON.stringify(refusedRow);
+    const read = readLaunchBody(body);
+    assert.ok(read?.hold?.refused, `a hold.refused that can't be read is a refusal still, never none: ${what}`);
+    assert.match(read.hold.refused.message, /hold\.refused/, `its words name the field that can't be read: ${what}`);
+    assert.ok(!read.hold.refused.message.includes(RAW) && !JSON.stringify(read.hold.refused).includes(RAW), `and never what it holds: ${what}`);
+    const store = { runners: { live: async () => [] }, runs: { launch: async () => ({ body }) } };
+    const notRunnable = (error) => error instanceof ApiError && error.code === "agent_not_runnable" && !error.message.includes(RAW);
+    await assert.rejects(heldRoute("startRun", "run-1", {}, store), notRunnable, `its start is refused: ${what}`);
+    const moment = { id: "run-1", agentId: "agent-1", kind: "agentic", harness: "pi", cancelled: false, terminal: false, working: false, awaitingAnswer: false, steers: true, paused: false };
+    await assert.rejects(message(store, moment, "Go on."), notRunnable, `and a message is: ${what}`);
+    const deps = { store: { sealedKeys: { get: async () => undefined }, settings: { get: async () => undefined } }, env: { OPENROUTER_API_KEY: HOST_MODEL_KEY } };
+    const claimed = await claimSecrets(deps, { kind: "agentic", body: { model: MODEL, tools: [] } }, read);
+    assert.equal(claimed.OPENROUTER_API_KEY, undefined, `its claim is laid no model key: ${what}`);
+  }
+});
+
+test("a launch row whose hold.minutes isn't a number keeps its hold and its refused: its start and messages are refused, and its claim is laid no model key", async () => {
+  // A corrupt row's minutes (a string, null, none at all) is no reason to drop the hold: read as not held, the run would
+  // start and its claim open the keys its model was refused for. It waits the default minutes instead.
+  for (const minutesRow of [{ minutes: "5" }, { minutes: null }, {}]) {
+    const body = { input: { content: "Do the task." }, title: "t", place: { mode: "runner" }, hold: { ...minutesRow, refused: REFUSAL } };
+    const what = JSON.stringify(minutesRow);
+    const read = readLaunchBody(body);
+    assert.ok(read?.hold, `a hold whose minutes can't be read is a hold still: ${what}`);
+    assert.equal(read.hold.minutes, HOLD_MINUTES, `it waits the default minutes: ${what}`);
+    assert.deepEqual(read.hold.refused, REFUSAL, `and keeps its refused: ${what}`);
+    const store = { runners: { live: async () => [] }, runs: { launch: async () => ({ body }) } };
+    const notRunnable = (error) => error instanceof ApiError && error.code === "agent_not_runnable";
+    await assert.rejects(heldRoute("startRun", "run-1", {}, store), notRunnable, `its start is refused: ${what}`);
+    const moment = { id: "run-1", agentId: "agent-1", kind: "agentic", harness: "pi", cancelled: false, terminal: false, working: false, awaitingAnswer: false, steers: true, paused: false };
+    await assert.rejects(message(store, moment, "Go on."), notRunnable, `and a message is: ${what}`);
+    const deps = { store: { sealedKeys: { get: async () => undefined }, settings: { get: async () => undefined } }, env: { OPENROUTER_API_KEY: HOST_MODEL_KEY } };
+    const claimed = await claimSecrets(deps, { kind: "agentic", body: { model: MODEL, tools: [] } }, read);
+    assert.equal(claimed.OPENROUTER_API_KEY, undefined, `its claim is laid no model key: ${what}`);
+  }
 });
 
 test("a grade's feedback round never opens a held run its model kept from running", async () => {
@@ -503,6 +550,21 @@ test("claim secrets (claimSecrets): a held run its model kept from running is la
   const held = await claimSecrets(deps, revision, { plane, hold: { minutes: 5, refused: REFUSAL } });
   assert.equal(held.OPENROUTER_API_KEY, undefined, "a held run its model kept from running is laid no model key: its model runs nowhere");
   assert.equal(held.PARALLEL_API_KEY, HOST_TOOL_KEY, "its tool's key is laid as any claim's is");
+});
+
+test("claim secrets (claimSecrets) on a runner holding the seal key: a held run its model kept from running opens no saved model key at all, not one it then drops; the same run not held opens its model's", async () => {
+  // The store's saved keys, as a runner reads them: each read is a sealed key opened with the seal key, if saved. None is
+  // saved here, so each read is counted by name and nothing is opened.
+  const reads = [];
+  const deps = { store: { sealedKeys: { get: async (name) => (reads.push(name), undefined) }, settings: { get: async () => undefined } }, sealKey: Buffer.alloc(32, 7), env: {} };
+  const revision = { kind: "agentic", body: { model: MODEL, tools: ["web_search"] } };
+  const plane = { web_search: "parallel", web_fetch: "parallel" };
+  await claimSecrets(deps, revision, { plane });
+  assert.ok(reads.includes("OPENROUTER_API_KEY"), `a claim of the run, not held, reads its model's saved key: ${JSON.stringify(reads)}`);
+  reads.length = 0;
+  await claimSecrets(deps, revision, { plane, hold: { minutes: 5, refused: REFUSAL } });
+  assert.deepEqual(reads.filter((name) => MODEL_KEY_NAMES.includes(name)), [], `a held run its model kept from running reads no saved model key: ${JSON.stringify(reads)}`);
+  assert.ok(reads.includes("PARALLEL_API_KEY"), `its tool's saved key is read as any claim's is: ${JSON.stringify(reads)}`);
 });
 
 /** A gateway's key saved in the console (model-gateway.ts saveGateway), a test's: never a real one. */
@@ -622,13 +684,15 @@ const LEARNS = { seed: "0".repeat(40), section: "" };
 /** A model gateway with no key for it: claimSpendOff's check (claim-secrets.ts serverKeyless) reads the saved keys. */
 const GATEWAY_ENV = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9" };
 
-/** A spy on a store's saved-key reads (server-keys.ts getSealedKey): `names` gets each one asked under claimSpendOff. */
+/** A spy on a store's saved-key reads (server-keys.ts getSealedKey): `names` gets each model key's name the claim asks
+ *  for. A held claim asks none, claimSpendOff's gateway check (serverKeyless) the same as claimSecrets'; a claim not held
+ *  asks the gateway's (GATEWAY_KEY_ENV) there. */
 function spendOffReads() {
   const names = [];
   const watch = (store) => {
     const get = store.sealedKeys.get.bind(store.sealedKeys);
     store.sealedKeys.get = (name) => {
-      if (new Error().stack?.includes("claimSpendOff")) names.push(name);
+      if (MODEL_KEY_NAMES.includes(name)) names.push(name);
       return get(name);
     };
   };
@@ -644,12 +708,12 @@ test("pi (adapter-run-spec), end of run: a held refused run that learns carries 
   const control = spendOffReads();
   const { spec: unheld } = await specFor(t, { body, env: GATEWAY_ENV, launch: { model: undefined, learning: LEARNS }, computer: phoneOn(root), watch: control.watch });
   assert.equal(typeof unheld.endOfRun, "function", "the run not held, learning, carries its end-of-run step, as before");
-  assert.ok(control.names.length > 0, "the run not held reads the saved keys for spend beside it (claimSpendOff), as before");
+  assert.ok(control.names.includes(GATEWAY_KEY_ENV), `the run not held reads the gateway's saved key, for spend beside it (claimSpendOff) among others, as before: ${JSON.stringify(control.names)}`);
   const reads = spendOffReads();
   const { spec } = await specFor(t, { body, env: GATEWAY_ENV, launch: { model: undefined, hold: { minutes: 5, refused: REFUSAL }, learning: LEARNS }, computer: phoneOn(root), watch: reads.watch })
     .catch((error) => assert.fail(`a held learning run opens its claim: ${error.message}`));
   assert.equal(spec.endOfRun, undefined, "a held run carries no end-of-run step, though it learns: nothing is compiled and no audit starts");
-  assert.deepEqual(reads.names, [], "a held run reads no saved key for spend beside it (claimSpendOff is not called)");
+  assert.deepEqual(reads.names, [], "a held run reads no saved model key, for spend beside it (claimSpendOff) or any other");
 });
 
 test("CLI (cli-run-spec), end of run: a held refused opencode run that learns carries no end-of-run step and reads no saved key for spend beside it; the same run not held does both", async (t) => {
@@ -658,11 +722,96 @@ test("CLI (cli-run-spec), end of run: a held refused opencode run that learns ca
   const control = spendOffReads();
   const unheld = await cliClaim(t, undefined, { learning: LEARNS }, { env: { OPENAI_API_KEY: HOST_MODEL_KEY, ...GATEWAY_ENV }, watch: control.watch });
   assert.equal(typeof unheld.endOfRun, "function", "the run not held, learning, carries its end-of-run step, as before");
-  assert.ok(control.names.length > 0, "the run not held reads the saved keys for spend beside it (claimSpendOff), as before");
+  assert.ok(control.names.includes(GATEWAY_KEY_ENV), `the run not held reads the gateway's saved key, for spend beside it (claimSpendOff) among others, as before: ${JSON.stringify(control.names)}`);
   const reads = spendOffReads();
   const spec = await cliClaim(t, { minutes: 5, refused: REFUSAL }, { learning: LEARNS }, { env: GATEWAY_ENV, watch: reads.watch }).catch((error) => assert.fail(`a held learning opencode run opens its claim: ${error.message}`));
   assert.equal(spec.endOfRun, undefined, "a held run carries no end-of-run step, though it learns");
-  assert.deepEqual(reads.names, [], "a held run reads no saved key for spend beside it (claimSpendOff is not called)");
+  assert.deepEqual(reads.names, [], "a held run reads no saved model key, for spend beside it (claimSpendOff) or any other");
+});
+
+/** fal's hosted MCP server, saved with its key (a test's: never a real one), and the pin a save of a revision granted its
+ *  run_model makes: what a claim of such a run opens, under the runner's seal key, into its memory. */
+const FAL_URL = "https://mcp.fal.ai/mcp";
+const FAL_KEY = "not-a-secret-held-fal-key";
+const FAL_GRANT = "mcp:fal/run_model";
+const FAL_TOOL = { name: "run_model", description: "Run a fal model.", inputSchema: { type: "object", properties: { endpoint_id: { type: "string" } } } };
+const FAL_PIN = { fal: { url: FAL_URL, meter: "fal", tools: [FAL_TOOL] } };
+const saveFal = (server) => server.mcp.put({ name: "fal", url: FAL_URL, auth: "headers", tools: [{ name: FAL_TOOL.name, description: FAL_TOOL.description, input_schema: FAL_TOOL.inputSchema }], sealed: sealMcpCredential(SEAL_KEY, "fal", { type: "headers", headers: { authorization: `Key ${FAL_KEY}` } }, FAL_URL) });
+/** `store`'s reads of a saved MCP server (store.mcp.server, mcp-store.ts getMcpServer), by name, into `read`: a claim's MCP
+ *  step reads each pinned server's row and opens its credential from it. The run's redactor is no witness here: every
+ *  claim, held or not, holds each secret the store keeps (store-secrets.ts holdStored) to cut it from what the run
+ *  writes, and sends none of them. */
+function readingMcp(store, read) {
+  const server = store.mcp.server.bind(store.mcp);
+  store.mcp.server = async (name) => (read.push(name), server(name));
+}
+
+test("pi (adapter-run-spec), MCP: a held run its model kept from running, granted a fal tool, opens no MCP credential at its claim and carries no MCP; the same run not held opens fal's key and carries its tool", async (t) => {
+  withEnv(t, {}, KEYLESS);
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "held-model-key-mcp-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const body = { model: MODEL, computer: PHONE, tools: [FAL_GRANT] };
+  const before = async (server) => {
+    await saveFal(server);
+    await server.agents.pinOnce("rev-1", FAL_PIN);
+  };
+  const unheldRead = [];
+  const { spec: unheld } = await specFor(t, { body, launch: { model: undefined }, before, computer: phoneOn(root), watch: (store) => readingMcp(store, unheldRead) });
+  t.after(() => unheld.release?.());
+  assert.ok(unheldRead.includes("fal"), "the run not held opens fal's key at its claim, as before, from fal's saved row");
+  assert.deepEqual(unheld.mcp?.tools.map((tool) => tool.name), ["mcp__fal__run_model"], "and carries fal's tool");
+  const heldRead = [];
+  const { spec } = await specFor(t, { body, launch: { model: undefined, hold: { minutes: 5, refused: REFUSAL } }, before, computer: phoneOn(root), watch: (store) => readingMcp(store, heldRead) })
+    .catch((error) => assert.fail(`a held run its model kept from running opens its claim: ${error.message}`));
+  t.after(() => spec.release?.());
+  assert.deepEqual(heldRead, [], "a held run its model kept from running opens no MCP credential, fal's included: nothing can call one (its start is refused, its provider refuses every request), so its claim reads no saved server");
+  assert.equal(spec.mcp, undefined, "and its spec carries no MCP");
+  assert.deepEqual(spec.held, { minutes: 5 }, "its claim still holds the computer for its owner");
+});
+
+test("CLI (cli-run-spec), MCP: a held opencode run its model kept from running, granted a fal tool, opens no MCP credential at its claim and carries no MCP; the same run not held opens fal's key and carries its tool", async (t) => {
+  withEnv(t, {}, KEYLESS);
+  const host = { body: { tools: ["read", FAL_GRANT] }, mcpPin: FAL_PIN, before: saveFal };
+  const unheldRead = [];
+  // The control's host holds opencode's key (the test's host model key), so the claim that is not held opens.
+  const unheld = await cliClaim(t, undefined, {}, { ...host, env: { OPENAI_API_KEY: HOST_MODEL_KEY }, watch: (store) => readingMcp(store, unheldRead) });
+  assert.ok(unheldRead.includes("fal"), "the run not held opens fal's key at its claim, as before, from fal's saved row");
+  assert.deepEqual(unheld.mcp?.tools.map((tool) => tool.name), ["mcp__fal__run_model"], "and carries fal's tool");
+  const heldRead = [];
+  const spec = await cliClaim(t, { minutes: 5, refused: REFUSAL }, {}, { ...host, watch: (store) => readingMcp(store, heldRead) }).catch((error) => assert.fail(`a held opencode run its model kept from running opens its claim: ${error.message}`));
+  assert.deepEqual(heldRead, [], "a held run its model kept from running opens no MCP credential, fal's included: nothing can call one (its start is refused, its provider refuses every request), so its claim reads no saved server");
+  assert.equal(spec.mcp, undefined, "and its spec carries no MCP");
+});
+
+test("per-run process (run-child-host heldFor), MCP: the runner opens no MCP credential for a held run its model kept from running, fal's included, whatever its process asks; the same run not held is answered fal's tool", async (t) => {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "held-model-key-mcp-seam-"));
+  const store = await openSqliteStore({ dataDir: dir, role: "server" });
+  const releases = [];
+  t.after(async () => {
+    for (const release of releases) await release().catch(() => {});
+    await store.close().catch(() => {});
+    rmSync(dir, { recursive: true, force: true });
+  });
+  await saveFal(store);
+  const revision = { kind: "agentic", body: { instructions: "Answer.", model: MODEL, tools: [FAL_GRANT] } };
+  await store.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", ...revision, mcpPin: FAL_PIN });
+  const read = [];
+  readingMcp(store, read);
+  const launch = { input: { content: "Do the task." }, title: "t", place: { mode: "runner" }, harness: "pi" };
+  const seam = async (runId, hold) => {
+    await store.runs.create({ id: runId, agentId: "agent-1", revisionId: "rev-1" }, { body: { ...launch, ...hold } });
+    const made = heldFor({ store, sealKey: SEAL_KEY, env: {}, data: dir }, { claim: { runId, epoch: 1 }, run: { agentId: "agent-1", revisionId: "rev-1", signInHanded: null }, launch: { ...launch, ...hold }, revision, claimed: {} }, (text) => text, () => {});
+    releases.push(() => made.release());
+    return made.held;
+  };
+  const appendRoot = async () => {};
+  const unheld = await (await seam("run-1", {})).mcp({ appendRoot });
+  assert.deepEqual(unheld?.tools.map((tool) => tool.catalog), [FAL_GRANT], "a run not held is answered fal's tool, as before");
+  assert.ok(read.includes("fal"), "its credential opened from fal's saved row");
+  read.length = 0;
+  const held = await (await seam("run-2", { hold: { minutes: 5, refused: REFUSAL } })).mcp({ appendRoot });
+  assert.equal(held, undefined, "a held run its model kept from running is answered no MCP, though its process asks: nothing can call it");
+  assert.deepEqual(read, [], "and the runner reads no saved server for it: no MCP credential is opened, fal's included");
 });
 
 test("pi: the stand-in route refuses every model request in the create's words, verbatim, and sends none", async (t) => {

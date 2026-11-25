@@ -307,10 +307,19 @@ const RUN_GRAPH = {
     read_at: { type: "string", format: "date-time", description: "When the view shown was read: the run process's last live view while it goes, else the read itself." },
     run: {
       type: "object", additionalProperties: false, required: ["id", "agent", "revision", "status", "paused", "startedAt", "endedAt"],
-      properties: { id: { type: "string" }, agent: { type: "string" }, revision: { type: "string" }, status: ref("schemas/RunStatus"), paused: { type: "boolean" }, startedAt: { type: "string", format: "date-time" }, endedAt: { type: ["string", "null"], format: "date-time" } },
+      properties: {
+        id: { type: "string" }, agent: { type: "string" }, revision: { type: "string" }, status: ref("schemas/RunStatus"), paused: { type: "boolean" }, startedAt: { type: "string", format: "date-time" }, endedAt: { type: ["string", "null"], format: "date-time" },
+        withheld: { const: true, description: "Present when the run's facts hold a saved secret split across two of them (its agent and its revision): `agent` and `revision` are then \"[redacted]\", and the rest is served as it is." },
+      },
     },
     workflow: { type: "object", description: "The revision's workflow definition." },
-    graph: { type: "object", required: ["nodes", "edges"], description: "The DSL's workflowGraph of the definition: nodes { path, kind, label, via?, changeCheck } and edges { from, to, kind }." },
+    graph: {
+      type: "object", additionalProperties: true, required: ["nodes", "edges"], description: "The DSL's workflowGraph of the definition: nodes { path, kind, label, via?, changeCheck } and edges { from, to, kind }.",
+      properties: {
+        nodes: { type: "array", items: { type: "object" } }, edges: { type: "array", items: { type: "object" } },
+        withheld: { const: true, description: "Present when the graph's words hold a saved secret split across two of them: the graph is then served with no nodes and no edges." },
+      },
+    },
     nodes: {
       type: "object", description: "Each graph node's state, by its path.",
       additionalProperties: {
@@ -560,11 +569,11 @@ const CHATGPT_SIGN_IN = {
 const CLAUDE_LOGIN = {
   type: "object", additionalProperties: false, required: ["state", "place", "command", "can_start", "folder", "machine"],
   properties: {
-    state: { enum: ["off", "other_machine", "signed_in", "signed_out", "no_cli", "unknown"], description: "`off`: not turned on. `other_machine`: turned on for another machine than this server's. Else what the CLI says: `signed_in`, `signed_out`, `no_cli` (no Claude Code CLI here yet: claude-agent's first run installs the pinned one), `unknown` (it gave no answer)." },
+    state: { enum: ["off", "other_machine", "refused", "signed_in", "signed_out", "no_cli", "unknown"], description: "`off`: not turned on. `other_machine`: turned on for another machine than this server's. `refused`: turned on for this machine and kept, but its folders (or the server's home) are ones this server's user may not use, as `refused` says: nothing runs on it and the CLI is not asked; it is used again once they are mended, and DELETE /settings/claude-login removes it as it does any other. Else what the CLI says: `signed_in`, `signed_out`, `no_cli` (no Claude Code CLI here yet: claude-agent's first run installs the pinned one), `unknown` (it gave no answer)." },
     place: { enum: ["agentrun", "machine"], description: "Where the login is: `agentrun`, AgentRun's own directory in its data (the default); `machine`, this machine's own Claude Code login (`machine.folder`), which the owner opts into." },
     command: { type: "string", description: "The line that signs the CLI in at `place`, for a terminal on this machine." },
     can_start: { type: "boolean", description: "Whether POST /settings/claude-login/login can start the CLI's sign-in here: the server is bound to loopback with no public address, so the browser it opens is on this machine." },
-    refused: { type: "string", description: "Why the mode can't be turned on here, in one line: more than one person can start runs on this server." },
+    refused: { type: "string", description: "Why the mode can't be turned on here, or, with state `refused`, why the login kept is not used, in one line: more than one person can start runs on this server, or the login's folders or the server's home are ones its user may not use." },
     account: {
       type: "object", additionalProperties: false,
       properties: { method: { type: "string" }, email: { type: "string" }, organization: { type: "string" }, plan: { type: "string" } },
@@ -1825,9 +1834,9 @@ const LEARNING_COST = closed({
     withheld: { oneOf: [closed({ unknown: { ...COUNT, description: "Runs whose cost is unknown." }, at_most: { ...COUNT, description: "Runs whose cost is known only as at most (`cost_upper_bound`)." } }), { type: "null" }], description: "After a takeover, the runs `before` and `after` would read whose cost is not known exactly: while any is, `times_cheaper` is null, so the ratio is never over a partial set. Null when every one is known, and before a takeover." },
     replay: { oneOf: [closed({
       n: { ...COUNT, description: "The inputs its check ran on." },
-      workflow_pct: { type: "number", minimum: 0, maximum: 100, description: "`agreed` over `alone`: the share of the inputs it answered alone that were right on every field against each field's known answer (a label, a grade's expected answer, else the agent's own), in percent to a tenth." },
-      agent_pct: { type: "number", minimum: 0, maximum: 100, description: "The agent's share on the same inputs against the same known answers (the check's `agent_agreed` over `alone`; an answer graded wrong is the agent's miss), in percent to a tenth: 100 on a check kept before it was counted, which judged against the agent's own answers only." },
-      cleared: { type: "boolean", description: "`agreed` over `alone` reached `agree_min`, as the check's joint floor needs of every promotion it decides; a record kept before that floor can fall short." },
+      workflow_pct: { type: "number", minimum: 0, maximum: 100, description: "`agreed` over `alone`: the share of the inputs it answered alone that were right on every field against each field's known answer (a grade's expected answer, else the agent's own), in percent to a tenth." },
+      agent_pct: { type: "number", minimum: 0, maximum: 100, description: "The agent's share on the same inputs against the same known answers (the check's `agent_agreed` over `alone`; an answer graded wrong is the agent's miss), in percent to a tenth." },
+      cleared: { type: "boolean", description: "The check's joint floor (its `joint`): `agreed` over `alone` reached `agree_min`, as every promotion it decides needs." },
       agreed: { ...COUNT, description: "Of the inputs it answered alone (`alone`), how many were right on every field against each field's known answer." },
       alone: { ...COUNT, description: "The inputs it answered alone (no hand-back, no failed step)." },
       agree_min: { type: "number", minimum: 0, maximum: 1, description: "The agreement bar it passed (the definition's `learning.agree_min`): `agreed` over `alone` at least this. Passing it says the workflow agreed with the agent that often, never that it is as accurate." },
@@ -1872,8 +1881,8 @@ const LEARNING_COST = closed({
 const GRADE = closedWith(GRADE_FIELDS, { expected: { type: "object", description: "The fields a right answer's JSON holds, when the grade gave them." } });
 const REPLAY_SCORE = {
   n: { ...COUNT, description: "The inputs it was decided on (a replay stopped at a write is none)." },
-  agree: { ...COUNT, description: "How many of them the workflow answered alone right on every field against each field's known answer (a label, a grade's expected answer, else the agent's own): the check's `agreed`." },
-  agent_acc: { type: "number", minimum: 0, maximum: 1, description: "The agent's accuracy on them against the same known answers: its misses are counted where the workflow's are, on the inputs it answered alone (the check's `alone` - `agent_agreed`; an answer graded wrong is the agent's miss), over `n`. 1 on a check kept before `agent_agreed` was counted." },
+  agree: { ...COUNT, description: "How many of them the workflow answered alone right on every field against each field's known answer (a grade's expected answer, else the agent's own): the check's `agreed`." },
+  agent_acc: { type: "number", minimum: 0, maximum: 1, description: "The agent's accuracy on them against the same known answers: its misses are counted where the workflow's are, on the inputs it answered alone (the check's `alone` - `agent_agreed`; an answer graded wrong is the agent's miss), over `n`." },
   wf_acc: { type: "number", minimum: 0, maximum: 1, description: "The workflow's accuracy on them: the share it answered alone as the agent did, plus the ones it handed back (a hand-back is the agent's answer), over `n`." },
   delta: { type: "number", description: "`wf_acc` - `agent_acc`." },
   handed_back: { ...COUNT, description: "How many of them it handed back; it answered `n` - `handed_back` alone." },
@@ -1893,7 +1902,7 @@ const CHECK_DISAGREEMENT = closedWith({ run: { type: "string" }, input: { type: 
   failed: { const: true, description: "A step failed on it, or its run was still at work past the check's deadline, or never created by then." },
   differs_on: { type: "string", description: "When `grader` compared it: the decision the two answers differ on, in the fast model's words, or why its verdict could not be had (\"the comparison could not be read\", \"the cap held the comparison\", or \"the comparison read an earlier answer\" when the agent's run answered again after it was compared). Cut at 1200 characters." },
   fields: { type: "array", items: { type: "string" }, description: "The fields it answered wrong, against each one's known answer (`check.fields`): `agree_on`'s paths, else `answer`, the whole answer." },
-  expected: { type: "array", items: closedWith({ field: { type: "string", description: "One of `fields`." }, known: { enum: ["label", "grade", "unknown"], description: "Where its known answer came from; `unknown` where a grade marked the agent's answer wrong without giving the right one." } }, { value: { type: "string", description: "The known answer, as text or JSON: a label's, or the expected answer a grade gave (with no `agree_on`, the check judges against it written over the agent's answer when both are JSON objects), cut at 1200 characters; empty once the run it is of was deleted. Left out for `unknown`." } }), description: "Of `fields`, each one known from a label or a grade (never the agent's own answer, `agent`), or marked wrong with no right answer: what the recompile is asked to say there." },
+  expected: { type: "array", items: closedWith({ field: { type: "string", description: "One of `fields`." }, known: { enum: ["grade", "unknown", "contradicts"], description: "Where its known answer came from; `unknown` where a grade marked the agent's answer wrong without giving the right one; `contradicts` where a grade marked it wrong yet the right answer it gave is the agent's, so there is none." } }, { value: { type: "string", description: "The known answer, as text or JSON: the expected answer a grade gave (with no `agree_on`, the check judges against it written over the agent's answer when both are JSON objects), cut at 1200 characters; empty once the run it is of was deleted. Left out for `unknown` and `contradicts`." } }), description: "Of `fields`, each one known from a grade (never the agent's own answer, `agent`), or marked wrong with no right answer: what the recompile is asked to say there." },
 });
 /** A field's counts on the inputs a check judged it on (learn/field-check.ts FieldCount). */
 const FIELD_COUNT = {
@@ -1902,32 +1911,35 @@ const FIELD_COUNT = {
   agent_right: { ...COUNT, description: "How many of them the agent's own answer had right." },
 };
 const UNJUDGED = { type: "integer", minimum: 1, description: "The inputs that carried it with no known answer (the agent's answer graded wrong with none given, and the workflow said another): never right, and the field must be judged on at least `alone_min` of the inputs that carried it. Left out when none." };
-const KNOWN_SOURCES = ["label", "grade", "agent"] as const;
-/** A field's counts by where its known answer came from, as a connected agent's check keeps them between turns. */
-const FIELD_TALLY = { type: "object", additionalProperties: false, properties: { ...Object.fromEntries(KNOWN_SOURCES.map((known) => [known, closed(FIELD_COUNT, `Its inputs known from ${known === "agent" ? "the agent's own answer" : `a ${known}`}.`)])), unjudged: UNJUDGED } };
+const KNOWN_SOURCES = ["grade", "agent"] as const;
+/** A field's counts by where its known answer came from: its inputs known from a grade, and from the agent's own answer. */
+const FIELD_BY = { grade: closed(FIELD_COUNT, "Its inputs known from a grade."), agent: closed(FIELD_COUNT, "Its inputs known from the agent's own answer.") };
+/** A field's counts by source, as a connected agent's check keeps them between turns. */
+const FIELD_TALLY = { type: "object", additionalProperties: false, properties: { ...FIELD_BY, unjudged: UNJUDGED } };
 /** One field's verdict (learn/field-check.ts FieldVerdict). */
 const FIELD_VERDICT = closedWith({
   ...FIELD_COUNT,
-  agent_right: { ...COUNT, description: "How many of them the agent's own answer had right, on the inputs known from a label or a grade only." },
+  agent_right: { ...COUNT, description: "How many of them the agent's own answer had right, on the inputs known from a grade only." },
   known: { enum: [...KNOWN_SOURCES], description: "The strongest source it was known from." },
-  pass: { type: "boolean", description: "Whether it passed: over all its known inputs pooled, at least `agree_min` right; on those with a known answer (from labels and grades together), at least `agree_min` right and at most 2 points under the agent, one miss always allowed in each; and judged on enough of its inputs (`unjudged`)." },
+  pass: { type: "boolean", description: "Whether it passed: over all its known inputs pooled, at least `agree_min` right; on those known from a grade, at least `agree_min` right and at most 2 points under the agent, one miss always allowed in each; and judged on enough of its inputs (`unjudged`)." },
   reason: { type: "string", description: "Why, in words, with the numbers." },
-  by: { type: "object", additionalProperties: false, properties: Object.fromEntries(KNOWN_SOURCES.map((known) => [known, closed({ ...FIELD_COUNT, pass: { type: "boolean", description: "Whether this source alone would pass: from a label or a grade, `agree_min` and the margin with one miss allowed in each; from the agent, `agree_min`. The field's `pass` pools them." } })])), description: "Its counts per source, each with whether it would pass alone." },
+  by: { type: "object", additionalProperties: false, properties: FIELD_BY, description: "Its counts per source." },
 }, { unjudged: UNJUDGED });
 /** A compiled draft's one check (learn/promote.ts CheckRecord): its bar while it replays, its numbers once decided. */
 const PROMOTION_CHECK = closedWith({
   compile_after: { type: "integer", minimum: 1, description: "The agent definition's `learning.compile_after` when the check began: how many of the agent's newest completed runs it read inputs from." },
-  agree_min: { type: "number", minimum: 0, maximum: 1, description: "The bar on being right: of the inputs it answered alone, the least share right on every field at once (the joint floor, `agreed`), and of each field's inputs, the least share right against its known answer (a label, a grade's expected answer, else the agent's own recorded answer)." },
+  agree_min: { type: "number", minimum: 0, maximum: 1, description: "The bar on being right: of the inputs it answered alone, the least share right on every field at once (the joint floor, `agreed`), and of each field's inputs, the least share right against its known answer (a grade's expected answer, else the agent's own recorded answer)." },
   alone_min: { type: "number", minimum: 0, maximum: 1, description: "The bar on answering alone: the least share of the inputs it ran on that it must answer with no escalate and no failed step." },
   attempt: { enum: [1, 2], description: "1: the compile's first check. 2: the check of its one recompile, after the first held it; held again, it stops (`stopped`)." },
 }, {
   agree_on: { type: "array", items: { type: "string" }, minItems: 1, description: "The definition's `learning.agree_on` it compared the draft's answer and the agent's on: dotted paths into the answer's JSON object, each resolving in both answers to equal values. Left out when it compared the whole answer." },
   grader: { type: "string", description: "With no `agree_on`: the agent's fast model that compared the two answers where they were not equal, asked whether they reach the same decision (one request per input, booked as the check's spend; a reply it could not read, a failed request or one the cap refused counts as differing). Left out when no fast model compared them: with `agree_on`, or with no fast model (the whole answer)." },
   n: { ...COUNT, description: "The inputs it ran on (a replay stopped at a write is none; one never created, or not ended, by the check's deadline counts, as failed). 0 with nothing to run on: never promoted, it stops (`stopped`) and `reason` says why." },
-  agreed: { ...COUNT, description: "How many of them it answered alone right on every field at once, each against its known answer: a label, a grade's expected answer, else the agent's recorded answer (compared on `agree_on` when set; else equal answers, or the same decision by `grader`'s verdict). An input a field has no known answer on is not right." },
+  agreed: { ...COUNT, description: "How many of them it answered alone right on every field at once, each against its known answer: a grade's expected answer, else the agent's recorded answer (compared on `agree_on` when set; else equal answers, or the same decision by `grader`'s verdict). An input a field has no known answer on is not right." },
   alone: { ...COUNT, description: "How many of them it answered alone. Promoted when `alone`/`n` >= `alone_min`, `agreed`/`alone` >= `agree_min`, and every field of `fields` passes." },
-  agent_agreed: { ...COUNT, description: "Of `alone`, how many the agent's own answers were right on every field against the same known answers (an answer graded wrong is its miss): the agent's side of `agreed`. Left out on a check kept before it was counted." },
-  fields: { type: "object", additionalProperties: FIELD_VERDICT, description: "Each field's verdict, by name: `agree_on`'s paths, else `answer`, the whole answer. Left out on a check kept before fields were judged one by one." },
+  agent_agreed: { ...COUNT, description: "Of `alone`, how many the agent's own answers were right on every field against the same known answers (an answer graded wrong is its miss): the agent's side of `agreed`. Set with `agreed`." },
+  joint: { type: "boolean", description: "The joint floor's verdict, as the check decided it: of `alone`, at least `agree_min` right on every field at once (`agreed`). A promotion needs it." },
+  fields: { type: "object", additionalProperties: FIELD_VERDICT, description: "Each field's verdict, by name: `agree_on`'s paths, else `answer`, the whole answer. Left out when no input was answered alone." },
   of: { type: "array", items: { type: "string" }, description: "The agent's runs whose inputs it ran on, newest first." },
   cost_usd: { type: ["number", "null"], minimum: 0, description: "What its replay runs cost together; null when one's cost is unknown." },
   outcomes: { ...REPLAY_OUTCOMES, description: "How each input it ran on came out, one per input: a replay run never created, or not ended, by the check's deadline is `failed`." },
@@ -1941,12 +1953,12 @@ const PROMOTION_CHECK = closedWith({
     n: { ...COUNT, description: "The native turns checked so far: each whose shadow answered or handed back, and each the backend never completed within an hour (`failed`)." },
     agreed: { ...COUNT, description: "How many of them the shadow answered alone right on every field, as `agreed` counts them." },
     alone: { ...COUNT, description: "How many of them the shadow answered alone." },
+    agent_agreed: { ...COUNT, description: "Of `alone`, how many the native answers were right on every field, as `agent_agreed` counts them." },
+    fields: { type: "object", additionalProperties: FIELD_TALLY, description: "Each field's counts so far, by name and by where its known answer came from, added to by each turn; the check judges them once it decides. Empty while no turn was answered alone." },
     of: { type: "array", items: { type: "string" }, description: "The agent's runs of those turns, newest first." },
     outcomes: { ...REPLAY_OUTCOMES, description: "How each turn came out, one per turn." },
   }, {
     disagreements: { type: "array", items: CHECK_DISAGREEMENT, description: "Each turn it did not agree on." },
-    agent_agreed: { ...COUNT, description: "Of `alone`, how many the native answers were right on every field, as `agent_agreed` counts them." },
-    fields: { type: "object", additionalProperties: FIELD_TALLY, description: "Each field's counts so far, by name and by where its known answer came from, added to by each turn; the check judges them once it decides." },
     fresh_reads: { type: "integer", minimum: 1, description: "The fresh read-only calls its shadows made, as `fresh_reads` counts them." },
   }), description: "A connected agent's check (`via` sdk) still collecting native turns. A check decides once, on `compile_after` inputs, so this one waits for that many turns, the agent answering each, then decides on all of them. Left out once decided, and on a server replay; a check stopped or set aside before it held them keeps the turns it had." },
 });
@@ -1973,7 +1985,10 @@ const PROMOTION = closedWith({
       input: { type: "string", description: "The served run's input, as text or JSON, cut at 1200 characters." },
       agent: { ...NULL_STRING, description: "The agent's answer (the shadow run's), cut at 1200 characters; null for a grade's row." },
       draft: { ...NULL_STRING, description: "The served answer, cut at 1200 characters; null when it could not be read." },
-    }, { graded: { const: true, description: "An owner's grade wrote this row: the served answer was graded wrong." } }), description: "Its disagreeing rows: the data its one recompile reads." },
+    }, {
+      graded: { const: true, description: "An owner's grade wrote this row: the served answer was graded wrong, or missed the right answer the grade gave." },
+      expected: { type: "string", description: "The right answer the grade gave (its `expected`, as JSON), cut at 1200 characters: the known answer the served one missed. Absent for a shadow's row and a grade that gave none; empty once its run was purged." },
+    }), description: "Its disagreeing rows: the data its one recompile reads." },
   }, { stopped: { const: true, description: "A second audit hold within the definition's `learning.stop_window` served runs of the first: it stopped, no compile is asked, nothing serves again until a new revision lands." } }),
 });
 const AUDIT_LINE = closed({
@@ -2024,10 +2039,10 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
   "/runs/{run_id}/grade": {
     put: {
       operationId: "gradeRun", tags: ["runs"], summary: "Grade an ended run's answer: right or wrong, and the fields a right answer holds",
-      description: `A person's feedback or an eval's label on a run that ended, kept for its agent (one grade a run: a later one replaces it; the newest ${GRADES_KEPT} are kept). Promotion reads none: a revision's check is scored against the agent's own recorded answers. A replay run is never graded. The run's path never changes on a grade: a grade of a run its learned workflow answered alone, right or wrong, is kept and nothing more ($0); a run the agent finished, graded with a \`label\`, opens again on a look-back on it. That round asks the agent no turn of the job's, only its end-of-run turn, and its spend is the run's learning (\`feedback\`). A run that reads ended while it still learns from that end (its \`learning.state\` \`reflecting\`: its own look-back, or a grade's round) is \`409 run_learning\`, nothing kept: grade it once \`learning.state\` moves on.`,
+      description: `A person's feedback or an eval's label on a run that ended, kept for its agent (one grade a run: a later one replaces it; the newest ${GRADES_KEPT} are kept). A revision's check and an audit read it: a grade's \`expected\` answer is the known answer they judge the workflow's against, where the agent's own answer stands in on an ungraded run. A replay run is never graded. The run's path never changes on a grade: a grade of a run its learned workflow answered alone, right or wrong, is kept and nothing more ($0); a run the agent finished, graded with a \`label\`, opens again on a look-back on it. That round asks the agent no turn of the job's, only its end-of-run turn, and its spend is the run's learning (\`feedback\`). A run that reads ended while it still learns from that end (its \`learning.state\` \`reflecting\`: its own look-back, or a grade's round) is \`409 run_learning\`, nothing kept: grade it once \`learning.state\` moves on.`,
       parameters: [ref("parameters/RunId")],
-      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["correct"], properties: { correct: { type: "boolean" }, expected: { type: "object", description: "The fields a right answer's JSON holds." }, source: { enum: [...GRADE_SOURCES], default: "feedback" }, label: { type: "string", maxLength: LABEL_MAX, description: "The grade's words (a teacher's label, a reviewer's note): what the run's look-back reads." } } } } } },
-      responses: { "200": json(GRADE, "The run's grade."), ...errors(400, 401, 404, 409, 429, 500) },
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["correct"], properties: { correct: { type: "boolean" }, expected: { type: "object", description: "The fields a right answer's JSON holds. No key, at any depth, is named `__proto__` (422)." }, source: { enum: [...GRADE_SOURCES], default: "feedback" }, label: { type: "string", maxLength: LABEL_MAX, description: "The grade's words (a teacher's label, a reviewer's note): what the run's look-back reads." } } } } } },
+      responses: { "200": json(GRADE, "The run's grade."), ...errors(400, 401, 404, 409, 422, 429, 500) },
       "x-agentrun-serve": "promotion/1",
     },
   },
@@ -2057,7 +2072,7 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
   "/agents/{agent_id}/learning/promotions": {
     get: {
       operationId: "listLearningPromotions", tags: ["agents"], summary: "Each learned workflow revision's promotion: its replay's numbers and whether it serves",
-      description: "Every promotion record of the agent's learned workflows, oldest first: a new revision's one check, a replay of it on the inputs of the agent's last completed runs scored against the agent's own recorded answers (replaying, then promoted or held, with its numbers), a draft held with nothing to check it on, a compile whose drafts all failed their checks (a hold with nothing checked, its reason naming the failed checks: the compile's attempt; a recompile's stops), or a serving revision held by its audits (GET .../learning/audits; the hold's `audit` holds the rows). A revision serves only once its check promotes it; the champion (the revision promoted last) keeps serving while a newer one is checked or after it is held, and `serving` says which digest serves and which is checked, each workflow's state, its newest check's numbers and its audit line. One revision of a workflow is checked at a time and a running check finishes. A hold's disagreements (a check's, an audit's) quote inputs and answers, cut as the agent's other learning reads cut them. What the console's Learning tab marks on its cost chart.",
+      description: "Every promotion record of the agent's learned workflows, oldest first: a new revision's one check, a replay of it on the inputs of the agent's last completed runs scored against the known answers (a grade's expected answer, else the agent's own recorded one) (replaying, then promoted or held, with its numbers), a draft held with nothing to check it on, a compile whose drafts all failed their checks (a hold with nothing checked, its reason naming the failed checks: the compile's attempt; a recompile's stops), or a serving revision held by its audits (GET .../learning/audits; the hold's `audit` holds the rows). A revision serves only once its check promotes it; the champion (the revision promoted last) keeps serving while a newer one is checked or after it is held, and `serving` says which digest serves and which is checked, each workflow's state, its newest check's numbers and its audit line. One revision of a workflow is checked at a time and a running check finishes. A hold's disagreements (a check's, an audit's) quote inputs and answers, cut as the agent's other learning reads cut them. What the console's Learning tab marks on its cost chart.",
       parameters: [AGENT_ID],
       responses: { "200": json(closed({ agent: { type: "string" }, promotions: { type: "array", items: PROMOTION }, serving: { type: "array", items: SERVING, description: "Each learned workflow with a record: the revision that serves, the one replaying, its state, its check's numbers and its audit line." } }), "The agent's promotion records, and what serves."), ...errors(401, 403, 404, 429, 500) },
       "x-agentrun-serve": "promotion/1",
@@ -2184,7 +2199,7 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
   "/agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays": {
     post: {
       operationId: "startLearnedWorkflowReplay", tags: ["agents"], summary: "Re-check a learned workflow's revision on the agent's own runs: a held revision, or an edited one",
-      description: `Starts the one check a run's claim starts for a new revision (GET /agents/{agent_id}/learning/promotions explains it): one replay run of the agent per input, each the workflow alone at workflow cost, its reads live and its writes answered only from the agent's own run's recording, never sent, scored against the agent's own recorded answers. \`inputs\`: \`held\` (the default), the runs the revision's last check ran on, or, with none, the agent's last \`compile_after\` completed runs; a number from 1 to ${COMPILE_AFTER_MAX}, that many of the agent's newest completed runs. Each is a completed run of the agent's own (path \`agent\` or \`handed_back\`), with no uploaded file, whose input the revision takes. Its record is a check's (\`replaying\` then promoted or held, with its numbers, as a claim-started one is), decided once every replay run ended: at a run's claim that lays the revision, or at its read (GET .../replays/{replay_id}). Its replay runs are handed no per-run MCP credentials. The revision is \`digest\`, the first 16 hex of its workflow.json's sha256: one a promotion record names (read at its commit), or the one on the learning folder's main. 404 for an unknown agent, workflow or revision. 409 \`replay_conflict\` when it is replaying already, another revision of the workflow replays (one at a time, and a running check finishes), it is promoted (it serves already), none of the inputs asked for fits it (nothing is reserved and no run starts), or the agent's runs take no learned workflow here. 409 \`agent_not_runnable\` for an archived agent, as a run's start is: nothing is reserved. 400 for any other \`inputs\`. Only the owner, signed in with their password, starts one: the console's password session alone, from this server's own origin with a JSON body; every token is 403 \`forbidden\`.`,
+      description: `Starts the one check a run's claim starts for a new revision (GET /agents/{agent_id}/learning/promotions explains it): one replay run of the agent per input, each the workflow alone at workflow cost, its reads live and its writes answered only from the agent's own run's recording, never sent, scored against the known answers (a grade's expected answer, else the agent's own recorded one). \`inputs\`: \`held\` (the default), the runs the revision's last check ran on, or, with none, the agent's last \`compile_after\` completed runs; a number from 1 to ${COMPILE_AFTER_MAX}, that many of the agent's newest completed runs. Each is a completed run of the agent's own (path \`agent\` or \`handed_back\`), with no uploaded file, whose input the revision takes. Its record is a check's (\`replaying\` then promoted or held, with its numbers, as a claim-started one is), decided once every replay run ended: at a run's claim that lays the revision, or at its read (GET .../replays/{replay_id}). Its replay runs are handed no per-run MCP credentials. The revision is \`digest\`, the first 16 hex of its workflow.json's sha256: one a promotion record names (read at its commit), or the one on the learning folder's main. 404 for an unknown agent, workflow or revision. 409 \`replay_conflict\` when it is replaying already, another revision of the workflow replays (one at a time, and a running check finishes), it is promoted (it serves already), none of the inputs asked for fits it (nothing is reserved and no run starts), or the agent's runs take no learned workflow here. 409 \`agent_not_runnable\` for an archived agent, as a run's start is: nothing is reserved. 400 for any other \`inputs\`. Only the owner, signed in with their password, starts one: the console's password session alone, from this server's own origin with a JSON body; every token is 403 \`forbidden\`.`,
       security: [{ ownerSession: [] }],
       parameters: [AGENT_ID, { name: "name", in: "path", required: true, description: "The learned workflow's folder name, `workflows/<name>/`.", schema: { type: "string" } }, { name: "digest", in: "path", required: true, description: "The revision: the first 16 hex of its workflow.json's sha256.", schema: { type: "string" } }],
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, properties: { inputs: { oneOf: [{ const: "held" }, { type: "integer", minimum: 1, maximum: COMPILE_AFTER_MAX }], default: "held", description: "`held`: the runs it was last checked on; a number: the agent's newest that many completed runs." } } } } } },
@@ -2271,6 +2286,34 @@ const FILE_LIST = { type: "object", additionalProperties: false, required: ["fil
 const AGENT_PACKAGE_FILE = closed({ path: { type: "string", description: "Its path in the package folder, with / between folders." }, encoding: { enum: ["utf8", "base64"] }, content: { type: "string" } });
 /** One thing an export does not carry as it is here: what it is, which one, and why. */
 const EXPORT_NOTE = closed({ kind: { type: "string", enum: [...EXPORT_NOTE_KINDS], description: "What the note is about." }, name: { type: "string", description: "Which one: a server, a trigger, a tool's key. A credential in the clear is named by its field (`<trigger>: source.urls.0`, `<server>: pin.<tool>.api_key`), never its value." }, reason: { type: "string" } });
+
+/** A cut in a share bundle (GET /runs/{run_id}/export): where it is and what kind, never its value. */
+const SHARE_CUT = closed({
+  id: { type: "string", pattern: "^c_[0-9a-f]{16}$", description: "Stable across exports of the run: made of the run, `at`, the rule and the rule's ordinal in that string, never of the value." },
+  at: { type: "string", description: "An RFC 6901 pointer to the string in this document." },
+  start: { type: "integer", minimum: 0, description: "Where the cut's marker starts in that string, as it is here." },
+  end: { type: "integer", minimum: 0 },
+  rule: { type: "string" },
+  kind: { enum: ["format", "held", "dump", "label", "personal", "jev"] },
+  restorable: { type: "boolean", description: "label, personal and jev cuts may be restored; format, held and dump cuts never." },
+  shape: { type: "string", description: "A public prefix or a character class, and the length: never the value." },
+});
+/** A restored cut in a share bundle: its value is in place at `start`-`end` of the string at `at`. */
+const SHARE_RESTORED = closed({ id: { type: "string", pattern: "^c_[0-9a-f]{16}$" }, at: { type: "string" }, start: { type: "integer", minimum: 0 }, end: { type: "integer", minimum: 0 }, rule: { type: "string" }, kind: { enum: ["label", "personal", "jev"] } });
+/** A run's share bundle (run-export.ts): one JSON document, written canonically (keys sorted, no space). */
+const SHARE_BUNDLE = closed({
+  format: { const: "agentrun.share/1" },
+  sha256: { type: "string", pattern: "^[0-9a-f]{64}$", description: "Hex sha256 of the document without `sha256`, written as this answer is: keys sorted, no whitespace." },
+  source: closed({ agentrun: { type: "string" }, scrubber: closed({ version: { type: "integer" }, rules: { type: "string", pattern: "^[0-9a-f]{64}$", description: "sha256 of the scrubber's rules, each `id:kind`, one a line." } }) }),
+  agent: closed({ name: { type: "string" }, kind: { enum: ["agentic", "workflow"] } }),
+  run: { type: "object", description: "The run as `GET /runs/{run_id}` serves it, these fields alone: kind, status, state, title, created_at, ended_at, result, error, review, cost, stopped_for, budget_refused_calls, effort, approvals, and imported_from with its source alone." },
+  rows: { type: "array", items: { type: "object" }, description: "Its Timeline rows as `GET /runs/{run_id}/timeline` serves them." },
+  graph: { type: ["object", "null"], description: "A workflow run's graph as `GET /runs/{run_id}/graph` serves it, but for `read_at` and the run's ids (`run` carries status, paused, startedAt and endedAt); null for an agentic run." },
+  files: { type: "array", items: closed({ path: { type: "string" }, bytes: { type: "integer", minimum: 0 }, sha256: { type: "string", pattern: "^[0-9a-f]{64}$", description: "As a template package's: path, a NUL byte, the content's bytes, a NUL byte." }, encoding: { const: "utf8" }, content: { type: "string" } }), description: "The run's UTF-8 text files, sorted by path: 256 KiB each, 4 MiB and 200 files in all." },
+  omitted: { type: "array", items: { type: "object", additionalProperties: false, required: ["what", "why"], properties: { what: { enum: ["file", "files", "recordings"] }, path: { type: "string" }, why: { enum: ["binary", "too_large", "over_total", "over_count", "unreadable", "list_truncated", "uncounted", "never"] } } }, description: "What the bundle leaves out, and why. Recordings and screenshots are never carried." },
+  cuts: { type: "array", items: SHARE_CUT },
+  restored: { type: "array", items: SHARE_RESTORED },
+});
 
 const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/agents/{agent_id}": {
@@ -2482,6 +2525,15 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       parameters: [ref("parameters/RunId")],
       responses: { "200": json(RUN_USAGE, "The run's usage lines, or why it has none."), ...errors(401, 403, 404, 429, 500) },
       "x-agentrun-serve": "runusage/1",
+    },
+  },
+  "/runs/{run_id}/export": {
+    get: {
+      operationId: "getRunExport", tags: ["runs"], summary: "An ended run as a share bundle, every string cut",
+      description: "The run as one `agentrun.share/1` document, the one a share page renders: its view's allowlisted fields, its Timeline rows, a workflow's graph, its UTF-8 text files within the caps, what is left out (`omitted`), and its sha256. Every string in it from the run is cut by the scrubber, with the values this server holds and the sign-ins the run was handed as its held values: a known key format, a held value and a dump (env output, a .env file, ~/.ssh) are cut for good; a value beside a label (`PGPASSWORD=`, `Authorization:`, `--password`) and a personal detail (a home path's user, an email, a private address) are cut and may be restored. Each cut is a record in `cuts`: where it is, its rule and kind, whether it may be restored, and its shape, never its value. The document is the same bytes on every export of the run, and is read back before it is answered: a value the cut left, or a scrub that failed, answers `500` with an empty body. `restore` re-exports with those cuts' values in place, each record moved to `restored`; an id of a cut that may not be restored, or of no cut, is `400`, and nothing is restored. `409 run_not_final` until the run has ended; `403 forbidden` while this server can't read the browser sign-in the run was handed; `413 export_too_large` over 8 MiB, never cut short.",
+      parameters: [ref("parameters/RunId"), { name: "restore", in: "query", required: false, description: "Cut ids to restore, comma-separated (the parameter may repeat): each a label, personal or jev cut of this run's bundle.", schema: { type: "string" } }],
+      responses: { "200": json(SHARE_BUNDLE, "The run's share bundle."), "500": { description: "The export failed closed: a scrub failed, or the bundle read back held a value. No body." }, ...errors(400, 401, 403, 404, 409, 413, 429) },
+      "x-agentrun-serve": "share/1",
     },
   },
   "/runs/{run_id}/browser": {
@@ -4213,7 +4265,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     tool_input: {
       type: "object", additionalProperties: true,
-      description: `On a \`tool_use\` row of a timeline read with \`calls=whole\` alone: the call's arguments as the agent sent them, each string through the run's redaction (a value this server holds, or text shaped like a key, reads \`[redacted]\`). Its names, values and brackets together are cut at ${CALL_RESULT_CHARS} characters, the bound \`tool_result_text\` has, in order, each name and value at least one character and each array or object its two brackets: the name or string that reaches it is cut there, a number, boolean or null that would pass it shows as \`...\`, an array or object then ends with one \`...\` (an item, or a \`...\` name), and a value past it shows as \`...\`. Its URLs keep their query values, as an approval's arguments do. Absent otherwise.`,
+      description: `On a \`tool_use\` row of a timeline read with \`calls=whole\` alone: the call's arguments as the agent sent them, each string through the run's redaction (a value this server holds, or text shaped like a key, reads \`[redacted]\`). Its names, values and brackets together are cut at ${CALL_RESULT_CHARS} characters, the bound \`tool_result_text\` has, in order, each name and value at least one character and each array or object its two brackets: the name or string that reaches it is cut there, a number, boolean or null that would pass it shows as \`...\`, an array or object then ends with one \`...\` (an item, or a \`...\` name), and a value past it shows as \`...\`. Its URLs keep their query values, as an approval's arguments do. Absent when the call's arguments are withheld whole, as they are when a held value is split across two of their strings, or across a property name and its value (the row's \`tool_input_preview\` then reads \`[redacted]\`), and absent otherwise.`,
       "x-agentrun-serve": "callswhole/1",
     },
     tool_result_text: {
