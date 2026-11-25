@@ -3273,6 +3273,13 @@ export interface operations {
     body: never;
     answer: Record<string, unknown>;
   };
+  getRevisionSkills: {
+    body: never;
+    answer: {
+      revision: string;
+      skills: Record<string, string>;
+    };
+  };
   getRun: {
     body: never;
     answer: components["Run"];
@@ -7079,6 +7086,41 @@ export interface operations {
     answer: {
       revoked: boolean;
       message?: string;
+    };
+  };
+  signOutClaudeLogin: {
+    body: never;
+    answer: {
+      confirmed: boolean;
+      message?: string;
+      login: {
+        state: "off" | "other_machine" | "refused" | "signed_in" | "signed_out" | "no_cli" | "unknown";
+        place: "agentrun" | "machine";
+        command: string;
+        can_start: boolean;
+        refused?: string;
+        account?: {
+          method?: string;
+          email?: string;
+          organization?: string;
+          plan?: string;
+        };
+        folder: string;
+        machine: {
+          folder: string;
+          source: "CLAUDE_CONFIG_DIR" | "default";
+          credentials?: string;
+        };
+        sign_in?: {
+          state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
+          started_at: string;
+          ended_at?: string;
+          limit_ms: number;
+          exit_code?: number;
+          signal?: string;
+          error?: string;
+        };
+      };
     };
   };
   sourceSyncFailure: {

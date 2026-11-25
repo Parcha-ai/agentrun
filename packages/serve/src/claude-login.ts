@@ -13,19 +13,20 @@
 // for a server one person runs: it is refused where more than one person can start runs, `on` included, and the owner
 // confirms they alone run agents here. It runs only in a runner place, on the machine the owner turned it on for.
 import { createHash, randomBytes } from "node:crypto";
-import { accessSync, chmodSync, closeSync, constants, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, closeSync, constants, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, realpathSync, renameSync, type RmOptions, rmSync, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
-import { delimiter, dirname, isAbsolute, join } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join } from "node:path";
 import type { ClaudeAgentLogin, ClaudeLoginStatus, ClaudeLoginToken } from "@parcha/agentrun-harness-claude";
-import { facts as claudeFacts } from "@parcha/agentrun-harness-claude/facts";
-import { registerSecretWrite } from "./secret-writes.js";
+import { facts as claudeFacts, loginRefresh } from "@parcha/agentrun-harness-claude/facts";
+import { registerSecretPage, registerSecretWrite } from "./secret-writes.js";
 import { copyEnv } from "./secrets.js";
 import type { ClaudeSignIns, SignInView } from "./claude-sign-in.js";
 import type { Settings } from "./store/index.js";
 
 // Every operation here is the owner's session's alone (secret-writes.ts): no answer holds a credential, but turning a
 // person's plan on for this server's runs, and starting its sign-in, are the owner's to do.
-for (const operation of ["getClaudeLogin", "turnOnClaudeLogin", "turnOffClaudeLogin", "startClaudeLogin"]) registerSecretWrite(operation, () => true);
+for (const operation of ["getClaudeLogin", "turnOnClaudeLogin", "turnOffClaudeLogin", "startClaudeLogin", "signOutClaudeLogin"]) registerSecretWrite(operation, () => true);
+registerSecretPage("signOutClaudeLogin", "/#/settings/keys");
 
 /** The switch: `off` (or 0, false, no) turns the mode off on this server, `on` (or 1, true, yes) leaves it there past
  *  loopback; unset, the listen address decides (claudeLoginSwitchedOff). */
@@ -626,7 +627,7 @@ export async function loginForRun(settings: Pick<Settings, "get">, data: string,
 }
 
 /** The routes here (server.ts): every one answers 404, by its name, while the mode is off (`why`). */
-export const CLAUDE_LOGIN_ROUTES: ReadonlySet<string> = new Set(["getClaudeLogin", "turnOnClaudeLogin", "turnOffClaudeLogin", "startClaudeLogin"]);
+export const CLAUDE_LOGIN_ROUTES: ReadonlySet<string> = new Set(["getClaudeLogin", "turnOnClaudeLogin", "turnOffClaudeLogin", "startClaudeLogin", "signOutClaudeLogin"]);
 /** Whether the claude-login routes answer here, the one rule the routes and capabilities' `features.claude_login` both
  *  read: none while the mode is switched off (`off`, claudeLoginSwitchedOff's reason), and none on an API-only server
  *  (`apiOnly`), whose route list holds none of them, so it refuses them before routing (server.ts). */
@@ -734,6 +735,22 @@ export async function claudeLoginView(deps: ClaudeLoginDeps): Promise<ClaudeLogi
   }
 }
 
+/** What AgentRun's own login folder (`<data>/claude-login`) leads to where it is a link (the link's text); else
+ *  undefined, a folder or nothing there. */
+function loginFolderLink(data: string): string | undefined {
+  const dir = agentRunLoginDir(data);
+  try {
+    return lstatSync(dir, { throwIfNoEntry: false })?.isSymbolicLink() ? readlinkSync(dir) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Why a turn-on is refused where AgentRun's own login folder (`dir`) is a link (to `to`). A sign-out removes that folder
+ *  whole, so it is one AgentRun keeps itself, and no link leads a sign-out into a folder elsewhere. */
+export const loginFolderIsLink = (dir: string, to: string): string =>
+  `AgentRun's own Claude login folder ${dir} is a link (to ${to}). AgentRun keeps its login in a folder of its own, which a sign-out removes whole, so it never follows a link there: remove the link, then turn it on again.`;
+
 /** PUT /settings/claude-login: turned on, refused in one line where more than one person can start runs. A turn-on that
  *  moves the login to another place first ends a sign-in this server started that still waits: its CLI signs in at the
  *  old place, which the login no longer reads. One at the same place leaves it waiting, as it still signs in there. */
@@ -764,6 +781,8 @@ export async function turnOnClaudeLogin(deps: ClaudeLoginDeps, body: unknown): P
       if (refused) throw new ClaudeLoginRefused("forbidden", refused);
       const at = loginAt(asked.place, deps.data, deps.env, deps.uid);
       if (at.refused !== undefined) throw new ClaudeLoginRefused("forbidden", at.refused);
+      const linked = asked.place === "agentrun" ? loginFolderLink(deps.data) : undefined;
+      if (linked !== undefined) throw new ClaudeLoginRefused("forbidden", loginFolderIsLink(agentRunLoginDir(deps.data), linked));
       // Its folders still to make are made here (madeLogin), so a sign-in from the line shown finds them made 0700.
       const login = madeLogin(at, asked.place, deps);
       const setting = settingFor(asked.place, deps.data);
@@ -785,6 +804,122 @@ export async function turnOffClaudeLogin(deps: ClaudeLoginDeps): Promise<ClaudeL
   });
   await deps.changed();
   return claudeLoginView(deps);
+}
+
+/** What may remain where the CLI didn't confirm its own sign-out (`why`, the CLI's step as it went). */
+const keychainMayRemain = (why: string): string =>
+  `${why}, so on macOS its Keychain item for this login may remain: remove it in Keychain Access (its name starts with "Claude Code-credentials").`;
+const KEYCHAIN_MAY_REMAIN = keychainMayRemain("Claude Code's own sign-out didn't confirm");
+/** The Keychain's words where the CLI's step threw before the CLI ran (`failed`, the error's words), else where it didn't confirm. */
+const keychainWords = (failed: string | undefined): string =>
+  failed === undefined ? KEYCHAIN_MAY_REMAIN : keychainMayRemain(`Claude Code's own sign-out could not run (${failed})`);
+
+/** What a sign-out answers beside `confirmed: false`: the login is gone here, and the CLI said nothing of its own copy. */
+export const LOGIN_SIGN_OUT_UNCONFIRMED = `Signed out here: AgentRun's copy of the login is removed. ${KEYCHAIN_MAY_REMAIN}`;
+
+/** What a sign-out answers beside `confirmed: false` where the CLI's step threw (`failed`, the error's words): the login is
+ *  gone here all the same, and the CLI's own copy may remain. */
+export const signOutCliFailed = (failed: string): string => `Signed out here: AgentRun's copy of the login is removed. ${keychainWords(failed)}`;
+
+/** What a sign-out answers beside `confirmed: false` where some of the login is still there (`left`: each thing, its path
+ *  and why), and the Keychain's words too where the CLI didn't confirm its own sign-out (`keychain`), naming the CLI
+ *  step's failure where it threw (`failed`). */
+export const signOutLeft = (left: readonly string[], keychain: boolean, failed?: string): string =>
+  `Signed out here, and the mode is off, but some of AgentRun's copy of the login remains: ${left.join("; ")}. Remove it by hand before turning the mode on again.${keychain ? ` ${keychainWords(failed)}` : ""}`;
+
+/** Why a sign-out of this machine's own login (`folder`, the person's `~/.claude` or CLAUDE_CONFIG_DIR) is refused. */
+export const machineSignOutRefused = (folder: string): string =>
+  `This is your own Claude Code login on this machine (${folder}), which AgentRun only uses: it never signs it out. Run \`claude auth logout\` in a terminal there to sign it out, or turn the mode off here.`;
+
+/** POST /settings/claude-login/sign-out's answer: whether all of the login is gone (the CLI confirmed its own sign-out and
+ *  every removal landed, whether or not a folder was there), else words saying what may remain
+ *  (LOGIN_SIGN_OUT_UNCONFIRMED, signOutLeft), and the view after it (`off`). */
+export type ClaudeLoginSignOut = { confirmed: boolean; message?: string; login: ClaudeLoginView };
+
+/** POST /settings/claude-login/sign-out: AgentRun's own login (`<data>/claude-login`) signed out and removed, so the next
+ *  turn-on finds none and the person signs in fresh, to the same account or another. In one turn on the sign-ins' queue
+ *  (no sign-in or turn-on lands in between): a sign-in this server started that still waits is ended; the mode is turned
+ *  off, so no new run goes on the login while it goes; the pinned CLI's own sign-out (the harness's claudeLogout) runs on
+ *  the folder, so it removes its credentials file and, on macOS, the Keychain item named from the folder. It runs where
+ *  the folder is gone too: a retry after a sign-out the CLI didn't confirm finds no folder, and the Keychain item may
+ *  remain, so the answer is confirmed only where the CLI confirms. Then the folder is removed whatever the CLI said (a
+ *  folder the CLI made as it signed out too) (credentials, account, profiles, the CLI's refresh lock, and
+ *  the CLI's older lock beside it), with the login's signed-in note (noteAnswer) and this process's token reader of it
+ *  (claude-login-token.ts forgetLoginTokens). Each removal stands alone: one that fails is named in the answer
+ *  (signOutLeft, `confirmed` false), and the others, the reader's drop and the server's reread of the keys still happen.
+ *  So with the CLI's step: a throw finding the CLI or loading the harness is named in the answer (signOutCliFailed), and
+ *  every removal still runs.
+ *  Where the folder is a link (put there after the turn-on, which refuses one), the link alone is removed, with the
+ *  login's signed-in note: no CLI runs through it, nothing it leads to is touched, and the answer names it. Runs already going are left as a turn-off
+ *  leaves them: each keeps the token its CLI holds, and fails in
+ *  LOGIN_SIGNED_OUT's words at its next read of the login; one claimed on it and started while the mode is off is refused
+ *  at its start (claude-login-token.ts LOGIN_CHANGED_SINCE_CLAIM). That check is of the folder, not the account, so one
+ *  started after a turn-on and a new sign-in runs on that sign-in. A run whose CLI reads the folder itself (in the
+ *  runner's process) holds the refresh token and may write a renewed pair back after the folder goes; nothing here
+ *  removes it again. A login on this machine's own folder (`machine`) is the person's:
+ *  refused (machineSignOutRefused), with nothing touched. */
+export async function signOutClaudeLogin(deps: ClaudeLoginDeps): Promise<ClaudeLoginSignOut> {
+  let off = false;
+  let signedOut = true;
+  let cliFailed: string | undefined;
+  const left: string[] = [];
+  const remove = (what: string, path: string, options: RmOptions) => {
+    try {
+      rmSync(path, options);
+    } catch (error) {
+      left.push(`${what} ${path} (${(error as NodeJS.ErrnoException).code ?? String(error)})`);
+    }
+  };
+  try {
+    await deps.signIns.serial(async (turn) => {
+      if ((await claudeLoginSetting(deps.settings))?.place === "machine") throw new ClaudeLoginRefused("forbidden", machineSignOutRefused(machineFolder(deps.env, deps.uid).folder));
+      await turn.stop();
+      await deps.settings.remove(CLAUDE_LOGIN_SETTING);
+      deps.saved(undefined);
+      off = true;
+      const dir = agentRunLoginDir(deps.data);
+      const linked = loginFolderLink(deps.data);
+      const note = answerFile(deps.data, { dir, profiles: join(dir, "anthropic") });
+      try {
+        if (linked !== undefined) {
+          // A link put there after the turn-on (which refuses one, loginFolderIsLink): the link alone goes, no CLI runs
+          // through it, and nothing it leads to is touched. The login's signed-in note, in the data folder, goes too.
+          signedOut = false;
+          remove("the link", dir, { force: true });
+          remove("the login's signed-in note", note, { force: true });
+          left.push(`${linked}, where the link ${dir} led, left as it was`);
+          return;
+        }
+        // The CLI's step in its own try: a throw finding the CLI or loading the harness skips no removal below, and the
+        // answer names it.
+        try {
+          const { login } = loginAt("agentrun", deps.data, deps.env, deps.uid);
+          const cli = loginCli(await deps.pinned(), deps.env);
+          signedOut = login && cli ? await (await deps.claude()).claudeLogout(cli, login, pathOf(deps.env)) : false;
+        } catch (error) {
+          signedOut = false;
+          cliFailed = error instanceof Error ? error.message : String(error);
+        }
+        // The older lock sits beside the folder in the data folder's real path. The folder's own real path is never
+        // followed: a link swapped in during the CLI's await would lead the lock's removal outside the data folder.
+        let beside = dir;
+        try {
+          beside = join(realpathSync(dirname(dir)), basename(dir));
+        } catch {
+          // The folder as named.
+        }
+        remove("the login's folder", dir, { recursive: true, force: true });
+        remove("the CLI's older lock", `${beside}${loginRefresh.legacyLockSuffix}`, { recursive: true, force: true });
+        remove("the login's signed-in note", note, { force: true });
+      } finally {
+        (await import("./claude-login-token.js")).forgetLoginTokens(dir);
+      }
+    });
+  } finally {
+    if (off) await deps.changed();
+  }
+  const message = left.length > 0 ? signOutLeft(left, !signedOut, cliFailed) : signedOut ? undefined : cliFailed !== undefined ? signOutCliFailed(cliFailed) : LOGIN_SIGN_OUT_UNCONFIRMED;
+  return { confirmed: message === undefined, ...(message ? { message } : {}), login: await claudeLoginView(deps) };
 }
 
 /** POST /settings/claude-login/login: the CLI's own sign-in, started on this machine, where it opens a browser, with the
@@ -834,7 +969,7 @@ export async function dropRefusedLogin(signIns: Pick<ClaudeSignIns, "serial">, s
 }
 
 /** What the routes and a run's check use of the harness (its login.ts), loaded only when asked. */
-export type ClaudeLoginCli = Pick<typeof import("@parcha/agentrun-harness-claude"), "claudeLoginStatus" | "startClaudeLogin" | "claudeLoginCommand">;
+export type ClaudeLoginCli = Pick<typeof import("@parcha/agentrun-harness-claude"), "claudeLoginStatus" | "startClaudeLogin" | "claudeLoginCommand" | "claudeLogout">;
 const pathOf = (env: Readonly<Record<string, string | undefined>>): { path?: string } => (env.PATH ? { path: env.PATH } : {});
 
 /** How long a signed-in answer stands in for a check that gives none (loginBeforeRun). */

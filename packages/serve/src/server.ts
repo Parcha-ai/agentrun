@@ -155,7 +155,7 @@ import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from 
 import { isSecretWriteOperation, type SecretRequest, secretPageFor, secretsWritableFields, secretWriteRefusal, secretWriterFacts, writesSecretFor, writesSecretsAllowed } from "./secret-writes.js";
 import { ChatGPTPlan, planOf, PlanSignInRefused, SIGN_OUT_UNCONFIRMED, withPlan } from "./chatgpt-plan.js";
 import { modelGatewayRoute, readSavedGateway, type SavedGateway, withSavedGateway } from "./model-gateway.js";
-import { CLAUDE_LOGIN_ROUTES, LOGIN_REFUSES_API_KEYS, oneOwnerDeps, ClaudeLoginRefused, claudeLoginOf, claudeLoginRouteOff, claudeLoginServed, claudeLoginSwitchedOff, claudeLoginSetting, claudeLoginView, type ClaudeLoginDeps, dropRefusedLogin, envAtPlace, LOGIN_HARNESS, loginOf, loginOnRunnerOnly, loopback, startLoginHere, turnOffClaudeLogin, turnOnClaudeLogin, withClaudeLogin } from "./claude-login.js";
+import { CLAUDE_LOGIN_ROUTES, LOGIN_REFUSES_API_KEYS, oneOwnerDeps, ClaudeLoginRefused, claudeLoginOf, claudeLoginRouteOff, claudeLoginServed, claudeLoginSwitchedOff, claudeLoginSetting, claudeLoginView, type ClaudeLoginDeps, dropRefusedLogin, envAtPlace, LOGIN_HARNESS, loginOf, loginOnRunnerOnly, loopback, signOutClaudeLogin, startLoginHere, turnOffClaudeLogin, turnOnClaudeLogin, withClaudeLogin } from "./claude-login.js";
 import { ClaudeSignIns } from "./claude-sign-in.js";
 import { bootSealKey, parametersDigest, withSealKey } from "./seal-key.js";
 import { ServerLockHeldError, takeServerLock } from "./server-lock.js";
@@ -726,6 +726,7 @@ export const ROUTES: readonly Route[] = [
   { method: "PUT", pattern: /^\/agents\/([^/]+)\/definition$/, name: "updateDefinition" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/revisions$/, name: "listRevisions" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/package$/, name: "getAgentPackage" },
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/revisions\/([^/]+)\/skills$/, name: "getRevisionSkills" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/current$/, name: "setCurrent" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/archive$/, name: "archiveAgent" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/unarchive$/, name: "unarchiveAgent" },
@@ -838,6 +839,7 @@ export const ROUTES: readonly Route[] = [
   { method: "PUT", pattern: /^\/settings\/claude-login$/, name: "turnOnClaudeLogin" },
   { method: "DELETE", pattern: /^\/settings\/claude-login$/, name: "turnOffClaudeLogin" },
   { method: "POST", pattern: /^\/settings\/claude-login\/login$/, name: "startClaudeLogin" },
+  { method: "POST", pattern: /^\/settings\/claude-login\/sign-out$/, name: "signOutClaudeLogin" },
   // The model gateway saved in the console (model-gateway.ts): its save, removal and test the owner's session's alone.
   { method: "GET", pattern: /^\/settings\/model-gateway$/, name: "getModelGateway" },
   { method: "PUT", pattern: /^\/settings\/model-gateway$/, name: "saveModelGateway" },
@@ -5505,6 +5507,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const page = all.slice(offset, offset + limit).map((row) => revisionView(entry.agent, row));
         return send(res, 200, { revisions: page, next_cursor: nextCursor(offset + limit, all.length) });
       }
+      case "getRevisionSkills": {
+        // Only the named revision is needed: the full agent view and numbered history load every skill bundle.
+        if (!ID.test(id) || !await store.agents.get(id)) throw new ApiError("not_found", `no agent ${id}`);
+        const selected = await store.agents.revision(decodeURIComponent(second!));
+        if (!selected || selected.agentId !== id) throw new ApiError("not_found", "no such revision for this agent");
+        // The complete immutable file map is needed before replacing skills in a definition edit. Native discovery
+        // metadata is separate: this read never follows a connection to its source machine or filesystem.
+        return send(res, 200, { revision: selected.id, skills: selected.skills ?? {} });
+      }
       case "getAgentPackage": {
         const entry = await needAgent(id);
         const { agent, revision } = entry;
@@ -6174,6 +6185,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const { revoked } = await plan.signOut();
         return send(res, 200, revoked ? { revoked } : { revoked, message: SIGN_OUT_UNCONFIRMED });
       }
+      // Its sign-out (claude-login.ts signOutClaudeLogin): AgentRun's own login removed, the mode off; this machine's own
+      // login refused in words.
+      case "signOutClaudeLogin":
+        try {
+          return send(res, 200, await signOutClaudeLogin(loginDeps()), { "cache-control": "no-store" });
+        } catch (error) {
+          if (error instanceof ClaudeLoginRefused) throw new ApiError(error.code, error.message);
+          throw error;
+        }
       // Claude Code's login on this machine (claude-login.ts): only its status is read, by asking the CLI.
       case "getClaudeLogin":
       case "turnOnClaudeLogin":

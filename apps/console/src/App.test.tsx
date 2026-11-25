@@ -568,7 +568,7 @@ describe("App, archiving a run and filtering the runs list", () => {
 });
 
 describe("App, an agent's address", () => {
-  it("opens the agent's page, and /edit opens its editor", async () => {
+  it("opens the agent's page, and /edit opens its settings", async () => {
     const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
     const calc = { agent_id: "calc", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Calc", instructions: "Answer.", harness: "pi", skills: [], tools: [] } };
     vi.stubGlobal("fetch", async (url: string) => {
@@ -593,7 +593,9 @@ describe("App, an agent's address", () => {
     const saveButton = () => [...host.querySelectorAll("button")].find((b) => /^(Save revision|Saved)/.test(b.textContent?.trim() ?? ""));
     await wait(() => !!saveButton());
     expect(saveButton()).toBeTruthy();
+    expect(host.querySelector('header[aria-label="Agent toolbar"] button[aria-label="Agent settings"]')).toBeNull();
     expect(host.querySelector('[role="tab"]')).toBeNull();
+    expect(host.querySelector('nav[aria-label="Agent settings sections"] [aria-current="page"]')?.textContent?.trim()).toMatch(/^General/);
   });
 
   it("opens the editor creating, blank, after an agent named new's editor: it never keeps that agent", async () => {
@@ -859,7 +861,7 @@ describe("App, the no-model bar", () => {
     expect(asked.filter((a) => a === "GET /v2/capabilities").length).toBeGreaterThanOrEqual(2);
   });
 
-  it("sits above the run request panels, leaving their footer in view, and is absent from the build page", async () => {
+  it("sits above the run request panels, leaving their footer in view, and is absent from the new-agent editor", async () => {
     serve(() => ({ source: "providers", default: null, ready: false, needs: "key" }), true, undefined, agentsList());
     const host = await mount("#/playground");
     const request = () => host.querySelector('section[aria-label="Request"]');
@@ -869,16 +871,16 @@ describe("App, the no-model bar", () => {
     expect(bar(host)!.compareDocumentPosition(request()!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(bar(host)!.parentElement!.className.split(" ")).toEqual(expect.arrayContaining(["flex", "flex-col", "min-h-0"]));
     expect(request()!.querySelector("footer")!.className.split(" ")).toContain("shrink-0");
-    // Describing an agent or handing it to a local coding agent needs no model key on this server.
+    // Configuring an agent or handing it to a local coding agent needs no model key on this server.
     await act(async () => { location.hash = "#/agents/new"; });
-    await until(() => !!host.textContent?.includes("What do you want to build?"));
+    await until(() => !!host.querySelector("#agent-name"));
     expect(bar(host)).toBeNull();
   });
 
-  it("opens the editor, creating, from Build's link: the one place a Decision or a Workflow agent is made", async () => {
+  it("opens the shared editor directly and keeps the legacy creation link", async () => {
     serve(() => ({ source: "providers", default: null, ready: false, needs: "key" }), true, undefined, agentsList());
     const host = await mount("#/agents/new");
-    await until(() => !!host.querySelector('a[href="#/agents/new?editor"]'));
+    await until(() => !!host.querySelector("#agent-name"));
     await act(async () => { location.hash = "#/agents/new?editor"; });
     const heading = () => [...host.querySelectorAll("h1")].map((h) => h.textContent);
     await until(() => heading().includes("New agent"));
