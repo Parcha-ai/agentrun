@@ -90,6 +90,7 @@ import { answerAsServed } from "../answer-json.js";
 import type { ClaimMcp } from "./mcp-run.js";
 import { type RequestFigures, reserveFor, stepAndAnswerFor, wrappingUp, wrapUpText } from "../wrap-up.js";
 import { LEARNED_CARD_FIELDS, LEARNED_CLIP, LEARNED_WORKFLOW_TOOL, learnedApprovedTools } from "../learned-workflow.js";
+import { LEARNED_NODES } from "../learned-nodes.js";
 import { warnHoldShort } from "../print.js";
 import { type FeedbackData, feedbackAsk, feedbackOf, jobEndOpen, pendingFeedbackOf } from "./feedback-round.js";
 import { handbackText, servedAnswerOf, servedAnswerText, WORKFLOW_FIRST, WORKFLOW_FIRST_CALL, type WorkflowFirst, type WorkflowFirstData, type WorkflowRevise } from "./workflow-first.js";
@@ -192,9 +193,9 @@ export interface AdapterRunSpec {
    *  run once through the session's own learned_workflow tool (its gate, record, ledger and cap), its answer the run's
    *  answer, or its handback the agent's first input. Absent: the agent takes the run from its first turn. */
   readonly workflowFirst?: WorkflowFirst;
-  /** The learned workflow that fits the run but that the money rule stopped from running first (workflow-first.ts
-   *  costLineOf): the loop keeps why on the root (WORKFLOW_FIRST, outcome needs_revision, the two numbers) as the agent
-   *  takes the run. The stop asks for no revision. */
+  /** The learned workflow the money rule stopped (workflow-first.ts costLineOf): one that fits the run, or one the
+   *  agent's own tool would run (toolStopsOf), which its tool then leaves out: the loop keeps why on the root
+   *  (WORKFLOW_FIRST, outcome needs_revision, the two numbers) as the agent takes the run. The stop asks for no compile. */
   readonly workflowRevise?: WorkflowRevise;
   /** The run's end-of-run step, when its spec builds one (over the per-claim resources it holds, its Archil claim among
    *  them), the run's only one (none without it): asked in the end turn while the claim is held, before
@@ -2992,12 +2993,6 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           memo: async (_key, value) => (typeof value === "function" ? value() : value),
         });
         const serveFirst = async (first: WorkflowFirst): Promise<Served | "park" | undefined> => {
-          // The session's learned_workflow as this loop wraps a tool, but nesting nothing of the harness's: a call a crash
-          // cut is ended interrupted and handed back, never run again (its record's start is not marked `nests`).
-          const bare = spec.session.tools.find((tool) => tool.name === LEARNED_WORKFLOW_TOOL);
-          if (!bare || !tools.some((tool) => tool.name === LEARNED_WORKFLOW_TOOL)) return undefined;
-          const { nests: _nests, ...plain } = bare;
-          const learned = hosted(plain);
           const [on, theRoot, theGate] = [harness!, root!, gate!];
           const args = { name: first.name, input: first.input };
           const call = { callId: WORKFLOW_FIRST_CALL, tool: LEARNED_WORKFLOW_TOOL, args };
@@ -3018,8 +3013,15 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           const recorded = (end: NonNullable<typeof ended>) => ({ text: end.output ?? (end.status === "interrupted" ? endedAnswer(LEARNED_WORKFLOW_TOOL, end).text : ""), isError: end.status !== "done" });
           if (kept?.outcome === "answered") return { outcome: "answered", text: ended?.output ?? "" };
           // Handed back on an earlier claim whose handback never reached the agent (the session is still new): sent now, in
-          // the words that claim would have sent (its why included).
+          // the words that claim would have sent (its why included), with or without the tool now (the money rule may have
+          // taken the workflow off it since: workflow-first.ts toolStopsOf).
           if (kept) return job(ended ? taken(recorded(ended)).text : "");
+          // The session's learned_workflow as this loop wraps a tool, but nesting nothing of the harness's: a call a crash
+          // cut is ended interrupted and handed back, never run again (its record's start is not marked `nests`).
+          const bare = spec.session.tools.find((tool) => tool.name === LEARNED_WORKFLOW_TOOL);
+          if (!bare || !tools.some((tool) => tool.name === LEARNED_WORKFLOW_TOOL)) return undefined;
+          const { nests: _nests, ...plain } = bare;
+          const learned = hosted(plain);
           if (!ended) {
             // A deny before anything is written leaves the run its agent's, as if the workflow were not there.
             const before = await spec.gate?.({ callId: call.callId, tool: call.tool as never, args });
@@ -3028,6 +3030,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             else await rec.person(spec.input);
           }
           let answer: { text: string; isError: boolean };
+          // Refused at its gate, on this claim or the one before: it ran nothing.
+          let refused = ended?.status === "refused";
           if (ended) answer = recorded(ended);
           else {
             const verdict = await preIntentGate(spec, hooks, wrapUpRefusal, (asked) => rec.park(asked.callId, asked.tool, asked.args ?? {}, false))(call, context);
@@ -3038,6 +3042,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               if (rec.unsentParked().includes(WORKFLOW_FIRST_CALL)) await rec.end(WORKFLOW_FIRST_CALL, "refused", verdict.deny);
               else await rec.refused(WORKFLOW_FIRST_CALL, LEARNED_WORKFLOW_TOOL, args, false, verdict.deny);
               answer = { text: verdict.deny, isError: true };
+              refused = true;
             } else {
               // A CLI's record takes the call's start and end inside the wrapper; pi's step record here.
               if (!record) await rec.start(WORKFLOW_FIRST_CALL, LEARNED_WORKFLOW_TOOL, args, false);
@@ -3050,8 +3055,12 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           answer = taken(answer);
           const outcome = answer.isError ? "handed_back" : "answered";
           const data: WorkflowFirstData = { workflow: first.name, digest: first.digest, ...(first.promotion !== undefined ? { promotion: first.promotion } : {}), revision: first.revision, call: WORKFLOW_FIRST_CALL, outcome };
+          // A call refused at its gate keeps its record as one the tool refused does (learned-nodes.ts LEARNED_NODES
+          // `refused`): no workflow ran it, so the money rule charges none and the run names none.
+          const refusal = refused ? { call: WORKFLOW_FIRST_CALL, workflow: first.name, digest: first.digest, caller: "platform", nodes: [], ended: "failed", refused: true } : undefined;
           await on.commit(async (tx) => {
             if (outcome === "answered") await tx.appendEntry(theRoot.id, { kind: KINDS.message, data: { role: "model", text: answer.text, at: now() } as unknown as JsonValue });
+            if (refusal) await tx.appendEntry(theRoot.id, { kind: LEARNED_NODES, data: refusal as unknown as JsonValue });
             await tx.appendEntry(theRoot.id, { kind: WORKFLOW_FIRST, data: data as unknown as JsonValue });
           }, context);
           return outcome === "answered" ? { outcome, text: answer.text } : job(answer.text);
@@ -3061,9 +3070,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // under way (the handback sent) never runs it again.
         let served: Served | undefined;
         // A workflow this run already served or handed back on an earlier claim (its end on the root): recovered whatever the
-        // money rule says now, so a crash before the handback never makes the agent redo finished work.
-        const keptFirst = spec.workflowFirst || !spec.workflowRevise || followedUp || firstUnplaced || session!.state !== "new" ? undefined : findData<WorkflowFirstData>(await entriesOf(gate!.journal, root!.id, context), WORKFLOW_FIRST, () => true);
-        const recovered: WorkflowFirst | undefined = keptFirst && keptFirst.outcome !== "needs_revision" ? { name: keptFirst.workflow, digest: keptFirst.digest, revision: keptFirst.revision, input: {}, ...(spec.workflowRevise?.outputSchema !== undefined ? { outputSchema: spec.workflowRevise.outputSchema } : {}) } : undefined;
+        // money rule says now (its stop, or its fail-closed read of an unreadable past), so a crash before the handback never
+        // makes the agent redo finished work. Only a run that learns keeps one.
+        const keptFirst = spec.workflowFirst || !spec.learningLaid || followedUp || firstUnplaced || session!.state !== "new" ? undefined : findData<WorkflowFirstData>(await entriesOf(gate!.journal, root!.id, context), WORKFLOW_FIRST, () => true);
+        const recovered: WorkflowFirst | undefined = keptFirst && keptFirst.outcome !== "needs_revision" ? { name: keptFirst.workflow, digest: keptFirst.digest, revision: keptFirst.revision, input: {}, ...(spec.outputSchema !== undefined ? { outputSchema: spec.outputSchema } : {}) } : undefined;
         const firstToServe = spec.workflowFirst ?? recovered;
         // A fitting workflow the money rule stopped: why, on the root, once for the run, as the agent takes it.
         if (spec.workflowRevise && !followedUp && !firstUnplaced && session!.state === "new") {

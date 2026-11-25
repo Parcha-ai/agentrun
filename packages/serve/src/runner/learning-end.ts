@@ -329,16 +329,6 @@ export function runPathOf(rows: readonly TimelineEvent[]): RunPath {
   return onlyLearnedWorkflows(rows) ? "workflow" : "handed_back";
 }
 
-/** The learned workflow a run's job called last by its call's `name` (callArgsOf's arguments, in the job's order: `calls`),
- *  or null when it called none by a name. */
-export function workflowNameOf(calls: readonly { tool: string; args: Record<string, unknown> }[]): string | null {
-  for (let i = calls.length - 1; i >= 0; i--) {
-    const call = calls[i]!;
-    if (LEARNED_NAMES.has(call.tool) && typeof call.args.name === "string") return call.args.name;
-  }
-  return null;
-}
-
 /** Whether a draft's workflow.json (`json`) waits for its owner's OK whatever its checks say: a step of it calls an MCP
  *  tool with no declared price (workflow-draft.ts unpricedCalls), from the prices each server's row keeps (mcp-probe.ts
  *  McpPrices), or an SDK run's manifest gives. A server the store can't read gives no price: held. */
