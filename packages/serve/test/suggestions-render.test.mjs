@@ -133,7 +133,8 @@ test("a Python client takes its inputs as one dict: an input named as the client
     let body = "";
     req.on("data", (chunk) => { body += chunk; });
     req.on("end", () => {
-      got.push({ method: req.method, url: req.url, auth: req.headers.authorization, body: body ? JSON.parse(body) : undefined });
+      // The client's requests alone, which carry a key: a probe of a new loopback listener from this machine carries none.
+      if (req.headers.authorization !== undefined) got.push({ method: req.method, url: req.url, auth: req.headers.authorization, body: body ? JSON.parse(body) : undefined });
       res.setHeader("content-type", "application/json");
       res.end(JSON.stringify({ run_id: "run_1", status: "completed", result: { output: { category: "billing" } } }));
     });

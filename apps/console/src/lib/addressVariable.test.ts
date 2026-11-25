@@ -7,8 +7,10 @@ import { describe, expect, it } from "vitest";
 // dev server's own that travels with AGENTRUN_TOKEN.
 const SOURCES: Record<string, string> = {
   ...import.meta.glob("../../../../packages/serve/{src,skills,templates}/**/*.{ts,mts,mjs,txt,md}", { query: "?raw", import: "default", eager: true }),
-  ...import.meta.glob("../../../../{README.md,packages/*/README.md,python/README.md}", { query: "?raw", import: "default", eager: true }),
-  ...import.meta.glob("../../../../{docs,examples}/**/*.{md,mjs,ts}", { query: "?raw", import: "default", eager: true }),
+  // One pattern each, never a brace that holds a path: such a brace makes the search read every directory of the checkout.
+  ...import.meta.glob(["../../../../README.md", "../../../../packages/*/README.md", "../../../../python/README.md"], { query: "?raw", import: "default", eager: true }),
+  ...import.meta.glob("../../../../{docs,examples,deploy}/**/*.{md,mjs,ts,yaml,yml}", { query: "?raw", import: "default", eager: true }),
+  ...import.meta.glob("../../../../packages/agentrun/lib/**/*.mjs", { query: "?raw", import: "default", eager: true }),
   ...import.meta.glob("../**/*.{ts,tsx,mjs}", { query: "?raw", import: "default", eager: true }),
   ...import.meta.glob("../../e2e/**/*.mjs", { query: "?raw", import: "default", eager: true }),
 };
@@ -25,9 +27,10 @@ describe("the name of a server's address", () => {
 
   it("is never AGENTRUN_URL, wherever the server, the console or a guide says or reads it", () => {
     const files = Object.keys(SOURCES);
-    for (const part of ["/packages/serve/src/suggestions.ts", "/packages/serve/README.md", "/packages/serve/skills/", "/packages/client/README.md", "/docs/", "/examples/", "/components/ApiKeysPage.tsx", "/e2e/flows/"]) {
+    for (const part of ["/packages/serve/src/suggestions.ts", "/packages/serve/README.md", "/packages/serve/skills/", "/packages/serve/templates/", "/packages/client/README.md", "/packages/agentrun/lib/cli.mjs", "/python/README.md", "/docs/", "/examples/", "/deploy/", "/components/ApiKeysPage.tsx", "/e2e/flows/"]) {
       expect(files.some((file) => file.includes(part)), part).toBe(true);
     }
+    expect(files.some((file) => /^(\.\.\/)+README\.md$/.test(file)), "the repository's README").toBe(true);
     const said: string[] = [];
     const older: Record<string, number> = {};
     for (const [file, text] of Object.entries(SOURCES).filter(([file]) => !OLDER_NAME_TESTS.some((end) => file.endsWith(end)))) {
