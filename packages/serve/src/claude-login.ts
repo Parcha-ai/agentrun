@@ -508,10 +508,11 @@ export function withClaudeLogin<T extends object>(env: T, login: RunLogin | unde
 }
 
 /** `env` as a run at `place` reads it: a runner place keeps the login; any other place (a sandbox) gets a copy without it,
- *  so a revision's checks there ask for a key, as its run will. */
+ *  so a revision's checks there ask for a key, as its run will. The copy keeps every own property as it is (secrets.ts
+ *  withSecrets' keys, read by name and never enumerated, and which of them were saved), where a spread would keep none. */
 export function envAtPlace<T extends object>(env: T, place: { readonly mode: string } | undefined): T {
   if (place?.mode === "runner" || (env as Record<symbol, unknown>)[LOGIN] === undefined) return env;
-  return withClaudeLogin({ ...env }, undefined);
+  return withClaudeLogin(Object.create(Object.getPrototypeOf(env), Object.getOwnPropertyDescriptors(env)) as T, undefined);
 }
 
 /** The login `env` carries, unless the switch is off. */
