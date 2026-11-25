@@ -260,11 +260,12 @@ test("capabilities' claude_login is what the routes do: true where GET /settings
   delete process.env[CLAUDE_LOGIN_ENV];
 });
 
-test("claudeLoginServed: one rule for the routes and for capabilities: none while switched off, on API-only only what its route list serves", () => {
-  assert.equal(claudeLoginServed(undefined, undefined), true);
-  assert.equal(claudeLoginServed(`${CLAUDE_LOGIN_ENV}=off`, undefined), false);
-  assert.equal(claudeLoginServed(undefined, API_ONLY_ROUTES), false, "API-only serves none of them today");
-  assert.equal(claudeLoginServed(undefined, new Set([...API_ONLY_ROUTES, ...CLAUDE_LOGIN_ROUTES])), true, "an API-only list that served them all would answer");
+test("claudeLoginServed: one rule for the routes and for capabilities: none while switched off, none on API-only, whose route list holds none of them", () => {
+  assert.equal(claudeLoginServed(undefined, false), true);
+  assert.equal(claudeLoginServed(`${CLAUDE_LOGIN_ENV}=off`, false), false);
+  assert.equal(claudeLoginServed(undefined, true), false);
+  // The API-only gate refuses every route outside its list before routing, so the login routes' own gate never sees one.
+  assert.deepEqual([...CLAUDE_LOGIN_ROUTES].filter((name) => API_ONLY_ROUTES.has(name)), [], "API-only serves none of the login routes");
 });
 
 test("AGENTRUN_CLAUDE_CODE_LOGIN=off: every route is 404 by name, a saved turn-on is dropped at the start, and claude-agent runs on the model keys", { timeout: 180_000 }, async (t) => {

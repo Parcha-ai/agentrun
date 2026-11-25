@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { keyLabel } from "@/lib/answerJson";
 import { type LinkedFiles, markdown } from "@/lib/format";
+import { Redactions } from "@/lib/redaction";
 
 /** The part of a JSON Schema a value is read with: a string marked `contentMediaType: "text/markdown"` is Markdown, an
  *  object's properties and an array's items carry their own, `title` names a field, and a local `$ref` stands for the part
@@ -43,7 +44,7 @@ function Value({ value, schema, root, linked }: { value: unknown } & Reading) {
   }
   if (typeof value === "object") return <Fields record={value as Record<string, unknown>} schema={schema} root={root} linked={linked} />;
   if (typeof value === "string" && isMarkdown(schema, root)) return <article data-json-markdown className="report max-w-none" dangerouslySetInnerHTML={{ __html: markdown(value, linked) }} />;
-  return <span data-json-value className="min-w-0 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{String(value)}</span>;
+  return <span data-json-value className="min-w-0 whitespace-pre-wrap break-words [overflow-wrap:anywhere]"><Redactions text={String(value)} /></span>;
 }
 
 /** An object's fields: each key's label (its schema's title, else the key) over its value; a nested object's fields
@@ -77,7 +78,7 @@ export function AnswerFields({ record, schema, linked }: { record: Record<string
         <Button type="button" size="xs" onClick={() => setRaw((r) => !r)}>{raw ? "Show fields" : "Show raw JSON"}</Button>
       </div>
       {raw
-        ? <pre aria-label="The answer's JSON" className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] border bg-card p-4 font-mono text-small leading-[1.8]">{JSON.stringify(record, null, 2)}</pre>
+        ? <pre aria-label="The answer's JSON" className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] border bg-card p-4 font-mono text-small leading-[1.8]"><Redactions text={JSON.stringify(record, null, 2)} /></pre>
         : <div aria-label="The answer's fields" className="min-w-0 [&>dl]:border-l-0 [&>dl]:pl-0"><Fields record={record} schema={schema} root={schema} linked={linked} /></div>}
     </section>
   );

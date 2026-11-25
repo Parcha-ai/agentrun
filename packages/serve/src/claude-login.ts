@@ -518,10 +518,9 @@ export async function loginForRun(settings: Pick<Settings, "get">, data: string,
 /** The routes here (server.ts): every one answers 404, by its name, while the mode is off (`why`). */
 export const CLAUDE_LOGIN_ROUTES: ReadonlySet<string> = new Set(["getClaudeLogin", "turnOnClaudeLogin", "turnOffClaudeLogin", "startClaudeLogin"]);
 /** Whether the claude-login routes answer here, the one rule the routes and capabilities' `features.claude_login` both
- *  read: none while the mode is switched off (`off`, claudeLoginSwitchedOff's reason), and on an API-only server
- *  (`apiOnlyRoutes`, the routes it serves) only if it serves them all. */
-export const claudeLoginServed = (off: string | undefined, apiOnlyRoutes: ReadonlySet<string> | undefined): boolean =>
-  !off && (!apiOnlyRoutes || [...CLAUDE_LOGIN_ROUTES].every((name) => apiOnlyRoutes.has(name)));
+ *  read: none while the mode is switched off (`off`, claudeLoginSwitchedOff's reason), and none on an API-only server
+ *  (`apiOnly`), whose route list holds none of them, so it refuses them before routing (server.ts). */
+export const claudeLoginServed = (off: string | undefined, apiOnly: boolean): boolean => !off && !apiOnly;
 export const claudeLoginRouteOff = (name: string, why: string): string => `${name}: Claude Code's login on this machine is off on this server: ${why}.`;
 
 /** What the routes need of the server. `pinned`: the pinned CLI's path when installed. `refused`: whyNotOneOwner of this

@@ -234,6 +234,22 @@ describe("Settings → Model keys, Claude Code's login on this machine", () => {
     expect(page.row()).toBeNull();
   });
 
+  it("switched off while a turn-on is out: its failure, landing after, shows no alert once the row comes back", async () => {
+    let fail: (answer: Response) => void = () => {};
+    const { v2 } = server(() => OFF, () => new Promise<Answer>((resolve) => { fail = resolve; }));
+    const page = await open(v2, undefined, true);
+    await act(async () => { page.row()!.querySelector<HTMLInputElement>('input[name="only_me"]')!.click(); });
+    await act(async () => { page.button(/^Turn on$/)!.click(); });
+    act(() => root!.render(createElement(KeysPage, { v2, writable: true, plan: createElement(ClaudeLoginRow, { v2, writable: true, available: false }) })));
+    await page.settle();
+    await act(async () => { fail(json(500, { error: { code: "internal", message: "putClaudeLogin: the write failed" } })); });
+    await page.settle();
+    act(() => root!.render(createElement(KeysPage, { v2, writable: true, plan: createElement(ClaudeLoginRow, { v2, writable: true, available: true }) })));
+    await page.settle();
+    expect(page.row()).not.toBeNull();
+    expect(page.row()!.querySelector('[role="alert"]')).toBeNull();
+  });
+
   it("switched off on the server (404): no row; the Anthropic key says which plans include API credits", async () => {
     const { v2 } = server(() => json(404, { error: { code: "not_found", message: "getClaudeLogin: Claude Code's login on this machine is off on this server (AGENTRUN_CLAUDE_CODE_LOGIN=off)." } }), () => OFF);
     const page = await open(v2);
