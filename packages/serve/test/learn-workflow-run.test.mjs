@@ -445,6 +445,15 @@ for (const harness of ["pi", "codex"]) {
   });
 }
 
+// A run every learned call of which was refused ran no workflow: the agent did the job, so its path is `agent`, naming
+// none, never `handed_back` with no workflow (the timeline alone, runPathOf, sees a learned_workflow call and the agent
+// going on after it).
+test("a run whose learned calls were all refused took the agent's path, naming no workflow", { timeout: 120_000 }, async (t) => {
+  const { view } = await refusedRun(t, "refused-path", "codex");
+  assert.deepEqual(view.workflow_calls?.map((call) => call.outcome), ["refused"], JSON.stringify(view));
+  assert.deepEqual([view.path, view.workflow], ["agent", null], JSON.stringify(view));
+});
+
 /** A learned workflow of one call node on `tool`, or that node inside a composed workflow node (`nested`). */
 const callFlow = (tool, nested = false) => {
   const inner = { v: 2, name: "fetch-one", schemas: { In: { type: "object", properties: { url: { type: "string" } }, required: ["url"] }, Page: { type: "object" } }, input: { schemaId: "In" }, output: { schemaId: "Page", path: "page" }, root: { node: "call", label: "fetch", via: "tool", tool, args: { url: "{url}" }, out: "Page", as: "page", deadline_s: 30 } };
