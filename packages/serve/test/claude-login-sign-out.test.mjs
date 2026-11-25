@@ -225,6 +225,44 @@ test("a sign-out with no login kept here (nothing signed in yet) runs no CLI, co
   assert.deepEqual(r.logouts, []);
 });
 
+// A first sign-out whose CLI didn't confirm removes the folder, but the CLI's own copy (on macOS, the Keychain item named
+// from the folder's path) may remain. A retry finds no folder: it still runs the CLI's own sign-out there, so it confirms
+// only where the CLI does, and removes the signed-in note and the token reader whatever it finds. A folder the CLI makes
+// as it signs out goes too.
+for (const [retry, confirms] of [["fails again", false], ["confirms", true]]) {
+  test(`a sign-out retried after one whose CLI didn't confirm runs the CLI's own sign-out again though the folder is gone, and answers confirmed only where that CLI's sign-out ${retry === "confirms" ? "confirms" : "does (here it fails again)"}`, async (t) => {
+    const said = [false, confirms];
+    const r = await rig(t, { signedIn: true });
+    const folder = signedInAt(r.data);
+    assert.equal((await login.claudeLoginView(r.deps)).state, "signed_in");
+    const [note] = answers(r.data);
+    assert.ok(note, "a signed-in note is kept for the login");
+    const real = await r.deps.claude();
+    r.deps.claude = async () => ({
+      ...real,
+      claudeLogout: async (cliPath, at, options) => {
+        r.logouts.push({ cli: cliPath, dir: at.dir, options });
+        if (r.logouts.length === 2) mkdirSync(at.dir, { recursive: true });
+        return said[r.logouts.length - 1];
+      },
+    });
+    const first = await login.signOutClaudeLogin(r.deps);
+    assert.equal(first.confirmed, false, JSON.stringify(first));
+    assert.equal(existsSync(folder), false, "the first sign-out removed the folder");
+    // A note written back after the first sign-out (a view read before it landed), and a reader taken since.
+    writeFileSync(join(r.data, LOGIN_ANSWERS_DIR, note), "{}");
+    const reader = loginTokensFor({ dir: folder, profiles: join(folder, "anthropic") }, () => {});
+    const again = await login.signOutClaudeLogin(r.deps);
+    assert.equal(again.confirmed, confirms, `the retry answers confirmed ${confirms}, as its CLI's sign-out did: ${JSON.stringify(again)}`);
+    assert.deepEqual(r.logouts.map((one) => one.dir), [folder, folder], "the retry ran the CLI's own sign-out at AgentRun's folder though the folder was gone");
+    if (!confirms) assert.equal(again.message, login.LOGIN_SIGN_OUT_UNCONFIRMED);
+    assert.equal(existsSync(folder), false, "a folder the CLI made as it signed out is removed");
+    assert.deepEqual(answers(r.data), [], "the signed-in note is removed though the folder was gone");
+    assert.notEqual(loginTokensFor({ dir: folder, profiles: join(folder, "anthropic") }, () => {}), reader, "the token reader is dropped though the folder was gone");
+    assert.equal(again.login.state, "off");
+  });
+}
+
 test("a sign-out where one removal fails still drops the runner's token reader, removes the rest, turns the mode off and has the server reread the keys, and answers confirmed false in words naming what remains", async (t) => {
   const r = await rig(t, { signedIn: true });
   const folder = signedInAt(r.data);
