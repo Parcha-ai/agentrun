@@ -2594,7 +2594,8 @@ the time the vendor made each, then id). Two processes whose creates of one requ
 browsers, so after the vendor's answer a create lists the label again: where an older browser of the request is
 there, it releases its own and answers the older, refused `exists` when the older has ended by then, and the oldest
 keeps its own. The browser's own options (viewport, stealth, profile) are not read back from the vendor, so a create
-from another process compares the labels alone. A browser released here leaves its request refused `exists`. A create whose outcome is unknown (its reply lost, cut short, answered 5xx or with no browser, or the caller's signal
+from another process compares the labels alone. A browser released here, or one this provider answered that the vendor
+has ended on its own (its timeout), leaves its request refused `exists`: the provider keeps each request's browser id. A create whose outcome is unknown (its reply lost, cut short, answered 5xx or with no browser, or the caller's signal
 aborted it) never sends a second create: each POST also writes `agentrun.attempt` (`ATTEMPT_LABEL`), a random value of
 its own, and a lost create finds the browsers carrying its attempt label as list does, in every state not ended, under
 a signal of its own bounded at `RECOVER_MS`, releases each, and its failure says so; that request is then refused
@@ -2639,7 +2640,8 @@ A browser's id, and its directory's name, is its request's name, `computer-<12 h
 makes that directory with `mkdir`, which one create alone wins. A create that finds the directory there already, in this
 process or another on the same root, answers that browser once its Chrome answers, when its labels and network are the
 ones asked; one of another spec, past its deadline or whose supervisor has ended is refused `exists`. A browser released
-here leaves its request refused `exists`.
+here, or one this provider made that ended on its own (its deadline removed its directory), leaves its request refused
+`exists`.
 
 Lifetime: each browser runs under a supervisor of its own (`local-supervisor.ts`), a small detached Node process. It
 ends Chrome and removes its files at the deadline, on release, or when Chrome exits, whatever became of the process

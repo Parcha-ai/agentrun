@@ -4,7 +4,7 @@
 // the same id from another provider instance (another process) finds the computer the first one made instead of making
 // a second. Orgo also runs the conformance suite's two cases, provider.create-retried and provider.create-after-release.
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test, { after } from "node:test";
@@ -327,6 +327,38 @@ for (const [id, cloud] of Object.entries(CLOUD_BROWSERS)) {
 		assert.equal(b.error.code, "exists");
 		assert.match(b.error.message, /was made for this request and has ended: create with a new request id/);
 		assert.equal(cloud.live(fake, cloud.ids(fake)[1]), false, "the newer is released");
+	});
+}
+
+/** How each provider's browser ends on its own, with no release: the vendor ends it, or the deadline does. */
+const ENDS = {
+	browserbase: { spec: () => VENDORS.browserbase.spec(), end: (fake, ref) => CLOUD_BROWSERS.browserbase.expire(fake, ref.id) },
+	kernel: { spec: () => VENDORS.kernel.spec(), end: (fake, ref) => CLOUD_BROWSERS.kernel.expire(fake, ref.id) },
+	"local-chrome": {
+		spec: () => ({ ...VENDORS["local-chrome"].spec(), lifetimeMs: 1_500 }),
+		// The supervisor ends Chrome at the deadline and removes the browser's directory.
+		end: async ({ root }, ref) => {
+			for (const until = Date.now() + 15_000; existsSync(join(root, ref.id)); ) {
+				assert.ok(Date.now() < until, "the deadline removes the browser's directory");
+				await new Promise((resolve) => setTimeout(resolve, 100));
+			}
+		},
+	},
+};
+
+for (const [id, ends] of Object.entries(ENDS)) {
+	const vendor = VENDORS[id];
+	test(`${id}: a browser that ended on its own, with no release, leaves its request refused exists, as a release does`, async () => {
+		const fake = vendor.vendor();
+		const provider = await vendor.make(fake);
+		const requestId = requestOf(`${id}-ended`);
+		const made = okOf(await provider.create(ends.spec(), { requestId }), "create");
+		await ends.end(fake, made);
+		const again = await provider.create(ends.spec(), { requestId });
+		assert.equal(again.ok, false, "the same id once its browser ended");
+		assert.equal(again.error.code, "exists");
+		assert.match(again.error.message, /was made for this request and has ended: create with a new request id/);
+		assert.equal(vendor.made(fake), 1, "nothing more was made");
 	});
 }
 

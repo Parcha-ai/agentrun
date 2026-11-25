@@ -85,7 +85,9 @@ fallback that makes one up: serve passes the run's claim (`<run>#<epoch>`), and 
 - A second create of a request still in flight in the same provider waits for the first and answers what it does; one
   asking another spec (any field but `lifetimeMs`, which each create counts from its own start) is refused `exists`.
   The provider remembers the requests whose computers it ended, so the same id is refused even once the vendor forgets
-  the computer; past the process, what the vendor (or the provider's ledger) still shows is what holds.
+  the computer; past the process, what the vendor (or the provider's ledger) still shows is what holds. The browser
+  providers (Browserbase, Kernel, the local browser) also keep the computer each create answered, so a request whose
+  browser ended on its own (a timeout, a deadline) is refused `exists` in the same words, never made again.
 
 Every provider that makes computers keeps it through one mechanism, `CreateRequests` (`src/create-requests.ts`): the id checked, the name,
 the creates in flight and the requests ended. What the vendor holds under the name is the provider's to read: the

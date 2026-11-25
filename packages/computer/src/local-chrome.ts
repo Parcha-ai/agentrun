@@ -139,6 +139,11 @@ export class LocalBrowserProvider implements ComputerProvider {
 	readonly #uid: number | undefined;
 	/** Idempotent create's in-process half: one browser per request id (provider.md). */
 	readonly #requests = new CreateRequests();
+	/**
+	 * The ids of the browsers this provider's creates answered, kept past their end: a request whose browser ended on its
+	 * own (its deadline, its supervisor) is refused exists, as one released here is, never made again.
+	 */
+	readonly #made = new Set<string>();
 	readonly root: string;
 
 	constructor({ executablePath, env = {}, headed = false, root, uid = process.getuid?.() }: LocalBrowserOptions = {}) {
@@ -236,7 +241,11 @@ export class LocalBrowserProvider implements ComputerProvider {
 		return this.#requests.create(spec, context, {
 			refuse: (code, message) => fail(code === "refused" && refusals.some((r) => r.field === "image" && r.message.endsWith(NO_CHROME)) ? "not_found" : code, message),
 			...(refusals.length > 0 ? { refused: refusals.map(({ field, message }) => `${field}: ${message}`).join("; ") } : {}),
-			make: (id) => this.#createNamed(spec, id, context.signal),
+			make: async (id) => {
+				const made = await this.#createNamed(spec, id, context.signal);
+				if (made.ok) this.#made.add(id);
+				return made;
+			},
 		});
 	}
 
@@ -284,6 +293,12 @@ export class LocalBrowserProvider implements ComputerProvider {
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code === "EEXIST") return this.#taken(spec, id, signal);
 			return fail("invalid", `the local browser's directory could not be made under ${this.root} (${(error as NodeJS.ErrnoException).code ?? (error as Error).message})`);
+		}
+		// A request whose browser this provider answered before, and whose directory is gone: it ended on its own.
+		if (this.#made.has(id)) {
+			await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+			this.#requests.end(id);
+			return fail("exists", endedWords(id));
 		}
 		const now = Date.now();
 		const record: BrowserRecord = {

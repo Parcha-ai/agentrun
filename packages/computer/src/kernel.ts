@@ -170,6 +170,11 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 	readonly #requests = new CreateRequests();
 	/** The request's name of each browser this provider made or found for a create, by id: its release ends the request. */
 	readonly #requestOf = new Map<string, string>();
+	/**
+	 * The browser each request's create answered, by the request's name, kept past its release: a request whose browser
+	 * ended on its own (its timeout, the vendor) is refused exists, as one released here is, never made again.
+	 */
+	readonly #madeFor = new Map<string, string>();
 
 	constructor({ apiKey, apiUrl, env = {}, fetch: fetcher, confirm = DEFAULT_CONFIRM, sleep = defaultSleep }: KernelProviderOptions) {
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("set options.apiKey to a Kernel API key: the provider reads no environment");
@@ -218,7 +223,11 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 		return this.#requests.create(spec, context, {
 			refuse: fail,
 			...(refusals.length > 0 ? { refused: refusals.map(({ field, message }) => `${field}: ${message}`).join("; ") } : {}),
-			make: (request) => this.#createNamed(spec, request, context.signal),
+			make: async (request) => {
+				const made = await this.#createNamed(spec, request, context.signal);
+				if (made.ok) this.#madeFor.set(request, made.value.id);
+				return made;
+			},
 		});
 	}
 
@@ -233,6 +242,8 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 			this.#requestOf.set(found.id, request);
 			return ok(refOf(found.id));
 		}
+		const ended = await this.#ended(spec, request, signal);
+		if (ended !== undefined) return ended;
 		const options = spec.browser;
 		if (options?.profile !== undefined) {
 			const ensured = await this.#ensureProfile(options.profile.pointer, signal);
@@ -310,6 +321,26 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 		if (differ.length > 0) return fail("exists", otherSpecWords(`${request} (browser ${kept.id})`, "was made", differ));
 		this.#requestOf.set(kept.id, request);
 		return ok(refOf(kept.id));
+	}
+
+	/**
+	 * A request this provider answered a browser for before, which its create label no longer finds: refused exists, the
+	 * request ended, once Kernel reads that browser as gone too; one it still holds (a listing that left it out) is
+	 * answered when its labels are this spec's. Undefined for a request with no browser here yet.
+	 */
+	async #ended(spec: ComputerSpec, request: string, signal?: AbortSignal): Promise<Result<CreatedComputer> | undefined> {
+		const before = this.#madeFor.get(request);
+		if (before === undefined) return undefined;
+		const read = await this.#running(before, signal);
+		if (!read.ok && read.error.code !== "not_found" && read.error.code !== "gone") return read;
+		if (!read.ok) {
+			this.#requests.end(request);
+			return fail("exists", endedWords(request));
+		}
+		const differ = labelsDiffer(spec.labels ?? {}, withoutCreateLabel(labelsOf(read.value.tags)), "read back");
+		if (differ.length > 0) return fail("exists", otherSpecWords(`${request} (browser ${before})`, "was made", differ));
+		this.#requestOf.set(before, request);
+		return ok(refOf(before));
 	}
 
 	/** A browser names only a profile Kernel knows: made if it is not (GET, then POST); a 409 is another process making it. */

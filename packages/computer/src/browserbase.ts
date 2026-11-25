@@ -349,6 +349,11 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 	readonly #requests = new CreateRequests();
 	/** The request's name of each session this provider made or found for a create, by id: its release ends the request. */
 	readonly #requestOf = new Map<string, string>();
+	/**
+	 * The session each request's create answered, by the request's name, kept past its release: a request whose session
+	 * ended on its own (its timeout, the vendor) is refused exists, as one released here is, never made again.
+	 */
+	readonly #madeFor = new Map<string, string>();
 
 	constructor({ apiKey, projectId, apiUrl, env = {}, fetch: fetcher, confirm = DEFAULT_CONFIRM, sleep = defaultSleep }: BrowserbaseProviderOptions) {
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("set options.apiKey to a Browserbase API key: the provider reads no environment");
@@ -415,7 +420,11 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 		return this.#requests.create(spec, context, {
 			refuse: fail,
 			...(refusals.length > 0 ? { refused: refusals.map(({ field, message }) => `${field}: ${message}`).join("; ") } : {}),
-			make: (request) => this.#createNamed(spec, request, context.signal),
+			make: async (request) => {
+				const made = await this.#createNamed(spec, request, context.signal);
+				if (made.ok) this.#madeFor.set(request, made.value.id);
+				return made;
+			},
 		});
 	}
 
@@ -430,6 +439,8 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 			this.#requestOf.set(found.id, request);
 			return ok(refOf({ id: found.id }));
 		}
+		const ended = await this.#ended(spec, request, signal);
+		if (ended !== undefined) return ended;
 		const browser = spec.browser;
 		// The request's label, which a retry and a converge find it by, and this POST's own, which its recovery finds it by.
 		const attempt = { [ATTEMPT_LABEL]: newAttempt() };
@@ -501,6 +512,26 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 		if (differ.length > 0) return fail("exists", otherSpecWords(`${request} (session ${kept.id})`, "was made", differ));
 		this.#requestOf.set(kept.id, request);
 		return ok(refOf({ id: kept.id }));
+	}
+
+	/**
+	 * A request this provider answered a session for before, which its create label no longer finds: refused exists, the
+	 * request ended, once Browserbase reads that session as ended too; one it still runs (a listing that left it out) is
+	 * answered when its labels are this spec's. Undefined for a request with no session here yet.
+	 */
+	async #ended(spec: ComputerSpec, request: string, signal?: AbortSignal): Promise<Result<CreatedComputer> | undefined> {
+		const before = this.#madeFor.get(request);
+		if (before === undefined) return undefined;
+		const read = await this.#running(before, signal);
+		if (!read.ok && read.error.code !== "not_found" && read.error.code !== "gone") return read;
+		if (!read.ok) {
+			this.#requests.end(request);
+			return fail("exists", endedWords(request));
+		}
+		const differ = labelsDiffer(spec.labels ?? {}, fromMetadata(read.value.userMetadata), "read back");
+		if (differ.length > 0) return fail("exists", otherSpecWords(`${request} (session ${before})`, "was made", differ));
+		this.#requestOf.set(before, request);
+		return ok(refOf({ id: before }));
 	}
 
 	/** A new context, a profile's pointer: one POST /v1/contexts, never retried. */
