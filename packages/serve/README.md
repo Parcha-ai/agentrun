@@ -2021,8 +2021,12 @@ A workflow's model nodes may each run on another tier's model, so a workflow's `
 it is Parallel on the server's key, else keyless Firecrawl, or the provider picked, and a pick of `native` alone is
 unavailable for a workflow.
 
-Where the server holds a TypeSafe key (`TYPESAFE_API_KEY`, set or saved), Jev ranks `web_search`'s results: each
-search's results are scored by Jev (`jev-1.14.0`) against its objective and reordered by that score, every one kept,
+Where the server holds a TypeSafe key (`TYPESAFE_API_KEY`, set or saved), Jev runs on the web tools by default, and
+run content goes to TypeSafe. Each `web_search` sends TypeSafe its objective and each result's URL, title and snippet.
+Each `web_fetch` given an objective sends TypeSafe the page's text (up to 1,000,000 characters, in chunks) and the
+objective; a fetch with no objective sends nothing. TypeSafe bills every request to the server's TypeSafe key. To
+keep the old behaviour on a server that holds the key, set `AGENTRUN_WEB_JEV_OFF=1`. Jev (`jev-1.14.0`) scores each
+search's results against its objective and reorders them by that score, keeping every one,
 each with its `relevance` (0 to 1), and a `sift` line saying how they were ranked, or why not (a Jev failure leaves them
 as the provider gave them). It applies wherever the run's own `web_search` runs (Parallel, keyless Firecrawl or Exa,
 pi's hosted search), never to a harness's own search inside its CLI. Each Jev request is held on the run's spend cap at
@@ -2031,8 +2035,11 @@ Jev pick the chunks of the page most likely to hold it, in page order (`found`, 
 held and booked the same way; a fetch with no objective asks Jev nothing and its page is whole. A server with only an
 OpenRouter key runs no ranking; `AGENTRUN_WEB_JEV_OFF=1` on the server turns Jev off for every run created while it is
 set, on whatever runner host claims it (the run's plane carries the switch, and keeps it at every later launch); a
-runner's own switch can add off for the runs that host claims, never turn it back on. `GET /capabilities`' `why` for `web_search` says which:
-`…; Jev (jev-1.14.0) ranks results …`, `…; Jev off: no TypeSafe key`, or `…; Jev off (AGENTRUN_WEB_JEV_OFF)`.
+runner's own switch can add off for the runs that host claims, never turn it back on. `GET /capabilities`' `why` for
+each tool says what it sends TypeSafe, or that Jev is off: for `web_search` `…; Jev (jev-1.14.0) ranks results …; each
+search sends that and each result's URL, title and snippet to TypeSafe …`, for `web_fetch` `…; a fetch given an
+objective sends the page's text and the objective to TypeSafe …`, and for either `…; Jev off: no TypeSafe key` or
+`…; Jev off (AGENTRUN_WEB_JEV_OFF)`.
 
 | | `claude-agent` | `codex` | pi |
 | --- | --- | --- | --- |
@@ -4106,20 +4113,17 @@ typed answers and their probabilities.
   ($0.042 per million input tokens; output tokens are free) as an estimate, and the run's `cost.usd` is its decisions'
   sum, with `basis: "estimate"`. A decision whose cost is unknown (no token counts, the OpenRouter route, or a call that
   failed after it may have been sent) keeps its receipt's cost `null`, and the run's reads `null`, never `0`.
-- The TypeSafe and Parallel keys never enter a run's environment, which its tools and its model's provider read. The
-  server drops `TYPESAFE_API_KEY` and `PARALLEL_API_KEY` from every run's process. It hands a run's process those it
-  needs ([Safety](#safety)), a workflow's decision providers', Parallel's where its `web_fetch` or `web_search`
-  resolves to Parallel, and TypeSafe's where one of its web tools is the run's own ([Search and
-  fetch](#search-and-fetch): `web_fetch` wherever it runs, `web_search` except a harness's own search inside its CLI,
-  as on codex or claude-agent), once, by name, on an inherited pipe (the first descriptor after its stdio and its secrets pipe, as macOS refuses a high one), at each
-  launch, a resume after a restart included. The process reads them once into its decision providers and web tools,
-  closes the descriptor before anything else runs, and keeps the keys nowhere else. It is never in an
-  environment, an argument list or a file, and no program the run starts inherits it. With no key, no descriptor is
-  opened. On the OpenRouter route Jev's key comes on the same descriptor, never from the run's environment; that key is
-  also the model gateway's key, which a run's process holds for its model nodes.
+- A run gets only the TypeSafe and Parallel keys it needs ([Safety](#safety)): a workflow's decision providers',
+  Parallel's where its `web_fetch` or `web_search` resolves to Parallel, and TypeSafe's where one of its web tools is
+  the run's own ([Search and fetch](#search-and-fetch): `web_fetch` wherever it runs, `web_search` except a harness's
+  own search inside its CLI, as on codex or claude-agent). The runner's claim reads them from the store and lays them
+  on the claim's own environment, the one the run's tools and decision providers read, a fresh object for each claim,
+  so no run sees another's. No program the run starts inherits them: a run process's environment has every key-shaped
+  name removed, and the run's shell environment is fixed. On the OpenRouter route Jev's key is also the model
+  gateway's key, which the claim holds for its model nodes.
 - `TYPESAFE_API_KEY` and `PARALLEL_API_KEY` are among the secrets the launcher hands the server over its pipe, so the
   server holds them out of its own environment too. Neither is ever among the secrets a run's process gets over its own
-  pipe, which are its tools' environment: the decision descriptor is their only way into a run.
+  pipe, which are its tools' environment: the runner's claim is their only way into a run.
 
 ## Archiving
 
