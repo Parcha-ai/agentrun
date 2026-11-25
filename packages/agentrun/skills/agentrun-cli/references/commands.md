@@ -139,6 +139,7 @@ Move the same agent to server-managed execution from its complete synchronized s
 
 Route: `POST /agents/{agent_id}/source/move`.
 
+- `--snapshot STRING` (string): When supplied, Move refuses unless this reviewed snapshot is still current.
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
@@ -307,6 +308,23 @@ Route: `POST /cli-learning/connections/{connection_id}/runs`.
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
+## connect
+
+### `agentrun connect PROJECT`
+
+Connect and copy a selected local agent setup into AgentRun Console, ready for deployment.
+
+Route: `POST /connectors/enrollment`, `POST /connectors`, `POST /connectors/{connector_id}/import`, `POST /connectors/{connector_id}/targets/{target_id}/sync`.
+
+- `--workspace ID` (string, this CLI's own): require the authenticated destination to be this workspace; sign in there first
+- `--from HARNESS` (string, this CLI's own): copy the whole local setup: claude-code, codex or pi; SOURCE is its project directory (default: current directory)
+- `--source-agent NAME` (string, this CLI's own): the selected named Claude Code agent
+- `--profile NAME` (string, this CLI's own): the selected Codex profile
+- `--name NAME` (string, this CLI's own): the console agent's name when first connected
+- `--dry-run` (boolean, this CLI's own): inspect a local setup or connected agent without uploading or deploying
+- `--to URL` (string, this CLI's own): cloud, or the selected AgentRun Console server's address
+- `--yes` (boolean, this CLI's own): copy the selected setup without an interactive confirmation
+
 ## connectors
 
 ### `agentrun connectors complete-remote-command CONNECTOR_ID COMMAND_ID`
@@ -351,13 +369,10 @@ Route: `POST /connectors/{connector_id}/targets/{target_id}/history`.
 
 ### `agentrun connectors import-remote-target CONNECTOR_ID`
 
-Import an explicitly selected source-native agent reference.
+Import a selected source reference or reserve a setup-only deployment without native execution.
 
 Route: `POST /connectors/{connector_id}/import`.
 
-- `--target-id STRING` (string, required)
-- `--name STRING` (string)
-- `--history-only` (boolean)
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
@@ -433,11 +448,18 @@ Route: `POST /connectors/{connector_id}/targets/{target_id}/sync/status`.
 
 ### `agentrun deploy SOURCE`
 
-Deploy an agent's package to another AgentRun: upload, plan, apply, lock (deploy rollback, deploy delete).
+Deploy a local harness setup, a connected agent, or an agent package into AgentRun Console.
 
 Route: `POST /templates/import`, `POST /templates/{template}/apply`.
 
 - `--to URL` (string, this CLI's own): where: cloud (the hosted AgentRun; AGENTRUN_CLOUD_URL overrides its address), or an AgentRun's address; left out after the first deploy, the lock's target (a folder's, only where this CLI deployed it, or cloud)
+- `--workspace ID` (string, this CLI's own): require the authenticated destination to be this workspace; sign in there first
+- `--from HARNESS` (string, this CLI's own): copy the whole local setup: claude-code, codex or pi; SOURCE is its project directory (default: current directory)
+- `--source-agent NAME` (string, this CLI's own): the selected named Claude Code agent
+- `--profile NAME` (string, this CLI's own): the selected Codex profile
+- `--name NAME` (string, this CLI's own): the console agent's name when first connected
+- `--dry-run` (boolean, this CLI's own): inspect a local setup or connected agent without uploading or deploying
+- `--connected ID` (string, this CLI's own): deploy an already connected console agent using its synchronized setup and preserve its identity
 - `--yes` (boolean, this CLI's own): apply without asking (needed off a terminal)
 - `--force` (boolean, this CLI's own): replace an agent edited on the target since the last deploy
 - `--params FILE` (string, this CLI's own): the package's parameters, a JSON object
@@ -1389,12 +1411,13 @@ Route: none, it runs on this machine.
 
 ### `agentrun skill install`
 
-Install this CLI's skill (agentrun-cli) for Claude Code and Codex, or into a skills directory.
+Install this CLI's skill (agentrun-cli) for Claude Code, Codex or Pi, or into a project's skills directory.
 
 Route: none, it runs on this machine.
 
 - `--claude` (boolean, this CLI's own): into Claude Code's skills: ~/.claude/skills/agentrun-cli
 - `--codex` (boolean, this CLI's own): into ~/.agents/skills/agentrun-cli, the shared skills folder Codex reads (Cursor too)
+- `--pi` (boolean, this CLI's own): into Pi's skills: ~/.pi/agent/skills/agentrun-cli (PI_CODING_AGENT_DIR overrides its agent directory)
 - `--dir DIR` (string, this CLI's own): into DIR/agentrun-cli (a project's .claude/skills or .agents/skills, say)
 
 ## slack

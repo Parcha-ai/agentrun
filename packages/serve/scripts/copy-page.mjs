@@ -11,6 +11,7 @@ cpSync(join(root, "src", "llms.txt"), join(root, "dist", "llms.txt"));
 // The handoff skill travels with the server so a coding agent reads instructions for this exact build.
 cpSync(join(root, "skills", "agentrun-serve"), join(root, "dist", "skills", "agentrun-serve"), { recursive: true });
 cpSync(join(root, "src", "learn", "learning.sh"), join(root, "dist", "learn", "learning.sh"));
+cpSync(join(root, "src", "native", "source-posix.py"), join(root, "dist", "native", "source-posix.py"));
 // The store's Postgres migrations (store/postgres/migrate.ts reads them beside itself).
 cpSync(join(root, "src", "store", "postgres", "migrations"), join(root, "dist", "store", "postgres", "migrations"), { recursive: true });
 cpSync(join(root, "src", "workspace", "kind-skills"), join(root, "dist", "workspace", "kind-skills"), { recursive: true });

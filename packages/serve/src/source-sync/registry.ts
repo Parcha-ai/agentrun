@@ -168,11 +168,14 @@ export class SourceSync {
   }
 
   /** One atomic ownership cutover. Retrying after an uncertain response returns the same managed agent. */
-  async move(agentId: string): Promise<AgentEntry> {
+  async move(agentId: string, expected?: { snapshot: string }): Promise<AgentEntry> {
     const entry = await this.entry(agentId);
     const record = await this.get(agentId);
     if (!record) throw new ApiError("agent_not_runnable", "Connect this agent's source and sync its setup first.");
     const moved = sourceSyncOf(entry.revision!.body);
+    // The caller's reviewed digest is checked against the same record that apply fences in its
+    // revision transaction, including a publication that races destination preparation.
+    if (expected && (record.snapshot !== expected.snapshot || moved?.id === record.id && moved.snapshot !== expected.snapshot)) throw busy();
     if (moved?.id === record.id) return entry;
     const authority = await this.authorized(agentId, "move", record);
     return await this.apply(entry, record, authority, true);

@@ -1,6 +1,6 @@
 ---
 name: agentrun-serve
-description: Onboard to AgentRun by starting a new agent, observing agents already running in a backend or terminal, or connecting an existing Claude Code or Codex setup for future jobs. Import selected history and inspect results with optional checked learning. Use the intended instance and its matching CLI.
+description: Onboard to AgentRun by starting a new agent, observing agents already running in a backend or terminal, or deploying an existing local Claude Code, Codex or Pi setup, or connecting it for source-native jobs. Import selected history and inspect results with optional checked learning. Use the intended instance and its matching CLI.
 ---
 
 # AgentRun Server
@@ -27,14 +27,34 @@ forbidden`. A key the owner hands you is sent as the token is, as `Authorization
 ## Choose the onboarding path
 
 For general setup, establish whether the user wants to **start a new agent** or **bring an existing agent**.
-Ask only when the intent is missing: a Build an agent handoff already chose new, and a Connect agent handoff
-already chose existing. Reuse the named server and their existing inputs. For a new agent, clarify the job and
+Ask only when the intent is missing: a Build an agent handoff already chose new, an Import agents or Deploy handoff
+already chose managed deployment, and a Connect agent handoff already chose existing. Reuse the named server and their existing inputs. For a new agent, clarify the job and
 expected result, offer a suitable template or a custom build, then follow Check the server and Create an agent.
-Inspect configured models before asking for a key. For an existing setup, follow Connect agent below; connection
+Inspect configured models before asking for a key. For a deployment, follow Deploy a local setup below. For a source-native setup, follow Connect agent below; connection
 and history import need no destination model key. Live jobs use the source runtime's existing sign-in.
 
 Finish with the first requested run's result and console link, or imported history and counts. Offer optional
 self-improvement separately, and verify owner corrections in a fresh later run when requested.
+
+## Deploy a local setup
+
+Run from the machine holding the user's configured Claude Code agent, Codex profile or Pi project. Use the same
+AgentRun CLI for this instance and Cloud; the destination changes, the upload/Move process does not. Read the
+installed `agentrun-cli` skill and use its **Deploy an existing local setup** recipe. Select only the projects and
+agents the person wants. Linux is supported directly; macOS requires Python 3 for safe descriptor-based capture.
+
+Preview with `agentrun connect /absolute/project --from codex --to <destination> --dry-run`, replacing the runtime
+with `claude-code` or `pi` and selecting `--source-agent NAME` or `--profile NAME` when needed. Then use
+`agentrun deploy /absolute/project --from codex --to <destination> --yes` once deployment is authorized. An existing
+connected console agent uses `agentrun deploy --connected AGENT_ID --to <destination> --yes`. A Cloud handoff's
+`--workspace WORKSPACE_ID` must match the signed-in workspace. Never create a second identity to bypass a blocker.
+
+The CLI checks `source_deployment` capability before capture, uploads the project and complete authored skill assets,
+and checks destination model, tool and policy requirements before Move. It never copies source credentials or imports
+session history. Unsupported configuration stays visible as blockers. `connected` means the setup was copied;
+`deployed` with a confirmed snapshot means AgentRun owns execution and can run while the source machine is offline.
+Show the returned console link and offer a first run only when requested. Browser import uses this same coding-agent
+handoff and CLI, without a separate file uploader.
 
 ## Connect agent
 

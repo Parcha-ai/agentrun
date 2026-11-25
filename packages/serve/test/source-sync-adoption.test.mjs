@@ -84,26 +84,68 @@ test("purpose-bound adoption keeps the CLI profile; forged, rotated and cross-ta
   await assert.rejects(broker.importTarget(id, { target_id: "target", target, cli_adoption: adoption }, resolve), /did not authorize/);
 });
 
-test("source metadata retries after Move cannot restore native execution or change the visible agent", async t => {
+for (const mode of ['capture', 'deployment']) test(`${mode} source metadata retries after Move cannot restore native execution or change the visible agent`, async t => {
   const { store } = await storeOn(t), broker = new RemoteConnectors(store), connections = new CliLearningConnections(store, "fixture-secret");
-  const capture = await captured(store, connections), registered = await remote(broker, { native_execution: false, config_sync: true });
-  const id = registered.connector.id, resolve = cliAdoptionResolver(store, connections), cli_adoption = proof(id, "target", capture);
-  await broker.importTarget(id, { target_id: "target", target, cli_adoption }, resolve);
+  const capture = mode === 'capture' ? await captured(store, connections) : undefined;
+  const registered = await remote(broker, { native_execution: false, history_import: false, config_sync: true });
+  const id = registered.connector.id, resolve = cliAdoptionResolver(store, connections);
+  const input = { target_id: "target", target: mode === 'deployment' ? { ...target, sync_only: true } : target,
+    ...(capture ? { cli_adoption: proof(id, "target", capture) } : { deployment: true }) };
+  const imported = await broker.importTarget(id, input, resolve), agentId = imported.agent_id;
+  const captureRevision = (await store.agents.get(agentId)).currentRevision;
+  assert.equal((await broker.importTarget(id, input, resolve)).agent_id, agentId, 'a lost import reply does not create another agent');
+  if (mode === 'deployment') {
+    assert.equal(imported.native, undefined);
+    assert.equal(imported.target.capabilities.launch, false);
+    const pending = await store.agents.revision(captureRevision);
+    assert.equal(pending.body.native, undefined);
+    assert.deepEqual(pending.body.sourceDeployment, { connector_id: id, target_id: 'target' });
+  }
   const authorized = await broker.syncAuthority(id, "target"), source = authorized.authority.source;
   const snapshot = { version: 1, digest: "b".repeat(64), complete: true, source, entries: [], blobs: {}, instructions: { text: "Moved.", layers: [] }, skills: [], configuration: { model: null, tools: [], permissions: {}, credentials: [] }, project: { git: null }, blockers: [] };
   const sync = new SourceSync(store, { authorize: async () => (await broker.syncAuthority(id, "target")).authority,
     persist: async () => {}, read: async () => snapshot,
     prepare: async () => ({ revision: { id: "prepared", kind: "agentic", body: { instructions: "Moved.", skills: {}, tools: [], harness: "codex" } } }),
   });
-  const grant = await sync.grant(capture.row.agent_id);
-  await sync.publish(capture.row.agent_id, { generation: grant.generation, sequence: 0, snapshot });
-  const moved = await sync.move(capture.row.agent_id);
-  await broker.importTarget(id, { target_id: "target", target: { ...target, fingerprint: "c".repeat(64) }, cli_adoption }, resolve);
-  assert.equal((await store.agents.get(capture.row.agent_id)).currentRevision, moved.revision.id);
-  assert.equal((await broker.syncAuthority(id, "target")).authority.captureRevision, "capture-1");
+  const grant = await sync.grant(agentId);
+  await sync.publish(agentId, { generation: grant.generation, sequence: 0, snapshot });
+  const moved = await sync.move(agentId);
+  assert.equal(moved.agent.id, agentId);
+  assert.equal(moved.revision.body.sourceDeployment, undefined);
+  assert.equal((await sync.move(agentId)).revision.id, moved.revision.id, 'an uncertain Move response keeps one revision');
+  await broker.importTarget(id, { ...input, target: { ...input.target, fingerprint: "c".repeat(64) } }, resolve);
+  assert.equal((await store.agents.get(agentId)).currentRevision, moved.revision.id);
+  assert.equal((await broker.syncAuthority(id, "target")).authority.captureRevision, captureRevision);
   assert.equal((await store.agents.list()).length, 1);
-  await sync.setEnabled(capture.row.agent_id, false);
-  assert.equal((await sync.grant(capture.row.agent_id)).enabled, false, "normal source grant cannot undo owner disable");
+  await sync.setEnabled(agentId, false);
+  assert.equal((await sync.grant(agentId)).enabled, false, "normal source grant cannot undo owner disable");
+});
+
+test('fresh deployment requires setup-only authority and cannot replace an adopted source association', async t => {
+  const { store } = await storeOn(t), broker = new RemoteConnectors(store), connections = new CliLearningConnections(store, 'fixture-secret');
+  const capture = await captured(store, connections), resolve = cliAdoptionResolver(store, connections);
+  const requested = { target_id: 'target', target: { ...target, sync_only: true }, deployment: true };
+  for (const capabilities of [
+    { native_execution: true, config_sync: true },
+    { native_execution: false, history_import: true, config_sync: true },
+    { native_execution: true, config_sync: false },
+  ]) {
+    const registered = await remote(broker, capabilities);
+    await assert.rejects(broker.importTarget(registered.connector.id, requested), error => error.code === 'forbidden');
+  }
+  const registered = await remote(broker, { native_execution: false, history_import: false, config_sync: true }), id = registered.connector.id;
+  for (const invalid of [
+    { ...requested, deployment: 'true' }, { ...requested, target }, { ...requested, history_only: true },
+    { ...requested, cli_adoption: proof(id, 'target', capture) },
+  ]) await assert.rejects(broker.importTarget(id, invalid, resolve), error => error.code === 'input_invalid');
+  await assert.rejects(broker.importTarget(id, { target_id: 'target', target }), /Enable capture/, 'legacy setup-only import still requires adoption');
+  await broker.importTarget(id, { target_id: 'target', target, cli_adoption: proof(id, 'target', capture) }, resolve);
+  await assert.rejects(broker.importTarget(id, requested), error => error.code === 'idempotency_mismatch');
+  const deployment = await broker.importTarget(id, { ...requested, target_id: 'fresh' });
+  await assert.rejects(broker.importTarget(id, { target_id: 'fresh', target, cli_adoption: proof(id, 'fresh', capture) }, resolve), error => error.code === 'idempotency_mismatch');
+  await assert.rejects(broker.importTarget(id, { ...requested, target_id: 'fresh', target: { ...requested.target, project: '/fixture/another' } }), error => error.code === 'idempotency_mismatch');
+  assert.equal((await store.agents.list()).length, 2);
+  assert.notEqual(deployment.agent_id, capture.row.agent_id);
 });
 
 test('a request authenticated before credential rotation cannot use the replacement epoch or its new scopes', async t => {

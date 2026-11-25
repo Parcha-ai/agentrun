@@ -6,6 +6,8 @@ import { join, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { exportSourceSnapshot, sourceSnapshotDigest } from '../dist/native/source-snapshot.js';
+import { validateSourceSnapshot } from '../dist/source-sync/snapshots.js';
+import { deploymentSource } from '../dist/deployment-source.js';
 
 const trusted = project => `[projects.${JSON.stringify(project)}]\ntrust_level = \"trusted\"\n`;
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -31,6 +33,9 @@ async function fixture(t, runtime = 'codex') {
   if (runtime === 'codex') {
     await put(join(home, '.codex', 'config.toml'), trusted(project), true);
     await put(join(project, '.codex', 'config.toml'), '[features]\napps = false\nplugins = false\nimage_generation = false\n[cloud.skills]\nenabled = false\n', true);
+  } else if (runtime === 'pi') {
+    target.version = '1.5.2';
+    await put(join(home, '.pi', 'agent', 'settings.json'), '{"defaultProvider":"openai","defaultModel":"gpt-5.5","defaultProjectTrust":"always"}', true);
   } else {
     await put(join(home, '.claude', 'settings.json'), '{"agent":"source"}', true);
     await put(join(home, '.claude', 'agents', 'source.md'), '---\nname: source\ntools: [Read, Write, Edit, Bash]\n---\n', true);
@@ -93,13 +98,13 @@ const file = (snapshot, path) => snapshot.entries.find(x => x.path === path);
 const content = (snapshot, path) => Buffer.from(snapshot.blobs[file(snapshot, path).sha256], 'base64');
 const command = (cwd, ...args) => execFileSync('git', args, { cwd, env: { PATH: process.env.PATH, HOME: cwd, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_OPTIONAL_LOCKS: '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
 
-for (const runtime of ['codex', 'claude-code']) test(`${runtime}: full authored assets, exact modes, deterministic no-op and references-only digest`, async t => {
-  const f = await fixture(t, runtime), dir = runtime === 'codex' ? '.codex' : '.claude';
-  const instruction = runtime === 'codex' ? 'AGENTS.md' : 'CLAUDE.md';
+for (const runtime of ['codex', 'claude-code', 'pi']) test(`${runtime}: full authored assets, exact modes, deterministic no-op and references-only digest`, async t => {
+  const f = await fixture(t, runtime), dir = runtime === 'codex' ? '.codex' : runtime === 'pi' ? '.pi/agent' : '.claude';
+  const instruction = runtime === 'claude-code' ? 'CLAUDE.md' : 'AGENTS.md';
   await f.put(join(f.home, dir, instruction), 'Global source policy.', true);
   await f.put(join(f.project, instruction), 'Project source policy.', true);
   const skill = join(f.home, dir, 'skills', 'build');
-  await f.put(join(skill, 'SKILL.md'), 'Read refs/guide.txt and run scripts/check.sh.', true);
+  await f.put(join(skill, 'SKILL.md'), (runtime === 'pi' ? '---\nname: build\ndescription: Build this project.\n---\n' : '') + 'Read refs/guide.txt and run scripts/check.sh.', true);
   await f.put(join(skill, 'refs', 'guide.txt'), 'Authored reference one.');
   await f.put(join(skill, 'scripts', 'check.sh'), '#!/bin/sh\nexit 0\n', false, 0o755);
   await f.put(join(skill, 'image.bin'), Buffer.from([0, 255, 2, 128]));
@@ -107,6 +112,7 @@ for (const runtime of ['codex', 'claude-code']) test(`${runtime}: full authored 
   f.target.skills.push('build');
   await f.put(join(f.project, 'work.txt'), 'Untracked work.');
   const first = await f.snapshot(); assert.equal(first.complete, true, JSON.stringify(first.blockers));
+  validateSourceSnapshot(first);
   assert.equal(first.instructions.text, 'Global source policy.\n\nProject source policy.');
   assert.ok(!first.instructions.text.includes('grader'));
   const prefix = first.skills[0].path;
@@ -120,6 +126,103 @@ for (const runtime of ['codex', 'claude-code']) test(`${runtime}: full authored 
   await f.put(join(skill, 'refs', 'guide.txt'), 'Authored reference two.');
   const changed = await f.snapshot(); assert.notEqual(changed.digest, first.digest);
   assert.equal((await f.snapshot()).digest, changed.digest, 'a repeated export is a no-op');
+});
+
+test('Pi setup preserves instruction precedence, model, thinking and tool selection', async t => {
+  const f = await fixture(t, 'pi');
+  await f.put(join(f.home, '.pi/agent/AGENTS.md'), 'Global instructions.', true);
+  await f.put(join(f.project, 'AGENTS.md'), 'Inactive instructions.', true);
+  await f.put(join(f.project, 'AGENTS.override.md'), 'Project instructions.', true);
+  await f.put(join(f.home, '.pi/agent/APPEND_SYSTEM.md'), 'Inactive append.', true);
+  await f.put(join(f.project, '.pi/APPEND_SYSTEM.md'), 'Project append.', true);
+  await f.put(join(f.project, '.pi/settings.json'), '{"defaultTools":["read"],"defaultThinkingLevel":"high"}', true);
+  const value = await f.snapshot();
+  assert.equal(value.complete, true, JSON.stringify(value.blockers));
+  assert.equal(value.instructions.text, 'Global instructions.\n\nProject instructions.\n\nProject append.');
+  assert.equal(value.configuration.model, 'openai/gpt-5.5');
+  assert.equal(value.configuration.thinking, 'high');
+  assert.deepEqual(value.configuration.permissions.tools, ['read']);
+  assert.equal(value.configuration.native_tools.capabilities.includes('shell'), false);
+  assert.equal(value.configuration.native_tools.capabilities.includes('file_read'), true);
+});
+
+test('deployment source exports the selected Pi setup with private consent and no native execution grant', async t => {
+  const f = await fixture(t, 'pi'), bin = join(f.root, 'bin');
+  await f.put(join(bin, 'pi'), '#!/bin/sh\nprintf "1.5.2\\n"\n', false, 0o755);
+  await f.put(join(f.home, '.pi/agent/auth.json'), '{"openai":{"type":"api_key","key":"private-provider-value"}}');
+  await f.put(join(f.project, 'work.txt'), 'Current work.');
+  const captured = await deploymentSource({ project: f.project, runtime: 'pi', environment: { HOME: f.home, PATH: bin }, secretValues: ['private-provider-value'] });
+  assert.equal(captured.snapshot.complete, true, JSON.stringify(captured.snapshot.blockers));
+  validateSourceSnapshot(captured.snapshot);
+  assert.equal(captured.target.capabilities.launch, false);
+  assert.equal(captured.target.runtime, 'pi');
+  assert.equal(captured.snapshot.source.project, f.project);
+  assert.equal(content(captured.snapshot, 'project/work.txt').toString(), 'Current work.');
+  assert.equal(JSON.stringify(captured).includes('private-provider-value'), false);
+});
+
+test('Pi project settings need saved source trust and shared authored skills retain their assets', async t => {
+  const f = await fixture(t, 'pi');
+  await f.put(join(f.home, '.pi/agent/settings.json'), '{"defaultProvider":"openai","defaultModel":"gpt-5.5"}', true);
+  await f.put(join(f.project, '.pi/settings.json'), '{"defaultTools":["read"]}', true);
+  await f.put(join(f.project, '.agents/skills/nested/check/SKILL.md'), '---\nname: check\ndescription: Check the project.\n---\nRead reference.txt.', true);
+  await f.put(join(f.project, '.agents/skills/nested/check/reference.txt'), 'Authored requirement.');
+  const untrusted = await f.snapshot();
+  assert.equal(untrusted.complete, false);
+  assert.ok(untrusted.blockers.some(item => item.code === 'pi_project_trust'));
+  await f.put(join(f.home, '.pi/agent/trust.json'), JSON.stringify({ [f.project]: true }), true);
+  const trusted = await f.snapshot();
+  assert.equal(trusted.complete, true, JSON.stringify(trusted.blockers));
+  assert.equal(trusted.skills.length, 1);
+  assert.equal(content(trusted, `${trusted.skills[0].path}/reference.txt`).toString(), 'Authored requirement.');
+});
+
+test('Pi provider and MCP credentials copied into ordinary assets cannot leave the private source boundary', async t => {
+  const f = await fixture(t, 'pi'), provider = 'fixture-source-provider-value', mcp = 'fixture-source-mcp-value';
+  await f.put(join(f.home, '.pi/agent/auth.json'), JSON.stringify({ openai: { type: 'oauth', access: provider, refresh: 'fixture-refresh-value', expires: 123 } }));
+  await f.put(join(f.home, '.pi/agent/mcp-auth.json'), JSON.stringify({ docs: { tokens: { access_token: mcp } } }));
+  for (const value of [provider, Buffer.from(provider).toString('base64'), mcp]) {
+    await f.put(join(f.project, 'ordinary.txt'), `Copied value: ${value}`);
+    await assert.rejects(f.snapshot(), error => error.code === 'source_unavailable' && !error.message.includes(value));
+  }
+  await rm(join(f.project, 'ordinary.txt'));
+  const clean = await f.snapshot();
+  assert.equal(clean.complete, true, JSON.stringify(clean.blockers));
+  assert.equal(JSON.stringify(clean).includes(provider), false);
+  for (const content of ['{', '[]', ' '.repeat(65_537)]) {
+    await f.put(join(f.home, '.pi/agent/auth.json'), content);
+    await assert.rejects(f.snapshot(), error => error.code === 'source_unavailable');
+  }
+});
+
+test('Pi inactive skills and discovery filters cannot silently become active managed skills', async t => {
+  const f = await fixture(t, 'pi'), root = join(f.home, '.pi/agent/skills');
+  await f.put(join(root, 'node_modules/ignored/SKILL.md'), 'Not an active Pi skill.');
+  assert.equal((await f.snapshot()).skills.length, 0, 'Pi does not discover dependency directories');
+  for (const [definition, filter, code] of [
+    ['Missing description.', false, 'pi_skill_definition'],
+    ['---\ndescription: Manual only.\ndisable-model-invocation: true\n---\n', false, 'pi_skill_invocation'],
+    ['---\ndescription: Active.\n---\n', true, 'pi_skill_filter'],
+  ]) {
+    await f.put(join(root, 'check/SKILL.md'), definition);
+    if (filter) await f.put(join(root, '.fdignore'), 'check/\n');
+    const value = await f.snapshot();
+    assert.equal(value.complete, false);
+    assert.ok(value.blockers.some(blocker => blocker.code === code), JSON.stringify(value.blockers));
+  }
+});
+
+for (const [path, content, code] of [
+  ['extensions/custom.ts', 'export default () => {};', 'pi_extension'],
+  ['SYSTEM.md', 'Replace all runtime policy.', 'pi_system_prompt'],
+  ['models.json', '{"providers":{"private":{}}}', 'pi_model_configuration'],
+  ['settings.json', '{"defaultProvider":"openai","defaultModel":"gpt-5.5","shellCommandPrefix":"guard"}', 'unsupported_setting'],
+]) test(`Pi setup refuses unmapped ${path} without dropping required configuration`, async t => {
+  const f = await fixture(t, 'pi');
+  await f.put(join(f.home, '.pi/agent', path), content, true);
+  const value = await f.snapshot();
+  assert.equal(value.complete, false);
+  assert.ok(value.blockers.some(blocker => blocker.code === code), JSON.stringify(value.blockers));
 });
 
 test('Codex override and selected profile preserve explicit source precedence', async t => {
@@ -381,7 +484,7 @@ test('a parent swapped for an outside symlink during read cannot redirect the op
 
 test('unsupported source platforms fail explicitly instead of using a path-based fallback', async t => {
   const f = await fixture(t), descriptor = Object.getOwnPropertyDescriptor(process, 'platform');
-  Object.defineProperty(process, 'platform', { value: 'darwin' });
+  Object.defineProperty(process, 'platform', { value: 'win32' });
   try { await assert.rejects(f.snapshot(), error => error.code === 'unsupported_platform'); }
   finally { Object.defineProperty(process, 'platform', descriptor); }
 });

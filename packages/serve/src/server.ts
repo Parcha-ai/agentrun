@@ -2,6 +2,7 @@ import { modelsInFlight } from "./in-flight.js";
 import { CALLS_PAGE_ROWS } from "./timeline/index.js";
 import { prepareProjectSkillEdit } from "./source-sync/skill-edits.js";
 import { sourceSyncOf } from "./source-sync/types.js";
+import { assertSourceDeployed, SOURCE_DEPLOYMENT_CAPABILITY } from "./source-sync/deployment.js";
 import { sourceService, SOURCE_BODY_BYTES } from "./source-sync/service.js";
 import { destinationPreparation, bindSourceTool } from "./source-sync/destination.js";
 import { prepareSource, SourcePreparationError } from "./source-sync/prepare.js";
@@ -1102,6 +1103,7 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
     server: { name: "@parcha/agentrun-serve", version: VERSION, platform: process.platform },
     /** What runs a run here (the contract's `runtimes`, informational): this server's runners, over its one store. */
     runtimes: ["runner"],
+    source_deployment: SOURCE_DEPLOYMENT_CAPABILITY,
     /** How a run is kept from another here (run-child-host.ts runIsolationOf): each a process of its own, and `uid`, each
      *  a user of its own too. */
     run_isolation: isolation,
@@ -3051,6 +3053,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const entry = await needAgent(id);
     // Another system's agent is archived only by its delete (its archive route is refused).
     if (entry.agent.archivedAt && ownedElsewhere(entry.agent)) throw agentDeleting(id);
+    assertSourceDeployed(entry.revision?.body);
     if (entry.agent.archivedAt) throw new ApiError("agent_not_runnable", `The agent ${id} is archived: unarchive it to run it.`, { details: { archived_at: new Date(entry.agent.archivedAt).toISOString() } });
     return entry;
   }
@@ -3389,6 +3392,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  run holds its computer (hold: true): kept from running by its model alone, it is not refused, and the refusal is
    *  returned for its launch, its start to answer it (computer-held.ts). */
   async function runnable(revision: Revision, place: Place, { capped = false, price = decisionPrice, carried = [], held = false }: { capped?: boolean; price?: (model: string) => Promise<unknown>; carried?: readonly string[]; held?: boolean } = {}): Promise<HeldRefusal | undefined> {
+    assertSourceDeployed(revision.body);
     if (cliLearningOf(revision.body)) throw new ApiError("agent_not_runnable", "Continue in the original CLI session; this connection records learning without launching its tools.");
     if (sdkOf(revision.body)) throw new ApiError("agent_not_runnable", "This agent runs in its backend SDK. Call its SDK wrapper to start a task; AgentRun does not launch its tools or credentials.");
     const native = nativeOf(revision.body);
@@ -5303,9 +5307,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       case "moveSourceAgent": {
         const body = await bodyOf(req);
-        if (Object.keys(body).length) throw new ApiError("input_invalid", "Move takes an empty object and uses the latest complete synchronized setup.");
+        if (Object.keys(body).some(key => key !== "snapshot") || body.snapshot !== undefined && (typeof body.snapshot !== "string" || !/^[a-f0-9]{64}$/.test(body.snapshot)))
+          throw new ApiError("input_invalid", "Move accepts the SHA-256 snapshot digest of the synchronized setup you reviewed.");
         try {
-          const entry = await agentWrite(id, () => sources.sync.move(id));
+          const entry = await agentWrite(id, () => sources.sync.move(id, typeof body.snapshot === "string" ? { snapshot: body.snapshot } : undefined));
           return send(res, 200, { agent: agentView(entry, linkOrigin(req), await agentExtra(entry)), source: await sources.status(id) });
         } catch (error) {
           if (error instanceof SourcePreparationError || error instanceof SnapshotError) throw new ApiError("agent_not_runnable", error.message);
@@ -5477,6 +5482,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           if (typeof revision !== "string" || !ID.test(revision)) throw invalid([{ field: "revision", reason: revision === undefined ? "missing" : "wrong_type", message: "revision is a revision id of this agent" }]);
           const candidate = await agents.revision(id, revision);
           if (!candidate) throw invalid([{ field: "revision", reason: "not_an_option", message: `${revision} is not a revision of the agent ${id}` }]);
+          assertSourceDeployed(entry.revision?.body);
+          assertSourceDeployed(candidate.revision.body);
           if (sourceSyncOf(candidate.revision.body)?.id !== sourceSyncOf(entry.revision?.body)?.id) throw new ApiError("input_invalid", "A revision restore cannot change this agent’s source ownership. Keep a revision from after Move.");
           if (stable(cliLearningOf(candidate.revision.body)) !== stable(cliLearningOf(entry.revision?.body))) throw new ApiError("input_invalid", "A revision restore cannot change the enrolled CLI learning connection.");
           if (stable(nativeOf(candidate.revision.body)) !== stable(nativeOf(entry.revision?.body))) throw new ApiError("input_invalid", "This revision changes the native connection. Reconnect or verify through the native connection controls; ordinary revision restore cannot change its source or connection state.");

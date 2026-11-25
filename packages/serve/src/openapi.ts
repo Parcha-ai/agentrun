@@ -4503,6 +4503,12 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "How this server holds its secrets: the names it treats as secrets, handed over a pipe, the condition that rests on, and what it does not cover.",
       "x-agentrun-serve": "serve/1",
     },
+    source_deployment: {
+      type: "object", additionalProperties: false, required: ["version", "runtimes"],
+      properties: { version: { const: 1 }, runtimes: { type: "array", items: { enum: ["claude-code", "codex", "pi"] } } },
+      description: "Setup-only source upload and deployment support. Imports reserve one agent without granting native execution or history access; Move enables managed execution after a complete validated upload.",
+      "x-agentrun-serve": "sourcedeployment/1",
+    },
     run_isolation: {
       enum: ["uid", "process"],
       description: "How this host keeps one run from another: each run is a process of its own under the runner, and with `uid` each runs as a user of its own (the image's helper, a uid from 1001 per slot), so a run's tools read no other run's folder or memory, nor the data directory's store. `process`: every run as the runner's own user, where the host has no helper (a local install) or `AGENTRUN_RUN_USER=same` says so.",

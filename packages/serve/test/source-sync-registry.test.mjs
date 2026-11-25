@@ -43,6 +43,32 @@ test("a new export grant defaults on; Move is idempotent and preserves identity 
   assert.equal(x.preparations(), 1, "retry never provisions or cuts over twice");
 });
 
+test('Move refuses a source snapshot newer than the one reviewed before changing execution ownership', async t => {
+  const x = await setup(t), reviewed = snapshot('a'), newer = snapshot('b');
+  await x.push(reviewed);
+  await x.push(newer, 1);
+  await assert.rejects(x.sync.move('agent-1', { snapshot: reviewed.digest }), error => error.code === 'precondition_failed');
+  assert.equal((await x.store.agents.get('agent-1')).currentRevision, 'rev-1');
+  assert.equal(x.preparations(), 0, 'a stale approval cannot prepare the newer setup');
+  const moved = await x.sync.move('agent-1', { snapshot: newer.digest });
+  assert.equal(moved.revision.body.sourceSync.snapshot, newer.digest);
+  assert.equal((await x.sync.move('agent-1', { snapshot: newer.digest })).revision.id, moved.revision.id);
+  await assert.rejects(x.sync.move('agent-1', { snapshot: reviewed.digest }), error => error.code === 'precondition_failed');
+});
+
+test('a snapshot published during Move preparation cannot cross the reviewed snapshot transaction fence', async t => {
+  let publish;
+  const x = await setup(t, { prepare: async () => {
+    await publish();
+    return { revision: { id: 'prepared', kind: 'agentic', body: { instructions: 'Reviewed setup.' } } };
+  } });
+  await x.push(snapshot('a'));
+  publish = () => x.push(snapshot('b'), 1);
+  await assert.rejects(x.sync.move('agent-1', { snapshot: 'a'.repeat(64) }), StoreConstraint);
+  assert.equal((await x.store.agents.get('agent-1')).currentRevision, 'rev-1');
+  assert.equal((await x.store.agents.revisions('agent-1')).length, 1);
+});
+
 test("incomplete, stale, duplicate and wrong-target uploads preserve the last complete version", async (t) => {
   const x = await setup(t);
   await x.push(snapshot("a"));

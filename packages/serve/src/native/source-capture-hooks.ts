@@ -23,6 +23,7 @@ function argumentsOf(line: string): string[] | undefined {
 }
 const failure = (): never => { throw new Error('Source hooks are not an unchanged, complete AgentRun capture installation.'); };
 export function removeOwnedCaptureHooks(original: Uint8Array, receiptBytes: Uint8Array, source: SourceSnapshot['source']): { bytes: Buffer; configRoot: string } {
+ if (source.runtime === 'pi') return failure();
  let config: any, receipt: any;
  try { const decoder = new TextDecoder('utf-8', { fatal: true }); config = JSON.parse(decoder.decode(original)); receipt = JSON.parse(decoder.decode(receiptBytes)); } catch { return failure(); }
  const events = NATIVE_RUNTIME_FACTS[source.runtime].protocol === 'codex-json' ? ['UserPromptSubmit', 'Stop', 'Interrupt', 'SessionEnd'] : ['UserPromptSubmit', 'Stop', 'StopFailure', 'SessionEnd'];

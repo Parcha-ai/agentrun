@@ -98,7 +98,7 @@ const allowedExtraFiles = {
   // which an operator builds for a Docker box that renders video, and the documents image's (documents/Dockerfile and its
   // layer documents.sh, which build-daytona.py --documents runs on the box image too), for one that writes Office files.
   computer: ['package/media/Dockerfile', 'package/documents/Dockerfile', 'package/documents/documents.sh', 'package/box/agentrun-archil', 'package/box/Dockerfile', 'package/box/install.sh', 'package/box/build-daytona.py', 'package/box/build-modal.py', 'package/box/build-e2b.mjs', 'package/box/recipe.mjs', 'package/box/recipe.d.mts', 'package/box/README.md'],
-  agentrun: ['package/bin/agentrun.mjs', 'package/lib/start.mjs', 'package/lib/cli.mjs', 'package/lib/local.mjs', 'package/lib/follow.mjs', 'package/lib/commands.generated.mjs', 'package/lib/login.mjs', 'package/lib/device.mjs', 'package/lib/skill.mjs', 'package/lib/template.mjs', 'package/lib/export.mjs', 'package/lib/service.mjs', 'package/lib/tailscale.mjs', 'package/lib/harness.mjs', 'package/lib/public-url.mjs', 'package/lib/doctor.mjs', 'package/lib/deploy.mjs', 'package/lib/target.mjs', 'package/lib/own.mjs', 'package/install.sh'],
+  agentrun: ['package/bin/agentrun.mjs', 'package/lib/start.mjs', 'package/lib/cli.mjs', 'package/lib/local.mjs', 'package/lib/follow.mjs', 'package/lib/commands.generated.mjs', 'package/lib/login.mjs', 'package/lib/device.mjs', 'package/lib/skill.mjs', 'package/lib/template.mjs', 'package/lib/export.mjs', 'package/lib/service.mjs', 'package/lib/tailscale.mjs', 'package/lib/harness.mjs', 'package/lib/public-url.mjs', 'package/lib/doctor.mjs', 'package/lib/deploy.mjs', 'package/lib/deploy-local.mjs', 'package/lib/target.mjs', 'package/lib/own.mjs', 'package/install.sh'],
 };
 const allowedEndpoints = {
   'run-adapters-claude-agent': [
@@ -446,6 +446,7 @@ import { execFileSync } from 'node:child_process';
 import * as serve from '@parcha/agentrun-serve';
 import * as serveHarness from '@parcha/agentrun-serve/harness';
 import * as serveConformance from '@parcha/agentrun-serve/conformance';
+import { deploymentSource } from '@parcha/agentrun-serve/deployment-source';
 import * as acp from '@parcha/agentrun-harness-acp';
 import * as acpFacts from '@parcha/agentrun-harness-acp/facts';
 import * as acpTesting from '@parcha/agentrun-harness-acp/testing';
@@ -473,6 +474,7 @@ assert.equal((await judge({label:'check',kind:'judge',state:{ok:true},questions:
 assert.equal(typeof authorWorkflow,'function');
 assert.ok(browser.BROWSER_TOOLS.length>0); assert.equal(typeof browserDurable.createBrowserExtension,'function'); assert.equal(typeof browserTesting.FakeBackend,'function'); assert.equal(typeof browserCdp.cdpProvider,'function');
 assert.ok(loadAuthorReference('language').includes(authorContract()));
+{ await assert.rejects(deploymentSource({ project: '', runtime: 'pi' }), error => error.code === 'source_unavailable'); assert.ok((await readFile(join(process.cwd(),'node_modules','@parcha','agentrun-serve','dist','native','source-posix.py'))).length > 0, 'the install carries its descriptor reader'); }
 { assert.equal(typeof serve.startServe,'function'); const servePkg=join(process.cwd(),'node_modules','@parcha','agentrun-serve'); assert.ok(JSON.parse(await readFile(join(servePkg,'dist','openapi','agentrun-v2.openapi.json'),'utf8')).openapi,'the install has the contract its build copies, dist/openapi/agentrun-v2.openapi.json'); const caps=await serve.capabilities({}); assert.equal(caps.contract,'agentrun.v2/0'); assert.equal(caps.backend,'local'); assert.deepEqual(caps.models,{source:'providers',route_prefix:null,fast:null,default:null,strong:null,ready:false,needs:'key',priced:null}); assert.deepEqual(caps.harnesses.map((h)=>[h.id,h.default_model]),[['pi',null],['claude-agent',null],['codex',null],['opencode',null]]); assert.equal(serve.ERROR_STATUS.unsupported_here,501); }
 { assert.deepEqual(Object.keys(serveHarness),[],'the harness subpath is types alone: a module that imports it loads nothing of serve'); assert.deepEqual(Object.keys(serveConformance).sort(),['MAX_RESTARTS','createAdapterLoop','registerHarnessConformance','suiteHostTools']); assert.equal(typeof serveConformance.registerHarnessConformance,'function'); assert.equal(typeof serveConformance.suiteHostTools,'function'); assert.equal(typeof serveConformance.createAdapterLoop,'function'); assert.equal(serveConformance.MAX_RESTARTS,5); }
 { assert.equal(typeof acp.acpAdapter,'function'); assert.equal(acpFacts.acpFacts,acp.acpFacts); assert.equal(acp.gooseFacts.id,'goose'); assert.equal(acp.recipeFile('goose').id,'goose','the install reads Goose\\'s recipe from its own recipes/goose.json'); assert.ok(acp.GOOSE_PIN.version,'Goose\\'s pin'); }

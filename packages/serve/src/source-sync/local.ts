@@ -11,7 +11,7 @@ import { nativeOf } from "../native/binding.js";
 import { selectedNative } from "../native/connection.js";
 import { nativeIdentity, nativeMachineId } from "../native/discovery.js";
 import { nativeEnvironment } from "../native/environment.js";
-import { NATIVE_RUNTIME_FACTS } from "../native/runtimes.js";
+import { isNativeRuntime, NATIVE_RUNTIME_FACTS } from "../native/runtimes.js";
 import { sourceNativeEnvironmentFacts } from "../native/source-runtime-tools.js";
 import { exportSourceSnapshot, SourceSnapshotError } from "../native/source-snapshot.js";
 import { runnerSecrets } from "../runner/redact.js";
@@ -35,7 +35,7 @@ const identity = (target: SourceIdentity): SourceIdentity => ({ runtime: target.
 const consentOf = (value: unknown): value is SourceLocalConsent => isObject(value) && Object.keys(value).every(key => ["version", "scope"].includes(key)) && value.version === 1 && typeof value.scope === "string" && /^[a-f0-9]{64}$/.test(value.scope);
 
 async function folders(target: SourceIdentity, env: NodeJS.ProcessEnv) {
-  if (process.platform !== "linux" || !process.geteuid || target.machine_id !== await nativeMachineId()) throw denied();
+  if (!isNativeRuntime(target.runtime) || process.platform !== "linux" || !process.geteuid || target.machine_id !== await nativeMachineId()) throw denied();
   const home = env.HOME || homedir();
   const explicit = NATIVE_RUNTIME_FACTS[target.runtime].protocol === "codex-json" ? env.CODEX_HOME : env.CLAUDE_CONFIG_DIR;
   const paths = [target.project, home, ...(explicit ? [explicit] : [])];
@@ -119,11 +119,11 @@ export class LocalSources {
     const row = await this.store.settings.get(sourceLocalKey(agentId)) as LocalRecord | undefined;
     if (!row?.active || row.version !== 1 || row.agent_id !== agentId) throw denied();
     const capture = await this.capture(agentId, row), env = { ...(this.options.env?.() ?? nativeEnvironment()) };
-    if (nativeIdentity(capture.target) !== nativeIdentity(row.source)) throw denied();
+    if (capture.target.runtime !== row.source.runtime || nativeIdentity(capture.target) !== nativeIdentity({ ...row.source, runtime: capture.target.runtime })) throw denied();
     const location = await folders(row.source, env);
     if (location.consent.scope !== row.scope) throw denied();
     const target = await (this.options.selected ?? selectedNative)(row.source, env);
-    if (nativeIdentity(target) !== nativeIdentity(row.source) || (await sourceLocalConsent(identity(target), env)).scope !== row.scope) throw denied();
+    if (target.runtime !== row.source.runtime || nativeIdentity(target) !== nativeIdentity({ ...row.source, runtime: target.runtime }) || (await sourceLocalConsent(identity(target), env)).scope !== row.scope) throw denied();
     const authority: SourceAuthority = { source: row.source, captureRevision: row.capture_revision,
       guards: [{ key: sourceLocalKey(agentId), fields: { active: true, generation: row.generation, scope: row.scope } }, ...capture.guards] };
     return { row, target, env, location, authority };

@@ -1195,6 +1195,10 @@ export type Capabilities = {
     condition: string;
     limit: string;
   };
+  source_deployment?: {
+    version: 1;
+    runtimes: Array<"claude-code" | "codex" | "pi">;
+  };
   run_isolation?: "uid" | "process";
   runner_refused?: string | null;
   switches: Record<string, {
@@ -2022,7 +2026,9 @@ export type ListLearningPromotionsResponse = {
 };
 
 /** Move the same agent to server-managed execution from its complete synchronized setup (POST /agents/{agent_id}/source/move). */
-export type MoveSourceAgentBody = Record<string, never>;
+export type MoveSourceAgentBody = {
+  snapshot?: string;
+};
 export type MoveSourceAgentResponse = {
   agent: Agent;
   source: {
@@ -2544,7 +2550,7 @@ export type ImportRemoteHistoryResponse = {
   already: number;
 };
 
-/** Import an explicitly selected source-native agent reference (POST /connectors/{connector_id}/import). */
+/** Import a selected source reference or reserve a setup-only deployment without native execution (POST /connectors/{connector_id}/import). */
 export type ImportRemoteTargetBody = {
   target_id: string;
   name?: string;
@@ -2582,11 +2588,45 @@ export type ImportRemoteTargetBody = {
     };
   };
   history_only?: boolean;
+  deployment?: false;
   cli_adoption?: {
     connection_id: string;
     credential_epoch: string;
     proof: string;
   };
+} | {
+  target_id: string;
+  name?: string;
+  target: {
+    runtime: "claude-code" | "codex" | "pi";
+    project: string;
+    selector: {
+      kind: "project" | "agent" | "profile";
+      name?: string;
+    };
+    machine_id: string;
+    version: string | null;
+    model: string | null;
+    fingerprint: string;
+    configuration: Array<{
+      path: string;
+      sha256: string;
+    }>;
+    skills: Array<string>;
+    mcp_servers: Array<string>;
+    state: "needs_verification" | "needs_attention" | "ready";
+    issues: Array<string>;
+    capabilities: {
+      launch: boolean;
+      learning: boolean;
+      workflows: false;
+      approval: "native" | "unavailable";
+      usage: boolean;
+    };
+    sync_only: true;
+    connected?: boolean;
+  };
+  deployment: true;
 };
 export type ImportRemoteTargetResponse = {
   agent_id: string;
@@ -2621,6 +2661,35 @@ export type ImportRemoteTargetResponse = {
     remote?: {
       connector_id: string;
       target_id: string;
+    };
+  };
+} | {
+  agent_id: string;
+  target: {
+    runtime: "claude-code" | "codex" | "pi";
+    project: string;
+    selector: {
+      kind: "project" | "agent" | "profile";
+      name?: string;
+    };
+    machine_id: string;
+    version: string | null;
+    model: string | null;
+    fingerprint: string;
+    configuration: Array<{
+      path: string;
+      sha256: string;
+    }>;
+    skills: Array<string>;
+    mcp_servers: Array<string>;
+    state: "needs_verification" | "needs_attention" | "ready";
+    issues: Array<string>;
+    capabilities: {
+      launch: boolean;
+      learning: boolean;
+      workflows: false;
+      approval: "native" | "unavailable";
+      usage: boolean;
     };
   };
 };
@@ -7737,7 +7806,7 @@ export function resources(call: Call) {
       grantSourceSync: (connectorId: string, targetId: string, body: GrantSourceSyncBody, options?: RequestOptions): Promise<GrantSourceSyncResponse> => call("grantSourceSync", [connectorId, targetId], body, undefined, options),
       /** Import explicitly selected, redacted past sessions without running or learning from them (POST /connectors/{connector_id}/targets/{target_id}/history). */
       importRemoteHistory: (connectorId: string, targetId: string, body: ImportRemoteHistoryBody, options?: RequestOptions): Promise<ImportRemoteHistoryResponse> => call("importRemoteHistory", [connectorId, targetId], body, undefined, options),
-      /** Import an explicitly selected source-native agent reference (POST /connectors/{connector_id}/import). */
+      /** Import a selected source reference or reserve a setup-only deployment without native execution (POST /connectors/{connector_id}/import). */
       importRemoteTarget: (connectorId: string, body: ImportRemoteTargetBody, options?: RequestOptions): Promise<ImportRemoteTargetResponse> => call("importRemoteTarget", [connectorId], body, undefined, options),
       /** List remote source machines and imported agent targets (GET /connectors). */
       listRemoteConnectors: (options?: RequestOptions): Promise<ListRemoteConnectorsResponse> => call("listRemoteConnectors", [], undefined, undefined, options),
