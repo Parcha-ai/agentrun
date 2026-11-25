@@ -12,9 +12,8 @@ import { createServer, request } from "node:http";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { pathToFileURL } from "node:url";
 import { serve } from "../../serve/test/support.mjs";
-import { packageSha256 } from "../lib/deploy.mjs";
+import { packageFiles, packageSha256 } from "../lib/deploy.mjs";
 import { cli as agentrun, scratch as scratchOf, server as serverOf } from "./support.mjs";
 
 const scratch = () => scratchOf("deploy");
@@ -322,27 +321,21 @@ test("a folder's upload is its package alone: agent.md, skills/, rules/, evals/ 
   // Each hidden path left out is said by name, a hidden folder once, before anything is sent; never what one holds.
   assert.match(first.err, /Left out, hidden: \.env, evals\/today\/\.cache\/, skills\/check\/\.DS_Store, skills\/check\/\.env\n/, first.err);
   assert.ok(!first.err.includes("not-a-secret"), first.err);
-  // agent.md naming a hidden file at the root as the answer's schema: said left out, and the package the target would
-  // refuse is refused here, in the target's words, with nothing sent.
+  // agent.md naming a hidden file at the root as the answer's schema: said left out, and not sent (the target refuses
+  // such a package in its own words).
   const dotted = folder(dir, { name: "dotted", extra: ["output: { schema: .answer.json }"] });
   writeFileSync(join(dotted, ".answer.json"), "{}\n");
-  let from = fake.seen.length;
   const hiddenSchema = await cli(env, ["deploy", dotted, "--to", fake.base, "--yes"], key);
-  assert.equal(hiddenSchema.code, 2, hiddenSchema.err);
   assert.match(hiddenSchema.err, /Left out, hidden: \.answer\.json\n/, hiddenSchema.err);
-  assert.match(hiddenSchema.err, /output\.schema \.answer\.json is a hidden file/, hiddenSchema.err);
-  assert.deepEqual(fake.seen.slice(from), [], "nothing sent");
+  assert.deepEqual(fake.bodies["POST /templates/import"]?.files?.map((file) => file.path), ["agent.md", "skills/check/SKILL.md"], "sent to the target without its hidden schema");
   // A schema named in another folder is not sent, nor anything of that folder: the target takes no folder but skills/,
-  // rules/ and evals/, so the package does not check, and that is said here with nothing sent.
+  // rules/ and evals/, and refuses such a package in its own words.
   const nested = folder(dir, { name: "nested", extra: ["output: { schema: schemas/answer.schema.json }"] });
   mkdirSync(join(nested, "schemas"));
   writeFileSync(join(nested, "schemas", "answer.schema.json"), "{}\n");
   writeFileSync(join(nested, "schemas", "draft.schema.json"), "{}\n");
-  from = fake.seen.length;
-  const elsewhere = await cli(env, ["deploy", nested, "--to", fake.base, "--yes"], key);
-  assert.equal(elsewhere.code, 2, elsewhere.err);
-  assert.match(elsewhere.err, /does not check, so nothing was sent/, elsewhere.err);
-  assert.deepEqual(fake.seen.slice(from), [], "nothing sent");
+  await cli(env, ["deploy", nested, "--to", fake.base, "--yes"], key);
+  assert.deepEqual(fake.bodies["POST /templates/import"]?.files?.map((file) => file.path), ["agent.md", "skills/check/SKILL.md"], "sent to the target without the other folder");
 
   // A real target takes it whole (its answer's schema read from the root), and deploy delete leaves no upload there.
   const b = await server(t, dir, env, "b");
@@ -743,64 +736,46 @@ test("agentrun deploy with no lock for a target that has an agent made from the 
   assert.deepEqual([await agents(), lockAgent()], [[made.agent_id, another.json().agent_id].sort(), another.json().agent_id]);
 });
 
-test("agentrun deploy checks the package as the target's import does before it sends anything: a category the target has not is refused, exit 2, naming the field, the value and the categories, with no request sent", { timeout: 120_000 }, async (t) => {
+/** A target that imports any package and plans and applies it: the answers a later AgentRun gives a package this CLI's
+ *  own server would refuse. */
+const ACCEPTS = {
+  "POST /templates/import": [201, { template: { id: "pkg-1", name: "pr-alert", sha: "f".repeat(64), mcp: [] } }],
+  "POST /templates/pkg-1/apply": [200, { plan: { action: "create", missing_secrets: [], unmatched_mcp: [], triggers: [], twins: [] }, agent_id: "agt_1", revision_id: "rev_1", revision_version: 1, agent_change: "made", triggers: [] }],
+};
+
+test("a deploy is checked by the target's import alone: a package the server beside this CLI would refuse goes to a target that takes it", { timeout: 120_000 }, async (t) => {
   const { dir, env } = scratch();
-  const key = { AGENTRUN_API_KEY: "not-a-secret" };
-  const fake = await fakeTarget(t, {});
+  const fake = await fakeTarget(t, ACCEPTS);
+  // A category this CLI's server does not list, as a later target's may.
   const pkg = folder(dir, { extra: ["category: productivity"] });
-  const refused = await cli(env, ["deploy", pkg, "--to", fake.base, "--yes"], key);
-  assert.equal(refused.code, 2, refused.err);
-  assert.match(refused.err, /category is one of engineering, security, sales, marketing, research, finance, operations, compliance, personal, not "productivity"/, refused.err);
-  assert.match(refused.err, /does not check, so nothing was sent/, refused.err);
-  assert.deepEqual(fake.seen, [], "no request sent");
-  assert.equal(existsSync(join(pkg, ".agentrun")), false, "no lock written");
-  // The same package with a category the target has goes on to the upload.
-  writeFileSync(join(pkg, "agent.md"), readFileSync(join(pkg, "agent.md"), "utf8").replace("category: productivity", "category: engineering"));
-  await cli(env, ["deploy", pkg, "--to", fake.base, "--yes"], key);
-  assert.deepEqual(fake.seen.slice(0, 1), ["POST /templates/import"]);
+  const result = await cli(env, ["deploy", pkg, "--to", fake.base, "--yes"], { AGENTRUN_API_KEY: "not-a-secret" });
+  assert.equal(result.code, 0, `a package the target accepts is deployed, whatever this CLI's server would say of it: ${result.err}`);
+  assert.deepEqual(fake.seen, ["POST /templates/import", "POST /templates/pkg-1/apply", "POST /templates/pkg-1/apply"]);
+  assert.equal(JSON.parse(readFileSync(join(pkg, ".agentrun", "deploy.json"), "utf8")).agent_id, "agt_1");
 });
 
-test("agentrun deploy checks the package with this node on the server's cli.js, never its shell launcher or any shell: a bad category is still refused with nothing sent and a good one still goes out", { timeout: 120_000 }, async (t) => {
+test("a package the target's import refuses (422 input_invalid) exits 2 with the target's words, and nothing is applied", { timeout: 120_000 }, async (t) => {
   const { dir, env } = scratch();
-  const key = { AGENTRUN_API_KEY: "not-a-secret" };
-  const fake = await fakeTarget(t, {});
-  // Loaded before the command (and so before each node it starts): a child_process call that starts anything but this
-  // node, or anything through a shell, throws, as the launcher's start does where there is no POSIX shell. Each process
-  // started is written to `started`, one line each.
-  const preload = join(dir, "only-node.mjs");
-  const started = join(dir, "started.txt");
-  writeFileSync(preload, [
-    'import cp from "node:child_process";',
-    'import { appendFileSync } from "node:fs";',
-    'import { syncBuiltinESMExports } from "node:module";',
-    "for (const name of [\"spawn\", \"spawnSync\", \"exec\", \"execSync\", \"execFile\", \"execFileSync\", \"fork\"]) {",
-    "  const real = cp[name];",
-    "  cp[name] = (command, args, options) => {",
-    "    const argv = Array.isArray(args) ? args : [];",
-    "    const opts = Array.isArray(args) ? options : args;",
-    '    if (command !== process.execPath || name.startsWith("exec") && !name.startsWith("execFile") || opts?.shell) throw new Error(`deploy started ${command} (${name})`);',
-    `    appendFileSync(${JSON.stringify(started)}, [command, ...argv].join(" ") + "\\n");`,
-    "    return real(command, args, options);",
-    "  };",
-    "}",
-    "syncBuiltinESMExports();",
-    "",
-  ].join("\n"));
-  const onlyNode = { ...key, NODE_OPTIONS: `${env.NODE_OPTIONS ?? ""} --import=${pathToFileURL(preload).href}`.trim() };
+  const field = { field: "category", reason: "not_an_option", message: "category productivity is not one this server has" };
+  const fake = await fakeTarget(t, { "POST /templates/import": [422, { error: { code: "input_invalid", message: field.message, fields: [field] } }] });
   const pkg = folder(dir, { extra: ["category: productivity"] });
-  const refused = await cli(env, ["deploy", pkg, "--to", fake.base, "--yes"], onlyNode);
-  assert.doesNotMatch(refused.err, /deploy started/, refused.err);
+  const refused = await cli(env, ["deploy", pkg, "--to", fake.base, "--yes"], { AGENTRUN_API_KEY: "not-a-secret" });
   assert.equal(refused.code, 2, refused.err);
-  assert.match(refused.err, /category is one of engineering, .*, not "productivity"/, refused.err);
-  assert.match(refused.err, /does not check, so nothing was sent/, refused.err);
-  assert.deepEqual(fake.seen, [], "no request sent");
-  writeFileSync(join(pkg, "agent.md"), readFileSync(join(pkg, "agent.md"), "utf8").replace("category: productivity", "category: engineering"));
-  const sent = await cli(env, ["deploy", pkg, "--to", fake.base, "--yes"], onlyNode);
-  assert.doesNotMatch(sent.err, /deploy started/, sent.err);
-  assert.deepEqual(fake.seen.slice(0, 1), ["POST /templates/import"]);
-  const lines = readFileSync(started, "utf8").trim().split("\n");
-  assert.equal(lines.length, 2, "one check per deploy");
-  for (const line of lines) assert.match(line, /^\S+ \S+[\\/]dist[\\/]cli\.js check-upload$/, line);
+  assert.match(refused.err, /category productivity is not one this server has/, refused.err);
+  assert.deepEqual(fake.seen, ["POST /templates/import"], "nothing applied");
+  assert.equal(existsSync(join(pkg, ".agentrun", "deploy.json")), false, "no lock written");
+});
+
+test("packageFiles reads a folder holding hidden files and leaves them out", async () => {
+  const { dir } = scratch();
+  const pkg = folder(dir);
+  writeFileSync(join(pkg, ".DS_Store"), "\0\0\0\x01Bud1");
+  writeFileSync(join(pkg, "skills", "check", ".env"), "KEY=not-a-secret\n");
+  let files;
+  await assert.doesNotReject(async () => {
+    files = await packageFiles(pkg, (_code, message) => new Error(message));
+  }, "packageFiles reads a folder holding a .DS_Store without throwing");
+  assert.deepEqual(files.map((file) => file.path), ["agent.md", "skills/check/SKILL.md"], "its hidden files are left out");
 });
 
 test("agentrun deploy whose lock names an agent gone from the target: --agent ID deploys onto the agent the hint names, --agent new makes another, and a missing one is refused; while the locked agent is there, --agent naming another is refused with nothing written", { timeout: 300_000 }, async (t) => {

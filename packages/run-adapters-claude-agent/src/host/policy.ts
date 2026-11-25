@@ -101,9 +101,7 @@ export interface AnthropicPolicyOptions {
   /** Told when a request on the session's main model carries no thinking and no effort: the model would answer without
    *  reasoning, which a session never asks for (the small model's background calls are not told). */
   onThinkingDisabled?: (request: { model: string }) => void;
-  /** The day of the run's clock (YYYY-MM-DD, `isoDay`), when the host set that clock (a template eval case's `now`):
-   *  the CLI's own date lines, which it reads from the machine's clock, say this day instead (`CLI_DATE`). Absent, they
-   *  pass as the CLI wrote them. */
+  /** The day of the run's clock (YYYY-MM-DD) when the host set one; the CLI's date lines say it (`CLI_DATE`). */
   day?: () => string;
 }
 

@@ -45,7 +45,7 @@ test("the model env of a run with its own key: that key in the gateway's variabl
   assert.equal(env.AGENT_MODEL_API_KEY, now, "a message's new key is read at the next request");
   const offOrigin = withRunModelKey({ ...base, ANTHROPIC_BASE_URL: "https://elsewhere.example" }, { origin: GW, key: () => RUN_KEY });
   assert.equal(offOrigin.ANTHROPIC_API_KEY, undefined, "Anthropic's endpoint off the gateway's origin never gets it");
-  assert.equal(claimModelEnv(base, {}, undefined).AGENT_MODEL_API_KEY, SERVER_KEY, "a run with no key of its own reads the server's, as before");
+  assert.equal(claimModelEnv(base, [], undefined).AGENT_MODEL_API_KEY, SERVER_KEY, "a run with no key of its own reads the server's, as before");
 });
 
 test("a claim opens the run's key from its sealed launch, bound to the gateway's origin: another origin is refused, a message's key replaces it at fresh(), and a launch that holds none falls back to the server's path", async () => {
@@ -70,7 +70,7 @@ test("a claim opens the run's key from its sealed launch, bound to the gateway's
   sealed = sealRunMcpAuth(sealKey, "run-1", { gw: { headers: { authorization: "Bearer x-mcp-123" }, origin: "https://mcp.example" } });
   const later = await claimModelKey({ store, sealKey, env: gateway }, "run-1");
   assert.deepEqual([later.key(), later.everHeld()], [undefined, false], "no key yet");
-  const env = claimModelEnv(gateway, { AGENT_MODEL_API_KEY: SERVER_KEY }, later);
+  const env = claimModelEnv(gateway, [{ AGENT_MODEL_API_KEY: SERVER_KEY }], later);
   assert.equal(env.AGENT_MODEL_API_KEY, SERVER_KEY, "the server's key until the run has one");
   sealed = sealRunLaunch(sealKey, "run-1", { model: { key: RUN_KEY, origin: GW } });
   await later.fresh();
