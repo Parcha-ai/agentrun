@@ -71,18 +71,23 @@ const REFUSED = [
   ["a user in the namespace, with the owner's account", { composio_user_id: "agentrun.token.other", connected_account_id: OWNERS_ACCOUNT }, "connected_account_id"],
   ["a user in the namespace, with another namespaced user's account", { composio_user_id: "agentrun.token.other", connected_account_id: TOKENS_ACCOUNT }, "connected_account_id"],
   ["a user in the namespace, with an account Composio doesn't list", { composio_user_id: TOKENS, connected_account_id: "ca_nobody_listed" }, "connected_account_id"],
+  ["the namespace's bare prefix, nothing after it", { composio_user_id: "agentrun.token." }, "composio_user_id"],
+  // A Composio answering every user's accounts, whatever user_ids asks: the owner's comes back under the owner's user.
+  ["a user in the namespace, with the owner's account Composio answers under the owner's user", { composio_user_id: TOKENS, connected_account_id: OWNERS_ACCOUNT }, "connected_account_id", { ignoreUserIds: true }],
 ];
-for (const [shape, binding, field] of REFUSED) {
+// Each refusal says which check refused it.
+const WHICH = { composio_user_id: /outside the API token's Composio namespace.*API token's own.*agentrun\.token\./, connected_account_id: /not listed under this run's composio_user_id.*Composio lists/ };
+for (const [shape, binding, field, fake] of REFUSED) {
   test(`API-only: a run bound to ${shape} is 422 not_allowed under mcp_auth.mail.${field}; no run is made and nothing reaches Composio's MCP endpoint`, async (t) => {
     withEnv(t, { [KEY_ENV]: KEY });
-    const s = await setup(t);
+    const s = await setup(t, { fake });
     const saved = await s.token("PUT", "/settings/mcp-servers/mail/composio", SAVE);
     assert.equal(saved.status, 200, JSON.stringify(saved.body));
     const before = await runCount(s);
     const run = await runAs(s.token, binding);
     assert.equal(run.status, 422, JSON.stringify(run.body));
     assert.deepEqual(run.body.error?.fields?.map((issue) => [issue.field, issue.reason]), [[`mcp_auth.mail.${field}`, "not_allowed"]], JSON.stringify(run.body.error));
-    assert.match(run.body.error.fields[0].message, field === "composio_user_id" ? /API token's own.*agentrun\.token\./ : /Composio lists under/, run.body.error.fields[0].message);
+    assert.match(run.body.error.fields[0].message, WHICH[field], run.body.error.fields[0].message);
     for (const value of [binding.composio_user_id, binding.connected_account_id, KEY].filter(Boolean)) assert.equal(JSON.stringify(run.body).includes(value), false, `the refusal never quotes ${value}`);
     assert.equal(await runCount(s), before, "no run made");
     nothingAsBound(s, binding);
@@ -123,10 +128,44 @@ test("API-only: a run bound to an account in the token's namespace is refused wh
   const run = await runAs(s.token, binding);
   assert.equal(run.status, 424, JSON.stringify(run.body));
   assert.equal(run.body.error?.code, "upstream_failed");
-  assert.match(run.body.error.message, /mail.*never taken unchecked/, run.body.error.message);
+  assert.match(run.body.error.message, /Composio didn't answer the check.*mail.*never taken unchecked/, run.body.error.message);
   assert.equal(JSON.stringify(run.body).includes(KEY), false);
   assert.equal(await runCount(s), before, "no run made");
   nothingAsBound(s, binding);
+});
+
+// The listing is read 50 a page, at most 10 pages, as the save's is: here the fake answers one a page, so an account on
+// the 10th page is found and one past it is never taken unchecked.
+const fillers = (n) => Array.from({ length: n }, (_, i) => ({ status: "ACTIVE", auth_config: MANAGED, id: `ca_token_ops_filler_${i}`, user: TOKENS }));
+test("API-only: a run's account on the listing's 10th page is found (202); one past the 10th page is refused fail closed, 422 under connected_account_id in words naming the page bound; nothing reaches the MCP endpoint", async (t) => {
+  withEnv(t, { [KEY_ENV]: KEY });
+  const within = await setup(t, { fake: { accountsPage: 1, accounts: { gmail: [...fillers(9), { status: "ACTIVE", auth_config: MANAGED, id: TOKENS_ACCOUNT, user: TOKENS }] } } });
+  assert.equal((await within.token("PUT", "/settings/mcp-servers/mail/composio", SAVE)).status, 200);
+  const found = await runAs(within.token, { composio_user_id: TOKENS, connected_account_id: TOKENS_ACCOUNT });
+  assert.equal(found.status, 202, JSON.stringify(found.body));
+
+  const past = await setup(t, { fake: { accountsPage: 1, accounts: { gmail: [...fillers(10), { status: "ACTIVE", auth_config: MANAGED, id: TOKENS_ACCOUNT, user: TOKENS }] } } });
+  assert.equal((await past.token("PUT", "/settings/mcp-servers/mail/composio", SAVE)).status, 200);
+  const before = await runCount(past);
+  const binding = { composio_user_id: TOKENS, connected_account_id: TOKENS_ACCOUNT };
+  const run = await runAs(past.token, binding);
+  assert.equal(run.status, 422, JSON.stringify(run.body));
+  assert.deepEqual(run.body.error?.fields?.map((issue) => [issue.field, issue.reason]), [["mcp_auth.mail.connected_account_id", "not_allowed"]]);
+  assert.match(run.body.error.fields[0].message, /more than 10 pages.*can't check/, run.body.error.fields[0].message);
+  assert.doesNotMatch(run.body.error.fields[0].message, /not listed under/, "its own reason, not the not-listed one");
+  assert.equal(await runCount(past), before, "no run made");
+  nothingAsBound(past, binding);
+});
+
+test("API-only: the token's save doesn't count an ACTIVE account Composio answers under another user (one answering every user's): 200 with a connect link, and its record never holds that account", async (t) => {
+  withEnv(t, { [KEY_ENV]: KEY });
+  const s = await setup(t, { fake: { ignoreUserIds: true, accounts: { gmail: [{ status: "ACTIVE", auth_config: MANAGED, id: OWNERS_ACCOUNT, user: OWNER }] } } });
+  const saved = await s.token("PUT", "/settings/mcp-servers/mail/composio", { ...SAVE, user_id: "ops" });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  assert.equal(typeof saved.body.connect_url, "string", "no ACTIVE account for the token's own user: a connect link");
+  assert.equal(JSON.stringify(saved.body).includes(OWNERS_ACCOUNT), false);
+  const record = await s.server.store.settings.get(composioMadeKey("mail"));
+  assert.equal(JSON.stringify(record).includes(OWNERS_ACCOUNT), false, "the record holds no account of another user");
 });
 
 test("full profile: the owner's run of the owner's per-run Composio server is as before: bound to the owner's user and account, it starts (202) and calls as them, with no account lookup", async (t) => {
