@@ -732,6 +732,17 @@ test("a decision its provider refuses unbilled (rate limited) charged nothing: i
   assert.deepEqual([row.state, asked, row.costUsd], ["failed", 1, 0], `asked once, refused unbilled, nothing counted: ${JSON.stringify(row)}`);
 });
 
+test("a decision OpenRouter answers 402 (the account is out of credit) is payment_required, unbilled: its hold is booked at $0, and the run's cost says $0", async (t) => {
+  const { openrouterProvider } = await import("@parcha/agentrun-decisions");
+  let asked = 0;
+  const outOfCredit = async () => (asked += 1, new Response(JSON.stringify({ error: { message: "Insufficient credits" } }), { status: 402, headers: { "content-type": "application/json" } }));
+  const real = openrouterProvider({ apiKey: "not-a-secret-x", baseURL: "https://fake.invalid/api", model: "liquid/d1", maxAttempts: 1, fetch: outOfCredit });
+  const decider = { ...fauxOpenrouter({ price: feeOnly(0.4), costUsd: null }), decide: (request, ctx) => real.decide(request, ctx) };
+  const { server } = await worldWith(t, { capUsd: 1, decider });
+  const row = await waitRow(server, (r) => r.state !== "running" && r.state !== "queued" && r.runner === null);
+  assert.deepEqual([row.state, asked, row.costUsd], ["failed", 1, 0], `asked once, refused unbilled, nothing counted: ${JSON.stringify(row)}`);
+});
+
 test("a decision the cap refuses inside its admission parks the run only once the driver's commit of its failed end has landed: a commit the store refuses there never leaves the run parked with the decision still asked", async (t) => {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-wf-dec-refused-commit-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
