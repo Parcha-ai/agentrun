@@ -125,6 +125,25 @@ describe("Settings → Model keys, Claude Code's login on this machine: Sign out
     expect(text).not.toContain(SIGNED_OUT_HERE);
   });
 
+  it("a sign-out whose answer finds the mode on again (another tab's turn-on) keeps no sign-out words: a Turn off after it reads off with none", async () => {
+    let view: ClaudeLoginView = SIGNED_IN;
+    const { v2 } = server(() => view, (call) => {
+      // The sign-out ran, then another tab turned the mode on before its answer was read: the answer's view is on.
+      if (call.path === "/v2/settings/claude-login/sign-out") return { confirmed: false, message: UNCONFIRMED, login: (view = { ...OFF, state: "signed_out" }) };
+      if (call.method === "DELETE") return (view = OFF);
+      return view;
+    });
+    const page = await open(v2);
+    await page.click(page.buttons(/^Sign out$/)[0]);
+    await page.click(page.buttons(/^Sign out$/).at(-1));
+    expect(page.row()!.textContent).toContain("Not signed in.");
+    await page.click(page.buttons(/^Turn off$/)[0]);
+    const text = page.row()!.textContent ?? "";
+    expect(page.buttons(/^Turn on$/), "Turn off left the row off").toHaveLength(1);
+    expect(text, "Turn off after another tab's turn-on brings back no sign-out words").not.toContain(UNCONFIRMED);
+    expect(text).not.toContain(SIGNED_OUT_HERE);
+  });
+
   it("a sign-out the server refuses keeps the row as it was and says why", async () => {
     const why = "This is your own Claude Code login on this machine (/u/p/.claude), which AgentRun only uses: it never signs it out.";
     const { v2 } = server(() => SIGNED_IN, () => json(403, { error: { code: "forbidden", message: why } }));
