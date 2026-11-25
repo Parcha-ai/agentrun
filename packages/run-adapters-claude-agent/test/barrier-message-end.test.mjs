@@ -141,3 +141,45 @@ test("a call the CLI refuses itself early in a long message is still shown to th
   assert.equal(shown.length, 1, 'the refused call is shown to the host as a call that failed');
   assert.equal(shown[0].name, 'submit');
 });
+
+/** The store alone, on a journal that keeps nothing. */
+async function storeOn(clock) {
+  const { JournalSessionStore } = await import('../dist/store.js');
+  const journal = { append: () => {}, message: () => {}, flush: async () => {} };
+  return new JournalSessionStore(journal, { records: [], timers: clock });
+}
+const assistantCall = (id, parent = null) => ({ type: 'assistant', parent_tool_use_id: parent, message: { content: [{ type: 'tool_use', id, name: 'mcp__hands__submit', input: {} }] } });
+const streamEvent = (parent = null) => ({ type: 'stream_event', parent_tool_use_id: parent, event: { type: 'content_block_delta', delta: { type: 'input_json_delta', partial_json: '{}' } } });
+/** When a barrier on `id` settled, on the fake clock. */
+const settledAt = (clock, promise) => promise.then(() => ({ ok: true, at: clock.now() }), (error) => ({ ok: false, at: clock.now(), error: String(error.message) }));
+
+test("the barrier's clock restarts only on its own message's stream: a subagent's events don't hold a main-thread call", async () => {
+  const clock = fakeClock();
+  const store = await storeOn(clock);
+  store.heard(assistantCall('toolu_main'));
+  const main = settledAt(clock, store.barrier('toolu_main', BARRIER_MS));
+  // A subagent streams the whole time; its events are not the main message's.
+  for (let at = 0; at < 3 * BARRIER_MS; at += 500) {
+    store.heard(streamEvent('toolu_task'));
+    await clock.advance(500);
+  }
+  const outcome = await main;
+  assert.equal(outcome.ok, false);
+  assert.equal(outcome.at, BARRIER_MS, 'refused the barrier after its own message last streamed');
+});
+
+test("the barrier's clock runs from the call when no stream names it, and its own stream's events restart it", async () => {
+  const clock = fakeClock();
+  const store = await storeOn(clock);
+  const unnamed = settledAt(clock, store.barrier('toolu_unnamed', BARRIER_MS));
+  store.heard(assistantCall('toolu_named'));
+  const named = settledAt(clock, store.barrier('toolu_named', BARRIER_MS));
+  for (let at = 0; at < 2 * BARRIER_MS; at += 1000) {
+    store.heard(streamEvent());
+    await clock.advance(1000);
+  }
+  assert.deepEqual(await unnamed, { ok: false, at: BARRIER_MS, error: `the transcript entry for tool call toolu_unnamed did not reach the log within ${BARRIER_MS} ms` });
+  // Its line lands: the wait ends at once.
+  await store.append({ projectKey: 'p', sessionId: 's' }, [{ type: 'assistant', uuid: 'u1', ...assistantCall('toolu_named') }]);
+  assert.deepEqual(await named, { ok: true, at: 2 * BARRIER_MS });
+});

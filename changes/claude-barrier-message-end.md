@@ -1,0 +1,6 @@
+---
+packages: @parcha/agentrun-harness-claude
+kind: fix
+---
+A host tool with replay `never` called early in a long message of parallel calls now runs. Such a tool waits until the transcript line that made its call is in the log, and the Agent SDK hands the log a message's lines only once the whole message has streamed, while the CLI starts each call as its block ends. The 10 s wait was counted from the call, so in a message of 12 calls streamed about 1.3 s apart the first calls were refused ("the transcript entry for tool call ... did not reach the log within 10000 ms") though nothing was wrong. The wait's clock now restarts on each stream event of the message that made the call (the main thread's, or a subagent's own), so it runs out 10 s after that message ends, or after its last event if the stream stalls; a call whose line never lands is still refused then. A short message waits as before.
+A call the CLI refuses itself early in such a message is shown to the host again: its answer line comes with the rest of the message, and the wait for it had run out the same way, so the refusal was only logged ("a refused call is not shown").

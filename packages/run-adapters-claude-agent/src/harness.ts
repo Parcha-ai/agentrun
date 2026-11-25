@@ -239,7 +239,8 @@ export interface ClaudeCodeHarnessOptions {
   name?: string;
   /** The Agent SDK module. Default: `import('@anthropic-ai/claude-agent-sdk')` on the first drive, after its version is checked against the pin. */
   sdk?: ClaudeAgentSdk;
-  /** How long a `never` tool waits for its call to reach the log before it is refused. Default 10 s. */
+  /** How long a `never` tool waits for its call to reach the log before it is refused, from the last stream event of the
+   *  message that made the call (the SDK mirrors a message's lines once it ends). Default 10 s. */
   barrierMs?: number;
   /** The timers that wait runs on. Default the system's; a test passes a fake clock. */
   barrierTimers?: BarrierTimers;
@@ -929,6 +930,9 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
               ctx.halt?.(mirrorUnmapped('a batch the Agent SDK could not keep in the log'));
               throw ctx.signal.reason ?? mirrorUnmapped('a batch the Agent SDK could not keep in the log');
             }
+            // Each event of a message's stream restarts the barrier's clock for the calls made in it (the mirror sends a
+            // message's lines once the message ends).
+            store.heard(m);
             booking?.observe(m);
             const end = transcript.observe(m);
             // A turn on a login ends once its responses are booked.
