@@ -229,7 +229,8 @@ jobs:
     # how long a job's tests take, so a fifth job would not shorten them. The count here and in the step below must
     # agree (scripts/ci-plan.test.mjs).
     name: serve store on Postgres (${{ matrix.shard }}/4)
-    runs-on: ubuntu-latest
+    # Runs where the build does, so the required path is not set by a GitHub-hosted leg.
+    runs-on: ${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -293,7 +294,8 @@ jobs:
     # apps/console, the server's console: a private app with its own lockfile (React, Vite, Storybook), outside the
     # workspaces. Its typecheck, tests, build and Storybook build run here; verify needs it like the test shards.
     name: console
-    runs-on: ubuntu-latest
+    # Runs where the build does, so the required path is not set by a GitHub-hosted leg.
+    runs-on: ${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     timeout-minutes: 15
     defaults:
       run:

@@ -97,12 +97,14 @@ export function failureText({ command, step, error, code = null, signal = null, 
 export const startTimeoutMs = (env) => (/^[1-9]\d*$/.test(env.AGENTRUN_START_TIMEOUT_MS ?? "") ? Number(env.AGENTRUN_START_TIMEOUT_MS) : START_TIMEOUT_MS);
 
 /** The start log, opened afresh in `dataDir` (made first, private, as the server makes it): private, as the server's banner
- *  names its API token, and never through a link. `{ fd }`, or `{ error }` when it can't be kept: a start goes on
- *  without it, and a start that fails says why there is none. */
+ *  names its API token, and never through a link. Each write goes at its end (O_APPEND): a second start on the same
+ *  folder begins it afresh, and a line the first adds later lands after what the second wrote, never over it or past a
+ *  hole of NULs. `{ fd }`, or `{ error }` when it can't be kept: a start goes on without it, and a start that fails says
+ *  why there is none. */
 function openStartLog(dataDir) {
   try {
     mkdirSync(dataDir, { recursive: true, mode: 0o700 });
-    const fd = openSync(join(dataDir, START_LOG), constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o600);
+    const fd = openSync(join(dataDir, START_LOG), constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_APPEND | constants.O_NOFOLLOW, 0o600);
     fchmodSync(fd, 0o600);
     return { fd };
   } catch (error) {
@@ -299,7 +301,7 @@ const AUTHORIZE_CODES = new Set([
 
 /** A failed sign-in's reason as the terminal says it. An `authorize_<code>` reason comes from the loopback callback's
  *  `?error=`, which any process on the machine can send while a sign-in waits: a code that is not one the authorize step
- *  sends is said as `authorize_other`. The server's line, its tagged code whole, is kept in the start log (signInFailed);
+ *  sends is said as `authorize_other`. The server's line, its tagged code whole, is kept in the start log (SIGN_IN_FAILED);
  *  `agentrun-serve` run on its own logs it. */
 function signInReason(reason) {
   if (reason === undefined) return "no reason given";
@@ -307,11 +309,14 @@ function signInReason(reason) {
   return authorize && !AUTHORIZE_CODES.has(authorize[1]) ? "authorize_other" : reason;
 }
 
-/** Whether `line` is the server's log line of a ChatGPT sign-in that did not finish. */
-const signInFailed = (line) => {
-  const fields = fieldsOf(line);
-  return fields.event === "chatgpt" && fields.chatgpt === "sign_in_failed";
-};
+/** The server's log line of a ChatGPT sign-in that did not finish, in its exact shape (print.ts logLine, its reason a tag):
+ *  a line with those fields among other text, which any writer to the server's stdout could print, is not one. Its time
+ *  is an ISO timestamp (Date.toISOString), ASCII only, so nothing but a time is ever parked where it goes. */
+const SIGN_IN_FAILED = /^at=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z event=chatgpt chatgpt=sign_in_failed reason=[A-Za-z0-9_]{1,60}$/;
+/** How much of the server's lines the start log keeps after the start (the sign-ins' failures): past it, a line says so,
+ *  and the log grows no more however long the server runs. */
+const START_LOG_AFTER_MAX = 64 * 1024;
+const START_LOG_FULL = "agentrun: the start log keeps no more of the server's lines past 64 KiB\n";
 
 /** A teller for one start: given a line of the server's output, what to say of it to the person, or undefined. A refused
  *  request (auth_failed) and a verified webhook delivery its trigger does not take (hook_ignored) are said in words, with
@@ -509,13 +514,17 @@ export async function main(argv, env = process.env) {
   let told = false;
   const held = [];
   const teller = tellerOf();
+  // The bytes of the server's lines the start log kept after the start.
+  let keptAfter = 0;
   const tell = (line) => {
     const said = SAID.test(line) ? line : teller(line);
     if (said !== undefined) told ? console.error(said) : held.push(said);
     // Started, the start log keeps the server's line of a ChatGPT sign-in that did not finish: its reason whole, a code
     // the terminal says only as authorize_other included, which nothing else under this command keeps. (Before the start,
-    // every line goes there already.)
-    if (started && signInFailed(line)) toLog(`${line}\n`);
+    // every line goes there already.) At most START_LOG_AFTER_MAX of them.
+    if (!started || !SIGN_IN_FAILED.test(line) || keptAfter > START_LOG_AFTER_MAX) return;
+    keptAfter += Buffer.byteLength(line) + 1;
+    toLog(keptAfter > START_LOG_AFTER_MAX ? START_LOG_FULL : `${line}\n`);
   };
   // A SAID line can come before the "Open " line too (the setup link is printed as the server attaches its owner, before
   // its banner): it is held and said first, in order.

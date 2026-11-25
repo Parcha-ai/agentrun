@@ -1,8 +1,9 @@
 // Codex: ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl. A subagent's thread names its parent in its session_meta.
+import { open } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { addRequest, setUsage } from "../counts.js";
 import { type LineSource, lineReader, type ReadContext } from "../lines.js";
-import { entries, rememberUser } from "../reader.js";
+import { entries, type Locator, rememberUser } from "../reader.js";
 import { argsOf, effortOf, isObject, str, textOf } from "../text.js";
 import type { Answer, Turn } from "../types.js";
 import { normalizeUsage } from "../usage.js";
@@ -108,8 +109,7 @@ function record(value: Record<string, unknown>, at: number, { state, keep, add }
     if (str(payload.cwd)) session.cwd = payload.cwd as string;
     if (str(payload.model_provider)) codex.provider = payload.model_provider as string;
     if (str(payload.parent_thread_id) || (isObject(payload.source) && isObject(payload.source.subagent))) session.child = true;
-    const spawn = isObject(payload.source) && isObject(payload.source.subagent) && isObject(payload.source.subagent.thread_spawn) ? payload.source.subagent.thread_spawn : undefined;
-    const parent = str(payload.parent_thread_id) ?? str(spawn?.parent_thread_id);
+    const parent = parentIn(payload);
     if (parent) session.parent = parent;
     return;
   }
@@ -253,4 +253,40 @@ const spec: LineSource<"codex", Own> = {
   forget: (own) => ({ ...own, held: own.held.map(({ index, turn }) => ({ index, turn: { ...turn, text: "" } as Turn })) }),
 };
 
-export const codex = lineReader(spec);
+/** The thread a session_meta payload names as the one it ran under. */
+function parentIn(payload: Record<string, unknown>): string | undefined {
+  const spawn = isObject(payload.source) && isObject(payload.source.subagent) && isObject(payload.source.subagent.thread_spawn) ? payload.source.subagent.thread_spawn : undefined;
+  return str(payload.parent_thread_id) ?? str(spawn?.parent_thread_id);
+}
+
+/** How much of a rollout parentOf reads at most: its first line, session_meta, holds the instructions the thread ran
+ *  with (some 20 KB, more with its tools), read to its end within this. */
+const FIRST_LINE_BYTES = 64 * 1024 * 1024;
+const CHUNK_BYTES = 256 * 1024;
+
+/** The thread a rollout ran under, from its first line alone (session_meta), read to its end but never past
+ *  FIRST_LINE_BYTES: what ties a file no one reads whole (over a caller's cap) to its parent, so the parent's run waits
+ *  for it. None when that line does not end within it. */
+async function parentOf({ file }: Locator): Promise<string | undefined> {
+  const handle = await open(file, "r");
+  try {
+    const line: Buffer[] = [];
+    for (let at = 0; ; ) {
+      if (at >= FIRST_LINE_BYTES) return undefined;
+      const chunk = Buffer.alloc(CHUNK_BYTES);
+      const { bytesRead } = await handle.read(chunk, 0, CHUNK_BYTES, at);
+      const end = chunk.subarray(0, bytesRead).indexOf(10);
+      line.push(chunk.subarray(0, end < 0 ? bytesRead : end));
+      at += bytesRead;
+      if (end >= 0 || bytesRead < CHUNK_BYTES) break;
+    }
+    const value: unknown = JSON.parse(Buffer.concat(line).toString("utf8"));
+    return isObject(value) && value.type === "session_meta" && isObject(value.payload) ? parentIn(value.payload) : undefined;
+  } catch {
+    return undefined;
+  } finally {
+    await handle.close();
+  }
+}
+
+export const codex = { ...lineReader(spec), parentOf };

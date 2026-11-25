@@ -285,6 +285,14 @@ const MAX_WAIT_MS = 25_000;
 const HANDED_FIXED = ["revision", "hold", "hold_minutes"] as const;
 /** How often the server fails the runs still queued while no runner here can take them (runner/presence.ts). */
 const REFUSED_SWEEP_MS = 2_000;
+/** How long the server's stop waits for a ChatGPT sign-in it cancelled to end (ChatGPTPlan.close): one past its code's
+ *  exchange saves its row before the store closes; one OpenAI holds longer does not hold the stop. */
+const PLAN_CLOSE_MS = 2_000;
+/** The ChatGPT sign-ins `plan` cancels, ended, or `ms` gone. */
+const planClosed = (plan: ChatGPTPlan, ms: number): Promise<void> => {
+  let timer: NodeJS.Timeout | undefined;
+  return Promise.race([plan.close(), new Promise<void>((done) => (timer = setTimeout(done, ms)))]).finally(() => clearTimeout(timer));
+};
 const PAGE_ROWS = 500;
 const FILE_LIST_CAP = 2_000;
 /** Where the stop's lines go (ServeOptions.notice). Best-effort: a notice that throws never stops a close or a start. */
@@ -483,6 +491,8 @@ export type ServeOptions = {
   /** For tests: the attach socket's liveness timing (computer-attach.ts AttachTiming), a relayed dial's included; the
    *  protocol's by default. */
   attachTiming?: AttachTiming;
+  /** For tests: how long the stop waits for a ChatGPT sign-in it cancelled to end (PLAN_CLOSE_MS by default). */
+  planCloseMs?: number;
   /** The most runs at once (default: AGENTRUN_MAX_RUNS, else as many pi runs as this host's memory holds: host.ts),
    *  beside the memory each run's harness reserves; over either, 429. */
   maxRuns?: number;
@@ -1552,6 +1562,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const mcpServers = mcpServersOverStore(store, own(withSecrets(base, "own")), VERSION);
   if (options.githubMcpOrigin) mcpServers.appOrigin = options.githubMcpOrigin;
   if (options.composioMcpOrigin) mcpServers.composioOrigin = options.composioMcpOrigin;
+  if (options.composioControl) mcpServers.composioControl = options.composioControl;
   mcpServers.standIns = options.mcpStandIns === true;
   // The saved MCP servers' metadata (their addresses and the tools they list), a snapshot the checks read in step (which
   // servers are saved, a workflow's grants, the template apply): the server is the one writer of these rows (a save,
@@ -1593,7 +1604,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // where it is signed in. A sign-in, a sign-out or an expiry it sees makes the reading again, as a key's save does.
   const plan = new ChatGPTPlan({ store, sealKey: seal.key, log: (fields) => (log ? log(logLine("chatgpt", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("chatgpt", fields)}\n`)), changed: () => keysChanged() });
   await plan.load();
-  stops.push(async () => void plan.close());
+  stops.push(() => planClosed(plan, options.planCloseMs ?? PLAN_CLOSE_MS));
   // Claude Code's login on this machine (claude-login.ts): env carries where it is while the owner has it on, so
   // claude-agent's model checks see a model without a key. Unset, its switch follows the listen address: there on
   // loopback, off past it. A setting kept where the mode is now off or refused goes first.
@@ -4894,8 +4905,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const state = await store.schemaState?.().catch(() => undefined);
       const storeSchema = state ? { store_schema: { version: state.version, runner_floor: state.runnerFloor, known: state.known } } : {};
       // features.harness_keys.kept names which harness ids still have keys stored: the owner's session or a holder of
-      // the server's token reads it; a caller with neither (this route answers before any bearer check) reads none.
+      // the server's token reads it; a caller with neither (this route answers before any bearer check) reads none. A
+      // bearer this server does not take still gets the answer, and the auth_failed line any other route writes for it.
       const keptShown = byOwnerSession(req) || bearer(req.headers.authorization, req);
+      if (!keptShown && req.headers.authorization !== undefined) authFailed(`/v2${path}`, "wrong_token");
       const keptCap = { ...answer.features.harness_keys, kept: keptShown ? answer.features.harness_keys.kept : [] };
       // features.api_keys.routes: false on an API-only server, which serves none of the keys' routes and reads no key.
       return send(res, 200, { ...answer, ...storeSchema, runner_refused: runnerRefused, features: { ...answer.features, harness_keys: keptCap, computers: await computerCapabilities(computersOf()), triggers: { ...answer.features.triggers, public_url: Boolean(options.publicUrl) }, claude_login: !loginOff && !options.apiOnly, api_keys: { ...answer.features.api_keys, routes: !options.apiOnly } } });
@@ -6043,7 +6056,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "getMcpServer":
         return send(res, 200, await mcpServers.get(id));
       case "previewMcpServer":
-        return send(res, 200, await mcpServers.preview(await bodyOf(req), stopping.signal));
+        // The API token's preview, as the gate reads a token's save: a server it saved is previewed at its shown address.
+        return send(res, 200, await mcpServers.preview(await bodyOf(req), stopping.signal, req.headers.authorization !== undefined && !mayHoldSecrets(req)));
       case "saveMcpServer": {
         const body = await bodyOf(req);
         const preset = await mcpServers.composioPreset(id);
@@ -6076,10 +6090,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, over.note ? { ...saved, composio: over.note } : saved);
       }
       // Composio makes the managed MCP server; what is kept is the ordinary MCP save, so the key is a sealed header.
-      case "listComposioTools":
-        return send(res, 200, await composioTools(await bodyOf(req), options.composioControl ?? {}, stopping.signal), { "cache-control": "no-store" });
-      case "listComposioToolkits":
-        return send(res, 200, await composioToolkits(await bodyOf(req), options.composioControl ?? {}, stopping.signal), { "cache-control": "no-store" });
+      // A listing stops at Composio when the console stops asking (Cancel, a key edit: the response closes), or the server
+      // stops.
+      case "listComposioTools": {
+        const done = new AbortController();
+        res.once("close", () => done.abort());
+        return send(res, 200, await composioTools(await bodyOf(req), options.composioControl ?? {}, AbortSignal.any([stopping.signal, done.signal])), { "cache-control": "no-store" });
+      }
+      case "listComposioToolkits": {
+        const done = new AbortController();
+        res.once("close", () => done.abort());
+        return send(res, 200, await composioToolkits(await bodyOf(req), options.composioControl ?? {}, AbortSignal.any([stopping.signal, done.signal])), { "cache-control": "no-store" });
+      }
       case "saveComposioServer": {
         // The name is checked before Composio is called: a refused name leaves nothing made there.
         mcpNameOf(id);
@@ -6110,7 +6132,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "deleteComposioSubscription":
         return send(res, 200, await composioTriggers.forget(id), { "cache-control": "no-store" });
       case "refreshMcpServer": {
-        const refreshed = await mcpServers.refresh(id, stopping.signal, options.composioControl ?? {});
+        const refreshed = await mcpServers.refresh(id, stopping.signal);
         await refreshMcpMeta();
         return send(res, 200, refreshed);
       }
@@ -7075,8 +7097,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     closing = true;
     stopping.abort();
     clearInterval(localSourceTimer);
-    // Cancel a pending ChatGPT callback without signing out or changing the saved credential (not waited for).
-    void plan.close();
+    // Cancel a pending ChatGPT callback without signing out or changing the saved credential. One past its code's
+    // exchange is waited for a short while (planClosed), so its row lands before the store closes.
+    const planStopped = planClosed(plan, options.planCloseMs ?? PLAN_CLOSE_MS);
     // The CLI's sign-in still waiting for its browser ends with the server, which forgets it: left running, its CLI would
     // keep the browser's callback port from the next server's sign-in. Awaited until its process is gone.
     const signInStopped = claudeSignIns.close();
@@ -7099,6 +7122,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await schemaSealed;
     await installStopped;
     await signInStopped;
+    await planStopped;
     await observationStopped;
     await localSourceSweep;
     // The ends' follower stops before the webhooks it feeds and the store it reads.
