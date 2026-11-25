@@ -635,11 +635,11 @@ switch (args[0]) {
 	return { provider: new DockerProvider(options), options, calls, names, volumeNames, networkNames, alter, daemonPath, bound, cache, program, proceed, started, late, runHeld };
 }
 
-/** The docker calls that delete computer `name` with nothing else of its own: rm it, then look for its egress proxy and
- *  its volume by their label, and find none. */
+/** The docker calls that delete computer `name` with nothing else of its own: look for its egress proxy by its label and
+ *  find none, rm it, then look for its volume by its label and find none. */
 export const removal = (name) => [
-	["rm", "--force", "--volumes", name],
 	["ps", "-a", "--no-trunc", "--filter", `label=agentrun.computer.egress=${name}`, "--format", "{{.ID}}"],
+	["rm", "--force", "--volumes", name],
 	["volume", "ls", "--filter", `label=agentrun.computer.egress=${name}`, "--format", "{{.Name}}"],
 ];
 

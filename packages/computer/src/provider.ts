@@ -535,9 +535,11 @@ export interface ComputerProvider {
 	/**
 	 * Removes what this provider's computers left behind outside the computers themselves (Docker: an egress proxy and its
 	 * volume whose computer is gone or whose deadline has passed), with all of these labels, and returns what it removed,
-	 * by name. Optional; the janitor's sweep calls it after the computers, which release their own parts.
+	 * by name. Optional; the janitor's sweep calls it after the computers, which release their own parts. With `mine`,
+	 * only a leftover whose labels (the computer's spec labels it carries) `mine` answers true for is removed: a host
+	 * shared by several callers has each remove its own alone.
 	 */
-	sweepLeftovers?(context: { labels: Record<string, string>; now: Date; signal?: AbortSignal }): Promise<Result<string[]>>;
+	sweepLeftovers?(context: { labels: Record<string, string>; now: Date; signal?: AbortSignal; mine?: (labels: Record<string, string>) => boolean | Promise<boolean> }): Promise<Result<string[]>>;
 	/**
 	 * One account-level read with the provider's keys (a list by label, the vendor's whoami) that never creates a
 	 * computer, so it never spends: Settings' "test connection". ok with words on what it read, or the error: unauthorized

@@ -13,8 +13,11 @@
 // - past its deadline, by the computer package's sweep (janitor.ts): the deadline label, or over the provider's cap; or
 //   its run is over (final in the store), whatever its deadline: the run's end lets go of every claim's computer
 //   (run-end-computers.ts), and this is for one a server that stopped before then left.
-// What a computer leaves outside itself (Docker's egress parts) goes with its release; the provider's sweepLeftovers is
-// not asked, since it reads labels alone and can't tell this server's parts from another's.
+// What a computer leaves outside itself (Docker's egress proxy and volume) goes with its release. One a release never
+// took (a server that stopped partway through a teardown) is the provider's sweepLeftovers', asked for this server's
+// alone (leftoverMine): one whose agentrun.run label (or its hash) names a run in this store, or whose owner names this
+// server, by the same labels the computers go by. Another server's on the same Docker host is never touched; it goes at
+// that server's own next sweep.
 //
 // A desktop or a phone kept at a run's park (computer-kept.ts) goes by its own row, on any provider: each sweep ends one
 // past its time or whose run ended, and the janitor wakes again at the earliest time still ahead. One pinned to another
@@ -107,7 +110,22 @@ async function sweepable(store: JanitorDeps["store"], info: ComputerInfo, byHash
   return FINAL_STATES.includes(run.state) ? "over" : true;
 }
 
-/** `provider` as the sweep sees it: its list cut to this server's computers that no claim holds, and no leftovers pass.
+type LeftoverContext = Parameters<NonNullable<ComputerProvider["sweepLeftovers"]>>[0];
+
+/** Whether a leftover with these labels is this server's: an agent's (an owner label) when its owner names `serverId`;
+ *  otherwise when its run (by its label, or its hash's) is in this store, whatever the run's state or claim. A leftover
+ *  is never a live computer's (the provider's sweepLeftovers looks at the computers first), so no claim keeps it. */
+async function leftoverMine(store: JanitorDeps["store"], labels: Record<string, string>, byHash: RunsByHash, serverId: string | undefined): Promise<boolean> {
+  const label = ownerOf(labels);
+  if (!label.ok || label.value !== undefined) return label.ok && serverId !== undefined && label.value?.server === serverId;
+  const named = labels[RUN_LABEL];
+  const hash = labels[RUN_HASH_LABEL];
+  const runId = typeof named === "string" && named !== "" ? named : typeof hash === "string" && hash !== "" ? (await byHash()).get(hash) : undefined;
+  return runId !== undefined && (await store.runs.get(runId)) !== undefined;
+}
+
+/** `provider` as the sweep sees it: its list cut to this server's computers that no claim holds, and its leftovers pass
+ *  (where it has one) cut to this server's (leftoverMine).
  *  A computer of a run that is over is listed past its deadline (the run's end is its deadline), so the sweep ends it
  *  now: a server that stopped before its run's end let go of an earlier claim's computer (run-end-computers.ts) leaves
  *  it for this sweep, never for its day-long deadline. Each call goes to the provider itself, so its own state is used
@@ -117,6 +135,7 @@ function thisServers(provider: ComputerProvider, store: JanitorDeps["store"], by
   // also clears the agent's record of it, so its view no longer shows it deleting.
   const ownedBy = new Map<string, string>();
   const { settings, agents } = store;
+  const leftovers = provider.sweepLeftovers?.bind(provider);
   return {
     id: provider.id,
     version: provider.version,
@@ -126,6 +145,7 @@ function thisServers(provider: ComputerProvider, store: JanitorDeps["store"], by
     attach: (target, context) => provider.attach(target, context),
     network: (ref, policy, context) => provider.network(ref, policy, context),
     connect: (ref) => provider.connect(ref),
+    ...(leftovers === undefined ? {} : { sweepLeftovers: (context: LeftoverContext) => leftovers({ ...context, mine: (labels) => leftoverMine(store, labels, byHash, serverId) }) }),
     async release(ref, how, context) {
       const agent = ownedBy.get(ref.id);
       if (how !== "delete" || agent === undefined || settings === undefined) {
@@ -302,6 +322,7 @@ export function startJanitor(deps: JanitorDeps): { readonly first: Promise<void>
         }
         said.delete(provider);
         if (swept.value.deleted.length > 0) deps.log(`the computer janitor ended ${provider}'s computers past their deadline: ${swept.value.deleted.join(", ")}`);
+        if ((swept.value.leftovers ?? []).length > 0) deps.log(`the computer janitor removed what ${provider}'s computers left behind: ${(swept.value.leftovers ?? []).join(", ")}`);
       }
     });
   const first = once();

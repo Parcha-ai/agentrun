@@ -82,7 +82,7 @@ import {
 	type ReleaseHow,
 	runLifetimeMs,
 } from "./provider.js";
-import { type ComputerErrorCode, failFor, ok, type Result, vendorFail } from "./result.js";
+import { type ComputerError, type ComputerErrorCode, failFor, ok, type Result, vendorFail } from "./result.js";
 import { CreateRequests, endedWords, otherSpecWords } from "./create-requests.js";
 import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "./screen-watch.js";
 import { countTested } from "./test-connection.js";
@@ -1194,9 +1194,10 @@ export class DockerProvider implements ComputerProvider {
 	 * closed), or whose computer is gone and that is older than a create could take (#leftoverGraceMs: one under way has
 	 * made its proxy before its computer, and pulled both images before either, so no pull happens in between). Each is
 	 * removed by what its label found, a proxy before its volume, never by a name alone. Returns the names removed, a
-	 * volume's as "<name> (volume)".
+	 * volume's as "<name> (volume)". With `mine`, only one whose labels it answers true for is removed (serve's: a run of
+	 * its own store), so a Docker host shared by several servers has each remove its own leftovers alone.
 	 */
-	async sweepLeftovers({ labels = {}, now = new Date(), signal }: { labels?: Record<string, string>; now?: Date; signal?: AbortSignal } = {}): Promise<Result<string[]>> {
+	async sweepLeftovers({ labels = {}, now = new Date(), signal, mine }: { labels?: Record<string, string>; now?: Date; signal?: AbortSignal; mine?: (labels: Record<string, string>) => boolean | Promise<boolean> } = {}): Promise<Result<string[]>> {
 		const problem = filterProblem(labels);
 		if (problem) return fail("invalid", problem);
 		const filters = [`label=${EGRESS_LABEL}`, ...Object.entries(labels).map(([key, value]) => `label=${key}=${value}`)].flatMap((filter) => ["--filter", filter]);
@@ -1216,6 +1217,8 @@ export class DockerProvider implements ComputerProvider {
 			const made = typeof created === "string" ? Date.parse(created) : Number.NaN;
 			return Number.isNaN(made) || at - made > grace;
 		};
+		// The caller's, when it says whose are its own: by the labels the leftover carries.
+		const owned = async (labelsOf: Record<string, string> | null | undefined) => mine === undefined || (await mine({ ...(labelsOf ?? {}) })) === true;
 		const removed: string[] = [];
 		const ps = await this.#run(["ps", "-a", "--no-trunc", ...filters, "--format", "{{.ID}}"], signal);
 		if (!ps.ok) return ps;
@@ -1226,6 +1229,7 @@ export class DockerProvider implements ComputerProvider {
 			if (!found.ok) return found;
 			for (const proxy of found.value) {
 				if (!leftover(proxy.Config?.Labels, (proxy as { Created?: unknown }).Created) || typeof proxy.Id !== "string") continue;
+				if (!(await owned(proxy.Config?.Labels))) continue;
 				const ran = await this.#run(["rm", "--force", proxy.Id], signal);
 				if (!ran.ok) return ran;
 				const gone = await this.#gone(ran.value, proxy.Id, `docker rm of the egress proxy ${nameOf(proxy)}`, AbortSignal.timeout(SETTLE_MS), signal);
@@ -1248,6 +1252,7 @@ export class DockerProvider implements ComputerProvider {
 					return vendorFail("docker",`docker volume inspect wrote a line that is not JSON: ${line.slice(0, 200)}`);
 				}
 				if (typeof volume.Name !== "string" || !leftover(volume.Labels, volume.CreatedAt)) continue;
+				if (!(await owned(volume.Labels))) continue;
 				const ran = await this.#run(["volume", "rm", "--force", volume.Name], signal);
 				if (!ran.ok) return ran;
 				if (ran.value.exitCode !== 0) return vendorFail("docker",`docker volume rm ${volume.Name} failed: ${ran.value.stderr.trim()}`);
@@ -1361,44 +1366,74 @@ export class DockerProvider implements ComputerProvider {
 		const report = found.value.find((one) => nameOf(one) === name);
 		const mine = report?.Config?.Labels?.[ATTEMPT_LABEL] === attempt;
 		// By the id looked at, never by the name, which another create may hold by the time rm runs.
+		// The proxy and volume go whether or not the computer could be removed: the computer's failure is the answer.
+		let computer: Result<void> = ok(undefined);
 		if (mine) {
 			const bound = AbortSignal.timeout(SETTLE_MS);
 			const removed = await this.#run(["rm", "--force", "--volumes", String(report.Id)], bound);
-			if (!removed.ok) return removed;
-			const gone = await this.#gone(removed.value, String(report.Id), `docker rm ${name}`, bound);
-			if (!gone.ok) return gone;
+			computer = removed.ok ? await this.#gone(removed.value, String(report.Id), `docker rm ${name}`, bound) : removed;
 		}
 		const proxy = await this.#removeProxy(name, attempt);
+		if (!computer.ok) return computer;
 		return proxy.ok ? ok(report !== undefined && !mine) : proxy;
 	}
 
-	/** release's work, which create also does for what it made before its computer ran (its request is not spent). */
+	/**
+	 * release's work, which create also does for what it made before its computer ran (its request is not spent). Its
+	 * egress proxies are found by their label first, and a delete removes the computer and them in one docker rm, which
+	 * Docker's CLI sends together: a teardown cut off once that call is made (its process ended) leaves no proxy running
+	 * without its computer, and one cut off before it leaves both, for the janitor. A container that call did not remove
+	 * is asked again alone and waited for (#gone). Neither part's failure keeps the other from being removed (a computer
+	 * whose removal fails still has its proxy and volume removed): the first failure, the computer's before its proxy's,
+	 * is the answer. A stop stops the computer, then its proxies, the same way.
+	 */
 	async #remove(ref: ComputerRef, how: "stop" | "delete"): Promise<Result<void>> {
-		const args = how === "stop" ? ["stop", ref.name] : ["rm", "--force", "--volumes", ref.name];
-		const ran = await this.#run(args);
-		if (!ran.ok) return ran;
-		const gone = await this.#gone(ran.value, ref.name, `docker ${args[0]} ${ref.name}`, AbortSignal.timeout(SETTLE_MS));
-		if (!gone.ok) return gone;
 		const label = `label=${EGRESS_LABEL}=${ref.name}`;
+		const lines = (text: string) => text.split("\n").map((line) => line.trim()).filter(Boolean);
 		const proxies = await this.#run(["ps", "-a", "--no-trunc", "--filter", label, "--format", "{{.ID}}"]);
-		if (!proxies.ok) return proxies;
-		if (proxies.value.exitCode !== 0) return vendorFail("docker",`docker ps for ${ref.name}'s egress proxy failed: ${proxies.value.stderr.trim()}`);
-		for (const id of proxies.value.stdout.split("\n").map((line) => line.trim()).filter(Boolean)) {
-			const ended = await this.#run(how === "stop" ? ["stop", id] : ["rm", "--force", id]);
-			if (!ended.ok) return ended;
-			const gone = await this.#gone(ended.value, id, `docker ${how === "stop" ? "stop" : "rm"} of ${ref.name}'s egress proxy`, AbortSignal.timeout(SETTLE_MS));
-			if (!gone.ok) return gone;
+		const listed: Result<string[]> = !proxies.ok ? proxies : proxies.value.exitCode !== 0 ? vendorFail("docker", `docker ps for ${ref.name}'s egress proxy failed: ${proxies.value.stderr.trim()}`) : ok(lines(proxies.value.stdout));
+		const ids = listed.ok ? listed.value : [];
+		const proxyWords = `${ref.name}'s egress proxy`;
+		// Every failure, in the order met: the first is the answer.
+		const failures: ComputerError[] = [];
+		const add = (result: Result<unknown>) => {
+			if (!result.ok) failures.push(result.error);
+		};
+		const parts = (verb: string): [string, string][] => [[ref.name, `docker ${verb} ${ref.name}`], ...ids.map((id): [string, string] => [id, `docker ${verb} of ${proxyWords}`])];
+		if (how === "delete") {
+			const all = await this.#run(["rm", "--force", "--volumes", ref.name, ...ids]);
+			if (!all.ok) add(all);
+			// Each one that call did not remove, asked again alone: one gone answers No such container, one whose removal is
+			// under way is waited for, and any other answer is its failure in words.
+			else if (all.value.exitCode !== 0) {
+				for (const [key, what] of parts("rm")) {
+					const again = await this.#run(["rm", "--force", ...(key === ref.name ? ["--volumes"] : []), key]);
+					const gone = again.ok ? await this.#gone(again.value, key, what, AbortSignal.timeout(SETTLE_MS)) : again;
+					add(gone);
+				}
+			}
+		} else {
+			for (const [key, what] of parts("stop")) {
+				const ran = await this.#run(["stop", key]);
+				const gone = ran.ok ? await this.#gone(ran.value, key, what, AbortSignal.timeout(SETTLE_MS)) : ran;
+				add(gone);
+			}
 		}
-		if (how === "stop") return ok(undefined);
-		const volumes = await this.#run(["volume", "ls", "--filter", label, "--format", "{{.Name}}"]);
-		if (!volumes.ok) return volumes;
-		if (volumes.value.exitCode !== 0) return vendorFail("docker",`docker volume ls for ${ref.name}'s egress volume failed: ${volumes.value.stderr.trim()}`);
-		for (const volume of volumes.value.stdout.split("\n").map((line) => line.trim()).filter(Boolean)) {
-			const removed = await this.#run(["volume", "rm", "--force", volume]);
-			if (!removed.ok) return removed;
-			if (removed.value.exitCode !== 0) return vendorFail("docker",`docker volume rm ${volume} failed: ${removed.value.stderr.trim()}`);
+		add(listed);
+		if (how === "delete") {
+			const volumes = await this.#run(["volume", "ls", "--filter", label, "--format", "{{.Name}}"]);
+			if (!volumes.ok) add(volumes);
+			else if (volumes.value.exitCode !== 0) add(vendorFail("docker", `docker volume ls for ${ref.name}'s egress volume failed: ${volumes.value.stderr.trim()}`));
+			else {
+				for (const volume of lines(volumes.value.stdout)) {
+					const removed = await this.#run(["volume", "rm", "--force", volume]);
+					if (!removed.ok) add(removed);
+					else if (removed.value.exitCode !== 0) add(vendorFail("docker", `docker volume rm ${volume} failed: ${removed.value.stderr.trim()}`));
+				}
+			}
 		}
-		return ok(undefined);
+		const [first] = failures;
+		return first === undefined ? ok(undefined) : { ok: false, error: first };
 	}
 
 	/**

@@ -322,7 +322,7 @@ test("release() stops or deletes, and a computer already gone is ok", async () =
 	assert.deepEqual(await provider.release(ref, "stop"), { ok: true, value: undefined });
 	assert.deepEqual(await provider.release(ref, "delete"), { ok: true, value: undefined });
 	const proxies = ["ps", "-a", "--no-trunc", "--filter", `label=agentrun.computer.egress=${ref.name}`, "--format", "{{.ID}}"];
-	assert.deepEqual(calls(), [["stop", ref.name], proxies, ...removal(ref.name)], "each looks for the computer's egress proxy, by its label, and delete its volume too");
+	assert.deepEqual(calls(), [proxies, ["stop", ref.name], ...removal(ref.name)], "each looks for the computer's egress proxy, by its label, and delete its volume too");
 	const gone = fakeDocker({ gone: true });
 	assert.deepEqual(await gone.provider.release(ref, "delete"), { ok: true, value: undefined });
 	assert.deepEqual(await gone.provider.release(ref, "stop"), { ok: true, value: undefined });
@@ -388,7 +388,7 @@ test("create() deletes a computer whose own report drifts from its spec, and say
 	assert.match(result.error.message, /PidsLimit/);
 	assert.match(result.error.message, /CapDrop/);
 	assert.match(result.error.message, /version 0\.0\.1/);
-	assert.deepEqual(calls().map((args) => args[0]), ["info", "run", "inspect", "exec", "rm", "ps", "volume"]);
+	assert.deepEqual(calls().map((args) => args[0]), ["info", "run", "inspect", "exec", "ps", "rm", "volume"]);
 	assert.deepEqual(calls().slice(-3), removal(name));
 	assert.deepEqual(names(), []);
 });
@@ -449,7 +449,7 @@ test("create() deletes a computer whose daemon does not answer hello", async () 
 	const result = await provider.create(SPEC, req());
 	assert.equal(result.ok, false);
 	assert.match(result.error.message, /OCI runtime exec failed/);
-	assert.deepEqual(calls().map((args) => args[0]), ["info", "run", "inspect", "exec", "rm", "ps", "volume"]);
+	assert.deepEqual(calls().map((args) => args[0]), ["info", "run", "inspect", "exec", "ps", "rm", "volume"]);
 	assert.deepEqual(names(), []);
 });
 

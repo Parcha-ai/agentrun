@@ -12,6 +12,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { allowed, container, fakeDocker } from "../../computer/test/fake-docker.mjs";
 import { ofStore, startRunnerProcess } from "../dist/runner/main.js";
+import { runHash } from "@parcha/agentrun-computer";
 import { openSqliteStore } from "../dist/store/index.js";
 import { startJanitor, sweepServerComputers } from "../dist/workspace/computer-janitor.js";
 import { fauxLoops, until } from "./runner-support.mjs";
@@ -291,6 +292,32 @@ test("the runner's start removes the egress proxies and volumes this server's ru
   await until(async () => said.some((line) => line.includes("past their deadline: computer-0000000000ee")), "the start's sweep of docker").catch((error) => assert.fail(`${error.message}; said: ${said.join(" | ")}`));
   assert.deepEqual(fake.names().sort(), ["computer-0000000000cc-egress", "computer-0000000000dd", "computer-0000000000dd-egress"]);
   assert.deepEqual(fake.volumeNames().sort(), ["computer-0000000000cc-egress", "computer-0000000000dd-egress"]);
+});
+
+test("the leftover sweep is asked for this server's alone: a run of this store (by its label or its hash), or an agent's whose owner names this server; never another server's, nor an owner it can't read", async () => {
+  const orgo = provider("orgo", []);
+  const asked = [];
+  orgo.made.sweepLeftovers = async ({ mine }) => {
+    const parts = {
+      "run-label": labels("run-mine", 1),
+      "run-hash": { "agentrun.run.hash": runHash("run-live") },
+      "other-run": labels("run-of-another-server", 1),
+      "other-hash": { "agentrun.run.hash": runHash("run-of-another-server") },
+      "agent-here": { "agentrun.owner": "agent:agent-1", "agentrun.owner-server": "0123456789ab" },
+      "agent-there": { "agentrun.owner": "agent:agent-1", "agentrun.owner-server": "ba9876543210" },
+      "agent-unread": { "agentrun.owner": "not-an-agent", "agentrun.run": "run-mine" },
+      unlabelled: {},
+    };
+    const removed = [];
+    for (const [name, of] of Object.entries(parts)) if (await mine(of)) removed.push(name);
+    asked.push(removed);
+    return { ok: true, value: removed };
+  };
+  const settings = { putIfAbsent: async () => ({ v: 1, id: "0123456789ab" }), get: async () => undefined, all: async () => [] };
+  const agents = { get: async () => undefined, list: async () => [] };
+  const swept = await sweepServerComputers({ store: { ...store(), settings, agents }, computers: computers([orgo], { ORGO_KEY: "k" }), now: () => NOW });
+  assert.deepEqual(swept, [{ provider: "orgo", swept: { ok: true, value: { deleted: [], kept: 0, leftovers: ["run-label", "run-hash", "agent-here"] } } }]);
+  assert.equal(asked.length, 1);
 });
 
 test("a computer the sweep deleted ends its run's interval at the sweep's time; one whose delete failed stays open (computer-intervals.ts)", async () => {
