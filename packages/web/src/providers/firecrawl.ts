@@ -5,7 +5,7 @@
 import { firecrawlFeeOf, type Pay } from "../fees.js";
 import { clip, markdownRead, type Read, TITLE_CAP } from "../page.js";
 import { defineProvider, type ProviderRun, settingsOf } from "../provider.js";
-import { type Failed, failed, failure, type Hit, type Limit, type SearchAsk, type Searched, searchArgs, snippetOf } from "../search.js";
+import { type Failed, failed, failure, type Hit, type Limit, retryAfterMs, type SearchAsk, type Searched, searchArgs, snippetOf, waitOf } from "../search.js";
 import { type Check, domains, type Keyed, keyedCall, keyedClient, type KeyedFailed, matching, settingsProblems, wholeIn, yesNo } from "./keyed.js";
 
 export const FIRECRAWL_API_URL = "https://api.firecrawl.dev";
@@ -74,13 +74,22 @@ export const firecrawlQueries = ({ queries, n }: SearchAsk): { queries: string[]
   return { queries: sent, limit: Math.ceil(n / Math.max(1, sent.length)) };
 };
 
-/** The most binding limit among `failures`: a quota over a rate limit; the failure that met it. */
-const bindingOf = (failures: readonly Failed[]): Failed | undefined => failures.find((one) => one.limit?.kind === "quota") ?? failures.find((one) => one.limit);
+/** How long `limit`, met at `nowMs`, says to wait: its Retry-After (retryAfterMs), else the breaker's default wait. */
+const waitedMs = (limit: Limit, nowMs: number): number => retryAfterMs(limit.retryAfter, nowMs) ?? waitOf(undefined, nowMs);
+
+/** The most binding limit among `failures`: a quota over any rate limit, else the rate limit naming the longest wait
+ *  (the first met of those that tie); the failure that met it. The queries go out at once, so every limit is met at
+ *  about the same moment, and the breaker must hold the longest any of them named. */
+const bindingOf = (failures: readonly Failed[], nowMs: number = Date.now()): Failed | undefined => {
+  const quota = failures.find((one) => one.limit?.kind === "quota");
+  if (quota) return quota;
+  return failures.filter((one) => one.limit).reduce<Failed | undefined>((longest, one) => (longest === undefined || waitedMs(one.limit!, nowMs) > waitedMs(longest.limit!, nowMs) ? one : longest), undefined);
+};
 
 /** One search's answer from `each`, its queries' requests in query order, each its hits or its failure: the hits of every
  *  request that answered, deduped by url (the first seen kept, in query order then the provider's), cut at `ask.n`;
  *  with none answered, the first failure in query order. The most binding limit any request met (a quota over a rate
- *  limit) goes to the run's breaker either way, typed as the failure that met it. */
+ *  limit, else the longest wait) goes to the run's breaker either way, typed as the failure that met it. */
 export function firecrawlMerged(provider: "firecrawl" | "firecrawl-keyless", { objective, queries, n }: SearchAsk, each: readonly (Hit[] | Failed)[]): Searched {
   const failures = each.filter((one): one is Failed => !Array.isArray(one));
   const binding = bindingOf(failures);

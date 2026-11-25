@@ -135,6 +135,38 @@ test("Firecrawl, keyed and keyless: two queries answering and one rate-limited p
   }
 });
 
+test("Firecrawl, keyed and keyless: of two rate limits a search's queries meet, the breaker holds the longer wait, and a quota still wins over a longer rate limit", async () => {
+  const SHORT = 1;
+  const LONG = 1_800;
+  // The short wait comes first in query order, so keeping the first limit met would hand the breaker 1 s.
+  const waits = { [QUERIES[1]]: SHORT, [QUERIES[2]]: LONG };
+  const hits = { [QUERIES[0]]: [row("a")] };
+  const paid = keyed((_path, body) => (hits[body.query] ? firecrawlRows(hits[body.query]) : json({ error: "slow" }, 429, { "retry-after": String(waits[body.query]) })));
+  const free = mcp((_name, args) => (hits[args.query] ? toolText({ success: true, data: { web: hits[args.query] } }) : { isError: true, content: [{ type: "text", text: "rate limited" }], structuredContent: { code: "KEYLESS_LIMIT_REACHED", retry_after_seconds: waits[args.query] } }));
+  // Keyed Firecrawl's wait is its retry-after header's words; keyless Firecrawl's, its payload's number.
+  const runs = [
+    ["firecrawl", web.createWeb({ order: { search: ["firecrawl"], fetch: [] }, keys: { firecrawl: KEY }, send: { firecrawl: paid.send } }), () => paid.sent.length, String(LONG)],
+    ["firecrawl-keyless", web.createWeb({ order: { search: ["firecrawl-keyless"], fetch: [] }, send: { "firecrawl-keyless": free.send } }), () => free.calls.length, LONG],
+  ];
+  for (const [provider, w, asked, wait] of runs) {
+    const first = await w.search({ objective: OBJECTIVE, queries: QUERIES.slice(0, 3) }, { n: 3 });
+    assert.deepEqual([(first.answer.results ?? []).map((hit) => hit.url), first.receipt.tries[0]?.limit], [["https://a.example/"], { kind: "rate", retryAfter: wait }], `${provider}: the answering query's hits, and the longer of the two rate limits (${LONG} s, not ${SHORT} s) on the receipt`);
+    const again = await w.search({ objective: OBJECTIVE, queries: QUERIES.slice(0, 3) }, { n: 3 });
+    assert.deepEqual([again.answer, asked()], [{ error: SEARCH_UNAVAILABLE }, 3], `${provider}: the breaker holds the ${LONG} s wait: the next search is not sent`);
+  }
+  // A quota met by a later query wins over a longer rate limit met by an earlier one.
+  const paidQuota = keyed((_path, body) => (body.query === QUERIES[0] ? json({ error: "slow" }, 429, { "retry-after": String(LONG) }) : body.query === QUERIES[1] ? json({ error: "credits" }, 402) : firecrawlRows([row("c")])));
+  const freeQuota = mcp((_name, args) => (args.query === QUERIES[0] ? { isError: true, content: [{ type: "text", text: "rate limited" }], structuredContent: { code: "KEYLESS_LIMIT_REACHED", retry_after_seconds: LONG } } : args.query === QUERIES[1] ? { isError: true, content: [{ type: "text", text: "spent" }], structuredContent: { code: "KEYLESS_QUOTA_EXHAUSTED" } } : toolText({ success: true, data: { web: [row("c")] } })));
+  const quotas = [
+    ["firecrawl", web.createWeb({ order: { search: ["firecrawl"], fetch: [] }, keys: { firecrawl: KEY }, send: { firecrawl: paidQuota.send } })],
+    ["firecrawl-keyless", web.createWeb({ order: { search: ["firecrawl-keyless"], fetch: [] }, send: { "firecrawl-keyless": freeQuota.send } })],
+  ];
+  for (const [provider, w] of quotas) {
+    const { answer, receipt } = await w.search({ objective: OBJECTIVE, queries: QUERIES.slice(0, 3) }, { n: 3 });
+    assert.deepEqual([(answer.results ?? []).map((hit) => hit.url), receipt.tries[0]?.limit?.kind], [["https://c.example/"], "quota"], `${provider}: a quota beside a longer rate limit is the limit the breaker gets`);
+  }
+});
+
 test("keyless Firecrawl's wire bodies: each query with the objective and the same scrapeOptions, merged as keyed Firecrawl's", async () => {
   const answers = { [QUERIES[0]]: [row("a"), row("b")], [QUERIES[1]]: [row("b"), row("c")], [QUERIES[2]]: [row("d")] };
   const free = mcp((_name, args) => toolText({ success: true, data: { web: answers[args.query] } }));
