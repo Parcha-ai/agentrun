@@ -1,3 +1,5 @@
+import { isRecord } from "./record.js";
+
 // Keywords that may sit on a schema but are not JSON Schema, read by the host alone: the DSL's `criteria` (System One's
 // question keyword) and every `x-` annotation (AgentRun's `x-carried`, the fields of an agent's answer its next run reads
 // back, which a learned workflow's output node can copy from the agent's output schema). Google's OpenAPI-subset
@@ -17,20 +19,20 @@ export function submitParameters(schema: unknown): Record<string, unknown> {
   const singles = new Set(["additionalProperties", "unevaluatedProperties", "propertyNames", "items", "additionalItems", "contains", "unevaluatedItems", "not", "if", "then", "else", "contentSchema"]);
   const arrays = new Set(["allOf", "anyOf", "oneOf", "prefixItems"]);
   const relocate = (node: unknown, resourceScope = false): unknown => {
-    if (!node || typeof node !== "object" || Array.isArray(node)) return structuredClone(node);
+    if (!isRecord(node)) return structuredClone(node);
     // $id establishes a separate schema resource: its local references do not move.
-    resourceScope ||= typeof (node as Record<string, unknown>).$id === "string" && (node as Record<string, unknown>).$id !== "";
+    resourceScope ||= typeof node.$id === "string" && node.$id !== "";
     const child = (value: unknown) => relocate(value, resourceScope);
     return Object.fromEntries(Object.entries(node).filter(([key]) => !hostOnlyKeyword(key)).map(([key, value]) => {
       if (!resourceScope && key === "$ref" && typeof value === "string" && (value === "#" || value.startsWith("#/"))) {
         return [key, `#/properties/value${value.slice(1)}`];
       }
-      if (maps.has(key) && value && typeof value === "object" && !Array.isArray(value)) {
+      if (maps.has(key) && isRecord(value)) {
         return [key, Object.fromEntries(Object.entries(value).map(([name, value]) => [name, child(value)]))];
       }
       if (arrays.has(key) && Array.isArray(value)) return [key, value.map(child)];
       if (singles.has(key)) return [key, Array.isArray(value) ? value.map(child) : child(value)];
-      if (key === "dependencies" && value && typeof value === "object" && !Array.isArray(value)) {
+      if (key === "dependencies" && isRecord(value)) {
         return [key, Object.fromEntries(Object.entries(value).map(([name, value]) => [name, Array.isArray(value) ? structuredClone(value) : child(value)]))];
       }
       // Annotations and literal values are data, not schemas (including a literal $ref).

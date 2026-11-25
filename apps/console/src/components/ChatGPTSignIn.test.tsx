@@ -214,6 +214,34 @@ describe("ChatGPTSignIn", () => {
     expect(page.host.textContent).toContain(`Waits until ${until}`);
   });
 
+  it("a sign-in still waiting shows the server's hint once a read carries it, long before it times out, and a new start drops it", async () => {
+    // OpenAI shows a workspace admin's refusal on its own page and never sends the browser back: the server's hint names it.
+    const HINT = "OpenAI hasn't sent the code back yet. If OpenAI's page showed an error instead of signing you in, your ChatGPT workspace's admin has likely turned off open-source apps (External access → OSS → Use ChatGPT plan): ask them to turn it on, or sign in with another account.";
+    const expires = new Date(Date.now() + 540_000).toISOString();
+    let waiting: ChatGPTView = { state: "pending", authorize_url: AUTHORIZE, expires_at: expires };
+    const { v2 } = server(() => waiting, () => json(200, { authorize_url: AUTHORIZE, expires_at: expires }));
+    const page = await mount(v2, waiting);
+    expect(page.host.textContent).not.toContain("workspace's admin");
+    waiting = { ...waiting, hint: HINT };
+    await page.wait(() => page.host.querySelector('[role="status"]')?.textContent === HINT, "the next read's hint is shown");
+    expect(page.host.querySelector('[role="alert"]'), "a hint, not an error").toBeNull();
+    waiting = { state: "pending", authorize_url: AUTHORIZE, expires_at: expires };
+    await page.click(/^Start again$/);
+    expect(page.host.textContent).not.toContain("workspace's admin");
+  });
+
+  it("a new waiting view given by its page drops a hint an earlier read showed, at once, not at the next read", async () => {
+    const HINT = "OpenAI hasn't sent the code back yet.";
+    const expires = new Date(Date.now() + 540_000).toISOString();
+    let waiting: ChatGPTView = { state: "pending", authorize_url: AUTHORIZE, expires_at: expires, hint: HINT };
+    const { v2 } = server(() => waiting, () => json(500, {}));
+    const page = await mount(v2, { state: "pending", authorize_url: AUTHORIZE, expires_at: expires });
+    await page.wait(() => page.host.querySelector('[role="status"]')?.textContent === HINT, "a read's hint is shown");
+    waiting = { state: "pending", authorize_url: `${AUTHORIZE}&n=2`, expires_at: expires };
+    act(() => root!.render(createElement(ChatGPTSignIn, { v2, view: waiting, onView: () => {}, writable: true })));
+    expect(page.host.querySelector('[role="status"]'), "the new view has no hint").toBeNull();
+  });
+
   it("while a pasted sign-in finishes, reads that still say waiting show no error, and it ends signed in", async () => {
     let state: ChatGPTView = { state: "pending", authorize_url: AUTHORIZE };
     let answer!: () => void;

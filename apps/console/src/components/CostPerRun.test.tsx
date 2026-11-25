@@ -142,7 +142,7 @@ describe("CostChart", () => {
   it("before any workflow has finished a run, the mix's last words say who did, not 0% by the workflow", () => {
     const host = draw(series([run(1, "agent", 0.002), run(2, "agent", 0.003), run(3, "handed_back", 0.002)]));
     const mix = host.querySelector('[data-testid="execution-mix"]')!;
-    expect(mix.textContent).toContain("Last run: 100% handed back");
+    expect(mix.textContent).toContain("Last 3 runs: 67% by the agent, 33% handed back");
     expect(mix.textContent).not.toContain("by the learned workflow");
   });
   it("labels the levels off the data: in a gutter right of the plot, pushed apart, and none on a phone (the legend and headline say them)", () => {
@@ -235,11 +235,11 @@ describe("CostChart", () => {
     expect(mix.querySelector(".sr-only")!.textContent).toContain("Execution mix in blocks of 5 runs. ");
     expect(mix.querySelector(".sr-only")!.textContent).toContain("Runs 21 to 25: by the agent 1, handed back 1, learned workflow 3");
   });
-  it("draws the execution mix on the run axis: a column a block, a segment a path it took, the last block's share said", () => {
+  it("draws the execution mix on the run axis: a column a block, a segment a path it took, the last 20 runs' share said as on a wide plot", () => {
     const host = draw(sample, true, 390);
     const mix = host.querySelector<HTMLElement>('[data-testid="execution-mix"]')!;
     expect(mix.textContent).toContain("Who finished each run, by 5");
-    expect(mix.textContent).toContain("Last 5 runs: 100% by the learned workflow");
+    expect(mix.textContent).toContain("Last 20 runs: 100% by the learned workflow");
     const segments = [...mix.querySelectorAll("svg rect")].filter((r) => r.getAttribute("class")?.startsWith("fill-chart-"));
     // Runs 16 to 20 are all the agent's (the takeover is run 21, the bill's promoted run): one segment there.
     expect(segments).toHaveLength(20);
