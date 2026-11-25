@@ -59,9 +59,13 @@ export type Decision = {
 export type Effect = { node: string | null; executionPath: string; item: number | null; tool: string; status: string; input: unknown; output: unknown; error?: string | null; startedAt?: string; endedAt?: string | null };
 
 export type RunGraph = {
-  run: { id: string; agent: string; revision: string; status: string; paused: boolean; startedAt: string; endedAt: string | null };
+  /** `withheld`: the server found a saved secret split across the run's agent and revision, and serves both as
+   *  "[redacted]". */
+  run: { id: string; agent: string; revision: string; status: string; paused: boolean; startedAt: string; endedAt: string | null; withheld?: true };
   workflow: unknown;
-  graph: WorkflowGraph;
+  /** `withheld`: the server found a saved secret split across two of the graph's words and served it with no nodes and
+   *  no edges. */
+  graph: WorkflowGraph & { withheld?: true };
   nodes: Record<string, NodeRun>;
   decisions: Decision[];
   effects: Effect[];

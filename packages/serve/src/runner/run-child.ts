@@ -20,11 +20,12 @@ import { registerRunErrors } from "./run-errors.js";
 import { remoteSaveSlots } from "./save-slots.js";
 import { runEnv } from "./main.js";
 import { carriedLedger } from "../paid-calls.js";
+import { reportHoldsTo } from "../web-holds.js";
 import { heldHands, type ComputerHold, type HoldAsk, type HoldEvent, type HoldState } from "../workspace/computer-hold.js";
 import type { ClaimComputer } from "../workspace/computer-for-claim.js";
 import type { AdapterSpecDeps } from "./adapter-run-spec.js";
 import type { JournalReads, Store } from "../store/store.js";
-import { flushTraces } from "../otel/tracer.js";
+import { postedTracing } from "../otel/tracer.js";
 
 /** How often the run's process reads its loop's held state (LoopDeps.live) and posts it to its runner when it moved: the
  *  runner's live ticker reads the newest it was posted. */
@@ -43,19 +44,24 @@ interface ChildInit {
   readonly githubWeb?: string;
   readonly githubMcpOrigin?: string;
   readonly composioMcpOrigin?: string;
+  /** The runner traces its runs: this run's trace is posted to it (tracer.ts postedTracing). */
+  readonly traced?: true;
 }
 
 registerRunErrors();
 
 const socket = new Socket({ fd: 4, readable: true, writable: true });
 const channel = new Channel(socket, {
-  // The runner closed the channel (the loop's end answered) or is gone: nothing of the run's goes on, but its trace's last
-  // spans are sent first (flushTraces: at most FLUSH_MS, at once when tracing is off).
-  onClose: () => void setImmediate(() => void flushTraces().finally(() => process.exit(0))),
+  // The runner closed the channel (the loop's end answered) or is gone: nothing of the run's goes on. Its trace is the
+  // runner's to send (postedTracing): nothing here waits on a collector.
+  onClose: () => void setImmediate(() => process.exit(0)),
   // Each call carries the ledger of the tool call it is made in: what the runner does for it (an MCP tool's call, a
   // computer's) books on the run's one ledger, as it would in the run's own process.
   context: carriedLedger,
 });
+// A keyless hold the run meets is the server's (web-holds.ts): handed to the runner, whose server keeps it. An end JSON
+// cannot carry (none named) goes as null.
+reportHoldsTo((hold) => channel.post("runner", "webHold", [{ ...hold, until: Number.isFinite(hold.until) ? hold.until : null }]));
 
 /** A journal's reads for run `runId`, each `call(read, args)` to the runner with the arguments the caller gave but its
  *  context (the runner reads with its own: run-child-host.ts readOf). */
@@ -213,6 +219,9 @@ function childDeps(init: ChildInit, store: Store, journal: Journal, held: Held):
     ...(init.githubMcpOrigin ? { githubMcpOrigin: init.githubMcpOrigin } : {}),
     ...(init.composioMcpOrigin ? { composioMcpOrigin: init.composioMcpOrigin } : {}),
     ...(init.mcpLoopback ? { mcpLoopback: true, mcpOwn: init.mcpOwn ?? [] } : {}),
+    // The run's trace, posted to the runner, which exports it: never one of this process's own (no OTLP setting reaches
+    // it, and nothing here flushes).
+    tracing: Promise.resolve(init.traced ? postedTracing((method, args) => channel.post("trace", method, args)) : undefined),
   };
 }
 

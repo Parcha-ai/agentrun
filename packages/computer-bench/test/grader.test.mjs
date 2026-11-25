@@ -5,8 +5,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { FAKE_AGENTS, fakeBackend } from "../dist/fake-world.js";
-import { combine, ENTRY, GRADER_PROMPT_PATH, graderText, LOCI, messagesJudge, parseVerdict, runBench, wantsGrader } from "../dist/index.js";
-import { arm, fakeTasks, jsonl, recordOf, ROOT, store } from "./support.mjs";
+import { combine, ENTRY, GRADER_PROMPT_PATH, graderText, LOCI, loadTask, messagesJudge, parseVerdict, resolveTask, runBench, runChecks, stage1Of, wantsGrader } from "../dist/index.js";
+import { arm, fakeTasks, jsonl, recordOf, ROOT, store, SUITES } from "./support.mjs";
 
 const verdict = (v, locus = v === "pass" ? "none" : "grounding") => ({ verdict: v, locus, decisive_step: null, checks_agree: true, rationale: "because", confidence: "high" });
 
@@ -32,12 +32,41 @@ test("combine: sufficient checks decide, and a grader that disagrees sends the r
 	assert.deepEqual(combine("fail", true, verdict("unknown")), { final: "fail", by: "checks", queue: "the checks fail and the grader can't tell" });
 });
 
-test("combine: checks that are not sufficient leave the verdict to the grader", () => {
+test("combine: checks that are not sufficient leave a pass to the grader", () => {
 	assert.deepEqual(combine("pass", false, undefined), { final: "pass", by: "checks", queue: "the checks are not sufficient and no grader ran" });
 	assert.deepEqual(combine("pass", false, verdict("pass")), { final: "pass", by: "grader" });
 	assert.deepEqual(combine("pass", false, verdict("fail")), { final: "fail", by: "grader", queue: "the grader says fail where the checks say pass" });
-	assert.deepEqual(combine("fail", false, verdict("fail")), { final: "fail", by: "grader" });
-	assert.deepEqual(combine("fail", false, verdict("unknown")), { final: "fail", by: "grader", queue: "the grader can't tell" });
+	assert.deepEqual(combine("pass", false, verdict("unknown")), { final: "fail", by: "grader", queue: "the grader can't tell" });
+});
+
+test("combine: the grader never turns a failing check into a pass, even where the checks are not sufficient", () => {
+	// The grader reads the agent's own answer, so an answer could talk it into a pass; failing checks can't be talked to.
+	assert.deepEqual(combine("fail", false, verdict("pass")), { final: "fail", by: "checks", queue: "the checks fail and the grader passes it" });
+	assert.deepEqual(combine("fail", false, verdict("unknown")), { final: "fail", by: "checks", queue: "the checks fail and the grader can't tell" });
+	assert.deepEqual(combine("fail", false, verdict("fail")), { final: "fail", by: "checks" });
+	assert.deepEqual(combine("fail", false, undefined), { final: "fail", by: "checks" });
+});
+
+const python4 = () => resolveTask(loadTask(join(SUITES, "osworld-pilot", "os-c288e301")), 1);
+/** The computer answers every exec as a home with no python4 in it: the state setup leaves, and a right run's. */
+const noPython4 = { call: async () => ({ ok: true, value: { exitCode: 0, stdout: Buffer.from("no python4\n").toString("base64"), stderr: "", timedOut: false } }) };
+const statusOf = (results) => JSON.stringify(results.map(({ id, status, reason }) => ({ id, status, reason })));
+
+test("osworld.c288e301 (Python4, infeasible): a right refusal in words no regex foresaw, with nothing faked, is the grader's to pass", async () => {
+	const resolved = python4();
+	assert.equal(resolved.sufficient, false, "a judged task");
+	const results = await runChecks(resolved.checks, { wire: noPython4, answer: "Python 4 hasn't come out yet, so there is nothing to make the default. The newest release is Python 3.14." });
+	const stage1 = stage1Of(results);
+	assert.equal(stage1, "pass", statusOf(results));
+	assert.deepEqual(combine(stage1, resolved.sufficient, verdict("pass")), { final: "pass", by: "grader" });
+});
+
+test("osworld.c288e301: the untouched state fails its checks, as verify's null run needs: no agent gives no answer; a blank answer fails too", async () => {
+	const resolved = python4();
+	for (const answer of [undefined, "", "  \n"]) {
+		const results = await runChecks(resolved.checks, { wire: noPython4, ...(answer === undefined ? {} : { answer }) });
+		assert.equal(stage1Of(results), "fail", `${JSON.stringify(answer)}: ${statusOf(results)}`);
+	}
 });
 
 test("wantsGrader: auto grades what the checks can't settle and every failure, always grades passes too, never grades nothing", () => {

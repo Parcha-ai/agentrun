@@ -1,0 +1,72 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "osworld.23393935",
+  "version": 1,
+  "title": "Copy every .jpg under a photos folder into one folder",
+  "split": "heldout",
+  "source": {
+    "suite": "OSWorld-Verified",
+    "id": "os/23393935-50c7-4a86-aeea-2b78fd089c5c",
+    "revision": "0ad41bee56565efe7bb3c3a5ebc67590a1b8276f",
+    "licence": "Apache-2.0 (Copyright 2024 XLANG NLP Lab); the instruction and the file names are copied word for word",
+    "changes": "OSWorld's /home/user is the run's folder, /tmp/computer-bench-<nonce>. OSWorld downloaded four photos and a PNG from its file cache; setup here writes small stand-ins under the same names and folders (a JPEG or PNG header and a line of text), since the check reads names only. Setup opens Xfce's terminal in the run's folder with HOME set to it (OSWorld opened no app; our desktop has no dock or Ctrl+Alt+T). The check is OSWorld's: the cpjpg folder holds exactly the four .jpg names."
+  },
+  "tags": ["osworld", "os", "terminal"],
+  "needs": {
+    "os": "linux",
+    "kind": "desktop",
+    "capabilities": [
+      { "id": "xfce4-terminal", "kind": "exec", "why": "Xfce's terminal, and xdotool, which setup places its window with.", "argv": ["sh", "-c", "command -v xfce4-terminal && command -v xdotool"] }
+    ]
+  },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "Make OSWorld's photos tree on the Desktop: three .jpg files under vacation, one under events, a .png under family, and the empty cpjpg folder.",
+      "params": { "argv": ["sh", "-c", "d=/tmp/computer-bench-{{nonce}}; rm -rf $d && p=$d/Desktop/photos && mkdir -p $d/Desktop/cpjpg $p/vacation/thailand $p/vacation/hk $p/family $p/events || exit 1; for f in vacation/thailand/monk252520thailand252520wat252520arun252520scaled25255B225255D.jpg vacation/hk/hong-kong-china.jpg vacation/hk/hk_group_photo.jpg events/emnlp2023.jpg; do printf '\\377\\330\\377\\340 %s {{nonce}}\\n' \"$f\" > \"$p/$f\" || exit 1; done; printf '\\211PNG\\r\\n family/us_3.png {{nonce}}\\n' > $p/family/us_3.png"], "timeoutMs": 20000 }
+    },
+    {
+      "method": "process.start",
+      "why": "Open Xfce's terminal in the run's folder, with HOME set to it: it stands in for OSWorld's /home/user.",
+      "params": { "argv": ["sh", "-c", "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); export HOME=/tmp/computer-bench-{{nonce}}; cd /tmp/computer-bench-{{nonce}} && echo $$ > /tmp/computer-bench-{{nonce}}-terminal.pid && exec xfce4-terminal --disable-server --working-directory=/tmp/computer-bench-{{nonce}}"] }
+    },
+    {
+      "method": "exec.run",
+      "why": "Wait for the terminal's window (20 s at most), make it fill the screen, put the pointer on it and activate it: a window manager gives the keys to the window activated, and with none they go to the window under the pointer.",
+      "params": { "argv": ["sh", "-c", "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); w=$(timeout 20 xdotool search --sync --onlyvisible --class xfce4-terminal | head -n1); [ -n \"$w\" ] || { echo no terminal window in 20 s >&2; exit 1; }; eval $(xdotool getdisplaygeometry --shell); xdotool windowmove $w 0 0 windowsize $w $WIDTH $HEIGHT; xdotool mousemove $((WIDTH / 2)) $((HEIGHT / 2)); xdotool windowactivate $w 2>/dev/null; sleep 1"], "timeoutMs": 30000 }
+    }
+  ],
+  "exec": "deny",
+  "instruction": "Recursively go through the folders of the 'photos' directory and copy any .jpg files found into another directory named 'cpjpg'.",
+  "budget": { "steps": 100, "usd": 3, "wall_s": 900 },
+  "checks": [
+    {
+      "id": "cpjpg",
+      "kind": "exec",
+      "why": "OSWorld's check: cpjpg holds exactly the four .jpg files' names (the .png is not copied, and nothing else is there), listed in byte order. Setup left cpjpg empty, so an agent that does nothing fails.",
+      "argv": ["sh", "-c", "cd /tmp/computer-bench-{{nonce}}/Desktop/cpjpg && LC_ALL=C ls -1A"],
+      "timeoutMs": 20000,
+      "stdout": { "equals": "emnlp2023.jpg\nhk_group_photo.jpg\nhong-kong-china.jpg\nmonk252520thailand252520wat252520arun252520scaled25255B225255D.jpg" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Close the run's apps by the pids setup kept beside the folder (a desktop may have others open), and delete the run's folder and its siblings.",
+      "params": { "argv": ["sh", "-c", "for f in /tmp/computer-bench-{{nonce}}-*.pid; do [ -f \"$f\" ] && kill -9 \"$(cat \"$f\")\" 2>/dev/null; done; rm -rf /tmp/computer-bench-{{nonce}} /tmp/computer-bench-{{nonce}}-*; true"], "timeoutMs": 20000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "input.actions",
+      "why": "Type a find that copies each .jpg into cpjpg, and run it.",
+      "params": {
+        "actions": [
+          { "type": "type", "text": "find Desktop/photos -type f -name '*.jpg' -exec cp {} Desktop/cpjpg/ \\;" },
+          { "type": "key", "keys": ["enter"] },
+          { "type": "wait", "ms": 1500 }
+        ]
+      }
+    }
+  ]
+}

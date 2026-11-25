@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ClientError } from "./client";
-import { bodyOf, capWords, disabledWords, type Draft, draftOf, type Schedule, emptyDraft, firingWords, instantOf, issuesOf, patchOf, scheduleLine, span, utcWhen, wallOf } from "./schedules";
+import { agentInputOf } from "./inputForm";
+import { bodyOf, capWords, disabledWords, type Draft, draftOf, type Schedule, emptyDraft, emptyWebhook, firingWords, instantOf, issuesOf, patchOf, scheduleLine, span, utcWhen, wallOf, webhookBodyOf } from "./schedules";
 import type { Firing } from "./v2";
 
 const draft = (over: Partial<Draft>): Draft => ({ ...emptyDraft(), agentId: "triage", content: "Triage last night's issues.", maxCost: "2", ...over });
@@ -227,7 +228,98 @@ describe("a 422, by field", () => {
       rest: ["source.kind is schedule"],
     });
   });
+  it("keeps an issue at one of the agent's input fields whole, to say at that field; one at any other part of the input goes under the message", () => {
+    const e = new ClientError(422, "input_invalid", "input.company is required");
+    e.fields = [
+      { field: "target.input.company", reason: "missing", message: "input.company is required" },
+      { field: "target.input.topics.1", reason: "wrong_type", message: "input.topics[1] is text" },
+      { field: "target.input.other", reason: "not_allowed", message: "input.other is not allowed" },
+    ];
+    expect(issuesOf(e, ["company", "topics"])).toEqual({ fields: { "target.input": "input.other is not allowed" }, rest: [], input: e.fields.slice(0, 2) });
+  });
   it("is the whole message for any other refusal", () => {
     expect(issuesOf(new ClientError(409, "scope_taken", "another trigger listens there"))).toEqual({ fields: {}, rest: ["scope_taken: another trigger listens there"] });
+  });
+});
+
+// A trigger's run takes its agent's typed input (lib/inputForm.ts): an edit keeps what the form doesn't show of it, and a
+// field emptied in the form is left out.
+describe("a schedule's typed input", () => {
+  const shape = agentInputOf({ type: "object", properties: { company: { type: "string" }, note: { type: "string" }, topics: { type: "array", items: { type: "string" } } }, required: ["company"] });
+  const typed = (input: Record<string, unknown>) => trigger({ target: { kind: "start_run", agent_id: "kyb", input, max_cost_usd: 2 } });
+  it("reads an input back into its fields, and an edit left alone changes nothing", () => {
+    const t = typed({ company: "Acme GmbH", note: "first", topics: ["a", "b"], extra: { deep: 1 } });
+    expect(draftOf(t).values).toEqual({ company: "Acme GmbH", note: "first", topics: "a\nb" });
+    expect(patchOf(t, bodyOf({ ...draftOf(t), shape }).body!)).toEqual({});
+  });
+  it("leaves out a field emptied in the form, and keeps what no field shows", () => {
+    const t = typed({ company: "Acme GmbH", note: "first", extra: { deep: 1 } });
+    const d = draftOf(t);
+    expect(patchOf(t, bodyOf({ ...d, shape, values: { ...d.values, note: "" } }).body!).target?.input).toEqual({ company: "Acme GmbH", extra: { deep: 1 }, content: "" });
+  });
+  // A list's text is one item a line, trimmed, blank items dropped, and an empty optional value is left out: an input
+  // rebuilt from fields left alone could differ from the one stored, so a rename alone changed it.
+  it("sends a field left alone as stored, though its text would read back as another value", () => {
+    const t = typed({ company: "Acme GmbH", note: "", topics: ["a\nb", " c ", ""] });
+    const d = draftOf(t);
+    expect(patchOf(t, bodyOf({ ...d, shape, name: "renamed" }).body!)).toEqual({ name: "renamed" });
+    // Another field edited: the ones left alone still go as stored.
+    expect(patchOf(t, bodyOf({ ...d, shape, values: { ...d.values, company: "Beta AG" } }).body!).target?.input).toEqual({ company: "Beta AG", note: "", topics: ["a\nb", " c ", ""], content: "" });
+  });
+  // A stored value its field can't show (an object where the schema now asks for text) is no field's text, so a
+  // required field rebuilt from the form read as "", [] or false and replaced it: a rename alone changed the input.
+  it("keeps a stored value its field can't show until that field is edited", () => {
+    const strict = agentInputOf({ type: "object", properties: { company: { type: "string" }, topics: { type: "array", items: { type: "string" } }, urgent: { type: "boolean" } }, required: ["company", "topics", "urgent"] });
+    const t = typed({ company: { name: "Acme GmbH" }, topics: [{ id: 1 }], urgent: { level: 2 } });
+    const d = draftOf(t);
+    expect(patchOf(t, bodyOf({ ...d, shape: strict, name: "renamed" }).body!)).toEqual({ name: "renamed" });
+    expect(patchOf(t, bodyOf({ ...d, shape: strict, values: { ...d.values, company: "Beta AG" } }).body!).target?.input).toEqual({ company: "Beta AG", topics: [{ id: 1 }], urgent: { level: 2 }, content: "" });
+  });
+  // A key no field has, with a value a field could show ("external"), is read into the draft's text too: it stays as
+  // stored whatever that text says, since no field sends it.
+  it("keeps a stored key no field has, though its value reads as text", () => {
+    const t = typed({ company: "Acme GmbH", reference: "external", count: 3, active: true });
+    const d = draftOf(t);
+    expect(patchOf(t, bodyOf({ ...d, shape, name: "renamed" }).body!)).toEqual({ name: "renamed" });
+    expect(patchOf(t, bodyOf({ ...d, shape, values: { ...d.values, company: "Beta AG" } }).body!).target?.input).toEqual({ company: "Beta AG", reference: "external", count: 3, active: true, content: "" });
+  });
+  // The agent's schema can come to require a field its stored input never had: a rename that edits no field must not
+  // fill that field in (a required text field read as "").
+  it("sends a rename alone when the schema now requires a field the stored input lacks", () => {
+    const t = typed({ content: "Check." });
+    expect(patchOf(t, bodyOf({ ...draftOf(t), shape, name: "renamed" }).body!)).toEqual({ name: "renamed" });
+  });
+  // serve adds a trigger's event and its line to input.content only when it is text.
+  // serve adds a trigger's event, its line and a schedule's last answer to input.content only when it is text.
+  it("sends a blank message as \"\" beside typed fields, a schedule's and an event trigger's, and on an edit that changes the input", () => {
+    expect(webhookBodyOf({ ...emptyWebhook(), agentId: "triage", content: "", maxCost: "2", shape, values: { company: "Acme GmbH" } }).body?.target?.input).toEqual({ company: "Acme GmbH", content: "" });
+    expect(bodyOf({ ...draft({ content: "", cron: "30 1 * * *" }), shape, values: { company: "Acme GmbH" } }).body?.target?.input).toEqual({ company: "Acme GmbH", content: "" });
+    const m = typed({ content: "Check.", company: "Acme GmbH" });
+    expect(patchOf(m, bodyOf({ ...draftOf(m), shape, content: "" }).body!).target?.input).toEqual({ content: "", company: "Acme GmbH" });
+  });
+  // serve counts and names an input's own fields alone against maxProperties and propertyNames, never content (#3803).
+  it("takes a schema that limits its keys as fields, the message beside them", () => {
+    const fields = { type: "object", required: ["company"], properties: { company: { type: "string" } } };
+    for (const limit of [{ maxProperties: 1 }, { propertyNames: { enum: ["company"] } }]) {
+      const capped = agentInputOf({ ...fields, ...limit });
+      expect(capped.kind).toBe("fields");
+      expect(bodyOf({ ...draft({ content: "", cron: "30 1 * * *" }), shape: capped, values: { company: "Acme" } }).body?.target?.input).toEqual({ company: "Acme", content: "" });
+    }
+  });
+  it("sends whole JSON exactly as written, a key its schema caps left out", () => {
+    const capped = agentInputOf({ type: "object", required: ["filters"], maxProperties: 1, properties: { filters: { type: "object" }, mode: { anyOf: [{ type: "string" }] } } });
+    expect(capped.kind).toBe("json");
+    expect(webhookBodyOf({ ...emptyWebhook(), agentId: "triage", maxCost: "2", shape: capped, json: '{"filters": {}}' }).body?.target?.input).toEqual({ filters: {} });
+    expect(webhookBodyOf({ ...emptyWebhook(), agentId: "triage", maxCost: "2", shape: capped, json: '{"filters": {}, "content": ""}' }).body?.target?.input).toEqual({ filters: {}, content: "" });
+    expect(bodyOf({ ...draft({ cron: "30 1 * * *" }), shape: capped, json: '{"filters": {}}' }).body?.target?.input).toEqual({ filters: {} });
+  });
+  it("sends an edited message beside fields left alone", () => {
+    const t = typed({ content: "Check.", company: "Acme GmbH" });
+    expect(patchOf(t, bodyOf({ ...draftOf(t), shape, content: "Recheck." }).body!).target?.input).toEqual({ content: "Recheck.", company: "Acme GmbH" });
+  });
+  it("needs no message when the schema requires another field, and says a whole input that is no JSON object", () => {
+    expect(bodyOf({ ...draft({ content: "", cron: "30 1 * * *" }), shape, values: { company: "Acme GmbH" } }).body?.target?.input).toEqual({ company: "Acme GmbH", content: "" });
+    const json = agentInputOf({ type: "object", properties: { filters: { type: "object" } } });
+    expect(bodyOf({ ...draft({ cron: "30 1 * * *" }), shape: json, json: "[1]" }).issues).toEqual({ "target.input": "The agent's input is a JSON object: this is not." });
   });
 });

@@ -17,6 +17,10 @@ import { hostPort, hostRefusedPage, movedPage } from "./host-check.js";
 // icon from it (apps/console/src/components/ProviderIcon.tsx), sent with no referrer. Everything else is this origin's.
 const CSP = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https://www.google.com https://t0.gstatic.com https://t1.gstatic.com https://t2.gstatic.com https://t3.gstatic.com; base-uri 'none'; form-action https://github.com; frame-ancestors 'none'";
 const SECURITY = { "content-security-policy": CSP, "x-content-type-options": "nosniff", "referrer-policy": "no-referrer", "cache-control": "no-store" };
+/** The share page's CSP (share.html at /share/<run>): this origin's scripts, styles, data and images, and nothing from
+ *  anywhere else. It is the page a share host serves, under the same policy; no favicon host, so a URL in a run's answer
+ *  can never make a third party fetch anything. */
+export const SHARE_PAGE_CSP = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 const HTML = "text/html; charset=utf-8";
 /** Strict-Transport-Security for a server whose public address (AGENTRUN_PUBLIC_URL) is https: a browser that saw it
  *  once opens the address over https only, for a year. None over http or with no public address (a browser would pin
@@ -84,8 +88,14 @@ export class ConsoleSessions {
  *  (7340, published at 7350), and so does another beside it. A Host with no port keeps the socket's. */
 const browserPort = (req: IncomingMessage) => hostPort(req.headers.host) ?? req.socket.localPort;
 const cookieName = (req: IncomingMessage) => `agentrun-${browserPort(req)}`;
-export const cookiesOf = (req: IncomingMessage, name: string) =>
-  String(req.headers.cookie ?? "").split(";").map((part) => part.trim()).filter((part) => part.startsWith(`${name}=`)).map((part) => part.slice(name.length + 1));
+/** The request's cookies, each name and value trimmed, in the order sent; a part with no name is left out. */
+const cookiePairs = (req: IncomingMessage): Array<{ name: string; value: string }> =>
+  String(req.headers.cookie ?? "").split(";").flatMap((part) => {
+    const at = part.indexOf("=");
+    return at > 0 && part.slice(0, at).trim() ? [{ name: part.slice(0, at).trim(), value: part.slice(at + 1).trim() }] : [];
+  });
+/** The values of the request's cookies named `name`, in the order sent. */
+export const cookiesOf = (req: IncomingMessage, name: string) => cookiePairs(req).filter((pair) => pair.name === name).map((pair) => pair.value);
 /** Whether the browser reached this server over TLS, as the proxy in front says (X-Forwarded-Proto): `https`, or `wss`,
  *  which some proxies (Traefik) send on a WebSocket upgrade. Both are the page's https origin and its `__Host-` cookie. */
 export const overHttps = (req: IncomingMessage) => ["https", "wss"].includes(String(req.headers["x-forwarded-proto"] ?? "").split(",")[0]!.trim().toLowerCase());
@@ -103,11 +113,7 @@ export const ownerCookie = (req: IncomingMessage, value: string, maxAgeS: number
  *  again through a tunnel at 8080 sends both to either. Which are this server's is the owner's to say (Owner.valid). */
 export const sessionsAtEveryPort = (req: IncomingMessage): Array<{ name: string; value: string }> => {
   const own = ownerCookieName(req);
-  return String(req.headers.cookie ?? "").split(";").flatMap((part) => {
-    const at = part.indexOf("=");
-    const name = part.slice(0, at).trim();
-    return at > 0 && (name === own || /^agentrun-\d{1,5}-session$/.test(name)) ? [{ name, value: part.slice(at + 1).trim() }] : [];
-  });
+  return cookiePairs(req).filter(({ name }) => name === own || /^agentrun-\d{1,5}-session$/.test(name));
 };
 /** The owner's session cookies the request holds, valid or not. */
 export const heldSessions = (req: IncomingMessage) => cookiesOf(req, ownerCookieName(req));
@@ -140,7 +146,8 @@ type PageServer = { token: string; authFailed?: (route: string, reason: string) 
 const redirect = (res: ServerResponse, location: string, headers: Record<string, string> = {}) => (res.writeHead(303, { ...SECURITY, location, "content-length": 0, ...headers }), void res.end());
 
 /** A file of the console: a known type inside `dir`, read through no link that leaves it. Vite's hashed assets are cached
- *  for a year; index.html is no-store. `hosted`: a share host's answer (its own headers, and the page's text rewritten). */
+ *  for a year; index.html is no-store. `hosted`: answer headers of its own (a CSP), and for a share host the page's text
+ *  rewritten. */
 async function file(req: IncomingMessage, res: ServerResponse, raw: string, dir: string, rel: string, status = 200, hosted?: { headers: Record<string, string>; rewrite?: (text: string) => string }): Promise<void> {
   const missing = () => refuse(req, res, new ApiError("not_found", `no file ${raw} in the console`));
   const type = CONSOLE_TYPES[extname(rel).toLowerCase()];
@@ -155,9 +162,9 @@ async function file(req: IncomingMessage, res: ServerResponse, raw: string, dir:
   send(req, res, status, type, hosted?.rewrite ? hosted.rewrite(bytes.toString("utf8")) : bytes, { "cache-control": rel.startsWith("assets/") ? "public, max-age=31536000, immutable" : "no-store", ...hosted?.headers });
 }
 
-/** A share host's pages' CSP (share-host.ts): this origin's scripts, styles, data, and nothing from anywhere else, so a
- *  public page makes no outbound fetch (a graph's image URL among them). */
-export const SHARE_HOST_CSP = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+/** A share host's pages' CSP (share-host.ts): the local preview's, so a public page, as the owner's preview of it, makes no
+ *  outbound fetch (a graph's image URL among them). */
+export const SHARE_HOST_CSP = SHARE_PAGE_CSP;
 const HOSTED = { "content-security-policy": SHARE_HOST_CSP, "x-robots-tag": "noindex" };
 /** The page's asset URLs as Vite writes them with base "./" (`./assets/x`), moved under the share host's /r/_assets/: the
  *  page answers at /r/<id> and /r/<id>/, where a relative URL would land elsewhere. */
@@ -216,7 +223,7 @@ async function share(req: IncomingMessage, res: ServerResponse, raw: string, dir
     if (given === "none") server.authFailed?.("/share", "no_session");
     return send(req, res, 401, HTML, SIGN_IN_FIRST);
   }
-  return file(req, res, raw, dir, "share.html");
+  return file(req, res, raw, dir, "share.html", 200, { headers: { "content-security-policy": SHARE_PAGE_CSP } });
 }
 
 /** The requests the owner's password session sends from the page (a write only from this server's own origin, with a

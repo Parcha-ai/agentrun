@@ -10,11 +10,15 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { test } from "node:test";
+import { beforeEach, test } from "node:test";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
 import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 import { firecrawlServer } from "./fixtures/fake-firecrawl.mjs";
+import { forgetHolds } from "../dist/web-holds.js";
+
+// Each case starts as on a server just started: no keyless hold a case before it met (web-holds.ts).
+beforeEach(() => forgetHolds());
 
 /** A run of web_search, web_fetch and write is not offered the host's search, call-by-name or script tools (offersMetaTools). */
 

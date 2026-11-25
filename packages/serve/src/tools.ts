@@ -203,8 +203,10 @@ function installTool(host: Pick<ToolHost, "install">, name: string, tool: ToolRe
 export type EffectRun = { signal: AbortSignal; env: NodeJS.ProcessEnv; work: string; complete?: Complete; ledger?: Ledger; search?: SearchOn };
 
 /** What a tool's own ask (ToolEntry.asks) reads: the run's host, and how many calls of a tool the run has run to a good
- *  end, from the run's record (its journal), so a pause and a new host count them all. */
-export type AskContext = { readonly host: ToolHost; ran(tool: string): Promise<number> };
+ *  end, from the run's record (its journal), so a pause and a new host count them all; `made`, the arguments of those
+ *  calls (each one whose arguments the record names), with those of the calls the gate let through that have no result
+ *  yet. */
+export type AskContext = { readonly host: ToolHost; ran(tool: string): Promise<number>; made(tool: string): Promise<readonly unknown[]> };
 
 export type ToolEntry = {
   /** One line, for capabilities. */
@@ -908,7 +910,7 @@ export const toolsView = (env: NodeJS.ProcessEnv, settings: ToolSettingsMap = {}
     // Unavailable says why: a sandbox-only tool no box here can run, why none can (`noBox`); on a tool a user picks a
     // provider for, the resolutions' own words (`web_search is turned off in settings`); else the variables it needs.
     const reason = available ? undefined : refusal ?? boxless ?? (plane ? [...new Set(Object.values(plane).filter(isUnavailable).map(whyUnavailable))].join("; ") : `Needs ${keyNeeded(missing)}`);
-    return { name, summary: entry.summary, ...(blurbOf(name) ? { blurb: blurbOf(name) } : {}), nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), ...(entry.sandboxOnly ? { sandbox_only: true } : {}), available, ...(reason ? { reason } : {}), ...(missing.length ? { missing } : {}), harnesses: isHostTool(name) ? [...everyHarness] : [...generalSpec], ...serverGate(name, settings), ...(plane ? { providers: [...PROVIDERS[name as Pickable]], provider: picked[name as Pickable].provider, default_provider: PROVIDERS[name as Pickable][0], resolves: plane, why: view!.why } : {}) };
+    return { name, summary: entry.summary, ...(blurbOf(name) ? { blurb: blurbOf(name) } : {}), nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), ...(entry.sandboxOnly ? { sandbox_only: true } : {}), ...(entry.runnerOnly ? { runner_only: true } : {}), available, ...(reason ? { reason } : {}), ...(missing.length ? { missing } : {}), harnesses: isHostTool(name) ? [...everyHarness] : [...generalSpec], ...serverGate(name, settings), ...(plane ? { providers: [...PROVIDERS[name as Pickable]], provider: picked[name as Pickable].provider, default_provider: PROVIDERS[name as Pickable][0], resolves: plane, why: view!.why } : {}) };
   });
   // The host tools over a run's own tools (META_TOOLS): not in the table, never granted or named by a node (`meta`), listed
   // so the owner sees them and their setting (allow or deny; a deny is not offered at all).

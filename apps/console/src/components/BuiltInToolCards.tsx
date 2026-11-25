@@ -4,12 +4,8 @@ import type { Place, Places } from "@/lib/place";
 import { SERVER_DENY, serverDenies, type ToolChoice, type ToolGate } from "@/lib/toolSettings";
 import type { AgentTool, ToolSettings } from "@/lib/v2";
 
-/** A Tools step's built-in tools, a ToolCard each, as the agent editor and Build's Tools step both draw them: the `<li>`s
- *  of the step's grid, for the `shown` offers (the step's filter keeps them). `offers`: every tool the server offers, which
- *  says which harnesses run each. `place`: the agent's own place, else none; with none, ticking a shell tool is what moves
- *  the agent to the box (defaultPlaceOf). `choices`, `gates`, `granted` (the agent's read tools) and `settings` (its tool
- *  settings): what says a tool is denied here or runs once the agent picks a provider of its own. `onChange`: the tools
- *  with the toggled one ticked or unticked. */
+/** The `<li>`s of a Tools step's grid: a ToolCard for each of the `shown` built-in tools. `place` is the agent's own, else none:
+ *  with none, ticking a shell tool is what moves the agent to the box (defaultPlaceOf). */
 export function BuiltInToolCards({ shown, offers, tools, harness, place, places, workflow = false, mcpHarnesses, choices = [], gates = [], granted, settings = {}, onChange }: {
   shown: ToolOffer[]; offers: ToolOffer[]; tools: readonly string[]; harness: string; place: Place | undefined; places: Places | null | undefined;
   workflow?: boolean; mcpHarnesses?: readonly string[]; choices?: readonly ToolChoice[]; gates?: readonly ToolGate[]; granted?: readonly AgentTool[];
@@ -27,10 +23,14 @@ export function BuiltInToolCards({ shown, offers, tools, harness, place, places,
     const pickedOver = !!choice && ownPick !== undefined && ownPick !== choice.provider;
     // With no place, ticking a shell tool is what moves the agent to the box: read the place with it ticked.
     const sandbox = sandboxReason(t, place ?? defaultPlaceOf(workflow, [...tools, t.name], places));
-    const why = serverDenies(t.name, gates, granted) ? SERVER_DENY : t.call_only && !workflow ? "Workflow-only: a workflow's call node runs it, not an agent" : !runs ? notOn(harness, t.name, offers) : sandbox ?? (!t.available && !pickedOver ? (choice?.reason ?? t.reason ?? `Needs ${(t.missing ?? []).join(", ")}`) : undefined);
-    // The state, as a one-line tag: "Workflow only" or "Sandbox-only" for those two, else the reason itself (cut to one
-    // line); the reason in full is its title, and in Details.
-    const tag = !why ? undefined : t.call_only && !workflow ? "Workflow only" : sandbox && runs && why === sandbox ? "Sandbox-only" : why;
+    const unavailable = !t.available && !pickedOver ? (choice?.reason ?? t.reason ?? `Needs ${(t.missing ?? []).join(", ")}`) : undefined;
+    // Every rule that keeps it off here, together (QA: the browser runs only on pi and only on the server, and the card
+    // said one rule at a time): the harnesses that run it, where it runs, and what it lacks.
+    const rules = [!runs ? notOn(harness, t.name, offers) : undefined, sandbox, unavailable].filter((rule): rule is string => !!rule);
+    const why = serverDenies(t.name, gates, granted) ? SERVER_DENY : t.call_only && !workflow ? "Workflow-only: a workflow's call node runs it, not an agent" : rules.length ? rules.join("; ") : undefined;
+    // The state, as a one-line tag: "Workflow only", "Sandbox-only" or "Server-only" for those, else the reason itself (cut
+    // to one line); the reason in full is its title, and in Details.
+    const tag = !why ? undefined : t.call_only && !workflow ? "Workflow only" : sandbox && why === sandbox ? (t.sandbox_only ? "Sandbox-only" : "Server-only") : why;
     return (
       <li key={t.name} className="min-w-0"><ToolCard value={t.name} name={t.name} blurb={t.blurb} description={t.summary} why={why} tag={tag} on={on} disabled={!!why && !on}
         onToggle={() => onChange(on ? tools.filter((x) => x !== t.name) : [...tools, t.name])} /></li>

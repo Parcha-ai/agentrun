@@ -1,7 +1,7 @@
 // Tasks as data: the schema and the rules past it, every suite in the package loading, and seeds resolving the same
 // way every time, so arms are paired.
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { DAEMON_METHODS } from "@parcha/agentrun-computer";
@@ -39,7 +39,7 @@ const problemsOf = (spec, files) => {
 
 test("every suite in the package loads; mac-dev and linux-desktop are half dev and half held out, android-dev within one", () => {
 	const counts = {};
-	for (const suite of ["fake", "ui-fixture", "mac-dev", "android-dev", "linux-desktop", "macosworld", "mobileworld"]) {
+	for (const suite of ["fake", "ui-fixture", "mac-dev", "android-dev", "linux-desktop", "macosworld", "mobileworld", "osworld-pilot"]) {
 		const tasks = loadSuite(join(SUITES, suite));
 		counts[suite] = { all: tasks.length, dev: tasks.filter((task) => task.spec.split === "dev").length };
 		for (const task of tasks) {
@@ -51,16 +51,55 @@ test("every suite in the package loads; mac-dev and linux-desktop are half dev a
 	assert.deepEqual(counts["android-dev"], { all: 37, dev: 18 });
 	assert.deepEqual(counts["linux-desktop"], { all: 10, dev: 5 });
 	assert.equal(counts.macosworld.all + counts.mobileworld.all, 16);
+	assert.deepEqual(counts["osworld-pilot"], { all: 15, dev: 0 });
 });
 
 test("the ported tasks name their source, its revision and licence", () => {
-	for (const suite of ["macosworld", "mobileworld"]) {
+	for (const suite of ["macosworld", "mobileworld", "osworld-pilot"]) {
 		for (const task of loadSuite(join(SUITES, suite))) {
 			const source = task.spec.source;
 			assert.ok(source, `${task.spec.id} names no source`);
 			assert.ok(source.suite && source.id && source.revision && source.licence, `${task.spec.id}: ${JSON.stringify(source)}`);
 		}
 	}
+});
+
+test("osworld-pilot: OSWorld-Verified at one revision, Apache-2.0 with its notice and changes, GUI only, and its arms", () => {
+	const tasks = loadSuite(join(SUITES, "osworld-pilot"));
+	const domains = {};
+	for (const task of tasks) {
+		const { spec } = task;
+		assert.equal(spec.source.suite, "OSWorld-Verified", spec.id);
+		assert.equal(spec.source.revision, "0ad41bee56565efe7bb3c3a5ebc67590a1b8276f", spec.id);
+		assert.match(spec.source.licence, /^Apache-2\.0 \(Copyright 2024 XLANG NLP Lab\)/, spec.id);
+		assert.ok(spec.source.changes, `${spec.id} says nothing of what the port changed`);
+		const [domain, uuid] = spec.source.id.split("/");
+		assert.equal(spec.id, `osworld.${uuid.slice(0, 8)}`);
+		domains[domain] = (domains[domain] ?? 0) + 1;
+		// The agent gets the screen and input alone (and the files group), as OSWorld's did; the oracle drives only input.
+		assert.equal(spec.exec, "deny", spec.id);
+		for (const call of spec.oracle ?? []) assert.match(call.method, /^input\./, `${spec.id}'s oracle calls ${call.method}`);
+		if ((spec.oracle ?? []).length === 0) assert.ok(spec.sufficient === false && task.rubric, `${spec.id} has no oracle, so the grader decides it with a rubric`);
+		// Every run works in its own folder and leaves nothing: teardown kills by the nonce and deletes the run's folder.
+		const teardown = spec.teardown.map((step) => step.params.argv.join(" ")).join("\n");
+		assert.match(teardown, /rm -rf \/tmp\/computer-bench-\{\{nonce\}\} \/tmp\/computer-bench-\{\{nonce\}\}-\*/, spec.id);
+		for (const kill of teardown.match(/pkill[^;]*/g) ?? []) assert.match(kill, /computer-bench-\{\{nonce\}\}/, `${spec.id}: ${kill}`);
+		for (const step of spec.setup.filter((one) => one.method === "process.start")) {
+			const script = step.params.argv.join(" ");
+			if (/exec (mousepad|xfce4-terminal)\b/.test(script)) assert.match(script, /echo \$\$ > \/tmp\/computer-bench-\{\{nonce\}\}-[a-z]+\.pid && exec /, spec.id);
+		}
+	}
+	assert.deepEqual(domains, { chrome: 2, multi_apps: 1, os: 10, vs_code: 2 });
+	const arms = JSON.parse(readFileSync(join(SUITES, "osworld-pilot", "arms.json"), "utf8"));
+	assert.deepEqual(
+		arms.map((arm) => [arm.id, arm.harness, arm.surface, arm.model, arm.options.provider]),
+		[
+			["sonnet-5.5", "pi", "code", "openrouter/anthropic/claude-sonnet-5.5", "e2b"],
+			["gpt-6.1-terra", "pi", "code", "openrouter/openai/gpt-6.1-terra", "e2b"],
+		],
+	);
+	// OpenRouter's Sonnet 5.5 answers 400 "Reasoning is mandatory" to an agent with no thinking level; effort is it.
+	for (const arm of arms) assert.equal(arm.effort, "medium", arm.id);
 });
 
 test("mac-dev and android-dev tasks cover the apps the brief names", () => {

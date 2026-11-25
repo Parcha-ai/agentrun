@@ -131,20 +131,19 @@ export async function runnerBeside(dataDir: string, { loops, loopsTold, drainMs,
     // The server's anonymous counts (telemetry.ts) hear a run's end: its state alone, never which run or agent.
     if (event.type === "ended") onRunEnded?.(event.status);
   };
-  // A run's end lets go of what its earlier claims' computers left, with the same computers (run-end-computers.ts), as
-  // the runner beside it (read at each end, once it has started): a computer kept pinned to another runner is that one's.
+  // A run's end lets go of what its earlier claims' computers left, with the same computers (run-end-computers.ts).
   const { runEndComputers } = await import("../workspace/run-end-computers.js");
   const { projectRunEnded } = await import("../source-sync/checkpoints.js");
   const { runCensus } = await import("../run-census.js");
-  const self = () => (runner.incarnation ? { runner: name, incarnation: runner.incarnation } : undefined);
-  const runEnded = projectRunEnded(store, runEndComputers({ store, computers: computers.computerDeps, log: (line) => console.error(`agentrun-serve runner: ${line}`), self }));
+  const runEnded = projectRunEnded(store, runEndComputers({ store, computers: computers.computerDeps, log: (line) => console.error(`agentrun-serve runner: ${line}`), env: runs, sealKey: seal.key }));
   const runner = startRunner({ store, name, ...(beside ? { incarnation: beside.incarnation } : {}), createLoop, census: runCensus(store, { data: dataDir, sealKey: seal.key, env: runs }), memory: runnerMemory(store, undefined, runs, isolation ? RUN_PROCESS_MIB : 0), onEvent: said, runEnded, ...(held !== undefined ? { loops: held } : {}), ...(drainMs !== undefined ? { drainMs } : {}) });
   // The computer janitor over the same computers, when the start asks for it: never under --faux. Its lines are the
   // runner's, on stderr (a stderr whose reader closed loses them, never the process: cli.ts).
   const { startJanitor } = await import("../workspace/computer-janitor.js");
   // As the runner beside it (its name and its presence's incarnation): a kept computer pinned to another runner still
-  // there is that runner's to end (computer-kept.ts sweepKept).
-  const swept = janitor ? startJanitor({ store, computers: computers.computerDeps, env: runs, log: (line) => console.error(`agentrun-serve runner: ${line}`), ...(runner.incarnation ? { self: { runner: name, incarnation: runner.incarnation } } : {}) }) : undefined;
+  // there is that runner's to end (computer-kept.ts sweepKept). The seal key is the claims' too: it opens the Archil key a
+  // kept computer's mount credential is removed with.
+  const swept = janitor ? startJanitor({ store, computers: computers.computerDeps, env: runs, sealKey: seal.key, log: (line) => console.error(`agentrun-serve runner: ${line}`), ...(runner.incarnation ? { self: { runner: name, incarnation: runner.incarnation } } : {}) }) : undefined;
   // Its close waits for any first-use install its claims let go of to stop (its npm ended) before it lets go of the data.
   const { claimInstallsStopped } = await import("../harness-install.js");
   // The janitor's sweep is cut and waited for on a bound of its own, beside the runner's close, never before it.

@@ -79,15 +79,15 @@ describe("HostedSharePage: a share host's public page", () => {
   });
 });
 
-describe("VerdictCard offline: a public page loads no image from elsewhere", () => {
+describe("VerdictCard shared: a public page loads no image from elsewhere", () => {
   const decision = { id: "d1", node: "judge", status: "answered", provider: "parallel", answers: {}, questions: {}, images: [{ token: "img1", ref: "", url: "https://images.example/page.png" }] } as unknown as Decision;
-  it("falls back to the provider's http URL on the owner's console, and never offline", async () => {
+  it("falls back to the provider's http URL on the owner's console, and never on a shared page", async () => {
     const online = await mount(createElement(VerdictCard, { d: decision, fileUrl: () => "", zoom: () => {} }));
     expect(online.querySelector("img")?.getAttribute("src")).toBe("https://images.example/page.png");
     act(() => root?.unmount());
     document.body.innerHTML = "";
-    const offline = await mount(createElement(VerdictCard, { d: decision, fileUrl: () => "", zoom: () => {}, offline: true }));
-    expect(offline.querySelector("img")).toBeNull();
-    expect(offline.innerHTML).not.toContain("images.example");
+    const shared = await mount(createElement(VerdictCard, { d: decision, fileUrl: () => "", zoom: () => {}, shared: true }));
+    expect(shared.querySelector("img")).toBeNull();
+    expect(shared.innerHTML).not.toContain("images.example");
   });
 });
