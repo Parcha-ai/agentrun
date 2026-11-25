@@ -490,8 +490,7 @@ export function pastRunsOf(out: Summarized, listed: readonly RunRecord[], since:
   const ids = new Set(scope.map((run) => run.id));
   const byHand = out.runs.filter((run) => ids.has(run.run_id) && run.path === "agent");
   const known = byHand.flatMap((run) => (run.cost_usd !== null && !run.cost_upper_bound ? [run.cost_usd] : []));
-  const by_hand = known.length ? { runs: known.length, mean_usd: Math.round((known.reduce((a, b) => a + b, 0) / known.length) * 1e6) / 1e6 } : null;
-  return { runs, by_hand, by_hand_unknown: byHand.length - known.length };
+  return { runs, by_hand: meanOf(known), by_hand_unknown: byHand.length - known.length };
 }
 
 /** pastRunsOf over the store: when the window is full and holds no run by hand of known cost (a workflow that serves well
