@@ -418,6 +418,12 @@ export const composioServerId = (address: string): string | undefined => {
   try { return /^\/v3\/mcp\/([^/]+)\/mcp$/.exec(new URL(address).pathname)?.[1]; } catch { return undefined; }
 };
 
+/** The Composio user a saved preset address calls as (its user_id), or undefined: none named, or not a preset address. */
+export const composioAddressUser = (address: string): string | undefined => {
+  if (composioServerId(address) === undefined) return undefined;
+  return new URL(address).searchParams.get(ADDRESS_USER) ?? undefined;
+};
+
 /** A thing at Composio as the words name it; `removed`: as a removal names it (an account its connect link with it). */
 const named = (thing: Thing | { kind: "mcp"; id: string }, removed = false): string =>
   thing.kind === "mcp" ? `the MCP server ${thing.id}` : thing.kind === "auth_config" ? `the auth config ${thing.id}` : `the connected account ${thing.id}${removed ? " (its connect link with it)" : ""}`;
