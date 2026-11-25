@@ -859,16 +859,28 @@ export function jsonEscapeAt(text: string, at: number): { char: string; end: num
 }
 
 const DECIMAL = only(DIGIT);
-/** The character an HTML numeric character reference at `at` stands for, as a browser reads one in text, and where it
- *  ends: "&#" and decimal digits, or "&#x" or "&#X" and hex digits, any zeros first (read as nothing: "&#00065;" is "A"),
- *  then at most 7 decimal or 6 hex digits, then ";" or not (a browser reads "&#65" before a letter as "A" too); undefined
- *  where none starts, or it stands for no character (zero, a surrogate, past U+10FFFF, or more digits than that). It
- *  reads its zeros and one digit past the most, each once and counted: a run of zeros is read again only by the view
- *  that copies it where no reference stands. key-refusal.ts's peek counts a reference by it, so the read past a call's
- *  stop and the views see the same characters. */
+/** The named references a writer's HTML escape emits (and a no-break space), each with its ";". */
+const NAMED: Readonly<Record<string, string>> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: "\u00a0", AMP: "&", LT: "<", GT: ">", QUOT: '"' };
+/** The character an HTML character reference at `at` stands for, as a browser reads one in text, and where it ends:
+ *  - a named one of NAMED, with its ";" ("&amp;" is "&"); it reads at most 6 characters;
+ *  - a numeric one: "&#" and decimal digits, or "&#x" or "&#X" and hex digits, any zeros first (read as nothing:
+ *    "&#00065;" is "A"), then at most 7 decimal or 6 hex digits, then ";" or not (a browser reads "&#65" before a letter
+ *    as "A" too). It reads its zeros and one digit past the most, each once and counted: a run of zeros is read again
+ *    only by the view that copies it where no reference stands.
+ *  Undefined where none starts, or it stands for no character (zero, a surrogate, past U+10FFFF, or more digits than
+ *  that). key-refusal.ts's peek counts a reference by it, so the read past a call's stop and the views see the same
+ *  characters. */
 export function entityAt(text: string, at: number): { char: string; end: number } | undefined {
-  if (text[at] !== "&" || text[at + 1] !== "#") {
-    scanned.chars += Math.min(2, text.length - at);
+  if (text[at] !== "&") {
+    scanned.chars++;
+    return undefined;
+  }
+  if (text[at + 1] !== "#") {
+    scanned.chars += Math.min(6, text.length - at);
+    for (let length = 2; length <= 4; length++) {
+      const name = text.slice(at + 1, at + 1 + length);
+      if (text[at + 1 + length] === ";" && Object.hasOwn(NAMED, name)) return { char: NAMED[name]!, end: at + 2 + length };
+    }
     return undefined;
   }
   const hex = text[at + 2] === "x" || text[at + 2] === "X";
@@ -885,8 +897,8 @@ export function entityAt(text: string, at: number): { char: string; end: number 
   if (code === 0 || (code >= 0xd800 && code <= 0xdfff) || code > 0x10ffff) return undefined;
   return { char: String.fromCodePoint(code), end: text[end] === ";" ? end + 1 : end };
 }
-/** An HTML numeric character reference (entityAt), as the character it stands for (a character past U+FFFF as its two
- *  UTF-16 units, each from the whole reference). */
+/** An HTML character reference (entityAt), as the character it stands for (a character past U+FFFF as its two UTF-16
+ *  units, each from the whole reference). */
 const ENTITY: Decoder = {
   trigger: "&",
   decode(text, at, unit) {
@@ -898,18 +910,19 @@ const ENTITY: Decoder = {
 };
 
 /** What a text holds that a view decodes or joins, each found by one read of the text (familiesOf): a percent-encoded
- *  byte, one of JSON's escapes, an escaped quote (at either level, or as its "\u" escape), an HTML numeric character
- *  reference's start, a "+", a quote, an escaped backslash (or its "\u" escape: where a second level of JSON's escapes
- *  can start). */
+ *  byte, one of JSON's escapes, an escaped quote (at either level, or as its "\u" escape), an HTML character reference's
+ *  start (a numeric one's "&#", or a named one of NAMED whole), a "+", a quote, an escaped backslash (or its "\u"
+ *  escape: where a second level of JSON's escapes can start). */
 type Families = { percent: boolean; escape: boolean; quoteEscape: boolean; entity: boolean; plus: boolean; quote: boolean; deep: boolean };
 const PERCENT_BYTE = /%[0-9a-fA-F]{2}/;
 const JSON_ESCAPED = /\\(?:u[0-9a-fA-F]{4}|["\\/bfnrt])/;
 const QUOTE_ESCAPED = /\\"|\\u00[2]2/;
 const BACKSLASH_ESCAPED = /\\\\|\\u005[cC]/;
+const ENTITY_START = /&(?:#|(?:amp|lt|gt|quot|apos|nbsp|AMP|LT|GT|QUOT);)/;
 function familiesOf(text: string): Families {
   // Seven reads of the text, each to its first find at most.
   scanned.chars += 7 * text.length;
-  return { percent: PERCENT_BYTE.test(text), escape: JSON_ESCAPED.test(text), quoteEscape: QUOTE_ESCAPED.test(text), entity: text.includes("&#"), plus: text.includes("+"), quote: text.includes('"'), deep: BACKSLASH_ESCAPED.test(text) };
+  return { percent: PERCENT_BYTE.test(text), escape: JSON_ESCAPED.test(text), quoteEscape: QUOTE_ESCAPED.test(text), entity: ENTITY_START.test(text), plus: text.includes("+"), quote: text.includes('"'), deep: BACKSLASH_ESCAPED.test(text) };
 }
 
 /** Which join of a JSON text's strings a view reads (joinOf): `nested`, each string's contents, a value's read again for
@@ -932,8 +945,8 @@ const viewSpec = (when: (has: Families) => boolean, decoders: readonly Decoder[]
  *    decodes to a backslash (elsewhere the two levels read as one does). Each reads a held value that holds another
  *    family's text of its own (a literal "\n", a literal "%41", "&#65;") as itself, which a stacked view decodes, so
  *    keeping them keeps every find they made;
- *  - stacked: its percent-encoded bytes, JSON's escapes (twice, an escaped quote as nothing) and HTML's numeric character
- *    references each decoded where it stands, so a value split by an encoded space of one family and an escaped one of
+ *  - stacked: its percent-encoded bytes, JSON's escapes (twice, an escaped quote as nothing) and HTML's character
+ *    references (entityAt) each decoded where it stands, so a value split by an encoded space of one family and an escaped one of
  *    another, or written half in each, or split by an escaped quote, reads whole; and the same with "+" as a space. Each
  *    is read only where it can read otherwise than the one-family views: the text has a character reference, an escaped
  *    quote, or both percent-encoding and JSON's escapes (and, with "+", any of JSON's escapes);

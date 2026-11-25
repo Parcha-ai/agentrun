@@ -247,9 +247,8 @@ function inPieces(text: string, secrets: readonly string[], enough = Number.POSI
 
 /** text from `from` on, as far as `count` characters the matcher sees (all of it, if it holds fewer), each run of
  *  whitespace in it one space. The matcher reads "+" as a space and decodes percent-encoded bytes, JSON's escapes (one
- *  level and two, as the JSON view reads them) and HTML's numeric character references, so a "+", an encoded byte, an
- *  escape and a reference that decode to whitespace
- *  count no more than whitespace does, and any other escape counts as what the view keeps of the character it decodes
+ *  level and two, as the JSON view reads them) and HTML's character references (named and numeric), so a "+", an
+ *  encoded byte, an escape and a reference that decode to whitespace count no more than whitespace does, and any other escape counts as what the view keeps of the character it decodes
  *  to. A character that renders as nothing (a zero-width space, a soft hyphen) or a combining mark counts as nothing
  *  too: the views drop it. So does a quote or JSON's punctuation ("{", "}", "[", "]", ",", ":"), which the join view
  *  drops between a text's strings, and, with `fold` (a held value folds: learn/secrets.ts foldsHeld), a separator ("-",
