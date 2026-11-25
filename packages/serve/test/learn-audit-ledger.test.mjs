@@ -208,7 +208,9 @@ async function landRevision(dir, workflow, runId) {
 const fenceOf = (ask) => /----- begin (\w+): the disagreements -----\n([\s\S]*?)\n----- end \1 -----/.exec(ask)?.[2] ?? "";
 
 test("(a) k = 10 by default: exactly the served runs whose id the draw picks start a shadow, each the audit of its run, learning off, path audit", { timeout: 240_000 }, async (t) => {
-  const w = await world(t, { learning: true });
+  // One run by hand first, at $1: past COST_WINDOW served runs the money rule holds the workflow to a by-hand cost.
+  let priced = 0;
+  const w = await world(t, { learning: true, prior: 1, priced: (model, usage) => (priced++ === 0 ? 1 : ((usage.input ?? 0) * 3 + (usage.output ?? 0) * 15) / 1e6) });
   const ids = Array.from({ length: 14 }, (_, i) => `drawn-${i}`);
   const expected = ids.filter((id) => drawn(id, 10));
   // The ids are chosen so the draw picks some and leaves most: the test means something either way.
