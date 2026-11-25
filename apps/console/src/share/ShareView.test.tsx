@@ -62,6 +62,25 @@ describe("ShareView over the golden bundle", () => {
     expect(panelChips()).toEqual(["[redacted:email]", "[redacted:sk-key]"]);
   });
 
+  it("draws no image a run's answer names, whose bytes the bundle never carries: its words stand in, on the owner's preview and the host's page", () => {
+    const answer = "See ![the shot](/v2/runs/run_golden/files/out/shot.png) and ![a chart](https://img.sample-host.zz/c.png).";
+    const withImages = { ...bundle, run: { ...bundle.run, result: { ...(bundle.run.result as object), final_answer: answer } } } as ShareBundle;
+    for (const preview of [true, false]) {
+      const { host } = mount({ bundle: withImages, ...(preview ? {} : { preview: undefined }) });
+      expect(host.querySelector("img")).toBeNull();
+      expect(host.textContent).toContain("the shot");
+      expect(host.textContent).toContain("a chart");
+      act(() => root?.unmount());
+      root = undefined;
+      document.body.innerHTML = "";
+    }
+  });
+
+  it("draws a marker in the agent's name, in the header, as a chip", () => {
+    const { host } = mount({ bundle: { ...bundle, agent: { ...bundle.agent, name: "Agent of [redacted:email]" } } });
+    expect(host.querySelector("header p.font-mono .redaction")?.textContent).toBe("[redacted:email]");
+  });
+
   it("lists the cuts by kind with their counts; a restore switch for each label or personal cut and for no other", () => {
     const { host } = mount();
     const panel = host.querySelector<HTMLElement>('[aria-label="Cuts"]')!;
