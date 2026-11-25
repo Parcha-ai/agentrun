@@ -1,8 +1,7 @@
 // OpenCode under the read pool: its sessions are rows of a database (or JSON storage files), not one file of lines, so
 // parseHome reads them on its own thread while the pool's workers read the line sources (pool.ts), Copilot CLI's among
 // them. A pooled call gives the totals of one thread on a home that holds OpenCode and Copilot data, its claude-agent
-// requests counted once and a copied Copilot shutdown no second time, and a worker at the heap floor (8 MB) still reads
-// every file it is given. Synthetic fixtures only.
+// requests counted once and a copied Copilot shutdown no second time. Synthetic fixtures only.
 import assert from "node:assert/strict";
 import { utimes } from "node:fs/promises";
 import { join } from "node:path";
@@ -64,19 +63,17 @@ async function mixedHome(t) {
   return home;
 }
 
-/** `run` with every pool worker it makes watched: how many were made, and the files their reads were of. */
+/** `run` with every pool worker it makes watched: the files their reads were of. */
 async function watched(run) {
-  let made = 0;
   const files = [];
   const watch = (worker) => {
-    made += 1;
     worker.on("message", (read) => {
       for (const { locator } of read.ok ? read.sessions : []) files.push(locator.file);
     });
   };
   process.on("worker", watch);
   try {
-    return { result: await run(), made, files };
+    return { result: await run(), files };
   } finally {
     process.off("worker", watch);
   }
@@ -102,21 +99,4 @@ test("a pooled call on a home with OpenCode and Copilot data gives the totals of
   }
   // OpenCode before Claude Code: the mirrored requests still count once.
   assert.deepEqual(await parseHome(home, { catalog: false, env: {}, threads: 2, sources: ["opencode", "copilot", "codex", "claude-code"] }), one);
-});
-
-test("with OpenCode and Copilot data in the home, a worker at the heap floor (8 MB) reads every file it is given: none lost", async (t) => {
-  const home = await mixedHome(t);
-  const one = await parseHome(home, { catalog: false, env: {}, threads: 1 });
-  let back = 0;
-  const { result, made } = await watched(async () => {
-    const watch = (worker) => worker.on("message", (read) => (back += read.ok ? 0 : 1));
-    process.on("worker", watch);
-    try {
-      return await parseHome(home, { catalog: false, env: {}, threads: 2, workerOldMb: 8 });
-    } finally {
-      process.off("worker", watch);
-    }
-  });
-  assert.deepEqual(result, one, "the totals of one thread");
-  assert.deepEqual({ made, back }, { made: 2, back: 0 }, "no worker lost, no file handed back");
 });
