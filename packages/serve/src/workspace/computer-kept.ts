@@ -464,8 +464,9 @@ export async function forgetEnded(settings: Pick<KeptSettings, "get" | "removeIf
 
 /** Removes run `runId`'s Archil mount credentials of `kept`'s claim epoch and earlier, by their names, on the disk its
  *  row names (computer-janitor.ts keptMountRevoke): what every end of a row kept on Archil asks before it marks the row
- *  ended (sweepKept, finishedKept). Throws where the remove failed. */
-export type KeptMountRevoke = (runId: string, kept: Kept) => Promise<void>;
+ *  ended (sweepKept, finishedKept). Throws where the remove failed. `signal`: aborted to cut its calls to Archil (the
+ *  janitor's bound passed). */
+export type KeptMountRevoke = (runId: string, kept: Kept, signal?: AbortSignal) => Promise<void>;
 
 /** What the janitor's pass over the kept computers did: the names it ended, the failures in words, and the earliest
  *  time still ahead (its next wake), if any. */
@@ -500,7 +501,8 @@ export async function sweepKept(deps: {
   /** Removes run `runId`'s Archil mount credentials of the row's claim epoch and earlier, by their names: asked after
    *  the delete of a row whose computer held the run's folder on Archil, within the same bound. No claim removes that
    *  credential once the janitor ends the row (a stop takes no row; a resume that starts no computer never reads it).
-   *  One that throws leaves the row ending, for the next pass. */
+   *  One that throws leaves the row ending, for the next pass. Handed a signal aborted once that bound passes, cutting its
+   *  calls to Archil. */
   readonly revokeMount?: KeptMountRevoke;
 }): Promise<KeptSweep> {
   const ended: string[] = [];
@@ -542,11 +544,12 @@ export async function sweepKept(deps: {
         failed.push(`${kept.name} of run ${runId}: this server can't reach ${kept.provider} to end it`);
         continue;
       }
+      const cut = new AbortController();
       const proven = async (): Promise<void> => {
         if (await deleteKept(provider, kept)) await deps.deleted?.(kept.provider, kept.id);
-        if (kept.folder === "archil") await deps.revokeMount?.(runId, kept);
+        if (kept.folder === "archil") await deps.revokeMount?.(runId, kept, cut.signal);
       };
-      const deleted = await endKept(deps.settings, runId, kept, () => bounded(deps.deleteMs ?? KEPT_DELETE_MS, proven()));
+      const deleted = await endKept(deps.settings, runId, kept, () => bounded(deps.deleteMs ?? KEPT_DELETE_MS, proven()).finally(() => cut.abort(new Error("the janitor's bound on the delete passed"))));
       if (deleted) ended.push(kept.name);
       if (deleted && over) await deps.settings.removeIf(row.key, rowOf(kept, "ended"));
     } catch (error) {
