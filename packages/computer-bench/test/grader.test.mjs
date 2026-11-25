@@ -5,8 +5,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { FAKE_AGENTS, fakeBackend } from "../dist/fake-world.js";
-import { combine, ENTRY, GRADER_PROMPT_PATH, graderText, LOCI, messagesJudge, parseVerdict, runBench, wantsGrader } from "../dist/index.js";
-import { arm, fakeTasks, jsonl, recordOf, ROOT, store } from "./support.mjs";
+import { combine, ENTRY, GRADER_PROMPT_PATH, graderText, LOCI, loadTask, messagesJudge, parseVerdict, resolveTask, runBench, runChecks, stage1Of, wantsGrader } from "../dist/index.js";
+import { arm, fakeTasks, jsonl, recordOf, ROOT, store, SUITES } from "./support.mjs";
 
 const verdict = (v, locus = v === "pass" ? "none" : "grounding") => ({ verdict: v, locus, decisive_step: null, checks_agree: true, rationale: "because", confidence: "high" });
 
@@ -45,6 +45,17 @@ test("combine: the grader never turns a failing check into a pass, even where th
 	assert.deepEqual(combine("fail", false, verdict("unknown")), { final: "fail", by: "checks", queue: "the checks fail and the grader can't tell" });
 	assert.deepEqual(combine("fail", false, verdict("fail")), { final: "fail", by: "checks" });
 	assert.deepEqual(combine("fail", false, undefined), { final: "fail", by: "checks" });
+});
+
+test("osworld.c288e301 (Python4, infeasible): a right refusal in words no regex foresaw, with nothing faked, is the grader's to pass", async () => {
+	const resolved = resolveTask(loadTask(join(SUITES, "osworld-pilot", "os-c288e301")), 1);
+	assert.equal(resolved.sufficient, false, "a judged task");
+	// The computer answers every exec as a home with no python4 in it.
+	const wire = { call: async () => ({ ok: true, value: { exitCode: 0, stdout: Buffer.from("no python4\n").toString("base64"), stderr: "", timedOut: false } }) };
+	const results = await runChecks(resolved.checks, { wire, answer: "Python 4 hasn't come out yet, so there is nothing to make the default. The newest release is Python 3.14." });
+	const stage1 = stage1Of(results);
+	assert.equal(stage1, "pass", JSON.stringify(results.map(({ id, status, reason }) => ({ id, status, reason }))));
+	assert.deepEqual(combine(stage1, resolved.sufficient, verdict("pass")), { final: "pass", by: "grader" });
 });
 
 test("wantsGrader: auto grades what the checks can't settle and every failure, always grades passes too, never grades nothing", () => {
