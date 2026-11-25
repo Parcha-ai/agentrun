@@ -61,13 +61,15 @@ function fakeClock() {
   return clock;
 }
 
-/** One turn whose "model" makes one message of `batch` calls to `submit` (replay `never`), on a fake clock. */
-async function batchTurn(t, batch) {
+/** One turn whose "model" makes one message of `batch` calls to `submit` (replay `never`), on a fake clock; past the
+ *  turn's end, the clock keeps moving until `until(logs)` holds, when given (or the limit). */
+async function batchTurn(t, batch, { until } = {}) {
   const clock = fakeClock();
   const provider = await fakeAnthropic({ reply: () => ({ text: 'ok' }) });
   t.after(() => provider.close());
   const ended = [];
   const events = [];
+  const logs = [];
   // The fake instant the harness took the message's message_stop. The fake clock moves while real work (the in-memory
   // MCP calls, the journal) is still settling, so on a loaded machine the harness can hear the stop a step or more after
   // the stream yielded it; a refusal is due BARRIER_MS after the harness heard it, never before the message ended.
@@ -78,6 +80,7 @@ async function batchTurn(t, batch) {
     price: () => 0,
     standIn: { command: process.execPath },
     barrierTimers: clock,
+    log: (message, fields) => logs.push({ message, fields, at: clock.now() }),
     sdk: fakeSdk({
       script: [`batch ${JSON.stringify({ tool: 'submit', args: { q: 'x' }, ...batch })}`],
       sleep: clock.sleep,
@@ -99,7 +102,9 @@ async function batchTurn(t, batch) {
     turn.catch(() => {});
     while (end === undefined && clock.now() < LIMIT_MS) await clock.advance(STEP_MS);
     await turn;
-    return { end, ran, events, stopTakenAt, ended: ended.sort((a, b) => a.index - b.index) };
+    const turnEndedAt = clock.now();
+    while (until && !until(logs) && clock.now() < LIMIT_MS) await clock.advance(STEP_MS);
+    return { end, ran, events, logs, stopTakenAt, turnEndedAt, ended: ended.sort((a, b) => a.index - b.index) };
   } finally {
     await session.close();
   }
@@ -148,6 +153,23 @@ test("a call the CLI refuses itself early in a long message is still shown to th
   assert.equal(shown[0].name, 'submit');
 });
 
+// A refusal's answer that never reaches the log is reported the barrier after its own message ended, never held open by
+// the messages after it in the same stream: the main thread's next message reuses its parent_tool_use_id.
+const NOT_SHOWN = 'claude-agent: a refused call is not shown: its answer never reached the log';
+test("a refusal whose answer never reaches the log is reported the barrier after its own message ended, though the turn's next message streams on", async (t) => {
+  // Block 1 is refused by the CLI and its answer lost; the message ends at 12 x 1.3 s; the answer after the calls is a
+  // second message that streams for 20 s.
+  const { end, logs, stopTakenAt, turnEndedAt } = await batchTurn(t, { n: 12, gapMs: 1300, refused: [1], lost: [1], then: { n: 40, gapMs: 500 } }, { until: (logs) => logs.some((line) => line.message === NOT_SHOWN) });
+  assert.equal(end.status, 'completed');
+  const messageEnd = 12 * 1300;
+  assert.ok(turnEndedAt >= messageEnd + 2 * BARRIER_MS, `the next message streamed past the barrier (the turn ended at ${turnEndedAt} ms)`);
+  const reported = logs.filter((line) => line.message === NOT_SHOWN);
+  assert.equal(reported.length, 1, JSON.stringify(logs.map((line) => line.message)));
+  assert.match(reported[0].fields.error, /the transcript entry answering tool call \S+ did not reach the log within 10000 ms/);
+  assert.ok(reported[0].at >= messageEnd + BARRIER_MS, `reported at ${reported[0].at} ms, before its message ended plus the barrier (${messageEnd + BARRIER_MS} ms)`);
+  assert.ok(reported[0].at <= stopTakenAt + BARRIER_MS + STEP_MS, `reported at ${reported[0].at} ms, more than the barrier after the harness heard its message end (${stopTakenAt} ms): the next message's events held it`);
+});
+
 /** The store alone, on a journal that keeps nothing. */
 async function storeOn(clock) {
   const { JournalSessionStore } = await import('../dist/store.js');
@@ -156,6 +178,7 @@ async function storeOn(clock) {
 }
 const assistantCall = (id, parent = null) => ({ type: 'assistant', parent_tool_use_id: parent, message: { content: [{ type: 'tool_use', id, name: 'mcp__hands__submit', input: {} }] } });
 const streamEvent = (parent = null) => ({ type: 'stream_event', parent_tool_use_id: parent, event: { type: 'content_block_delta', delta: { type: 'input_json_delta', partial_json: '{}' } } });
+const messageStop = (parent = null) => ({ type: 'stream_event', parent_tool_use_id: parent, event: { type: 'message_stop' } });
 /** When a barrier on `id` settled, on the fake clock. */
 const settledAt = (clock, promise) => promise.then(() => ({ ok: true, at: clock.now() }), (error) => ({ ok: false, at: clock.now(), error: String(error.message) }));
 
@@ -188,4 +211,28 @@ test("the barrier's clock runs from the call when no stream names it, and its ow
   // Its line lands: the wait ends at once.
   await store.append({ projectKey: 'p', sessionId: 's' }, [{ type: 'assistant', uuid: 'u1', ...assistantCall('toolu_named') }]);
   assert.deepEqual(await named, { ok: true, at: 2 * BARRIER_MS });
+});
+
+test("after its message's message_stop, a call's clock no longer restarts on its stream's later events; a call of the stream's next message still does", async () => {
+  const clock = fakeClock();
+  const store = await storeOn(clock);
+  store.heard(assistantCall('toolu_old'));
+  let oldOutcome;
+  settledAt(clock, store.resultBarrier('toolu_old', BARRIER_MS)).then((outcome) => (oldOutcome = outcome));
+  await clock.advance(1000);
+  // Its message ends at 1 s: the stop restarts its clock one last time.
+  store.heard(messageStop());
+  store.heard(assistantCall('toolu_new'));
+  let newSettled = false;
+  const fresh = settledAt(clock, store.barrier('toolu_new', BARRIER_MS)).then((outcome) => ((newSettled = true), outcome));
+  // The next message of the same stream (the main thread's, '') streams for twice the barrier.
+  for (let at = 0; at < 2 * BARRIER_MS; at += 1000) {
+    store.heard(streamEvent());
+    await clock.advance(1000);
+  }
+  assert.deepEqual(oldOutcome, { ok: false, at: 1000 + BARRIER_MS, error: `the transcript entry answering tool call toolu_old did not reach the log within ${BARRIER_MS} ms` });
+  assert.equal(newSettled, false, "the current message's call is held by its own stream's events");
+  store.heard(messageStop());
+  await clock.advance(BARRIER_MS);
+  assert.deepEqual(await fresh, { ok: false, at: 1000 + 2 * BARRIER_MS + BARRIER_MS, error: `the transcript entry for tool call toolu_new did not reach the log within ${BARRIER_MS} ms` });
 });

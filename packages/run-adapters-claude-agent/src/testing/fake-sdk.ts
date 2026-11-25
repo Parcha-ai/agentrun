@@ -55,7 +55,11 @@ import type { ClaudeAgentSdk } from '../harness.js';
  *   real mirror does, the message's transcript lines reach the session store
  *   only once the message ends; those of the blocks in `lost` (from 1) never.
  *   The blocks in `refused` the CLI answers itself as its block ends, a
- *   tool the session doesn't have, as Claude Code does: no call is made.
+ *   tool the session doesn't have, as Claude Code does: no call is made. A
+ *   block in both `refused` and `lost` has neither line reach the store, its
+ *   answer included. With `then` (`{ n, gapMs }`), the answer after the calls
+ *   is a second message of the turn, its text streamed in `n` deltas `gapMs`
+ *   apart before its line is mirrored.
  */
 
 interface FakeTool {
@@ -467,7 +471,7 @@ export function fakeSdk(fake: FakeSdkOptions = {}): FakeSdk {
           }
           const batching = /^batch (.*)$/s.exec(command);
           if (batching) {
-            const spec = JSON.parse(batching[1]!) as { n: number; gapMs: number; tool: string; args: unknown; lost?: number[]; refused?: number[] };
+            const spec = JSON.parse(batching[1]!) as { n: number; gapMs: number; tool: string; args: unknown; lost?: number[]; refused?: number[]; then?: { n: number; gapMs: number } };
             const sleep = fake.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
             const event = (ev: Record<string, unknown>) => ({ type: 'stream_event', parent_tool_use_id: null, event: ev });
             const tool = (await tools).get(spec.tool);
@@ -486,7 +490,7 @@ export function fakeSdk(fake: FakeSdkOptions = {}): FakeSdk {
               yield { type: 'assistant', parent_tool_use_id: null, uuid: a.uuid, session_id: sessionId, message: a.message };
               if (spec.refused?.includes(index)) {
                 const r = entry('user', { message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, is_error: true, content: `<tool_use_error>Error: No such tool available: ${block.name}</tool_use_error>` }] } });
-                lines.push(r);
+                if (!spec.lost?.includes(index)) lines.push(r);
                 yield { type: 'user', parent_tool_use_id: null, message: r.message };
                 continue;
               }
@@ -510,6 +514,18 @@ export function fakeSdk(fake: FakeSdkOptions = {}): FakeSdk {
               yield { type: 'user', parent_tool_use_id: null, message: r.message };
             }
             const reply = `${spec.tool} ran ${results.filter(({ result }) => !result.isError).length} of ${spec.n}`;
+            if (spec.then) {
+              // The answer is a message of its own, in the same stream, streamed as the model writes it.
+              yield event({ type: 'message_start', message: { id: `msg_${uuid().slice(0, 8)}`, role: 'assistant', content: [] } });
+              yield event({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
+              for (let at = 0; at < spec.then.n; at++) {
+                await sleep(spec.then.gapMs);
+                yield event({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: at ? ' .' : reply } });
+              }
+              yield event({ type: 'content_block_stop', index: 0 });
+              yield event({ type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 12 } });
+              yield event({ type: 'message_stop' });
+            }
             const b = entry('assistant', { message: { role: 'assistant', content: [{ type: 'text', text: reply }] } });
             await mirror([b]);
             yield { type: 'assistant', parent_tool_use_id: null, uuid: b.uuid, session_id: sessionId, message: b.message };
