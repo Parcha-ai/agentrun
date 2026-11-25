@@ -1,4 +1,5 @@
 import type { Capabilities } from "@/lib/client";
+import { withoutRoutePrefix } from "@/lib/routePrefix";
 import type { ChatGPTView } from "@/lib/v2";
 
 /** Where "Manage usage" opens: ChatGPT's settings. OpenAI documents no exact address for a plan's usage, so it is this
@@ -21,11 +22,7 @@ const PLAN_RUNS_GATEWAY = "This server sends its models to a gateway, so agents 
  *  AGENT_MODEL first, and chooseModel the plan before the gateway); capabilities send that default under the prefix
  *  (`agent-model/chatgpt/<id>`), so the prefix comes off before the check. */
 export const planRuns = (source?: Capabilities["models"]["source"], model?: string | null, routePrefix?: string | null): string =>
-  source === "gateway" && !isPlanModel(ownModel(model, routePrefix)) ? PLAN_RUNS_GATEWAY : PLAN_RUNS;
-/** A model id without the routing prefix the server names (`models.route_prefix`, a gateway's), else as it is: what to ask
- *  isPlanModel about, since a gateway sends a plan default as `agent-model/chatgpt/<id>`. */
-export const ownModel = (model: string | null | undefined, routePrefix: string | null | undefined): string | null | undefined =>
-  routePrefix && model?.startsWith(`${routePrefix}/`) ? model.slice(routePrefix.length + 1) : model;
+  source === "gateway" && !isPlanModel(withoutRoutePrefix(model, routePrefix)) ? PLAN_RUNS_GATEWAY : PLAN_RUNS;
 /** The paste step, while a sign-in waits. */
 export const PASTE_STEP = "Signing in on this computer finishes by itself. On a server elsewhere, the tab ends on a page that won't load: copy that tab's whole address and paste it here.";
 /** Ours, under OpenAI's disclosure: one person's plan, one server. */

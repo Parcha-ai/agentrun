@@ -131,7 +131,7 @@ import { gradeRow, notAuditableOf } from "./runner/audit.js";
 import { namedDisksOf } from "./learn/learning-of.js";
 import { auditsOffWords, auditWriterOf, isShadowRun, readAudits, servingLinesOf, shadowRunId } from "./learn/audit.js";
 import { auditLoopOf, COMPILE_AFTER_MAX } from "./learning-setting.js";
-import { FINAL_STATES, RUN_CHANGES_PAGE, type RunChange, type RunChangeCursor } from "./store/store.js";
+import { FINAL_STATES, type ListedFilter, RUN_CHANGES_PAGE, type RunChange, type RunChangeCursor } from "./store/store.js";
 import { championOf, forgetRunCopies, type Grade, GRADE_SOURCES, GRADES_KEPT, type GradeSource, gradeView, LABEL_MAX, type PromotionRecord, promotionsOf, promotionsShown, type Refused, servingOf, servingStateOf, shownDeep } from "./learn/promote.js";
 import { workflowNodesOf } from "./learn/workflow-nodes.js";
 import { deleteLearning } from "./learn/delete.js";
@@ -160,7 +160,7 @@ import { recordDataRoot } from "./runner/disk-free.js";
 import { recordRunEnv, runFacingNames } from "./runner/runner-check.js";
 import { DRAIN_TIMEOUT } from "./runner/beside.js";
 import { runnerName } from "./runner/runner.js";
-import { analyticsFilter, analyticsView, statsView } from "./stats.js";
+import { analyticsFilter, analyticsView, statsView, utcOf } from "./stats.js";
 import { loggedReads, within, WRAPPED_WAIT_MS, wrappedView } from "./wrapped.js";
 import { type CostBasis, joinedBasis } from "./runner/metrics.js";
 import { unifiedUsage } from "./unified-usage.js";
@@ -285,6 +285,14 @@ const MAX_WAIT_MS = 25_000;
 const HANDED_FIXED = ["revision", "hold", "hold_minutes"] as const;
 /** How often the server fails the runs still queued while no runner here can take them (runner/presence.ts). */
 const REFUSED_SWEEP_MS = 2_000;
+/** How long the server's stop waits for a ChatGPT sign-in it cancelled to end (ChatGPTPlan.close): one past its code's
+ *  exchange saves its row before the store closes; one OpenAI holds longer does not hold the stop. */
+const PLAN_CLOSE_MS = 2_000;
+/** The ChatGPT sign-ins `plan` cancels, ended, or `ms` gone. */
+const planClosed = (plan: ChatGPTPlan, ms: number): Promise<void> => {
+  let timer: NodeJS.Timeout | undefined;
+  return Promise.race([plan.close(), new Promise<void>((done) => (timer = setTimeout(done, ms)))]).finally(() => clearTimeout(timer));
+};
 const PAGE_ROWS = 500;
 const FILE_LIST_CAP = 2_000;
 /** Where the stop's lines go (ServeOptions.notice). Best-effort: a notice that throws never stops a close or a start. */
@@ -480,6 +488,8 @@ export type ServeOptions = {
   /** For tests: the attach socket's liveness timing (computer-attach.ts AttachTiming), a relayed dial's included; the
    *  protocol's by default. */
   attachTiming?: AttachTiming;
+  /** For tests: how long the stop waits for a ChatGPT sign-in it cancelled to end (PLAN_CLOSE_MS by default). */
+  planCloseMs?: number;
   /** The most runs at once (default: AGENTRUN_MAX_RUNS, else as many pi runs as this host's memory holds: host.ts),
    *  beside the memory each run's harness reserves; over either, 429. */
   maxRuns?: number;
@@ -1590,7 +1600,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // where it is signed in. A sign-in, a sign-out or an expiry it sees makes the reading again, as a key's save does.
   const plan = new ChatGPTPlan({ store, sealKey: seal.key, log: (fields) => (log ? log(logLine("chatgpt", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("chatgpt", fields)}\n`)), changed: () => keysChanged() });
   await plan.load();
-  stops.push(async () => void plan.close());
+  stops.push(() => planClosed(plan, options.planCloseMs ?? PLAN_CLOSE_MS));
   // Claude Code's login on this machine (claude-login.ts): env carries where it is while the owner has it on, so
   // claude-agent's model checks see a model without a key. Unset, its switch follows the listen address: there on
   // loopback, off past it. A setting kept where the mode is now off or refused goes first.
@@ -1908,8 +1918,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       : {
         hostWhy,
         kinds: { SETTING_KINDS, PROVIDERS: COMPUTER_PROVIDERS, servingRefusals },
-        // The one place serve builds a provider (workspace/computer-providers.ts), the claim's makers' own.
-        factories: computerProviderFactories(computerProviderMakers(), (id) => storeLedger(store.computerLedger, id)),
+        // The one place serve builds a provider (workspace/computer-providers.ts), the claim's makers' own, each given the
+        // server's values of the host variables its descriptor reads (Docker's PATH, HOME and DOCKER_HOST, for its test and
+        // an agent computer's release).
+        factories: computerProviderFactories(computerProviderMakers({ env: process.env }), (id) => storeLedger(store.computerLedger, id)),
         answers: dockerAnswers,
       }),
   }));
@@ -4372,7 +4384,37 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     return given[0];
   }
 
-  async function runsPage(url: URL, filter: { agent?: string; revision?: string }, origin: string, source?: string) {
+  /** GET /runs' `from` and `to`, each once: ISO instants with a zone (the server reads no time zone of its own), the window
+   *  [from, to) of the runs' starts, in ms. Either one alone; a `from` after `to` is 400, one equal to it an empty window. */
+  function windowParams(url: URL): { startedFrom?: number; startedBefore?: number } {
+    const instant = (name: "from" | "to"): number | undefined => {
+      const given = url.searchParams.getAll(name);
+      if (given.length === 0) return undefined;
+      // As the analytics' bounds read (stats.ts utcOf): an RFC 3339 date-time that exists, to the ms.
+      const iso = given.length === 1 ? utcOf(given[0]!) : undefined;
+      if (iso === undefined) throw new ApiError("bad_request", `${name} is one RFC 3339 date-time with its zone (2026-11-01T00:00:00Z, or an offset such as +01:00), to the millisecond; once`);
+      return Date.parse(iso);
+    };
+    const from = instant("from"), to = instant("to");
+    if (from !== undefined && to !== undefined && from > to) throw new ApiError("bad_request", "from is at or before to: the window [from, to) of the runs' starts");
+    return { ...(from !== undefined ? { startedFrom: from } : {}), ...(to !== undefined ? { startedBefore: to } : {}) };
+  }
+
+  /** GET /runs' `model`, once: a model as a run's metrics name it, `provider/model`. */
+  function modelParam(url: URL): string | undefined {
+    const given = url.searchParams.getAll("model");
+    if (given.length === 0) return undefined;
+    if (given.length > 1 || !/^[^\u0000-\u001f\u007f]{1,256}$/.test(given[0]!)) throw new ApiError("bad_request", "model is one model as a run's metrics name it (provider/model); once");
+    return given[0];
+  }
+
+  /** GET /runs' own filters: `source`, the window (`from`, `to`) and `model`. */
+  function runsOnly(url: URL): Pick<ListedFilter, "source" | "startedFrom" | "startedBefore" | "model"> {
+    const source = sourceParam(url), model = modelParam(url);
+    return { ...(source !== undefined ? { source } : {}), ...windowParams(url), ...(model !== undefined ? { model } : {}) };
+  }
+
+  async function runsPage(url: URL, filter: { agent?: string; revision?: string }, origin: string, only: Pick<ListedFilter, "source" | "startedFrom" | "startedBefore" | "model"> = {}) {
     const limit = limitOf(url.searchParams.get("limit"));
     const offset = cursorOf(url.searchParams.get("cursor"));
     const status = url.searchParams.get("status");
@@ -4386,7 +4428,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // ordered and cut to the page in one query, so a list costs the same at ten runs and at thousands, however long their
     // journals. An audit's shadow run is no row of the list (learn/audit.ts): it is read by id, and its cost is its served
     // run's. A run's archive is its own or its agent's.
-    const where = { ...(filter.agent !== undefined ? { agentId: filter.agent } : {}), ...(filter.revision !== undefined ? { revisionId: filter.revision } : {}), ...(labels ? { labels } : {}), ...(source !== undefined ? { source } : {}), archived };
+    const where = { ...(filter.agent !== undefined ? { agentId: filter.agent } : {}), ...(filter.revision !== undefined ? { revisionId: filter.revision } : {}), ...(labels ? { labels } : {}), ...only, archived };
     // A listing is built by the server's lister (run-listing.ts) once per change, so a list finds it current. One that is
     // behind (a write landed since, or the lister has not reached it since the store was upgraded) is built here, written
     // back, and shown as built: for a status filter, first every run still going whose listing is behind (its row's
@@ -4858,8 +4900,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const state = await store.schemaState?.().catch(() => undefined);
       const storeSchema = state ? { store_schema: { version: state.version, runner_floor: state.runnerFloor, known: state.known } } : {};
       // features.harness_keys.kept names which harness ids still have keys stored: the owner's session or a holder of
-      // the server's token reads it; a caller with neither (this route answers before any bearer check) reads none.
+      // the server's token reads it; a caller with neither (this route answers before any bearer check) reads none. A
+      // bearer this server does not take still gets the answer, and the auth_failed line any other route writes for it.
       const keptShown = byOwnerSession(req) || bearer(req.headers.authorization, req);
+      if (!keptShown && req.headers.authorization !== undefined) authFailed(`/v2${path}`, "wrong_token");
       const keptCap = { ...answer.features.harness_keys, kept: keptShown ? answer.features.harness_keys.kept : [] };
       // features.api_keys.routes: false on an API-only server, which serves none of the keys' routes and reads no key.
       return send(res, 200, { ...answer, ...storeSchema, runner_refused: runnerRefused, features: { ...answer.features, harness_keys: keptCap, computers: await computerCapabilities(computersOf()), triggers: { ...answer.features.triggers, public_url: Boolean(options.publicUrl) }, claude_login: !loginOff && !options.apiOnly, api_keys: { ...answer.features.api_keys, routes: !options.apiOnly } } });
@@ -5449,7 +5493,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "listAllRuns": {
         const agent = url.searchParams.get("agent") ?? undefined;
         const revision = url.searchParams.get("revision") ?? undefined;
-        return send(res, 200, await runsPage(url, { ...(agent ? { agent } : {}), ...(revision ? { revision } : {}) }, linkOrigin(req), sourceParam(url)));
+        return send(res, 200, await runsPage(url, { ...(agent ? { agent } : {}), ...(revision ? { revision } : {}) }, linkOrigin(req), runsOnly(url)));
       }
       case "getRun": {
         const run = await runRead(id, linkOrigin(req));
@@ -7045,8 +7089,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     closing = true;
     stopping.abort();
     clearInterval(localSourceTimer);
-    // Cancel a pending ChatGPT callback without signing out or changing the saved credential (not waited for).
-    void plan.close();
+    // Cancel a pending ChatGPT callback without signing out or changing the saved credential. One past its code's
+    // exchange is waited for a short while (planClosed), so its row lands before the store closes.
+    const planStopped = planClosed(plan, options.planCloseMs ?? PLAN_CLOSE_MS);
     // The CLI's sign-in still waiting for its browser ends with the server, which forgets it: left running, its CLI would
     // keep the browser's callback port from the next server's sign-in. Awaited until its process is gone.
     const signInStopped = claudeSignIns.close();
@@ -7069,6 +7114,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await schemaSealed;
     await installStopped;
     await signInStopped;
+    await planStopped;
     await observationStopped;
     await localSourceSweep;
     // The ends' follower stops before the webhooks it feeds and the store it reads.

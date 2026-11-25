@@ -22,7 +22,7 @@ import type { GateAnswer, GateCall } from "@parcha/agentrun-kernel";
 import type { DriveContext, HostTool, SessionState } from "@parcha/agentrun-kernel/kernel";
 import { askGate, journalRecords, NativeJournal, openTurn, placeSubmissions, recoveryNote, resumeUnstartedCalls, toolBridge, toolKey, transcriptOf, type DanglingCall, type ToolBridge, type TranscriptEntry } from "@parcha/agentrun-kernel/process";
 import type { ParentWatch } from "@parcha/agentrun-kernel/host";
-import { CallIds, MCP_SERVER, ourTool, permissionCallId } from "./calls.js";
+import { announcedInput, CallIds, MCP_SERVER, ourTool, permissionCallId } from "./calls.js";
 import { ACP_CODES } from "./facts.js";
 import { homePath, type AcpRecipe } from "./recipe.js";
 import { restoreState, STATE_STREAM, StateMirror, type StateRecord } from "./state.js";
@@ -349,7 +349,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
         // Only a call whose kind has no effects of its own can be ours (ourTool): a shell titled as our tool never takes an
         // MCP call's id, and never passes the permission shortcut below.
         const tool = ourTool(update as { title?: string | null; name?: string | null; kind?: string | null }, names);
-        if (tool) rt.calls.add(update.toolCallId, tool, update.rawInput);
+        if (tool) rt.calls.add(update.toolCallId, tool, announcedInput(update as { title?: string | null; name?: string | null }, update.rawInput));
         return;
       }
       case "tool_call_update": {

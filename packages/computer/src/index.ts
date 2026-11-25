@@ -4,6 +4,7 @@ export * from "./provider.js";
 export * from "./ui-engine.js";
 export * from "./attach.js";
 export * from "./mount.js";
+export { SDK_MISSING } from "./vendor-sdk.js";
 export { type CallOptions, DaemonClient, type DaemonStream, findNodes, refusedStep, type UiActOptions, type UiQuery, UiSession } from "./client.js";
 export { type ActionFailure, type CheckActionsOptions, checkActions, isKey } from "./actions.js";
 export { pullTar, pullTarStream, pushTar, readFile, writeFile, type PulledTar } from "./files.js";
@@ -50,6 +51,7 @@ export {
 	recipeHash,
 	recipeTag,
 } from "./docker/image.js";
+export { BASE_ENV_NAMES, CHROME_ENV_NAMES, childEnv, chromeEnv, DOCKER_ENV_NAMES, dockerEnv, type HostEnv } from "./child-env.js";
 export { EGRESS_IMAGE, EGRESS_LABEL, EGRESS_MOUNT, EGRESS_SOCKET } from "./docker/egress.js";
 export {
 	ARCHIL_HELPER,
