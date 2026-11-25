@@ -329,6 +329,24 @@ test("a sign-out where AgentRun's own login folder became a link after the turn-
   assert.equal(r.rows.has(CLAUDE_LOGIN_SETTING), false, "the mode is off");
 });
 
+test("a sign-out where AgentRun's own login folder became a link removes the login's signed-in note too, so no run reads the old login as signed in", async (t) => {
+  const r = await rig(t, { signedIn: true });
+  signedInAt(r.data);
+  assert.equal((await login.claudeLoginView(r.deps)).state, "signed_in");
+  assert.equal(answers(r.data).length, 1, "a signed-in note is kept for the login");
+  const elsewhere = await elsewhereFolder(t);
+  const folder = join(r.data, "claude-login");
+  rmSync(folder, { recursive: true, force: true });
+  symlinkSync(elsewhere, folder);
+  const out = await login.signOutClaudeLogin(r.deps);
+  assert.deepEqual(r.logouts, [], "no CLI sign-out ran through the link");
+  assert.equal(lstatSync(folder, { throwIfNoEntry: false }), undefined, "the link is removed");
+  assert.deepEqual(answers(r.data), [], "the login's signed-in note is removed");
+  assert.ok(existsSync(join(elsewhere, CREDENTIALS)), "what the link led to is left as it was");
+  assert.equal(out.confirmed, false, JSON.stringify(out));
+  assert.equal(r.rows.has(CLAUDE_LOGIN_SETTING), false, "the mode is off");
+});
+
 test("a sign-out where the login folder is swapped for a link while the CLI signs out removes nothing outside the data folder: the link goes, what it leads to and the lock beside that are left", async (t) => {
   const elsewhere = await elsewhereFolder(t);
   let folder;
