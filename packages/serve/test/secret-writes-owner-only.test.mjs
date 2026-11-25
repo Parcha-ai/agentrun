@@ -473,17 +473,19 @@ test("the token's first save of a name is the token's from the moment its row is
   assert.equal((await server.store.settings.get(mcpSourceKey("docs")))?.by, "token", "the server is the token's");
 });
 
-test("an owner's delete never strips the mark of the token's first save of the name that lands while it removes: the token's new row stays the token's", async (t) => {
+test("an owner's delete of the token's server never strips the mark of the token's save of the name again that lands while it removes: the token's new row stays the token's", async (t) => {
   const server = await serve(t);
-  const owners = await startFakeMcp();
-  const chosen = await startFakeMcp();
-  t.after(() => Promise.all([owners.close(), chosen.close()]));
+  const first = await startFakeMcp();
+  const again = await startFakeMcp();
+  t.after(() => Promise.all([first.close(), again.close()]));
   const page = await asPage(server);
   const token = asToken(server);
-  const made = await page("PUT", "/settings/mcp-servers/docs", { url: owners.url, auth: { type: "bearer", token: TOKEN } });
+  const made = await token("PUT", "/settings/mcp-servers/docs", { url: first.url, auth: { type: "none" } });
   assert.equal(made.status, 200, made.text);
-  // The token's first save of the name, whole, between the delete's read of the name's record (its row already gone) and
-  // the delete's removal of that record.
+  const old = await server.store.mcp.server("docs");
+  assert.deepEqual((await server.store.settings.get(mcpSourceKey("docs")))?.of, old.createdAt, "the token's first save recorded its row");
+  // The token's save of the name again, whole (a first save: the row is gone), between the delete's read of the name's
+  // record, which is still the old row's, and the delete's removal of it.
   let armed = true;
   let saved;
   const prototype = onPostgres ? PgConnection.prototype : Connection.prototype;
@@ -492,7 +494,7 @@ test("an owner's delete never strips the mark of the token's first save of the n
     const value = await get.call(this, sql, ...params);
     if (armed && sql === "SELECT value FROM settings WHERE key = ?" && params[0] === mcpSourceKey("docs") && (await server.store.mcp.server("docs")) === undefined) {
       armed = false;
-      saved = await token("PUT", "/settings/mcp-servers/docs", { url: chosen.url, auth: { type: "none" } });
+      saved = await token("PUT", "/settings/mcp-servers/docs", { url: again.url, auth: { type: "none" } });
     }
     return value;
   });
@@ -502,6 +504,7 @@ test("an owner's delete never strips the mark of the token's first save of the n
   assert.equal(saved.status, 200, saved.text);
   const row = await server.store.mcp.server("docs");
   const record = await server.store.settings.get(mcpSourceKey("docs"));
-  assert.equal(row?.url, chosen.url, "the token's row is the one saved");
-  assert.deepEqual([record?.by, record?.of], ["token", row.createdAt], `the owner's delete stripped the token's new mark: it read the name's record before the token's first save and removed the key after it, so the token's row reads as the owner's (record ${JSON.stringify(record)})`);
+  assert.equal(row?.url, again.url, "the token's new row is the one saved");
+  assert.notEqual(row.createdAt, old.createdAt, "a new row");
+  assert.deepEqual([record?.by, record?.of], ["token", row.createdAt], `the owner's delete stripped the token's new mark: it read the old row's record before the token saved the name again and removed the key after, so the token's new row reads as the owner's (record ${JSON.stringify(record)})`);
 });
