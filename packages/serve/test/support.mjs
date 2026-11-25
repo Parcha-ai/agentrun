@@ -27,7 +27,7 @@ import { maxRunsOf } from "../dist/host.js";
 import { claimInstallsStopped } from "../dist/harness-install.js";
 import { runnerMemory } from "../dist/runner/memory-claim.js";
 import { dispatchRunner } from "../dist/runner/harness-loops.js";
-import { childLoops } from "../dist/runner/run-child-host.js";
+import { childLoops, isolationLoops } from "../dist/runner/run-child-host.js";
 import { runnerComputers } from "../dist/runner/main.js";
 import { routeOf } from "../dist/runner/model-route.js";
 import { withoutFaux } from "../dist/model.js";
@@ -454,13 +454,17 @@ export async function startInProcessRunner(data, { faux, githubApi, githubWeb, g
     // its keys and calls the runner's across the channel; the same user unless `childRuns.isolation` says otherwise (a
     // stand-in helper's), its lines on `childRuns.log`, its runs' traces on `childRuns.tracing` (a test's exporter).
     const childLog = childRuns?.log ?? (() => {});
-    const createLoop = childRuns ? childLoops({ deps: { ...deps, log: childLog }, isolation: childRuns.isolation ?? { kind: "process", why: "a test's runner" }, log: childLog, ...(childRuns.tracing ? { tracing: childRuns.tracing } : {}) }) : dispatchRunner(deps);
+    const childIsolation = childRuns?.isolation ?? { kind: "process", why: "a test's runner" };
+    const createLoop = childRuns ? childLoops({ deps: { ...deps, log: childLog }, isolation: childIsolation, log: childLog, ...(childRuns.tracing ? { tracing: childRuns.tracing } : {}) }) : dispatchRunner(deps);
     runner = startRunner({
       ...(runnerTiming ?? {}),
       store,
       // Each end's census of what its caller handed the run, as the CLI's runner beside it makes it (runner/beside.ts).
       census: runCensus(store, { data: deps.data, sealKey, env }),
-      loops: maxRunsOf(process.env, switches.maxRuns),
+      // Where each run is a user of its own, no more runs at once than its slots, as the CLI's runners hold them
+      // (run-child-host.ts isolationLoops): a run that reads completed while its claim still gives its slot back leaves the
+      // next run queued, never claimed onto the held slot and refused for it.
+      loops: isolationLoops(childIsolation, maxRunsOf(process.env, switches.maxRuns)),
       // And by memory, as the CLI's runners claim (memory-claim.ts): each waiting run weighed by its harness against this
       // host's memory, read now (a test's process.constrainedMemory stand-in, set before serve(), is its container limit).
       memory: runnerMemory(store, undefined, env),
