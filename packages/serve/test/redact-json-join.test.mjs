@@ -440,6 +440,18 @@ test("an SDK run's learned_workflow start whose arguments hold a split held valu
   const inbox = await run.inbox();
   assert.deepEqual(shows(JSON.stringify(inbox)), []);
   assert.deepEqual(inbox.batches.map((batch) => batch.events), [[{ ...workflowStart("release"), input: "[redacted]" }], [callback]]);
+  assert.deepEqual(inbox.workflow_calls, { workflow: "release" });
+});
+
+test("an SDK run's learned_workflow start stored withheld whose id holds a held value: the stored row shows no part of it, and the workflow it names is kept under the id as stored", async (t) => {
+  const run = await sdkWorkflowRunOf(t);
+  const start = { ...workflowStart("release"), id: `workflow-${KEY}` };
+  assert.deepEqual(await run.sdk.events(run.id, { sequence: 1, events: [start] }), { accepted: true });
+  const row = await run.inbox();
+  assert.deepEqual(shows(JSON.stringify(row)), []);
+  const stored = row.batches[0].events[0];
+  assert.deepEqual(stored, { ...start, id: "workflow-[redacted]", input: "[redacted]" });
+  assert.deepEqual(row.workflow_calls, { [stored.id]: "release" });
 });
 
 test("an SDK run's learned_workflow start whose arguments hold a split held value and that names no workflow the run was given still refuses a callback nested in it (control)", async (t) => {
