@@ -2226,7 +2226,7 @@ const SHARE_BUNDLE = closed({
   rows: { type: "array", items: { type: "object" }, description: "Its Timeline rows as `GET /runs/{run_id}/timeline` serves them." },
   graph: { type: ["object", "null"], description: "A workflow run's graph as `GET /runs/{run_id}/graph` serves it, but for `read_at` and the run's ids (`run` carries status, paused, startedAt and endedAt); null for an agentic run." },
   files: { type: "array", items: closed({ path: { type: "string" }, bytes: { type: "integer", minimum: 0 }, sha256: { type: "string", pattern: "^[0-9a-f]{64}$", description: "As a template package's: path, a NUL byte, the content's bytes, a NUL byte." }, encoding: { const: "utf8" }, content: { type: "string" } }), description: "The run's UTF-8 text files, sorted by path: 256 KiB each, 4 MiB and 200 files in all." },
-  omitted: { type: "array", items: { type: "object", additionalProperties: false, required: ["what", "why"], properties: { what: { enum: ["file", "files", "recordings"] }, path: { type: "string" }, why: { enum: ["binary", "too_large", "over_total", "over_count", "unreadable", "list_truncated", "never"] } } }, description: "What the bundle leaves out, and why. Recordings and screenshots are never carried." },
+  omitted: { type: "array", items: { type: "object", additionalProperties: false, required: ["what", "why"], properties: { what: { enum: ["file", "files", "recordings"] }, path: { type: "string" }, why: { enum: ["binary", "too_large", "over_total", "over_count", "unreadable", "list_truncated", "uncounted", "never"] } } }, description: "What the bundle leaves out, and why. Recordings and screenshots are never carried." },
   cuts: { type: "array", items: SHARE_CUT },
   restored: { type: "array", items: SHARE_RESTORED },
 });

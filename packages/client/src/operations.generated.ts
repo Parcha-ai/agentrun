@@ -4742,7 +4742,7 @@ export type GetRunExportResponse = {
   omitted: Array<{
     what: "file" | "files" | "recordings";
     path?: string;
-    why: "binary" | "too_large" | "over_total" | "over_count" | "unreadable" | "list_truncated" | "never";
+    why: "binary" | "too_large" | "over_total" | "over_count" | "unreadable" | "list_truncated" | "uncounted" | "never";
   }>;
   cuts: Array<{
     id: string;
