@@ -5,8 +5,8 @@
 // mcp_auth.<server>.composio_user_id, nothing written. The owner's set is read at each check, so a user the owner
 // connects after a token's start is refused at the next. The seal marks who handed each binding (`by`), and the runner's
 // claim reads the set again: a token's binding of a user the owner has connected since, or an unmarked one sealed before
-// the mark, is refused unsent. The owner's session binds the owner's users as before. API-only has no owner: only the
-// default user is refused. Fake Composio on loopback (fixtures/fake-composio.mjs), the faux MCP model
+// the mark, is refused unsent. The owner's session binds the owner's users as before. API-only has no owner's session:
+// every caller is the token, and the same users are refused (api-only-composio-binding). Fake Composio on loopback (fixtures/fake-composio.mjs), the faux MCP model
 // (fixtures/faux-mcp.mjs). No key, no network.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
@@ -269,7 +269,7 @@ test("the owner's session binds a user the owner connected: its start passes, an
   assert.deepEqual(toolCalls(s.composio.mcpLog.slice(from)).map(asWho), [[OWNER, ACCOUNT_OWNER]], "as the owner's user and account");
 });
 
-test("API-only: no owner, so a token binds a bare user id and agentrun.token.<x>, and its call reaches Composio as that user", { timeout: 120_000 }, async (t) => {
+test("API-only: no owner, so a token binds a bare user id and agentrun.token.<x>, and its call reaches Composio as that user; the default user is refused", { timeout: 120_000 }, async (t) => {
   const KEY = `not-a-secret-${"composio-env-key-0001"}`;
   withEnv(t, { COMPOSIO_API_KEY: KEY });
   const composio = await startFakeComposio({ apiKey: KEY, toolkits: TOOLKITS, mcpAccounts: MCP_ACCOUNTS });
@@ -278,11 +278,17 @@ test("API-only: no owner, so a token binds a bare user id and agentrun.token.<x>
   const token = (method, path, body) => server.api(method, path, body, { authorization: `Bearer ${server.token}` });
   const saved = await token("PUT", "/settings/mcp-servers/mail/composio", { api_key_env: "COMPOSIO_API_KEY", toolkit: "gmail", tools: ["add"], user_id: "per_run" });
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
-  for (const [user, account] of [[USER_A, ACCOUNT_A], [TOKEN_USER]]) {
+  // No account named: an API-only binding's named account must be one Composio lists under the user (api-only-composio-binding).
+  for (const user of [USER_A, TOKEN_USER]) {
     const from = composio.mcpLog.length;
-    const started = await token("POST", "/runs", inline(bind(user, account)));
+    const started = await token("POST", "/runs", inline(bind(user)));
     assert.equal(started.status, 202, `${user}: ${JSON.stringify(started.body)}`);
     await follow(token, started.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
     assert.deepEqual(toolCalls(composio.mcpLog.slice(from)).map((entry) => asWho(entry)[0]), [user], `${user}'s call reached Composio as that user`);
   }
+  const runs = (await token("GET", "/runs")).body.runs.length;
+  const refused = await token("POST", "/runs", inline(bind(COMPOSIO_USER)));
+  const issue = refused.body.error?.fields?.[0];
+  assert.deepEqual([refused.status, issue?.field, issue?.reason], [422, FIELD, "not_allowed"], JSON.stringify(refused.body));
+  assert.equal((await token("GET", "/runs")).body.runs.length, runs, "no run is written for a refused binding");
 });
