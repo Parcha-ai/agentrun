@@ -3439,6 +3439,12 @@ export const COMMANDS = [
         "type": "string",
         "required": false,
         "description": "Only runs holding this label: `<key>:<value>`, split at the first `:` (a key holds none). Once per request; a second `label`, or one that does not read as a label, is 400."
+      },
+      {
+        "name": "source",
+        "type": "string",
+        "required": false,
+        "description": "Only runs imported from this source, a source's name as the run's `imported_from.source` holds it (`claude-code`, `codex`, ...), or `live` for the runs made here, not imported. A name no run holds lists none. Once per request; a second `source`, or one that does not read as a name, is 400."
       }
     ],
     "headers": [],
@@ -5053,6 +5059,12 @@ export const COMMANDS = [
 // Every route whose body carries a secret, a command's or one with no command (omitted): a raw `api` call to one never
 // takes its body from the command line, and what it prints has the body's values cut, its public fields kept.
 export const SECRET_ROUTES = [
+  {
+    "operationId": "listComposioToolkits",
+    "method": "POST",
+    "path": "/settings/mcp-servers/composio/toolkits",
+    "publicFields": []
+  },
   {
     "operationId": "listComposioTools",
     "method": "POST",

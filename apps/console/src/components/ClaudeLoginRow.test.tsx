@@ -73,6 +73,21 @@ describe("Settings → Model keys, Claude Code's login on this machine", () => {
     expect(page.button(/Open the CLI's sign-in here/)).toBeDefined();
   });
 
+  it("off: while the owner's word is not ticked, Turn on says why it waits, next to it and as its description; ticked, the words go", async () => {
+    const WHY = 'Tick "Only I run agents on this server" to turn it on.';
+    const { v2 } = server(() => OFF, () => OFF);
+    const page = await open(v2);
+    const turnOn = page.button(/^Turn on$/)!;
+    expect(turnOn.disabled).toBe(true);
+    expect(page.row()!.textContent).toContain(WHY);
+    const described = turnOn.getAttribute("aria-describedby");
+    expect(described && document.getElementById(described)?.textContent).toBe(WHY);
+    await act(async () => { page.row()!.querySelector<HTMLInputElement>('input[name="only_me"]')!.click(); });
+    expect(page.button(/^Turn on$/)!.disabled).toBe(false);
+    expect(page.row()!.textContent).not.toContain(WHY);
+    expect(page.button(/^Turn on$/)!.getAttribute("aria-describedby")).toBeNull();
+  });
+
   it("signed in: who and which plan; Turn off; nothing else to type", async () => {
     let view: ClaudeLoginView = { ...OFF, state: "signed_in", place: "machine", account: { method: "claude.ai", email: "person@example.com", plan: "max" } };
     const { v2, calls } = server(() => view, () => (view = { ...OFF, place: "machine" }));
@@ -208,6 +223,18 @@ describe("Settings → Model keys, Claude Code's login on this machine", () => {
     expect(radio.parentElement!.textContent).toBe("This machine's Claude Code login (/work/claude-config)");
     await act(async () => { radio.click(); });
     expect(set.row()!.textContent).not.toMatch(/start AgentRun with CLAUDE_CONFIG_DIR/);
+  });
+
+  it("names where this machine's login keeps its credentials when the server's environment sets CLAUDE_SECURESTORAGE_CONFIG_DIR, set and empty included, and says nothing of it otherwise", async () => {
+    const at = (credentials?: string): ClaudeLoginView => ({ ...SIGNED_OUT_HERE, place: "machine", folder: "/u/p/.claude", machine: { ...OFF.machine, ...(credentials === undefined ? {} : { credentials }) } as ClaudeLoginView["machine"] });
+    const set = await open(server(() => at("/u/p/secure"), () => at("/u/p/secure")).v2);
+    expect(set.row()!.textContent).toContain("Its credentials are read from /u/p/secure, as CLAUDE_SECURESTORAGE_CONFIG_DIR in the server's environment says.");
+    act(() => root?.unmount());
+    const empty = await open(server(() => at(""), () => at("")).v2);
+    expect(empty.row()!.textContent).toMatch(/CLAUDE_SECURESTORAGE_CONFIG_DIR set empty in the server's environment.*~\/\.claude, and on macOS the Keychain item with no suffix/);
+    act(() => root?.unmount());
+    const none = await open(server(() => at(), () => at()).v2);
+    expect(none.row()!.textContent).not.toMatch(/Its credentials are read/);
   });
 
   it("a sign-in the server started that still waits shows as waiting from the server's word, after a reload too, with no press on this page", async () => {

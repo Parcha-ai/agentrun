@@ -305,6 +305,10 @@ export interface components {
     learning_usd?: number | null;
     tools_usd?: number | null;
     all_in_usd?: number | null;
+    compile_usd?: number | null;
+    followup_usd?: number | null;
+    shadow_usd?: number | null;
+    share_usd?: number | null;
     degraded?: true;
     plan?: {
       requests: number;
@@ -627,6 +631,7 @@ export interface components {
       auth: ("none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run")[];
       at_rest: "sealed";
       harnesses: string[];
+      composio_per_run: boolean;
     };
     tool_permissions?: boolean;
     webhooks?: {
@@ -2796,6 +2801,7 @@ export interface operations {
       machine: {
         folder: string;
         source: "CLAUDE_CONFIG_DIR" | "default";
+        credentials?: string;
       };
       sign_in?: {
         state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
@@ -2921,6 +2927,11 @@ export interface operations {
         cost_upper_bound: boolean;
         learning_usd: number | null;
         total_usd: number | null;
+        compile_usd?: number | null;
+        followup_usd?: number | null;
+        shadow_usd?: number | null;
+        share_usd?: number | null;
+        not_served?: "cost_stop" | "cut" | null;
       }[];
       total_runs: number;
       unknown_cost_runs: number;
@@ -3083,6 +3094,11 @@ export interface operations {
       listed_at: string;
       updated_at: string;
       secret?: components["SecretMeta"];
+      composio_account?: {
+        state: "connected" | "pending" | "expired" | "none" | "unknown";
+        labels?: string[];
+        checked_at: string;
+      };
     };
   };
   getModelGateway: {
@@ -4189,12 +4205,14 @@ export interface operations {
         sessions: number;
         requests: number;
         tokens: number;
+        sources: string[];
       }[];
       models: {
         model: string;
         requests: number;
         tokens: number;
         cost_usd: number;
+        unpriced_requests: number;
       }[];
       sources: {
         source: string;
@@ -4510,6 +4528,17 @@ export interface operations {
       }[];
     };
   };
+  listComposioToolkits: {
+    body: {
+      api_key: string;
+    };
+    answer: {
+      toolkits: {
+        slug: string;
+        name: string;
+      }[];
+    };
+  };
   listComposioTools: {
     body: {
       api_key: string;
@@ -4589,6 +4618,8 @@ export interface operations {
         online: boolean;
         held_by_run: string | null;
         held_until: string | null;
+        held_on: string | null;
+        hold_note: string | null;
         pairing: string;
         created_at: string;
         seen_at: string | null;
@@ -5032,6 +5063,11 @@ export interface operations {
         listed_at: string;
         updated_at: string;
         secret?: components["SecretMeta"];
+        composio_account?: {
+          state: "connected" | "pending" | "expired" | "none" | "unknown";
+          labels?: string[];
+          checked_at: string;
+        };
       }[];
     };
   };
@@ -6103,6 +6139,11 @@ export interface operations {
         listed_at: string;
         updated_at: string;
         secret?: components["SecretMeta"];
+        composio_account?: {
+          state: "connected" | "pending" | "expired" | "none" | "unknown";
+          labels?: string[];
+          checked_at: string;
+        };
       };
     };
   };
@@ -6490,6 +6531,11 @@ export interface operations {
         listed_at: string;
         updated_at: string;
         secret?: components["SecretMeta"];
+        composio_account?: {
+          state: "connected" | "pending" | "expired" | "none" | "unknown";
+          labels?: string[];
+          checked_at: string;
+        };
       };
       connect_url?: string;
       not_served?: string[];
@@ -6634,6 +6680,11 @@ export interface operations {
       listed_at: string;
       updated_at: string;
       secret?: components["SecretMeta"];
+      composio_account?: {
+        state: "connected" | "pending" | "expired" | "none" | "unknown";
+        labels?: string[];
+        checked_at: string;
+      };
       composio?: {
         removed: boolean;
         note: string;
@@ -6883,6 +6934,7 @@ export interface operations {
       machine: {
         folder: string;
         source: "CLAUDE_CONFIG_DIR" | "default";
+        credentials?: string;
       };
       sign_in?: {
         state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
@@ -7139,6 +7191,7 @@ export interface operations {
       machine: {
         folder: string;
         source: "CLAUDE_CONFIG_DIR" | "default";
+        credentials?: string;
       };
       sign_in?: {
         state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
@@ -7172,6 +7225,7 @@ export interface operations {
       machine: {
         folder: string;
         source: "CLAUDE_CONFIG_DIR" | "default";
+        credentials?: string;
       };
       sign_in?: {
         state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
