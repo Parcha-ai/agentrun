@@ -726,3 +726,34 @@ test("a DELETE of a run empties every SDK run's inbox of the workflow text it wr
   assert.notEqual(late.status, 201, `the start is refused: ${JSON.stringify(late.body)}`);
   assert.doesNotMatch(await inboxes(), /RACEWORD/, "the refused start's inbox is removed");
 });
+
+// A start's receipt carries a workflow's description (its README.md) beside its text (its workflow.json), and the two
+// can be two runs' words: one run wrote both, a later one rewrote only the workflow.json. The start names every run
+// whose file it delivers, so a purge of the README.md's run refuses the receipt sent again and empties the inbox.
+test("an SDK start names every run whose file it delivers: a DELETE of the run that wrote only the README.md answers the receipt sent again 410 purged and empties the inbox", async (t) => {
+  const { api, store } = await serve(t, { runner: false });
+  const id = "sdk-readme";
+  const tool = { name: "mcp:backend/status", description: "Read release status.", input_schema: { type: "object" }, permission: "allow", price_usd: 0 };
+  const body = { runtime: "claude-agent-sdk", input: "Check release status.", instructions: "Use the backend tools.", workflow_tools: [tool] };
+  const flowOf = (deadline) => ({ v: 2, name: "status", schemas: { Input: { type: "object" }, Answer: { type: "object", properties: { ready: { type: "boolean" } }, required: ["ready"] } }, input: { schemaId: "Input" }, output: { schemaId: "Answer", path: "answer" }, root: { node: "call", label: "status", via: "tool", tool: tool.name, args: {}, out: "Answer", as: "answer", deadline_s: deadline } });
+  const [v1, v2] = [JSON.stringify(flowOf(5)), JSON.stringify(flowOf(9))];
+  assert.equal((await api("POST", "/agents", { definition: { id, name: id, instructions: body.instructions, sdk: { runtime: body.runtime }, learning: true, tools: [] } })).status, 201);
+  assert.equal((await api("POST", `/agents/${id}/sdk-runs`, body, { "Idempotency-Key": "first" })).status, 201);
+  await endedRuns(api, store, id, ["readme-writer", "json-writer"], false);
+  const readme = { path: "workflows/status/README.md", text: "---\nname: status\ndescription: Read release status, READMEWORD.\n---\n" };
+  await learned(store, id, (learning) => learningCommit(learning, { runId: "readme-writer", reason: "It learned status.", files: [{ path: "workflows/status/workflow.json", text: v1 }, readme] }));
+  const merge = await learned(store, id, (learning) => learningCommit(learning, { runId: "json-writer", reason: "It waits longer.", files: [{ path: "workflows/status/workflow.json", text: v2 }, readme] }));
+  await putPromotions(store, id, [recordOf("status", digestOf(v2), "promote", merge)]);
+  const inboxes = async () => JSON.stringify((await store.settings.all({ prefix: "sdk-run:" })).map((row) => row.value));
+  const pinned = await api("POST", `/agents/${id}/sdk-runs`, body, { "Idempotency-Key": "pinned" });
+  assert.equal(pinned.status, 201, JSON.stringify(pinned.body));
+  assert.deepEqual(pinned.body.learning.workflows.map(({ description, workflow }) => [description, digestOf(workflow)]), [["Read release status, READMEWORD.", digestOf(v2)]], "the start is given json-writer's workflow.json with readme-writer's README.md");
+  assert.match(await inboxes(), /READMEWORD/);
+  assert.equal((await api("DELETE", "/runs/readme-writer")).status, 204);
+  assert.doesNotMatch(await inboxes(), /READMEWORD/, "no SDK run's inbox keeps the purged run's README.md");
+  const again = await api("POST", `/agents/${id}/sdk-runs`, body, { "Idempotency-Key": "pinned" });
+  assert.deepEqual({ status: again.status, code: again.body?.error?.code, run: again.body?.error?.details?.run_id }, { status: 410, code: "purged", run: "readme-writer" }, `the receipt sent again refuses the purged run's description: ${JSON.stringify(again.body)}`);
+  const fresh = await api("POST", `/agents/${id}/sdk-runs`, body, { "Idempotency-Key": "fresh" });
+  assert.equal(fresh.status, 201, JSON.stringify(fresh.body));
+  assert.doesNotMatch(JSON.stringify(fresh.body.learning), /READMEWORD/, "a new start is given none of it");
+});

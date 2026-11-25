@@ -6,7 +6,7 @@ import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { inspectWorkflow, resolveSchemaForWorkflow } from "@parcha/agentrun-dsl";
 import { ApiError, invalid } from "../errors.js";
 import { canonical, isObject, cliLearningOf, learningSettingForBody, type AgenticBody } from "../store/agent-body.js";
-import type { Claim, RunOrigin, Store, SettingsGuard } from "../store/store.js";
+import type { Claim, LearningAt, RunOrigin, Store, SettingsGuard } from "../store/store.js";
 import type { AgentEntry } from "../agents-store.js";
 import { uuidv7 } from "../ids.js";
 import { launchBody, type RunLaunch } from "../run-launch.js";
@@ -19,7 +19,7 @@ import { refuseWhileNoRunner } from "../runner/presence.js";
 import { secretRedactor } from "../runner/redact.js";
 import { redactedOutput, withheldWhole } from "../key-refusal.js";
 import { decodedStrings, draftProblems } from "../learn/workflow-draft.js";
-import { learningOf, type LearningRead, readAt } from "../learn/rows.js";
+import { learningOf } from "../learn/rows.js";
 import { purgedRun, purgedRows } from "../purged-workflow.js";
 
 import { sdkWorkflowManifest, sdkDraftTools } from "./workflows.js";
@@ -77,8 +77,8 @@ export type SdkInbox = {
   batches: { sequence: number; events: SdkEvent[] }[];
   /** Exact promoted executable workflows delivered by the start receipt. */
   learning_workflows?: LearnedWorkflow[];
-  /** The runs whose text learning_workflows and learning_check's draft are: a receipt sent again after one of them is
-   *  purged answers 410 purged (receipt). */
+  /** The runs whose text learning_workflows and learning_check's draft are, every file's writer (a README.md's as well
+   *  as a workflow.json's): a receipt sent again after one of them is purged answers 410 purged (receipt). */
   learning_writers?: string[];
   /** The learned workflow a learned_workflow start names, by its call's id as stored, where its input is stored withheld (a held
    *  value split across its arguments, withheldParts): the parent check of a callback nested in it reads its name here
@@ -418,7 +418,7 @@ export class SdkRuns {
       const reset = learning ? await resetAtOf(this.store.settings, entry.agent.id) : undefined;
       if (learning && reset !== undefined && !(learning.seededAt !== undefined && learning.seededAt > reset))
         throw new ApiError("unavailable", "The agent's learning was reset while this run started: start it again.", { retry_after_ms: 1_000 });
-      const selected = learning && !learning.noWorkflows && workflow ? await this.selectedWorkflows(entry.agent.id, learning.seed, workflow) : { workflows: [], writers: new Map<LearnedWorkflow, string>(), candidates: [], drafts: {} as Record<string, string> };
+      const selected = learning && !learning.noWorkflows && workflow ? await this.selectedWorkflows(entry.agent.id, learning.seed, workflow) : { workflows: [], writers: new Map<LearnedWorkflow, string[]>(), candidates: [], drafts: {} as Record<string, string[]> };
       const cleaned = this.clean({ instructions, ...(model ? { model } : {}) });
       const runId = uuidv7();
       const redacted = cleanedInput !== input || cleaned.instructions !== instructions;
@@ -429,7 +429,7 @@ export class SdkRuns {
       const check = learning ? await reserveSdkCheck(checkDeps, { runId, revision: learning.seed, learning: revisionBody.learning, flows: selected.candidates, takes }) : undefined;
       // A shadow check needs the original agent's own answer, not an answer produced by its existing champion.
       const workflows = check ? [] : selected.workflows;
-      const writers = [...new Set([...workflows.map((flow) => selected.writers.get(flow)), check ? selected.drafts[check.workflow.name] : undefined].filter((run): run is string => typeof run === "string"))];
+      const writers = [...new Set([...workflows.flatMap((flow) => selected.writers.get(flow) ?? []), ...(check ? (selected.drafts[check.workflow.name] ?? []) : [])])];
       const launch: RunLaunch = {
         input: { content: cleanedInput },
         title: title === undefined ? cleanedInput.trim().replace(/\s+/g, " ").slice(0, 80) : this.clean({ title }).title,
@@ -528,13 +528,14 @@ export class SdkRuns {
       },
     };
   }
-  /** The workflows a start delivers, each the seed's or its champion's text read at its record's save, and the run whose
-   *  text each is (`writers`); the drafts a check may take, and the run whose text each is (`drafts`, by name). A text and
+  /** The workflows a start delivers, each the seed's or its champion's text read at its record's save, and the runs whose
+   *  text each is (`writers`: every run that wrote one of its files there, its README.md's description as well as its
+   *  workflow.json's text); the drafts a check may take, and the runs whose text each is (`drafts`, by name). A text and
    *  its writer are two reads, and a purge rewrites the saves they read in place: it adds a save of its own after the
    *  newest (Store.learning purgeRun), so a selection a purge save moved under is read again (a normal save rewrites
    *  nothing it read), and one that keeps moving refuses the start, to start again. Never the purged run's text named as
    *  no run's. */
-  private async selectedWorkflows(agentId: string, revision: string | null, binding: NonNullable<ReturnType<typeof sdkWorkflowManifest>>): Promise<{ workflows: LearnedWorkflow[]; writers: Map<LearnedWorkflow, string>; candidates: LearnedWorkflow[]; drafts: Record<string, string> }> {
+  private async selectedWorkflows(agentId: string, revision: string | null, binding: NonNullable<ReturnType<typeof sdkWorkflowManifest>>): Promise<{ workflows: LearnedWorkflow[]; writers: Map<LearnedWorkflow, string[]>; candidates: LearnedWorkflow[]; drafts: Record<string, string[]> }> {
     const newest = () => this.store.learning.newestPurge(agentId);
     for (let attempt = 0; attempt < 3; attempt++) {
       const before = await newest();
@@ -543,11 +544,17 @@ export class SdkRuns {
     }
     throw new ApiError("unavailable", "The agent's learning changed while this run started: start it again.", { retry_after_ms: 1_000 });
   }
-  private async selectedOnce(agentId: string, revision: string | null, binding: NonNullable<ReturnType<typeof sdkWorkflowManifest>>): Promise<{ workflows: LearnedWorkflow[]; writers: Map<LearnedWorkflow, string>; candidates: LearnedWorkflow[]; drafts: Record<string, string> }> {
+  private async selectedOnce(agentId: string, revision: string | null, binding: NonNullable<ReturnType<typeof sdkWorkflowManifest>>): Promise<{ workflows: LearnedWorkflow[]; writers: Map<LearnedWorkflow, string[]>; candidates: LearnedWorkflow[]; drafts: Record<string, string[]> }> {
     const learning = learningOf(this.store, agentId);
-    const reads = new Map<string, Promise<LearningRead | undefined>>();
-    const readSave = (save: string) => reads.get(save) ?? reads.set(save, readAt(learning, save)).get(save)!;
-    const writerAt = async (name: string, save: string | null) => (save === null ? undefined : (await readSave(save))?.view?.workflows.find((item) => item.name === name)?.run ?? undefined);
+    const reads = new Map<string, Promise<LearningAt | undefined>>();
+    const readSave = (save: string) => reads.get(save) ?? reads.set(save, this.store.learning.itemsAt(agentId, save)).get(save)!;
+    // Every run whose file of workflow `name` save `save` holds: its README.md's (the description delivered) as well as
+    // its workflow.json's (the item's run), and any other file's, so a purge of any of them refuses the receipt.
+    const writersAt = async (name: string, save: string | null): Promise<string[]> => {
+      const item = save === null ? undefined : (await readSave(save))?.items.find((one) => one.kind === "workflow" && one.name === name);
+      if (!item) return [];
+      return [...new Set([item.byRun, ...Object.values(item.writers ?? {})].filter((run): run is string => typeof run === "string"))];
+    };
     const seed = await seedAt(learning, revision);
     const { flows } = chooseWorkflows(seed, secretsShown(this.secrets(), { local: true }));
     const dsl = await import("@parcha/agentrun-dsl");
@@ -560,20 +567,20 @@ export class SdkRuns {
       room -= bytes;
       return true;
     };
-    const workflows: LearnedWorkflow[] = [], candidates: LearnedWorkflow[] = [], writers = new Map<LearnedWorkflow, string>(), drafts: Record<string, string> = {};
+    const workflows: LearnedWorkflow[] = [], candidates: LearnedWorkflow[] = [], writers = new Map<LearnedWorkflow, string[]>(), drafts: Record<string, string[]> = {};
     const atSave = async (name: string, save: string) =>
       chooseWorkflows(await seedAt(learning, save), secretsShown(this.secrets(), { local: true })).flows.find((one) => one.name === name);
     for (const flow of flows) {
       const { text: serving, champion } = await championTextOf(records, flow, atSave);
       if (serving && compatible(serving)) {
         workflows.push(serving);
-        const writer = await writerAt(serving.name, serving === flow ? seed.sha : champion!.commit ?? null);
-        if (writer) writers.set(serving, writer);
+        const runs = await writersAt(serving.name, serving === flow ? seed.sha : champion!.commit ?? null);
+        if (runs.length) writers.set(serving, runs);
       }
       if ((!serving || workflowDigest(serving) !== workflowDigest(flow)) && compatible(flow)) {
         candidates.push(flow);
-        const writer = await writerAt(flow.name, seed.sha);
-        if (writer) drafts[flow.name] = writer;
+        const runs = await writersAt(flow.name, seed.sha);
+        if (runs.length) drafts[flow.name] = runs;
       }
     }
     return { workflows, writers, candidates, drafts };
