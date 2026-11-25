@@ -272,12 +272,13 @@ export async function keepKept(settings: Pick<KeptSettings, "get" | "putIfAbsent
 }
 
 /** What came of marking a kept row ending before its machine's delete (endingKept): `marked`, the row reads ending or
- *  ended now (or holds no keep the delete could take from a claim), so the delete may go on; `left`, the row is a later
- *  claim's keep, or a claim is taking it back, so its machine `id` is that claim's and is not deleted; `unmarked`, no
- *  try marked it (`why`), so its machine `id`, where the row was read, is not deleted either: it is left for the row's
- *  own time (its keeper's end, or a janitor's pass). */
+ *  ended now (or holds no keep the delete could take from a claim), so the delete may go on, and `kept` is the row as it
+ *  reads ending, for finishedKept once that delete took its machine; `left`, the row is a later claim's keep, or a claim
+ *  is taking it back, so its machine `id` is that claim's and is not deleted; `unmarked`, no try marked it (`why`), so
+ *  its machine `id`, where the row was read, is not deleted either: it is left for the row's own time (its keeper's end,
+ *  or a janitor's pass). */
 export type KeptEnding =
-  | { readonly kind: "marked" }
+  | { readonly kind: "marked"; readonly kept?: Kept }
   | { readonly kind: "left"; readonly id?: string }
   | { readonly kind: "unmarked"; readonly id?: string; readonly why: string };
 
@@ -295,9 +296,10 @@ async function markEnding(settings: Pick<KeptSettings, "get" | "replaceIf">, run
         const kept = keptOf(was);
         id = kept?.id ?? id;
         const verdict = judge(kept);
-        if (verdict === "go") return { kind: "marked" };
+        if (verdict === "go") return { kind: "marked", ...(kept?.ending ? { kept: rowOf(kept, "ending") } : {}) };
         if (verdict === "leave") return { kind: "left", ...(kept ? { id: kept.id } : {}) };
-        if (await settings.replaceIf(key, was, rowOf(kept!, "ending"))) return { kind: "marked" };
+        const ending = rowOf(kept!, "ending");
+        if (await settings.replaceIf(key, was, ending)) return { kind: "marked", kept: ending };
       }
       return { kind: "unmarked", ...(id === undefined ? {} : { id }), why: "the row kept changing" };
     });
@@ -410,6 +412,16 @@ export async function endKept(settings: Pick<KeptSettings, "get" | "replaceIf">,
   }
   await end();
   return settings.replaceIf(key, ending, rowOf(kept, "ended"));
+}
+
+/** Marks `runId`'s kept row ended once a delete that marked it ending (a run's end, a janitor's provider sweep: the
+ *  `kept` of KeptEnding's `marked`) took its machine: only while the row still reads that ending row, so a row changed
+ *  since is left. A row left ending refuses every later park of the run (keepKept) until a janitor's pass ends it, so a
+ *  follow-up to a stopped run would keep nothing; ended, the next park writes over it. The delete's caller says only
+ *  where its provider answered ok for that very machine, so a machine its list never showed (another runner's engine)
+ *  keeps its row ending for its keeper to end. Never throws: a row left ending is still ended at its time. */
+export async function finishedKept(settings: Pick<KeptSettings, "replaceIf">, runId: string, kept: Kept): Promise<boolean> {
+  return settings.replaceIf(keptKeyOf(runId), rowOf(kept, "ending"), rowOf(kept, "ended")).catch(() => false);
 }
 
 /** What the janitor's pass over the kept computers did: the names it ended, the failures in words, and the earliest

@@ -268,9 +268,12 @@ test("a stopped run's end on another runner deletes a dial machine kept by a liv
   await runEndComputers({ store: run.server, computers, log: (line) => logged.push(line), retryMs: 50 })({ runId: RUN, epoch: 3 });
   assert.deepEqual(run.docker.left(), [], "the stopped run's machine kept by runner-a is deleted with the earlier claim's");
   assert.deepEqual(logged, [`run ${RUN} is over: let go of the computers an earlier claim left on docker, c1, c2`]);
-  // runner-a's own end at the keep's time finds its machine gone: a delete that reads not_found is as good as done.
-  const ended = await endKept(run.server.settings, RUN, kept, async () => void (await deleteKept(run.docker.provider(), kept)));
-  assert.equal(ended, true, "runner-a's end marks its row ended");
+  assert.deepEqual(await readKept(run.server.settings, RUN), { ...kept, ended: true }, "the run's end marked the row ended once its delete took the machine");
+  // runner-a's own end at the keep's time finds its row ended already: it deletes nothing, and the row stays ended.
+  const deleted = [];
+  const ended = await endKept(run.server.settings, RUN, kept, async () => void deleted.push(kept.id));
+  assert.equal(ended, false, "runner-a's end finds its row ended by the run's end");
+  assert.deepEqual(deleted, [], "and asks no delete");
   assert.equal((await readKept(run.server.settings, RUN))?.ended, true);
 });
 
@@ -291,8 +294,8 @@ test("a stopped run's end marks its kept row ending before it deletes the machin
     };
     await runEndComputers({ store: run.server, computers, log: () => {}, retryMs: 50 })({ runId: RUN, epoch: 3 });
     run.docker.provider = listed;
-    assert.deepEqual(await readKept(run.server.settings, RUN), { ...kept, ending: true }, `the run is final: ${JSON.stringify(row)} reads ending, so no claim takes its machine back`);
-    assert.deepEqual(atDelete, { ...kept, ending: true }, "marked before the delete");
+    assert.deepEqual(atDelete, { ...kept, ending: true }, `the run is final: ${JSON.stringify(row)} reads ending before the delete, so no claim takes its machine back`);
+    assert.deepEqual(await readKept(run.server.settings, RUN), { ...kept, ended: true }, "and ended once the delete took it");
     assert.deepEqual(run.docker.left(), [], "and the machine is deleted");
   }
 });
@@ -364,8 +367,8 @@ test("a run's end whose kept-row mark the store fails tries it again, and delete
     await runEndComputers({ store, computers, log: (line) => logged.push(line), retryMs: 50 })({ runId: RUN, epoch: 3 });
     fails = 0;
     if (then === "taken") {
-      assert.deepEqual(await readKept(run.server.settings, RUN), { ...kept, ending: true }, "the mark, tried again, reads ending");
-      assert.deepEqual(run.docker.left(), [], "and then the kept machine is deleted with the rest");
+      assert.deepEqual(run.docker.left(), [], "the mark, tried again, landed, and then the kept machine is deleted with the rest");
+      assert.deepEqual(await readKept(run.server.settings, RUN), { ...kept, ended: true }, "its row ended once the delete took it");
     } else {
       assert.deepEqual(run.docker.left(), ["c2@2"], "a row never marked ending: its machine is left for the row's time, so no claim attaches a machine being deleted");
       assert.deepEqual(await readKept(run.server.settings, RUN), kept, "its row as its park wrote it");

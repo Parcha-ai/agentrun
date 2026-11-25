@@ -592,7 +592,7 @@ test("runner-b's full janitor pass, after runner-b ended runner-a's parked run, 
   // The kept pass leaves the row to runner-a; the provider sweep lists the same machine, its run over, and ends it.
   assert.deepEqual(deletes(one.account), ["c1"], `runner-b's provider sweep deletes the stopped run's machine: ${JSON.stringify(logged)}`);
   assert.equal(one.account.computers.has("c1"), false, "nothing left billing for a run that is over");
-  assert.deepEqual(await one.store.settings.get(key), { ...row, ending: true }, "its row marked ending before the delete, so no claim takes the machine back mid-delete; still runner-a's to finish");
+  assert.deepEqual(await one.store.settings.get(key), { ...row, ended: true }, "its row marked ending before the delete, so no claim takes the machine back mid-delete, and ended once the delete took it, so the run's next park writes its own keep");
   // runner-a's own pass: its delete reads not_found, as good as done, and the row goes, the run being over.
   await one.pass({ self: RUNNER_A, runners: { live: async () => [{ ...RUNNER_A, refused: null }] } });
   assert.equal(await one.store.settings.get(key), undefined, "runner-a's own pass removes its row, the run being over");
@@ -642,7 +642,7 @@ test("a kept machine's runner that is still there but refusing claims still hold
   const logged = await stopped.pass({ self: RUNNER_B, runners: refusing });
   // The run is over, so its machine has no user: the provider sweep ends it from any runner. The row stays runner-a's.
   assert.deepEqual(deletes(stopped.account), ["c1"], `runner-b's provider sweep ends the stopped run's machine: ${JSON.stringify(logged)}`);
-  assert.deepEqual(await stopped.store.settings.get(key), { ...stoppedRow, ending: true }, "runner-b's kept pass leaves the refusing runner-a's row, and its provider sweep marks it ending before the delete");
+  assert.deepEqual(await stopped.store.settings.get(key), { ...stoppedRow, ended: true }, "runner-b's kept pass leaves the refusing runner-a's row, and its provider sweep marks it ending before the delete and ended after it");
   await stopped.pass({ self: RUNNER_A, runners: refusing });
   assert.equal(await stopped.store.settings.get(key), undefined, "runner-a's own pass removes its row, the run being over");
 });

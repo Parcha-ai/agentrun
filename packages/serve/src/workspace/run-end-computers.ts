@@ -18,8 +18,10 @@
 //
 // A machine the run's park kept (computer-kept.ts) goes too when this end's provider lists it, whichever runner kept it:
 // the run is final, so it has no user. Its row is marked ending first (endingKept), so no claim takes it back while the
-// delete runs (a follow-up that queues the run again makes a new one), and its runner's own end then reads it gone and
-// marks its row ended. A row a later claim wrote or is taking back (a follow-up that queued the run again while this end
+// delete runs (a follow-up that queues the run again makes a new one). Once the delete took it, its row is marked ended
+// here (finishedKept): a row left ending refuses the run's next park until a janitor's pass, so a follow-up would keep
+// nothing. A row whose machine this list never showed (another runner's engine) stays ending for that runner's end. A
+// row a later claim wrote or is taking back (a follow-up that queued the run again while this end
 // waited on the store) is that claim's: the mark leaves it as it stands, and the delete leaves its machine.
 import { type ComputerProvider, epochOf, ok, releaseOlder } from "@parcha/agentrun-computer";
 import { KEY_TABLE, providerOptions } from "../computer-keys.js";
@@ -27,7 +29,7 @@ import { readLaunchBody } from "../run-launch.js";
 import type { Store } from "../store/index.js";
 import { settingOf } from "./computer-for-claim.js";
 import type { ComputerDeps } from "./computer-deps.js";
-import { endingKept } from "./computer-kept.js";
+import { endingKept, finishedKept } from "./computer-kept.js";
 import { storeLedger } from "./computer-ledger.js";
 import { type ComputerSetting, providerKeys } from "./resolve-computer.js";
 import { endingDeletes, intervalWrites } from "./computer-intervals.js";
@@ -158,6 +160,9 @@ export function runEndComputers(deps: RunEndComputersDeps): (claim: { readonly r
           if (released.ok) {
             const names = released.value.released.map((ref) => ref.name);
             if (names.length > 0) log(`run ${runId} is over: let go of ${names.length === 1 ? "the computer" : "the computers"} an earlier claim left on ${provider.id}, ${names.join(", ")}`);
+            // The kept machine deleted here: its row ended, so a follow-up's park writes its own keep (finishedKept).
+            const kept = marked.kind === "marked" ? marked.kept : undefined;
+            if (kept && released.value.released.some((ref) => ref.id === kept.id)) await finishedKept(store.settings, runId, kept);
             return;
           }
           why = `on ${provider.id}, ${released.error.message}`;

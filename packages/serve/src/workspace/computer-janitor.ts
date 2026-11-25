@@ -19,9 +19,10 @@
 // A desktop or a phone kept at a run's park (computer-kept.ts) goes by its own row, on any provider: each sweep ends one
 // past its time or whose run ended, and the janitor wakes again at the earliest time still ahead. One pinned to another
 // runner still there is that runner's (computer-kept.ts heldElsewhere): the kept pass leaves its row. The provider sweep
-// ends only a machine past its deadline or whose run is final, which no one uses, and the row's runner then reads it gone
-// and marks its row ended. Its row is marked ending before that delete (endingKeptMachine), so a follow-up never takes
-// the machine back mid-delete; a row a claim is taking back is left, and the machine with it, said as a failed delete.
+// ends only a machine past its deadline or whose run is final, which no one uses. Its row is marked ending before that
+// delete (endingKeptMachine), so a follow-up never takes the machine back mid-delete, and ended once the delete took it
+// (finishedKept), so the run's next park writes its own keep; a row a claim is taking back is left, and the machine with
+// it, said as a failed delete.
 //
 // A provider whose sweep fails is logged, once per distinct failure, and the others are swept. It runs only where its
 // start asks for it (the CLI's runner and the runner subcommand), never under --faux, and never two sweeps at once. Its
@@ -37,7 +38,7 @@ import { FAUX_ENV } from "../model.js";
 import { FINAL_STATES, type Store } from "../store/index.js";
 import { deleteUnderHold, ownerGoneOf, serverIdOf, wantsOn } from "./agent-computer.js";
 import type { ComputerDeps } from "./computer-deps.js";
-import { endingKeptMachine, type KeptHolder, type KeptSweep, readKept, sweepKept } from "./computer-kept.js";
+import { endingKeptMachine, finishedKept, type KeptHolder, type KeptSweep, readKept, sweepKept } from "./computer-kept.js";
 import { storeLedger } from "./computer-ledger.js";
 import { providerKeys } from "./resolve-computer.js";
 import { intervalWrites } from "./computer-intervals.js";
@@ -153,16 +154,23 @@ function thisServers(provider: ComputerProvider, store: JanitorDeps["store"], by
       const why = how === "delete" ? unread.get(ref.id) : undefined;
       if (why !== undefined) return fail("refused", `its run's kept row could not be read (${why}), so it was left`);
       const run = how === "delete" ? keptRun.get(ref.id) : undefined;
+      /** The machine's row as marked ending here: ended once the delete took it (finishedKept). */
+      let finished: (() => Promise<unknown>) | undefined;
       if (run !== undefined && keeps) {
         const marked = await endingKeptMachine(keeps.settings, run, { provider: keeps.entry, id: ref.id });
         if (marked.kind === "left") return fail("refused", `it is kept at run ${run}'s park and a claim is taking it back or has it, so it was left`);
         if (marked.kind === "unmarked") return fail("refused", `it is kept at run ${run}'s park and its row could not be marked ending (${marked.why}), so it was left for the row's time`);
+        const kept = marked.kept;
+        if (kept && kept.provider === keeps.entry && kept.id === ref.id) finished = () => finishedKept(keeps.settings, run, kept);
       }
       const agent = ownedBy.get(ref.id);
       if (how !== "delete" || agent === undefined || settings === undefined) {
         const released = await provider.release(ref, how, context);
         // A run's computer the sweep deleted: its interval ends (computer-intervals.ts), on the provider's ok alone.
-        if (released.ok && how === "delete") await ended(ref.id);
+        if (released.ok && how === "delete") {
+          await ended(ref.id);
+          await finished?.();
+        }
         return released;
       }
       // Asked again under the hold: the agent may want it back since ownerGone was read (this server's owners carry no
