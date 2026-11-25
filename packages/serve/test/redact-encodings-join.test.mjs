@@ -54,3 +54,16 @@ test("a single-quoted dict (Python's repr) gets the join view: a held login read
   // Control: another value under the held login's name is no spelling of it.
   assert.equal(withheldWhole("{'alice': 'other'}", ["alice:secretpw"]), false);
 });
+
+test("a single-quoted dict's strings read through Python's escapes: a held value with both quotes, its \\' escaped, split across two of them, is withheld", () => {
+  for (const [text, value] of [
+    [String.raw`{'a': 'ab\'cd"', 'b': 'efgh'}`, `ab'cd"efgh`],
+    [String.raw`{'a': 'see ab\x27cd', 'b': 'efgh more'}`, "ab'cdefgh"],
+    [String.raw`{'a': 'see a\\b\'cd', 'b': 'efgh'}`, String.raw`a\b'cdefgh`],
+  ]) {
+    assert.equal(withheldWhole(text, [value]), true, text);
+    assert.equal(redacted(text, [value]), "[redacted]", text);
+  }
+  // Control: a single-quoted dict with an escaped apostrophe that holds no spelling of the value stays shown.
+  assert.equal(withheldWhole(String.raw`{'a': 'it\'s ab', 'b': 'cd"efgh'}`, [`ab'cd"efgh`]), false);
+});
