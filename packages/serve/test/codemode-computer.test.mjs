@@ -415,7 +415,7 @@ test("on a vendor's desktop whose agent's write is set to deny, a script's compu
   const { runners } = await stores({ runners: 1 });
   const folder = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "codemode-computer-gate-"));
   dirs.push(folder);
-  const gate = await adapterRunGate(runners[0], { runId: "run-1" }, { kind: "agentic", body: { approvals: "ask", toolSettings: { write: { permission: "deny" } } } }, folder, "none", { facts: undefined });
+  const gate = await adapterRunGate(runners[0], { runId: "run-1" }, { kind: "agentic", body: { approvals: "ask", tools: ["read", "write"], toolSettings: { write: { permission: "deny" } } } }, folder, "none", { facts: undefined });
   const script = "const apps = await computer.apps.list();\nawait computer.files.write('/workspace/notes.txt', 'Pears: 41');\nreturn 'wrote';";
   const { requests } = await codemodeRun(t, [{ call: CODEMODE, args: { script } }, { say: "done" }], tools, gate, undefined, { computer: run.computer });
   const result = lastResult(requests);
@@ -526,7 +526,7 @@ test("on Codex, a computer_op answers its script one text item: an op that ran i
   const { runners } = await stores({ runners: 1 });
   const folder = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "codemode-computer-codex-shape-"));
   dirs.push(folder);
-  const gate = await adapterRunGate(runners[0], { runId: "run-1" }, { kind: "agentic", body: { approvals: "ask", toolSettings: { bash: { permission: "allow" }, write: { permission: "deny" } } } }, folder, "none", { facts: undefined });
+  const gate = await adapterRunGate(runners[0], { runId: "run-1" }, { kind: "agentic", body: { approvals: "ask", tools: ["read", "write"], toolSettings: { bash: { permission: "allow" }, write: { permission: "deny" } } } }, folder, "none", { facts: undefined });
   const { server } = await codexRun(t, [{ tool: "computer_op", args: { op: "shell.run", args: { command: "echo hi" } } }, { tool: "computer_op", args: { op: "files.write", args: { path: "/workspace/notes.txt", data: "Pears: 41" } } }], { gate });
   const answers = await codexAnswers(server);
   const ran = answers.find((one) => one.arguments?.op === "shell.run");

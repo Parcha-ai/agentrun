@@ -479,7 +479,7 @@ test("create() refuses a computer whose init does not relay to the proxy: its ne
 	assert.deepEqual([relayless.names(), relayless.volumeNames()], [[], []]);
 });
 
-test("release(delete) removes the computer, then its proxy and its volume, each found by its label; a container or volume with the proxy's name but not its label stays", async () => {
+test("release(delete) removes the computer and its proxy in one docker rm, then its volume, the proxy and the volume each found by its label; a container or volume with the proxy's name but not its label stays", async () => {
 	const seeded = allowed({ name: A, allow: ALLOW });
 	const impostor = "computer-0000000000bb-egress";
 	const { provider, calls, names, volumeNames } = fakeDocker({
@@ -488,9 +488,8 @@ test("release(delete) removes the computer, then its proxy and its volume, each 
 	});
 	assert.deepEqual(await provider.release(ref(A), "delete"), { ok: true, value: undefined });
 	assert.deepEqual(calls(), [
-		["rm", "--force", "--volumes", A],
 		["ps", "-a", "--no-trunc", "--filter", `label=agentrun.computer.egress=${A}`, "--format", "{{.ID}}"],
-		["rm", "--force", idOf(`${A}-egress`)],
+		["rm", "--force", "--volumes", A, idOf(`${A}-egress`)],
 		["volume", "ls", "--filter", `label=agentrun.computer.egress=${A}`, "--format", "{{.Name}}"],
 		["volume", "rm", "--force", `${A}-egress`],
 	]);
@@ -506,8 +505,8 @@ test("release(stop) stops the computer and its proxy; a stopped computer with it
 	const { provider, calls } = fakeDocker(allowed({ name: A, allow: ALLOW }));
 	assert.deepEqual(await provider.release(ref(A), "stop"), { ok: true, value: undefined });
 	assert.deepEqual(calls(), [
-		["stop", A],
 		["ps", "-a", "--no-trunc", "--filter", `label=agentrun.computer.egress=${A}`, "--format", "{{.ID}}"],
+		["stop", A],
 		["stop", idOf(`${A}-egress`)],
 	]);
 	assert.deepEqual(await provider.network(ref(A)), { ok: true, value: { allow: ALLOW } });

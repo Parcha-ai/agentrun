@@ -7,6 +7,8 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { serve, client } from "./support.mjs";
 import { createSdkLoop } from "../dist/runner/sdk-loop.js";
 import { journalEntries } from "../dist/runner/journal-reader.js";
+import { END_PATCH_MS } from "../dist/runner/loop.js";
+import { fakeClock } from "./runner-support.mjs";
 const { heldRedactor } = await import("../dist/runner/redact.js");
 
 const SDK_USAGE = { input_tokens: 20, output_tokens: 5, cache_read_tokens: 3, cache_write_tokens: 2, cost_usd: 0.25 };
@@ -45,7 +47,7 @@ async function completedSdk(t, { learning = true, usage = SDK_USAGE, status = "c
   });
   assert.equal(completed.status, 200, JSON.stringify(completed.body));
   const launch = (await server.store.runs.launch(runId)).body;
-  const start = async (asker, { interruptEnd = false, pathRead, expectedState = status === "completed" ? "ended" : status === "cancelled" ? "stopped" : "failed" } = {}) => {
+  const start = async (asker, { interruptEnd = false, pathRead, endPatchTimer, expectedState = status === "completed" ? "ended" : status === "cancelled" ? "stopped" : "failed" } = {}) => {
     const claim = await server.store.claim(runId, "usage-proof", { leaseMs: 60_000 });
     assert.ok(claim);
     const abort = new AbortController();
@@ -86,7 +88,7 @@ async function completedSdk(t, { learning = true, usage = SDK_USAGE, status = "c
         return typeof value === "function" ? value.bind(target) : value;
       },
     });
-    const loop = createSdkLoop(launch, { store, data: server.data, env: {}, sealKey: Buffer.alloc(32, 7) }, async () => asker)({ redact: heldRedactor((text) => text), journal: () => guarded, flush: () => server.store.flush(), signal: abort.signal });
+    const loop = createSdkLoop(launch, { store, data: server.data, env: {}, sealKey: Buffer.alloc(32, 7), endPatchTimer }, async () => asker)({ redact: heldRedactor((text) => text), journal: () => guarded, flush: () => server.store.flush(), signal: abort.signal });
     const end = await loop.start(claim);
     if (interruptEnd) {
       assert.equal(interrupted, true, "the fault fired at the end's commit");
@@ -231,7 +233,10 @@ test("a failed SDK path read keeps the backend outcome and leaves persisted cost
 
 test("a stalled SDK path read is bounded and persists unknown cost and metrics", { timeout: 40_000 }, async t => {
   const server = await completedSdk(t, { status: "cancelled" });
-  await server.start(route([]), { pathRead: () => new Promise(() => {}) });
+  // The end's bound on its reads (END_PATCH_MS) is armed on this clock, which the stalled read itself moves past it: the
+  // bound runs out while the read waits, never after a real wait.
+  const clock = fakeClock();
+  await server.start(route([]), { pathRead: () => (clock.advance(END_PATCH_MS), new Promise(() => {})), endPatchTimer: clock });
   const run = await server.store.runs.get(server.runId);
   assert.deepEqual([run.state, run.outcome, run.costUsd, run.metrics], ["stopped", "cancelled", null, null]);
   const cost = (await server.api("GET", "/agents/sdk-usage/learning/cost")).body;

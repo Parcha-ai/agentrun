@@ -71,6 +71,13 @@ export function valueLeft(text: string, values: readonly string[], cuts?: readon
   return holds(text, needles, { cuts: cuts ?? cutSpans(text, needles, SECRET_SHAPES) });
 }
 
+/** Whether any of `values` holds a hex identifier the matcher finds folded (its separators "-", "_", ":" and "."
+ *  dropped, however many stand in a row): a reader that counts what the views keep of a text counts each separator as
+ *  nothing then (key-refusal.ts peek). */
+export function foldsHeld(values: readonly string[]): boolean {
+  return derivedOf(values).folds.length > 0;
+}
+
 /** redactSecrets over `shapes`, each found in place, and `held` spans cut beside them (redact/match.ts planCut). */
 function redactWith(text: string, values: readonly string[], max: number, shapes: readonly Shape[], held: readonly (readonly [number, number])[] = []): string {
   if (Buffer.byteLength(text) > max) return "[redacted]";
@@ -109,6 +116,7 @@ function derivedOf(values: readonly string[]): Needles {
     hexes: [...needles.values()].map((of) => of.hex),
     folds: [...needles.values()].flatMap((of) => of.folded),
     plain: [...new Set([...[...needles.values()].flatMap((of) => of.plain), ...parts.map(squeeze)])],
+    joined: [...new Set([...needles.keys()].filter((v) => JOIN_DROPS.test(v)).map((v) => squeeze(v).replace(JOIN_DROPPED, "")).filter(longEnough))],
   };
   DERIVED.set(values, { values: [...values], derived });
   return derived;
@@ -227,6 +235,12 @@ function needlesOf(value: string): { plain: string[]; hex: string; folded: strin
 }
 
 const longEnough = (value: string) => [...value].length >= MIN_SECRET;
+
+/** The punctuation between JSON's strings that a held value can hold: a value holding one, JSON can split there (a
+ *  login's ":" as a name and its value, a "," between an array's strings), and the join view reads it without them
+ *  (redact/match.ts Needles `joined`). Gone from that needle only, so it never reads past a value's own length. */
+const JOIN_DROPS = /[,:]/;
+const JOIN_DROPPED = /[,:]/g;
 
 /** The fewest characters a line of a held value must have to be held as a part of it: a key's base64 line (64) is, a
  *  short line any text may hold ("-----END …-----", "}", a JSON field's name and a word) is not. */

@@ -32,9 +32,9 @@ const strip = (value) => (Array.isArray(value) ? value.map(strip) : value && typ
 
 /** The grader's verdict on its user text (graderUserText), as the reply's text. */
 export function graderVerdict(user) {
-  const [agent, draft] = [fenced(user, "The agent's answer"), fenced(user, "The workflow's answer")];
-  if (agent === undefined || draft === undefined) return JSON.stringify({ same: false, differs_on: "the answers could not be read" });
-  const [a, b] = [decisionOf(agent), decisionOf(draft)];
+  const [known, draft] = [fenced(user, "The known answer"), fenced(user, "The workflow's answer")];
+  if (known === undefined || draft === undefined) return JSON.stringify({ same: false, differs_on: "the answers could not be read" });
+  const [a, b] = [decisionOf(known), decisionOf(draft)];
   if (JSON.stringify(a) === JSON.stringify(b)) return JSON.stringify({ same: true, differs_on: null });
   const keyed = a && b && typeof a === "object" && typeof b === "object" && !Array.isArray(a) && !Array.isArray(b);
   const key = keyed ? [...new Set([...Object.keys(a), ...Object.keys(b)])].find((one) => JSON.stringify(a[one]) !== JSON.stringify(b[one])) : undefined;
@@ -49,7 +49,7 @@ const stringsOf = (value) => (typeof value === "string" ? [value] : Array.isArra
 export function graderAnswerOfBody(body) {
   const strings = stringsOf(body);
   if (!strings.some(isGraderSystem)) return undefined;
-  const user = strings.find((one) => one.includes("The agent's answer:\n<<<"));
+  const user = strings.find((one) => one.includes("The known answer:\n<<<"));
   return user === undefined ? undefined : graderVerdict(user);
 }
 

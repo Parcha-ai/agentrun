@@ -169,6 +169,26 @@ describe("Settings → Model keys, Claude Code's login on this machine", () => {
     expect(page.button(/^Turn on$/)).toBeUndefined();
   });
 
+  it("a login kept while this server refuses its folders: says it is kept and why, with Turn off and no turn-on; Turn off removes it, and the turn-on comes back", async () => {
+    const why = "Claude Code's login on this machine needs its folders to be this server's user's own: it runs as uid 1000 (runner), and /data/runner/claude, the folder CLAUDE_CONFIG_DIR gives it, is not a folder it owns, nor one it would make in a folder it owns. Start the server as the person whose Claude plan it is.";
+    let view: ClaudeLoginView = { ...OFF, state: "refused", place: "machine", command: "", can_start: false, refused: why, folder: "/data/runner/claude" };
+    const changed: number[] = [];
+    const { v2, calls } = server(() => view, (call) => (view = call.method === "DELETE" ? OFF : view));
+    const page = await open(v2, () => changed.push(1));
+    const text = page.row()?.textContent ?? "";
+    expect(text).toContain(why);
+    expect(text).toContain("Turned on, and not used while this server refuses its folders");
+    expect(text).not.toContain("AgentRun asks the CLI about the login in");
+    expect(page.button(/^Turn off$/), "Turn off is offered").toBeDefined();
+    expect(page.button(/^Turn on$/)).toBeUndefined();
+    expect(page.row()?.querySelector("form")).toBeNull();
+    await page.click(/^Turn off$/);
+    expect(calls.filter((c) => c.method !== "GET")).toEqual([{ method: "DELETE", path: "/v2/settings/claude-login" }]);
+    expect(changed).toEqual([1]);
+    expect(page.row()!.querySelector("form")).not.toBeNull();
+    expect(page.row()!.textContent).not.toContain(why);
+  });
+
   it("switched off, as capabilities say (features.claude_login false): no row, and no request, so the browser logs no 404", async () => {
     const { v2, calls } = server(() => json(404, { error: { code: "not_found", message: "getClaudeLogin: off" } }), () => OFF);
     const page = await open(v2, undefined, false);

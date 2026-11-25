@@ -145,6 +145,36 @@ describe("markdown", () => {
   });
 });
 
+describe("markdown with images off (a shared run's page)", () => {
+  // A run's answer is model output and may hold raw HTML: with images off, nothing in it loads anything. An <img> is its
+  // alt text; every other element or attribute the sanitizer keeps that would fetch a URL is gone.
+  const loaders = [
+    '<svg width="1" height="1"><image href="https://beacon.example/svg.png"></image></svg>',
+    '<video poster="https://beacon.example/poster.png"></video>',
+    '<input type="image" src="https://beacon.example/input.png">',
+    '<table background="https://beacon.example/table.png"><tr><td background="https://beacon.example/cell.png">cell text</td></tr></table>',
+    '<picture><source srcset="https://beacon.example/source.png"></picture>',
+    '<audio src="https://beacon.example/a.mp3"></audio>',
+    '<p style="background:url(https://beacon.example/style.png)">styled text</p>',
+    '<img src="https://beacon.example/img.png" alt="the alt">',
+  ];
+  for (const html of loaders) {
+    it(`fetches nothing: ${html.slice(0, 40)}`, () => {
+      const out = markdown(`Before\n\n${html}\n\nAfter`, { paths: [], images: false });
+      expect(out).not.toContain("beacon.example");
+      expect(out).toContain("Before");
+      expect(out).toContain("After");
+    });
+  }
+  it("keeps the words: an image's alt text, a cell's and a paragraph's", () => {
+    const out = markdown(loaders.join("\n\n"), { paths: [], images: false });
+    for (const words of ["the alt", "cell text", "styled text"]) expect(out).toContain(words);
+  });
+  it("leaves the console's own markdown as it was (images on)", () => {
+    expect(markdown('<img src="https://example.com/a.png" alt="a">')).toContain('src="https://example.com/a.png"');
+  });
+});
+
 describe("cost in the runs list", () => {
   it("the runs list shows a null cost as Unknown, never $0", async () => {
     const { renderToStaticMarkup } = await import("react-dom/server");

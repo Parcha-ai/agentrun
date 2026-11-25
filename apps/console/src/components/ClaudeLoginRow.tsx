@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Chip, type ChipTone } from "@/components/ui/chip";
-import { checksFolder, claudeLoginView, LOGIN_ROW, LOGIN_RUNS, type LoginView, loginSignedInAs, MACHINE_DEFAULT_FOLDER, machineCredentials, NO_CLI, ONLY_ME, ONLY_ME_FIRST, ONLY_ME_WHY, OTHER_MACHINE, placeWords, SIGNED_OUT, signInWords, UNKNOWN } from "@/lib/claudeLogin";
+import { checksFolder, claudeLoginView, KEPT_REFUSED, LOGIN_ROW, LOGIN_RUNS, type LoginView, loginSignedInAs, MACHINE_DEFAULT_FOLDER, machineCredentials, NO_CLI, ONLY_ME, ONLY_ME_FIRST, ONLY_ME_WHY, OTHER_MACHINE, placeWords, SIGNED_OUT, signInWords, UNKNOWN } from "@/lib/claudeLogin";
 import { type Client, ClientError } from "@/lib/client";
 import { type SecretsWhyNot, WHY_NOT_WORDS } from "@/lib/secrets";
 import type { ClaudeLoginView } from "@/lib/v2";
@@ -15,6 +15,7 @@ const words = (e: unknown): string => (e instanceof ClientError ? e.message : e 
 const STATE: Record<ClaudeLoginView["state"], { tone: ChipTone; words: string }> = {
   off: { tone: "plain", words: "off" },
   other_machine: { tone: "warning", words: "another machine" },
+  refused: { tone: "warning", words: "refused here" },
   signed_in: { tone: "success", words: "signed in" },
   signed_out: { tone: "warning", words: "not signed in" },
   no_cli: { tone: "plain", words: "no CLI yet" },
@@ -25,7 +26,8 @@ const STATE: Record<ClaudeLoginView["state"], { tone: ChipTone; words: string }>
  *  login is (AgentRun's own by default, this machine's own by choice) and the owner's word that only they run agents
  *  here, then Turn on; where the server refuses the mode, its one line instead. On: what the CLI says (who and which
  *  plan), or the command that signs it in on the server's machine and, where the browser is on that machine, a button
- *  that starts the CLI's own sign-in; Turn off. Nothing on a server with the mode switched off (its GET is a 404).
+ *  that starts the CLI's own sign-in; Turn off. On but kept while the server refuses its folders (`refused`): that, and
+ *  the server's words for why; Turn off. Nothing on a server with the mode switched off (its GET is a 404).
  *  `available`: capabilities' `features.claude_login`; false (switched off, or capabilities not read yet) asks nothing, so
  *  the browser never logs the 404. `onChange`: after a turn on or off, which change what Claude Agent runs on. */
 export function ClaudeLoginRow({ v2, writable, whyNot = "sign_in", onChange, available = true }: { v2: Client; writable: boolean; whyNot?: SecretsWhyNot; onChange?: () => void; available?: boolean }) {
@@ -106,8 +108,9 @@ export function ClaudeLoginRow({ v2, writable, whyNot = "sign_in", onChange, ava
   const command = <pre className="overflow-x-auto border bg-card p-3 font-mono text-small"><code>{view.command}</code></pre>;
   const signIn = signInWords(view);
   // The folder the status is read from, and, for this machine's login where the server saw no CLAUDE_CONFIG_DIR, how a
-  // Claude Code that keeps it elsewhere is found. An older server names no folder: no line.
-  const folder = on && view.state !== "other_machine" && view.folder !== undefined && (
+  // Claude Code that keeps it elsewhere is found. An older server names no folder: no line. A refused login's CLI is not
+  // asked: no line.
+  const folder = on && view.state !== "other_machine" && view.state !== "refused" && view.folder !== undefined && (
     <div className="space-y-1">
       <p className="text-small text-muted-foreground">{checksFolder(view.folder)}</p>
       {view.place === "machine" && view.machine?.source === "default" && <p className="text-small text-muted-foreground">{MACHINE_DEFAULT_FOLDER}</p>}
@@ -124,6 +127,12 @@ export function ClaudeLoginRow({ v2, writable, whyNot = "sign_in", onChange, ava
       <div className="mt-3 space-y-3">
         {view.state === "signed_in" && <p className="text-body font-semibold">{loginSignedInAs(view)}</p>}
         {view.state === "other_machine" && <p className="text-body">{OTHER_MACHINE}</p>}
+        {view.state === "refused" && (
+          <div className="space-y-1">
+            <p className="text-body">{KEPT_REFUSED}</p>
+            {view.refused && <p className="text-body" role="status">{view.refused}</p>}
+          </div>
+        )}
         {folder}
         {(view.state === "signed_out" || view.state === "no_cli" || view.state === "unknown") && (
           <div className="space-y-2">

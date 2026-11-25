@@ -506,9 +506,10 @@ function RunTargetFields({ v2, draft, edit, issues, agents, input, agentCap, cap
   issues: Record<string, string>; agents: Agent[] | null; input: RunInputState; agentCap: number | undefined; capRule: CapRule; what: string; asked?: string; skips?: boolean;
 }) {
   // Another agent's input starts afresh (its fields as they start, its example), and the issues at the last one's fields go.
+  // An edited trigger's stored input goes too (inputRead): it was the last agent's, keys the new one may refuse or never show.
   const pick = (agentId: string) => {
     if (agentId === draft.agentId) return;
-    edit({ agentId, values: undefined, json: undefined });
+    edit({ agentId, values: undefined, json: undefined, inputRead: undefined });
     input.setFieldIssues([]);
   };
   return <>

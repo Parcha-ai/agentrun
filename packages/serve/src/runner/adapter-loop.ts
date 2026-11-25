@@ -58,7 +58,7 @@ import { type HeldRedact, mustHold } from "./redact.js";
 import { deniedText as setToDenyText, ENDED_WHILE_WAITING, refusedText, STOPPED_WHILE_WAITING } from "../refusal-words.js";
 import { ADAPTER_API } from "../turn-end.js";
 import { answerText, REFLECT_PREFIX, reflectRequestId } from "./end-of-run.js";
-import { agentEntriesOf, approvalOf, BOOKING_WRITE_MS, CLOSE_MS, CUT_STEP_MS, END_PATCH_MS, END_PATCH_UNKNOWN, PARK_SIBLINGS_MS, readAgain, STOP_SETTLE_MS, commandRequest, cutLast, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, INPUT_REQUEST, Interrupted, KernelFault, lastAnswerText, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
+import { agentEntriesOf, approvalOf, BOOKING_WRITE_MS, CLOSE_MS, CUT_STEP_MS, END_PATCH_MS, END_PATCH_UNKNOWN, PARK_SIBLINGS_MS, REAL_TIMER, type BoundTimer, readAgain, STOP_SETTLE_MS, commandRequest, cutLast, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, INPUT_REQUEST, Interrupted, KernelFault, lastAnswerText, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
 import { outputMiss, outputRetryWords } from "../answer-json.js";
 import type { PiRun, PiSessionIO, PreIntentAnswer, PreIntentCall } from "./adapters/pi.js";
 import { answerOnce, HAND_BACK, handBackOf } from "./hand-back.js";
@@ -184,7 +184,7 @@ export interface AdapterRunSpec {
   /** How long a park waits for the calls pi started beside the parked one (siblingsSettled) before it seals. Default
    *  PARK_SIBLINGS_MS. */
   readonly parkSiblingsMs?: number;
-  /** The run's agent: named to the end-of-run step (LoopDeps.endOfRun), which a spec without it cannot be asked. */
+  /** The run's agent: named to the end-of-run step (endOfRun, below), which a spec without it cannot be asked. */
   readonly agentId?: string;
   /** The learned workflow the run starts on, before its agent's first turn (runner/workflow-first.ts workflowFirstOf):
    *  run once through the session's own learned_workflow tool (its gate, record, ledger and cap), its answer the run's
@@ -195,7 +195,7 @@ export interface AdapterRunSpec {
    *  takes the run. The stop asks for no revision. */
   readonly workflowRevise?: WorkflowRevise;
   /** The run's end-of-run step, when its spec builds one (over the per-claim resources it holds, its Archil claim among
-   *  them): it wins over LoopDeps.endOfRun and is asked where that one is, in the end turn while the claim is held, before
+   *  them), the run's only one (none without it): asked in the end turn while the claim is held, before
    *  a tool host's beforeRelease and the run's release, its rows in the end's commit. */
   readonly endOfRun?: EndOfRunTurn;
   /** What the claim laid of the run's learning seed (runner/learning-seed.ts): the learned workflows it was given, by
@@ -210,16 +210,17 @@ export interface AdapterRunSpec {
    *  workspace (store-reads/journal.ts runTimeline). */
   readonly cwd?: string;
   /** The end's patch beside its state: the run's outcome, cost and metrics, read when the end is written and carried in
-   *  its commit. Bounded (endPatchMs): a reader that stalls gives no patch, and the end is still written, its cost and
+   *  its commit. Bounded (END_PATCH_MS): a reader that stalls gives no patch, and the end is still written, its cost and
    *  metrics unknown (END_PATCH_UNKNOWN). */
   readonly endPatch?: (end: EndData) => Promise<Pick<EndData, "outcome" | "costUsd" | "metrics">>;
   /** The run's cost for its end, read apart from the end's patch and in place of the patch's own `costUsd`: one cheap
-   *  read of its booking (metrics.ts runCostOf), so a patch whose metrics run past endPatchMs never takes the cost with
-   *  them. Bounded by endPatchMs too: a read that fails is read again (END_COST_TRIES in all, within the bound), and
+   *  read of its booking (metrics.ts runCostOf), so a patch whose metrics run past END_PATCH_MS never takes the cost with
+   *  them. Bounded by END_PATCH_MS too: a read that fails is read again (END_COST_TRIES in all, within the bound), and
    *  late or failing every time, the cost is unknown (null), the answer every reader of the ended run then gives. */
   readonly endCost?: () => Promise<EndCost>;
-  /** The most the end's patch may take before the end is written without it. Default END_PATCH_MS. */
-  readonly endPatchMs?: number;
+  /** For tests: the timer the end's bound (END_PATCH_MS) on its patch and cost is armed on. Default: the real one
+   *  (REAL_TIMER). */
+  readonly endPatchTimer?: BoundTimer;
   /** Optional moved-project capture, only after actual dispatch has drained. Failure remains an explicit terminal receipt. */
   readonly projectCheckpoint?: { capture(signal: AbortSignal): Promise<ProjectCheckpoint>; uncertain(): ProjectCheckpoint; readonly timeoutMs?: number };
   /** The most a booking whose write has begun is waited for before an answer's cost, a park or the end goes on without
@@ -3724,10 +3725,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   }
 
   /** How the job's own turn ended (`data`, and a CLI's error answer `failedWith`), as this claim decided it, kept on the
-   *  root before the end-of-run step asks its first turn (KINDS.jobEnd), for a run with a step to ask (stepOf). Kept with
-   *  its time, now, which it answers; with no step to ask, nothing is kept. */
+   *  root before the end-of-run step asks its first turn (KINDS.jobEnd), for a run with a step to ask (its spec's endOfRun).
+   *  Kept with its time, now, which it answers; with no step to ask, nothing is kept. */
   async function keepJobEnd(on: Harness, conversation: Conversation, spec: AdapterRunSpec, data: EndData, failedWith: string | undefined): Promise<number | undefined> {
-    if (!stepOf(spec)) return undefined;
+    if (!spec.endOfRun) return undefined;
     const kept = jobEndOf(data, failedWith, now());
     await on.commit((tx) => tx.appendEntry(conversation.id, { kind: KINDS.jobEnd, data: kept as unknown as JsonValue }), context);
     return kept.endedAt;
@@ -3895,10 +3896,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     };
   }
 
-  /** The run's end-of-run step: its spec's (AdapterRunSpec.endOfRun) when it has one, else the loop's deps'. */
-  const stepOf = (spec: AdapterRunSpec): EndOfRunTurn | undefined => spec.endOfRun ?? deps.endOfRun;
-
-  /** The end-of-run step (stepOf: the spec's, else LoopDeps.endOfRun), asked once: the rows to stage with the end; `stopped` when a person's stop
+  /** The end-of-run step (its spec's endOfRun; none without one), asked once: the rows to stage with the end; `stopped` when a person's stop
    *  came during it; `interrupted` when the claim was lost or the runner is closing (no end is written, and the next claim
    *  asks it again). A step that throws on its own writes the end without rows: the run's end never waits on it. `over`:
    *  the claim's overCap, read after each turn the step asks (askEndOfRun). */
@@ -3908,7 +3906,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       if (stopReason || deps.signal.aborted) return { kind: "interrupted" };
       return undefined;
     };
-    const step = stepOf(spec);
+    const step = spec.endOfRun;
     if (!step) return { kind: "rows", also: [] };
     if (!spec.agentId) throw new Error("the run's spec names no agent, so its end-of-run step cannot be asked");
     // Every request from here is learning's, between the step's asks too, until the claim ends (reflecting).
@@ -3931,11 +3929,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     }
   }
 
-  /** What a run cut before it could look back keeps beside its end (LoopDeps.endOfRun with `cut`, never asking): a
+  /** What a run cut before it could look back keeps beside its end (its spec's endOfRun with `cut`, never asking): a
    *  person's stop, before or during the end-of-run turn, or a fault. Bounded (CUT_STEP_MS): a step that reads a stalled
    *  store, or throws, keeps nothing, and the end is never held up by it. */
   async function cutRows(claim: Claim, spec: AdapterRunSpec, cut: "stopped" | "stopped-looking" | "faulted"): Promise<readonly AlsoRow[]> {
-    const step = stepOf(spec);
+    const step = spec.endOfRun;
     if (!step || !spec.agentId) return [];
     const refuse = () => Promise.reject(new Error("a cut run's end-of-run step asks nothing"));
     let timer: NodeJS.Timeout | undefined;
@@ -4043,9 +4041,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   async function endPatchOf(data: EndData): Promise<Pick<EndData, "outcome" | "costUsd" | "costUpperBound" | "metrics">> {
     const spec = specNow;
     if (!spec?.endPatch && !spec?.endCost) return {};
-    let timer: NodeJS.Timeout | undefined;
-    const boundMs = spec.endPatchMs ?? END_PATCH_MS;
-    const late = new Promise<"late">((resolve) => (timer = setTimeout(() => resolve("late"), boundMs)));
+    const bound = spec.endPatchTimer ?? REAL_TIMER;
+    let timer: unknown;
+    const late = new Promise<"late">((resolve) => (timer = bound.setTimeout(() => resolve("late"), END_PATCH_MS)));
     // The cost, read apart (AdapterRunSpec.endCost): a patch whose metrics run late or fail never takes it with them. A
     // read that fails is read again within the same bound (END_COST_TRIES): the stored cost is every reader's answer
     // (the list, the view, usage), so a null there is kept only when the booking could not be read at all.
@@ -4054,7 +4052,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       ? readAgain(endCost, late, (error, tries, last) =>
           console.warn(last ? `[runner] its end's cost failed ${tries} times, last: ${said(error)}; the end is written with its cost unknown` : `[runner] its end's cost failed: ${said(error)}; read again`),
         ).then((answer): EndCost => {
-          if (answer === "late") console.warn(`[runner] its end's cost gave no answer within ${boundMs / 1000} s; the end is written with its cost unknown`);
+          if (answer === "late") console.warn(`[runner] its end's cost gave no answer within ${END_PATCH_MS / 1000} s; the end is written with its cost unknown`);
           return answer === "late" || answer === "failed" ? { costUsd: null, costUpperBound: false } : answer;
         })
       : undefined;
@@ -4063,7 +4061,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       try {
         const patch = await Promise.race([spec.endPatch(data), late]);
         if (patch === "late") {
-          console.warn(`[runner] its end's patch gave no answer within ${boundMs / 1000} s; the end is written with its ${cost ? "metrics" : "cost and metrics"} unknown`);
+          console.warn(`[runner] its end's patch gave no answer within ${END_PATCH_MS / 1000} s; the end is written with its ${cost ? "metrics" : "cost and metrics"} unknown`);
           return END_PATCH_UNKNOWN;
         }
         return patch ?? {};
@@ -4076,7 +4074,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       const [patch, read] = await Promise.all([patched(), cost]);
       return read ? { ...patch, ...read } : patch;
     } finally {
-      clearTimeout(timer);
+      bound.clearTimeout(timer);
     }
   }
 

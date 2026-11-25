@@ -2,6 +2,7 @@ import { AnswerFields, AnswerValue } from "@/components/AnswerFields";
 import { Banner } from "@/components/ui/banner";
 import { answerRecord } from "@/lib/answerJson";
 import { markdown, openLinkedFile } from "@/lib/format";
+import { Redactions } from "@/lib/redaction";
 import type { Run, RunFile, TimelineRow } from "@/lib/v2";
 
 /** The run's answer, as a report. An agentic run whose agent has an output schema: its result.output read with that
@@ -11,9 +12,11 @@ import type { Run, RunFile, TimelineRow } from "@/lib/v2";
  *  in, or is, a JSON object reads that object as fields, AnswerFields). A workflow run: its typed output as JSON (with its
  *  written reports as Markdown). Nothing is invented when there is no answer. A link in it that names one of the run's
  *  `files` opens that file (`onOpen`, the Files tab's viewer); no other relative link leaves the page. */
-export function RunResult({ run, rows, files = [], onOpen, schema }: { run: Run; rows: TimelineRow[]; files?: RunFile[]; onOpen?: (file: RunFile) => void; schema?: unknown }) {
+export function RunResult({ run, rows, files = [], onOpen, schema, shared = false }: { run: Run; rows: TimelineRow[]; files?: RunFile[]; onOpen?: (file: RunFile) => void; schema?: unknown;
+  /** A share's run (share/ShareView): its bundle carries no image, so its Markdown draws none (LinkedFiles `images`). */
+  shared?: boolean }) {
   const answer = run.result?.final_answer ?? rows.findLast((r) => r.kind === "final_answer")?.text ?? null;
-  const linked = onOpen ? { paths: files.map((f) => f.path) } : undefined;
+  const linked = onOpen || shared ? { paths: onOpen ? files.map((f) => f.path) : [], ...(shared ? { images: false as const } : {}) } : undefined;
   const open = openLinkedFile((path) => { const f = files.find((x) => x.path === path); if (f) onOpen?.(f); });
   const output = run.result?.output;
   // An agentic run's output is there only when its agent has an output schema and the answer met it (serve's store-view).
@@ -58,7 +61,7 @@ export function RunResult({ run, rows, files = [], onOpen, schema }: { run: Run;
         {(!written.length || Object.keys(rest as object).length > 0) && (
           <section>
             <p className="caps mb-2 text-label text-muted-foreground">{written.length ? "The rest of the output" : "Output"}</p>
-            <pre className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] border bg-card p-4 font-mono text-small leading-[1.8]">{JSON.stringify(rest, null, 2)}</pre>
+            <pre className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] border bg-card p-4 font-mono text-small leading-[1.8]"><Redactions text={JSON.stringify(rest, null, 2)} /></pre>
           </section>
         )}
       </div>
