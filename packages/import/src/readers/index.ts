@@ -1,15 +1,12 @@
 // The sources this package reads, one Reader each. A new source is a file beside these that exports its Reader, and
-// one line here; nothing else names a source.
+// one line here, or in line-readers.ts for one whose every session is one file of lines (the read pool's workers read
+// those); nothing else names a source.
 import type { Reader } from "../reader.js";
-import { claudeCode } from "./claude-code.js";
-import { codex } from "./codex.js";
+import { LINE_READERS } from "./line-readers.js";
 import { opencode } from "./opencode.js";
-import { pi } from "./pi.js";
 
 export const READERS = {
-  "claude-code": claudeCode,
-  codex,
-  pi,
+  ...LINE_READERS,
   opencode,
 } as const satisfies Record<string, Reader<string, any>>;
 

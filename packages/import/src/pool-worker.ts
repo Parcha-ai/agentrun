@@ -1,13 +1,13 @@
-// A read pool's worker (pool.ts): reads one locator with the registry's reader as parseHome's totals read does, through a
-// `seen` of the locator's own records alone, and hands back its sessions, the records it added (mine) and the records it
-// asked for, did not hold and never added (missed). parseHome takes the read as its own when no record of either is one
-// an earlier locator holds: its `seen` would then have answered every question alike (a record asked for and then added
-// is in mine), so the read is the one it would have made.
+// A read pool's worker (pool.ts): reads one locator of a line source (LINE_READERS) as parseHome's totals read does,
+// through a `seen` of the locator's own records alone, and hands back its sessions, the records it added (mine) and the
+// records it asked for, did not hold and never added (missed). parseHome takes the read as its own when no record of
+// either is one an earlier locator holds: its `seen` would then have answered every question alike (a record asked for
+// and then added is in mine), so the read is the one it would have made.
 import { parentPort, workerData } from "node:worker_threads";
 import { packed, packInto } from "./record-key.js";
 import { addRecord, indexArrays, notIn, ownerOf, recordIndex } from "./record-index.js";
 import { DROPS_CURSOR, type InternalReadOptions, NO_READ_AHEAD } from "./internal.js";
-import { READERS } from "./readers/index.js";
+import { LINE_READERS } from "./readers/line-readers.js";
 import type { Locator } from "./reader.js";
 
 export type PoolAsk = { id: number; source: string; locator: Locator };
@@ -20,7 +20,7 @@ const { maxLine } = workerData as { maxLine: number };
 const buffers = (index: ReturnType<typeof recordIndex>): ArrayBuffer[] => indexArrays(index).map((a) => a.buffer as ArrayBuffer);
 
 parentPort!.on("message", async ({ id, source, locator }: PoolAsk) => {
-  const reader = (READERS as Record<string, (typeof READERS)[keyof typeof READERS]>)[source]!;
+  const reader = (LINE_READERS as Record<string, (typeof LINE_READERS)[keyof typeof LINE_READERS]>)[source]!;
   const mine = recordIndex(64);
   // Every record asked for while mine did not hold it; the ones added after are taken out once the read ends.
   const asked = recordIndex(64);

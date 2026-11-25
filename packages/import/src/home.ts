@@ -11,6 +11,7 @@ import { type CalculateCost, type Catalog, builtinCatalog, loadCalculateCost, ty
 import { childrenOf, inOrder, type Readers, readerOf, sessionLocators } from "./read.js";
 import { type Env, type Locator, locatorKey, type SessionRead } from "./reader.js";
 import { READERS, SOURCES, type Source } from "./readers/index.js";
+import { LINE_READERS } from "./readers/line-readers.js";
 import { addRequest, AT, atOf, type Counts, counts, HAS_LONG, HAS_REASONING, HAS_USAGE, STRIDE, trimmed, USAGE_FIELDS } from "./counts.js";
 import { DROPS_CURSOR, type InternalReadOptions } from "./internal.js";
 import { defaultThreads, MIN_OLD_MB, OLD_MB, type PoolRead, ReadPool, readAheadBytes } from "./pool.js";
@@ -323,7 +324,9 @@ export async function parseHome(home: string, { sources = SOURCES, readers = REA
   // files then share the threads with the next source's, and the largest files of every source are read first (pool.ts).
   const ahead = new Map<string, Listing>();
   if (pool) {
-    for (const source of sources) ahead.set(source, await listSource(home, source, readers, env, true));
+    // The pool reads the line sources (LINE_READERS) alone. Another (OpenCode: a session is rows of a database, or JSON
+    // files, its size not its file's) is read here, on this thread, as without a pool: the same totals either way.
+    for (const source of sources) if (Object.hasOwn(LINE_READERS, source)) ahead.set(source, await listSource(home, source, readers, env, true));
     const items = [...ahead].flatMap(([source, { listed, childList }]) => [...listed.map(({ locator, stats }) => ({ source, locator, size: stats.size })), ...childList.map(({ locator, size }) => ({ source, locator, size }))]);
     const ids = pool.readAll(items);
     let at = 0;

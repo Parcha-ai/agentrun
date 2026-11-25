@@ -36,7 +36,8 @@ const sessions = await parseHome(homedir(), { sources: ["claude-code", "codex"] 
   still free (the machine's, page cache counted as free, at most its container's limit) once `readAhead` is set aside;
   `1` reads them in order on the calling thread; at most 64). A read is kept only when it is the one the import's order
   would make; any other file is read again in order, so the totals are the same whatever the count. A call with a
-  `state`, or with readers of its own, reads on the calling thread.
+  `state`, or with readers of its own, reads on the calling thread; so does OpenCode in any call (its sessions are rows of
+  a database, not files of lines).
 - `readAhead` caps the bytes of finished reads waiting to be taken (default 1 GiB, or a sixteenth of the memory the
   process may use, its container's limit when one is set, when that is less: 512 MiB at 8 GiB). Under it, files of 64 MiB and over are read first, largest first, then
   the rest in order; at it, the threads read only the file the import waits on. It is a cap on finished reads waiting,
