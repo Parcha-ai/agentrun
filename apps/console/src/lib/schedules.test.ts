@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ClientError } from "./client";
 import { agentInputOf } from "./inputForm";
-import { bodyOf, capWords, disabledWords, type Draft, draftOf, type Schedule, emptyDraft, emptyWebhook, firingWords, instantOf, issuesOf, patchOf, scheduleLine, span, utcWhen, wallOf, webhookBodyOf } from "./schedules";
+import { bodyOf, capWords, disabledWords, type Draft, draftOf, type Schedule, emptyDraft, emptyWebhook, firingWords, instantOf, issuesOf, patchOf, scheduleLine, span, triggerInputOf, utcWhen, wallOf, webhookBodyOf } from "./schedules";
 import type { Firing } from "./v2";
 
 const draft = (over: Partial<Draft>): Draft => ({ ...emptyDraft(), agentId: "triage", content: "Triage last night's issues.", maxCost: "2", ...over });
@@ -296,6 +296,16 @@ describe("a schedule's typed input", () => {
     expect(bodyOf({ ...draft({ content: "", cron: "30 1 * * *" }), shape, values: { company: "Acme GmbH" } }).body?.target?.input).toEqual({ company: "Acme GmbH", content: "" });
     const m = typed({ content: "Check.", company: "Acme GmbH" });
     expect(patchOf(m, bodyOf({ ...draftOf(m), shape, content: "" }).body!).target?.input).toEqual({ content: "", company: "Acme GmbH" });
+  });
+  it("takes a schema that limits its keys as whole JSON, since typed fields always carry the message", () => {
+    const fields = { type: "object", required: ["company"], properties: { company: { type: "string" } } };
+    expect(triggerInputOf(fields).kind).toBe("fields");
+    for (const limit of [{ maxProperties: 1 }, { propertyNames: { enum: ["company"] } }]) {
+      const capped = triggerInputOf({ ...fields, ...limit });
+      expect(capped.kind).toBe("json");
+      expect(bodyOf({ ...draft({ content: "", cron: "30 1 * * *" }), shape: capped, json: '{"company": "Acme"}' }).body?.target?.input).toEqual({ company: "Acme" });
+    }
+    expect(triggerInputOf(undefined)).toEqual({ kind: "message" });
   });
   it("sends whole JSON exactly as written, a key its schema caps left out", () => {
     const capped = agentInputOf({ type: "object", required: ["filters"], maxProperties: 1, properties: { filters: { type: "object" }, mode: { anyOf: [{ type: "string" }] } } });

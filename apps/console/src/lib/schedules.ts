@@ -2,7 +2,8 @@ import cronstrue from "cronstrue";
 import { type Accept, acceptFields, acceptOf, acceptWords, type ConditionDraft, conditionDraftOf, type RuleDraft, ruleDraftOf } from "./accept";
 import { ClientError, type FieldIssue } from "./client";
 import { clock } from "./format";
-import { type AgentInput, fieldOfIssue, fieldStartText, inputOf } from "./inputForm";
+import { type AgentInput, agentInputOf, fieldOfIssue, fieldStartText, inputOf } from "./inputForm";
+import { exampleOf, type Schema } from "./runStart";
 import type { ParameterText } from "./templatePackages";
 import type { Firing, Trigger, TriggerCreate, TriggerInput, TriggerSource, TriggerTarget } from "./v2";
 
@@ -44,6 +45,14 @@ export const inputText = (input: Record<string, unknown>): ParameterText =>
  *  (triggers.ts), and a schedule's last completed answer (trigger-targets.ts previousResultOf). A run whose typed input
  *  left the message out would start without them. */
 const withMessage = (input: Record<string, unknown>): Record<string, unknown> => (Object.hasOwn(input, "content") ? input : { ...input, content: "" });
+
+/** How a trigger's form takes an agent's input: as agentInputOf says, except that a schema limiting how many keys or
+ *  which keys its input has (maxProperties, propertyNames) is taken as whole JSON. A trigger's typed fields always go
+ *  with the message (withMessage), which such a schema can refuse; in the JSON the person sees `content` and decides. */
+export function triggerInputOf(schema: unknown): AgentInput {
+  const shape = agentInputOf(schema);
+  return shape.kind === "fields" && isRecord(schema) && ("maxProperties" in schema || "propertyNames" in schema) ? { kind: "json", example: exampleOf(schema as Schema) } : shape;
+}
 
 /** The input a trigger's run is given, or what is wrong with it under `target.input`: the message alone; the message
  *  (optional when the agent's schema requires another field) and the typed fields; or, for a schema the fields can't
