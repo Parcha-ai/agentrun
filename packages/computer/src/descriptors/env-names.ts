@@ -1,5 +1,5 @@
 // The names of the host's environment a child this package starts is handed (child-env.ts childEnv): every child's,
-// the docker CLI's and Chrome's. Here, beside the descriptors, so a descriptor's hostEnv names them and loads no provider
+// the docker CLI's, Chrome's and adb's. Here, beside the descriptors, so a descriptor's hostEnv names them and loads no provider
 // code; this file imports nothing.
 //
 // No list names a variable serve's keyShaped() takes for a key's (a segment KEY, TOKEN, SECRET, PASS, CREDENTIAL(S) ...):
@@ -54,3 +54,11 @@ export const CHROME_ENV_NAMES: readonly string[] = Object.freeze([
 	"FONTCONFIG_FILE", "FONTCONFIG_PATH", "FONTCONFIG_SYSROOT",
 	"DBUS_SESSION_BUS_ADDRESS", "CHROME_DEVEL_SANDBOX",
 ]);
+
+/**
+ * adb's (Android platform-tools), beside the base, for every adb the phone provider runs and the adb server it starts:
+ * where the SDK is (ANDROID_HOME, ANDROID_SDK_ROOT) and where adb keeps its key pair (ANDROID_USER_HOME, or the older
+ * ANDROID_SDK_HOME). No ADB_* nor ANDROID_ADB_* name and no ANDROID_SERIAL: each points adb at another server or
+ * device than the provider's own -P port and socket requests reach.
+ */
+export const ADB_ENV_NAMES: readonly string[] = Object.freeze([...BASE_ENV_NAMES, "ANDROID_HOME", "ANDROID_SDK_ROOT", "ANDROID_USER_HOME", "ANDROID_SDK_HOME"]);
