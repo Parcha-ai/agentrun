@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
-import { carriedOver, fileOf, readLog, timingsOf } from './ci-timings.mjs';
+import { carriedOver, fileOf, literals, readLog, timingsOf } from './ci-timings.mjs';
 
 const scratch = mkdtempSync(join(tmpdir(), 'ci-timings-'));
 after(() => rmSync(scratch, { recursive: true, force: true }));
@@ -23,6 +23,15 @@ test('a test is credited to the one file declaring its name, a template name by 
   assert.equal(fileOf(declared, 'a \\# in a name'), 'b.test.mjs', "TAP's escaped #");
   assert.equal(fileOf(declared, 'twice'), undefined);
   assert.equal(fileOf(declared, 'nobody declares this'), undefined);
+  // A name declared exactly is its file's, though a template elsewhere would match it; a template's own names stay its.
+  const broad = [...declared, { file: 'd.test.mjs', names: [{ pattern: /^[^]*: [^]*$/ }] }, { file: 'e.test.mjs', names: [{ exact: 'run: opens' }] }];
+  assert.equal(fileOf(broad, 'run: opens'), 'e.test.mjs');
+  assert.equal(fileOf(broad, 'box: starts'), 'd.test.mjs');
+});
+
+test("a template's pattern is its literal text, a substitution's own braces counted", () => {
+  assert.deepEqual(literals("a run SIGKILLed ${{ request: 'mid-request', idle: 'idle' }[mode]} leaves ${n} alive"), ['a run SIGKILLed ', ' leaves ', ' alive']);
+  assert.deepEqual(literals('no substitution, an escaped \\${x}'), ['no substitution, an escaped \\${x}']);
 });
 
 test('a log gives each suite its top-level tests, vitest files and wall, and each pi type-check its time', () => {
@@ -74,8 +83,8 @@ test("the timings are each file's median over the logs, each suite's file total 
   ].join('\n');
   const timings = timingsOf(root, [run(3, 2, 2), run(5, 4, 4), run(9, 6, 3)]);
   assert.deepEqual(timings.files, { 'packages/a/test/one.test.mjs': 6, 'packages/a/test/two.test.mjs': 4 });
-  // Totals 6/2, 10/4 and 16/3: the median of 3, 2.5 and 5.33.
-  assert.deepEqual(timings.parallelism['@x/a'], 3);
+  // Totals 6/2, 10/4 and 16/3: the 90th percentile of 3, 2.5 and 5.33, what the suite keeps up with its slots full.
+  assert.deepEqual(timings.parallelism['@x/a'], 5.3);
   assert.deepEqual(timings.walls, { 'test:viewer': 6 });
 });
 

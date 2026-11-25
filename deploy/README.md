@@ -100,17 +100,12 @@ then picks up again after the restart.
 ## Fly.io
 
 One Fly Machine with a volume, from [`fly/fly.toml`](fly/fly.toml), set up by one command. Fly gives the Machine no
-Docker, so its agents get file tools and `web_fetch` but no shell, as on Render and Railway. It needs no model key.
+Docker, so its agents get file tools and `web_fetch` but no shell, as on Render and Railway. It needs no model key, and
+Fly needs a card on the organization ([pricing](https://docs.fly.io/about/pricing)).
 
-This setup has not yet run on a real Fly account. It follows Fly's docs and flyctl's source, and its tests run the
-script against a stand-in `fly`. What only a real deploy will show is the volume's owner. A forum answer from Fly
-says a new volume is given to the image's user (uid 1000 here), and the docs don't say. If it is not, the server
-stops before it starts, and `fly logs` has one line: `/data is not writable by uid 1000 ...`.
-
-At Fly's prices on 2026-11-23, in its cheapest regions (`iad` and `ewr`), the Machine (`shared-cpu-1x`, 1 GB) costs
-$6.70 a month and the 10 GB volume $1.50, so $8.20 a month ([pricing](https://docs.fly.io/about/pricing)). The app's
-shared IPv4 address and its IPv6 address are free, and so is the first 10 GB of volume snapshots. Fly needs a card on
-the organization. A personal organization on the Free plan then gets $5 of usage a month.
+This setup has not yet run on a real Fly account; its tests run the script against a stand-in `fly`. If Fly gives the
+new volume to another user than the image's (uid 1000), the server stops before it starts, and `fly logs` has one line:
+`/data is not writable by uid 1000 ...`.
 
 With [flyctl](https://docs.fly.io/flyctl/install) installed and logged in (`fly auth login`), from a clone of this
 repository:
@@ -138,14 +133,10 @@ Open `https://<app name>.fly.dev/` and paste the setup code. To read it again la
 with ChatGPT or add a model key in the console.
 
 Run the script again to upgrade to the release `fly.toml` pins. It keeps the app, the secrets and the volume, and
-deploys in the volume's region (from `fly volumes list --json`). Naming another region stops it, since a Machine there
-would start on a new, empty volume. Each deploy replaces the one Machine in place (`fly.toml` pins the rolling strategy). Keep the app to
-one Machine, because the store is SQLite on its one volume: `fly scale count 2` would start a second server on a new,
-empty volume ([scaling](https://docs.fly.io/launch/scale-count)). Fly warns that one Machine with one volume can lose
-data. It snapshots every volume daily and keeps each snapshot 5 days
-([snapshots](https://docs.fly.io/volumes/snapshots)). 1 GB of memory holds a run or two at once. For more, raise
-`memory` in `fly.toml` and run the script again. `fly.toml` sets `AGENTRUN_RUN_USER=same`, as `render.yaml` does and
-for the same reason.
+deploys in the volume's region; naming another region stops it, since a Machine there would start on a new, empty
+volume. Keep the app to one Machine: the store is SQLite on its one volume, and `fly scale count 2` would start a second
+server on a new, empty volume. Fly snapshots each volume daily ([snapshots](https://docs.fly.io/volumes/snapshots)).
+For more than a run or two at once, raise `memory` in `fly.toml` and run the script again.
 
 ## One command on a server you rent
 
@@ -349,7 +340,7 @@ What each takes, from its environment alone:
 | `AGENTRUN_LAUNCH_HOOK_URL` | optional | | The host's https address (plain http only to this machine): each trigger firing that would start a run is POSTed there, signed, and the host starts the run through the API ([Launch hook](../packages/serve/README.md#launch-hook)). Set with the secret below, or neither. |
 | `AGENTRUN_LAUNCH_HOOK_SECRET` | optional | | The `whsec_` secret the launch hook signs with. A secret: the server's alone, never a runner's or a run's. |
 | `AGENTRUN_API_ONLY` | optional | | `1` serves the run routes, a deploy's routes (a template's apply, an agent's read, revisions, rollback, archive and delete), the MCP servers' names, a Composio server's save (its key named by `api_key_env`, never in the request; a new name, or over a server the token saved) and the delete of a server the token saved alone, for a server behind its caller's backend: the console, sign-in, setup, other settings, the MCP endpoint, triggers and hooks are `404`, and there are no accounts ([API only](../packages/serve/README.md#api-only)). Unset or `0`, the whole server. |
-| `AGENTRUN_API_ONLY_MCP_ORIGINS` | optional | | With `AGENTRUN_API_ONLY=1`: the MCP origins the token may save a per_run MCP server at. Unset, a per_run server the token saved with API-only off is refused until its origin is listed: list it before upgrading, or re-save it from the owner's session with API-only off ([API only](../packages/serve/README.md#api-only)). |
+| `AGENTRUN_API_ONLY_MCP_ORIGINS` | optional | | With `AGENTRUN_API_ONLY=1`: the MCP origins the token may save a per_run MCP server at. Unset, a per_run server the token saved with API-only off is refused until its origin is listed: list it before upgrading, or re-save it from the owner's session with API-only off. Plain `http://` is taken only for a loopback host (127.0.0.0/8, ::1, localhost); any other entry over http stops the start ([API only](../packages/serve/README.md#api-only)). |
 | `AGENTRUN_RUN_KEYS` | optional | | `1`: a template's apply makes its agent though a tool key it declares is not set here, with a warning, and each run of that agent must bring the key in `keys` (409 without it). Keys the server holds are still used by runs that bring none. No trigger is made whose firings would run that agent without its keys, unless the launch hook starts them ([Per-run tool keys](../packages/serve/README.md#per-run-tool-keys)). Unset or `0`, off. |
 
 The server listens where `--listen` says: above, its container's own address (its hostname), where Docker publishes the

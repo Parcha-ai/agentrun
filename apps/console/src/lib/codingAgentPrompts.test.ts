@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { briefAgentDraft } from "./agentDraft";
 import { applyTemplatePrompt, buildAgentPrompt, connectAgentPrompt, connectExistingAgentsPrompt, connectRemoteAgentsPrompt, editAgentPrompt, enableCliLearningPrompt, importAgentsPrompt, playgroundPrompt, queryRunsPrompt, runAgentPrompt, runTemplatePrompt } from "./codingAgentPrompts";
 import type { TemplateView } from "./v2";
 import { observedAgentPrompt } from "./codingAgentPrompts";
@@ -194,9 +195,18 @@ describe("coding-agent handoffs", () => {
     const prompt = buildAgentPrompt("http://localhost:7340", "Keep the summary under 200 words.", { definition });
     expect(prompt).toContain("Keep the summary under 200 words.");
     expect(prompt).toContain(JSON.stringify({ definition }, null, 2));
-    expect(prompt).toContain("Preserve the template's instructions, tools and skills");
+    expect(prompt).toContain("Keep the tools, place and skills it names");
     expect(prompt).toContain("Ask only the missing questions");
     expect(prompt).toContain("Do not start a run");
+  });
+
+  it("carries the tools and place picked in the console through the draft it is given, in no block of its own", () => {
+    const draft = briefAgentDraft("Send the digest.", { tools: ["mcp:gmail/GMAIL_SEND_EMAIL"], place: { mode: "sandbox", box: "docker" } });
+    const prompt = buildAgentPrompt("http://localhost:7340", "Send the digest.", draft);
+    expect(prompt).toContain(JSON.stringify(draft, null, 2));
+    expect(prompt).toContain("Keep the tools, place and skills it names");
+    expect(prompt).not.toContain("I picked these in the console");
+    expect(buildAgentPrompt("http://localhost:7340", "Send the digest.")).not.toContain("complete create request");
   });
 
   it("copies the exact canonical package instead of reconstructing an agent from its catalog description", () => {

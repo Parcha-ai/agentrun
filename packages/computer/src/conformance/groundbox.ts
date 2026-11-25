@@ -4,6 +4,7 @@
 // has a deadline of at most 30 minutes, and Groundbox's own timer ends it 5 minutes past that.
 import { boxImageRef } from "../box-image.js";
 import { create, DEFAULT_API_URL, type GroundboxProvider, type GroundboxProviderOptions } from "../groundbox.js";
+import { httpsBase } from "../hosted/rest.js";
 import { type Env, type HostedModuleOptions, hostedModule, keyPrint, kindFrom, requiredSecret, setOptions } from "./module-kit.js";
 
 export { CONFORMANCE_MAX_LIFETIME_MS } from "./module-kit.js";
@@ -48,7 +49,7 @@ export const { createProvider, createDriftedProvider, createHost, sweepScope } =
 	host: ["fetch", "webSocket", "daemonPath", "timeouts"],
 	run: ["onNote"],
 	// The key's team, the key named by its sha256 prefix alone.
-	scope: ({ apiKey, apiUrl }) => `the Groundbox team of the key ${keyPrint(apiKey)} at ${apiUrl ?? DEFAULT_API_URL}`,
+	scope: ({ apiKey, apiUrl }) => `the Groundbox team of the key ${keyPrint(apiKey)} at ${httpsBase(apiUrl ?? DEFAULT_API_URL, `the Groundbox API URL (${GROUNDBOX_ENV.apiUrl})`)}`,
 });
 
 /** The image every computer of the run starts from: COMPUTER_GROUNDBOX_IMAGE, else the box image prepareImage() answers. */

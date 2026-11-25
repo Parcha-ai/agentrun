@@ -50,9 +50,12 @@ interface TimelineRow {
 	tool_input_preview: string | null;
 	tool_result_preview: string | null;
 	text: string | null;
+	/** The conversation the row is in: a subagent's rows are in one of their own. */
+	conversation_id?: number;
+	/** A nested call's caller (a codemode script's call, in the same conversation), or a subagent's spawning call. */
 	parent_tool_use_id?: string;
 	/** On a tool_result row: each computer call the tool call made, in order, and how many past serve's bound it kept
-	 *  none of. */
+	 *  none of. A script's own row carries none: each computer call it makes is a nested call with a row of its own. */
 	computer_calls?: ComputerCall[];
 	computer_calls_dropped?: number;
 	/** On a tool_result row: the call was refused before it ran (a gate's deny, a person's). */
@@ -60,7 +63,7 @@ interface TimelineRow {
 }
 
 /** A computer call as serve's record keeps it (serve's computer-calls.ts): never a param's value or an answer's bytes.
- *  `at` (when it was sent) and `words` (the call in a line) are read where serve's record has them. */
+ *  `started_at` is when it was sent; `words` (the call in a line) is read where the record has it. */
 interface ComputerCall {
 	method: string;
 	ok: boolean;
@@ -68,13 +71,13 @@ interface ComputerCall {
 	code?: string;
 	steps?: { do: string; route?: string; verified?: boolean; error?: string }[];
 	expect?: "met" | "unmet";
-	at?: string | number;
+	started_at?: string;
 	words?: string;
 }
 
-/** When a computer call was sent, from its record's `at` (an ISO time, or epoch milliseconds), where it has one. */
-const sentAt = (at: unknown): number | undefined => {
-	const t = typeof at === "string" ? Date.parse(at) : typeof at === "number" && at > 1e12 ? at : Number.NaN;
+/** When a computer call was sent, from its record's `started_at`, where it parses. */
+const sentAt = (at: string | undefined): number | undefined => {
+	const t = at === undefined ? Number.NaN : Date.parse(at);
 	return Number.isFinite(t) ? t : undefined;
 };
 
@@ -274,7 +277,8 @@ export function serveBackend(options: ServeBackendOptions): Backend {
 
 	/** Starts the held run's agent and follows it until it is done and the run keeps its computer for the checks: its
 	 *  steps (the computer calls on the Timeline's tool rows, under the step budget), its tool calls (its turns), and its
-	 *  answer (the Timeline's final answer). A tool call that made no computer call is a turn, not a step. */
+	 *  answer (the Timeline's final answer). A tool call that made no computer call is a turn, not a step. A script's
+	 *  computer calls are nested calls under its call, each with rows of its own: steps of the script's turn, never turns. */
 	async function drive(runId: string, request: Parameters<Episode["agent"]>[0]): Promise<AgentResult> {
 		const go = await api("POST", `/runs/${runId}/start`, {});
 		const startGap = gapOf(ROUTE.start, go.status, go.value);
@@ -282,8 +286,12 @@ export function serveBackend(options: ServeBackendOptions): Backend {
 		if (go.status >= 300) return { outcome: "infra", message: `start answered ${go.status}: ${errorOf(go.value).message ?? ""}` };
 		const t0 = Date.now();
 		let after: number | undefined;
-		const uses = new Map<string, { at: number; name: string; input: string | null }>();
+		/** Each tool call the bench saw start; the model's own (no parent) numbered as its turns, in the order they began. */
+		const uses = new Map<string, { at: number; name: string; input: string | null; conversation?: number; parent?: string; turn?: number }>();
+		let turns = 0;
 		const done = new Set<string>();
+		/** The model's own tool calls that ended: the run's tool calls. A nested call is no tool call of the model's. */
+		let modelCalls = 0;
 		let computerCalls = 0;
 		let answer: string | undefined;
 		let stopped: "budget" | "signal" | undefined;
@@ -298,24 +306,31 @@ export function serveBackend(options: ServeBackendOptions): Backend {
 				}
 				if (got.status !== 200) return;
 				for (const row of (got.value?.rows ?? []) as TimelineRow[]) {
-					// The run's own conversation: a subagent's rows are not the agent's computer calls.
-					if (row.parent_tool_use_id) continue;
-					if (row.kind === "final_answer" && row.text !== null) answer = row.text;
-					if (row.kind === "tool_use" && row.tool_use_id && !uses.has(row.tool_use_id)) uses.set(row.tool_use_id, { at: Date.parse(row.timestamp), name: row.tool_name ?? "", input: row.tool_input_preview });
+					// A nested call (a script's) is under a model's tool call, in that call's conversation. A subagent's rows are
+					// in a conversation of their own under its spawning call: not the agent's computer calls.
+					const parent = row.parent_tool_use_id === undefined ? undefined : uses.get(row.parent_tool_use_id);
+					if (row.parent_tool_use_id !== undefined && (parent === undefined || parent.parent !== undefined || parent.conversation !== row.conversation_id)) continue;
+					if (row.kind === "final_answer" && row.text !== null && !parent) answer = row.text;
+					if (row.kind === "tool_use" && row.tool_use_id && !uses.has(row.tool_use_id)) {
+						uses.set(row.tool_use_id, { at: Date.parse(row.timestamp), name: row.tool_name ?? "", input: row.tool_input_preview, conversation: row.conversation_id, ...(parent ? { parent: row.parent_tool_use_id } : { turn: (turns += 1) }) });
+					}
 					if (row.kind !== "tool_result" || !row.tool_use_id || row.tool_status === null || done.has(row.tool_use_id)) continue;
 					done.add(row.tool_use_id);
-					const turn = done.size;
+					if (!parent) modelCalls += 1;
 					const use = uses.get(row.tool_use_id);
 					const at = Date.parse(row.timestamp);
 					const start = use?.at ?? at;
-					const tool = row.tool_name ?? use?.name ?? "";
+					const name = row.tool_name ?? use?.name ?? "";
+					// A nested call's steps are its script's: that call's turn, by that call's tool.
+					const turn = (parent ?? use)?.turn ?? (turns += 1);
+					const tool = parent ? parent.name : name;
 					const preview = use?.input ?? row.tool_input_preview ?? null;
 					const calls = row.computer_calls ?? [];
 					const dropped = row.computer_calls_dropped ?? 0;
 					if (calls.length === 0 && dropped === 0) {
 						request.onStep({
 							phase: "tool",
-							method: tool,
+							method: name,
 							params: { preview },
 							t_ms: Math.max(0, start - t0),
 							ms: Math.max(0, at - start),
@@ -329,7 +344,7 @@ export function serveBackend(options: ServeBackendOptions): Backend {
 					// Each computer call is a step, at its own time where serve's record says, else after the one before it.
 					let next = start;
 					calls.forEach((call, i) => {
-						const sent = sentAt(call.at) ?? next;
+						const sent = sentAt(call.started_at) ?? next;
 						request.onStep(stepOfCall(call, sent, t0, turn, tool, i === 0 ? preview : undefined));
 						next = sent + Math.max(0, call.ms);
 						if (call.method !== "hello" && call.method !== "ping") computerCalls += 1;
@@ -366,7 +381,7 @@ export function serveBackend(options: ServeBackendOptions): Backend {
 		if (!stopped && overSteps) stopped = "budget";
 		const usd = view.cost?.usd ?? view.cost?.so_far_usd;
 		const final = answer ?? view.result?.final_answer ?? undefined;
-		const common = { ...(typeof usd === "number" ? { cost_usd: usd } : {}), ...(final ? { answer: final } : {}), tool_calls: done.size, ...(overSteps ? { over_steps: true } : {}), transcript: `serve run ${runId}` };
+		const common = { ...(typeof usd === "number" ? { cost_usd: usd } : {}), ...(final ? { answer: final } : {}), tool_calls: modelCalls,...(overSteps ? { over_steps: true } : {}), transcript: `serve run ${runId}` };
 		if (stopped === "budget") return { ...common, outcome: "budget", message: computerCalls > request.budget.steps ? `the task's budget of ${request.budget.steps} computer calls is spent` : "the run paused at its cap" };
 		if (stopped === "signal") return { ...common, outcome: "budget", message: String((request.signal.reason as Error | undefined)?.message ?? "stopped") };
 		if (view.computer?.held?.state === "ended" || view.status === "completed") return { ...common, outcome: "done" };
@@ -388,7 +403,7 @@ export const SERVE_CONTRACT: readonly { method: string; path: string; body?: Jso
 	{ method: "GET", path: "/runs/{run_id}", answers: "{status, computer {state, provider, why, held {state starting|waiting|started|ended|released, why}}, cost {usd, so_far_usd}, result {final_answer}, error {code, message}}", need: "reads where the hold is, and how the run ended", item: 5 },
 	{ method: "POST", path: "/runs/{run_id}/computer/call", body: { method: "a protocol method", params: "its params" }, answers: "{ok, value} | {ok: false, error {code, message}}: the computer's answer, verbatim", need: "reaches the held computer through it, for setup, frames, checks and teardown", item: 2 },
 	{ method: "POST", path: "/runs/{run_id}/start", answers: "{held {state: started}}", need: "starts the held run's agent once the task is set up", item: 1 },
-	{ method: "GET", path: "/runs/{run_id}/timeline?after=", answers: "{rows [{kind tool_use|tool_result|final_answer, tool_name, tool_use_id, tool_status, tool_input_preview, text, computer_calls [{method, ok, ms, code?, steps?, expect?, at?, words?}]?, computer_calls_dropped?}], next_after, has_more}", need: "reads the agent's tool calls, the computer calls each made, and its final answer", item: 4 },
+	{ method: "GET", path: "/runs/{run_id}/timeline?after=", answers: "{rows [{kind tool_use|tool_result|final_answer, tool_name, tool_use_id, tool_status, tool_input_preview, text, conversation_id?, parent_tool_use_id?, computer_calls [{method, started_at, ok, ms, code?, steps?, expect?, words?}]?, computer_calls_dropped?}], next_after, has_more}", need: "reads the agent's tool calls, the computer calls each made (a script's on its nested calls' rows), and its final answer", item: 4 },
 	{ method: "POST", path: "/runs/{run_id}/cancel", answers: "the run stops", need: "stops a run past its budget", item: 0 },
 	{ method: "POST", path: "/runs/{run_id}/computer/release", answers: "{held {state: released}}; 404 not_found, not 'no route', once let go", need: "releases the computer once the checks have read it", item: 3 },
 ];

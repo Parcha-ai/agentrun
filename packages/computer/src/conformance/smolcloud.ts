@@ -3,6 +3,7 @@
 // key, under COMPUTER_SMOLCLOUD_API_KEY (never SMOLCLOUD_API_KEY, which may hold another account's key). Every computer
 // of a run has a deadline of at most 30 minutes, and smol cloud's delete timer is set 5 minutes past it.
 import { boxImageRef } from "../box-image.js";
+import { httpsBase } from "../hosted/rest.js";
 import { create, type SmolcloudProvider, type SmolcloudProviderOptions } from "../smolcloud.js";
 import { type Env, type HostedModuleOptions, hostedModule, keyPrint, requiredSecret, setOptions } from "./module-kit.js";
 
@@ -39,7 +40,7 @@ export const { createProvider, createDriftedProvider, createHost, sweepScope } =
 	host: ["fetch", "daemonPath", "timeouts"],
 	run: ["onNote"],
 	// The key's account, the key named by its sha256 prefix alone.
-	scope: ({ apiKey, apiUrl }) => `the smol cloud account of the key ${keyPrint(apiKey)} at ${apiUrl ?? "https://api.smolmachines.com"}`,
+	scope: ({ apiKey, apiUrl }) => `the smol cloud account of the key ${keyPrint(apiKey)} at ${httpsBase(apiUrl ?? "https://api.smolmachines.com", `the smol cloud API URL (${SMOLCLOUD_ENV.apiUrl})`)}`,
 });
 
 /** The image every computer of the run starts from: COMPUTER_SMOLCLOUD_IMAGE, else the box image prepareImage() answers. */
