@@ -213,14 +213,14 @@ test("on a thread run with email_send on allow, a send to the thread's sender go
 const GMAIL = { preset: "gmail" };
 /** The receiving server's own Authentication-Results on a message from starter@example.com that passed DMARC, as Gmail
  *  writes it (folded, with comments), its header.from in another case than the From's. */
-const GMAIL_PASS = "mx.google.com;\r\n       dkim=pass header.i=@example.com header.s=s1 header.b=abc;\r\n       spf=pass (google.com: domain of starter@example.com designates 192.0.2.1 as permitted sender) smtp.mailfrom=starter@example.com;\r\n       dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=Example.COM";
+const GMAIL_PASS = "mx.google.com;\r\n       dkim=pass header.i=@example.com header.s=s1 header.b=abc;\r\n       spf=pass (google.com: domain of starter@example.com designates the sending host as permitted sender) smtp.mailfrom=starter@example.com;\r\n       dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=Example.COM";
 /** A first-time sender's message (Cc a stranger) as the receiving server keeps it: `results`, the Authentication-Results
  *  it put on top, then its Received line, then the sender's own headers, `lower` (Authentication-Results the sender wrote
  *  itself) first among them. */
 function starterRaw({ results = [], lower = [], from = "Starter <starter@example.com>" } = {}) {
   return [
     ...results.map((one) => `Authentication-Results: ${one}`),
-    "Received: from mail.example.com (mail.example.com [192.0.2.1]) by mx.google.com with ESMTPS id q1; Mon, 01 Jun 2026 00:00:40 +0000",
+    "Received: from mail.example.com (mail.example.com) by mx.google.com with ESMTPS id q1; Mon, 01 Jun 2026 00:00:40 +0000",
     ...lower.map((one) => `Authentication-Results: ${one}`),
     `From: ${from}`,
     `To: ${ADDRESS}`,
@@ -261,7 +261,7 @@ for (const [why, message, account] of [
   ["the receiving server says dmarc=fail", { results: ["mx.google.com; spf=softfail smtp.mailfrom=starter@example.com; dmarc=fail (p=NONE sp=NONE dis=NONE) header.from=example.com"] }],
   ["the receiving server says dmarc=none", { results: ["mx.google.com; spf=pass smtp.mailfrom=starter@example.com; dmarc=none header.from=example.com"] }],
   ["the receiving server says dkim=pass for the From's domain and nothing of DMARC", { results: ["mx.google.com; dkim=pass header.i=@example.com header.d=example.com; spf=pass smtp.mailfrom=starter@example.com"] }],
-  ["a dmarc=pass under the provider's authserv-id sits below the receiving server's own header, which has no DMARC result (the sender wrote it)", { results: ["mx.google.com; spf=softfail (google.com: domain of transitioning starter@example.com does not designate 198.51.100.7 as permitted sender) smtp.mailfrom=starter@example.com"], lower: ["mx.google.com; dmarc=pass (p=REJECT) header.from=example.com"] }],
+  ["a dmarc=pass under the provider's authserv-id sits below the receiving server's own header, which has no DMARC result (the sender wrote it)", { results: ["mx.google.com; spf=softfail (google.com: domain of transitioning starter@example.com does not designate the sending host as permitted sender) smtp.mailfrom=starter@example.com"], lower: ["mx.google.com; dmarc=pass (p=REJECT) header.from=example.com"] }],
   ["the topmost dmarc=pass carries another authserv-id than the provider's", { results: ["mx.attacker.example; dmarc=pass (p=REJECT) header.from=example.com"] }],
   ["the receiving server's dmarc=pass is for another domain than the From's", { results: ["mx.google.com; dkim=pass header.d=attacker.example; dmarc=pass (p=NONE sp=NONE dis=NONE) header.from=attacker.example"] }],
   ["the account's provider has no known authserv-id (not Gmail), though the header reads as Gmail's pass", { results: [GMAIL_PASS] }, {}],
