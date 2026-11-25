@@ -30,17 +30,30 @@ const cleaned = (path: string) => posix.resolve(path);
 /** A read the daemon may answer from a copy: an absolute path outside /proc (whose self is the reader's), a whole chunk. */
 const copyable = ({ path, length }: FilesReadParams) => path.startsWith("/") && !cleaned(path).startsWith("/proc/") && (length === undefined || length === MAX_CHUNK_BYTES);
 
+/** The bytes one connection's copies may hold at once: two files at the read limit. */
+const COPIES_BYTES = 2 * MAX_READ_BYTES;
+
+/** A file a first chunk found worth copying: the copy starts at the first read past that chunk, and stop ends it. */
+interface Copy {
+	path: string;
+	size: number;
+	stop: AbortController;
+	bytes?: Promise<Uint8Array | undefined>;
+}
+
 /**
  * connection, with every files.read past one chunk read from one downloaded copy after its first chunk. A first chunk
  * (offset 0, a whole chunk) whose file runs past it, and is at most the surface's read limit (MAX_READ_BYTES, all a copy
- * holds in memory), starts the copy; a larger file is the daemon's, chunk by chunk. The reads after it, at the offsets
- * the first's reader asks for, are answered from the copy, as the daemon answers (eof once a read reaches the copy's
- * size), and the copy is let go at its end, at the next first chunk of its path, or at any call of another method, which
- * may change a file. A copy that fails at any step (the daemon's user unread, read-stage refused, the download, a size
- * other than the daemon read) leaves the daemon to answer every read, as on a host with no download. The copy in the
- * machine is removed once it is downloaded, without holding up the read. A close of the connection or of its client lets
- * every copy go and stops one still coming: each read after it, or still waiting on a copy, is the closed daemon
- * client's (gone).
+ * holds in memory), makes its file one to copy; a larger file is the daemon's, chunk by chunk. The copy starts at the
+ * first read past that chunk, so a reader that stops at one chunk copies nothing. The reads after it, at the offsets the
+ * first's reader asks for, are answered from the copy, as the daemon answers (eof once a read reaches the copy's size),
+ * and the copy is let go at its end, at the next first chunk of its path, at any call of another method, which may change
+ * a file, or, the oldest first, once the files to copy pass COPIES_BYTES in all. A copy let go while it is still coming
+ * is stopped, and the reads waiting on it are the daemon's. A copy that fails at any step (the daemon's user unread,
+ * read-stage refused, the download, a size other than the daemon read) leaves the daemon to answer every read, as on a
+ * host with no download. The copy in the machine is removed once it is downloaded, without holding up the read. A close
+ * of the connection or of its client lets every copy go: each read after it, or still waiting on a copy, is the closed
+ * daemon client's (gone).
  */
 export function downloadingConnection(
 	host: MachineHost,
@@ -50,8 +63,8 @@ export function downloadingConnection(
 	bounds: DownloadBounds,
 ): ComputerConnection {
 	const { client } = connection;
-	const copies = new Map<string, Promise<Uint8Array | undefined>>();
-	const closing = new AbortController();
+	const copies = new Map<string, Copy>();
+	let closed = false;
 	let user: Promise<[string, string] | undefined> | undefined;
 
 	/** The daemon's uid and gid, from its own /proc/self/status: each of its four ids the same, else none. */
@@ -68,48 +81,66 @@ export function downloadingConnection(
 			return undefined;
 		})());
 
-	/** path's copy, downloaded: its bytes when they are size long, else undefined. */
-	const copyOf = async (path: string, size: number): Promise<Uint8Array | undefined> => {
+	/** path's copy, downloaded until signal aborts: its bytes when they are size long, else undefined. */
+	const copyOf = async (path: string, size: number, signal: AbortSignal): Promise<Uint8Array | undefined> => {
 		const who = await userOf();
 		if (who === undefined) return undefined;
 		const copy = `${READ_COPIES}/${randomBytes(16).toString("hex")}`;
 		const unstage = () => void runToExit(host, id, readUnstage(copy), { ms: bounds.execMs, what: `removing the copy of ${path}` });
-		const staged = await runToExit(host, id, readStage(who[0], who[1], path, copy), { ms: bounds.execMs, signal: closing.signal, what: `copying ${path} as the daemon's user` });
+		const staged = await runToExit(host, id, readStage(who[0], who[1], path, copy), { ms: bounds.execMs, signal, what: `copying ${path} as the daemon's user` });
 		if (!staged.ok || staged.value.exitCode !== 0) {
 			// One that never answered may yet write its copy.
 			if (!staged.ok) unstage();
 			return undefined;
 		}
-		const got = await hostCall(host, `downloading the copy of ${path}`, (ctx) => download(id, copy, ctx), bounds.downloadMs, closing.signal);
+		const got = await hostCall(host, `downloading the copy of ${path}`, (ctx) => download(id, copy, ctx), bounds.downloadMs, signal);
 		unstage();
 		return got.ok && got.value.length === size ? got.value : undefined;
 	};
 
-	/** Every copy let go, and one still coming stopped. */
+	/** key's copy let go, and stopped if it is still coming. */
+	const letGo = (key: string) => {
+		copies.get(key)?.stop.abort();
+		copies.delete(key);
+	};
+	const letAllGo = () => {
+		for (const key of copies.keys()) letGo(key);
+	};
 	const drop = () => {
-		closing.abort();
-		copies.clear();
+		closed = true;
+		letAllGo();
 	};
 
 	const reading: ComputerClient = {
 		async call<M extends DaemonMethod>(method: M, params: DaemonMethods[M]["params"], options?: { signal?: AbortSignal }): Promise<Result<DaemonMethods[M]["result"]>> {
-			if (method !== "files.read" || closing.signal.aborted) {
-				copies.clear();
+			if (method !== "files.read" || closed) {
+				letAllGo();
 				return client.call(method, params, options);
 			}
 			const read = params as FilesReadParams;
 			const offset = read.offset ?? 0;
 			if (offset === 0) {
-				copies.delete(read.path);
+				letGo(read.path);
 				const first = await client.call(method, params, options);
 				const answer = first.ok ? (first.value as DaemonMethods["files.read"]["result"]) : undefined;
-				if (answer !== undefined && !answer.eof && answer.size > MAX_CHUNK_BYTES && answer.size <= MAX_READ_BYTES && copyable(read)) copies.set(read.path, copyOf(cleaned(read.path), answer.size));
+				if (answer !== undefined && !answer.eof && answer.size > MAX_CHUNK_BYTES && answer.size <= MAX_READ_BYTES && copyable(read)) {
+					// Room for it within COPIES_BYTES: the oldest let go first.
+					let held = answer.size;
+					for (const each of copies.values()) held += each.size;
+					for (const [key, each] of copies) {
+						if (held <= COPIES_BYTES) break;
+						held -= each.size;
+						letGo(key);
+					}
+					copies.set(read.path, { path: cleaned(read.path), size: answer.size, stop: new AbortController() });
+				}
 				return first;
 			}
-			const copying = copies.get(read.path);
+			const copy = copies.get(read.path);
 			const length = read.length ?? MAX_CHUNK_BYTES;
-			if (copying === undefined || !Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 1 || length > MAX_CHUNK_BYTES) return client.call(method, params, options);
-			const bytes = await untilAborted(copying, [options?.signal, closing.signal]);
+			if (copy === undefined || !Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 1 || length > MAX_CHUNK_BYTES) return client.call(method, params, options);
+			copy.bytes ??= copyOf(copy.path, copy.size, copy.stop.signal);
+			const bytes = await untilAborted(copy.bytes, [options?.signal, copy.stop.signal]);
 			if (bytes === undefined) {
 				if (!options?.signal?.aborted) copies.delete(read.path);
 				return client.call(method, params, options);
