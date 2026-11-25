@@ -127,8 +127,9 @@ test("Sign out of AgentRun's own login drops it: no credentials, account, signed
 });
 
 /** The routes' deps over stand-ins, for test `t`: the setting in `rows` (turned on at `place`), the pinned CLI a file,
- *  the CLI's sign-out answering `logout` (and noting each call in `logouts`), each sign-in waiting until stopped. */
-async function rig(t, { place = "agentrun", logout = async () => true, env: extra = {} } = {}) {
+ *  the CLI's sign-out answering `logout` (and noting each call in `logouts`), each sign-in waiting until stopped, the
+ *  CLI's status signed in where `signedIn`. */
+async function rig(t, { place = "agentrun", logout = async () => true, env: extra = {}, signedIn = false } = {}) {
   const data = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-sign-out-"));
   const signIns = new ClaudeSignIns();
   t.after(async () => {
@@ -144,7 +145,7 @@ async function rig(t, { place = "agentrun", logout = async () => true, env: extr
   const started = [];
   const cli = {
     claudeLoginCommand: () => "claude auth login",
-    claudeLoginStatus: async () => ({ signedIn: false, method: "none" }),
+    claudeLoginStatus: async () => (signedIn ? { signedIn: true, method: "claude.ai", email: "person@example.com" } : { signedIn: false, method: "none" }),
     startClaudeLogin: (_cli, at) => {
       const one = { dir: at.dir, stopped: false };
       started.push(one);
@@ -221,6 +222,29 @@ test("a sign-out with no login kept here (nothing signed in yet) runs no CLI, co
   const out = await login.signOutClaudeLogin(r.deps);
   assert.deepEqual([out.confirmed, out.login.state], [true, "off"]);
   assert.deepEqual(r.logouts, []);
+});
+
+test("a sign-out where one removal fails still drops the runner's token reader, removes the rest, turns the mode off and has the server reread the keys, and answers confirmed false in words naming what remains", async (t) => {
+  const r = await rig(t, { signedIn: true });
+  const folder = signedInAt(r.data);
+  assert.equal((await login.claudeLoginView(r.deps)).state, "signed_in");
+  const [note] = answers(r.data);
+  assert.ok(note, "a signed-in note is kept for the login");
+  // A folder with a file in it where the note was: its removal as a file fails (EISDIR), as root too.
+  const stuck = join(r.data, LOGIN_ANSWERS_DIR, note);
+  rmSync(stuck);
+  mkdirSync(stuck);
+  writeFileSync(join(stuck, "kept"), "");
+  const reader = loginTokensFor({ dir: folder, profiles: join(folder, "anthropic") }, () => {});
+  let rereads = 0;
+  const out = await login.signOutClaudeLogin({ ...r.deps, changed: async () => void rereads++ });
+  assert.equal(out.confirmed, false, JSON.stringify(out));
+  assert.ok(out.message?.includes(stuck), `the words name what remains: ${out.message}`);
+  assert.equal(rereads, 1, "the server rereads the keys all the same");
+  assert.notEqual(loginTokensFor({ dir: folder, profiles: join(folder, "anthropic") }, () => {}), reader, "the runner's token reader for the folder is dropped all the same");
+  assert.equal(existsSync(folder), false, "the folder is removed all the same");
+  assert.equal(r.rows.has(CLAUDE_LOGIN_SETTING), false, "the mode is off");
+  assert.equal(out.login.state, "off");
 });
 
 test("where runs have users of their own, a run claimed on AgentRun's own login before Sign out is refused at its start, in the fixed words of a login changed since its claim: never handed the signed-out login's reader nor left to a model key", async (t) => {
