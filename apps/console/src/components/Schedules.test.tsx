@@ -887,6 +887,19 @@ describe("a trigger's typed input and its agent picker", () => {
     expect(calls.filter((c) => c.method === "PATCH").map((c) => c.body)).toEqual([{ target: { kind: "start_run", agent_id: "triage", input: { content: "Check." }, max_cost_usd: 2 } }]);
   });
 
+  it("an edit that picks another agent and then the trigger's own again keeps the input it had, the keys no field shows too", async () => {
+    const kyb: Trigger = { ...NIGHTLY, target: { kind: "start_run", agent_id: "kyb_1", input: { content: "Check.", company: "Acme GmbH", country: "DE", note: { from: "api" } }, max_cost_usd: 2 } };
+    const { v2, calls } = server({ triggers: [kyb], agents });
+    const t = await open(v2, { trigger: "trg_1", edit: true });
+    await t.set("agent", "triage");
+    await t.set("agent", "kyb_1");
+    await t.set("name", "kyb nightly");
+    await t.click(/^Save changes$/);
+    // Before: the stored input went with the first pick, so the target was sent again without note (no field shows it).
+    expect(t.issue("target.input")).toBeNull();
+    expect(calls.filter((c) => c.method === "PATCH").map((c) => c.body)).toEqual([{ name: "kyb nightly" }]);
+  });
+
   it("a name changed alone leaves a typed input as it is", async () => {
     const kyb: Trigger = { ...NIGHTLY, target: { kind: "start_run", agent_id: "kyb_1", input: { company: "Acme GmbH", country: "DE" }, max_cost_usd: 2 } };
     const { v2, calls } = server({ triggers: [kyb], agents });
