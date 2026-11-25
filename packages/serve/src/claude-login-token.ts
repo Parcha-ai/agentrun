@@ -233,9 +233,9 @@ const heldPairs = new Map<string, HeldPair>();
 
 /** `held` written into `file` as the pinned CLI writes a renewal back (login-refresh.ts): only while the file still holds
  *  the refresh token it spent (or one the CLI cleared), the fields it gives over the file's, the rest kept as they are.
- *  "saved" once written, "held" while the write or the read before it fails (kept in heldPairs), and "dropped" when the
- *  file holds another holder's pair (or is gone, or holds no login the runner reads): the file wins, as the CLI's own
- *  check lets it. */
+ *  "saved" once written (or found written: another ask saved it), "held" while the write or the read before it fails
+ *  (kept in heldPairs), and "dropped" when the file holds another holder's pair (or is gone, or holds no login the
+ *  runner reads): the file wins, as the CLI's own check lets it. */
 async function saveHeld(file: string, held: HeldPair, options: RenewLoginOptions, owned?: () => Promise<LockRead>): Promise<"saved" | "held" | "dropped"> {
   const say = options.log ?? (() => undefined);
   const forget = () => {
@@ -249,6 +249,13 @@ async function saveHeld(file: string, held: HeldPair, options: RenewLoginOptions
     heldPairs.set(file, held);
     say({ claude_login: "renewed", saved: "no", reason: "file_unread" });
     return "held";
+  }
+  // The file holds this very pair: another ask of this process saved it since this one took it from heldPairs. Saved,
+  // and said so, never as a newer pair, which reads as another holder's takeover.
+  if (current !== "gone" && current.oauth.accessToken === held.fields.accessToken && current.oauth.refreshToken === held.fields.refreshToken) {
+    forget();
+    say({ claude_login: "renewed", saved: "yes", reason: "already_saved" });
+    return "saved";
   }
   if (current === "gone" || (current.oauth.refreshToken !== held.posted && current.oauth.refreshToken !== "")) {
     forget();
@@ -342,7 +349,7 @@ async function credentialsNow(file: string, options: RenewLoginOptions): Promise
 /** The pinned CLI's renewal of a login (the adapter's login-refresh.ts), as the runner does it in the CLI's place. */
 export function renewLogin(options: RenewLoginOptions = {}): Renew {
   const now = options.now ?? Date.now;
-  return async (login, seen, refusedAccess) => {
+  const renew: Renew = async (login, seen, refusedAccess) => {
     const file = join(login.dir, LOGIN_FILE);
     // A pair renewed here and not saved yet: its token is handed and its write tried again (under the refresh locks, read
     // again there: saveHeldUnderLock), and nothing is posted, for the file's refresh token is spent. Once saved, a token
@@ -370,12 +377,18 @@ export function renewLogin(options: RenewLoginOptions = {}): Renew {
     // is handed that pair. The spent check stops only a new request.
     let flight = flights.get(refresh);
     if (!flight) {
-      if (dead.has(refresh)) throw new Error("the login's refresh token is spent or was refused for good");
+      if (dead.has(refresh)) {
+        // The renewal that spent it may have held its pair unsaved and settled while this read was out, after the check
+        // of heldPairs above: that pair is this ask's, through the held branch, never a refusal.
+        if (heldPairs.get(file)?.posted === refresh) return renew(login, seen, refusedAccess);
+        throw new Error("the login's refresh token is spent or was refused for good");
+      }
       flight = renewUnderLock(login.dir, file, seen, refresh, options).finally(() => flights.delete(refresh));
       flights.set(refresh, flight);
     }
     return flight;
   };
+  return renew;
 }
 
 /** The file operations a refresh lock is taken, touched and released with: fs/promises' own, or a test's that watches
@@ -640,8 +653,10 @@ async function renewUnderLock(dir: string, file: string, seen: string, refresh: 
         if (before === "own") {
           const answer = await postRefresh(held.oauth, refresh, options);
           const after = await locks.owned();
+          // Written back (or held) before the line is said: a log that throws never loses the pair the post rotated.
+          const renewed = await writeBack(file, refresh, answer, options);
           if (after !== "own") say({ claude_login: lockWord(after), at: "after_post" });
-          return await writeBack(file, refresh, answer, options);
+          return renewed;
         }
         say({ claude_login: lockWord(before), at: "before_post" });
       } finally {
