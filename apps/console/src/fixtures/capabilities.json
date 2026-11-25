@@ -276,7 +276,7 @@
       "default_place": {
         "mode": "runner"
       },
-      "default_reason": "new agents run on the runner, because the docker box is unavailable here: docker is not set up on this server",
+      "default_reason": "name a box: this server has no Docker box for a new agent. Set place to {mode: sandbox, box: <none is set up>}, or to {mode: runner} to run without a shell.",
       "boxes": [
         {
           "id": "docker",

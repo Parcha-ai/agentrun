@@ -16,7 +16,8 @@ export function PlaceSetting({ value, saved, places, tools, picked, onChange, er
   // No place runs where the server resolves it: the runner for a tool that runs only there, else default_place.
   const mode = (place ?? defaultPlaceOf(false, picked, places)).mode;
   // A box this server can run; an agent saved in one it lacks keeps it. With none at all, Sandbox can't be picked: the
-  // server stays the place, and each box says why it isn't set up.
+  // agent needs a box set up, or the server chosen (a new one with a shell and no place is refused), and each box says
+  // why it isn't set up.
   const runnable = places.boxes.find((b) => b.available)?.id;
   const box = place?.mode === "sandbox" ? place.box : runnable;
   const noBox = !runnable && mode !== "sandbox";
@@ -45,7 +46,7 @@ export function PlaceSetting({ value, saved, places, tools, picked, onChange, er
       </div>
       {noBox && (
         <div className="mt-3 border px-4 py-3 text-small text-muted-foreground" role="status">
-          <p>No box is set up on this server, so this agent runs on the server.</p>
+          <p>No box is set up on this server: set one up for this agent, or choose On the server to run it without a shell.</p>
           <ul className="mt-1">{places.boxes.map((b) => <li key={b.id}><span className="font-mono">{b.id}</span>{b.reason ? `: ${b.reason}` : ""}</li>)}</ul>
         </div>
       )}
