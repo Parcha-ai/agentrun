@@ -3,6 +3,9 @@
 // the bridge, the probe, idempotent create, late-create cleanup, extend, release) is tested once, against its one fake
 // host (hosted-provider.test.mjs); boxd's own is proven live (test/boxd). No SDK is loaded and nothing reaches the network.
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { BOXD, kindRefusals } from "../dist/index.js";
 import { providerFor } from "../dist/providers.js";
@@ -20,6 +23,13 @@ const LINUX_GROUPS = ["exec", "files", "processes"];
 const DESKTOP_GROUPS = [...LINUX_GROUPS, "screen", "input.pointer", "input.keys", "apps"];
 const TIMEOUTS = { requestMs: 2_000, createMs: 3_000 };
 const HOUR = 3_600_000;
+
+// The provider's create reads the daemon before it calls the recorder, which takes any bytes: a stand-in, so these
+// tests hold on a checkout with no computerd built.
+const dir = mkdtempSync(join(tmpdir(), "computer-boxd-"));
+test.after(() => rmSync(dir, { recursive: true, force: true }));
+const DAEMON = join(dir, "computerd");
+writeFileSync(DAEMON, Buffer.from("a stand-in for computerd, linux/amd64\n"));
 
 const named = (name, extra = {}) => Object.assign(new Error(name), { name, ...extra });
 
@@ -69,7 +79,7 @@ function recorder(answers = {}) {
 
 function setup(options = {}, answers = {}) {
 	const rec = recorder(answers);
-	const provider = new BoxdProvider({ apiKey: KEY, Boxd: rec.Boxd, org: "acme", timeouts: TIMEOUTS, ...options });
+	const provider = new BoxdProvider({ apiKey: KEY, Boxd: rec.Boxd, org: "acme", timeouts: TIMEOUTS, daemonPath: DAEMON, ...options });
 	return { rec, provider, host: provider.host };
 }
 const ctx = { timeoutMs: 1_234 };

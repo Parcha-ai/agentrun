@@ -878,6 +878,15 @@ describe("a trigger's typed input and its agent picker", () => {
     expect(calls.filter((c) => c.method === "PATCH").map((c) => c.body)).toEqual([{ target: { kind: "start_run", agent_id: "kyb_1", input: { content: "Check.", company: "Acme GmbH", country: "FR", note: { from: "api" } }, max_cost_usd: 2 } }]);
   });
 
+  it("an edit that picks another agent sends that agent's input afresh, none of the last agent's keys", async () => {
+    const kyb: Trigger = { ...NIGHTLY, target: { kind: "start_run", agent_id: "kyb_1", input: { content: "Check.", company: "Acme GmbH", country: "DE", note: { from: "api" } }, max_cost_usd: 2 } };
+    const { v2, calls } = server({ triggers: [kyb], agents });
+    const t = await open(v2, { trigger: "trg_1", edit: true });
+    await t.set("agent", "triage");
+    await t.click(/^Save changes$/);
+    expect(calls.filter((c) => c.method === "PATCH").map((c) => c.body)).toEqual([{ target: { kind: "start_run", agent_id: "triage", input: { content: "Check." }, max_cost_usd: 2 } }]);
+  });
+
   it("a name changed alone leaves a typed input as it is", async () => {
     const kyb: Trigger = { ...NIGHTLY, target: { kind: "start_run", agent_id: "kyb_1", input: { company: "Acme GmbH", country: "DE" }, max_cost_usd: 2 } };
     const { v2, calls } = server({ triggers: [kyb], agents });

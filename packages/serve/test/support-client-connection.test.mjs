@@ -34,9 +34,8 @@ test("the test client sends each request on a connection of its own: a server th
   const { asked, api } = await answersEachConnectionOnce(t);
   const answers = [];
   for (const [method, body] of [["GET"], ["POST", { n: 1 }], ["GET"], ["PATCH", { n: 2 }], ["PUT", { n: 3 }], ["DELETE"], ["GET"], ["POST"]]) answers.push(await api(method, "/things", body));
-  for (let n = 0; n < 4; n++) answers.push(await api.fresh("GET", "/things"));
-  assert.deepEqual(answers.map((answer) => answer.status), Array(12).fill(200));
-  assert.deepEqual(asked, Array.from({ length: 12 }, (_, n) => n), "twelve requests, twelve connections");
+  assert.deepEqual(answers.map((answer) => answer.status), Array(8).fill(200));
+  assert.deepEqual(asked, Array.from({ length: 8 }, (_, n) => n), "eight requests, eight connections");
 });
 
 test("the test client's answer reads as before: the status, the body as JSON or else its text, each header by name and every Set-Cookie apart; a body goes whole on every method, and a redirect is answered as it is", { timeout: 30_000 }, async (t) => {

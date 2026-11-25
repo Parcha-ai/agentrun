@@ -14,11 +14,11 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { test } from "node:test";
+import { Worker } from "node:worker_threads";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 import * as handedValues from "../dist/handed-values.js";
 import { WITHHELD_TITLE } from "../dist/run-view.js";
-import { raw } from "./store-target.mjs";
 import { agent, follow, runDir, serve, withEnv } from "./support.mjs";
 
 const { Webhook } = createRequire(import.meta.url)("standardwebhooks");
@@ -102,14 +102,28 @@ async function cutRead({ baseUrl, token, runId }, path) {
   return res.status === 200 ? [200, new TextDecoder("utf-8", { ignoreBOM: true }).decode(await res.arrayBuffer())] : [res.status, (await res.json()).error?.code];
 }
 
-/** One raw write to the server's store under `data`, waiting out a live runner's write as long as a loaded box holds one. */
+/** The raw write, on a thread of its own: node:sqlite waits out a lock synchronously, on the thread that asked. */
+const WRITER = `
+const { parentPort, workerData } = require("node:worker_threads");
+const { DatabaseSync } = require("node:sqlite");
+const db = new DatabaseSync(workerData.file, { timeout: workerData.timeout });
+try {
+  db.prepare(workerData.sql).run(...workerData.params);
+} finally {
+  db.close();
+}
+`;
+
+/** One raw write to the server's store under `data`, waiting out a live runner's write as long as a loaded box holds one.
+ *  It runs on a worker thread. The server and runner of this test live in this process, and each store transaction of
+ *  theirs is driven step by step from this thread. A write here that waited on their lock would block this thread, so
+ *  the transaction holding that lock could never commit and the wait would end in "database is locked". */
 async function write(data, sql, ...params) {
-  const db = await raw(join(data, "store.sqlite"), { timeout: 30_000 });
-  try {
-    await db.run(sql, ...params);
-  } finally {
-    await db.close();
-  }
+  const worker = new Worker(WRITER, { eval: true, workerData: { file: join(data, "store.sqlite"), timeout: 30_000, sql, params } });
+  await new Promise((resolve, reject) => {
+    worker.once("error", reject);
+    worker.once("exit", (code) => (code === 0 ? resolve() : reject(new Error(`the raw write's thread ended with code ${code}`))));
+  });
 }
 
 /** Run `runId`'s launch census set to `census` in the server's store, as an end that wrote it would leave it. */
@@ -162,6 +176,28 @@ test("a run's own model_key is cut from its files by a cut read while it runs, a
   assert.deepEqual(await cutRead(run, "later.txt"), [403, "forbidden"], "written after the end: no entry, withheld");
   await writeFile(join(run.work, "clean.txt"), "nothing held here\n");
   assert.deepEqual(await cutRead(run, "clean.txt"), [200, "nothing held here\n"], "the same bytes again read as counted");
+});
+
+test("an ended run's export carries none of its files once its end erased what its caller handed it: its census says where those sat in a file, never in a name", { timeout: 180_000 }, async (t) => {
+  const run = await liveRun(t, { start: { model_key: KEY } });
+  // Prose with no label a pattern reads, and a file named by the key: only the census knows either holds it.
+  await writeFile(join(run.work, "notes.txt"), `seen ${KEY} here\n`);
+  await writeFile(join(run.work, `cache-${KEY}.txt`), "cached\n");
+  await writeFile(join(run.work, "clean.txt"), "nothing held here\n");
+  await run.ended();
+  const res = await until(async () => {
+    const answer = await get(run.baseUrl, run.token, `/runs/${run.runId}/export`);
+    return answer.status === 409 ? (await answer.body?.cancel(), undefined) : answer;
+  }, "the run settled for its export");
+  assert.equal(res.status, 200);
+  const body = await res.text();
+  for (const [form, value] of [["raw", KEY], ["JSON", JSON.stringify(KEY).slice(1, -1)], ["URL", encodeURIComponent(KEY)], ["base64", Buffer.from(KEY).toString("base64")], ["its middle", "handed-cut-model-key"]]) {
+    assert.equal(body.includes(value), false, `the handed key (${form}) is not in the bundle`);
+  }
+  const doc = JSON.parse(body);
+  assert.deepEqual(doc.files, [], "no file carried, its content or its name");
+  assert.deepEqual(doc.omitted.filter((one) => one.what === "file"), [], "no file named in what was left out");
+  assert.ok(doc.omitted.some((one) => one.what === "files" && one.why === "uncounted"), `the files left out as uncounted: ${JSON.stringify(doc.omitted)}`);
 });
 
 test("an ended run whose end erased its secrets with no census (the marker, or a pending an earlier build left) withholds its files", { timeout: 180_000 }, async (t) => {

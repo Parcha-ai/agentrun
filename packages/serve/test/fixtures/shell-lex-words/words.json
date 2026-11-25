@@ -1,0 +1,229 @@
+{
+  "bash": "5.2.21(1)-release",
+  "lines": [
+    {
+      "line": "a b c",
+      "words": [
+        "a",
+        "b",
+        "c"
+      ]
+    },
+    {
+      "line": "-u admin:pw",
+      "words": [
+        "-u",
+        "admin:pw"
+      ]
+    },
+    {
+      "line": "-a 'two words'",
+      "words": [
+        "-a",
+        "two words"
+      ]
+    },
+    {
+      "line": "'a b' \"c d\"",
+      "words": [
+        "a b",
+        "c d"
+      ]
+    },
+    {
+      "line": "'a'\"b\"c",
+      "words": [
+        "abc"
+      ]
+    },
+    {
+      "line": "\"a b\"'c d'e\\ f",
+      "words": [
+        "a bc de f"
+      ]
+    },
+    {
+      "line": "\"\" ''",
+      "words": [
+        "",
+        ""
+      ]
+    },
+    {
+      "line": "a\"\"b",
+      "words": [
+        "ab"
+      ]
+    },
+    {
+      "line": "\"'\" '\"'",
+      "words": [
+        "'",
+        "\""
+      ]
+    },
+    {
+      "line": "\"a\tb\"",
+      "words": [
+        "a\tb"
+      ]
+    },
+    {
+      "line": "\"a\\\"b\" \"c\\\\d\" \"e\\$f\" \"g\\h\" \"i\\`j\"",
+      "words": [
+        "a\"b",
+        "c\\d",
+        "e$f",
+        "g\\h",
+        "i`j"
+      ]
+    },
+    {
+      "line": "a\\ b c\\\\d \\'e\\\"",
+      "words": [
+        "a b",
+        "c\\d",
+        "'e\""
+      ]
+    },
+    {
+      "line": "a\\;b a\\|b a\\&b a\\>b a\\(b\\)",
+      "words": [
+        "a;b",
+        "a|b",
+        "a&b",
+        "a>b",
+        "a(b)"
+      ]
+    },
+    {
+      "line": "\\$HOME '$HOME' \"\\$(x)\"",
+      "words": [
+        "$HOME",
+        "$HOME",
+        "$(x)"
+      ]
+    },
+    {
+      "line": "$'a\\tb' $'\\x41\\x4a' $'\\101' $'\\n' $'it\\'s' $'\\e[0m'",
+      "words": [
+        "a\tb",
+        "AJ",
+        "A",
+        "\n",
+        "it's",
+        "\u001b[0m"
+      ]
+    },
+    {
+      "line": "$'a\\\\b' $'\\\"q\\\"' $'\\?' $'\\x7' $'\\0101'",
+      "words": [
+        "a\\b",
+        "\"q\"",
+        "?",
+        "\u0007",
+        "\b1"
+      ]
+    },
+    {
+      "line": "$'-u' $'admin:Copper9lumen9'",
+      "words": [
+        "-u",
+        "admin:Copper9lumen9"
+      ]
+    },
+    {
+      "line": "-p'secret pass' --user=\"u:p w\"",
+      "words": [
+        "-psecret pass",
+        "--user=u:p w"
+      ]
+    },
+    {
+      "line": "--user=a:b -pabc x=y",
+      "words": [
+        "--user=a:b",
+        "-pabc",
+        "x=y"
+      ]
+    },
+    {
+      "line": "\"semi;colon\" 'pipe|bar' \"amp&er\" \"paren()\" 'lt<gt>'",
+      "words": [
+        "semi;colon",
+        "pipe|bar",
+        "amp&er",
+        "paren()",
+        "lt<gt>"
+      ]
+    },
+    {
+      "line": "a\\\nb",
+      "words": [
+        "ab"
+      ]
+    },
+    {
+      "line": "a \\\n b",
+      "words": [
+        "a",
+        "b"
+      ]
+    },
+    {
+      "line": "-a \\\n Copper9lumen9",
+      "words": [
+        "-a",
+        "Copper9lumen9"
+      ]
+    },
+    {
+      "line": "x\\\n\\\ny",
+      "words": [
+        "xy"
+      ]
+    },
+    {
+      "line": "héllo 'wörld' \"naïve\"",
+      "words": [
+        "héllo",
+        "wörld",
+        "naïve"
+      ]
+    },
+    {
+      "line": "a\\\\",
+      "words": [
+        "a\\"
+      ]
+    },
+    {
+      "line": "'it'\\''s'",
+      "words": [
+        "it's"
+      ]
+    },
+    {
+      "line": "\"a\"'b'$'c'd",
+      "words": [
+        "abcd"
+      ]
+    },
+    {
+      "line": "-H \"Authorization: Bearer abc\" -u 'a:b c'",
+      "words": [
+        "-H",
+        "Authorization: Bearer abc",
+        "-u",
+        "a:b c"
+      ]
+    },
+    {
+      "line": "a# b#c",
+      "words": [
+        "a#",
+        "b#c"
+      ]
+    }
+  ]
+}

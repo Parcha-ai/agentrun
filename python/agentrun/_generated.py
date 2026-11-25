@@ -478,10 +478,19 @@ __all__ = [
     "GetObservationsResponseUsageDailyItem",
     "GetObservationsResponseUsageModelsItem",
     "GetOpenapiResponse",
+    "GetRunExportResponse",
+    "GetRunExportResponseAgent",
+    "GetRunExportResponseCutsItem",
+    "GetRunExportResponseFilesItem",
+    "GetRunExportResponseOmittedItem",
+    "GetRunExportResponseRestoredItem",
+    "GetRunExportResponseSource",
+    "GetRunExportResponseSourceScrubber",
     "GetRunGraphResponse",
     "GetRunGraphResponseDecisionsItem",
     "GetRunGraphResponseDecisionsItemImagesItem",
     "GetRunGraphResponseEffectsItem",
+    "GetRunGraphResponseGraph",
     "GetRunGraphResponseNodesValue",
     "GetRunGraphResponseNodesValueItemsItem",
     "GetRunGraphResponseRun",
@@ -1580,7 +1589,7 @@ class DefinitionPlace1(TypedDict):
 
 class DefinitionPlace2(TypedDict):
     mode: Literal["sandbox"]
-    box: Literal["docker", "modal", "daytona"]
+    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "boxd", "groundbox"]
 
 
 class _DefinitionComputerRequired(TypedDict):
@@ -2086,7 +2095,7 @@ class DefinitionInputPlace1(TypedDict):
 
 class DefinitionInputPlace2(TypedDict):
     mode: Literal["sandbox"]
-    box: Literal["docker", "modal", "daytona"]
+    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "boxd", "groundbox"]
 
 
 class _DefinitionInputComputerRequired(TypedDict):
@@ -4583,6 +4592,7 @@ class GetLearningCostResponseWorkflowsItem(TypedDict):
     workflow: str
     digest: str
     state: Literal["serving", "needs_revision"]
+    reason: Literal["over_line", "no_by_hand_cost"] | None
     served: GetLearningCostResponseWorkflowsItemServed | None
     by_hand: GetLearningCostResponseWorkflowsItemByHand | None
     unknown_cost_runs: int
@@ -5185,7 +5195,7 @@ class GetChatGPTSignInResponse(_GetChatGPTSignInResponseRequired, total=False):
 
 
 class _GetClaudeLoginResponseRequired(TypedDict):
-    state: Literal["off", "other_machine", "signed_in", "signed_out", "no_cli", "unknown"]
+    state: Literal["off", "other_machine", "refused", "signed_in", "signed_out", "no_cli", "unknown"]
     place: Literal["agentrun", "machine"]
     command: str
     can_start: bool
@@ -5865,7 +5875,7 @@ class RunPlace1(TypedDict):
 
 class RunPlace2(TypedDict):
     mode: Literal["sandbox"]
-    box: Literal["docker", "modal", "daytona"]
+    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "boxd", "groundbox"]
 
 
 class _RunComputerRequired(TypedDict):
@@ -6596,7 +6606,7 @@ class StartChatGPTSignInResponse(TypedDict):
 
 
 class _StartClaudeLoginResponseRequired(TypedDict):
-    state: Literal["off", "other_machine", "signed_in", "signed_out", "no_cli", "unknown"]
+    state: Literal["off", "other_machine", "refused", "signed_in", "signed_out", "no_cli", "unknown"]
     place: Literal["agentrun", "machine"]
     command: str
     can_start: bool
@@ -6743,7 +6753,7 @@ class TestWorkspaceArchilResponseObject2(TypedDict):
 
 
 class _TurnOffClaudeLoginResponseRequired(TypedDict):
-    state: Literal["off", "other_machine", "signed_in", "signed_out", "no_cli", "unknown"]
+    state: Literal["off", "other_machine", "refused", "signed_in", "signed_out", "no_cli", "unknown"]
     place: Literal["agentrun", "machine"]
     command: str
     can_start: bool
@@ -6795,7 +6805,7 @@ class TurnOnClaudeLoginBody(_TurnOnClaudeLoginBodyRequired, total=False):
 
 
 class _TurnOnClaudeLoginResponseRequired(TypedDict):
-    state: Literal["off", "other_machine", "signed_in", "signed_out", "no_cli", "unknown"]
+    state: Literal["off", "other_machine", "refused", "signed_in", "signed_out", "no_cli", "unknown"]
     place: Literal["agentrun", "machine"]
     command: str
     can_start: bool
@@ -7503,6 +7513,72 @@ class CreateRunComputerViewerResponse(TypedDict):
     expires_at: str
 
 
+class GetRunExportResponse(TypedDict):
+    format: Literal["agentrun.share/1"]
+    sha256: str
+    source: GetRunExportResponseSource
+    agent: GetRunExportResponseAgent
+    run: dict[str, Any]
+    rows: list[dict[str, Any]]
+    graph: dict[str, Any] | None
+    files: list[GetRunExportResponseFilesItem]
+    omitted: list[GetRunExportResponseOmittedItem]
+    cuts: list[GetRunExportResponseCutsItem]
+    restored: list[GetRunExportResponseRestoredItem]
+
+
+class GetRunExportResponseSource(TypedDict):
+    agentrun: str
+    scrubber: GetRunExportResponseSourceScrubber
+
+
+class GetRunExportResponseSourceScrubber(TypedDict):
+    version: int
+    rules: str
+
+
+class GetRunExportResponseAgent(TypedDict):
+    name: str
+    kind: Literal["agentic", "workflow"]
+
+
+class GetRunExportResponseFilesItem(TypedDict):
+    path: str
+    bytes: int
+    sha256: str
+    encoding: Literal["utf8"]
+    content: str
+
+
+class _GetRunExportResponseOmittedItemRequired(TypedDict):
+    what: Literal["file", "files", "recordings"]
+    why: Literal["binary", "too_large", "over_total", "over_count", "unreadable", "list_truncated", "uncounted", "never"]
+
+
+class GetRunExportResponseOmittedItem(_GetRunExportResponseOmittedItemRequired, total=False):
+    path: str
+
+
+class GetRunExportResponseCutsItem(TypedDict):
+    id: str
+    at: str
+    start: int
+    end: int
+    rule: str
+    kind: Literal["format", "held", "dump", "label", "personal", "jev"]
+    restorable: bool
+    shape: str
+
+
+class GetRunExportResponseRestoredItem(TypedDict):
+    id: str
+    at: str
+    start: int
+    end: int
+    rule: str
+    kind: Literal["label", "personal", "jev"]
+
+
 ListRunFilesResponse: TypeAlias = "RunFileList"
 
 
@@ -7557,14 +7633,14 @@ class GetRunGraphResponse(TypedDict):
     read_at: str
     run: GetRunGraphResponseRun
     workflow: dict[str, Any]
-    graph: dict[str, Any]
+    graph: GetRunGraphResponseGraph
     nodes: dict[str, GetRunGraphResponseNodesValue]
     decisions: list[GetRunGraphResponseDecisionsItem]
     effects: list[GetRunGraphResponseEffectsItem]
     totals: GetRunGraphResponseTotals
 
 
-class GetRunGraphResponseRun(TypedDict):
+class _GetRunGraphResponseRunRequired(TypedDict):
     id: str
     agent: str
     revision: str
@@ -7572,6 +7648,19 @@ class GetRunGraphResponseRun(TypedDict):
     paused: bool
     startedAt: str
     endedAt: str | None
+
+
+class GetRunGraphResponseRun(_GetRunGraphResponseRunRequired, total=False):
+    withheld: Literal[True]
+
+
+class _GetRunGraphResponseGraphRequired(TypedDict):
+    nodes: list[dict[str, Any]]
+    edges: list[dict[str, Any]]
+
+
+class GetRunGraphResponseGraph(_GetRunGraphResponseGraphRequired, total=False):
+    withheld: Literal[True]
 
 
 class _GetRunGraphResponseNodesValueRequired(TypedDict):
@@ -8632,7 +8721,7 @@ class CapabilitiesPlaces(_CapabilitiesPlacesRequired, total=False):
 
 
 class _CapabilitiesPlacesBoxesItemRequired(TypedDict):
-    id: Literal["docker", "modal", "daytona"]
+    id: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "boxd", "groundbox"]
     available: bool
     state: Literal["ready", "unavailable"]
 
@@ -8650,7 +8739,7 @@ class CapabilitiesPlacesDefaultPlace1(TypedDict):
 
 class CapabilitiesPlacesDefaultPlace2(TypedDict):
     mode: Literal["sandbox"]
-    box: Literal["docker", "modal", "daytona"]
+    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "boxd", "groundbox"]
 
 
 class _CapabilitiesHarnessesItemRequired(TypedDict):
@@ -11900,6 +11989,7 @@ OPERATIONS: dict[str, Operation] = {
     "createInlineRun": Operation(method="POST", path="/runs", path_params=(), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "createRunComputerViewer": Operation(method="POST", path="/runs/{run_id}/computer/viewer", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "deleteRun": Operation(method="DELETE", path="/runs/{run_id}", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
+    "getRunExport": Operation(method="GET", path="/runs/{run_id}/export", path_params=("run_id",), multi_segment=(), query=("restore",), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listRunFiles": Operation(method="GET", path="/runs/{run_id}/files", path_params=("run_id",), multi_segment=(), query=("cut",), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getRun": Operation(method="GET", path="/runs/{run_id}", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "gradeRun": Operation(method="PUT", path="/runs/{run_id}/grade", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
@@ -12582,6 +12672,10 @@ class RunsResource(Group):
     def delete(self, run_id: str, *, timeout: float | None = None) -> None:
         """Purge a run's content and keep its cost (DELETE /runs/{run_id})."""
         return self._call("deleteRun", (run_id,), None, None, timeout=timeout)
+
+    def export(self, run_id: str, *, restore: str | None = None, timeout: float | None = None) -> GetRunExportResponse:
+        """An ended run as a share bundle, every string cut (GET /runs/{run_id}/export)."""
+        return self._call("getRunExport", (run_id,), None, {"restore": restore}, timeout=timeout)
 
     def files(self, run_id: str, *, cut: Literal["run"] | None = None, timeout: float | None = None) -> ListRunFilesResponse:
         """The files the run wrote (GET /runs/{run_id}/files)."""

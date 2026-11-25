@@ -88,9 +88,16 @@ export function standingOf(...args: Parameters<typeof standingBase>): Standing {
 }
 
 /** The digest of `workflow` the money rule stopped running first (the cost read's `needs_revision`: over its last runs it
- *  cost as much as the agent by hand), or null. */
+ *  cost as much as the agent by hand, or no run by hand has a known cost to hold it to), or null. */
 export const stoppedOf = (cost: Pick<LearningCost, "workflows"> | null, workflow: string): string | null =>
   cost?.workflows.find((one) => one.workflow === workflow && one.state === "needs_revision")?.digest ?? null;
+
+/** Why the money rule stopped `workflow` running first, in words after "no longer runs first: " (the cost read's
+ *  `reason`). */
+const stopWords = (cost: Pick<LearningCost, "workflows"> | null, workflow: string): string =>
+  cost?.workflows.find((one) => one.workflow === workflow && one.state === "needs_revision")?.reason === "no_by_hand_cost"
+    ? "no run by hand has a known cost to hold it to"
+    : "it cost as much as the agent by hand";
 
 /** What a promotion record was decided on, in a few words beside "Promoted" or "Serving": "checked on 18 inputs · 9
  *  alone" (the inputs of the agent's own runs its one check ran on, and how many it answered alone); null for one still
@@ -149,7 +156,7 @@ export function storyOf(input: {
   const challenger = now?.replaying ? `revision ${now.replaying.slice(0, 7)} is checked on the inputs of its agent's own runs before it serves` : newest?.decided === "hold" && newest.digest !== champion ? `revision ${newest.digest.slice(0, 7)} was held: ${replayLine(newest)}` : null;
   // The champion the money rule stopped running first (the cost read's needs_revision): no promotion record says so.
   const stopped = champion !== null && newest ? stoppedOf(cost, newest.workflow) === champion : false;
-  const stoppedLine = stopped ? `revision ${champion!.slice(0, 7)} no longer runs first: it cost as much as the agent by hand; the agent takes its runs` : null;
+  const stoppedLine = stopped ? `revision ${champion!.slice(0, 7)} no longer runs first: ${stopWords(cost, newest!.workflow)}; the agent takes its runs` : null;
   const servingLine = stoppedLine ? (challenger ? `${stoppedLine}; ${challenger}` : stoppedLine) : champion && challenger ? `revision ${champion.slice(0, 7)} serves; ${challenger}` : null;
   const stages: Stage[] = [];
   stages.push({
