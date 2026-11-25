@@ -80,6 +80,21 @@ const unescape = (text) => text.replace(/\\(['"`\\])/g, '$1').replace(/\\n/g, '\
 // match every name and leave every test of its suite uncredited.
 const DECLARED = /(?<![.\w$])(?:test|it|describe|suite)(?:\.(?:skip|only|todo))?\s*\(\s*(?:(['"])((?:\\.|(?!\1)[^\\\n])*)\1|`((?:\\.|[^`\\])*)`)/g;
 
+/** A template's literal text around its `${...}` substitutions, a substitution's braces counted (`${{ a: 1 }[k]}` is one). */
+export function literals(template) {
+  const parts = [];
+  let part = '';
+  for (let i = 0; i < template.length; i++) {
+    if (template[i] === '\\') { part += template.slice(i, i + 2); i++; continue; }
+    if (template[i] !== '$' || template[i + 1] !== '{') { part += template[i]; continue; }
+    let depth = 0;
+    for (i++; i < template.length; i++) { if (template[i] === '{') depth++; else if (template[i] === '}' && --depth === 0) break; }
+    parts.push(part);
+    part = '';
+  }
+  return [...parts, part];
+}
+
 /** The top-level test names each file of a suite declares, as exact names and as patterns for template strings. */
 export function declaredNames(root, suite) {
   return suite.files.map((file) => {
@@ -87,16 +102,18 @@ export function declaredNames(root, suite) {
     const names = [];
     for (const m of source.matchAll(DECLARED)) {
       if (m[3] === undefined) names.push({ exact: unescape(m[2]) });
-      else names.push({ pattern: new RegExp(`^${m[3].split(/\$\{[^}]*\}/).map((part) => unescape(part).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[^]*')}$`) });
+      else names.push({ pattern: new RegExp(`^${literals(m[3]).map((part) => unescape(part).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[^]*')}$`) });
     }
     return { file, names };
   });
 }
 
-/** The one file of `declared` that declares a test called `name` (TAP's escapes undone), or undefined. */
+/** The one file of `declared` that declares a test called `name` (TAP's escapes undone), or undefined. A name one file
+ *  declares exactly is that file's, whatever a template elsewhere (`${a}: ${b}`) would match. */
 export function fileOf(declared, name) {
   const plain = name.replace(/\\#/g, '#').replace(/\\\\/g, '\\');
-  const hits = declared.filter(({ names }) => names.some((n) => (n.exact !== undefined ? n.exact === plain : n.pattern.test(plain))));
+  const exact = declared.filter(({ names }) => names.some((n) => n.exact === plain));
+  const hits = exact.length ? exact : declared.filter(({ names }) => names.some((n) => n.pattern?.test(plain)));
   return hits.length === 1 ? hits[0].file : undefined;
 }
 
