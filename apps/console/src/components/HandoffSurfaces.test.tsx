@@ -30,8 +30,8 @@ describe("Coding-agent handoffs in the console", () => {
     root = createRoot(host);
     await act(async () => { root!.render(createElement(AgentsPage, { v2: { listAgents } as never, archived: false, go: vi.fn() })); });
     expect(button("Import history")).toBeUndefined();
-    expect(button("Connect agent")).toBeDefined();
-    await act(async () => { button("Connect agent")!.click(); });
+    expect(button("Connect your agents")).toBeDefined();
+    await act(async () => { button("Connect your agents")!.click(); });
     expect(document.querySelector('[role="menu"]')?.textContent).toContain("Claude Code CLI");
     expect(document.querySelector('[role="menu"]')?.textContent).toContain("Codex CLI");
     expect(listAgents).toHaveBeenCalledTimes(1);

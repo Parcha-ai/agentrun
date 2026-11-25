@@ -2,9 +2,11 @@ import type { ReactNode } from "react";
 import { level, timesOf, usd } from "@/lib/costPerRun";
 import { agreedWords, agreementOf, auditsOf, auditWords, glanceOf, headlineOf, intervalWords, percent, type RevisionPoint, type Share } from "@/lib/learningGlance";
 import type { LearningCost } from "@/lib/v2";
+import { cn } from "@/lib/utils";
 
 // The Learning tab at a glance, once a learned workflow has taken a run over: one sentence, then four figures, each
-// with the count it stands on and, for a share, the 95% interval that count leaves it. The cost ratio is the server's
+// with one short line of the count it stands on. The whole basis (a share's 95% interval, the bar it cleared, its audits)
+// is the cell's hover text and a screen reader's, so the row stays a row of figures. The cost ratio is the server's
 // (the cost read's summary), the agreement the serving revision's promotion check (its `agreed` of its `alone`, with
 // its audits since said beside it, never added to it), the runs finished alone the summary's hand-backs, the
 // break-even the bill's. Nothing before a takeover: the loop's strip says what comes next.
@@ -35,6 +37,7 @@ export function LearningGlance({ cost, revisions }: { cost: LearningCost | null;
         {/* The server's ratio when it says cheaper; else the level a served run costs, never a ratio worked out here. */}
         <Figure label={cheaper ? "Cheaper a run" : "Cost a run"} testid="glance-cost"
           value={cheaper ? timesOf(ratio!) : after !== null ? level(after) : "No cost yet"}
+          short={after !== null && before !== null ? `${level(after)} a run, was ${level(before)}` : undefined}
           basis={after !== null
             ? `${level(after)} all-in over ${served} served ${served === 1 ? "run" : "runs"}${before !== null ? `, ${level(before)} by the agent before` : ""}`
             : "No run it served has a known cost yet."}>
@@ -42,6 +45,7 @@ export function LearningGlance({ cost, revisions }: { cost: LearningCost | null;
         </Figure>
         <Figure label="Agrees with the agent" testid="glance-agreement"
           value={agreement ? percent(agreement.share) : "Not checked"}
+          short={agreement ? agreedWords(agreement) : undefined}
           basis={agreement
             ? `${agreedWords(agreement)} · 95% interval ${intervalWords(agreement)}${needed !== null ? ` · ${percent(needed)} needed to serve` : ""}${audited}`
             : "No check or audit of the workflow that serves has a verdict yet."}>
@@ -49,6 +53,7 @@ export function LearningGlance({ cost, revisions }: { cost: LearningCost | null;
         </Figure>
         <Figure label="Finished alone" testid="glance-alone"
           value={g.alone ? percent(g.alone.share) : "No run yet"}
+          short={g.alone ? `${g.alone.agreed} of ${runsWord(g.alone.rows)} it ran first` : undefined}
           basis={g.alone
             ? `${g.alone.agreed} of ${runsWord(g.alone.rows)} it ran first, ${g.alone.rows - g.alone.agreed} handed back to the agent · 95% interval ${intervalWords(g.alone)}`
             : "It has run no job first yet."}>
@@ -56,6 +61,7 @@ export function LearningGlance({ cost, revisions }: { cost: LearningCost | null;
         </Figure>
         <Figure label="Break-even" testid="glance-even"
           value={even === null ? "No bill" : "n" in even ? `Run ${even.n}` : "Not yet"}
+          short={even !== null && "n" in even && bill && last ? `${usd(bill.booked_usd)} booked over ${runsWord(bill.points.length)}` : undefined}
           basis={even === null || !bill || !last ? "The cost read gave no bill."
             : "n" in even ? `${usd(bill.booked_usd)} booked over ${runsWord(bill.points.length)}${last.agent_usd !== null ? `, ${usd(last.agent_usd)} had the agent done all of it` : ""}`
               : even.gap_usd !== null ? `${usd(even.gap_usd)} over the agent for all of it at run ${last.n}` : "The bill is still over the agent for all of it."}>
@@ -66,14 +72,22 @@ export function LearningGlance({ cost, revisions }: { cost: LearningCost | null;
   );
 }
 
-function Figure({ label, value, basis, testid, children }: { label: string; value: string; basis: string; testid: string; children?: ReactNode }) {
+/** One figure: its label, its value, a picture of it (`children`, a 16px band kept when empty so values line up), and one
+ *  line under it. `short` is that line where the whole `basis` is longer: the basis is then the cell's hover text and a
+ *  screen reader's, never cut. `aside`: a word beside the value (a change); `band` false: a row that draws no picture
+ *  under any of its figures drops the band. Exported for the tab's other rows of figures, so their columns line up with
+ *  these. */
+export function Figure({ label, value, basis, short, testid, className, aside, band = true, children }: { label: string; value: string; basis: string; short?: string; testid?: string; className?: string; aside?: ReactNode; band?: boolean; children?: ReactNode }) {
+  const brief = short !== undefined && short !== basis;
   return (
-    <div className="flex min-w-0 flex-col bg-card px-4 py-3" data-testid={testid}>
+    <div className={cn("flex min-w-0 flex-col bg-card px-4 py-3", className)} data-testid={testid} title={brief ? basis : undefined}>
       <dt className="caps text-label text-muted-foreground">{label}</dt>
       <dd className="mt-1 flex min-w-0 flex-1 flex-col">
-        <span className="block break-words font-mono text-display font-semibold leading-tight">{value}</span>
-        <span className="mt-2 block h-4" aria-hidden>{children}</span>
-        <span className="mt-2 block text-small text-muted-foreground">{basis}</span>
+        <span className="flex flex-wrap items-baseline gap-x-2"><span className="break-words font-mono text-display font-semibold leading-tight">{value}</span>{aside}</span>
+        {band && <span className="mt-2 block h-4" aria-hidden>{children}</span>}
+        {brief
+          ? <><span className="mt-2 block truncate text-small text-muted-foreground" aria-hidden data-basis="short">{short}</span><span className="sr-only">{basis}</span></>
+          : <span className="mt-2 block text-small text-muted-foreground">{basis}</span>}
       </dd>
     </div>
   );

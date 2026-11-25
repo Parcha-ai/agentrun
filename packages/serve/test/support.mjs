@@ -22,6 +22,7 @@ import { FAUX_VENDOR_API_ENV } from "../dist/tools.js";
 import { resolve } from "node:path";
 import { openSqliteStore, openStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
+import { runCensus } from "../dist/run-census.js";
 import { maxRunsOf } from "../dist/host.js";
 import { claimInstallsStopped } from "../dist/harness-install.js";
 import { runnerMemory } from "../dist/runner/memory-claim.js";
@@ -41,6 +42,14 @@ import { stranger } from "./fixtures/stranger.mjs";
   process.env.XDG_CONFIG_HOME = config;
   process.on("exit", () => rmSync(config, { recursive: true, force: true }));
 }
+
+// HOME is an empty home of the test process's own, as the config home above, never the runner's: a server reads session
+// files under it (GET /v2/wrapped and setup's import, through homedir(), unless a test passes its own `sessionsHome`), and
+// so does a CLI a test starts with the test's environment ({ ...process.env }). A long history there would make a sweep of
+// every GET route read it all.
+const EMPTY_HOME = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-home-"));
+process.on("exit", () => rmSync(EMPTY_HOME, { recursive: true, force: true }));
+process.env.HOME = EMPTY_HOME;
 
 // No test asks an Ollama this machine may run (ollama-provider.ts lists its models, and with no key one is the default),
 // whatever env it passes: the process's own switch (OLLAMA_OFF_ENV) turns every Ollama off. A test of Ollama clears it
@@ -436,6 +445,8 @@ export async function startInProcessRunner(data, { faux, githubApi, githubWeb, g
     runner = startRunner({
       ...(runnerTiming ?? {}),
       store,
+      // Each end's census of what its caller handed the run, as the CLI's runner beside it makes it (runner/beside.ts).
+      census: runCensus(store, { data: deps.data, sealKey, env }),
       loops: maxRunsOf(process.env, switches.maxRuns),
       // And by memory, as the CLI's runners claim (memory-claim.ts): each waiting run weighed by its harness against this
       // host's memory, read now (a test's process.constrainedMemory stand-in, set before serve(), is its container limit).

@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { BROWSER_CHARGED, BROWSER_PRICES, browserPrice, browserSpend, priceEnvOf } from "../dist/browser-cost.js";
+import { BROWSER_CHARGED, BROWSER_PRICES, BROWSER_SESSION_OPEN, browserPrice, browserSpend, priceEnvOf } from "../dist/browser-cost.js";
 import { journalRecords } from "../dist/runner/journal-reader.js";
 import { agent, follow, scratch, serve, toolLedger, withEnv } from "./support.mjs";
 
@@ -401,7 +401,7 @@ test("prices by provider: Browserbase, Kernel and local Chrome, each overridden 
   assert.deepEqual([refused.booked, refused.backend.tally().creates], [[], 0]);
 });
 
-test("after a reopen, a kept session's down time is held once: its first call fits where its true exposure does; a session already billed is not held", { skip: "bug (main's runner has it too): the run's ledger keeps a reopened session's reserve at its stretch and down time ($0.039) after the charge that books the down time (browser-cost.ts booked() resets reserve.usd locally only), and the call's hold whole beside that charge, so spent and held reach $0.1071 over the $0.10 cap while the call runs" }, async (t) => {
+test("after a reopen, a kept session's down time is held once: its first call fits where its true exposure does; a session already billed is not held", async (t) => {
   // 15 min down at Browserbase's price ($0.03), with $0.02 spent under a $0.10 cap: the kept session holds a stretch and its
   // down time ($0.039), the call two stretches ($0.018); $0.077 fits. Holding the down time on the call too ($0.048) would not.
   t.mock.timers.enable({ apis: ["Date"], now: T0 + 900_000 });
@@ -440,11 +440,324 @@ test("after a reopen, a kept session's down time is held once: its first call fi
   assert.ok(!JSON.stringify(out).includes("spend_cap_reached"), JSON.stringify(out));
   assert.deepEqual(releases, [], "the kept session was not released");
   assert.ok(Math.abs(held[0] - 0.077) < 1e-6, `spent and held as the call runs: ${held[0]}`);
+  // Its charge booked the down time and the call's 3 s ($0.0301): the reserve is one stretch again on the run's ledger
+  // ($0.009), beside the call's two ($0.018) and the $0.0501 spent, never the down time held beside the charge that booked it.
+  assert.ok(Math.abs(held[1] - 0.0771) < 1e-6, `spent and held once the charge is booked: ${held[1]}`);
   await spend.ledgerIdle();
-  // The browser resets the reserve to one stretch once its charge books the down time; the run's ledger keeps the reserve
-  // step at what it was admitted at, the stretch and the down time, until the session's release lets it go.
-  assert.ok(Math.abs(paidHolds() - base - 0.039) < 1e-9, `after its charge the ledger still holds the reserve as admitted: ${paidHolds() - base}`);
+  assert.ok(Math.abs(paidHolds() - base - 0.009) < 1e-9, `after its charge the ledger holds the reserve at one stretch: ${paidHolds() - base}`);
   for (const figure of [...held, spentNow() + paidHolds() - base]) assert.ok(figure <= cap, `${figure} is over the cap of ${cap}`);
+});
+
+test("a kept session's reserve held again at one stretch is asked only once its old one is given back, on a ledger whose give-backs land late", async (t) => {
+  // The reopen above, on a ledger whose settle lands 20 ms after it is asked (a write, in real time): the re-held reserve
+  // must not be asked while the old one (a stretch and 15 min down, $0.039) is still held there, or the ledger judges
+  // the new stretch beside the old one and the charge that booked it (about $0.116 of a $0.10 cap).
+  t.mock.timers.enable({ apis: ["Date"], now: T0 + 900_000 });
+  const inner = await toolLedger(0.1);
+  await inner.spend(0.02);
+  const events = [];
+  const paid = {
+    admit: (request) => (events.push(["asked", request.id]), inner.admit(request)),
+    settle: async (id, usd, options) => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const out = await inner.settle(id, usd, options);
+      events.push(["landed", id, options?.givenBack === true]);
+      return out;
+    },
+  };
+  const spend = browserSpend("browserbase", BROWSERBASE, 180, async () => {}, undefined, { paid });
+  let listener;
+  spend.watch({ observeCommits: (observer) => ((listener = (publication) => observer.advance(publication)), { detach: () => {} }) });
+  const docs = { Inventory: "inventory", Sessions: "sessions" };
+  await spend.reopened({ snapshot: async (token) => (token === "inventory" ? { rows: { k: { tag: "ar-kept", conversationId: 1 } } } : { sessions: [{ tag: "ar-kept", spent: { chargedThrough: new Date(T0).toISOString() } }] }) }, docs, undefined);
+  await spend.ledgerIdle();
+  const tool = spend.capped({ name: "snapshot", execute: async () => {
+    t.mock.timers.tick(3_000);
+    const entries = [];
+    await spend.onCharge({ conversationId: 1, tag: "ar-kept", provider: "browserbase", at: new Date(Date.now()).toISOString(), seconds: 903, usd: 903 * 0.12 / 3600, final: false, state: "priced" }, { appendEntry: async (_, entry) => void entries.push(entry) }, { callId: "c1" });
+    listener({ seq: 1, changes: entries.map((value) => ({ type: "entry", value })) });
+    await spend.ledgerIdle();
+    return { content: [{ type: "text", text: "seen" }] };
+  } });
+  const out = await tool.execute({}, { conversationId: 1, callId: "c1", commit: async () => undefined }, undefined);
+  assert.ok(!JSON.stringify(out).includes("spend_cap_reached"), JSON.stringify(out));
+  await spend.ledgerIdle();
+  const reserves = events.filter(([what, id]) => what === "asked" && id.startsWith("browser:this browser session's reserve#")).map(([, id]) => id);
+  assert.equal(reserves.length, 2, `the reopen's reserve, then the one held again: ${JSON.stringify(events)}`);
+  const givenBack = events.findIndex(([what, id, back]) => what === "landed" && id === reserves[0] && back);
+  const askedAgain = events.findIndex(([what, id]) => what === "asked" && id === reserves[1]);
+  assert.ok(givenBack >= 0 && givenBack < askedAgain, `the old reserve is given back before the new one is asked: ${JSON.stringify(events)}`);
+  assert.ok(Math.abs(inner.heldUsd() - 0.009) < 1e-9, `the ledger holds the reserve at one stretch: ${inner.heldUsd()}`);
+});
+
+/** A new session's first charge (3 s at Browserbase, under no call), committed and seen by `spend`'s watch. */
+async function firstCharge(spend) {
+  let listener;
+  spend.watch({ observeCommits: (observer) => ((listener = (publication) => observer.advance(publication)), { detach: () => {} }) });
+  const entries = [];
+  await spend.onCharge({ conversationId: 1, tag: "ar-new", provider: "browserbase", at: new Date(T0).toISOString(), seconds: 3, usd: 3 * 0.12 / 3600, final: false, state: "priced" }, { appendEntry: async (_, entry) => void entries.push(entry) });
+  listener({ seq: 1, changes: entries.map((value) => ({ type: "entry", value })) });
+  await spend.ledgerIdle();
+}
+
+test("capped, a new session's reserve the cap refuses is said and pauses the run in the cap's words; it is never held", async (t) => {
+  // $0.095 spent of a $0.10 cap: the session's first charge (3 s, owed) is booked, and its reserve, one stretch ($0.009),
+  // has no room. Starting a session is a choice, so the reserve is not owed; refused, its next stretch is held nowhere.
+  t.mock.timers.enable({ apis: ["Date"], now: T0 });
+  const paid = await toolLedger(0.1);
+  await paid.spend(0.095);
+  const logs = [];
+  const paused = [];
+  await firstCharge(browserSpend("browserbase", BROWSERBASE, 180, async () => {}, (line) => logs.push(line), { paid, pause: async (refusal) => void paused.push(refusal) }));
+  const said = logs.filter((line) => line.includes("event=browser_reserve_refused"));
+  assert.equal(said.length, 1, JSON.stringify(logs));
+  assert.match(said[0], /ar-new/);
+  assert.match(said[0], /spend_cap_reached/);
+  assert.equal(paused.length, 1, `the run is paused once: ${JSON.stringify(paused)}`);
+  assert.equal(paused[0].code, "spend_cap_reached");
+  assert.match(paused[0].refuse, /spend_cap_reached/);
+  assert.equal(paid.heldUsd(), 0, "no reserve is held");
+  assert.ok(Math.abs(paid.spentUsd() - 0.0951) < 1e-9, `the charge is booked: ${paid.spentUsd()}`);
+});
+
+test("capped with room, a new session's reserve is held, and nothing is said or paused", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: T0 });
+  const paid = await toolLedger(5);
+  const logs = [];
+  const paused = [];
+  await firstCharge(browserSpend("browserbase", BROWSERBASE, 180, async () => {}, (line) => logs.push(line), { paid, pause: async (refusal) => void paused.push(refusal) }));
+  assert.deepEqual([logs, paused], [[], []]);
+  assert.ok(Math.abs(paid.heldUsd() - 0.009) < 1e-9, `its reserve, one stretch: ${paid.heldUsd()}`);
+});
+
+/** A browser call through `spend`'s cap that opens a new session: its first charge (3 s at Browserbase) is committed under
+ *  the call, and `inside()` runs once that charge is seen, while the call still holds. The call's result. */
+async function callOpening(spend, inside = () => {}) {
+  let listener;
+  spend.watch({ observeCommits: (observer) => ((listener = (publication) => observer.advance(publication)), { detach: () => {} }) });
+  const tool = spend.capped({ name: "snapshot", execute: async () => {
+    const entries = [];
+    await spend.onCharge({ conversationId: 1, tag: "ar-new", provider: "browserbase", at: new Date(Date.now()).toISOString(), seconds: 3, usd: 3 * 0.12 / 3600, final: false, state: "priced" }, { appendEntry: async (_, entry) => void entries.push(entry) }, { callId: "c1" });
+    listener({ seq: 1, changes: entries.map((value) => ({ type: "entry", value })) });
+    await inside();
+    return { content: [{ type: "text", text: "seen" }] };
+  } });
+  return tool.execute({}, { conversationId: 1, callId: "c1", commit: async () => undefined }, undefined);
+}
+
+test("capped, a call that fits with its two stretches opens a new session: its reserve is held in the room the call kept for it, never refused, and nothing pauses", async (t) => {
+  // A $0.025 cap: the call holds two stretches ($0.018), one for its own time and one for the reserve of a session it
+  // opens. Asked beside the call's whole hold, the reserve ($0.009) would make $0.027 and be refused for room the run has.
+  t.mock.timers.enable({ apis: ["Date"], now: T0 });
+  const paid = await toolLedger(0.025);
+  const logs = [];
+  const paused = [];
+  const spend = browserSpend("browserbase", BROWSERBASE, 180, async () => {}, (line) => logs.push(line), { paid, pause: async (refusal) => void paused.push(refusal) });
+  // The call runs on a while after its session opened (20 ms in real time), as a call does.
+  const out = await callOpening(spend, () => new Promise((resolve) => setTimeout(resolve, 20)));
+  await spend.ledgerIdle();
+  assert.ok(!JSON.stringify(out).includes("spend_cap_reached"), JSON.stringify(out));
+  assert.deepEqual([logs, paused], [[], []], "the reserve is not refused, and the run is not paused");
+  assert.ok(Math.abs(paid.heldUsd() - 0.009) < 1e-9, `the session's reserve is held, one stretch: ${paid.heldUsd()}`);
+  assert.ok(Math.abs(paid.spentUsd() - 0.0001) < 1e-9, `the call's charge is booked: ${paid.spentUsd()}`);
+});
+
+test("a new session is never held nowhere: its call's two stretches hold it until the call's hold is given back, and the call returns only once its reserve is held", async (t) => {
+  // A ledger whose asks and settles each land 20 ms after they are made (writes, in real time), so nothing here leans on
+  // the order of microtasks.
+  t.mock.timers.enable({ apis: ["Date"], now: T0 });
+  const inner = await toolLedger(1);
+  const stretch = 270 * 0.12 / 3600;
+  const later = () => new Promise((resolve) => setTimeout(resolve, 20));
+  const events = [];
+  const paid = {
+    admit: async (request) => {
+      events.push(["asked", request.id]);
+      await later();
+      const out = await inner.admit(request);
+      events.push(["held", request.id, inner.heldUsd()]);
+      return out;
+    },
+    settle: async (id, usd, options) => {
+      await later();
+      const out = await inner.settle(id, usd, options);
+      events.push(["landed", id, options?.givenBack === true, inner.heldUsd()]);
+      return out;
+    },
+  };
+  const spend = browserSpend("browserbase", BROWSERBASE, 180, async () => {}, undefined, { paid });
+  const during = [];
+  await callOpening(spend, async () => {
+    await later();
+    during.push(inner.heldUsd());
+  });
+  // The moment the call returns is the run's next chance to spend (its next request, its next call).
+  const returned = inner.heldUsd();
+  assert.ok(during[0] >= stretch - 1e-12, `while the call runs its own hold covers the session: ${during[0]}`);
+  assert.ok(returned >= stretch - 1e-12 && Math.abs(returned - 0.009) < 1e-9, `once the call returns its session's reserve is held: ${returned} (${JSON.stringify(events)})`);
+  const reserve = events.find(([what, id]) => what === "asked" && id.startsWith("browser:this browser session's reserve#"))?.[1];
+  const givenBack = events.findIndex(([what, id, back]) => what === "landed" && id.startsWith("c1#") && back);
+  const asked = events.findIndex(([what, id]) => what === "asked" && id === reserve);
+  assert.ok(givenBack >= 0 && givenBack < asked, `the reserve is asked once the call's hold is given back, never beside it: ${JSON.stringify(events)}`);
+  assert.deepEqual(events.slice(givenBack + 1, asked).filter(([what]) => what === "asked"), [], `no other step is asked between the two: ${JSON.stringify(events)}`);
+  await spend.ledgerIdle();
+});
+
+// ---- a call that opens a session and then throws ----
+
+/** `promise`, or a failure naming `what` once `ms` pass in real time: a hang fails here as a hang, never as the suite's
+ *  timeout. */
+async function within(promise, what, ms = 5_000) {
+  let timer;
+  try {
+    return await Promise.race([promise, new Promise((_, reject) => (timer = setTimeout(() => reject(new Error(`${what} did not settle within ${ms} ms`)), ms)))]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** The run's one ledger `inner` as its writes see it: each admit and settle lands 20 ms after it is made (real time), and
+ *  each is logged in `events` (asked, then held or refused; landed, or lost). `charges` settles once every charge admitted
+ *  so far is booked. `losesAt(name)`: the claim is lost at the settle of a step of that name, so that settle and every
+ *  admit and settle after it fail, as a lost claim's writes do. */
+function lateLedger(inner, losesAt = () => false) {
+  const later = () => new Promise((resolve) => setTimeout(resolve, 20));
+  const events = [];
+  const names = new Map();
+  const booked = [];
+  const done = new Map();
+  let lost = false;
+  const paid = {
+    admit: async (request) => {
+      events.push(["asked", request.id]);
+      names.set(request.id, request.name);
+      if (!request.hold) booked.push(new Promise((resolve) => done.set(request.id, resolve)));
+      await later();
+      try {
+        if (lost) throw new Error("the claim was lost");
+        const out = await inner.admit(request);
+        events.push(["held", request.id]);
+        return out;
+      } catch (error) {
+        events.push(["refused", request.id]);
+        done.get(request.id)?.();
+        throw error;
+      }
+    },
+    settle: async (id, usd, options) => {
+      await later();
+      try {
+        if (lost || losesAt(names.get(id))) {
+          lost = true;
+          events.push(["lost", id]);
+          throw new Error("the claim was lost");
+        }
+        const out = await inner.settle(id, usd, options);
+        events.push(["landed", id, options?.givenBack === true]);
+        return out;
+      } finally {
+        done.get(id)?.();
+      }
+    },
+  };
+  return { paid, events, charges: () => Promise.all(booked) };
+}
+
+/** A browser call through `spend`'s cap that opens a new session and then throws `thrown`: its open is recorded (opening,
+ *  pi-browser's beforeCreate; its records pushed to `opened`), its first charge (`seconds` at Browserbase) is committed
+ *  under the call and seen, and once `ready()` settles the tool throws. The call's result. */
+async function callOpeningThenThrowing(spend, thrown, { seconds = 3, ready = () => {}, opened = [] } = {}) {
+  let listener;
+  spend.watch({ observeCommits: (observer) => ((listener = (publication) => observer.advance(publication)), { detach: () => {} }) });
+  const tool = spend.capped({ name: "snapshot", execute: async () => {
+    await spend.opening({ conversationId: 1, tag: "ar-new", commit: async (write) => write({ appendEntry: async (_, entry) => void opened.push(entry) }) });
+    const entries = [];
+    await spend.onCharge({ conversationId: 1, tag: "ar-new", provider: "browserbase", at: new Date(Date.now()).toISOString(), seconds, usd: seconds * 0.12 / 3600, final: false, state: "priced" }, { appendEntry: async (_, entry) => void entries.push(entry) }, { callId: "c1" });
+    listener({ seq: 1, changes: entries.map((value) => ({ type: "entry", value })) });
+    await ready();
+    throw thrown;
+  } });
+  return tool.execute({}, { conversationId: 1, callId: "c1", commit: async () => undefined }, undefined);
+}
+
+/** The index in `events` of the call's hold given back (or lost with its claim), and of its session's reserve asked. */
+const giveBackThenReserve = (events) => {
+  const call = events.find(([what, id]) => what === "asked" && id.startsWith("c1#"))?.[1];
+  const reserve = events.find(([what, id]) => what === "asked" && id.startsWith("browser:this browser session's reserve#"))?.[1];
+  return {
+    givenBack: events.findIndex(([what, id, back]) => id === call && ((what === "landed" && back) || what === "lost")),
+    asked: events.findIndex(([what, id]) => what === "asked" && id === reserve),
+  };
+};
+
+test("a call that opens a session and then throws rejects with its own error, once its session's reserve is held in the room the call kept for it; the run's pending drains", async (t) => {
+  // A $0.025 cap, as above: the call holds two stretches ($0.018). Its tool opens a session, which is charged 3 s, and then
+  // throws. paidStep gives the call's hold back on that path too, and its callback (landed) then asks the reserve.
+  t.mock.timers.enable({ apis: ["Date"], now: T0 });
+  const inner = await toolLedger(0.025);
+  const { paid, events, charges } = lateLedger(inner);
+  const logs = [];
+  const paused = [];
+  const opened = [];
+  const spend = browserSpend("browserbase", BROWSERBASE, 180, async () => {}, (line) => logs.push(line), { paid, pause: async (refusal) => void paused.push(refusal) });
+  const thrown = new Error("the page crashed");
+  await assert.rejects(within(callOpeningThenThrowing(spend, thrown, { opened, ready: charges }), "the call that threw"), (error) => error === thrown);
+  const returned = inner.heldUsd();
+  assert.equal(opened.length, 1, JSON.stringify(opened));
+  assert.equal(opened[0].kind, BROWSER_SESSION_OPEN);
+  assert.ok(Math.abs(opened[0].data.held_usd - 0.018) < 1e-9, `the session opened under the call's two stretches: ${JSON.stringify(opened[0])}`);
+  const { givenBack, asked } = giveBackThenReserve(events);
+  assert.ok(givenBack >= 0 && givenBack < asked, `the reserve is asked once the call's hold is given back: ${JSON.stringify(events)}`);
+  assert.ok(Math.abs(returned - 0.009) < 1e-9, `once the call rejects its session's reserve is held, one stretch: ${returned} (${JSON.stringify(events)})`);
+  await within(spend.ledgerIdle(), "the run's pending ledger steps");
+  assert.deepEqual([logs, paused], [[], []], "the reserve is not refused, and the run is not paused");
+  assert.ok(Math.abs(inner.spentUsd() - 0.0001) < 1e-9, `the call's charge is booked: ${inner.spentUsd()}`);
+});
+
+test("a call that opens a session and then throws, its reserve refused by the cap: it rejects with its own error, the refusal is said and pauses the run once; the run's pending drains", async (t) => {
+  // $0.005 spent of a $0.025 cap: the call fits with its two stretches ($0.023). Its session runs ten minutes ($0.02,
+  // owed) and the tool throws. With the call's hold given back, its reserve ($0.009) has no room: $0.034 of $0.025.
+  t.mock.timers.enable({ apis: ["Date"], now: T0 });
+  const inner = await toolLedger(0.025);
+  await inner.spend(0.005);
+  const { paid, events, charges } = lateLedger(inner);
+  const logs = [];
+  const paused = [];
+  const spend = browserSpend("browserbase", BROWSERBASE, 180, async () => {}, (line) => logs.push(line), { paid, pause: async (refusal) => void paused.push(refusal) });
+  const thrown = new Error("the page crashed");
+  await assert.rejects(within(callOpeningThenThrowing(spend, thrown, { seconds: 600, ready: charges }), "the call that threw"), (error) => error === thrown);
+  const { givenBack, asked } = giveBackThenReserve(events);
+  assert.ok(givenBack >= 0 && givenBack < asked, `the reserve is asked once the call's hold is given back: ${JSON.stringify(events)}`);
+  // Acted on before the call returned: the call waits for its reserves.
+  const said = logs.filter((line) => line.includes("event=browser_reserve_refused"));
+  assert.equal(said.length, 1, JSON.stringify(logs));
+  assert.match(said[0], /ar-new/);
+  assert.match(said[0], /spend_cap_reached/);
+  assert.equal(paused.length, 1, `the run is paused once: ${JSON.stringify(paused)}`);
+  assert.equal(paused[0].code, "spend_cap_reached");
+  await within(spend.ledgerIdle(), "the run's pending ledger steps");
+  assert.equal(inner.heldUsd(), 0, "no reserve is held");
+  assert.ok(Math.abs(inner.spentUsd() - 0.025) < 1e-9, `the charge is booked: ${inner.spentUsd()}`);
+});
+
+test("a call that opens a session and then throws as its claim is lost (the give-back's settle fails): it rejects with its own error, not the settle's; the reserve's failed ask is said; the run's pending drains", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: T0 });
+  const inner = await toolLedger(0.025);
+  const { paid, events, charges } = lateLedger(inner, (name) => name === "this browser call");
+  const logs = [];
+  const paused = [];
+  const spend = browserSpend("browserbase", BROWSERBASE, 180, async () => {}, (line) => logs.push(line), { paid, pause: async (refusal) => void paused.push(refusal) });
+  const thrown = new Error("the page crashed");
+  await assert.rejects(within(callOpeningThenThrowing(spend, thrown, { ready: charges }), "the call that threw"), (error) => error === thrown);
+  const { givenBack, asked } = giveBackThenReserve(events);
+  assert.ok(givenBack >= 0 && events[givenBack][0] === "lost" && givenBack < asked, `the reserve is asked once the call's give-back failed: ${JSON.stringify(events)}`);
+  const said = logs.filter((line) => line.includes("event=browser_reserve_refused"));
+  assert.equal(said.length, 1, JSON.stringify(logs));
+  assert.match(said[0], /ar-new/);
+  assert.match(said[0], /the claim was lost/);
+  // Not the cap's refusal: nothing a raise would fix, so nothing pauses (the next claim's reopen holds the session).
+  assert.deepEqual(paused, []);
+  await within(spend.ledgerIdle(), "the run's pending ledger steps");
 });
 
 // ---- pi 1.5's commit observers detach on a throw (observeCommits) ----

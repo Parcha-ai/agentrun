@@ -10,8 +10,10 @@
 // run's is refused (Fenced) and writes nothing.
 import type { Context } from "@earendil-works/chord/context";
 import type { Storage, StorageWrite } from "@earendil-works/pi-durable";
+import type { Source } from "@parcha/agentrun-import";
 import type { JournalPage } from "./journal/storage.js";
 import type { MonidPinBody } from "./agent-body.js";
+import type { LedgerRow, SpendRow } from "../learn/ledger.js";
 
 /** A run's state. queued: a row, no runner yet. running: a runner holds the claim. parked: waiting for a person (an
  *  approval, a raised cap) with no claim held; a command row or its wake_at makes it claimable again. ended, stopped and
@@ -187,6 +189,13 @@ export interface ListedFilter {
   readonly agentId?: string;
   readonly revisionId?: string;
   readonly labels?: RunLabels;
+  /** Only runs imported from this source (imported_from.source), or with "live" the runs not imported. */
+  readonly source?: string;
+  /** Only runs started at or after this time (ms), and before `startedBefore` (ms): the window [startedFrom, startedBefore). */
+  readonly startedFrom?: number;
+  readonly startedBefore?: number;
+  /** Only runs that sent at least one request to this model (`provider/model`), a key of their metrics' `models`, exactly. */
+  readonly model?: string;
   readonly archived: boolean;
   readonly status?: string;
   /** Only runs still going (no settled status on the row) whose listing is behind. */
@@ -234,7 +243,7 @@ export function stoppedByPerson(run: Pick<RunRow, "state" | "outcome" | "importe
 }
 
 /** The harness an imported run came from. */
-export type ImportSource = "claude-code" | "codex" | "pi";
+export type ImportSource = Source;
 /** Where an imported run came from: the harness that ran it, and its own session id. `file` is the server's own record of
  *  the session file an import read whole (the sha-256 of its path, never the path, with its size and mtime), so a later
  *  import does not read an unchanged file again; it is internal and never shown on an answer. The unique import index keys
@@ -346,6 +355,10 @@ export interface RunPatch {
    *  cancel waiting at its commit cut the look-back, never the job's end, and is refused (refuseLeftovers), unless a
    *  person's message waits too: that message's run is the one they stop or cancel. */
   readonly keepsEnd?: boolean;
+  /** A final patch's census (run-census.ts): where in the run's files the secrets its launch holds sit, made under the
+   *  launch's `sealed` bytes as they were then. The end that erases them writes it as the launch's census when its sealed
+   *  bytes are still those, else the marker "unscanned" (refuseLeftovers), as it does for an end with none. */
+  readonly census?: { readonly json: string; readonly sealed: Uint8Array };
 }
 
 /** The row runs.update answers. When the patch wrote `signInHanded` (the runner's bind at its claim), `save` rides with it:
@@ -364,12 +377,18 @@ export interface RunLaunchInput {
   readonly sealed?: Uint8Array | null;
 }
 
+/** The census an end that erased a launch's sealed bytes writes when it has none made under them (RunLaunchRow.census): what
+ *  the run was handed may be in its files, and nothing says where. */
+export const CENSUS_UNSCANNED = JSON.stringify("unscanned");
+
 /** A run's launch as the store holds it: the body the runner reads at its claim, and its sealed bytes, which the store never
- *  opens. */
+ *  opens. `census`: null until an end erased its sealed bytes (none handed, none erased yet, or a run ended before the census
+ *  was kept); then the JSON text the last end that erased them wrote (RunPatch.census, run-census.ts), or CENSUS_UNSCANNED when that end had none made under them. */
 export interface RunLaunchRow {
   readonly runId: string;
   readonly body: unknown;
   readonly sealed: Uint8Array | null;
+  readonly census: string | null;
   readonly createdAt: number;
 }
 
@@ -465,6 +484,12 @@ export interface Learning {
    *  before it was proposed ended when it was kept; a proposal ended when its learning run ended (ended or failed), whose
    *  row keeps the grade's spend as its cost. One still waiting for its grade is none of them. */
   spend(window: { from: number; to: number }): Promise<LearningSpend[]>;
+  /** Agent `agentId`'s ledger (learn/ledger.ts), in one read (one snapshot of both tables): every run's row its end
+   *  recorded, oldest first, each with the end it was recorded for (`epoch`, its run's epoch then), and every spend row.
+   *  With `runIds`, those runs' rows alone and the spend rows they booked or that audit them (none for none). Written
+   *  only beside a run's end and a heal of its cost (run-patch.ts recordLedger); a purge or a delete of the run takes its
+   *  row and its spend. */
+  ledger(agentId: string, runIds?: readonly string[]): Promise<{ rows: (LedgerRow & { readonly epoch: number })[]; spend: SpendRow[] }>;
 }
 
 /** One run's learning end as GET /usage's learning meter counts it (Learning.spend). */
@@ -1257,14 +1282,22 @@ export type McpServerWrite = { name: string; url: string; auth: string; protocol
  *  `of` is the row's created_at). An owner's save drops the mark in the transaction that writes its row (McpOwnersMark),
  *  so a write that needs the mark never lands over the owner's save, whenever that save lands. The write that needs it
  *  takes the server's lock first, so on Postgres its statement reads the record as the owner's committed transaction left
- *  it. */
-export type McpTokensMark = { readonly record: string };
+ *  it. `made`: the token's first save of the name, whose record (`made` of the row written) is written at `record` in the
+ *  transaction that writes the row, so no reader ever finds the token's new row without its mark. */
+export type McpTokensMark = { readonly record: string; readonly made?: (row: { createdAt: number }) => unknown };
 
 /** The owner's write over a saved server's row: in the transaction that writes the row, and only once the row is written,
  *  the setting at `record` (the server's source record) loses the API token's mark (`by`) when it still says the token
  *  saved that very row. A write refused (no row) leaves the record as it was, so a refused owner's save never takes the
  *  server from the token; one that lands makes it the owner's with no moment between its row and its record. */
 export type McpOwnersMark = { readonly record: string };
+
+/** A row as a rewrite read it (Mcp.rewrite): its sealed credential, its address, its auth type and its last edit
+ *  (updatedAt). The rewrite lands only while the row still has all four, so it never writes back anything it read (an
+ *  address, an auth type, prices) over a save made since, even one that kept the address, auth type and credential. Every
+ *  save moves updatedAt past the row's own, even within its millisecond; a write that passes updatedAt (a refresh) keeps
+ *  the one it read. */
+export type McpRewriteSeen = { readonly sealed: Uint8Array | null; readonly url: string; readonly auth: string; readonly updatedAt: number };
 
 export interface Mcp {
   /** The server's write: the server's row, inserted or replaced by name (its first save's time kept). An owner's save
@@ -1278,14 +1311,16 @@ export interface Mcp {
    *  token's mark (McpTokensMark), in the same statement. `owns`: the owner's write, which drops the token's mark in the
    *  same transaction once the row is written (McpOwnersMark). */
   putIfCredential(server: McpServerWrite, expected: McpCredentialMark, tokens?: McpTokensMark, owns?: McpOwnersMark): Promise<McpServerRow | undefined>;
-  /** An owner's rewrite of a row it read, its credential kept as it is (a tools refresh, a save that sends no new
-   *  credential): the listing, prices, url and times written by a compare-and-set on the CREDENTIAL, iff the row is still
-   *  saved and its sealed value is still `seen` (the one the owner read). The credential's columns (sealed, token_until,
+  /** A rewrite of a row it read, its credential kept as it is (a tools refresh, a save that sends no new credential): the
+   *  listing, prices, url and times written by a compare-and-set on the row as `seen` (McpRewriteSeen), iff the row is
+   *  still saved, its sealed value is still the one read, it is still at the address and of the auth type read, and no
+   *  save has edited it since (its updated_at the one read). The credential's columns (sealed, token_until,
    *  credential_changed_at) and any refresh lease are left as they are, so a runner's refresh in flight still keeps its
-   *  set. undefined, writing nothing, when the credential changed meanwhile (a refresh kept a rotated set) or the row went:
-   *  the caller reads it again and re-applies its change onto the fresh row, a bounded few times. `owns`: as
-   *  putIfCredential's, the token's mark dropped in the same transaction once the row is written. */
-  rewrite(server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; listedAt?: number; updatedAt?: number }, seen: Uint8Array | null, owns?: McpOwnersMark): Promise<McpServerRow | undefined>;
+   *  set. undefined, writing nothing, when the credential changed meanwhile (a refresh kept a rotated set), a save landed
+   *  (one with no credential leaves the sealed column as it was, and may keep the address and auth type too), or the row
+   *  went: the caller reads it again and re-applies its change onto the fresh row while it still holds, a bounded few
+   *  times. `owns`: as putIfCredential's, the token's mark dropped in the same transaction once the row is written. */
+  rewrite(server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; listedAt?: number; updatedAt?: number }, seen: McpRewriteSeen, owns?: McpOwnersMark): Promise<McpServerRow | undefined>;
   /** Deletes the row, answering what it held as it went (McpRemoved); undefined when there was none. */
   remove(name: string): Promise<McpRemoved | undefined>;
   /** remove(), only while the server's credential is still `expected` (its mark as the remover read it), compared and
@@ -1891,6 +1926,11 @@ export interface Store {
   /** Reads the store's schema version and its runner floor now, without a lock or a write: a runner reads it at each
    *  renewal (runner/main.ts), and stops once the floor is above the version its build knows. */
   schemaState?(): Promise<StoreSchemaState>;
+  /** The clock a claim's lease is judged and stamped on (its `until`), when it is this process's own: the store's clock on
+   *  SQLite (one host), or a test's. A runner reckons a claim's deadline from its `until` on it, so a claim or renew that
+   *  waited for the writer lock keeps the lease the store granted from the lock. Absent when the lease is the database's
+   *  clock (Postgres), which this process cannot read: the runner reckons from when it asked. */
+  readonly leaseClock?: () => number;
   /** Claims the run for `runner` until now + `leaseMs`: the run's epoch + 1 when it is claimable (runs.claimable); null when
    *  another claim holds it, or it is final, or parked with nothing to wake it. A queued or parked run becomes running. */
   claim(runId: string, runner: string, options?: { leaseMs?: number }): Promise<Claim | null>;

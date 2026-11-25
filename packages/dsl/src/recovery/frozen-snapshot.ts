@@ -4,6 +4,7 @@
 import { createHash } from "node:crypto";
 import { RecoveryError } from "./errors.js";
 import { itemState as rebuildItemState, partialResults as readPartialResults, type PartialSlot, type Sha256, type StateDelta } from "./item-state.js";
+import { isRecord } from "../record.js";
 
 export const failure = (code: string, message: string) => new RecoveryError(message, code);
 
@@ -186,12 +187,11 @@ export type FrozenShape = { resolves: (path: string) => boolean };
 
 export const emptyPathFrame = (): PathFrame => ({ input: null, done: [], states: {}, chains: {}, loops: {}, routes: {}, inputs: {}, steps: {} });
 
-const record = (value: unknown): boolean => Boolean(value) && typeof value === "object" && !Array.isArray(value);
 export const SHA256 = /^[a-f0-9]{64}$/;
 
 type Fields = Record<string, unknown>;
 /** `value` as an object whose fields can be read, or null. */
-const fields = (value: unknown): Fields | null => record(value) ? value as Fields : null;
+const fields = (value: unknown): Fields | null => isRecord(value) ? value : null;
 const entriesOf = (value: unknown): Array<[string, unknown]> | null => { const object = fields(value); return object ? Object.entries(object) : null; };
 const isStepFailure = (value: unknown): boolean => {
   const at = fields(value);
@@ -225,7 +225,7 @@ function validFrame(value: unknown, resolves: (path: string) => boolean): boolea
   const failures = frame.failures === undefined ? [] : entriesOf(frame.failures);
   const decisions = frame.decisions === undefined ? [] : entriesOf(frame.decisions);
   return Boolean(decisions && decisions.every(([path, requests]) => resolves(path) && (entriesOf(requests)?.every(([id, request]) => isDecisionRequest(id, request)) ?? false))
-    && states && states.every(([path, state]) => done.has(path) && record(state))
+    && states && states.every(([path, state]) => done.has(path) && isRecord(state))
     && failures && failures.every(([item, outcome]) => /\/items\/(?:0|[1-9]\d*)$/.test(item) && resolves(`${item}/body`) && isItemOutcome(outcome))
     && chains && chains.every(([, head]) => { const at = fields(head); return Boolean(at && nonNegativeInt(at.index) && typeof at.path === "string" && done.has(at.path)); })
     && loops && loops.every(([loop, count]) => resolves(loop) && nonNegativeInt(count))
@@ -235,7 +235,7 @@ function validFrame(value: unknown, resolves: (path: string) => boolean): boolea
       return Boolean(at && resolves(route) && typeof at.label === "string" && typeof at.branch === "string"
         // A refused route took its unsure branch and chose none: a named branch, a null choice, never "" for either.
         && (at.refused === undefined ? (typeof at.choice === "string" && typeof at.unsure === "boolean") || (at.choice === undefined && at.unsure === undefined) : at.refused === true && at.branch !== "" && at.choice === null && at.unsure === true)
-        && record(at.result) && (at.request_sha256 === null || typeof at.request_sha256 === "string")
+        && isRecord(at.result) && (at.request_sha256 === null || typeof at.request_sha256 === "string")
         && (at.receipts === null || (receipts && typeof receipts.invocation === "string" && nonNegativeInt(receipts.request_bytes) && Number.isFinite(receipts.latency_ms))));
     })
     && inputs && inputs.every(([path, digest]) => resolves(path) && !done.has(path) && typeof digest === "string" && SHA256.test(digest))
@@ -251,14 +251,14 @@ function validFrame(value: unknown, resolves: (path: string) => boolean): boolea
 
 /** Refuses a saved snapshot the driver could not have produced for this run. */
 export function validateFrozenSnapshot(saved: any, shape: FrozenShape): void {
-  if (!record(saved) || saved.schema !== FROZEN_SNAPSHOT_SCHEMA || !Number.isFinite(saved.startedAt)
+  if (!saved || typeof saved !== "object" || Array.isArray(saved) || saved.schema !== FROZEN_SNAPSHOT_SCHEMA || !Number.isFinite(saved.startedAt)
     || (saved.questionSpendUsd !== undefined && !(Number.isFinite(saved.questionSpendUsd) && saved.questionSpendUsd >= 0))
     || (saved.unpricedQuestionCount !== undefined && !nonNegativeInt(saved.unpricedQuestionCount))
     || !["running", "paused", "cancelled"].includes(saved.status)
-    || !record(saved.clocks) || !Object.values(saved.clocks).every(Number.isFinite)
-    || !record(saved.files) || !Object.values(saved.files).every(value => typeof value === "string" && SHA256.test(value))
+    || !isRecord(saved.clocks) || !Object.values(saved.clocks).every(Number.isFinite)
+    || !isRecord(saved.files) || !Object.values(saved.files).every(value => typeof value === "string" && SHA256.test(value))
     || !validFrame(saved.pin, shape.resolves)
-    || (saved.escalation !== undefined && (!record(saved.escalation) || typeof saved.escalation.tail !== "string" || typeof saved.escalation.kind !== "string" || !Number.isSafeInteger(saved.escalation.revision)))
+    || (saved.escalation !== undefined && (!isRecord(saved.escalation) || typeof saved.escalation.tail !== "string" || typeof saved.escalation.kind !== "string" || !Number.isSafeInteger(saved.escalation.revision)))
     // A checkpoint that holds a second document's frame is refused: the driver runs one document.
     || saved.adaptation !== undefined) {
     throw failure("FROZEN_CHECKPOINT_INVALID", "Invalid frozen recovery checkpoint");

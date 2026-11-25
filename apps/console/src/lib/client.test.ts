@@ -192,12 +192,16 @@ describe("agents", () => {
     await v2.listRuns(50, "c2", { archived: true });
     await v2.listAgentRuns("x", 50, null, { status: "input_required", archived: true });
     await v2.listRuns(50, null, { archived: false });
+    await v2.listRuns(50, null, { source: "claude-code", status: "failed" });
+    await v2.listRuns(50, null, { from: "2026-11-01T00:00:00.000Z", to: "2026-11-02T00:00:00.000Z", model: "openai/gpt-5" });
     expect(calls.map((c) => c.url)).toEqual([
       "/v2/runs?limit=10",
       "/v2/runs?limit=50&status=failed",
       "/v2/runs?limit=50&cursor=c2&archived=true",
       "/v2/agents/x/runs?limit=50&status=input_required&archived=true",
       "/v2/runs?limit=50",
+      "/v2/runs?limit=50&status=failed&source=claude-code",
+      "/v2/runs?limit=50&from=2026-11-01T00%3A00%3A00.000Z&to=2026-11-02T00%3A00%3A00.000Z&model=openai%2Fgpt-5",
     ]);
   });
 

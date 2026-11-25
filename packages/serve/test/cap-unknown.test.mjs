@@ -4,15 +4,16 @@
 // are read over the same marks. (The admission side of these figures is the kernel cap's: run-adapters kernel-cap-*.test.mjs.)
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { REQUEST_COST, REQUEST_ENDED, REQUEST_STARTED, runMetricsOf, timelineOf, TOOL_COST, TOOL_STARTED } from "../dist/timeline/index.js";
 import { CAP_REFUSED_FIELD, HELD_FIELD, meterFiguresFrom, spentFrom } from "../dist/cap.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
+import { bookedCapSpend } from "../dist/runner/metrics.js";
 import { runEntries } from "../dist/store-reads/journal.js";
-import { agent, follow, journalOf, runDir, serve } from "./support.mjs";
+import { agent, follow, serve } from "./support.mjs";
 
 
 /** `entries`, in order, as the one store's journal hands them to the cap's reading (store-reads/cap.ts spentOverStore runs
@@ -291,9 +292,12 @@ test("a capped pi run steered mid-answer: the answer in flight finishes, never a
   assert.equal(typeof run.cost.usd, "number", "no answer was cut: the run's cost is known");
 });
 
-/** The run's store, read once its process has let it go. */
-const storeFileOf = (data, runId) => join(runDir(data, runId), "store", "run.sqlite");
-const view = async (api, runId) => (await api("GET", `/runs/${runId}`)).body;
+/** What the run's cap counts it spent, from its records in the one store, as a process the next message opens reads it
+ *  (metrics.ts bookedCapSpend: every session's bookings, a stopped request at what its stop counts). */
+const capSpentOf = async (store, runId) => bookedCapSpend(await runEntries(store, runId, BACKGROUND_CONTEXT));
+/** The bookings of the run's requests a stop ended (each runner.turn its stop's rule booked). */
+const stopsOf = async (store, runId) => (await runEntries(store, runId, BACKGROUND_CONTEXT)).filter((entry) => entry.kind === RUNNER_RECORDS.turn && entry.data?.rule === "stopped").map((entry) => entry.data);
+const view =async (api, runId) => (await api("GET", `/runs/${runId}`)).body;
 const finished = async (api, runId) => (await follow(api, runId, ["completed", "failed", "cancelled"]), view(api, runId));
 /** The same, or the run paused at its cap (input_required, pending budget). */
 const pausedOrEnded = async (api, runId) => (await follow(api, runId, ["input_required", "completed", "failed", "cancelled"]), view(api, runId));
@@ -323,9 +327,8 @@ async function stopped(api, id, cap) {
   return runId;
 }
 
-// SKIP (follow-up #2080): a capped pi run stopped mid-answer ends cancelled on the runner, never goes on while its cap allows.
-test.skip("a capped pi run stopped mid-answer goes on while its cap allows: in its process, and in the process a later message opens, the stopped request counts what it streamed and the 1,024-token allowance", async (t) => {
-  const { api, data } = await serve(t, { faux: OUTPUT_PRICED });
+test("a capped pi run stopped mid-answer goes on while its cap allows: in its process, and in the process a later message opens, the stopped request counts what it streamed and the 1,024-token allowance", async (t) => {
+  const { api, store } = await serve(t, { faux: OUTPUT_PRICED });
   const runId = await stopped(api, "stopped");
   assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "go on" })).body.mode, "follow_up");
   let run = await finished(api, runId);
@@ -334,8 +337,9 @@ test.skip("a capped pi run stopped mid-answer goes on while its cap allows: in i
   const stoppedUsage = (await api("GET", `/runs/${runId}/timeline`)).body.rows.findLast((r) => r.kind === "usage")?.usage;
   assert.deepEqual([stoppedUsage?.usd, stoppedUsage?.requests, stoppedUsage?.unpriced], [null, 2, 1], "the stopped request is booked: counted, at an unknown cost, the one charge with no price");
   assert.ok(stoppedUsage.so_far_usd > 0 && stoppedUsage.so_far_usd === run.cost.so_far_usd, `the follow-up's known cost so far, as the run says: ${JSON.stringify([stoppedUsage, run.cost])}`);
-  const spent = spentFrom(journalOf(data, runId));
-  // Stopped before it streamed anything, on the faux model's free input: 1,024 tokens at $100 a million, and the answer since.
+  const spent = await capSpentOf(store, runId);
+  // Stopped before it streamed anything, on the faux model's free input: 1,024 tokens at $100 a million, and the answer
+  // since; never the $1.64 it was held at.
   assert.ok(Math.abs(spent - (1_024 * 100 / 1e6 + run.cost.so_far_usd)) < 1e-6, `the store says what the cap counts: the stop's $0.1024 and the answer since, $${spent}`);
   // Completed, the run's process is gone: the next message opens a new one, which reads its spend from the store.
   assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "and again" })).body.mode, "follow_up");
@@ -344,8 +348,7 @@ test.skip("a capped pi run stopped mid-answer goes on while its cap allows: in i
   assert.equal(run.cost.usd, null);
 });
 
-// SKIP (follow-up #2080): a capped pi run stopped mid-answer ends cancelled on the runner, never goes on to pause at its cap.
-test.skip("a capped pi run stopped mid-answer, when what the stopped request counts leaves no room for another request's least: the next request is refused with the cap's message, the run pauses at its cap, and its cost shows unknown, never $0", async (t) => {
+test("a capped pi run stopped mid-answer, when what the stopped request counts leaves no room for another request's least: the next request is refused with the cap's message, the run pauses at its cap, and its cost shows unknown, never $0", async (t) => {
   // $0.15: the request is clamped to what $0.15 buys; stopped before it streamed anything, it counts its 1,024-token
   // allowance, $0.1024, and leaves $0.0476: not another's least, 1,024 tokens at $0.0001.
   const { api } = await serve(t, { faux: OUTPUT_PRICED });
@@ -357,25 +360,22 @@ test.skip("a capped pi run stopped mid-answer, when what the stopped request cou
   assert.equal(run.cost.usd, null, "the refusal never balances the stopped request: unknown, not $0");
 });
 
-// SKIP (follow-up #2080): a capped pi run stopped mid-answer ends cancelled on the runner, never goes on to pause at its cap.
-test.skip("QA 7.4: a pi run under a $1 cap, stopped while its clamped request is out, goes on: the stop counts what it can have cost (nothing streamed and 1,024 tokens, $0.1024), never the rest of the cap, in its process and in its store", async (t) => {
+test("QA 7.4: a pi run under a $1 cap, stopped while its clamped request is out, goes on: the stop counts what it can have cost (nothing streamed and 1,024 tokens, $0.1024), never the rest of the cap, in its process and in its store", async (t) => {
   // The faux model's request asks 16,384 tokens at $100 a million, $1.64: under $1 it is clamped to what is left and held
   // at nearly all of it. Stopped before it streamed anything, it counts its free input and the 1,024-token allowance.
-  const { api, data } = await serve(t, { faux: OUTPUT_PRICED });
+  const { api, store } = await serve(t, { faux: OUTPUT_PRICED });
   const runId = await stopped(api, "qa-stop", 1);
   assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "go on" })).body.mode, "follow_up");
   const run = await finished(api, runId);
-  assert.deepEqual([run.status, run.error?.code ?? null, run.result?.final_answer], ["completed", null, "On go on: done."], `the follow-up runs: ${JSON.stringify(run.error)}`);
-  const db = new DatabaseSync(storeFileOf(data, runId), { readOnly: true });
-  let marks;
-  try {
-    marks = db.prepare("SELECT record FROM entries ORDER BY rowid").all().map((row) => JSON.parse(row.record)).filter((entry) => entry.kind === REQUEST_ENDED);
-  } finally {
-    db.close();
-  }
-  assert.equal(marks.length, 1, "one stopped request");
-  assert.ok(Math.abs(marks[0].data[HELD_FIELD] - 1_024 * 100 / 1e6) < 1e-12, `the stopped request's end mark says what the cap counts it at: ${marks[0].data[HELD_FIELD]}`);
-  const spent = spentFrom(journalOf(data, runId));
+  // Told what is left with its request (the faux model quotes the last message, the cap's note appended to it): $1 less
+  // the stop's $0.1024, about $0.90, never the cap spent on a hold.
+  const told = "<system-reminder>AgentRun server note: This run's budget is about $0.90, enough for little work: answer as soon as you can.</system-reminder>";
+  assert.deepEqual([run.status, run.error?.code ?? null, run.result?.final_answer], ["completed", null, `On go on${told}: done.`], `the follow-up runs: ${JSON.stringify(run.error)}`);
+  const stops = await stopsOf(store, runId);
+  assert.equal(stops.length, 1, `one stopped request: ${JSON.stringify(stops)}`);
+  assert.ok(Math.abs(stops[0].bookedUsd - 1_024 * 100 / 1e6) < 1e-12, `the stopped request's booking says what the cap counts it at: ${JSON.stringify(stops[0])}`);
+  assert.equal(stops[0].heldUsd, stops[0].bookedUsd, "and keeps it (heldUsd), so a later process counts it the same");
+  const spent = await capSpentOf(store, runId);
   assert.ok(Math.abs(spent - (0.1024 + run.cost.so_far_usd)) < 1e-6, `the store says the stop's $0.1024 and the follow-up's cost: $${spent}, so far $${run.cost.so_far_usd}`);
 });
 

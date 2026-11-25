@@ -313,16 +313,22 @@ export async function deleteKept(provider: Pick<ComputerProvider, "release">, ke
   return released.ok;
 }
 
-/** `work`, or its timeout in words after `ms`: a delete that hangs is left to finish on its own. */
-async function bounded(ms: number, work: Promise<void>): Promise<void> {
+/** `work`, or its timeout in words after `ms`, or `signal`'s abort, whichever is first: a delete that hangs is left to
+ *  finish on its own. */
+export async function bounded(ms: number, work: Promise<void>, signal?: AbortSignal): Promise<void> {
   let timer: NodeJS.Timeout | undefined;
+  let stopped: (() => void) | undefined;
   const late = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new Error(`its delete did not answer within ${ms / 1000} s; the next pass tries again`)), ms);
+    stopped = () => reject(new Error("its delete was left at the run's stop; the next pass tries again"));
+    if (signal?.aborted) stopped();
+    else signal?.addEventListener("abort", stopped, { once: true });
   });
   try {
     await Promise.race([work, late]);
   } finally {
     clearTimeout(timer);
+    if (stopped) signal?.removeEventListener("abort", stopped);
   }
 }
 
