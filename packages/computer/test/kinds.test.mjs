@@ -140,8 +140,9 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	// The cloud browsers read the gateway a server reaches them through.
 	assert.deepEqual(extra.browserbase.hostEnv, ["BROWSERBASE_BASE_URL", "BROWSERBASE_CONNECT_BASE_URL"]);
 	assert.deepEqual(extra.kernel.hostEnv, ["KERNEL_BASE_URL"]);
-	// The phone harness reads the APKs every phone installs, each pinned by its sha256: the operator's setting.
-	assert.deepEqual(extra["phone-harness"].hostEnv, ["PHONE_HARNESS_APKS"]);
+	// The phone harness reads the APKs every phone installs, each pinned by its sha256: the operator's setting. Its adb
+	// gets the names every child reads.
+	assert.deepEqual(extra["phone-harness"].hostEnv, ["PHONE_HARNESS_APKS", ...computer.BASE_ENV_NAMES]);
 	// Orgo offers its Linux desktop; its Windows and macOS desktops are parked, each with why, and offered by no
 	// configuration.
 	assert.deepEqual(extra.orgo.parked.map((one) => one.image), ["windows", "macos"]);

@@ -16,8 +16,10 @@ import { createConnection } from "node:net";
 import type { Duplex } from "node:stream";
 import { basename, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
+import { childEnv } from "./child-env.js";
 import { DaemonClient } from "./client.js";
 import { CreateRequests, endedWords, labelsDiffer, otherSpecWords } from "./create-requests.js";
+import { BASE_ENV_NAMES } from "./descriptors/env-names.js";
 import { PHONE_GROUPS, PHONE_HARNESS } from "./descriptors/phone-harness.js";
 import { httpsBase } from "./hosted/rest.js";
 import { type ComputerClient, type DaemonMethod, type DaemonMethods, type HelloResult, PROTOCOL_VERSION } from "./protocol.js";
@@ -406,7 +408,8 @@ export interface PhoneProviderOptions {
 	baseUrl?: string;
 	/** fetch; default the global one. Tests give a fake. */
 	fetch?: typeof globalThis.fetch;
-	/** How adb is reached (AdbTransport), or the adb CLI's path; default adbCli("adb"). */
+	/** How adb is reached (AdbTransport), or the adb CLI's path; default adb on PATH. A path is spawned by adbCli with
+	 *  BASE_ENV_NAMES of env (PATH to be found, HOME for its keys) and nothing else: with no env, none. */
 	adb?: AdbTransport | string;
 	/** Where the provider's phones and their labels are kept; default memoryLedger(). */
 	ledger?: PhoneLedger;
@@ -434,7 +437,8 @@ export interface PhoneProviderOptions {
 	 * PHONE_HARNESS_APKS, else none. A connect that cannot install one fails in words.
 	 */
 	apks?: readonly PinnedApk[];
-	/** The host's own variables its descriptor declares (hostEnv): PHONE_HARNESS_APKS alone, the server's apks. */
+	/** The host's own variables its descriptor declares (hostEnv): PHONE_HARNESS_APKS, the server's apks, and the names
+	 *  every child reads (BASE_ENV_NAMES), adb's environment. */
 	env?: Readonly<Record<string, string | undefined>>;
 }
 
@@ -541,7 +545,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		const apks = options.apks ?? apksOf(options.env?.PHONE_HARNESS_APKS);
 		if (!Array.isArray(apks) || !apks.every(pinned)) throw new Error(`options.apks ${show(options.apks)} is not a list of { path, sha256 }: an APK file's absolute path and its sha256, 64 lowercase hex digits`);
 		this.#apks = apks.map(({ path, sha256 }) => ({ path, sha256 }));
-		this.#adb = adb === undefined || typeof adb === "string" ? adbCli(adb ?? "adb") : adb;
+		this.#adb = adb === undefined || typeof adb === "string" ? adbCli(adb ?? "adb", { env: childEnv(options.env ?? {}, BASE_ENV_NAMES) }) : adb;
 		this.#ledger = guardedLedger(options.ledger ?? memoryLedger());
 		this.#maxLifetimeMs = options.maxLifetimeMs ?? DEFAULT_MAX_LIFETIME_MS;
 		if (!(Number.isSafeInteger(this.#maxLifetimeMs) && this.#maxLifetimeMs > 0)) throw new Error(`maxLifetimeMs ${show(options.maxLifetimeMs)} is not a whole number of milliseconds above 0`);

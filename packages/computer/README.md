@@ -2745,8 +2745,10 @@ the API's control URL) is a later change: `platform: "ios"` is refused in words.
   socket requests reach one server. `adbCli(path, { env })` spawns adb from the environment given, with every
   `ADB_*`, `ANDROID_ADB_*` and `ANDROID_SERIAL` variable dropped, so nothing in it points the CLI at another server or
   device. The library reads no environment of its own: the conformance module passes its own, minus its
-  `COMPUTER_PHONE_HARNESS_*` names (the key never reaches adb), and serve should pass one too. Without `env`, a spawned
-  adb inherits the process's environment as it is. Without adb, connect says so in words.
+  `COMPUTER_PHONE_HARNESS_*` names (the key never reaches adb). The provider, given adb as a path, spawns it with the
+  names every child reads (`BASE_ENV_NAMES`) of its `env` option and nothing else, so with no `env` adb starts with none;
+  its descriptor's `hostEnv` names them, so serve hands them over. A bare `adbCli(path)` with no `env` inherits the
+  process's environment as it is. Without adb, connect says so in words.
 - **testConnection** is list(): one `GET /sessions` joined to the ledger, and a GET of any phone the listing leaves out.
   It rents nothing and reaches no phone: ok with the
   count of this provider's phones, `unauthorized` for a refused key, `unreachable` when the phone harness is not
