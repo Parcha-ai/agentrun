@@ -189,14 +189,14 @@ async function server({ setting = E2B_DESKTOP, mode = 1, groups = DESKTOP_GROUPS
   };
   // `self` and `runners`: the janitor of a runner (its name and incarnation), reading which runners are there. `now`: its
   // process's own clock, where it is not the store's. `log`: where it says what it did.
-  const janitor = ({ self, runners, now = () => clock.now, log } = {}) => sweepKeptComputers({ store: runners ? { ...store, runners } : store, computers: { kinds: KINDS, providers, keyOf: (name) => getSealedKey(store, sealKey, name) }, env: {}, sealKey, ...mountControl, now, ...(self ? { self } : {}), ...(log ? { log } : {}) });
+  const janitor = ({ self, runners, now = () => clock.now, log, deleteMs } = {}) => sweepKeptComputers({ store: runners ? { ...store, runners } : store, computers: { kinds: KINDS, providers, keyOf: (name) => getSealedKey(store, sealKey, name) }, env: {}, sealKey, ...mountControl, now, ...(self ? { self } : {}), ...(log ? { log } : {}), ...(deleteMs ? { deleteMs } : {}) });
   // A full janitor pass as the runner process runs it (startJanitor's first: the kept pass, then every provider's sweep),
   // as runner `self` reading `runners`; one vendor account behind every provider, as a dial vendor's (or one Docker
   // engine) both runners list. The store without its agents, so no server id is minted. What it logged.
-  const pass = async ({ self, runners } = {}) => {
+  const pass = async ({ self, runners, deleteMs } = {}) => {
     const logged = [];
     const swept = { runs: store.runs, computerLedger: store.computerLedger, settings: store.settings, sealedKeys: store.sealedKeys, computerIntervals: store.computerIntervals, ...(runners ? { runners } : {}) };
-    const running = startJanitor({ store: swept, computers: { kinds: KINDS, providers, keyOf: (name) => getSealedKey(store, sealKey, name) }, env: {}, sealKey, ...mountControl, log: (line) => void logged.push(line), everyMs: 600_000, now: () => clock.now, ...(self ? { self } : {}) });
+    const running = startJanitor({ store: swept, computers: { kinds: KINDS, providers, keyOf: (name) => getSealedKey(store, sealKey, name) }, env: {}, sealKey, ...mountControl, log: (line) => void logged.push(line), everyMs: 600_000, now: () => clock.now, ...(self ? { self } : {}), ...(deleteMs ? { deleteMs } : {}) });
     try {
       await running.first;
     } finally {
@@ -1222,6 +1222,42 @@ test("Mode 2, a run's process whose credential remove failed, its runner's relea
   const swept = await one.janitor();
   assert.deepEqual(swept.failed, []);
   assert.deepEqual(nicknames(archil), [], "removed by the janitor's pass");
+});
+
+test("Mode 2, a left credential remove whose Archil never answers is bounded: the pass goes on to its provider sweep and its next wake, the call is cut, and the row stays for the next pass", { timeout: 10_000 }, async () => {
+  const real = mountUsers();
+  let hang = true;
+  let cut = 0;
+  // Archil not answering: a call waits until its signal is aborted, if it has one.
+  const archil = {
+    ...real,
+    fetch: (input, init = {}) => {
+      if (!hang) return real.fetch(input, init);
+      return new Promise((_, reject) => init.signal?.addEventListener("abort", () => { cut += 1; reject(init.signal.reason); }, { once: true }));
+    },
+  };
+  const one = await server({ mode: 2, archil });
+  one.store.runs.set("run-1", "completed");
+  await one.store.settings.put("archil_revoke:run-1", { epoch: 3, disk: DISK, until: T0 });
+  // A kept row of a run still going, in its time, so the pass has a next wake to answer.
+  one.store.runs.set("run-2", "working");
+  await one.store.settings.put("computer_kept:run-2", { provider: "e2b", kind: "desktop", id: "c9", name: "c9", epoch: 1, until: T0 + KEEP_MS });
+
+  const swept = await one.janitor({ deleteMs: 50 });
+  assert.equal(swept.next, T0 + KEEP_MS, "the next wake answered");
+  assert.equal(swept.failed.length, 1, swept.failed.join("\n"));
+  assert.match(swept.failed[0], /run run-1: .*did not answer within 0\.05 s/);
+  assert.ok(cut >= 1, "the Archil call was cut, not left to hang");
+  assert.deepEqual(await one.store.settings.get("archil_revoke:run-1"), { epoch: 3, disk: DISK, until: T0 }, "left for the next pass");
+
+  const logged = await one.pass({ deleteMs: 50 });
+  assert.ok(one.account.calls.some(([verb]) => verb === "list"), "the provider sweep ran after it");
+  assert.ok(logged.some((line) => /could not end a computer kept at a park: .*run-1/.test(line)), logged.join("\n"));
+
+  hang = false;
+  assert.deepEqual((await one.janitor()).failed, []);
+  assert.deepEqual(nicknames(real), ["agentrun:run-1:6", "agentrun:run-2:3"], "the next pass removed run-1's up to epoch 3");
+  assert.equal(await one.store.settings.get("archil_revoke:run-1"), undefined);
 });
 
 /** The store's next clock read waits until `release()`: `reached` resolves once a read is waiting. Later reads answer
