@@ -7,7 +7,8 @@
 import { randomBytes } from "node:crypto";
 import { type Learning, type LearningAt, type LearningChangeKind, type LearningDiff, type LearningItem, type LearningItemKind, type LearningRecord, type LearningRecordKind, LearningRecordRefused, type LearningRecordWrite, type LearningSave, type LearningSaveBy } from "../store.js";
 import { learnedStatus, restoredLearned, retiredLearned, workflowRunOf, WORKFLOWS_DIR } from "../../learn/workflow-draft.js";
-import { forgetRunIn, type PromotionRecord, runsNamedIn } from "../../learn/promote.js";
+import { forgetRunIn, runsNamedIn } from "../../learn/forget-run.js";
+import type { PromotionRecord } from "../../learn/promote.js";
 import type { SqliteExecutor, SqliteValue, StoreConnection, Tx } from "./connection.js";
 
 type SaveKind = "init" | "run" | "person" | "purged";
