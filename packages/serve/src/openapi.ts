@@ -3910,7 +3910,7 @@ const SO_FAR = {
 /** composioperrun/1: the Composio user (and connected account) a per-run Composio server's calls run as, for one run. */
 const COMPOSIO_RUN_BINDING: Json = {
   ...closedWith({
-    composio_user_id: { type: "string", pattern: COMPOSIO_USER_ID.source, description: "The Composio user this run's calls of that server run as. The preset's default user `agentrun` is refused (422 not_allowed): it is the one single-user preset servers call as." },
+    composio_user_id: { type: "string", pattern: COMPOSIO_USER_ID.source, description: "The Composio user this run's calls of that server run as. The preset's default user `agentrun` is refused (422 not_allowed): it is the one single-user preset servers call as. On an API-only server (AGENTRUN_API_ONLY=1) any user the owner calls as here is refused too, in any letter case, before any account is looked up (422 not_allowed): the default and tool-listing users, and each user a server the owner saved stands on; any other user, a backend's own id or one starting `agentrun.token.`, is the caller's, and a `connected_account_id` it names must be one Composio lists under it (422 not_allowed; 424 when Composio doesn't answer)." },
   }, {
     connected_account_id: { type: "string", pattern: "^ca_[A-Za-z0-9_-]{5,64}$", description: "The user's connected account they run on (Composio's `ca_...` id). Absent: Composio picks the user's account for the toolkit." },
   }),

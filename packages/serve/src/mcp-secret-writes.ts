@@ -10,8 +10,8 @@
 //   drops or changes its credential, moves it, or removes what it made at Composio.
 // A new server with no credential, the token's own server, a preview and a refresh (each keeps nothing new) stay open to a
 // token.
-import { composioMadeKey, recordedMade } from "./composio-made.js";
-import { COMPOSIO_TOOLKIT } from "./composio-preset.js";
+import { composioAccountKey, composioMadeKey, recordedMade } from "./composio-made.js";
+import { COMPOSIO_LISTING_USER, COMPOSIO_TOOLKIT, COMPOSIO_USER } from "./composio-preset.js";
 import type { InputIssue } from "./errors.js";
 import { secretShapes } from "./learn/secrets.js";
 import { urlOf } from "./mcp-probe.js";
@@ -34,7 +34,7 @@ export function mcpWritesSecret(operation: string, body: unknown): boolean {
 
 /** The least of a saved server's row a save's check reads: its auth type, its sealed credential and when that was set,
  *  and when the row was made (its source record is bound to it). */
-type SavedRow = { auth: string; sealed: unknown; credentialChangedAt?: number | null; createdAt?: number };
+type SavedRow = { auth: string; sealed: unknown; credentialChangedAt?: number | null; createdAt?: number; url?: string };
 type SavedServers = { mcp: { server(name: string): Promise<SavedRow | undefined>; servers(): Promise<(SavedRow & { name: string })[]> }; settings: { get(key: string): Promise<unknown> } };
 
 /** The saved server the owner saved (no token's mark on its record, mcp-sources.ts savedByToken) that stands on the
@@ -48,6 +48,34 @@ export async function ownersAuthConfig(store: SavedServers, id: string): Promise
     if (!savedByToken(await store.settings.get(mcpSourceKey(row.name)), row.createdAt)) return row.name;
   }
   return undefined;
+}
+
+/** Whether a run's binding on an API-only server (mcp_auth.<server>.composio_user_id) names `user`, a Composio user the
+ *  owner calls as here, in any letter case: the preset's default user and its tool-listing user, and each user a server
+ *  the owner saved (no token's mark on its record) stands on: its preset record's (not per_run), its kept account's,
+ *  and the one its address names. The one check of a binding's user, at the start or message that hands it
+ *  (McpServersOverStore.tokenBinding) and at each claim (runner/mcp-claim.ts). Any other user is the run's caller's,
+ *  a bare backend id or one in the token's namespace alike. Read from the store at each check, never cached. */
+export async function ownersComposioUser(store: SavedServers, user: string): Promise<boolean> {
+  const asked = user.toLowerCase();
+  if (asked === COMPOSIO_USER || asked === COMPOSIO_LISTING_USER) return true;
+  for (const row of await store.mcp.servers()) {
+    if (savedByToken(await store.settings.get(mcpSourceKey(row.name)), row.createdAt)) continue;
+    const made = recordedMade(await store.settings.get(composioMadeKey(row.name)), row.createdAt);
+    const kept = await store.settings.get(composioAccountKey(row.name));
+    const users = [made && !made.per_run ? made.user : undefined, isObject(kept) && kept.of === row.createdAt && typeof kept.user === "string" ? kept.user : undefined, addressUser(row.url)];
+    if (users.some((one) => one?.toLowerCase() === asked)) return true;
+  }
+  return false;
+}
+
+/** The Composio user a saved address names (`user_id`), if it names one. */
+function addressUser(url: string | undefined): string | undefined {
+  try {
+    return (url && new URL(url).searchParams.get("user_id")) || undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Whether a server the API token saved holds the Composio connected account `id` as made here (its record of what it

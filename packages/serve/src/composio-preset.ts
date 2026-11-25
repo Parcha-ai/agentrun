@@ -32,12 +32,11 @@ export const COMPOSIO_TOKEN_USER_PREFIX = "agentrun.token.";
 /** The Composio user an API token's save names `user` as (composioSave `userAs`). */
 export const composioTokenUser = (user: string): string => COMPOSIO_TOKEN_USER_PREFIX + user;
 /** Whether `user` is in the API token's namespace: the prefix exactly as its saves write it, and a user after it. Every
- *  listed API token is one principal (api-token.ts), so the prefix is the namespace, not one per token. On an API-only
- *  server a run's Composio binding must be (server.ts handedLaunchSecrets, runner/mcp-claim.ts). */
+ *  listed API token is one principal (api-token.ts), so the prefix is the namespace, not one per token. */
 export const composioTokenNamespaced = (user: string): boolean => user.startsWith(COMPOSIO_TOKEN_USER_PREFIX) && user.length > COMPOSIO_TOKEN_USER_PREFIX.length;
-/** Why a run's Composio binding on an API-only server can't be used: its user is not in the token's namespace. Never
- *  names the user. */
-export const COMPOSIO_TOKEN_BINDING_WORDS = `it is outside the API token's Composio namespace: on this API-only server a run's Composio user is the API token's own, one starting "${COMPOSIO_TOKEN_USER_PREFIX}" and naming a user after it (the namespace its Composio saves are kept in), so a run never calls as a user the owner or another client connects`;
+/** Why a run's Composio binding on an API-only server can't be used: its user is one the owner's servers call as here
+ *  (mcp-secret-writes.ts ownersComposioUser). Never names the user or the server. */
+export const COMPOSIO_OWNERS_USER_WORDS = `it is a Composio user this server's owner calls as here (the preset's default user, its tool-listing user, or the user an MCP server the owner saved calls as), and a run's binding on this API-only server never calls as the owner: name a Composio user of the run's own person`;
 
 /** Whether a connected account Composio answered is `user`'s: one it answers under another user is never (a Composio
  *  answering every user's, whatever user_ids asks); one it answers with no user_id is the user's asked for. */

@@ -2553,8 +2553,8 @@ runs as one account. A server saved for one user before this mode keeps calling 
 With `user_id: "per_run"`, whoever can start a run chooses its Composio user, so the host owns which user each run
 binds: it binds each run to its own person and never takes the ids from that person. Only `agentrun` is
 refused, so a host must not bind a per-run server to a `user_id` that a single-user server calls as. On an API-only
-server a run's user is one in the API token's namespace (`agentrun.token.`), and a named account one Composio lists
-under it (see [API only](#api-only)).
+server a run's user is none the owner calls as here (the preset's default and tool-listing users, and every user a
+server the owner saved stands on), and a named account one Composio lists under it (see [API only](#api-only)).
 
 What can go wrong, told apart:
 
@@ -3661,20 +3661,21 @@ serves these routes alone:
     check them all, and an owner's save goes on with the ones it read. That check sees the accounts there when the token
     saves; the namespace is what keeps the user the token's after it, since no save here names it;
   - a run's binding of a per-run Composio server (`mcp_auth.<server>`, `{composio_user_id, connected_account_id?}`)
-    stays in that namespace too, since every caller here is the token: its `composio_user_id` starts `agentrun.token.`
-    (exactly) with a user after it, else `422` `not_allowed` under it, and a `connected_account_id` it names is one
-    Composio lists under that user for the server's toolkit, read at the start or the message that hands it with the
+    never calls as a user the owner calls as here, since every caller here is the token: its `composio_user_id`, in any
+    letter case, is not the preset's default user (`agentrun`), its tool-listing user, or any user a server the owner
+    saved (no token's mark on its record) stands on, by its preset record, the account its refresh kept or its address,
+    else `422` `not_allowed` under it, before any account is looked up. Any other user is the caller's: a backend's
+    own bare user id or one in the token's namespace alike. A `connected_account_id` it names is
+    one Composio lists under that user for the server's toolkit, read at the start or the message that hands it with the
     server's key, 50 a page and at most 10 pages, as the save's lookup reads; one Composio answers under another user
     never counts. An account it doesn't list there is `422` `not_allowed` under `connected_account_id`, and so is one
     past those 10 pages, in words of its own, since it can't be checked. Composio not answering that read is `424`
     (`upstream_failed`): a run's account is never taken unchecked. Each refusal says which check refused it, nothing is
-    started, and none quotes what was sent. A run's claim refuses a binding outside the namespace too (one sealed before
-    this rule), its calls refused unsent. Every API token listed is one principal, so the namespace is the prefix, not
-    one per token: all API tokens share one Composio namespace, so a token's runs can use any account connected under
-    `agentrun.token.*`, and never the owner's. An account connected by hand (the Composio dashboard, or another client of
-    the same Composio project) under an `agentrun.token.` user is the token's, by design. The token's backend connects its users'
-    accounts at Composio under namespaced user ids (`agentrun.token.<its own id>`). On the full server the owner's runs
-    bind as before;
+    started, and none quotes what was sent. A run's claim reads the same check again (one sealed before it, or before
+    the owner's server was saved), its calls refused unsent. What it can't see: the per-run server lends this install's
+    Composio key, so a binding may name a user the owner connected only at Composio (its dashboard, or another client of
+    the same Composio project) with no record here, and call as that user. Save a per-run Composio server only with a
+    Composio project whose users are all the token's backend's. On the full server the owner's runs bind as before;
   - a server the token saved before the namespace (0.1.0-beta.56 and earlier) calls as a user outside it, which may be
     the owner's: every run's claim of it is refused unsent, in words that say to delete it, and the start names each such
     server in one log line (`api_only_composio_outside_namespace`), never its user or address. Delete it, then save it
