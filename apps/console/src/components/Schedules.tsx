@@ -25,7 +25,7 @@ import { keeper, uuid } from "@/lib/idempotency";
 import { type Problem, problem } from "@/lib/problem";
 import type { Tone } from "@/lib/runState";
 import { ACCEPT_LIMITS, acceptFields, emptyRule, type RuleDraft, ruleDraftOf } from "@/lib/accept";
-import { agentCapOf, atLeast, bodyOf, capOf, type CapRule, CONNECTED_NO_CAP, disabledWords, dollars, acceptWords, onceState, type OnceState, emptyGitHub, FIRED_BY, GITHUB_EVENT_NAMES, GITHUB_EVENTS, githubBodyOf, type GitHubDraft, type GitHubPicks, githubPicksOf, githubRulesOf, githubSourceOf, githubWhen, emailWhen, feedWhen, composioWhen, type ComposioDraft, type ComposioTrigger, composioBodyOf, composioSourceOf, type ConfigField, configFieldsOf, emptyComposio, isComposioTrigger, type GitHubTrigger, isGitHubTrigger, HOOK_URL_HINT, hookUrlOf, hookWhen, isScheduleTrigger, isWebhookTrigger, same, SIGNATURE_WORDS, utcWhen, type Draft, draftOf, type Schedule, type WebhookTrigger, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, pastWords, scheduleLine, emptyWebhook, type WebhookDraft, webhookBodyOf, webhookSourceOf, type FeedDraft, type FeedTrigger, type InputDraft, emptyFeed, feedBodyOf, feedDraftOf, feedFields, feedSourceOf, feedUrlsOf, FEED_EVERY_S, isFeedTrigger, type EmailTrigger, isEmailTrigger, type EmailDraft, emptyEmail, emailBodyOf, EMAIL_FIELDS, MAX_FEEDS, span, TRIGGER_KINDS } from "@/lib/schedules";
+import { agentCapOf, inputText, atLeast, bodyOf, capOf, type CapRule, CONNECTED_NO_CAP, disabledWords, dollars, acceptWords, onceState, type OnceState, emptyGitHub, FIRED_BY, GITHUB_EVENT_NAMES, GITHUB_EVENTS, githubBodyOf, type GitHubDraft, type GitHubPicks, githubPicksOf, githubRulesOf, githubSourceOf, githubWhen, emailWhen, feedWhen, composioWhen, type ComposioDraft, type ComposioTrigger, composioBodyOf, composioSourceOf, type ConfigField, configFieldsOf, emptyComposio, isComposioTrigger, type GitHubTrigger, isGitHubTrigger, HOOK_URL_HINT, hookUrlOf, hookWhen, isScheduleTrigger, isWebhookTrigger, same, SIGNATURE_WORDS, utcWhen, type Draft, draftOf, type Schedule, type WebhookTrigger, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, pastWords, scheduleLine, emptyWebhook, type WebhookDraft, webhookBodyOf, webhookSourceOf, type FeedDraft, type FeedTrigger, type InputDraft, emptyFeed, feedBodyOf, feedDraftOf, feedFields, feedSourceOf, feedUrlsOf, FEED_EVERY_S, isFeedTrigger, type EmailTrigger, isEmailTrigger, type EmailDraft, emptyEmail, emailBodyOf, EMAIL_FIELDS, MAX_FEEDS, span, TRIGGER_KINDS } from "@/lib/schedules";
 import type { ComposioEvent, ComposioTriggers, Firing, Trigger, TriggerCreate, TriggerMade } from "@/lib/v2";
 import type { McpServer } from "@/lib/mcp";
 import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
@@ -507,9 +507,11 @@ function RunTargetFields({ v2, draft, edit, issues, agents, input, agentCap, cap
 }) {
   // Another agent's input starts afresh (its fields as they start, its example), and the issues at the last one's fields go.
   // An edited trigger's stored input goes too (inputRead): it was the last agent's, keys the new one may refuse or never show.
+  // Picking the trigger's own agent again brings its stored input back whole, the keys no field shows with it.
   const pick = (agentId: string) => {
     if (agentId === draft.agentId) return;
-    edit({ agentId, values: undefined, json: undefined, inputRead: undefined });
+    const back = draft.stored?.agentId === agentId ? draft.stored.input : undefined;
+    edit(back ? { agentId, values: inputText(back), json: JSON.stringify(back, null, 2), inputRead: back } : { agentId, values: undefined, json: undefined, inputRead: undefined });
     input.setFieldIssues([]);
   };
   return <>

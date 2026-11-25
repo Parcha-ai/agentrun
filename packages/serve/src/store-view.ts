@@ -8,7 +8,7 @@ import { isDeepStrictEqual } from "node:util";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { CAPS, type EntryLike, isMessageRow, type TimelineEvent } from "./timeline/index.js";
 import { runLink } from "./console-links.js";
-import { redacted, redactedAnswer, redactedOutput, redactedOutputWhole, withheldWhole, withoutLoopback } from "./key-refusal.js";
+import { redacted, redactedAnswer, redactedOutput, redactedOutputWhole, withoutLoopback } from "./key-refusal.js";
 import { structuredAnswer } from "./answer-json.js";
 import { isObject } from "./validate.js";
 import { currentLearning, holdsForOk, type ItemStatus, type Learning, learningView, LEARNING_LABEL, secretsShown, shortOf, type Shown } from "./learning.js";
@@ -60,7 +60,7 @@ import { capNowOf, type EndData, KINDS } from "./runner/journal-kinds.js";
 import { laidOf, pathViewOf, roundsOf, runLearningEnd, usedOnly } from "./store-reads/learning.js";
 import { inReflect, reflectRanges } from "./runner/end-of-run.js";
 import { correctionCount } from "./learn/corrections.js";
-import { forgetServedAnswers, isCliRecord, servedSince, runReflect, runTimeline, wholeAnswerFor, wholeAnswers, withoutFeedbackRounds } from "./store-reads/journal.js";
+import { forgetServedAnswers, isCliRecord, rowCutsOnce, servedSince, runReflect, runTimeline, wholeAnswerFor, wholeAnswers, withoutFeedbackRounds } from "./store-reads/journal.js";
 import { costOfRun, type RunReadState, readRun, runReadState } from "./store-reads/runs.js";
 import { feedbackOf, type KeptEnd, keptEndOf } from "./runner/feedback-round.js";
 import { runCutValues, runErrorWordsOf, underCut } from "./run-cut.js";
@@ -405,7 +405,8 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   // A run that ended reads settled, and its usage row says its cost ("Cost: …"), never what it has cost so far. One
   // looking back is still going: its look-back's rows come yet.
   // A call's arguments, or a web call's output, split across two strings are withheld whole (TimelineOptions.holds).
-  const timelineOptions = { settled: terminal && !lookingBack, ended: terminal && !lookingBack, redact: (text: string) => redacted(text, values), holds: (text: string) => withheldWhole(text, values) };
+  // Each text cut once per held value set (rowCutsOnce): a polled view cuts only what an earlier read had not.
+  const timelineOptions = { settled: terminal && !lookingBack, ended: terminal && !lookingBack, ...rowCutsOnce(store, runId, cut, since) };
   // Rendered from the records read above, so its usage row and the cost's `plan` (bookedSpend over the same entries) are
   // of one read.
   const timeline = withAsks(await wholeAnswers(store, runId, context, await runTimeline(store, runId, context, timelineOptions, records), timelineOptions, wholeAnswerFor(values), since));
@@ -925,8 +926,10 @@ export function listedItem(listing: KeptListing, origin: string, archivedAt: num
   return listing.cut === secretsDigest(serverSecrets) ? item : (redactedOutput(item, [...serverSecrets]) as Record<string, unknown>);
 }
 
-/** A set of secrets' digest, the same for the same set in any order: what a listing was cut of. */
-const secretsDigest = (values: readonly string[]): string => createHash("sha256").update([...new Set(values)].sort().join("\0")).digest("hex");
+/** A set of secrets' digest, the same for the same set in any order: what a listing was cut of. Of the sorted values'
+ *  JSON, which escapes a lone surrogate and a NUL as written, so no two sets share it: as UTF-8 every lone surrogate is
+ *  the one replacement character, and values joined by a NUL read as one value that holds it. */
+const secretsDigest = (values: readonly string[]): string => createHash("sha256").update(JSON.stringify([...new Set(values)].sort())).digest("hex");
 
 /** A run's facts as its view states them, and none of its words: its kind, revision, agent, status and times, and whether
  *  its output is withheld (`unshown`). What a read that serves its own parts (the graph) needs of the run: read off the
