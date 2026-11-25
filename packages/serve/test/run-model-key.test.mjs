@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
+import { OLLAMA_DEFAULT_HOST } from "../dist/ollama-provider.js";
 import { gatewayKeyNames, gatewayOnThisMachine, modelKeyMisfit, modelKeyRequired, noServerKeyFor, serverKeyMissing, withRunModelKey } from "../dist/run-model-key.js";
 import { claimModelEnv, claimModelKey, claimSpendOff } from "../dist/runner/claim-secrets.js";
 import { providerFor } from "../dist/provider.js";
@@ -121,7 +122,8 @@ test("model_key_required: a gateway on this machine is told to remove AGENT_MODE
   for (const base of ["http://localhost:11434/v1", "http://127.0.0.1:11434/v1", "http://[::1]:11434/v1"]) {
     assert.equal(gatewayOnThisMachine({ AGENT_MODEL_BASE_URL: base }), true, base);
     for (const message of [false, true]) {
-      const refused = modelKeyRequired(message, { AGENT_MODEL_BASE_URL: base });
+      // One owner's own machine: server.ts puts the default address in the server's OLLAMA_HOST.
+      const refused = modelKeyRequired(message, { AGENT_MODEL_BASE_URL: base, OLLAMA_HOST: OLLAMA_DEFAULT_HOST });
       assert.equal(refused.code, "model_key_required");
       assert.ok(refused.message.includes(MOVE), refused.message);
       assert.ok(!refused.message.includes(base), "the address is never in the words");
@@ -132,4 +134,20 @@ test("model_key_required: a gateway on this machine is told to remove AGENT_MODE
     assert.ok(!modelKeyRequired(false, env).message.includes(MOVE));
   }
   assert.ok(!modelKeyRequired(false).message.includes(MOVE), "no env: the words as before");
+});
+
+test("model_key_required: the move adds OLLAMA_HOST where the server would lose Ollama with the gateway: a shared server naming none, or a gateway off port 11434", () => {
+  const HOST = "remove AGENT_MODEL_BASE_URL and set OLLAMA_HOST=<host:port> (Ollama's address); AgentRun lists Ollama itself";
+  const said = (env) => modelKeyRequired(false, env).message;
+  // A shared server names no OLLAMA_HOST of its own, so it lists no Ollama until one is set.
+  assert.ok(said({ AGENT_MODEL_BASE_URL: "http://localhost:11434/v1" }).includes(HOST));
+  // An Ollama on a port of its own, reached as the gateway: the default address is not it.
+  assert.ok(said({ AGENT_MODEL_BASE_URL: "http://localhost:11500/v1", OLLAMA_HOST: OLLAMA_DEFAULT_HOST }).includes(HOST));
+  assert.ok(said({ AGENT_MODEL_BASE_URL: "http://localhost/v1", OLLAMA_HOST: OLLAMA_DEFAULT_HOST }).includes(HOST), "no port: 80");
+  // OLLAMA_HOST already names an Ollama, or the default where the gateway is on 11434: the move is the gateway alone.
+  for (const env of [{ AGENT_MODEL_BASE_URL: "http://localhost:11500/v1", OLLAMA_HOST: "127.0.0.1:11500" }, { AGENT_MODEL_BASE_URL: "http://127.0.0.1:11434/v1", OLLAMA_HOST: OLLAMA_DEFAULT_HOST }]) {
+    assert.ok(said(env).includes("remove AGENT_MODEL_BASE_URL; AgentRun lists Ollama itself"), JSON.stringify(env));
+    assert.ok(!said(env).includes("OLLAMA_HOST=<host:port>"));
+  }
+  assert.ok(!said({ AGENT_MODEL_BASE_URL: "https://gateway.example.com/v1" }).includes("OLLAMA_HOST"), "a gateway elsewhere: bring a key");
 });

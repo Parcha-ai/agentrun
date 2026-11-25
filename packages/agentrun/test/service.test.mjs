@@ -501,7 +501,10 @@ test("service install --env refuses any other variable by name, and a pair with 
     // Ollama takes no key, so a service is never given one, `none` included: its own refusal, which names the move.
     ["AGENT_MODEL_API_KEY=none", /^--env takes no AGENT_MODEL_API_KEY\. AgentRun takes no model key in a service file: a key goes in the console \(Settings → Model keys\), and Ollama takes none\.$/],
     ["AGENT_MODEL_API_KEY=sk-or-x", /^--env takes no AGENT_MODEL_API_KEY\./],
-    ["AGENT_MODEL", /--env takes KEY=VALUE, not AGENT_MODEL/],
+    ["AGENT_MODEL", /^--env takes KEY=VALUE, and one --env has no =\.$/],
+    // A pair with no name may be a key itself: never echoed.
+    ["sk-or-x", /^--env takes KEY=VALUE, and one --env has no =\.$/],
+    ["=sk-or-x", /^--env takes KEY=VALUE, and one --env has no name before =\.$/],
     ["AGENT_MODEL=a\nb", /AGENT_MODEL's value has a line break/],
   ]) {
     // The value is never echoed: it may be a key.
@@ -511,21 +514,38 @@ test("service install --env refuses any other variable by name, and a pair with 
   await assert.rejects(service.install({ env: ["AGENT_MODEL_BASE_URL=http://localhost:11434/v1", "AGENT_MODEL_API_KEY=sk-or-x"] }), (error) =>
     error.code === 2 && error.message.includes("The model gateway at AGENT_MODEL_BASE_URL is on this machine: remove AGENT_MODEL_BASE_URL; AgentRun lists Ollama itself.") &&
     error.message.includes(`Run ${GATEWAY_REMOVAL}, start Ollama, and pick the model as ollama/<tag>.`) && !error.message.includes("sk-or-x"));
+  // An Ollama elsewhere, or on a port of its own, or a shared service: the move adds OLLAMA_HOST, or Ollama is lost with
+  // the gateway. One the install already names needs nothing more.
+  const HOST = "remove AGENT_MODEL_BASE_URL and add --env OLLAMA_HOST=<host:port> (Ollama's address); AgentRun lists Ollama itself.";
+  const RUN_HOST = `Run ${GATEWAY_REMOVAL} --env OLLAMA_HOST=<host:port>, start Ollama`;
+  for (const [options, label] of [
+    [{ env: ["AGENT_MODEL_BASE_URL=https://gateway.example.com/v1", "AGENT_MODEL_API_KEY=none"] }, "a gateway elsewhere"],
+    [{ env: ["AGENT_MODEL_BASE_URL=http://localhost:11500/v1", "AGENT_MODEL_API_KEY=none"] }, "a gateway on another port"],
+    [{ tailscale: true, env: ["AGENT_MODEL_BASE_URL=http://localhost:11434/v1", "AGENT_MODEL_API_KEY=none"] }, "--tailscale"],
+    [{ "public-url": "https://agents.example.com", env: ["AGENT_MODEL_BASE_URL=http://localhost:11434/v1", "AGENT_MODEL_API_KEY=none"] }, "--public-url"],
+  ]) {
+    await assert.rejects(service.install(options), (error) => error.code === 2 && error.message.includes(HOST) && error.message.includes(RUN_HOST), label);
+  }
   await assert.rejects(service.install({ env: ["AGENT_MODEL_BASE_URL=https://gateway.example.com/v1", "AGENT_MODEL_API_KEY=none"] }), (error) =>
-    error.code === 2 && error.message.includes("If the model gateway at AGENT_MODEL_BASE_URL is Ollama, remove AGENT_MODEL_BASE_URL; AgentRun lists Ollama itself."));
+    error.message.startsWith("--env takes no AGENT_MODEL_API_KEY. If the model gateway at AGENT_MODEL_BASE_URL is Ollama, remove AGENT_MODEL_BASE_URL and add"));
+  await assert.rejects(service.install({ tailscale: true, env: ["AGENT_MODEL_BASE_URL=http://localhost:11434/v1", "OLLAMA_HOST=127.0.0.1:11434", "AGENT_MODEL_API_KEY=none"] }), (error) =>
+    error.message.includes("remove AGENT_MODEL_BASE_URL; AgentRun lists Ollama itself.") && !error.message.includes("<host:port>"), "OLLAMA_HOST named");
   assert.equal(existsSync(join(home, ".config", "systemd", "user", UNIT)), false);
 });
 
 // A service installed before AGENT_MODEL_API_KEY went: a re-install keeps every other variable, drops the key in one
 // line that names the move and never its value, and the changelog's own migration line then takes the gateway off.
-const FRAGMENT = readFileSync(new URL("../../../changes/ollama-walks.md", import.meta.url), "utf8");
-const MIGRATION = FRAGMENT.match(/`(agentrun service install --env AGENT_MODEL_BASE_URL= [^`]*)`/)?.[1];
-const migrationEnv = () => MIGRATION.split(" ").filter((word, i, all) => all[i - 1] === "--env");
+// The migration line is the CLI's own (GATEWAY_REMOVAL); the release note's wording is checked apart, since a release
+// folds the note into the changelog and deletes it.
+const migrationEnv = () => GATEWAY_REMOVAL.split(" ").filter((word, i, all) => all[i - 1] === "--env");
 const KEPT = ["OLLAMA_CONTEXT_LENGTH=16384", "DO_NOT_TRACK=1"];
 const KEPT_VARS = { OLLAMA_CONTEXT_LENGTH: "16384", DO_NOT_TRACK: "1" };
 
-test("the changelog's migration line is the one the CLI names", () => {
-  assert.equal(MIGRATION, GATEWAY_REMOVAL);
+test("the release note names the CLI's migration line, word for word: the fragment while it is there, else the changelog it is folded into", () => {
+  const fragment = new URL("../../../changes/ollama-walks.md", import.meta.url);
+  // @parcha/agentrun keeps no CHANGELOG of its own: its notes fold into the repository's.
+  const note = readFileSync(existsSync(fragment) ? fragment : new URL("../../../CHANGELOG.md", import.meta.url), "utf8");
+  assert.ok(note.includes(GATEWAY_REMOVAL));
 });
 
 test("a re-install drops AGENT_MODEL_API_KEY=none from a systemd unit, keeps the rest, says so in one line; the migration line takes the gateway off", async () => {
@@ -548,6 +568,30 @@ test("a re-install drops AGENT_MODEL_API_KEY=none from a systemd unit, keeps the
   assert.equal(await service.install({ env: migrationEnv() }), 0);
   assert.deepEqual(unitEnv(readFileSync(file, "utf8")), { PATH: "/usr/bin", ...KEPT_VARS });
   assert.ok(!out.join("").includes("AGENT_MODEL_API_KEY"), "said once: the key is gone");
+});
+
+test("a re-install drops any AGENT_MODEL_API_KEY without its value, says so only once the file is written, and adds OLLAMA_HOST to the move for a shared service", async () => {
+  const { home, exec, get } = linuxHome();
+  const { io, out } = ioOf();
+  const service = serviceOf({ platform: "linux", home, uid: 1000, user: "a", env: { PATH: "/usr/bin" }, exec, io, fail, get, waitMs: 5_000 });
+  const file = join(home, ".config", "systemd", "user", UNIT);
+  assert.equal(await service.install({ "public-url": "https://agents.example.com", env: [...MODEL_ENV, ...KEPT] }), 0);
+  writeFileSync(file, readFileSync(file, "utf8").replace("Environment=AGENT_MODEL=", "Environment=AGENT_MODEL_API_KEY=sk-or-x\nEnvironment=AGENT_MODEL="));
+  const before = readFileSync(file, "utf8");
+  out.length = 0;
+  // A refused re-install writes nothing and says nothing of the key.
+  await assert.rejects(service.install({ tailscale: true, port: "0" }), (error) => error.code === 2);
+  assert.equal(readFileSync(file, "utf8"), before);
+  assert.ok(!out.join("").includes("AGENT_MODEL_API_KEY"), out.join(""));
+  // An --env change keeps the service's --public-url (a bare re-install, the installer's, names its own flags).
+  assert.equal(await service.install({ env: ["OLLAMA_CONTEXT_LENGTH=16384"] }), 0);
+  assert.ok(unitArgs(readFileSync(file, "utf8")).includes("--public-url"));
+  assert.deepEqual(unitEnv(readFileSync(file, "utf8")), { PATH: "/usr/bin", ...MODEL_VARS, ...KEPT_VARS });
+  const said = out.join("").split("\n").filter((line) => line.includes("AGENT_MODEL_API_KEY"));
+  assert.equal(said.length, 1);
+  assert.ok(said[0].startsWith("This re-install drops AGENT_MODEL_API_KEY from the service. The model gateway at AGENT_MODEL_BASE_URL is on this machine: remove AGENT_MODEL_BASE_URL and add --env OLLAMA_HOST=<host:port> (Ollama's address); AgentRun lists Ollama itself."), said[0]);
+  assert.ok(said[0].includes(`Run ${GATEWAY_REMOVAL} --env OLLAMA_HOST=<host:port>,`));
+  assert.ok(!out.join("").includes("sk-or-x"), "the key's value is never said");
 });
 
 test("a re-install drops AGENT_MODEL_API_KEY=none from a LaunchAgent and keeps the rest; the migration line takes the gateway off", async () => {

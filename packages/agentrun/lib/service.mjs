@@ -151,12 +151,26 @@ const gatewayHere = (url) => {
     return false;
   }
 };
+/** The port of the gateway address `url`, its scheme's default where it names none. */
+const portOf = (url) => {
+  try {
+    const at = new URL(url);
+    return at.port || (at.protocol === "https:" ? "443" : "80");
+  } catch {
+    return undefined;
+  }
+};
 /** What a service with AGENT_MODEL_BASE_URL `url` (none: no gateway) does now that it takes no AGENT_MODEL_API_KEY. The
- *  key's value is never in it. */
-const keyMove = (url) =>
-  url === undefined
-    ? "AgentRun takes no model key in a service file: a key goes in the console (Settings → Model keys), and Ollama takes none."
-    : `${gatewayHere(url) ? "The model gateway at AGENT_MODEL_BASE_URL is on this machine: remove AGENT_MODEL_BASE_URL; AgentRun lists Ollama itself." : "If the model gateway at AGENT_MODEL_BASE_URL is Ollama, remove AGENT_MODEL_BASE_URL; AgentRun lists Ollama itself."} Run ${GATEWAY_REMOVAL}, start Ollama, and pick the model as ollama/<tag>. A key for any other gateway goes in the console (Settings → Model keys).`;
+ *  key's value is never in it. `shared`: the service has a public address (--tailscale, --public-url), so it lists Ollama
+ *  only where OLLAMA_HOST names it; `ollamaHost`: the service's OLLAMA_HOST, if it sets one. Without one, a shared service,
+ *  a gateway elsewhere or one off Ollama's port 11434 (an Ollama elsewhere, or on a port of its own) needs OLLAMA_HOST
+ *  added, or the move loses Ollama's address. */
+const keyMove = (url, { shared = false, ollamaHost } = {}) => {
+  if (url === undefined) return "AgentRun takes no model key in a service file: a key goes in the console (Settings → Model keys), and Ollama takes none.";
+  const host = !ollamaHost && (shared || !gatewayHere(url) || portOf(url) !== "11434");
+  const move = `remove AGENT_MODEL_BASE_URL${host ? " and add --env OLLAMA_HOST=<host:port> (Ollama's address)" : ""}; AgentRun lists Ollama itself.`;
+  return `${gatewayHere(url) ? "The model gateway at AGENT_MODEL_BASE_URL is on this machine:" : "If the model gateway at AGENT_MODEL_BASE_URL is Ollama,"} ${move} Run ${GATEWAY_REMOVAL}${host ? " --env OLLAMA_HOST=<host:port>" : ""}, start Ollama, and pick the model as ollama/<tag>. A key for any other gateway goes in the console (Settings → Model keys).`;
+};
 /** The usage counts' two switches in SERVICE_ENV, which install also copies from its own shell. */
 const TELEMETRY_NAMES = ["AGENTRUN_TELEMETRY", "DO_NOT_TRACK"];
 
@@ -343,14 +357,19 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
   const installed = () => manager !== undefined && existsSync(manager.file);
   /** The AGENT_MODEL_BASE_URL a service would have after `sets`: the last one they give (empty: none), else the installed
    *  service's. */
-  const gatewayOf = (sets) => {
-    const given = sets.findLast((pair) => pair.startsWith("AGENT_MODEL_BASE_URL="));
-    if (given !== undefined) return given.slice("AGENT_MODEL_BASE_URL=".length) || undefined;
+  /** The installed service's variables, or none. */
+  const installedEnv = () => {
     try {
-      return installed() ? manager.env(readFileSync(manager.file, "utf8")).AGENT_MODEL_BASE_URL : undefined;
+      return installed() ? manager.env(readFileSync(manager.file, "utf8")) : {};
     } catch {
-      return undefined;
+      return {};
     }
+  };
+  /** The value `name` has once `sets` (--env pairs) apply to the installed service: the last one given (empty: none),
+   *  else the service's own. */
+  const serviceVar = (sets, name) => {
+    const given = sets.findLast((pair) => pair.startsWith(`${name}=`));
+    return given !== undefined ? given.slice(name.length + 1) || undefined : installedEnv()[name];
   };
   const needInstalled = () => {
     if (!installed()) throw fail(3, "AgentRun's service is not installed: agentrun service install installs it.");
@@ -464,10 +483,16 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
       if (port !== undefined && !/^\d+$/.test(port)) throw fail(2, `--port takes a port number, not ${port}.`);
       const changes = sets.map((pair) => {
         const at = pair.indexOf("=");
-        if (at < 1) throw fail(2, `--env takes KEY=VALUE, not ${pair}.`);
+        // Never echoed: a pair with no name may be a key itself (--env sk-or-..., --env =sk-or-...).
+        if (at < 1) throw fail(2, `--env takes KEY=VALUE, and one --env has ${at < 0 ? "no =" : "no name before ="}.`);
         const key = pair.slice(0, at);
         // AGENT_MODEL_API_KEY=none once reached Ollama through a gateway; its refusal names the move, never the value.
-        if (key === "AGENT_MODEL_API_KEY") throw fail(2, `--env takes no AGENT_MODEL_API_KEY. ${keyMove(gatewayOf(sets))}`);
+        if (key === "AGENT_MODEL_API_KEY") {
+          // Shared as far as this install says: a public address given now, or the service's own unless --no-tailscale.
+          const own = installedEnv();
+          const shared = tailscale === true || given !== undefined || (tailscale !== false && installed() && (argsNow().includes("--public-url") || own.AGENTRUN_PUBLIC_URL !== undefined));
+          throw fail(2, `--env takes no AGENT_MODEL_API_KEY. ${keyMove(serviceVar(sets, "AGENT_MODEL_BASE_URL"), { shared, ollamaHost: serviceVar(sets, "OLLAMA_HOST") })}`);
+        }
         if (!Object.hasOwn(SERVICE_ENV, key)) throw fail(2, `--env takes ${SERVICE_NAMES.slice(0, -1).join(", ")} or ${SERVICE_NAMES.at(-1)}, not ${key}: a key goes in the console (Settings → Model keys), never in a service file.`);
         if (/[\0-\x1f]/.test(pair)) throw fail(2, `${key}'s value has a line break or another control character.`);
         const takes = SERVICE_ENV[key];
@@ -493,8 +518,6 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
         if (value === "") delete model[key];
         else model[key] = value;
       }
-      // A service from before keeps every variable it may hold but AGENT_MODEL_API_KEY, which is said in one line.
-      if (Object.hasOwn(was, "AGENT_MODEL_API_KEY")) say(`This re-install drops AGENT_MODEL_API_KEY from the service. ${keyMove(model.AGENT_MODEL_BASE_URL)}`);
       // --tailscale, --no-tailscale, --env or --public-url on an installed service changes that only: its data folder, port
       // and public address stay unless named (the installer passes the flag alone). --tailscale names its own address instead.
       if ((tailscale !== undefined || changes.length > 0 || given !== undefined) && installed()) {
@@ -523,6 +546,9 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
       mkdirSync(join(root, "logs"), { recursive: true, mode: 0o700 });
       mkdirSync(join(manager.file, ".."), { recursive: true });
       writeFileSync(manager.file, manager.text({ program, args, path: env.PATH ?? "/usr/bin:/bin", log, env: vars }));
+      // A service from before keeps every variable it may hold but AGENT_MODEL_API_KEY, which is said in one line once
+      // the file is written without it (a refused install says nothing of it).
+      if (Object.hasOwn(was, "AGENT_MODEL_API_KEY")) say(`This re-install drops AGENT_MODEL_API_KEY from the service. ${keyMove(model.AGENT_MODEL_BASE_URL, { shared: share || publicUrl !== undefined, ollamaHost: model.OLLAMA_HOST })}`);
       const since = Date.now();
       manager.install();
       say(`Installed AgentRun's service (${manager.file}): it keeps running after this terminal closes, and starts again at login.`);

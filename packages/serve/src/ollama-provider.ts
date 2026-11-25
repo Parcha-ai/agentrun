@@ -32,7 +32,7 @@ export const OLLAMA_LIST_TIMEOUT_MS = 2_000;
 /** How long an address's listing is kept before it is asked again (behind the caller, which takes the kept one). */
 export const OLLAMA_TTL_MS = 30_000;
 /** Ollama's port, where OLLAMA_HOST names none and no scheme. */
-const OLLAMA_PORT = "11434";
+export const OLLAMA_PORT = "11434";
 const ZERO = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } as const;
 
 /** A model as Ollama lists it: its tag, its capabilities, and the context it was trained on (undefined: /api/show says none). */

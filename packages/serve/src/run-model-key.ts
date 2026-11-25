@@ -17,6 +17,7 @@
 import { ApiError, type InputIssue } from "./errors.js";
 import { handedSecretOf } from "./handed-secret.js";
 import { isLoopbackName } from "./host-check.js";
+import { OLLAMA_DEFAULT_HOST, OLLAMA_PORT } from "./ollama-provider.js";
 import { FAUX_ENV, GATEWAY_KEY_ENV, MODEL_PROVIDER, PROVIDER_KEYS } from "./model.js";
 import { gatewayBase } from "./provider.js";
 import type { RunLaunch } from "./run-launch.js";
@@ -70,12 +71,25 @@ export function gatewayOnThisMachine(env: NodeJS.ProcessEnv): boolean {
   return origin !== undefined && isLoopbackName(new URL(origin).hostname);
 }
 
+/** The move off a gateway on this machine (`env`), in words, or "" where the gateway is elsewhere or there is none.
+ *  `env` is the server's: its OLLAMA_HOST is the Ollama it lists (server.ts sets the default address there on one owner's
+ *  own machine), so where it is unset (a shared server naming none) or is the default while the gateway is on another
+ *  port (an Ollama on a port of its own), the move adds OLLAMA_HOST, or Ollama is lost with the gateway. */
+export function gatewayMove(env: NodeJS.ProcessEnv): string {
+  if (!gatewayOnThisMachine(env)) return "";
+  const origin = new URL(runModelOrigin(env)!);
+  const port = origin.port || (origin.protocol === "https:" ? "443" : "80");
+  const ollamaHost = env.OLLAMA_HOST?.trim();
+  const host = !ollamaHost || (ollamaHost === OLLAMA_DEFAULT_HOST && port !== OLLAMA_PORT);
+  return ` The model gateway at AGENT_MODEL_BASE_URL is on this machine: if it is Ollama, remove AGENT_MODEL_BASE_URL${host ? " and set OLLAMA_HOST=<host:port> (Ollama's address)" : ""}; AgentRun lists Ollama itself, and the model is picked as ollama/<tag>.`;
+}
+
 /** 422 model_key_required: a run start, or a message that would start a turn, with no model key to spend: none handed,
  *  none the run holds, and none the server holds for its route. Where the gateway is on this machine (`env`), the words
- *  name the move off it as well: a service that reached Ollama through AGENT_MODEL_BASE_URL with AGENT_MODEL_API_KEY=none
- *  gets this once that key is gone. */
+ *  name the move off it as well (gatewayMove): a service that reached Ollama through AGENT_MODEL_BASE_URL with
+ *  AGENT_MODEL_API_KEY=none gets this once that key is gone. */
 export const modelKeyRequired = (message: boolean, env?: NodeJS.ProcessEnv): ApiError =>
-  new ApiError("model_key_required", `This server holds no model key for this run's model (AGENT_MODEL_API_KEY is not set and none is saved in Settings → Model keys), so each run's caller brings its own: send model_key with ${message ? "a message that starts a turn" : "the run"}, a key for the model gateway at AGENT_MODEL_BASE_URL (such as a LiteLLM virtual key) minted for ${message ? "that turn" : "this run"}.${env && gatewayOnThisMachine(env) ? " The model gateway at AGENT_MODEL_BASE_URL is on this machine: if it is Ollama, remove AGENT_MODEL_BASE_URL; AgentRun lists Ollama itself, and the model is picked as ollama/<tag>." : ""}`, { fields: [{ field: "model_key", reason: "missing", message: "model_key is required here: the server holds no model key for this run's model." }] });
+  new ApiError("model_key_required", `This server holds no model key for this run's model (AGENT_MODEL_API_KEY is not set and none is saved in Settings → Model keys), so each run's caller brings its own: send model_key with ${message ? "a message that starts a turn" : "the run"}, a key for the model gateway at AGENT_MODEL_BASE_URL (such as a LiteLLM virtual key) minted for ${message ? "that turn" : "this run"}.${env ? gatewayMove(env) : ""}`, { fields: [{ field: "model_key", reason: "missing", message: "model_key is required here: the server holds no model key for this run's model." }] });
 
 /** What of a run says where its model requests go: its kind and its launch's pinned model. */
 export type ModelKeyTarget = { readonly kind: "agentic" | "workflow" | string; readonly model?: { readonly provider: string; readonly modelId: string } | undefined; readonly native?: boolean };
