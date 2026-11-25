@@ -85,13 +85,36 @@ function agyTool(whole: string, tools: ReadonlySet<string>, server: string): str
   return tool !== undefined && tools.has(tool) ? tool : undefined;
 }
 
+/** Whether an input schema may name a toolSummary argument: in its `properties`, or in those of a schema it composes
+ *  (allOf, anyOf, oneOf, at any depth), or behind a `$ref` to its own `$defs` or `definitions`. A `$ref` it cannot read
+ *  (another document's, or a def it lacks) may, so it counts; a `$ref` that comes back to itself adds nothing. */
+export function declaresToolSummary(schema: unknown): boolean {
+  if (!isPlain(schema)) return false;
+  const root = schema;
+  const seen = new Set<unknown>();
+  const walk = (node: unknown): boolean => {
+    if (!isPlain(node) || seen.has(node)) return false;
+    seen.add(node);
+    if (isPlain(node.properties) && Object.hasOwn(node.properties, "toolSummary")) return true;
+    if (typeof node.$ref === "string") {
+      const local = /^#\/(\$defs|definitions)\/([^/]+)$/.exec(node.$ref);
+      const defs = local ? root[local[1]!] : undefined;
+      const target = local && isPlain(defs) && Object.hasOwn(defs, local[2]!) ? defs[local[2]!] : undefined;
+      if (target === undefined) return true;
+      if (walk(target)) return true;
+    }
+    return (["allOf", "anyOf", "oneOf"] as const).some((key) => Array.isArray(node[key]) && (node[key] as unknown[]).some(walk));
+  };
+  return walk(schema);
+}
+
 /** The input an agent's tool_call for our tool reports, as the MCP call carries it: agy reports its own `toolSummary` (a
  *  line of its model's about the call) beside the call's arguments, which the MCP call never carries, so under agy's
  *  recipe (`form` agy) a call it names in its own form, of our server `server`, is matched without it; unless our
- *  tool's schema declares a toolSummary argument (`declared`, the arguments it names), which is then the call's own.
+ *  tool's schema declares a toolSummary argument (`declared`, declaresToolSummary), which is then the call's own.
  *  Any other input is as reported. */
-export function announcedInput(update: { title?: string | null; name?: string | null }, input: unknown, form?: CallNames, server: string = MCP_SERVER, declared?: ReadonlySet<string>): unknown {
-  if (form !== "agy" || declared?.has("toolSummary")) return input;
+export function announcedInput(update: { title?: string | null; name?: string | null }, input: unknown, form?: CallNames, server: string = MCP_SERVER, declared?: boolean): unknown {
+  if (form !== "agy" || declared) return input;
   const agys = [update.name, update.title].some((said) => typeof said === "string" && agyNamed(said, server) !== undefined);
   if (!agys || !isPlain(input) || typeof input.toolSummary !== "string") return input;
   const { toolSummary: _summary, ...args } = input;

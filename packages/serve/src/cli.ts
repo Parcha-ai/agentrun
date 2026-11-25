@@ -254,7 +254,8 @@ if (process.argv[2] === "install-harness") {
     const [{ ArchiveInstallFailed }, { installRecipe, loadRecipe, recipeCheckLine, RecipeRefused, recipeSaid }] = await Promise.all([import("./harness-archive.js"), import("./harness-recipe.js")]);
     const data = resolve(values.data ?? defaultData());
     try {
-      const { recipe, file, bundled } = loadRecipe(shipped ?? values.recipe!);
+      // A shipped recipe by the name given, never by its path: a file of that name in the directory refuses it (resolveRecipe).
+      const { recipe, file, bundled } = loadRecipe(shipped ? positionals[0]! : values.recipe!);
       console.error(recipeSaid(recipe.label, file, bundled));
       const said = { downloaded: "the archive is downloaded and its sha256 matches the recipe", unpacked: "unpacked", verified: "its files are checked" } as const;
       const { version, installed, binary, pinnedBy } = await installRecipe(recipe, file, data, { onStep: (step) => console.error(`${recipe.label}: ${said[step]}`) });

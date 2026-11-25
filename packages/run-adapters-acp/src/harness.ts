@@ -22,7 +22,7 @@ import type { GateAnswer, GateCall } from "@parcha/agentrun-kernel";
 import type { DriveContext, HostTool, SessionState } from "@parcha/agentrun-kernel/kernel";
 import { askGate, journalRecords, NativeJournal, openTurn, placeSubmissions, recoveryNote, resumeUnstartedCalls, toolBridge, toolKey, transcriptOf, type DanglingCall, type ToolBridge, type TranscriptEntry } from "@parcha/agentrun-kernel/process";
 import type { ParentWatch } from "@parcha/agentrun-kernel/host";
-import { announcedInput, CallIds, mcpServerName, ourTool, permissionCallId } from "./calls.js";
+import { announcedInput, CallIds, declaresToolSummary, mcpServerName, ourTool, permissionCallId } from "./calls.js";
 import { ACP_CODES } from "./facts.js";
 import { homePath, type AcpRecipe } from "./recipe.js";
 import { restoreState, STATE_STREAM, StateMirror, type StateRecord } from "./state.js";
@@ -245,12 +245,6 @@ export function contextNote(state: SessionState): string | undefined {
   ].join("\n");
 }
 
-/** The arguments a tool's input schema names (its `properties`). */
-function argumentsOf(schema: unknown): ReadonlySet<string> {
-  const properties = typeof schema === "object" && schema !== null ? (schema as { properties?: unknown }).properties : undefined;
-  return new Set(typeof properties === "object" && properties !== null && !Array.isArray(properties) ? Object.keys(properties) : []);
-}
-
 /** The ACP harness. `control` is told of each drive call's stop hook while it runs. */
 export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveControl | undefined) => void) {
   const log = options.log ?? (() => {});
@@ -260,8 +254,8 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
   const names = new Set(listed.map((tool) => tool.name));
   /** The form the agent names a call of our tools in, by its recipe (ourTool). */
   const form = recipe.quirks?.callNames;
-  /** The arguments each tool's schema names (announcedInput keeps one it declares). */
-  const declared = new Map(listed.map((tool) => [tool.name, argumentsOf(tool.inputSchema)]));
+  /** Whether each tool's schema declares a toolSummary argument (announcedInput keeps it then). */
+  const declared = new Map(listed.map((tool) => [tool.name, declaresToolSummary(tool.inputSchema)]));
   let runtime: Runtime | undefined;
 
   /** The recipe's refusal `text` (the agent's stderr, an error it answered) says, as `<code>: <words>`; undefined when it
