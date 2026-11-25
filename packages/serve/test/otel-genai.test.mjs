@@ -699,6 +699,20 @@ test("an OTLP header value's URL, in every shape and with any hard character in 
   assert.deepEqual(missed.slice(0, 24), [], `every URL shape's user and password are held and cut alone, and passed, contact and ops are left (${missed.length} missed)`);
 });
 
+test("a quoted URL's short password, under the held lists' floor, is still cut from the [otel] line at any length, though a later pair holds an @", () => {
+  const userinfo = (name, secret) => [name, secret].join(":");
+  const [user, password] = [`ab${"12"}`, `cd${"34"}`];
+  const missed = [];
+  for (const [quoting, quote] of URL_QUOTES.filter(([, quote]) => quote)) {
+    for (const [place, put] of URL_PLACES) {
+      const env = { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Upstream=${put(`${quote}https://${userinfo(user, password)}@relay.invalid${quote}`)}` };
+      const otel = otlpHeaderCut(env)(`401 from relay: user ${user}, password ${password}; 2 spans passed, contact ops`);
+      if (otel !== "401 from relay: user [redacted], password [redacted]; 2 spans passed, contact ops") missed.push(`${quoting} URL ${place}: the [otel] cut shows ${otel}`);
+    }
+  }
+  assert.deepEqual(missed, [], "a quoted URL's user and password are read inside its quotes, so the [otel] cut takes them at any length");
+});
+
 test("a short OTLP header value is cut from the tracer's own error text, at any length; a standard header's value is left as it is", async (t) => {
   const short = `hc${"7"}x1`;
   const env = { ...ON, OTEL_EXPORTER_OTLP_HEADERS: `x-honeycomb-team=${short},Content-Type=application/json`, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `x-team=${short}` };
