@@ -266,8 +266,10 @@ own (under `agentrun-serve runner`) sends its trace to its runner, which exports
 sends as untrusted: every string is cut as a name the model wrote, a provider or host that loses its shape is dropped,
 and a request's or turn's end takes only a value the runner knows. Every OTLP header value is a secret
 the runner holds, at any length and under any name, an unknown one too, but the value of a `Content-Type`, `Accept`,
-`Content-Encoding` or `User-Agent` header. It is cut from the runner's logs and from what a run writes, as every held
-value of 8 characters or more is. Spans are sent in the background, so a run's end never waits on
+`Content-Encoding` or `User-Agent` header. The tracer's own `[otel]` lines, where an exporter's error may quote a header
+it sent, are cut of every such value at any length, a short one too. Everywhere else, the runner's logs and what a run
+writes, a held value is cut at 8 characters or more, a header value's as any other's: that floor is kept on purpose,
+since a needle of a few characters would cut ordinary text. Spans are sent in the background, so a run's end never waits on
 the collector; a server or runner that stops waits at most 3 s to send what is left, and a collector that is down
 costs one log line and the dropped spans. Unset, or with `OTEL_SDK_DISABLED=true`, no OpenTelemetry code loads and
 nothing is sent.

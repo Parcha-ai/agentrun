@@ -12,8 +12,8 @@
 //  - one trace per run: its id is the run id's hash, so every claim of a run (a resume, a takeover) is in one trace, and
 //    the sampler (always parent-based, its root's ratio from OTEL_TRACES_SAMPLER/_ARG) decides once per run, never
 //    splitting a run's spans;
-//  - an export that fails or throws is one log line (cut by the runner's redactor, which holds every OTLP header value),
-//    and its spans are dropped: never the run's failure. A run's end never waits on an export: the batch processor sends
+//  - an export that fails or throws is one log line (cut by the runner's redactor, which holds every OTLP header value,
+//    then of each header value at any length: saidOf), and its spans are dropped: never the run's failure. A run's end never waits on an export: the batch processor sends
 //    in the background, a run's process never flushes, and only the runner's close flushes once (flushTraces), for at
 //    most FLUSH_MS.
 import { createHash, randomBytes } from "node:crypto";
@@ -22,7 +22,7 @@ import type { Context, Span } from "@opentelemetry/api";
 import type { SpanExporter, TracerProvider } from "@opentelemetry/sdk-trace";
 import type { Ended, ModelUsage } from "@parcha/agentrun-kernel";
 import { runnerSecrets, secretRedactor } from "../runner/redact.js";
-import { keyValues } from "../secrets.js";
+import { keyValues, otlpHeaderCut } from "../secrets.js";
 import { agentAttributes, chatAttributes, spanName, toolAttributes, written, type RouteTrace, type TraceEvent, type TracedRun } from "./genai.js";
 
 /** The most the runner's closing flush waits for its spans' export. */
@@ -215,11 +215,13 @@ const serveVersion = (): string => (JSON.parse(readFileSync(new URL("../../packa
 
 /** The tracing's log (`given`, else the runner's console): each `[otel]` line cut first by the runner's redactor over
  *  `env` (runner/redact.ts runnerSecrets: its OTLP header values among them), since an exporter's error may quote a
- *  header it sent. */
+ *  header it sent, then of every OTLP header value at any length (secrets.ts otlpHeaderCut): the redactor cuts none
+ *  shorter than MIN_SECRET, and a tracing key may be. Every line of this module goes through here. */
 function saidOf(env: NodeJS.ProcessEnv, given?: (line: string) => void): (line: string) => void {
   const cut = secretRedactor(runnerSecrets(env));
+  const headers = otlpHeaderCut(env);
   const log = given ?? ((line: string) => console.warn(line));
-  return (line) => log(cut(line));
+  return (line) => log(headers(cut(line)));
 }
 
 async function made(env: NodeJS.ProcessEnv, test?: TracingTest): Promise<GenAiTracing> {

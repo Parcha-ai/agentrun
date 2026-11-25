@@ -257,12 +257,28 @@ export const otlpHeaderValues = (env: NodeJS.ProcessEnv): string[] =>
       return [...(sent ? [sent[1]] : []), part.slice(at + 1).trim()].flatMap((value) => [value, value.replace(/^Bearer(?:\s+|%20)/i, "")]);
     })).filter((value) => value.trim() !== "");
 
-/** `values` as a cut holds them: each MIN_SECRET long or more, whitespace aside (a shorter one matches too much text by
- *  chance to be refused), and every OTLP header value `env` names (otlpHeaderValues) at any length. */
+/** `values` as the held list keeps them: each MIN_SECRET long or more, whitespace aside (a shorter one matches too much
+ *  text by chance to be refused), and every OTLP header value `env` names (otlpHeaderValues) at any length. Every
+ *  redactor still cuts only a value of MIN_SECRET or more; a shorter header value is cut by otlpHeaderCut alone. */
 export const keptSecrets = (values: readonly string[], env: NodeJS.ProcessEnv): string[] => {
   const headers = new Set(otlpHeaderValues(env));
   return [...new Set([...values, ...headers])].filter((value) => headers.has(value) || value.replace(/\s+/g, "").length >= MIN_SECRET);
 };
+
+const CUT = "[redacted]";
+
+/** Text with every OTLP header value `env` names (otlpHeaderValues) put as "[redacted]", at any length: the one cut
+ *  without the MIN_SECRET floor. The tracer's own lines take it, after the runner's redactor (otel/tracer.ts saidOf),
+ *  since they are where a header value can show: an exporter's error may quote a header it sent, and a run's process
+ *  never holds one. Every other cut keeps the floor on purpose: a needle of a few characters in every redactor would cut
+ *  ordinary text everywhere. Each value is matched exactly as held, the longest first, so one inside another is cut
+ *  whole; a "[redacted]" already in the text is left whole. */
+export function otlpHeaderCut(env: NodeJS.ProcessEnv): (text: string) => string {
+  const values = [...new Set(otlpHeaderValues(env))].sort((a, b) => b.length - a.length);
+  if (!values.length) return (text) => text;
+  const needle = new RegExp([CUT, ...values].map((value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "g");
+  return (text) => (text ? text.replace(needle, () => CUT) : text);
+}
 
 /** Every header value of `credentials`: what a secret scan refuses. */
 export const mcpSecretValues = (credentials: Record<string, { headers?: Record<string, string> }>): string[] =>

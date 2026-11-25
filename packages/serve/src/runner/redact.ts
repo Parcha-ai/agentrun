@@ -28,7 +28,8 @@ export const keepText: Redact = withHeldValues((text) => text, () => []);
  *  secret- or password-named value (secrets.ts hostSecrets), and the value `env` itself gives each launcher name (a
  *  runner's key comes in its env, which hostSecrets reads only for names off the launcher's list), with any `extra` a
  *  caller holds. One shorter than MIN_SECRET, whitespace aside, matches too much text by chance and is left out, but an
- *  OTLP header value, held at any length (secrets.ts keptSecrets). */
+ *  OTLP header value, held at any length (secrets.ts keptSecrets). This module's redactors still cut none shorter than
+ *  MIN_SECRET; the tracer's own lines cut a short header value too (secrets.ts otlpHeaderCut). */
 export function runnerSecrets(env: NodeJS.ProcessEnv, extra: readonly string[] = []): string[] {
   const own = SECRET_NAMES.map((name) => env[name] ?? "");
   return keptSecrets([...hostSecrets(env), ...own, ...extra], env);
