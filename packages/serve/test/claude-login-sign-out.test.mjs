@@ -329,6 +329,27 @@ test("a sign-out where AgentRun's own login folder became a link after the turn-
   assert.equal(r.rows.has(CLAUDE_LOGIN_SETTING), false, "the mode is off");
 });
 
+test("a sign-out where the login folder is swapped for a link while the CLI signs out removes nothing outside the data folder: the link goes, what it leads to and the lock beside that are left", async (t) => {
+  const elsewhere = await elsewhereFolder(t);
+  let folder;
+  // The CLI's sign-out awaits; the folder becomes a link to a folder elsewhere before it answers.
+  const r = await rig(t, {
+    logout: async () => {
+      rmSync(folder, { recursive: true, force: true });
+      symlinkSync(elsewhere, folder);
+      return true;
+    },
+  });
+  folder = signedInAt(r.data);
+  const out = await login.signOutClaudeLogin(r.deps);
+  assert.equal(r.logouts.length, 1, "the CLI's sign-out ran on the folder, before the swap");
+  assert.equal(lstatSync(folder, { throwIfNoEntry: false }), undefined, "the link is removed");
+  assert.ok(existsSync(join(elsewhere, CREDENTIALS)), "what the link led to is left as it was");
+  assert.ok(existsSync(`${elsewhere}.lock`), "the lock beside what the link led to is left: the older lock removed is the one in the data folder");
+  assert.equal(r.rows.has(CLAUDE_LOGIN_SETTING), false, "the mode is off");
+  assert.equal(out.login.state, "off");
+});
+
 test("where runs have users of their own, a run claimed on AgentRun's own login before Sign out is refused at its start, in the fixed words of a login changed since its claim: never handed the signed-out login's reader nor left to a model key", async (t) => {
   const host = await import("../dist/runner/run-child-host.js");
   const { heldRedactor, keepText } = await import("../dist/runner/redact.js");
