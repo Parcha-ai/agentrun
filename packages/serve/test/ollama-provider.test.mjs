@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fakeOllama, SYNTH_MODELS } from "./fixtures/fake-ollama.mjs";
-import { freePort } from "./fixtures/ports.mjs";
+import { ephemeralLow, freePort } from "./fixtures/ports.mjs";
 import { messagesModule, MESSAGES_MODULE } from "./fixtures/messages-module.mjs";
 import { agent, follow, journalOf, scratch, serve, withEnv } from "./support.mjs";
 
@@ -62,6 +62,28 @@ test("a down address listed first leaves the next port-0 fake Ollama its own lis
   const ollama = await fakeOllama(t);
   const listed = (await providerModels({ OLLAMA_HOST: ollama.host })).getModels("ollama").map((model) => model.id);
   assert.deepEqual(listed, [PLAIN, TOOLS], "the fake's own chat models, never a down address's kept []");
+  assert.equal(ollama.got.tags, 1, "the fake was asked");
+});
+
+test("a fake Ollama asked for no port takes one below the ephemeral range that this file never handed out before, so no listen(0) and no earlier fake shares its address", async (t) => {
+  const low = ephemeralLow();
+  const down = await freePort();
+  const ports = [];
+  for (let i = 0; i < 5; i++) {
+    await t.test(`fake ${i}`, async (t2) => ports.push(Number((await fakeOllama(t2)).host.split(":").pop())));
+  }
+  for (const port of ports) assert.ok(port < low, `port ${port} lies below the ephemeral range, from ${low}`);
+  assert.equal(new Set([down, ...ports]).size, ports.length + 1, `every port is new to this file: ${[down, ...ports].join(", ")}`);
+});
+
+test("a fake Ollama with no models, listed and closed, leaves the next fake its own listing: the next fake's models, asked of it", async (t) => {
+  await t.test("the empty fake", async (t2) => {
+    const empty = await fakeOllama(t2, { models: [] });
+    assert.deepEqual((await providerModels({ OLLAMA_HOST: empty.host })).getModels("ollama"), [], "the empty fake lists no model");
+  });
+  const ollama = await fakeOllama(t);
+  const listed = (await providerModels({ OLLAMA_HOST: ollama.host })).getModels("ollama").map((model) => model.id);
+  assert.deepEqual(listed, [PLAIN, TOOLS], "the fake's own chat models, never a closed fake's kept []");
   assert.equal(ollama.got.tags, 1, "the fake was asked");
 });
 
