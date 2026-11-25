@@ -929,7 +929,8 @@ const viewSpec = (when: (has: Families) => boolean, decoders: readonly Decoder[]
  *    is read only where it can read otherwise than the one-family views: the text has a character reference, an escaped
  *    quote, or both percent-encoding and JSON's escapes (and, with "+", any of JSON's escapes);
  *  - for a text with a quote in it, its JSON strings joined (joinOf), each string's contents read again for the strings
- *    written in it, decoded as the stacked view;
+ *    written in it, decoded as the stacked view; and the same with "+" as a space, where the text has a "+" (a "+" after
+ *    a held value's head with a character reference in it, or in JSON written in a string);
  *  - for a text with a quote in it, its JSON strings joined whole, read as the base's check of a web call's strings read
  *    them (decoded as JSON.parse decodes them, then through the one-family views): one level of JSON's escapes, an
  *    escaped quote a quote, so a held value with a quote of its own reads whole across two strings; the same
@@ -947,6 +948,7 @@ const VIEWS: readonly ViewSpec[] = [
   viewSpec((has) => has.entity || has.quoteEscape || (has.percent && has.escape), [PERCENT, JSON_ESCAPE, ENTITY]),
   viewSpec((has) => has.plus && (has.entity || has.escape), [PERCENT, PLUS, JSON_ESCAPE, ENTITY]),
   viewSpec((has) => has.quote, [PERCENT, JSON_ESCAPE, ENTITY], "nested"),
+  viewSpec((has) => has.quote && has.plus, [PERCENT, PLUS, JSON_ESCAPE, ENTITY], "nested"),
   viewSpec((has) => has.quote, [JSON_ESCAPE_ONCE], "strings"),
   viewSpec((has) => has.quote && has.percent, [PERCENT, JSON_ESCAPE_ONCE], "strings"),
   viewSpec((has) => has.quote && has.plus, [PERCENT, PLUS, JSON_ESCAPE_ONCE], "strings"),
