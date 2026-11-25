@@ -251,7 +251,7 @@ export interface ClaimComputer {
   readonly off?: true;
   readonly hold?: RunHold;
   readonly held?: HeldComputer;
-  /** The computer is a new one that replaced an earlier claim's (Replaced): what was on that one is gone. Absent: the
+  /** The computer is a new one that replaced an earlier claim's (Replaced): nothing on that one comes with it. Absent: the
    *  run's first, or the agent's own or a paired computer, which are the same computer at every claim. */
   readonly replaced?: Replaced;
   /** The claim made the run a computer of its own, of this kind: never the agent's own (a persistent setting), a paired

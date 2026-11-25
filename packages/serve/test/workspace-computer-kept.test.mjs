@@ -736,7 +736,7 @@ test("a park never writes over a kept row pinned to another runner still there: 
   // runner-a there: runner-b gave its row back marked ending, said so, and its park leaves the row so.
   const there = await reclaimed(refusing);
   assert.deepEqual(there.resumed.replaced, { kind: "sandbox", folderKept: false, elsewhere: true });
-  assert.equal(computerReadyWords(there.said[0]), "The sandbox is ready: Linux (amd64), from Docker. The sandbox wasn't kept: another runner kept it and couldn't take the run, so that runner ends it. It's a new sandbox: the one before is gone, with what was on it.");
+  assert.equal(computerReadyWords(there.said[0]), "The sandbox is ready: Linux (amd64), from Docker. The sandbox wasn't kept: another runner kept it and couldn't take the run, so that runner ends it. It's a new sandbox; nothing on the one before comes with it.");
   assert.equal(JSON.stringify(await there.one.store.settings.get(key)), JSON.stringify({ ...there.written, ending: true }), "runner-a's row given back, marked ending");
   assert.equal(await there.resumed.park("approval"), false, "runner-b's park keeps nothing");
   assert.equal(JSON.stringify(await there.one.store.settings.get(key)), JSON.stringify({ ...there.written, ending: true }), "runner-a's row stands");
