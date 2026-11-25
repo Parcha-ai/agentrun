@@ -446,6 +446,24 @@ test(`an upload of more than SHARE_STRINGS (${SHARE_STRINGS}) distinct strings i
   await assert.rejects(screenShare(clean, [], undefined, strings.size - 1), (error) => error.code === "payload_too_large" && error.extra.details.strings === strings.size);
 });
 
+test("a body that is not UTF-8 is 400 and stores nothing, even when its sha256 matches the text a lenient read makes of it; a byte-order mark is refused, not dropped", async (t) => {
+  const s = await shareHost(t);
+  const doc = JSON.parse(await bundleOf());
+  doc.run.title = `Multiply two numbers \uFFFD ${nonce()}`;
+  const text = resigned(doc);
+  const bytes = Buffer.from(text, "utf8");
+  const at = bytes.indexOf(Buffer.from("\uFFFD", "utf8"));
+  // One invalid byte where the replacement character was: a lenient read makes exactly the text whose digest is signed.
+  const sent = Buffer.concat([bytes.subarray(0, at), Buffer.from([0xff]), bytes.subarray(at + 3)]);
+  assert.equal(sent.toString("utf8"), text);
+  const res = await upload(s, sent);
+  assert.equal(res.status, 400, res.text);
+  assert.match(res.json.error.message, /not UTF-8/);
+  const bom = await upload(s, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(await bundleOf())]));
+  assert.equal(bom.status, 400, bom.text);
+  assert.deepEqual(sharesIn(s.shares), [], "nothing stored");
+});
+
 test("the sha256 is checked: a tampered digest, a file whose digest or size is wrong, or a body that is not canonical is 400 and stores nothing", async (t) => {
   const s = await shareHost(t);
   const body = await bundleOf();
