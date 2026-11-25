@@ -68,6 +68,10 @@ async function batchTurn(t, batch) {
   t.after(() => provider.close());
   const ended = [];
   const events = [];
+  // The fake instant the harness took the message's message_stop. The fake clock moves while real work (the in-memory
+  // MCP calls, the journal) is still settling, so on a loaded machine the harness can hear the stop a step or more after
+  // the stream yielded it; a refusal is due BARRIER_MS after the harness heard it, never before the message ended.
+  let stopTakenAt;
   const adapter = claudeAgentAdapter({
     model: 'claude-test',
     provider: { origin: provider.url, credential: () => 'provider-secret' },
@@ -78,6 +82,7 @@ async function batchTurn(t, batch) {
       script: [`batch ${JSON.stringify({ tool: 'submit', args: { q: 'x' }, ...batch })}`],
       sleep: clock.sleep,
       onCallEnd: (call) => ended.push({ ...call, at: clock.now() }),
+      onMessageEnd: () => (stopTakenAt = clock.now()),
     }),
   });
   const ran = [];
@@ -94,7 +99,7 @@ async function batchTurn(t, batch) {
     turn.catch(() => {});
     while (end === undefined && clock.now() < LIMIT_MS) await clock.advance(STEP_MS);
     await turn;
-    return { end, ran, events, ended: ended.sort((a, b) => a.index - b.index) };
+    return { end, ran, events, stopTakenAt, ended: ended.sort((a, b) => a.index - b.index) };
   } finally {
     await session.close();
   }
@@ -110,13 +115,14 @@ test('a call made more than the barrier before its message ends runs: 12 blocks 
 
 test("a call whose line never reaches the log is still refused, the barrier's wait after its message ended", async (t) => {
   // Block 1's line is lost; the message's last block ends at 12 x 1.3 s.
-  const { end, ran, ended } = await batchTurn(t, { n: 12, gapMs: 1300, lost: [1] });
+  const { end, ran, ended, stopTakenAt } = await batchTurn(t, { n: 12, gapMs: 1300, lost: [1] });
   assert.equal(end.status, 'completed');
   const first = ended.find((call) => call.index === 1);
   assert.equal(first.isError, true);
   assert.match(first.text, REFUSED);
   const messageEnd = 12 * 1300;
-  assert.ok(first.at >= messageEnd + BARRIER_MS && first.at <= messageEnd + BARRIER_MS + STEP_MS, `refused at ${first.at} ms, ${messageEnd + BARRIER_MS} ms expected`);
+  assert.ok(first.at >= messageEnd + BARRIER_MS, `refused at ${first.at} ms, before its message ended plus the barrier (${messageEnd + BARRIER_MS} ms)`);
+  assert.ok(first.at <= stopTakenAt + BARRIER_MS + STEP_MS, `refused at ${first.at} ms, more than the barrier after the harness heard the message end (${stopTakenAt} ms)`);
   assert.deepEqual(ended.filter((call) => call.index !== 1).map((call) => call.isError), Array(11).fill(false), 'the other calls ran');
   assert.equal(ran.length, 11);
 });
@@ -128,7 +134,7 @@ test('a short message of one call behaves as before: it runs, and a lost line is
   const lost = await batchTurn(t, { n: 1, gapMs: 200, lost: [1] });
   assert.equal(lost.ended[0].isError, true);
   assert.match(lost.ended[0].text, REFUSED);
-  assert.ok(lost.ended[0].at >= 200 + BARRIER_MS && lost.ended[0].at <= 200 + BARRIER_MS + STEP_MS, `refused at ${lost.ended[0].at} ms`);
+  assert.ok(lost.ended[0].at >= 200 + BARRIER_MS && lost.ended[0].at <= lost.stopTakenAt + BARRIER_MS + STEP_MS, `refused at ${lost.ended[0].at} ms, the stop heard at ${lost.stopTakenAt} ms`);
   assert.equal(lost.ran.length, 0);
 });
 

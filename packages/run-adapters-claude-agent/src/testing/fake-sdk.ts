@@ -95,6 +95,8 @@ export interface FakeSdkOptions {
   sleep?: (ms: number) => Promise<void>;
   /** A `batch` call's handler returned: its block's place in the message (from 1), and what the tool server answered. */
   onCallEnd?: (call: { id: string; index: number; isError: boolean; text: string }) => void;
+  /** A `batch` message's `message_stop` was taken: the consumer asked for what follows it, so it has heard the stop. */
+  onMessageEnd?: () => void;
 }
 
 /**
@@ -498,6 +500,7 @@ export function fakeSdk(fake: FakeSdkOptions = {}): FakeSdk {
             }
             yield event({ type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { output_tokens: 12 } });
             yield event({ type: 'message_stop' });
+            fake.onMessageEnd?.();
             await mirror(lines);
             const results = await Promise.all(running);
             if (signal?.aborted) return;
