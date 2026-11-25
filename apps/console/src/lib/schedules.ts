@@ -39,11 +39,17 @@ const fieldShows = (x: unknown) => scalar(x) || (Array.isArray(x) && x.every(sca
 export const inputText = (input: Record<string, unknown>): ParameterText =>
   Object.fromEntries(Object.entries(input).flatMap(([k, v]): [string, string][] => (k === "content" || !fieldShows(v) ? [] : [[k, Array.isArray(v) ? v.map(String).join("\n") : String(v)]])));
 
+/** `input` with the run's message, "" where it has none. A trigger's event (a webhook's body, a feed's item, an email)
+ *  and the line saying what fired the run are added to input.content, and only when that is text (serve's triggers.ts),
+ *  so a run whose input the form made without a message would start without its event. */
+const withMessage = (input: Record<string, unknown>): Record<string, unknown> => (Object.hasOwn(input, "content") ? input : { ...input, content: "" });
+
 /** The input a trigger's run is given, or what is wrong with it under `target.input`: the message alone; the message
  *  (optional when the agent's schema requires another field) and the typed fields; or, for a schema the fields can't
  *  show, the whole input as JSON, an object. An edited trigger's input starts as read, and only a field or the message
  *  whose text was changed is taken from the form: a key no field has, a value a field can't show, and a field the
- *  schema now requires but the input never had all go as stored until edited, so a rename never changes the input. */
+ *  schema now requires but the input never had all go as stored until edited, so a rename never changes the input. An
+ *  input the form makes or edits carries the message, "" when it is left blank (withMessage). */
 export function targetInputOf(d: { content: string } & InputDraft, issues: Record<string, string>): Record<string, unknown> {
   const read = d.inputRead ?? {};
   const shape = d.shape;
@@ -51,24 +57,25 @@ export function targetInputOf(d: { content: string } & InputDraft, issues: Recor
     const text = d.json ?? shape.example.text;
     let input: unknown;
     try { input = JSON.parse(text); } catch { input = undefined; }
-    if (isRecord(input)) return input;
+    if (isRecord(input)) return d.inputRead && text === JSON.stringify(d.inputRead, null, 2) ? input : withMessage(input);
     issues["target.input"] = text.trim() ? "The agent's input is a JSON object: this is not." : "Give the agent's input, as JSON.";
     return {};
   }
   if (shape?.kind === "fields") {
     if (shape.form.contentRequired && !d.content.trim()) issues["target.input"] = "Say what each run is asked.";
     const typed = d.values ?? fieldStartText(shape.form);
-    const fromForm = inputOf(shape.form, d.content, typed);
+    const fromForm = withMessage(inputOf(shape.form, d.content, typed));
     if (!d.inputRead) return fromForm;
     // A value rebuilt from a field's text can differ from the one stored (a list's text is trimmed, its blank items
     // dropped: ["a\nb", ""] would go back as ["a", "b"]), so only a field whose text changed is rebuilt. A field's
     // text as read is "" for a value it can't show or none.
     const asRead = inputText(read);
     const input: Record<string, unknown> = { ...read };
-    const take = (k: string) => { if (Object.hasOwn(fromForm, k)) input[k] = fromForm[k]; else delete input[k]; };
+    let edited = false;
+    const take = (k: string) => { edited = true; if (Object.hasOwn(fromForm, k)) input[k] = fromForm[k]; else delete input[k]; };
     for (const [k] of shape.form.fields) if ((typed[k] ?? "") !== (asRead[k] ?? "")) take(k);
     if (d.content !== (typeof read.content === "string" ? read.content : "")) take("content");
-    return input;
+    return edited ? withMessage(input) : input;
   }
   if (!d.content.trim()) issues["target.input"] = "Say what each run is asked.";
   return { ...read, content: d.content };

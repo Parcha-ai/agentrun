@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ClientError } from "./client";
 import { agentInputOf } from "./inputForm";
-import { bodyOf, capWords, disabledWords, type Draft, draftOf, type Schedule, emptyDraft, firingWords, instantOf, issuesOf, patchOf, scheduleLine, span, utcWhen, wallOf } from "./schedules";
+import { bodyOf, capWords, disabledWords, type Draft, draftOf, type Schedule, emptyDraft, emptyWebhook, firingWords, instantOf, issuesOf, patchOf, scheduleLine, span, utcWhen, wallOf, webhookBodyOf } from "./schedules";
 import type { Firing } from "./v2";
 
 const draft = (over: Partial<Draft>): Draft => ({ ...emptyDraft(), agentId: "triage", content: "Triage last night's issues.", maxCost: "2", ...over });
@@ -255,7 +255,7 @@ describe("a schedule's typed input", () => {
   it("leaves out a field emptied in the form, and keeps what no field shows", () => {
     const t = typed({ company: "Acme GmbH", note: "first", extra: { deep: 1 } });
     const d = draftOf(t);
-    expect(patchOf(t, bodyOf({ ...d, shape, values: { ...d.values, note: "" } }).body!).target?.input).toEqual({ company: "Acme GmbH", extra: { deep: 1 } });
+    expect(patchOf(t, bodyOf({ ...d, shape, values: { ...d.values, note: "" } }).body!).target?.input).toEqual({ company: "Acme GmbH", extra: { deep: 1 }, content: "" });
   });
   // A list's text is one item a line, trimmed, blank items dropped, and an empty optional value is left out: an input
   // rebuilt from fields left alone could differ from the one stored, so a rename alone changed it.
@@ -264,7 +264,7 @@ describe("a schedule's typed input", () => {
     const d = draftOf(t);
     expect(patchOf(t, bodyOf({ ...d, shape, name: "renamed" }).body!)).toEqual({ name: "renamed" });
     // Another field edited: the ones left alone still go as stored.
-    expect(patchOf(t, bodyOf({ ...d, shape, values: { ...d.values, company: "Beta AG" } }).body!).target?.input).toEqual({ company: "Beta AG", note: "", topics: ["a\nb", " c ", ""] });
+    expect(patchOf(t, bodyOf({ ...d, shape, values: { ...d.values, company: "Beta AG" } }).body!).target?.input).toEqual({ company: "Beta AG", note: "", topics: ["a\nb", " c ", ""], content: "" });
   });
   // A stored value its field can't show (an object where the schema now asks for text) is no field's text, so a
   // required field rebuilt from the form read as "", [] or false and replaced it: a rename alone changed the input.
@@ -273,7 +273,7 @@ describe("a schedule's typed input", () => {
     const t = typed({ company: { name: "Acme GmbH" }, topics: [{ id: 1 }], urgent: { level: 2 } });
     const d = draftOf(t);
     expect(patchOf(t, bodyOf({ ...d, shape: strict, name: "renamed" }).body!)).toEqual({ name: "renamed" });
-    expect(patchOf(t, bodyOf({ ...d, shape: strict, values: { ...d.values, company: "Beta AG" } }).body!).target?.input).toEqual({ company: "Beta AG", topics: [{ id: 1 }], urgent: { level: 2 } });
+    expect(patchOf(t, bodyOf({ ...d, shape: strict, values: { ...d.values, company: "Beta AG" } }).body!).target?.input).toEqual({ company: "Beta AG", topics: [{ id: 1 }], urgent: { level: 2 }, content: "" });
   });
   // A key no field has, with a value a field could show ("external"), is read into the draft's text too: it stays as
   // stored whatever that text says, since no field sends it.
@@ -281,7 +281,7 @@ describe("a schedule's typed input", () => {
     const t = typed({ company: "Acme GmbH", reference: "external", count: 3, active: true });
     const d = draftOf(t);
     expect(patchOf(t, bodyOf({ ...d, shape, name: "renamed" }).body!)).toEqual({ name: "renamed" });
-    expect(patchOf(t, bodyOf({ ...d, shape, values: { ...d.values, company: "Beta AG" } }).body!).target?.input).toEqual({ company: "Beta AG", reference: "external", count: 3, active: true });
+    expect(patchOf(t, bodyOf({ ...d, shape, values: { ...d.values, company: "Beta AG" } }).body!).target?.input).toEqual({ company: "Beta AG", reference: "external", count: 3, active: true, content: "" });
   });
   // The agent's schema can come to require a field its stored input never had: a rename that edits no field must not
   // fill that field in (a required text field read as "").
@@ -289,12 +289,22 @@ describe("a schedule's typed input", () => {
     const t = typed({ content: "Check." });
     expect(patchOf(t, bodyOf({ ...draftOf(t), shape, name: "renamed" }).body!)).toEqual({ name: "renamed" });
   });
+  // serve adds a trigger's event and its line to input.content only when it is text: a blank message is sent as "".
+  it("sends a blank message as \"\", so a trigger's event still reaches its run", () => {
+    expect(webhookBodyOf({ ...emptyWebhook(), agentId: "triage", content: "", maxCost: "2", shape, values: { company: "Acme GmbH" } }).body?.target?.input).toEqual({ content: "", company: "Acme GmbH" });
+    const json = agentInputOf({ type: "object", properties: { filters: { type: "object" } } });
+    expect(bodyOf({ ...draft({ cron: "30 1 * * *" }), shape: json, json: '{"filters": {}}' }).body?.target?.input).toEqual({ filters: {}, content: "" });
+    const t = typed({ company: "Acme GmbH" });
+    expect(patchOf(t, bodyOf({ ...draftOf(t), shape, values: { ...draftOf(t).values, company: "Beta AG" } }).body!).target?.input).toEqual({ company: "Beta AG", content: "" });
+    const m = typed({ content: "Check.", company: "Acme GmbH" });
+    expect(patchOf(m, bodyOf({ ...draftOf(m), shape, content: "" }).body!).target?.input).toEqual({ content: "", company: "Acme GmbH" });
+  });
   it("sends an edited message beside fields left alone", () => {
     const t = typed({ content: "Check.", company: "Acme GmbH" });
     expect(patchOf(t, bodyOf({ ...draftOf(t), shape, content: "Recheck." }).body!).target?.input).toEqual({ content: "Recheck.", company: "Acme GmbH" });
   });
   it("needs no message when the schema requires another field, and says a whole input that is no JSON object", () => {
-    expect(bodyOf({ ...draft({ content: "", cron: "30 1 * * *" }), shape, values: { company: "Acme GmbH" } }).body?.target?.input).toEqual({ company: "Acme GmbH" });
+    expect(bodyOf({ ...draft({ content: "", cron: "30 1 * * *" }), shape, values: { company: "Acme GmbH" } }).body?.target?.input).toEqual({ content: "", company: "Acme GmbH" });
     const json = agentInputOf({ type: "object", properties: { filters: { type: "object" } } });
     expect(bodyOf({ ...draft({ cron: "30 1 * * *" }), shape: json, json: "[1]" }).issues).toEqual({ "target.input": "The agent's input is a JSON object: this is not." });
   });

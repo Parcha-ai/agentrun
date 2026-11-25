@@ -898,7 +898,7 @@ describe("a trigger's typed input and its agent picker", () => {
     await n.type(box, '{"filters": {"risk": "high"}}');
     await n.set("maxCost", "2");
     await n.click(/^Create schedule$/);
-    expect((calls.find((c) => c.method === "POST")!.body as { target: { input: unknown } }).target.input).toEqual({ filters: { risk: "high" } });
+    expect((calls.find((c) => c.method === "POST")!.body as { target: { input: unknown } }).target.input).toEqual({ filters: { risk: "high" }, content: "" });
     act(() => root?.unmount()); document.body.innerHTML = "";
     const made: Trigger = { ...NIGHTLY, target: { kind: "start_run", agent_id: "filters", input: { filters: { risk: "high" }, content: "Look." }, max_cost_usd: 2 } };
     const e = server({ triggers: [made], agents });
