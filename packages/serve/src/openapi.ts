@@ -1370,7 +1370,7 @@ const RUN_PATH: Record<string, Json> = {
   },
   first_choice: {
     oneOf: [{ enum: [...FIRST_REASONS] }, { type: "null" }],
-    description: "Why the platform ran a learned workflow first on the run's last claim, or why not: `served`; `replay`, a replay run serves the workflow it replays; `replay_missing`; `none_laid`, the agent learns no workflow (or its run is not agentic); `off`, its launch set `workflow_first: false`; `none_fit`, no workflow takes its input; `many_fit`, more than one does; `not_promoted`, the one that does is not checked to serve yet; `champion_misfit`, the revision serving in its place does not take the input; `many_champions`; `cost_stop`, the money rule stopped it; `held`, a check refused the claim's workflow. Null on a run whose end recorded none (one that does not learn, or an SDK or native run).",
+    description: "Why the platform ran a learned workflow first on the run's last claim, or why not: `served`; `replay`, a replay run serves the workflow it replays; `replay_missing`; `none_laid`, the agent learns no workflow (or its run is not agentic); `off`, its launch set `workflow_first: false`; `none_fit`, no workflow takes its input; `many_fit`, more than one does; `not_promoted`, the one that does is not checked to serve yet; `champion_misfit`, the revision serving in its place does not take the input; `many_champions`; `cost_stop`, the money rule stopped it; `past_unread`, the money rule could not read the agent's past runs, so nothing ran first (it fails closed); `held`, a check refused the claim's workflow. Null on a run whose end recorded none (one that does not learn, or an SDK or native run).",
     "x-agentrun-serve": "path/1",
   },
 };

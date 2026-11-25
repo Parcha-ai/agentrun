@@ -20,7 +20,8 @@
 // first: the agent takes the run, the run's journal keeps why with the two numbers (WORKFLOW_FIRST, outcome
 // needs_revision), and the agent's cost per run shows it stopped. The stop asks for no compile. A new revision of it (a
 // new digest: one its hold asked, or its owner's) serves again from zero. Fewer than
-// COST_WINDOW served runs, or no by-hand cost at all (said in the log): it serves. Every input is the run record's path
+// COST_WINDOW served runs, or no by-hand cost at all (said in the log): it serves. Past runs it can't read: it fails
+// closed, the agent takes the run (said in the log). Every input is the run record's path
 // (metrics.path, one classifier: store-reads/learning.ts runPathOverStore). The rule catches a workflow that costs more
 // than doing the job by hand; it does not catch one that answers wrong with confidence. The spec builders
 // (adapter-run-spec.ts, cli-run-spec.ts) choose here, once per claim; the adapter loop serves it (adapter-loop.ts, before
@@ -92,8 +93,6 @@ type Mean = { readonly runs: number; readonly mean_usd: number };
  *  mean job's own $ of the ones on the `agent` path, learning left out) with the by-hand runs it left out for an unknown
  *  cost (`by_hand_unknown`). */
 export type PastRuns = { readonly runs: readonly PastRun[]; readonly by_hand: Mean | null; readonly by_hand_unknown: number };
-/** No runs read: nothing to stop. */
-export const NO_PAST_RUNS: PastRuns = { runs: [], by_hand: null, by_hand_unknown: 0 };
 /** How many of the agent's newest runs on no named disk the money rule reads, both sides (store-reads/learning.ts
  *  pastRunsOf): a launch's read is bounded whatever the agent's history, and the cost page reads the same window. */
 export const PAST_RUNS = 500;
@@ -158,8 +157,9 @@ export function workflowCostsOf(past: PastRuns): { workflow: string; digest: str
  *  `none_fit`, no laid workflow (nor a champion in place of one) takes its input; `many_fit`, more than one laid
  *  workflow does; `not_promoted`, the one that does is not promoted, nor a champion of it; `champion_misfit`, its
  *  champion does not take the input; `many_champions`, more than one champion does; `cost_stop`, the money rule
- *  stopped it (costLineOf); `held`, a check refused the claim's workflow and nothing serves this claim. */
-export const FIRST_REASONS = ["served", "replay", "replay_missing", "none_laid", "off", "none_fit", "many_fit", "not_promoted", "champion_misfit", "many_champions", "cost_stop", "held"] as const;
+ *  stopped it (costLineOf); `past_unread`, the money rule could not read the agent's past runs, and fails closed: the
+ *  agent takes the run; `held`, a check refused the claim's workflow and nothing serves this claim. */
+export const FIRST_REASONS = ["served", "replay", "replay_missing", "none_laid", "off", "none_fit", "many_fit", "not_promoted", "champion_misfit", "many_champions", "cost_stop", "past_unread", "held"] as const;
 export type FirstReason = (typeof FIRST_REASONS)[number];
 
 /** What firstChoice chose: the workflow the run serves first, or the one the money rule stopped (the run asks for its
@@ -244,8 +244,8 @@ export async function workflowFirstOf(kind: string, workflows: readonly LearnedW
     money: past !== undefined,
   };
   // Each fact firstChoice asks for, read here and handed back to it: the promotion's verdict (which settles the laid
-  // digest's checks: runner/promotion.ts promotionGate), the champions, the agent's past runs. A read that fails stops
-  // nothing: the run is served unchecked, and the log says so.
+  // digest's checks: runner/promotion.ts promotionGate), the champions, the agent's past runs. Past runs it can't read
+  // fail closed (firstChoice's past_unread): the agent takes the run, and the log says why.
   for (;;) {
     const step = firstChoice(facts);
     if (!("ask" in step)) {
@@ -292,7 +292,8 @@ export type FirstChosen = FirstChoice & { readonly said: readonly string[] };
  *  workflows, its launch does not force the agent path, and exactly one of them fits its input; then its promotion's
  *  verdict (runner/promotion.ts: a new digest serves only once its replay on the agent's graded inputs clears the bar,
  *  learn/promote.ts, its champion serving meanwhile when it fits the input too, `champion`; none leaves the run to the
- *  agent), then costLineOf over the agent's runs at the digest that serves. When none of them fits, the revisions allowed
+ *  agent), then costLineOf over the agent's runs at the digest that serves (runs it can't read: none serves,
+ *  `past_unread`). When none of them fits, the revisions allowed
  *  to serve in their place are asked (`champions`: a champion whose revision on the folder changed its input, a new
  *  required field say): exactly one champion that fits serves. `outputSchema`: the agent's, when it has one: the
  *  workflow's answer is served shaped to it (answer-json.ts answerAsServed), on a replay too, so a replay scores the
@@ -363,9 +364,10 @@ export function firstChoice(facts: FirstFacts): FirstAsk | FirstChosen {
   const serve = { ...champion, serve: { name: chosen.name, digest, ...(promotion !== undefined ? { promotion } : {}), input: launch.input as Record<string, unknown>, revision: launch.learning.seed, ...shaped } };
   if (!facts.money) return done("served", serve);
   if (!facts.past) return { ask: "past" };
+  // Fails closed: runs it can't read leave the run to the agent, and the log says why.
   if ("unread" in facts.past) {
-    said.push(`workflow-first: the money rule could not read the agent's past runs (${facts.past.unread}); ${chosen.name} serves this run unchecked`);
-    return done("served", serve);
+    said.push(`workflow-first: the money rule could not read the agent's past runs (${facts.past.unread}); ${chosen.name} does not run first, the agent takes this run`);
+    return done("past_unread");
   }
   const line = costLineOf(facts.past, chosen.name, digest);
   if (line.served.runs < COST_WINDOW) return done("served", serve);
