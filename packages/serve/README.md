@@ -267,7 +267,8 @@ sends as untrusted: every string is cut as a name the model wrote, a provider or
 and a request's or turn's end takes only a value the runner knows. Every OTLP header value is a secret
 the runner holds, at any length and under any name, an unknown one too, but the value of a `Content-Type`, `Accept`,
 `Content-Encoding` or `User-Agent` header. The tracer's own `[otel]` lines, where an exporter's error may quote a header
-it sent, are cut of every such value at any length, a short one too. Everywhere else, the runner's logs and what a run
+it sent, are cut of every such value at any length, a short one too. No OpenTelemetry diag logger is set, since the
+SDK's diag writes can quote a header value as sent, and a test fails if a source sets one or `OTEL_LOG_LEVEL`. Everywhere else, the runner's logs and what a run
 writes, a held value is cut at 8 characters or more, a header value's as any other's: that floor is kept on purpose,
 since a needle of a few characters would cut ordinary text. Spans are sent in the background, so a run's end never waits on
 the collector; a server or runner that stops waits at most 3 s to send what is left, and a collector that is down
