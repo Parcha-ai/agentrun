@@ -1737,12 +1737,20 @@ has the row **Use Claude Code's login on this machine**, over these routes:
   in is the user's alone where that group is the user's private one, as the local account files alone say:
   `/etc/nsswitch.conf` takes users and groups from those files only (`files` or `compat` on its `passwd`, `group` and
   any `initgroups` line), and the group is the user's primary group, which no other user has as theirs and
-  `/etc/group` lists with no other member, so a umask of 002 under one refuses nothing. Any other group (one shared
-  with other users, one that is not the user's primary group, one `/etc/group` lacks, account files with a `+` or `-`
-  line, or a switch that also asks sssd, LDAP, NIS, winbind or systemd's user records, as the `files systemd` of
-  recent Ubuntu, Debian and Fedora installs does, or no switch file: there members can exist that the files do not
-  show), and a folder anyone may write in, are refused in words that name the folder, its mode and the
-  `chmod g-w,o-w` that closes it. A folder of the login
+  `/etc/group` lists with no other member and gives no password there (`x`, `!`, `*` or empty), and `/etc/passwd` has
+  one account with the user's uid and one with its name, so a umask of 002 under one refuses nothing. Any other group
+  (one shared with other users, one that is not the user's primary group, one `/etc/group` lacks, account files with
+  a `+` or `-` line, a second account with the user's name or uid, an id with blanks before it, or a switch that also
+  asks sssd, LDAP, NIS, winbind or systemd's user records, as the `files systemd` of recent Ubuntu, Debian and Fedora
+  installs does, or no switch file: there members can exist that the files do not show), and a folder anyone may
+  write in, are refused in words that name the folder, its mode and the `chmod g-w,o-w` that closes it. A group
+  `/etc/group` gives a password is refused too, since anyone who knows it may join the group with `newgrp`, and the
+  words also name the group and the `gpasswd -r` that removes the password. An `x` there is not refused: it says only
+  that the group's password, if it has one, is in `/etc/gshadow`, with the members `newgrp` lets in without it, and a
+  server without privileges cannot read that file, so the check does not. A gshadow password or member set with
+  `gpasswd` is not seen; remove it with `gpasswd -r` or `gpasswd -d`. The files are read as they are now: a user
+  removed from the group keeps it in the sessions they already have open, since a process's groups are set when it
+  logs in, so end those sessions before counting the folder as the user's alone. A folder of the login
   still to make is made by AgentRun at the turn-on and before the CLI's sign-in, 0700 whatever the umask, so the login
   the CLI signs in there is not refused after.
 - `GET /v2/settings/claude-login` says `state`: `off`, `signed_in` (with the `account` the CLI names: method, email,
@@ -1759,6 +1767,10 @@ has the row **Use Claude Code's login on this machine**, over these routes:
   `machine` with the default `~/.claude`, the CLI is signed in as the person's own `claude` runs: no
   `CLAUDE_CONFIG_DIR` or `CLAUDE_SECURESTORAGE_CONFIG_DIR`, in their home, so it writes the account in `~/.claude.json`
   and the tokens where their Claude Code keeps them (in `~/.claude`; on macOS the Keychain item `Claude Code-credentials`).
+  On macOS the CLI names that item's account by `USER`, so the sign-in, the status check and a run all get `USER` and
+  `LOGNAME` set to the user the server runs as (as the system names it, whatever `USER` the server was started with):
+  the item is the one the person's own `claude auth status` reads in their terminal, never one under the account
+  `unknown`, which a CLI started with no `USER` uses.
   `command` there is `env -u CLAUDE_CONFIG_DIR -u CLAUDE_SECURESTORAGE_CONFIG_DIR ... auth login`, so a terminal that
   exports either still signs in at that login. env is a program, so the line runs alike when pasted into sh, bash,
   zsh, fish or tcsh; a CLI path holding `=`, which env would read as a variable, goes to `sh -c` as its `$0`. env skips
@@ -1927,8 +1939,8 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `bash_signal` | Send a background process's group `TERM`, `INT` or `KILL`: `{id, signal}` | an agentic definition whose place is a sandbox | no, no |
 | `bash_list` | List the run's background processes: id, state or exit code, output size, start time and command | an agentic definition whose place is a sandbox | no, no |
 | `ask_person` | Ask the person who started the run; the turn ends until a message answers | nothing | no, no |
-| `web_fetch` | Read one web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked ([search and fetch](#search-and-fetch)), a part at a time: `{url, offset?, max_chars?}` in, a Page out, `{ok, url, status, title, text, chars, truncated?, original_chars?, beyond_read?, offset?, next_offset?, html_chars?, converted?, links, links_omitted?, via, parallel?, refused?, error?}` | nothing (`PARALLEL_API_KEY` for Parallel, one billed extract a page a run) | yes, yes |
-| `web_search` | Search the web, natively where the harness or the model's provider can, else through Parallel where the server holds its key, else keyless through Exa, or through the provider picked ([search and fetch](#search-and-fetch)): `{query, n?}` in, `{provider, query, results: [{url, title, snippet, published?}], text?}` or `{error}` out | nothing (`PARALLEL_API_KEY` for Parallel) | yes, yes |
+| `web_fetch` | Read one web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked ([search and fetch](#search-and-fetch)), a part at a time: `{url, offset?, max_chars?, objective?}` in (`objective`, what the page is read for, is passed to the run's Web; with no classifier in the run it changes nothing), a Page out, `{ok, url, status, title, text, chars, truncated?, original_chars?, beyond_read?, offset?, next_offset?, html_chars?, converted?, links, links_omitted?, via, parallel?, refused?, error?}` | nothing (`PARALLEL_API_KEY` for Parallel, one billed extract a page a run) | yes, yes |
+| `web_search` | Search the web, natively where the harness or the model's provider can, else through Parallel where the server holds its key, else keyless through Exa, or through the provider picked ([search and fetch](#search-and-fetch)): `{objective, queries?, n?}` in (`query` is deprecated: a model's call must give `objective`, which the schema requires; a workflow call node's `{query}` alone is still searched as the objective and its one query), `{provider, objective, queries, results: [{url, title, snippet, published?}], text?}` or `{error}` out | nothing (`PARALLEL_API_KEY` for Parallel) | yes, yes |
 | `web_save` | Download one file from a public URL into the run's `work/` and keep it there, for a link that expires (a generated image, audio or video): `{url, path}` in, `path` relative to `work/` and a bare name under `media/`; `{ok: true, path, bytes, content_type, duration_s?, url}` or `{ok: false, url, refused \| error}` out, `duration_s` its length in seconds when it is audio or video whose bytes give it (below). Never overwrites | nothing | no, no |
 | `browser` | A hosted browser, Browserbase's or Kernel's, on pi-browser's durable adapter: `snapshot`, `run`, `screenshot`, `browser_read`, `browser_release`, `browser_relaunch`, `browser_downloads` and `browser_upload` (into and from the run's `work/`); Kernel keeps no downloads, so a run on Kernel has no `browser_downloads` | `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`, or `KERNEL_API_KEY` | yes, no |
 | `monid:<provider>/<endpoint>`, `monid:<provider>/*` | One monid endpoint, or every endpoint monid lists for a provider (at most 50), each pinned at the save and run as a tool of its own, paid per call from the monid wallet: `{body?, queryParams?, pathParams?}` in, the run's `output`, `price` and `cost` out ([monid](#monid)) | `MONID_API_KEY` | no, no |
@@ -2160,11 +2172,13 @@ https://exa.ai/terms). To turn them off, set `web_search` to `native` (native on
 keys (or set `PARALLEL_API_KEY`): `auto` then searches through Parallel and bills the key.
 
 Keyless Firecrawl is one MCP exchange with Firecrawl's public endpoint (`https://mcp.firecrawl.dev/v2/mcp`), with no key,
-no Authorization header and no header of our own: `firecrawl_search` with the query and the number of results asked for,
+no Authorization header and no header of our own: `firecrawl_search` once for each of the search's first 3 queries, all at
+once, each with the objective (its tool requires one), its share of the results asked for and a scrape of each result
+as markdown, the answers merged by URL,
 or `firecrawl_scrape` with the URL, for its markdown. A call ends at 30 s and is not retried: the backend behind Firecrawl
 answers it in its place. A search's 60 s are one deadline for both keyless backends: Firecrawl's 30 s leave Exa the rest,
 and no backend starts once the deadline is spent. A page Firecrawl read with a status that is not 2xx, or an answer past
-the bound (1 MiB for a search, the guarded fetch's 5 MiB for a page), is no read: the call goes to the backend behind
+the bound (8 MiB for a search, its results scraped; the guarded fetch's 5 MiB for a page), is no read: the call goes to the backend behind
 Firecrawl, and where the guarded direct fetch then reads the page, the server logs why Firecrawl gave none
 (`event=web_fetch_firecrawl_failed`, never the URL). Firecrawl refuses a keyless call it will not serve with a code, and
 only the code is read, never its words or its sign-up link: `KEYLESS_QUOTA_EXHAUSTED` (its free daily limit spent), `KEYLESS_ACCESS_NOT_AVAILABLE` or
@@ -2213,7 +2227,10 @@ refuses is refused and never leaves the machine. A call stopped before its page 
 `via: "stopped"`: no page came for it (the run's read of the URL goes on for its other calls).
 
 `web_search` through Parallel uses its Search API (`POST https://api.parallel.ai/v1/search`, its `fast` mode, about
-$0.001 a search). On every provider the query is cut at 200 characters and `n` is 1 to 25 (10 by default). A result is a lead: the agent reads the page with `web_fetch`. A failure answers
+$0.001 a search): the objective as its objective, the queries as its `search_queries`, and the run's model as
+`client_model` (its bare id) where the run names one. A search asks an objective, what the agent wants to find out in a
+sentence (cut at 1,000 characters), and up to 5 keyword queries (each cut at 200; with none, the objective's first 200
+characters); Exa is sent the objective as its query, native search the first query. `n` is 1 to 25 (10 by default). A result is a lead: the agent reads the page with `web_fetch`. A failure answers
 `{error}`, with nothing searched instead; a 401 or 403 to either web tool stops Parallel for both for the rest of the run.
 
 Parallel's fees are the run's spend, booked as monid's are: each search and each page Parallel extracts is marked in the
@@ -2241,7 +2258,7 @@ keyless use has a rate limit it does not publish, and its own terms. Past that l
 then is a tool error in our words (above): the model reads why and answers without it, and the run's later searches
 are held for the wait. Exa answers its daily count running out the same way, naming no wait, so a second limit naming no
 wait after a wait has passed (a 429 with Retry-After is a timed limit, and only waits), in the same run and with no search succeeding since, turns search off for the rest of that run. A search ends at 60 s, its retry
-included, so a call never hangs. The answer is the query and its results, each a URL, a title, a
+included, so a call never hangs. The answer is the objective, the queries and their results, each a URL, a title, a
 snippet of at most 3,000 characters and its date when Exa knows it, then a line asking the model to cite the URLs it
 relies on. Keyless Exa answers behind keyless Firecrawl, the default for a harness with no native search when the server
 holds no Parallel key; `off` turns `web_search` off, both included.
@@ -2656,10 +2673,28 @@ other server, are `422` at `mcp_auth.<server>`, and no run starts. A per-run ser
 runs as one account. A server saved for one user before this mode keeps calling as that user.
 
 With `user_id: "per_run"`, whoever can start a run chooses its Composio user, so the host owns which user each run
-binds: it binds each run to its own person and never takes the ids from that person. Only `agentrun` is
-refused, so a host must not bind a per-run server to a `user_id` that a single-user server calls as. On an API-only
-server a run's user is none the owner calls as here (the preset's default and tool-listing users, and every user a
-server the owner saved stands on), and a named account one Composio lists under it (see [API only](#api-only)).
+binds: it binds each run to its own person and never takes the ids from that person. The API token never binds a run to
+a Composio user the owner calls as here, in any letter case: the user any preset server the owner saved calls as or
+its kept account stands on (not one the token saved, and not a per-run one), `agentrun`, and the tool-listing user.
+On a start, an inline start, a launch hook's firing start and a message, the
+token's binding of one is `422 input_invalid` at `mcp_auth.<server>.composio_user_id` (`not_allowed`), and nothing is
+written: no run, no new binding, and a firing stays as it was. The owner's users are read at each request, so one the
+owner connects after a token's run started is refused from then on. The seal marks each binding with who handed it
+(the token or the owner's session), and each claim reads the owner's users again: a token's binding of a user the owner
+has connected since has its calls answered, unsent, that the user is the owner's, until a message hands `mcp_auth`
+again or a new run starts. The owner's session binds any user, the owner's own included. On an [API-only](#api-only)
+server every caller is the token: the same users are refused, at the request and at each claim whoever handed the
+binding, and a named account must be one Composio lists under the run's user.
+
+What this leaves open: a per-run server lends the install's Composio key to whoever starts a run, and a token can still
+name a user the owner connected directly at Composio (the dashboard, or another client of the same Composio project),
+outside this install, which no record here names. Save a per-run server only on an install whose token callers own
+that Composio project's users.
+
+Upgrading: a run sealed before the mark, in flight across the upgrade, whose binding names a user the owner connects
+here has its calls of that server answered, unsent, in the same words at its next claim, since nothing says the owner
+handed it: a message that hands `mcp_auth` again (the owner's session, for the owner's user) marks it, or start a new
+run.
 
 What can go wrong, told apart:
 

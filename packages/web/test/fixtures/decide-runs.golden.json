@@ -3,7 +3,10 @@
   "op": "search",
   "answer": {
    "provider": "parallel",
-   "query": "widgets delaware",
+   "objective": "widgets delaware",
+   "queries": [
+    "widgets delaware"
+   ],
    "results": [
     {
      "url": "https://registry.example/widgets",
@@ -19,10 +22,13 @@
    ],
    "sift": "fake kept 2 of 4 results"
   },
-  "text": "{\"provider\":\"parallel\",\"query\":\"widgets delaware\",\"results\":[{\"url\":\"https://registry.example/widgets\",\"title\":\"\",\"snippet\":\"See the registry entry for Widgets, Inc. … Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under…\",\"published\":\"2026-10-01\"},{\"url\":\"https://result.example/4\",\"title\":\"Result 4 for widgets delaware\",\"snippet\":\"Excerpt 4.\"}],\"sift\":\"fake kept 2 of 4 results\"}\nCite the URL of each result you rely on.",
+  "text": "{\"provider\":\"parallel\",\"objective\":\"widgets delaware\",\"queries\":[\"widgets delaware\"],\"results\":[{\"url\":\"https://registry.example/widgets\",\"title\":\"\",\"snippet\":\"See the registry entry for Widgets, Inc. … Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under…\",\"published\":\"2026-10-01\"},{\"url\":\"https://result.example/4\",\"title\":\"Result 4 for widgets delaware\",\"snippet\":\"Excerpt 4.\"}],\"sift\":\"fake kept 2 of 4 results\"}\nCite the URL of each result you rely on.",
   "receipt": {
    "op": "search",
    "asked": "widgets delaware",
+   "queries": [
+    "widgets delaware"
+   ],
    "provider": "parallel",
    "tries": [
     {
@@ -74,8 +80,8 @@
    },
    "injection": "unjudged",
    "out": {
-    "bytes": 3330,
-    "chars": 3326
+    "bytes": 3365,
+    "chars": 3361
    },
    "cost": {
     "usd": 0.0012,
@@ -100,7 +106,10 @@
   "op": "search",
   "answer": {
    "provider": "parallel",
-   "query": "widgets delaware",
+   "objective": "widgets delaware",
+   "queries": [
+    "widgets delaware"
+   ],
    "results": [
     {
      "url": "https://registry.example/widgets",
@@ -111,10 +120,13 @@
    ],
    "sift": "fake kept 1 of 2 results"
   },
-  "text": "{\"provider\":\"parallel\",\"query\":\"widgets delaware\",\"results\":[{\"url\":\"https://registry.example/widgets\",\"title\":\"\",\"snippet\":\"See the registry entry for Widgets, Inc. … Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under…\",\"published\":\"2026-10-01\"}],\"sift\":\"fake kept 1 of 2 results\"}\nCite the URL of each result you rely on.",
+  "text": "{\"provider\":\"parallel\",\"objective\":\"widgets delaware\",\"queries\":[\"widgets delaware\"],\"results\":[{\"url\":\"https://registry.example/widgets\",\"title\":\"\",\"snippet\":\"See the registry entry for Widgets, Inc. … Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under file 1234567. Widgets are registered in Delaware under…\",\"published\":\"2026-10-01\"}],\"sift\":\"fake kept 1 of 2 results\"}\nCite the URL of each result you rely on.",
   "receipt": {
    "op": "search",
    "asked": "widgets delaware",
+   "queries": [
+    "widgets delaware"
+   ],
    "provider": "parallel",
    "tries": [
     {
@@ -161,8 +173,8 @@
    },
    "injection": "unjudged",
    "out": {
-    "bytes": 3232,
-    "chars": 3228
+    "bytes": 3267,
+    "chars": 3263
    },
    "cost": {
     "usd": 0.0012,
@@ -186,12 +198,13 @@
  {
   "op": "search",
   "answer": {
-   "error": "web_search needs a query"
+   "error": "web_search needs an objective"
   },
-  "text": "{\"error\":\"web_search needs a query\"}",
+  "text": "{\"error\":\"web_search needs an objective\"}",
   "receipt": {
    "op": "search",
    "asked": "   ",
+   "queries": [],
    "provider": null,
    "tries": [],
    "classifier": {
@@ -221,8 +234,8 @@
    },
    "injection": "unjudged",
    "out": {
-    "bytes": 36,
-    "chars": 36
+    "bytes": 41,
+    "chars": 41
    },
    "cost": {
     "usd": 0,

@@ -6,8 +6,9 @@
 // (the harness its owner installs: goose) is harness.mjs's, and service
 // (AgentRun as a launchd or systemd user service) and stop (the AgentRun the installer started in the background) are
 // service.mjs's, doctor (how this AgentRun is set up, read-only) is doctor.mjs's, export (an agent written as a template
-// package folder) is export.mjs's, and deploy (an agent's package sent to another AgentRun, with its lock, rollback and
-// delete) is deploy.mjs's. Any other word runs agentrun-WORD from PATH, as git runs git-WORD (externalOf, below).
+// package folder) is export.mjs's, share (what sharing a run would send, shown with --dry-run) is share.mjs's, and
+// deploy (an agent's package sent to another AgentRun, with its lock, rollback and delete) is deploy.mjs's. Any other
+// word runs agentrun-WORD from PATH, as git runs git-WORD (externalOf, below).
 import { spawn } from "node:child_process";
 import { accessSync, closeSync, constants, fstatSync, openSync, readFileSync, statSync } from "node:fs";
 import { homedir, constants as osConstants } from "node:os";
@@ -641,6 +642,18 @@ async function run(argv, env, io) {
   if (entry) return command(entry, argv, env, io);
   if (verb === undefined) return io.stdout.write(`${nounHelp(noun, listed)}\n`), 0;
   throw usageError(`agentrun ${noun} has no verb ${verb}.\n\n${nounHelp(noun, listed)}`);
+}
+
+/** `entry`, a hand-written command, run as main runs one of LOCAL: for a test whose entry is bound to what it injects
+ *  (share.mjs shareOf's opener). Its exit code, a refusal's message on stderr. */
+export async function runLocal(entry, argv, env, io) {
+  try {
+    return await local(entry, argv, env, io);
+  } catch (error) {
+    if (!(error instanceof Exit)) throw error;
+    io.stderr.write(`${error.message}\n`);
+    return error.code;
+  }
 }
 
 export async function main(argv, env = process.env, io = process) {

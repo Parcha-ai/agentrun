@@ -12,7 +12,7 @@ import type { RunLaunch } from "../run-launch.js";
 import { cliPolicyOf, closeSdkInbox, type SdkInbox, sdkInbox } from "../sdk/runs.js";
 import { settleSdkCheck } from "../sdk/check.js";
 import type { RunPatch, Store } from "../store/store.js";
-import { runPathOverStore } from "../store-reads/learning.js";
+import { runPathMetricsOverStore } from "../store-reads/learning.js";
 import type { AdapterSpecDeps } from "./adapter-run-spec.js";
 import { capSpendOf, learningEndOfRun } from "./learning-end.js";
 import { AskOverCap, type AskRoute, bookedAsk } from "./sdk-ask.js";
@@ -24,7 +24,6 @@ import { stopEnd, type AlsoRow, type Claim, type EndOfRunAnswer, type EndOfRunKe
 import { END_PATCH_MS, END_PATCH_UNKNOWN, REAL_TIMER } from "./loop.js";
 import { mustHold } from "./redact.js";
 import { storeSecrets } from "./store-secrets.js";
-import { pathMetrics } from "./workflow-first.js";
 
 const ROOT = ROOT_CONVERSATION_ID;
 export function createSdkLoop(
@@ -432,10 +431,10 @@ export function createSdkLoop(
                 }).filter((turn) => !turn.givenBack && !turn.unsent);
                 const tokens = (key: keyof typeof spend.tokens) =>
                   spend.unmetered || turns.some((turn) => typeof turn.usage?.[key] !== "number") ? null : spend.tokens[key];
-                const classified = completeEvidence && launch.learning ? await runPathOverStore(host.store, claim.runId, launch.learning, deps.redact) : undefined;
+                const path = completeEvidence ? await runPathMetricsOverStore(host.store, claim.runId, launch, { redact: deps.redact }) : {};
                 return {
                   costUsd: spend.usd,
-                  metrics: { ...metrics, input: tokens("input"), output: tokens("output"), cacheRead: tokens("cacheRead"), cacheWrite: tokens("cacheWrite"), ...(completeEvidence ? pathMetrics(launch, classified, entries) : {}) },
+                  metrics: { ...metrics, input: tokens("input"), output: tokens("output"), cacheRead: tokens("cacheRead"), cacheWrite: tokens("cacheWrite"), ...path },
                 };
               });
               await append(
@@ -455,7 +454,7 @@ export function createSdkLoop(
             also = droppedLearning(cancelled);
             const patch = await patchOf(async () => ({
               costUsd: usage?.cost_usd ?? null,
-              metrics: { ...metrics, ...(completeEvidence ? pathMetrics(launch, launch.learning ? await runPathOverStore(host.store, claim.runId, launch.learning, deps.redact) : undefined) : {}) },
+              metrics: { ...metrics, ...(completeEvidence ? await runPathMetricsOverStore(host.store, claim.runId, launch, { redact: deps.redact }) : {}) },
             }));
             await append(
               [
