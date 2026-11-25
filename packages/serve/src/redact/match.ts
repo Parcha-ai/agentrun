@@ -859,22 +859,31 @@ export function jsonEscapeAt(text: string, at: number): { char: string; end: num
 }
 
 const DECIMAL = only(DIGIT);
-/** The character an HTML numeric character reference at `at` stands for ("&#" and 1 to 7 decimal digits, or "&#x" or
- *  "&#X" and 1 to 6 hex digits, then ";"), and where it ends; undefined where none starts, or it stands for no
- *  character (zero, a surrogate, past U+10FFFF). It reads at most 11 characters. key-refusal.ts's peek counts a
- *  reference by it, so the read past a call's stop and the views see the same characters. */
+/** The character an HTML numeric character reference at `at` stands for, as a browser reads one in text, and where it
+ *  ends: "&#" and decimal digits, or "&#x" or "&#X" and hex digits, any zeros first (read as nothing: "&#00065;" is "A"),
+ *  then at most 7 decimal or 6 hex digits, then ";" or not (a browser reads "&#65" before a letter as "A" too); undefined
+ *  where none starts, or it stands for no character (zero, a surrogate, past U+10FFFF, or more digits than that). It
+ *  reads its zeros and one digit past the most, each once and counted: a run of zeros is read again only by the view
+ *  that copies it where no reference stands. key-refusal.ts's peek counts a reference by it, so the read past a call's
+ *  stop and the views see the same characters. */
 export function entityAt(text: string, at: number): { char: string; end: number } | undefined {
-  scanned.chars += Math.min(11, text.length - at);
-  if (text[at] !== "&" || text[at + 1] !== "#") return undefined;
+  if (text[at] !== "&" || text[at + 1] !== "#") {
+    scanned.chars += Math.min(2, text.length - at);
+    return undefined;
+  }
   const hex = text[at + 2] === "x" || text[at + 2] === "X";
   const from = at + (hex ? 3 : 2);
   const digit = hex ? HEX : DECIMAL;
-  let end = from;
-  while (end < text.length && end - from < (hex ? 6 : 7) && digit(text.charCodeAt(end))) end++;
-  if (end === from || text[end] !== ";") return undefined;
-  const code = Number.parseInt(text.slice(from, end), hex ? 16 : 10);
+  const most = hex ? 6 : 7;
+  let start = from;
+  while (start < text.length && text.charCodeAt(start) === 48) start++;
+  let end = start;
+  while (end < text.length && end - start <= most && digit(text.charCodeAt(end))) end++;
+  scanned.chars += end - at + 1;
+  if (end === from || end - start > most) return undefined;
+  const code = end === start ? 0 : Number.parseInt(text.slice(start, end), hex ? 16 : 10);
   if (code === 0 || (code >= 0xd800 && code <= 0xdfff) || code > 0x10ffff) return undefined;
-  return { char: String.fromCodePoint(code), end: end + 1 };
+  return { char: String.fromCodePoint(code), end: text[end] === ";" ? end + 1 : end };
 }
 /** An HTML numeric character reference (entityAt), as the character it stands for (a character past U+FFFF as its two
  *  UTF-16 units, each from the whole reference). */
