@@ -4,8 +4,8 @@ import { ChatGPTSignIn, WhatRunsHere } from "@/components/ChatGPTSignIn";
 import { KEY_ADVICE, KeyForm } from "@/components/KeysPage";
 import { RunError } from "@/components/RunError";
 import { Button } from "@/components/ui/button";
-import { isPlanModel, PLAN_RUNS } from "@/lib/chatgpt";
-import { type Client, ClientError } from "@/lib/client";
+import { isPlanModel, ownModel, planRuns } from "@/lib/chatgpt";
+import { type Capabilities, type Client, ClientError } from "@/lib/client";
 import type { HarnessInfo } from "@/lib/models";
 import { secretLabel, type SecretsWhyNot, WHY_NOT_WORDS } from "@/lib/secrets";
 import type { ApiError, ChatGPTView, ToolKey } from "@/lib/v2";
@@ -23,7 +23,7 @@ const apiError = (e: unknown): ApiError => (e instanceof ClientError ? e.toApiEr
  *  "Continue with ChatGPT", the keys behind "Add a key" beside it; `onPlan` hears each state the sign-in moves to (the
  *  page keeps the card while one waits), and once signed in the card says who and OpenAI's words on usage until `onDone`.
  *  `harnesses`: the capabilities' harnesses, listed as what runs here. */
-export function ModelKeyCard({ v2, needs, model, onSaved, writable, whyNot = "sign_in", plan, onPlan, onDone, harnesses }: { v2: Client; needs?: "key" | "model" | null; model?: string | null; onSaved?: () => void; writable: boolean; whyNot?: SecretsWhyNot; plan?: ChatGPTView | null; onPlan?: (v: ChatGPTView) => void; onDone?: () => void; harnesses?: readonly HarnessInfo[] }) {
+export function ModelKeyCard({ v2, needs, model, onSaved, writable, whyNot = "sign_in", plan, onPlan, onDone, harnesses, source, routePrefix }: { v2: Client; needs?: "key" | "model" | null; model?: string | null; onSaved?: () => void; writable: boolean; whyNot?: SecretsWhyNot; plan?: ChatGPTView | null; onPlan?: (v: ChatGPTView) => void; onDone?: () => void; harnesses?: readonly HarnessInfo[]; source?: Capabilities["models"]["source"]; routePrefix?: string | null }) {
   const [rows, setRows] = useState<ToolKey[] | null>(null);
   const [loadError, setLoadError] = useState<ApiError | null>(null);
   const [pick, setPick] = useState<string | null>(null);
@@ -40,8 +40,9 @@ export function ModelKeyCard({ v2, needs, model, onSaved, writable, whyNot = "si
   };
   useEffect(() => { if (needs !== "model") load(); }, [v2, needs]); // eslint-disable-line react-hooks/exhaustive-deps
   // The default's provider, when the server's default names one of these keys: that key alone runs it. The plan's own
-  // model (chatgpt/<id>, the default once signed in) names no key.
-  const provider = model?.includes("/") && !isPlanModel(model) ? model.slice(0, model.indexOf("/")) : undefined;
+  // model (chatgpt/<id>, the default once signed in, or AGENT_MODEL's) names no key, also behind a gateway, which sends it
+  // under its route prefix (agent-model/chatgpt/<id>). A gateway's other defaults keep the prefix as their "provider".
+  const provider = model?.includes("/") && !isPlanModel(ownModel(model, routePrefix)) ? model.slice(0, model.indexOf("/")) : undefined;
   const required = rows?.find((k) => k.id === provider);
   const offered = required ? [required] : rows;
   const picked = rows?.find((k) => k.id === pick);
@@ -84,7 +85,7 @@ export function ModelKeyCard({ v2, needs, model, onSaved, writable, whyNot = "si
                 <p className="text-body text-muted-foreground">This server has no model yet, so an agent that names no model can't run.</p>
                 <ChatGPTSignIn v2={v2} view={planView} onView={moved} writable={writable} whyNot={whyNot}
                   beside={<Button type="button" size="sm" aria-expanded={keysOpen} onClick={() => setKeysOpen((open) => !open)}>Add a key</Button>} />
-                <p className="text-body text-muted-foreground">{PLAN_RUNS}</p>
+                <p className="text-body text-muted-foreground">{planRuns(source, model, routePrefix)}</p>
                 {keysOpen && <p className="text-body text-muted-foreground">{KEY_ADVICE}</p>}
               </>
             : <><p className="text-body text-muted-foreground">No model provider's key is set on this server, so an agent that names no model can't run. Save one: such an agent then runs on that provider's everyday model.</p>

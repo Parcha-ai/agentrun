@@ -548,6 +548,10 @@ export type Cost = {
   learning_usd?: number | null;
   tools_usd?: number | null;
   all_in_usd?: number | null;
+  compile_usd?: number | null;
+  followup_usd?: number | null;
+  shadow_usd?: number | null;
+  share_usd?: number | null;
   degraded?: true;
   plan?: {
     requests: number;
@@ -2735,6 +2739,11 @@ export type GetLearningCostResponse = {
     cost_upper_bound: boolean;
     learning_usd: number | null;
     total_usd: number | null;
+    compile_usd?: number | null;
+    followup_usd?: number | null;
+    shadow_usd?: number | null;
+    share_usd?: number | null;
+    not_served?: "cost_stop" | "cut" | null;
   }>;
   total_runs: number;
   unknown_cost_runs: number;
@@ -3527,6 +3536,8 @@ export type ListComputersResponse = {
     online: boolean;
     held_by_run: string | null;
     held_until: string | null;
+    held_on: string | null;
+    hold_note: string | null;
     pairing: string;
     created_at: string;
     seen_at: string | null;
@@ -4894,6 +4905,7 @@ export interface ListAllRunsParams {
   status?: "queued" | "working" | "paused" | "input_required" | "completed" | "failed" | "cancelled";
   archived?: boolean;
   label?: string;
+  source?: string;
 }
 export type ListAllRunsResponse = RunList;
 
@@ -7239,6 +7251,7 @@ export type GetWrappedResponse = {
     sessions: number;
     requests: number;
     tokens: number;
+    sources: Array<string>;
   }>;
   models: Array<{
     model: string;
@@ -7410,7 +7423,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   handBackRunComputer: {"method":"POST","path":"/runs/{run_id}/computer/hand-back","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getRunLearning: {"method":"GET","path":"/runs/{run_id}/learning","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getRunLearningDiff: {"method":"GET","path":"/runs/{run_id}/learning/diff","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
-  listAllRuns: {"method":"GET","path":"/runs","pathParams":[],"multiSegment":[],"query":["limit","cursor","agent","revision","status","archived","label"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  listAllRuns: {"method":"GET","path":"/runs","pathParams":[],"multiSegment":[],"query":["limit","cursor","agent","revision","status","archived","label","source"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   sendMessage: {"method":"POST","path":"/runs/{run_id}/messages","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   pauseRun: {"method":"POST","path":"/runs/{run_id}/pause","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   raiseRunCap: {"method":"PATCH","path":"/runs/{run_id}","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},

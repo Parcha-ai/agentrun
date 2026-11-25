@@ -119,6 +119,8 @@ test("pair a computer with a code; it is listed as its hello says, offline once 
     online: true,
     held_by_run: null,
     held_until: null,
+    held_on: null,
+    hold_note: null,
     pairing: pairing.body.id,
   });
   assert.ok(Date.parse(created_at) <= Date.parse(seen_at), `${created_at} ${seen_at}`);

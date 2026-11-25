@@ -2,6 +2,7 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WrappedPage } from "./WrappedPage";
+import { WRAPPED_CARDS, type CardRenderer } from "@/lib/wrappedCards";
 import { route } from "@/App";
 import { ClientError, type Client } from "@/lib/client";
 import type { Wrapped } from "@/lib/v2";
@@ -18,16 +19,16 @@ const YEAR: Wrapped = {
   cost_usd: 42.5, unpriced_requests: 3, unread_files: 0,
   days: [{ day: "2025-03-02", requests: 100, tokens: 4_000_000 }, { day: "2025-03-03", requests: 200, tokens: 2_300_000 }],
   hours: Array.from({ length: 24 }, (_, h) => (h === 14 ? 120 : h === 9 ? 80 : 4)), weekdays: [0, 200, 100, 0, 0, 0, 0], active_ms: 7_200_000,
-  harnesses: [{ harness: "claude-agent", sessions: 10, requests: 250, tokens: 6_000_000 }, { harness: "pi", sessions: 2, requests: 50, tokens: 300_000 }],
+  harnesses: [{ harness: "claude-agent", sessions: 10, requests: 250, tokens: 6_000_000, sources: ["claude-code"] }, { harness: "pi", sessions: 2, requests: 50, tokens: 300_000, sources: ["gemini", "pi"] }],
   models: [{ model: "anthropic/claude-sonnet", requests: 250, tokens: 6_000_000, cost_usd: 40 }, { model: "openai/gpt", requests: 50, tokens: 300_000, cost_usd: 2.5 }],
   sources: [{ source: "claude-code", sessions: 10, requests: 250 }, { source: "codex", sessions: 2, requests: 50 }],
-  imported: [{ source: "claude-code", runs: 7 }],
+  imported: [{ source: "claude-code", runs: 7 }, { source: "gemini", runs: 4 }],
 };
 
-async function mount(wrapped: () => Promise<Wrapped>, go = vi.fn(), year?: number) {
+async function mount(wrapped: () => Promise<Wrapped>, go = vi.fn(), year?: number, cards?: CardRenderer) {
   const v2 = { wrapped: vi.fn(wrapped) } as unknown as Client;
   root = createRoot(document.body.appendChild(document.createElement("div")));
-  await act(async () => { root!.render(createElement(WrappedPage, { v2, year, go })); });
+  await act(async () => { root!.render(createElement(WrappedPage, { v2, year, go, cards })); });
   return { go, v2 };
 }
 
@@ -77,7 +78,7 @@ describe("WrappedPage", () => {
 
   it("links a source's imported runs to the runs list of that source, and says when none are imported", async () => {
     await mount(async () => YEAR);
-    const link = document.querySelector<HTMLAnchorElement>('a[href="#/runs?source=claude-code"]');
+    const link = document.querySelector<HTMLAnchorElement>('[aria-labelledby="w-imported"] a[href="#/runs?source=claude-code"]');
     expect(link?.textContent).toBe("7 imported as runs");
     expect(document.body.textContent).toContain("codex: 2 sessions read");
     expect(document.body.textContent).toContain("none imported as runs yet");
@@ -94,6 +95,55 @@ describe("WrappedPage", () => {
     document.body.innerHTML = "";
     await mount(async () => YEAR, vi.fn(), 2025);
     expect(document.querySelector('[data-unread]')).toBeNull();
+  });
+
+  it("links each harness's numbers to the runs of every source behind it: one source, several, and a source with no imported runs", async () => {
+    await mount(async () => YEAR);
+    const row = (harness: string) => [...document.querySelectorAll('[aria-label="Harnesses"] > li')].find((li) => li.textContent?.includes(harness))!;
+    const hrefs = (harness: string) => [...row(harness).querySelectorAll("a")].map((a) => a.getAttribute("href"));
+    expect(hrefs("claude-agent")).toEqual(["#/runs?source=claude-code"]);
+    expect(row("claude-agent").textContent).toContain("claude-code: 7 runs");
+    expect(hrefs("pi")).toEqual(["#/runs?source=gemini"]);
+    expect(row("pi").textContent).toContain("gemini: 4 runs");
+    expect(row("pi").textContent).toContain("pi: not imported yet");
+    expect(row("pi").textContent).toContain("agentrun-serve import");
+  });
+
+  it("keeps the totals, models, days and hours as plain numbers: no link to a filter that does not exist", async () => {
+    await mount(async () => YEAR);
+    const hrefs = [...document.querySelectorAll("a")].map((a) => a.getAttribute("href"));
+    expect(hrefs.every((h) => h?.startsWith("#/runs?source="))).toBe(true);
+    expect(document.querySelectorAll('[aria-label="Models"] a')).toHaveLength(0);
+  });
+
+  it("registers the nine cards in the prototype's order, each with the body fields it reads and what it waits on", () => {
+    expect(WRAPPED_CARDS.map((c) => c.id)).toEqual(["cover", "split", "hours", "cache", "laptop", "leak", "type", "summary", "launch"]);
+    const by = Object.fromEntries(WRAPPED_CARDS.map((c) => [c.id, c]));
+    for (const c of WRAPPED_CARDS) expect(c.waits).toContain("race-card-renderer");
+    for (const id of ["laptop", "type"]) expect(by[id]!.waits).toContain("derived");
+    expect(WRAPPED_CARDS.filter((c) => c.waits.includes("derived")).map((c) => c.id)).toEqual(["laptop", "type"]);
+    expect(by.leak!.waits).toEqual(expect.arrayContaining(["race-card-renderer", "scrubber-count-mode"]));
+    expect(by.launch!.waits).toEqual(expect.arrayContaining(["race-card-renderer", "benchmark"]));
+    expect(by.cover!.reads).toEqual(expect.arrayContaining(["tokens", "days"]));
+    expect(by.hours!.reads).toEqual(expect.arrayContaining(["hours", "weekdays", "active_ms"]));
+    const known = Object.keys(YEAR);
+    for (const c of WRAPPED_CARDS) for (const f of c.reads) expect(known).toContain(f);
+  });
+
+  it("shows no cards section, and no empty box, with the default renderer", async () => {
+    await mount(async () => YEAR);
+    expect(document.querySelector("[data-cards]")).toBeNull();
+    expect(document.body.textContent).not.toContain("Cards");
+  });
+
+  it("calls an injected renderer for each of the nine cards, in order, with the body, and shows what it returns", async () => {
+    const seen: string[] = [];
+    const bodies: Wrapped[] = [];
+    const cards: CardRenderer = (card, data) => { seen.push(card.id); bodies.push(data); return card.id === "cover" || card.id === "launch" ? createElement("p", { key: card.id, "data-fake": card.id }, `fake ${card.id}`) : null; };
+    await mount(async () => YEAR, vi.fn(), 2025, cards);
+    expect(seen).toEqual(["cover", "split", "hours", "cache", "laptop", "leak", "type", "summary", "launch"]);
+    expect(bodies.every((b) => b.year === 2025 && b.requests === 300)).toBe(true);
+    expect([...document.querySelectorAll("[data-cards] [data-fake]")].map((e) => e.textContent)).toEqual(["fake cover", "fake launch"]);
   });
 
   it("says a year with no sessions in a sentence", async () => {

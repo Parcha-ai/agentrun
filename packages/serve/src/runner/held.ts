@@ -81,10 +81,11 @@ export interface Held {
    *  out and its launch's payload names the pull request. Its mint makes a token of that repository alone, contents
    *  read, whatever the process names; its MCP mints on the runner (mcp). */
   githubAppAccess(): Promise<GithubAppAccessAt | undefined>;
-  /** Every saved model key, for a run whose routes have no revision to scope them by (a subagent's tiers, a learning run's
- *  grade, an SDK run's); a replay's or an audit's grader gets its fast model's provider's key alone, none when its revision
- *  names agree_on or has no fast model. */
-  savedModelKeys(): Promise<Record<string, string>>;
+  /** The saved model keys of the models of the claim's subagent tiers (claim-secrets.ts subagentTierKeys asks): an agentic
+   *  run granted the subagent tool gets its routed tiers' keys; a replay's or an audit's grader, its fast tier's key alone
+   *  (none when its revision names agree_on or routes no fast tier). None to any other run, to one that holds a model key
+   *  of its own, or to a held run its model kept from running. */
+  subagentTierKeys(): Promise<Record<string, string>>;
   /** The model keys the host's models of `tiers` need (claim-secrets.ts tierModelKeys), the plan's reader with them: of
    *  the tiers the claim's learned workflows name, as the runner chose them (learnedFirst), alone. */
   tierModelKeys(tiers: readonly Tier[]): Promise<{ readonly keys: Record<string, string>; readonly plan?: PlanReader }>;

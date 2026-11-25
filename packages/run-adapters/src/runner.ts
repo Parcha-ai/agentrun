@@ -253,8 +253,10 @@ export async function modelPortFor(writer: SessionWriter, options: ModelPortOpti
  *  for each (`held`), the label of each the host sent beside the harness's own (`hosts`), which were answered, and the
  *  session's spend (null: unknown). A turn is a paid request that left: counted from the records written before each one
  *  left, so a request a crash cut off (or one still in flight, read from another process or session) counts at the
- *  figure its host held for it, and leaves the spend unknown when there is none. */
-export function sessionSpendOf(records: readonly SessionRecord[]): { turns: number[]; held: Map<number, number>; hosts: Map<number, string>; answered: Set<number>; openHolds: Set<number>; spentUsd: number | null; figures: { turn: number; usd: number | null }[]; cost: SessionCost } {
+ *  figure its host held for it, and leaves the spend unknown when there is none. `chargedUsd` is what the answered
+ *  requests were charged alone (a crash's cut one at its hold among them), never one still in flight at its hold; null:
+ *  one charged has no figure. */
+export function sessionSpendOf(records: readonly SessionRecord[]): { turns: number[]; held: Map<number, number>; hosts: Map<number, string>; answered: Set<number>; openHolds: Set<number>; spentUsd: number | null; chargedUsd: number | null; figures: { turn: number; usd: number | null }[]; cost: SessionCost } {
   const requests = records.filter((r) => r.kind === RUNNER_RECORDS.request).map((r) => (r.data ?? {}) as { turn?: number; heldUsd?: unknown; host?: unknown; hold?: unknown });
   const turns = requests.map((data, i) => data.turn ?? i + 1);
   // Hold-only steps (ModelRequest.paid.hold): money reserved, never spent. One still open is no spend here: the process
@@ -311,6 +313,8 @@ export function sessionSpendOf(records: readonly SessionRecord[]): { turns: numb
     else if (own.atMost) (bounded += own.usd), atMost++;
     else known += own.usd;
   }
+  // Every figure so far is an answered request's: what they were charged, before the open ones count at their holds.
+  const chargedUsd = spentUsd;
   const openHolds = new Set<number>();
   for (const turn of turns) {
     if (answered.has(turn)) continue;
@@ -322,7 +326,7 @@ export function sessionSpendOf(records: readonly SessionRecord[]): { turns: numb
     figures.push({ turn, usd: worst(turn) ?? null });
     if (!onPlan.has(turn)) unpriced++;
   }
-  return { turns, held, hosts, answered, openHolds, spentUsd, figures, cost: costOfParts([{ known, bounded, atMost, unpriced }]) };
+  return { turns, held, hosts, answered, openHolds, spentUsd, chargedUsd, figures, cost: costOfParts([{ known, bounded, atMost, unpriced }]) };
 }
 
 /** A cost's parts, each charge counted by turnCostOf: `known`, the sum of the figures that are a charge's own; `bounded`,
