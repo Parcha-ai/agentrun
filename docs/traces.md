@@ -88,9 +88,9 @@ header there ([Sentry: Collector][sentry-collector]).
 ## How spans leave
 
 Spans are sent in the background, so a run's end never waits on the collector or backend. A server or runner that stops
-waits at most 3 s to send what is left. A runner with tracing on says so in its log as it starts, with the endpoint
-(never its user, password, key parameter or headers). A backend that is
-down costs the dropped spans and a log line with the endpoint and the time, then at most one line a minute counting the
+waits at most 3 s to send what is left. A runner with tracing on says so in its log as it starts, with the endpoint's
+origin alone: scheme, host and port, never its user, password, path, query, fragment or headers. A backend that is
+down costs the dropped spans and a log line with that origin and the time, then at most one line a minute counting the
 failed exports since the last; the run is not affected. A run is sampled whole or not at all (`OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG`), so a trace is never
 missing part of its run. `OTEL_SDK_DISABLED=true` turns tracing off even with an endpoint set.
 

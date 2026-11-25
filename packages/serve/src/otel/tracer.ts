@@ -12,9 +12,9 @@
 //  - one trace per run: its id is the run id's hash, so every claim of a run (a resume, a takeover) is in one trace, and
 //    the sampler (always parent-based, its root's ratio from OTEL_TRACES_SAMPLER/_ARG) decides once per run, never
 //    splitting a run's spans;
-//  - tracing on says so once, as it is made (at the runner's start), with the endpoint its spans go to, never its user,
-//    password or key (shownEndpoint);
-//  - an export that fails or throws is a log line with the endpoint and the time, then at most one a minute counting
+//  - tracing on says so once, as it is made (at the runner's start), with the origin of the endpoint its spans go to,
+//    never its user, password, path, query or fragment (shownEndpoint);
+//  - an export that fails or throws is a log line with the endpoint's origin and the time, then at most one a minute counting
 //    the failures it did not say (safeExporter), each cut by the runner's redactor, which holds each OTLP header value
 //    of 8 characters or more, then of each header value at any length (saidOf), and its spans are dropped: never the run's failure. A run's end never waits on an export: the batch processor sends
 //    in the background, a run's process never flushes, and only the runner's close flushes once (flushTraces), for at
@@ -48,18 +48,17 @@ export function exporterConfig(env: NodeJS.ProcessEnv): { url: string; headers: 
   return { url, headers: { ...keyValues(env.OTEL_EXPORTER_OTLP_HEADERS), ...keyValues(env.OTEL_EXPORTER_OTLP_TRACES_HEADERS) }, ...(Number.isFinite(timeout) && timeout > 0 ? { timeoutMillis: timeout } : {}) };
 }
 
-/** The endpoint `url` as a log line shows it: without its user and password; a query parameter named like a credential
- *  is cut after, with every other OTLP credential, by the line's own cut (saidOf: secrets.ts otlpHeaderCut, over the
- *  endpoint reading otlpEndpointValues). One that is not a URL is shown as that alone, never as written. */
+/** The endpoint `url` as a log line shows it: its origin alone (scheme://host[:port]). That says where spans go, and
+ *  holds none of the parts a credential can be written in: the user and password, the path, the query, the fragment.
+ *  One that is not a URL, or names no host, is shown as that alone, never as written. */
 export function shownEndpoint(url: string): string {
   try {
-    const parsed = new URL(url);
-    parsed.username = "";
-    parsed.password = "";
-    return parsed.href;
+    const { protocol, host } = new URL(url);
+    if (host) return `${protocol}//${host}`;
   } catch {
-    return "an endpoint that is not a URL";
+    // Not a URL: said as that alone, below.
   }
+  return "an endpoint that is not a URL";
 }
 
 const TRUE = new Set(["1", "true", "yes", "on"]);
@@ -311,7 +310,7 @@ async function made(env: NodeJS.ProcessEnv, test?: TracingTest): Promise<GenAiTr
   };
   // A process that ends by running out of work (no close, no exit call) flushes once first.
   if (!test) process.once("beforeExit", () => void flush());
-  // Said once, as the tracing is made: that it is on, and where its spans go (no header, no credential of the endpoint).
+  // Said once, as the tracing is made: that it is on, and where its spans go (the endpoint's origin; no header).
   log(`[otel] tracing is on: spans export to ${where}`);
   return {
     flush,
@@ -457,7 +456,7 @@ function rootSampler(env: NodeJS.ProcessEnv, sdk: typeof import("@opentelemetry/
 }
 
 /** `exporter` made safe for a run: a throw or a failed export drops its spans and is said in the log, with the endpoint
- *  (`where`, shownEndpoint) and the time (`now`): the first at once; after it, at most one line each FAILURE_LINE_MS,
+ *  (`where`, its origin: shownEndpoint) and the time (`now`): the first at once; after it, at most one line each FAILURE_LINE_MS,
  *  said by the next failure once that long has passed since the last line, counting every failure since that line, the
  *  current one among them. So a collector that is down is a line a minute at most, never one a batch or a span; a
  *  failure that no later one follows is counted in no line. */

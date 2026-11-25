@@ -304,9 +304,9 @@ no held list: that floor is kept on purpose, since a needle of a few characters 
 number such as `1` into `[redacted]`, or refuse a source capture of any project that holds it. Spans are sent in the background, so a run's end never waits on
 the collector; a server or runner that stops waits at most 3 s to send what is left. At its start, a runner (the one
 beside the server, or `agentrun-serve runner`) with tracing on says so once, and where its spans go:
-`[otel] tracing is on: spans export to https://collector.example/v1/traces`, the endpoint without its user or password
-and with a credential's query parameter cut, never a header. A collector that is down costs the dropped spans and a
-line with the endpoint and the time (`[otel] a trace export to ... failed at 2026-11-25T07:01:31.465Z; its spans were
+`[otel] tracing is on: spans export to https://collector.example:4318`, the endpoint's origin alone (scheme, host and
+port; never its user, password, path, query or fragment, nor a header). A collector that is down costs the dropped spans
+and a line with the endpoint's origin and the time (`[otel] a trace export to ... failed at 2026-11-25T07:01:31.465Z; its spans were
 dropped: Request timed out`), then at most one line a minute, said by the next failure once a minute has passed, that
 counts the failures since the last line (`[otel] 25 more trace exports to ... failed since ..., the last at ...`); never
 a line per span or per batch. Unset, or with `OTEL_SDK_DISABLED=true`, no OpenTelemetry code loads, nothing is sent and
