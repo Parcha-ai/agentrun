@@ -1777,10 +1777,10 @@ route translates, and the console names it
 `<tag> · local (Ollama)`, on a run's page too (from the run's `tokens` usage line, `provider` `ollama` and `model` the
 tag), so a run on the default says which model it ran on. An embedding model is left out. A model pulled after the server shows in capabilities
 within half a minute (the listing is kept that long, and asked again behind the next answer). A down or stuck Ollama
-slows nothing: the listing has 2 seconds in all and follows no redirect. A listing that fails (refused, past its
-deadline, or an answer of the wrong shape) is never kept as one: the models listed before it stay, none where there
-were none, and Ollama is asked again behind the next answer, so an Ollama that comes back or starts after the server
-shows in the answer after that. A run never waits on the listing: one on `ollama/<tag>` asks that model's `/api/show` alone (10
+slows nothing: the listing has 2 seconds in all and follows no redirect. A listing that fails is never kept as one:
+past its deadline or with an answer of the wrong shape, the models listed before it stay; refused (Ollama is not
+running), none do. Either way Ollama is asked again behind the next answer, so an Ollama that comes back or starts
+after the server shows in the answer after that. A run never waits on the listing: one on `ollama/<tag>` asks that model's `/api/show` alone (10
 seconds), and a run on any other model, a key's default included, never asks Ollama.
 
 - Where: `OLLAMA_HOST`, read as the ollama CLI reads it. Unset, 127.0.0.1:11434, but only on one owner's own server
