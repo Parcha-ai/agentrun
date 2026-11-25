@@ -271,10 +271,14 @@ secret the server and the runner hold, under any name, an unknown one too, but t
 its first word is held too when that word is a known auth scheme (`Bearer`, `Basic`, `Api-Key`, `Api-Token`, `Token`,
 `sentry`, `Splunk`, `GenieKey`) or the header is named like a credential (`authorization`, `x-sentry-auth`,
 `x-api-key`); any other header's value is held whole, never its tail alone. So are an OTLP endpoint's user, password
-and any query parameter whose name has a whole word key, token, secret, password, auth, sig or signature in it
-(`api_key`, `access_token` and `apiKey` do; `authority` and `keyspace` do not). Commas split the header variables, so write a
-comma inside a value as `%2C`. The tracer's own `[otel]` lines, where an exporter's error may quote a header it sent or
-the URL it posted to, are cut of every such value at any length, a short one too. A run's process can hold at most 512
+and any query parameter named like a credential. A header's or a parameter's name is split into words at punctuation
+and at each lower-to-upper case change, and it is named like a credential when a word is authorization, auth, key,
+apikey, token, secret, password, passwd, pwd, sig, signature, credential or credentials, or ends in key, token,
+secret, password, auth, sig, signature, credential or credentials (`api_key`, `access_token`, `apiKey`, `accesstoken`
+and `writekey` are; `authority` and `keyspace` are not). Commas split the header variables, so write a comma inside a
+value as `%2C`. The tracer's own `[otel]` lines, where an exporter's error may quote a header it sent or the URL it
+posted to, are cut of every such value at any length, a short one too, and of what follows any header value's first
+word, whatever the word and the header's name. A run's process can hold at most 512
 model requests and 512 tool calls open in its runner's trace at once; one started past that has no span. No OpenTelemetry diag logger is set, since the
 SDK's diag writes can quote a header value as sent, and a test fails if a source sets one or `OTEL_LOG_LEVEL`. Everywhere else, the runner's logs and what a run
 writes, a held value is cut at 8 characters or more, a header value's as any other's, and a shorter header value is on

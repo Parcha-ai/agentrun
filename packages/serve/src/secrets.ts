@@ -268,21 +268,25 @@ const KNOWN_SCHEME = /^(?:bearer|basic|api-?key|api-?token|token|sentry|splunk|g
 
 /** The words of a header's or an endpoint's query parameter's name that say its value is a credential
  *  (`authorization`, `x-sentry-auth`, `x-api-key`, `access_token`, `apiKey`, `X-Amz-Signature`): a name is split at
- *  each non-alphanumeric and at each lower-to-upper case change, and only a whole word counts (`authority` and
- *  `keyspace` say nothing). */
+ *  each non-alphanumeric and at each lower-to-upper case change, and a word counts when it is one of CREDENTIAL_WORDS
+ *  or ends in one of CREDENTIAL_ENDING's (a lowercase compound: `accesstoken`, `writekey`, `clientsecret`). A word that
+ *  only starts like one says nothing (`authority`, `keyspace`). */
 const CREDENTIAL_WORDS = new Set(["authorization", "auth", "key", "apikey", "token", "secret", "password", "passwd", "pwd", "sig", "signature", "credential", "credentials"]);
+const CREDENTIAL_ENDING = /(?:key|token|secret|password|auth|sig|signature|credentials?)$/;
 const credentialNamed = (name: string): boolean =>
-  name.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9]+/).some((word) => CREDENTIAL_WORDS.has(word));
+  name.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9]+/).some((word) => CREDENTIAL_WORDS.has(word) || CREDENTIAL_ENDING.test(word));
 
 /** The OTLP exporter's header values `env` names (OTEL_EXPORTER_OTLP_HEADERS and OTEL_EXPORTER_OTLP_TRACES_HEADERS: a
  *  tracing backend's key is one), at any length (keptSecrets floors them for the held list; otlpHeaderCut does not),
  *  but those of a header OTLP_PLAIN_HEADERS names, and, for the held list (`held`), those OTLP_CUT_ONLY_HEADERS names.
  *  Each is held as written (percent-encoded) and as sent (decoded); and as the SDK reads the same variable, which it
  *  merges under ours (`headers`, tracer.ts exporterConfig) and which drops a `;` and what follows it, so a part ours
- *  can't decode still sends that much; and, under a credential-named header (CREDENTIAL_WORDS) or after a known auth
+ *  can't decode still sends that much; and, under a credential-named header (credentialNamed) or after a known auth
  *  scheme (KNOWN_SCHEME), each of those without its first word (AUTH_SCHEME), the credential alone, as an error may
- *  quote it. Any other header's value is held whole, never its tail alone. A part whose name can't be decoded is held.
- *  Commas split the variable, so a comma inside a value must be written `%2C`. */
+ *  quote it. For the held list, any other header's value is held whole, never its tail alone; for the cut (`held`
+ *  false), every value is taken without any first word too, since cutting more of the tracer's own lines costs
+ *  nothing. A part whose name can't be decoded is held. Commas split the variable, so a comma inside a value must be
+ *  written `%2C`. */
 export const otlpHeaderValues = (env: NodeJS.ProcessEnv, held: boolean): string[] =>
   [env.OTEL_EXPORTER_OTLP_HEADERS, env.OTEL_EXPORTER_OTLP_TRACES_HEADERS].flatMap((text) =>
     (text ?? "").split(",").flatMap((part) => {
@@ -296,12 +300,12 @@ export const otlpHeaderValues = (env: NodeJS.ProcessEnv, held: boolean): string[
       const property = written.indexOf(";");
       const forms = [written, ...(property >= 0 ? [written.slice(0, property).trim()] : [])].flatMap((value) => [value, decoded(value) ?? value]);
       const named = credentialNamed(name);
-      return forms.flatMap((value) => [value, ...(named || KNOWN_SCHEME.test(value) ? [value.replace(AUTH_SCHEME, "")] : [])]);
+      return forms.flatMap((value) => [value, ...(!held || named || KNOWN_SCHEME.test(value) ? [value.replace(AUTH_SCHEME, "")] : [])]);
     })).filter((value) => value.trim() !== "");
 
 /** The credentials the OTLP endpoints `env` names write into their URLs (OTEL_EXPORTER_OTLP_ENDPOINT and
  *  OTEL_EXPORTER_OTLP_TRACES_ENDPOINT): a user and password, and the value of each query parameter whose name says it is
- *  one (CREDENTIAL_WORDS), each as written and decoded. An exporter's error may quote the URL it posted to. */
+ *  one (credentialNamed), each as written and decoded. An exporter's error may quote the URL it posted to. */
 export const otlpEndpointValues = (env: NodeJS.ProcessEnv): string[] =>
   [env.OTEL_EXPORTER_OTLP_ENDPOINT, env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT].flatMap((text) => {
     let url: URL;
