@@ -1195,6 +1195,9 @@ export async function staysInRunner(deps: Pick<AdapterSpecDeps, "store" | "data"
     const revision = run ? await deps.store.agents.revision(run.revisionId) : undefined;
     if (revision && isWorkflowRevision(revision)) return STAYS;
   }
+  // A held run its model kept from running reads no login and is refused for none: its agent never starts (heldFor's
+  // claudeLogin answers it none), so it holds its computer whatever login this machine has on.
+  if (launch.hold?.refused !== undefined) return OFF_LOGIN;
   const login = await loginForRun(deps.store.settings, deps.data, deps.env ?? {}, harness, launch.place);
   if (login === undefined) return OFF_LOGIN;
   if ((await openRunModelKey({ store: deps.store, sealKey: deps.sealKey }, runId)) !== undefined) return OFF_LOGIN;
