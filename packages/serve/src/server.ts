@@ -2782,9 +2782,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         ...(process.execArgv.some((arg) => arg.startsWith("--input-type")) ? { execArgv: workerArgs(process.execArgv) } : {}),
         // Its own heap, at most IMPORT_HEAP_MB whatever the machine's memory: an import that needs more ends as a failed
         // worker (said, and counted: IMPORT_STARTS). A Wrapped read also starts the import package's read threads
-        // (wrappedReading), each with a heap outside this one: a 16 MB young generation and an old one with no cap,
-        // counted at 96 MiB (more while it reads a large file). Their finished reads wait in this heap, at most readAhead
-        // (a quarter of it). So a Wrapped read holds up to IMPORT_HEAP_MB plus threads x 96 MiB, more for a large file.
+        // (wrappedReading), each with a heap of its own outside this one, capped at its start: a 16 MB young generation
+        // and the import's workerOldMb (64 MB) old one. Their finished reads wait in this heap, at most readAhead (a quarter
+        // of it) plus one in flight a thread. So a Wrapped read holds at most IMPORT_HEAP_MB plus threads x (workerOldMb +
+        // 16) MB, readAhead inside the first.
         resourceLimits: { maxOldGenerationSizeMb: IMPORT_HEAP_MB },
       });
       workers.set(worker, { task, exit: once(worker, "exit").catch(() => undefined) });
