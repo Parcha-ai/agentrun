@@ -241,10 +241,13 @@ Never write `outline-none` without a `focus-visible:` replacement drawn with the
 
 - **The shell** is a 220px sidebar and a main column. The `roomy:` variant shows the sidebar at 768px wide and 501px tall; smaller or shorter windows use a top bar with a menu.
   Banners sit above the page, outside its scroller. A page with no top bar scrolls in `main`.
-- **A page's top bar stays where it is.** The bar is `pageToolbarClass`, 48px, so its bottom edge meets the edge under
-  the sidebar's logo row. The page's frame fills `main` and never scrolls (`flex h-full min-h-0 flex-col`); what is under
-  the bar scrolls in a pane of its own (`min-h-0 flex-1 overflow-auto`). A bar that scrolls with its page leaves that
-  edge as soon as the page moves. The `top-bars` browser flow measures every page with a bar: add a new one to its list.
+- **A page's top bar stays where it is beside the sidebar.** The bar is `pageToolbarClass`, 48px, so its bottom edge
+  meets the edge under the sidebar's logo row. Where the sidebar shows (`roomy:`), the page's frame fills `main` and
+  never scrolls (`roomy:h-full roomy:min-h-0`), and what is under the bar scrolls in a pane of its own (`roomy:min-h-0
+  roomy:flex-1 roomy:overflow-auto`). A bar that scrolls with its page leaves that edge as soon as the page moves. In a
+  smaller window there is no logo row to meet, and a bar whose actions wrap would hold a large part of the screen: the
+  page scrolls as a whole, bar and all. Mission Control, Runs and the other pages that had this frame before keep
+  their bar fixed at every size. The `top-bars` browser flow measures every page with a bar: add a new one to its list.
 - **Breakpoints** are Tailwind's: write mobile first and add `md:` for the desktop layout. `max-sm:` tightens a
   phone. `short:` is for a viewport at most 500px tall (a phone on its side). `roomy:` combines a minimum width of 768px and height of 501px for the desktop shell. Do not add a breakpoint.
 - **A part beside a panel** is laid out by the width of its pane, not the window's: a panel that takes part of the page

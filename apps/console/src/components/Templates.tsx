@@ -70,13 +70,13 @@ export function TemplatesPage({ v2, name, install, go, playground = false, draft
   // Its own page has the sections' top bar: the list names the section; a template, or a package being read, leads back to it.
   const listing = install === undefined && name === undefined;
   return (
-    <section className="flex h-full min-h-0 flex-col">
+    <section className="flex min-h-full flex-col roomy:h-full roomy:min-h-0">
       <header className={cn(pageToolbarClass, "flex-wrap gap-2 px-5 md:px-6")}>
         {listing
           ? <h1 className={pageTitleClass}><LayoutTemplate className="size-4" aria-hidden />Templates</h1>
           : <nav aria-label="Breadcrumb"><a href="#/templates" className={cn(pageTitleClass, "text-muted-foreground hover:text-foreground")}><ArrowLeft className="size-4" aria-hidden />Templates</a></nav>}
       </header>
-      <div className="min-h-0 flex-1 overflow-auto"><div className="p-5 md:p-6">{body}</div></div>
+      <div className="roomy:min-h-0 roomy:flex-1 roomy:overflow-auto"><div className="p-5 md:p-6">{body}</div></div>
     </section>
   );
 }

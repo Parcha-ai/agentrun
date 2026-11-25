@@ -120,12 +120,12 @@ export function AgentDojo({ v2, server, modelAccess }: { v2: Client; server?: "o
   const stale = eligible.some((row) => row.stale);
   const changes = eligible.flatMap((row) => (row.view?.log.items ?? []).map((change) => ({ agent: row.agent, change })))
     .sort((a, b) => b.change.at.localeCompare(a.change.at)).slice(0, 8);
-  return <section className="flex h-full min-h-0 flex-col">
+  return <section className="flex min-h-full flex-col roomy:h-full roomy:min-h-0">
     <header className={cn(pageToolbarClass, "gap-2 px-5")}>
       <h1 className={pageTitleClass}><DojoIcon size={16} className="shrink-0" />Learning Dojo</h1>
       <Button className="ml-auto" size="icon" aria-label="Refresh Learning Dojo" disabled={loading || !server} onClick={() => void read()}><RefreshCw className="size-4" aria-hidden /></Button>
     </header>
-    <div className="min-h-0 flex-1 overflow-auto">
+    <div className="roomy:min-h-0 roomy:flex-1 roomy:overflow-auto">
     <div className="mx-auto w-full max-w-page-wide space-y-7 p-5 md:p-8">
       <div><h2 className="text-xl font-semibold">What your agents learn</h2><p className="mt-2 max-w-3xl text-lead leading-relaxed text-muted-foreground">Review the corrections and workflow drafts your current agents keep for later runs. Open an agent to enable learning, inspect its changes or review pending drafts.</p><p className="mt-2 max-w-3xl text-small leading-relaxed text-muted-foreground">Imported sessions are history, not learning runs. Workflow drafts come from agentic runs started through this server; corrections are yours, given with a grade or written on an agent's Learning tab.</p></div>
       {server === undefined ? <p role="status" className="text-lead text-muted-foreground">Checking learning support…</p>

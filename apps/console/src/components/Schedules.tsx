@@ -114,8 +114,9 @@ function ScheduleList({ v2, go, agentName, every, now, failuresToPause, noAddres
   const { asks, outcome } = useAskingTools(v2, (triggers ?? []).flatMap((t) => startsOf(t) ?? []));
   return (
     // The page's frame is every list page's (Agents, Runs): a header bar with the place's icon and name in caps
-    // and its actions at the right, the main one last, then the content in a pane of its own, so the bar stays.
-    <section className="flex h-full min-h-0 flex-col" aria-label="Triggers">
+    // and its actions at the right, the main one last, then the content: beside the sidebar it scrolls in a pane of
+    // its own, so the bar stays; in a smaller window the page scrolls as a whole.
+    <section className="flex min-h-full flex-col roomy:h-full roomy:min-h-0" aria-label="Triggers">
       <header className={cn(pageToolbarClass, "flex-wrap justify-between gap-3 px-5")}>
         <h1 className={pageTitleClass}><CalendarClock className="size-4" aria-hidden />Triggers</h1>
         {/* With no trigger yet the panel below offers each kind, with what it is for: the page says each once. */}
@@ -131,7 +132,7 @@ function ScheduleList({ v2, go, agentName, every, now, failuresToPause, noAddres
         )}
       </header>
       {/* The content starts where the header's name does (px-5). */}
-      <div className="min-h-0 flex-1 overflow-auto">
+      <div className="roomy:min-h-0 roomy:flex-1 roomy:overflow-auto">
       <div className="px-5 py-5 md:py-6">
       {noAddress && triggers && triggers.length > 0 && <p className="mb-4 text-small text-muted-foreground">{NO_ADDRESS_LINE}</p>}
       {error && !triggers ? <ProblemCard problem={error} onRetry={() => setTries((n) => n + 1)} className="" />

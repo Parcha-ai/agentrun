@@ -65,7 +65,7 @@ export function Race({ v2, label, rereadMs = RACE_REREAD_MS }: { v2: Client; lab
   if (error) return <ProblemCard problem={problem(error, "the race")} onRetry={() => setReads((n) => n + 1)} />;
   if (!read) return <RunSkeleton />;
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="flex flex-col roomy:h-full roomy:min-h-0">
       <div className={cn(pageToolbarClass, "gap-3 px-5 md:px-8")}>
         <h1 className={pageTitleClass}>Race</h1>
         <span className="truncate font-mono text-small text-muted-foreground" title={raceFilter(label)}>{label}</span>
@@ -73,7 +73,7 @@ export function Race({ v2, label, rereadMs = RACE_REREAD_MS }: { v2: Client; lab
         {/* The lanes' Dev tools figures side by side (#/compare), in the lanes' order: what each lane's model and harness cost and took. */}
         {read.lanes.length >= MIN_COMPARED && <a href={compareHref(read.lanes.map((run) => run.run_id))} className={buttonVariants({ size: "sm" })}>Compare in figures</a>}
       </div>
-      <div className="min-h-0 flex-1 overflow-auto">
+      <div className="roomy:min-h-0 roomy:flex-1 roomy:overflow-auto">
       {read.lanes.length === 0 ? (
         <p role="status" className="px-5 py-8 text-body text-muted-foreground md:px-8">
           No run carries the label <span className="font-mono text-foreground">{raceFilter(label)}</span> yet. A run joins this race when it starts with that label.
