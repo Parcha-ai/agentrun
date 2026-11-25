@@ -18,7 +18,7 @@ import { ObservationLearning } from "./observation/learning.js";
 import { cliLearningOf } from "./store/agent-body.js";
 import { maintainObservations, Observations } from './observation/observer.js';
 import { isObservationRoute, observationHttp } from './observation/http.js';
-import { SDK_MAX_OPEN_MS, SdkRuns, sdkOf, sdkRunSecret } from "./sdk/runs.js";
+import { forgetSdkCopies, SDK_MAX_OPEN_MS, SdkRuns, sdkOf, sdkRunSecret } from "./sdk/runs.js";
 import { learningModelOf, type LearningModel } from "./learning-model.js";
 import { answerSkill } from './skill-route.js';
 import { RemoteConnectors, verifyRemote, REMOTE_COMPLETION_BODY_BYTES } from './native/remote.js';
@@ -3135,7 +3135,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     madeFrom: async (runId) => [...new Set([...(await store.runs.madeFrom(runId)), shadowRunId(runId)])],
     // Its copies in the agent's promotion records. Its learning rows (its saves' words, its notes and workflow files, its
     // grades and audits) go with the run's rows in the store's purge (Store.learning.purgeRun).
-    forgetCopies: (agentId, runId) => forgetRunCopies(store.learning, agentId, runId),
+    forgetCopies: async (agentId, runId) => {
+      await forgetRunCopies(store.learning, agentId, runId);
+      await forgetSdkCopies(store, runId);
+    },
     // /usage's meters and a live read's spend, from its journal, as they read now (store-reads/cap.ts), and how its
     // learning ended as /stats counts it (its state and reason alone).
     kept: async (runId) => {

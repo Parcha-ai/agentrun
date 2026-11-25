@@ -162,6 +162,23 @@ export async function sdkInbox(store: Pick<Store, "settings">, runId: string): P
   return row as unknown as SdkInbox;
 }
 
+/** What every SDK run's inbox holds of run `runId`'s text, gone (its purge): an inbox whose workflows or check draft it
+ *  wrote (`learning_writers` names it) keeps none of them, its writers kept, so its receipt answers 410 purged. Run after
+ *  the run's purge committed, and a start checks its writers after its inbox is written (start), so one of the two
+ *  always sees the other: no inbox keeps a purged run's workflow text. */
+export async function forgetSdkCopies(store: Pick<Store, "settings">, runId: string): Promise<void> {
+  for (const row of await store.settings.all({ prefix: keyOf("") })) {
+    for (let value = row.value, retry = 0; retry < 20; retry++) {
+      if (!isObject(value)) break;
+      const inbox = value as unknown as SdkInbox;
+      if (!inbox.learning_writers?.includes(runId) || (!inbox.learning_workflows?.length && !inbox.learning_check)) break;
+      const { learning_check: _check, ...rest } = inbox;
+      if (await store.settings.replaceIf(row.key, value, { ...rest, learning_workflows: [] })) break;
+      value = await store.settings.get(row.key);
+    }
+  }
+}
+
 /** Completion and closure compete on the same inbox. A stale runner cannot close it, and a completion that won
  *  remains available to the next claim even if this one cannot read or journal it. No external SDK call is replayed.
  *  An expiry is checked against the row it replaces: an events batch that moved the deadline keeps the inbox open. */
@@ -393,6 +410,10 @@ export class SdkRuns {
           ...(redacted ? { check_redacted: true } : {}),
           ...(cli && cleanedInput !== input ? { evidence_incomplete: true } : {}),
         } satisfies SdkInbox);
+        // A writer purged since the selection read it (the purge's own scrub of inboxes, forgetSdkCopies, runs after it
+        // commits, so it sees this inbox unless this read sees the purge): the start is refused, its inbox removed.
+        if (writers.length && (await purgedRows(this.store, writers)).size)
+          throw new ApiError("unavailable", "The agent's learning changed while this run started: start it again.", { retry_after_ms: 1_000 });
         await this.store.runs.create(
           { id: runId, agentId: entry.agent.id, revisionId: revision.id, ...(cli ? { expectedCurrent, settingsGuards: sourceGuards } : {}), ...(origin ? { origin } : {}), ...(labels ? { labels } : {}), ...(startedAt !== undefined ? { startedAt } : {}) },
           { body: launchBody(launch) },

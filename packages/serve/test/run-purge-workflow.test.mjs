@@ -648,3 +648,52 @@ test("rows: a purge takes out only the purged run's line: the same words another
   assert.equal(lines.filter((line) => line === "- the same words twice").length, 1, `the kept run's copy stays: ${JSON.stringify(lines)}`);
   assert.ok(lines.includes("- ALPHA line from the owner") && lines.includes("- KEPT line from the owner"), JSON.stringify(lines));
 });
+
+// An SDK start keeps the workflows it delivered (and its check's draft) in its inbox row. A DELETE of the run that wrote
+// them empties every such inbox; and a start whose writer is purged after its selection read it, before its inbox is
+// written, is refused, its inbox removed: no inbox keeps a purged run's workflow text.
+test("a DELETE of a run empties every SDK run's inbox of the workflow text it wrote, and a start whose writer is purged before its inbox is written keeps none", async (t) => {
+  const { api, store } = await serve(t, { runner: false });
+  const id = "sdk-inbox";
+  const tool = { name: "mcp:backend/status", description: "Read release status.", input_schema: { type: "object" }, permission: "allow", price_usd: 0 };
+  const body = { runtime: "claude-agent-sdk", input: "Check release status.", instructions: "Use the backend tools.", workflow_tools: [tool] };
+  const flowOf = (deadline, label) => ({ v: 2, name: "status", schemas: { Input: { type: "object" }, Answer: { type: "object", properties: { ready: { type: "boolean" } }, required: ["ready"] } }, input: { schemaId: "Input" }, output: { schemaId: "Answer", path: "answer" }, root: { node: "call", label, via: "tool", tool: tool.name, args: {}, out: "Answer", as: "answer", deadline_s: deadline } });
+  assert.equal((await api("POST", "/agents", { definition: { id, name: id, instructions: body.instructions, sdk: { runtime: body.runtime }, learning: true, tools: [] } })).status, 201);
+  assert.equal((await api("POST", `/agents/${id}/sdk-runs`, body, { "Idempotency-Key": "first" })).status, 201);
+  const readme = { path: "workflows/status/README.md", text: "---\nname: status\ndescription: Read release status.\n---\n" };
+  /** Run `writer` ended, its workflow `status` (labelled `label`) merged and promoted. */
+  const promoted = async (writer, label) => {
+    await endedRuns(api, store, id, [writer], false);
+    const text = JSON.stringify(flowOf(5, label));
+    const merge = await learned(store, id, (learning) => learningCommit(learning, { runId: writer, reason: "It learned status.", files: [{ path: "workflows/status/workflow.json", text }, readme] }));
+    await putPromotions(store, id, [recordOf("status", digestOf(text), "promote", merge)]);
+  };
+  const inboxes = async () => JSON.stringify((await store.settings.all({ prefix: "sdk-run:" })).map((row) => row.value));
+  await promoted("inbox-writer", "INBOXWORD");
+  const pinned = await api("POST", `/agents/${id}/sdk-runs`, body, { "Idempotency-Key": "pinned" });
+  assert.equal(pinned.status, 201, JSON.stringify(pinned.body));
+  assert.match(JSON.stringify(pinned.body.learning.workflows), /INBOXWORD/, "the start is given the writer's workflow");
+  assert.match(await inboxes(), /INBOXWORD/);
+  assert.equal((await api("DELETE", "/runs/inbox-writer")).status, 204);
+  assert.doesNotMatch(await inboxes(), /INBOXWORD/, "no SDK run's inbox keeps the purged run's workflow text");
+  // The purge commits after the selection read the writer, before the inbox is written.
+  await promoted("race-writer", "RACEWORD");
+  // The server's SdkRuns (this process's module) purges the writer, store alone (no inbox scrub), right after its
+  // selection returns.
+  const { SdkRuns } = await import("../dist/sdk/runs.js");
+  const selectedWorkflows = SdkRuns.prototype.selectedWorkflows;
+  let raced = false;
+  SdkRuns.prototype.selectedWorkflows = async function (agentId, ...rest) {
+    const selected = await selectedWorkflows.call(this, agentId, ...rest);
+    if (!raced && agentId === id && JSON.stringify(selected.workflows).includes("RACEWORD")) {
+      raced = true;
+      await store.runs.purge("race-writer", { meters: null, spend: { usd: 0.1, basis: "list" }, learning: null });
+    }
+    return selected;
+  };
+  t.after(() => { SdkRuns.prototype.selectedWorkflows = selectedWorkflows; });
+  const late = await api("POST", `/agents/${id}/sdk-runs`, body, { "Idempotency-Key": "late" });
+  assert.ok(raced, "the purge ran between the selection and the inbox's write");
+  assert.notEqual(late.status, 201, `the start is refused: ${JSON.stringify(late.body)}`);
+  assert.doesNotMatch(await inboxes(), /RACEWORD/, "the refused start's inbox is removed");
+});

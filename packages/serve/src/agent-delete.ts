@@ -70,7 +70,8 @@ export interface AgentDeleteHost {
   madeFrom(runId: string): Promise<string[]>;
   /** What agent `agentId`'s learning copied from run `runId`, gone: the grades it keeps of the run dropped, its promotion
    *  records' disagreements naming the run blanked, their decisions, numbers and run ids kept (learn/promote.ts
-   *  forgetRunCopies). Idempotent: a purged run's DELETE runs it again. */
+   *  forgetRunCopies), and every SDK run's inbox that holds its workflow text emptied of it (sdk/runs.ts forgetSdkCopies).
+   *  Idempotent: run before the run's purge and again after it commits, and a purged run's DELETE runs it again. */
   forgetCopies(agentId: string, runId: string): Promise<void>;
   /** What run `runId`'s spend reads from its journal, read before its purge removes it (store-reads/cap.ts). */
   kept(runId: string): Promise<PurgeKept>;
@@ -173,6 +174,9 @@ export async function purgeRun(host: AgentDeleteHost, runId: string): Promise<vo
   await host.at?.("run_made_from_gone", runId);
   await host.forgetCopies(run.agentId, runId);
   await purgeOneOrRefuse(host, run.agentId, runId, runId, true);
+  // Again after the purge committed: a copy written meanwhile (an SDK start's inbox, which checks its writers after it is
+  // written) is seen by this pass, or saw the purge itself.
+  await host.forgetCopies(run.agentId, runId);
 }
 
 /** The one per-run step of both purges: the figures its spend's readers read from its journal, its things outside its
