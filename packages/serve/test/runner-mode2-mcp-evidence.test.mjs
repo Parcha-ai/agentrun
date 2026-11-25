@@ -4,8 +4,9 @@
 // its mount holds the disk's write delegation and a write over the disk's file API is refused (409): the gateway files
 // through the computer then, and a fal job's result is filed at evidence/fal/<request_id>.json (the attached Workspace
 // makes a file without the chance of replacing one). Where nothing mounts the folder, the gateway files over the disk's
-// file API, and a fal result is filed nowhere: that Workspace has no writeNew until Parcha-ai/agentrun#3777. An answer too
-// long for the model is filed whole at evidence/mcp in both. The answer the model reads is fal's, byte for byte.
+// file API, and a fal result is filed nowhere: that Workspace has no writeNew until Parcha-ai/agentrun#3777 (every claim
+// path, with no computer, below). An answer too long for the model is filed whole at evidence/mcp in both. The answer
+// the model reads is fal's, byte for byte.
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -109,6 +110,21 @@ for (const [name, harness, build] of [["pi's spec", undefined, adapterRunSpecFro
     assert.ok(tool, "the run's wait_for_jobs");
     const [first, second] = await callTwice(tool);
     assertFiledThroughTheComputer({ data: run.data, agentId: AGENT, runId: RUN, scratch: run.scratch, disk, first, second });
+  });
+}
+
+for (const [name, harness, build] of [["pi's spec", undefined, adapterRunSpecFromLaunch], ["the CLI spec (opencode)", "opencode", cliRunSpecFromLaunch]]) {
+  test(`Mode 2, ${name}, no computer: the MCP files over the disk's file API, no fal result (#3777), nothing in this machine's folder`, { timeout: 120_000 }, async (t) => {
+    const { fake, register } = await fakeFal(t);
+    const disk = new FakeArchilDisk();
+    const run = await mode2Run(t, { harness, disk, mcp: MCP(fake, register), computer: false });
+    strayFolder(run.data, AGENT, RUN);
+    const { spec } = await run.claimNext(build);
+    assert.equal(run.mounts.length, 0, "nothing mounts the run's folder");
+    const tool = spec.mcp.tools.find((one) => spec.mcp.catalogOf(one.name) === "mcp:fal/wait_for_jobs");
+    assert.ok(tool, "the run's wait_for_jobs");
+    const [first, second] = await callTwice(tool);
+    assertFiledOverTheDisk({ data: run.data, agentId: AGENT, runId: RUN, disk, key: RUN_KEY, first, second });
   });
 }
 
