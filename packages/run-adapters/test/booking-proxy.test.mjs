@@ -167,16 +167,17 @@ test("a request its client stops part way books what its content streamed and th
   assert.equal(Math.round((await later(store)) * 1e9) / 1e9, Math.round(want * 1e9) / 1e9, 'read again at the same figure');
 });
 
-/** One request whose client hangs up once it has the answer's first piece (`first`), over a route's own fetch (serve's
- *  model-route: pi-ai's stream ends on its abort in an error event, and the route closes it cleanly, never throwing):
- *  on the proxy's abort, the provider's stream writes `onAbort` and ends. What the request was booked at, and its end. */
+/** One request whose client hangs up once it has the answer's first piece (`first`, a string, or several pieces the
+ *  provider sends one by one as network chunks), over a route's own fetch (serve's model-route: pi-ai's stream ends on
+ *  its abort in an error event, and the route closes it cleanly, never throwing): on the proxy's abort, the provider's
+ *  stream writes `onAbort` and ends. What the request was booked at, and its end. */
 async function hungUpOnRoute(t, first, onAbort) {
   const store = memorySessionStore();
   const booking = await modelPortFor(await store.open('chat:b'), { key: 'chat:b', beforeRequest: () => ({ holdUsd: HOLD }) });
   const { hooks, ends, settled } = watched(booking.models);
   const p = await startModelProxy({ policy, model: 'session-model', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks, price: () => 0.001, log: () => {}, fetch: async (_url, init) => new Response(new ReadableStream({
     start(c) {
-      c.enqueue(new TextEncoder().encode(first));
+      for (const piece of [first].flat()) c.enqueue(new TextEncoder().encode(piece));
       init.signal.addEventListener('abort', () => { c.enqueue(new TextEncoder().encode(onAbort)); c.close(); }, { once: true });
     },
   }), { status: 200, headers: { 'content-type': 'text/event-stream' } }) }, KEY);
@@ -224,4 +225,42 @@ test("a provider's refusal inside its stream (a rate limit before any content) t
   assert.deepEqual([ends[0].end, ends[0].label], ['nothing', 'refused'], JSON.stringify(ends[0]));
   assert.equal(spent, 0, "the provider's refusal costs nothing");
   assert.equal(await later(store), 0, 'read again at nothing');
+});
+
+/** The refusal above as an event may carry it: its data on two `data:` lines, which the format joins with a line feed
+ *  (the JSON reads whole only once they are), each line `end`ed as given. */
+const twoLines = (end) => `data: {"type":"error",${end}data: "error":{"type":"rate_limit_error","message":"slow down"}}${end}${end}`;
+/** A refusal its client read and hung up on, the provider's stream still open: booked as r2's single-line one is. */
+async function refusedOnce(t, pieces, label) {
+  const { ends, spent, store } = await hungUpOnRoute(t, pieces, '');
+  assert.equal(ends.length, 1, `${label}: ${JSON.stringify(ends)}`);
+  assert.deepEqual([ends[0].end, ends[0].label], ['nothing', 'refused'], `${label}: ${JSON.stringify(ends[0])}`);
+  assert.equal(spent, 0, `${label}: the provider's refusal costs nothing`);
+  assert.equal(await later(store), 0, `${label}: read again at nothing`);
+}
+
+test("a provider's refusal whose data comes on two `data:` lines of one event, read by its client before it hangs up, is the provider's refusal: booked at $0, never as a stop", async (t) => {
+  await refusedOnce(t, twoLines('\n'), 'two data lines');
+});
+
+test("the two-line refusal split between network chunks part way through a line is read as one event: booked at $0", async (t) => {
+  const event = twoLines('\n');
+  const at = event.indexOf('rate_limit');
+  await refusedOnce(t, [event.slice(0, at), event.slice(at)], 'two chunks');
+});
+
+test("the two-line refusal with CRLF or bare CR line ends, a CRLF split between chunks too, is read as one event: booked at $0", async (t) => {
+  const crlf = twoLines('\r\n');
+  const cut = crlf.indexOf('\r\ndata:') + 1;
+  for (const [label, pieces] of [['CRLF', crlf], ['CRLF split between chunks', [crlf.slice(0, cut), crlf.slice(cut)]], ['bare CR', twoLines('\r')]]) await refusedOnce(t, pieces, label);
+});
+
+test("the two-line refusal split across both its lines and three network chunks at once is read as one event: booked at $0", async (t) => {
+  // Chunk 1 ends part way through the first data line; chunk 2 holds its rest and half the second; chunk 3 the rest of
+  // that and the blank line.
+  const event = twoLines('\n');
+  const first = event.indexOf('"error",');
+  const second = event.indexOf('rate_limit');
+  assert.ok(first > 0 && second > event.indexOf('\ndata: "error"') && event.indexOf('\n\n') > second, 'each chunk boundary sits inside its line');
+  await refusedOnce(t, [event.slice(0, first + 4), event.slice(first + 4, second), event.slice(second)], 'three chunks');
 });
