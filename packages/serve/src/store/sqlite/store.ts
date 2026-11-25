@@ -1467,7 +1467,7 @@ class SqliteStore implements Store {
       },
       // A list's page from the rows alone: filtered, ordered and cut to the page in the query, one read whatever the number
       // of runs, each row with its listing (schema.ts RUN_LISTING_COLUMNS) and its agent's archive time.
-      listed: async ({ agentId, revisionId, labels, archived, status, going, after, limit, offset = 0 }) => {
+      listed: async ({ agentId, revisionId, labels, source, archived, status, going, after, limit, offset = 0 }) => {
         const n = clock();
         const behind = listingBehind(n.sql);
         // Neither a built-in learning run nor an audit's shadow run (learn/audit.ts SHADOW_PREFIX, matched as it is, case and all).
@@ -1476,6 +1476,8 @@ class SqliteStore implements Store {
         if (agentId !== undefined) (where.push("runs.agent_id = ?"), params.push(agentId));
         if (revisionId !== undefined) (where.push("runs.revision_id = ?"), params.push(revisionId));
         for (const [key, value] of Object.entries(labels ?? {})) (where.push(d.jsonObjectHas("runs.labels")), params.push(key, value));
+        if (source === "live") where.push("runs.imported_from IS NULL");
+        else if (source !== undefined) (where.push(`${d.jsonText("runs.imported_from", ["source"])} = ?`), params.push(source));
         where.push(`COALESCE(runs.archived_at, agents.archived_at) IS ${archived ? "NOT NULL" : "NULL"}`, "runs.purged_at IS NULL");
         if (status !== undefined) (where.push("runs.list_status = ?"), params.push(status));
         // A run still going (no settled status on its row) whose listing is behind: its list_status may say what it was.

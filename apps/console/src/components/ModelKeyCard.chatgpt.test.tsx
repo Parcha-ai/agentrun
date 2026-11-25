@@ -77,6 +77,28 @@ describe("ModelKeyCard, a server with no key that offers the ChatGPT sign-in", (
     ]);
   });
 
+  it("on a gateway server, says the plan runs only an agent that names its model", async () => {
+    const card = await open({ plan: { state: "signed_out" }, harnesses: HARNESSES, source: "gateway" });
+    expect(card.host.textContent).not.toContain(LINE);
+    expect(card.host.textContent).toContain("An agent runs on your ChatGPT plan only when it names one of the plan's models (chatgpt/…).");
+  });
+
+  // A gateway server whose AGENT_MODEL is a plan model (chatgpt/<id>) runs an agent with no model on the plan, so signed
+  // out it can't run one until someone signs in (serve's planChoice), and the sign-in is the card's way on. Capabilities
+  // send that default under the gateway's route_prefix: agent-model/chatgpt/<id>.
+  it("on a gateway server whose default is a plan model, offers the sign-in and says what the plan runs", async () => {
+    const card = await open({ plan: { state: "signed_out" }, harnesses: HARNESSES, source: "gateway", model: "agent-model/chatgpt/gpt-6.1-sol", routePrefix: "agent-model" });
+    expect(card.buttons().slice(0, 2)).toEqual(["Continue with ChatGPT", "Add a key"]);
+    expect(card.host.textContent).toContain(LINE);
+  });
+
+  // A gateway's own default (agent-model/anthropic/claude-x) runs on the gateway: the provider under the prefix is the
+  // gateway's to route, so its key isn't the one to ask for.
+  it("on a gateway server whose default is the gateway's own model, doesn't ask for that model's provider key", async () => {
+    const card = await open({ plan: { state: "signed_out" }, harnesses: HARNESSES, source: "gateway", model: "agent-model/anthropic/claude-x", routePrefix: "agent-model" });
+    expect(card.host.textContent).not.toContain("Save the Anthropic key");
+  });
+
   it("Continue with ChatGPT starts the sign-in and keeps the card while it waits (onPlan)", async () => {
     vi.stubGlobal("open", vi.fn(() => ({ location: { href: "" }, opener: null, close() {} })));
     const seen: ChatGPTView[] = [];
