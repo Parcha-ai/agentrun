@@ -464,8 +464,9 @@ test("a claim's end never waits on the collector: with an exporter that never an
 
 test("under the runner subcommand (each run a process of its own), a run's release waits on no collector: its process sends nothing, its runner's exporter takes its spans, and no flush comes before the release", { timeout: 120_000 }, async (t) => {
   // A collector that takes a request and never answers: what a run's process would wait on if it sent its own spans.
-  const posts = [];
-  const collector = createServer((req) => void posts.push(req.url));
+  // Only a POST is an export: a GET or HEAD is a prober finding the port, never a span.
+  const asked = [];
+  const collector = createServer((req) => void asked.push(`${req.method} ${req.url}`));
   await new Promise((resolve) => collector.listen(0, "127.0.0.1", resolve));
   t.after(() => {
     collector.closeAllConnections();
@@ -484,7 +485,7 @@ test("under the runner subcommand (each run a process of its own), a run's relea
   const { last } = await follow(server.api, run.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
   assert.equal(last.status, "completed");
   await until(async () => (await server.store.runs.get(run.body.run_id)).runner === null, "the run's claim was released", 20_000);
-  assert.deepEqual(posts, [], "the run's process sent no span to the collector itself");
+  assert.deepEqual(asked.filter((request) => request.startsWith("POST ")), [], `the run's process sent no span to the collector itself (all it was asked: ${JSON.stringify(asked)})`);
   assert.ok(hanging.exported.some((span) => span.name.startsWith("invoke_agent ")), `the runner's exporter took the run's spans: ${hanging.exported.map((span) => span.name)}`);
   assert.equal(flushed, 0, "no flush of the runner's tracing before the run's release");
   assert.equal(hanging.flushes, 0, "no flush of the exporter before the run's release");
