@@ -102,7 +102,7 @@ test("a refused call ran nothing, so its $ is 0 wherever its window can't be tol
   assert.deepEqual(workflowCallsOf([kept(WORKFLOW_FIRST_CALL, refused)]).map(({ caller, outcome, usd }) => [caller, outcome, usd]), [["platform", "refused", 0]]);
 });
 
-test("on pi a subagent's call is its own only while no other conversation works:a sibling subagent running beside it makes its $ unknown", () => {
+test("on pi a subagent's call is its own only while no other conversation works: a sibling subagent running beside it makes its $ unknown", () => {
   const CHILD = 3;
   const SIBLING = 4;
   const asked = (conversationId, ...calls) => ({ kind: "pi.assistant", conversationId, model: [{ role: "assistant", content: calls.map(([id, name]) => ({ type: "toolCall", id, name, arguments: {} })) }] });
