@@ -267,3 +267,41 @@ async function sameMillisecond(t, restarted) {
 test("a server saved again under the name in the millisecond its last row was made is a new row: the removal of the last one keeps the token's record of it", (t) => sameMillisecond(t, false));
 
 test("a server started again makes a row saved again under the name, in the millisecond its last row was made, a new row too: the removal it reads keeps the token's record of it", (t) => sameMillisecond(t, true));
+
+const firstSaveOf = (store) => store.mcp.putIfCredential({ name: "hn", url: "http://127.0.0.1:9/plain", auth: "none", tools: [], sealed: null }, null, { record: mcpSourceKey("hn"), made: (row) => storedSource({ source: "url", toolkit: null }, row, false, true) });
+
+test("a record left with no row, read by no store since, is never a new row's: the token's first save of the name on a server started again with its clock stepped back is made past the record's row", async (t) => {
+  const clock = { now: 1_800_000_000_000 };
+  const first = await storeOn(t, { clock });
+  const old = await firstSaveOf(first.store);
+  // A removal cut short: its row went, its record stayed.
+  await first.store.mcp.remove("hn");
+  assert.equal((await first.store.settings.get(mcpSourceKey("hn")))?.of, old.createdAt, "the record outlived its row");
+  clock.now += 60_000;
+  await first.store.close();
+  // A server started again on the same place, its clock stepped back to the old row's millisecond.
+  clock.now = old.createdAt;
+  const { store } = await storeOn(t, { clock, file: first.file });
+  const again = await firstSaveOf(store);
+  assert.ok(again.createdAt > old.createdAt, `the new row is made past the row the record left behind names (${old.createdAt}, ${again.createdAt})`);
+  assert.deepEqual([(await store.settings.get(mcpSourceKey("hn")))?.of, (await store.mcp.server("hn"))?.createdAt], [again.createdAt, again.createdAt], "the token's record names the new row");
+});
+
+test("two servers on one store: a row one made and removed, saved again by the other in that millisecond, is a new row, and the removal keeps the token's record of it", async (t) => {
+  const clock = { now: 1_800_000_000_000 };
+  const a = await storeOn(t, { clock });
+  const b = (await storeOn(t, { clock, file: a.file, role: "runner" })).store;
+  // b saves the server and serves its removal; a, which never read the row, saves the name again inside it.
+  const old = await firstSaveOf(b);
+  let again;
+  const get = b.settings.get;
+  t.mock.method(b.settings, "get", async function (key) {
+    const value = await get.call(this, key);
+    if (again === undefined && key === mcpSourceKey("hn") && (await b.mcp.server("hn")) === undefined) again = await firstSaveOf(a.store);
+    return value;
+  });
+  await new McpServersOverStore(b, { AGENTRUN_SEAL_KEY: SEAL }, "test").remove("hn");
+  assert.ok(again, "the other server saved the name again inside the removal");
+  assert.deepEqual([(await get.call(b.settings, mcpSourceKey("hn")))?.of, (await a.store.mcp.server("hn"))?.createdAt], [again.createdAt, again.createdAt], "the removal of the last row of the name dropped the token's record of the row the other server saved again in its millisecond: the two rows read as one");
+  assert.ok(again.createdAt > old.createdAt, `the row saved again is made after the one removed, in one millisecond (${old.createdAt}, ${again.createdAt})`);
+});
