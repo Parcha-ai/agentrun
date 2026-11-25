@@ -534,11 +534,14 @@ export interface Learning {
    *  with each purged run's copies its data names blanked (learn/promote.ts forgetRunIn). */
   changeRecords<T>(agentId: string, kind: LearningRecordKind, update: (records: readonly LearningRecord[], held?: (workflow: string, digest: string) => boolean) => { records: readonly LearningRecordWrite[]; result: T } | { result: T }, options?: { readonly anyDigest?: string }): Promise<T>;
   /** Agent `agentId`'s ledger (learn/ledger.ts), in one read (one snapshot of both tables): every run's row its end
-   *  recorded, oldest first, each with the end it was recorded for (`epoch`, its run's epoch then), and every spend row.
-   *  With `runIds`, those runs' rows alone and the spend rows they booked or that audit them (none for none). Written
-   *  only beside a run's end and a heal of its cost (run-patch.ts recordLedger); a purge or a delete of the run takes its
-   *  row and its spend. */
-  ledger(agentId: string, runIds?: readonly string[]): Promise<{ rows: (LedgerRow & { readonly epoch: number })[]; spend: SpendRow[] }>;
+   *  recorded, oldest first, and every spend row. With `runIds`, those runs' rows alone and the spend rows they booked or
+   *  that audit them (none for none). Written only beside a run's end and a heal of its cost (run-patch.ts recordLedger);
+   *  a purge or a delete of the run takes its row and its spend. */
+  ledger(agentId: string, runIds?: readonly string[]): Promise<{ rows: LedgerRow[]; spend: SpendRow[] }>;
+  /** Agent `agentId`'s newest `limit` ledger rows on the `agent` path at a known cost, of runs before run `before` in
+   *  runs.list's order (started_at, then id), on no named disk, neither imported nor archived, newest first: the money
+   *  rule's by-hand side read past its window (store-reads/learning.ts pastRunsRead). One read. */
+  byHandBefore(agentId: string, before: { readonly id: string; readonly startedAt: number }, limit: number): Promise<{ readonly id: string; readonly startedAt: number; readonly jobUsd: number }[]>;
 }
 
 /** A learning item: one line of the owner's notes (corrections.md), or one learned workflow's folder. */

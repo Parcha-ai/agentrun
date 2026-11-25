@@ -20,17 +20,20 @@ cpSync(join(root, "src", "workspace", "kind-skills"), join(root, "dist", "worksp
 // so there.
 const built = join(root, "..", "..", "apps", "console", "dist");
 if (existsSync(join(built, "index.html"))) {
-  const index = readFileSync(join(built, "index.html"), "utf8");
-  // The server's CSP (src/page.ts) runs no inline script or style, and the console's paths stay relative to it.
-  const problems = [
-    [/<script\b(?![^>]*\ssrc\s*=)[^>]*>/i, "an inline <script>"],
-    [/<style[\s>]/i, "a <style> block"],
-    [/\sstyle\s*=/i, "a style attribute"],
-    [/\s(?:src|href)\s*=\s*["']?\//i, "an absolute src or href (the console builds with base './')"],
-  ].filter(([pattern]) => pattern.test(index)).map(([, what]) => what);
-  if (problems.length) throw new Error(`apps/console/dist/index.html has ${problems.join(", ")}: the server's CSP or path would refuse it`);
   mkdirSync(join(root, "dist", "console"), { recursive: true });
-  cpSync(join(built, "index.html"), join(root, "dist", "console", "index.html"));
+  // Its pages: the console, and the share preview (share.html, served at /share/<run>) when the build has it.
+  for (const name of ["index.html", "share.html"].filter((page) => page === "index.html" || existsSync(join(built, page)))) {
+    const html = readFileSync(join(built, name), "utf8");
+    // The server's CSP (src/page.ts) runs no inline script or style, and the console's paths stay relative to it.
+    const problems = [
+      [/<script\b(?![^>]*\ssrc\s*=)[^>]*>/i, "an inline <script>"],
+      [/<style[\s>]/i, "a <style> block"],
+      [/\sstyle\s*=/i, "a style attribute"],
+      [/\s(?:src|href)\s*=\s*["']?\//i, "an absolute src or href (the console builds with base './')"],
+    ].filter(([pattern]) => pattern.test(html)).map(([, what]) => what);
+    if (problems.length) throw new Error(`apps/console/dist/${name} has ${problems.join(", ")}: the server's CSP or path would refuse it`);
+    cpSync(join(built, name), join(root, "dist", "console", name));
+  }
   // The licenses of the third-party code the console bundles (apps/console/third-party-notices.mjs), which NOTICE points
   // to. A console build without them is refused: this package would ship that code without its notices.
   const notices = join(built, "THIRD-PARTY-NOTICES.txt");

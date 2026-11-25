@@ -19,10 +19,17 @@ type RaceHarness = { id: string; available: boolean; default_model?: string | nu
  *  again: its agent's id names the agent already made, and its run's key the run, if the server made either). */
 type Outcome = { run: Run } | { error: string } | { unsure: LaneStart };
 
+/** The models a lane of `h` may run on: those capabilities offer for it, else its default model alone. A plan-billed
+ *  harness (Cursor on its own sign-in) offers no list, only the model its agent picks (`cursor/default`). */
+function choices(h: RaceHarness): string[] {
+  if (h.models?.length) return h.models;
+  return h.default_model ? [h.default_model] : [];
+}
+
 /** Lane `i`'s first pick: the harnesses that run here in turn, each on its default model (then its next ones). */
 function firstPick(runnable: RaceHarness[], i: number): LaneChoice {
   const h = runnable[i % runnable.length];
-  const models = h.models ?? [];
+  const models = choices(h);
   const start = Math.max(0, models.indexOf(h.default_model ?? ""));
   return { harness: h.id, model: models[(start + Math.floor(i / runnable.length)) % models.length] };
 }
@@ -61,7 +68,7 @@ const pickKey = (n: number, agent: Pick<LaneStart["agent"], "harness" | "model" 
  *  `label`: the race's (a test's), else a new one (newRaceLabel). `tools` and `places`: capabilities' tool offers and
  *  places, which give each lane a new agent's tools and box (laneKit). */
 export function RaceStart({ v2, harnesses, tools, places, go, label: given }: { v2: Pick<Client, "createAgent" | "listRevisions" | "startRun" | "archiveAgent">; harnesses: RaceHarness[]; tools: ToolOffer[]; places: Places | null; go: (to: string) => void; label?: string }) {
-  const runnable = harnesses.filter((h) => h.available && (h.models?.length ?? 0) > 0);
+  const runnable = harnesses.filter((h) => h.available && choices(h).length > 0);
   const label = useRef(given ?? newRaceLabel()).current;
   const keys = useRef(keepersByRun()).current;
   // Each pick the form has sent (pickKey), numbered in turn: the same pick is the same agent.
@@ -181,7 +188,8 @@ export function RaceStart({ v2, harnesses, tools, places, go, label: given }: { 
           {lanes.map((lane, i) => {
             const outcome = outcomes[i];
             const ran = outcome && "run" in outcome ? outcome.run : undefined;
-            const models = runnable.find((h) => h.id === lane.harness)?.models ?? [];
+            const offered = runnable.find((h) => h.id === lane.harness);
+            const models = offered ? choices(offered) : [];
             return (
               <div key={i} data-race-lane={i + 1} className="flex flex-col gap-3 border bg-card p-4">
                 <div className="flex items-center gap-2">

@@ -192,6 +192,39 @@ for (const [blank, said] of [[" ", "a space"], ["", "empty"]]) {
   });
 }
 
+for (const [blank, said] of [[" ", "a space"], ["", "empty"]]) {
+  test(`a server whose saved Composio user is blank (${said}) keeps its routes, and its delete takes the project's turn`, async (t) => {
+    const s = await setup(t);
+    const blankUser = async () => {
+      const row = await s.server.store.mcp.server("gh");
+      const url = new URL(row.url);
+      url.searchParams.set("user_id", blank);
+      await s.server.store.mcp.put({ ...row, url: url.href });
+    };
+    // A create holds the project's turn at its upsert; the row is saved blank meanwhile (an older or damaged save).
+    const upsert = s.composio.hold("/upsert", "POST");
+    const create = s.api("POST", "/triggers", issueTrigger());
+    await upsert.reached;
+    await blankUser();
+    // Its routes send Composio no user: they answer, not as if the server were missing.
+    const events = await s.api("GET", "/settings/mcp-servers/gh/composio/events");
+    assert.equal(events.status, 200, JSON.stringify(events.body));
+    const listed = await s.api("GET", "/settings/mcp-servers/gh/composio/triggers");
+    assert.equal(listed.status, 200, JSON.stringify(listed.body));
+    // Its delete waits for the create's turn: it checks who uses the server only once the create is saved or undone.
+    let answered = false;
+    const removed = s.api("DELETE", "/settings/mcp-servers/gh").then((res) => ((answered = true), res));
+    await new Promise((r) => setTimeout(r, 1000));
+    assert.equal(answered, false, "the delete waits for the create holding the project's turn");
+    upsert.release();
+    const [made, gone] = await Promise.all([create, removed]);
+    // The create finds the row's user blank on its re-check and undoes what it made; the delete then finds no trigger.
+    assert.deepEqual([made.status, made.body.error?.fields?.map((f) => f.field)], [422, ["source.server"]], JSON.stringify(made.body));
+    assert.ok(gone.status < 300, JSON.stringify(gone.body));
+    assert.equal((await s.api("GET", "/triggers")).body.triggers.length, 0);
+  });
+}
+
 // A server saved with auth_config_id stands on that config: its MCP server serves only the accounts under it, so its
 // triggers run as one of those, and its connect link is made under it. The user here has a GitHub account under the
 // managed config too, which that server never serves.

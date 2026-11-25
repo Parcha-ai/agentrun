@@ -43,11 +43,11 @@ function later(breaking, version = KNOWN + 1) {
   return { version, name: breaking ? "later_breaking" : "later_additive", sql, sha256: createHash("sha256").update(sql).digest("hex"), breaking };
 }
 
-/** The version of the learning rows' migration (0030_learning_rows.sql), and the version before it: what a runner of the
+/** The version of the learning rows' migration (0032_learning_rows.sql), and the version before it: what a runner of the
  *  release before learning rows knows. */
 const ROWS = migrationsIn().find((m) => m.name === "learning_rows").version;
 /** The SQLite schema version of the release before learning rows: its runner opens only that version. */
-const SQLITE_BEFORE_ROWS = 15;
+const SQLITE_BEFORE_ROWS = 16;
 
 /** A scratch schema dropped at the test's end, with a test client on it. */
 async function schemaFor(t) {
@@ -298,7 +298,7 @@ test("a floor read on a database that stopped answering gives up at its deadline
 // Learning rows are runners-breaking: a runner of the release before them commits a run's learning to its git folder and
 // settings keys, which this server neither reads nor purges, so it must never run beside this server's store. It is
 // refused at its open, in words that name the floor, on either store.
-test("the learning rows' migration (0030) is breaking for runners: a schema migrated through it refuses a runner that knows only the version before it", () => {
+test("the learning rows' migration (0032) is breaking for runners: a schema migrated through it refuses a runner that knows only the version before it", () => {
   const rows = migrationsIn().find((m) => m.version === ROWS);
   assert.equal(rows.breaking, true, `${String(ROWS).padStart(4, "0")}_${rows.name}.sql says "-- runners: breaking" in its leading comment`);
   const state = { version: ROWS, runnerFloor: floorAt(ROWS) };

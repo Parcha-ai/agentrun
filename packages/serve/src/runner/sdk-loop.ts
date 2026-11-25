@@ -20,7 +20,7 @@ import { journalEntries } from "./journal-reader.js";
 import { capNowOf, KINDS } from "./journal-kinds.js";
 import { bookedSpend } from "./metrics.js";
 import { stopEnd, type AlsoRow, type Claim, type EndOfRunAnswer, type EndOfRunKept, type LoopFactory, type StopReason } from "./loop-contract.js";
-import { END_PATCH_MS, END_PATCH_UNKNOWN } from "./loop.js";
+import { END_PATCH_MS, END_PATCH_UNKNOWN, REAL_TIMER } from "./loop.js";
 import { storeSecrets } from "./store-secrets.js";
 import { pathMetrics } from "./workflow-first.js";
 
@@ -126,16 +126,17 @@ export function createSdkLoop(
           // The end keeps cost and path together, under the same bound as the other loops. A failed or late read
           // leaves both unknown; the completed backend task is still completed. No read writes after this end.
           const patchOf = async (read: () => Promise<Pick<RunPatch, "costUsd" | "metrics">>) => {
-            let timer: NodeJS.Timeout | undefined;
+            const bound = host.endPatchTimer ?? REAL_TIMER;
+            let timer: unknown;
             const late = new Promise<typeof END_PATCH_UNKNOWN>((resolve) => {
-              timer = setTimeout(() => resolve(END_PATCH_UNKNOWN), host.endPatchMs ?? END_PATCH_MS);
+              timer = bound.setTimeout(() => resolve(END_PATCH_UNKNOWN), END_PATCH_MS);
             });
             try {
               endPatch = await Promise.race([read(), late]);
             } catch {
               endPatch = END_PATCH_UNKNOWN;
             } finally {
-              clearTimeout(timer);
+              bound.clearTimeout(timer);
             }
             // A stop during the reads owns this end too. The catch below takes its row with the patch just read;
             // claim loss or shutdown instead leaves the durable SDK completion for the next claim.

@@ -21,7 +21,7 @@ import { migrationsIn, runnerFloorOf, runnerOn, type SchemaState } from "./postg
 import { STORE_CONNECT_TIMEOUT_MS } from "./postgres/connection.js";
 import { storePlace, storeTarget, type StoreTarget } from "./open.js";
 import { SCHEMA_VERSION } from "./schema.js";
-import { earlierVersionIn, runnerWaitsFor, STORE_FILE } from "./sqlite/store.js";
+import { earlierVersionIn, runnerWaitsFor, SQLITE_UPGRADES, STORE_FILE } from "./sqlite/store.js";
 
 /** The line `agentrun-serve store-schema` prints. */
 export interface StoreSchemaReport {
@@ -35,9 +35,6 @@ export interface StoreSchemaReport {
   readonly runner: "opens" | "waits" | "refused";
 }
 
-/** The SQLite store's versions the server upgrades in place (sqlite/store.ts openSqliteStore). */
-const SQLITE_UPGRADES = new Set([11, 12, 13, 14, 15]);
-
 /** What a build that knows `build` does with a store at `state`, on `kind`. `earlier`: the data directory holds an earlier
  *  version's files (SQLite only), which this build's server refuses to start beside (StoreFromEarlierVersion). `awaits`:
  *  on SQLite at this build's version, a column this build's runner needs that the file lacks (SQLITE_RUNNER_NEEDS), which
@@ -48,7 +45,8 @@ export function storeSchemaReport(target: StoreTarget, state: SchemaState, build
     ? "refuses"
     : version === null ? "sets up" : version === build ? "opens" : version > build ? "refuses" : target.kind === "postgres" || SQLITE_UPGRADES.has(version) ? "migrates" : "refuses";
   // A SQLite runner opens only its own version: its floor is the version (sqlite/store.ts schemaState).
-  // On SQLite a runner waits only for a version its server upgrades in place (11-14), and refuses any other earlier one.
+  // On SQLite a runner waits only for a version its server upgrades in place (SQLITE_UPGRADES), and refuses any other
+  // earlier one.
   const runner = target.kind === "sqlite" && version !== null && version < build && !SQLITE_UPGRADES.has(version)
     ? "refused"
     : awaits && version === build ? "waits" : runnerOn(target.kind === "sqlite" ? { version, runnerFloor: version } : state, build);
