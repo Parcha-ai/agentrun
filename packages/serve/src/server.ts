@@ -2091,8 +2091,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // The outbound webhook's secret, as it stands (set by a PUT, gone with a DELETE), and each it held before.
   stops.push(() => webhooks.close());
   // A share host sends no message: a data folder it reuses may hold a webhook, a Slack URL and messages left queued, about
-  // runs it neither runs nor answers for. Its outboxes are never read, so nothing is resumed or sent.
-  if (!options.shareHost) await webhooks.load();
+  // runs it neither runs nor answers for. Its outboxes are never read, so nothing is resumed or sent; their saved secrets
+  // are, so they stay held values its uploads are scrubbed with.
+  await (options.shareHost ? webhooks.readSecrets() : webhooks.load());
   // Where an earlier version kept the webhook: no longer read.
   if (existsSync(join(data, WEBHOOK_FILE))) log?.(logLine("webhook", { condition: "webhook_left_over", file: join(data, WEBHOOK_FILE), effect: "not read: the webhook is kept in the store now; set it again with PUT /v2/settings/webhook" }));
   secretStores.add("webhook", () => webhooks.signingSecrets());
@@ -2107,7 +2108,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     serverSecrets: () => serverSecrets(),
   });
   stops.push(() => slack.close());
-  if (!options.shareHost) await slack.load();
+  await (options.shareHost ? slack.readSecrets() : slack.load());
   secretStores.add("slack", () => slack.urlForms());
   const uploads = new Uploads(join(data, UPLOADS_DIR));
   // Under the data directory's lock and before this server answers anything, so no PUT of its own is in flight: an upload
