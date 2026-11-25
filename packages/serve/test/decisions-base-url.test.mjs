@@ -4,7 +4,11 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { test } from "node:test";
-import { decisionProvidersIn } from "../dist/decisions.js";
+import { decisionProvidersIn, FAUX_JEV_ENV } from "../dist/decisions.js";
+import { FAUX_ENV } from "../dist/model.js";
+import { asked } from "./fixtures/loopback-only-fetch.mjs";
+
+const LOOPBACK_ONLY = new URL("./fixtures/loopback-only-fetch.mjs", import.meta.url).pathname;
 
 test("an http TYPESAFE_BASE_URL is refused by its name when a run's decision providers are built, and TYPESAFE_API_KEY goes nowhere", async (t) => {
   const heard = [];
@@ -47,4 +51,33 @@ test("an https TYPESAFE_BASE_URL with a user, a password or a query is refused i
     process.env.TYPESAFE_BASE_URL = url;
     await assert.rejects(decisionProvidersIn(process.env), (error) => error.message === words, words);
   }
+});
+
+test("the env a run's providers are built from is the one TYPESAFE_BASE_URL is read from: a value in the process's environment alone is never where the key goes", async (t) => {
+  const heard = [];
+  const server = createServer((req, res) => {
+    if (req.headers.authorization !== undefined) heard.push(`${req.method} ${req.url} ${req.headers.authorization}`);
+    req.resume();
+    req.on("end", () => {
+      res.writeHead(500, { "content-type": "application/json" });
+      res.end("{}");
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  const saved = process.env.TYPESAFE_BASE_URL;
+  asked.length = 0;
+  try {
+    process.env.TYPESAFE_BASE_URL = `http://127.0.0.1:${server.address().port}`;
+    // The env handed in has the key and no base. Its fetch passes a loopback URL on and answers TypeSafe's own host
+    // itself, so the default base is seen here and never reached.
+    const env = { TYPESAFE_API_KEY: "fake-test-key", [FAUX_ENV]: "1", [FAUX_JEV_ENV]: LOOPBACK_ONLY };
+    const built = await decisionProvidersIn(env);
+    const questions = { holds: { type: "noul", instructions: "Does it hold?" } };
+    await built.providers.jev.decide({ label: "x", kind: "judge", state: {}, questions }, { decisionId: "d", signal: AbortSignal.timeout(10_000), deadlineMs: 10_000 }).catch(() => undefined);
+  } finally {
+    saved === undefined ? delete process.env.TYPESAFE_BASE_URL : (process.env.TYPESAFE_BASE_URL = saved);
+  }
+  assert.deepEqual(heard, [], "TYPESAFE_API_KEY went to the process's TYPESAFE_BASE_URL, which the env handed in lacks");
+  assert.deepEqual(asked, ["https://api.typesafe.ai/v1/systemone"], "the request goes to TypeSafe's default base, the key check's");
 });
