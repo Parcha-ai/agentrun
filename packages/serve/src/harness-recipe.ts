@@ -97,7 +97,9 @@ export interface Recipe {
   readonly files: Readonly<Record<string, string>>;
   readonly state: readonly string[];
   readonly declares: { readonly load: boolean; readonly mcp: "http" | "stdio" };
-  readonly quirks: { readonly mcpCall?: "match" | "mint" };
+  /** `mcpCall`: how an MCP call is tied to the agent's tool call. `callNames`: the one form the agent names a call of our
+   *  tools in (the ACP adapter's CallNames); none declared, Goose's and Cursor's. */
+  readonly quirks: { readonly mcpCall?: "match" | "mint"; readonly callNames?: "goose" | "cursor" | "agy" };
   readonly signIn?: RecipeSignIn;
 }
 
@@ -312,7 +314,7 @@ export function recipeProblems(parsed: unknown): { code: RecipeCode; words: stri
 
   const declares = r.declares;
   if (!isPlain(declares) || typeof declares.load !== "boolean" || (declares.mcp !== "http" && declares.mcp !== "stdio")) say(RECIPE_CODES.invalid, 'declares is { "load": true or false, "mcp": "http" or "stdio" }');
-  if (r.quirks !== undefined && (!isPlain(r.quirks) || Object.keys(r.quirks).some((k) => k !== "mcpCall") || (r.quirks.mcpCall !== undefined && r.quirks.mcpCall !== "match" && r.quirks.mcpCall !== "mint"))) say(RECIPE_CODES.invalid, 'quirks is { "mcpCall": "match" or "mint" }');
+  if (r.quirks !== undefined && (!isPlain(r.quirks) || Object.keys(r.quirks).some((k) => k !== "mcpCall" && k !== "callNames") || (r.quirks.mcpCall !== undefined && r.quirks.mcpCall !== "match" && r.quirks.mcpCall !== "mint") || (r.quirks.callNames !== undefined && r.quirks.callNames !== "goose" && r.quirks.callNames !== "cursor" && r.quirks.callNames !== "agy"))) say(RECIPE_CODES.invalid, 'quirks is { "mcpCall": "match" or "mint", "callNames": "goose", "cursor" or "agy" }');
   if (r.description !== undefined && typeof r.description !== "string") say(RECIPE_CODES.invalid, "description is a string");
   return problems;
 }

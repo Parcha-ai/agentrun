@@ -73,7 +73,9 @@ export function acpRecipeFor(recipe: Recipe, binary: string, release: RecipeArch
     state: [...recipe.state],
     declares: { ...recipe.declares },
     billing: recipe.model.billing === "proxy" ? { kind: "proxy" } : { kind: "plan", maxTurns: recipe.model.maxTurns, maxToolCalls: recipe.model.maxToolCalls },
-    ...(recipe.quirks.mcpCall ? { quirks: { mcpCall: recipe.quirks.mcpCall } } : {}),
+    ...(recipe.quirks.mcpCall || recipe.quirks.callNames
+      ? { quirks: { ...(recipe.quirks.callNames ? { callNames: recipe.quirks.callNames } : {}), ...(recipe.quirks.mcpCall ? { mcpCall: recipe.quirks.mcpCall } : {}) } }
+      : {}),
   };
 }
 

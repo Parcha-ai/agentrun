@@ -250,6 +250,8 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
   const plan = recipe.billing.kind === "plan" ? recipe.billing : undefined;
   const listed = options.tools.filter((tool) => !tool.deferred);
   const names = new Set(listed.map((tool) => tool.name));
+  /** The form the agent names a call of our tools in, by its recipe (ourTool). */
+  const form = recipe.quirks?.callNames;
   let runtime: Runtime | undefined;
 
   /** The recipe's refusal `text` (the agent's stderr, an error it answered) says, as `<code>: <words>`; undefined when it
@@ -337,8 +339,8 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
         if (typeof update.kind === "string") rt.kinds.set(update.toolCallId, update.kind);
         // Only a call whose kind has no effects of its own can be ours (ourTool): a shell titled as our tool never takes an
         // MCP call's id, and never passes the permission shortcut below.
-        const tool = ourTool(update as { title?: string | null; name?: string | null; kind?: string | null }, names);
-        if (tool) rt.calls.add(update.toolCallId, tool, announcedInput(update as { title?: string | null; name?: string | null }, update.rawInput));
+        const tool = ourTool(update as { title?: string | null; name?: string | null; kind?: string | null }, names, form);
+        if (tool) rt.calls.add(update.toolCallId, tool, announcedInput(update as { title?: string | null; name?: string | null }, update.rawInput, form));
         return;
       }
       case "tool_call_update": {
@@ -350,8 +352,8 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
         if (!rt.calls.has(update.toolCallId)) {
           // Held to both kinds, the tool_call's and the update's: a shell renamed by a later update is never ours.
           const title = update.title ?? null;
-          const announcedAs = ourTool({ title, kind: rt.kinds.get(update.toolCallId) ?? null }, names);
-          const tool = announcedAs && ourTool({ title, kind: update.kind ?? null }, names) === announcedAs ? announcedAs : undefined;
+          const announcedAs = ourTool({ title, kind: rt.kinds.get(update.toolCallId) ?? null }, names, form);
+          const tool = announcedAs && ourTool({ title, kind: update.kind ?? null }, names, form) === announcedAs ? announcedAs : undefined;
           if (tool) {
             const raw = update.rawInput as { toolName?: unknown; args?: unknown } | null | undefined;
             const args = raw && raw.toolName === tool && typeof raw.args === "object" && raw.args !== null && !Array.isArray(raw.args) ? raw.args : raw;
@@ -438,7 +440,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     // agent's text, so it takes both: a request whose kind has no effects of its own and whose name is ours, for the
     // tool_call the agent announced as that same tool of ours under the request's own id. Anything else is the agent's
     // own call: the host's gate, journaled.
-    const mine = ourTool(request.toolCall as { title?: string | null; name?: string | null; kind?: string | null }, names);
+    const mine = ourTool(request.toolCall as { title?: string | null; name?: string | null; kind?: string | null }, names, form);
     if (mine && rt.calls.announced(request.toolCall.toolCallId) === mine) return choose("allow_once");
     const call = request.toolCall;
     const kind = typeof call.kind === "string" && call.kind ? call.kind : "other";

@@ -78,6 +78,9 @@ export interface AcpRecipe {
     /** How an MCP call finds its id. `match` (default): the agent's own tool_call for it, by tool and arguments; `mint`:
      *  an id of the adapter's, for an agent that announces no tool_call for an MCP call. */
     readonly mcpCall?: "match" | "mint";
+    /** The one form the agent names a call of our tools in (calls.ts CallNames): `goose`, `cursor` or `agy`. Absent:
+     *  Goose's and Cursor's, never agy's. */
+    readonly callNames?: "goose" | "cursor" | "agy";
   };
 }
 
@@ -96,6 +99,8 @@ export function recipeProblems(recipe: AcpRecipe): string[] {
   if (!/^[a-z][a-z0-9-]{0,62}$/.test(recipe.id ?? "")) problems.push(`the id ${JSON.stringify(recipe.id)} is not lowercase letters, digits and dashes`);
   if (typeof recipe.command !== "string" || !isAbsolute(recipe.command)) problems.push("the command must be an absolute path");
   if (!recipe.declares || typeof recipe.declares.load !== "boolean" || (recipe.declares.mcp !== "http" && recipe.declares.mcp !== "stdio")) problems.push('declares needs load (true or false) and mcp ("http" or "stdio")');
+  const callNames = recipe.quirks?.callNames as unknown;
+  if (callNames !== undefined && callNames !== "goose" && callNames !== "cursor" && callNames !== "agy") problems.push('quirks.callNames is "goose", "cursor" or "agy"');
   const billing = recipe.billing as { kind?: unknown; maxTurns?: unknown; maxToolCalls?: unknown } | undefined;
   if (billing?.kind === "plan") {
     if (!Number.isInteger(billing.maxTurns) || (billing.maxTurns as number) < 1) problems.push("plan billing needs maxTurns, a whole number of turns of at least 1");
