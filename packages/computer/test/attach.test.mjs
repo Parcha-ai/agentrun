@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { ATTACH_CLOSE, AttachHub, attachedProvider, conformanceCases, formatReport, kindServed, MACHINE_TOKEN_SOURCE, newMachineToken, PROTOCOL_VERSION, redialDelay, redials, runConformance, socketStreams } from "../dist/index.js";
+import { ATTACH_CLOSE, ATTACH_SUBPROTOCOL, AttachHub, attachedProvider, conformanceCases, formatReport, kindServed, MACHINE_TOKEN_SOURCE, mintedComputer, newMachineToken, PROTOCOL_VERSION, redialDelay, redials, runConformance, socketStreams, upgradeRefusal } from "../dist/index.js";
 import { FakeUiDriver, serveUiSocket, UI_FIXTURE } from "../dist/fake-ui-driver.js";
 
 const APP = UI_FIXTURE.id;
@@ -197,6 +197,45 @@ test("a run's connection outlives a redial: gone while the computer is away; the
 	driver.close();
 });
 
+test("the subprotocol serve answers a driver's upgrade with: its own when asked for it, else the first it asked for at 0.2 or a later 0.x; none of 0.1, another major or shape", async () => {
+	const { attachSubprotocolOf } = await import("../dist/index.js");
+	assert.equal(ATTACH_SUBPROTOCOL, "agentrun.computer.0.2");
+	assert.equal(attachSubprotocolOf(["agentrun.computer.0.2"]), "agentrun.computer.0.2");
+	assert.equal(attachSubprotocolOf(["agentrun.computer.0.3"]), "agentrun.computer.0.3", "answered with the one it asked for");
+	assert.equal(attachSubprotocolOf(["agentrun.computer.0.3", "agentrun.computer.0.2"]), "agentrun.computer.0.2", "the server's own, which says what it speaks");
+	assert.equal(attachSubprotocolOf(["agentrun.computer.1.0", "agentrun.computer.0.3"]), "agentrun.computer.0.3", "the first that works");
+	for (const asked of [[], ["agentrun.computer.0.1"], ["agentrun.computer.1.0"], ["agentrun.computer.0.2.0"], ["agentrun.computer."], ["other.0.2"], ["0.2"]]) assert.equal(attachSubprotocolOf(asked), undefined, JSON.stringify(asked));
+});
+
+test("a driver a protocol minor ahead pairs and attaches: a minor step only adds, and its hello's groups say what it has", async () => {
+	class Minor extends Mac {
+		hello() {
+			return { ...super.hello(), protocol: "0.3" };
+		}
+	}
+	const hub = new AttachHub();
+	const driver = new Minor();
+	const { accepted } = await dial(hub, pairedFor(new Mac()), driver);
+	assert.equal(accepted.ok, true, accepted.error?.message);
+	assert.equal(hub.online("c-1"), true);
+	driver.close();
+});
+
+test("a 0.1 driver, from before 0.2 replaced apps.ui_tree with ui, is closed with protocol and told to update the driver: never attached without its UI tools", async () => {
+	class Old extends Mac {
+		hello() {
+			return { ...super.hello(), protocol: "0.1" };
+		}
+	}
+	const hub = new AttachHub();
+	const old = await dial(hub, pairedFor(new Mac()), new Old());
+	assert.equal(old.accepted.ok, false);
+	assert.equal(old.serve.closed.code, ATTACH_CLOSE.protocol);
+	assert.match(old.accepted.error.message, /^Test Mac's driver \S+ speaks protocol 0\.1, and this server 0\.2: update the driver on Test Mac \(the download is on the console's Computers page\)$/);
+	assert.equal(redials(old.serve.closed.code), false, "it stops dialing until it is updated");
+	assert.equal(hub.online("c-1"), false);
+});
+
 test("a hello that is not what the computer paired as is closed: another kind with mismatch, another protocol with protocol", async () => {
 	const hub = new AttachHub();
 	const phone = new FakeUiDriver({ os: "android", kind: "android" });
@@ -207,14 +246,45 @@ test("a hello that is not what the computer paired as is closed: another kind wi
 	assert.equal(wrongKind.serve.closed.code, ATTACH_CLOSE.mismatch);
 	class Old extends Mac {
 		hello() {
-			return { ...super.hello(), protocol: "0.1" };
+			return { ...super.hello(), protocol: "0.1.4" };
 		}
 	}
 	const old = await dial(hub, pairedFor(mac), new Old());
 	assert.equal(old.serve.closed.code, ATTACH_CLOSE.protocol);
-	assert.match(old.accepted.error.message, /speaks protocol 0\.1, and this server 0\.2: update the driver on Test Mac \(the download is on the console's Computers page\)$/);
+	assert.match(old.accepted.error.message, /speaks protocol 0\.1\.4, and this server 0\.2: update the driver on Test Mac \(the download is on the console's Computers page\)$/);
 	assert.equal(redials(old.serve.closed.code), false, "a driver of another protocol stops dialing until it is updated");
+	// A number-led version of another shape reads past 0.2 part by part, but no server takes its shape, so updating the
+	// server never helps: the driver is the side to update.
+	for (const protocol of ["0.2.1", "0.3-beta"]) {
+		class Malformed extends Mac {
+			hello() {
+				return { ...super.hello(), protocol };
+			}
+		}
+		const malformed = await dial(hub, pairedFor(mac), new Malformed());
+		assert.equal(malformed.serve.closed.code, ATTACH_CLOSE.protocol, protocol);
+		assert.match(malformed.accepted.error.message, new RegExp(`speaks protocol ${protocol.replaceAll(".", "\\.")}, and this server 0\\.2: update the driver on Test Mac \\(the download is on the console's Computers page\\)$`), protocol);
+	}
+	class Major extends Mac {
+		hello() {
+			return { ...super.hello(), protocol: "1.0" };
+		}
+	}
+	const major = await dial(hub, pairedFor(mac), new Major());
+	assert.equal(major.serve.closed.code, ATTACH_CLOSE.protocol);
+	assert.match(major.accepted.error.message, /speaks protocol 1\.0, and this server 0\.2: the server is older: it is updated by whoever runs it$/);
 	assert.equal(hub.online("c-1"), false);
+});
+
+test("an upgrade refused for its subprotocols names the side to update as hello does: the server for a later protocol, else the driver, and a minted machine is made again", () => {
+	const mac = pairedFor(new Mac());
+	const update = "update the driver on Test Mac (the download is on the console's Computers page)";
+	assert.equal(upgradeRefusal(mac, ["agentrun.computer.0.1"]), `this server speaks agentrun.computer.0.2, and Test Mac's driver asked for agentrun.computer.0.1: ${update}`);
+	assert.equal(upgradeRefusal(mac, []), `this server speaks agentrun.computer.0.2, and Test Mac's driver asked for no subprotocol: ${update}`);
+	assert.equal(upgradeRefusal(mac, ["other.0.3", "agentrun.computer.0.3-beta"]), `this server speaks agentrun.computer.0.2, and Test Mac's driver asked for other.0.3, agentrun.computer.0.3-beta: ${update}`);
+	assert.equal(upgradeRefusal(mac, ["agentrun.computer.0.1", "agentrun.computer.1.0"]), "this server speaks agentrun.computer.0.2, and Test Mac's driver asked for agentrun.computer.0.1, agentrun.computer.1.0: the server is older: it is updated by whoever runs it");
+	const machine = mintedComputer("dial-1", { kind: "linux", os: "linux", arch: "amd64" });
+	assert.equal(upgradeRefusal(machine, ["agentrun.computer.0.1"]), "this server speaks agentrun.computer.0.2, and dial-1's driver asked for agentrun.computer.0.1: dial-1 runs a computerd that is not this server's build: create the computer again");
 });
 
 test("a paired computer's token on another machine: another arch or os is closed with mismatch and stops dialing; the same os and arch replaces the live socket", async () => {

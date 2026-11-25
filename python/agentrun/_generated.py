@@ -80,6 +80,7 @@ __all__ = [
     "CapabilitiesStoreSchema",
     "CapabilitiesSwitchesValue",
     "CapabilitiesToolsItem",
+    "CapabilitiesToolsItemHeldItem",
     "CapabilitiesToolsItemResolves",
     "CapabilitiesToolsItemWhy",
     "CapabilitiesWorkflows",
@@ -1086,8 +1087,10 @@ __all__ = [
     "RunSummarySdkUsage",
     "RunSummaryTrigger",
     "RunSummaryWorkflow",
+    "RunSummaryWorkflowCallsItem",
     "RunTrigger",
     "RunWorkflow",
+    "RunWorkflowCallsItem",
     "RunsResource",
     "SaveCalendarBody",
     "SaveCalendarResponse",
@@ -3451,6 +3454,8 @@ class RunSummary(_RunSummaryRequired, total=False):
     trigger: RunSummaryTrigger | None
     path: Literal["agent", "handed_back", "workflow", "replay", "audit"] | None
     workflow: RunSummaryWorkflow | None
+    workflow_calls: list[RunSummaryWorkflowCallsItem] | None
+    first_choice: Literal["served", "replay", "replay_missing", "none_laid", "off", "none_fit", "many_fit", "not_promoted", "champion_misfit", "many_champions", "cost_stop", "no_by_hand_cost", "past_unread", "held"] | None
 
 
 RunStatus: TypeAlias = "Literal[\"queued\", \"working\", \"paused\", \"input_required\", \"completed\", \"failed\", \"cancelled\"]"
@@ -3737,6 +3742,14 @@ class RunSummaryWorkflow(TypedDict):
     name: str | None
     digest: str | None
     repick: Literal["found", "missed"] | None
+
+
+class RunSummaryWorkflowCallsItem(TypedDict):
+    workflow: str
+    digest: str
+    caller: Literal["platform", "agent"]
+    outcome: Literal["answered", "handed_back", "failed", "refused"]
+    usd: float | None
 
 
 class SetSourceSyncBody(TypedDict):
@@ -5748,6 +5761,8 @@ class Run(_RunRequired, total=False):
     audit_of: str | None
     path: Literal["agent", "handed_back", "workflow", "replay", "audit"] | None
     workflow: RunWorkflow | None
+    workflow_calls: list[RunWorkflowCallsItem] | None
+    first_choice: Literal["served", "replay", "replay_missing", "none_laid", "off", "none_fit", "many_fit", "not_promoted", "champion_misfit", "many_champions", "cost_stop", "no_by_hand_cost", "past_unread", "held"] | None
 
 
 class _RunResultRequired(TypedDict):
@@ -5998,6 +6013,14 @@ class RunWorkflow(TypedDict):
     name: str | None
     digest: str | None
     repick: Literal["found", "missed"] | None
+
+
+class RunWorkflowCallsItem(TypedDict):
+    workflow: str
+    digest: str
+    caller: Literal["platform", "agent"]
+    outcome: Literal["answered", "handed_back", "failed", "refused"]
+    usd: float | None
 
 
 class ListSuggestionsResponse(TypedDict):
@@ -8798,6 +8821,7 @@ class CapabilitiesToolsItem(_CapabilitiesToolsItemRequired, total=False):
     default_provider: str
     resolves: CapabilitiesToolsItemResolves
     why: CapabilitiesToolsItemWhy
+    held: list[CapabilitiesToolsItemHeldItem]
     ask_needs: Literal["password"]
     key: Literal["parallel", "monid", "browserbase", "kernel", "typesafe", "anthropic", "openai", "particle", "openrouter"]
 
@@ -8806,6 +8830,14 @@ CapabilitiesToolsItemResolves = TypedDict("CapabilitiesToolsItemResolves", {"pi"
 
 
 CapabilitiesToolsItemWhy = TypedDict("CapabilitiesToolsItemWhy", {"pi": "str", "claude-agent": "str", "codex": "str", "opencode": "str"})
+
+
+class CapabilitiesToolsItemHeldItem(TypedDict):
+    provider: str
+    tool: Literal["search", "fetch", "key"]
+    kind: Literal["quota", "rate"]
+    until: str
+    words: str
 
 
 class CapabilitiesWorkflows(TypedDict):

@@ -129,9 +129,11 @@ export type CompileAsk = {
 /** One attempt of the compile turn: whether its draft passed the checks, and else why not, in the checks' words. */
 export type CompileAttempt = { readonly ok: boolean; readonly errors: readonly string[] };
 /** The compile record a run's learning keeps (SPEC: the `compiled` event): the workflow, every attempt in order, and the
- *  kept draft's digest (workflowDigest of its workflow.json: what a run serving it records). `promoted` is read from the
- *  agent's promotion records when the run's learning is read (promotedOf), never kept. */
-export type CompiledRecord = { readonly workflow: string; readonly attempts: readonly CompileAttempt[]; readonly digest?: string; readonly promoted?: boolean };
+ *  kept draft's digest (workflowDigest of its workflow.json: what a run serving it records). `held`: a revise's, the digest
+ *  of the held revision it was asked to revise (runner/learning-end.ts compileAskOf counts it as that hold's one revise; a
+ *  new compile, whatever it drafted, is none). `promoted` is read from the agent's promotion records when the run's
+ *  learning is read (promotedOf), never kept. */
+export type CompiledRecord = { readonly workflow: string; readonly attempts: readonly CompileAttempt[]; readonly digest?: string; readonly held?: string; readonly promoted?: boolean };
 
 /** Whether the draft a compile kept at `digest` serves (learn/promote.ts records, newest wins): true once promoted, false
  *  while held; undefined while its check runs, or before its first claim decides it. */
@@ -628,6 +630,8 @@ export async function compileTurn<K>(input: {
   // could not be read, or that never answered.
   const problemsOf = new Map<number, Problem[]>();
   let name = input.compile.mode === "revise" ? input.compile.workflow : "";
+  // A revise's record names the hold it revises, whatever came of it.
+  const held = input.compile.mode === "revise" ? { held: input.compile.held.digest } : {};
   let answered = false;
   const firstPrompt = compilePrompt(input.compile);
   let prompt = firstPrompt;
@@ -650,7 +654,7 @@ export async function compileTurn<K>(input: {
       errors = checked ? keptErrors(checked.errors) : ["the checks could not run"];
       if (checked && !checked.errors.length && checked.kept !== undefined) {
         attempts.push({ ok: true, errors: [] });
-        return { record: { workflow: read.name, attempts, ...(checked.digest ? { digest: checked.digest } : {}) }, kept: checked.kept, draftErrors: [] };
+        return { record: { workflow: read.name, attempts, ...(checked.digest ? { digest: checked.digest } : {}), ...held }, kept: checked.kept, draftErrors: [] };
       }
       if (checked && !errors.length) errors = ["the draft is the very text the folder holds already"];
       else if (checked?.problems?.length) problemsOf.set(attempts.length, keptProblems(checked.problems));
@@ -668,5 +672,5 @@ export async function compileTurn<K>(input: {
   const last = at < 0 ? [] : attempts[at]!.errors;
   const problems = problemsOf.get(at);
   // A draft that never named itself is recorded all the same, under UNNAMED: every attempt is.
-  return { record: { workflow: name || UNNAMED, attempts }, draftErrors: [...last], ...(problems ? { draftProblems: problems } : {}), ...(answered ? { drafted: true as const } : {}) };
+  return { record: { workflow: name || UNNAMED, attempts, ...held }, draftErrors: [...last], ...(problems ? { draftProblems: problems } : {}), ...(answered ? { drafted: true as const } : {}) };
 }

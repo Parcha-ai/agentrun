@@ -71,7 +71,8 @@ import { type ComputerError, failFor, ok, type Result } from "../result.js";
 import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "../screen-watch.js";
 import { countTested } from "../test-connection.js";
 import { waitUntil } from "../wait.js";
-import { bounded, CALL_SLACK_MS, hostCall, type Opened, openBridge, pause, rootOf, runToExit, seconds, uploadThroughExec, words } from "./process.js";
+import { bounded, CALL_SLACK_MS, hostCall, type Opened, openBridge, pause, rootOf, runToExit, seconds, untilAborted, uploadThroughExec, words } from "./process.js";
+import { downloadingConnection } from "./download.js";
 import { isWhole, PACKED_NAME, packLabels, unpackLabels } from "./values.js";
 import { EGRESS_POLICY, EGRESS_PROXY_USER, EGRESS_RELAY, HOSTED_ALLOW, NETWORK_LABEL, networkFormOf, networkOfForm, networkRefusal, throughProxy } from "./network.js";
 import { ARCHIL_GATE, closedSocketsOf, type DaemonExpected, daemonDrift, type HostedCommands, hostedCommands, initFlags, installerOf } from "./scripts.js";
@@ -525,10 +526,11 @@ export class HostedProvider implements ComputerProvider {
 	 */
 	#dialed(): { attach: string; daemon: string; dial: HostedDial } | { problem: string } {
 		if (this.#dial === undefined) {
-			// No dial: a runner in a process of its own (serve's runner subcommand, the image's server-and-runner). The fix is
-			// the one a paired computer's refusal names (serve's workspace/attached-computers.ts ONE_PROCESS_FIX).
+			// No dial: a runner in a process of its own (serve's runner subcommand, the image's server-and-runner) that relays
+			// no socket. The fixes are the ones a paired computer's refusal names (serve's workspace/attached-computers.ts
+			// RELAY_FIX, then ONE_PROCESS_FIX).
 			return {
-				problem: `${this.#label} machines dial in to this server, and this runner runs in a process of its own, with no attach hub to take their socket: start the image with the server options alone, without server-and-runner (outside the image: agentrun-serve without --no-runner)`,
+				problem: `${this.#label} machines dial in to this server, and this runner runs in a process of its own and relays no machine's socket: give the runner AGENTRUN_PUBLIC_URL (this server's public address), or start the image with the server options alone, without server-and-runner (outside the image: agentrun-serve without --no-runner)`,
 			};
 		}
 		const url = this.#dial.url;
@@ -1244,7 +1246,12 @@ export class HostedProvider implements ComputerProvider {
 			return ok(deletedSaid(this.host, ref, this.#label, requestMs, { ...connection, hello: hello.value }));
 		}
 		const opened = await openBridge(this.host, ref.id, { argv: hostedCommands().stdio, name: ref.name, version: VERSION, requestMs, helloMs, ...(signal ? { signal } : {}) });
-		return opened.ok ? ok(deletedSaid(this.host, ref, this.#label, requestMs, opened.value)) : opened;
+		if (!opened.ok) return opened;
+		// A host with download takes a read past one chunk out through it, not the bridge (./download.ts).
+		const download = this.host.download?.bind(this.host);
+		const { execMs, uploadMs } = this.#timeouts;
+		const connection = download === undefined ? opened.value : downloadingConnection(this.host, download, ref.id, opened.value, { execMs, downloadMs: uploadMs });
+		return ok(deletedSaid(this.host, ref, this.#label, requestMs, connection));
 	}
 
 	/** #open, tried again while the bridge finds no daemon listening, until hello or helloMs in all. */
@@ -1849,22 +1856,6 @@ async function readMachine(host: MachineHost, id: string, ms: number, signal?: A
 	const read = await hostCall(host, `the read of ${id}`, (ctx) => host.get(id, ctx), ms, signal);
 	if (!read.ok) return read.error.code === "not_found" ? ok(undefined) : read;
 	return ok(read.value === undefined ? undefined : unpacked(host, read.value));
-}
-
-/** What reading answers, or undefined once a signal aborts first: a caller that stopped waiting never waits on a read. */
-function untilAborted<T>(reading: Promise<T>, signals: readonly (AbortSignal | undefined)[]): Promise<T | undefined> {
-	const given = signals.filter((signal): signal is AbortSignal => signal !== undefined);
-	if (given.length === 0) return reading;
-	const signal = AbortSignal.any(given);
-	if (signal.aborted) return Promise.resolve(undefined);
-	return new Promise((settle) => {
-		const onAbort = () => settle(undefined);
-		signal.addEventListener("abort", onAbort, { once: true });
-		reading.then((value) => {
-			signal.removeEventListener("abort", onAbort);
-			settle(value);
-		});
-	});
 }
 
 /**
