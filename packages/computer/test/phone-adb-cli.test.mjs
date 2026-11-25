@@ -11,8 +11,10 @@ import test, { after } from "node:test";
 
 import { fakePhoneHarness, KEY, PHONED_JAR } from "./fake-phone-harness.mjs";
 
-const { adbCli, ADB_SERVER_PORT } = await import("../dist/phone-harness.js");
+const { adbCli, ADB_SERVER_PORT, create } = await import("../dist/phone-harness.js");
 const conformance = await import("../dist/conformance/phone-harness.js");
+const { BASE_ENV_NAMES, childEnv } = await import("../dist/child-env.js");
+const { PROVIDERS } = await import("../dist/kinds.js");
 
 const dir = mkdtempSync(join(tmpdir(), "computer-adb-cli-"));
 after(() => rmSync(dir, { recursive: true, force: true }));
@@ -233,4 +235,43 @@ test("the conformance module's adb option, given as a transport, is used as it i
 	assert.ok(fake.serverCalls().some((call) => call.startsWith("host:connect:")), "the given transport carried the connect");
 	await connected.value.close();
 	await provider.release(created.value, "delete");
+});
+
+test("the phone harness provider's adb starts with the names every child reads of its host's environment, and no secret of it or of this process, whatever the secret's name", async (t) => {
+	// One value under a key-shaped name and one under a plain name (a store's URL, which a server holds as a secret by
+	// name). Both are in this process's environment, so an adb that inherits it is caught, and in the host's, so an adb
+	// handed it whole is caught. The record is read by value: the plain name is caught as surely as the key-shaped one.
+	const PLANTED = { FOO_API_KEY: "not-a-secret-adb-key", AGENTRUN_STORE_URL: "not-a-secret-adb-store" };
+	const was = Object.fromEntries(Object.keys(PLANTED).map((name) => [name, process.env[name]]));
+	Object.assign(process.env, PLANTED);
+	t.after(() => {
+		for (const [name, value] of Object.entries(was)) {
+			if (value === undefined) delete process.env[name];
+			else process.env[name] = value;
+		}
+	});
+	// The adb exits 1 at start-server, so connect stops there, before any socket: no adb server is asked.
+	const log = join(dir, "adb-provider.json");
+	const script = join(dir, "adb-provider");
+	writeFileSync(script, `#!${process.execPath}\nrequire("node:fs").writeFileSync(${JSON.stringify(log)}, JSON.stringify(process.env));\nprocess.exit(1);\n`);
+	chmodSync(script, 0o755);
+	const env = { ...process.env, ...POISON };
+	const fake = fakePhoneHarness();
+	const provider = await create({ apiKey: KEY, fetch: fake.fetch, adb: script, env, now: fake.clock.now, sleep: fake.clock.sleep });
+	const created = await provider.create({ image: "android", lifetimeMs: 60_000, network: "open" }, { requestId: "adb-provider" });
+	assert.equal(created.ok, true, JSON.stringify(created));
+	const connected = await provider.connect(created.value);
+	assert.match(connected.error?.message ?? "", /adb start-server failed/);
+	const seen = JSON.parse(readFileSync(log, "utf8"));
+	for (const [name, value] of Object.entries(PLANTED)) {
+		assert.deepEqual(Object.keys(seen).filter((at) => seen[at] === value), [], `${name}'s value reached adb`);
+	}
+	assert.deepEqual(seen, childEnv(env, BASE_ENV_NAMES), "adb gets the names every child reads of the host's environment, and nothing else");
+	assert.ok(seen.PATH && seen.HOME, "adb gets PATH, to be found, and HOME, its keys' place");
+	await provider.release(created.value, "delete");
+});
+
+test("serve hands the phone harness provider the names its adb reads: its descriptor's hostEnv names every child's", () => {
+	const { hostEnv } = PROVIDERS.find((entry) => entry.id === "phone-harness");
+	assert.deepEqual(BASE_ENV_NAMES.filter((name) => !hostEnv.includes(name)), [], "a name every child reads that serve never hands the provider, so its adb never gets it");
 });

@@ -14,6 +14,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { after, test } from "node:test";
 import { RECORDING_LIMITS, recorderMissing, startRecording } from "../dist/computer-record.js";
 import { commandOnPath } from "../dist/host-command.js";
+import { helperEnv } from "../dist/helper-env.js";
 
 const dirs = [];
 /** Every recording made here, stopped at the end whatever a test left (a live stand-in ffmpeg keeps the process up). */
@@ -120,6 +121,33 @@ test("each frame is acked as it comes; an encoder that falls behind costs frames
   assert.equal(logged.at(-1), "recorded the desktop's screen into recordings/c1.mp4: 0 frames written, 19 dropped while ffmpeg was busy, 0 thinned to 10 a second", "the counts, in the server's log");
   assert.equal(tv.watches[0].closed, true, "the watch let go");
   assert.equal(tv.watches[0].signal.aborted, true);
+});
+
+test("ffmpeg starts with a helper program's environment alone: no secret of the server's reaches it, whatever the secret's name", async (t) => {
+  // One value under a key-shaped name and one under a plain name the server holds as a secret (its store's URL), both in
+  // the server's environment. The record is read by value, so the plain name is caught as surely as the key-shaped one.
+  const PLANTED = { FOO_API_KEY: "not-a-secret-ffmpeg-key", AGENTRUN_STORE_URL: "not-a-secret-ffmpeg-store" };
+  const was = Object.fromEntries(Object.keys(PLANTED).map((name) => [name, process.env[name]]));
+  Object.assign(process.env, PLANTED);
+  t.after(() => {
+    for (const [name, value] of Object.entries(was)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
+  const dir = scratch();
+  const envAt = join(dir, "env.json");
+  const { tv, recorder } = recording({ ffmpeg: program(dir, `const fs = require("node:fs"); fs.writeFileSync(${JSON.stringify(envAt)}, JSON.stringify(process.env)); process.stdin.pipe(fs.createWriteStream(process.argv.at(-1)));`) });
+  await until(() => tv.watches.length === 1, "the recorder's watch");
+  tv.show(frame("jpeg", [1, 2, 3, 4]));
+  await until(() => recorder.facts().files.length === 1, "the file's ffmpeg started");
+  // The stop waits on ffmpeg's end, and it wrote its environment before it read a byte.
+  await recorder.stop("ended");
+  const seen = JSON.parse(readFileSync(envAt, "utf8"));
+  for (const [name, value] of Object.entries(PLANTED)) {
+    assert.deepEqual(Object.keys(seen).filter((at) => seen[at] === value), [], `${name}'s value reached ffmpeg`);
+  }
+  assert.deepEqual(seen, helperEnv(process.env), "ffmpeg gets PATH, the locale and TMPDIR of the server's environment, and nothing else");
 });
 
 test("at most 10 frames a second reach ffmpeg: one sooner waits, a newer one replaces it (thinned); the stop writes the newest once more", async () => {
