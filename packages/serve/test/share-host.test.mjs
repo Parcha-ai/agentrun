@@ -22,6 +22,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { builtConsole, call, serve } from "./support.mjs";
 import { unixHome } from "./scrub-positives.mjs";
+import { receiver } from "./webhook-support.mjs";
 
 /** One GET of / at the host, as the box's probe of a new loopback listener makes: its status. */
 async function portProbe(url) {
@@ -525,6 +526,23 @@ test("a share host fires nothing a reused data folder holds: its triggers never 
   assert.equal((await send(s.port, { path: "/r/v2/health" })).status, 200);
   await new Promise((resolve) => setTimeout(resolve, 300));
   assert.deepEqual(asked, [], "no schedule or feed runs on a share host");
+});
+
+test("a share host sends nothing a reused data folder left queued: no webhook or Slack delivery resumes, no run's change is followed", async (t) => {
+  const hook = await receiver(t);
+  // A server that sent webhooks, on the folder the host reuses: its webhook set, and a message it left queued.
+  const before = await serve(t, { runner: false, webhookPrivateTargets: true });
+  assert.equal((await before.api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  await before.store.channels.post({ id: "msg_left_queued", channel: "webhook-out", moment: "run.ended", body: '{"type":"run.ended"}', nextAt: 0 });
+  await before.stop();
+  const host = await shareHost(t, { data: before.data, webhookPrivateTargets: true });
+  assert.equal((await send(host.port, { path: "/r/v2/health" })).status, 200);
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  await host.stop();
+  assert.deepEqual(hook.got, [], "the share host sent no message");
+  // The same folder under a server that is no share host sends it: the message was there to send.
+  await serve(t, { runner: false, webhookPrivateTargets: true, data: before.data });
+  await hook.when(1);
 });
 
 test("a deleted share's bytes go even when its delete was cut short: a second delete, and the next start, finish it", async () => {
