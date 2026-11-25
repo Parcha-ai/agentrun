@@ -12,8 +12,9 @@
 //   - a stop while the step is asked: the claim that holds it ends the run stopped.
 //   - the money rule: a workflow whose last 10 served runs cost more than the agent by hand, each side all-in (its own cost
 //     and every learning round booked for it), stops running first and the agent takes the run, which asks for no
-//     revision; under it, at a new digest, under 10 runs or with no by-hand baseline, it serves. A run whose all-in is
-//     unknown (learning of unknown cost) is left out of the mean and counted, never read as 0.
+//     revision; under it, at a new digest or under 10 runs, it serves; with no by-hand baseline, or past runs it can't
+//     read, the agent takes the run. A run whose all-in is unknown (learning of unknown cost) is left out of the mean and
+//     counted, never read as 0.
 // pi's model and the node's go through the session proxy to a loopback gateway; no sleeps, no port races. The same on a
 // CLI harness (the faux one the harness table hands the runner): one loop serves every harness.
 import assert from "node:assert/strict";
@@ -1007,19 +1008,23 @@ test("money rule, all-in: a served run whose learning's cost is unknown is left 
   assert.equal(few.metrics?.path, "workflow", `an unknown run is never one of the window: ${JSON.stringify(few.metrics)}`);
 });
 
-test("money rule: under the by-hand cost, a new digest, fewer than 10 served runs, or no by-hand baseline: the workflow serves", async (t) => {
+test("money rule: under the by-hand cost, a new digest or fewer than 10 served runs: the workflow serves; no by-hand baseline: the agent takes the run", async (t) => {
   for (const [why, past] of [
     ["under the by-hand cost", pastRuns({ servedUsd: 0.1, byHandUsd: 0.2 })],
     ["a new revision of it (another digest's runs)", pastRuns({ servedUsd: 0.5, byHandUsd: 0.2, digest: "fedcba9876543210" })],
     ["9 served runs", pastRuns({ served: COST_WINDOW - 1, servedUsd: 0.5, byHandUsd: 0.2 })],
-    ["no by-hand baseline", pastRuns({ servedUsd: 0.5, byHand: 0 })],
   ]) {
     await t.test(why, async (t) => {
-      const { row, logs } = await piRun(t, { past });
+      const { row } = await piRun(t, { past });
       assert.equal(row.metrics?.path, "workflow", `${why}: ${JSON.stringify(row.metrics)}`);
-      if (why === "no by-hand baseline") assert.ok(logs.some((line) => /no by-hand cost to hold answer to/.test(line)), JSON.stringify(logs));
     });
   }
+  await t.test("no by-hand baseline", async (t) => {
+    const { row, gateway, logs } = await piRun(t, { past: pastRuns({ servedUsd: 0.5, byHand: 0 }) });
+    assert.equal(row.metrics?.path, "agent", JSON.stringify(row.metrics));
+    assert.equal(gateway.requests.filter(isNode).length, 0, "the workflow never ran");
+    assert.ok(logs.some((line) => /no by-hand cost to hold answer to/.test(line) && /the agent takes this run/.test(line)), JSON.stringify(logs));
+  });
 });
 
 test("costLineOf: the newest 10 served runs at the digest against the by-hand side as given (one baseline, over the same runs)", () => {
@@ -1219,13 +1224,17 @@ test("workflowFirstOf: one fitting workflow serves; none, two, a workflow run, n
   assert.deepEqual(servedOf([{ kind: WORKFLOW_FIRST, data: { workflow: "answer", digest: "d", outcome: "handed_back" } }]), { outcome: "handed_back", workflow: "answer", digest: "d" });
 });
 
-test("workflowFirstOf: past runs it can't read stop nothing, and it says so: the run is served unchecked and the log names why", async () => {
+test("workflowFirstOf fails closed: past runs it can't read, or no by-hand cost to hold the workflow to, send the run to the agent, and the log names why; never served unchecked", async () => {
   const flow = { name: "answer", description: "", workflow: JSON.stringify({ ...answerFlow, name: "answer", schemas: { ...answerFlow.schemas, In: { type: "object", required: ["question"], properties: { question: { type: "string" } } } } }) };
   const launch = { input: { question: "q" }, learning: { seed: "abc" } };
   const logs = [];
-  const { serve } = await workflowFirstOf("agentic", [flow], launch, (line) => logs.push(line), () => Promise.reject(new Error("the store is gone")));
-  assert.equal(serve?.name, "answer", "it serves");
-  assert.ok(logs.some((line) => /money rule could not read/.test(line) && line.includes("the store is gone") && line.includes("unchecked")), JSON.stringify(logs));
+  assert.deepEqual(await workflowFirstOf("agentic", [flow], launch, (line) => logs.push(line), () => Promise.reject(new Error("the store is gone"))), {}, "the agent takes it");
+  assert.ok(logs.some((line) => /money rule could not read/.test(line) && line.includes("the store is gone") && /the agent takes this run/.test(line)), JSON.stringify(logs));
+  // COST_WINDOW served runs at its digest and no run by hand since the reset, in the window or before it.
+  const served = Array.from({ length: COST_WINDOW }, (_, i) => ({ metrics: { path: "workflow", workflow: "answer", workflow_digest: workflowDigest(flow) }, allInUsd: 0.1, startedAt: i }));
+  const none = [];
+  assert.deepEqual(await workflowFirstOf("agentic", [flow], launch, (line) => none.push(line), async () => ({ runs: served, by_hand: null, by_hand_unknown: 0 })), {}, "no by-hand side: the agent takes it");
+  assert.ok(none.some((line) => /no by-hand cost to hold answer to/.test(line) && /the agent takes this run/.test(line)), JSON.stringify(none));
 });
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;

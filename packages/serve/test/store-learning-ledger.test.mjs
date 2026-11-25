@@ -21,7 +21,7 @@ import { agentWithRevision, storeOn, T0 } from "./store-helpers.mjs";
 import { raw } from "./store-target.mjs";
 
 const { agentCostOverStore, ledgerRowStands, pastRunsOverStore, runAllInOverStore } = await import("../dist/store-reads/learning.js");
-const { PAST_RUNS } = await import("../dist/runner/workflow-first.js");
+const { PAST_RUNS, workflowCostsOf } = await import("../dist/runner/workflow-first.js");
 const { keepResetAt } = await import("../dist/learn/promote.js");
 
 const C = "c".repeat(16);
@@ -33,14 +33,14 @@ const KEPT = { meters: { tools: 0, tokens: 0.1, browser: { usd: 0, seconds: 0 },
 const kept = (n, job, look, extra = {}) => ({ table: "learning_proposals", row: { round: n, turn: {}, proposal: { state: "dropped", reason: "empty", detail: "d", answered_at: AT, job_cost_usd: job, look_back_usd: look, ...extra } } });
 
 /** A store with agent-1 and its revision, and `end`: run `id` made and ended at the clock's next second, its row's cost
- *  `costUsd` and its metrics, with `also`'s rows; on a named disk with `disk`. */
+ *  `costUsd` and its metrics, with `also`'s rows; on a named disk with `disk`; an audit's shadow with `audit`. */
 async function ledgerStore(t) {
   const clock = { now: T0 };
   const { store, file } = await storeOn(t, { clock });
   await agentWithRevision(store, "agent-1", "rev-1");
-  const end = async (id, costUsd, metrics = { path: "agent" }, { also = [], disk } = {}) => {
+  const end = async (id, costUsd, metrics = { path: "agent" }, { also = [], disk, audit } = {}) => {
     clock.now += 1_000;
-    await store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "q" }, title: "t", place: { mode: "runner" }, ...(disk ? { archil_disk: { disk_id: disk, kind: "launch" } } : {}) } });
+    await store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "q" }, title: "t", place: { mode: "runner" }, ...(disk ? { archil_disk: { disk_id: disk, kind: "launch" } } : {}), ...(audit ? { audit } : {}) } });
     const claim = await store.claim(id, "runner-a", { leaseMs: 60_000 });
     clock.now += 1_000;
     await store.runs.update(claim, { state: "ended", costUsd, metrics }, also.length ? { also } : undefined);
@@ -277,4 +277,26 @@ test("the money rule's by-hand side is the job's own cost of the agent's runs on
   const page = await agentCostOverStore(store, "agent-1");
   assert.deepEqual(page.workflows.map((one) => one.by_hand), [{ runs: 2, mean_usd: 1.5 }], "the cost page's money rule reads the same runs");
   assert.notDeepEqual(page.summary.before, past.by_hand, "the series' before is over every run it shows, a wider set");
+});
+
+test("once the newest PAST_RUNS runs hold no run by hand, the money rule holds the workflow to the newest runs by hand before them: 500 served, then 10 at twice the by-hand cost, stops it", async (t) => {
+  const { store, end } = await ledgerStore(t);
+  for (let at = 0; at < 10; at++) await end(`h${String(at).padStart(2, "0")}`, 1);
+  for (let at = 0; at < PAST_RUNS; at++) await end(`s${String(at).padStart(3, "0")}`, 0.1, SERVED);
+  for (let at = 0; at < 10; at++) await end(`x${String(at).padStart(2, "0")}`, 2, SERVED);
+  const past = await pastRunsOverStore(store, "agent-1");
+  assert.equal(past.runs.filter((run) => run.metrics.path === "agent").length, 0, "no run by hand in the window");
+  assert.deepEqual(past.by_hand, { runs: 10, mean_usd: 1 }, "the 10 by hand before the window");
+  assert.deepEqual(workflowCostsOf(past).map((one) => [one.state, one.served, one.by_hand]), [["needs_revision", { runs: 10, mean_usd: 2 }, { runs: 10, mean_usd: 1 }]]);
+  assert.deepEqual((await agentCostOverStore(store, "agent-1")).workflows.map((one) => one.state), ["needs_revision"], "the cost page says the same");
+});
+
+test("a shadow that failed before its end wrote its metrics books its cost at its end, on the run its launch audits", async (t) => {
+  const { store, end } = await ledgerStore(t);
+  await end("s1", 0.1, SERVED);
+  await end("audit.s1", 0.05, {}, { audit: { of: "s1", workflow: "answer", digest: C } });
+  const ledger = await store.learning.ledger("agent-1");
+  assert.deepEqual(ledger.rows.filter((row) => row.runId === "audit.s1").map((row) => row.path), ["audit"]);
+  assert.deepEqual(ledger.spend.map((one) => [one.runId, one.kind, one.ofRun, one.usd]), [["audit.s1", "audit", "s1", 0.05]]);
+  assert.equal((await runAllInOverStore(store, "s1")).shadow_usd, 0.05);
 });

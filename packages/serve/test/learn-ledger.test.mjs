@@ -17,13 +17,13 @@ import { agent, serve } from "./support.mjs";
 
 const { figuresOf, record, summarize } = await import("../dist/learn/ledger.js");
 const { pastRunsOf } = await import("../dist/store-reads/learning.js");
-const { PAST_RUNS } = await import("../dist/runner/workflow-first.js");
+const { costLineOf, PAST_RUNS, workflowCostsOf } = await import("../dist/runner/workflow-first.js");
 const { promotionsKey } = await import("../dist/learn/promote.js");
 
 const C = "c".repeat(16);
 const AT = "2026-11-24T00:00:00.000Z";
 /** A run's end as record() reads it: `r` of agent `a`, its row's cost, its metrics and the rounds its learning kept. */
-const endOf = ({ id = "r", startedAt = 0, costUsd = null, costAtMostUsd = null, metrics = { path: "agent" }, rounds = [] }) => ({ id, agentId: "a", startedAt, costUsd, costAtMostUsd, metrics, rounds });
+const endOf = ({ id = "r", startedAt = 0, costUsd = null, costAtMostUsd = null, metrics = { path: "agent" }, rounds = [], auditOf }) => ({ id, agentId: "a", startedAt, costUsd, costAtMostUsd, metrics, rounds, ...(auditOf === undefined ? {} : { auditOf }) });
 /** A kept round: its job's cost as it answered, its compile turn's (look_back_usd), and the draft it kept. */
 const round = (job, look, extra = {}) => ({ round: 1, proposal: { state: "dropped", reason: "empty", detail: "d", answered_at: AT, job_cost_usd: job, look_back_usd: look, ...extra } });
 const row = (over) => ({ runId: "r", agentId: "a", startedAt: 0, path: "agent", workflow: null, digest: null, notServed: null, jobUsd: null, lookBackUsd: 0, cost: "known", ...over });
@@ -43,6 +43,7 @@ test("record: one ledger row a run, and a spend row for each compile turn, check
     ["a served run", endOf({ costUsd: 0.1, metrics: served }), { row: row({ path: "workflow", workflow: "answer", digest: C, jobUsd: 0.1 }), spend: [] }],
     ["a check's replay: its cost is its revision's", endOf({ costUsd: 0.3, metrics: { ...served, path: "replay" } }), { row: row({ path: "replay", workflow: "answer", digest: C, jobUsd: 0.3 }), spend: [spendRow({ kind: "check", workflow: "answer", digest: C, usd: 0.3 })] }],
     ["an audit's shadow: its cost is the run it audits'", endOf({ costUsd: 0.05, metrics: { path: "audit", audit: { of: "s", workflow: "answer", digest: C } } }), { row: row({ path: "audit", workflow: "answer", digest: C, jobUsd: 0.05 }), spend: [spendRow({ kind: "audit", ofRun: "s", workflow: "answer", digest: C, usd: 0.05 })] }],
+    ["an audit's shadow whose end named no audit (it failed first): its cost is the run its launch audits'", endOf({ id: "audit.s", costUsd: 0.05, metrics: {}, auditOf: "s" }), { row: row({ runId: "audit.s", path: "audit", jobUsd: 0.05 }), spend: [spendRow({ runId: "audit.s", kind: "audit", ofRun: "s", usd: 0.05 })] }],
     ["the money rule stopped its workflow", endOf({ costUsd: 0.4, metrics: { path: "agent", not_served: "cost_stop" } }), { row: row({ notServed: "cost_stop", jobUsd: 0.4 }), spend: [] }],
     ["a restart cut its workflow's call: handed back, cut, never the workflow's own hand-back", endOf({ costUsd: 0.2, metrics: { ...served, path: "handed_back", workflow_cut: true } }), { row: row({ path: "handed_back", workflow: "answer", digest: C, notServed: "cut", jobUsd: 0.2 }), spend: [] }],
     ["a hand-back of the workflow's own: no reason", endOf({ costUsd: 0.2, metrics: { ...served, path: "handed_back" } }), { row: row({ path: "handed_back", workflow: "answer", digest: C, jobUsd: 0.2 }), spend: [] }],
@@ -132,6 +133,21 @@ test("pastRunsOf: the window is the newest PAST_RUNS runs on no named disk: an o
   const past = pastRunsOf(out, listed, () => true);
   assert.equal(past.runs.length, PAST_RUNS);
   assert.deepEqual(past.by_hand, { runs: PAST_RUNS, mean_usd: 1 }, "the oldest, out of the window, is left out of the by-hand side too");
+});
+
+test("pastRunsOf: a served run cut at its cap reads at its bound on the served side, so a workflow whose runs keep hitting their caps stops; the by-hand side stays exact", () => {
+  const served = { path: "workflow", workflow: "answer", workflow_digest: C };
+  // Two runs by hand at $1 and one cut at a $9 bound, then 10 served: 3 cut at a $5 bound, 7 at $0.10.
+  const ends = [
+    { id: "h1", costUsd: 1 }, { id: "h2", costUsd: 1 }, { id: "h3", costAtMostUsd: 9 },
+    ...Array.from({ length: 10 }, (_, i) => ({ id: `s${i}`, metrics: served, ...(i < 3 ? { costAtMostUsd: 5 } : { costUsd: 0.1 }) })),
+  ].map((end, at) => ({ ...end, startedAt: at }));
+  const out = summarize({ rows: ends.map((end) => record(endOf(end)).row), spend: [], shadows: new Map(), revisions: [], compileAfter: 2 });
+  const listed = ends.map((end) => ({ id: end.id, startedAt: end.startedAt, disk: null, costAtMostUsd: end.costAtMostUsd ?? null, metrics: end.metrics ?? { path: "agent" } })).reverse();
+  const past = pastRunsOf(out, listed, () => true);
+  assert.deepEqual([past.by_hand, past.by_hand_unknown], [{ runs: 2, mean_usd: 1 }, 1], "by hand exact: the bound left out and counted");
+  assert.deepEqual(costLineOf(past, "answer", C).served, { runs: 10, mean_usd: 1.57 }, "the 3 cut runs at their $5 bound");
+  assert.deepEqual(workflowCostsOf(past).map((one) => one.state), ["needs_revision"]);
 });
 
 const LEARNS = { input: { content: "What is 1 plus 41?" }, title: "t", place: { mode: "runner" }, learning: { given: [], seed: "a".repeat(40), section: "", seedNotes: 0, workflows: ["answer"] } };
