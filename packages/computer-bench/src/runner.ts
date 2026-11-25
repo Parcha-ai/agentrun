@@ -4,6 +4,7 @@
 // releases, then grades (the grader reads what the record kept, so no computer waits on a model). Arms see the same tasks and seeds (paired); an infra outcome is run again and never scored.
 // What a computer or a harness is lives behind Backend; what a task is lives in its folder.
 import { randomBytes } from "node:crypto";
+import type { EventEmitter } from "node:events";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { type CheckResult, nodeLine, nodeMatches, type ObservedNode, runChecks, type Stage1, stage1Of } from "./checks.js";
@@ -554,9 +555,11 @@ async function onComputer(options: RunOptions, bench: string, resolved: Resolved
 		const overspent = overUsd || agent.over_steps === true;
 		if (overspent && agent.outcome === "done") agent = { ...agent, outcome: "budget", message: overUsd ? `it spent $${agent.cost_usd?.toFixed(2)} of a $${resolved.budget.usd} budget` : `it made more than the task's budget of ${resolved.budget.steps} computer calls` };
 		const agentWall = sinceS(agentStart);
-		if (signal.aborted) return end({ ...empty, outcome: "infra", phase: "agent", why: "the bench run was stopped" });
 		const tallies = tally(steps);
 		const common = { ...tallies, tool_calls: agent.tool_calls ?? turns, cost_usd: agent.cost_usd, wall_s: agentWall, ...(agent.answer === undefined ? {} : { answer: agent.answer }) };
+		// A stopped run still says what its agent spent (serve answers the cost of the run it cancelled), so a cap kept
+		// outside the bench counts it as spent rather than as the whole budget.
+		if (signal.aborted) return end({ ...common, outcome: "infra", phase: "agent", why: "the bench run was stopped" });
 		if (agent.outcome === "infra" || agent.outcome === "refused") return end({ ...common, outcome: agent.outcome, phase: "agent", why: agent.message ?? `the agent's run ended ${agent.outcome}` });
 
 		// Is the computer still there? Decided from its own signals, never a grader's: a ping on the bench's channel. One
@@ -684,6 +687,23 @@ export function jobsOf(tasks: readonly Task[], arms: readonly Arm[], seeds: read
 	return jobs;
 }
 
+/** Stops a run on its first SIGINT or SIGTERM: no new episode starts, and the running ones are cut, torn down, released
+ *  and written. A later signal only says, once, that the stop is under way: it keeps its listener because a signal with
+ *  none gets the default action, which would kill the bench before its computers are released. `emitter` is the
+ *  process in the command line. */
+export function stopOnSignals(emitter: Pick<EventEmitter, "on">, controller: AbortController, say: (line: string) => void = (line) => process.stderr.write(line)): void {
+	let seen = 0;
+	const stop = () => {
+		seen += 1;
+		if (seen === 1) {
+			say("stopping: no new episode starts; the running ones are cut, release their computers and are written\n");
+			controller.abort(new Error("stopped"));
+		} else if (seen === 2) say("already stopping: the running episodes are releasing their computers\n");
+	};
+	emitter.on("SIGINT", stop);
+	emitter.on("SIGTERM", stop);
+}
+
 /** Runs a bench: every job, with infra re-runs, `parallel` at a time. Returns every attempt's result. */
 export async function runBench(options: RunOptions): Promise<Result[]> {
 	const bench = options.id ?? `bench-${new Date().toISOString().replace(/[-:]/g, "").slice(0, 15)}-${randomBytes(3).toString("hex")}`;
@@ -720,7 +740,11 @@ export async function runBench(options: RunOptions): Promise<Result[]> {
 	let next = 0;
 	let fatal: unknown;
 	const worker = async () => {
-		while (next < jobs.length && !signal.aborted && fatal === undefined) {
+		for (;;) {
+			// A turn of the event loop before each job. A fake episode never waits on I/O, so without it the CLI's SIGINT
+			// handler, which aborts `signal`, could not run until every job had run.
+			await new Promise((resolve) => setImmediate(resolve));
+			if (next >= jobs.length || signal.aborted || fatal !== undefined) return;
 			const job = jobs[next++] as (typeof jobs)[number];
 			const resolved = resolveTask(job.task, job.seed);
 			const unrun = (n: number, outcome: "infra" | "refused", why: string, phase?: Result["phase"]): Result => ({ bench, run: "-", ...jobOf(job.task, job.seed, job.arm), attempt: n, outcome, scored: false, rerun: false, why, ...(phase ? { phase } : {}), steps: 0, tool_calls: 0, exec_calls: 0, wall_s: 0, routes: {}, stale: 0, noop: 0, verified: 0, acts: 0 });

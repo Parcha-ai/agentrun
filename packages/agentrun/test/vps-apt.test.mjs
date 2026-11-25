@@ -1,7 +1,8 @@
 // install.sh --vps installs Docker with apt-get on a server that has just booted, where cloud-init, apt-daily or
 // unattended-upgrades may hold apt's locks for minutes (a Droplet whose user data runs the installer starts it on first
 // boot). vps_apt waits for them: dpkg's lock through DPkg::Lock::Timeout, and every other lock apt-get could not get (the
-// archives' that `install` takes, the lists' that `update` takes), which that option does not cover, by trying again.
+// archives' that `install` takes, the lists' that `update` takes), which that option does not cover, by trying again
+// until 600 s by the clock have passed since the first try.
 // apt-get runs under LC_ALL=C, so its words are the ones matched on a server set to another language. Any other failure
 // stops the install at once, as before.
 import assert from "node:assert/strict";
@@ -17,8 +18,10 @@ const vpsApt = /^vps_apt\(\) \{\n[\s\S]*?\n\}\n/m.exec(await readFile(INSTALL, "
 
 // A stand-in apt-get on a server set to German: it logs its arguments, says it could not get the lock at $LOCK for its
 // first $LOCKED calls (in English only under LC_ALL=C, as apt does), then exits $THEN (0, or 100 with another error).
+// Each call takes $TOOK seconds of the stand-in clock ($FAKE/clock, which the stand-in date reads and sleep moves on).
 const APT = String.raw`#!/bin/sh
 printf '%s\n' "$*" >> "$FAKE/calls"
+echo $(($(cat "$FAKE/clock") + TOOK)) > "$FAKE/clock"
 n=$(wc -l < "$FAKE/calls")
 if [ "$n" -le "$LOCKED" ]; then
   if [ "$LC_ALL" = C ]; then
@@ -34,18 +37,20 @@ exit "$THEN"
 
 const ARCHIVES = "/var/cache/apt/archives/lock";
 
-async function run(t, { locked, then, lock = ARCHIVES, verb = "install docker-ce" }) {
+async function run(t, { locked, then, lock = ARCHIVES, verb = "install docker-ce", took = 0 }) {
   const dir = await mkdtemp(join(tmpdir(), "vps-apt-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   await writeFile(join(dir, "apt-get"), APT);
-  await writeFile(join(dir, "sleep"), "#!/bin/sh\nexit 0\n"); // the waits between tries, at once
-  await chmod(join(dir, "apt-get"), 0o755);
-  await chmod(join(dir, "sleep"), 0o755);
+  // The waits between tries, at once, and the clock they move on: date +%s reads it.
+  await writeFile(join(dir, "sleep"), '#!/bin/sh\necho $(($(cat "$FAKE/clock") + $1)) > "$FAKE/clock"\n');
+  await writeFile(join(dir, "date"), '#!/bin/sh\ncat "$FAKE/clock"\n');
+  for (const name of ["apt-get", "sleep", "date"]) await chmod(join(dir, name), 0o755);
   await writeFile(join(dir, "calls"), "");
+  await writeFile(join(dir, "clock"), "1000\n");
   const script = `set -u\nwork=${dir}\nsay() { printf '%s\\n' "$*"; }\nfail() { printf 'agentrun install: %s\\n' "$*" >&2; exit 1; }\n${vpsApt}vps_apt ${verb}\n`;
   await writeFile(join(dir, "script.sh"), script);
   const result = await promisify(execFile)("sh", [join(dir, "script.sh")], {
-    env: { PATH: `${dir}:${process.env.PATH}`, FAKE: dir, LOCKED: String(locked), THEN: String(then), LOCK: lock, LANG: "de_DE.UTF-8" },
+    env: { PATH: `${dir}:${process.env.PATH}`, FAKE: dir, LOCKED: String(locked), THEN: String(then), LOCK: lock, TOOK: String(took), LANG: "de_DE.UTF-8" },
   }).then((r) => ({ code: 0, ...r }), (e) => ({ code: e.code, stdout: e.stdout, stderr: e.stderr }));
   const calls = (await readFile(join(dir, "calls"), "utf8")).trim().split("\n").filter(Boolean);
   return { ...result, calls };
@@ -90,4 +95,14 @@ test("vps_apt stops on dpkg's lock, which apt-get has already waited 600 s for",
     assert.ok(stderr.includes(`Could not get lock ${lock}`), stderr);
     assert.match(stderr, /agentrun install: apt-get install docker-ce failed/);
   }
+});
+
+// One try can first wait out DPkg::Lock::Timeout's 600 s for dpkg's lock and only then be refused the archives' lock: the
+// 600 s are the clock's since the first try, not the 5 s sleeps between tries, or such a box loops ~120 tries of 605 s.
+test("vps_apt stops trying again once 600 s have passed by the clock, however long each try took", async (t) => {
+  const { code, calls, stderr } = await run(t, { locked: 5, then: 0, took: 400 });
+  assert.equal(code, 1, stderr);
+  assert.equal(calls.length, 2, "the first try ended at 400 s and was tried again; the second ended past 600 s and stopped");
+  assert.ok(stderr.includes(`Could not get lock ${ARCHIVES}`), stderr);
+  assert.match(stderr, /agentrun install: apt-get install docker-ce failed/);
 });

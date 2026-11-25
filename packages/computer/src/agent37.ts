@@ -2,7 +2,7 @@
 // the adapter starts through the daemon), each a whole VM by default (type "vm"), or a gVisor sandbox
 // (type "default"). The control plane is Agent37's REST API over fetch (https://api.agent37.com/v1, a Bearer key);
 // every command (the daemon's upload, its install, init's start, the stdio bridge) goes over SSH, as root, through the
-// host's own ssh2 package, of which this package names only the slice it uses (Ssh2Module) and imports nothing at load.
+// ssh2 package (an optional dependency), of which this package names only the slice it uses (Ssh2Module) and imports nothing at load.
 // Agent37 has no SSH port on the internet: the SSH stream rides a binary WebSocket to wss://{id}-22022.agent37.app,
 // which the edge opens for the workspace key in X-Agent37-Key (npm agent37@0.4.1 src/cli.js, wsHandshake and runTunnel),
 // and the instance's sshd then takes the workspace's registered SSH key. Agent37's REST exec is one-shot (no stdin,
@@ -21,6 +21,7 @@ import { pemOf, type Ssh2Module, SshExec, SshTunnelError, type SshTunnel } from 
 import { dateOf, DOMAIN, isWhole } from "./hosted/values.js";
 import type { CallContext, ComputerSpec, Refusal } from "./provider.js";
 import { type ComputerErrorCode, failFor, ok, type Result } from "./result.js";
+import { vendorSdk } from "./vendor-sdk.js";
 
 /** A WebSocket as this provider uses one: Node's global WebSocket (undici), which takes headers, or the same slice. */
 export interface WebSocketLike {
@@ -96,8 +97,6 @@ export interface Agent37Options extends Omit<Agent37ProviderOptions, "ssh2"> {
 	ssh2?: Ssh2Module;
 }
 
-/** Not a literal, so no type checker or bundler resolves ssh2 from this package. */
-const SSH2_PACKAGE: string = "ssh2";
 const DEFAULT_API_URL = "https://api.agent37.com";
 const DEFAULT_PROXY_DOMAIN = "agent37.app";
 /** The port the platform's sshd answers on inside every instance, reached as {id}-22022.<domain> (cli.js:21, 720). */
@@ -478,7 +477,7 @@ class Agent37Host implements MachineHost {
 export async function create(options: Agent37Options): Promise<Agent37Provider> {
 	const { ssh2: given, ...rest } = options ?? ({} as Agent37Options);
 	// ssh2 is CommonJS: its Client is a named export of the module, and of its default.
-	const loaded = given ?? ((await import(SSH2_PACKAGE)) as Partial<Ssh2Module> & { default?: Ssh2Module });
+	const loaded = given ?? (await vendorSdk<Partial<Ssh2Module> & { default?: Ssh2Module }>(AGENT37.label, "ssh2"));
 	const ssh2 = typeof loaded.Client === "function" ? (loaded as Ssh2Module) : (loaded as { default?: Ssh2Module }).default;
 	return new Agent37Provider({ ...rest, ssh2: ssh2 as Ssh2Module });
 }
@@ -543,7 +542,7 @@ export class Agent37Provider extends HostedProvider {
 		if (typeof fetcher !== "function") throw new Error("options.fetch must be a function, as the global fetch is");
 		if (typeof WebSocket !== "function") throw new Error("options.WebSocket must be a WebSocket class that takes headers, as Node's global one does");
 		const api = new URL(httpsBase(apiUrl, "the Agent37 API URL"));
-		if (api.search !== "" || api.hash !== "") throw new Error(`the Agent37 API URL takes no query or fragment, as ${DEFAULT_API_URL} has none: ${JSON.stringify(apiUrl)}`);
+		if (api.search !== "" || api.hash !== "") throw new Error(`the Agent37 API URL takes no query or fragment, as ${DEFAULT_API_URL} has none: ${api.protocol}//${api.host}`);
 		if (typeof proxyDomain !== "string" || !DOMAIN.test(proxyDomain)) throw new Error(`proxyDomain must be a host name such as ${DEFAULT_PROXY_DOMAIN}, not ${JSON.stringify(proxyDomain)}`);
 		if (type !== "vm" && type !== "default") throw new Error(`type is vm or default, not ${JSON.stringify(type)}`);
 		if (region !== "us" && region !== "eu" && region !== "ap-south") throw new Error(`region is us, eu or ap-south, not ${JSON.stringify(region)}`);
