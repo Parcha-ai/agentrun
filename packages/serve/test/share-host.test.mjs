@@ -382,6 +382,17 @@ test("a restored record that names no value the host finds is a stale or edited 
   assert.deepEqual(sharesIn(s.shares), []);
 });
 
+test("a file's content is read knowing its path: a credential file's plain contents refuse, also when another file holds the same text", async () => {
+  const pgpass = `db.example:5432:app:alice:orchard${nonce()}plain`;
+  const doc = JSON.parse(await bundleOf());
+  const fileOf = (path) => ({ ...doc.files[0], path, content: `${pgpass}\n`, bytes: Buffer.byteLength(`${pgpass}\n`), sha256: fileSha(path, `${pgpass}\n`) });
+  // Alone, and after a file of the same text under a name that is no credential file's (read first, by the order).
+  for (const files of [[fileOf(".pgpass")], [fileOf("notes/a.txt"), fileOf(".pgpass")]]) {
+    const body = resigned({ ...doc, files });
+    await assert.rejects(screenShare(body, []), (error) => error.code === "input_invalid" && (error.extra.details.counts["credential-file"] ?? 0) >= 1, files.map((file) => file.path).join());
+  }
+});
+
 test("each string is read alone too: a label the whole-body read misses still refuses", async (t) => {
   const planted = plantedRestorable();
   const doc = JSON.parse(await restoredBundleOf(planted.content));
