@@ -39,6 +39,7 @@ import computersKeys from "./computers-keys.mjs";
 import computersRunning from "./computers-running.mjs";
 import workspaceArchil from "./workspace-archil.mjs";
 import triggerRowLabel from "./trigger-row-label.mjs";
+import triggersBar from "./triggers-bar.mjs";
 import computerStep from "./computer-step.mjs";
 import agentCardFooter from "./agent-card-footer.mjs";
 import connectAgentTabs from "./connect-agent-tabs.mjs";
@@ -89,6 +90,7 @@ export const flows = [
   computersRunning,
   workspaceArchil,
   triggerRowLabel,
+  triggersBar,
   computerStep,
   agentCardFooter,
   connectAgentTabs,

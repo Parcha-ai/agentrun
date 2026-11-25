@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { CopyButton } from "@/components/ui/copy-button";
 import { Field as UiField, formColumnsClass, Input, Textarea } from "@/components/ui/field";
+import { Menu, MenuItem } from "@/components/ui/menu";
 import type { Agent } from "@/lib/agentForm";
 import { agentsByName } from "@/lib/agents";
 import { Picker } from "@/components/ui/picker";
@@ -116,11 +117,29 @@ function ScheduleList({ v2, go, agentName, every, now, failuresToPause, noAddres
     // The page's frame is every list page's (Agents, Runs): a header bar with the place's icon and name in caps
     // and its actions at the right, the main one last, then the content.
     <section className={pageClass} aria-label="Triggers">
-      <header className={cn(pageToolbarClass, "flex-wrap justify-between gap-3 px-5")}>
+      <header className={cn(pageToolbarClass, "@container flex-wrap justify-between gap-3 px-5")}>
         <h1 className={pageTitleClass}><CalendarClock className="size-4" aria-hidden />Triggers</h1>
         {/* With no trigger yet the panel below offers each kind, with what it is for: the page says each once. */}
-        {!(triggers && !triggers.length) && (
-          <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+        {/* Six buttons and the bar's name are one row only where the bar has 1,138px inside (measured). Narrower, they
+            wrapped as loose words: one alone, then two, then one, then two. They stand in columns instead, by the
+            bar's own width, each a little past where it fits: two from a tablet's width; three from 44rem (694px
+            beside the name); one row from 72rem. The main one is last in each.
+            A phone has no room for two columns of these words (191px in 171px at 390px wide): there one button lists
+            the six, in the order the first-trigger panel gives them. */}
+        {!(triggers && !triggers.length) && <>
+          <div className="ml-auto sm:hidden">
+            <Menu variant="primary" trigger={<><Plus aria-hidden /> New trigger</>}>
+              <MenuItem icon={CalendarClock} onSelect={() => go("#/triggers/new")}>New schedule</MenuItem>
+              <MenuItem icon={Webhook} onSelect={() => go("#/triggers/new-webhook")}>New webhook</MenuItem>
+              <MenuItem icon={GitPullRequest} onSelect={() => go("#/triggers/new-github")}>New GitHub trigger</MenuItem>
+              <MenuItem icon={Blocks} disabled={noAddress} onSelect={() => go("#/triggers/new-composio")}>New app trigger</MenuItem>
+              <MenuItem icon={Rss} onSelect={() => go("#/triggers/new-feed")}>New feed trigger</MenuItem>
+              <MenuItem icon={Mail} onSelect={() => go("#/triggers/new-email")}>New email trigger</MenuItem>
+            </Menu>
+          </div>
+          {/* Hidden on a phone as a range (max-sm:), never shown with sm:, which would be written after the bar's own
+              widths and undo the one row. */}
+          <div data-new-triggers className="ml-auto grid grid-cols-2 gap-2 max-sm:hidden @[44rem]:grid-cols-3 @[72rem]:flex @[72rem]:items-center [&>button]:justify-start">
             <Button size="sm" disabled={noAddress} onClick={() => go("#/triggers/new-composio")}><Blocks aria-hidden /> New app trigger</Button>
             <Button size="sm" onClick={() => go("#/triggers/new-github")}><GitPullRequest aria-hidden /> New GitHub trigger</Button>
             <Button size="sm" onClick={() => go("#/triggers/new-webhook")}><Webhook aria-hidden /> New webhook</Button>
@@ -128,7 +147,7 @@ function ScheduleList({ v2, go, agentName, every, now, failuresToPause, noAddres
             <Button size="sm" onClick={() => go("#/triggers/new-email")}><Mail aria-hidden /> New email trigger</Button>
             <Button size="sm" variant="primary" onClick={() => go("#/triggers/new")}><Plus aria-hidden /> New schedule</Button>
           </div>
-        )}
+        </>}
       </header>
       {/* The content starts where the header's name does (px-5). */}
       <div data-page-body className={cn(pageBodyClass, "px-5 py-5 md:py-6")}>

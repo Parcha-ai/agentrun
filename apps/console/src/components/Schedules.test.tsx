@@ -212,11 +212,35 @@ describe("the schedules list", () => {
     expect(h1.className.split(" ")).toContain("caps");
     expect(h1.querySelector("svg")?.getAttribute("class")).toContain("lucide-calendar-clock");
     for (const c of ["min-h-12", "border-b"]) expect(header.className.split(" ")).toContain(c);
-    const actions = [...header.querySelectorAll("button")];
+    // From a tablet's width up: the six, in columns where they wrap (the triggers-bar browser flow measures them).
+    const row = header.querySelector("[data-new-triggers]")!;
+    const actions = [...row.querySelectorAll("button")];
     expect(actions.map((b) => b.textContent?.trim())).toEqual(["New app trigger", "New GitHub trigger", "New webhook", "New feed trigger", "New email trigger", "New schedule"]);
     // Toolbar-sized, and one main action, the last.
     for (const b of actions) expect(b.className.split(" "), b.textContent ?? "").toContain("h-control-sm");
     expect(actions.map((b) => /\bbg-primary\/10\b/.test(b.className))).toEqual([false, false, false, false, false, true]);
+    // The columns are by the bar's own width, and a phone hides them as a range: a breakpoint that showed them (sm:)
+    // would be written after the bar's widths and undo the one row.
+    expect(header.className.split(" ")).toContain("@container");
+    for (const c of ["grid", "grid-cols-2", "max-sm:hidden", "@[44rem]:grid-cols-3", "@[72rem]:flex"]) expect(row.className.split(" "), c).toContain(c);
+    expect(row.className).not.toMatch(/(^| )sm:(grid|flex|block)( |$)/);
+  });
+
+  it("gives a phone one New trigger button that lists the six kinds and opens the one picked", async () => {
+    const t = await open(server({ triggers: [NIGHTLY] }).v2, {});
+    const header = t.host.querySelector("header")!;
+    const menu = [...header.querySelectorAll("button")].find((b) => b.textContent?.trim() === "New trigger")!;
+    // Shown on a phone alone, and the bar's main action there.
+    expect(menu.parentElement!.className.split(" ")).toContain("sm:hidden");
+    expect(menu.className).toMatch(/\bbg-primary\/10\b/);
+    expect(menu.closest("[data-new-triggers]")).toBeNull();
+    await act(async () => { menu.click(); });
+    await t.settle();
+    const items = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')];
+    // The first-trigger panel's order: the kinds as a person meets them.
+    expect(items.map((item) => item.textContent?.trim())).toEqual(["New schedule", "New webhook", "New GitHub trigger", "New app trigger", "New feed trigger", "New email trigger"]);
+    await act(async () => { items[2]!.click(); });
+    expect(t.went).toEqual(["#/triggers/new-github"]);
   });
 
   it("offers each kind as a peer, unframed, when there is none: no main action among them", async () => {
