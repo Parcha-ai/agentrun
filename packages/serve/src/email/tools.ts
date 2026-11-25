@@ -72,9 +72,10 @@ const messageId = (value: string) => {
   return id.startsWith("<") ? id : `<${id}>`;
 };
 
-/** The message a thread run started from: who sent it (its From's address, as compared: addressKey), its Message-ID, and where the
- *  trigger found it (the mailbox, its UIDVALIDITY, the UID). */
-export type ThreadRoot = { from: string; message_id: string; mailbox: string; uidvalidity: string; uid: number };
+/** The message a thread run started from: who sent it (its From's address, as compared: addressKey), its Message-ID, where the
+ *  trigger found it (the mailbox, its UIDVALIDITY, the UID), and `dmarc`, whether the receiving server's own
+ *  Authentication-Results said DMARC passed for that From's domain (the firing's `dmarc` attr, trigger-email.ts). */
+export type ThreadRoot = { from: string; message_id: string; mailbox: string; uidvalidity: string; uid: number; dmarc: boolean };
 
 /** What a run may read: the whole account, or the thread of the message that started it (`root`, null when its firing
  *  does not say which message and where it was found: then nothing). */
@@ -84,10 +85,10 @@ type Scope = { kind: "mailbox" } | { kind: "thread"; root: ThreadRoot | null };
  *  sender, its Message-ID and where the trigger found it. Null when any of them is missing or does not read, so the run
  *  reads nothing (fail closed). */
 export function threadRootOf(attrs: Readonly<Record<string, unknown>> | undefined): ThreadRoot | null {
-  const { from, message_id, mailbox, uidvalidity, uid } = attrs ?? {};
+  const { from, message_id, mailbox, uidvalidity, uid, dmarc } = attrs ?? {};
   const named = (value: unknown): value is string => typeof value === "string" && value.trim() !== "";
   if (!named(from) || !named(message_id) || !named(mailbox) || !named(uidvalidity) || !named(uid) || !/^[1-9]\d{0,15}$/.test(uid)) return null;
-  return { from: addressKey(from), message_id, mailbox, uidvalidity, uid: Number(uid) };
+  return { from: addressKey(from), message_id, mailbox, uidvalidity, uid: Number(uid), dmarc: dmarc === "pass" };
 }
 
 /** The scope of `tool`'s calls in the run `host` binds for: the agent's `scope: "mailbox"` reads the whole account; a run
@@ -413,13 +414,15 @@ function recipientsOf(args: Record<string, unknown>): string[] {
  *  (mail.ts neverSentTo, To, Cc or Bcc, the exact address). The account's own address is never new, nor one this run
  *  already sent to (its earlier sends, unasked or approved, from its record: a copy in Sent or not), nor, on a run that
  *  reads only its email's thread, the thread's starter (its root's From, as the trigger read it: ThreadRoot.from), whom
- *  an auto-responder answers. Everyone else that message names, its Cc's strangers among them, is checked as on any
- *  other run. A Sent folder that can't be read asks, saying so (fail closed). Nothing on a run no trigger started. */
+ *  an auto-responder answers, but only when the receiving server vouched for that From (ThreadRoot.dmarc: its own
+ *  Authentication-Results said dmarc=pass for the From's domain); a From it didn't vouch for may be forged, and asks
+ *  as anyone's. Everyone else that message names, its Cc's strangers among them, is checked as on any other run. A Sent
+ *  folder that can't be read asks, saying so (fail closed). Nothing on a run no trigger started. */
 async function newWords(ctx: AskContext, args: Record<string, unknown>): Promise<string | undefined> {
   const host = ctx.host;
   if (!host.startedBy || !opens(host)) return undefined;
   const scope = await scopeOf(host, EMAIL_READ);
-  const starter = scope.kind === "thread" && scope.root ? [scope.root.from] : [];
+  const starter = scope.kind === "thread" && scope.root?.dmarc ? [scope.root.from] : [];
   let recipients: string[];
   try {
     const letter = letterOf(args);

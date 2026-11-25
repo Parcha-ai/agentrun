@@ -3,8 +3,9 @@
 // too (the count is the run's record's, not the process's). On a run an email started (its thread), a send to anyone
 // outside the thread's participants (the account's own address and every From, To and Cc of the thread's messages)
 // asks even on allow, naming them. As any run a trigger started, it also asks before a send to an address the account
-// never sent to (email-trigger-ask.test.mjs), the thread's starter (the root message's From) alone exempt, so a stranger
-// the starter Cc'd is asked about. A run that reads the whole account (scope "mailbox") has no thread ask, and the same
+// never sent to (email-trigger-ask.test.mjs), the thread's starter (the root message's From) alone exempt, and only when
+// the receiving server's own Authentication-Results (the topmost, under the provider's authserv-id) says dmarc=pass for
+// the From's domain; a stranger the starter Cc'd is asked about. A run that reads the whole account (scope "mailbox") has no thread ask, and the same
 // new-address ask with no one exempt; a run no trigger started is held to the cap alone. A template eval's run never reads a real account to list its thread's people: with another
 // account saved than its case's fake, a send asks nothing and is refused in the eval's words, no IMAP command sent.
 import assert from "node:assert/strict";
@@ -308,7 +309,8 @@ test("a starter's DMARC verdict reads only the topmost Authentication-Results, o
   fails(["mx.google.com; dmarc=pass"]);
   fails(["mx.google.com; dmarc=pass header.from=example.com"], ["starter@example.com", "other@example.com"]);
   fails(["mx.google.com; dmarc=pass header.from=example.com"], []);
-  fails(["mx.google.com; dmarc=pass header.from=example.com"], from, undefined);
+  // No authserv-id known for the account's provider (authservIdOf's undefined; a default argument would stand in for it).
+  assert.equal(dmarcPassed(["mx.google.com; dmarc=pass header.from=example.com"], from, undefined), false, "no authserv-id, no verdict");
   fails(["mx.google.com (dmarc=pass header.from=example.com); spf=none smtp.mailfrom=example.com"]);
   fails(['mx.google.com; spf=none reason="dmarc=pass header.from=example.com"']);
   fails(["mx.google.com; dmarc=pass header.from=example.com (unclosed"]);

@@ -90,6 +90,10 @@ export type MailMessage = {
   attachments: { name: string; size: number; type: string }[];
   /** The X-AgentRun-Sent header's value, when it has one: this server sent it. */
   sent_here?: string;
+  /** What the receiving server's DMARC verdict is read from (authentication.ts dmarcPassed): the values of its
+   *  Authentication-Results headers, topmost first, unfolded, and every address of its From (none when the message has
+   *  no From header or more than one). Never in a payload or an answer. */
+  authentication: { results: string[]; from: string[] };
 };
 
 /** The first `<...>` id of a header's value, or null. */
@@ -132,6 +136,7 @@ function headersOf(parsed: ParsedMail, internalDate: FetchMessageObject["interna
 export async function messageOf(row: Pick<FetchMessageObject, "uid" | "flags" | "source" | "internalDate">, mailbox: string): Promise<MailMessage> {
   const parsed = await simpleParser(row.source ?? Buffer.alloc(0), { skipImageLinks: true, skipTextLinks: true });
   const sentHere = parsed.headers.get(SENT_HEADER.toLowerCase());
+  const lines = (key: string) => parsed.headerLines.filter((line) => line.key === key).map((line) => line.line.slice(line.line.indexOf(":") + 1).replace(/\r?\n[ \t]+/g, " ").trim());
   return {
     uid: row.uid,
     mailbox,
@@ -141,6 +146,7 @@ export async function messageOf(row: Pick<FetchMessageObject, "uid" | "flags" | 
     text: (parsed.text ?? "").replace(/\s+$/, ""),
     attachments: parsed.attachments.map((a) => ({ name: a.filename ?? "attachment", size: a.size, type: a.contentType })),
     ...(typeof sentHere === "string" && sentHere.trim() ? { sent_here: sentHere.trim() } : {}),
+    authentication: { results: lines("authentication-results"), from: lines("from").length === 1 ? addresses(parsed.from).map((a) => a.address) : [] },
   };
 }
 

@@ -3218,9 +3218,15 @@ goes. Some servers (Exchange and Outlook among them) keep no Bcc header on a Sen
 only ever Bcc'd asks. Mail received from someone doesn't count, so a scheduled run replying to a first-time sender asks
 once; nor does a draft or someone else's message in Sent, and `email_file` refuses Sent and Drafts as targets, so a run
 can't file its own evidence there. Mail sent from a "send as" alias is filed from that alias, so a send to its
-recipients asks. The new-address check never asks about the account's own address, an address the run already sent
-to (unasked or approved), or, on a thread-scoped email run, the thread's starter (the From of the message that started
-the run). Anyone else that message names, such as a stranger it Cc'd, asks on a reply-all. The 5-send cap still counts
+recipients asks. The new-address check never asks about the account's own address or an address the run already sent
+to (unasked or approved). On a thread-scoped email run it doesn't ask about the thread's starter (the From of the
+message that started the run) either, but only when the receiving mail server vouched for that From: the message's
+topmost Authentication-Results header carries the account provider's authserv-id and says `dmarc=pass` with a
+`header.from` equal to the From's domain (case-blind, ASCII letters only). A header lower down may be the sender's own
+and is never read; `dkim=pass` or `spf=pass` alone doesn't count. The provider's authserv-id is known for Gmail
+(`mx.google.com`, by the Gmail preset or an IMAP host under gmail.com) and for no other provider yet, so there the
+starter asks like any new address. A starter with no DMARC pass asks too, since their From may be forged. Anyone else
+that message names, such as a stranger it Cc'd, asks on a reply-all. The 5-send cap still counts
 every send. A Sent folder that can't be read (or none, or no account saved when the send is checked) asks, saying so.
 `scope: "mailbox"` turns the thread ask off and exempts no starter. A playground or API run has neither ask, only the
 cap. The pending approval carries the reason as `asks_because`, which the console's card says above the call's
