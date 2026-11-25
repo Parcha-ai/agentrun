@@ -159,8 +159,9 @@ function Row({ step, last, ended, waitingChip, files, onOpen }: { step: Step; la
               {awaitsApproval(row) && <Chip tone="warning">Approval required</Chip>}
               {failed && <Chip tone="error">Error</Chip>}
               {/* A call refused before it ran never failed: a neutral chip, never the red Error one (its row says why). A
-                  script that stopped at a refused call reads the same, its calls before that one having run. */}
-              {rowRefused(row) && <Chip tone="muted" title={row.tool_name === "codemode" ? "Stopped at a refused call: its calls before it ran, none after it" : "Not run: refused before it ran"}>Refused</Chip>}
+                  script reads the same whether the run refused it before it started or it stopped at a refused call, which only
+                  its nested rows tell apart (the calls before that one ran). */}
+              {rowRefused(row) && <Chip tone="muted" title={row.tool_name === "codemode" ? "Refused before it started, or stopped at a refused call: the calls under it say which ran" : "Not run: refused before it ran"}>Refused</Chip>}
               {row.agent_label && <Chip label title={row.agent_label}>{row.agent_label}</Chip>}
               {step.ms !== undefined && <span className="font-mono text-label">{took(step.ms)}</span>}
               {step.times && <span className="font-mono text-label">{step.times} times{step.until ? ` over ${took(Math.max(0, Date.parse(step.until) - Date.parse(row.timestamp)))}` : ""}</span>}
