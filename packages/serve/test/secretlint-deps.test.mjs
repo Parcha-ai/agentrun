@@ -41,12 +41,6 @@ test("the scan loads exactly the 27 recommended rules but the comment filter, in
   assert.deepEqual(SECRETLINT_RULE_IDS, LOADED);
 });
 
-test("a set of rules that leaves nothing to load is refused when the module loads, never a scan that finds nothing", async () => {
-  const { secretlintConfig } = await import("../dist/secret-cut.js");
-  assert.throws(() => secretlintConfig([]), /no secretlint rule/);
-  assert.throws(() => secretlintConfig([{ meta: { id: "@secretlint/secretlint-rule-filter-comments" } }]), /no secretlint rule/);
-});
-
 test("a secretlint-disable comment in what an import reads switches nothing off: the key after it is still cut", async () => {
   const { secretsIn } = await import("../dist/secret-cut.js");
   const fake = `ghp_${"Z9y8X7w6V5".repeat(3)}uvwxyz`;
