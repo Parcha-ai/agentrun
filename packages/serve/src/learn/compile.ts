@@ -386,13 +386,17 @@ const fenced = (what: string, text: string): string[] => {
 
 /** A check's disagreement as the prompt fences it (learn/promote.ts CheckDisagreement): with the known answer of each
  *  field a grade gave, where the draft missed it, or that the owner marked the agent's answer wrong without
- *  giving the right one. */
+ *  giving the right one, or that the owner's grade contradicts itself. */
 const disagreementText = (one: CheckDisagreement, i: number): string => clean([
   `Input ${i + 1}: ${one.input}`,
   `Your answer: ${one.agent ?? "(none recorded)"}`,
   one.draft !== undefined ? `The draft's answer: ${one.draft}` : one.escalated !== undefined ? `The draft handed it back: ${one.escalated}` : "The draft failed on it: a step did not finish.",
   ...(one.fields?.length ? [`The fields it had wrong: ${one.fields.join(", ")}`] : []),
-  ...(one.expected ?? []).map((known) => (known.known === "unknown" ? `On ${known.field}, the owner marked your answer wrong without giving the right one.` : `The known answer of ${known.field} (from a grade): ${known.value ?? ""}`)),
+  ...(one.expected ?? []).map((known) => (known.known === "unknown"
+    ? `On ${known.field}, the owner marked your answer wrong without giving the right one.`
+    : known.known === "contradicts"
+    ? `On ${known.field}, the owner's grade contradicts itself: it marked your answer wrong, yet the right answer it gave is yours. There is no known answer there.`
+    : `The known answer of ${known.field} (from a grade): ${known.value ?? ""}`)),
 ].join("\n"), TRACE_MAX);
 
 /** An audited run the workflow disagreed on, as the prompt fences it: its input, the agent's answer on its shadow run (or

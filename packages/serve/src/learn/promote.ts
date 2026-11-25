@@ -165,13 +165,14 @@ export interface CheckDisagreement {
   readonly fields?: readonly string[];
   /** Of those, each one known from a grade (never the agent's own answer, `agent` above): the known answer
    *  (its text or JSON, cut to CHECK_TEXT_MAX) and where it came from, which the recompile is asked to say; or
-   *  "unknown", no value, where a grade marked the agent's answer wrong without giving the right one. */
+   *  "unknown", no value, where a grade marked the agent's answer wrong without giving the right one; or "contradicts", no
+ *  value, where the grade marked it wrong yet the right answer it gave is the agent's. */
   readonly expected?: readonly CheckKnown[];
 }
 
 /** A known answer a draft missed on one field of one input: the field, its source, and the value as text; none when the
- *  grade gave no right answer ("unknown"). */
-export type CheckKnown = { readonly field: string; readonly known: "grade" | "unknown"; readonly value?: string };
+ *  grade gave no right answer ("unknown") or contradicts itself ("contradicts"). */
+export type CheckKnown = { readonly field: string; readonly known: "grade" | "unknown" | "contradicts"; readonly value?: string };
 
 /** A check's numbers, once decided: `n` inputs it ran on (a skipped write is none), `agreed` of them answered alone right
  *  on every field, `alone` answered alone (no escalate, no failed step), each field's verdict (`fields`,

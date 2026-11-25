@@ -94,8 +94,9 @@ export type FieldVerdict = FieldCount & {
 };
 
 /** One field the workflow had wrong on one input it answered alone: its value, the known one, and where that came from;
- *  "unknown" (no expected value) where a grade marked the agent's answer wrong without giving the right one. */
-export type Miss = { readonly field: string; readonly input_id: string; readonly workflow: unknown; readonly expected: unknown; readonly known: Known | "unknown" };
+ *  "unknown" (no expected value) where a grade marked the agent's answer wrong without giving the right one, and
+ *  "contradicts" (none) where its grade contradicts itself (FieldAnswers.no_known). */
+export type Miss = { readonly field: string; readonly input_id: string; readonly workflow: unknown; readonly expected: unknown; readonly known: Known | "unknown" | "contradicts" };
 
 export type CheckVerdict = {
   readonly verdict: "serve" | "hold";
@@ -190,12 +191,12 @@ const countsOf = (by: FieldTally): Counting => ({
 });
 
 /** The misses in `rows`: each field the workflow had wrong on an input it answered alone, inputs in order, and each it
- *  had no known answer on (never right): those a grade marked wrong without the right one are "unknown", no value. */
+ *  had no known answer on (never right), no value: "contradicts" where its grade contradicts itself, else "unknown". */
 export function missesOf(rows: readonly CheckInput[]): Miss[] {
   return rows.flatMap((row) => row.outcome !== "answered" ? [] : Object.entries(row.fields ?? {}).flatMap(([field, one]): Miss[] => {
     const j = judged(one);
     if (j?.workflow) return [];
-    return [{ field, input_id: row.input_id, workflow: one.workflow, expected: j?.expected, known: !j || j.marked ? "unknown" : j.known }];
+    return [{ field, input_id: row.input_id, workflow: one.workflow, expected: j?.expected, known: one.no_known ? "contradicts" : !j || j.marked ? "unknown" : j.known }];
   }));
 }
 

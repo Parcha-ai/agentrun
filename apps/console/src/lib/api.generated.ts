@@ -4874,7 +4874,7 @@ export interface operations {
             fields?: string[];
             expected?: {
               field: string;
-              known: "grade" | "unknown";
+              known: "grade" | "unknown" | "contradicts";
               value?: string;
             }[];
           }[];
@@ -4917,7 +4917,7 @@ export interface operations {
               fields?: string[];
               expected?: {
                 field: string;
-                known: "grade" | "unknown";
+                known: "grade" | "unknown" | "contradicts";
                 value?: string;
               }[];
             }[];
@@ -5035,7 +5035,7 @@ export interface operations {
               fields?: string[];
               expected?: {
                 field: string;
-                known: "grade" | "unknown";
+                known: "grade" | "unknown" | "contradicts";
                 value?: string;
               }[];
             }[];
@@ -5078,7 +5078,7 @@ export interface operations {
                 fields?: string[];
                 expected?: {
                   field: string;
-                  known: "grade" | "unknown";
+                  known: "grade" | "unknown" | "contradicts";
                   value?: string;
                 }[];
               }[];
