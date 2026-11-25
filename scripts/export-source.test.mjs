@@ -517,28 +517,6 @@ test('a Northflank docs URL in the provider scorecard is a reviewed citation; th
   }
 });
 
-test('a credentialed URL whose password is exactly not-a-secret or fake-test-key is a reviewed finding; any other password still blocks', async t => {
-  const f = await fixture(t);
-  const path = 'examples/credentialed.txt';
-  await f.write(path, 'a refused base: https://agent:not-a-secret@gateway.example\nanother: https://agent:fake-test-key@vendor.example/v1\n');
-  await f.run();
-  const passed = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
-  assert.deepEqual(passed.findings, []);
-  assert.deepEqual(passed.reviewedFindings.map(finding => [finding.path, finding.line, finding.rule, finding.reason]), [
-    [path, 1, 'credential_url', 'Explicit fake credential in a URL.'],
-    [path, 2, 'credential_url', 'Explicit fake credential in a URL.'],
-  ]);
-  // Built from parts so this file carries none of the passwords that must block.
-  for (const password of ['hunter2', 'not-a-secret2', 'xnot-a-secret', 'Not-A-Secret', 'fake-test-key-2']) {
-    const text = `a base: ${['https://agent', `${password}@gateway.example`].join(':')}\n`;
-    await f.write(path, text);
-    await assert.rejects(f.run(), /Source export blocked/, password);
-    const blocked = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
-    assert.deepEqual(blocked.findings.map(finding => [finding.path, finding.rule]), [[path, 'credential_url']], password);
-    assert.ok(!JSON.stringify(blocked).includes(password), `the receipt holds the password ${password}`);
-  }
-});
-
 test('vendored code an app keeps is listed apart, with its source, licenses and size, and a license the inventory does not take is flagged', async t => {
   const f = await fixture(t);
   const manifest = (license) => JSON.stringify({ name: 'some-lib', version: '1.2.3', license: 'MIT', source: 'https://registry.example.org/some-lib-1.2.3.tgz',

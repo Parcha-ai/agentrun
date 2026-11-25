@@ -188,13 +188,9 @@ function scan(path, content) {
         const proof = { path, line: index + 1, rule, lineSha256: sha256(line) };
         // Public examples/tests may use explicit fake credentials, never plausible secrets.
         const fakeCredential = rule === 'literal_credential' && /^(?:api[_-]?key|password|access[_-]?token|auth[_-]?token|client[_-]?secret)['"]?\s*[=:]\s*['"](?:fake-test-key|fake|test-key|example|your-key|YOUR_[A-Z_]+|not-a-secret)['"]$/i.test(matched);
-        // A credentialed URL whose password is exactly one of the two fake key literals (a test that a key URL with a password
-        // is refused); any other password, a near miss or another case included, still blocks.
-        const fakeCredentialUrl = rule === 'credential_url' && /^https?:\/\/[^\s/:]+:(?:not-a-secret|fake-test-key)@$/.test(matched);
         const docsCitation = rule === 'internal_domain' && path === vendorDocsCitation.path &&
           ![line, decoded].some(text => text.replaceAll(vendorDocsCitation.url, '').toLowerCase().includes(matched.toLowerCase()));
         if (fakeCredential) reviewed.push({ ...proof, reason: 'Explicit fake/example credential literal.' });
-        else if (fakeCredentialUrl) reviewed.push({ ...proof, reason: 'Explicit fake credential in a URL.' });
         else if (docsCitation) reviewed.push({ ...proof, reason: 'public vendor documentation citation' });
         else findings.push(proof);
       }
