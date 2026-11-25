@@ -73,6 +73,8 @@ export function DemoPage({ on, loading, onChange, v2, go }: { on: boolean; loadi
     finally { setStarting(null); }
   };
   return (
+    // Scrolls in its own box, as every Settings page does, so the Settings tabs above it stay in view.
+    <div className="h-full overflow-auto">
     <div className={settingsPageClass}>
       <div className={settingsIntroClass}>
         <p className="caps text-label text-muted-foreground">Settings</p>
@@ -120,6 +122,7 @@ export function DemoPage({ on, loading, onChange, v2, go }: { on: boolean; loadi
           </SettingsSection>
         ))}
       </div>
+    </div>
     </div>
   );
 }
