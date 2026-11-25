@@ -692,9 +692,14 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
    *  handed none of the server's (claim-secrets.ts keyedAtClaim, held here for the runner's answers). */
   const runKeyed = async () => (await openRunModelKey(keys, claim.runId)) !== undefined;
   /** Whether the claim's run is held, its model kept from running at its create (hold.refused): it routes no model, so
-   *  whatever its process asks, the runner hands it no model key, answers it keyless and refuses it a learning step (its
-   *  learned workflows and its end-of-run step), as its spec asks for none of them (adapter-run-spec.ts, cli-run-spec.ts). */
+   *  whatever its process asks, the runner hands it no model key (keyless, below), answers it keyless and refuses it a
+   *  learning step (its learned workflows and its end-of-run step), as its spec asks for none of them (adapter-run-spec.ts,
+   *  cli-run-spec.ts). */
   const modelRefused = launch.hold?.refused !== undefined;
+  /** Whether the claim's run sends no model key (claim-secrets.ts sendsNoModelKey: a held run as above, any run on a --faux
+   *  runner, a faux-pinned one; `deps.env` is the claim's environment): the runner answers its process no tier's model key.
+   *  A faux run still runs its learned steps on the faux model: only modelRefused refuses them. */
+  const keyless = sendsNoModelKey(launch, deps.env ?? {});
   const refusedSpend = (): ClaimRefused => new ClaimRefused("a held run its model kept from running asks its runner for no model spend: it routes no model and takes no learning step");
   const learningFolder = async () => {
     const made = await archilOf();
@@ -840,10 +845,10 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       // that tier's model's key alone (through a gateway, the gateway's), none when the revision names agree_on (no
       // grader). A learning run's grade and an SDK run's compile turn stay in the runner (runsInRunner): their process
       // never asks, and gets none. And never for a run that holds a key of its own (its launch's, read now): the server's
-      // keys are not its to spend, whatever its process asks; nor for a held run its model kept from running, which routes
-      // no model and grades nothing.
-      const subagent = !modelRefused && revision.kind === "agentic" && granted.includes(SUBAGENT_TOOL);
-      const grades = !modelRefused && (launch.replay !== undefined || launch.audit !== undefined) && !agreeOnOf((revision.body as { readonly learning?: unknown }).learning)?.length;
+      // keys are not its to spend, whatever its process asks; nor for a run that sends no model key (keyless: a held run,
+      // which routes no model and grades nothing, or a faux one, whose model sends none).
+      const subagent = !keyless && revision.kind === "agentic" && granted.includes(SUBAGENT_TOOL);
+      const grades = !keyless && (launch.replay !== undefined || launch.audit !== undefined) && !agreeOnOf((revision.body as { readonly learning?: unknown }).learning)?.length;
       if (!subagent && !grades) return {};
       const { tiers, refs } = routedSubagentTiers(revision.body, keys.env ?? {});
       const keyed = await runKeyed();
@@ -852,9 +857,10 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     tierModelKeys: async (tiers) => {
       // The tiers the claim's learned workflows name (learnedTiers), as this runner chose them (learnedFirst below): a
       // tier the process names beyond them gets no key, and none before the choice (a held run its model kept from running
-      // makes none: its learnedFirst is refused).
+      // makes none: its learnedFirst is refused), nor to a run that sends no model key (keyless: a faux one's tiers run on
+      // the faux model).
       const asked = new Set((tiers as readonly unknown[]).filter((tier): tier is Tier => typeof tier === "string"));
-      const named = !modelRefused && learnsWorkflows(revision.kind, learnedFlows) ? learnedTiers(learnedFlows).filter((tier) => asked.has(tier)) : [];
+      const named = !keyless && learnsWorkflows(revision.kind, learnedFlows) ? learnedTiers(learnedFlows).filter((tier) => asked.has(tier)) : [];
       const keyed = await runKeyed();
       const got = keyed ? {} : await tierModelKeys(keys, named);
       const plan = planOf(got);
