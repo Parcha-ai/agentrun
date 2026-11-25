@@ -1875,13 +1875,19 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  may have started a probe that dropped its own, or another's reading it waited for failed. So once its wait ends, a
    *  request goes on only where the hand-over it waited for is still the latest and did not fail; else it looks again
    *  (refreshOnce), which waits for the later one or hands a failed one over again. A reading its own hand-over started
-   *  that fails is answered to it. It looks at most LOGIN_ROUNDS times, then is refused (unavailable, retryable), so
-   *  turns that keep coming never hold it for ever. */
+   *  that fails is answered to it. A probe with no hand-over (a key's save, a harness key's, a new Ollama listing) can
+   *  drop the hand-over's too, and then fail or still be out: the hand-over is still the latest and did not fail, yet the
+   *  offers held were made before it. So the request also goes on only where the offers held are made from the inputs
+   *  now (offersMadeFrom); where not, it makes them as a key's save does (keysChanged: it waits for the probe out of
+   *  these inputs, or probes itself, and a probe of its own that fails is answered to it). It looks at most LOGIN_ROUNDS
+   *  times, then is refused (unavailable, retryable), so turns that keep coming never hold it for ever. */
   const loginNow = async (): Promise<void> => {
     if (loginOff !== undefined) return;
     for (let round = 1; ; round++) {
       const n = await refreshOnce();
-      if (handed.n === n && !handed.failed) return;
+      const latest = () => handed.n === n && !handed.failed;
+      if (latest() && !offersMadeFrom(offersInputs(env))) await keysChanged();
+      if (latest() && offersMadeFrom(offersInputs(env))) return;
       if (round >= LOGIN_ROUNDS) throw new ApiError("unavailable", `Claude Code's login on this machine was handed over again, or the offers made from it failed, each time this request waited for them, ${LOGIN_ROUNDS} times: ask again.`);
     }
   };
