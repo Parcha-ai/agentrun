@@ -69,14 +69,6 @@ export type LineSource<S extends string, O> = Pick<Reader<S>, "source" | "name" 
 /** The bytes a read takes from its file at once. */
 const CHUNK = 1 << 20;
 
-/** A line longer than the read's maxLine (ReadOptions): the read ends before decoding it. */
-export class LineTooLong extends Error {
-  constructor(readonly file: string, readonly offset: number, readonly bytes: number, readonly maxLine: number) {
-    super(`${file}: a line at byte ${offset} is longer than ${maxLine} bytes (${bytes} so far)`);
-    this.name = "LineTooLong";
-  }
-}
-
 /** What a listing reads from the session's text: a turns: false cursor keeps none of it, and a read resumed from one
  *  gives none (it would describe only what was written since). */
 const withoutText = <T extends SessionOf>(session: T): T => {
@@ -111,8 +103,8 @@ async function markOf(handle: FileHandle, offset: number): Promise<string> {
   return bytes.subarray(0, bytesRead).toString("base64");
 }
 
-/** A read started ahead of its turn: a failure the read never gets to (a line too long ends it first) is not unhandled;
- *  awaited, it still throws. */
+/** A read started ahead of its turn: a failure the read never gets to (an error of the read's own ends it first) is not
+ *  unhandled; awaited, it still throws. */
 const ahead = <T>(read: Promise<T>): Promise<T> => {
   read.catch(() => {});
   return read;
@@ -125,7 +117,7 @@ const overlay = (base: Set<string>): Set<string> => {
 };
 
 /** One session file of `spec`'s source, read from its start or from `cursor`. */
-async function readLines<S extends string, O>(spec: LineSource<S, O>, file: string, cursor: FileCursor | undefined, { turns: keep = true, totals: asked = false, seen, keepsCursor = true, [DROPS_CURSOR]: dropsCursor = false, maxLine = Infinity }: InternalReadOptions = {}): Promise<ReadResult<S, FileCursor>> {
+async function readLines<S extends string, O>(spec: LineSource<S, O>, file: string, cursor: FileCursor | undefined, { turns: keep = true, totals: asked = false, seen, keepsCursor = true, [DROPS_CURSOR]: dropsCursor = false }: InternalReadOptions = {}): Promise<ReadResult<S, FileCursor>> {
   const { source } = spec;
   const totals = asked && !keep && spec.totals === true;
   const handle = await open(file, "r");
@@ -174,10 +166,6 @@ async function readLines<S extends string, O>(spec: LineSource<S, O>, file: stri
     let offset = start;
     let read = 0;
     let rest: Buffer[] = [];
-    let restBytes = 0;
-    const tooLong = (bytes: number) => {
-      if (bytes > maxLine) throw new LineTooLong(file, offset, bytes, maxLine);
-    };
     if (stats.size > start) {
       // The open handle, so the bytes read are the file stat described, whatever the path names now. Two buffers for the
       // whole read, taken in turn: the next chunk is read into one while this one's lines are read (a new buffer a chunk
@@ -196,20 +184,14 @@ async function readLines<S extends string, O>(spec: LineSource<S, O>, file: stri
         read += chunk.length;
         let from = 0;
         for (let nl = chunk.indexOf(10); nl !== -1; nl = chunk.indexOf(10, from)) {
-          tooLong(restBytes + nl - from);
           const whole = rest.length ? Buffer.concat([...rest, chunk.subarray(from, nl)]) : chunk.subarray(from, nl);
           rest = [];
-          restBytes = 0;
           line(whole.toString("utf8", 0, whole.length && whole[whole.length - 1] === 13 ? whole.length - 1 : whole.length));
           offset += whole.length + 1;
           from = nl + 1;
         }
         // The buffer is read into again: a line's start is kept as a copy.
-        if (from < chunk.length) {
-          restBytes += chunk.length - from;
-          tooLong(restBytes);
-          rest.push(Buffer.from(chunk.subarray(from)));
-        }
+        if (from < chunk.length) rest.push(Buffer.from(chunk.subarray(from)));
       }
     }
     // A last line with no newline yet may be a record still being written: read into this result when it is whole JSON,
