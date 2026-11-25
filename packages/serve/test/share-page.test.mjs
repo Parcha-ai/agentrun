@@ -55,7 +55,12 @@ test("with the printed link's session /share/<run> is share.html under the conso
   assert.equal(page.headers["x-content-type-options"], "nosniff");
   assert.equal(page.headers["referrer-policy"], "no-referrer");
   assert.equal(page.headers["cache-control"], "no-store");
-  assert.equal((await call(server.port, { path: `/share/${run}/`, headers: { cookie } })).text, SHARE_INDEX, "a trailing slash is the same page");
+  // The page's assets are relative (./assets/): under /share/<run>/ they would resolve to /share/<run>/assets/, a 404.
+  for (const [path, to] of [[`/share/${run}/`, `/share/${run}`], [`/share/${run}/?tab=files`, `/share/${run}?tab=files`]]) {
+    const slashed = await call(server.port, { path, headers: { cookie } });
+    assert.deepEqual([slashed.status, slashed.headers.location], [303, to], `${path} leaves its trailing slash, its query kept`);
+  }
+  assert.equal((await call(server.port, { path: `/share/${run}/`, headers: {} })).status, 303, "with no session as well: the slash goes first");
   const head = await call(server.port, { method: "HEAD", path: `/share/${run}`, headers: { cookie } });
   assert.deepEqual([head.status, head.text], [200, ""]);
   // The page's one read: the session stands in for the token on it (this nonce is no run: the export's own 404).

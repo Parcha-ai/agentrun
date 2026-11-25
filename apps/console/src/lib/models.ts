@@ -1,4 +1,5 @@
 import { isPlanModel, PLAN_PROVIDER } from "@/lib/chatgpt";
+import { withoutRoutePrefix } from "@/lib/routePrefix";
 import type { RunUsage } from "@/lib/v2";
 
 /** A model id as a person reads it: without the gateway's routing prefix, the full id kept for a title. `routePrefix` is
@@ -9,9 +10,12 @@ import type { RunUsage } from "@/lib/v2";
  *  says its tag and where it runs: "qwen3:8b · local (Ollama)". The one wording for a plan or local model, in the Model
  *  picker, on an agent's page and on what a run's node ran on. */
 export function modelLabel(id: string, routePrefix: string | null | undefined): { text: string; title?: string } {
-  if (isPlanModel(id)) return { text: `${id.slice(PLAN_PROVIDER.length + 1)} · on your ChatGPT plan`, title: id };
+  // A gateway sends a plan default under its prefix (agent-model/chatgpt/<id>), and serve runs it on the plan (chooseModel
+  // asks the plan before the gateway). Any other id under the prefix, ollama/ too, goes to the gateway.
+  const own = withoutRoutePrefix(id, routePrefix);
+  if (isPlanModel(own)) return { text: `${own.slice(PLAN_PROVIDER.length + 1)} · on your ChatGPT plan`, title: id };
   if (isLocalModel(id)) return { text: `${id.slice(LOCAL_PROVIDER.length + 1)} · local (Ollama)`, title: id };
-  return routePrefix && id.startsWith(`${routePrefix}/`) && id.length > routePrefix.length + 1 ? { text: id.slice(routePrefix.length + 1), title: id } : { text: id };
+  return own !== id ? { text: own, title: id } : { text: id };
 }
 
 /** The provider of the models on this machine's Ollama, which the server lists itself (`ollama/<tag>`). */

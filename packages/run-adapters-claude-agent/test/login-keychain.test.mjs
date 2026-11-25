@@ -170,3 +170,28 @@ test("the stand-ins keep macOS's rule, the one a status check in a home of its o
   assert.equal(asked(scratch()), false, "an empty home: no login keychain, so no tokens");
   assert.equal(asked(m.home), true, "the person's home");
 });
+
+// The badge (the status check, which runs the CLI on a copy of the account file as its config dir and names the tokens'
+// folder in CLAUDE_SECURESTORAGE_CONFIG_DIR) and a plain `claude auth status` a person runs in their own terminal, in
+// their home, with the shown line's variables, read the same Keychain item, so they answer alike, before the sign-in and
+// after it, at every place. On AgentRun's own folder those variables are CLAUDE_CONFIG_DIR and
+// CLAUDE_SECURESTORAGE_CONFIG_DIR both set to the folder: the item's suffix is the hash of that folder's path as written.
+// On the CLI's default folder there are none: the item is the one with no suffix, and both variables set to ~/.claude
+// name another item (its hash), which holds nothing, so that command reads signed out while the badge reads signed in.
+const plainStatus = (m, vars) => JSON.parse(spawnSync(m.cli, ['auth', 'status', '--json'], { env: { ...m.terminal, ...vars }, encoding: 'utf8' }).stdout).loggedIn;
+test("on macOS the badge and a plain `claude auth status` in the person's home with the shown line's variables answer alike at every place, before and after the sign-in; on AgentRun's own folder those are CLAUDE_CONFIG_DIR and CLAUDE_SECURESTORAGE_CONFIG_DIR both set to it", { skip }, async () => {
+  for (const [place, at] of Object.entries(PLACES)) {
+    const m = mac();
+    const login = at(m);
+    const shown = claude.claudeSignInEnv(login);
+    await asServerOf(m, async () => {
+      assert.equal((await status(m, login)).signedIn, false, `${place}: the badge before the sign-in`);
+      assert.equal(plainStatus(m, shown), false, `${place}: a plain auth status before the sign-in`);
+      await WAYS['the sign-in this host starts'](m, login);
+      assert.equal((await status(m, login)).signedIn, true, `${place}: the badge after the sign-in`);
+      assert.equal(plainStatus(m, shown), true, `${place}: a plain auth status with the shown line's variables ${JSON.stringify(shown)} read signed out while the badge read signed in`);
+    });
+    if (place === "AgentRun's own folder") assert.deepEqual([shown.CLAUDE_CONFIG_DIR, shown.CLAUDE_SECURESTORAGE_CONFIG_DIR], [login.dir, login.dir], "on AgentRun's own folder the line names the folder in both variables");
+    if (login.home !== undefined) assert.equal(plainStatus(m, { CLAUDE_CONFIG_DIR: login.dir, CLAUDE_SECURESTORAGE_CONFIG_DIR: login.dir }), false, `${place}: both variables set to the default folder name another Keychain item`);
+  }
+});
