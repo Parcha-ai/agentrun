@@ -429,3 +429,28 @@ test("money rule: the by-hand mean is the run view's (a compile turn is its revi
     "by hand is the run view's mean ($1.00), never $1.10 with run-02's compile turn: C costs more a run than doing the job by hand");
   assert.equal((await costStopOverStore(store, "agent-1"))("answer", C), true, "a launch's read (no cost page figures) stops it too");
 });
+
+test("money rule, the view's read: past runs it can't read, or 10 served runs and no by-hand cost to hold them to, read as stopped, as a launch then leaves the run to the agent", async (t) => {
+  const clock = { now: Date.parse(at(0)) };
+  const { store } = await storeOn(t, { clock });
+  for (const agent of ["agent-1", "agent-2"]) await store.agents.create({ id: agent, name: "Learns" }, { id: `rev-${agent}`, kind: "agentic", body: { instructions: "Go.", learning: true } });
+  let minute = 0;
+  const end = async (agentId, id, cost, metrics) => {
+    clock.now = Date.parse(at((minute += 1)));
+    await store.runs.create({ id, agentId, revisionId: `rev-${agentId}` }, { body: LEARNS });
+    const claim = await store.claim(id, "runner-a", { leaseMs: 60_000 });
+    await store.runs.update(claim, { state: "ended", costUsd: cost, metrics });
+  };
+  const SERVED_C = { path: "workflow", workflow: "answer", workflow_digest: C };
+  // agent-1: three runs by hand at $1, then 10 served at $0.50: under the line, it serves; unreadable, it is stopped.
+  for (let i = 1; i <= 3; i++) await end("agent-1", `hand-${i}`, 1, { path: "agent" });
+  for (let i = 1; i <= 10; i++) await end("agent-1", `a1-served-${i}`, 0.5, SERVED_C);
+  assert.equal((await costStopOverStore(store, "agent-1"))("answer", C), false, "under the by-hand cost: it serves");
+  const unreadable = new Proxy(store, { get: (target, key) => (key === "runs" ? { list: async () => { throw new Error("the store is busy"); } } : Reflect.get(target, key)) });
+  assert.equal((await costStopOverStore(unreadable, "agent-1"))("answer", C), true, "past runs it can't read: stopped, never serving");
+  // agent-2: served runs only. Under 10 it serves; at 10 with no by-hand cost it is stopped, as a launch then is.
+  for (let i = 1; i <= 9; i++) await end("agent-2", `a2-served-${i}`, 0.5, SERVED_C);
+  assert.equal((await costStopOverStore(store, "agent-2"))("answer", C), false, "9 served runs: the window has not filled, it serves");
+  await end("agent-2", "a2-served-10", 0.5, SERVED_C);
+  assert.equal((await costStopOverStore(store, "agent-2"))("answer", C), true, "10 served runs and no run by hand: stopped, never serving unchecked");
+});
