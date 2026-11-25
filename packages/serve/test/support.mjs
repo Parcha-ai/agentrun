@@ -34,6 +34,7 @@ import { withoutFaux } from "../dist/model.js";
 import { runLine } from "../dist/print.js";
 import { bootSealKey } from "../dist/seal-key.js";
 import { stranger } from "./fixtures/stranger.mjs";
+import { holdStore } from "./fixtures/sqlite-guard.mjs";
 
 // Every test process has a config home of its own, never this machine's ~/.config: a test writes nothing outside its own
 // directories (a server keeps its seal key in its data directory, seal-key.ts).
@@ -532,6 +533,17 @@ export async function serve(t, { harnesses: asked, runner: wantRunner = true, co
   // through the runner's one way in, a test runner's option: no run of a test reaches GitHub. A test's own githubApi or
   // githubWeb wins.
   const runnerOptions = { ...(server.fauxGitHub ? { githubApi: server.fauxGitHub.api, ...(server.fauxGitHub.web ? { githubWeb: server.fauxGitHub.web } : {}) } : {}), ...options, faux: Object.hasOwn(options, "faux") ? options.faux : FAUX, mcpOwn: server.own, ...(computerForClaim ? { computerForClaim } : {}), ...(evalFakes ? { evalFakes } : {}), ...(childRuns ? { childRuns } : {}) };
+  // The store is a live server's from here until it closes: a test writes it through raw(), never a DatabaseSync of its own
+  // (fixtures/sqlite-guard.mjs).
+  const release = holdStore(data);
+  const closeServer = server.close;
+  server.close = async (...args) => {
+    try {
+      return await closeServer.apply(server, args);
+    } finally {
+      release();
+    }
+  };
   let closeRunner = wantRunner === false ? undefined : await startInProcessRunner(data, runnerOptions);
   // Runners a test crashed (crashRunner), closed with the rest at the stop.
   const crashed = [];

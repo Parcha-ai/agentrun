@@ -11,7 +11,6 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { request } from "node:http";
 import { networkInterfaces, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 import { keepRunDisk, saveArchilSettings, storeAgentDisk } from "../dist/archil-settings.js";
 import { agentFolderOf } from "../dist/files.js";
@@ -40,6 +39,7 @@ import { FakeArchilDisk } from "./fixtures/archil-fake.mjs";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 import { landWorkflows, startAt } from "./learned-workflow-seed-support.mjs";
 import { git, resnap } from "./learn-support.mjs";
+import { raw } from "./store-target.mjs";
 import { agent, cookieOf, follow, serve, withEnv } from "./support.mjs";
 
 after(closeOpenSessions);
@@ -232,14 +232,14 @@ test("a served run's cost keeps its share of its revision's paid check after the
 /** Run `runId`'s launch record naming disk `diskId` as the caller's, and the run's disk with it, as POST /runs with
  *  `archil_disk` records them (run-launch.ts: archil_disk { disk_id, kind: "launch" }; runs.disk), written into the
  *  store's file (agent-delete.test.mjs). */
-function launchOnDisk(data, runId, diskId) {
-  const db = new DatabaseSync(join(data, "store.sqlite"), { timeout: 10_000 });
+async function launchOnDisk(data, runId, diskId) {
+  const db = await raw(join(data, "store.sqlite"), { timeout: 10_000 });
   try {
-    const changed = db.prepare("UPDATE run_launch SET body = json_set(body, '$.archil_disk', json(?)) WHERE run_id = ?").run(JSON.stringify({ disk_id: diskId, kind: "launch" }), runId);
-    assert.equal(Number(changed.changes), 1, "the run's launch record names the disk");
-    assert.equal(Number(db.prepare("UPDATE runs SET disk = ? WHERE id = ?").run(diskId, runId).changes), 1, "and the run its disk");
+    const changed = await db.run("UPDATE run_launch SET body = json_set(body, '$.archil_disk', json(?)) WHERE run_id = ?", JSON.stringify({ disk_id: diskId, kind: "launch" }), runId);
+    assert.equal(changed.changes, 1, "the run's launch record names the disk");
+    assert.equal((await db.run("UPDATE runs SET disk = ? WHERE id = ?", diskId, runId)).changes, 1, "and the run its disk");
   } finally {
-    db.close();
+    await db.close();
   }
 }
 
@@ -262,7 +262,7 @@ test("Mode 2: the agent's learning folder on every Archil disk its runs used (it
   }
   await storeAgentDisk(store, "spread", { diskId: own });
   await keepRunDisk(store, "on-own", own);
-  launchOnDisk(data, "on-customer", customer);
+  await launchOnDisk(data, "on-customer", customer);
   // What Mode 2 runs left on each disk: the agent's learning folder (learningKey) and each run's folder (runKey), beside
   // what is not the agent's.
   const dir = `agents/${agentDirOf("spread")}`;
@@ -307,7 +307,7 @@ test("Mode 2, the last run naming a caller's disk purged (DELETE /runs/{id}, its
   const revisionId = (await store.agents.get("gone-run")).currentRevision;
   await store.runs.create({ id: "on-customer", agentId: "gone-run", revisionId }, { body: { input: ASK, title: "t", place: { mode: "runner" } } });
   await endAsRunner(store, "on-customer", "ended");
-  launchOnDisk(data, "on-customer", customer);
+  await launchOnDisk(data, "on-customer", customer);
   const dir = `agents/${agentDirOf("gone-run")}`;
   for (const key of [`${dir}/learning/corrections.md`, `${dir}/learning/.git/HEAD`, `${dir}/runs/on-customer/work/notes.md`, "shared/customers.csv"]) await disk.putObject(key, Buffer.from("bytes"));
   const learningOn = () => [...disk.files.keys(), ...disk.dirs].filter((key) => key === `${dir}/learning` || key.startsWith(`${dir}/learning/`));
@@ -390,7 +390,7 @@ test("a grade of a run on a named disk is kept, and writes no audit row: its ans
     await store.runs.create({ id, agentId: "customer-graded", revisionId }, { body: { input: ASK, title: "t", place: { mode: "runner" } } });
     const claim = await store.claim(id, "runner-grade", { leaseMs: 60_000 });
     await store.runs.update(claim, { state: "ended", costUsd: 0.1, metrics: { path: "workflow", workflow: "answer", workflow_digest: DIGEST } });
-    launchOnDisk(data, id, "customer-disk");
+    await launchOnDisk(data, id, "customer-disk");
   }
   for (const id of named) {
     const graded = await api("PUT", `/runs/${id}/grade`, { correct: false });
@@ -892,11 +892,11 @@ test("runs purged by DELETE /runs/{id} (their kept learning cut to its state alo
     await store.runs.create({ id, agentId: "cut", revisionId }, { body: LEARNS });
     const claim = await store.claim(id, "runner-cut", { leaseMs: 60_000 });
     await store.runs.update(claim, { state: "ended", costUsd: 0.1, metrics: { path: "agent" } });
-    const db = new DatabaseSync(join(data, "store.sqlite"), { timeout: 10_000 });
+    const db = await raw(join(data, "store.sqlite"), { timeout: 10_000 });
     try {
-      db.prepare("INSERT INTO learning_proposals (run_id, round, agent_id, turn, proposal, created_at) VALUES (?, 1, ?, ?, ?, ?)").run(id, "cut", JSON.stringify({ asked: `${TEXT}: its turn.` }), JSON.stringify(proposal), Date.now());
+      await db.run("INSERT INTO learning_proposals (run_id, round, agent_id, turn, proposal, created_at) VALUES (?, 1, ?, ?, ?, ?)", id, "cut", JSON.stringify({ asked: `${TEXT}: its turn.` }), JSON.stringify(proposal), Date.now());
     } finally {
-      db.close();
+      await db.close();
     }
   }
   for (const id of ["cut-1", "cut-2"]) {

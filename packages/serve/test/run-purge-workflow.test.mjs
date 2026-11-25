@@ -14,12 +14,12 @@ import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { learningCommit } from "../dist/learn/commit.js";
 import { learningFolderOf } from "../dist/learning.js";
 import { launchBody } from "../dist/run-launch.js";
 import { ended, git, repoOf, resnap, started } from "./learn-support.mjs";
+import { raw } from "./store-target.mjs";
 import { agent, answerFlow, serve, startRun } from "./support.mjs";
 
 /** `write` over agent `agentId`'s learning folder on this server, as a run's merge writes it: its commit. */
@@ -72,11 +72,11 @@ test("a purge takes the purged run's workflow off main: both its files read 404,
   const merge = await learned(data, "keeper", (ws) => learningCommit(ws, { runId: gone, round: 7, reason: "It learned two workflows.", files: [{ path: answerPath, text: v1 }, said("answer"), { path: soloPath, text: solo }, said("solo")] }));
   const next = await learned(data, "keeper", (ws) => learningCommit(ws, { runId: other, round: 2, reason: "It answers in whole numbers.", files: [{ path: answerPath, text: v2 }, answerSaid] }));
   // The other run's second look-back kept its merge (as its end keeps it): GET /runs/{id}/learning/diff reads it.
-  const db = new DatabaseSync(join(data, "store.sqlite"), { timeout: 5_000 });
+  const db = await raw(join(data, "store.sqlite"), { timeout: 5_000 });
   try {
-    db.prepare("INSERT INTO learning_proposals (run_id, round, agent_id, turn, proposal, created_at) VALUES (?, 2, 'keeper', '{}', ?, ?)").run(other, JSON.stringify({ state: "merged", merged: next }), Date.now());
+    await db.run("INSERT INTO learning_proposals (run_id, round, agent_id, turn, proposal, created_at) VALUES (?, 2, 'keeper', '{}', ?, ?)", other, JSON.stringify({ state: "merged", merged: next }), Date.now());
   } finally {
-    db.close();
+    await db.close();
   }
   const record = (workflow, digest) => ({ workflow, digest, at: new Date().toISOString(), decided: "promote", reason: "checked: promoted", commit: merge });
   await store.settings.put("learning.promotions.keeper", { v: 1, items: [record("answer", digestOf(v1)), record("solo", digestOf(solo))] });
@@ -731,12 +731,12 @@ test("a purge gate whose store read fails leaves the run read 200, its cost mark
   assert.equal(whole.status, 200);
   assert.equal(whole.body.cost?.degraded, undefined, `a read with the gate's answer is not degraded: ${JSON.stringify(whole.body.cost)}`);
   // The writer's row no longer reads: every store read of it throws (its metrics are not JSON, past the column's check).
-  const db = new DatabaseSync(join(data, "store.sqlite"), { timeout: 5_000 });
+  const db = await raw(join(data, "store.sqlite"), { timeout: 5_000 });
   try {
-    db.exec("PRAGMA ignore_check_constraints = ON");
-    db.prepare("UPDATE runs SET metrics = '{' WHERE id = ?").run(writer);
+    await db.exec("PRAGMA ignore_check_constraints = ON");
+    await db.run("UPDATE runs SET metrics = '{' WHERE id = ?", writer);
   } finally {
-    db.close();
+    await db.close();
   }
   await assert.rejects(store.runs.get(writer), "the writer's row read throws");
 
