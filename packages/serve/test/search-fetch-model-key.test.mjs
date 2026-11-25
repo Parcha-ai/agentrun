@@ -68,9 +68,9 @@ const HARNESS_RESEARCH = "Research widgets on the web, read http://public.exampl
 test.skip("with only model keys: native search on pi, claude-agent and codex, and the kernel's fetch, each run's report citing the page; then Parallel picked, the next runs go through Parallel", { timeout: 180_000 }, async (t) => {
   const { seen } = await setting(t, { PARALLEL_API_KEY: PARALLEL_CANARY });
   const { api } = await serve(t, FAUX);
-  assert.deepEqual(await resolves(api), { web_search: AUTO_KEYED, web_fetch: each("kernel") }, "Parallel on every harness (a native search an explicit pick), the kernel's fetch");
+  assert.deepEqual(await resolves(api), { web_search: AUTO_KEYED, web_fetch: each("parallel") }, "Parallel on every harness for both (a native search an explicit pick)");
   assert.deepEqual((await api("PUT", "/settings/tools", { web_search: { provider: "native" } })).status, 200);
-  assert.deepEqual(await resolves(api), { web_search: NATIVE, web_fetch: each("kernel") }, "native picked: each harness's own, Claude's among them; Parallel's key held but not used");
+  assert.deepEqual(await resolves(api), { web_search: NATIVE, web_fetch: each("parallel") }, "native picked: each harness's own, Claude's among them; Parallel's key held for the fetch alone");
   assert.equal((await api("GET", "/capabilities")).body.features.tool_permissions, true);
 
   // pi on Anthropic: its search is one request to the provider with exactly the hosted tool, booked with its fee.
