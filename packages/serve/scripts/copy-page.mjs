@@ -9,6 +9,8 @@ cpSync(join(root, "src", "openapi"), join(root, "dist", "openapi"), { recursive:
 cpSync(join(root, "src", "llms.txt"), join(root, "dist", "llms.txt"));
 // The handoff skill travels with the server so a coding agent reads instructions for this exact build.
 cpSync(join(root, "skills", "agentrun-serve"), join(root, "dist", "skills", "agentrun-serve"), { recursive: true });
+// The old learning folder's script (src/learn/legacy/learning.sh): a run's purge still scrubs that folder.
+cpSync(join(root, "src", "learn", "legacy", "learning.sh"), join(root, "dist", "learn", "legacy", "learning.sh"));
 // The store's Postgres migrations (store/postgres/migrate.ts reads them beside itself).
 cpSync(join(root, "src", "store", "postgres", "migrations"), join(root, "dist", "store", "postgres", "migrations"), { recursive: true });
 cpSync(join(root, "src", "workspace", "kind-skills"), join(root, "dist", "workspace", "kind-skills"), { recursive: true });

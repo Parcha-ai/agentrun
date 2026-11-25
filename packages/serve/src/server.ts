@@ -134,6 +134,7 @@ import { FINAL_STATES, type ListedFilter, RUN_CHANGES_PAGE, type RunChange, type
 import { championOf, forgetRunCopies, type Grade, GRADE_SOURCES, GRADES_KEPT, type GradeSource, gradeView, LABEL_MAX, promotionsOf, promotionsShown, servingOf, servingStateOf, shownDeep } from "./learn/promote.js";
 import { workflowNodesOf } from "./learn/workflow-nodes.js";
 import { deleteLearning } from "./learn/delete.js";
+import { forgetLegacyRunLearning, legacyGradesKey, legacyPromotionsKey } from "./learn/legacy/scrub.js";
 import { runModelRef } from "./model.js";
 import { ollamaHostOf, ollamaHostRefused, ollamaListing, ollamaModels, ollamaReading } from "./ollama-provider.js";
 import { REDACTED } from "./secret-cut.js";
@@ -3102,8 +3103,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // DELETE. A run on its agent's own disk: with its agent's delete that disk went whole (removeDisk), its folder with
       // it; deleted alone, its folder there is deleted, the disk kept, read from its disk setting, which goes after.
       const launched = await store.runs.launch(runId).then((row) => readLaunchBody(row.body)?.archilDisk, (error: unknown) => (error instanceof StoreLaunchMissing ? undefined : Promise.reject(error)));
+      // The agent's learning folder there too, kept from before learning moved to the store's rows: a Mode 2 end wrote
+      // the run's diff and correction in it, and nothing reads it (learn/legacy/scrub.ts).
       if (launched?.kind === "launch") {
         await notYetWith(() => archil.removeRunFolder(agentId, runId, launched.diskId), ["unavailable", "upstream_failed"], again);
+        await notYetWith(() => archil.removeLearningFolder(agentId, launched.diskId), ["unavailable", "upstream_failed"], again);
       } else if (alone) {
         const own = launched?.diskId ?? (await runDiskKept(store, runId));
         if (own) await notYetWith(() => archil.removeRunFolder(agentId, runId, own, "agent"), ["unavailable", "upstream_failed"], again);
@@ -3120,8 +3124,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       await forgetKept("run", runId);
     },
     forgetAgent: async (agentId) => {
-      // The agent's folder (its runs' folders, its home) and its scratch folder.
+      // The agent's folder (its runs' folders, its home, the learning folder kept from before the store's rows) and its
+      // scratch folder, and the old learning settings keys (learn/legacy/scrub.ts), as the agent's purge took them before.
       await rm(agentFolder(data, agentId), { recursive: true, force: true });
+      for (const key of [legacyGradesKey(agentId), legacyPromotionsKey(agentId)]) await store.settings.remove(key);
       await rm(join(data, "scratch", agentDirName(agentId)), { recursive: true, force: true });
       // Private source metadata is owned by this exact agent. Prefix siblings with dotted IDs are left alone.
       for (const key of [`source-sync.agent.${agentId}`, `source-sync.local.${agentId}`]) await store.settings.remove(key);
@@ -3134,10 +3140,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // run by its id (one whose launch is gone too).
     madeFrom: async (runId) => [...new Set([...(await store.runs.madeFrom(runId)), shadowRunId(runId)])],
     // Its copies in the agent's promotion records. Its learning rows (its saves' words, its notes and workflow files, its
-    // grades and audits) go with the run's rows in the store's purge (Store.learning.purgeRun).
+    // grades and audits) go with the run's rows in the store's purge (Store.learning.purgeRun). Then its text off the
+    // learning kept from before the rows (learn/legacy/scrub.ts: the agent's old learning folder here, the old settings
+    // keys), in the agent's queue: a folder that can't be written now is 503, the run purged or kept as the purge had
+    // got, and the next DELETE does it again.
     forgetCopies: async (agentId, runId) => {
       await forgetRunCopies(store.learning, agentId, runId);
       await forgetSdkCopies(store, runId);
+      await notYetWith(() => forgetLegacyRunLearning(data, agentId, runId, store), ["unavailable"], "The agent's old learning folder keeps the run's text until the DELETE is sent again.");
     },
     // /usage's meters and a live read's spend, from its journal, as they read now (store-reads/cap.ts), and how its
     // learning ended as /stats counts it (its state and reason alone).
