@@ -762,7 +762,8 @@ test("an OTLP header value's credential pair is read anywhere in the value, a UR
 });
 
 // A credential with a raw ; in it, as an OTLP endpoint's query parameter or inside a header value. A query or a pair list
-// read split at & alone keeps the whole value, a %2C in it too; read split at & and %2C, it keeps the value of a pair in
+// read split at & alone keeps the whole value, a %2C in it too, and read split at an & or a space written %26 or %20 too,
+// it keeps that value as written before one; read split at & and %2C, it keeps the value of a pair in
 // a list joined by %2C; read split at ; too, it keeps each pair after a ;. Every reading is held. A value whose part
 // before its first ; is empty is held after it; a value of only ; is not held.
 // Each row: [what, the env, the credentials held and cut alone, what is on no held list, a line quoting the variable and

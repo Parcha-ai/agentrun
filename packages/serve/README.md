@@ -292,9 +292,10 @@ its first word is held too when that word is a known auth scheme (`Bearer`, `Bas
 and any query parameter named like a credential, and, inside any header's value, the value of each `name=value` pair
 named like a credential, read over the whole value as written, a URL's query and fragment included (a cookie's
 `session=<token>`, `https://relay/v1?region=us;session=<token>`, `#access_token=<token>`; pairs split at `;`, `&`, a
-comma or its `%2C`, and spaces, again at `?`, `#` and `/` too, and twice keeping a `;`: at all but `;`, so
-`api_key=<key;rest>%2Cregion=us` holds the key, and at `&` and spaces alone, so `api_key=<key;rest%2Cmore>` holds the
-whole key (both are held, since a redactor matches each held value exactly and the longer reading never covers the
+comma or its `%2C`, and spaces, again at `?`, `#` and `/` too, and three times keeping a `;`: at all but `;`, so
+`api_key=<key;rest>%2Cregion=us` holds the key; at `&` and spaces alone, so `api_key=<key;rest%2Cmore>` holds the
+whole key; and at those or their `%26` and `%20`, so that key is held as written before an encoded `&` or space too
+(all are held, since a redactor matches each held value exactly and the longer reading never covers the
 key alone); a value whose part before its first `;` is empty, `token=;<key>` or `token=%3B<key>`, is
 held after that `;` too; a value in quotes is held without them; `theme=dark` is not held), and the user, password and
 credential-named query parameters of every URL in it, one inside another's query or path too, scheme-relative
