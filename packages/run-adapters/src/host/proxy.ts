@@ -1574,8 +1574,15 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
         say(`model proxy (${policy.id}): onCut threw`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
       }
     };
-    /** The answer's stops, read from what has come of it so far: its content-filter stop, and its cut. */
+    /** Whether this proxy had aborted the request when the answer's first error event was read (undefined: none read
+     *  yet). Each line is read here before its client is written it, so an error read before the abort is the
+     *  provider's own (a refusal, an overload) that its client then read and left on: no stop. One read after the abort
+     *  may be the abort's own end of the stream (a route's "aborted" event), or a refusal raced by the hang-up: a stop. */
+    let errorReadAborted: boolean | undefined;
+    /** The answer's stops, read from what has come of it so far: its content-filter stop, and its cut. And whether its
+     *  first error event came before this proxy's abort. */
     const tellStops = (text: string): void => {
+      if (errorReadAborted === undefined && text.includes("error") && streamErrorOf(text) !== undefined) errorReadAborted = controller.signal.aborted;
       tellFiltered(text);
       tellCut(text);
     };
@@ -1742,14 +1749,16 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       answered = { ok: upstream.ok };
       // An upstream that ends its answer on this proxy's abort without throwing (a route's own fetch: pi-ai's stream ends
       // in its "aborted" error event, and the route closes it) is a stop all the same: its client left, and this proxy's
-      // abort, not the provider, ended it. Never one read on past its client (keepReading: the signal was never aborted).
-      stoppedByClient = clientLeft && upstream.ok && controller.signal.aborted;
+      // abort, not the provider, ended it. Never one read on past its client (keepReading: the signal was never aborted),
+      // nor one whose error event was read before the abort (errorReadAborted false): the provider ended it, and its
+      // client left after reading that.
+      stoppedByClient = clientLeft && upstream.ok && controller.signal.aborted && errorReadAborted !== false;
     } catch (error) {
       // Its client had left before this (a stop): read now, as the proxy's own end below closes the response too.
       // Before any header too: the request left, and the provider may have begun it, as a stop part way. Only this proxy's
       // abort ends a stop: an answer read on after its client left (its content-filter stop) that the provider ends with
-      // an error is no stop.
-      stoppedByClient = clientLeft && (began === undefined || began.ok) && controller.signal.aborted;
+      // an error is no stop, nor is one whose error event was read before the abort (errorReadAborted false).
+      stoppedByClient = clientLeft && (began === undefined || began.ok) && controller.signal.aborted && errorReadAborted !== false;
       if (!began) failedCode = rejectionCode(error);
       say(`model proxy (${policy.id}): the request did not complete`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
       if (!res.headersSent) refuse(res, 502, "the provider did not answer", req);
