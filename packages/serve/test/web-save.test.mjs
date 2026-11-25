@@ -947,3 +947,11 @@ test("a list saved as text is served back as text/csv or text/plain with X-Conte
     await download.arrayBuffer();
   }
 });
+
+test("web_save's description tells the model where untyped and XML text saves: .txt or .csv, XML at .txt alone, UTF-8 with no NUL", async (t) => {
+  const { ws } = await folders(t);
+  const description = webSaveTool(() => ws, () => ({})).description;
+  assert.match(description, /no type \(application\/octet-stream or none\)[^.]*\.txt or a \.csv/, description);
+  assert.match(description, /declares XML[^.]*\.txt alone/, description);
+  assert.match(description, /UTF-8 text with no NUL/, description);
+});
