@@ -66,3 +66,20 @@ test("redaction reads the same with the kept derivation as with a fresh array ea
   ];
   for (const text of texts) assert.equal(redactSecrets(text, VALUES, 1 << 20), redactSecrets(text, [...VALUES], 1 << 20));
 });
+
+// A held JSON value's strings are read at any depth (learn/secrets.ts heldFields). One nested 20,000 arrays deep is read
+// with no call per level, so deriving its needles never overflows the stack: a text that holds none of it is served as
+// it came, and its string with a line break, printed alone, is cut.
+test("a held JSON value nested 20,000 arrays deep is derived without overflowing the stack, and its string is held", () => {
+  const inner = `${"x".repeat(40)}\nsecond line of forty characters or more`;
+  const held = `${"[".repeat(20_000)}${JSON.stringify(inner)}${"]".repeat(20_000)}`;
+  const read = (text) => {
+    try {
+      return redactSecrets(text, [held]);
+    } catch (error) {
+      return `threw ${error?.name}`;
+    }
+  };
+  assert.equal(read("an unrelated text"), "an unrelated text");
+  assert.equal(read(`$ jq -r '..|strings' deep.json\n${inner}\n`), "$ jq -r '..|strings' deep.json\n[redacted]\n");
+});

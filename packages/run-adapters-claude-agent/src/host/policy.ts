@@ -101,6 +101,13 @@ export interface AnthropicPolicyOptions {
   /** Told when a request on the session's main model carries no thinking and no effort: the model would answer without
    *  reasoning, which a session never asks for (the small model's background calls are not told). */
   onThinkingDisabled?: (request: { model: string }) => void;
+  /** The day of the run's clock (YYYY-MM-DD) when the host set one; the CLI's date lines say it (`CLI_DATE`). */
+  day?: () => string;
+}
+
+/** `now`'s day in `zone` (default UTC) as YYYY-MM-DD, the form the CLI's date line takes. */
+export function isoDay(now: Date, zone = "UTC"): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
 }
 
 /** Whether a Messages body asks the model to think: thinking on (adaptive, or a budget), or an effort level. */
@@ -144,6 +151,26 @@ function blocks(content: unknown, where: string, inResult = false, references?: 
     if (!CLAUDE_BLOCKS.has(block.type)) refuse(403, `${where} holds a block of a type this session does not send`);
     if (block.type === "tool_result") blocks(block.content, "a tool result's content", true, references);
   }
+}
+
+/** The pinned CLI's date lines, read from the machine's clock in its own local time: "Today's date is 2026-11-24.", and on
+ *  a later day "Today's date is now 2026-11-25. ...". The CLI has no setting for its date (test/case-clock.test.mjs fails
+ *  if a CLI bump words these differently, or moves them). */
+const CLI_DATE = /\bToday's date is (now )?\d{4}-\d{2}-\d{2}\./g;
+
+/** `text` with each of the CLI's date lines saying `day`. */
+const onDay = (text: string, day: string): string => text.replace(CLI_DATE, (_line, now: string | undefined) => `Today's date is ${now ?? ""}${day}.`);
+
+/** A message with the CLI's date lines saying `day`, when it is one of the CLI's own: a `system` message among the
+ *  messages, where the pinned CLI puts its environment note and the date at its end. Every other message (the person's
+ *  words, the app's tool results, the model's replies) and the system prompt (the app's instructions) are never changed, so
+ *  a date someone wrote, quoted or read reaches the model as it was. */
+function messageOnDay(message: unknown, day: string): unknown {
+  if (!isPlain(message) || message.role !== "system") return message;
+  const content = message.content;
+  if (typeof content === "string") return { ...message, content: onDay(content, day) };
+  if (!Array.isArray(content)) return message;
+  return { ...message, content: content.map((block) => (isPlain(block) && block.type === "text" && typeof block.text === "string" ? { ...block, text: onDay(block.text, day) } : block)) };
 }
 
 /** A message with the CLI's note of its own image file left out of each tool result that holds the image itself: the
@@ -307,7 +334,11 @@ export function applyAnthropic(body: unknown, route: ProxyRoute, options: Anthro
   if (isPlain(choice) && choice.type === "tool" && !chosen) refuse(403, "tool_choice names a tool this session does not have");
   const small = options.smallModel ?? options.model;
   if (body.model !== options.model && body.model !== small) refuse(403, "the model is not this session's");
-  const out: Record<string, unknown> = { ...body, messages: (body.messages as unknown[]).map(withoutImageNotes), ...(tools === undefined ? {} : { tools }) };
+  // On a set clock, the CLI's date lines say its day, in its own system messages only (messageOnDay). The host's own side
+  // requests carry none of the CLI's lines, and are left as they are.
+  const day = context.host === undefined ? options.day?.() : undefined;
+  const messages = (body.messages as unknown[]).map(withoutImageNotes);
+  const out: Record<string, unknown> = { ...body, messages: day === undefined ? messages : messages.map((m) => messageOnDay(m, day)), ...(tools === undefined ? {} : { tools }) };
   if (count) return out;
   // A main-model request that would not think is said, never passed silently (it is still forwarded: the CLI decides
   // its own requests, and this is the record that one went without reasoning).

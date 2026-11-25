@@ -233,6 +233,19 @@ for (const harness of ["claude-agent", "codex", "opencode"]) {
   });
 }
 
+// web_search's default, auto, on codex: the session codex is handed lists agentrun's own web_search, on the plane the
+// server resolves for the run (tool-plane.ts planeFor), keyless Firecrawl with no Parallel key. Codex's own search is
+// off on that plane (web-search-auto-ours.test.mjs), so this tool is the session's one search.
+test("a codex run on auto is handed agentrun's own web_search in its session's tools, through keyless Firecrawl, not the model provider's search", async (t) => {
+  const { planeFor } = await import("../dist/tool-plane.js");
+  const plane = planeFor({ OPENAI_API_KEY: `not-a-secret-${"openai"}` }, { harness: "codex", tools: ["web_search"] }, {});
+  assert.deepEqual(plane, { web_search: "firecrawl-keyless" }, "the server's plane for a codex run on auto");
+  const { spec: built } = await specOn(t, "codex", { body: { tools: ["read", "write", "web_search"] }, launch: { plane }, prepare: (data) => linkHarnesses(data) });
+  const search = built.session.tools.filter((tool) => tool.name === "web_search");
+  assert.equal(search.length, 1, `one web_search in the session's tools: ${built.session.tools.map((tool) => tool.name).join(", ")}`);
+  assert.match(search[0].description, /^Search the web through Firecrawl, with Exa behind it\./, "agentrun's keyless search, not the model provider's own");
+});
+
 test("a claude-agent run whose answer misses its output schema is asked once more in the same session, in the server's words, and ends on the corrected answer", { timeout: 180_000 }, async (t) => {
   const asked = [];
   const fake = await fakeAnthropic({

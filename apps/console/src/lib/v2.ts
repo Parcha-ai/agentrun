@@ -33,6 +33,8 @@ export type ToolSettings = Record<string, ToolSetting>;
 /** The private-network hosts an MCP server's authorization server may be on (none by default): GET and PUT
  *  /v2/settings/mcp-servers/oauth/private-hosts. Only the owner's password session writes it. */
 export type McpPrivateHosts = Answer<"getMcpPrivateHosts">;
+/** A year of the work under the machine the server runs on (GET /v2/wrapped): numbers and names only. */
+export type Wrapped = Answer<"getWrapped">;
 /** GET /v2/agents/{id}'s `tools`: each tool the agent grants, with its permission and provider in force. */
 export type AgentTool = NonNullable<components["Agent"]["tools"]>[number];
 /** The computer an agent's runs are given (definition.computer): its kind and the provider that serves it, absent for
@@ -57,12 +59,18 @@ export type TemplateApply = Body<"applyTemplate">;
 export type TemplateApplied = Exclude<Answer<"applyTemplate">, { plan: unknown }>;
 /** A package read from GitHub or uploaded (POST /v2/templates/import): checked, and shown whole (its instructions, every skill file). */
 export type TemplateImported = Answer<"importTemplate">;
+/** The marketplace's list as the server read it (GET /v2/marketplace/templates, serve's marketplace/1): its state, and
+ *  each template with the package here that it is. */
+export type MarketplaceList = Answer<"listMarketplaceTemplates">;
+export type MarketplaceTemplate = MarketplaceList["templates"][number];
 
 /** `so_far_usd` and `unpriced` (serve's costsofar/1), present while `usd` is null, and beside `upper_bound` (its exact
  *  part and held count); `usd` is said first whenever it is known (format.ts chargeWords, soFar). */
 export type Cost = components["Cost"];
 
 export type Run = components["Run"];
+/** POST /v2/runs' body: a run of an agent the request carries whole (`definition`), kept here under `external`. */
+export type RunCreateInline = components["RunCreateInline"];
 
 /** A trigger of any kind (GET /v2/triggers/{id}): a schedule or a webhook. */
 export type Trigger = Answer<"getTrigger">;
