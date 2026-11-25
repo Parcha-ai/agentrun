@@ -801,6 +801,20 @@ const SEMI_ROWS = [
     [`401 for X-Relay: api_key=${SEMI_WHOLE}&region=us-east-1; region us-east-1`, "401 for X-Relay: [redacted]; region us-east-1"],
   ],
   [
+    "a header value's credential pair with a ; in its value, before a %2C pair",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=api_key=${SEMI_WHOLE}%2Cregion=us-east-1` },
+    [SEMI_WHOLE, SEMI_PREFIX],
+    ["us-east-1"],
+    [`401 from relay: key ${SEMI_WHOLE} refused`, "401 from relay: key [redacted] refused"],
+  ],
+  [
+    "a header value's credential pair with a ; in its value, after a %2C pair",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=region=us-east-1%2Capi_key=${SEMI_WHOLE}` },
+    [SEMI_WHOLE, SEMI_PREFIX],
+    ["us-east-1"],
+    [`401 from relay: key ${SEMI_WHOLE} refused`, "401 from relay: key [redacted] refused"],
+  ],
+  [
     "a header value's credential pair with a ; and a %2C in its value",
     { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=api_key=${SEMI_COMMA}&region=us-east-1` },
     [SEMI_COMMA, decodeURIComponent(SEMI_COMMA), SEMI_PREFIX],
@@ -810,6 +824,13 @@ const SEMI_ROWS = [
   [
     "a header value's credential pair whose value starts with a ;",
     { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=token=;${SEMI_WHOLE}&region=us-east-1` },
+    [`;${SEMI_WHOLE}`, SEMI_WHOLE, SEMI_PREFIX],
+    ["us-east-1"],
+    [`401 from relay: token ${SEMI_WHOLE} refused`, "401 from relay: token [redacted] refused"],
+  ],
+  [
+    "a header value's credential pair whose value starts with a ;, after a %2C pair",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=region=us-east-1%2Ctoken=;${SEMI_WHOLE}` },
     [`;${SEMI_WHOLE}`, SEMI_WHOLE, SEMI_PREFIX],
     ["us-east-1"],
     [`401 from relay: token ${SEMI_WHOLE} refused`, "401 from relay: token [redacted] refused"],
