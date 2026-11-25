@@ -67,3 +67,17 @@ test("a single-quoted dict's strings read through Python's escapes: a held value
   // Control: a single-quoted dict with an escaped apostrophe that holds no spelling of the value stays shown.
   assert.equal(withheldWhole(String.raw`{'a': 'it\'s ab', 'b': 'cd"efgh'}`, [`ab'cd"efgh`]), false);
 });
+
+test("a single-quoted dict written in a call's arguments (a JSON string's text) gets the quoted joins too, Python's escapes one level down", () => {
+  // A call's arguments are read as JSON.stringify writes them, so a dict a model wrote in an argument is a JSON string's
+  // text: its apostrophes as they are, its backslashes doubled.
+  const [HEAD, REST] = [["Zq8V", "bN3x", "LmT6", "pR2w"].join(""), ["Yk9H", "sD4f", "Gj7A", "c5Ue"].join("")];
+  for (const [args, value] of [
+    [{ note: "{'alice': 'secretpw'}" }, "alice:secretpw"],
+    [{ code: `d = {'a': 'see ${HEAD}', 'b': '${REST} more'}` }, `${HEAD}${REST}`],
+    [{ code: String.raw`d = {'a': 'ab\'cd"', 'b': 'efgh'}` }, `ab'cd"efgh`],
+    [{ code: String.raw`d = {'a': 'see ab\x41cd', 'b': 'efgh more'}` }, "abAcdefgh"],
+  ]) assert.equal(withheldWhole(JSON.stringify(args), [value]), true, JSON.stringify(args));
+  // Control: another value under the held login's name, in an argument, is no spelling of it.
+  assert.equal(withheldWhole(JSON.stringify({ note: "{'alice': 'other'}" }), ["alice:secretpw"]), false);
+});
