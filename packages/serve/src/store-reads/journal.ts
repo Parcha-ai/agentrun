@@ -465,9 +465,11 @@ export function forgetServedAnswers(store: Store, runId: string): string[] {
   return dropped;
 }
 
-/** What each store's readers last cut of a run's texts, by run and the digest of the values they were cut of, in the
- *  order the reader was handed them (redacted takes them in that order, so a set read in another order is cut again,
- *  never served a cut made of another order): by each text's digest, what the row's redactor made of it (key-refusal.ts
+/** What each store's readers last cut of a run's texts, by run and the digest of its whole cut (run-cut.ts RunCut): every
+ *  held value, in the order the reader was handed them (redacted takes them in that order, so a set read in another
+ *  order is cut again, never served a cut made of another order), and its census mode (its censusDigest, "none", or
+ *  "unreadable"), so a value saved or a census written since is a new set and every text is cut again. By each text's
+ *  digest, what the row's redactor made of it (key-refusal.ts
  *  redacted) or whether it is withheld whole (withheldWhole). A reader that follows a run (a console's live Timeline,
  *  its view polled) reads its rows once per change, each read renders every row from the journal again, and an entry's
  *  words never change: so each text is cut once per held value set, not once per read, and a run of n turns costs the
@@ -478,7 +480,7 @@ export function forgetServedAnswers(store: Store, runId: string): string[] {
  *  value set's, its oldest text first). A text that alone costs more than CUT_BYTES is not kept. At most CUT_SETS run
  *  and value set pairs a store. So the worst case is CUT_BYTES (32 MiB) of kept cuts per open store, whatever a run
  *  wrote: a made text is at most redacted's head (SHOWN plus 6 times the longest held value, and 16), most rows far
- *  less, and a 62-search run keeps about 1.5 MB. */
+ *  less, and a run of 60 web searches keeps about 280 KB. */
 type CutsOf = { readonly sets: Map<string, { readonly texts: Map<string, string | boolean>; bytes: number }>; bytes: number };
 const cutsKept = new WeakMap<Store, CutsOf>();
 const CUT_SETS = 16;
@@ -500,13 +502,19 @@ function forgetCuts(origin: Store, runId: string): void {
   }
 }
 
-/** The row redactor (`redact`) and the whole-text check (`holds`) of run `runId`'s rows under the held `values` (run-cut.ts
- *  runCutValues), as a reader's TimelineOptions takes them: each text cut once per held value set, in its order
- *  (cutsKept), what was cut kept only while no run's text was forgotten since `since` (servedSince, taken before the
- *  read began). */
-export function rowCutsOnce(store: Store, runId: string, values: readonly string[], since: number): { redact: (text: string) => string; holds: (text: string) => boolean } {
+/** A run's cut as a reader holds it (run-cut.ts runCutValues): its held values and the census its files are cut by, or
+ *  "unreadable" (its rows withheld, read under no values). */
+export type RowCut = { readonly values: readonly string[]; readonly censusDigest?: string } | "unreadable";
+
+/** The row redactor (`redact`) and the whole-text check (`holds`) of run `runId`'s rows under its `cut` (run-cut.ts
+ *  runCutValues), as a reader's TimelineOptions takes them: each text cut once per cut, its values in their order and its
+ *  census mode (cutsKept), what was cut kept only while no run's text was forgotten since `since` (servedSince, taken
+ *  before the read began). */
+export function rowCutsOnce(store: Store, runId: string, cut: RowCut, since: number): { redact: (text: string) => string; holds: (text: string) => boolean } {
   const origin = store.origin;
-  const set = `${runId}\0${createHash("sha256").update(JSON.stringify(values)).digest("hex")}`;
+  const values = cut === "unreadable" ? [] : cut.values;
+  const mode = cut === "unreadable" ? "unreadable" : (cut.censusDigest ?? "none");
+  const set = `${runId}\0${createHash("sha256").update(JSON.stringify([mode, values])).digest("hex")}`;
   const once = <T extends string | boolean>(how: string, text: string, cut: () => T): T => {
     const slot = `${how}\0${createHash("sha256").update(text).digest("base64")}`;
     const kept = cutsKept.get(origin)?.sets.get(set)?.texts.get(slot);
@@ -548,10 +556,12 @@ export function rowCutsOnce(store: Store, runId: string, values: readonly string
   };
 }
 
-/** What the readers of `store` keep of their cuts now: the bytes counted (cutBudget bounds it), the texts and the sets. */
-export function cutsKeptOf(store: Store): { bytes: number; texts: number; sets: number } {
+/** What the readers of `store` keep of their cuts now: the bytes counted (cutBudget bounds it), the texts and the sets, and
+ *  each kept text (its set, its slot and what was made of it), so a test can read that nothing a run wrote is kept. */
+export function cutsKeptOf(store: Store): { bytes: number; texts: number; sets: number; kept: { set: string; slot: string; made: string | boolean }[] } {
   const cuts = cutsKept.get(store.origin);
-  return { bytes: cuts?.bytes ?? 0, texts: [...(cuts?.sets.values() ?? [])].reduce((n, kept) => n + kept.texts.size, 0), sets: cuts?.sets.size ?? 0 };
+  const kept = [...(cuts?.sets ?? [])].flatMap(([set, of]) => [...of.texts].map(([slot, made]) => ({ set, slot, made })));
+  return { bytes: cuts?.bytes ?? 0, texts: kept.length, sets: cuts?.sets.size ?? 0, kept };
 }
 
 /** `rows` (runTimeline's, rendered with `options`) with each final answer whole, as main served a run's answer: the renderer

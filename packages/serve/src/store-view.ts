@@ -406,7 +406,7 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   // looking back is still going: its look-back's rows come yet.
   // A call's arguments, or a web call's output, split across two strings are withheld whole (TimelineOptions.holds).
   // Each text cut once per held value set (rowCutsOnce): a polled view cuts only what an earlier read had not.
-  const timelineOptions = { settled: terminal && !lookingBack, ended: terminal && !lookingBack, ...rowCutsOnce(store, runId, values, since) };
+  const timelineOptions = { settled: terminal && !lookingBack, ended: terminal && !lookingBack, ...rowCutsOnce(store, runId, cut, since) };
   // Rendered from the records read above, so its usage row and the cost's `plan` (bookedSpend over the same entries) are
   // of one read.
   const timeline = withAsks(await wholeAnswers(store, runId, context, await runTimeline(store, runId, context, timelineOptions, records), timelineOptions, wholeAnswerFor(values), since));

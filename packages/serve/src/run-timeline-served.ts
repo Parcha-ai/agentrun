@@ -51,7 +51,7 @@ export async function servedTimelineRows(deps: ServedTimelineDeps, store: Store,
     if (cut === "unreadable") return undefined;
     const { values } = cut;
     // Each text cut once per held value set (rowCutsOnce): a reader that follows the run cuts only what an earlier read had not.
-    const { redact, holds } = rowCutsOnce(store, runId, values, since);
+    const { redact, holds } = rowCutsOnce(store, runId, cut, since);
     return { values, redact, ...(await store.snapshot(async (snapshot) => {
       // The rows a person reads: each call that waited for approval in order (held, your approval, what came of it), its
       // arguments and the person's notes through the cut (run-view.ts withApprovalRows), as main's served Timeline read them.
