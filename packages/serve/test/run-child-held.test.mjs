@@ -534,6 +534,13 @@ test("where runs have users of their own and the login is this machine's own, a 
   const claimed = {};
   for (const [where, env, own] of SENDS_NO_MODEL_KEY) claimed[where] = await claimOf(env, own).then((place) => place, (error) => ({ refused: error.message }));
   assert.deepEqual(claimed, Object.fromEntries(SENDS_NO_MODEL_KEY.map(([where]) => [where, { stays: false, login: undefined }])), "a run that sends no model key reads no login at its claim: a process of its own, no login, never refused for one");
+  // Where every run is the runner's own user (AGENTRUN_RUN_USER=same): the same claim off faux stays in the runner, on the
+  // machine's login; one that sends no model key reads no login either, so it is a process of its own, not the runner's.
+  const sameUser = (env, own) => host.staysInRunner({ ...staysDeps(data, "agentic", "machine"), env }, "claude-agent", { ...launch, ...own }, "run-own", SAME_USER);
+  assert.deepEqual(await sameUser({}, {}), { stays: true }, "AGENTRUN_RUN_USER=same, off faux: it stays in the runner, on the machine's login");
+  const placed = {};
+  for (const [where, env, own] of SENDS_NO_MODEL_KEY) placed[where] = await sameUser(env, own);
+  assert.deepEqual(placed, Object.fromEntries(SENDS_NO_MODEL_KEY.map(([where]) => [where, { stays: false, login: undefined }])), "AGENTRUN_RUN_USER=same: a run that sends no model key is a process of its own, with no login, never in the runner on it");
 });
 
 // The runners on a data folder say at their start whether their runs on the login stay in their own process

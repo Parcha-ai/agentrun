@@ -215,6 +215,7 @@ for (const [blank, said] of [[" ", "a space"], ["", "empty"]]) {
     // step that takes a project's turn from here (composio-triggers.ts serial, the server's own instance of the class) is
     // seen as it takes its place, and says as it begins whether the create's upsert was let go: a delete that takes its
     // place is seen at once, and one that skips the turn answers instead, each with no clock.
+    assert.equal(typeof ComposioTriggers.prototype.serial, "function", "the project's turn is taken by ComposioTriggers' serial, the method seen below");
     const { serial } = ComposioTriggers.prototype;
     t.after(() => void (ComposioTriggers.prototype.serial = serial));
     let released = false;
