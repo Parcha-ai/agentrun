@@ -757,11 +757,13 @@ test("an OTLP header value's credential pair is read anywhere in the value, a UR
 });
 
 // A credential with a raw ; in it, as an OTLP endpoint's query parameter or inside a header value. A query or a pair list
-// read split at & alone keeps the whole value; read split at ; too, it keeps each pair after a ;. Both readings are held.
+// read split at & alone keeps the whole value, a %2C in it too; read split at ; too, it keeps each pair after a ;. Both
+// readings are held. A value whose part before its first ; is empty is held after it; a value of only ; is not held.
 // Each row: [what, the env, the credentials held and cut alone, what is on no held list, a line quoting the variable and
 // its cut].
 const SEMI_PREFIX = `prefix-${"dummy"}`;
 const SEMI_WHOLE = `${SEMI_PREFIX};suffix-${"dummy"}`;
+const SEMI_COMMA = `${SEMI_PREFIX}%2Cmid-${"dummy"};suffix-${"dummy"}`;
 const SEMI_ROWS = [
   [
     "an endpoint's credential parameter with a ; in its value",
@@ -797,6 +799,27 @@ const SEMI_ROWS = [
     [SEMI_WHOLE, SEMI_PREFIX],
     ["us-east-1"],
     [`401 for X-Relay: api_key=${SEMI_WHOLE}&region=us-east-1; region us-east-1`, "401 for X-Relay: [redacted]; region us-east-1"],
+  ],
+  [
+    "a header value's credential pair with a ; and a %2C in its value",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=api_key=${SEMI_COMMA}&region=us-east-1` },
+    [SEMI_COMMA, decodeURIComponent(SEMI_COMMA), SEMI_PREFIX],
+    ["us-east-1"],
+    [`401 from relay: api_key=${decodeURIComponent(SEMI_COMMA)} refused`, "401 from relay: api_key=[redacted] refused"],
+  ],
+  [
+    "a header value's credential pair whose value starts with a ;",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=token=;${SEMI_WHOLE}&region=us-east-1` },
+    [`;${SEMI_WHOLE}`, SEMI_WHOLE, SEMI_PREFIX],
+    ["us-east-1"],
+    [`401 from relay: token ${SEMI_WHOLE} refused`, "401 from relay: token [redacted] refused"],
+  ],
+  [
+    "a header value's credential pair left empty before a ;",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: "X-Relay=token=; theme=dark" },
+    [],
+    [";", "dark"],
+    ["parse error at ; near theme", "parse error at ; near theme"],
   ],
 ];
 
