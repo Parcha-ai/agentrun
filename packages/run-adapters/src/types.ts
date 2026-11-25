@@ -513,6 +513,10 @@ export interface AdapterFacts {
   /** It defers a run's MCP tools behind a tool search of its own (Claude Code's ToolSearch), so the host offers no
    *  `tools_search` or `tools_call` beside it. Absent: the host's are offered when a run's catalog tools are deferred. */
   readonly ownToolSearch?: true;
+  /** Its model proxy forwards with the fetch its launch hands it (ModuleLaunch.fetch, a provider's `fetch`), so a model
+   *  only that fetch reaches (one the host's route translates onto its wire: an Ollama model on Messages or Responses) is
+   *  its to run. Absent: the host offers it no such model, names none as its default, and refuses one a run names. */
+  readonly forwardsRoute?: true;
   /** The model as the harness names it (Anthropic's id has no dot). */
   normalizeModel(model: { provider: string; modelId: string }): { provider: string; modelId: string };
   /** How it is installed and pinned: the line that installs it into a project, the package it pins, and the codes its

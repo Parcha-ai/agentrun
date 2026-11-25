@@ -234,6 +234,11 @@ A request's path has no query. `auth_failed` names the route and why (`no_creden
 `wrong_launch_code`, `wrong_password`, `sign_in_table_full`), never the token given nor any part of it. `AGENTRUN_LOG=quiet` leaves out the request lines; the
 run and `auth_failed` lines stay. A run whose process failed at its start says why in its `error.message`, in words.
 One line at start, `event=boxes`, says which boxes this server has ([Sandbox](#sandbox)); quiet keeps it too.
+`AGENTRUN_LOG=debug` keeps every line and also writes into a run's log one line per call an ACP agent announces, when
+its recipe declares `announces`: `acp: the agent announced a call`, with the call's `toolCallId`, its `kind`, the tool
+name the recipe's field holds when it names an AgentRun tool (at most 200 characters; `native` for any other call,
+since a recipe's field may sit inside the call's input) and the AgentRun tool it named, never the call's input. A call
+announced with no name (Cursor's) gets the line again when a later update names it.
 `event=harness_offers why=start ms=<n>` says how long the server took to check what each harness offers (each CLI's
 package and pins; [harnesses](#harnesses)), the bulk of its start; quiet keeps it too. It is made at the start only: a
 PUT of `/settings/tools` and a save or delete of a tool key change no harness's offer, so they remake capabilities at
@@ -945,6 +950,15 @@ of a computer tool answers the tool's value. Codex's code mode takes no binding 
 `computer_op` beside the computer's tools and its scripts call them as nested calls, each answering the tool's value as
 JSON. A run whose `codemode` is set to deny lists them the same way, so its computer stays in reach. `computerMcp` (`src/workspace/computer-mcp.ts`) serves the same tools to an MCP
 client, each answer with its value as `structuredContent`.
+
+A desktop's or a phone's own disk is not the run's files: only the run's folder is collected, and the computer goes at
+the run's end with what is on it. `computer_screenshot`'s `save_as` (a path relative to the run's folder, ending `.png`)
+saves the screenshot into the run's files through the run's own file writer, on any computer; a path outside the folder
+is refused in words before the computer is asked. A screenshot with `save_as` is a file written, so `write`'s setting holds
+it too, after the kind's deny: the stricter decides (`write` set to deny refuses it before the computer is asked, set to
+ask puts it to a person); one with no `save_as` is held to the kind's setting alone. On a desktop or a phone the run's folder is not mounted in (one with
+`exec: false`, or a provider that mounts none), the model is told this once in the run, as the server's note, after a
+due cap wrap-up.
 
 A kind with no provider, a provider that does not serve the kind, or a provider whose required keys are not saved is
 refused before anything starts, in words that name the fix in Settings → Computers. A Docker computer needs a Docker
@@ -2533,8 +2547,9 @@ lists. Composio's server can leave out an action it was allowed (it did for `HAC
 A refresh of a saved Composio server also reads its account at Composio, and every read of the server then says it as
 `composio_account: {state, labels?, checked_at}`: `connected` with each account's label (its alias, else the name
 Composio shows, else its word id; never its id or a token), `pending` while its connect link is unfinished, `expired`,
-`none`, or `unknown` when Composio didn't answer. An account Composio answers as another user's is never the server's,
-and only one it names as the server's user's gives a label. A per-run server has none; an empty recorded user reads
+`none`, or `unknown` when Composio didn't answer. Only an account Composio names as the server's user's is the server's,
+for its state, its label, a save and a trigger alike: one answered as another user's, or with no user at all, never is,
+and the user connects one again. A per-run server has none; an empty recorded user reads
 `unknown`. The API token sees `composio_account` too, in a server's full read: its label may be the account's email.
 
 A saved Composio server is gated, approved and shown on the Timeline as any MCP server's tools are, "not metered" until
@@ -5046,16 +5061,16 @@ step is sent only when the run's spend plus that step's least (its whole input b
 1,024-token answer) fits. So a small cap pauses a run well before it has spent it. Measured on a pi desktop run on Sonnet
 ($3 / $15, cache write $3.75, cache read $0.30 a million) through the dispatch's own system prompt and tools (read,
 write, edit, the desktop's and `codemode`, with the desktop skill named in the system prompt), five requests (four
-screenshots, then the answer), spending about $0.04 in all. Through a gateway the first request's byte bound is 9,772
-tokens, so it needs $0.052; each later request is bounded by the last one's bill and the bytes it adds, so the whole run
+screenshots, then the answer), spending about $0.04 in all. Through a gateway the first request's byte bound is 10,445
+tokens, the server's note that the desktop's disk is not the run's files among them, so it needs $0.055; each later request is bounded by the last one's bill and the bytes it adds, so the whole run
 needs $0.082;
-straight to Anthropic the count is one recorded from a real desktop run on Sonnet (3,146 tokens at first), so it needs
-$0.030 and $0.083:
+straight to Anthropic the count is one recorded from a real desktop run on Sonnet (3,146 tokens at first), and the note,
+placed after the count, adds its byte bound (371 tokens), so it needs $0.031 and $0.083:
 
 | Route | First request needs | Five-step run needs | Each further step |
 | --- | --- | --- | --- |
 | Through a gateway (OpenRouter): the byte bound, then the last bill | $0.06 | $0.09 | about $0.012 |
-| Straight to Anthropic: Anthropic's count | $0.03 | $0.09 | about $0.012 |
+| Straight to Anthropic: Anthropic's count | $0.04 | $0.09 | about $0.012 |
 
 A claude-agent run's first request is of the same size (the pinned
 CLI's measured 6,926 bytes with five tools: $0.04 for its first request through a gateway). A cap below these pauses at

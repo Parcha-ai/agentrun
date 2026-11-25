@@ -23,7 +23,7 @@ import { launchBody } from "./run-launch.js";
 import { DEFAULT_PORT } from "./server.js";
 import { REDACTED, secretCut, secretsIn } from "./secret-cut.js";
 import { handedSecret, SECRET_NAMES, withSecrets } from "./secrets.js";
-import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
+import { handedNoSealKey, SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
 import { bootSealKey, SealKeyRefused, withSealKey } from "./seal-key.js";
 import { toolKeysOverStore } from "./tool-keys-store.js";
 import { openServerSecretsOverStore } from "./server-secrets-store.js";
@@ -1295,7 +1295,8 @@ function runTitleOf(session: Pick<Session, "sourceTitle" | "titleText" | "cwd" |
  *  `whsec_` from elsewhere). The per-run door token is gone (the runner cutover deleted it). A sealed value that does not
  *  open is said to `say` (the webhook's secret once, naming the data directory): the import goes on, and does not cut it. */
 export async function ownSecrets(store: { triggerSettings: Pick<Store["triggerSettings"], "get" | "put" | "removeScope">; flush(): Promise<void> }, data: string, env: NodeJS.ProcessEnv, say: (fields: Record<string, string>) => void = () => {}): Promise<string[]> {
-  if (!sealKeyOf(env[SEAL_KEY_ENV])) throw new Error(`the server's own secrets open only under its seal key (${SEAL_KEY_ENV}), and none was handed`);
+  const handed = env[SEAL_KEY_ENV];
+  if (!sealKeyOf(handed)) throw new Error(`the server's own secrets open only under its seal key (${SEAL_KEY_ENV}), and ${handedNoSealKey(handed) ?? "none was handed"}`);
   return (await openServerSecretsOverStore(store, data, env, TRIGGER_ADAPTERS, say)).secrets.values();
 }
 

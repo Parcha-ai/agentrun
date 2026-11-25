@@ -6,7 +6,11 @@ import { openSqliteStore } from '../dist/store/index.js';
 import { createDispatchLoop } from '../dist/runner/dispatch.js';
 import { createNativeLoop } from '../dist/runner/native-loop.js';
 import { startRunner } from '../dist/runner/runner.js';
-import { END_PATCH_MS } from '../dist/runner/loop.js';
+
+/** The end's bound on its metrics read (host.endPatchMs; END_PATCH_MS in a runner): a stalled read is waited out this
+ *  long. A stop sent during the stall must reach the loop before it runs out, so that case's outlasts the 10 s `within`
+ *  gives the stop. */
+const endPatchBoundMs = (mode) => (mode === 'stall-stop' ? 12_000 : 2_000);
 
 const timing = { leaseMs: 60_000, renewEveryMs: 1_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
 const within = async (promise, what) => {
@@ -85,7 +89,7 @@ for (const cancel of [false, true]) {
 }
 
 for (const mode of ['reject', 'stall', 'stall-stop']) {
-  test(`a native terminal metrics ${mode} preserves the task end and releases its source lock`, { timeout: END_PATCH_MS + 25_000 }, async t => {
+  test(`a native terminal metrics ${mode} preserves the task end and releases its source lock`, { timeout: 55_000 }, async t => {
     let runner, store, release;
     t.after(async () => { release?.(); await runner?.close(); await store?.close(); });
     const fixture = await nativeFixture(t);
@@ -106,7 +110,7 @@ for (const mode of ['reject', 'stall', 'stall-stop']) {
     const dispatch = createDispatchLoop({
       launchOf: runId => store.runs.launch(runId),
       resolve: (_harness, launch) => deps => {
-        const native = createNativeLoop(launch, { store, data, sealKey: Buffer.alloc(32) })({
+        const native = createNativeLoop(launch, { store, data, sealKey: Buffer.alloc(32), endPatchMs: endPatchBoundMs(mode) })({
           ...deps,
           journal: claim => {
             const journal = deps.journal(claim);
@@ -137,7 +141,7 @@ for (const mode of ['reject', 'stall', 'stall-stop']) {
       await within(stopped, 'the native loop to receive the stop');
     }
     let row;
-    const deadline = Date.now() + (mode === 'reject' ? 5_000 : END_PATCH_MS + 5_000);
+    const deadline = Date.now() + (mode === 'reject' ? 5_000 : endPatchBoundMs(mode) + 5_000);
     for (;;) {
       row = await store.runs.get(start.body.run_id);
       if (row.runner === null && ['ended', 'stopped', 'failed'].includes(row.state)) break;

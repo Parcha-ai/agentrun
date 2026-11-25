@@ -97,3 +97,16 @@ export function sealKeyOf(text: string | undefined): Buffer | undefined {
   const trimmed = text?.trim() ?? "";
   return /^[A-Za-z0-9+/_-]{43}=?$/.test(trimmed) ? Buffer.from(trimmed, "base64") : undefined;
 }
+
+/** Why `text`, handed as a seal key, is none (sealKeyOf), by its length alone: never its value, a secret. A host whose
+ *  generator counts bytes where characters were meant hands 60 characters, and the refusal that stops a start says so. */
+export function notASealKey(text: string): string {
+  const length = text.trim().length;
+  return `is not 32 bytes in base64 (43 characters, or 44 ending in =; it has ${length}${length === 43 || length === 44 ? ", but not in that form" : ""})`;
+}
+
+/** For a reader that got no seal key from `text` (sealKeyOf): "the one handed is not …" when one was handed (not blank),
+ *  else undefined, so the reader says none was. The words every such refusal uses, by length, never the value. */
+export function handedNoSealKey(text: string | undefined): string | undefined {
+  return text?.trim() ? `the one handed ${notASealKey(text)}` : undefined;
+}

@@ -93,7 +93,7 @@ import { sourceAuxiliaryAdmitter } from "../source-sync/auxiliary.js";
 import { beginSourceIO, type SourceIOReceipt } from "../source-sync/io.js";
 import type { ProjectCheckpoint, ProjectUncertain } from "../source-sync/checkpoints.js";
 import type { ClaimComputer } from "../workspace/computer-for-claim.js";
-import { runTools, type RunTools } from "../workspace/run-tools.js";
+import { attachedIn, type RunComputer, runTools, type RunTools } from "../workspace/run-tools.js";
 import { ProjectHostGate } from "./project-host.js";
 import { runProjectCheckpoint } from "./project-checkpoint.js";
 
@@ -424,13 +424,17 @@ const always: Check = () => true;
  *  its Archil settings (no credential), its MCP hosts and server names, its Claude-login mode and its approvers. */
 const SHARED_SETTINGS: ReadonlySet<string> = new Set(["tool-settings", "archil", "mcp.private_oauth_hosts", "mcp.server_own", "claude_login", "approvers"]);
 
-/** The rows of the claim's own run that its process writes, and removes, itself: its browser's wait that ended
- *  (browser-wait-ended.ts) and its browser's take (browser-hold.ts), each the run's process's report of its own browser
- *  to the server's reads. No other row is its to write. */
-const ownWrittenSettings = (bound: Bound): ReadonlySet<string> => new Set([
-  waitEndedKey(bound.claim.runId),
-  browserHoldKey(bound.claim.runId),
+/** The rows of the claim's own run that its process writes, and removes, itself, each with its string fields (beside the
+ *  claim's epoch): its browser's wait that ended (browser-wait-ended.ts) and its browser's take (browser-hold.ts), each
+ *  the run's process's report of its own browser to the server's reads. No other row is its to write. */
+const ownWrittenSettings = (bound: Bound): ReadonlyMap<string, readonly string[]> => new Map([
+  [waitEndedKey(bound.claim.runId), ["at", "why"]],
+  [browserHoldKey(bound.claim.runId), ["session", "at"]],
 ]);
+
+/** The most one of those rows may take, as JSON bytes: a session's tag, a time and a timeline row's words fit many times
+ *  over, and the server parses the row on every read of the run and every Screen poll. */
+const OWN_ROW_MAX_BYTES = 4096;
 
 /** The settings of the claim's own run and agent a run's process may read: its run's Archil disk, SDK record, kept
  *  computer, browser wait and browser take, and its agent's Archil disk and promotions. Every other row (another run's
@@ -439,7 +443,7 @@ const ownSettings = (bound: Bound): ReadonlySet<string> => new Set([
   `archil.run.${bound.claim.runId}`,
   `sdk-run:${bound.claim.runId}`,
   keptKeyOf(bound.claim.runId),
-  ...ownWrittenSettings(bound),
+  ...ownWrittenSettings(bound).keys(),
   `archil.agent.${bound.agentId}`,
   `learning.promotions.${bound.agentId}`,
 ]);
@@ -447,8 +451,18 @@ const ownSettings = (bound: Bound): ReadonlySet<string> => new Set([
 /** Whether a run's process may read setting `key`. */
 export const settingReadable = (key: unknown, bound: Bound): boolean => typeof key === "string" && (SHARED_SETTINGS.has(key) || ownSettings(bound).has(key));
 const readableSetting: Check = (args, bound) => settingReadable(args[0], bound);
-/** Whether a run's process may write or remove setting `key`: only its own run's browser rows (ownWrittenSettings). */
-const writableSetting: Check = (args, bound) => typeof args[0] === "string" && ownWrittenSettings(bound).has(args[0]);
+/** Whether a run's process may remove setting `key`: only its own run's browser rows (ownWrittenSettings). */
+const removableSetting: Check = (args, bound) => typeof args[0] === "string" && ownWrittenSettings(bound).has(args[0]);
+/** Whether a run's process may write `value` to setting `key`: one of its own run's browser rows, with that row's fields
+ *  alone, each a string, the claim's own epoch, and at most OWN_ROW_MAX_BYTES. A row with a later epoch would be kept by
+ *  every clear of this claim (browser-hold.ts), so a later claim would read a take nobody holds. */
+const writableSetting: Check = ([key, value], bound) => {
+  const fields = typeof key === "string" ? ownWrittenSettings(bound).get(key) : undefined;
+  if (!fields || typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  return Object.keys(row).length === fields.length + 1 && row.epoch === bound.claim.epoch && fields.every((field) => typeof row[field] === "string")
+    && Buffer.byteLength(JSON.stringify(row)) <= OWN_ROW_MAX_BYTES;
+};
 
 /** The store's methods a run's loop calls, each with what binds it to the claim. A method not here is refused, and the
  *  refusal is said on the runner's log. Reads of the claim's run, its launch, its commands and its agent's revisions;
@@ -473,7 +487,7 @@ const STORE_CALLS: ReadonlyMap<string, Check> = new Map<string, Check>([
   ["agents.revisions", ownAgent],
   ["settings.get", readableSetting],
   ["settings.put", writableSetting],
-  ["settings.remove", writableSetting],
+  ["settings.remove", removableSetting],
   // Its rows filtered to the readable ones (storeCall).
   ["settings.all", always],
   ["mcp.pin", ownRun],
@@ -676,6 +690,8 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
   };
   const fromGitHub = launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github";
   const github = () => githubAppAccess(store, sealKey, launch.input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) });
+  /** The run's folder as the computer this claim made mounts it (Mode 2), where the claim's MCP files once it is made. */
+  let mountedFolder: Workspace | undefined;
   /** Mode 2's Archil claim, made once for the claim on the runner, its folder the run's. */
   let archil: Promise<Awaited<ReturnType<typeof archilClaim>> | undefined> | undefined;
   const archilOf = () =>
@@ -793,7 +809,15 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     mcp: (ask) => projectCall(async () => {
       const reach = await mcpReachOf(deps);
       const harness = { commit: (change: (tx: unknown) => Promise<unknown>) => change({ appendEntry: async (_conversation: number, entry: unknown) => void (await ask.appendRoot(dataOnly(entry))) }) };
-      const made = await mcpForClaim({ claim, store, sealKey, grants: granted, harness: harness as never, work: () => runFolder(deps.data, run.agentId, claim.runId), launchInput: launch.input, githubAppAccess: () => github(), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, ...claimMetering(deps, undefined, launch) });
+      // What the gateway files goes in the run's own files. In Mode 1 that is the run's folder on this machine. In Mode 2
+      // it is the run's disk: through the computer this claim made once it mounts the folder (mountedFolder, the computer
+      // answer's), since the mount holds the disk's write delegation; over the disk's file API (opened here, as the archil
+      // answer opens it, let go at the claim's release) when no computer mounts it. work() is read only when a call is
+      // answered (mcp-gateway.ts textOf, fileResults).
+      const disk = await archilOf();
+      const ws = disk === undefined ? undefined : await openRunWorkspace({ mode: 2, agentId: run.agentId, runId: claim.runId, archil: disk, log });
+      if (ws) releases.push(() => ws.end());
+      const made = await mcpForClaim({ claim, store, sealKey, grants: granted, harness: harness as never, work: () => (ws === undefined ? runFolder(deps.data, run.agentId, claim.runId) : mountedFolder ?? ws.workspace), launchInput: launch.input, githubAppAccess: () => github(), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, ...claimMetering(deps, undefined, launch) });
       if (!made) return undefined;
       releases.push(() => made.release());
       const exposed = heldMcpOf(made, cut);
@@ -920,6 +944,13 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
         } as never,
       );
       releases.push(() => ws.end());
+      // A Mode 2 computer that mounts the run's folder holds the disk's write delegation: what the claim's MCP files then
+      // goes through it, attached here as the run's process attaches it. A failed attach leaves the MCP on the disk's file
+      // API, which says in its answer that the file could not be saved.
+      if (mode === 2) mountedFolder = await attachedIn(ws.workspace, (got as { computer?: RunComputer } | undefined)?.computer).catch((error: unknown) => {
+        log(`the run's folder could not be attached for the MCP's files: ${(error as Error)?.message ?? String(error)}`);
+        return undefined;
+      });
       // The computer let go by this runner at the claim's release too, before its folder: a process that crashed or broke
       // its channel never calls its release. Idempotent with the process's own release and with its park (which keeps it).
       const claimed = got as { release?: (why?: "ended") => Promise<void> } | undefined;
