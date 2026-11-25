@@ -25,7 +25,7 @@
 // asked anything.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { ApiError, invalid } from "./errors.js";
-import { type Ask, asking, type ComposioControl, managedConfig } from "./composio-preset.js";
+import { accountsUnder, type Ask, asking, type ComposioControl, managedConfig } from "./composio-preset.js";
 import type { Source } from "./trigger-adapter.js";
 import { COMPOSIO_HOOK, COMPOSIO_SECRET, CONFIG_SECRET, CONFIG_UNLISTED, configScope, configSecrets, MOVE_FIELD, SEALED_FIELD, SEALED_MASK, sealableValue, sealedConfigFields, sealedKept, sealedSchemaFields, shownSource } from "./trigger-composio.js";
 import type { TriggerUpstream } from "./triggers.js";
@@ -642,14 +642,13 @@ export class ComposioTriggers implements TriggerUpstream {
     return hook;
   }
 
-  /** The id of the one ACTIVE account the server's user has for its toolkit, under the auth config the server's save stands
-   *  on (as its MCP server serves only those; every config, for a server saved before that was recorded); none: refused,
-   *  with the link to connect it under that config; several: refused, naming each with when it was connected, so the
-   *  owner disconnects the ones it shouldn't run as. */
+  /** The id of the one ACTIVE account the server's user has for its toolkit (accountsUnder: never another user's), under
+   *  the auth config the server's save stands on (as its MCP server serves only those; every config, for a server saved
+   *  before that was recorded); none: refused, with the link to connect it under that config; several: refused, naming
+   *  each with when it was connected, so the owner disconnects the ones it shouldn't run as. */
   private async accountOf(ask: Ask, credential: ComposioCredential, server: string): Promise<string> {
     const config = credential.auth_config;
-    const accounts = await ask("checking the connected account", "GET", `/api/v3/connected_accounts?user_ids=${enc(credential.user)}&toolkit_slugs=${enc(credential.toolkit)}${config ? `&auth_config_ids=${enc(config)}` : ""}&statuses=ACTIVE`);
-    const active = (Array.isArray(accounts.items) ? accounts.items : []).filter((a): a is Json => isObject(a) && a.status === "ACTIVE" && !!text(a.id) && (!config || (isObject(a.auth_config) && a.auth_config.id === config)));
+    const active = (await accountsUnder(ask, { user: credential.user, toolkit: credential.toolkit, ...(config ? { auth_config: config } : {}) }, true)).filter((a) => !!text(a.id));
     if (active.length === 1) return text(active[0]!.id);
     const under = config ? ` under auth config ${config}` : "";
     // Several: never one picked, which would run the trigger as an account the owner didn't choose, unseen.

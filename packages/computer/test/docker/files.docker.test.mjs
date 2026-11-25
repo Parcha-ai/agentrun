@@ -53,7 +53,7 @@ describe("the host's tar and a Docker computer", { skip: LIVE ? false : "set AGE
 		const arch = docker("version", "--format", "{{.Server.Arch}}").trim();
 		const daemonPath = fileURLToPath(new URL(`../../dist/computerd-linux-${arch}`, import.meta.url));
 		assert.ok(existsSync(daemonPath), `no daemon for Docker's arch at ${daemonPath}: run npm run build:daemon`);
-		const provider = new DockerProvider({ daemonPath });
+		const provider = new DockerProvider({ env: process.env, daemonPath });
 		const created = await provider.create({ image: IMAGE, lifetimeMs: 10 * 60_000, network: "none", labels: { "agentrun.test": "files" } }, newRequest("files"));
 		assert.equal(created.ok, true, JSON.stringify(created));
 		made.push(created.value.name);

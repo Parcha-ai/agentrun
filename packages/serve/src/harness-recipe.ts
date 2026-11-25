@@ -3,12 +3,12 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { isAbsolute, join, normalize, resolve, sep } from "node:path";
 import { HARNESS_ID_PATTERN, RESERVED_HARNESS_IDS } from "./harness.js";
-import { ARCHIVE_FORMATS, type ArchiveFormat, type ArchiveInstallOptions, archivePlatform, type ArchiveRelease, installArchive } from "./harness-archive.js";
+import { ARCHIVE_CODES, ARCHIVE_FORMATS, type ArchiveFormat, type ArchiveInstallOptions, archivePlatform, type ArchiveRelease, installArchive, linkOutOf } from "./harness-archive.js";
 import { BUILTIN_HARNESS_IDS } from "./harness-table.js";
 import { commandData } from "./harness-owned.js";
 import { harnessesOf, installDirOf, shellWord } from "./harness-install.js";
 import { ENV_NAME, KEY_NAME, launchEnv } from "@parcha/agentrun-kernel";
-import { acpPackage } from "./acp-package.js";
+import { ACP_PACKAGE, acpPackage } from "./acp-package.js";
 import { keyShaped, SECRET_SEGMENTS } from "./secret-name.js";
 import { SECRET_NAMES } from "./secrets.js";
 
@@ -64,8 +64,6 @@ export const AGENT_VARS: Readonly<Record<"inherited" | "reserved" | "proxy", rea
 export type RecipeModel =
   | { readonly billing: "proxy"; readonly wire: "anthropic-messages"; readonly env: string; readonly hostEnv?: "ANTHROPIC_HOST" | "ANTHROPIC_BASE_URL" }
   | { readonly billing: "plan"; readonly maxTurns: number; readonly maxToolCalls: number; readonly hosts?: readonly string[]; readonly id?: string };
-/** A sign-in method's id as an agent lists it (keyMethod's `gemini-api-key`). */
-const SIGN_IN_METHOD = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 /** A long flag as signIn.homeArg names one (`--gemini-dir`): its value is the next argument, never after an `=`. */
 const LONG_FLAG = /^--[a-z0-9][a-z0-9-]{0,63}$/;
 /** `items` in a sentence: `a`, `a and b`, `a, b and c`. */
@@ -97,9 +95,20 @@ export interface Recipe {
   readonly env: Readonly<Record<string, string>>;
   readonly model: RecipeModel;
   readonly files: Readonly<Record<string, string>>;
+  /** A file in the private HOME the adapter writes at each start from that start's tools, in the form the agent reads
+   *  (Goose's `.config/goose/permission.yaml`, `goose-permission`): the agent runs our tools without asking. */
+  readonly allowFile?: { readonly path: string; readonly form: string };
+  /** Where the agent's tool_call names which tool it calls, each a dotted path into it: `tool` (with `server`, our
+   *  tool's own name; without, `<prefix><tool>`), `server` (must be `agentrun`), `prefix` (without `server`: default
+   *  `agentrun__`, agy's `mcp_agentrun_`; it names our server), `args` (default rawInput), and `extras`, fields beside
+   *  the arguments the MCP call never carries (agy's `toolSummary`), left out when they hold text. A call it names as
+   *  another tool is the agent's own; absent, calls are matched to MCP calls by their arguments alone (AcpAnnounces). */
+  readonly announces?: { readonly tool: string; readonly server?: string; readonly prefix?: string; readonly args?: string; readonly extras?: readonly string[] };
   readonly state: readonly string[];
   readonly declares: { readonly load: boolean; readonly mcp: "http" | "stdio" };
-  readonly quirks: { readonly mcpCall?: "match" | "mint" };
+  /** `permissionTie: "title"`: the adapter answers the agent's permission request for one of our announced calls
+   *  allow_once (Cursor's way); absent, every request goes to the server's gate. */
+  readonly quirks: { readonly mcpCall?: "match" | "mint"; readonly permissionTie?: "title" };
   readonly signIn?: RecipeSignIn;
 }
 
@@ -112,7 +121,7 @@ export class RecipeRefused extends Error {
 }
 
 /** The fields a recipe has. */
-const FIELDS = new Set(["id", "label", "release", "args", "keys", "keyMethod", "env", "model", "files", "state", "declares", "quirks", "signIn", "description", "$schema"]);
+const FIELDS = new Set(["id", "label", "release", "args", "keys", "keyMethod", "env", "model", "files", "allowFile", "announces", "state", "declares", "quirks", "signIn", "description", "$schema"]);
 /** Fields that would run something of the recipe's own at install or start (rule 4). */
 const INSTALL_FIELDS = new Set(["install", "installCommand", "postinstall", "preinstall", "setup", "script", "scripts", "run", "hooks", "update"]);
 /** Fields that would name a binary other than the release's archive (rule 2). */
@@ -241,7 +250,9 @@ export function recipeProblems(parsed: unknown): { code: RecipeCode; words: stri
       handed.add(env);
     }
   }
-  if (r.keyMethod !== undefined && (typeof r.keyMethod !== "string" || !SIGN_IN_METHOD.test(r.keyMethod))) say(RECIPE_CODES.invalid, "keyMethod, when given, is the sign-in method's id the agent's initialize lists for its key (gemini-api-key)");
+  // A sign-in method's id: the ACP package's AUTH_METHOD, the one definition, unchecked in form without it (as model.id).
+  const methodId = acpPackage()?.AUTH_METHOD;
+  if (r.keyMethod !== undefined && (typeof r.keyMethod !== "string" || (methodId !== undefined && !methodId.test(r.keyMethod)))) say(RECIPE_CODES.invalid, "keyMethod, when given, is the sign-in method's id the agent's initialize lists for its key (gemini-api-key)");
   else if (r.keyMethod !== undefined && !entries?.length) say(RECIPE_CODES.invalid, "keyMethod is the method the agent signs in with on its keys: name them in keys");
 
   // Rule 5: env, with rule 1 for a key named in it (by its saved name or the one it is handed as).
@@ -307,12 +318,27 @@ export function recipeProblems(parsed: unknown): { code: RecipeCode; words: stri
     if (!insideHome(path)) say(RECIPE_CODES.paths, `the file ${JSON.stringify(path)} must be a path inside the session's private HOME`);
     if (typeof content !== "string") say(RECIPE_CODES.invalid, `the file ${JSON.stringify(path)}'s content must be a string`);
   }
+  if (r.allowFile !== undefined) {
+    const allow = r.allowFile;
+    if (!isPlain(allow) || typeof allow.path !== "string" || typeof allow.form !== "string" || Object.keys(allow).some((k) => k !== "path" && k !== "form")) say(RECIPE_CODES.invalid, 'allowFile is { "path": a file in the private HOME, "form": the form its agent reads }');
+    else {
+      const path = insideHome(allow.path);
+      if (!path) say(RECIPE_CODES.paths, `the allowFile ${JSON.stringify(allow.path)} must be a path inside the session's private HOME`);
+      else if (isPlain(r.files) && Object.keys(r.files).some((file) => insideHome(file) === path)) say(RECIPE_CODES.invalid, `the allowFile ${JSON.stringify(allow.path)} is also one of files: the adapter writes it from each start's tools`);
+      // The forms are the ACP package's (ALLOW_FILE_FORMS), the one definition. Without that package no recipe runs.
+      const forms = acpPackage()?.ALLOW_FILE_FORMS;
+      if (forms !== undefined && !forms.includes(allow.form)) say(RECIPE_CODES.invalid, `the allowFile form ${JSON.stringify(allow.form)} is none of ${forms.join(", ")}`);
+    }
+  }
   if (r.state !== undefined && !strings(r.state)) say(RECIPE_CODES.paths, "state is a list of folders in the private HOME");
   else for (const path of (r.state as string[] | undefined) ?? []) if (!insideHome(path)) say(RECIPE_CODES.paths, `the state folder ${JSON.stringify(path)} must be inside the session's private HOME`);
 
   const declares = r.declares;
   if (!isPlain(declares) || typeof declares.load !== "boolean" || (declares.mcp !== "http" && declares.mcp !== "stdio")) say(RECIPE_CODES.invalid, 'declares is { "load": true or false, "mcp": "http" or "stdio" }');
-  if (r.quirks !== undefined && (!isPlain(r.quirks) || Object.keys(r.quirks).some((k) => k !== "mcpCall") || (r.quirks.mcpCall !== undefined && r.quirks.mcpCall !== "match" && r.quirks.mcpCall !== "mint"))) say(RECIPE_CODES.invalid, 'quirks is { "mcpCall": "match" or "mint" }');
+  // The announces field, and the title tie that needs it: the ACP package's rule (announcesProblems), the one definition.
+  // Without that package no recipe runs.
+  for (const words of acpPackage()?.announcesProblems(r.announces, isPlain(r.quirks) ? r.quirks.permissionTie : undefined) ?? []) say(RECIPE_CODES.invalid, words);
+  if (r.quirks !== undefined && (!isPlain(r.quirks) || Object.keys(r.quirks).some((k) => k !== "mcpCall" && k !== "permissionTie") || (r.quirks.mcpCall !== undefined && r.quirks.mcpCall !== "match" && r.quirks.mcpCall !== "mint") || (r.quirks.permissionTie !== undefined && r.quirks.permissionTie !== "title"))) say(RECIPE_CODES.invalid, 'quirks is { "mcpCall": "match" or "mint", "permissionTie": "title" }');
   if (r.description !== undefined && typeof r.description !== "string") say(RECIPE_CODES.invalid, "description is a string");
   return problems;
 }
@@ -340,6 +366,8 @@ export function parseRecipe(text: string): Recipe {
     env: r.env ?? {},
     model: r.model,
     files: Object.fromEntries(Object.entries(r.files ?? {}).map(([path, content]) => [insideHome(path)!, content])),
+    ...(r.allowFile ? { allowFile: Object.freeze({ path: insideHome(r.allowFile.path)!, form: r.allowFile.form }) } : {}),
+    ...(r.announces ? { announces: Object.freeze({ tool: r.announces.tool, ...(r.announces.server !== undefined ? { server: r.announces.server } : {}), ...(r.announces.prefix !== undefined ? { prefix: r.announces.prefix } : {}), ...(r.announces.args !== undefined ? { args: r.announces.args } : {}), ...(r.announces.extras !== undefined ? { extras: Object.freeze([...r.announces.extras]) } : {}) }) } : {}),
     state: (r.state ?? []).map((path) => insideHome(path)!),
     declares: r.declares,
     quirks: r.quirks ?? {},
@@ -369,10 +397,6 @@ export const recipeInstallLine = (file: string, data: string, env: NodeJS.Proces
 /** Where the recipe's binary is once installed: `<data>/harnesses/<id>/<cmd>`. */
 export const recipeBinaryOf = (data: string, recipe: Recipe, release: RecipeArchive): string => join(installDirOf(data, recipe.id), insideHome(release.cmd)!);
 
-/** Where the first sha256 of a binary the recipe does not pin is kept: beside the harnesses' folders, never inside the
- *  one an install replaces, so a reinstall that unpacks a different binary is seen. One per id, version and platform. */
-export const firstSeenOf = (data: string, recipe: Recipe, platform: string): string => join(harnessesOf(data), ".first-seen", `${recipe.id}@${recipe.release.version}-${platform}.sha256`);
-
 /** A first-seen digest record in a file of its own (one line, the sha256), written once and never over another's. */
 export function firstSeenRecord(file: string): { read(): string | undefined; write(sha256: string): void } {
   return {
@@ -389,25 +413,47 @@ export function firstSeenRecord(file: string): { read(): string | undefined; wri
   };
 }
 
-/** Where the first digest of every file the archive unpacked to (acp's treeDigest) is kept, for a recipe that pins no
- *  treeSha256: beside the binary's (firstSeenOf), so a second executable beside the binary (Antigravity's sidecar) is held
- *  to its first install as the binary is. */
+/** Where the first digest of every file the archive unpacked to (acp's treeDigest), the binary among them, is kept for a
+ *  recipe that pins no treeSha256: beside the harnesses' folders, never inside the one an install replaces, so a
+ *  reinstall that unpacks another binary or sidecar (Antigravity's) is seen. One per id, version and platform. */
 export const firstSeenTreeOf = (data: string, recipe: Recipe, platform: string): string => join(harnessesOf(data), ".first-seen", `${recipe.id}@${recipe.release.version}-${platform}.tree.sha256`);
 
-/** The sha256 the installed binary must have: the recipe's pin, else the first one its install recorded; undefined when it
- *  pins none and none was recorded (never installed by the owner's command). */
-export function pinnedDigest(data: string, recipe: Recipe, release: RecipeArchive, platform: string): { sha256: string; by: "recipe" | "first-seen" } | undefined {
-  if (release.binarySha256) return { sha256: release.binarySha256, by: "recipe" };
-  const recorded = firstSeenRecord(firstSeenOf(data, recipe, platform)).read();
-  return recorded ? { sha256: recorded, by: "first-seen" } : undefined;
+/** A recipe's install on `data` as every reader holds it (harness-check, `harness sign-in`, a server's entry and each of
+ *  its starts): its release for `platform`, its binary and folder, the owner's command that installs it (`line`), and the
+ *  digest every file in the folder must have together (treeDigest, the binary among them): the recipe's treeSha256, else
+ *  the first one its install recorded. Nothing is downloaded. */
+export type RecipeInstall = { readonly platform: string; readonly release: RecipeArchive; readonly binary: string; readonly dir: string; readonly line: string; readonly tree: { readonly sha256: string; readonly by: "recipe" | "first-seen" } };
+/** Why a recipe's install does not run, by code, in words that end with the command that fixes it. */
+export type InstallRefusal = { readonly code: string; readonly message: string };
+
+/** The recipe's install (RecipeInstall), or why there is none to hold: no release for the platform, nothing installed, or
+ *  an install from before every file beside its binary was recorded. */
+export function recipeInstall(data: string, recipe: Recipe, file: string, env: NodeJS.ProcessEnv = process.env, platform: string | undefined = archivePlatform()): RecipeInstall | InstallRefusal {
+  const release = releaseFor(recipe, platform);
+  if (!platform || !release) return { code: "HARNESS_PLATFORM_UNSUPPORTED", message: `${recipe.label} ${recipe.release.version} has no release for ${platform ?? `${process.platform}-${process.arch}`}` };
+  const dir = installDirOf(data, recipe.id);
+  const binary = recipeBinaryOf(data, recipe, release);
+  const line = recipeInstallLine(file, data, env);
+  const recorded = release.treeSha256 ? undefined : firstSeenRecord(firstSeenTreeOf(data, recipe, platform)).read();
+  const tree = release.treeSha256 ? { sha256: release.treeSha256, by: "recipe" as const } : recorded ? { sha256: recorded, by: "first-seen" as const } : undefined;
+  if (!existsSync(binary)) return { code: "HARNESS_NOT_INSTALLED", message: `${recipe.label} ${recipe.release.version} is not installed in ${dir}. Install it with: ${line}` };
+  if (!tree) return { code: "HARNESS_NOT_INSTALLED", message: `${recipe.label} ${recipe.release.version}'s files in ${dir} were never recorded by its install, so they cannot be checked. Install it again with: ${line}` };
+  return { platform, release, binary, dir, line, tree };
 }
 
-/** The digest every file of the install must have together (treeDigest): the recipe's treeSha256, else the first one its
- *  install recorded; undefined when neither is there (an install from before trees were recorded, or none at all). */
-export function pinnedTree(data: string, recipe: Recipe, release: RecipeArchive, platform: string): { sha256: string; by: "recipe" | "first-seen" } | undefined {
-  if (release.treeSha256) return { sha256: release.treeSha256, by: "recipe" };
-  const recorded = firstSeenRecord(firstSeenTreeOf(data, recipe, platform)).read();
-  return recorded ? { sha256: recorded, by: "first-seen" } : undefined;
+/** Whether every file of the install is still its tree's (RecipeInstall), digested now: undefined, or the refusal
+ *  (HARNESS_BINARY_MISMATCH; HARNESS_NOT_INSTALLED where the ACP adapter that takes the digest is not beside this server).
+ *  The tree digest holds a link by its target's name, never the file it leads to, so a folder with a link out of it
+ *  (linkOutOf: the executable behind a linked folder, code it loads from elsewhere) is refused: those bytes would be
+ *  checked by nothing. */
+export async function installHolds(install: RecipeInstall): Promise<InstallRefusal | undefined> {
+  const acp = acpPackage();
+  if (!acp) return { code: "HARNESS_NOT_INSTALLED", message: `the ACP adapter (${ACP_PACKAGE}) is not installed beside this server` };
+  const outward = await linkOutOf(install.dir).catch(() => "(unreadable)");
+  if (outward !== undefined) return { code: ARCHIVE_CODES.binary, message: `${install.dir} holds a link that leads outside it (${outward}), so the digest of its files does not hold what it leads to. Install it again with: ${install.line}` };
+  const found = await acp.treeDigest(install.dir).catch(() => undefined);
+  if (found === install.tree.sha256) return undefined;
+  return { code: ARCHIVE_CODES.binary, message: `${install.dir} has the tree sha256 ${found ?? "(unreadable)"}, and ${install.tree.by === "recipe" ? "the recipe pins" : "its first install recorded"} ${install.tree.sha256}. Install it again with: ${install.line}` };
 }
 
 /** The folder the agent keeps its owner's sign-in in (given by signIn.homeArg on `agentrun harness sign-in` and on every
@@ -428,9 +474,10 @@ export const recipeSignInLine = (file: string, data: string, env: NodeJS.Process
  *  Whether the sign-in still holds is the agent's to say when it runs (an ACP -32000, Authentication required). */
 export const signedIn = (data: string, recipe: Recipe): boolean => recipe.signIn !== undefined && existsSync(signedInNoteOf(data, recipe.id));
 
-/** What a passing harness-check proved, by digest: the recipe file, the binary and every file beside it, on `platform`. A
- *  server runs the recipe only while all three are still these (harness-recipe-entry.ts). */
-export type RecipeChecked = { readonly recipe: string; readonly binary: string; readonly tree: string; readonly version: string; readonly platform: string };
+/** What a passing harness-check proved, by digest: the recipe file (its version in it) and every file of the install, the
+ *  binary among them, on `platform`. A server runs the recipe only while all three are still these
+ *  (harness-recipe-entry.ts). */
+export type RecipeChecked = { readonly recipe: string; readonly tree: string; readonly platform: string };
 
 /** AgentRun's own note of the last harness-check that passed for the recipe `id` on `data`: `<data>/harnesses/<id>.checked`,
  *  beside the install and never in it. */
@@ -446,7 +493,7 @@ export function writeChecked(data: string, id: string, checked: RecipeChecked): 
 export function checkedOf(data: string, id: string): RecipeChecked | undefined {
   try {
     const note = JSON.parse(readFileSync(checkedNoteOf(data, id), "utf8")) as Partial<Record<keyof RecipeChecked, unknown>>;
-    const fields = ["recipe", "binary", "tree", "version", "platform"] as const;
+    const fields = ["recipe", "tree", "platform"] as const;
     return fields.every((field) => typeof note[field] === "string") ? (Object.fromEntries(fields.map((field) => [field, note[field]])) as RecipeChecked) : undefined;
   } catch {
     return undefined;
@@ -454,20 +501,18 @@ export function checkedOf(data: string, id: string): RecipeChecked | undefined {
 }
 
 /** Installs the recipe's release into `<data>/harnesses/<id>` (the owner's command, rule 4): its archive downloaded and
- *  checked against the recipe's sha256, unpacked, and its binary checked against the recipe's pin, or recorded as the
- *  first one seen where the recipe pins none (a later one that differs is refused). Every file beside it the same way: the
- *  recipe's treeSha256, else the first tree digest recorded, so nothing in the archive runs unpinned. */
+ *  checked against the recipe's sha256, unpacked, its binary checked against the recipe's binarySha256 where it pins one,
+ *  and every file it unpacked to, the binary among them, held to the recipe's treeSha256, else recorded as the first tree
+ *  seen (a later one that differs is refused), so nothing in the archive runs unpinned. */
 export async function installRecipe(recipe: Recipe, file: string, data: string, options: ArchiveInstallOptions = {}, env: NodeJS.ProcessEnv = process.env) {
   const platform = options.platform ?? archivePlatform();
   const release = releaseFor(recipe, platform);
-  const record = platform ? firstSeenRecord(firstSeenOf(data, recipe, platform)) : undefined;
-  const binary = release && !release.binarySha256 && record ? { binaryRecord: record } : {};
   const acp = acpPackage();
-  const trees = release && !release.treeSha256 && platform && acp ? { treeRecord: firstSeenRecord(firstSeenTreeOf(data, recipe, platform)) } : {};
-  const before = release && !release.binarySha256 ? record?.read() : undefined;
-  const done = await installArchive({ id: recipe.id, label: recipe.label, retry: recipeInstallLine(file, data, env), pin: { version: recipe.release.version, archives: recipe.release.archives }, ...(acp ? { tree: (root: string) => acp.treeDigest(root) } : {}) }, installDirOf(data, recipe.id), { ...options, ...binary, ...trees });
-  // What the binary was held to: the recipe's pin, the first digest an earlier install recorded, or this one's, recorded now.
-  const pinnedBy: "recipe" | "first-seen" | "recorded" = release?.binarySha256 ? "recipe" : before ? "first-seen" : "recorded";
+  const record = release && !release.treeSha256 && platform && acp ? firstSeenRecord(firstSeenTreeOf(data, recipe, platform)) : undefined;
+  const before = record?.read();
+  const done = await installArchive({ id: recipe.id, label: recipe.label, retry: recipeInstallLine(file, data, env), pin: { version: recipe.release.version, archives: recipe.release.archives }, ...(acp ? { tree: (root: string) => acp.treeDigest(root) } : {}) }, installDirOf(data, recipe.id), { ...options, ...(record ? { treeRecord: record } : {}) });
+  // What its files were held to: the recipe's tree pin, the first tree an earlier install recorded, or this one's, recorded now.
+  const pinnedBy: "recipe" | "first-seen" | "recorded" = release?.treeSha256 ? "recipe" : before ? "first-seen" : "recorded";
   return { version: recipe.release.version, pinnedBy, ...done };
 }
 

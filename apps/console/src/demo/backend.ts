@@ -3,13 +3,14 @@
 // data, the few things a tour does (answering a question or an approval, starting or stopping a run) change only the
 // world in this page's memory, and every other write is refused, saying so.
 //
-// Three reads go to the server all the same. The session and sign-out (`/auth/…`), since the person is signed in to it.
+// A few reads go to the server all the same. The session and sign-out (`/auth/…`), since the person is signed in to it.
 // And its catalogue, which is the product's own and holds nothing of the owner's: what the server can do
 // (`/capabilities`, shown as a server with every model and tool ready, without its secrets' names or its switches) and the
-// templates it ships with (`/templates`, the bundled ones only).
+// templates it ships with (`/templates`, the bundled ones only), with the marketplace's list beside them
+// (`/marketplace/templates`), whose entries are marked here only for a bundled one.
 import { DAY } from "./tale";
 import { DEMO_REFUSAL, demoPicked } from "./mode";
-import type { GradeBody, TemplateApply, TemplateView, TriggerCreate, TriggerInput } from "@/lib/v2";
+import type { GradeBody, MarketplaceList, TemplateApply, TemplateView, TriggerCreate, TriggerInput } from "@/lib/v2";
 import { createSuggestions } from "./suggestions";
 import { createWorld, hex, type World } from "./world";
 
@@ -79,6 +80,13 @@ export function createDemoFetch({ real, world = createWorld() }: { real: typeof 
       const served = (await res.json()) as { templates?: TemplateView[] };
       templates = (served.templates ?? []).filter((t) => t.bundled === true);
       return json({ ...served, templates });
+    }
+    if (method === "GET" && path === "/marketplace/templates") {
+      const res = await real(input, init);
+      if (!res.ok) return res;
+      const served = (await res.json()) as MarketplaceList;
+      const ids = new Set((await bundled()).map((t) => t.id));
+      return json({ ...served, templates: served.templates.map(({ here, ...t }) => (here && ids.has(here) ? { ...t, here } : t)) });
     }
     const template = path.match(/^\/templates\/([^/]+)(\/apply)?$/);
     if (template) {

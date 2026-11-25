@@ -2,8 +2,7 @@ import { agentHash } from "@/components/AgentPage";
 import { ArrowLeft, Blocks, CalendarClock, GitPullRequest, KeyRound, Mail, Pause, Pencil, Play, Plus, Rss, Trash2, Webhook, Zap } from "lucide-react";
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { AcceptEditor, ConditionList, EVENT_HINTS, Said } from "@/components/AcceptEditor";
-import { ListFilter } from "@/components/ListFilter";
-import { matchesFilter } from "@/lib/filter";
+import { FieldInput, FieldIssues } from "@/components/FieldInput";
 import { ProblemCard } from "@/components/Problem";
 import { ListSkeleton } from "@/components/Skeleton";
 import { Button } from "@/components/ui/button";
@@ -13,17 +12,20 @@ import { Field as UiField, formColumnsClass, Input, Textarea } from "@/component
 import type { Agent } from "@/lib/agentForm";
 import { agentsByName } from "@/lib/agents";
 import { Picker } from "@/components/ui/picker";
+import { SearchPicker } from "@/components/ui/search-picker";
 import { ScheduleWhen } from "@/components/ScheduleWhen";
 import { askCue, UnattendedWarning, useAskingTools } from "@/components/UnattendedWarning";
 import { ZonePicker } from "@/components/ZonePicker";
-import { type Client, ClientError } from "@/lib/client";
+import { type Client, ClientError, type FieldIssue } from "@/lib/client";
+import { type AgentInput, type FieldSpec, fieldIssueWords, fieldLabel, fieldOfIssue, fieldStartText, fieldValid } from "@/lib/inputForm";
+import { paramHelp } from "@/lib/templatePackages";
 import { httpHref } from "@/lib/safeUrl";
 import { markdown, runLabel, when } from "@/lib/format";
 import { keeper, uuid } from "@/lib/idempotency";
 import { type Problem, problem } from "@/lib/problem";
 import type { Tone } from "@/lib/runState";
 import { ACCEPT_LIMITS, acceptFields, emptyRule, type RuleDraft, ruleDraftOf } from "@/lib/accept";
-import { agentCapOf, atLeast, bodyOf, capOf, type CapRule, CONNECTED_NO_CAP, disabledWords, dollars, acceptWords, onceState, type OnceState, emptyGitHub, FIRED_BY, GITHUB_EVENT_NAMES, GITHUB_EVENTS, githubBodyOf, type GitHubDraft, type GitHubPicks, githubPicksOf, githubRulesOf, githubSourceOf, githubWhen, emailWhen, feedWhen, composioWhen, type ComposioDraft, type ComposioTrigger, composioBodyOf, composioSourceOf, type ConfigField, configFieldsOf, emptyComposio, isComposioTrigger, type GitHubTrigger, isGitHubTrigger, HOOK_URL_HINT, hookUrlOf, hookWhen, isScheduleTrigger, isWebhookTrigger, same, SIGNATURE_WORDS, utcWhen, type Draft, draftOf, type Schedule, type WebhookTrigger, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, pastWords, scheduleLine, emptyWebhook, type WebhookDraft, webhookBodyOf, webhookSourceOf, type FeedDraft, type FeedTrigger, emptyFeed, feedBodyOf, feedDraftOf, feedFields, feedSourceOf, feedUrlsOf, FEED_EVERY_S, isFeedTrigger, type EmailTrigger, isEmailTrigger, type EmailDraft, emptyEmail, emailBodyOf, EMAIL_FIELDS, MAX_FEEDS, span, TRIGGER_KINDS } from "@/lib/schedules";
+import { agentCapOf, triggerInputOf, atLeast, bodyOf, capOf, type CapRule, CONNECTED_NO_CAP, disabledWords, dollars, acceptWords, onceState, type OnceState, emptyGitHub, FIRED_BY, GITHUB_EVENT_NAMES, GITHUB_EVENTS, githubBodyOf, type GitHubDraft, type GitHubPicks, githubPicksOf, githubRulesOf, githubSourceOf, githubWhen, emailWhen, feedWhen, composioWhen, type ComposioDraft, type ComposioTrigger, composioBodyOf, composioSourceOf, type ConfigField, configFieldsOf, emptyComposio, isComposioTrigger, type GitHubTrigger, isGitHubTrigger, HOOK_URL_HINT, hookUrlOf, hookWhen, isScheduleTrigger, isWebhookTrigger, same, SIGNATURE_WORDS, utcWhen, type Draft, draftOf, type Schedule, type WebhookTrigger, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, pastWords, scheduleLine, emptyWebhook, type WebhookDraft, webhookBodyOf, webhookSourceOf, type FeedDraft, type FeedTrigger, type InputDraft, emptyFeed, feedBodyOf, feedDraftOf, feedFields, feedSourceOf, feedUrlsOf, FEED_EVERY_S, isFeedTrigger, type EmailTrigger, isEmailTrigger, type EmailDraft, emptyEmail, emailBodyOf, EMAIL_FIELDS, MAX_FEEDS, span, TRIGGER_KINDS } from "@/lib/schedules";
 import type { ComposioEvent, ComposioTriggers, Firing, Trigger, TriggerCreate, TriggerMade } from "@/lib/v2";
 import type { McpServer } from "@/lib/mcp";
 import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
@@ -362,6 +364,8 @@ function ScheduleDetail({ v2, go, agentName, id, every, now, failuresToPause }: 
     }
   };
   const content = typeof runs.target.input.content === "string" ? runs.target.input.content : null;
+  // The input's other fields (an agent's typed input beside the message), each by its key.
+  const given = Object.entries(runs.target.input).filter(([k]) => k !== "content");
   return (
     <div className="p-5 md:p-8">
       <a href="#/triggers" className="caps -my-1 inline-flex items-center gap-2 py-1 text-label text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Triggers</a>
@@ -404,7 +408,11 @@ function ScheduleDetail({ v2, go, agentName, id, every, now, failuresToPause }: 
       {(feed || mail) && <LastCheck check={trigger.last_check ?? null} newest={firings[0]} />}
       <dl className="mt-5 grid grid-cols-1 gap-x-6 gap-y-3 border p-4 text-body sm:grid-cols-[max-content_minmax(0,1fr)]">
         <dt className="caps text-label text-muted-foreground">Agent</dt><dd className="min-w-0 break-words"><a href={agentHash(runs.target.agent_id)} className="hover:underline">{agentName(runs.target.agent_id) || runs.target.agent_id}</a></dd>
-        <dt className="caps text-label text-muted-foreground">Each run is asked</dt><dd className="min-w-0 whitespace-pre-wrap break-words">{content ?? JSON.stringify(runs.target.input)}</dd>
+        {(content !== null || !given.length) && <><dt className="caps text-label text-muted-foreground">Each run is asked</dt><dd className="min-w-0 whitespace-pre-wrap break-words">{content ?? JSON.stringify(runs.target.input)}</dd></>}
+        {given.length > 0 && <>
+          <dt className="caps text-label text-muted-foreground">Each run's input</dt>
+          <dd className="min-w-0 break-words"><ul className="space-y-1 font-mono text-small" data-input>{given.map(([k, v]) => <li key={k}>{k}: {typeof v === "string" ? v : Array.isArray(v) && v.every((x) => typeof x === "string") ? v.join(", ") : JSON.stringify(v)}</li>)}</ul></dd>
+        </>}
         <dt className="caps text-label text-muted-foreground">Cost cap</dt>{connected ? <dd data-no-cap className="min-w-0 break-words">{CONNECTED_NO_CAP}</dd> : <dd className="font-mono">{capOf(runs.target.max_cost_usd, agentCap)}</dd>}
         {hook ? <>
           <dt className="caps text-label text-muted-foreground">URL</dt><dd className="flex min-w-0 flex-wrap items-center gap-2"><code className="min-w-0 break-all font-mono text-small">{hookUrlOf(hook)}</code><CopyButton text={hookUrlOf(hook)} label="Copy URL" /><span className="basis-full text-small text-muted-foreground">{HOOK_URL_HINT}</span></dd>
@@ -488,26 +496,27 @@ function Field({ label, field, issue, hint, required, children }: { label: strin
  *  empty field takes; none when the agent has none, never a made-up example. */
 const capPlaceholder = (agentCap: number | undefined) => (agentCap !== undefined ? `${dollars(agentCap)}, the agent's default` : undefined);
 
-/** What a trigger's runs are: the agent each starts, what each is asked (`asked`: what comes with it) and the cost cap
- *  under `capRule`, the rule the form's body builder takes too: for a connected agent (`none`) no field, only the words
- *  saying why, with a refusal the server still names under the cap. `what` names the trigger in the cap's hint;
- *  `skips`: the agent warning's note for a schedule. A picked agent since archived, or not listed, stays picked. */
-function RunTargetFields({ v2, draft, set, issues, agents, agentCap, capRule, what, asked, skips }: {
-  v2: Client; draft: { agentId: string; content: string; maxCost: string }; set: (k: "agentId" | "content" | "maxCost") => (value: string) => void;
-  issues: Record<string, string>; agents: Agent[] | null; agentCap: number | undefined; capRule: CapRule; what: string; asked?: string; skips?: boolean;
+/** What a trigger's runs are: the agent each starts, what each is given (RunInput; `asked`: what comes with it) and the
+ *  cost cap under `capRule`, the rule the form's body builder takes too: for a connected agent (`none`) no field, only the
+ *  words saying why, with a refusal the server still names under the cap. `input`: how the picked agent takes its input
+ *  and the server's issues at its fields (useTriggerCreate). `edit`: a change to the draft's run fields. `what` names the
+ *  trigger in the cap's hint; `skips`: the agent warning's note for a schedule. */
+function RunTargetFields({ v2, draft, edit, issues, agents, input, agentCap, capRule, what, asked, skips }: {
+  v2: Client; draft: RunDraft; edit: (patch: Partial<RunDraft>) => void;
+  issues: Record<string, string>; agents: Agent[] | null; input: RunInputState; agentCap: number | undefined; capRule: CapRule; what: string; asked?: string; skips?: boolean;
 }) {
-  const live = agentsByName((agents ?? []).filter((a) => !a.archived_at || a.agent_id === draft.agentId));
+  // Another agent's input starts afresh (its fields as they start, its example), and the issues at the last one's fields go.
+  const pick = (agentId: string) => {
+    if (agentId === draft.agentId) return;
+    edit({ agentId, values: undefined, json: undefined });
+    input.setFieldIssues([]);
+  };
   return <>
     <Field label="Agent" field="target.agent_id" issue={issues["target.agent_id"]} required>
-      <Picker name="agent" label="Agent" className="w-full" value={draft.agentId} onChange={(v) => set("agentId")(v)}
-        options={[{ value: "", label: agents ? "Pick an agent" : "Loading the agents" },
-          ...live.map((a) => ({ value: a.agent_id, label: `${a.definition.name || a.agent_id}${a.kind === "workflow" ? " (workflow)" : ""}` })),
-          ...(draft.agentId && agents && !live.some((a) => a.agent_id === draft.agentId) ? [{ value: draft.agentId, label: draft.agentId }] : [])]} />
+      <AgentPick agents={agents} value={draft.agentId} onChange={pick} />
     </Field>
     <UnattendedWarning v2={v2} agentId={draft.agentId} skips={skips} />
-    <Field label="Each run is asked" field="target.input" issue={issues["target.input"]} required hint={asked}>
-      <Textarea name="content" rows={4} className="p-3 font-sans" value={draft.content} onChange={(e) => set("content")(e.target.value)} />
-    </Field>
+    <RunInput shape={input.shape} draft={draft} onChange={edit} issue={issues["target.input"]} fieldIssues={input.fieldIssues} setFieldIssues={input.setFieldIssues} hint={asked} />
     {capRule === "none" ? (
       <UiField className="min-w-0" group label="Cost cap" error={issues["target.max_cost_usd"] ? <span data-issue="target.max_cost_usd">{issues["target.max_cost_usd"]}</span> : undefined}>
         <p data-no-cap role="note" className="text-body text-muted-foreground">{CONNECTED_NO_CAP}</p>
@@ -515,10 +524,81 @@ function RunTargetFields({ v2, draft, set, issues, agents, agentCap, capRule, wh
     ) : (
       <Field label="Cost cap, US dollars a run" field="target.max_cost_usd" issue={issues["target.max_cost_usd"]} required={capRule === "required"}
         hint={agentCap !== undefined ? `Uses the agent's default (${dollars(agentCap)}) if empty.` : capRule === "optional" ? "Uses the agent's default if empty." : `Each run this ${what} starts stops at this spend.`}>
-        <Input name="maxCost" inputMode="decimal" className="max-w-64" value={draft.maxCost} onChange={(e) => set("maxCost")(e.target.value)} placeholder={capPlaceholder(agentCap)} />
+        <Input name="maxCost" inputMode="decimal" className="max-w-64" value={draft.maxCost} onChange={(e) => edit({ maxCost: e.target.value })} placeholder={capPlaceholder(agentCap)} />
       </Field>
     )}
   </>;
+}
+
+/** A trigger form's run fields as its draft holds them. */
+type RunDraft = { agentId: string; content: string; maxCost: string } & InputDraft;
+
+/** The Agent picker of every trigger form: the agents in picker order (agentsByName), archived ones left out but the one
+ *  picked, which stays picked (an edited schedule's), as does one not listed. Two or more that share a name (several made
+ *  from one template) each say their id beside it, so each option names one agent; a name no other agent has stays as it
+ *  is. */
+function AgentPick({ agents, value, onChange }: { agents: Agent[] | null; value: string; onChange: (agentId: string) => void }) {
+  const live = agentsByName((agents ?? []).filter((a) => !a.archived_at || a.agent_id === value));
+  const nameOf = (a: Agent) => a.definition.name || a.agent_id;
+  const shared = (a: Agent) => live.filter((b) => nameOf(b) === nameOf(a)).length > 1;
+  return (
+    <Picker name="agent" label="Agent" className="w-full" value={value} onChange={onChange}
+      options={[{ value: "", label: agents ? "Pick an agent" : "Loading the agents" },
+        ...live.map((a) => ({ value: a.agent_id, label: `${shared(a) ? `${nameOf(a)} (${a.agent_id})` : nameOf(a)}${a.kind === "workflow" ? " (workflow)" : ""}` })),
+        ...(value && agents && !live.some((a) => a.agent_id === value) ? [{ value, label: value }] : [])]} />
+  );
+}
+
+/** How the picked agent takes its input (lib/inputForm.ts, as the run bar reads it): an agentic agent's input_schema; a
+ *  workflow agent's trigger sends the message, as it always has. None while the agents load. */
+const shapeOf = (agent: Agent | undefined): AgentInput | undefined => (agent && agent.kind !== "workflow" ? triggerInputOf(agent.definition.input_schema) : undefined);
+
+/** A trigger form's run input: how the picked agent takes it (`shape`), the input fields the form shows for it (`keys`),
+ *  and the server's issues at those fields. */
+type RunInputState = { shape: AgentInput | undefined; keys: string[]; fieldIssues: FieldIssue[]; setFieldIssues: (update: FieldIssue[] | ((was: FieldIssue[]) => FieldIssue[])) => void };
+
+/** What each run a trigger starts is given, by how its agent takes input (lib/inputForm.ts, the run bar's): the message;
+ *  the message and the agent's typed fields under it (the message optional when the schema requires another field), each
+ *  with the server's issues at it (`target.input.<key>`); or, for a schema the fields can't show, the whole input as JSON.
+ *  `hint`: what else each run is given (an event's payload). */
+function RunInput({ shape, draft, onChange, issue, fieldIssues, setFieldIssues, hint }: {
+  shape: AgentInput | undefined; draft: { content: string } & InputDraft; onChange: (patch: { content?: string } & InputDraft) => void; issue?: string;
+  fieldIssues: FieldIssue[]; setFieldIssues: RunInputState["setFieldIssues"]; hint?: string;
+}) {
+  if (shape?.kind === "json") {
+    const fields = shape.example.fields.map((f) => f.name).join(", ");
+    return (
+      <Field label="Each run's input, as JSON" field="target.input" issue={issue} required
+        hint={`The agent takes its whole input as JSON${fields ? `: ${fields}` : ""}.${hint ? ` ${hint}` : ""} What comes with each run (its event, the last run's answer) is added to its "content": without "content", the run starts without it.`}>
+        <Textarea name="input" rows={6} spellCheck={false} className="p-3 font-mono leading-[1.6]" value={draft.json ?? shape.example.text} onChange={(e) => onChange({ json: e.target.value })} />
+      </Field>
+    );
+  }
+  const form = shape?.kind === "fields" ? shape.form : null;
+  const values = form ? draft.values ?? fieldStartText(form) : {};
+  const keyOf = (i: FieldIssue) => fieldOfIssue(i.field, "target.input");
+  const setField = (key: string, f: FieldSpec, value: string) => {
+    onChange({ values: { ...values, [key]: value } });
+    // An issue at the field goes as soon as its value is one the server takes.
+    if (fieldValid(f, value)) setFieldIssues((was) => was.filter((i) => keyOf(i) !== key));
+  };
+  return (
+    <>
+      <UiField className="min-w-0" label="Each run is asked" required={!form || form.contentRequired} optional={!!form && !form.contentRequired} hint={hint} error={issue ? <span data-issue="target.input">{issue}</span> : undefined}>
+        <Textarea name="content" rows={4} className="p-3 font-sans" value={draft.content} onChange={(e) => onChange({ content: e.target.value })} />
+      </UiField>
+      {form && (
+        <div role="group" aria-label="Each run's input" className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2">
+          {form.fields.map(([key, f]) => (
+            <div key={key} data-field={`target.input.${key}`} className="min-w-0">
+              <FieldInput field={f} label={fieldLabel(key, f)} help={paramHelp(f)} value={values[key] ?? ""} onChange={(v) => setField(key, f, v)} />
+              <FieldIssues issues={fieldIssues.filter((i) => keyOf(i) === key)} words={(i) => fieldIssueWords(i, key, f)} />
+            </div>
+          ))}
+        </div>
+      )}
+    </>
+  );
 }
 
 /** Every agent, a page at a time, for the agent picker. */
@@ -549,8 +629,9 @@ function splitRefusal(found: ReturnType<typeof issuesOf>, shown: ReadonlySet<str
  *  once a connected one is picked, as no field is left to fix it in); the Idempotency-Key keeper (a create sent again
  *  unchanged, a lost answer or a second click, reuses its key and makes one trigger; an edited one gets a new key); whether
  *  the form is still open (a save that answers after the person left it opens nothing); and `refused`, which says a
- *  refusal's issues under the fields the form shows (`shown`) and the rest above it. `loadAgents`: false on a form with no
- *  agent picker (a feed's edit). */
+ *  refusal's issues under the fields the form shows (`shown`), those at the agent's input fields (`input`, how the picked
+ *  agent takes its input) at each, and the rest above it. `loadAgents`: false on a form with no agent picker (a feed's
+ *  edit). */
 function useTriggerCreate(v2: Client, agentId: string, loadAgents = true, capOptional = false) {
   const [agents, setAgents] = useState<Agent[] | null>(null);
   const [issues, setIssues] = useState<Record<string, string>>({});
@@ -563,12 +644,16 @@ function useTriggerCreate(v2: Client, agentId: string, loadAgents = true, capOpt
   const { agentCap, connected } = agentCapOf((agents ?? []).find((a) => a.agent_id === agentId));
   const capRule: CapRule = connected ? "none" : agentCap !== undefined || capOptional ? "optional" : "required";
   useEffect(() => { if (capRule === "none") setIssues((was) => { const { "target.max_cost_usd": said, ...kept } = was; return said === undefined ? was : kept; }); }, [capRule]);
+  const shape = shapeOf((agents ?? []).find((a) => a.agent_id === agentId));
+  const [fieldIssues, setFieldIssues] = useState<FieldIssue[]>([]);
+  const input: RunInputState = { shape, keys: shape?.kind === "fields" ? shape.form.fields.map(([k]) => k) : [], fieldIssues, setFieldIssues };
   const refused = (found: ReturnType<typeof issuesOf>, shown: ReadonlySet<string>) => {
     const split = splitRefusal(found, shown);
     setIssues(split.issues);
     setRest(split.rest);
+    setFieldIssues(found.input ?? []);
   };
-  return { agents, agentCap, capRule, issues, setIssues, rest, setRest, saving, setSaving, keys, open, refused };
+  return { agents, agentCap, capRule, input, issues, setIssues, rest, setRest, saving, setSaving, keys, open, refused };
 }
 
 /** A new schedule, or `trigger` to edit. A save the server refuses (422) says each issue under the field it names. */
@@ -578,7 +663,7 @@ function ScheduleForm({ v2, go, trigger, minEvery, now = Date.now }: FormProps &
   // and each run takes the agent's. An edited schedule that already ran under its agent's default keeps it so too. A
   // connected agent takes no cap at all, nor the effort an edited schedule carried for another agent.
   const ranUnderDefault = !!trigger && typeof trigger.target.max_cost_usd !== "number" && draft.agentId === trigger.target.agent_id;
-  const { agents, agentCap, capRule, issues, setIssues, rest, setRest, saving, setSaving, keys, refused } = useTriggerCreate(v2, draft.agentId, true, ranUnderDefault);
+  const { agents, agentCap, capRule, input, issues, setIssues, rest, setRest, saving, setSaving, keys, refused } = useTriggerCreate(v2, draft.agentId, true, ranUnderDefault);
   const set = <K extends keyof Draft>(key: K) => (value: Draft[K]) => setDraft((d) => ({ ...d, [key]: value }));
   // A one-time schedule's time: a refusal on it (a time already passed) goes once the time picked is ahead of now; one
   // still past keeps it, as the server would refuse it again.
@@ -590,10 +675,12 @@ function ScheduleForm({ v2, go, trigger, minEvery, now = Date.now }: FormProps &
     else if (picked !== null) setIssues((was) => (was["source.at"] ? { ...was, "source.at": pastWords(picked, { now: now() }) } : was));
   };
   const shown = new Set(["name", "source.cron", "source.timezone", "source.at", "source.every_s", "source.start_at", "target.agent_id", "target.input", "target.max_cost_usd", ...(trigger ? [] : ["enabled"])]);
+  // The draft as a save sends it: with how the picked agent takes its input.
+  const sent = (): Draft => ({ ...draft, shape: input.shape });
   const save = async (e: FormEvent) => {
     e.preventDefault();
-    const { body, issues: missing } = bodyOf(draft, capRule);
-    setRest([]);
+    const { body, issues: missing } = bodyOf(sent(), capRule);
+    setRest([]); input.setFieldIssues([]);
     if (!body) { setIssues(missing ?? {}); return; }
     setIssues({}); setSaving(true);
     try {
@@ -606,7 +693,7 @@ function ScheduleForm({ v2, go, trigger, minEvery, now = Date.now }: FormProps &
         go(hashOf(trigger.id));
       }
     } catch (err) {
-      const found = issuesOf(err);
+      const found = issuesOf(err, input.keys);
       // A one-time schedule refused at a time already passed: said in the person's own time, as the schedule line reads,
       // never in the API's ISO time (its error's details keep that). Past by this page's clock, or by the server's own
       // refusal (serve's trigger-schedule.ts: "Pick a time in the future: <ISO> has already passed."), since a browser
@@ -620,7 +707,7 @@ function ScheduleForm({ v2, go, trigger, minEvery, now = Date.now }: FormProps &
     }
   };
   // An edit that changes when starts the schedule again from now (the server's rule for a new source): said before the save.
-  const edited = trigger ? bodyOf(draft, capRule).body : undefined;
+  const edited = trigger ? bodyOf(sent(), capRule).body : undefined;
   const restarts = !!(trigger && edited && patchOf(trigger, edited, capRule === "none").source);
   // The instants the hints say: the ones the save sends (a time left alone keeps the instant it was read with).
   const atInstant = draft.kind === "at" ? instantKept(draft.at, draft.read?.at) : null;
@@ -666,7 +753,7 @@ function ScheduleForm({ v2, go, trigger, minEvery, now = Date.now }: FormProps &
           </div>
           {restarts && <p className="mt-3 text-small text-warning-text" role="note">Changing when restarts the schedule from now.</p>}
         </fieldset>
-        <RunTargetFields v2={v2} draft={draft} set={set} issues={issues} agents={agents} agentCap={agentCap} capRule={capRule} what="schedule" skips />
+        <RunTargetFields v2={v2} draft={draft} edit={(patch) => setDraft((d) => ({ ...d, ...patch }))} issues={issues} agents={agents} input={input} agentCap={agentCap} capRule={capRule} what="schedule" skips />
         {!trigger && (
           <div>
             <label className="flex items-center gap-2 text-body"><input type="checkbox" name="enabled" checked={draft.enabled} onChange={(e) => set("enabled")(e.target.checked)} className="accent-primary" /> On from now (off: made paused)</label>
@@ -710,13 +797,13 @@ function Copyable({ title, text, label, hint }: { title: string; text: string; l
 function EmailForm({ v2, go, minEvery }: FormProps) {
   const [draft, setDraft] = useState<EmailDraft>(emptyEmail);
   const [noAccount, setNoAccount] = useState(false);
-  const { agents, agentCap, capRule, issues, setIssues, rest, setRest, saving, setSaving, keys, open, refused } = useTriggerCreate(v2, draft.agentId);
+  const { agents, agentCap, capRule, input, issues, setIssues, rest, setRest, saving, setSaving, keys, open, refused } = useTriggerCreate(v2, draft.agentId);
   useEffect(() => { v2.emailAccount().then((a) => { if (open.current) setNoAccount(!a.configured); }, () => {}); }, [v2, open]);
   const set = <K extends keyof EmailDraft>(k: K) => (value: EmailDraft[K]) => setDraft((d) => ({ ...d, [k]: value }));
   const save = async (e: FormEvent) => {
     e.preventDefault();
-    const { body, issues: missing } = emailBodyOf(draft, minEvery, capRule);
-    setRest([]);
+    const { body, issues: missing } = emailBodyOf({ ...draft, shape: input.shape }, minEvery, capRule);
+    setRest([]); input.setFieldIssues([]);
     if (!body) { setIssues(missing ?? {}); return; }
     setIssues({}); setSaving(true);
     try {
@@ -724,7 +811,7 @@ function EmailForm({ v2, go, minEvery }: FormProps) {
       if (open.current) go(hashOf(made.id));
     } catch (err) {
       if (!open.current) return;
-      refused(issuesOf(err), EMAIL_FIELDS);
+      refused(issuesOf(err, input.keys), EMAIL_FIELDS);
       setSaving(false);
     }
   };
@@ -751,7 +838,7 @@ function EmailForm({ v2, go, minEvery }: FormProps) {
               options={(["seconds", "minutes", "hours"] as const).map((u) => ({ value: u, label: u }))} />
           </span>
         </Field>
-        <RunTargetFields v2={v2} draft={draft} set={set} issues={issues} agents={agents} agentCap={agentCap} capRule={capRule} what="trigger" asked="The message comes with it: its sender, subject and text." />
+        <RunTargetFields v2={v2} draft={draft} edit={(patch) => setDraft((d) => ({ ...d, ...patch }))} issues={issues} agents={agents} input={input} agentCap={agentCap} capRule={capRule} what="trigger" asked="The message comes with it: its sender, subject and text." />
         <div>
           <label className="flex items-center gap-2 text-body"><input type="checkbox" name="enabled" checked={draft.enabled} onChange={(e) => set("enabled")(e.target.checked)} className="accent-primary" /> On from now (off: made paused)</label>
           {issues.enabled && <p className="mt-1 text-small text-destructive-text" role="alert" data-issue="enabled">{issues.enabled}</p>}
@@ -774,19 +861,19 @@ function WebhookForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
   const [draft, setDraft] = useState<WebhookDraft>(emptyWebhook);
   const [made, setMade] = useState<TriggerMade | null>(null);
   // A create sent again unchanged makes one webhook, its secret's note on the retry.
-  const { agents, agentCap, capRule, issues, setIssues, rest, setRest, saving, setSaving, keys, refused } = useTriggerCreate(v2, draft.agentId);
+  const { agents, agentCap, capRule, input, issues, setIssues, rest, setRest, saving, setSaving, keys, refused } = useTriggerCreate(v2, draft.agentId);
   const set = <K extends keyof WebhookDraft>(k: K) => (value: WebhookDraft[K]) => setDraft((d) => ({ ...d, [k]: value }));
   const save = async (e: FormEvent) => {
     e.preventDefault();
     const shown = new Set(["name", "source.signature", "target.agent_id", "target.input", "target.max_cost_usd", ...acceptFields(draft.accept.map((r) => r.where.length))]);
-    const { body, issues: missing } = webhookBodyOf(draft, capRule);
-    setRest([]);
+    const { body, issues: missing } = webhookBodyOf({ ...draft, shape: input.shape }, capRule);
+    setRest([]); input.setFieldIssues([]);
     if (!body) { setIssues(missing ?? {}); return; }
     setIssues({}); setSaving(true);
     try {
       setMade(await v2.createTrigger(body, keys.keyFor("createTrigger", body)));
     } catch (err) {
-      refused(issuesOf(err), shown);
+      refused(issuesOf(err, input.keys), shown);
     } finally {
       setSaving(false);
     }
@@ -829,7 +916,7 @@ function WebhookForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
         </fieldset>
         <p className="text-small text-muted-foreground">Events from an app Composio connects start runs through an app trigger instead: <a href="#/triggers/new-composio" className="underline underline-offset-2">New app trigger</a></p>
         <WebhookFilter signature={draft.signature} rules={draft.accept} onChange={set("accept")} issues={issues} cap={null} />
-        <RunTargetFields v2={v2} draft={draft} set={set} issues={issues} agents={agents} agentCap={agentCap} capRule={capRule} what="webhook" />
+        <RunTargetFields v2={v2} draft={draft} edit={(patch) => setDraft((d) => ({ ...d, ...patch }))} issues={issues} agents={agents} input={input} agentCap={agentCap} capRule={capRule} what="webhook" />
       </div>
       <div className="mt-6 flex flex-wrap gap-2">
         <Button type="submit" size="lg" variant="solid" disabled={saving}>{saving ? "Creating" : "Create webhook"}</Button>
@@ -847,7 +934,7 @@ function GitHubForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
   const [readError, setReadError] = useState<Problem | null>(null);
   const [tries, setTries] = useState(0);
   const [draft, setDraft] = useState<GitHubDraft>(emptyGitHub);
-  const { agents, agentCap, capRule, issues, setIssues, rest, setRest, saving, setSaving, keys, open, refused } = useTriggerCreate(v2, draft.agentId);
+  const { agents, agentCap, capRule, input, issues, setIssues, rest, setRest, saving, setSaving, keys, open, refused } = useTriggerCreate(v2, draft.agentId);
   useEffect(() => {
     let live = true;
     setReadError(null);
@@ -863,15 +950,15 @@ function GitHubForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
   const save = async (e: FormEvent) => {
     e.preventDefault();
     const shown = new Set(["name", "target.agent_id", "target.input", "target.max_cost_usd", ...acceptFields(githubRulesOf(draft).map((r) => r.where.length))]);
-    const { body, issues: missing } = githubBodyOf(draft, capRule);
-    setRest([]);
+    const { body, issues: missing } = githubBodyOf({ ...draft, shape: input.shape }, capRule);
+    setRest([]); input.setFieldIssues([]);
     if (!body) { setIssues(missing ?? {}); return; }
     setIssues({}); setSaving(true);
     try {
       const made = await v2.createTrigger(body, keys.keyFor("createTrigger", body));
       if (open.current) go(hashOf(made.id));
     } catch (err) {
-      refused(issuesOf(err), shown);
+      refused(issuesOf(err, input.keys), shown);
       setSaving(false);
     }
   };
@@ -897,7 +984,7 @@ function GitHubForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
       <div className={`mt-5 ${formColumnsClass}`}>
         <Field label="Name" field="name" issue={issues.name}><Input name="name" value={draft.name} onChange={(e) => set("name")(e.target.value)} placeholder="review PRs" /></Field>
         <GitHubEvents picks={draft} onChange={(picks) => setDraft((d) => ({ ...d, ...picks }))} issues={issues} />
-        <RunTargetFields v2={v2} draft={draft} set={set} issues={issues} agents={agents} agentCap={agentCap} capRule={capRule} what="trigger" asked="The event's payload comes with it." />
+        <RunTargetFields v2={v2} draft={draft} edit={(patch) => setDraft((d) => ({ ...d, ...patch }))} issues={issues} agents={agents} input={input} agentCap={agentCap} capRule={capRule} what="trigger" asked="The event's payload comes with it." />
       </div>
       <div className="mt-6 flex flex-wrap gap-2">
         <Button type="submit" size="lg" variant="solid" disabled={saving}>{saving ? "Creating" : "Create GitHub trigger"}</Button>
@@ -918,12 +1005,11 @@ function ComposioForm({ v2, go, noAddress }: { v2: Client; go: (hash: string) =>
   const [tries, setTries] = useState(0);
   const [events, setEvents] = useState<{ server: string; events: ComposioEvent[] } | null>(null);
   // The filter box over the server's events: another server starts it empty.
-  const [eventQuery, setEventQuery] = useState("");
   const [eventsError, setEventsError] = useState<Problem | null>(null);
   const [eventTries, setEventTries] = useState(0);
   const [draft, setDraft] = useState<ComposioDraft>(emptyComposio);
   // A create sent again unchanged reuses its key; an edited one (a move asked) gets a new key.
-  const { agents, agentCap, capRule, issues, setIssues, rest, setRest, saving, setSaving, keys, open, refused } = useTriggerCreate(v2, draft.agentId);
+  const { agents, agentCap, capRule, input, issues, setIssues, rest, setRest, saving, setSaving, keys, open, refused } = useTriggerCreate(v2, draft.agentId);
   // A refusal's way on: the link to connect the server's account, or the address the project's subscription is at.
   const [connect, setConnect] = useState<string | null>(null);
   // The move is asked about the create Composio refused, kept with it: "Move it here" sends that one, and any edit to the
@@ -953,18 +1039,16 @@ function ComposioForm({ v2, go, noAddress }: { v2: Client; go: (hash: string) =>
   const edit = (next: (d: ComposioDraft) => ComposioDraft) => { setElsewhere(null); setDraft(next); };
   const set = <K extends keyof ComposioDraft>(k: K) => (value: ComposioDraft[K]) => edit((d) => ({ ...d, [k]: value }));
   // Another server or event starts its config and filter afresh.
-  const pickServer = (server: string) => { if (server !== draft.server) setEventQuery(""); edit((d) => (d.server === server ? d : { ...d, server, event: "", config: {}, where: [] })); };
+  const pickServer = (server: string) => { edit((d) => (d.server === server ? d : { ...d, server, event: "", config: {}, where: [] })); };
   const pickEvent = (event: string) => { edit((d) => (d.event === event ? d : { ...d, event, config: {}, where: [] })); setIssues({}); };
   const event = events?.server === draft.server ? events.events.find((e) => e.slug === draft.event) : undefined;
   // The server's events A to Z by the words the list shows (Composio sends them in no order a person reads by), and those
   // the filter box keeps; the picked one stays in the list, so the field still says it while a query hides it.
   const listedEvents = events?.server === draft.server ? [...events.events].sort((a, b) => eventLabel(a).localeCompare(eventLabel(b), undefined, { sensitivity: "base" })) : [];
-  const matchedEvents = listedEvents.filter((e) => matchesFilter(eventQuery, e.name, e.slug, e.description));
-  const keptEvents = listedEvents.filter((e) => e.slug === draft.event || matchedEvents.includes(e));
   const fields: ConfigField[] = configFieldsOf(event?.config, event?.sealed);
   const send = async (body: TriggerCreate) => {
     const shown = new Set(["name", "source.server", "source.event", "source.config", ...fields.map((f) => `source.config.${f.name}`), "target.agent_id", "target.input", "target.max_cost_usd", ...(draft.where.length ? acceptFields([draft.where.length]) : [])]);
-    setIssues({}); setRest([]); setConnect(null); setElsewhere(null); setSaving(true);
+    setIssues({}); setRest([]); setConnect(null); setElsewhere(null); input.setFieldIssues([]); setSaving(true);
     try {
       const made = await v2.createTrigger(body, keys.keyFor("createTrigger", body));
       if (open.current) go(hashOf(made.id));
@@ -975,11 +1059,11 @@ function ComposioForm({ v2, go, noAddress }: { v2: Client; go: (hash: string) =>
         // Composio's refusals are said in the server's words: what stops it, and how to go on.
         setRest([err.message]);
         if (err.code === "composio_not_connected") setConnect(httpHref(typeof err.details?.connect_url === "string" ? err.details.connect_url : null) ?? null);
-      } else refused(issuesOf(err), shown);
+      } else refused(issuesOf(err, input.keys), shown);
     }
     setSaving(false);
   };
-  const bodyNow = () => composioBodyOf(draft, fields, capRule);
+  const bodyNow = () => composioBodyOf({ ...draft, shape: input.shape }, fields, capRule);
   const save = (e: FormEvent) => {
     e.preventDefault();
     const { body, issues: missing } = bodyNow();
@@ -1026,10 +1110,12 @@ function ComposioForm({ v2, go, noAddress }: { v2: Client; go: (hash: string) =>
         </Field>
         {draft.server && (eventsError ? <ProblemCard problem={eventsError} onRetry={() => setEventTries((n) => n + 1)} className="" /> : (
           <div className="space-y-2">
-            {listedEvents.length > 0 && <ListFilter value={eventQuery} onChange={setEventQuery} label="Filter events" placeholder="Filter by name, slug or description" shown={matchedEvents.length} total={listedEvents.length} />}
+            {/* One field: typing in it filters its list by an event's name, slug or description (QA #162: the filter was a box of its own above it). */}
             <Field label="Event" field="source.event" issue={issues["source.event"]}>
-              <Picker name="event" label="Event" className="w-full" value={draft.event} onChange={pickEvent} disabled={!events}
-                options={[{ value: "", label: !events ? "Loading the events" : !listedEvents.length ? "Composio offers no event for this toolkit" : matchedEvents.length ? "Pick an event" : `No event matches “${eventQuery.trim()}”` }, ...keptEvents.map((x) => ({ value: x.slug, label: eventLabel(x) }))]} />
+              <SearchPicker name="event" label="Event" className="w-full" value={draft.event} onChange={pickEvent} disabled={!listedEvents.length}
+                placeholder={events?.server !== draft.server ? "Loading the events" : !listedEvents.length ? "Composio offers no event for this toolkit" : "Search or pick an event"}
+                nothing={(query) => `No event matches “${query}”`}
+                options={listedEvents.map((x) => ({ value: x.slug, label: eventLabel(x), keywords: [x.slug, x.description] }))} />
             </Field>
             {/* Composio writes an event's description in Markdown (lists, ``code``): rendered, never shown as its marks. */}
             {event?.description && <div data-event-description className="report report-sm text-muted-foreground" dangerouslySetInnerHTML={{ __html: markdown(event.description) }} />}
@@ -1053,7 +1139,7 @@ function ComposioForm({ v2, go, noAddress }: { v2: Client; go: (hash: string) =>
             <AppFilter where={draft.where} onChange={set("where")} issues={issues} />
           </>
         )}
-        <RunTargetFields v2={v2} draft={draft} set={set} issues={issues} agents={agents} agentCap={agentCap} capRule={capRule} what="trigger" asked="What Composio delivered comes with it." />
+        <RunTargetFields v2={v2} draft={draft} edit={(patch) => edit((d) => ({ ...d, ...patch }))} issues={issues} agents={agents} input={input} agentCap={agentCap} capRule={capRule} what="trigger" asked="What Composio delivered comes with it." />
       </div>
       {elsewhere && (
         <div role="alertdialog" aria-label="Move the subscription here?" className="mt-6 space-y-3 border border-warning/50 p-4 text-body">
@@ -1263,7 +1349,7 @@ function LastCheck({ check, newest }: { check: NonNullable<Trigger["last_check"]
 function FeedForm({ v2, go, trigger, minEvery }: FormProps & { trigger?: FeedTrigger }) {
   const [draft, setDraft] = useState<FeedDraft>(() => (trigger ? feedDraftOf(trigger) : emptyFeed()));
   // An edit has no agent to pick: its agent and what each run is asked stay as they are.
-  const { agents, agentCap, capRule, issues, setIssues, rest, setRest, saving, setSaving, keys, open, refused } = useTriggerCreate(v2, draft.agentId, !trigger);
+  const { agents, agentCap, capRule, input, issues, setIssues, rest, setRest, saving, setSaving, keys, open, refused } = useTriggerCreate(v2, draft.agentId, !trigger);
   // The JSON list's pointers show open when the trigger has one.
   const [listOpen, setListOpen] = useState(() => !!trigger && (trigger.source.items !== undefined || trigger.source.id !== undefined));
   // An issue on a pointer opens the disclosure it sits under, so the error shows beside its field.
@@ -1275,7 +1361,7 @@ function FeedForm({ v2, go, trigger, minEvery }: FormProps & { trigger?: FeedTri
     setRest([]);
     const fail = (err: unknown) => {
       if (!open.current) return;
-      refused(issuesOf(err), shown);
+      refused(issuesOf(err, input.keys), shown);
       setSaving(false);
     };
     if (trigger) {
@@ -1288,7 +1374,8 @@ function FeedForm({ v2, go, trigger, minEvery }: FormProps & { trigger?: FeedTri
       } catch (err) { fail(err); }
       return;
     }
-    const { body, issues: missing } = feedBodyOf(draft, minEvery, capRule);
+    const { body, issues: missing } = feedBodyOf({ ...draft, shape: input.shape }, minEvery, capRule);
+    input.setFieldIssues([]);
     if (!body) { setIssues(missing ?? {}); return; }
     setIssues({}); setSaving(true);
     try {
@@ -1342,7 +1429,7 @@ function FeedForm({ v2, go, trigger, minEvery }: FormProps & { trigger?: FeedTri
           </div>
         </fieldset>
         {!trigger && <>
-          <RunTargetFields v2={v2} draft={draft} set={set} issues={issues} agents={agents} agentCap={agentCap} capRule={capRule} what="trigger" asked="The item comes with it: its title, link, summary and feed." />
+          <RunTargetFields v2={v2} draft={draft} edit={(patch) => setDraft((d) => ({ ...d, ...patch }))} issues={issues} agents={agents} input={input} agentCap={agentCap} capRule={capRule} what="trigger" asked="The item comes with it: its title, link, summary and feed." />
         </>}
       </div>
       <div className="mt-6 flex flex-wrap gap-2">

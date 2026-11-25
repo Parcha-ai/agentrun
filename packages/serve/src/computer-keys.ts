@@ -10,7 +10,7 @@
 // in (workspace/computer-providers.ts makes the computer package's; a test gives stand-ins): a provider with no module
 // here answers that its test is not available. No key is ever in an answer: each value is scrubbed from the provider's
 // words, and the words this module adds name keys only by their names.
-import { type ComputerProvider, PROVIDERS, type ProviderEntry, providerFor } from "@parcha/agentrun-computer";
+import { type ComputerProvider, PROVIDERS, type ProviderEntry, providerFor, SDK_MISSING } from "@parcha/agentrun-computer";
 import { keyShaped } from "./secret-name.js";
 
 /** One key a provider takes: its name in its descriptor, the create() option it fills, and whether it is needed. */
@@ -185,6 +185,8 @@ async function builtFrom(providerId: string, keys: Readonly<Record<string, strin
   try {
     return { ok: true, value: { provider: await create(made.options), label, values } };
   } catch (error) {
+    // The vendor's SDK is not installed here: its words name the package and the install step, and nothing else is wrong.
+    if ((error as { code?: unknown } | null)?.code === SDK_MISSING) return refused(SDK_MISSING, scrub(messageOf(error), values));
     return refused("invalid", wordsFor("invalid", providerId, scrub(messageOf(error), values), table));
   }
 }

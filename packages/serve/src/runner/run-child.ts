@@ -24,6 +24,7 @@ import { heldHands, type ComputerHold, type HoldAsk, type HoldEvent, type HoldSt
 import type { ClaimComputer } from "../workspace/computer-for-claim.js";
 import type { AdapterSpecDeps } from "./adapter-run-spec.js";
 import type { JournalReads, Store } from "../store/store.js";
+import { postedTracing } from "../otel/tracer.js";
 
 /** How often the run's process reads its loop's held state (LoopDeps.live) and posts it to its runner when it moved: the
  *  runner's live ticker reads the newest it was posted. */
@@ -42,13 +43,16 @@ interface ChildInit {
   readonly githubWeb?: string;
   readonly githubMcpOrigin?: string;
   readonly composioMcpOrigin?: string;
+  /** The runner traces its runs: this run's trace is posted to it (tracer.ts postedTracing). */
+  readonly traced?: true;
 }
 
 registerRunErrors();
 
 const socket = new Socket({ fd: 4, readable: true, writable: true });
 const channel = new Channel(socket, {
-  // The runner closed the channel (the loop's end answered) or is gone: nothing of the run's goes on.
+  // The runner closed the channel (the loop's end answered) or is gone: nothing of the run's goes on. Its trace is the
+  // runner's to send (postedTracing): nothing here waits on a collector.
   onClose: () => void setImmediate(() => process.exit(0)),
   // Each call carries the ledger of the tool call it is made in: what the runner does for it (an MCP tool's call, a
   // computer's) books on the run's one ledger, as it would in the run's own process.
@@ -211,6 +215,9 @@ function childDeps(init: ChildInit, store: Store, journal: Journal, held: Held):
     ...(init.githubMcpOrigin ? { githubMcpOrigin: init.githubMcpOrigin } : {}),
     ...(init.composioMcpOrigin ? { composioMcpOrigin: init.composioMcpOrigin } : {}),
     ...(init.mcpLoopback ? { mcpLoopback: true, mcpOwn: init.mcpOwn ?? [] } : {}),
+    // The run's trace, posted to the runner, which exports it: never one of this process's own (no OTLP setting reaches
+    // it, and nothing here flushes).
+    tracing: Promise.resolve(init.traced ? postedTracing((method, args) => channel.post("trace", method, args)) : undefined),
   };
 }
 

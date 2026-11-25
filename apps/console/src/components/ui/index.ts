@@ -9,6 +9,7 @@ export { bareFieldClass, Checkbox, Field, fieldBoxClass, fieldClass, Input, Radi
 export { Menu, MenuItem, MenuSeparator } from "./menu";
 export { NavItem } from "./nav-item";
 export { Picker, type PickerOption } from "./picker";
+export { SearchPicker, type SearchPickerOption } from "./search-picker";
 export { Segmented, type SegmentedOption } from "./segmented";
 export { Slider } from "./slider";
 export { Spinner } from "./spinner";
