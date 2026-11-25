@@ -67,6 +67,9 @@ export type ReadOptions = {
    *  decoded. The read pool's workers set it to an eighth of their heap (pool.ts), so that no one line can end the
    *  process; parseHome then reads the file on its own thread, with no such bound. Default: none. */
   maxLine?: number;
+  /** What a reader looks up once for a whole import, shared across its files: one map per import, each reader keying
+   *  its own entries. Without one, each read looks up afresh. */
+  lookups?: Map<string, unknown>;
 };
 
 export type Reader<S extends string = string, C = unknown> = {
@@ -77,6 +80,9 @@ export type Reader<S extends string = string, C = unknown> = {
   harness: string;
   /** The candidate locators of the source under `home`, any order (`env`: where the source's own directory is named). */
   discover: (home: string, env?: Env) => Promise<Locator[]>;
+  /** The id the read gives the locator's session when no record of it names one (Claude Code's always: its file's
+   *  name). A caller that names a session without reading it (a listing's probe) takes the same id. */
+  idOf: (locator: Locator) => string;
   /** One locator read, from its start or from `cursor` (one this reader returned for the same locator). A cursor that no
    *  longer fits (the file replaced, truncated, rewritten) is read from the start, `resumed` false. */
   read: (locator: Locator, cursor?: C, options?: ReadOptions) => Promise<ReadResult<S, C>>;

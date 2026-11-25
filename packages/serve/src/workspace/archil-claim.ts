@@ -182,8 +182,9 @@ export async function archilClaim(options: ArchilClaimOptions): Promise<ArchilCl
    *  by their names, once per mint asked for: a mint whose answer was lost (Archil made the user, this claim never heard
    *  of it) is found there; and Archil's list, read right after another caller's mint, may not hold that user yet
    *  (mint-4), so the reclaim before this claim's mint can miss an earlier claim's, which by the run's end the list holds.
-   *  A mint never heard of always gets one more read 2 s later, past that lag. Best effort: one still missed ends at its
-   *  ttl. */
+   *  A mint never heard of always gets one more read 2 s later, past that lag. A remove by name that fails (the last
+   *  read's, where there are two) rejects the revoke in Archil's words, and the next revoke tries again: a kept row's
+   *  end is left ending for the janitor (computer-kept.ts). A user the list never showed still ends at its ttl. */
   const revoke = async (): Promise<void> => {
     const credential = live ?? (await minted?.catch(() => undefined));
     if (credential !== undefined) {
@@ -195,15 +196,23 @@ export async function archilClaim(options: ArchilClaimOptions): Promise<ArchilCl
     const mount = options.mount;
     if (!(asked || inherited) || mount === undefined) return;
     const minting = asked;
+    const taken = inherited;
     asked = false;
     inherited = false;
     // No signal: a lost claim's is aborted already, and this remove is what its loss asks for.
-    await removeRunMountTokens(credentialOptions, mount.runId, mount.epoch).catch(() => undefined);
+    const removed = (): Promise<{ readonly error: unknown } | undefined> =>
+      removeRunMountTokens(credentialOptions, mount.runId, mount.epoch).then(() => undefined, (error: unknown) => ({ error }));
+    let failed = await removed();
     // A mint never heard of: its user may not be in the list yet, whatever this read found (another epoch's user it
     // removed is not this mint's), so the list is read once more past Archil's lag, and every match then removed too.
     if (credential === undefined && minting) {
       await new Promise((done) => setTimeout(done, LOST_MINT_REREAD_MS));
-      await removeRunMountTokens(credentialOptions, mount.runId, mount.epoch).catch(() => undefined);
+      failed = await removed();
+    }
+    if (failed !== undefined) {
+      asked ||= minting;
+      inherited ||= taken;
+      throw failed.error;
     }
   };
   // A lost claim (or a stopped runner): the values dropped, and the credential removed at once, not left for the ttl.

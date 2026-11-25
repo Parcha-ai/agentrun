@@ -30,11 +30,11 @@ export function liveSettings(value) {
 }
 
 /** A run's gate: the server's stored `settings` (a value, or a reader), the revision's own `overrides`, `harness`,
- *  `approvers` and `approvals`, its folder `root`, and `argumentsOf`, the arguments its pinned listing
- *  declares of each MCP tool (ClaimMcp.argumentsOf). */
-export function runnerGate({ settings, overrides = {}, harness = "pi", approvers = true, approvals = "ask", root = "/nonexistent/run", work, argumentsOf } = {}) {
+ *  `approvers` and `approvals`, its folder `root`, `argumentsOf`, the arguments its pinned listing
+ *  declares of each MCP tool (ClaimMcp.argumentsOf), and `tools`, the agent's (none given, none). */
+export function runnerGate({ settings, overrides = {}, harness = "pi", approvers = true, approvals = "ask", root = "/nonexistent/run", work, argumentsOf, tools } = {}) {
   const read = typeof settings === "function" ? settings : () => storedSettings(settings);
-  return new RunGate({ root, work: work ?? root, runId: "r1", ...(harness ? { harness } : {}), ...(argumentsOf ? { argumentsOf } : {}), facts: builtinFacts(harness) }, read, overrides, approvers, approvals);
+  return new RunGate({ root, work: work ?? root, runId: "r1", ...(harness ? { harness } : {}), ...(argumentsOf ? { argumentsOf } : {}), ...(tools ? { tools } : {}), facts: builtinFacts(harness) }, read, overrides, approvers, approvals);
 }
 
 /** The words a call the gate refuses is answered with, or its verdict ("allow" or "ask"). */
