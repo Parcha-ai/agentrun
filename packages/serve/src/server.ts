@@ -1646,10 +1646,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // The sign-in this server starts, kept for this process (claude-sign-in.ts). Its queue is the one way the login's
   // setting changes, the drop here included. A server whose user may not use the saved login's folders (its home, or
   // those its env gives this machine's login: loginRefused) keeps it, refused in words, and logs why.
-  // Whether a refresh of the login (loginNow, below) holds the queue while env, needs and the offers are made again from
-  // the login it found: a turn asked meanwhile waits for that, and the log says so.
-  let rebuilding = false;
-  const claudeSignIns = new ClaudeSignIns({ limitMs: options.claudeSignInLimitMs, asked: () => void (rebuilding && log?.(logLine("claude_login_wait", { why: "refresh" }))) });
+  const claudeSignIns = new ClaudeSignIns({ limitMs: options.claudeSignInLimitMs });
   await dropRefusedLogin(claudeSignIns, store.settings, loginOff ?? oneOwner.refused(), base, (line) => (log ? log(logLine("claude_login", { line })) : void process.stderr.write(`agentrun-serve: ${line}\n`)));
   // The status checks' folders a server killed mid-check left in the temporary folder, each with a copy of the account
   // file (the harness's sweepClaudeStatusFolders): this user's alone, and only once the check has ended by the end it
@@ -1799,13 +1796,21 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // The latest hand-over of the login (a turn on or off, or a refresh), until env, needs and the offers are made from
   // it. It never fails: a failed reading is answered to the request that handed the login over, as a key's save is.
   let handing: Promise<void> = Promise.resolve();
+  // Which the latest hand-over was (`why`: a refresh's or a turn on's or off's), whether its reading is still going
+  // (`out`), and whether it failed (`failed`): the login held is then one env, needs and the offers were not made from,
+  // and the next refresh hands it over again, though it finds it unchanged.
+  let handed = { n: 0, why: "turn" as "refresh" | "turn", out: false, failed: false };
   /** The server's login replaced by `login`, then env, needs and the offers made again from it (keysChanged). */
-  const handOver = (login: typeof claudeLogin): Promise<void> => {
+  const handOver = (login: typeof claudeLogin, why: "refresh" | "turn"): Promise<void> => {
     claudeLogin = login;
+    const mine = { n: handed.n + 1, why, out: true, failed: false };
+    handed = mine;
     const made = keysChanged();
+    // Only the latest hand-over's end counts: an earlier one that ends after it says nothing of the login held.
+    const ended = (failed: boolean) => void (handed === mine && (handed = { ...mine, out: false, failed }));
     handing = made.then(
-      () => {},
-      () => {},
+      () => ended(false),
+      () => ended(true),
     );
     return made;
   };
@@ -1824,7 +1829,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       sameMachine: isLoopback(host) && !options.publicUrl,
       claude: () => import("@parcha/agentrun-harness-claude"),
       saved: (login) => {
-        made = handOver(login);
+        made = handOver(login, "turn");
       },
       changed: () => made,
     };
@@ -1834,26 +1839,26 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   let asked: Promise<void> | undefined;
   /** The login runs here go on, as its folders are now (loginOf, one look at them), handed over where it differs from
    *  the one held. The held one is the start's or the last turn's, and a folder mended with a chmod since (or refused
-   *  since) changes it with no turn: a run's check, a save's and capabilities ask this first, so they agree with the
-   *  Settings view, which looks at the folders itself (loginAt). It answers once env, needs and the offers are made from
-   *  the login it found, so no request sees a new login with the offers made before it. The look, the hand-over and the
-   *  reading after it are one turn on the sign-ins' queue, the one way the setting changes: a turn on or off asked
-   *  meanwhile lands after the reading, never under it, and a refresh asked meanwhile looks again once it is done. A
-   *  refresh that finds the login as held waits for the latest hand-over's reading (a turn's, which goes on after its
-   *  turn) outside the queue. */
+   *  since) changes it with no turn: a run's check, a save's and capabilities ask this first, so they agree with the Settings view, which looks at the folders itself (loginAt). It answers once env,
+   *  needs and the offers are made from the login it found, so no request sees a new login with the offers made before
+   *  it. The look and the hand-over are one turn on the sign-ins' queue, the one way the setting changes, so a turn on or
+   *  off asked meanwhile lands before the look or after the hand-over, never between them. The reading after the
+   *  hand-over (keysChanged) goes on outside the queue, as a turn on's or off's does, so a sign-in, a turn on or off and
+   *  the server's stop never wait on its probe of the offers; where a turn off lands during it, the turn off's own
+   *  reading overtakes it (keysChanged's latest probe stands). Every refresh then waits for the latest hand-over's
+   *  reading, its own or another's (a turn's, or another refresh's). A refresh that finds the login as held, where the
+   *  latest reading failed, hands it over again, so a failed reading is made again by the next request, never left. The
+   *  log says when a refresh waits: for its turn (why=queue), or for another's reading (why=refresh or why=turn). */
   const loginNow = (): Promise<void> => {
     if (loginOff !== undefined) return Promise.resolve();
-    asked ??= claudeSignIns
+    if (asked) return asked;
+    if (claudeSignIns.busy) log?.(logLine("claude_login_wait", { why: "queue" }));
+    asked = claudeSignIns
       .serial(async () => {
         asked = undefined;
         const login = loginOf(await claudeLoginSetting(store.settings), data, base);
-        if (isDeepStrictEqual(login, claudeLogin)) return { made: handing };
-        rebuilding = true;
-        try {
-          await handOver(login);
-        } finally {
-          rebuilding = false;
-        }
+        if (!isDeepStrictEqual(login, claudeLogin) || handed.failed) return { made: handOver(login, "refresh") };
+        if (handed.out) log?.(logLine("claude_login_wait", { why: handed.why }));
         return { made: handing };
       })
       .then(({ made }) => made);

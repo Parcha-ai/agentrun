@@ -1203,9 +1203,10 @@ test("a hold of the held table released before any check took it holds and answe
 
 // A turn starts or ends the sign-in through its own `turn`. A start or stop of the sign-ins' own beside it would be a
 // turn of its own, so one called inside a turn would wait for that turn to end, for ever, and the server's stop (which
-// waits for the sign-ins' close) with it. The sign-ins offer none: their queue (serial), the view and the server's close.
+// waits for the sign-ins' close) with it. The sign-ins offer none: their queue (serial), whether it is busy, the view and
+// the server's close.
 test("the sign-ins start and end a sign-in only in a turn on their queue: they offer no start or stop of their own, which a turn calling it would wait on for ever", () => {
-  assert.deepEqual(Object.getOwnPropertyNames(ClaudeSignIns.prototype).sort(), ["close", "constructor", "serial", "view"], "the sign-ins offer a start or stop beside a turn's, which one called inside a turn waits on for ever");
+  assert.deepEqual(Object.getOwnPropertyNames(ClaudeSignIns.prototype).sort(), ["busy", "close", "constructor", "serial", "view"], "the sign-ins offer a start or stop beside a turn's, which one called inside a turn waits on for ever");
   // A class field is the instance's own, not the prototype's: the one the sign-ins have is their limit.
   assert.deepEqual(Object.keys(new ClaudeSignIns()), ["limitMs"], "the sign-ins offer a start or stop beside a turn's, which one called inside a turn waits on for ever");
 });
