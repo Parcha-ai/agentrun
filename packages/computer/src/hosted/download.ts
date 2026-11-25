@@ -6,6 +6,7 @@
 import { randomBytes } from "node:crypto";
 import { posix } from "node:path";
 import type { MachineHost } from "../host.js";
+import type { ComputerConnection } from "../provider.js";
 import { type ComputerClient, type DaemonMethod, type DaemonMethods, type FilesReadParams, MAX_CHUNK_BYTES } from "../protocol.js";
 import { ok, type Result } from "../result.js";
 import { MAX_READ_BYTES } from "../surface/core.js";
@@ -30,17 +31,27 @@ const cleaned = (path: string) => posix.resolve(path);
 const copyable = ({ path, length }: FilesReadParams) => path.startsWith("/") && !cleaned(path).startsWith("/proc/") && (length === undefined || length === MAX_CHUNK_BYTES);
 
 /**
- * client, with every files.read past one chunk read from one downloaded copy after its first chunk. A first chunk (offset
- * 0, a whole chunk) whose file runs past it, and is at most the surface's read limit (MAX_READ_BYTES, all a copy holds in
- * memory), starts the copy; a larger file is the daemon's, chunk by chunk. The reads after it, at the offsets the first's reader asks
- * for, are answered from the copy, as the daemon answers (eof once a read reaches the copy's size), and the copy is let
- * go at its end, at the next first chunk of its path, or at any call of another method, which may change a file. A copy
- * that fails at any step (the daemon's user unread, read-stage refused, the download, a size other than the daemon read)
- * leaves the daemon to answer every read, as on a host with no download. The copy in the machine is removed once it is
- * downloaded, without holding up the read.
+ * connection, with every files.read past one chunk read from one downloaded copy after its first chunk. A first chunk
+ * (offset 0, a whole chunk) whose file runs past it, and is at most the surface's read limit (MAX_READ_BYTES, all a copy
+ * holds in memory), starts the copy; a larger file is the daemon's, chunk by chunk. The reads after it, at the offsets
+ * the first's reader asks for, are answered from the copy, as the daemon answers (eof once a read reaches the copy's
+ * size), and the copy is let go at its end, at the next first chunk of its path, or at any call of another method, which
+ * may change a file. A copy that fails at any step (the daemon's user unread, read-stage refused, the download, a size
+ * other than the daemon read) leaves the daemon to answer every read, as on a host with no download. The copy in the
+ * machine is removed once it is downloaded, without holding up the read. A close of the connection or of its client lets
+ * every copy go and stops one still coming: each read after it, or still waiting on a copy, is the closed daemon
+ * client's (gone).
  */
-export function downloadingClient(host: MachineHost, download: NonNullable<MachineHost["download"]>, id: string, client: ComputerClient, bounds: DownloadBounds): ComputerClient {
+export function downloadingConnection(
+	host: MachineHost,
+	download: NonNullable<MachineHost["download"]>,
+	id: string,
+	connection: ComputerConnection,
+	bounds: DownloadBounds,
+): ComputerConnection {
+	const { client } = connection;
 	const copies = new Map<string, Promise<Uint8Array | undefined>>();
+	const closing = new AbortController();
 	let user: Promise<[string, string] | undefined> | undefined;
 
 	/** The daemon's uid and gid, from its own /proc/self/status: each of its four ids the same, else none. */
@@ -63,20 +74,26 @@ export function downloadingClient(host: MachineHost, download: NonNullable<Machi
 		if (who === undefined) return undefined;
 		const copy = `${READ_COPIES}/${randomBytes(16).toString("hex")}`;
 		const unstage = () => void runToExit(host, id, readUnstage(copy), { ms: bounds.execMs, what: `removing the copy of ${path}` });
-		const staged = await runToExit(host, id, readStage(who[0], who[1], path, copy), { ms: bounds.execMs, what: `copying ${path} as the daemon's user` });
+		const staged = await runToExit(host, id, readStage(who[0], who[1], path, copy), { ms: bounds.execMs, signal: closing.signal, what: `copying ${path} as the daemon's user` });
 		if (!staged.ok || staged.value.exitCode !== 0) {
 			// One that never answered may yet write its copy.
 			if (!staged.ok) unstage();
 			return undefined;
 		}
-		const got = await hostCall(host, `downloading the copy of ${path}`, (ctx) => download(id, copy, ctx), bounds.downloadMs);
+		const got = await hostCall(host, `downloading the copy of ${path}`, (ctx) => download(id, copy, ctx), bounds.downloadMs, closing.signal);
 		unstage();
 		return got.ok && got.value.length === size ? got.value : undefined;
 	};
 
-	return {
+	/** Every copy let go, and one still coming stopped. */
+	const drop = () => {
+		closing.abort();
+		copies.clear();
+	};
+
+	const reading: ComputerClient = {
 		async call<M extends DaemonMethod>(method: M, params: DaemonMethods[M]["params"], options?: { signal?: AbortSignal }): Promise<Result<DaemonMethods[M]["result"]>> {
-			if (method !== "files.read") {
+			if (method !== "files.read" || closing.signal.aborted) {
 				copies.clear();
 				return client.call(method, params, options);
 			}
@@ -92,7 +109,7 @@ export function downloadingClient(host: MachineHost, download: NonNullable<Machi
 			const copying = copies.get(read.path);
 			const length = read.length ?? MAX_CHUNK_BYTES;
 			if (copying === undefined || !Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 1 || length > MAX_CHUNK_BYTES) return client.call(method, params, options);
-			const bytes = await untilAborted(copying, [options?.signal]);
+			const bytes = await untilAborted(copying, [options?.signal, closing.signal]);
 			if (bytes === undefined) {
 				if (!options?.signal?.aborted) copies.delete(read.path);
 				return client.call(method, params, options);
@@ -104,8 +121,16 @@ export function downloadingClient(host: MachineHost, download: NonNullable<Machi
 			return ok(answer) as Result<DaemonMethods[M]["result"]>;
 		},
 		close() {
-			copies.clear();
+			drop();
 			client.close();
+		},
+	};
+	return {
+		...connection,
+		client: reading,
+		close() {
+			drop();
+			return connection.close();
 		},
 	};
 }
