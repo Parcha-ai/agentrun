@@ -814,7 +814,8 @@ export class McpServersOverStore {
     const key = Object.entries(headers).find(([header]) => header.toLowerCase() === "x-api-key")?.[1];
     if (!key) throw refuse(`${name}'s saved credential holds no Composio key: save it again with its key.`);
     const config = recordedMade(recorded, row.createdAt)?.auth_config?.id;
-    const user = new URL(row.url).searchParams.get("user_id") || COMPOSIO_USER;
+    // Only an address with no user_id at all is the default user's: an empty one is a blank user, refused below.
+    const user = new URL(row.url).searchParams.get("user_id") ?? COMPOSIO_USER;
     // A user that is no Composio user id (a blank one Composio may read as every user) is refused before Composio is asked
     // anything: no account read, no connect link made for it.
     if (!COMPOSIO_USER_ID.test(user)) throw refuse(`${name}'s saved Composio user ${JSON.stringify(user)} is no Composio user id: save the server again with its user.`);
