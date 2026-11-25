@@ -518,6 +518,15 @@ test("the bundle's shape is checked: its format, its closed keys at each level t
   assert.throws(() => checkShareBundle("[]"), (error) => error.status === 400);
 });
 
+test("a share host fires nothing a reused data folder holds: its triggers never start, so no clock is read and nothing armed", async (t) => {
+  const asked = [];
+  const triggerClock = { now: () => (asked.push("now"), Date.now()), arm: (_fire, ms) => (asked.push(`arm ${ms}`), { clear() {} }) };
+  const s = await shareHost(t, { triggerClock });
+  assert.equal((await send(s.port, { path: "/r/v2/health" })).status, 200);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.deepEqual(asked, [], "no schedule or feed runs on a share host");
+});
+
 test("a deleted share's bytes go even when its delete was cut short: a second delete, and the next start, finish it", async () => {
   const dir = await mkdtemp(join(tmpdir(), "share-store-"));
   const body = await bundleOf();
