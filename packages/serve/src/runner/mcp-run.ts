@@ -89,6 +89,9 @@ export interface McpForClaimOptions {
   readonly media?: { readonly env: NodeJS.ProcessEnv; readonly web?: WebFake; readonly slots?: SaveSlots };
   /** Each credential value the claim opens, refreshes or mints, for the run's redactors (mcp-claim.ts `hold`). */
   readonly hold?: (values: string[]) => void;
+  /** The run's redactor, after each call's own scrub on every text its gateway answers or files (mcp-gateway.ts
+   *  McpGatewayOptions.redact). None: the call's scrub alone. */
+  readonly redact?: (text: string) => string;
   /** The run's revision's own tool settings (body.toolSettings), where a tool's file setting is read (filed-tool.ts
    *  filedBy): each answer of such a tool is filed whole in the run's files and the tool's result is its summary. A run's
    *  own process passes none: its runner reads them from the revision it reads itself (run-child-host.ts). */
@@ -196,6 +199,7 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
     ...(options.callBounds ? { bounds: options.callBounds } : {}),
     capped: options.capped !== false,
     ...(options.toolSettings !== undefined ? { filed: filedBy(options.toolSettings) } : {}),
+    ...(options.redact ? { redact: options.redact } : {}),
     ...(media ? { media: publicMedia(async () => (media.web ? fakeSaveOptions(media.web) : fetchOptions(media.env, FAUX_ENV)), media.slots) } : {}),
   });
   const catalog = new Map<string, string>();

@@ -242,6 +242,10 @@ export interface McpGatewayOptions {
    *  summary. UNREADABLE for a tool: a stored setting that does not read, and every call of the tool is refused unsent.
    *  None, or undefined for a tool: its answers are the model's, as always. */
   filed?: (server: string, tool: string) => FileSetting | typeof UNREADABLE | undefined;
+  /** The run's redactor (the runner's one, holding every key the run opened: its own model and tool keys, the other
+   *  servers' credentials), after each call's own scrub on every text the gateway answers or files: the model's answer,
+   *  a filed answer, a long answer's filed rest, a server's results and an error's words. None: the call's scrub alone. */
+  redact?: (text: string) => string;
 }
 
 /** A run's journal commit. */
@@ -442,8 +446,12 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     // Read at each use: a token refreshed while the call is out, and sent, is scrubbed with the one it took.
     const held = callSet(server);
     const scrubbed = scrubberOf(server, hold(server, headers), held.values);
-    // Every text the model reads of the call (its answer, a filed one, an error), its keys read as the agent's own.
-    const clean = back ? (text: string) => back(scrubbed(text)) : scrubbed;
+    // Every text the model reads of the call or the run's files keep of it (its answer, a filed one, an error), its keys
+    // read as the agent's own, then cut by the run's redactor: a value the run holds that the server echoed reaches
+    // neither. The one place each of those texts passes.
+    const own = back ? (text: string) => back(scrubbed(text)) : scrubbed;
+    const runCut = options.redact;
+    const clean = runCut ? (text: string) => runCut(own(text)) : own;
     hold(server, queryOf(server));
     try {
       const upstream = await until(connect(server, url, headers), boundedSignal);
