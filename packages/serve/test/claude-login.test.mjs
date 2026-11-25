@@ -1436,6 +1436,21 @@ test("a link another user made above this machine's login folder or its home ref
 
 test("a trailing slash hides no link: another user's link as the last name of this machine's login folder or its home, written with a trailing slash, refuses the login in the view, the sign-in, the turn-on and a run: root, with CLAUDE_CONFIG_DIR or HOME the person's link to root's /, and a slash after it", { skip: ROOT_LINKS_SKIP, timeout: 60_000 }, (t) => refusedThroughPersonsLinks(t, (link) => `${link}/`));
 
+// A folder of another user's on the way is theirs to change as their link is: the person could put a link in the place
+// of a name in it once the check has looked, and a `..` after that name would then go up from where the link leads.
+// Here, under root, a way into the person's folder and back out of it with `..` to root's own /usr.
+test("a folder of another user's on the way to this machine's login folder or its home refuses the login in the view, the sign-in, the turn-on and a run, a way back out of it with `..` included: root, with CLAUDE_CONFIG_DIR or HOME through the person's folder and up to root's /usr", { skip: process.platform === "win32" ? "no uid" : process.geteuid() === 0 ? "root owns the test's folders" : false, timeout: 60_000 }, async (t) => {
+  const mine = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-theirs-"));
+  t.after(() => rmSync(mine, { recursive: true, force: true }));
+  const value = `${mine}${"/..".repeat(mine.split("/").length - 1)}/usr`;
+  const rig = await loginRig(t);
+  const asked = [];
+  const asRoot = (env) => rig.deps({ uid: 0, env: { ...rig.env, ...env }, claude: async () => askedClaude(asked) });
+  await refusedEverywhere(rig, asRoot({ HOME: "/", CLAUDE_CONFIG_DIR: value }), notOwnFolder("uid 0", "CLAUDE_CONFIG_DIR", value), `root, its own HOME, CLAUDE_CONFIG_DIR=${value}`);
+  await refusedEverywhere(rig, asRoot({ HOME: value }), homeNotOwned("uid 0", value), `root, HOME=${value}`);
+  assert.deepEqual(asked, [], "the CLI was not asked, and no sign-in started");
+});
+
 // A person's own server, with a link of theirs to a folder of theirs anywhere on the way (a home moved to another disk,
 // say), keeps its login, and the CLI gets the folders as the env gives them.
 test("a link the server's user made to a folder of its own, above this machine's login folder or its home or as their last name, with a trailing slash or none, keeps the login, and the login has the folders as the env gives them", { skip: process.platform === "win32" ? "no uid" : process.geteuid() === 0 ? "root owns /" : false, timeout: 60_000 }, async (t) => {
