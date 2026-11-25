@@ -736,7 +736,7 @@ test("a decision OpenRouter answers 402 (the account is out of credit) is paymen
   const { openrouterProvider } = await import("@parcha/agentrun-decisions");
   let asked = 0;
   const outOfCredit = async () => (asked += 1, new Response(JSON.stringify({ error: { message: "Insufficient credits" } }), { status: 402, headers: { "content-type": "application/json" } }));
-  const real = openrouterProvider({ apiKey: "not-a-secret-x", baseURL: "https://fake.invalid/api", model: "liquid/d1", maxAttempts: 1, fetch: outOfCredit });
+  const real = openrouterProvider({ apiKey: "not-a-secret", baseURL: "https://fake.invalid/api", model: "liquid/d1", maxAttempts: 1, fetch: outOfCredit });
   const decider = { ...fauxOpenrouter({ price: feeOnly(0.4), costUsd: null }), decide: (request, ctx) => real.decide(request, ctx) };
   const { server } = await worldWith(t, { capUsd: 1, decider });
   const row = await waitRow(server, (r) => r.state !== "running" && r.state !== "queued" && r.runner === null);
