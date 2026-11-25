@@ -3527,6 +3527,8 @@ export type ListComputersResponse = {
     online: boolean;
     held_by_run: string | null;
     held_until: string | null;
+    held_on: string | null;
+    hold_note: string | null;
     pairing: string;
     created_at: string;
     seen_at: string | null;
@@ -7239,6 +7241,7 @@ export type GetWrappedResponse = {
     sessions: number;
     requests: number;
     tokens: number;
+    sources: Array<string>;
   }>;
   models: Array<{
     model: string;

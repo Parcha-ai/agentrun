@@ -6,9 +6,10 @@ export const LOGIN_ROW = "Use Claude Code's login on this machine";
 export const LOGIN_HARNESS = "claude-agent";
 /** Whether a run on the login's harness that names `model` goes on the login: one naming none (the login's default is
  *  Anthropic's) or one of Anthropic's own (`anthropic/<id>`). Any other, Anthropic's through OpenRouter
- *  (`openrouter/anthropic/<id>`) included, goes on its provider's key whatever the login says. Serve's providerFor
- *  decides it on the server, and its claude-login test pins the same cases; the console reads no server code, so the rule
- *  is copied here. */
+ *  (`openrouter/anthropic/<id>`) included, goes on its provider's key whatever the login says. Serve's own loginServes
+ *  (claude-login.ts) decides it on the server, for providerFor and for the refusal's offer to move a box agent to the
+ *  runner; the console reads no server code, so the rule is copied here, and claudeLogin.test.ts names the cases serve's
+ *  claude-login test names. */
 export const loginServes = (model: unknown): boolean => model === undefined || model === "" || (typeof model === "string" && model.startsWith("anthropic/"));
 /** What the mode does, under the row's name. */
 export const LOGIN_RUNS = "Claude Agent runs on your Claude plan through the Claude Code CLI on this server's machine. The CLI keeps the login and calls Anthropic itself; AgentRun only asks it whether it is signed in.";

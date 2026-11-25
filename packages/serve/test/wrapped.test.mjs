@@ -8,7 +8,7 @@ import { basename, join } from "node:path";
 import { test } from "node:test";
 import { request } from "node:http";
 import { execFileSync } from "node:child_process";
-import { keptReads } from "../dist/wrapped.js";
+import { keptReads, wrappedView } from "../dist/wrapped.js";
 import { randomBytes } from "node:crypto";
 import { agent, call, cookieOf, follow, serve, withEnv } from "./support.mjs";
 
@@ -53,6 +53,7 @@ test("GET /wrapped reads the year under the home: tokens, days, hours, models, h
   assert.equal(body.active_ms, 30_000);
   assert.deepEqual(body.models.map((m) => [m.model, m.requests, m.tokens]), [["anthropic/claude-fixture-1", 2, 440]]);
   assert.deepEqual(body.sources, [{ source: "claude-code", sessions: 0, requests: 2 }]);
+  assert.deepEqual(body.harnesses.map((h) => [h.harness, h.sources]), [["claude-agent", ["claude-code"]]], "each harness row names the sources behind it, for the console's links to their runs");
   assert.deepEqual(body.imported.map((g) => [g.source, g.runs]).sort(), [["claude-code", 2], ["codex", 1]]);
   const was = (await api("GET", "/wrapped?year=2025")).body;
   assert.deepEqual([was.sessions, was.turns, was.requests], [1, 1, 1]);
@@ -129,6 +130,13 @@ test("a session file that cannot be read is counted, as a number and no path, no
   assert.equal(body.unread_files, 1);
   assert.equal(body.requests, 2, "the rest of the year is read");
   assert.equal(JSON.stringify(body).includes("00000000-0000-4000-8000-000000000002"), false, "no path or id");
+});
+
+test("a harness row lists the source behind it, a source of a reader outside the table standing for itself", () => {
+  const row = (harness) => ({ harness, sessions: 1, requests: 1, tokens: 1 });
+  const src = (source) => ({ source, sessions: 1, requests: 1 });
+  const body = wrappedView({ year: 2026, sessions: 3, turns: 0, requests: 3, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, cost: 0, unpricedRequests: 0, days: [], hours: [], weekdays: [], activeMs: 0, harnesses: [row("pi"), row("claude-agent"), row("own-harness")], models: [], sources: [src("pi"), src("claude-code"), src("own-harness")] }, []);
+  assert.deepEqual(body.harnesses.map((h) => [h.harness, h.sources]), [["pi", ["pi"]], ["claude-agent", ["claude-code"]], ["own-harness", ["own-harness"]]]);
 });
 
 test("a server that takes two API tokens does not read the machine's files for either holder: 403", { timeout: 120_000 }, async (t) => {
