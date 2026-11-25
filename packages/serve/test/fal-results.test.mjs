@@ -291,7 +291,7 @@ test("saveOnce, which web_save shares: a file made between its check and its cre
   assert.equal(await readFile(join(dir, "media/clip.mp3"), "utf8"), "FIRST", "and kept");
 });
 
-test("a Workspace that cannot create without replacing files nothing: the call works, nothing is written, and saveOnce is refused", async (t) => {
+test("a Workspace that cannot create without replacing files nothing: the call's answer is unchanged, nothing is written, and saveOnce is refused unless it is asked to check then write, as web_save does", async (t) => {
   const id = "01a1fb41-3c4d-7e5f-8a6b-7c8d9e0f1a2b";
   const writes = [];
   // A Workspace with write but no writeNew (as a backend whose create can replace is): its write is recorded, never used.
@@ -311,7 +311,12 @@ test("a Workspace that cannot create without replacing files nothing: the call w
   assert.deepEqual(await tree(run.work), [], "nothing is filed");
   assert.deepEqual(writes, [], "and no write that could replace was made");
   await assert.rejects(saveOnce(replacing(run.work), "media/x.mp3", "x"), (error) => error.code === "REFUSED");
-  assert.deepEqual(writes, [], "saveOnce never falls back to write");
+  assert.deepEqual(writes, [], "saveOnce never falls back to write unasked");
+  // web_save's path there (Parcha-ai/agentrun#3777): the check, then one write.
+  assert.deepEqual(await saveOnce(replacing(run.work), "media/x.mp3", "x", { checkThenWrite: true }), { saved: true });
+  assert.deepEqual(writes, ["media/x.mp3"], "checked, then written once");
+  assert.deepEqual(await saveOnce(replacing(run.work), "media/x.mp3", "y", { checkThenWrite: true }), { held: "file" });
+  assert.deepEqual(writes, ["media/x.mp3"], "a file there is held, never written over");
 });
 
 test("on a run's files attached in a computer (a Docker box), a completed job is filed through the computer; a file landing before the move is kept, and a sibling is filed", async (t) => {
