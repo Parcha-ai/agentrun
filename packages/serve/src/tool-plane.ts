@@ -195,6 +195,9 @@ export type ResolveInput = {
   /** What the server's Jev means for web_search (decisions.ts jevWebWhy): said after the why of a search the run's own
    *  web_search runs. None: no Jev key, nothing to say. */
   jevWhy?: string;
+  /** The same for web_fetch (jevWebWhy's "web_fetch"): what a fetch the run's own Web serves sends TypeSafe, said after
+   *  its why. None: no Jev key, nothing to say. */
+  jevFetchWhy?: string;
 };
 
 /** Whether a harness's own search, `native` in its facts (the provider's search tool, through its proxy), has per-use fees
@@ -260,11 +263,14 @@ const searchesOwn = (resolves: string, facts: AdapterFacts | undefined): boolean
 const ranksOwn = (resolves: Resolution, input: ResolveInput): boolean => searchesOwn(resolves, input.facts);
 
 /** What `capability` resolves to on a run of `input`, and why in a plain sentence (capabilities' `why`): one rule, so
- *  the two never disagree. A web_search the run's own tool runs says what Jev does with it, where the server has a Jev
- *  key or Jev is turned off (`jevWhy`). */
+ *  the two never disagree. A web_search the run's own tool runs, and a web_fetch its own Web serves (any resolution but
+ *  a deny), say what Jev does with it and what it sends TypeSafe, where the server has a Jev key, or that Jev is off
+ *  (`jevWhy`, `jevFetchWhy`). */
 export function explainCapability(capability: Pickable, input: ResolveInput): { resolves: Resolution; why: string } {
   const said = explained(capability, input);
-  return capability === "web_search" && input.jevWhy && ranksOwn(said.resolves, input) ? { ...said, why: `${said.why}; ${input.jevWhy}` } : said;
+  if (capability === "web_search" && input.jevWhy && ranksOwn(said.resolves, input)) return { ...said, why: `${said.why}; ${input.jevWhy}` };
+  if (capability === "web_fetch" && input.jevFetchWhy && WEB_RUNS.web_fetch.includes(said.resolves)) return { ...said, why: `${said.why}; ${input.jevFetchWhy}` };
+  return said;
 }
 
 function explained(capability: Pickable, input: ResolveInput): { resolves: Resolution; why: string } {
@@ -381,8 +387,9 @@ function browserBy(chosen: string, picked: string, keys: Record<BrowserVendor, b
 /** The server's environment's part of every resolution: its gateway and Parallel's key, and where the key is from. */
 const served = (env: NodeJS.ProcessEnv) => {
   const parallelKey = PARALLEL_KEY_ENV in decisionKeysOf(env);
-  const jevWhy = jevWebWhy(env);
-  return { gateway: Boolean(env.AGENT_MODEL_BASE_URL), parallelKey, browserKeys: browserKeysOf(env), ...(parallelKey ? { parallelKeyFrom: savedIn(env).has(PARALLEL_KEY_ENV) ? ("saved" as const) : ("server" as const) } : {}), ...(jevWhy ? { jevWhy } : {}) };
+  const jevWhy = jevWebWhy(env, "web_search");
+  const jevFetchWhy = jevWebWhy(env, "web_fetch");
+  return { gateway: Boolean(env.AGENT_MODEL_BASE_URL), parallelKey, browserKeys: browserKeysOf(env), ...(parallelKey ? { parallelKeyFrom: savedIn(env).has(PARALLEL_KEY_ENV) ? ("saved" as const) : ("server" as const) } : {}), ...(jevWhy ? { jevWhy } : {}), ...(jevFetchWhy ? { jevFetchWhy } : {}) };
 };
 
 /** Each pickable capability on each harness under the server's `settings` and an agent's `overrides`, on `model`
