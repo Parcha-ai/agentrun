@@ -5,19 +5,24 @@
 // ssh2 package (an optional dependency), of which this package names only the slice it uses (Ssh2Module) and imports nothing at load.
 // Agent37 has no SSH port on the internet: the SSH stream rides a binary WebSocket to wss://{id}-22022.agent37.app,
 // which the edge opens for the workspace key in X-Agent37-Key (npm agent37@0.4.1 src/cli.js, wsHandshake and runTunnel),
-// and the instance's sshd then takes the workspace's registered SSH key. Agent37's REST exec is one-shot (no stdin,
+// and the instance's sshd then takes the workspace's registered SSH keys (docs: agents-api/ssh): the one the caller gives
+// (sshKey), else the provider's own, an ed25519 key it makes on first use, keeps in its store (secrets: a server's
+// sealed one, else this process's memory) and registers with POST /v1/ssh-keys before its first create. Agent37's REST exec is one-shot (no stdin,
 // output only at its end), so it is not used. The rest of the computer is the shared machine-host adapter's
 // (./hosted/provider.ts). Every vendor fact here is cited in the README's Agent37 section.
 import { createHash } from "node:crypto";
 import { Duplex } from "node:stream";
 import { boxImageRef, boxRecipeHash } from "./box-image.js";
+import type { ProviderSecrets } from "./descriptor.js";
 import { AGENT37, AGENT37_BASE_TEMPLATE } from "./descriptors/agent37.js";
 import { DEADLINE_LABEL, show } from "./drift.js";
 import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
-import { orThrow } from "./hosted/process.js";
+import { boundOf, codeOfError, orThrow } from "./hosted/process.js";
 import { httpsBase, jsonOf, type Rest, rest } from "./hosted/rest.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts } from "./hosted/provider.js";
 import { pemOf, type Ssh2Module, SshExec, SshTunnelError, type SshTunnel } from "./hosted/ssh-exec.js";
+import { ed25519PublicOf, newEd25519, type SshPublicKey } from "./hosted/ssh-key.js";
+import type { ProviderNote } from "./mount-archil.js";
 import { dateOf, DOMAIN, isWhole } from "./hosted/values.js";
 import type { CallContext, ComputerSpec, Refusal } from "./provider.js";
 import { type ComputerErrorCode, failFor, ok, type Result } from "./result.js";
@@ -65,9 +70,14 @@ export interface Agent37ProviderOptions extends Omit<HostedOptions, "maxLifetime
 	apiKey: string;
 	/**
 	 * The private half of an SSH key registered on the same workspace (POST /v1/ssh-keys), in OpenSSH or PEM form: its
-	 * contents, never a path. Every command reaches an instance over SSH as root with it.
+	 * contents, never a path. Every command reaches an instance over SSH as root with it. Absent: the provider's own key.
 	 */
-	sshKey: string;
+	sshKey?: string;
+	/**
+	 * Where the provider's own SSH key is kept, with no sshKey: a server's sealed store (its descriptor's `secrets`), one
+	 * key per store. Absent: this process's memory, one key shared by its providers until it exits.
+	 */
+	secrets?: ProviderSecrets;
 	/** The ssh2 package: the host's own, or anything with the same slice. */
 	ssh2: Ssh2Module;
 	/** The fetch every REST call goes through; default the global one. */
@@ -135,6 +145,29 @@ const REGISTER_MS = 15 * 60_000;
 const TEMPLATE_READ_MS = 30_000;
 /** How often a template another registration is making is read again. */
 const TEMPLATE_POLL_MS = 1_000;
+/** The name the provider's own SSH key is kept under in its store. */
+const SSH_KEY_SECRET = "ssh_key";
+/** Agent37's cap on one workspace's SSH keys: the 21st POST /v1/ssh-keys answers 400 invalid_request (docs: agents-api/ssh). */
+const MAX_SSH_KEYS = 20;
+/**
+ * How long after its registration a key may still be on its way to an instance made before it, so a login its sshd
+ * refuses is tried again: Agent37 hands a key to running instances "within about two minutes" (docs: agents-api/ssh),
+ * and a minute more is allowed. An instance made after the registration has the key from boot.
+ */
+const KEY_SETTLE_MS = 3 * 60_000;
+/** Each call of the key's registration: the listing, then the POST. */
+const SSH_KEY_CALL_MS = 30_000;
+/** Where a provider given no store keeps its own key: this process's memory, one key shared by its providers. */
+const PROCESS_SECRETS: ProviderSecrets = (() => {
+	const held = new Map<string, string>();
+	return { get: async (name) => held.get(name), put: async (name, value) => void held.set(name, value) };
+})();
+
+/** The SSH key a login takes: in the form ssh2 reads; for the provider's own, its fingerprint and when the workspace registered it. */
+interface LoginKey {
+	privateKey: string;
+	own?: { fingerprint: string; registeredAt: number };
+}
 
 /** An id held to Agent37's form before it reaches a URL or a host name (an id is also a DNS label here): not_found else. */
 function instanceId(id: string): string {
@@ -177,6 +210,13 @@ function codeOf(error: unknown): ComputerErrorCode {
 	if (level === "client-timeout") return "timeout";
 	return "vendor";
 }
+
+/** A workspace at Agent37's cap of SSH keys, in words: what shows it there (`why`), and the two ways out. Nothing is deleted. */
+const fullOf = (why: string): HostError =>
+	new HostError(
+		"limit",
+		`this server's own SSH key could not be registered: Agent37 takes at most ${MAX_SSH_KEYS} SSH keys a workspace, and ${why}. Delete keys the workspace no longer needs (those named agentrun-<hash> were registered by AgentRun; DELETE /v1/ssh-keys/{id}), or set AGENT37_SSH_KEY to the private half of a key already on it`,
+	);
 
 /** Agent37's statuses (docs: instances/object, Statuses) as the adapter's states; failed, deleting and deleted are gone (get answers none for deleted). */
 function stateOf(status: string): Machine["state"] | undefined {
@@ -284,10 +324,25 @@ class Agent37Host implements MachineHost {
 	readonly #WebSocket: WebSocketClass;
 	readonly #proxyDomain: string;
 	readonly #declared: { type: Agent37Type; region: Agent37Region };
+	readonly #secrets: ProviderSecrets;
+	readonly #onNote: ProviderNote | undefined;
+	/** The key every login takes: the given one from the start; the provider's own once kept and registered. */
+	#key: LoginKey | undefined;
+	/** The provider's own key on its way: kept and registered once, every call waiting on the same; dropped when it fails. */
+	#ready: Promise<LoginKey> | undefined;
 
-	constructor(options: { apiKey: string; sshKey: string; ssh2: Ssh2Module; fetch: typeof fetch; WebSocket: WebSocketClass; apiUrl: string; proxyDomain: string; type: Agent37Type; region: Agent37Region }) {
+	constructor(options: { apiKey: string; sshKey: string | undefined; secrets: ProviderSecrets; onNote: ProviderNote | undefined; ssh2: Ssh2Module; fetch: typeof fetch; WebSocket: WebSocketClass; apiUrl: string; proxyDomain: string; type: Agent37Type; region: Agent37Region }) {
 		this.#apiKey = options.apiKey;
-		this.#ssh = new SshExec({ ssh2: options.ssh2, loginOf: () => ({ username: "root", privateKey: options.sshKey }), tunnelOf: (id) => this.#tunnel(id) });
+		this.#key = options.sshKey === undefined ? undefined : { privateKey: options.sshKey };
+		this.#secrets = options.secrets;
+		this.#onNote = options.onNote;
+		this.#ssh = new SshExec({
+			ssh2: options.ssh2,
+			loginOf: () => ({ username: "root", privateKey: this.#key?.privateKey }),
+			tunnelOf: (id) => this.#tunnel(id),
+			// The provider's own key may still be on its way to an instance made before its registration.
+			deniedUntil: () => (this.#key?.own ? this.#key.own.registeredAt + KEY_SETTLE_MS : 0),
+		});
 		this.#client = rest({
 			base: options.apiUrl,
 			headers: () => ({ Authorization: `Bearer ${options.apiKey}`, Accept: "application/json" }),
@@ -329,9 +384,103 @@ class Agent37Host implements MachineHost {
 		return { ...tunnelOf(ws, host), host };
 	}
 
-	/** argv as root over SSH (hosted/ssh-exec.ts): one connection per instance through its tunnel, shared by its execs. */
+	/**
+	 * argv as root over SSH (hosted/ssh-exec.ts): one connection per instance through its tunnel, shared by its execs,
+	 * with the given key or the provider's own (#keyReady), within ctx. The provider's own key refused past KEY_SETTLE_MS
+	 * after its registration is denied in words, and the next call reads the workspace's keys again (it may be gone).
+	 */
 	async exec(id: string, argv: readonly string[], ctx: HostCall): Promise<MachineProcess> {
-		return this.#ssh.exec(instanceId(id), argv, ctx);
+		const machine = instanceId(id);
+		const end = Date.now() + ctx.timeoutMs;
+		const key = await this.#keyReady(ctx);
+		try {
+			return await this.#ssh.exec(machine, argv, { ...ctx, timeoutMs: Math.max(1, end - Date.now()) });
+		} catch (error) {
+			if (key.own === undefined || codeOf(error) !== "denied") throw error;
+			if (this.#key === key) this.#ready = undefined;
+			const { fingerprint, registeredAt } = key.own;
+			throw new HostError(
+				"denied",
+				`the sshd of Agent37 instance ${machine} refused this server's own SSH key ${fingerprint}, registered on the workspace at ${new Date(registeredAt).toISOString()}: Agent37 hands a key to running instances within about two minutes, and it was tried until ${KEY_SETTLE_MS / 60_000} minutes after its registration. Check that the key is still on the workspace (GET /v1/ssh-keys), or set AGENT37_SSH_KEY to the private half of a key that is`,
+			);
+		}
+	}
+
+	/**
+	 * The key a login takes, within ctx: the given one, or the provider's own, kept in its store and registered on the
+	 * workspace once (#ownKey), every call waiting on the same; one that failed is tried afresh by the next call.
+	 */
+	async #keyReady(ctx: HostCall): Promise<LoginKey> {
+		if (this.#key !== undefined && this.#key.own === undefined) return this.#key;
+		if (this.#ready === undefined) {
+			const making = this.#ownKey();
+			this.#ready = making;
+			making.catch(() => {
+				if (this.#ready === making) this.#ready = undefined;
+			});
+		}
+		const bound = boundOf(ctx.timeoutMs, ctx.signal, "the registration of this server's own SSH key on the Agent37 workspace");
+		try {
+			return await Promise.race([this.#ready, bound.promise]);
+		} finally {
+			bound.clear();
+		}
+	}
+
+	/** The provider's own key, kept (#keptKey) and registered (#register): the key every login takes from then on. */
+	async #ownKey(): Promise<LoginKey> {
+		const pem = await this.#keptKey();
+		const pub = ed25519PublicOf(pem) as SshPublicKey;
+		const registeredAt = await this.#register(pub);
+		const privateKey = pemOf(pem);
+		if (privateKey === undefined) throw new HostError("vendor", `this server's own SSH key ${pub.fingerprint} could not be read as SSH reads it`);
+		this.#key = { privateKey, own: { fingerprint: pub.fingerprint, registeredAt } };
+		return this.#key;
+	}
+
+	/**
+	 * The ed25519 key the store keeps (PKCS#8 PEM), else a new one, put there first. Another process on the same store
+	 * may put its own at the same moment: the store is read again after the put, and the key it keeps is the one used.
+	 */
+	async #keptKey(): Promise<string> {
+		const kept = await this.#secrets.get(SSH_KEY_SECRET);
+		if (kept !== undefined && ed25519PublicOf(kept) !== undefined) return kept;
+		const made = newEd25519();
+		await this.#secrets.put(SSH_KEY_SECRET, made);
+		const read = await this.#secrets.get(SSH_KEY_SECRET);
+		return read !== undefined && ed25519PublicOf(read) !== undefined ? read : made;
+	}
+
+	/**
+	 * The key on the workspace, and when it was registered (ms): GET /v1/ssh-keys, which echoes no key, matched by
+	 * fingerprint; else POST /v1/ssh-keys { public_key, name agentrun-<its hash> }, where a 409 ssh_key_exists is a
+	 * registration another made (docs: agents-api/ssh). A workspace at its 20 keys is refused in words, and no key of it
+	 * is deleted. Throws a HostError, in Agent37's words.
+	 */
+	async #register({ line, fingerprint, hash }: SshPublicKey): Promise<number> {
+		const name = `agentrun-${hash.slice(0, 12)}`;
+		const failed = (error: unknown) => {
+			const said = error instanceof Error ? error.message : String(error);
+			return new HostError(codeOfError(this, error), `this server's own SSH key ${fingerprint} could not be registered on the Agent37 workspace: ${said}`);
+		};
+		const listed = await this.#rest<{ data?: unknown }>("GET", "/v1/ssh-keys", undefined, { timeoutMs: SSH_KEY_CALL_MS }).catch((error: unknown) => {
+			throw failed(error);
+		});
+		if (!Array.isArray(listed?.data)) throw failed(new HostError("vendor", "GET /v1/ssh-keys answered no data list"));
+		const keys = listed.data as { fingerprint?: unknown; created?: unknown }[];
+		const found = keys.find((one) => one?.fingerprint === fingerprint);
+		if (found) return typeof found.created === "number" && Number.isFinite(found.created) ? found.created * 1000 : Date.now();
+		if (keys.length >= MAX_SSH_KEYS) throw fullOf(`the workspace holds ${keys.length}`);
+		let status: number;
+		try {
+			status = orThrow(await this.#client.call("POST", this.#client.url("/v1/ssh-keys"), { json: { public_key: `${line} ${name}`, name }, timeoutMs: SSH_KEY_CALL_MS, accept: (code) => (code >= 200 && code < 300) || code === 409 })).status;
+		} catch (error) {
+			// The one line this sends is well formed: a 400 is the cap, reached since the listing.
+			if (error instanceof HostError && error.code === "invalid") throw fullOf(`Agent37 said so: ${error.message}`);
+			throw failed(error);
+		}
+		if (status !== 409) this.#onNote?.({ computer: name, note: `this server's own SSH key ${fingerprint} was registered on the Agent37 workspace as ${name}` });
+		return Date.now();
 	}
 
 	/** One REST call, bounded by ctx: its JSON answer; a failure throws a HostError in Agent37's words. */
@@ -362,12 +511,16 @@ class Agent37Host implements MachineHost {
 	 * instance's name, the labels as metadata, deny-all (or allow-all where the adapter asks egress: an Archil computer's root, or the
 	 * egress proxy of a network open or a list), auto-sleep off and
 	 * no public port. It answers once the instance runs (docs: instances/create, Defaults). req.backstopAt is left:
-	 * Agent37 has no delete or stop timer to set it on, so the janitor alone ends an instance.
+	 * Agent37 has no delete or stop timer to set it on, so the janitor alone ends an instance. The provider's own SSH key
+	 * is registered first (#keyReady), so the instance has it from boot.
 	 */
 	async create(req: MachineRequest, ctx: HostCall): Promise<{ id: string }> {
 		const bytes = Buffer.byteLength(JSON.stringify(req.labels));
 		if (bytes > METADATA_MAX_BYTES) throw new HostError("invalid", `Agent37 holds an instance's metadata to ${METADATA_MAX_BYTES} bytes as JSON, and this one's would be ${bytes}: give shorter labels`);
 		const shape = req.cpus !== undefined || req.memoryMb !== undefined ? shapeOf(req.cpus, req.memoryMb) : undefined;
+		const end = Date.now() + ctx.timeoutMs;
+		await this.#keyReady(ctx);
+		ctx = { ...ctx, timeoutMs: Math.max(1, end - Date.now()) };
 		const made = await this.#rest<Agent37Instance>(
 			"POST",
 			"/v1/instances",
@@ -471,8 +624,9 @@ class Agent37Host implements MachineHost {
 
 /**
  * An Agent37Provider from its options alone; it reads no environment. The key is options.apiKey and the SSH key
- * options.sshKey, nowhere else (serve passes its AGENT37_API_KEY and AGENT37_SSH_KEY, the conformance module what it
- * reads), and ssh2 is the host's package unless given. Throws in words when an option is missing or wrong, never echoing a key.
+ * options.sshKey when given, nowhere else (serve passes its AGENT37_API_KEY, its AGENT37_SSH_KEY when set, and its sealed
+ * store as options.secrets; the conformance module what it reads), and ssh2 is the host's package unless given. Throws
+ * in words when an option is missing or wrong, never echoing a key.
  */
 export async function create(options: Agent37Options): Promise<Agent37Provider> {
 	const { ssh2: given, ...rest } = options ?? ({} as Agent37Options);
@@ -525,6 +679,7 @@ export class Agent37Provider extends HostedProvider {
 		const {
 			apiKey,
 			sshKey,
+			secrets = PROCESS_SECRETS,
 			ssh2,
 			fetch: fetcher = globalThis.fetch,
 			WebSocket = globalThis.WebSocket as unknown as WebSocketClass,
@@ -537,7 +692,8 @@ export class Agent37Provider extends HostedProvider {
 		} = options ?? ({} as Agent37ProviderOptions);
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, the Agent37 API key, is required: the provider reads no environment, so the caller passes it");
 		const privateKey = typeof sshKey === "string" ? pemOf(sshKey) : undefined;
-		if (privateKey === undefined) throw new Error("options.sshKey must be the contents of an SSH private key (-----BEGIN ... PRIVATE KEY-----), never a path");
+		if (sshKey !== undefined && privateKey === undefined) throw new Error("options.sshKey must be the contents of an SSH private key (-----BEGIN ... PRIVATE KEY-----), never a path");
+		if (typeof secrets?.get !== "function" || typeof secrets.put !== "function") throw new Error("options.secrets must be a store of the provider's own secrets, with get and put, as a server's sealed one is");
 		if (typeof (ssh2 as { Client?: unknown } | null)?.Client !== "function") throw new Error("options.ssh2 must be the ssh2 package (its Client class): the host installs it, as it does e2b");
 		if (typeof fetcher !== "function") throw new Error("options.fetch must be a function, as the global fetch is");
 		if (typeof WebSocket !== "function") throw new Error("options.WebSocket must be a WebSocket class that takes headers, as Node's global one does");
@@ -546,7 +702,7 @@ export class Agent37Provider extends HostedProvider {
 		if (type !== "vm" && type !== "default") throw new Error(`type is vm or default, not ${JSON.stringify(type)}`);
 		if (region !== "us" && region !== "eu" && region !== "ap-south") throw new Error(`region is us, eu or ap-south, not ${JSON.stringify(region)}`);
 		if (region !== "us" && type !== "vm") throw new Error(`Agent37 runs type default in us alone: ${region} takes type vm`);
-		const host = new Agent37Host({ apiKey, sshKey: privateKey, ssh2, fetch: fetcher, WebSocket, apiUrl: api, proxyDomain, type, region });
+		const host = new Agent37Host({ apiKey, sshKey: privateKey, secrets, onNote: rest.onNote, ssh2, fetch: fetcher, WebSocket, apiUrl: api, proxyDomain, type, region });
 		super(host, { ...rest, timeouts: { createMs: DEFAULT_CREATE_MS, ...timeouts } });
 	}
 }
