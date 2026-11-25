@@ -1687,12 +1687,17 @@ has the row **Use Claude Code's login on this machine**, over these routes:
   in is the user's alone where that group is the user's private one, as the local account files alone say:
   `/etc/nsswitch.conf` takes users and groups from those files only (`files` or `compat` on its `passwd`, `group` and
   any `initgroups` line), and the group is the user's primary group, which no other user has as theirs and
-  `/etc/group` lists with no other member, so a umask of 002 under one refuses nothing. Any other group (one shared
-  with other users, one that is not the user's primary group, one `/etc/group` lacks, account files with a `+` or `-`
-  line, or a switch that also asks sssd, LDAP, NIS, winbind or systemd's user records, as the `files systemd` of
-  recent Ubuntu, Debian and Fedora installs does, or no switch file: there members can exist that the files do not
-  show), and a folder anyone may write in, are refused in words that name the folder, its mode and the
-  `chmod g-w,o-w` that closes it. A folder of the login
+  `/etc/group` lists with no other member and gives no password (`x`, `!`, `*` or empty), and `/etc/passwd` has one
+  account with the user's uid and one with its name, so a umask of 002 under one refuses nothing. Any other group
+  (one shared with other users, one that is not the user's primary group, one `/etc/group` lacks, account files with
+  a `+` or `-` line, a second account with the user's name or uid, an id with blanks before it, or a switch that also
+  asks sssd, LDAP, NIS, winbind or systemd's user records, as the `files systemd` of recent Ubuntu, Debian and Fedora
+  installs does, or no switch file: there members can exist that the files do not show), and a folder anyone may
+  write in, are refused in words that name the folder, its mode and the `chmod g-w,o-w` that closes it. A group with a
+  password is refused too, since anyone who knows it may join the group with `newgrp`, and the words also name the
+  group and the `gpasswd -r` that removes the password. The files are read as they are now: a user removed from the
+  group keeps it in the sessions they already have open, since a process's groups are set when it logs in, so end
+  those sessions before counting the folder as the user's alone. A folder of the login
   still to make is made by AgentRun at the turn-on and before the CLI's sign-in, 0700 whatever the umask, so the login
   the CLI signs in there is not refused after.
 - `GET /v2/settings/claude-login` says `state`: `off`, `signed_in` (with the `account` the CLI names: method, email,
