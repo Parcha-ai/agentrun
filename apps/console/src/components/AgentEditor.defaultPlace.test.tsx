@@ -27,7 +27,7 @@ function mount(places: ReturnType<typeof placesOf>) {
   const input = (sel: string) => host.querySelector(sel) as HTMLInputElement | null;
   const step = (label: RegExp) => click([...host.querySelectorAll("button")].find((b) => label.test(b.textContent ?? "")));
   const fill = () => {
-    step(/Context|Instructions/);
+    step(/General|Instructions/);
     const set = (el: HTMLInputElement | HTMLTextAreaElement | null, value: string) => act(() => {
       const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
       Object.getOwnPropertyDescriptor(proto, "value")!.set!.call(el, value);

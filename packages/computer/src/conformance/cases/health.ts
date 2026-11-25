@@ -1,6 +1,6 @@
 // The daemon answers: hello, ping, and an error in words for a method it does not have; the computer is the kind it
-// says it is; what the provider declares of itself, its capabilities() and each hello agree, at this protocol's
-// version; and no error the provider answers holds a key.
+// says it is; what the provider declares of itself, its capabilities() and each hello agree, at exactly the suite's
+// protocol version; and no error the provider answers holds a key.
 import { GROUPS, PROTOCOL_VERSION } from "../../protocol.js";
 import { kindServed } from "../../kinds.js";
 import { kindRefusals } from "../../provider.js";
@@ -91,7 +91,10 @@ export const healthCases: Case[] = [
 		group: "health",
 		needs: [],
 		async run(t) {
-			t.equal(t.hello.protocol, PROTOCOL_VERSION, `hello carries the protocol version this suite speaks, ${PROTOCOL_VERSION}`);
+			// A provider is certified by the suite of its own version, so its computers speak that version exactly: the
+			// tolerance of a later minor (helloProblem) is the wire's, between a server and a driver built apart.
+			const protocol: unknown = t.hello.protocol;
+			t.assert(protocol === PROTOCOL_VERSION, `hello: the computer speaks protocol ${protocol === undefined || protocol === null ? "none" : String(protocol)}, and this suite ${PROTOCOL_VERSION}`);
 			const declared = t.declared;
 			if (declared === undefined) {
 				return t.skip("the run was given no declaration of the provider: its descriptor, its PROVIDERS entry, or its module's CAPABILITIES");

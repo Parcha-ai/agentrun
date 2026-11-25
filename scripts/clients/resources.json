@@ -49,6 +49,7 @@
     "listRuns": ["agents", "runs"],
     "listRevisions": ["revisions", "list"],
     "getAgentPackage": ["agents", "package"],
+    "getRevisionSkills": ["revisions", "skills"],
     "setCurrent": ["revisions", "set-current"],
     "validateWorkflow": ["workflows", "validate"],
     "createRun": ["runs", "start"],

@@ -24,6 +24,8 @@ const type = async (input: HTMLInputElement, text: string) => {
 };
 const button = (host: HTMLElement, text: string | RegExp) => [...host.querySelectorAll("button")].find((b) => (typeof text === "string" ? b.textContent?.trim() === text : text.test(b.textContent ?? "")))!;
 
+const section = (host: HTMLElement, label: string) => [...host.querySelectorAll<HTMLButtonElement>('nav[aria-label="Agent settings sections"] ul button')].find(control => control.textContent?.trim().startsWith(label))!;
+
 describe("the Tools step's monid row", () => {
   it("a grant typed into the row reaches the create's tools", async () => {
     const posts: { path: string; body: { definition: { tools: string[] } } }[] = [];
@@ -41,7 +43,7 @@ describe("the Tools step's monid row", () => {
     act(() => root!.render(createElement(AgentEditPage, { v2: createClient({ fetch }), caps: CAPS, agentId: null, go: () => {} })));
     await settle();
     await type(host.querySelector("#agent-name") as HTMLInputElement, "Searcher");
-    await act(async () => { button(host, /Tools & skills/).click(); });
+    await act(async () => { button(host, /Tools/).click(); });
     const row = host.querySelector('[aria-label="monid endpoints"]') as HTMLElement;
     expect(row).not.toBeNull();
     await type(row.querySelector('input[aria-label="monid grant"]') as HTMLInputElement, "monid:keenable/v1/search");
@@ -77,7 +79,7 @@ describe("the Tools step's monid row", () => {
     root = createRoot(host);
     act(() => root!.render(createElement(AgentEditPage, { v2: createClient({ fetch }), caps: CAPS, agentId: "searcher", go: () => {} })));
     await settle();
-    await act(async () => { button(host, /Tools & skills/).click(); });
+    await act(async () => { section(host, "Tools").click(); });
     const row = () => host.querySelector('[aria-label="monid endpoints"]') as HTMLElement;
     const card = (grant: string) => row().querySelector(`input[type="checkbox"][value="${grant}"]`) as HTMLInputElement | null;
     const grant = async (name: string) => { await type(row().querySelector('input[aria-label="monid grant"]') as HTMLInputElement, name); await act(async () => { button(row(), "Grant").click(); }); };
@@ -91,12 +93,12 @@ describe("the Tools step's monid row", () => {
     expect(page.card("monid:exa/*")?.checked).toBe(true);
     // The built-in tools' cards never show a monid grant: the row does.
     expect(page.host.querySelectorAll('input[value="monid:keenable/v1/search"]')).toHaveLength(1);
-    await act(async () => { button(page.host, /Context/).click(); });
+    await act(async () => { section(page.host, "General").click(); });
     const instructions = page.host.querySelector("textarea") as HTMLTextAreaElement;
     await act(async () => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(instructions, "Search the web."); instructions.dispatchEvent(new Event("input", { bubbles: true })); });
     await page.save();
     expect(page.puts.at(-1)!.definition.tools).toEqual(["read", "monid:keenable/v1/search", "monid:exa/*"]);
-    await act(async () => { button(page.host, /Tools & skills/).click(); });
+    await act(async () => { section(page.host, "Tools").click(); });
     await act(async () => { page.card("monid:exa/*")!.click(); });
     // Unticked, it stays on the row, to tick again.
     expect(page.card("monid:exa/*")?.checked).toBe(false);
@@ -120,8 +122,8 @@ describe("the Tools step's monid row", () => {
     const page = await editPage(["read"]);
     await page.grant("monid:exa/*");
     await act(async () => { page.card("monid:exa/*")!.click(); });
-    await act(async () => { button(page.host, /Context/).click(); });
-    await act(async () => { button(page.host, /Tools & skills/).click(); });
+    await act(async () => { section(page.host, "General").click(); });
+    await act(async () => { section(page.host, "Tools").click(); });
     expect(page.card("monid:exa/*")?.checked).toBe(false);
     await act(async () => { page.card("monid:exa/*")!.click(); });
     await page.save();

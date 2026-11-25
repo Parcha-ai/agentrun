@@ -478,6 +478,7 @@ __all__ = [
     "GetObservationsResponseUsageDailyItem",
     "GetObservationsResponseUsageModelsItem",
     "GetOpenapiResponse",
+    "GetRevisionSkillsResponse",
     "GetRunExportResponse",
     "GetRunExportResponseAgent",
     "GetRunExportResponseCutsItem",
@@ -7423,6 +7424,11 @@ class SetCurrentBody(TypedDict):
 SetCurrentResponse: TypeAlias = "Agent"
 
 
+class GetRevisionSkillsResponse(TypedDict):
+    revision: str
+    skills: dict[str, str]
+
+
 ArchiveRunResponse: TypeAlias = "dict[str, Any]"
 
 
@@ -12004,6 +12010,7 @@ OPERATIONS: dict[str, Operation] = {
     "getObservations": Operation(method="GET", path="/observations", path_params=(), multi_segment=(), query=("days", "session_id"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listRevisions": Operation(method="GET", path="/agents/{agent_id}/revisions", path_params=("agent_id",), multi_segment=(), query=("limit", "cursor"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "setCurrent": Operation(method="POST", path="/agents/{agent_id}/current", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "getRevisionSkills": Operation(method="GET", path="/agents/{agent_id}/revisions/{revision}/skills", path_params=("agent_id", "revision"), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "archiveRun": Operation(method="POST", path="/runs/{run_id}/archive", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "cancelRun": Operation(method="POST", path="/runs/{run_id}/cancel", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "callRunComputer": Operation(method="POST", path="/runs/{run_id}/computer/call", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
@@ -12662,6 +12669,10 @@ class RevisionsResource(Group):
     def set_current(self, agent_id: str, body: SetCurrentBody, *, timeout: float | None = None) -> SetCurrentResponse:
         """Make one of the agent's revisions current again (POST /agents/{agent_id}/current)."""
         return self._call("setCurrent", (agent_id,), body, None, timeout=timeout)
+
+    def skills(self, agent_id: str, revision: str, *, timeout: float | None = None) -> GetRevisionSkillsResponse:
+        """Read all skill files saved with one agent revision (GET /agents/{agent_id}/revisions/{revision}/skills)."""
+        return self._call("getRevisionSkills", (agent_id, revision), None, None, timeout=timeout)
 
 
 class RunsResource(Group):

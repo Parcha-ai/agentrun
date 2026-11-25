@@ -2,9 +2,11 @@
 // refusal is read by its code (quota: off for the run; limit: held for its wait), and a spent daily limit by the one
 // plain-text answer Firecrawl gives for it (off until 00:00 UTC). Firecrawl's words are never passed on. A call is never
 // retried and ends at FIRECRAWL_MS. A URL the public-host guard refuses is never sent (fetch.ts).
-import { clip, markdownRead, PAGE_MAX_BYTES, type Read, TITLE_CAP, withoutUserinfo } from "../page.js";
+import { clip, markdownRead, PAGE_MAX_BYTES, type Read, withoutUserinfo } from "../page.js";
 import { defineProvider, type ProviderRun, type Reader, readerOf } from "../provider.js";
-import { bare, type Failed, failed, type Hit, keyWide, type Limit, type Search, searchBreaker, searchFailed, snippetOf } from "../search.js";
+import { bare, type Failed, failed, type Hit, keyWide, type Limit, type Search, type SearchAsk, searchBreaker, type Searched } from "../search.js";
+import { firecrawlHits, firecrawlMerged, firecrawlQueries, firecrawlScrapeOptions } from "./firecrawl.js";
+import { KEYED_MAX_BYTES } from "./keyed.js";
 import { type Bounded, callTool, MAX_BYTES, RATE_LIMITED, textBlocks, type Words } from "./mcp.js";
 
 export const FIRECRAWL_MCP_URL = "https://mcp.firecrawl.dev/v2/mcp";
@@ -121,20 +123,22 @@ async function firecrawlCall<T>(name: string, args: Record<string, unknown>, wha
   }
 }
 
-/** `query` searched on Firecrawl's keyless endpoint, at most `n` results, its answer at most MAX_BYTES; a failure typed. */
-function searchTyped(query: string, n: number, options: FirecrawlOptions): Promise<Search | Typed> {
-  return firecrawlCall<Search>(FIRECRAWL_SEARCH_TOOL, { query, limit: n }, "search", MAX_BYTES, (json) => {
-    const data = json.data as { web?: unknown } | unknown[] | undefined;
-    const rows = Array.isArray(data) ? data : Array.isArray(data?.web) ? data.web : undefined;
-    if (!rows) return failed("error", "UNREADABLE", "Firecrawl's search answered no results this server reads");
-    const hits = rows.flatMap((row: { url?: unknown; title?: unknown; description?: unknown } | null): Hit[] => (typeof row?.url === "string" && URL.canParse(row.url) ? [{ url: row.url, title: typeof row.title === "string" ? clip(row.title, TITLE_CAP) : "", snippet: snippetOf(typeof row.description === "string" ? row.description : "") }] : []));
-    return { provider: "firecrawl-keyless", query, results: hits.slice(0, n) };
-  }, options);
+/** `ask` searched on Firecrawl's keyless endpoint as keyed Firecrawl searches it (firecrawl.ts firecrawlSearched): up to
+ *  FIRECRAWL_QUERIES_MAX of its queries, one call each, all at once, each sent the objective (which the keyless tool
+ *  requires) and the same scrape of its results, each answer at most KEYED_MAX_BYTES, merged (firecrawlMerged). No
+ *  conversation id is sent. A failure typed. */
+async function searchTyped(ask: SearchAsk, options: FirecrawlOptions): Promise<Searched> {
+  const { queries, limit } = firecrawlQueries(ask);
+  const each = await Promise.all(queries.map((query) =>
+    firecrawlCall<Hit[]>(FIRECRAWL_SEARCH_TOOL, { query, limit, objective: ask.objective, scrapeOptions: firecrawlScrapeOptions() }, "search", KEYED_MAX_BYTES, (json) => firecrawlHits(json.data) ?? failed("error", "UNREADABLE", "Firecrawl's search answered no results this server reads"), options),
+  ));
+  return firecrawlMerged("firecrawl-keyless", ask, each);
 }
 
-/** `query` searched on Firecrawl's keyless endpoint, at most `n` results, its answer at most MAX_BYTES. */
+/** `query` searched on Firecrawl's keyless endpoint as the objective and the one query, at most `n` results. */
 export async function firecrawlSearch(query: string, n: number, options: FirecrawlOptions = {}): Promise<Search | FirecrawlFailed> {
-  return bare(await searchTyped(query, n, options));
+  const { answer, limit } = await searchTyped({ objective: query, queries: [query], n }, options);
+  return "error" in answer ? { error: answer.error, ...(limit ? { limit } : {}) } : answer;
 }
 
 /** The page at `url` scraped by Firecrawl's keyless endpoint, as markdown, its answer at most the direct fetch's bound
@@ -171,11 +175,10 @@ export const firecrawlKeyless = defineProvider(
   ({ endpoint, send, words, now, bounds }): ProviderRun => {
     const options: Omit<FirecrawlOptions, "signal"> = { ...(endpoint ? { endpoint } : {}), ...(send ? { send } : {}), ...(words ? { words } : {}), now };
     return {
-      async search({ query, n }, deadline, _signal, called) {
+      async search(ask, deadline, _signal, called) {
         const firecrawlMs = called?.firecrawlMs ?? bounds?.firecrawlMs;
-        const found = await searchTyped(query, n, { ...options, signal: deadline, ...(firecrawlMs === undefined ? {} : { timeoutMs: firecrawlMs }) });
         // Which limit Firecrawl met is the breaker's to read, never the model's.
-        return "error" in found ? searchFailed(found as Typed) : { answer: found };
+        return searchTyped(ask, { ...options, signal: deadline, ...(firecrawlMs === undefined ? {} : { timeoutMs: firecrawlMs }) });
       },
       read: (url, { signal }) => scrapeTyped(url as string, { ...options, ...(signal ? { signal } : {}) }),
     };

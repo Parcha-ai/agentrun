@@ -20,17 +20,16 @@ export type Definition = { native?: NativeBinding; version: number; approvals?: 
  *  is refused until the host has it. `field` names the definition's field (`definition.model`, `definition.tools[2]`). */
 export type SaveWarning = NonNullable<Agent["warnings"]>[number];
 export type { Agent };
-export type AgentFields = Partial<Pick<Definition, "name" | "description" | "instructions" | "harness" | "thinking" | "model" | "tools" | "workflow" | "learning" | "tool_settings" | "max_cost_usd" | "approvals">> & { workflowText?: string; maxCostText?: string; place?: Place; computer?: Computer };
+export type AgentFields = Partial<Pick<Definition, "name" | "description" | "instructions" | "harness" | "thinking" | "model" | "tools" | "workflow" | "learning" | "tool_settings" | "max_cost_usd" | "approvals">> & { skillFiles?: Record<string, string>; workflowText?: string; maxCostText?: string; place?: Place; computer?: Computer };
 
 /** The body of a definition edit: the current definition with the edited fields; the name stays as the agent was created,
  *  and a changed description is sent (serve writes it with the new revision). Every field the
  *  form does not show (schemas, tools, a workflow, connection references) is kept as it is, never dropped. A workflow
- *  revision keeps no thinking level (the server refuses one). Skill files are not sent, so they stay as they are. */
-export function editBody(agent: Agent, fields: AgentFields, note: string): { definition: Definition; note?: string; unchanged: boolean } {
+ *  revision keeps no thinking level (the server refuses one). Untouched skill files are omitted; an edited file set is sent whole, including supporting files. */
+export function editBody(agent: Agent, fields: AgentFields, note: string, originalSkills?: Record<string, string>): { definition: Definition; skills?: Record<string, string>; note?: string; unchanged: boolean } {
   // The agent store keeps an agent's id and name from its creation: an edit never sends a changed one.
-  const { name: _name, ...editable } = fields as AgentFields & { id?: string };
-  const edited: Definition = { ...agent.definition, ...editable };
-  // An agent with no description, left blank in the form, still has none: not a change.
+  const { name: _name, skillFiles, ...editable } = fields as AgentFields & { id?: string };
+  const edited: Definition = { ...agent.definition, ...editable, ...(skillFiles !== undefined ? { skills: skillNames(skillFiles) } : {}) };
   if (edited.description === "" && agent.definition.description === undefined) delete edited.description;
   // The computer is the setting; place is the server's view of it. A definition with a computer goes without its place,
   // which would still say the old computer after a change (the server writes place from computer).
@@ -59,10 +58,13 @@ export function editBody(agent: Agent, fields: AgentFields, note: string): { def
     if (computer !== undefined) { compared.computer = computer; delete compared.place; }
     return compared;
   };
-  const unchanged = same(comparable(edited), comparable(current));
+  const unchanged = same(comparable(edited), comparable(current)) && (skillFiles === undefined || same(skillFiles, originalSkills));
   edited.version = unchanged ? agent.definition.version : agent.revisions + 1;
-  return { definition: edited, ...(note.trim() ? { note: note.trim() } : {}), unchanged };
+  return { definition: edited, ...(skillFiles !== undefined ? { skills: skillFiles } : {}), ...(note.trim() ? { note: note.trim() } : {}), unchanged };
 }
+
+/** The skill names represented by the complete file set; supporting files remain beside each SKILL.md. */
+export const skillNames = (files: Record<string, string>) => Object.keys(files).filter(path => path.endsWith("/SKILL.md")).map(path => path.slice(0, -"/SKILL.md".length)).sort();
 
 /** Deep equality of two JSON values, whatever their keys' order. */
 export function same(a: unknown, b: unknown): boolean {
@@ -103,21 +105,22 @@ export function decisionProvider(workflows: { adapters?: string[]; decisions?: {
  *  to edit, never empty. Harness-neutral, one sentence. */
 export const DEFAULT_INSTRUCTIONS = "You are a helpful agent. Do the task you're given and report what you found.";
 
-/** The body that creates an agent: its first revision, with what the form names and no skills yet. A starter choice
+/** The body that creates an agent: its first revision, with what the form names and any custom skill files. A starter choice
  *  (Decision, Workflow) makes a workflow agent from that starter (Decision's on the server's decision provider), with no
  *  instructions, harness, thinking, model or tools: a workflow revision keeps none of those beside its workflow. */
-export function createBody(f: { name: string; description: string; instructions: string; harness: string; tools: string[]; approvals?: Approvals; thinking?: string; model?: string; learning?: LearningSetting; decisionProvider?: string; tool_settings?: ToolSettings; computer?: Computer; max_cost_usd?: number }): { definition: Definition } {
+export function createBody(f: { name: string; description: string; instructions: string; harness: string; tools: string[]; approvals?: Approvals; thinking?: string; model?: string; learning?: LearningSetting; decisionProvider?: string; tool_settings?: ToolSettings; computer?: Computer; max_cost_usd?: number; skillFiles?: Record<string, string> }): { definition: Definition; skills?: Record<string, string> } {
   if (isStarter(f.harness)) {
-    return { definition: { version: 1, name: f.name, ...(f.description.trim() ? { description: f.description } : {}), workflow: STARTERS[f.harness]!(f.decisionProvider), skills: [], tools: [] } };
+    return { definition: { version: 1, name: f.name, ...(f.description.trim() ? { description: f.description } : {}), workflow: STARTERS[f.harness]!(f.decisionProvider), skills: skillNames(f.skillFiles ?? {}), tools: [] }, ...(f.skillFiles !== undefined ? { skills: f.skillFiles } : {}) };
   }
   return {
     definition: {
       version: 1, name: f.name, ...(f.description.trim() ? { description: f.description } : {}), instructions: f.instructions, harness: f.harness,
-      ...(f.thinking ? { thinking: f.thinking } : {}), ...(f.model?.trim() ? { model: f.model.trim() } : {}), ...(f.computer ? { computer: f.computer } : {}), ...(f.learning ? { learning: f.learning } : {}), ...(f.max_cost_usd !== undefined ? { max_cost_usd: f.max_cost_usd } : {}), skills: [], tools: f.tools,
+      ...(f.thinking ? { thinking: f.thinking } : {}), ...(f.model?.trim() ? { model: f.model.trim() } : {}), ...(f.computer ? { computer: f.computer } : {}), ...(f.learning ? { learning: f.learning } : {}), ...(f.max_cost_usd !== undefined ? { max_cost_usd: f.max_cost_usd } : {}), skills: skillNames(f.skillFiles ?? {}), tools: f.tools,
       ...(f.tool_settings && Object.keys(f.tool_settings).length ? { tool_settings: f.tool_settings } : {}),
       // Approvals: sent only when it never asks (ask is the server's default).
       ...(f.approvals === "never" ? { approvals: "never" as const } : {}),
     },
+    ...(f.skillFiles !== undefined ? { skills: f.skillFiles } : {}),
   };
 }
 
