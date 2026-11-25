@@ -297,8 +297,12 @@ test("workflow alone: the run answers on its learned workflow with no agent-mode
   assert.equal(row.metrics?.workflow, "answer");
   assert.match(String(row.metrics?.workflow_digest), /^[0-9a-f]{16}$/);
   assert.equal(row.metrics.workflow_digest, digest, "the run record's digest is the served workflow's");
+  // Its one call, the platform's, on its record as the money rule counts it; why it served.
+  assert.deepEqual(row.metrics.workflow_calls?.map(({ usd: _usd, ...call }) => call), [{ workflow: "answer", digest, caller: "platform", outcome: "answered" }], JSON.stringify(row.metrics));
+  assert.equal(row.metrics.first_choice, "served");
   const booked = turns.reduce((sum, turn) => sum + (typeof turn.usd === "number" ? turn.usd : 0), 0);
   assert.ok(booked > 0, `the node's request is priced: ${JSON.stringify(turns)}`);
+  assert.equal(row.metrics.workflow_calls[0].usd, Math.round(booked * 1e12) / 1e12, "its call's $ is what its node booked");
   assert.ok(Math.abs((row.costUsd ?? 0) - booked) < 1e-9, `the run's cost is the node's booked $: ${row.costUsd} vs ${booked}`);
   // Its learning: no end-of-run turn, nothing new, at no cost (the clean-use count reads path "workflow").
   assert.equal(reflect, undefined, "no end-of-run turn was placed");
