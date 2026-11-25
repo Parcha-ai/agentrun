@@ -45,10 +45,10 @@ async function ledgerStore(t) {
   const clock = { now: T0 };
   const { store, file } = await storeOn(t, { clock });
   await agentWithRevision(store, "agent-1", "rev-1");
-  const end = async (id, costUsd, metrics = { path: "agent" }, { also = [], disk, audit, learns } = {}) => {
+  const end = async (id, costUsd, metrics = { path: "agent" }, { also = [], disk, audit, learns, revisionId = "rev-1" } = {}) => {
     clock.now += 1_000;
     const learning = learns ? { learning: { given: [], seed: "a".repeat(40), section: "", seedNotes: 0 } } : {};
-    await store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "q" }, title: "t", place: { mode: "runner" }, ...(disk ? { archil_disk: { disk_id: disk, kind: "launch" } } : {}), ...(audit ? { audit } : {}), ...learning } });
+    await store.runs.create({ id, agentId: "agent-1", revisionId }, { body: { input: { content: "q" }, title: "t", place: { mode: "runner" }, ...(disk ? { archil_disk: { disk_id: disk, kind: "launch" } } : {}), ...(audit ? { audit } : {}), ...learning } });
     const claim = await store.claim(id, "runner-a", { leaseMs: 60_000 });
     clock.now += 1_000;
     await store.runs.update(claim, { state: "ended", costUsd, metrics }, also.length ? { also } : undefined);
@@ -210,6 +210,22 @@ test("one by-hand rule in the window and before it: a run whose end named no pat
   const past = await pastRunsOverStore(store, "agent-1");
   assert.deepEqual(past.by_hand, { runs: 10, mean_usd: 1 }, "the 10 by hand before the window, as the window would read them; the runs that learn left out");
   assert.deepEqual((await agentCostOverStore(store, "agent-1")).workflows.map((one) => one.state), ["needs_revision"]);
+});
+
+test("one by-hand rule in the window and before it: a run of a workflow revision is never by hand, though its row says agent (a standalone workflow's launch does not learn and names no path)", async (t) => {
+  const { store, end } = await ledgerStore(t);
+  await store.agents.addRevision({ agentId: "agent-1", id: "rev-wf", kind: "workflow", body: {}, advance: false });
+  for (let at = 0; at < 10; at++) await end(`h${String(at).padStart(2, "0")}`, 1);
+  // Newer than those, nearer the window: the agent's runs as a workflow, at $5, each row on the agent path.
+  for (let at = 0; at < 10; at++) await end(`w${String(at).padStart(2, "0")}`, 5, {}, { revisionId: "rev-wf" });
+  const rows = new Map((await store.learning.ledger("agent-1")).rows.map((row) => [row.runId, row.path]));
+  assert.equal(rows.get("w00"), "agent", "the row says agent");
+  assert.deepEqual((await pastRunsOverStore(store, "agent-1")).by_hand, { runs: 10, mean_usd: 1 }, "in the window: the 10 by hand, the workflow's runs left out");
+  for (let at = 0; at < PAST_RUNS; at++) await end(`s${String(at).padStart(3, "0")}`, 0.1, SERVED);
+  for (let at = 0; at < 10; at++) await end(`x${String(at).padStart(2, "0")}`, 2, SERVED);
+  const past = await pastRunsOverStore(store, "agent-1");
+  assert.deepEqual(past.by_hand, { runs: 10, mean_usd: 1 }, "before the window: the same 10, as the window would read them; the workflow's runs left out");
+  assert.deepEqual(workflowCostsOf(past).map((one) => one.state), ["needs_revision"], "$2 served against $1 by hand, never against a mean the workflow's $5 runs raise");
 });
 
 test("a shadow that failed before its end wrote its metrics books its cost at its end, on the run its launch audits", async (t) => {
