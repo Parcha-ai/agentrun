@@ -12,9 +12,9 @@ import { ApiError } from "./errors.js";
 import { GRAPH_CACHE_BYTES, PartCache, servedGraphView } from "./graph-served.js";
 import { runGraph } from "./graph-view.js";
 import { checkedPath, decodedPath } from "./home-path.js";
-import { redactSecrets } from "./learn/secrets.js";
 import { CUT_MS, cutInWorker, CutUnserved } from "./cut-pool.js";
 import { censusCut, censusDigest } from "./run-census.js";
+import { cutFileText } from "./run-file-cut.js";
 import { type RunCut, underCut } from "./run-cut.js";
 import { usageWordsOf, WITHHELD_SIGN_IN } from "./run-view.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
@@ -93,7 +93,7 @@ export async function listRunFiles(store: RunReadsStore, runId: string, deps: Ru
   // Once the run's end erased what its caller handed it (censusDigest), its cut no longer holds those values: its census
   // says where they sat in each file's text, never in a name, so no file is named (a grader counts them, as from a server
   // that doesn't know `cut`).
-  const named = await underCut(() => deps.cutValues(store, runId), async (held) => (held === "unreadable" ? undefined : held.censusDigest !== undefined ? listed : listed.map((file) => ({ ...file, name: redactSecrets(file.path, held.values, Buffer.byteLength(file.path)) }))));
+  const named = await underCut(() => deps.cutValues(store, runId), async (held) => (held === "unreadable" ? undefined : held.censusDigest !== undefined ? listed : listed.map((file) => ({ ...file, name: cutFileText(file.path, held.values) }))));
   if (named === undefined) throw new ApiError("forbidden", WITHHELD_SIGN_IN);
   return { run_id: runId, files: named, complete: true, truncated };
 }
@@ -122,8 +122,9 @@ export const WITHHELD_UNCOUNTED = "This run was handed secrets of its own, and i
 /** File `rel` of the run's `workspace` as UTF-8 text cut of everything the run's own cut holds (deps.cutValues, the set its
  *  timeline's calls are cut of: the server's keys, the keys a person saved, its secret stores' values, the sign-in refs
  *  the run was handed, and while its launch holds them what its caller handed it: its own model key, tool keys and MCP
- *  credentials), through redactSecrets over the whole text in the cut worker (cut-pool.ts), off this server's event loop
- *  and under one deadline for the read (deps.cutMs, CUT_MS): past it, or when the worker fails, the read is 503
+ *  credentials), through cutFileText (run-file-cut.ts: redactSecrets over the whole text) in the cut worker
+ *  (cut-pool.ts), off this server's event loop and under one deadline for the read (deps.cutMs, CUT_MS): past it, or
+ *  when the worker fails, the read is 503
  *  (`unavailable`), never the text uncut. Each value and secret shape is replaced by "[redacted]" in
  *  place, and the text "[redacted]" whole when a value still shows in another form. A long run with no whitespace
  *  (compact JSON) is never blanked for its length. Once an end erased what its caller handed it, the run's census says

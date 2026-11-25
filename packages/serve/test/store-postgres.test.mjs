@@ -805,7 +805,8 @@ test("a store holding two answers to one approval is refused migration 0003 in w
   // The store as a build before 0003 left it, after an approve and a deny of call-1 raced and both were written; call-2 has
   // one answer, which the migration keeps as it is. Every migration from 0003 on is unrecorded, so the open applies them
   // again from 0003 (0004 on runs.outcome's check, 0007's computer_viewers.host, 0008's tables, 0010's imported_templates, 0011's
-  // revisions.mcp_pin, 0015's runs.labels and 0021's purge times, made only where missing, run twice unharmed; 0009's column and 0020's runners
+  // revisions.mcp_pin, 0015's runs.labels and 0021's purge times, made only where missing, and 0030's ledger repair, run only
+  // while learning_ledger.epoch is there, run twice unharmed (store-migration-lint.test.mjs); 0009's column and 0020's runners
   // table are dropped, as a build before them left the store: 0020 renames the runner_relays 0019 makes).
   await sql(schema, "DROP INDEX commands_one_answer");
   await sql(schema, "ALTER TABLE commands DROP COLUMN answer");

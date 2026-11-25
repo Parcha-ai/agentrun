@@ -16,10 +16,8 @@ export type AgentCreateDraft = {
   };
 };
 
-/** What the create page's Tools step picked: the tools to grant, and where it runs. None picked: today's request. */
-export type DraftPicks = { tools?: readonly string[]; place?: Place };
-
-export function briefAgentDraft(brief: string, picks: DraftPicks = {}): AgentCreateDraft {
+/** `picks`: what the create page's Tools step picked, the tools to grant and where it runs; none picked, today's request. */
+export function briefAgentDraft(brief: string, picks: { tools?: readonly string[]; place?: Place } = {}): AgentCreateDraft {
   return { definition: { version: 1, name: "New agent", instructions: brief.trim(), harness: "pi", tools: [...(picks.tools ?? [])], skills: [], ...(picks.place ? { place: picks.place } : {}) } };
 }
 
