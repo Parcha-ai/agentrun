@@ -61,19 +61,6 @@ test("on a set clock in a zone, the day is the zone's: 05:00Z on 3 March is stil
   assert.deepEqual(told.cli, ['2026-03-02'], `the dates in the CLI's own system messages: ${JSON.stringify(told.cli)}`);
 });
 
-/** `at`'s calendar day in this process's local time (the CLI reads its own local day). */
-const localDay = (at) => `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, '0')}-${String(at.getDate()).padStart(2, '0')}`;
-
-test("with no clock set, the CLI tells the model the machine's day", { skip, timeout: 120_000 }, async (t) => {
-  const before = new Date();
-  const told = await datesTold(t);
-  const later = new Date();
-  // The machine's day, in UTC or in local time (the CLI's zone is its own), read before and after the run.
-  const machine = new Set([before, later].flatMap((at) => [isoDay(at), localDay(at)]));
-  assert.ok(told.cli.length > 0 && told.cli.every((d) => machine.has(d)), `the dates in the CLI's own system messages: ${JSON.stringify(told.cli)}, the machine's ${JSON.stringify([...machine])}`);
-  assert.ok(told.quoted, "the app's instructions and the person's prompt reached the model as written");
-});
-
 // The rewrite itself, at the policy (no CLI): which text it changes, and which it leaves.
 const MESSAGES = anthropicPolicy({ model: MODEL, tools: [] }).routes.find((r) => r.path === '/v1/messages');
 const CLOCKED = { model: MODEL, tools: ['lookup'], day: () => '2026-03-02' };

@@ -416,8 +416,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
           ...(provider.auth ? { auth: provider.auth } : {}),
           ...(provider.headers ? { headers: provider.headers } : {}),
-          // On a clock the host set (`now`), the CLI's own date lines, read from the machine's clock, say that clock's day in
-          // the run's zone. A session on a login has no proxy, and keeps the machine's date.
+          // The CLI's own date lines follow the clock (policy.ts `day`).
           ...(options.now ? { day: () => isoDay(options.now!(), options.zone) } : {}),
           ...(options.log ? { log: options.log } : {}),
           ...(options.fetch ? { fetch: options.fetch } : {}),
