@@ -1775,10 +1775,12 @@ gateway and no restart: `GET /api/tags` for the tags, `POST /api/show` for each 
 is `ollama/<tag>` in `harnesses[].models` and `harnesses[].free_models` for pi and for every harness on a wire the
 route translates, and the console names it
 `<tag> · local (Ollama)`, on a run's page too (from the run's `tokens` usage line, `provider` `ollama` and `model` the
-tag), so a run on the default says which model it ran on. An embedding model is left out. A model pulled or an Ollama started after the server shows in capabilities
+tag), so a run on the default says which model it ran on. An embedding model is left out. A model pulled after the server shows in capabilities
 within half a minute (the listing is kept that long, and asked again behind the next answer). A down or stuck Ollama
-lists no models and slows nothing: the listing has 2 seconds in all, follows no redirect, and keeps the models shown
-before its deadline. A run never waits on the listing: one on `ollama/<tag>` asks that model's `/api/show` alone (10
+slows nothing: the listing has 2 seconds in all and follows no redirect. A listing that fails (refused, past its
+deadline, or an answer of the wrong shape) is never kept as one: the models listed before it stay, none where there
+were none, and Ollama is asked again behind the next answer, so an Ollama that comes back or starts after the server
+shows in the answer after that. A run never waits on the listing: one on `ollama/<tag>` asks that model's `/api/show` alone (10
 seconds), and a run on any other model, a key's default included, never asks Ollama.
 
 - Where: `OLLAMA_HOST`, read as the ollama CLI reads it. Unset, 127.0.0.1:11434, but only on one owner's own server
