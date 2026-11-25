@@ -3,12 +3,14 @@
 // give, and a whole suite only for a pick of its own. Then the plan: the pool keeps only those units, shared by time.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { affectedSince, affectedTests } from './ci-affected.mjs';
 import { testShards } from './ci-plan.mjs';
+import * as testAffected from './test-affected.mjs';
 
 // Two split suites (@fx/a, @fx/b), a whole one (@fx/w, its runner listing its files with --list), the root's test:release
 // over scripts/*.test.mjs, an `any` pool of two shards that runs the affected tests and a `fixed` pool that runs @fx/b whole.
@@ -96,6 +98,34 @@ test('Markdown, a file outside the packages that no test reaches and a deleted f
     assert.deepEqual(picked(result), ['packages/a/test/plain.test.mjs'], path);
     assert.equal(result.paths[0].widened, undefined, path);
   }
+});
+
+// #3689 added packages/import/test/pool-oom.test.mjs with an unreviewed entry check. Its pull request's CI picked that
+// file, its package's smoke file and the other smoke files, never scripts/entry-points.test.mjs, which reads every
+// tracked script: the policy broke in the merge queue, and every group stacked behind it failed with it.
+test('a test that reads the whole tree runs for any change: a new test file in a package picks it; no change picks nothing', (t) => {
+  const root = fixture(t);
+  writeFileSync(join(root, 'scripts/tree.test.mjs'), '// Reads every tracked script (git ls-files), as entry-points.test.mjs does: no import or name says which.\n');
+  const added = 'packages/b/test/new.test.mjs';
+  writeFileSync(join(root, added), "import test from 'node:test';\n");
+  const treeWide = { 'test:release': ['scripts/tree.test.mjs'] };
+  const result = affectedTests(root, [added], { smoke: {}, treeWide });
+  assert.equal(result.full, undefined);
+  assert.deepEqual(picked(result), [added, 'scripts/tree.test.mjs'], 'the policy test runs on the pull request, not first in the queue');
+  assert.deepEqual([...result.suites].sort(), ['@fx/b', 'test:release']);
+  assert.deepEqual(picked(affectedTests(root, ['docs/guide.md'], { smoke: {}, treeWide })), ['scripts/tree.test.mjs'], 'Markdown is part of the tree too');
+  assert.deepEqual(picked(affectedTests(root, [], { smoke: {}, treeWide })), [], 'no change, nothing');
+  const stale = affectedTests(root, [added], { smoke: {}, treeWide: { 'test:release': ['scripts/gone.test.mjs'] } });
+  assert.deepEqual(stale.warnings, ['TREE_WIDE names test:release scripts/gone.test.mjs, which is not one of its test files here; update TREE_WIDE in scripts/test-affected.mjs']);
+});
+
+test("this tree's whole-tree tests are listed, and each is a file here", () => {
+  const repo = join(dirname(fileURLToPath(import.meta.url)), '..');
+  const listed = testAffected.TREE_WIDE?.['test:release'] ?? [];
+  for (const file of ['scripts/entry-points.test.mjs', 'scripts/typebox-out.test.mjs', 'scripts/doc-checkpoint.test.mjs', 'scripts/check-doc-anchors.test.mjs']) {
+    assert.ok(listed.includes(file), `${file} reads every tracked file of its kind: TREE_WIDE in scripts/test-affected.mjs runs it for any change`);
+  }
+  for (const [name, files] of Object.entries(testAffected.TREE_WIDE ?? {})) for (const file of files) assert.ok(existsSync(join(repo, file)), `${name} ${file} is not a file here`);
 });
 
 test("the changes are the diff from a merge commit's first parent; a base that names no commit runs every test", (t) => {

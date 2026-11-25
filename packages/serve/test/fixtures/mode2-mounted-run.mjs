@@ -108,8 +108,9 @@ async function learningSeedIn(t, dir, read) {
 /** A Mode 2 run of a revision with one skill, over the Archil fake `disk`, in a fresh store (`learns`: a learning run whose
  *  seed holds a correction; `read` counts the claim's reads of its learning folder). `claimNext(build)` claims it (a claim taken over a lapsed one when there was
  *  one) and builds its spec; `t.after` lets every spec go. `mcp`: the run's MCP, its revision granted `grants` and
- *  pinned `pin`, `before(server)` registering the server, `deps` added to the claim's. */
-export async function mode2Run(t, { harness, disk, learns = false, mcp }) {
+ *  pinned `pin`, `before(server)` registering the server, `deps` added to the claim's. `computer: false`: a revision with
+ *  no computer, so nothing mounts the run's folder. */
+export async function mode2Run(t, { harness, disk, learns = false, mcp, computer = true }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mode2-skills-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -126,7 +127,7 @@ export async function mode2Run(t, { harness, disk, learns = false, mcp }) {
   });
   await server.agents.create(
     { id: AGENT, name: "Agent" },
-    { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read", "write", ...(mcp?.grants ?? [])], skills: { "cite/SKILL.md": "0".repeat(64) }, computer: { kind: "sandbox", provider: "e2b" }, ...(harness ? { harness } : {}), ...(learns ? { learning: true } : {}) }, skills: { "cite/SKILL.md": SKILL }, ...(mcp?.pin ? { mcpPin: mcp.pin } : {}) },
+    { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read", "write", ...(mcp?.grants ?? [])], skills: { "cite/SKILL.md": "0".repeat(64) }, ...(computer ? { computer: { kind: "sandbox", provider: "e2b" } } : {}), ...(harness ? { harness } : {}), ...(learns ? { learning: true } : {}) }, skills: { "cite/SKILL.md": SKILL }, ...(mcp?.pin ? { mcpPin: mcp.pin } : {}) },
   );
   await mcp?.before?.(server);
   const read = { count: 0 };

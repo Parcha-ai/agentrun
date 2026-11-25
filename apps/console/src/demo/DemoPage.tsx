@@ -56,7 +56,7 @@ export const TOUR: { title: string; note: string; stops: Stop[] }[] = [
     stops: [
       { title: "Connected agents", shows: "Nine agents: seven that run on the server, and a developer's own Claude Code architect and Codex code reviewer, connected and ready.", href: "#/agents" },
       { title: "A connected Claude Code agent", shows: "The Architect runs as it is set up on its developer's machine: its project, its skills, its MCP servers.", href: "#/agents/architect" },
-      { title: "Build an agent", shows: "Describe an agent or start from a template. In the demo it is kept in this page and runs as a stand-in.", href: "#/agents/new" },
+      { title: "Build an agent", shows: "Name an agent, set its instructions, and choose its tools. In the demo it is kept in this page and runs as a stand-in.", href: "#/agents/new" },
     ],
   },
 ];

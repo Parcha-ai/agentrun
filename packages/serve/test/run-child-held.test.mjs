@@ -35,7 +35,8 @@ const { routedSubagentTiers } = await import("../dist/runner/subagent.js");
 const { MODEL_KEY_NAMES, subagentTierKeys } = await import("../dist/runner/claim-secrets.js");
 const { heldRedactor } = await import("../dist/runner/redact.js");
 const { putSealedKey } = await import("../dist/server-keys.js");
-const { settingFor } = await import("../dist/claude-login.js");
+const { FAUX_ENV, FAUX_PROVIDER } = await import("../dist/model.js");
+const { loginForRun, settingFor } = await import("../dist/claude-login.js");
 
 const KEY = randomBytes(32);
 const { privateKey: PEM } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { type: "pkcs1", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } });
@@ -81,12 +82,28 @@ async function fakeGitHub(t) {
   return { api: `http://127.0.0.1:${server.address().port}`, asked };
 }
 
-/** The runner's answers for claim run-own (agent-own, rev-own) of `revision` and `launch`, over `store`. */
-function heldOf(store, { env = {}, githubApi, data = "/nonexistent-data", revision = { kind: "agentic", body: {} }, launch = { input: { content: "Hello." } } } = {}, lines = []) {
+/** The runner's answers for claim run-own (agent-own, rev-own) of `revision` and `launch`, over `store`; `login` the
+ *  login its claim read (staysInRunner), `cut` the runner's redactor for the run. */
+function heldOf(store, { env = {}, githubApi, data = "/nonexistent-data", revision = { kind: "agentic", body: {} }, launch = { input: { content: "Hello." } }, login, cut = (text) => text } = {}, lines = []) {
   const deps = { store, sealKey: KEY, env, data, ...(githubApi ? { githubApi } : {}) };
-  const reads = { claim: { runId: "run-own", epoch: 1 }, run: { agentId: "agent-own", revisionId: "rev-own", signInHanded: null }, launch, revision, claimed: {} };
-  return host.heldFor(deps, reads, (text) => text, (line) => void lines.push(line)).held;
+  const reads = { claim: { runId: "run-own", epoch: 1 }, run: { agentId: "agent-own", revisionId: "rev-own", signInHanded: null }, launch, revision, claimed: {}, ...(login ? { login } : {}) };
+  return host.heldFor(deps, reads, cut, (line) => void lines.push(line)).held;
 }
+
+/** A held run's deferred refusal: its model kept from running (run-launch.ts hold.refused), every word fake. */
+const REFUSAL = {
+  message: "No OpenRouter key here for openrouter/anthropic/claude-sonnet-5.5: add one in Settings → Model keys, or set OPENROUTER_API_KEY where AgentRun starts.",
+  fields: [{ field: "definition.model", reason: "not_runnable", message: "No OpenRouter key here for openrouter/anthropic/claude-sonnet-5.5." }],
+  details: { unbound: [], missing: {} },
+};
+
+/** Each run that sends no model key (claim-secrets.ts sendsNoModelKey), as the runner's env and the launch's own fields:
+ *  any run on a --faux runner, a faux-pinned launch claimed on a runner off faux, and a held run its model kept from running. */
+const SENDS_NO_MODEL_KEY = [
+  ["on a --faux runner", { [FAUX_ENV]: "1" }, {}],
+  ["faux-pinned on a runner off faux", {}, { model: { provider: FAUX_PROVIDER, modelId: "faux-1" } }],
+  ["held, its model kept from running", {}, { hold: { minutes: 5, refused: REFUSAL } }],
+];
 
 test("a run's process mints a GitHub token for its own pull request's repository alone, contents read, whatever repository or permissions it names; a run with no pull-request checkout gets no access", async (t) => {
   const { store } = await storeOn(t);
@@ -120,6 +137,52 @@ const judgeFlow = (name, provider) => ({
   },
   input: { schemaId: "In" }, output: { schemaId: "Coi", path: "coi" },
   root: { node: "chain", steps: [{ node: "judge", label: "coi", state: { doc: "{question}" }, out: "Coi", as: "coi", provider }] },
+});
+
+/** A learned workflow of one model node on the strong tier. */
+const strongFlow = {
+  v: 2, name: "on-strong",
+  schemas: { In: { type: "object", required: ["question"], properties: { question: { type: "string" } } }, Answer: { type: "object", required: ["answer"], properties: { answer: { type: "string" } } } },
+  input: { schemaId: "In" }, output: { schemaId: "Answer", path: "answer" },
+  root: { node: "chain", steps: [{ node: "extract", label: "answer", instructions: "Answer the question.", out: "Answer", as: "answer", tier: "strong" }] },
+};
+
+test("a run that sends no model key (a --faux runner's, a faux-pinned one, a held one) is answered no tier's model key, for a subagent tier or a learned workflow's; off faux, unpinned and not held, each its tier's key", async (t) => {
+  const { store } = await storeOn(t);
+  // OpenAI's and Anthropic's keys saved; the subagent's fast tier is the revision's OpenAI model, the learned workflow's
+  // strong tier the host's Anthropic one.
+  await putSealedKey(store, KEY, "OPENAI_API_KEY", OPENAI_DUMMY);
+  await putSealedKey(store, KEY, "ANTHROPIC_API_KEY", ANTHROPIC_DUMMY);
+  const host = { AGENT_MODEL_STRONG: "anthropic/claude-sonnet-5-5" };
+  const subagent = { kind: "agentic", body: { tools: ["subagent"], modelTiers: { fast: "openai/gpt-6.1-sol" } } };
+  const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "run-child-held-faux-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  const sha = await landWorkflows(data, "agent-own", [{ name: "on-strong", description: "Answers a question", workflow: strongFlow }]);
+  await promoteChecked(store.settings, "agent-own", [{ name: "on-strong", workflow: strongFlow }]);
+  const learning = { input: { content: "Hello." }, learning: startAt(sha) };
+  for (const [where, env, own] of [["off faux, unpinned and not held", {}, {}], ...SENDS_NO_MODEL_KEY]) {
+    // The subagent's run on a host that names no tier: its fast tier alone routes a model.
+    const tiers = await heldOf(store, { env, revision: subagent, launch: { input: { content: "Hello." }, ...own } }).subagentTierKeys();
+    const learner = heldOf(store, { env: { ...host, ...env }, data, launch: { ...learning, ...own } });
+    if (own.hold) {
+      // A held run never reaches a learned tier: learnedFirst refuses it (no audit, no replay, no workflow), so the runner
+      // chose no workflow whose tier it could ask. What holds for it is its subagent tiers' answer, asserted below.
+      await assert.rejects(learner.learnedFirst({ laid: true }), `${where}: the runner chose no workflow for it`);
+      assert.deepEqual(Object.keys(tiers).filter((name) => MODEL_KEY_NAMES.includes(name)), [], `${where}: granted subagent, it is answered a model key, which it never sends`);
+      assert.deepEqual(tiers, {}, `${where}: no key at all for its subagent tiers`);
+      continue;
+    }
+    assert.deepEqual((await learner.learnedFirst({ laid: true })).workflows.map(({ name }) => name), ["on-strong"], `${where}: the runner chose the claim's workflow`);
+    const learned = (await learner.tierModelKeys(["strong"])).keys;
+    if (!env[FAUX_ENV] && !own.model) {
+      assert.deepEqual(tiers, { OPENAI_API_KEY: OPENAI_DUMMY }, `${where}, a run granted subagent: its fast tier's model's key alone`);
+      assert.deepEqual(learned, { ANTHROPIC_API_KEY: ANTHROPIC_DUMMY }, `${where}, a learned workflow's strong tier: its model's key alone`);
+    } else {
+      assert.deepEqual(Object.keys(tiers).filter((name) => MODEL_KEY_NAMES.includes(name)), [], `${where}: granted subagent, it is answered a model key, which the faux model never sends`);
+      assert.deepEqual(Object.keys(learned).filter((name) => MODEL_KEY_NAMES.includes(name)), [], `${where}: it is answered a learned workflow tier's model key, which the faux model never sends`);
+      assert.deepEqual([tiers, learned], [{}, {}], `${where}: no key at all for its tiers`);
+    }
+  }
 });
 
 test("a run's process gets no decision or tier key its claim's learned workflows do not name: none before the runner chose them, and of those only the named", async (t) => {
@@ -663,6 +726,33 @@ test("the runner's answer to held claudeLogin is the claim's one decision whethe
     assert.equal(error.message, host.LOGIN_MACHINE_NEEDS_SERVER_USER);
     return true;
   }, "a claim on this machine's own login is refused at the claim in LOGIN_MACHINE_NEEDS_SERVER_USER's words, never answered none and left to a model key");
+});
+
+test("a run that sends no model key (a --faux runner's, a faux-pinned one, a held one) is answered no reader of the Claude login (held claudeLogin), whatever its claim read; off faux, unpinned and not held, its reader", async (t) => {
+  const { heldRedactor, keepText } = await import("../dist/runner/redact.js");
+  const { store } = await storeOn(t);
+  const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "held-login-keyless-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  // AgentRun's own login folder, turned on for this machine, signed in: the pinned CLI's file shape, every value fake.
+  await store.settings.put("claude_login", settingFor("agentrun", data));
+  const dir = join(data, "claude-login");
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const accessToken = `not-a-secret-login-access-${randomBytes(6).toString("hex")}`;
+  const refreshToken = `not-a-secret-login-refresh-${randomBytes(6).toString("hex")}`;
+  writeFileSync(join(dir, ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken, refreshToken, expiresAt: Date.now() + 3_600_000, scopes: ["user:inference"], subscriptionType: null, rateLimitTier: null } }), { mode: 0o600 });
+  const place = { mode: "runner" };
+  // The login as the claim read it (staysInRunner's loginForRun): the same read for each run below.
+  const login = await loginForRun(store.settings, data, {}, "claude-agent", place);
+  assert.ok(login, "the claim read AgentRun's own login folder");
+  const revision = { kind: "agentic", body: { harness: "claude-agent" } };
+  const answerOf = (env, own) => heldOf(store, { env, data, revision, launch: { input: { content: "Hello." }, harness: "claude-agent", place, ...own }, login, cut: heldRedactor(keepText) }).claudeLogin();
+  // The control: off faux, unpinned and not held, the same claim is handed the login's reader.
+  const handed = await answerOf({}, {});
+  assert.equal(typeof handed?.token, "function", "off faux, unpinned and not held: the run is handed the login's reader");
+  // Each run that sends no model key: none, whatever its process asks.
+  const answered = {};
+  for (const [where, env, own] of SENDS_NO_MODEL_KEY) answered[where] = typeof (await answerOf(env, own))?.token;
+  assert.deepEqual(answered, Object.fromEntries(SENDS_NO_MODEL_KEY.map(([where]) => [where, "undefined"])), "a run that sends no model key is handed no reader of the Claude login's token");
 });
 
 test("the install a run's process asks for is readable by every user and writable by none, an install from before installs were shared too", { skip: process.getuid?.() === 0 && "root reads every folder" }, async (t) => {

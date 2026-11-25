@@ -252,10 +252,23 @@ names no run, and a store with no such run says nothing; quiet keeps it too.
 
 Set `OTEL_EXPORTER_OTLP_ENDPOINT` (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) and every run on a pi or CLI harness
 exports a GenAI trace over OTLP/HTTP to any backend that takes one, with the official OpenTelemetry SDK: an
-`invoke_agent {harness}` span per claim of the run, under it a `chat {model}` span per model request (provider, model,
+`invoke_agent {agent name}` span per claim of the run, under it a `chat {model}` span per model request (provider, model,
 `server.address` (the host the request goes to, OpenRouter's for a model reached through it; none where not known),
 and tokens with the cache: `gen_ai.usage.input_tokens` includes the cache read and write, which are also given on their
-own) and an `execute_tool {tool}` span per tool call. A name the model wrote is never sent as written: a call the
+own) and an `execute_tool {tool}` span per tool call. Every span says which agent ran and on what, as the
+[GenAI semantic conventions][otel-agent-spans] name it:
+
+| Attribute | Value |
+| --- | --- |
+| `gen_ai.agent.name` | The agent's name as you gave it (`billing-helper`). An agent with no name has none, never the harness in its place, and its span is `invoke_agent` alone. |
+| `gen_ai.agent.id` | The agent's id, the one its API routes take. |
+| `agentrun.harness` | The harness that ran it (`pi`, `claude-agent`, `codex`). The conventions have no attribute for it. |
+| `gen_ai.conversation.id`, `agentrun.run.id`, `session.id` | The run's id. |
+| `gen_ai.operation.name` | `invoke_agent`, `chat` or `execute_tool`. |
+
+An inline run (`POST /runs` with its definition) names its agent too, since it writes the agent's row first. The
+agent's name and id are cut as any other name is (below), and a name written like a key (a GitHub token's shape, an
+`sk-` key's) is `[redacted]` whatever the runner holds. A name the model wrote is never sent as written: a call the
 harness refused (a tool the session does not have) is `execute_tool` with `error.type=tool_refused` and no tool name, a
 model the run does not know is named by its route's model, and any other name is cut of every secret the runner holds
 and at 64 characters. A run is one trace, sampled whole or not at
@@ -276,22 +289,48 @@ secret the server and the runner hold, under any name, an unknown one too, but t
 its first word is held too when that word is a known auth scheme (`Bearer`, `Basic`, `Api-Key`, `Api-Token`, `Token`,
 `sentry`, `Splunk`, `GenieKey`) or the header is named like a credential (`authorization`, `x-sentry-auth`,
 `x-api-key`); any other header's value is held whole, never its tail alone. So are an OTLP endpoint's user, password
-and any query parameter named like a credential. A header's or a parameter's name is split into words at punctuation
-and at each lower-to-upper case change, and it is named like a credential when a word is authorization, auth, key,
-apikey, token, secret, password, passwd, pwd, sig, signature, credential or credentials, or ends in key, token,
-secret, password, auth, sig, signature, credential or credentials (`api_key`, `access_token`, `apiKey`, `accesstoken`
-and `writekey` are; `authority` and `keyspace` are not). Commas split the header variables, so write a comma inside a
-value as `%2C`. The tracer's own `[otel]` lines, where an exporter's error may quote a header it sent or the URL it
+and any query parameter named like a credential, and, inside any header's value, the value of each `name=value` pair
+named like a credential, read over the whole value as written, a URL's query and fragment included (a cookie's
+`session=<token>`, `https://relay/v1?region=us;session=<token>`, `#access_token=<token>`; pairs split at `;`, `&`, a
+comma or its `%2C`, and spaces, again at `?`, `#` and `/` too, and again at all but `;`, so `api_key=<key;rest>` holds
+the whole key; a value in quotes is held without them; `theme=dark` is not held), and the user, password and
+credential-named query parameters of every URL in it, one inside another's query or path too, scheme-relative
+(`//<key>@host`) or with its slashes escaped (`https:\/\/`). A URL's query, an endpoint's too, is read split at `&`
+alone and again at `&` and `;`, so `?api_key=<key;rest>` holds the whole key and `?region=us;session=<token>` the
+token; after the first query a header value's read takes, a later one is read while 4,096 characters of them in all
+fit, and the pair read covers the rest. A URL in quotes ends at its
+closing quote; one without at the next space or quote, and, when that is a quote, it is also read on to the next space,
+since a password may hold a raw `'`. Inside it the user and password are read as RFC 3986 reads them, everything before
+the last `@` of its authority, any `;`, `&`, `=`, `,` or `@` in a password included, and also, a user or password of
+8 characters or more, before its first `@` and up to 14 more `@` (4,096 characters of those at most), each as written
+and decoded. A URL only adds readings: the pair
+read covers its text too. A header's, a parameter's or a pair's name is split into words at punctuation and at each
+lower-to-upper case change, a word's trailing digits are dropped (`apiKey2` is `api` and `key`), and it is named like a
+credential when a word is authorization, auth, key, apikey, token, secret, password, passwd, pwd, sig, signature,
+credential, credentials, jwt or session; or ends in key, token, secret, password, passwd, pwd, auth, authorization,
+sig, signature, credential, credentials, jwt or sessionid; or starts with token, secret, password, passwd or jwt and is
+longer than its plural (`api_key`, `access_token`, `apiKey`, `token2`, `accesstoken`, `tokenvalue`, `passwordhash`,
+`jsessionid`, `writekey` and `hmackey` are; `authority`, `keyspace`, `tokens`, `sessions` and `sessioncount` are not).
+Commas split the header variables, so write a comma inside a value as `%2C`. The tracer's own `[otel]` lines, where an exporter's error may quote a header it sent or the URL it
 posted to, are cut of every such value at any length, a short one too, and of what follows any header value's first
-word, whatever the word and the header's name. A run's process can hold at most 512
+word, whatever the word and the header's name; values that overlap or touch in a line are cut as one `[redacted]`, as
+every other redactor cuts them, so no character of any of them is left. A run's process can hold at most 512
 model requests and 512 tool calls open in its runner's trace at once; one started past that has no span. No OpenTelemetry diag logger is set, since the
 SDK's diag writes can quote a header value as sent, and a test fails if a source sets one or `OTEL_LOG_LEVEL`. Everywhere else, the runner's logs and what a run
 writes, a held value is cut at 8 characters or more, a header value's as any other's, and a shorter header value is on
 no held list: that floor is kept on purpose, since a needle of a few characters would cut ordinary text, turn a served
 number such as `1` into `[redacted]`, or refuse a source capture of any project that holds it. Spans are sent in the background, so a run's end never waits on
-the collector; a server or runner that stops waits at most 3 s to send what is left, and a collector that is down
-costs one log line and the dropped spans. Unset, or with `OTEL_SDK_DISABLED=true`, no OpenTelemetry code loads and
-nothing is sent.
+the collector; a server or runner that stops waits at most 3 s to send what is left. At its start, a runner (the one
+beside the server, or `agentrun-serve runner`) with tracing on says so once, and where its spans go:
+`[otel] tracing is on: spans export to https://collector.example:4318`, the endpoint's origin alone (scheme, host and
+port; never its user, password, path, query or fragment, nor a header). A collector that is down costs the dropped spans
+and a line with the endpoint's origin and the time (`[otel] a trace export to ... failed at 2026-11-25T07:01:31.465Z; its spans were
+dropped: Request timed out`), then at most one line a minute, said by the next failure once a minute has passed, that
+counts the failures since the last line (`[otel] 25 more trace exports to ... failed since ..., the last at ...`); never
+a line per span or per batch. Unset, or with `OTEL_SDK_DISABLED=true`, no OpenTelemetry code loads, nothing is sent and
+nothing is said.
+
+[otel-agent-spans]: https://github.com/open-telemetry/semantic-conventions-genai/blob/d0e74ba6c48bcc4ded473b1828a8212f06b23753/docs/gen-ai/gen-ai-agent-spans.md#L213-L272
 
 To send traces to Sentry (two variables: its OTLP endpoint and its `x-sentry-auth` header) or to any other backend
 through an OpenTelemetry Collector, and for what Sentry's Agents view shows of a run, see
@@ -1690,11 +1729,26 @@ has the row **Use Claude Code's login on this machine**, over these routes:
   The login's folders must be the server's user's own: at either place its home, and on `machine` each folder the
   server's environment gives it (`CLAUDE_CONFIG_DIR`, `CLAUDE_SECURESTORAGE_CONFIG_DIR`, and `ANTHROPIC_CONFIG_DIR`
   or else `XDG_CONFIG_HOME`'s `anthropic`). Each is a folder that user owns, or one still to make in a folder it owns,
-  reached through no other user's link or folder, and writable by its owner alone; a folder on the way may be open to
+  reached through no other user's link or folder, and writable by no one else; a folder on the way may be open to
   all where the sticky bit is set, as on `/tmp`. Else the turn-on and the sign-in answer `403` in words, no run goes
   on the login, and a setting saved before is kept but not used, the start logging why. A folder its group may write
-  in is refused in words that name it, its mode and the `chmod g-w,o-w` that closes it. A umask of 002, which some
-  distributions (Ubuntu's user-private groups among them) give each user, makes new folders so. A folder of the login
+  in is the user's alone where that group is the user's private one, as the local account files alone say:
+  `/etc/nsswitch.conf` takes users and groups from those files only (`files` or `compat` on its `passwd`, `group` and
+  any `initgroups` line), and the group is the user's primary group, which no other user has as theirs and
+  `/etc/group` lists with no other member and gives no password there (`x`, `!`, `*` or empty), and `/etc/passwd` has
+  one account with the user's uid and one with its name, so a umask of 002 under one refuses nothing. Any other group
+  (one shared with other users, one that is not the user's primary group, one `/etc/group` lacks, account files with
+  a `+` or `-` line, a second account with the user's name or uid, an id with blanks before it, or a switch that also
+  asks sssd, LDAP, NIS, winbind or systemd's user records, as the `files systemd` of recent Ubuntu, Debian and Fedora
+  installs does, or no switch file: there members can exist that the files do not show), and a folder anyone may
+  write in, are refused in words that name the folder, its mode and the `chmod g-w,o-w` that closes it. A group
+  `/etc/group` gives a password is refused too, since anyone who knows it may join the group with `newgrp`, and the
+  words also name the group and the `gpasswd -r` that removes the password. An `x` there is not refused: it says only
+  that the group's password, if it has one, is in `/etc/gshadow`, with the members `newgrp` lets in without it, and a
+  server without privileges cannot read that file, so the check does not. A gshadow password or member set with
+  `gpasswd` is not seen; remove it with `gpasswd -r` or `gpasswd -d`. The files are read as they are now: a user
+  removed from the group keeps it in the sessions they already have open, since a process's groups are set when it
+  logs in, so end those sessions before counting the folder as the user's alone. A folder of the login
   still to make is made by AgentRun at the turn-on and before the CLI's sign-in, 0700 whatever the umask, so the login
   the CLI signs in there is not refused after.
 - `GET /v2/settings/claude-login` says `state`: `off`, `signed_in` (with the `account` the CLI names: method, email,
@@ -1711,6 +1765,10 @@ has the row **Use Claude Code's login on this machine**, over these routes:
   `machine` with the default `~/.claude`, the CLI is signed in as the person's own `claude` runs: no
   `CLAUDE_CONFIG_DIR` or `CLAUDE_SECURESTORAGE_CONFIG_DIR`, in their home, so it writes the account in `~/.claude.json`
   and the tokens where their Claude Code keeps them (in `~/.claude`; on macOS the Keychain item `Claude Code-credentials`).
+  On macOS the CLI names that item's account by `USER`, so the sign-in, the status check and a run all get `USER` and
+  `LOGNAME` set to the user the server runs as (as the system names it, whatever `USER` the server was started with):
+  the item is the one the person's own `claude auth status` reads in their terminal, never one under the account
+  `unknown`, which a CLI started with no `USER` uses.
   `command` there is `env -u CLAUDE_CONFIG_DIR -u CLAUDE_SECURESTORAGE_CONFIG_DIR ... auth login`, so a terminal that
   exports either still signs in at that login. env is a program, so the line runs alike when pasted into sh, bash,
   zsh, fish or tcsh; a CLI path holding `=`, which env would read as a variable, goes to `sh -c` as its `$0`. env skips
@@ -1879,8 +1937,8 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `bash_signal` | Send a background process's group `TERM`, `INT` or `KILL`: `{id, signal}` | an agentic definition whose place is a sandbox | no, no |
 | `bash_list` | List the run's background processes: id, state or exit code, output size, start time and command | an agentic definition whose place is a sandbox | no, no |
 | `ask_person` | Ask the person who started the run; the turn ends until a message answers | nothing | no, no |
-| `web_fetch` | Read one web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked ([search and fetch](#search-and-fetch)), a part at a time: `{url, offset?, max_chars?}` in, a Page out, `{ok, url, status, title, text, chars, truncated?, original_chars?, beyond_read?, offset?, next_offset?, html_chars?, converted?, links, links_omitted?, via, parallel?, refused?, error?}` | nothing (`PARALLEL_API_KEY` for Parallel, one billed extract a page a run) | yes, yes |
-| `web_search` | Search the web, natively where the harness or the model's provider can, else through Parallel where the server holds its key, else keyless through Exa, or through the provider picked ([search and fetch](#search-and-fetch)): `{query, n?}` in, `{provider, query, results: [{url, title, snippet, published?}], text?}` or `{error}` out | nothing (`PARALLEL_API_KEY` for Parallel) | yes, yes |
+| `web_fetch` | Read one web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked ([search and fetch](#search-and-fetch)), a part at a time: `{url, offset?, max_chars?, objective?}` in (`objective`, what the page is read for, is passed to the run's Web; with no classifier in the run it changes nothing), a Page out, `{ok, url, status, title, text, chars, truncated?, original_chars?, beyond_read?, offset?, next_offset?, html_chars?, converted?, links, links_omitted?, via, parallel?, refused?, error?}` | nothing (`PARALLEL_API_KEY` for Parallel, one billed extract a page a run) | yes, yes |
+| `web_search` | Search the web, natively where the harness or the model's provider can, else through Parallel where the server holds its key, else keyless through Exa, or through the provider picked ([search and fetch](#search-and-fetch)): `{objective, queries?, n?}` in (`query` is deprecated: a model's call must give `objective`, which the schema requires; a workflow call node's `{query}` alone is still searched as the objective and its one query), `{provider, objective, queries, results: [{url, title, snippet, published?}], text?}` or `{error}` out | nothing (`PARALLEL_API_KEY` for Parallel) | yes, yes |
 | `web_save` | Download one file from a public URL into the run's `work/` and keep it there, for a link that expires (a generated image, audio or video): `{url, path}` in, `path` relative to `work/` and a bare name under `media/`; `{ok: true, path, bytes, content_type, duration_s?, url}` or `{ok: false, url, refused \| error}` out, `duration_s` its length in seconds when it is audio or video whose bytes give it (below). Never overwrites | nothing | no, no |
 | `browser` | A hosted browser, Browserbase's or Kernel's, on pi-browser's durable adapter: `snapshot`, `run`, `screenshot`, `browser_read`, `browser_release`, `browser_relaunch`, `browser_downloads` and `browser_upload` (into and from the run's `work/`); Kernel keeps no downloads, so a run on Kernel has no `browser_downloads` | `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`, or `KERNEL_API_KEY` | yes, no |
 | `monid:<provider>/<endpoint>`, `monid:<provider>/*` | One monid endpoint, or every endpoint monid lists for a provider (at most 50), each pinned at the save and run as a tool of its own, paid per call from the monid wallet: `{body?, queryParams?, pathParams?}` in, the run's `output`, `price` and `cost` out ([monid](#monid)) | `MONID_API_KEY` | no, no |
@@ -2112,11 +2170,13 @@ https://exa.ai/terms). To turn them off, set `web_search` to `native` (native on
 keys (or set `PARALLEL_API_KEY`): `auto` then searches through Parallel and bills the key.
 
 Keyless Firecrawl is one MCP exchange with Firecrawl's public endpoint (`https://mcp.firecrawl.dev/v2/mcp`), with no key,
-no Authorization header and no header of our own: `firecrawl_search` with the query and the number of results asked for,
+no Authorization header and no header of our own: `firecrawl_search` once for each of the search's first 3 queries, all at
+once, each with the objective (its tool requires one), its share of the results asked for and a scrape of each result
+as markdown, the answers merged by URL,
 or `firecrawl_scrape` with the URL, for its markdown. A call ends at 30 s and is not retried: the backend behind Firecrawl
 answers it in its place. A search's 60 s are one deadline for both keyless backends: Firecrawl's 30 s leave Exa the rest,
 and no backend starts once the deadline is spent. A page Firecrawl read with a status that is not 2xx, or an answer past
-the bound (1 MiB for a search, the guarded fetch's 5 MiB for a page), is no read: the call goes to the backend behind
+the bound (8 MiB for a search, its results scraped; the guarded fetch's 5 MiB for a page), is no read: the call goes to the backend behind
 Firecrawl, and where the guarded direct fetch then reads the page, the server logs why Firecrawl gave none
 (`event=web_fetch_firecrawl_failed`, never the URL). Firecrawl refuses a keyless call it will not serve with a code, and
 only the code is read, never its words or its sign-up link: `KEYLESS_QUOTA_EXHAUSTED` (its free daily limit spent), `KEYLESS_ACCESS_NOT_AVAILABLE` or
@@ -2165,7 +2225,10 @@ refuses is refused and never leaves the machine. A call stopped before its page 
 `via: "stopped"`: no page came for it (the run's read of the URL goes on for its other calls).
 
 `web_search` through Parallel uses its Search API (`POST https://api.parallel.ai/v1/search`, its `fast` mode, about
-$0.001 a search). On every provider the query is cut at 200 characters and `n` is 1 to 25 (10 by default). A result is a lead: the agent reads the page with `web_fetch`. A failure answers
+$0.001 a search): the objective as its objective, the queries as its `search_queries`, and the run's model as
+`client_model` (its bare id) where the run names one. A search asks an objective, what the agent wants to find out in a
+sentence (cut at 1,000 characters), and up to 5 keyword queries (each cut at 200; with none, the objective's first 200
+characters); Exa is sent the objective as its query, native search the first query. `n` is 1 to 25 (10 by default). A result is a lead: the agent reads the page with `web_fetch`. A failure answers
 `{error}`, with nothing searched instead; a 401 or 403 to either web tool stops Parallel for both for the rest of the run.
 
 Parallel's fees are the run's spend, booked as monid's are: each search and each page Parallel extracts is marked in the
@@ -2193,7 +2256,7 @@ keyless use has a rate limit it does not publish, and its own terms. Past that l
 then is a tool error in our words (above): the model reads why and answers without it, and the run's later searches
 are held for the wait. Exa answers its daily count running out the same way, naming no wait, so a second limit naming no
 wait after a wait has passed (a 429 with Retry-After is a timed limit, and only waits), in the same run and with no search succeeding since, turns search off for the rest of that run. A search ends at 60 s, its retry
-included, so a call never hangs. The answer is the query and its results, each a URL, a title, a
+included, so a call never hangs. The answer is the objective, the queries and their results, each a URL, a title, a
 snippet of at most 3,000 characters and its date when Exa knows it, then a line asking the model to cite the URLs it
 relies on. Keyless Exa answers behind keyless Firecrawl, the default for a harness with no native search when the server
 holds no Parallel key; `off` turns `web_search` off, both included.
@@ -2608,10 +2671,28 @@ other server, are `422` at `mcp_auth.<server>`, and no run starts. A per-run ser
 runs as one account. A server saved for one user before this mode keeps calling as that user.
 
 With `user_id: "per_run"`, whoever can start a run chooses its Composio user, so the host owns which user each run
-binds: it binds each run to its own person and never takes the ids from that person. Only `agentrun` is
-refused, so a host must not bind a per-run server to a `user_id` that a single-user server calls as. On an API-only
-server a run's user is none the owner calls as here (the preset's default and tool-listing users, and every user a
-server the owner saved stands on), and a named account one Composio lists under it (see [API only](#api-only)).
+binds: it binds each run to its own person and never takes the ids from that person. The API token never binds a run to
+a Composio user the owner calls as here, in any letter case: the user any preset server the owner saved calls as or
+its kept account stands on (not one the token saved, and not a per-run one), `agentrun`, and the tool-listing user.
+On a start, an inline start, a launch hook's firing start and a message, the
+token's binding of one is `422 input_invalid` at `mcp_auth.<server>.composio_user_id` (`not_allowed`), and nothing is
+written: no run, no new binding, and a firing stays as it was. The owner's users are read at each request, so one the
+owner connects after a token's run started is refused from then on. The seal marks each binding with who handed it
+(the token or the owner's session), and each claim reads the owner's users again: a token's binding of a user the owner
+has connected since has its calls answered, unsent, that the user is the owner's, until a message hands `mcp_auth`
+again or a new run starts. The owner's session binds any user, the owner's own included. On an [API-only](#api-only)
+server every caller is the token: the same users are refused, at the request and at each claim whoever handed the
+binding, and a named account must be one Composio lists under the run's user.
+
+What this leaves open: a per-run server lends the install's Composio key to whoever starts a run, and a token can still
+name a user the owner connected directly at Composio (the dashboard, or another client of the same Composio project),
+outside this install, which no record here names. Save a per-run server only on an install whose token callers own
+that Composio project's users.
+
+Upgrading: a run sealed before the mark, in flight across the upgrade, whose binding names a user the owner connects
+here has its calls of that server answered, unsent, in the same words at its next claim, since nothing says the owner
+handed it: a message that hands `mcp_auth` again (the owner's session, for the owner's user) marks it, or start a new
+run.
 
 What can go wrong, told apart:
 
@@ -3382,9 +3463,29 @@ after asks, saying "this run has sent 5 emails" (the count is the run's own reco
 stops two auto-responders answering each other. On a run an email started whose `email_read` is thread-scoped (no
 `scope: "mailbox"`), a send to anyone outside the thread's people
 (the account's own address and every From, To and Cc of the thread's messages) asks too, naming them ("eve@example.com
-is outside this email's thread"). The pending approval carries the reason as `asks_because`, which the console's card
-says above the call's arguments ("Asks because ..."). With accounts off, where no one can
-approve, such a send is refused in those words.
+is outside this email's thread"). On every run a trigger started (schedule, webhook, Slack, GitHub, Composio, feed or
+email), a send to an address this account has never sent to asks too, naming it ("someone@example.com: this account
+has never sent to them"). Never sent to means no message in the account's own Sent folder (Gmail's Sent Mail), from
+the account's own address and not a draft, has the address in its To, Cc or Bcc: the exact address, blind to the case
+of ASCII letters only (a Unicode look-alike such as the Kelvin sign for K is another address), as far back as Sent
+goes. Some servers (Exchange and Outlook among them) keep no Bcc header on a Sent copy over IMAP, so there an address
+only ever Bcc'd asks. Mail received from someone doesn't count, so a scheduled run replying to a first-time sender asks
+once; nor does a draft or someone else's message in Sent, and `email_file` refuses Sent and Drafts as targets, so a run
+can't file its own evidence there. Once it has made a folder, `email_file` files only into a mailbox the server lists
+by exactly the name given, so a name the server takes as another's (`Sent/` read as Sent) files nothing. Mail sent from a "send as" alias is filed from that alias, so a send to its
+recipients asks. The new-address check never asks about the account's own address or an address the run already sent
+to (unasked or approved). On a thread-scoped email run it doesn't ask about the thread's starter (the From of the
+message that started the run) either, but only when the receiving mail server vouched for that From: the message's
+topmost Authentication-Results header carries the account provider's authserv-id and says `dmarc=pass` with a
+`header.from` equal to the From's domain (case-blind, ASCII letters only). A header lower down may be the sender's own
+and is never read; `dkim=pass` or `spf=pass` alone doesn't count. The provider's authserv-id is known for Gmail
+(`mx.google.com`, by the Gmail preset or an IMAP host under gmail.com) and for no other provider yet, so there the
+starter asks like any new address. A starter with no DMARC pass asks too, since their From may be forged. Anyone else
+that message names, such as a stranger it Cc'd, asks on a reply-all. The 5-send cap still counts
+every send. A Sent folder that can't be read (or none, or no account saved when the send is checked) asks, saying so.
+`scope: "mailbox"` turns the thread ask off and exempts no starter. A playground or API run has neither ask, only the
+cap. The pending approval carries the reason as `asks_because`, which the console's card says above the call's
+arguments ("Asks because ..."). With accounts off, where no one can approve, such a send is refused in those words.
 
 An agent whose definition says `checkout: repository` starts each run in a checkout of the repository the run names: its
 start's `repo`, else the first `https://github.com/<owner>/<repo>` in its first message (a github trigger's run, its
@@ -3504,6 +3605,7 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model` and `thinking` (agentic only), `harness` ([harnesses](#harnesses)), `place` ([place](#place)), `tools`, `tool_settings` ([search and fetch](#search-and-fetch)), `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets, and `max_cost_usd`, the agent's default cap (an agentic agent's or a workflow's), kept by an edit that leaves it out and cleared only by 0 ([spend cap](#spend-cap)), and `output_schema` (agentic only, at most 64 KiB): the JSON Schema the final answer's json block meets (its last fenced one, or the whole answer when it is one JSON object), which a completed run's `result.output` then holds (null when the answer doesn't meet it), kept by an edit that leaves it out. A template's answer schema is set here at apply, and a run a schedule trigger starts is handed that trigger's last completed `result.output` after its message; no other source's runs are, since each of their firings is a different event. Over 32 KiB, a scheduled run is handed only the fields the producing run's schema names in `x-carried`; carried arrays lose entries from the front until they fit, and the run is told how many. A save refuses an `x-carried` that is not unique root property names. `checkout` (agentic only): `pull_request` has the server check out, before each run's first turn, the pull request the run's GitHub event names, in `repo/` at its head with its base and merge base, using a read-only token of its GitHub App that the agent never holds ([GitHub triggers](#github-triggers-connect-github)); `none` clears it, and an edit that leaves it out keeps it. A field the store does not keep (`input_schema`) is `422 input_invalid` by name, and so is a definition that can never run here; one this host cannot run yet saves with `warnings` ([models](#models)). The ETag (`home_etag`) is the current revision's id. `GET /agents/{id}` adds `tools`, the tools its current revision grants with each one's provider ([search and fetch](#search-and-fetch)). It also adds `run_blockers` (`x-agentrun-serve: "runblockers/1"`): `{message, fields}` as a start with no overrides would be refused now (`409 agent_not_runnable`), or null. It is always null for an archived, native or SDK agent and for a revision whose MCP tools its first run pins, and the read asks no other service, so under the agent's `max_cost_usd` an OpenRouter decision model's missing price is named only once a save or a start has read OpenRouter's catalog: null is no promise that a start is accepted. |
 | `PUT /agents/{id}/definition` | The same body, checked [the same way](#models): a new revision, its parent the current one, made current. Without `skills` the current revision's skill files carry over. A definition that is the current revision already writes nothing, so a PUT sent twice makes one revision. An agent's id and name stay those it was made with (another name is `422` on `definition.name`). Its description is a label kept on the agent, not on a revision: a PUT that names a new one makes the next revision (even when nothing else changed) and writes the description with it in one commit, so a stale or refused edit changes neither; a PUT that leaves it out keeps it. `If-Match` that is not the current ETag is `412 precondition_failed`; the store compares it again inside the commit, so of two edits that read the same revision exactly one lands. The contract's body is taken too: the definition itself, with `If-Match` required (`412` without it) and `definition.version` greater than the current one (`422`). Any such version is taken, and always makes a new revision, the same definition included; the revision is numbered as this server numbers them, the next, and the answer says which; the route reads a body holding `definition` as this one, any other as the contract's. |
 | `GET /agents/{id}/revisions` | The agent's revisions, newest first: `revision`, `version`, `parent`, `kind`, `current`, `note`, `created_at` and the `definition`. |
+| `GET /agents/{id}/revisions/{revision}/skills` | `{revision, skills}`: every skill file saved with that exact revision, as paths relative to `.agents/skills/` mapped to their text, including supporting files. Read these before preparing a replacement `skills` map for a definition edit; retain the revision's ETag for `If-Match`. An unknown revision or one belonging to another agent is `404 not_found`, never the current revision instead. This read changes nothing and reads no connected agent's source filesystem; a revision without stored skills returns `{}`. |
 | `POST /agents/{id}/current` | `{revision}`: one of the agent's revisions becomes current again. |
 | `POST /agents/{id}/archive`, `POST /agents/{id}/unarchive` | [Archiving](#archiving): hides the agent and its runs from the lists, or shows them again. Answers the agent, with `archived_at`. |
 | `DELETE /agents/{id}` | This server's own route (`x-agentrun-serve: "agentdelete/1"`): [deletes an agent another system owns](#deleting-an-agent-another-system-owns) (one an inline run made) whole, and [purges](#purging-a-run-or-an-agent-made-here) an archived agent made here. `204`; an agent made here not archived is `409 agent_not_archived`. |

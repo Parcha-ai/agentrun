@@ -13,7 +13,8 @@
 // removes the mount credential of a run folder it held on Archil, then marks the row ended, so the resume says why its
 // computer is new; a row left ending (its process died, or its delete or remove failed or hung mid-way) is ended again at
 // the janitor's next pass, with no remove once the credential's ttl is past its time. A row whose run is final is
-// removed, its computer deleted first.
+// removed, its computer deleted first: by the run's end, once the row reads ended (forgetEnded), so a follow-up never
+// says that lapse again, and otherwise by the janitor's pass (none runs under --faux).
 //
 // A sandbox's run folder is the run's either way (bound from this machine, or on Archil, as before); what the keep adds is
 // the rest of the machine (its other files, its processes). A synced folder's delta lands on the disk at the park; what
@@ -441,6 +442,24 @@ export async function finishedKept(settings: Pick<KeptSettings, "replaceIf">, ru
     }
   }
   return settings.replaceIf(keptKeyOf(runId), rowOf(kept, "ending"), rowOf(kept, "ended")).catch(() => false);
+}
+
+/** Removes `runId`'s kept row at the run's end (run-end-computers.ts: the claim at `epoch` ended the run), after its
+ *  deletes answered or its bound passed: one read of the row, then a remove only while it still reads as read. Removed
+ *  only where it reads ended (its machine gone: this end's delete marked it so, finishedKept, or its keeper's end at its
+ *  time or a janitor's pass did before) and was kept at or before `epoch`. Whoever ended it, the run is final, so no
+ *  resume of this run is left to read it and say why its computer is new; removed, a follow-up that queues the run again
+ *  reads no keep and never says that lapse. A row that reads ending (a delete not done or not proven), none, and a later
+ *  claim's keep are left. True when removed; false when left, or when the read or the remove failed. Never throws. */
+export async function forgetEnded(settings: Pick<KeptSettings, "get" | "removeIf">, runId: string, epoch: number): Promise<boolean> {
+  try {
+    const was = await settings.get(keptKeyOf(runId));
+    const kept = keptOf(was);
+    if (kept?.ended !== true || kept.epoch > epoch) return false;
+    return await settings.removeIf(keptKeyOf(runId), was);
+  } catch {
+    return false;
+  }
 }
 
 /** Removes run `runId`'s Archil mount credentials of `kept`'s claim epoch and earlier, by their names, on the disk its

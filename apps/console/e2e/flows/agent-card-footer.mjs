@@ -100,10 +100,10 @@ export default {
         if (c.fits && c.rows > 1) wrong.push(`${width}px ${c.name}: its chips fit on one row of the footer but take ${c.rows}`);
         for (const p of c.past) wrong.push(`${width}px ${c.name}: ${p} past the card's right edge`);
         check(c.controls.length === 4, `${width}px ${c.name}: ${c.controls.length} whole action controls, not 4`);
-        const [run, edit, runs, archive] = c.controls;
+        const [run, edit, runs, settings] = c.controls;
         check(run.label === `Run ${c.name} options` && run.buttons.includes(`Choose coding agent for Run ${c.name}`), `${width}px ${c.name}: missing Run coding-agent dropdown`);
         check(edit.label === `Edit ${c.name} options` && edit.buttons.includes(`Choose coding agent for Edit ${c.name}`), `${width}px ${c.name}: missing Edit coding-agent dropdown`);
-        check(runs.label === `Runs of ${c.name}` && archive.label === `Archive ${c.name}`, `${width}px ${c.name}: missing Runs or Archive action`);
+        check(runs.label === `Runs of ${c.name}` && settings.label === `Settings for ${c.name}`, `${width}px ${c.name}: missing Runs or Settings action`);
         for (const control of c.controls) {
           if (control.height !== 32) wrong.push(`${width}px ${c.name}: ${control.label} is ${control.height}px high, expected 32px`);
           if (control.radii.some((radius) => radius !== 8)) wrong.push(`${width}px ${c.name}: ${control.label} outer corners are ${control.radii.join(", ")}px, expected 8px`);

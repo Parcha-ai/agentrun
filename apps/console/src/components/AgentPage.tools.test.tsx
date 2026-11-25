@@ -29,7 +29,7 @@ async function open(agent: Agent) {
   act(() => root!.render(createElement(AgentPage, { v2: v2 as never, agentId: agent.agent_id, go: () => {} })));
   for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
   const facts = host.querySelector('dl[aria-label="Current revision"]')!;
-  const dd = [...facts.querySelectorAll("dt")].find((t) => t.textContent === "Tools")?.nextElementSibling ?? null;
+  const dd = [...facts.querySelectorAll("dt")].find((t) => (t.querySelector("span")?.textContent ?? t.textContent) === "Tools")?.nextElementSibling ?? null;
   return { dd };
 }
 
@@ -80,7 +80,7 @@ describe("AgentPage, the agent's tools", () => {
     await act(async () => { (host.querySelector('[role="switch"]') as HTMLButtonElement).click(); });
     for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
     const facts = host.querySelector('dl[aria-label="Current revision"]')!;
-    const dd = [...facts.querySelectorAll("dt")].find((t) => t.textContent === "Tools")!.nextElementSibling!;
+    const dd = [...facts.querySelectorAll("dt")].find((t) => (t.querySelector("span")?.textContent ?? t.textContent) === "Tools")!.nextElementSibling!;
     expect([...dd.querySelectorAll("li")].map((li) => li.textContent)).toEqual(["web_fetch · Parallel · ask", "bash · allow"]);
     // The page's own read, the switch's read before its save, and the page's read again after it.
     expect(reads.length).toBeGreaterThanOrEqual(3);
@@ -109,7 +109,7 @@ describe("AgentPage, the agent's tools", () => {
     await settle();
     const toolsShown = () => {
       const facts = host.querySelector('dl[aria-label="Current revision"]')!;
-      return [...[...facts.querySelectorAll("dt")].find((t) => t.textContent === "Tools")!.nextElementSibling!.querySelectorAll("li")].map((li) => li.textContent);
+      return [...[...facts.querySelectorAll("dt")].find((t) => (t.querySelector("span")?.textContent ?? t.textContent) === "Tools")!.nextElementSibling!.querySelectorAll("li")].map((li) => li.textContent);
     };
     expect(host.querySelector('[role="switch"]')!.getAttribute("aria-checked")).toBe("false");
     await act(async () => { (host.querySelector('[role="switch"]') as HTMLButtonElement).click(); });

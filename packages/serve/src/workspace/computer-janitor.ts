@@ -1,6 +1,8 @@
 // The computer janitor of this server: at the runner's start, then every JANITOR_EVERY_MS, each computer this server made
 // that is past its deadline is ended. A run's release ends its computer; the janitor is for the ones a crashed runner
-// left, on a provider whose vendor never ends them itself (capabilities().lifetime "janitor": Docker, Orgo).
+// left, on every provider of the registry whose vendor never ends them itself: each whose capabilities().lifetime is
+// "janitor", read off its built provider at every sweep (sweepServerComputers). One whose lifetime is "vendor" is
+// skipped: its vendor ends its machines at their lifetime.
 //
 // Which computers it may end:
 // - a provider's whose keys this server has (saved, or in its environment); Docker takes none, so it is always asked;

@@ -6,7 +6,7 @@ name: Install walk
 # checkout's launcher, packed; after a release, the published one. The container also walks --tailscale with a fake
 # tailscale (packages/agentrun/test/fake-tailscale.sh): no tailnet, no secret. No model is called. Not a required check.
 # The first-run jobs walk the setup prompt's own lines (docs/SKILL.md) from the installer to a finished first run on a
-# local model (walk-model.mjs, a stand-in for Ollama), the time against the bar (5 minutes) in the job summary: a
+# local model (walk-model.mjs, a fake Ollama the server lists and runs itself), the time against the bar (5 minutes) in the job summary: a
 # container on x64 and arm64, the systemd user service and the macOS LaunchAgent.
 # The vps job walks --vps as root on a runner whose Docker it purges first (packages/agentrun/test/vps-walk.sh), its
 # first install a DigitalOcean Droplet's user data (deploy/digitalocean/user-data.sh) as cloud-init runs it: the
@@ -26,7 +26,7 @@ on:
       - 'deploy/digitalocean/user-data.sh'
       - 'packages/agentrun/test/vps-faux-shell.mjs'
       - 'packages/agentrun/test/walk-model.mjs'
-      - 'packages/serve/test/fixtures/gateway-answers.mjs'
+      - 'packages/serve/test/fixtures/fake-ollama.mjs'
       - 'docs/SKILL.md'
       - '.github/workflows/install-walk.yml'
   push:
@@ -43,7 +43,7 @@ on:
       - 'deploy/digitalocean/user-data.sh'
       - 'packages/agentrun/test/vps-faux-shell.mjs'
       - 'packages/agentrun/test/walk-model.mjs'
-      - 'packages/serve/test/fixtures/gateway-answers.mjs'
+      - 'packages/serve/test/fixtures/fake-ollama.mjs'
       - 'docs/SKILL.md'
       - '.github/workflows/install-walk.yml'
   workflow_run:
