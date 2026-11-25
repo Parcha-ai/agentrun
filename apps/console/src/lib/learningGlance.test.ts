@@ -117,9 +117,13 @@ describe("the tab at a glance", () => {
     const held = { ...PROMOTIONS.serving[0]!, digest: null, state: "held" as const };
     const first = revisionsOf(COST, PROMOTIONS.promotions.slice(0, 2), [held], AUDITS);
     expect(headlineOf(glanceOf(COST, first)!)).toBe("7.7x cheaper a run. Held now: the agent takes the runs.");
-    const stopped: LearningCost = { ...COST, workflows: [{ workflow: WORKFLOW, digest: SECOND, state: "needs_revision", served: { runs: 20, mean_usd: 0.9 }, by_hand: { runs: 20, mean_usd: 0.89 }, unknown_cost_runs: 0 }] };
+    const stopped: LearningCost = { ...COST, workflows: [{ workflow: WORKFLOW, digest: SECOND, state: "needs_revision", reason: "over_line", served: { runs: 20, mean_usd: 0.9 }, by_hand: { runs: 20, mean_usd: 0.89 }, unknown_cost_runs: 0 }] };
     expect(glanceOf(stopped, revisions())!.serves).toBe(false);
     expect(headlineOf(glanceOf(stopped, revisions())!)).toBe("7.7x cheaper a run. Not serving now: the agent takes the runs.");
+    // Stopped with no by-hand cost to hold it to: not serving either, and no by-hand price is read.
+    const unpriced: LearningCost = { ...COST, workflows: [{ workflow: WORKFLOW, digest: SECOND, state: "needs_revision", reason: "no_by_hand_cost", served: { runs: 20, mean_usd: 0.9 }, by_hand: null, unknown_cost_runs: 0 }] };
+    expect(glanceOf(unpriced, revisions())!.serves).toBe(false);
+    expect(headlineOf(glanceOf(unpriced, revisions())!)).toBe("7.7x cheaper a run. Not serving now: the agent takes the runs.");
   });
   it("says how far over the agent the bill stands when it has not broken even", () => {
     const over: LearningCost = { ...COST, bill: { ...COST.bill, break_even: null, gap_usd: 1.25 } };

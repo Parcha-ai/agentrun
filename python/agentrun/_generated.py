@@ -4591,6 +4591,7 @@ class GetLearningCostResponseWorkflowsItem(TypedDict):
     workflow: str
     digest: str
     state: Literal["serving", "needs_revision"]
+    reason: Literal["over_line", "no_by_hand_cost"] | None
     served: GetLearningCostResponseWorkflowsItemServed | None
     by_hand: GetLearningCostResponseWorkflowsItemByHand | None
     unknown_cost_runs: int
