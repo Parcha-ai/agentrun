@@ -252,10 +252,23 @@ names no run, and a store with no such run says nothing; quiet keeps it too.
 
 Set `OTEL_EXPORTER_OTLP_ENDPOINT` (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) and every run on a pi or CLI harness
 exports a GenAI trace over OTLP/HTTP to any backend that takes one, with the official OpenTelemetry SDK: an
-`invoke_agent {harness}` span per claim of the run, under it a `chat {model}` span per model request (provider, model,
+`invoke_agent {agent name}` span per claim of the run, under it a `chat {model}` span per model request (provider, model,
 `server.address` (the host the request goes to, OpenRouter's for a model reached through it; none where not known),
 and tokens with the cache: `gen_ai.usage.input_tokens` includes the cache read and write, which are also given on their
-own) and an `execute_tool {tool}` span per tool call. A name the model wrote is never sent as written: a call the
+own) and an `execute_tool {tool}` span per tool call. Every span says which agent ran and on what, as the
+[GenAI semantic conventions][otel-agent-spans] name it:
+
+| Attribute | Value |
+| --- | --- |
+| `gen_ai.agent.name` | The agent's name as you gave it (`billing-helper`). An agent with no name has none, never the harness in its place, and its span is `invoke_agent` alone. |
+| `gen_ai.agent.id` | The agent's id, the one its API routes take. |
+| `agentrun.harness` | The harness that ran it (`pi`, `claude-agent`, `codex`). The conventions have no attribute for it. |
+| `gen_ai.conversation.id`, `agentrun.run.id`, `session.id` | The run's id. |
+| `gen_ai.operation.name` | `invoke_agent`, `chat` or `execute_tool`. |
+
+An inline run (`POST /runs` with its definition) names its agent too, since it writes the agent's row first. The
+agent's name and id are cut as any other name is (below), and a name written like a key (a GitHub token's shape, an
+`sk-` key's) is `[redacted]` whatever the runner holds. A name the model wrote is never sent as written: a call the
 harness refused (a tool the session does not have) is `execute_tool` with `error.type=tool_refused` and no tool name, a
 model the run does not know is named by its route's model, and any other name is cut of every secret the runner holds
 and at 64 characters. A run is one trace, sampled whole or not at
@@ -289,9 +302,17 @@ SDK's diag writes can quote a header value as sent, and a test fails if a source
 writes, a held value is cut at 8 characters or more, a header value's as any other's, and a shorter header value is on
 no held list: that floor is kept on purpose, since a needle of a few characters would cut ordinary text, turn a served
 number such as `1` into `[redacted]`, or refuse a source capture of any project that holds it. Spans are sent in the background, so a run's end never waits on
-the collector; a server or runner that stops waits at most 3 s to send what is left, and a collector that is down
-costs one log line and the dropped spans. Unset, or with `OTEL_SDK_DISABLED=true`, no OpenTelemetry code loads and
-nothing is sent.
+the collector; a server or runner that stops waits at most 3 s to send what is left. At its start, a runner (the one
+beside the server, or `agentrun-serve runner`) with tracing on says so once, and where its spans go:
+`[otel] tracing is on: spans export to https://collector.example:4318`, the endpoint's origin alone (scheme, host and
+port; never its user, password, path, query or fragment, nor a header). A collector that is down costs the dropped spans
+and a line with the endpoint's origin and the time (`[otel] a trace export to ... failed at 2026-11-25T07:01:31.465Z; its spans were
+dropped: Request timed out`), then at most one line a minute, said by the next failure once a minute has passed, that
+counts the failures since the last line (`[otel] 25 more trace exports to ... failed since ..., the last at ...`); never
+a line per span or per batch. Unset, or with `OTEL_SDK_DISABLED=true`, no OpenTelemetry code loads, nothing is sent and
+nothing is said.
+
+[otel-agent-spans]: https://github.com/open-telemetry/semantic-conventions-genai/blob/d0e74ba6c48bcc4ded473b1828a8212f06b23753/docs/gen-ai/gen-ai-agent-spans.md#L213-L272
 
 To send traces to Sentry (two variables: its OTLP endpoint and its `x-sentry-auth` header) or to any other backend
 through an OpenTelemetry Collector, and for what Sentry's Agents view shows of a run, see
@@ -550,11 +571,16 @@ one off.
 ## Sandbox
 
 A sandbox agent's `bash` runs in a box, a machine apart from this server. Docker is the default box and the only one offered
-with no setup: a Docker container made for each run, which binds the run's `work/` and nothing else. A Daytona or Modal box
-runs on a computer from that provider, offered once `AGENTRUN_BOXES` lists it and the keys its computer provider needs are
-set (the environment, or Settings → Computers). No box holds a key. A Docker box on Linux reaches the package registries
-and GitHub through a proxy, and nothing else; so does a Daytona or Modal box, through the egress proxy its computer's
-init starts, and capabilities say so in its `places.boxes` entry. Its `read`, `write` and `edit` work on that same `work/`: on this server, where the box binds it and this server
+with no setup: a Docker container made for each run, which binds the run's `work/` and nothing else. Every other provider
+whose sandbox can hold the run's folder is a box too: `daytona`, `modal`, `e2b`, `agent37`, `morph`, `cloudflare`, `fly`,
+`boxd` and `groundbox`. Such a box runs on a sandbox computer from that provider, offered once `AGENTRUN_BOXES` lists it
+and the keys its computer provider needs are set (the environment, or Settings → Computers): `AGENTRUN_BOXES=docker,e2b`
+with `E2B_API_KEY` set offers both. A box is a provider that serves a sandbox, takes the run's folder (a bind, an Archil
+mount or a synced folder), starts with no image named and keeps to the allow-list or has no network; Orgo (desktops), the
+phone, the hosted browsers and smol cloud (whose disk sits where the folder would) are not. No box holds a key. A Docker
+box on Linux reaches the package registries and GitHub through a proxy, and nothing else; so does a vendor's box, through
+the egress proxy its computer's init starts, and capabilities say so in its `places.boxes` entry (`none` for boxd, whose
+computers have no network). Its `read`, `write` and `edit` work on that same `work/`: on this server, where the box binds it and this server
 holds directory handles (Docker on Linux), else in the box. The agent's loop, its log, its model calls and every key stay
 on the server. An agent says so in its [place](#place); the server says which boxes it has (`places.boxes` in its capabilities); [a run in a Docker
 box](#a-run-in-a-docker-box) is what the container gets; [the box's image](#the-boxs-image) is what it starts from.
@@ -1685,11 +1711,18 @@ has the row **Use Claude Code's login on this machine**, over these routes:
   The login's folders must be the server's user's own: at either place its home, and on `machine` each folder the
   server's environment gives it (`CLAUDE_CONFIG_DIR`, `CLAUDE_SECURESTORAGE_CONFIG_DIR`, and `ANTHROPIC_CONFIG_DIR`
   or else `XDG_CONFIG_HOME`'s `anthropic`). Each is a folder that user owns, or one still to make in a folder it owns,
-  reached through no other user's link or folder, and writable by its owner alone; a folder on the way may be open to
+  reached through no other user's link or folder, and writable by no one else; a folder on the way may be open to
   all where the sticky bit is set, as on `/tmp`. Else the turn-on and the sign-in answer `403` in words, no run goes
   on the login, and a setting saved before is kept but not used, the start logging why. A folder its group may write
-  in is refused in words that name it, its mode and the `chmod g-w,o-w` that closes it. A umask of 002, which some
-  distributions (Ubuntu's user-private groups among them) give each user, makes new folders so. A folder of the login
+  in is the user's alone where that group is the user's private one, as the local account files alone say:
+  `/etc/nsswitch.conf` takes users and groups from those files only (`files` or `compat` on its `passwd`, `group` and
+  any `initgroups` line), and the group is the user's primary group, which no other user has as theirs and
+  `/etc/group` lists with no other member, so a umask of 002 under one refuses nothing. Any other group (one shared
+  with other users, one that is not the user's primary group, one `/etc/group` lacks, account files with a `+` or `-`
+  line, or a switch that also asks sssd, LDAP, NIS, winbind or systemd's user records, as the `files systemd` of
+  recent Ubuntu, Debian and Fedora installs does, or no switch file: there members can exist that the files do not
+  show), and a folder anyone may write in, are refused in words that name the folder, its mode and the
+  `chmod g-w,o-w` that closes it. A folder of the login
   still to make is made by AgentRun at the turn-on and before the CLI's sign-in, 0700 whatever the umask, so the login
   the CLI signs in there is not refused after.
 - `GET /v2/settings/claude-login` says `state`: `off`, `signed_in` (with the `account` the CLI names: method, email,
@@ -1791,10 +1824,12 @@ gateway and no restart: `GET /api/tags` for the tags, `POST /api/show` for each 
 is `ollama/<tag>` in `harnesses[].models` and `harnesses[].free_models` for pi and for every harness on a wire the
 route translates, and the console names it
 `<tag> · local (Ollama)`, on a run's page too (from the run's `tokens` usage line, `provider` `ollama` and `model` the
-tag), so a run on the default says which model it ran on. An embedding model is left out. A model pulled or an Ollama started after the server shows in capabilities
+tag), so a run on the default says which model it ran on. An embedding model is left out. A model pulled after the server shows in capabilities
 within half a minute (the listing is kept that long, and asked again behind the next answer). A down or stuck Ollama
-lists no models and slows nothing: the listing has 2 seconds in all, follows no redirect, and keeps the models shown
-before its deadline. A run never waits on the listing: one on `ollama/<tag>` asks that model's `/api/show` alone (10
+slows nothing: the listing has 2 seconds in all and follows no redirect. A listing that fails is never kept as one:
+past its deadline or with an answer of the wrong shape, the models listed before it stay; refused (Ollama is not
+running), none do. Either way Ollama is asked again behind the next answer, so an Ollama that comes back or starts
+after the server shows in the answer after that. A run never waits on the listing: one on `ollama/<tag>` asks that model's `/api/show` alone (10
 seconds), and a run on any other model, a key's default included, never asks Ollama.
 
 - Where: `OLLAMA_HOST`, read as the ollama CLI reads it. Unset, 127.0.0.1:11434, but only on one owner's own server
