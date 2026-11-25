@@ -66,7 +66,7 @@ export function ShareView({ bundle, preview }: { bundle: ShareBundle; preview?: 
             <h1 className="min-w-0 break-words text-2xl font-semibold"><Redactions text={run.title || "Untitled run"} /></h1>
             <StatusBadge run={served} />
           </div>
-          <p className="mt-1 font-mono text-small text-muted-foreground">{facts.join(" · ")}</p>
+          <p className="mt-1 font-mono text-small text-muted-foreground">{facts.map((fact, i) => <span key={i}>{i ? " · " : ""}<Redactions text={fact!} /></span>)}</p>
         </div>
       </header>
       <main className="min-h-0 flex-1 overflow-auto">
@@ -78,10 +78,10 @@ export function ShareView({ bundle, preview }: { bundle: ShareBundle; preview?: 
                 <>
                   {run.status === "failed" && run.error && <RunError error={run.error as ApiError} />}
                   {run.review && <section className="border border-warning/50 bg-warning/10 p-4" aria-label="Needs review"><p className="caps text-label text-warning-text">Needs review</p><p className="mt-2 text-lead"><Redactions text={run.review.reason} /></p></section>}
-                  <RunResult run={served} rows={bundle.rows} files={files} onOpen={(f) => showFile(f.path)} />
+                  <RunResult run={served} rows={bundle.rows} files={files} onOpen={(f) => showFile(f.path)} shared />
                 </>
               )}
-              {view === "timeline" && <Timeline rows={bundle.rows} live={false} ended files={files} onOpen={(f) => showFile(f.path)} />}
+              {view === "timeline" && <Timeline rows={bundle.rows} live={false} ended files={files} onOpen={(f) => showFile(f.path)} shared />}
               {view === "graph" && bundle.graph && (
                 <div className="-mx-5 border-y md:-mx-8">
                   {/* Files are in the bundle as text, never served: the graph links none. */}
