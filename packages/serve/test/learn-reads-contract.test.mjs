@@ -266,19 +266,23 @@ async function ledger(t, seen) {
   };
   const servedBy = { path: "workflow", workflow: "answer", workflow_digest: DIGEST };
   for (const id of ["ledger", "pricey"]) assert.equal((await api("POST", "/agents", agent(id, { learning: { compile_after: 2 } }))).status, 201);
-  await landWorkflows(store, "ledger", [{ name: "answer", description: "Answers a question as a number; use when the person asks for the answer", workflow: FLOW }]);
+  // A check's record names a digest a version of its workflow holds (the store writes none of another): each workflow
+  // checked here is landed first.
+  const named = (name) => ({ name, description: "Answers a question; use when asked", workflow: { ...FLOW, name } });
+  await landWorkflows(store, "ledger", [{ name: "answer", description: "Answers a question as a number; use when the person asks for the answer", workflow: FLOW }, named("second"), named("third"), named("fourth")]);
+  const digestOf = async (name) => (await store.learning.versions("ledger", "workflow", name))[0].digest;
 
   await ended("ledger", "run-01", 1, 1, { path: "agent" });
   await ended("ledger", "run-02", 2, 1.3, { path: "agent" }, { rows: await compileRound("run-02", "ledger", at(2), { kept: true }) });
   for (const [id, minute] of [["replay-1", 3], ["replay-2", 4]]) await ended("ledger", id, minute, 0.3, { path: "replay", workflow: "answer", workflow_digest: DIGEST, replay: { of: "run-01", outcome: "answered" } }, { launch: { ...body, replay: { of: "run-01", workflow: "answer", digest: DIGEST } } });
   assert.equal((await decided(store, "ledger", "answer", DIGEST, { answer: 42, now: at(5) })).decided, "promote");
   for (let i = 0; i < 20; i++) await ended("ledger", `served-${String(i + 1).padStart(2, "0")}`, 6 + i, 0.1, servedBy);
-  assert.equal((await decided(store, "ledger", "second", "e".repeat(16), { answer: 41, now: at(30) })).decided, "hold");
+  assert.equal((await decided(store, "ledger", "second", await digestOf("second"), { answer: 41, now: at(30) })).decided, "hold");
   await ended("ledger", "run-03", 31, 1, { path: "agent" }, { rows: await compileRound("run-03", "ledger", at(31), { kept: false }) });
-  const stopped = await decided(store, "ledger", "third", "f".repeat(16), { answer: 41, now: at(32), attempt: 2 });
+  const stopped = await decided(store, "ledger", "third", await digestOf("third"), { answer: 41, now: at(32), attempt: 2 });
   assert.equal(stopped.decided, "hold");
   assert.equal(stopped.check?.stopped, true, JSON.stringify(stopped.check));
-  const fourth = { name: "fourth", description: "Answers a question; use when asked", workflow: JSON.stringify({ ...FLOW, name: "fourth" }) };
+  const fourth = { ...named("fourth"), workflow: JSON.stringify(named("fourth").workflow) };
   const reserved = await reserveSdkCheck(checkDeps(store, "ledger", at(33)), { runId: "run-03", revision: "c".repeat(40), learning: { compile_after: 2 }, flows: [fourth], takes: () => true });
   assert.equal(reserved?.workflow.name, "fourth", "a connected agent's check of `fourth` reserved");
 
