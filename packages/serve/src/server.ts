@@ -1115,8 +1115,9 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
     // their words name the model it lacks. One whose default lacks a key while another model runs is (its `needs` says
     // what the default lacks).
     harnesses: harnesses.map(({ keys: _keys, noModelRuns, ...offer }) => ({ ...offer, available: offer.available && !noModelRuns, max_concurrent_runs: Math.min(maxRuns, runsThatFit(offer.id, memory, env)) })),
-    /** The places a revision may name (`definition.place`), this host's default, and whether this server has each box. */
-    places: placesOf(boxes, boxAllowOf(env)),
+    /** The places a revision may name (`definition.place`), this host's default (null where a new agent must name one),
+     *  and whether this server has each box. */
+    places: placesOf(boxes, boxAllowOf(env), !!runnerShell?.size),
     models,
     learning_model,
     /** `pending`: a workflow draft with a call no price covers is kept to wait for its owner's OK, served to no run;
@@ -3609,11 +3610,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       return { warnings: [], stamp: {} };
     }
     if (cliLearningOf(body) || sdkOf(body)) return { warnings: [], stamp: {} };
-    // An agentic revision that names no place and would be given Docker's box (no tools named, or a shell tool the
-    // runner's own shell does not run), where this server has none: refused, naming a box or the runner, never given
-    // another box (place.ts noBoxRefusal), with whatever else refuses it.
-    const runnerShell = revision.kind === "agentic" && (await shellOf({ kind: "none" })) === "local" ? shellTools("local") : undefined;
-    const noPlace = revision.kind === "agentic" && body.place === undefined && body.computer === undefined ? noBoxRefusal(toolsUnnamed ? undefined : body.tools ?? [], boxOffers, toolOf, runnerShell) : undefined;
+    // An agentic revision that names no place and would be given Docker's box (no tools named, or a shell tool), where
+    // this server has none and the runner has no shell (Mode 1): refused, naming a box or the runner, never given another
+    // box (place.ts noBoxRefusal), with whatever else refuses it. On Mode 2 it saves for the runner, as it always did.
+    const noPlace = revision.kind === "agentic" && body.place === undefined && body.computer === undefined ? noBoxRefusal(toolsUnnamed ? undefined : body.tools ?? [], boxOffers, toolOf, (await shellOf({ kind: "none" })) === "local") : undefined;
     await loginNow();
     // A workflow's own issues, as POST /workflows/validate lists them (workflowIssues: the DSL's checks, the durable
     // runner's refusal), refuse its save before anything is written, each at its path under definition.workflow. Asked

@@ -77,10 +77,11 @@ const wantsBox = (tools: readonly unknown[], flags: ToolFlags): boolean => {
 
 /** The refusal of an agentic definition that names no place (noPlaceIssue), at its create or at an edit that would
  *  save it, where it would be given the default box (it names no tools, `tools` undefined, so it would get a shell, or a
- *  tool that runs only in a box) and this server does not have Docker's box. A shell tool the runner's own shell runs
- *  (`runnerShell`: bash on Mode 2's Archil exec) needs no box. Undefined for one that saves. */
-export function noBoxRefusal(tools: readonly unknown[] | undefined, registry: readonly BoxOffer[], flags: ToolFlags, runnerShell: ReadonlySet<string> = new Set()): InputIssue | undefined {
-  if (!wantsBox((tools ?? NEW_AGENT_TOOLS).filter((tool) => typeof tool !== "string" || !runnerShell.has(tool)), flags)) return undefined;
+ *  tool that runs only in a box) and this server does not have Docker's box, and where the runner has no shell
+ *  (`runnerShell` false: Mode 1). On Mode 2 the runner's exec is a shell, and such a definition saves for the runner as
+ *  it always did, its tools checked there (runnable.ts). Undefined for one that saves. */
+export function noBoxRefusal(tools: readonly unknown[] | undefined, registry: readonly BoxOffer[], flags: ToolFlags, runnerShell: boolean): InputIssue | undefined {
+  if (runnerShell || !wantsBox(tools ?? NEW_AGENT_TOOLS, flags)) return undefined;
   const fresh = newAgentPlace(registry);
   return "reason" in fresh ? noPlaceIssue(registry) : undefined;
 }
@@ -139,12 +140,15 @@ export function boxesLine(registry: readonly BoxOffer[], listed: ReadonlySet<str
 }
 
 /** `places` in capabilities: the modes a revision may name, the place a new agent is saved with and a revision that
- *  names none runs in (`default_place`, with `default_reason` when it is the runner: the words a new agent that would get
- *  a box is refused in there), each box, and the hosts a box whose
- *  `network` is `allowlist` reaches (`allow`, box-settings.ts boxAllowOf; empty for `none`). */
-export const placesOf = (registry: readonly BoxOffer[], allow: readonly string[] | "none" = "none") => {
+ *  names none runs in (`default_place`), each box, and the hosts a box whose `network` is `allowlist` reaches (`allow`,
+ *  box-settings.ts boxAllowOf; empty for `none`). `default_place` is Docker's box where this server has it; else, where
+ *  the runner has a shell (`runnerShell`: Mode 2's Archil exec), the runner; else null, no default: a new agent names its
+ *  place, and `default_reason` is the words a no-place create is refused in (noBoxRefusal). `default_reason` is there
+ *  exactly when `default_place` is null. */
+export const placesOf = (registry: readonly BoxOffer[], allow: readonly string[] | "none" = "none", runnerShell = false) => {
   const fresh = newAgentPlace(registry);
-  return { modes: [...PLACE_MODES], ...("place" in fresh ? { default_place: fresh.place } : { default_place: { mode: "runner" } as Place, default_reason: fresh.reason }), boxes: boxAvailability(registry).map(stated), allow: allow === "none" ? [] : [...allow] };
+  const byDefault = "place" in fresh ? { default_place: fresh.place } : runnerShell ? { default_place: { mode: "runner" } as Place } : { default_place: null, default_reason: fresh.reason };
+  return { modes: [...PLACE_MODES], ...byDefault, boxes: boxAvailability(registry).map(stated), allow: allow === "none" ? [] : [...allow] };
 };
 /** A box with its state, `ready` when it is available and `unavailable` when not; and, on an available box, its network as the server set it, with
  *  `network_reason` when it is none for a cause of its own. */

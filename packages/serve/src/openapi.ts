@@ -4560,15 +4560,18 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   // widening is a mark of its own. decisions/3: a provider takes `route` (parallel's, on Parallel's API or OpenRouter), which a
   // client that validates against decisions/2 refuses.
   "Capabilities/places": {
+    // place/5: default_place took null (no default: name a box), which a client that validates against place/4 refuses,
+    // and default_reason is there exactly when it is null.
     default_place: {
       oneOf: [
         { type: "object", additionalProperties: false, required: ["mode"], properties: { mode: { const: "runner" } } },
         { type: "object", additionalProperties: false, required: ["mode", "box"], properties: { mode: { const: "sandbox" }, box: { enum: [...BOX_IDS] } } },
+        { type: "null" },
       ],
-      description: "The place a NEW agentic agent that names none and has a shell is saved with, written on its revision at its create: the Docker box (`{\"mode\": \"sandbox\", \"box\": \"docker\"}`) where this server has docker, with tools [\"bash\", \"bash_background\", \"bash_output\", \"bash_input\", \"bash_signal\", \"bash_list\"] when the definition names no tools; else the runner, with `default_reason`, and such a create (no tools named, or a shell tool the runner's own shell does not run) is refused `422` at `definition.place` in those words: it names a box or the runner, and no other box is picked for it. One whose named tools need no shell is saved with no place and runs on the runner. It is also where an agentic revision saved with no place and a shell tool runs, resolved at each run: a workflow, a revision whose tools need no shell, and a revision that names a tool a box refuses, run on the runner. (It replaces `places.default`, which said `runner`.)",
-      "x-agentrun-serve": "place/4",
+      description: "The place a NEW agentic agent that names none and has a shell is saved with, written on its revision at its create, and where an agentic revision saved with no place and a shell tool runs, resolved at each run. The Docker box (`{\"mode\": \"sandbox\", \"box\": \"docker\"}`) where this server has docker, with tools [\"bash\", \"bash_background\", \"bash_output\", \"bash_input\", \"bash_signal\", \"bash_list\"] when the definition names no tools. Where it has no docker: in Mode 2, where the runner's shell is Archil's serverless exec, the runner (`{\"mode\": \"runner\"}`), and such a create saves with no place; in Mode 1, where the runner has no shell, null, meaning no default: a new agent names a box or the runner, `default_reason` gives the words, and a create that names no place and no tools, or a tool that runs only in a box, is refused `422 input_invalid` at field `definition.place`, reason `missing`, in those words, no other box picked for it. A client tells the cases apart by `default_place` being null, never by reading `default_reason`. One whose named tools need no shell is saved with no place and runs on the runner, as do a workflow and a revision that names a tool a box refuses. (It replaces `places.default`, which said `runner`.)",
+      "x-agentrun-serve": "place/5",
     },
-    default_reason: { type: "string", description: "When `default_place` is the runner (Docker's box is unavailable here), the words a new agent that would get the box is refused in: `name a box: this server has no Docker box for a new agent. Set place to {mode: sandbox, box: <one of: …>}, or to {mode: runner} to run without a shell.`, listing the boxes this server has, or `<none is set up>`. Docker's own reason is on its entry in `boxes`.", "x-agentrun-serve": "place/3" },
+    default_reason: { type: "string", description: "There exactly when `default_place` is null (Mode 1 with no Docker box): the words a create that names no place and would get the box is refused in, `name a box: this server has no Docker box for a new agent. Set place to {mode: sandbox, box: <one of: …>}, or to {mode: runner} to run without a shell.`, listing the boxes this server has, or `<none is set up>`. Docker's own reason is on its entry in `boxes`.", "x-agentrun-serve": "place/5" },
     allow: { type: "array", items: { type: "string" }, description: "The hosts a box whose `network` is `allowlist` may reach: AGENTRUN_BOX_ALLOW's, else the package registries and GitHub; empty when it is `none`.", "x-agentrun-serve": "place/2" },
   },
   "Capabilities/workflows": {
@@ -4881,6 +4884,8 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   const capabilities = schemas.Capabilities as Json & { required: string[]; properties: Record<string, Json & { required: string[] }> };
   capabilities.required = [...capabilities.required, ...CAPABILITIES_SENT];
   capabilities.properties.places!.required = [...capabilities.properties.places!.required, "default_place"];
+  // default_reason is there exactly when default_place is null (place.ts placesOf).
+  Object.assign(capabilities.properties.places!, { if: { required: ["default_place"], properties: { default_place: { type: "null" } } }, then: { required: ["default_reason"] }, else: { not: { required: ["default_reason"] } } });
   // The contract's definition fields this server refuses (validate.ts), each marked with the reason its 422 gives.
   const definition = schemas.DefinitionInput as Json & { properties: Record<string, Json>; required: string[] };
   const refused: string[] = [];

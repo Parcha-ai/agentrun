@@ -138,14 +138,14 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
   // server's folder with the runner-only tools, which the runnerOnly check below holds to a sandbox place alone.
   const onRunner = revision.kind === "agentic" && shellOf && (place?.mode ?? "runner") === "runner";
   const runnerShell = onRunner && (await shellOf(revision.computer ?? { kind: "none" })) === "local" ? shellTools("local") : new Set<string>();
-  /** A shell tool the runner does not run. One that names no place is there only because Docker's box, its default, is
-   *  not here (place.ts defaultPlaceOf): it names a box or the runner, in the words its create is refused in (nameABox),
-   *  never given another box. One whose place is the runner: a box this server runs in is the fix; with none, why
+  /** A shell tool the runner does not run. One that names no place, on a runner with no shell (Mode 1), is there only
+   *  because Docker's box, its default, is not here (place.ts defaultPlaceOf): it names a box or the runner, in the words
+   *  its create is refused in (nameABox), never given another box. One whose place is the runner: a box this server runs in is the fix; with none, why
    *  Docker's box is not here and both ways out, fixing that or keeping the agent on the runner without the tool. Where
    *  the runner has a shell that runs others (Mode 2's Archil exec runs bash), it says which. */
   const shellOnRunner = (tool: string, field: string, named: boolean): Blocker => {
     const fresh = newAgentPlace(boxes);
-    if (!named && "reason" in fresh) return { ...noPlaceIssue(boxes), host: false, tool };
+    if (!named && !runnerShell.size && "reason" in fresh) return { ...noPlaceIssue(boxes), host: false, tool };
     const where = named ? "this agent's place is the runner" : "this agent names no place, so it runs on the runner";
     const has = runnerShell.size ? `whose shell here runs ${[...runnerShell].join(", ")} alone` : "which has no shell";
     const box = boxAvailability(boxes).find((b) => b.available);

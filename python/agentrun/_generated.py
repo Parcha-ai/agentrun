@@ -8734,7 +8734,7 @@ class CapabilitiesLearning(_CapabilitiesLearningRequired, total=False):
 class _CapabilitiesPlacesRequired(TypedDict):
     modes: list[Literal["runner", "sandbox"]]
     boxes: list[CapabilitiesPlacesBoxesItem]
-    default_place: CapabilitiesPlacesDefaultPlace1 | CapabilitiesPlacesDefaultPlace2
+    default_place: CapabilitiesPlacesDefaultPlace1 | CapabilitiesPlacesDefaultPlace2 | None
     allow: list[str]
 
 

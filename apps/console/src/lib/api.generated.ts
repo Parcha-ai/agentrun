@@ -180,7 +180,7 @@ export interface components {
       } | {
         mode: "sandbox";
         box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "boxd" | "groundbox";
-      };
+      } | null;
       default_reason?: string;
       allow: string[];
     };
