@@ -299,7 +299,9 @@ function itemsFor(at: LearningAt | undefined, read: LearningRead, change: Learni
     if (path !== CORRECTIONS_FILE && folderOf(path) === undefined) throw new Error(`${path} is no learning file: corrections.md or a workflow's workflows/<name>/<file>`);
   }
   // corrections.md: one note a line, matched to the lines there by their longest common run; a line kept keeps its
-  // item (moved when its place changed), one gone is ended, one new is a new item.
+  // item (moved when its place changed). A line the run left out whose words an old note left out also holds is that
+  // note moved, matched one to one in order (a reorder moves a line outside the longest run): it keeps its writer, so
+  // its run's purge still takes it. Only words no such note holds are a new item; a note left unmatched is ended.
   if (writes.has(CORRECTIONS_FILE) || deletes.has(CORRECTIONS_FILE)) {
     const text = asNotes(writes.get(CORRECTIONS_FILE) ?? "");
     if (text !== (read.text(CORRECTIONS_FILE) ?? "")) files.push(CORRECTIONS_FILE);
@@ -308,21 +310,26 @@ function itemsFor(at: LearningAt | undefined, read: LearningRead, change: Learni
     const width = lines.length + 1;
     const lcs = new Uint32Array((old.length + 1) * width);
     for (let i = old.length - 1; i >= 0; i--) for (let j = lines.length - 1; j >= 0; j--) lcs[i * width + j] = old[i]!.body === lines[j] ? lcs[(i + 1) * width + j + 1]! + 1 : Math.max(lcs[(i + 1) * width + j]!, lcs[i * width + j + 1]!);
+    // Each line's old note (undefined: none in the longest run), and the old notes the longest run left out.
+    const kept: (LearningItem | undefined)[] = lines.map(() => undefined);
+    const left: LearningItem[] = [];
     let [i, j] = [0, 0];
     while (i < old.length || j < lines.length) {
-      if (i < old.length && j < lines.length && old[i]!.body === lines[j]) {
-        const note = old[i]!;
-        if (note.pos !== j) items.push({ kind: "note", name: note.name, body: note.body, byRun: note.byRun, change: note.change, person: note.person, pos: j, digest: null, writers: null });
-        i++, j++;
-      } else if (j < lines.length && (i >= old.length || lcs[i * width + j + 1]! >= lcs[(i + 1) * width + j]!)) {
-        items.push({ kind: "note", name: `${version}.${j}`, body: lines[j]!, byRun: run ?? null, change: kind, person, pos: j, digest: null, writers: null });
-        j++;
-      } else {
-        const note = old[i]!;
-        items.push({ kind: "note", name: note.name, body: null, byRun: note.byRun, change: kind, person, pos: note.pos, digest: null, writers: null });
-        i++;
-      }
+      if (i < old.length && j < lines.length && old[i]!.body === lines[j]) kept[j++] = old[i++]!;
+      else if (j < lines.length && (i >= old.length || lcs[i * width + j + 1]! >= lcs[(i + 1) * width + j]!)) j++;
+      else left.push(old[i++]!);
     }
+    // A line outside the longest run takes the first old note left out with its words, in order.
+    const leftBy = new Map<string, LearningItem[]>();
+    for (const note of left) leftBy.set(note.body ?? "", [...(leftBy.get(note.body ?? "") ?? []), note]);
+    lines.forEach((line, pos) => { kept[pos] ??= leftBy.get(line)?.shift(); });
+    const moved = new Set(kept);
+    lines.forEach((line, pos) => {
+      const note = kept[pos];
+      if (!note) items.push({ kind: "note", name: `${version}.${pos}`, body: line, byRun: run ?? null, change: kind, person, pos, digest: null, writers: null });
+      else if (note.pos !== pos) items.push({ kind: "note", name: note.name, body: note.body, byRun: note.byRun, change: note.change, person: note.person, pos, digest: null, writers: null });
+    });
+    for (const note of left) if (!moved.has(note)) items.push({ kind: "note", name: note.name, body: null, byRun: note.byRun, change: kind, person, pos: note.pos, digest: null, writers: null });
   }
   // Each workflow touched: a run's merge writes it whole (its folder is the files the run gives); a person's change keeps
   // its files as they are, with the writes and deletes in its folder. Gone when none is left. Each file keeps its writer

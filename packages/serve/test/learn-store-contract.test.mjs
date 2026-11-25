@@ -237,6 +237,62 @@ test("a purge takes out only the purged run's copy of a line: one its owner remo
   assert.deepEqual(diff.files.map((file) => [file.path, file.patch.includes(`+- ${shared}`)]), [["corrections.md", true]]);
 });
 
+/** corrections.md rewritten as `text` by `by`: a person's edit (putCorrections), or a run's merge that gives the file. */
+const rewrite = async (learning, by, text) => {
+  if (by === "person") {
+    const view = await readView(learning);
+    assert.equal((await putCorrections(learning, { text, ifMatch: etagOf(view.corrections.oid) })).ok, true);
+    return;
+  }
+  await writeLearning(learning, async () => ({ result: null, change: { by: { run: by, reason: `${by} reason words` }, writes: [{ path: "corrections.md", text }] } }));
+};
+for (const by of ["person", "run_mover"]) test(`a line moved outside the longest common run (${by === "person" ? "a person's" : "another run's"} reorder) keeps its writer: the purged run's line is gone from every save and every later one`, async (t) => {
+  const { store } = await storeOn(t);
+  const learning = learningOf(store, AGENT);
+  await merge(learning, { runId: "run_alpha", correction: "ALPHA rule." });
+  await merge(learning, { runId: "run_bravo", correction: "BRAVO rule." });
+  // [A, B] to [B, A]: the longest common run keeps one line, and the other moves outside it.
+  await rewrite(learning, by, "- BRAVO rule.\n- ALPHA rule.\n");
+  assert.equal(await corrections(learning), "- BRAVO rule.\n- ALPHA rule.\n");
+  await store.learning.purgeRun(AGENT, "run_bravo");
+  assert.equal(await corrections(learning), "- ALPHA rule.\n", "the purged run's line is gone after a reorder");
+  await merge(learning, { runId: "run_later", correction: "LATER rule." });
+  assert.equal(await corrections(learning), "- ALPHA rule.\n- LATER rule.\n");
+  for (const save of (await store.learning.saves(AGENT, { limit: 100 })).saves) assert.doesNotMatch((await corrections(learning, save.id)) ?? "", /BRAVO/, save.id);
+  assert.doesNotMatch(await everything(store), /BRAVO/, "no row holds the purged run's line");
+  // The reorder wrote no words: a purge of the run that moved the lines keeps both.
+  if (by !== "person") {
+    await store.learning.purgeRun(AGENT, by);
+    assert.equal(await corrections(learning), "- ALPHA rule.\n- LATER rule.\n");
+  }
+});
+
+test("a line moved outside the longest common run of three keeps its writer; lines of the same words are matched one to one", async (t) => {
+  const { store } = await storeOn(t);
+  const learning = learningOf(store, AGENT);
+  await merge(learning, { runId: "run_a", correction: "ALPHA rule." });
+  await merge(learning, { runId: "run_b", correction: "BRAVO rule." });
+  await merge(learning, { runId: "run_c", correction: "CHARLIE rule." });
+  // [A, B, C] to [C, A, B]: the longest common run is [A, B], and C moves outside it.
+  await rewrite(learning, "person", "- CHARLIE rule.\n- ALPHA rule.\n- BRAVO rule.\n");
+  await store.learning.purgeRun(AGENT, "run_c");
+  assert.equal(await corrections(learning), "- ALPHA rule.\n- BRAVO rule.\n", "the purged run's line is gone after a move outside the longest common run");
+  assert.doesNotMatch(await everything(store), /CHARLIE/);
+  // Two runs' lines of the same words, reordered around a third: each copy keeps its own run, one to one.
+  await merge(learning, { runId: "run_x1", correction: "SAME rule." });
+  await merge(learning, { runId: "run_y", correction: "YANKEE rule." });
+  await merge(learning, { runId: "run_x2", correction: "SAME rule." });
+  await rewrite(learning, "run_mover", "- YANKEE rule.\n- SAME rule.\n- SAME rule.\n- BRAVO rule.\n- ALPHA rule.\n");
+  const same = (await store.learning.newest(AGENT)).items.filter((item) => item.kind === "note" && item.body === "- SAME rule.").map((item) => item.byRun).sort();
+  assert.deepEqual(same, ["run_x1", "run_x2"], "each copy of the same words keeps its own run");
+  await store.learning.purgeRun(AGENT, "run_x2");
+  assert.equal(await corrections(learning), "- YANKEE rule.\n- SAME rule.\n- BRAVO rule.\n- ALPHA rule.\n");
+  await store.learning.purgeRun(AGENT, "run_x1");
+  await store.learning.purgeRun(AGENT, "run_a");
+  assert.equal(await corrections(learning), "- YANKEE rule.\n- BRAVO rule.\n");
+  assert.doesNotMatch(await everything(store), /SAME|ALPHA|CHARLIE/);
+});
+
 test("a purge takes the purged run's workflows out of every version: one it alone learned is in none; one a later run rewrote is that run's; the other runs' things stay", async (t) => {
   const { store } = await storeOn(t);
   const learning = learningOf(store, AGENT);
