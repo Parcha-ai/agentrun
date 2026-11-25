@@ -35,7 +35,7 @@ export { SHARE_HOST_CSP } from "./page.js";
 export const SHARE_ROOT = "/r/";
 /** The share host's API. */
 export const SHARE_API = "/r/v2/";
-/** The most shares one token keeps (Miguel, 11-23): a delete makes room. No share expires. */
+/** The most shares one token keeps: a delete makes room. No share expires. */
 export const SHARE_QUOTA = 100;
 /** The most distinct strings one upload's per-string scrub reads: each is a scrub of its own (about 0.1 ms), so past it
  *  the upload is 413 before any is read. With the body's cap it bounds what one upload asks of the scrubber: the whole
