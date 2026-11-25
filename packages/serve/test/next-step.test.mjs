@@ -84,10 +84,10 @@ test("bash on a runner, the browser in a sandbox and a workflow in one are 422s 
     [agent("browsing", { tools: ["bash", "browser"], place: { mode: "sandbox", box: "docker" } }).definition, "definition.tools[1]", "browser does not run in a sandbox place yet: it saves files into the run's work/ from this server, outside the box, and a command in the box could point those writes elsewhere on this server. Give it to an agent whose place is the runner.", 'Remove "browser" from definition.tools.'],
     [flowAgent("flow", undefined, { place: { mode: "sandbox", box: "docker" } }).definition, "definition.place", "A workflow runs on the runner here: its place is runner (or none), not sandbox on docker.", '"place": {"mode": "runner"}'],
   ];
-  // One with no place is refused at its place, naming a box: no fix, since none is picked for it.
+  // One with no place is refused at its place, naming a box: its fix lists what to set, picking none.
   const shell = await api("POST", "/agents", { definition: agent("shell", { tools: ["read", "bash"] }).definition });
   assert.equal(shell.status, 422, JSON.stringify(shell.body));
-  assert.deepEqual(shell.body.error.fields, [{ field: "definition.place", reason: "missing", message: "name a box: this server has no Docker box for a new agent. Set place to {mode: sandbox, box: <none is set up>}, or to {mode: runner} to run without a shell." }]);
+  assert.deepEqual(shell.body.error.fields, [{ field: "definition.place", reason: "missing", message: "name a box: this server has no Docker box for a new agent. Set place to {mode: sandbox, box: <none is set up>}, or to {mode: runner} to run without a shell.", fix: "Set place to {mode: sandbox, box: <none is set up>}, or to {mode: runner} to run without a shell." }]);
   for (const [definition, field, message, fix] of cases) {
     const refused = await api("POST", "/agents", { definition });
     assert.equal(refused.status, 422, JSON.stringify(refused.body));

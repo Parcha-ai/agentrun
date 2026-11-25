@@ -461,5 +461,5 @@ test("a template that grants bash applies in Mode 2, its agent on the runner wit
   const mode1 = await server(t, { archil: false, templates });
   const refused = await mode1("POST", "/templates/shell-reader/apply", {});
   assert.equal(refused.status, 422, JSON.stringify(refused.body));
-  assert.match(JSON.stringify(refused.body.error), /bash runs only in a box, and this agent names no place, so it runs on the runner, which has no shell/);
+  assert.match(refused.body.error.message, /^name a box: this server has no Docker box for a new agent\. /);
 });

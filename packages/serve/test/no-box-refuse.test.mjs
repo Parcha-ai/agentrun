@@ -13,12 +13,13 @@ const NONE_WORDS = "name a box: this server has no Docker box for a new agent. S
 const plain = (id, extra = {}) => ({ definition: { id, name: id, instructions: "Answer.", ...extra } });
 const flags = (tool) => ({ bash: { sandboxOnly: true }, browser: { runnerOnly: true } })[tool];
 
-/** The refusal a create or an edit gets: 422 under definition.place, in the words, with nothing else said. */
+/** The refusal a create or an edit gets: 422 under definition.place, in the words, its fix what to set (no example
+ *  place picked for it). */
 function refusedForPlace(said, words = NONE_WORDS) {
   assert.equal(said.status, 422, JSON.stringify(said.body));
   assert.equal(said.body.error.code, "input_invalid");
   assert.equal(said.body.error.message, words);
-  assert.deepEqual(said.body.error.fields.map((one) => [one.field, one.reason, one.message]), [["definition.place", "missing", words]]);
+  assert.deepEqual(said.body.error.fields.map((one) => [one.field, one.reason, one.message, one.fix]), [["definition.place", "missing", words, words.slice(words.indexOf("Set place"))]]);
 }
 
 test("the default box is Docker's by its id: with Docker down and another box available, a new agent is given no box, and the words list the available boxes without picking one", () => {
