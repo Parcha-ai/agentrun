@@ -119,8 +119,9 @@ export function noBoxReason(registry: readonly BoxOffer[], listed: ReadonlySet<s
 /** The start banner's words on the boxes: which are ready for a sandbox agent's tools, then why each box is not that
  *  AGENTRUN_BOXES lists (`listed`), and, when none is ready, the boxes it does not list, with what to do.
  *  `byDefault`, with AGENTRUN_BOXES not set at all: short, the local box alone, said to be on by default, or why it is
- *  not. */
-export function boxesLine(registry: readonly BoxOffer[], listed: ReadonlySet<string>, allow: readonly string[] | "none" = "none", byDefault = false): string {
+ *  not, and where a new agent with no place goes then: it names its place, or, where the runner has a shell
+ *  (`runnerShell`: Mode 2), it runs on the runner (placesOf). */
+export function boxesLine(registry: readonly BoxOffer[], listed: ReadonlySet<string>, allow: readonly string[] | "none" = "none", byDefault = false, runnerShell = false): string {
   const boxes = boxAvailability(registry);
   const ready = boxes.filter((box) => box.available).map((box) => box.id);
   const said = ready.length ? [`${and(ready)} ${ready.length === 1 ? "is" : "are"} ready, so sandbox agents run their tools there.`] : [];
@@ -133,7 +134,7 @@ export function boxesLine(registry: readonly BoxOffer[], listed: ReadonlySet<str
     box.network === "allowlist" ? sentence(`${box.id} boxes reach only ${hosts}`) : sentence(`${box.id} boxes have no network${box.network_reason ? `: ${box.network_reason}` : ""}`));
   if (byDefault) {
     const box = defaultBox(registry);
-    if (!box.available) return `Boxes: none, so a new agent must name its place: a box, or the runner. ${sentence(box.reason ?? "no reason given")}`;
+    if (!box.available) return `Boxes: none, so ${runnerShell ? "new agents run on the runner" : "a new agent must name its place: a box, or the runner"}. ${sentence(box.reason ?? "no reason given")}`;
     return [`Boxes: ${box.id} (on by default; set ${BOXES_ENV} to change).`, ...reach].join(" ");
   }
   return ["Boxes:", ...(none ? ["none is ready, so sandbox agents do not run here."] : said), ...reach, ...why.map((box) => sentence(`${box.id}: ${box.reason ?? "not available"}`)), ...(rest ? [sentence(rest)] : [])].join(" ");

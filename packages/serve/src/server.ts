@@ -7337,7 +7337,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     tokenMade: stored?.made ?? false,
     ...(setupUrl ? { setupUrl, setupOpen: openSetup } : {}),
     ...(consoleSessions ? { launchCode: consoleSessions.code } : {}),
-    boxesLine: boxesLine(boxOffers, enabledBoxes(env), boxAllow, boxesByDefault(env)),
+    boxesLine: boxesLine(boxOffers, enabledBoxes(env), boxAllow, boxesByDefault(env), (await shellOf({ kind: "none" })) === "local"),
     attachHub,
     beside,
     dial: { ...(options.publicUrl ? { url: options.publicUrl.replace(/\/+$/, "") } : {}), tokens: attach.machineTokens, hub: attachHub },
