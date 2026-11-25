@@ -35,13 +35,7 @@ export const COMPOSIO_ORIGIN = "https://backend.composio.dev";
 export type Cleanup = { remove: Thing[]; kept: (Thing & { by?: string })[] };
 export type Thing = { kind: "account" | "auth_config"; id: string };
 
-/** The store.settings key a server's record lives under. */
-export const composioMadeKey = (name: string): string => `mcp.composio/${name}`;
-
-/** The store.settings key a server's account, as its last refresh read it at Composio, lives under: `{of, user, toolkit,
- *  auth_config, state, labels?, checked_at}`, bound to the server row (`of`) and to what it was read for, so a save over
- *  the server as another user, toolkit or auth config shows none until the next refresh. No id, no token. */
-export const composioAccountKey = (name: string): string => `mcp.composio-account/${name}`;
+export { composioAccountKey, composioMadeKey } from "./store/mcp-record-keys.js";
 
 /** The settings value a record is stored as, bound to the server row it was written for. */
 export const storedMade = (made: ComposioMade, row: { createdAt: number }): ComposioMade & { of: number } => ({ ...made, of: row.createdAt });

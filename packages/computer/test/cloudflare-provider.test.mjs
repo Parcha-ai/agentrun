@@ -88,12 +88,15 @@ test("list asks the relay's index by the labels; delete is the relay's DELETE", 
 });
 
 test("the relay's errors are codes in its words, never the token; a create that got no answer is never sent again", async () => {
-	for (const [status, code] of [[401, "denied"], [422, "invalid"], [503, "vendor"], [429, "limit"]]) {
+	for (const [status, code, tries] of [[401, "denied", 1], [422, "invalid", 1], [503, "vendor", 4], [429, "limit", 4]]) {
 		const relay = fakeRelay(() => ({ status, json: { error: "the relay said no" } }));
-		const error = await provider(relay).host.create(REQUEST, CTX).catch((caught) => caught);
+		const pauses = [];
+		const error = await provider(relay, { pause: async (ms) => void pauses.push(ms) }).host.create(REQUEST, CTX).catch((caught) => caught);
 		assert.equal(codeOfError(provider(relay).host, error), code, String(status));
 		assert.match(error.message, new RegExp(`^POST /v1/computers answered ${status}: the relay said no$`));
 		assert.equal(error.message.includes(TOKEN), false);
+		assert.equal(relay.calls.length, tries, String(status));
+		assert.deepEqual(pauses, [1_000, 2_000, 4_000].slice(0, tries - 1), `${status}: a doubling pause before each try again`);
 	}
 	let tries = 0;
 	const silent = { fetch: async () => (tries++, Promise.reject(new TypeError("fetch failed"))) };
@@ -104,8 +107,10 @@ test("the relay's errors are codes in its words, never the token; a create that 
 test("a create answered 500, 502 or 503 is sent again with the same name, which the relay answers with the first's row", async () => {
 	const answers = [{ status: 500 }, { status: 502 }, { status: 503, json: { error: "the relay failed: overloaded" } }, { status: 201, json: row("starting") }];
 	const relay = fakeRelay(() => answers.shift());
-	assert.deepEqual(await provider(relay).host.create(REQUEST, CTX), { id: NAME });
+	const pauses = [];
+	assert.deepEqual(await provider(relay, { pause: async (ms) => void pauses.push(ms) }).host.create(REQUEST, CTX), { id: NAME });
 	assert.equal(relay.calls.length, 4);
+	assert.deepEqual(pauses, [1_000, 2_000, 4_000]);
 	assert.equal(new Set(relay.calls.map(({ body }) => JSON.stringify(body))).size, 1);
 });
 

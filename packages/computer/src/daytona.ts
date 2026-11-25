@@ -176,7 +176,10 @@ const OUT = Buffer.from([1, 1, 1]);
 const ERR = Buffer.from([2, 2, 2]);
 /** A line the client wrote, echoed back: a request or a notification is never a daemon's reply. */
 const ECHO = /^\{"jsonrpc":"2\.0",("id":\d+,)?"method":/;
-/** The toolbox session a dial sandbox's agentrun-dial runs in, its one command: dialLog reads its log by this id. */
+/**
+ * The toolbox session a dial sandbox's agentrun-dial runs in, its one command: dialLog reads its log by this id. A
+ * second start (redial) runs in a session of its own, this name with -2.
+ */
 const DIAL_SESSION = "agentrun-dial";
 
 const decoder = new TextDecoder();
@@ -242,10 +245,15 @@ class DaytonaHost implements MachineHost {
 	/** connect exec alone: a dial host has neither (HostFacts.connect). */
 	readonly exec?: MachineHost["exec"];
 	readonly upload?: MachineHost["upload"];
-	/** connect dial alone: agentrun-dial's session command's log. */
+	/** connect dial alone: agentrun-dial's session command's log, its exit, and its second start. */
 	readonly dialLog?: MachineHost["dialLog"];
-	/** The command that runs agentrun-dial, by sandbox id, from its create: what dialLog reads. Let go of at its delete. */
-	readonly #dials = new Map<string, string>();
+	readonly dialExit?: MachineHost["dialExit"];
+	readonly redial?: MachineHost["redial"];
+	/**
+	 * The session and command that run agentrun-dial, by sandbox id, from its create or its second start, and the attach
+	 * URL its line sets: what dialLog and dialExit read, and redial starts again. Let go of at its delete.
+	 */
+	readonly #dials = new Map<string, { session: string; command: string; attach: string; starts: number }>();
 	/** Daytona's REST API: the control plane, and the toolbox of each sandbox. */
 	readonly #rest: Rest;
 	readonly #headers: Record<string, string>;
@@ -291,7 +299,11 @@ class DaytonaHost implements MachineHost {
 		if (options.connect === "exec") {
 			this.exec = (id, argv, ctx) => this.#exec(id, argv, ctx);
 			this.upload = (id, path, bytes, ctx) => this.#upload(id, path, bytes, ctx);
-		} else this.dialLog = (id, ctx) => this.#dialLog(id, ctx);
+		} else {
+			this.dialLog = (id, ctx) => this.#dialLog(id, ctx);
+			this.dialExit = (id, ctx) => this.#dialExit(id, ctx);
+			this.redial = (id, ctx) => this.#redial(id, ctx);
+		}
 	}
 
 	/**
@@ -397,7 +409,7 @@ class DaytonaHost implements MachineHost {
 		try {
 			const toolbox = await this.#toolbox(id);
 			const { commandId } = await this.#runAsync(toolbox, DIAL_SESSION, dialLaunch({ rootOnly: this.facts.rootOnly, attach }), Math.max(1, until - Date.now()));
-			this.#dials.set(id, commandId);
+			this.#dials.set(id, { session: DIAL_SESSION, command: commandId, attach, starts: 1 });
 		} catch (error) {
 			throw new HostError("vendor", `starting agentrun-dial in ${id} failed: ${words(error)}`);
 		}
@@ -409,11 +421,37 @@ class DaytonaHost implements MachineHost {
 	 * prefixes are dropped. undefined when this host started no agentrun-dial there.
 	 */
 	async #dialLog(id: string, ctx: HostCall): Promise<string | undefined> {
-		const commandId = this.#dials.get(id);
-		if (commandId === undefined) return undefined;
-		const session = `${await this.#toolbox(id, ctx.signal)}/process/session/${DIAL_SESSION}`;
-		const logs = orThrow(await this.#rest.call("GET", `${session}/command/${encodeURIComponent(commandId)}/logs`, { retry: true, timeoutMs: ctx.timeoutMs }, ctx.signal));
+		const dial = this.#dials.get(id);
+		if (dial === undefined) return undefined;
+		const session = `${await this.#toolbox(id, ctx.signal)}/process/session/${dial.session}`;
+		const logs = orThrow(await this.#rest.call("GET", `${session}/command/${encodeURIComponent(dial.command)}/logs`, { retry: true, timeoutMs: ctx.timeoutMs }, ctx.signal));
 		return decoder.decode(logs.bytes).replaceAll(OUT.toString("latin1"), "").replaceAll(ERR.toString("latin1"), "");
+	}
+
+	/**
+	 * agentrun-dial's exit code: one read of its session, whose command of the id its start returned carries exitCode
+	 * once it has exited (as the exec path reads a command's exit). undefined while it runs, and where this host started
+	 * no agentrun-dial.
+	 */
+	async #dialExit(id: string, ctx: HostCall): Promise<number | undefined> {
+		const dial = this.#dials.get(id);
+		if (dial === undefined) return undefined;
+		const read = orThrow(await this.#rest.json("GET", `${await this.#toolbox(id, ctx.signal)}/process/session/${dial.session}`, { retry: true, timeoutMs: ctx.timeoutMs }, ctx.signal));
+		const found = ((read as { commands?: Array<{ id?: unknown; exitCode?: unknown }> } | null)?.commands ?? []).find((one) => one.id === dial.command);
+		return typeof found?.exitCode === "number" ? found.exitCode : undefined;
+	}
+
+	/**
+	 * agentrun-dial started once more, as create started it (dialLaunch's line, the same attach URL; the token is the
+	 * sandbox's env still), in a session of its own: dialLog and dialExit read that one from then. A sandbox this host
+	 * started no agentrun-dial in is refused.
+	 */
+	async #redial(id: string, ctx: HostCall): Promise<void> {
+		const dial = this.#dials.get(id);
+		if (dial === undefined) throw new HostError("not_found", `no agentrun-dial was started in the sandbox ${id}, so it is not started again`);
+		const session = `${DIAL_SESSION}-${dial.starts + 1}`;
+		const { commandId } = await this.#runAsync(await this.#toolbox(id, ctx.signal), session, dialLaunch({ rootOnly: this.facts.rootOnly, attach: dial.attach }), ctx.timeoutMs, ctx.signal);
+		this.#dials.set(id, { ...dial, session, command: commandId, starts: dial.starts + 1 });
 	}
 
 	/** GET /sandbox/{id}; one Daytona answers 404 for, or reads destroyed, is none. */

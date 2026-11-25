@@ -14,7 +14,7 @@
 // request: a server at fal's own host scopes each key to the run before it leaves (falKeys).
 import { createHash } from "node:crypto";
 import type { PublicFetchOptions } from "@parcha/pi-browser";
-import type { McpKeys, McpMeter, McpQuote } from "./mcp-gateway.js";
+import type { McpKeys, McpMeter, McpQuote, McpResults } from "./mcp-gateway.js";
 import { mediaSeconds, voiceSeconds } from "./media-duration.js";
 import { SAVE_MAX_BYTES, type SaveSlots, SERVER_SLOTS } from "./web-save.js";
 import { micro } from "./micro.js";
@@ -559,6 +559,36 @@ export function falKeys(run: string): McpKeys {
   };
 }
 
+/** Where a fal job's result is filed in the run's files: evidence/fal/<request_id>.json. */
+export const FAL_RESULTS_DIR = "evidence/fal";
+/** fal's request ids: UUIDs. Only one names a file: anything else (a path, a dot name, a name past a filename's
+ *  limit, a plain name fal never gives) is never filed. */
+export const FAL_REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** fal's tools whose answers carry completed jobs: run_model's one, submit_jobs' and wait_for_jobs' each. */
+const WITH_RESULTS = new Set(["run_model", "submit_jobs", "wait_for_jobs"]);
+
+/** The completed jobs of fal's answer to `tool`, each by its request_id with its `result` as fal answered it: the answer
+ *  itself (run_model), and each entry of a list in it (submit_jobs', wait_for_jobs' `jobs`). A job is completed when
+ *  fal says so (`status` "completed") and it carries a `result`. One whose request_id is not a UUID is left out, and a
+ *  request_id twice in one answer is filed from its first entry. */
+export const falResults: McpResults = {
+  dir: FAL_RESULTS_DIR,
+  of(tool, reply) {
+    if (!WITH_RESULTS.has(tool)) return [];
+    const body = bodyOf(reply);
+    if (!isObject(body)) return [];
+    const entries = [body, ...Object.values(body).flatMap((value) => (Array.isArray(value) ? value : []))];
+    const seen = new Set<string>();
+    return entries.flatMap((entry) => {
+      if (!isObject(entry) || entry.status !== "completed" || !Object.hasOwn(entry, "result")) return [];
+      const id = entry.request_id;
+      if (typeof id !== "string" || !FAL_REQUEST_ID.test(id) || seen.has(id)) return [];
+      seen.add(id);
+      return [{ name: id, value: entry.result }];
+    });
+  },
+};
+
 /** A fal server's meter: fal's unit prices read through the gateway's `ask`, kept per endpoint for PRICE_TTL_MS.
  *  `media` reads an input media file (none: such a job is unpriceable); `now`, the clock. */
 export function falMeter({ media, now = Date.now }: { media?: MediaReader; now?: () => number } = {}): McpMeter {
@@ -654,6 +684,7 @@ export function falMeter({ media, now = Date.now }: { media?: MediaReader; now?:
   };
   return {
     bills: falBills,
+    results: falResults,
     async quote(tool, args, ask, signal): Promise<McpQuote> {
       const quotes: (Priced | Unpriced)[] = [];
       // One at a time: each endpoint's price is read once, the next job's from what the last one kept.

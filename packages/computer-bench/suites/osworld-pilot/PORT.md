@@ -164,7 +164,7 @@ Environment, by name only:
 - computer-bench: `AGENTRUN_TOKEN` (serve's token), and `OPENROUTER_API_KEY` for the judge.
 
 ```
-B=packages/computer-bench; S=$B/suites/osworld-pilot; API=$AGENTRUN_URL/v2   # serve's base URL
+B=packages/computer-bench; S=$B/suites/osworld-pilot; API=$AGENTRUN_BASE_URL   # serve's base URL, ending in /v2, as it prints it
 node $B/dist/cli.js validate $S
 node $B/dist/cli.js verify --suite $S --arms $S/arms.json --backend serve --serve $API --out $OUT/verify --seeds 1,2,3 --parallel 4
 node $B/dist/cli.js run --suite $S --arms $S/arms.json --backend serve --serve $API --verified $OUT/verify/verify.json \

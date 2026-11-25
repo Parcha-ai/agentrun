@@ -2,18 +2,17 @@
 // a Core run happens inside that server's own process, behind its public address: serve's
 // packages/serve/scripts/dial-conformance.mjs --provider cloudflare gives createProvider() its dial and the run a DialKit.
 // From a laptop's CLI, dialKit() refuses in words, and the provider refuses every create before the relay is called.
-//
-// The provider reads no environment: this module reads its own COMPUTER_CLOUDFLARE_* names and passes each to create()
-// as its option. The live sweep (sweep.ts, --provider cloudflare) reads the same names through createHost.
 import { type CloudflareProvider, create } from "../cloudflare.js";
+import { CLOUDFLARE } from "../descriptors/cloudflare.js";
 import type { MachineHost } from "../host.js";
 import type { HostedDial } from "../hosted/provider.js";
 import { httpsBase } from "../hosted/rest.js";
 import type { ProviderNote } from "../mount-archil.js";
 import { dialOnlyFromServer } from "./dial-only.js";
-import { kindFrom } from "./kind.js";
+import { CONFORMANCE_MAX_LIFETIME_MS, type Env, kindFrom, preparedImage } from "./module-kit.js";
 
-/** The environment this module reads, by name, each for the option its comment names. */
+export { CONFORMANCE_MAX_LIFETIME_MS };
+
 export const ENV = {
 	/** relayUrl, required: the relay Worker's https address. */
 	url: "COMPUTER_CLOUDFLARE_RELAY_URL",
@@ -23,11 +22,8 @@ export const ENV = {
 	kind: "COMPUTER_CLOUDFLARE_KIND",
 } as const;
 
-/** The longest lifetime a computer of a run may ask for: init's deadline and the janitor end each container by then. */
-export const CONFORMANCE_MAX_LIFETIME_MS = 30 * 60_000;
-
 /** The provider's options this module reads from env; throws in words without either, never echoing the token. */
-export function settingsFromEnv(env: Record<string, string | undefined> = process.env): { relayUrl: string; relayToken: string } {
+export function settingsFromEnv(env: Env = process.env): { relayUrl: string; relayToken: string } {
 	const relayUrl = env[ENV.url];
 	const relayToken = env[ENV.token];
 	if (!relayUrl || !relayToken) throw new Error(`the Cloudflare conformance module needs ${ENV.url} and ${ENV.token}`);
@@ -62,15 +58,11 @@ export function createProvider({ env = process.env, dial, daemonPath, fetch, onN
 
 /** The run's image: the box image the relay was deployed FROM, as its /v1/health names it. */
 export async function conformanceImage(options: Pick<CloudflareModuleOptions, "env" | "fetch"> = {}, context: { signal?: AbortSignal } = {}): Promise<string> {
-	const image = await createProvider(options).prepareImage(context);
-	if (!image.ok) throw new Error(image.error.message);
-	return image.value;
+	return preparedImage(createProvider(options), context.signal);
 }
 
-/** The server the run's containers dial, as the CLI asks for it: refused in words (dial-only.ts). */
-export const dialKit = dialOnlyFromServer("cloudflare", "Cloudflare");
+export const dialKit = dialOnlyFromServer(CLOUDFLARE);
 
-/** The Cloudflare host the live sweep lists and deletes through, from the same settings; it makes nothing. */
 export function createHost({ env = process.env, fetch }: Pick<CloudflareModuleOptions, "env" | "fetch"> = {}): MachineHost {
 	return create({ ...settingsFromEnv(env), ...(fetch ? { fetch } : {}) }).host;
 }
