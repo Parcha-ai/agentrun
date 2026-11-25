@@ -10,7 +10,7 @@
 import { availableParallelism, freemem, totalmem } from "node:os";
 import { Worker } from "node:worker_threads";
 import type { Locator, SessionRead } from "./reader.js";
-import type { RecordIndex } from "./record-index.js";
+import { indexArrays, type RecordIndex } from "./record-index.js";
 
 /** A read the pool made: its sessions, the records it added, those it asked for and did not hold. Not ok: make it again. */
 export type PoolRead = { ok: true; sessions: SessionRead[]; mine: RecordIndex; missed: RecordIndex } | { ok: false };
@@ -110,8 +110,7 @@ export function stringBytes(read: object): number {
 
 type Job = { id: number; source: string; locator: Locator; size: number; state: "queued" | "running" | "waiting" | "taken"; read?: PoolRead; bytes: number };
 
-const indexBytes = (index: RecordIndex): number =>
-  [index.uuids.slots, index.uuids.owners, index.uuids.words, index.others.slots, index.others.owners, index.others.ends, index.others.bytes].reduce((sum, a) => sum + a.byteLength, 0);
+const indexBytes = (index: RecordIndex): number => indexArrays(index).reduce((sum, a) => sum + a.byteLength, 0);
 
 /** What a read holds while it waits: its indexes' and counts' arrays, and its sessions with their strings. */
 function heldBytes(read: PoolRead): number {

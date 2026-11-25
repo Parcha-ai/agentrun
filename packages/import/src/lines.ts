@@ -4,7 +4,7 @@
 // takes only the bytes written since.
 import { type FileHandle, open } from "node:fs/promises";
 import { addRequest, type Counts, counts, trimmed } from "./counts.js";
-import { DROPS_CURSOR, type InternalReadOptions } from "./internal.js";
+import { DROPS_CURSOR, type InternalReadOptions, NO_READ_AHEAD } from "./internal.js";
 import { type Env, type Locator, type Reader, type ReadOptions, type ReadResult, rememberUser } from "./reader.js";
 import { type Fields, fieldsOf, type Shape, scan } from "./scan.js";
 import { isObject, mostEffortOf, timeOf } from "./text.js";
@@ -132,7 +132,7 @@ const overlay = (base: Set<string>): Set<string> => {
 };
 
 /** One session file of `spec`'s source, read from its start or from `cursor`. */
-async function readLines<S extends string, O>(spec: LineSource<S, O>, shape: Fields | undefined, file: string, cursor: FileCursor | undefined, { turns: keep = true, totals: asked = false, seen, keepsCursor = true, [DROPS_CURSOR]: dropsCursor = false, maxLine = Infinity }: InternalReadOptions = {}): Promise<ReadResult<S, FileCursor>> {
+async function readLines<S extends string, O>(spec: LineSource<S, O>, shape: Fields | undefined, file: string, cursor: FileCursor | undefined, { turns: keep = true, totals: asked = false, seen, keepsCursor = true, [DROPS_CURSOR]: dropsCursor = false, [NO_READ_AHEAD]: inTurn = false, maxLine = Infinity }: InternalReadOptions = {}): Promise<ReadResult<S, FileCursor>> {
   const { source } = spec;
   const totals = asked && !keep && spec.totals === true;
   const fields = totals ? shape : undefined;
@@ -195,19 +195,20 @@ async function readLines<S extends string, O>(spec: LineSource<S, O>, shape: Fie
       if (bytes > maxLine) throw new LineTooLong(file, offset, bytes, maxLine);
     };
     if (stats.size > start) {
-      // The open handle, so the bytes read are the file stat described, whatever the path names now. Two buffers for the
-      // whole read, taken in turn: the next chunk is read into one while this one's lines are read (a new buffer a chunk
-      // leaves freed native memory behind on every thread that reads, the read pool's).
-      const buffers = [Buffer.allocUnsafeSlow(CHUNK), Buffer.allocUnsafeSlow(CHUNK)] as const;
+      // The open handle, so the bytes read are the file stat described, whatever the path names now. The buffers last the
+      // whole read (a new buffer a chunk leaves freed native memory behind on every thread that reads, the read pool's):
+      // two taken in turn, the next chunk read into one while this one's lines are read; read in turn (NO_READ_AHEAD),
+      // one, the next chunk read into it once its lines are.
+      const buffers = inTurn ? [Buffer.allocUnsafeSlow(CHUNK)] : [Buffer.allocUnsafeSlow(CHUNK), Buffer.allocUnsafeSlow(CHUNK)];
       let which = 0;
-      let next = ahead(handle.read(buffers[0], 0, CHUNK, start));
+      let next = ahead(handle.read(buffers[0]!, 0, CHUNK, start));
       for (let at = start; ; ) {
         const { bytesRead } = await next;
         if (!bytesRead) break;
         const buffer = buffers[which]!;
         at += bytesRead;
-        which ^= 1;
-        next = ahead(handle.read(buffers[which]!, 0, CHUNK, at));
+        which = (which + 1) % buffers.length;
+        if (!inTurn) next = ahead(handle.read(buffers[which]!, 0, CHUNK, at));
         const chunk = buffer.subarray(0, bytesRead);
         read += chunk.length;
         let from = 0;
@@ -234,6 +235,7 @@ async function readLines<S extends string, O>(spec: LineSource<S, O>, shape: Fie
           tooLong(restBytes);
           rest.push(Buffer.from(chunk.subarray(from)));
         }
+        if (inTurn) next = handle.read(buffer, 0, CHUNK, at);
       }
     }
     // A last line with no newline yet may be a record still being written: read into this result when it is whole JSON,
