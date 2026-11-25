@@ -22,6 +22,10 @@ import { at as minute, claudeSession, claudeSubagent, codexSession, piSession } 
 import { agentWithRevision, storeOn } from "./store-helpers.mjs";
 import { call, client, cookieOf, FAUX, LAUNCH_HOOK_URL, scratch, serve, startServe, withEnv } from "./support.mjs";
 
+// The import finds each source's folders where the environment puts them: none of this machine's, for a server started
+// with this process's environment, so its scratch home is all it reads.
+for (const name of ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "XDG_DATA_HOME", "OPENCODE_DB"]) delete process.env[name];
+
 const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
 const json = { "content-type": "application/json" };
 const page = (server) => ({ ...json, origin: `http://127.0.0.1:${server.port}` });

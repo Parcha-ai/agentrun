@@ -1704,9 +1704,29 @@ nothing.
 A check where the CLI answered nothing that reads as a status gets the same. Any other failure of the check, such as no CLI at
 its path, fails the run at once in the check's own words. It never switches to a key. The run books its tokens and no dollars (`cost.plan`, `on: "claude_code"`), and the plan's own limits
 apply. Only a run in a runner place, on the machine the mode was turned on for, goes on the login. A run placed in a
-sandbox, or on another machine, uses the keys. The login is the server's user's, so a run on it needs runs under that
-user: where each run is a user of its own (the image, `run_isolation: "uid"`), a claude-agent run that would go on the
-login fails at its claim and says so. Set `AGENTRUN_RUN_USER=same`, or give the run a `model_key`.
+sandbox, or on another machine, uses the keys. The login is the server's user's. Where each run is a user of its own
+(the image, `run_isolation: "uid"`), a run on AgentRun's own login folder gets the login's access token alone in
+`CLAUDE_CODE_OAUTH_TOKEN`: never the folder and never the refresh token, so its CLI never renews the login. The runner
+reads the token from the folder at the run's start and again whenever Anthropic refuses it mid-run, so a renewal the
+person's own Claude Code wrote there is picked up. The runner renews the login itself, in the CLI's place: when a token
+has less than five minutes left, and after Anthropic refuses one mid-run. It sends the pinned CLI's own refresh request,
+holds the CLI's own refresh lock on the folder (so a renewal by the CLI or another runner is taken and nothing is sent
+twice), and writes the answer back to the folder's `.credentials.json` alone, atomically at mode 0600, every other field
+kept. It holds that lock as the CLI does, by the mtime it set: a lock another holder took over while the runner was
+paused is never touched or removed, and the runner sends nothing under it. If the write back fails, the runner keeps the
+new pair in memory: each later ask gets its token, sends nothing (the old refresh token is spent and is never sent
+again) and tries the write again, under the same refresh lock and after reading the file again, so a newer pair another
+holder wrote there is kept. Once that token has less than five minutes left and is still unsaved, the run fails
+in words that say the renewal could not be saved and what to fix. A held token Anthropic refuses is never handed again:
+the ask fails while the pair is unsaved, and once it is saved the runner renews from it. One ask sends at most one renewal and nothing retries it. A renewal that fails, a refresh token Anthropic refused
+included, fails the run at its start in words that say to open Claude Code once to renew it, and mid-run ends the turn
+in the same words (or, with no failure to tell, words that say to run the claude CLI once on this login to renew it).
+No token is in the runner's log or in any error, and each token handed is cut from the run's journal, messages and rows
+as the runner writes them. A command the run's CLI starts can read the token,
+as the run's own user can. Under per-run users, a run on this machine's own Claude Code login (`~/.claude`, or the `CLAUDE_CONFIG_DIR` AgentRun was started with) fails at its
+claim and says so, and so does any login run while another runner on the same data folder runs its login runs under
+the server's user (its CLI renews the folder's login itself), naming that runner. Set `AGENTRUN_RUN_USER=same`, or give
+the run a `model_key`.
 
 The mode exists only on a server that listens on loopback (a local install, or one behind a local proxy). A server
 bound to any other address, such as all interfaces in a container or on a hosting service, has it off
@@ -1751,12 +1771,26 @@ seconds), and a run on any other model, a key's default included, never asks Oll
 - Cost: $0, booked as a known cost. Its requests never count toward the server's [limit on free
   requests](#a-limit-on-free-requests): there is no shared quota behind them. An agent's own `max_requests` counts them,
   with its other free requests, so a run on Ollama that keeps calling tools still stops there.
-- Harness: pi, and every harness on a wire the route translates. That wire is Anthropic's Messages: claude-agent,
-  Goose, and a harness module on it. Its requests go through the same translation as pi's: the same `/api/chat`,
-  `num_ctx`, tools and cost. A Messages client's token count (`/v1/messages/count_tokens`) is answered there without
-  asking the model, an answer it asks for unstreamed comes back whole (or as a 500 error with words when part of the
-  stream doesn't read), and every model id it sends (Claude Code's small model too) runs the one tag. claude-agent turns its own tool search off on these models. codex and opencode, on
-  OpenAI's Responses, never list them.
+- Harness: pi, and every harness on a wire the route translates. Those wires are Anthropic's Messages (claude-agent,
+  Goose, a harness module on it) and OpenAI's Responses (codex, opencode, a harness module on it). Their requests go
+  through the same translation as pi's: the same `/api/chat`, `num_ctx`, tools and cost. A Messages client's token
+  count (`/v1/messages/count_tokens`) is answered there without asking the model, an answer it asks for unstreamed
+  comes back whole (or as a 500 error with words when part of the stream doesn't read), and every model id it sends
+  (Claude Code's small model too) runs the one tag. claude-agent turns its own tool search off on these models.
+- On OpenAI's Responses, each request is the whole conversation: `store: true` and `previous_response_id` are
+  refused, since nothing is stored here. Function tools only: a custom (freeform) tool such as Codex's `apply_patch`
+  grammar, `local_shell` and `web_search` are refused with words, never dropped, and codex offers no live web search
+  on these models. A `tool_choice` that forces a call (`"required"`, or one naming a function) is refused too: Ollama
+  can't be made to call a tool. `"auto"` and `"none"` are taken. `text.format` `json_schema` is Ollama's own `format`
+  (the answer held to the schema; `json_object` to any object), refused beside tools sent, since a model held to it
+  can't call one. `temperature` and `top_p` reach Ollama's options; `reasoning.effort` turns a thinking model's
+  thinking on, `"none"` off. An effort or a format the route doesn't know is refused. `parallel_tool_calls: false` gets
+  an answer's first call alone, and the calls it drops are logged by tool name. A request streams only with
+  `stream: true`; one that names no stream is answered whole. Replayed reasoning, OpenAI's encrypted reasoning
+  included, is dropped, not refused. An answer cut at its output limit ends `response.incomplete` with its usage, so it
+  is booked and codex ends the turn rather than asking again. Every model id the client sends (a title or compaction
+  request's too) runs the one tag. codex and opencode are given the model's window as the route runs it (its `num_ctx`,
+  at most 64k), so they compact before Ollama would cut the prompt, and its output ceiling (half that, at most 16,384).
 - Cloud models: an Ollama cloud model (a `-cloud` tag, with `remote_host` and `remote_model` in `/api/tags` or
   `/api/show`) runs on ollama.com, not here, so it is never listed: never local, never $0, never the default.
 - Default: with no model key held (and no `AGENT_MODEL`, ChatGPT sign-in or gateway), pi and every harness on a wire the
@@ -2459,8 +2493,9 @@ preset: you give your Composio API key, a toolkit (`github`, `slack`...), the ac
 toolkit's list) and a server name, and the server has Composio make a managed MCP server for them, then saves it as an
 ordinary MCP server with the key sealed as an `x-api-key` header. `POST /v2/settings/mcp-servers/composio/tools`
 `{api_key, toolkit}` lists the actions, and `POST /v2/settings/mcp-servers/composio/toolkits` `{api_key}` lists the
-toolkits Composio offers (`{toolkits: [{slug, name}]}`, by name) for the console's toolkit picker; `PUT /v2/settings/mcp-servers/{name}/composio` `{api_key, toolkit, tools,
-user_id?, auth_config_id?, price_usd?}` makes and saves the server. In place of `api_key`, `"api_key_env":
+toolkits Composio offers (`{toolkits: [{slug, name}]}`, by name) for the console's toolkit picker;
+`PUT /v2/settings/mcp-servers/{name}/composio` `{api_key, toolkit, tools, user_id?, auth_config_id?, price_usd?}` makes
+and saves the server. In place of `api_key`, `"api_key_env":
 "COMPOSIO_API_KEY"` reads the key from that variable, as the server and each runner were started with it, at each use and keeps no copy: the
 way an [API-only](#api-only) server's token saves one. That key is only ever sent to Composio's own origin, fixed in
 code, so a server saved so whose address is anywhere else is refused by name and sent nothing. The body names no
@@ -2474,12 +2509,15 @@ server. `price_usd` (0 or more, as a `prices` value) is what each call costs you
 price, so a call is held under its run's cap and booked as the run's tool cost (its trace span's `usd`, the run's
 `cost.usd`), as any priced MCP tool's. A re-save that names no price keeps the server's prices for the actions it still
 lists. Composio's server can leave out an action it was allowed (it did for `HACKERNEWS_GET_FRONTPAGE`), so the answer's
-`not_served` names any chosen action the saved server doesn't list. These routes are the owner's session alone. A refresh of a saved Composio server also reads its account at Composio,
-and every read of the server then says it as `composio_account: {state, labels?, checked_at}`: `connected` with each
-account's label (its alias, else the name Composio shows, else its word id; never its id or a token), `pending` while
-its connect link is unfinished, `expired`, `none`, or `unknown` when Composio didn't answer. An account Composio answers as
-another user's is never the server's, and a server whose recorded user is empty or `per_run` is never asked about (`unknown`).
-The API token sees `composio_account` too, in a server's full read: its label may be the account's email.
+`not_served` names any chosen action the saved server doesn't list. These routes are the owner's session alone.
+
+A refresh of a saved Composio server also reads its account at Composio, and every read of the server then says it as
+`composio_account: {state, labels?, checked_at}`: `connected` with each account's label (its alias, else the name
+Composio shows, else its word id; never its id or a token), `pending` while its connect link is unfinished, `expired`,
+`none`, or `unknown` when Composio didn't answer. An account Composio answers as another user's is never the server's,
+and only one it names as the server's user's gives a label. A per-run server has none; an empty recorded user reads
+`unknown`. The API token sees `composio_account` too, in a server's full read: its label may be the account's email.
+
 A saved Composio server is gated, approved and shown on the Timeline as any MCP server's tools are, "not metered" until
 you price them (`price_usd`, or the server's `prices`). Composio's own meta tools stay refused, and the helper actions
 that connect an account are left off the server's address. Deleting the server in Settings deletes what its save made in Composio too, with the saved key: the Composio MCP server, the connected account its connect link started (the link with it) and the auth config it made (Composio's "already gone" is fine). What another saved server uses is kept until the last of them goes, and what was there before the save (an auth config or account you had) is never deleted. The `DELETE` answers `200 {deleted: true, composio: {removed, note}}`: the note says what it removed, what it kept and why, and, when Composio refuses or does not answer, what is left to remove in Composio yourself (`removed: false`; the server is still forgotten here). The console shows it. A save that fails removes in Composio what it made there and never what it found, and its error names what is left when Composio refuses that too (a 422 on a field says it in `details.composio` as well). A save over a preset server removes, once it is saved, the Composio MCP server its earlier save made, and what that save made and the new one no longer stands on (the account of another `user_id`, the auth config of another toolkit), with the key it was made with, unless another saved server uses it, and answers `composio: {removed, note}` saying so. An ordinary `PUT` that moves a preset server to another address makes it another service's server: it removes what the preset made for it in Composio as its delete would, and answers `composio` too. While Composio triggers use the server, that move, and a preset save over it as another `user_id` or auth config, are refused as its delete is (`409 composio_in_use`, naming them). Preset saves and MCP server deletes run one at a time, so a delete never removes what a save in progress reuses; an ordinary save of a preset server lists its tools at once and takes its turn only to write the server and clean up.
@@ -3343,8 +3381,9 @@ Create; no run ever holds a token that can write.
      then applies it here (an apply refused takes the package back, deletes the branch and makes nothing). The push is
      recorded on the suggestion first, so a create after a write that failed finds the agent made from that template at
      that commit and reuses it, never making a second one;
-   - opens the pull request, naming the agent's id and the variables the client reads (`AGENTRUN_URL`,
-     `AGENTRUN_API_KEY`, `AGENTRUN_AGENT_<KEY>`). A pull request GitHub refuses keeps the agent (`502 github_failed`,
+   - opens the pull request, naming the agent's id and the variables the client reads (`AGENTRUN_BASE_URL`, given
+     with `/v2` as the server prints it and taken with or without, as AgentRun's own clients take it;
+     `AGENTRUN_API_KEY`; `AGENTRUN_AGENT_<KEY>`). A pull request GitHub refuses keeps the agent (`502 github_failed`,
      `details.agent_id`), and the next create opens the pull request alone. A created suggestion answers `200` as it is.
 
 `--faux-github` (with `--faux`) serves the list, the checks and the create from its fake App: its installation holds
@@ -3412,7 +3451,7 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `DELETE /runs/{id}` | This server's own route (`x-agentrun-serve: "purge/1"`): [purges](#purging-a-run-or-an-agent-made-here) a run that is not live, its cost kept in every total. `204`, again on a second `DELETE`; a live run is `409 run_not_final`, and every route of a purged run is `410 purged`. |
 | `DELETE /agents/{id}/sign-ins/{key}` | This server's own route (`x-agentrun-serve: "signins/1"`): forgets one of the agent's [saved sign-ins](#saved-sign-ins), at its vendor and here. `409 sign_in_held` while a run holds its save lease, or while a run it was handed is still going. |
 | `POST /agents/{id}/runs`, `GET /agents/{id}/runs` | A run of the current revision, or of `revision`. An agentic run's input is `{content: string}`; a workflow run's is what its workflow's input schema takes. `file_ids` names [uploaded](#uploads) files, copied into the run's `work/inputs/` before it starts and named in its first message. `labels` (this server's own, `runlabels/1`) is the caller's map of its own strings for the run: at most 16 keys, each 1 to 63 letters, digits, `.`, `_`, `-` or `/` starting with a letter or a digit, each value 1 to 256 characters with no control character; kept as given, served as `labels` on every read of the run (`{}` when none), never read by the server otherwise, so no place for a secret. The agent's runs, newest first; `label` filters them as `GET /runs` does. |
-| `GET /runs` | Every agent's runs, newest first, a page of at most 100; `agent`, `revision` and `status` narrow it, `label=<key>:<value>` (`runlabels/1`, split at the first `:`, once per request) keeps the runs holding that label, `source=<name>` (`runsource/1`, once per request) keeps the runs imported from that source (its name as `imported_from.source` holds it: `claude-code`, `codex`, ...) and `source=live` the runs made here, not imported, and `archived=true` lists only archived ones. A failed run's summary carries its `error`, and a waiting run's its `pending`. |
+| `GET /runs` | Every agent's runs, newest first, a page of at most 100; `agent`, `revision` and `status` narrow it, `label=<key>:<value>` (`runlabels/1`, split at the first `:`, once per request) keeps the runs holding that label, `source=<name>` (`runsource/1`, once per request) keeps the runs imported from that source (its name as `imported_from.source` holds it: `claude-code`, `codex`, ...) and `source=live` the runs made here, not imported, `from` and `to` (`runwindow/1`, RFC 3339 date-times with their zone, each once) keep the runs started in [from, to), `model=<provider/model>` (`runmodel/1`, once) the runs that sent at least one request to that model (its exact name as their metrics hold it; a run counts from its first finished turn, as its metrics are written each time a turn ends), and `archived=true` lists only archived ones. A failed run's summary carries its `error`, and a waiting run's its `pending`. |
 | `GET /runs/{id}` | The run: its revision, kind, status, state, result, error, `pending` (this server's own, `pending/1`: what a waiting run waits on, by `kind`: `{kind: "question", question, asked_at}` for a question it asked a person; `approval` for a tool call held for a person's approval, with the tool, its arguments and its price; `budget` for a run paused at its cap ([a run paused at its cap](#a-run-paused-at-its-cap)); `{kind: "browser", instruction, completion_condition, asked_at, expires_at}` for its agent's ask for the owner in its browser; or `{kind: "computer", computer: "desktop" \| "phone", instruction, completion_condition, asked_at, expires_at}` for its agent's ask for the owner on its desktop or phone; else null, a stopped turn's included) and cost (`basis` `reported`, `estimate` or `unpriced`, with its model requests' `tokens`: [A run's cost](#a-runs-cost-its-tokens-and-its-basis); $0 before its first model request, a cancelled run's included). |
 | `GET /runs/{id}/timeline` | JSON pages with the change-number cursor (`after`, `next_after`, `reset`, `drop`, `has_more`, `final`, `wait_ms` long poll, and this server's own `limit`, 1 to 500 rows a page, default 500), or server-sent events with `Accept: text/event-stream` (`id` is the cursor, `Last-Event-ID` resumes). Rows sort by `seq`; the usage row (`Cost so far`), the run's running total, is always the last row, and moves to the end when a row comes after it. Beside the rows, `in_flight`: what a live run waits on now, each model request sent and not answered (from its booking's `runner.request`, stamped `at` when it left) and each tool call not returned, from when it was sent; empty once the run is final. A request sent or answered is a change of the page, as a row is. |
 | `POST /runs/{id}/messages` | To an agentic run: `steer` while the agent works, `answer` when it asked the person, `follow_up` after a stop or after it completed: a completed run opens again, the same run on its own session and store, takes a place under `--max-runs` (it waits for one when none is free), and completes again. A failed or cancelled run, an archived run and a run of an archived agent are `409 not_continuable` (a run of an agent [being deleted](#deleting-an-agent-another-system-owns), `409 agent_not_runnable`); a workflow run takes none (`501`). |
@@ -4272,19 +4311,20 @@ Never bypass the store lock. This local-store operation has no server endpoint t
 machine; importing into a different local store does not populate a remote console. Build, edit, run, query and
 connection handoffs use the shared coding-agent selector and target this server's matching skill, MCP endpoint and API.
 
-`agentrun-serve import --data DIR` reads the Claude Code, Codex and pi sessions in your own home (`~/.claude/projects`,
-`~/.codex/sessions`, `~/.pi/agent/sessions`) into the data directory, once. Each project folder becomes an agent, with its
+`agentrun-serve import --data DIR` reads the Claude Code, Codex, pi and OpenCode sessions in your own home
+(`~/.claude/projects`, `~/.codex/sessions`, `~/.pi/agent/sessions`, `~/.local/share/opencode`) into the data directory,
+once. Each project folder becomes an agent, with its
 CLAUDE.md or AGENTS.md and its skill folders, and each session becomes a run you can read but not continue. Nothing leaves
 this machine, and the values of key-shaped environment variables are cut out of what it writes. Run it again and it takes
 only what it has not taken already. Sessions written in the last 10 minutes wait for the next import.
 
-A run's cost is what its source recorded (Claude Code's and pi's). A session its source did not price, such as a Codex
+A run's cost is what its source recorded (Claude Code's, pi's and OpenCode's). A session its source did not price, such as a Codex
 session, keeps the model catalog's estimate for its tokens beside an unknown cost, and every place that shows a run's
 cost reads that estimate, as an estimate: the run (`cost.usd`, basis `estimate`), its usage row, `GET /stats` and its
 analytics, and `GET /usage`. A session on a model the catalog does not price stays unknown.
 
 - `--dry-run` lists what it would import and writes nothing.
-- `--from claude-code,codex,pi` picks the sources.
+- `--from claude-code,codex,pi,opencode` picks the sources.
 - `--include-deleted` also imports the sessions of project folders that no longer exist, such as a git worktree you
   deleted. Each such folder is still its own agent, with no instructions or skills to read.
 - `--all` keeps those too, as well as sessions of temporary folders and sessions with no message of yours.

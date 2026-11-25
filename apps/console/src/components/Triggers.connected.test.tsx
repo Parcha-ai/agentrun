@@ -6,6 +6,7 @@ import { createClient } from "@/lib/client";
 import { CONNECTED_NO_CAP } from "@/lib/schedules";
 import type { Trigger } from "@/lib/v2";
 import { pick, picker } from "@/test/picker";
+import { searchPick, searchPicker } from "@/test/search-picker";
 
 // A trigger that starts a connected agent (its definition names a `native` source) takes no cost cap and no effort: the
 // server refuses either on its target (422 not_allowed, serve's trigger target check), since the agent's own CLI keeps
@@ -79,7 +80,8 @@ async function open(v2: ReturnType<typeof createClient>, view: ScheduleView, ref
     const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
     await act(async () => { Object.getOwnPropertyDescriptor(proto, "value")!.set!.call(el, value); el.dispatchEvent(new Event("input", { bubbles: true })); });
   };
-  const choose = async (label: string, value: string) => { await pick(picker(host, label)!, value); await settle(); };
+  // The Event field is a search picker; every other one a Picker.
+  const choose = async (label: string, value: string) => { const search = searchPicker(host, label); await (search ? searchPick(search, value) : pick(picker(host, label)!, value)); await settle(); };
   const issue = (field: string) => host.querySelector(`[data-issue="${field}"]`)?.textContent ?? null;
   return { host, went, click, set, choose, issue, settle, cap: () => host.querySelector('[name="maxCost"]'), noCap: () => host.querySelector("[data-no-cap]")?.textContent ?? null };
 }
