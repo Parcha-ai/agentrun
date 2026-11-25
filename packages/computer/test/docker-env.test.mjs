@@ -91,11 +91,15 @@ test("ensureImage(): docker image inspect and pull, which read the credential he
 });
 
 test("ensureImage(): two calls at once for the same image on two Docker hosts each pull on their own host, never one sharing the other's pull", async () => {
-	const fake = fakeImageDocker();
+	// The pulls are held until both have started (or 5 s pass), so neither host's pull is done before the other's inspect:
+	// the fake keeps one set of images for both hosts.
+	const fake = fakeImageDocker({ "pull-hold": "" });
 	const image = "registry.example.com/team/box:2";
 	const hosts = ["unix:///run/one/docker.sock", "unix:///run/two/docker.sock"];
-	const answers = await Promise.all(hosts.map((DOCKER_HOST) => ensureImage({ image }, { docker: fake.docker, env: { ...hostEnv(), DOCKER_HOST } })));
-	assert.deepEqual(answers, [{ ok: true, value: image }, { ok: true, value: image }]);
+	const asked = Promise.all(hosts.map((DOCKER_HOST) => ensureImage({ image }, { docker: fake.docker, env: { ...hostEnv(), DOCKER_HOST } })));
+	for (let waited = 0; waited < 5000 && fake.pulls().length < hosts.length; waited += 20) await new Promise((resolve) => setTimeout(resolve, 20));
+	fake.clear("pull-hold");
+	assert.deepEqual(await asked, [{ ok: true, value: image }, { ok: true, value: image }]);
 	const pulledOn = fake.envs().filter((e) => e.args[0] === "pull").map((e) => e.seen.DOCKER_HOST).sort();
 	assert.deepEqual(pulledOn, hosts, `each host pulls the image itself: pulls went to ${JSON.stringify(pulledOn)}`);
 });
