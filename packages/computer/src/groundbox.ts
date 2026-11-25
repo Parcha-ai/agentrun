@@ -23,7 +23,7 @@ import { HostedProvider, type HostedOptions } from "./hosted/provider.js";
 import { allPages, httpsBase, jsonOf, type Rest, rest } from "./hosted/rest.js";
 import { PID_KILL } from "./hosted/scripts.js";
 import { dateOf, isWhole } from "./hosted/values.js";
-import type { ComputerSpec, Refusal } from "./provider.js";
+import type { ComputerResources, ComputerSpec, Refusal } from "./provider.js";
 import { type ComputerErrorCode, ok, type Result } from "./result.js";
 
 /** The parts of a WebSocket the host uses: Node's global WebSocket, or a stand-in in tests. */
@@ -233,6 +233,10 @@ interface Sandbox {
 	metadata?: Record<string, string>;
 	created_at?: string;
 	stop_reason?: string | null;
+	/** What the sandbox was given, the figures Groundbox bills by: its vCPUs, its memory in GiB and its disk in GB. */
+	cpus?: number;
+	memory_gb?: number;
+	disk_gb?: number;
 }
 
 /** One message of the command stream, as the server sends it (ExecStreamServerMessage). */
@@ -289,6 +293,22 @@ interface Command {
 /** The bytes a chunk of base64 holds. */
 const bytesOf = (base64: string): number => Math.floor((base64.length * 3) / 4);
 
+/** A positive finite figure of Groundbox's answer, else undefined (absent, zero or not a number: never guessed). */
+const given = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined);
+
+/** What Groundbox says a sandbox was given (Machine.resources): its vCPUs, its memory (GiB, as MB) and its disk (GB),
+ *  each where its answer says it; none where it says nothing. A sandbox made with no size named is given Groundbox's
+ *  own, which only its answer says. */
+function resourcesOf(sandbox: Pick<Sandbox, "cpus" | "memory_gb" | "disk_gb">): { resources?: ComputerResources } {
+	const [cpus, memory, disk] = [given(sandbox.cpus), given(sandbox.memory_gb), given(sandbox.disk_gb)];
+	const resources: ComputerResources = {
+		...(cpus === undefined ? {} : { cpus }),
+		...(memory === undefined ? {} : { memoryMb: memory * 1024 }),
+		...(disk === undefined ? {} : { diskGb: disk }),
+	};
+	return Object.keys(resources).length > 0 ? { resources } : {};
+}
+
 /** A sandbox as the adapter reads a machine; none for a record Groundbox keeps of one that has ended. */
 function machineOf(sandbox: Sandbox): Machine | undefined {
 	const labels = { ...(sandbox.metadata ?? {}) };
@@ -297,7 +317,7 @@ function machineOf(sandbox: Sandbox): Machine | undefined {
 	const state = STATES[sandbox.status];
 	if (state === undefined) return undefined;
 	const created = dateOf(sandbox.created_at);
-	return { id: sandbox.id, labels, state, ...(created ? { createdAt: created } : {}) };
+	return { id: sandbox.id, labels, state, ...(created ? { createdAt: created } : {}), ...resourcesOf(sandbox) };
 }
 
 /** Why Groundbox's metadata can't hold these labels, in words; undefined when it can. */

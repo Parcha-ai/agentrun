@@ -184,6 +184,17 @@ test("get reads Groundbox's statuses as the adapter's, an ended sandbox's record
 	await assert.rejects(hostOf(() => [404, refusal("not_found", "No sandbox sbx_0123456789ab")]).host.get(ID, CTX), (error) => error.code === "not_found");
 });
 
+test("the read-back's resources are what Groundbox's answer says the sandbox was given (memory in GiB, as MB), each only where it says it", async () => {
+	const read = async (fields) => (await hostOf(() => [200, sandbox(fields)]).host.get(ID, CTX)).resources;
+	assert.deepEqual(await read({ cpus: 2, memory_gb: 4, disk_gb: 20 }), { cpus: 2, memoryMb: 4096, diskGb: 20 }, "a sandbox made with no size named: Groundbox's own, which only its answer says");
+	assert.deepEqual(await read({ cpus: 8, memory_gb: 16 }), { cpus: 8, memoryMb: 16384 }, "no disk said: none");
+	assert.deepEqual(await read({ cpus: 0, memory_gb: null, disk_gb: "20" }), undefined, "zero, null and a string are no figure: never guessed");
+	assert.equal(await read({}), undefined, "an answer that says no size: no resources");
+	// A listing's rows carry them too, so a machine found by its labels says what it was given.
+	const { host } = hostOf(() => [200, { data: [sandbox({ cpus: 4, memory_gb: 8, disk_gb: 40 })], has_more: false }]);
+	assert.deepEqual((await host.list(LABELS, CTX)).map((machine) => machine.resources), [{ cpus: 4, memoryMb: 8192, diskGb: 40 }]);
+});
+
 test("list is one listing of the live sandboxes that carry every label, the labels as the API's metadata filter, every page", async () => {
 	const query = "live=true&limit=200&metadata%5Bagentrun.computer%5D=1&metadata%5Bagentrun.computer.name%5D=computer-0123456789ab";
 	const pages = {
