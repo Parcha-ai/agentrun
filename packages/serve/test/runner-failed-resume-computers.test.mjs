@@ -297,6 +297,23 @@ test("a stopped run's end marks its kept row ending before it deletes the machin
   }
 });
 
+test("a run's end whose mark comes late leaves a later claim's keep as that claim wrote it: a follow-up that reopened the run and parked a new machine, or is taking the old one back, keeps its machine", { timeout: 60_000 }, async (t) => {
+  const run = await opened(t);
+  const computers = { kinds: KINDS, providers: { docker: () => run.docker.provider() } };
+  // The claim at epoch 3 ended the run, and its end waited on the store. Meanwhile a follow-up queued the run again, and
+  // its claim (epoch 4) either parked a new machine on runner-b, or marked the old keep taking to attach it.
+  const parked = { provider: "docker", kind: "sandbox", id: "c4", name: "c4", epoch: 4, until: Date.now() + KEEP_MS, runner: "runner-b", incarnation: "inc-b" };
+  const taking = { provider: "docker", kind: "sandbox", id: "c2", name: "c2", epoch: 2, until: Date.now() + KEEP_MS, runner: "runner-a", incarnation: "inc-a", taking: 4 };
+  for (const row of [parked, taking]) {
+    run.docker.held.clear();
+    run.docker.held.set(row.id, { ref: { id: row.id, name: row.id }, labels: { "agentrun.run": RUN, "agentrun.epoch": String(row.epoch) } });
+    await run.server.settings.put(keptKeyOf(RUN), row);
+    await runEndComputers({ store: run.server, computers, log: () => {}, retryMs: 50 })({ runId: RUN, epoch: 3 });
+    assert.deepEqual(await readKept(run.server.settings, RUN), row, `the later claim's keep reads as it wrote it: ${JSON.stringify(row)}`);
+    assert.deepEqual(run.docker.left(), [`${row.id}@${row.epoch}`], "and its machine is left");
+  }
+});
+
 test("a run whose only claim ends it lets its own sandbox go at its end, and the run's end asks the provider nothing more", { timeout: 120_000 }, async (t) => {
   const run = await opened(t);
   await run.start("runner-a");
