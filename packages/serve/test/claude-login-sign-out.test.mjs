@@ -10,7 +10,7 @@
 // `auth login` writes that file and the account, `auth logout` removes both and exits as the test says.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
@@ -245,6 +245,51 @@ test("a sign-out where one removal fails still drops the runner's token reader, 
   assert.equal(existsSync(folder), false, "the folder is removed all the same");
   assert.equal(r.rows.has(CLAUDE_LOGIN_SETTING), false, "the mode is off");
   assert.equal(out.login.state, "off");
+});
+
+/** A folder outside the test's data dir with a credentials file in it, and the CLI's older lock beside it, for `<data>/claude-login` to link to. */
+async function elsewhereFolder(t) {
+  const elsewhere = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-sign-out-elsewhere-"));
+  writeFileSync(join(elsewhere, CREDENTIALS), "{}");
+  writeFileSync(`${elsewhere}.lock`, "");
+  t.after(() => {
+    rmSync(elsewhere, { recursive: true, force: true });
+    rmSync(`${elsewhere}.lock`, { force: true });
+  });
+  return elsewhere;
+}
+
+test("a turn-on where AgentRun's own login folder is a link is refused in words that name it, and saves nothing: the login AgentRun signs out is always a folder of its own", async (t) => {
+  const r = await rig(t);
+  r.rows.delete(CLAUDE_LOGIN_SETTING);
+  const elsewhere = await elsewhereFolder(t);
+  const folder = join(r.data, "claude-login");
+  rmSync(folder, { recursive: true, force: true });
+  symlinkSync(elsewhere, folder);
+  await assert.rejects(login.turnOnClaudeLogin(r.deps, { only_me: true }), (error) => {
+    assert.equal(error.code, "forbidden", error.stack);
+    assert.ok(error.message.includes(folder), `the words name the folder: ${error.message}`);
+    assert.match(error.message, /is a link/);
+    return true;
+  });
+  assert.equal(r.rows.has(CLAUDE_LOGIN_SETTING), false, "nothing is saved");
+  assert.ok(lstatSync(folder).isSymbolicLink(), "the link is left as it was");
+});
+
+test("a sign-out where AgentRun's own login folder became a link after the turn-on removes the link alone: no CLI runs through it, what it leads to and the lock beside that are left, and the words say so", async (t) => {
+  const r = await rig(t);
+  const elsewhere = await elsewhereFolder(t);
+  const folder = join(r.data, "claude-login");
+  rmSync(folder, { recursive: true, force: true });
+  symlinkSync(elsewhere, folder);
+  const out = await login.signOutClaudeLogin(r.deps);
+  assert.deepEqual(r.logouts, [], "no CLI sign-out ran through the link");
+  assert.equal(lstatSync(folder, { throwIfNoEntry: false }), undefined, "the link is removed");
+  assert.ok(existsSync(join(elsewhere, CREDENTIALS)), "what the link led to is left as it was");
+  assert.ok(existsSync(`${elsewhere}.lock`), "and so is the lock beside it");
+  assert.equal(out.confirmed, false, JSON.stringify(out));
+  assert.ok(out.message?.includes(elsewhere), `the words name what the link led to: ${out.message}`);
+  assert.equal(r.rows.has(CLAUDE_LOGIN_SETTING), false, "the mode is off");
 });
 
 test("where runs have users of their own, a run claimed on AgentRun's own login before Sign out is refused at its start, in the fixed words of a login changed since its claim: never handed the signed-out login's reader nor left to a model key", async (t) => {
