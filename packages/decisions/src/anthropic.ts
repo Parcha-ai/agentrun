@@ -169,7 +169,8 @@ export function anthropicProvider(options: AnthropicOptions = {}): AnthropicProv
       for (let attempt = 1; ; attempt++) {
         let response: Response;
         try {
-          response = await fetcher(`${root}/v1/messages`, { method: "POST", headers, body, signal });
+          // It carries the key: a redirect is an error, never followed to an address the key was not meant for.
+          response = await fetcher(`${root}/v1/messages`, { method: "POST", headers, body, signal, redirect: "error" });
         } catch (error) {
           if (signal.aborted) throw ctx.signal.aborted ? stopped(attempt) : lost(attempt, "passed its deadline");
           if (!neverSent(error)) throw lost(attempt, "lost the connection");

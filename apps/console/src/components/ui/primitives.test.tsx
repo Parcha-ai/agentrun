@@ -362,6 +362,37 @@ describe("the design-system stories", () => {
 
 // A picker sized by its words changes width with each pick unless it is `steady`. jsdom lays nothing out, so this holds
 // what the width comes from: every option's words in the field, hidden, in the picked words' own grid cell.
+describe("Picker, option descriptions", () => {
+  it("shows a disabled choice's full reason in the list while keeping its selected label compact", async () => {
+    const reason = "Install the runtime package and configure its provider key, then restart the server before choosing this runtime.";
+    const picked = vi.fn();
+    const options = [{ value: "ready", label: "Ready" }, { value: "missing", label: "Missing runtime", disabled: true, description: reason }];
+    const host = mount(<Picker label="Runtime" value="missing" onChange={picked} options={options} />);
+    const field = host.querySelector("button")!;
+    expect(field.textContent).toBe("Missing runtime");
+    await click(field);
+    const list = document.querySelector('[role="listbox"]')!;
+    const missing = list.querySelector('[role="option"][data-value="missing"]')!;
+    expect(missing.textContent).toContain(reason);
+    expect(missing.getAttribute("aria-disabled")).toBe("true");
+    expect(missing.getAttribute("aria-label")).toBe("Missing runtime");
+    expect(missing.getAttribute("title")).toBeNull();
+    const description = [...missing.querySelectorAll("span")].find(span => span.textContent === reason)!;
+    expect(description).toBeTruthy();
+    expect([...description.classList]).toEqual(expect.arrayContaining(["font-sans", "text-small"]));
+    expect(description.closest(".break-words")).toBeTruthy();
+    expect(document.getElementById(missing.getAttribute("aria-describedby")!)).toBe(description);
+    expect(missing.classList.contains("data-[disabled]:opacity-50")).toBe(false);
+    expect(description.closest('[hidden], [aria-hidden="true"], .hidden, .sr-only, .truncate')).toBeNull();
+    expect(list.querySelector('[role="option"][data-value="ready"]')?.textContent).toBe("Ready");
+    await click(missing);
+    expect(picked).not.toHaveBeenCalled();
+    await key(list, "Escape");
+    expect(field.textContent).toBe("Missing runtime");
+    expect(host.textContent).not.toContain(reason);
+  });
+});
+
 describe("Picker, steady", () => {
   const options = [{ value: "a", label: "GET · Short" }, { value: "b", label: "POST · The longest of them all" }];
   const sizers = (host: HTMLElement) => [...host.querySelectorAll("button [data-picker-sizer]")];

@@ -11,7 +11,7 @@
  * CLI's behavior; none reaches the child unless it is listed here.
  */
 
-import { type ClaudeAgentLogin, loginEnv, personHome } from './login.js';
+import { type ClaudeAgentLogin, loginEnv, loginUser, personHome } from './login.js';
 
 /** What never reaches a CLI that runs on a person's login from the app's own variables: a model URL, key or token of
  *  any kind, a refresh token or a token's file descriptor among them. A login handed as a token sets its own
@@ -85,6 +85,8 @@ export interface DurableEnvOptions {
  * - `HOME`, `CLAUDE_CONFIG_DIR`, `TMPDIR` and the XDG dirs in the session's
  *   cache dirs, which the relay wipes before every spawn (`/var/lib/dh/s`),
  *   but `HOME` on macOS on a login: the person's (login.ts personHome);
+ * - on a login, `USER` and `LOGNAME`: the user this process runs as
+ *   (login.ts loginUser), the account of the login's Keychain item on macOS;
  * - the projects key fixed (`CLAUDE_CODE_PROJECT_DIR_NAME`), so a transcript
  *   resumes on any VM, whatever the cwd;
  * - the model through the VM's model port, with the attach's key; the
@@ -124,6 +126,9 @@ export function durableEnv(options: DurableEnvOptions): Record<string, string> {
     // On macOS the CLI on a login reads its tokens from the login keychain, which is under the person's home: in the
     // session's it finds none and reads signed out. Its config, XDG and temporary dirs stay the session's.
     HOME: options.login && platform === 'darwin' ? personHome(options.login) : home,
+    // On a login, the user it is the login of: on macOS the CLI names the Keychain item's account by USER, and with
+    // none it reads the account "unknown", not the one the sign-in saved the tokens under (login.ts loginUser).
+    ...(options.login ? loginUser() : {}),
     TMPDIR: options.tmpDir,
     CLAUDE_CONFIG_DIR: options.configDir,
     CLAUDE_CODE_PROJECT_DIR_NAME: PROJECT_DIR_NAME,

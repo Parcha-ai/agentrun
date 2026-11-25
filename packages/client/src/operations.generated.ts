@@ -521,6 +521,14 @@ export type RunSummary = {
     digest: string | null;
     repick: "found" | "missed" | null;
   } | null;
+  workflow_calls?: Array<{
+    workflow: string;
+    digest: string;
+    caller: "platform" | "agent";
+    outcome: "answered" | "handed_back" | "failed" | "refused";
+    usd: number | null;
+  }> | null;
+  first_choice?: "served" | "replay" | "replay_missing" | "none_laid" | "off" | "none_fit" | "many_fit" | "not_promoted" | "champion_misfit" | "many_champions" | "cost_stop" | "no_by_hand_cost" | "past_unread" | "held" | null;
 };
 
 export type RunStatus = "queued" | "working" | "paused" | "input_required" | "completed" | "failed" | "cancelled";
@@ -824,6 +832,14 @@ export type Run = {
     digest: string | null;
     repick: "found" | "missed" | null;
   } | null;
+  workflow_calls?: Array<{
+    workflow: string;
+    digest: string;
+    caller: "platform" | "agent";
+    outcome: "answered" | "handed_back" | "failed" | "refused";
+    usd: number | null;
+  }> | null;
+  first_choice?: "served" | "replay" | "replay_missing" | "none_laid" | "off" | "none_fit" | "many_fit" | "not_promoted" | "champion_misfit" | "many_champions" | "cost_stop" | "no_by_hand_cost" | "past_unread" | "held" | null;
 };
 
 export type RunResult = {
@@ -3237,6 +3253,7 @@ export type DeleteModelGatewayResponse = {
 /** Turn Mode 2 off: run folders on this server's own disk (DELETE /workspace/archil). */
 export type DeleteWorkspaceArchilResponse = {
   on: boolean;
+  regions: Record<string, string>;
   secret: {
     name: string;
     set: boolean;
@@ -3246,6 +3263,7 @@ export type DeleteWorkspaceArchilResponse = {
   source?: "env" | "console";
   region?: string;
   s3Url?: string;
+  s3UrlFrom?: "region" | "given";
   image?: string;
 };
 
@@ -3517,6 +3535,7 @@ export type GetSuggestionResponse = {
 /** Whether run folders are on Archil disks (Mode 2), the settings, and whether its keys are saved (GET /workspace/archil). */
 export type GetWorkspaceArchilResponse = {
   on: boolean;
+  regions: Record<string, string>;
   secret: {
     name: string;
     set: boolean;
@@ -3526,6 +3545,7 @@ export type GetWorkspaceArchilResponse = {
   source?: "env" | "console";
   region?: string;
   s3Url?: string;
+  s3UrlFrom?: "region" | "given";
   image?: string;
 };
 
@@ -3859,7 +3879,7 @@ export type ListSuggestionsResponse = {
 /** Turn Mode 2 on: run folders on Archil disks, one per agent (PUT /workspace/archil). */
 export type PutWorkspaceArchilBody = {
   region: string;
-  s3Url: string;
+  s3Url?: string;
   image?: string;
   keys?: {
     ARCHIL_API_KEY?: string | null;
@@ -3867,6 +3887,7 @@ export type PutWorkspaceArchilBody = {
 };
 export type PutWorkspaceArchilResponse = {
   on: boolean;
+  regions: Record<string, string>;
   secret: {
     name: string;
     set: boolean;
@@ -3876,6 +3897,7 @@ export type PutWorkspaceArchilResponse = {
   source?: "env" | "console";
   region?: string;
   s3Url?: string;
+  s3UrlFrom?: "region" | "given";
   image?: string;
 };
 
@@ -4201,6 +4223,40 @@ export type ScanForSuggestionsResponse = {
 export type SignOutChatGPTResponse = {
   revoked: boolean;
   message?: string;
+};
+
+/** Sign out of Claude Code's login on this machine: AgentRun's own login removed, the mode off (POST /settings/claude-login/sign-out). */
+export type SignOutClaudeLoginResponse = {
+  confirmed: boolean;
+  message?: string;
+  login: {
+    state: "off" | "other_machine" | "refused" | "signed_in" | "signed_out" | "no_cli" | "unknown";
+    place: "agentrun" | "machine";
+    command: string;
+    can_start: boolean;
+    refused?: string;
+    account?: {
+      method?: string;
+      email?: string;
+      organization?: string;
+      plan?: string;
+    };
+    folder: string;
+    machine: {
+      folder: string;
+      source: "CLAUDE_CONFIG_DIR" | "default";
+      credentials?: string;
+    };
+    sign_in?: {
+      state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
+      started_at: string;
+      ended_at?: string;
+      limit_ms: number;
+      exit_code?: number;
+      signal?: string;
+      error?: string;
+    };
+  };
 };
 
 /** Start signing in with ChatGPT: the link to open (POST /settings/chatgpt/sign-in). */
@@ -4782,6 +4838,12 @@ export type SetCurrentBody = {
   revision: string;
 };
 export type SetCurrentResponse = Agent;
+
+/** Read all skill files saved with one agent revision (GET /agents/{agent_id}/revisions/{revision}/skills). */
+export type GetRevisionSkillsResponse = {
+  revision: string;
+  skills: Record<string, string>;
+};
 
 /** Archive the run: hidden from the lists, kept with its history (POST /runs/{run_id}/archive). */
 export type ArchiveRunResponse = Record<string, unknown>;
@@ -5818,6 +5880,10 @@ export type GetTemplateResponse = {
         pin?: Record<string, string | number | boolean | null | Array<string | number | boolean | null> | {
           keys: Array<string>;
         }>;
+        file?: {
+          folder: string;
+          show: Array<string>;
+        };
       }>;
     }>;
     parameters: Record<string, unknown>;
@@ -5920,6 +5986,10 @@ export type ImportTemplateResponse = {
         pin?: Record<string, string | number | boolean | null | Array<string | number | boolean | null> | {
           keys: Array<string>;
         }>;
+        file?: {
+          folder: string;
+          show: Array<string>;
+        };
       }>;
     }>;
     parameters: Record<string, unknown>;
@@ -6015,6 +6085,10 @@ export type ListTemplatesResponse = {
         pin?: Record<string, string | number | boolean | null | Array<string | number | boolean | null> | {
           keys: Array<string>;
         }>;
+        file?: {
+          folder: string;
+          show: Array<string>;
+        };
       }>;
     }>;
     parameters: Record<string, unknown>;
@@ -7559,6 +7633,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   saveModelGateway: {"method":"PUT","path":"/settings/model-gateway","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":true,"publicFields":["base_url","ids","models.default","models.fast","models.strong"],"tagged":false},
   scanForSuggestions: {"method":"POST","path":"/suggestions/scans","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   signOutChatGPT: {"method":"DELETE","path":"/settings/chatgpt","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  signOutClaudeLogin: {"method":"POST","path":"/settings/claude-login/sign-out","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   startChatGPTSignIn: {"method":"POST","path":"/settings/chatgpt/sign-in","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   startClaudeLogin: {"method":"POST","path":"/settings/claude-login/login","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   startMcpOAuth: {"method":"POST","path":"/settings/mcp-servers/{name}/oauth/start","pathParams":["name"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":true,"publicFields":["url","scopes.[]","client_id"],"tagged":false},
@@ -7580,6 +7655,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   getObservations: {"method":"GET","path":"/observations","pathParams":[],"multiSegment":[],"query":["days","session_id"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listRevisions: {"method":"GET","path":"/agents/{agent_id}/revisions","pathParams":["agent_id"],"multiSegment":[],"query":["limit","cursor"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   setCurrent: {"method":"POST","path":"/agents/{agent_id}/current","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  getRevisionSkills: {"method":"GET","path":"/agents/{agent_id}/revisions/{revision}/skills","pathParams":["agent_id","revision"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   archiveRun: {"method":"POST","path":"/runs/{run_id}/archive","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   cancelRun: {"method":"POST","path":"/runs/{run_id}/cancel","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   callRunComputer: {"method":"POST","path":"/runs/{run_id}/computer/call","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -7901,6 +7977,8 @@ export function resources(call: Call) {
       scanForSuggestions: (body: ScanForSuggestionsBody, options?: RequestOptions): Promise<ScanForSuggestionsResponse> => call("scanForSuggestions", [], body, undefined, options),
       /** Sign out of ChatGPT: the session revoked at OpenAI, then forgotten here (DELETE /settings/chatgpt). */
       signOutChatGpt: (options?: RequestOptions): Promise<SignOutChatGPTResponse> => call("signOutChatGPT", [], undefined, undefined, options),
+      /** Sign out of Claude Code's login on this machine: AgentRun's own login removed, the mode off (POST /settings/claude-login/sign-out). */
+      signOutClaudeLogin: (options?: RequestOptions): Promise<SignOutClaudeLoginResponse> => call("signOutClaudeLogin", [], undefined, undefined, options),
       /** Start signing in with ChatGPT: the link to open (POST /settings/chatgpt/sign-in). */
       startChatGptsignIn: (options?: RequestOptions): Promise<StartChatGPTSignInResponse> => call("startChatGPTSignIn", [], undefined, undefined, options),
       /** Start the Claude Code CLI's own sign-in on this machine (POST /settings/claude-login/login). */
@@ -7947,6 +8025,8 @@ export function resources(call: Call) {
       list: (agentId: string, params?: ListRevisionsParams, options?: RequestOptions): Promise<ListRevisionsResponse> => call("listRevisions", [agentId], undefined, params, options),
       /** Make one of the agent's revisions current again (POST /agents/{agent_id}/current). */
       setCurrent: (agentId: string, body: SetCurrentBody, options?: RequestOptions): Promise<SetCurrentResponse> => call("setCurrent", [agentId], body, undefined, options),
+      /** Read all skill files saved with one agent revision (GET /agents/{agent_id}/revisions/{revision}/skills). */
+      skills: (agentId: string, revision: string, options?: RequestOptions): Promise<GetRevisionSkillsResponse> => call("getRevisionSkills", [agentId, revision], undefined, undefined, options),
     },
     runs: {
       /** Archive the run: hidden from the lists, kept with its history (POST /runs/{run_id}/archive). */

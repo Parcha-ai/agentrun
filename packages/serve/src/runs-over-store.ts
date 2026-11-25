@@ -604,7 +604,7 @@ export async function startRun(store: Store, deps: StartDeps, entry: AgentEntry,
  *  written, never a failure at its first model call. A start with them (the API's) is the sealer's to check. `target`:
  *  the run's (run-model-key.ts keyTargetOf). */
 function keyedOrRefused(deps: StartDeps, target: ModelKeyTarget, sealed: StartOptions["sealed"]): void {
-  if (!sealed && serverKeyMissing(deps.planeEnv(), target)) throw modelKeyRequired(false);
+  if (!sealed && serverKeyMissing(deps.planeEnv(), target)) throw modelKeyRequired(false, deps.planeEnv());
 }
 
 /** Writes run `runId` of agent `agentId` with `write`, its files (launch.files) held for it first (StartDeps.files): a

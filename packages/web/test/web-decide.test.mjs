@@ -87,8 +87,8 @@ test("a sift keeps what the decider scores as needed and drops at the threshold:
   assert.equal(answer.sift, "fake kept 2 of 4 results");
   assert.ok(searchText(answer).includes(`"sift":"fake kept 2 of 4 results"`), "the model reads it");
   assert.deepEqual(receipt.out, { bytes: Buffer.byteLength(searchText(answer)), chars: searchText(answer).length }, "the receipt measures what the model reads");
-  assert.deepEqual(receipt.cost.usd, 0.0012, "the search's fee and the decider's hold, which the run's cap books");
-  assert.deepEqual(receipt.cost.lines.map((fee) => [fee.by, fee.usd]), [["parallel", 0.001], ["fake", 0.0002]]);
+  assert.deepEqual(receipt.cost.usd, 0.0011, "the search's fee and the decider's charge (the cost it gave, under its $0.0002 hold), which the run's cap books");
+  assert.deepEqual(receipt.cost.lines.map((fee) => [fee.by, fee.usd]), [["parallel", 0.001], ["fake", 0.0001]]);
   assert.equal(receipt.cost.lines[1].name, "fake's decision");
   const record = receipt.classifier;
   assert.ok(Number.isFinite(record.latency_ms) && record.latency_ms >= 0);
@@ -141,12 +141,12 @@ test("a dropped passage's place counts from the page's start, not the part's", a
   assert.deepEqual(receipt.classifier.dropped.map((d) => d.at), [[A.length, A.length + answer.chars]]);
 });
 
-test("a fetch with no task is not judged: the part whole, a line saying so, and a record that says why", async () => {
+test("a fetch with no task is not judged: the part whole, no sift field, and a record that says why", async () => {
   const { asked, provider } = fakeProvider();
   const { answer, receipt } = await fakeWeb({ decider: priced(provider), send: { parallel: longPages } }).fetch(PUBLIC);
   assert.equal(asked.length, 0);
   assert.equal(answer.text, LONG);
-  assert.equal(answer.sift, "not run (no task given); this part is whole");
+  assert.equal(Object.hasOwn(answer, "sift"), false, `no sift field; got ${JSON.stringify(answer.sift)}`);
   assert.equal(receipt.classifier.ran, false);
   assert.equal(receipt.classifier.skipped, "no task");
 });
@@ -171,7 +171,7 @@ test("nothing to sift is not sifted: an error, a failed page, a refused part; th
   const { asked, provider } = fakeProvider();
   const web = fakeWeb({ decider: priced(provider) });
   const empty = await web.search("   ", { task: TASK });
-  assert.deepEqual(empty.answer, { error: "web_search needs a query" });
+  assert.deepEqual(empty.answer, { error: "web_search needs an objective" });
   assert.deepEqual([empty.receipt.classifier.ran, empty.receipt.classifier.skipped], [false, "no results"]);
   const refused = await web.fetch("http://evil.example/", { task: TASK });
   assert.equal(refused.answer.sift, undefined);
@@ -332,7 +332,7 @@ test("a search over the state budget is trimmed: every snippet cut to the longes
   assert.ok(bytesOf(longer.state) > STATE_BUDGET_BYTES, "the longest that fits");
   assert.deepEqual(asked[0].request, siftRequest("widgets", hits.map((hit) => ({ ...hit, snippet: hit.snippet.slice(0, cut[0]) })), TASK));
   assert.deepEqual(got.trimmed, { snippets: 10, to_chars: cut[0] });
-  const { answer, classifier } = await siftSearch(priced(fakeProvider().provider), { provider: "parallel", query: "widgets", results: hits }, { task: TASK });
+  const { answer, classifier } = await siftSearch(priced(fakeProvider().provider), { provider: "parallel", objective: "widgets", queries: ["widgets"], results: hits }, { task: TASK });
   assert.deepEqual([classifier.trimmed, classifier.requests], [{ snippets: 10, to_chars: cut[0] }, 1]);
   assert.deepEqual(answer.results, hits, "the model reads every snippet whole");
   const small = await priced(fakeProvider().provider).sift("widgets", hits.slice(0, 1), TASK, CTX());
@@ -415,7 +415,7 @@ test("a fetched part over the budget is judged in several requests: the record c
   assert.equal(answer.text, wide, "nothing dropped at p=0.5");
   assert.equal(asked.length, 2);
   assert.deepEqual([receipt.classifier.requests, receipt.classifier.questions_sha256.length, receipt.classifier.items], [2, 2, { in: 40, kept: 40 }]);
-  assert.deepEqual(receipt.cost.lines.filter((fee) => fee.by === "fake").map((fee) => fee.usd), [0.0002, 0.0002]);
+  assert.deepEqual(receipt.cost.lines.filter((fee) => fee.by === "fake").map((fee) => fee.usd), [0.0001, 0.0001], "each request's line is the cost it gave, under its hold");
 });
 
 test("passagesOf tiles the text: paragraphs packed to about 1,000 characters, a longer one cut on a space, never a surrogate pair split, and at most 50 passages", () => {

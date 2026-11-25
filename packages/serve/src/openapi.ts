@@ -27,7 +27,7 @@ import { HARNESS_ID_PATTERN, HARNESSES } from "./harness.js";
 import { HARNESS_KEY_REENTER } from "./server-keys.js";
 import { LEARNING_LABEL, LEARNING_MODES, LEARNING_REASONS, LEARNING_STATES, RUN_LEARNING_USE } from "./learning.js";
 import { AUDIT_DEFAULTS, AUDIT_MAX, REPICK_MAX_CHARS_DEFAULT, REPICK_MAX_CHARS_MAX } from "./learning-setting.js";
-import { AFTER_STATES, CHEAPER_AFTER_RUNS, COST_CSV_COLUMNS, COST_WINDOW, COST_RUNS_DEFAULT, COST_RUNS_MAX, RUN_PATHS } from "./learning-cost.js";
+import { AFTER_STATES, CHEAPER_AFTER_RUNS, COST_CSV_COLUMNS, COST_WINDOW, COST_RUNS_DEFAULT, COST_RUNS_MAX, RUN_PATHS, WORKFLOW_CALL_OUTCOMES, WORKFLOW_CALLERS } from "./learning-cost.js";
 import { FEEDBACK_ROUNDS, FEEDBACK_STATUSES } from "./runner/feedback-round.js";
 import { COMPILE_AFTER_MAX } from "./learning-setting.js";
 import { LOOP_COMPILES_MAX } from "./store-reads/loop.js";
@@ -72,12 +72,14 @@ import { tableTools } from "./tool-list.js";
 import { SECRET_META_SCHEMA } from "./secret-writes.js";
 import { LABEL_KEY, MAX_LABEL_VALUE, MAX_LABELS } from "./run-labels.js";
 import { COST_BASES } from "./runner/metrics.js";
-import { PAST_RUNS } from "./runner/workflow-first.js";
+import { FIRST_REASONS, PAST_RUNS } from "./runner/workflow-first.js";
 import { BASH_POLICIES } from "./bash-read-only.js";
+import { MAX_SHOW_PATHS, MAX_SHOW_SEGMENTS, SHOWN_CHARS } from "./filed-tool.js";
 // The modules that own the computer and Archil key writes: loading the document loads their secret-write predicates
 // (secret-writes.ts registerSecretWrite), so every operation the document marks has its predicate wherever it is read.
 import "./computers.js";
 import { ARCHIL_KEY_NAMES } from "./archil-routes.js";
+import { ARCHIL_S3_URLS } from "./archil-settings.js";
 import { RUN_FILE_CUT_MAX } from "./run-files.js";
 import { ATTACH_HEARTBEAT_MS, ATTACH_IDLE_MS, ATTACH_SUBPROTOCOL, MAX_LINE_BYTES, PAIRING_CODE_PATTERN, PAIRING_CODE_TTL_MS, PROTOCOL_VERSION } from "@parcha/agentrun-computer";
 import { DAEMON_FETCHES_PER_MINUTE, PAIR_TRIES_PER_MINUTE, PAIRED_NAME_MAX } from "./computer-attach.js";
@@ -851,10 +853,20 @@ const EMAIL_SCOPE = {
   description: "An agent's own setting on email_read, email_search and email_file only, never the server's. thread (the default): on a run an email trigger started, the tool sees (and email_file files) the thread of the message that started it alone (that message, and every message whose References or In-Reply-To links it, in any mailbox), and a message outside it is answered \"outside this run's thread\" and never fetched; mailbox: the whole account. A run no email started sees the whole account either way.",
   "x-agentrun-serve": "email/1",
 };
-/** An agent's own tool settings (definition.tool_settings): the map, with bash's policy and the email read tools' scope. */
+/** filed-results/1: an MCP tool's file setting (filed-tool.ts), in an agent's own tool settings and a package's mcp need. */
+const FILE_SETTING = {
+  type: "object", additionalProperties: false, required: ["folder", "show"],
+  properties: {
+    folder: { type: "string", pattern: "^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}(/[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}){0,2}$", description: "The folder of the run's files each answer is filed in: 1 to 3 segments, none starting with a dot." },
+    show: { type: "array", maxItems: MAX_SHOW_PATHS, uniqueItems: true, items: { type: "string", pattern: "^(?:[A-Za-z_$][A-Za-z0-9_$-]{0,63}|0|[1-9][0-9]{0,8}|-1)(?:\\.(?:[A-Za-z_$][A-Za-z0-9_$-]{0,63}|0|[1-9][0-9]{0,8}|-1)){0,5}$" }, description: `The paths of each answer the tool's result shows, at most ${MAX_SHOW_PATHS}, each 1 to ${MAX_SHOW_SEGMENTS} segments joined by .: a key, an index, or -1 (the last item). A path that reaches no scalar shows null; a string is cut at ${SHOWN_CHARS} characters. A path that names a free-text field shows that text, and defeats the setting.` },
+  },
+  description: `An agent's own setting on an MCP tool's own key (mcp:<server>/<tool>) only, never a server's wildcard and never the server's settings: each answer of the tool, an error answer too, is written whole (its credentials scrubbed) at <folder>/<tool>-<time>-<id>.json in the run's files before the model is answered, for the skill's code. The answer is not returned as the tool's result, and goes through neither the clip nor evidence/mcp/: the result is a summary of the answer's bytes, the file's path, the value at each show path, and the answer's shape (keys that read as short names and types to depth 2, each array's length, never a value), and it is an error when the answer is. The model's own file tools (read, grep, ls, and bash on a computer) can still open the folder, so a template that must keep the model off the answer grants none of them, or runs its skill's code where the model can't read the output. A write that fails answers an error with none of the answer. A stored setting that no longer reads refuses every call of the tool, sending nothing. Removing the setting gives the tool's answers to the model again. A template's apply writes it from the package's mcp[].file.`,
+  "x-agentrun-serve": "filed-results/1",
+};
+/** An agent's own tool settings (definition.tool_settings): the map, with bash's policy, the email read tools' scope and an MCP tool's file setting. */
 const AGENT_TOOL_SETTINGS = {
   ...TOOL_SETTINGS,
-  additionalProperties: { type: "object", additionalProperties: false, properties: { permission: PERMISSION, pin: PIN, pin_broken: PIN_BROKEN } },
+  additionalProperties: { type: "object", additionalProperties: false, properties: { permission: PERMISSION, pin: PIN, pin_broken: PIN_BROKEN, file: FILE_SETTING } },
   properties: {
     ...TOOL_SETTINGS.properties,
     bash: { ...TOOL_SETTINGS.properties.bash, properties: { ...TOOL_SETTINGS.properties.bash!.properties, policy: BASH_POLICY } },
@@ -1332,14 +1344,17 @@ const RUNNING_COMPUTERS = closed({
     description: "The runs still going whose agent has a computer, newest first, each as GET /runs/{run_id} answers it, so each carries its `computer`. A run with no computer, and one that has ended, is not here.",
   },
 });
-/** archil/1: GET, PUT and DELETE /workspace/archil's answer (archil-routes.ts view). */
+/** archil/1: GET, PUT and DELETE /workspace/archil's answer (archil-routes.ts view). archil/2: `regions` and `s3UrlFrom`,
+ *  which a client that validates against archil/1 refuses, so they are a mark of their own. */
 const ARCHIL_VIEW = closedWith({
   on: { type: "boolean", description: "Whether Mode 2 is on: run folders on Archil disks, each agent's own (made on its first run that needs one) unless a run's launch names another. Off, they are on this server's own disk (Mode 1)." },
+  regions: { type: "object", additionalProperties: { type: "string", format: "uri" }, description: `Each Archil region this server knows, with its S3 endpoint (its control plane's host with \`control.\` made \`s3.\`, as Archil's SDK derives it): ${Object.keys(ARCHIL_S3_URLS).join(", ")}. A PUT naming one of them may leave \`s3Url\` out.`, "x-agentrun-serve": "archil/2" },
   secret: { ...SECRET_ITEM("\"workspace:archil\": the Archil account key, which PUT /workspace/archil takes as keys.ARCHIL_API_KEY and the environment variable ARCHIL_API_KEY sets."), description: "The account key as its SecretMeta: never a value." },
 }, {
   source: { enum: ["env", "console"], description: "While on, where the settings come from: `env`, the server's environment (AGENTRUN_ARCHIL_REGION, AGENTRUN_ARCHIL_S3_URL and AGENTRUN_ARCHIL_IMAGE), which wins over saved ones and is changed where the server is started; `console`, saved with PUT /workspace/archil." },
   region: { type: "string", description: "The account key's region: every disk is made, read and minted on its control plane." },
-  s3Url: { type: "string", format: "uri", description: "The region's S3 endpoint (the disks' file API)." },
+  s3Url: { type: "string", format: "uri", description: "The S3 endpoint in force (the disks' file API): the one given, else the region's (`regions`)." },
+  s3UrlFrom: { enum: ["region", "given"], description: "While on, where `s3Url` comes from: `region`, the region's own (`regions`), as saved when the PUT, or the environment, gave none; `given`, another one given.", "x-agentrun-serve": "archil/2" },
   image: { type: "string", description: "The exec image, pinned by digest (`<name>@sha256:<64 hex>`); absent, serve's default (`buildpack-deps:trixie-scm` pinned by digest, git 2.47)." },
 });
 /** archil/1: GET and DELETE /agents/{agent_id}/archil's answer (archil-routes.ts agentView). */
@@ -1383,6 +1398,25 @@ const RUN_PATH: Record<string, Json> = {
       repick: { oneOf: [{ enum: ["found", "missed"] }, { type: "null" }], description: "`found` or `missed`: the answer's quote re-pick ran and found, or still missed, its quotes. Null: no re-pick ran." },
     }), { type: "null" }],
     description: "The learned workflow that served the run, as its end recorded it: present on a run with `path` `workflow` (its answer is the workflow's) or `handed_back` (its answer is the agent's), null on every other run. Read off the run's record, so every row of a runs list carries it.",
+    "x-agentrun-serve": "path/1",
+  },
+  workflow_calls: {
+    oneOf: [{
+      type: "array",
+      items: closed({
+        workflow: { type: "string", description: "The learned workflow called, by name." },
+        digest: { type: "string", description: "The revision that ran: the first 16 hex of its workflow.json's sha256." },
+        caller: { enum: [...WORKFLOW_CALLERS], description: "`platform`: it ran first, before the agent's first turn; `agent`: the agent called it itself." },
+        outcome: { enum: [...WORKFLOW_CALL_OUTCOMES], description: "`answered`; `handed_back`, it escalated, or the platform took its answer back to the agent; `failed`, it threw or was stopped; `refused`, it was refused before any node ran (its input, a check, a tool its gate denies, or the call's own gate: its ask declined, the cap's wrap-up) and ran nothing." },
+        usd: { type: ["number", "null"], description: "What its nodes' requests booked, in dollars; null when that is not known or can't be told apart from other work of the run (another call ran beside it)." },
+      }),
+    }, { type: "null" }],
+    description: "Every learned workflow call the run made, in call order, as its end recorded it: the platform's and the agent's own. The money rule charges a run the platform served first to that workflow alone, and a run only the agent called to each workflow it ran; a refused call counts on no side. An empty list on an ended run that called none; null where `path` is null.",
+    "x-agentrun-serve": "path/1",
+  },
+  first_choice: {
+    oneOf: [{ enum: [...FIRST_REASONS] }, { type: "null" }],
+    description: "Why the platform ran a learned workflow first on the run's last claim, or why not: `served`; `replay`, a replay run serves the workflow it replays; `replay_missing`; `none_laid`, the agent learns no workflow (or its run is not agentic); `off`, its launch set `workflow_first: false`; `none_fit`, no workflow takes its input; `many_fit`, more than one does; `not_promoted`, the one that does is not checked to serve yet; `champion_misfit`, the revision serving in its place does not take the input; `many_champions`; `cost_stop`, the money rule stopped it, over its cost by hand; `no_by_hand_cost`, the money rule stopped it, with no cost by hand to hold its served runs to (it is never served unchecked); `past_unread`, the money rule could not read the agent's past runs, so nothing ran first (it fails closed); `held`, a check refused the claim's workflow. Null on a run whose end recorded none (one that does not learn, or an SDK or native run).",
     "x-agentrun-serve": "path/1",
   },
 };
@@ -1607,7 +1641,7 @@ const TEMPLATE = closed({
       toolkit: { type: "string", description: "The toolkit its tools are: the package names them `mcp:<toolkit>/<tool>`, and apply maps it to a saved MCP server whose `source` and `toolkit` match, rewriting the name to `mcp:<server>/<tool>` in the agent it makes." },
       required: { type: "boolean" },
       reason: { type: ["string", "null"], description: "Why the agent needs these tools, one line, for the apply screen." },
-      tools: { type: "array", items: closedWith({ name: { type: "string" }, tool: { type: "string", description: "Its name in the package, `mcp:<toolkit>/<tool>`: what apply's `grants` name." }, asks: { enum: ["allow", "ask"], description: "Every listed tool is one the package uses and asks the owner to grant (a consent screen shows each): only the owner's `grants` at apply grant it, with no permission written; one left out is not granted. `asks` says only how its calls run once granted: `allow`, a tool the package's manifest lists under `allow`, expected to run without asking (a read); `ask`, each call waits for the owner's OK (a write) unless the owner allowed it in tool settings or chose approvals `never`." } }, { pin: { type: "object", additionalProperties: { anyOf: [{ type: ["string", "number", "boolean", "null"] }, { type: "array", items: { type: ["string", "number", "boolean", "null"] } }, PIN_KEYS] }, description: "The arguments (each a value, a list one of which, or {keys: [...]}, the keys an object argument may hold) each call of the tool must carry, `${parameters.<name>}` unfilled: apply writes them, filled, as the tool's pin in the agent's tool_settings, so the tool gate refuses a call with any other (a send goes only to the destination the owner sets), and a call carrying an argument the tool's listing does not declare (an alias of a pinned one). A pin whose parameter apply is not given sets the tool to deny instead, with a `pins.<tool>` warning.", "x-agentrun-serve": "pins/1" } }) },
+      tools: { type: "array", items: closedWith({ name: { type: "string" }, tool: { type: "string", description: "Its name in the package, `mcp:<toolkit>/<tool>`: what apply's `grants` name." }, asks: { enum: ["allow", "ask"], description: "Every listed tool is one the package uses and asks the owner to grant (a consent screen shows each): only the owner's `grants` at apply grant it, with no permission written; one left out is not granted. `asks` says only how its calls run once granted: `allow`, a tool the package's manifest lists under `allow`, expected to run without asking (a read); `ask`, each call waits for the owner's OK (a write) unless the owner allowed it in tool settings or chose approvals `never`." } }, { pin: { type: "object", additionalProperties: { anyOf: [{ type: ["string", "number", "boolean", "null"] }, { type: "array", items: { type: ["string", "number", "boolean", "null"] } }, PIN_KEYS] }, description: "The arguments (each a value, a list one of which, or {keys: [...]}, the keys an object argument may hold) each call of the tool must carry, `${parameters.<name>}` unfilled: apply writes them, filled, as the tool's pin in the agent's tool_settings, so the tool gate refuses a call with any other (a send goes only to the destination the owner sets), and a call carrying an argument the tool's listing does not declare (an alias of a pinned one). A pin whose parameter apply is not given sets the tool to deny instead, with a `pins.<tool>` warning.", "x-agentrun-serve": "pins/1" }, file: { ...FILE_SETTING, description: "Where each answer of the tool is filed whole in the run's files, and the paths of it the tool's result shows (the package's mcp[].file): apply writes it as the tool's file setting in the agent's tool_settings, ticked or not, so the tool's result is a summary of each answer, never the answer. Absent when the package files none." } }) },
     }),
     description: "The MCP servers it uses, by source and toolkit, and the tools of each it may be granted: apply maps each to a saved server whose `source` and `toolkit` match (`servers` picks when several do) and grants there only those the apply's `grants` name, with no permission written (each call follows this server's tool settings: under approvals ask a write asks unless the owner allowed it there, and a read runs unasked only where the server's Allow reads is on); a tool left out of `grants` is not the agent's at all, whatever its approvals, and the owner can grant it later in the agent's tools. One no saved server matches is skipped with an `mcp.<toolkit>` warning saying how to set it up, or, `required`, refuses the apply (409, nothing made).",
   },
@@ -1819,7 +1853,7 @@ const LEARNING_COST = closed({
   workflows: { type: "array", items: closed({
     workflow: { type: "string", description: "The learned workflow, by name." },
     digest: { type: "string", description: "The version of it its newest run served first ran: the first 16 hex characters of its workflow.json's sha256. A new version starts its count from zero." },
-    state: { enum: ["serving", "needs_revision"], description: `\`serving\`: it runs first on every run it fits. \`needs_revision\`: the money rule stopped it, as a run's launch decides (\`reason\` says why), so it no longer runs first: the agent takes each run it would have served, and the stop asks for no new version. A new version (a new digest) runs first again.` },
+    state: { enum: ["serving", "needs_revision"], description: `\`serving\`: it runs first on every run it fits. \`needs_revision\`: the money rule stopped it, as a run's launch decides (\`reason\` says why), so it no longer runs first and the agent's own learned_workflow tool no longer runs it: the agent takes each run it would have served, and the stop asks for no new version. A new version (a new digest) runs first again.` },
     reason: { enum: ["over_line", "no_by_hand_cost", null], description: `Why \`state\` is \`needs_revision\`; null while it serves. \`over_line\`: over its newest ${COST_WINDOW} priced runs served at this version, its mean all-in cost (\`served\`) is at or over the agent's cost by hand (\`by_hand\`). \`no_by_hand_cost\`: it served ${COST_WINDOW} priced runs or more at this version and there is no cost by hand to hold them to (\`by_hand\` null: no run by hand, or none whose own cost is known exactly, \`unknown_cost_runs\` counting those), so it is never served unchecked.` },
     served: COST_MEAN(`The mean all-in cost (\`total_usd\`: the run's own cost, the workflow's nodes and, after a handback, the agent's work, with every learning round booked for it) of its newest ${COST_WINDOW} runs served first at this version whose all-in cost is known (a window, never how many runs it served: \`runs\` stops at ${COST_WINDOW}); null when none is.`),
     by_hand: COST_MEAN(`The agent's cost by hand, as the money rule reads it at a run's launch: the mean of the job's own cost (\`cost_usd\`, learning left out) of its runs on the \`agent\` path (a run that does not learn among them) in a window, the agent's newest ${PAST_RUNS} runs on no named disk since its learning's reset, whose cost is known exactly; null when there are none: past ${COST_WINDOW} served runs the workflow then stops (\`reason\` \`no_by_hand_cost\`). The window, never every run: \`summary.before\` reads every run before the takeover, so the two differ.`),
@@ -2460,6 +2494,24 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "export/1",
     },
   },
+  "/agents/{agent_id}/revisions/{revision}/skills": {
+    get: {
+      operationId: "getRevisionSkills", tags: ["agents"], summary: "Read all skill files saved with one agent revision",
+      description: "Returns the exact revision's complete skill file map, including SKILL.md and supporting text files, without changing the agent. Use these files when preparing a replacement skills map for PUT /agents/{agent_id}/definition, with the ETag of the revision being edited. An unknown revision or a revision belonging to another agent is 404; there is no fallback to the current revision. Only files stored in the revision are returned: detected skills on a connected native agent's source machine are not read. Revisions with no stored skill files return an empty map.",
+      parameters: [ref("parameters/AgentId"), { name: "revision", in: "path", required: true, description: "The immutable revision ID from the agent or its revisions list.", schema: { type: "string" } }],
+      responses: {
+        "200": json({
+          type: "object", additionalProperties: false, required: ["revision", "skills"],
+          properties: {
+            revision: { type: "string" },
+            skills: { type: "object", additionalProperties: { type: "string" }, description: "Paths relative to .agents/skills/ mapped to their complete text." },
+          },
+        }, "The requested revision's saved skill files."),
+        ...errors(401, 404, 429, 500),
+      },
+      "x-agentrun-serve": "skills/1",
+    },
+  },
   "/agents/{agent_id}/current": {
     post: {
       operationId: "setCurrent", tags: ["agents"], summary: "Make one of the agent's revisions current again",
@@ -2797,10 +2849,11 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     put: {
       operationId: "putWorkspaceArchil", tags: ["local"], summary: "Turn Mode 2 on: run folders on Archil disks, one per agent",
-      description: "Replaces the Archil settings (the account key's region and its S3 URL, and an exec image pinned by digest when given) and seals the account key (ARCHIL_API_KEY) under the server's seal key when given; null removes it, and a key not given is kept. There is no server-wide disk: each agent gets its own, made in this region on its first run that uses it (`agentrun-<server id>-i-<agent id>`), and a run may name another (`archil_disk` on its start), so `diskId` is refused. No disk token is kept: a computer's mount credential is minted per run from the account key, so ARCHIL_DISK_TOKEN is refused like any field Archil does not take. Any PUT here is a secret write, whatever its body: it takes the owner's signed-in session, and the API token is 403, since the region and S3 URL say where every run's files go. A field that is not right, or an image not pinned by digest, is 422 input_invalid with its fields, and nothing is saved. While the server's environment sets the settings (GET's `source` is `env`), it is 409 key_set_by_server naming its variables, and nothing is saved. The answer never holds a key.",
+      description: "Replaces the Archil settings (the account key's region; its S3 URL, which for a region this server knows (GET's `regions`) may be left out and is then that region's, and a region it doesn't know needs; and an exec image pinned by digest when given) and seals the account key (ARCHIL_API_KEY) under the server's seal key when given; null removes it, and a key not given is kept. There is no server-wide disk: each agent gets its own, made in this region on its first run that uses it (`agentrun-<server id>-i-<agent id>`), and a run may name another (`archil_disk` on its start), so `diskId` is refused. No disk token is kept: a computer's mount credential is minted per run from the account key, so ARCHIL_DISK_TOKEN is refused like any field Archil does not take. Any PUT here is a secret write, whatever its body: it takes the owner's signed-in session, and the API token is 403, since the region and S3 URL say where every run's files go. A field that is not right, or an image not pinned by digest, is 422 input_invalid with its fields, and nothing is saved. While the server's environment sets the settings (GET's `source` is `env`), it is 409 key_set_by_server naming its variables, and nothing is saved. The answer never holds a key.",
       requestBody: {
         required: true,
-        content: { "application/json": { schema: closedWith({ region: { type: "string", minLength: 1 }, s3Url: { type: "string", format: "uri", pattern: "^https://" } }, {
+        content: { "application/json": { schema: closedWith({ region: { type: "string", minLength: 1 } }, {
+          s3Url: { type: "string", format: "uri", pattern: "^https://", description: "The region's S3 endpoint. Left out for a region this server knows (GET's `regions`), that region's." },
           image: { type: "string", pattern: "^[^\\s@]+@sha256:[0-9a-f]{64}$" },
           keys: { type: "object", additionalProperties: false, properties: Object.fromEntries(ARCHIL_KEY_NAMES.map((name) => [name, { type: ["string", "null"], minLength: 1, "x-agentrun-secret": true }])) },
         }) } },
@@ -3031,7 +3084,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     put: {
       operationId: "turnOnClaudeLogin", tags: ["local"], summary: "Turn on Claude Code's login on this machine for claude-agent's runs",
-      description: "Runs claude-agent on the login at `place` (default `agentrun`), on this machine's runner only. 403 forbidden in one line where more than one person can start runs (more than one API token, the API-only profile); 422 input_invalid without `only_me` true. A model a revision names on a gateway or OpenRouter still runs on its key. 404 not_found, naming the operation, when AGENTRUN_CLAUDE_CODE_LOGIN is `off`. A secret write: the owner's signed-in session alone (ownerSession).",
+      description: "Runs claude-agent on the login at `place` (default `agentrun`), on this machine's runner only. 403 forbidden in one line where more than one person can start runs (more than one API token, the API-only profile); 422 input_invalid without `only_me` true. 403 forbidden, too, at `agentrun` when AgentRun's own login folder (`<data>/claude-login`) is a link, in words naming it and where it leads: the login a sign-out removes is always a folder of AgentRun's own. A model a revision names on a gateway or OpenRouter still runs on its key. 404 not_found, naming the operation, when AGENTRUN_CLAUDE_CODE_LOGIN is `off`. A secret write: the owner's signed-in session alone (ownerSession).",
       "x-agentrun-secret": true,
       security: [{ ownerSession: [] }],
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["only_me"], properties: { place: { enum: ["agentrun", "machine"], description: "Where the login is (see the answer's `place`)." }, only_me: { const: true, description: "The owner's word that they alone run agents on this server, since its runs would use their Claude plan." } } } } } },
@@ -3054,6 +3107,19 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-secret": true,
       security: [{ ownerSession: [] }],
       responses: { "200": json(CLAUDE_LOGIN, "The sign-in started."), ...errors(401, 403, 404, 409, 429, 500) },
+      "x-agentrun-serve": "claudelogin/1",
+    },
+  },
+  "/settings/claude-login/sign-out": {
+    post: {
+      operationId: "signOutClaudeLogin", tags: ["local"], summary: "Sign out of Claude Code's login on this machine: AgentRun's own login removed, the mode off",
+      description: "For a person to sign in fresh, or as another account: a turn-off leaves the login as the CLI keeps it, so the next turn-on reads it again. Ends a sign-in that waits, turns the mode off, runs the pinned CLI's own `claude auth logout` on AgentRun's own login folder (`<data>/claude-login`), which removes its credentials file and, on macOS, its Keychain item for that folder, then removes the folder (credentials, account, profiles, refresh locks), the login's signed-in note and the runner's token reader, whatever the CLI said. The next turn-on finds no login (`signed_out`) and the sign-in starts as before. Runs already going on the login are left as a turn-off leaves them: each keeps the token its CLI holds, and fails saying the login is signed out at its next read of it. `confirmed` false: signed out here and the mode off, and `message` says what may remain: the CLI didn't confirm its own sign-out, or its step failed, named (on macOS its Keychain item may remain); a removal failed, each named with its path (the others still happen); or the folder had become a link, which alone is removed, with no CLI run through it and nothing it leads to touched. 403 forbidden, with nothing touched, when the login is this machine's own (`place` `machine`: the person's `~/.claude` or CLAUDE_CONFIG_DIR): AgentRun never signs it out, and the words say to run `claude auth logout` in a terminal there. 404 not_found, naming the operation, when AGENTRUN_CLAUDE_CODE_LOGIN is `off`. A secret write: the owner's signed-in session alone (ownerSession).",
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      responses: {
+        "200": json({ type: "object", additionalProperties: false, required: ["confirmed", "login"], properties: { confirmed: { type: "boolean", description: "Whether all of the login is gone: the CLI confirmed its own sign-out and every removal landed. The CLI's sign-out runs where the folder is already gone too, so a retry after an unconfirmed sign-out is true only where the CLI confirms." }, message: { type: "string", description: "With `confirmed` false: what may remain, in words (the CLI's step unconfirmed or failed, a removal that failed, a link left in place of the folder)." }, login: CLAUDE_LOGIN } }, "Signed out here."),
+        ...errors(401, 403, 404, 429, 500),
+      },
       "x-agentrun-serve": "claudelogin/1",
     },
   },
@@ -3403,7 +3469,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/settings/tools": {
     get: {
       operationId: "getToolSettings", tags: ["capabilities"], summary: "The server's tool settings",
-      description: "Each capability that has a choice, and its provider, and each tool's permission that is set (an MCP server's wildcard mcp:<server>/* among them): web_search auto (Parallel where the server holds its key, which bills it, else Firecrawl's keyless search with Exa's behind it, on every harness), native (the harness's own search, claude-agent's or codex's, or on pi the model provider's hosted one: that alone), firecrawl-keyless (Firecrawl's, Exa's behind it), exa-keyless (that alone) or parallel; web_fetch auto (the guarded direct fetch where the server holds a Parallel key, else Firecrawl's keyless fetch, which is sent each URL read, never a private or local one, with the guarded direct fetch behind it), firecrawl-keyless (that, whatever the key), kernel (the guarded direct fetch alone) or parallel; browser auto (Browserbase where the server holds its keys, else Kernel where it holds Kernel's), browserbase, kernel (each that alone) or chrome (a Chrome on the server's host, not set up on any server yet: unavailable). An agent's definition.tool_settings is over these, except a permission set to deny here: a server deny is absolute and refuses the tool on this server whatever the agent sets. capabilities.tools say what each resolves to on each harness, and GET /agents/{agent_id} for that agent. An MCP tool's own key may carry its pin, the arguments its calls must carry.",
+      description: "Each capability that has a choice, and its provider, and each tool's permission that is set (an MCP server's wildcard mcp:<server>/* among them): web_search auto (Parallel where the server holds its key, which bills it, else Firecrawl's keyless search with Exa's behind it, on every harness), native (the harness's own search, claude-agent's or codex's, or on pi the model provider's hosted one: that alone), firecrawl-keyless (Firecrawl's, Exa's behind it), exa-keyless (that alone) or parallel; web_fetch auto (Parallel's extract where the server holds a Parallel key, which bills it, with the guarded direct fetch behind it, else Firecrawl's keyless fetch, which is sent each URL read, never a private or local one, with the guarded direct fetch behind it), firecrawl-keyless (that, whatever the key), kernel (the guarded direct fetch alone) or parallel; browser auto (Browserbase where the server holds its keys, else Kernel where it holds Kernel's), browserbase, kernel (each that alone) or chrome (a Chrome on the server's host, not set up on any server yet: unavailable). An agent's definition.tool_settings is over these, except a permission set to deny here: a server deny is absolute and refuses the tool on this server whatever the agent sets. capabilities.tools say what each resolves to on each harness, and GET /agents/{agent_id} for that agent. An MCP tool's own key may carry its pin, the arguments its calls must carry.",
       responses: { "200": json(TOOL_SETTINGS_ANSWER, "Each capability's provider."), ...errors(401, 429, 500) },
       "x-agentrun-serve": "providers/1",
     },
@@ -3963,7 +4029,7 @@ const SO_FAR = {
 /** composioperrun/1: the Composio user (and connected account) a per-run Composio server's calls run as, for one run. */
 const COMPOSIO_RUN_BINDING: Json = {
   ...closedWith({
-    composio_user_id: { type: "string", pattern: COMPOSIO_USER_ID.source, description: "The Composio user this run's calls of that server run as. The preset's default user `agentrun` is refused (422 not_allowed): it is the one single-user preset servers call as. On an API-only server (AGENTRUN_API_ONLY=1) any user the owner calls as here is refused too, in any letter case, before any account is looked up (422 not_allowed): the default and tool-listing users, and each user a server the owner saved stands on; any other user, a backend's own id or one starting `agentrun.token.`, is the caller's, and a `connected_account_id` it names must be one Composio lists under it (422 not_allowed; 424 when Composio doesn't answer)." },
+    composio_user_id: { type: "string", pattern: COMPOSIO_USER_ID.source, description: "The Composio user this run's calls of that server run as. The preset's default user `agentrun` is refused (422 not_allowed): it is the one single-user preset servers call as. From the API token, so is any user the owner calls as here, in any letter case: the default and tool-listing users, and each user a server the owner saved (not per-run) stands on: 422 not_allowed at this field, read at each request, nothing written. The owner's session binds any user. On an API-only server (AGENTRUN_API_ONLY=1), where every caller is the token, that refusal comes before any account is looked up; any other user, a backend's own id or one starting `agentrun.token.`, is the caller's, and a `connected_account_id` it names must be one Composio lists under it (422 not_allowed; 424 when Composio doesn't answer)." },
   }, {
     connected_account_id: { type: "string", pattern: "^ca_[A-Za-z0-9_-]{5,64}$", description: "The user's connected account they run on (Composio's `ca_...` id). Absent: Composio picks the user's account for the toolkit." },
   }),
@@ -3978,7 +4044,7 @@ const MCP_RUN_AUTH: Json = {
   propertyNames: { pattern: "^[a-z][a-z0-9-]{0,31}$" },
   // Not x-agentrun-secret: that marks a write of a secret the server keeps for every run (an owner's alone). This one is
   // the run's own, handed by whoever may start it, and kept only for that run.
-  description: "What each MCP server this run calls takes from the run, by server name: a per_run server's headers, `{\"<server>\": {\"headers\": {...}}}`, or the Composio account a per-run Composio server's calls run as, `{\"<server>\": {\"composio_user_id\": \"...\", \"connected_account_id\": \"ca_...\"}}` (the account optional). For this run alone, from whoever starts it: the server keeps it sealed for the run's life and redacts its values from what the run shows; a per-run Composio server's row never names a user or an account. A server of either kind that this run hands nothing calls its tools refused, nothing sent.",
+  description: "What each MCP server this run calls takes from the run, by server name: a per_run server's headers, `{\"<server>\": {\"headers\": {...}}}`, or the Composio account a per-run Composio server's calls run as, `{\"<server>\": {\"composio_user_id\": \"...\", \"connected_account_id\": \"ca_...\"}}` (the account optional). For this run alone, from whoever starts it: the server keeps it sealed for the run's life and redacts its values from what the run shows; a per-run Composio server's row never names a user or an account. A server of either kind that this run hands nothing calls its tools refused, nothing sent. The API token never binds a per-run Composio server to a Composio user the owner connects here (the user a preset server the owner saved calls as, or `agentrun`): 422 not_allowed at `mcp_auth.<server>.composio_user_id`, nothing written. Each binding is sealed with who handed it (the token or the owner's session), and each claim reads the owner's users again: a token's binding of a user the owner connected since, or one sealed before that mark, has its calls refused unsent until `mcp_auth` is handed again on a message or a new run starts.",
   "x-agentrun-serve": "mcpperrun/1",
 };
 

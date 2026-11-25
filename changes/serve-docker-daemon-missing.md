@@ -1,7 +1,0 @@
----
-packages: @parcha/agentrun-serve, @parcha/agentrun-computer
-kind: fix
----
-A server whose computerd build for its Docker's architecture is not there (built with `npm run build` but not `npm run build:daemon -w @parcha/agentrun-computer`) says so at its start and doesn't offer Docker. Its `boxes` line, the start's banner and capabilities give the reason with the command that builds it ("no daemon for Docker's amd64 at …: run npm run build:daemon -w @parcha/agentrun-computer, then restart AgentRun"). A run that needs a Docker computer or the Docker box is refused at its start with that reason, and a new agent runs on the runner. Before, Docker was offered and every Docker run failed at its computer's create, a fraction of a second in. As with the server's other Docker checks, it is decided once at the start, so a build made later takes a restart. A daemon of another machine, or a layout whose paths Docker lacks, is still said first.
-The start's probe of Docker (`docker version`) now names the daemon's architecture with its version, so the check asks Docker nothing more. A server with `AGENTRUN_BOXES` not listing docker still asks Docker nothing.
-`@parcha/agentrun-computer/docker` exports `dockerDaemonOf(arch, dir?)`: the daemon file a Docker computer binds for that architecture, and the words when it is missing. Docker's `create()` takes its daemon there, so it and a server's start check name the same file in the same words.

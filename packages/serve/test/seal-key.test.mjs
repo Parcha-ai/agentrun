@@ -154,6 +154,12 @@ test("every seal-key reader refuses none, and a malformed AGENTRUN_SEAL_KEY by i
       return true;
     });
   }
+  // An import and a scrub run offline: with none handed, they are pointed at the data directory, not told to start a server.
+  await assert.rejects(ownSecrets({}, "/nowhere", {}), (error) => {
+    assert.doesNotMatch(String(error.message), /start the server/);
+    assert.match(String(error.message), /none was handed: .*--data/);
+    return true;
+  });
 });
 
 test("the server does not start without a seal key it can keep: in words, naming AGENTRUN_SEAL_KEY", async (t) => {

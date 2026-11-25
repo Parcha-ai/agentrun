@@ -578,32 +578,57 @@ test("API-only: the token's Composio save checks every ACTIVE account Composio l
   assert.deepEqual(await s.server.store.settings.get(composioMadeKey("mail")), mine, "the first server's record is unchanged");
 });
 
-/** A Composio whose connected accounts for the user under the toolkit's auth config run past the lookup's 10 pages: 11
- *  INITIATED accounts and its own, one a page. */
+/** A Composio whose ACTIVE connected accounts for the user under the toolkit's auth config run past the lookup's 10
+ *  pages: 11 of them, one a page. */
 const MANY = "ac_gmail_many";
-const PAST_THE_BOUND = { authConfigs: { gmail: [{ id: MANY, is_composio_managed: true, status: "ENABLED" }] }, accountsPage: 1, accounts: { gmail: Array.from({ length: 11 }, (_, i) => ({ status: "INITIATED", auth_config: MANY, id: `ca_initiated_${String(i).padStart(2, "0")}` })) } };
-const accountPages = (calls) => calls.filter((call) => call.method === "GET" && call.path === "/api/v3/connected_accounts").length;
+const MANY_CONFIG = { gmail: [{ id: MANY, is_composio_managed: true, status: "ENABLED" }] };
+const PAST_THE_BOUND = { authConfigs: MANY_CONFIG, accountsPage: 1, accounts: { gmail: Array.from({ length: 11 }, (_, i) => ({ status: "ACTIVE", auth_config: MANY, id: `ca_active_${String(i).padStart(2, "0")}` })) } };
+/** The same user's accounts, 11 pages of them, none ACTIVE: started, expired or turned off. */
+const NONE_ACTIVE = { authConfigs: MANY_CONFIG, accountsPage: 1, accounts: { gmail: Array.from({ length: 11 }, (_, i) => ({ status: ["INITIATED", "EXPIRED", "INACTIVE"][i % 3], auth_config: MANY, id: `ca_not_active_${String(i).padStart(2, "0")}` })) } };
+const accountLookups = (calls) => calls.filter((call) => call.method === "GET" && call.path === "/api/v3/connected_accounts");
+const accountPages = (calls) => accountLookups(calls).length;
 
-test("API-only: the token's Composio save whose user's connected accounts run past the lookup's page bound is 403, since it can't check each one is its own: nothing made at Composio, no server saved", async (t) => {
+test("API-only: the token's Composio save whose user's ACTIVE connected accounts run past the lookup's page bound is 403, since it can't check each one is its own: nothing made at Composio, no server saved", async (t) => {
   withEnv(t, { [KEY_ENV]: KEY });
   const s = await setup(t, { fake: PAST_THE_BOUND });
   const res = await s.token("PUT", "/settings/mcp-servers/mail/composio", { ...SAVE, user_id: "ops" });
   assert.equal(res.status, 403, JSON.stringify(res.body));
   assert.match(res.body.error?.message, /more than 10 pages of connected accounts for the user_id ops under the auth config ac_gmail_many.*can't check/, res.body.error?.message);
   assert.equal(accountPages(s.composio.calls), 10, "it read 10 pages, no more");
-  assert.deepEqual([...new Set(s.composio.calls.filter((call) => call.path === "/api/v3/connected_accounts").map((call) => call.query?.limit))], ["50"], "each page asks for 50 accounts");
+  assert.deepEqual([...new Set(accountLookups(s.composio.calls).map((call) => call.query?.limit))], ["50"], "each page asks for 50 accounts");
   assert.deepEqual(s.composio.calls.filter((call) => call.method !== "GET"), [], "nothing made at Composio");
   assert.equal(await s.server.store.mcp.server("mail"), undefined, "no server saved");
 });
 
-test("full profile: the owner's Composio save whose user's connected accounts run past the lookup's page bound is not refused: it goes on with the 10 pages it read (no ACTIVE one there: a connect link)", async (t) => {
+test("full profile: the owner's Composio save whose user's ACTIVE connected accounts run past the lookup's page bound is not refused: it goes on with the 10 pages it read and stands on the first ACTIVE one", async (t) => {
   withEnv(t, { [KEY_ENV]: KEY });
   const s = await setup(t, { full: true, fake: PAST_THE_BOUND });
   const res = await asOwner(s.server)("PUT", "/settings/mcp-servers/mail/composio", { ...SAVE, user_id: "ops" });
   assert.equal(res.status, 200, JSON.stringify(res.body));
   assert.equal(accountPages(s.composio.calls), 10, "it read 10 pages, no more");
-  assert.equal(typeof res.body.connect_url, "string", "no ACTIVE account in what it read: a connect link");
+  assert.equal(res.body.connect_url, undefined, "an ACTIVE account in what it read: no connect link");
+  assert.match(JSON.stringify(await s.server.store.settings.get(composioMadeKey("mail"))), /ca_active_00/, "it stands on the first ACTIVE account");
   assert.equal(new URL((await s.server.store.mcp.server("mail")).url).searchParams.get("user_id"), "ops", "saved as the owner's user");
+});
+
+// Only an ACTIVE account can serve a save, so the lookup asks Composio for ACTIVE ones alone: a user's started, expired
+// or turned-off accounts never count toward the page bound, and never cost the token's save its 403-free path.
+test("API-only: the token's Composio save asks Composio for ACTIVE accounts alone, so 11 pages of the user's accounts that are not ACTIVE are one empty page: 200 with a connect link", async (t) => {
+  withEnv(t, { [KEY_ENV]: KEY });
+  const s = await setup(t, { fake: NONE_ACTIVE });
+  const res = await s.token("PUT", "/settings/mcp-servers/mail/composio", { ...SAVE, user_id: "ops" });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(typeof res.body.connect_url, "string", "no ACTIVE account: a connect link");
+  assert.deepEqual(accountLookups(s.composio.calls).map((call) => call.query?.statuses), ["ACTIVE"], "one lookup, for ACTIVE accounts");
+});
+
+test("full profile: the owner's Composio save asks Composio for ACTIVE accounts alone too: one page, a connect link", async (t) => {
+  withEnv(t, { [KEY_ENV]: KEY });
+  const s = await setup(t, { full: true, fake: NONE_ACTIVE });
+  const res = await asOwner(s.server)("PUT", "/settings/mcp-servers/mail/composio", { ...SAVE, user_id: "ops" });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(typeof res.body.connect_url, "string", "no ACTIVE account: a connect link");
+  assert.deepEqual(accountLookups(s.composio.calls).map((call) => call.query?.statuses), ["ACTIVE"], "one lookup, for ACTIVE accounts");
 });
 
 test("API-only: the token's re-save of a server saved before its user was namespaced (its record on the bare user) deletes at Composio the account that server's link made, which no other server stands on, and records the new user's", async (t) => {
