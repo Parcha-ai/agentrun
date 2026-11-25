@@ -1,6 +1,7 @@
 // web_save: one public file saved into the run's Workspace (a bare name under media/), so a link that expires becomes a
 // file the run keeps. It downloads through the public-host guard's bytes variant (pi-browser publicDownload, web_fetch's
 // hop loop) and writes once through the Workspace, never over a path in use, a media type only when its bytes agree.
+import { isUtf8 } from "node:buffer";
 import { extname } from "node:path";
 import type { JsonValue } from "@earendil-works/chord/json";
 import type { TSchema } from "typebox";
@@ -74,6 +75,12 @@ const MEDIA_TYPES = new Set(MEDIA.flatMap((kind) => kind.types));
 const ALIASES: ReadonlyMap<string, string> = new Map([["image/jpg", "image/jpeg"], ["image/pjpeg", "image/jpeg"], ["audio/mp3", "audio/mpeg"], ["audio/x-wav", "audio/wav"], ["audio/wave", "audio/wav"], ["audio/vnd.wave", "audio/wav"], ["audio/x-m4a", "audio/mp4"], ["audio/m4a", "audio/mp4"]]);
 /** Declared types that say nothing about the bytes. */
 const UNTYPED = new Set(["", "application/octet-stream", "binary/octet-stream", "application/binary"]);
+/** Declared XML: saved as plain text alone (.txt), so no browser parses it as XML or XHTML. */
+const XML_DECLARED = new Set(["application/xml", "text/xml"]);
+/** Where untyped or XML text is saved: plain text or CSV, served as that text with nosniff (run-files.ts), never as a page. */
+const TEXT_SAVED = new Set(["text/plain", "text/csv"]);
+/** Bytes that are text: no NUL anywhere in the whole file, and UTF-8 throughout (a BOM is UTF-8). */
+const isText = (bytes: Uint8Array): boolean => bytes.indexOf(0) === -1 && isUtf8(bytes);
 /** A Content-Type as its bare type, lower case, its parameters dropped and its aliases resolved. */
 const bare = (type: string | undefined): string => {
   const plain = (type ?? "").split(";")[0]!.trim().toLowerCase();
@@ -100,6 +107,10 @@ export function typeFor(bytes: Uint8Array, declared: string, path: string): { ty
   }
   if (MEDIA_TYPES.has(said)) return { refused: `refused: the host says ${said}, but the bytes are not ${said}` };
   if (named !== undefined && named === said) return { type: said };
+  // A list a government publishes often comes untyped (the UK's CSV) or as XML (the UN's): it saves as plain text or
+  // CSV when its bytes are text, served back as that text with nosniff, so nothing renders or parses it as a page.
+  if (named !== undefined && TEXT_SAVED.has(named) && (UNTYPED.has(said) || (XML_DECLARED.has(said) && named === "text/plain")))
+    return isText(bytes) ? { type: named } : { refused: `refused: ${said || "a file with no type"} saves as ${named} only when its bytes are UTF-8 text with no NUL, and these are not` };
   return { refused: `refused: ${said ? `${said} is` : "a file with no type is"} not a media type this server plays${named ? `, and the path's extension ${ext} says ${named}` : ", and the path's extension does not say it is"}` };
 }
 
