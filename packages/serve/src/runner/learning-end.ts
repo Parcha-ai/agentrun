@@ -547,8 +547,8 @@ export function traceFrom(timeline: readonly TimelineEvent[], refuse: readonly s
 /** The compile turn's facts for run `runId` of agent `agentId` (learn/compile.ts): a revision of the learned workflow
  *  that fits the run's input and whose promotion holds it at main's digest (runner/promotion.ts: its one check on the
  *  agent's own runs fell under the bar; its champion served the run, or the agent did by hand), its text as main holds
- *  it, with the check's numbers and the inputs it disagreed on, once per hold (none when any run since the hold compiled
- *  it, read from the agent's kept learning; a stopped check's none; a connected agent's hold on give-backs only once it
+ *  it, with the check's numbers and the inputs it disagreed on, once per hold (none when any run since the hold was asked
+ *  its revise, read from the agent's kept learning; a stopped check's none; a connected agent's hold on give-backs only once it
  *  is due, as a first compile is, on its runs since the hold); else, when the job is due (compileDue: the run
  *  completed, the agent has no learned workflow active or waiting, and it has its definition's compile_after completed
  *  agent runs), a new one, compiled once: one more after a first compile whose drafts all failed their checks, and none
@@ -584,7 +584,7 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
   // Due on the agent's own completed runs, the ending one counted.
   const ending = input.outcome === "completed" ? 1 : 0;
   const dueWith = (workflows: number) => compileDue({ completed: ending === 1, runs: own.length + ending, workflows, compileAfter });
-  const compiledOf = (kept: LearningProposal | undefined) => (kept?.proposal as { compiled?: { workflow?: unknown } } | null | undefined)?.compiled;
+  const compiledOf = (kept: LearningProposal | undefined) => (kept?.proposal as { compiled?: { workflow?: unknown; held?: unknown } } | null | undefined)?.compiled;
   // Compile once: a recompile whose drafts failed their checks stopped the agent's new compiles (recordDraftFailed).
   const stopped = compileStoppedOf(records);
   // First by what the run started from (the workflows it was offered): a run not due by them opens no folder, unless one
@@ -652,15 +652,17 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
     const after = (run: { readonly startedAt: number } | undefined) => run !== undefined && run.startedAt > heldAt;
     const sinceHold = own.filter(after).length + (after(listed[at]) ? ending : 0);
     if (heldOnGiveBacks(read.held.check) && !(ending === 1 && sinceHold >= compileAfter)) return sayLeftOut(), undefined;
-    // Once per hold: a run since it that compiled this workflow asked already, whatever came of it (its revision is on its
-    // way to a replay, or its draft failed its checks), however many runs ago. Read from the agent's kept learning since
-    // the hold, never a window of its last runs; one that can't be read asks nothing. A draft that failed since, not stopped
-    // (only a revise of a connected agent's hold on give-backs: reviseAttemptOf), asks once more: counted from it, its own
-    // run's kept learning (written after its record, at the run's end) not counted.
+    // Once per hold: a run since it that was asked this hold's revise (its compile record names the held digest) asked
+    // already, whatever came of it (its revision is on its way to a replay, or its draft failed its checks), however many
+    // runs ago. A new compile asked before the hold (in flight as it was decided) that drafted the same workflow and ended
+    // after it is no revise. Read from the agent's kept learning since the hold, never a window of its last runs; one that
+    // can't be read asks nothing. A draft that failed since, not stopped (only a revise of a connected agent's hold on
+    // give-backs: reviseAttemptOf), asks once more: counted from it, its own run's kept learning (written after its record,
+    // at the run's end) not counted.
     const failed = records.findLast((one) => one.workflow === read.held!.workflow && draftFailedOf(one) && !one.check?.stopped && !(one.at < read.held!.at));
     const since = Date.parse(failed?.at ?? read.held.at);
     const kept = await deps.store.learning.proposals(agentId, { limit: HELD_ASKED_READ }).catch(() => undefined);
-    const asked = (one: LearningProposal) => !(one.createdAt < since) && compiledOf(one)?.workflow === read.held!.workflow && draftFailedDigest(one.runId) !== failed?.digest;
+    const asked = (one: LearningProposal) => !(one.createdAt < since) && compiledOf(one)?.workflow === read.held!.workflow && compiledOf(one)?.held === read.held!.digest && draftFailedDigest(one.runId) !== failed?.digest;
     if (!kept || kept.some(asked)) return sayLeftOut(), undefined;
     const { workflow, digest, reason, check, audit } = read.held;
     // A check's or an audit's disagreements are the agent's own inputs and answers: cut of the run's secrets as a trace is

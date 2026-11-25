@@ -11,8 +11,10 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { client, scratch, startServe } from "./support.mjs";
 
-/** The fix in one line, as an operator reads it wherever it is said (workspace/attached-computers.ts ONE_PROCESS_FIX). */
-const FIX = "start the image with the server options alone, without server-and-runner (outside the image: agentrun-serve without --no-runner)";
+/** The two fixes, as an operator reads them wherever they are said (workspace/attached-computers.ts RELAY_FIX, then
+ *  ONE_PROCESS_FIX): the runner relays the machine's socket once it has the server's public address, as it relays a
+ *  paired computer's, or the server runs its runs in its own process. */
+const FIX = "give the runner AGENTRUN_PUBLIC_URL (this server's public address), or start the image with the server options alone, without server-and-runner (outside the image: agentrun-serve without --no-runner)";
 /** The providers whose machines dial this server as serve makes them (its settings name no connect): the descriptors'. */
 const DIALS = [["fly", "Fly Machines"], ["cloudflare", "Cloudflare"]];
 /** Providers the server reaches through the vendor: Docker on this machine, and E2B, Daytona and Modal on exec. */
@@ -24,7 +26,7 @@ const rowsOf = (view, id) => view.kinds.flatMap((kind) => kind.providers.filter(
 /** `said` is a dial provider's runner-apart line: no run here can use it, why, and the fix. */
 function saysDialApart(said, label, where) {
   assert.equal(typeof said, "string", `${where}: ${JSON.stringify(said)}`);
-  assert.equal(said, `no run on this server can use ${label}: its machines dial this server, and its runner runs in a process of its own, with no attach hub to take their socket: ${FIX}`, where);
+  assert.equal(said, `no run on this server can use ${label}: its machines dial this server, and its runner runs in a process of its own and relays no machine's socket: ${FIX}`, where);
 }
 
 async function served(t, options) {

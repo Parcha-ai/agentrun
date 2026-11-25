@@ -5,7 +5,8 @@
 // creating it if missing, as archive: true does; only an explicit `archive: false` is refused in words, nothing moved;
 // the account holds as many messages, and the answer's note says "moved out of the inbox to <to>". Its description,
 // built for the server it is bound on, says which in one line. The trash and junk folders are refused, by special use or
-// by name, with nothing changed. It is allowed by default, scoped to a run's thread as email_read and email_search are
+// by name, with nothing changed, and so are Sent and Drafts (a message filed there would read as the account's own sent
+// mail). It is allowed by default, scoped to a run's thread as email_read and email_search are
 // (`scope: "mailbox"` widens it). Its answer is {filed, message_id, to, archived, subject, note?} (the note on a move
 // only), and its timeline line, read from that answer, says "Filed <subject> under <to>".
 import assert from "node:assert/strict";
@@ -139,6 +140,47 @@ test("the trash and junk folders are refused, by name or special use, and nothin
     assert.deepEqual(faux.messages().map((m) => m.labels), labels, `${layout}: no label changed`);
     assert.ok(!faux.commands().some((c) => /^(UID )?(MOVE|STORE|COPY|EXPUNGE)\b|^CREATE\b/i.test(c)), `${layout}: ${faux.commands().join("\n")}`);
   }
+});
+
+const KEPT = (to) => `email_file never files into Sent or Drafts: ${to} is the account's sent or drafts mail, which only email_send and email_draft write.`;
+
+test("the Sent and Drafts folders are refused, by name or special use, and nothing changes: a filing can't make mail look sent", { timeout: 150_000 }, async (t) => {
+  for (const [layout, targets] of [["standard", ["Sent", "Drafts", "sent", "\\Sent", "\\Drafts"]], ["gmail", ["[Gmail]/Sent Mail", "[Gmail]/Drafts", "\\Sent", "\\Draft", "Sent", "Drafts"]]]) {
+    const { api } = await serve(t, { faux: FAUX_EMAIL });
+    const faux = await mailbox(t, { layout });
+    faux.seed({ from: "ana@example.com", to: [ADDRESS, "eve@example.com"], subject: "Keep me", messageId: "<s1@example.com>" });
+    faux.seed({ mailbox: "Drafts", from: ADDRESS, to: ["eve@example.com"], subject: "Draft", messageId: "<s2@example.com>", flags: ["\\Draft", "\\Seen"] });
+    await saved(api, faux, layout === "gmail" ? { preset: "gmail" } : {});
+    assert.equal((await api("POST", "/agents", mailAgent("keeper"))).status, 201);
+    const before = holding(faux);
+    const labels = faux.messages().map((m) => m.labels);
+    const list = targets.flatMap((to) => [["email_file", { message_id: "<s1@example.com>", to }], ["email_file", { message_id: "<s2@example.com>", to }]]);
+    const { saw } = await ran(api, "keeper", list);
+    list.forEach(([, args], i) => assert.match(String(saw[i]), new RegExp(KEPT(args.to).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), `${layout} ${args.message_id} to ${args.to}: ${JSON.stringify(saw[i])}`));
+    assert.deepEqual(holding(faux), before, `${layout}: nothing moved, nothing created`);
+    assert.deepEqual(faux.messages().map((m) => m.labels), labels, `${layout}: no label changed`);
+    assert.ok(!faux.commands().some((c) => /^(UID )?(MOVE|STORE|COPY|EXPUNGE)\b|^CREATE\b/i.test(c)), `${layout}: ${faux.commands().join("\n")}`);
+  }
+});
+
+test("a name the server takes as Sent's or Drafts' (Sent/ and Drafts/, a trailing delimiter dropped) is refused once the server lists no mailbox of that exact name, and nothing moves; a folder it lists as named still files", { timeout: 150_000 }, async (t) => {
+  const { api } = await serve(t, { faux: FAUX_EMAIL });
+  const faux = await mailbox(t, { trailingDelimiter: true });
+  faux.seed({ from: "ana@example.com", to: [ADDRESS, "eve@example.com"], subject: "Keep me", messageId: "<s1@example.com>" });
+  await saved(api, faux);
+  assert.equal((await api("POST", "/agents", mailAgent("mapper"))).status, 201);
+  const { saw } = await ran(api, "mapper", [
+    ["email_file", { message_id: "<s1@example.com>", to: "Sent/" }],
+    ["email_file", { message_id: "<s1@example.com>", to: "Drafts/" }],
+    ["email_file", { message_id: "<s1@example.com>", to: "Receipts" }],
+  ]);
+  for (const [i, to] of [[0, "Sent/"], [1, "Drafts/"]]) {
+    assert.equal(String(saw[i]), `email_file: the mail server lists no mailbox named exactly "${to}" once it is made, so nothing was filed: give the folder's name as the server lists it.`, `${to}: ${JSON.stringify(saw[i])}`);
+  }
+  assert.deepEqual([faux.messages("Sent").length, faux.messages("Drafts").length], [0, 0], "nothing was filed into Sent or Drafts");
+  assert.ok(!faux.commands().some((c) => /MOVE .*(Sent|Drafts)\//i.test(c)), faux.commands().join("\n"));
+  assert.equal(saw[2]?.filed, true, `a folder the server lists as named files: ${JSON.stringify(saw[2])}`);
+  assert.deepEqual(faux.messages("Receipts").map((m) => m.messageId), ["<s1@example.com>"]);
 });
 
 test("a run an email started files only within its thread; `scope: \"mailbox\"` on email_file widens it", { timeout: 150_000 }, async (t) => {

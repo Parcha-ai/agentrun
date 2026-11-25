@@ -662,7 +662,7 @@ const HARNESS_KEYS_VIEW = closed({
       ready: { type: "boolean", description: "Whether every one of `keys` is saved for this recipe file: then its runs run on them, a scheduled or triggered one too, ahead of its owner's own sign-in (--harness-sign-in)." },
       reenter: {
         type: "array",
-        description: "Each of `keys` with a value kept that its runs do not get, and why: recipe_changed (saved for another recipe file of this id, so a recipe that changed never inherits it), not_bound (bound to no recipe file it opens with: saved before this release, which binds keys, or its save did not finish), seal_key_changed (sealed under another seal key), file_unreadable (damaged). Saving it again replaces it.",
+        description: "Each of `keys` with a value kept that its runs do not get, and why: recipe_changed (saved for another recipe file of this id, so a recipe that changed never inherits it), not_bound (bound to no recipe file it opens with: saved before 0.1.0-beta.57, the first release that binds keys, or its save did not finish), seal_key_changed (sealed under another seal key), file_unreadable (damaged). Saving it again replaces it.",
         items: closed({ name: { type: "string" }, why: { enum: [...HARNESS_KEY_REENTER] } }),
       },
     }),
@@ -3887,7 +3887,7 @@ const PENDING: Json = {
         call_id: { type: "string", description: "The call's id, as its tool_result row's tool_use_id." },
         args_preview: { type: "string", maxLength: ARGS_PREVIEW_BYTES, description: `The call's arguments as JSON, cut at ${ARGS_PREVIEW_BYTES} bytes: the model's alone (why the call asks is asks_because).` },
         summary: { type: "string", description: `What the call does, in words, where its tool says: email_send's "Send email to <to>, cc <cc>: <subject>", a blank line, then the text's first 300 characters; email_file's "File <message_id> under <to>". Redacted as args_preview is.`, "x-agentrun-serve": "email/1" },
-        asks_because: { type: "string", description: `Why the call asks though its setting allows it, a clause to say as "Asks because <why>.": its tool's own ask, email_send past ${SEND_CAP} sends in a run ("this run has sent 5 emails") or to anyone outside the thread of the email that started the run ("<address> is outside this email's thread"). Redacted as args_preview is. Absent on a call that asks by its setting.`, "x-agentrun-serve": "email/1" },
+        asks_because: { type: "string", description: `Why the call asks though its setting allows it, a clause to say as "Asks because <why>.": its tool's own ask, email_send past ${SEND_CAP} sends in a run ("this run has sent 5 emails"), to anyone outside the thread of the email that started the run ("<address> is outside this email's thread"), or, on a run a trigger started, to an address the account has never sent to ("<address>: this account has never sent to them", or "its recipients couldn't be checked against this account's sent mail (<error>)" when its Sent folder can't be read); several reasons are joined with "; ". Redacted as args_preview is. Absent on a call that asks by its setting.`, "x-agentrun-serve": "email/1" },
         requested_at: { type: "string", format: "date-time" },
         price: { oneOf: [{ type: "number", minimum: 0 }, { const: "not metered" }, { const: "priced by usage" }], description: "What the call costs, in USD, where its tool declares a price; \"not metered\" for an unpriced MCP call; \"priced by usage\" for a monid endpoint priced by usage: monid estimates its cost only when the call runs, after the allow (the call is held at that estimate; a charge above it is booked as charged, and stops the run only when it passes the run's cap), so nothing is sent to monid while it waits. Absent when the tool names none." },
         destructive: { const: true, description: `Present on an MCP tool's call that is destructive by the annotations the run pinned (destructiveHint true, readOnlyHint not true), and on a call whose allow lets such a tool run (a learned workflow's, its card naming the tool in \`mcp_calls\`): its allow needs \`confirm_destructive: true\`. Absent on every other call.`, "x-agentrun-serve": "allowreads/1" },
@@ -4488,6 +4488,15 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
           default_provider: { type: "string", description: "A tool with a provider choice: the built-in default.", "x-agentrun-serve": "providers/1" },
           resolves: { ...RESOLVES, "x-agentrun-serve": "providers/1" },
           why: { ...WHY, "x-agentrun-serve": "providers/1" },
+          held: {
+            type: "array",
+            description: "web_search and web_fetch alone, read at each answer: what holds a keyless provider the tool asks where it resolves on some harness (firecrawl-keyless, exa-keyless), for this whole server, because a run met its limit: the tool's own hold, or its key's, across both tools (`tool`: key). Each says its kind (rate-limited or out of quota), until when, and both in words. A held provider is not asked until then; the tool goes on to the next in its order (the guarded direct fetch for web_fetch). Kept in the server's memory alone: a restart forgets them. Absent when nothing holds the tool.",
+            items: {
+              type: "object", additionalProperties: false, required: ["provider", "tool", "kind", "until", "words"],
+              properties: { provider: { type: "string" }, tool: { enum: ["search", "fetch", "key"] }, kind: { enum: ["quota", "rate"] }, until: { type: "string", format: "date-time" }, words: { type: "string", examples: ["rate-limited until 12:01 UTC"] } },
+            },
+            "x-agentrun-serve": "held/1",
+          },
           permission: { ...PERMISSION, description: "The server's permission of the tool: its setting, else the owner's default.", "x-agentrun-serve": "approvals/1" },
           default_permission: { enum: [...PERMISSIONS], description: "The owner's default: allow for this server's tools, ask for a catalog tool.", "x-agentrun-serve": "approvals/1" },
           permissions: { type: "array", items: { enum: [...PERMISSIONS] }, description: "The permissions it may be set to.", "x-agentrun-serve": "approvals/1" },

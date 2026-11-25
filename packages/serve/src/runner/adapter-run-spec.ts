@@ -105,7 +105,7 @@ import { monidForClaim, type MonidFake, withMonid } from "./monid-run.js";
 import { verifyPlacedProject, movedSkillFiles } from "../source-sync/claim.js";
 import { projectCheckpointForRun } from "./project-checkpoint.js";
 import { sourceAuxiliaryAdmitter } from "../source-sync/auxiliary.js";
-import { routeTrace } from "../otel/genai.js";
+import { agentOfRun, routeTrace } from "../otel/genai.js";
 
 /** What a claim gives the shared computerForClaim: the run, its epoch, the claim itself (a live view's row is fenced on it
  *  and names its runner), its revision, its place and any computer choice. */
@@ -465,18 +465,34 @@ export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick
   // count. Its calls are asked about one at a time (asking, a chain by tool): the count read and the reservation with
   // nothing between. A reserved call whose result is in the journal leaves it: counted there, or its slot freed (an
   // error, a deny). A new claim's gate starts with none: what finished is the journal's.
-  const reserved = new Map<string, Set<string>>();
+  // Each reserved call is kept with its arguments: a tool's own ask reads what the run's calls of it were made with
+  // (AskContext.made), those let through here among them. A call its tool asks about that a person has approved
+  // (approved: its answer in the journal, or their approve waiting for it) is reserved the same way, in its turn, before
+  // it runs: a call of the tool asked about after it (two sends at once to one new address) reads it as made, never
+  // asking again for what the person just approved; its slot goes as any reserved call's does.
+  const reserved = new Map<string, Map<string, unknown>>();
   const asking = new Map<string, Promise<unknown>>();
-  const counted = (ran: NonNullable<NonNullable<Parameters<NonNullable<AdapterRunSpec["gate"]>>[1]>["ran"]>) => async (tool: string): Promise<number> => {
+  type GateOptions = NonNullable<Parameters<NonNullable<AdapterRunSpec["gate"]>>[1]>;
+  type Ran = NonNullable<GateOptions["ran"]>;
+  /** The journal's calls of `tool`, the reserved ones that have a result there let go. */
+  const read = async (ran: Ran, tool: string) => {
     const calls = await ran(tool);
     const held = reserved.get(tool);
-    for (const id of held ?? []) if (calls.ran.has(id) || calls.ended.has(id)) held!.delete(id);
+    for (const id of [...(held?.keys() ?? [])]) if (calls.ran.has(id) || calls.ended.has(id)) held!.delete(id);
+    return { calls, held };
+  };
+  const counted = (ran: Ran) => async (tool: string): Promise<number> => {
+    const { calls, held } = await read(ran, tool);
     return calls.ran.size + calls.unnamed + (held?.size ?? 0);
   };
-  const askedOne = (call: Parameters<NonNullable<AdapterRunSpec["gate"]>>[0], asks: NonNullable<ToolEntry["asks"]>, made: ToolHost, ran: Parameters<typeof counted>[0]): Promise<string | undefined> => {
+  const madeWith = (ran: Ran) => async (tool: string): Promise<unknown[]> => {
+    const { calls, held } = await read(ran, tool);
+    return [...[...calls.ran].flatMap((id) => (calls.args.has(id) ? [calls.args.get(id)] : [])), ...(held?.values() ?? [])];
+  };
+  const askedOne = (call: Parameters<NonNullable<AdapterRunSpec["gate"]>>[0], asks: NonNullable<ToolEntry["asks"]>, made: ToolHost, ran: Ran, approved: GateOptions["approved"]): Promise<string | undefined> => {
     const turn = (asking.get(call.tool) ?? Promise.resolve()).then(async () => {
-      const because = await asks((call.args ?? {}) as Record<string, unknown>, { host: made, ran: counted(ran) });
-      if (because === undefined && call.callId) reserved.set(call.tool, (reserved.get(call.tool) ?? new Set()).add(call.callId));
+      const because = await asks((call.args ?? {}) as Record<string, unknown>, { host: made, ran: counted(ran), made: madeWith(ran) });
+      if (call.callId && (because === undefined || (await approved?.(call.callId)))) reserved.set(call.tool, (reserved.get(call.tool) ?? new Map()).set(call.callId, call.args));
       return because;
     });
     asking.set(call.tool, turn.catch(() => undefined));
@@ -507,7 +523,7 @@ export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick
     // outside the run's thread): put to a person with the tool's reason on its card, whatever the setting; where no one
     // can approve, refused in those words. No tool's name is read here: the reason is the tool's.
     const asksOf = decision === "allow" && host && options.ran ? toolOf(call.tool)?.asks : undefined;
-    const because = asksOf ? await askedOne(call, asksOf, host!, options.ran!) : undefined;
+    const because = asksOf ? await askedOne(call, asksOf, host!, options.ran!, options.approved) : undefined;
     if (because !== undefined) return approvers ? { ask: {}, because } : { deny: noApproverText(gate.askedAs(call.tool, call.args), options.replayed ? "unknown" : "no", because) };
     // A learned workflow's MCP nodes are the run's own MCP calls, held to the same settings: one set to deny refuses the
     // whole call in the gate's words before any node runs, nothing sent; the actions set to ask are put to a person on the
@@ -1050,9 +1066,11 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     ...(body.outputSchema !== undefined ? { outputSchema: body.outputSchema } : {}),
     ...(cap ? { cap } : {}),
     // Its routes, as its GenAI trace names them (otel/genai.ts): the session's, and each tier's by its name.
+    // And the agent the run is of (its id and name; the loop cuts them).
     trace: {
       ...traceOfRoute(route),
       routes: new Map([...tierRoutes].map(([tier, routed]) => [tier, traceOfRoute(routed)])),
+      agent: await agentOfRun(deps.store.agents, runRow.agentId),
     },
     // The run's MCP for a harness with its own client (mcp-run.ts), with its monid endpoints beside it (monid-run.ts):
     // the catalog tools the session mounts; absent when none.
@@ -1079,7 +1097,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     ...(computer.replaced ? { computerNote: computerReplacedNote(computer.replaced) } : {}),
     // A desktop or a phone that holds none of the run's files: the model is told once in the run where they are, or, where
     // the gate would refuse a save (RunGate.writeBar), that a screenshot can't be saved to them.
-    ...(tools.apart ? { computerFilesNote: computerFilesNote({ ...tools.apart, writes: gate.writes() }) } : {}),
+    ...(tools.apart ? { computerFilesNote: computerFilesNote({ ...tools.apart, writes: gate.writes(), outlives: computer.outlives === true }) } : {}),
     workRoot: root,
     // The end's cost: its booking's, by the one rule every reader of an ended run's cost takes (metrics.ts runCostOf):
     // every model request its session's proxy booked (pi's own answers and its side calls: a learned workflow's nodes,
