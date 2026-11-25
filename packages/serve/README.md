@@ -893,7 +893,9 @@ client, each answer with its value as `structuredContent`.
 A desktop's or a phone's own disk is not the run's files: only the run's folder is collected, and the computer goes at
 the run's end with what is on it. `computer_screenshot`'s `save_as` (a path relative to the run's folder, ending `.png`)
 saves the screenshot into the run's files through the run's own file writer, on any computer; a path outside the folder
-is refused in words before the computer is asked. On a desktop or a phone the run's folder is not mounted in (one with
+is refused in words before the computer is asked. A screenshot with `save_as` is a file written, so `write`'s setting holds
+it too, after the kind's deny: the stricter decides (`write` set to deny refuses it before the computer is asked, set to
+ask puts it to a person); one with no `save_as` is held to the kind's setting alone. On a desktop or a phone the run's folder is not mounted in (one with
 `exec: false`, or a provider that mounts none), the model is told this once in the run, as the server's note, after a
 due cap wrap-up.
 
@@ -4910,16 +4912,16 @@ step is sent only when the run's spend plus that step's least (its whole input b
 1,024-token answer) fits. So a small cap pauses a run well before it has spent it. Measured on a pi desktop run on Sonnet
 ($3 / $15, cache write $3.75, cache read $0.30 a million) through the dispatch's own system prompt and tools (read,
 write, edit, the desktop's and `codemode`, with the desktop skill named in the system prompt), five requests (four
-screenshots, then the answer), spending about $0.04 in all. Through a gateway the first request's byte bound is 10,072
-tokens, so it needs $0.053; each later request is bounded by the last one's bill and the bytes it adds, so the whole run
+screenshots, then the answer), spending about $0.04 in all. Through a gateway the first request's byte bound is 10,445
+tokens, the server's note that the desktop's disk is not the run's files among them, so it needs $0.055; each later request is bounded by the last one's bill and the bytes it adds, so the whole run
 needs $0.082;
-straight to Anthropic the count is one recorded from a real desktop run on Sonnet (3,146 tokens at first), so it needs
-$0.030 and $0.083:
+straight to Anthropic the count is one recorded from a real desktop run on Sonnet (3,146 tokens at first), and the note,
+placed after the count, adds its byte bound (371 tokens), so it needs $0.031 and $0.083:
 
 | Route | First request needs | Five-step run needs | Each further step |
 | --- | --- | --- | --- |
 | Through a gateway (OpenRouter): the byte bound, then the last bill | $0.06 | $0.09 | about $0.012 |
-| Straight to Anthropic: Anthropic's count | $0.03 | $0.09 | about $0.012 |
+| Straight to Anthropic: Anthropic's count | $0.04 | $0.09 | about $0.012 |
 
 A claude-agent run's first request is of the same size (the pinned
 CLI's measured 6,926 bytes with five tools: $0.04 for its first request through a gateway). A cap below these pauses at

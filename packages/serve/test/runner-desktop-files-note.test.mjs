@@ -7,7 +7,7 @@
 // The desktop is --faux's (faux-computers.ts): nothing is rented.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -106,6 +106,21 @@ test("a desktop that mounts no folder: the model's first request carries the fil
   const saved = readFileSync(join(runFolder(one.dir, "agent-1", RUN), "shots/desktop.png"));
   assert.deepEqual(saved.subarray(0, 8), PNG_MAGIC, "a PNG, in the run's files");
   assert.match(JSON.stringify(one.requests[1]), /saved as shots\/desktop\.png in the run's files/, "the model is told where it went");
+});
+
+test("with the desktop allowed and write set to deny, a screenshot with save_as is refused in write's words and nothing is written to the run's files", { timeout: 120_000 }, async (t) => {
+  const one = await desktopRun(t, {
+    script: [{ call: "computer_screenshot", args: { save_as: "shots/desktop.png" } }, { say: "done" }],
+    body: { tools: ["read", "write"], toolSettings: { desktop: { permission: "allow" }, write: { permission: "deny" } } },
+  });
+  const row = await rests(one, ["ended"]);
+  assert.equal(row.state, "ended", JSON.stringify(row));
+  assert.equal(one.requests.length, 2, "the refused screenshot, then the answer");
+  const answered = JSON.stringify(one.requests[1]);
+  assert.match(answered, /write is set to deny for this agent/, "the model reads write's deny");
+  assert.match(answered, /save_as/, "and why it holds a screenshot");
+  assert.doesNotMatch(answered, /saved as shots/, "nothing says it was saved");
+  assert.ok(!existsSync(join(runFolder(one.dir, "agent-1", RUN), "shots/desktop.png")), "nothing in the run's files");
 });
 
 test("the files note is told once a run: the claim that resumes it after a park never tells it again", { timeout: 120_000 }, async (t) => {

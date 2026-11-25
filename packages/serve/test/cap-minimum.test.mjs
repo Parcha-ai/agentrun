@@ -5,14 +5,15 @@
 // step's least fits the cap; a step's least is its whole input bound at the cache-write price ($3.75 a million) and a
 // 1,024-token answer ($15 a million). The answers' usage is a desktop run's on Sonnet (3,146 tokens written to the cache
 // at first, then 1,300 more each step, 40 out), so the run spends about $0.04 in all. So:
-//  - through a gateway (OpenRouter, which counts nothing): the first request is bounded by its bytes, 10,072 tokens, most
+//  - through a gateway (OpenRouter, which counts nothing): the first request is bounded by its bytes, 10,445 tokens, most
 //    of them the computer's tools' and codemode's definitions, the computer's types among them, and the desktop skill's
-//    line in the system prompt, so it needs $0.053. Each later request carries the one before it, so it is bounded by
+//    line in the system prompt, and the server's files note (the faux desktop mounts no folder), so it needs $0.055. Each later request carries the one before it, so it is bounded by
 //    what that one billed and the bytes it adds, its screenshot at the 1,366 tokens it bills (1,744 over the last bill,
 //    against the 1,300 each step bills here): the whole run needs $0.082. $0.09, documented, takes it to its answer;
 //    $0.08 wraps it up before its last screenshot;
-//  - straight to Anthropic, each bound is Anthropic's count (3,821 tokens at first with the tool prompt), so the first
-//    request needs $0.030 and the whole run $0.083: $0.09, documented, takes it to its answer, $0.08 parks it. The count
+//  - straight to Anthropic, each bound is Anthropic's count (3,821 tokens at first with the tool prompt) and, on the first,
+//    the files note's byte bound (371 tokens: the note is placed after the count), so the first request needs $0.031 and
+//    the whole run $0.083: $0.09, documented, takes it to its answer, $0.08 parks it. The count
 //    here is the one recorded from a real desktop run before codemode was offered beside the computer's tools; the fake
 //    origin answers it, so this route's figures do not move with the offered tools.
 import assert from "node:assert/strict";
@@ -70,21 +71,22 @@ async function desktopRun(t, capUsd, origin) {
   const { spec } = await specFor(t, { body: { instructions: TASK, tools: ["read", "write", "edit"], computer: { kind: "desktop", provider: "faux-desktop" } }, computer: fauxComposer });
   const counted = [];
   const provider = { api: "anthropic-messages", origin, credential: () => `not-a-secret-${"x"}` };
+  assert.ok(spec.computerFilesNote, "the faux desktop mounts no folder: the run is told where its files are");
   const result = await capRun(t, {
-    specOf: (sent) => (_claim, run) => ({ adapter: piAdapter({ run, model: SONNET.id, provider, fetch: desktopOrigin(sent, counted), price: priceOf }), session: { ...spec.session, key: "root", label: "root", context: "fresh" }, input: TASK, hooks: quiet, gate: () => "allow" }),
+    specOf: (sent) => (_claim, run) => ({ adapter: piAdapter({ run, model: SONNET.id, provider, fetch: desktopOrigin(sent, counted), price: priceOf }), session: { ...spec.session, key: "root", label: "root", context: "fresh" }, computerFilesNote: spec.computerFilesNote, input: TASK, hooks: quiet, gate: () => "allow" }),
     // Every step's input at the cache-write price, whatever was cached: the worst case, the one cap mode.
     runCap: { capUsd: () => capUsd, modelOf: () => SONNET },
     cap: specCap(capUsd),
   });
-  return { ...result, counted };
+  return { ...result, counted, filesNote: spec.computerFilesNote };
 }
 
 /** What the run needs to reach its answer: the most, over its steps, of what it spent before a step and that step's least,
  *  read off a run under a cap that never binds. */
 async function neededFor(t, origin) {
-  const { asked, row, sent } = await desktopRun(t, 1, origin);
+  const { asked, row, sent, filesNote } = await desktopRun(t, 1, origin);
   assert.deepEqual([row.state, asked.length], ["ended", 5], JSON.stringify({ state: row.state, summary: row.summary }));
-  return { sent, first: leastOf(asked[0].request.inputTokensMax), whole: Math.max(...asked.map(({ request }) => request.spentUsd + leastOf(request.inputTokensMax))), asked };
+  return { sent, first: leastOf(asked[0].request.inputTokensMax), whole: Math.max(...asked.map(({ request }) => request.spentUsd + leastOf(request.inputTokensMax))), asked, filesNote };
 }
 
 test("the documented minimums are what the run needs, to the cent above: $0.09 through a gateway, $0.09 straight to Anthropic", async (t) => {
@@ -92,9 +94,10 @@ test("the documented minimums are what the run needs, to the cent above: $0.09 t
   const direct = await neededFor(t, "https://api.anthropic.com");
   t.diagnostic(`measured: ${JSON.stringify({ offered: offeredOf(gateway.sent[0]), gateway: { first: gateway.first, whole: gateway.whole, bound: gateway.asked[0].request.inputTokensMax }, direct: { first: direct.first, whole: direct.whole } })}`);
   assert.deepEqual(offeredOf(gateway.sent[0]), DESKTOP_OFFERED, "the run is offered a desktop run's tools, the host's codemode among them");
+  for (const route of [gateway, direct]) assert.ok(JSON.stringify(route.sent[0]).includes(route.filesNote), "the first request carries the files note, as a real desktop run's does");
   assert.ok(gateway.asked[0].request.inputTokensMax > 9_000, `through a gateway the first request is read by its bytes: ${gateway.asked[0].request.inputTokensMax}`);
-  assert.equal(direct.asked[0].request.inputTokensMax, 3_146 + 675, "straight to Anthropic, by its count and the tool-use prompt");
-  assert.deepEqual([gateway.first, direct.first].map((usd) => Math.round(usd * 1000) / 1000), [0.053, 0.03], "the first request's least");
+  assert.equal(direct.asked[0].request.inputTokensMax, 3_146 + 675 + 371, "straight to Anthropic, by its count and the tool-use prompt, and the files note's bytes placed after the count");
+  assert.deepEqual([gateway.first, direct.first].map((usd) => Math.round(usd * 1000) / 1000), [0.055, 0.031], "the first request's least");
   assert.deepEqual([Math.ceil(gateway.whole * 100) / 100, Math.ceil(direct.whole * 100) / 100], [GATEWAY_MINIMUM, DIRECT_MINIMUM], JSON.stringify({ gateway: gateway.whole, direct: direct.whole }));
 });
 
