@@ -275,6 +275,47 @@ test("the read before the window walks the by-hand index (learning_ledger_by_han
   assert.ok(!plan.some((step) => step.includes("TEMP B-TREE")), plan.join("\n"));
 });
 
+test("the backfill locks each run before it reads it again: a heal that commits meanwhile is read, never overwritten with the cost unknown", sqliteOnly("a seam over SQLite's connection stands in for a second server's heal on Postgres"), async (t) => {
+  const { Connection } = await import("../dist/store/sqlite/connection.js");
+  const { SQLITE } = await import("../dist/store/dialect.js");
+  const { backfillLedger, recordLedger, runOf, RUN_COLUMNS } = await import("../dist/store/sqlite/run-patch.js");
+  const { store, file, clock, end } = await ledgerStore(t);
+  await end("x", null);
+  await store.close();
+  let db = await raw(file);
+  // Ended with no row (an earlier build), the ledger not marked whole: the next server's open backfills it.
+  await db.run("DELETE FROM learning_ledger WHERE run_id = 'x'");
+  await db.run("UPDATE store_meta SET ledger_backfilled = 0 WHERE singleton = 1");
+  await db.close();
+  // Another server heals x's cost (Runs.healCost: its UPDATE and its ledger row, one transaction). On Postgres the
+  // backfill's re-read at READ COMMITTED sees it only once it has committed: a lock on the run waits for that commit,
+  // and with no lock the heal lands between the re-read and the write. The seam runs it at that point.
+  const heal = async (tx) => recordLedger(tx, runOf(await tx.get(`UPDATE runs SET cost_usd = 0.7 WHERE id = 'x' RETURNING ${RUN_COLUMNS}`)), clock.now);
+  const steps = [];
+  const connection = await Connection.open(file);
+  t.after(() => connection.close().catch(() => undefined));
+  const seam = {
+    dialect: { ...SQLITE, lockRow: async (tx, table, column, value) => { steps.push(["lock", table, value]); if (value === "x") await heal(tx); } },
+    get: (...args) => connection.get(...args),
+    all: (...args) => connection.all(...args),
+    transaction: (callback, options) => connection.transaction((tx) => callback(new Proxy(tx, {
+      get: (target, key) => key !== "get" ? (typeof target[key] === "function" ? target[key].bind(target) : target[key]) : async (sql, ...params) => {
+        const row = await target.get(sql, ...params);
+        if (sql.startsWith(`SELECT ${RUN_COLUMNS} FROM runs WHERE id = ?`)) {
+          steps.push(["read", params[0]]);
+          if (!steps.some(([kind, , id]) => kind === "lock" && id === params[0])) await heal(target);
+        }
+        return row;
+      },
+    })), options),
+  };
+  await backfillLedger(seam, () => clock.now);
+  await connection.close();
+  const { store: reopened } = await storeOn(t, { file, clock });
+  assert.deepEqual((await reopened.learning.ledger("agent-1", ["x"])).rows.map((row) => [row.cost, row.jobUsd]), [["known", 0.7]], "the healed row stands");
+  assert.deepEqual(steps, [["lock", "runs", "x"], ["read", "x"]], "the run locked, then read again, in the page's transaction");
+});
+
 test("the server's open records the runs with no row a page at a time and marks the ledger whole: an open after a stop partway records the rest, once; an open after that reads no run again", async (t) => {
   const { store, file, clock, end } = await ledgerStore(t);
   for (let at = 0; at < 70; at++) await end(`r${String(at).padStart(2, "0")}`, 1);
