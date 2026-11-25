@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
-import { cutPasses } from "../dist/key-refusal.js";
+import { cutPasses, withheldWhole } from "../dist/key-refusal.js";
 import { storeOn, T0 } from "./store-helpers.mjs";
 
 const { servedTimelineRows } = await import("../dist/run-timeline-served.js");
@@ -141,4 +141,29 @@ test("a value shown before it was held, then written again: once saved, the new 
   const saved = await read(store, "run-1", [KEY, LATER]);
   assert.ok(!saved.bytes.includes(LATER), "LATER saved: neither row that says it shows it");
   assert.equal(saved.bytes.split("[redacted]").length - 1 >= 2, true, "both rows cut");
+});
+
+test("texts and held values that differ only in a lone surrogate are kept apart: each is cut as itself", () => {
+  const store = {};
+  store.origin = store;
+  // A high, a low, and a low before a high (a pair reversed): as UTF-8 each is the one replacement character.
+  const lone = ["\ud800", "\ud801", "\udc00", "\udc00\ud800"];
+  const texts = lone.map((s) => `note ${s} ${KEY}`);
+  const { redact, holds } = rowCutsOnce(store, "run-1", { values: [KEY] }, servedSince(store));
+  for (const [i, text] of texts.entries()) {
+    const before = cutPasses.count;
+    const [cut, held] = [redact(text), holds(text)];
+    assert.equal(cutPasses.count - before, 2, `text ${i} is cut, not served from another text's slot`);
+    assert.equal(cut, `note ${lone[i]} [redacted]`, `text ${i} is cut as itself, never as another's kept cut`);
+    assert.equal(held, withheldWhole(text, [KEY]));
+  }
+  // The held set's key is the values' JSON, where a lone surrogate is escaped as written: two sets that differ only in
+  // one miss each other.
+  const cutOf = (values) => {
+    const before = cutPasses.count;
+    const out = rowCutsOnce(store, "run-1", { values }, servedSince(store)).redact(`said ${KEY}\ud800 and ${KEY}\ud801`);
+    return { out, passes: cutPasses.count - before };
+  };
+  assert.deepEqual(cutOf([`${KEY}\ud800`]), { out: `said [redacted] and ${KEY}\ud801`, passes: 1 });
+  assert.deepEqual(cutOf([`${KEY}\ud801`]), { out: `said ${KEY}\ud800 and [redacted]`, passes: 1 }, "a set that differs only in a lone surrogate is its own set");
 });

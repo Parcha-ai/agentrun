@@ -9,7 +9,8 @@
 //    (redacted and withheldWhole over every text, on every read);
 //  - the store's readers: fewer runs through the timeline page a server serves (runTimelines over servedTimelineRows and
 //    viewOverStore), the followed store's pages applied by a client and its view, against a second store on the same
-//    file whose cuts are forgotten before each read.
+//    file whose cuts are forgotten before each read and that keeps none while it reads (a budget of 0 bytes), so two
+//    texts of one read can never share a kept cut on that side either.
 // A failure names its seed: CUT_DIFF_SEED=<seed> CUT_DIFF_RUNS=1 CUT_DIFF_STORE_RUNS=1 reproduces it alone.
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -59,8 +60,13 @@ function poolOf(rng) {
   return [a, b, c, d, e, word(rng, 26), word(rng, 20)];
 }
 
-/** A text that may hold values from `pool` whole, split or joined where two overlap, and filler around them. */
-function textOf(rng, pool) {
+/** Lone UTF-16 surrogates (a high one, a low one, and a low before a high: a pair reversed), which a journal keeps
+ *  through JSON as written; as UTF-8 each would be the one replacement character. */
+const LONE = ["\ud800", "\udbff", "\udc00", "\udfff", "\udc00\ud800"];
+
+/** A text that may hold values from `pool` whole, split or joined where two overlap, and filler around them; given
+ *  `lone`, sometimes a lone surrogate too, the text and its surrogate kept in `lone` (for its twin, scriptOf). */
+function textOf(rng, pool, lone) {
   const parts = [`${word(rng, 5)} ${word(rng, 7)}`];
   const n = rng.int(3);
   for (let i = 0; i < n; i++) {
@@ -71,6 +77,13 @@ function textOf(rng, pool) {
     else if (how === 2) parts.push(`"${v}"`);
     else parts.push(`key=${v}&n=${rng.int(99)}`);
     parts.push(word(rng, 4 + rng.int(6)));
+  }
+  if (lone && rng.chance(0.3)) {
+    const surrogate = rng.pick(LONE);
+    parts.splice(1 + rng.int(parts.length), 0, `${word(rng, 3)}${surrogate}`);
+    const text = parts.join(" ");
+    lone.push({ text, surrogate });
+    return text;
   }
   return parts.join(" ");
 }
@@ -114,7 +127,8 @@ function scriptOf(seed) {
   const cli = rng.chance(0.5);
   const pool = poolOf(rng);
   let held = rng.chance(0.5) ? [pool[3]] : [];
-  const did = { grown: 0, grownShown: 0, rotated: 0, reordered: 0, split: 0, again: 0 };
+  const did = { grown: 0, grownShown: 0, rotated: 0, reordered: 0, split: 0, again: 0, twins: 0 };
+  const lone = [];
   const shownValues = new Set();
   const steps = [];
   for (let step = 0; step < STEPS; step++) {
@@ -137,9 +151,9 @@ function scriptOf(seed) {
       did.reordered++;
     }
     // What the run writes this step.
-    const kind = rng.int(6);
+    const kind = rng.int(7);
     const write = {};
-    if (kind === 0) write.said = [textOf(rng, pool)];
+    if (kind === 0) write.said = [textOf(rng, pool, lone)];
     else if (kind === 1) {
       // A value split across two writes: the tail of one text, the head of the next (two entries, or two blocks of one).
       const v = rng.pick(pool);
@@ -149,11 +163,20 @@ function scriptOf(seed) {
       else write.said = [head, tail];
       did.split++;
     } else if (kind === 2) {
-      const q = textOf(rng, pool);
-      write.call = { tool: "web_search", args: { query: q }, output: JSON.stringify({ query: q, results: [0, 1].map((i) => ({ url: `https://h.example/${seed}/${step}/${i}?k=${rng.pick(pool)}`, title: textOf(rng, pool), snippet: textOf(rng, pool) })) }) };
-    } else if (kind === 3) write.call = { tool: rng.pick(["bash", "read_file", "fetch"]), args: { command: textOf(rng, pool) }, output: textOf(rng, pool), failed: rng.chance(0.2) };
-    else if (kind === 4) write.person = textOf(rng, pool);
-    else {
+      const q = textOf(rng, pool, lone);
+      write.call = { tool: "web_search", args: { query: q }, output: JSON.stringify({ query: q, results: [0, 1].map((i) => ({ url: `https://h.example/${seed}/${step}/${i}?k=${rng.pick(pool)}`, title: textOf(rng, pool, lone), snippet: textOf(rng, pool, lone) })) }) };
+    } else if (kind === 3) write.call = { tool: rng.pick(["bash", "read_file", "fetch"]), args: { command: textOf(rng, pool, lone) }, output: textOf(rng, pool, lone), failed: rng.chance(0.2) };
+    else if (kind === 4) write.person = textOf(rng, pool, lone);
+    else if (kind === 6) {
+      // A text written before with a lone surrogate, written again with another in its place: as UTF-8 the two are the
+      // same bytes, as UTF-16 they differ, and each row must show its own.
+      if (lone.length) {
+        const { text, surrogate } = rng.pick(lone);
+        const other = rng.pick(LONE.filter((s) => s !== surrogate));
+        write.said = [text.replace(surrogate, other)];
+        did.twins++;
+      } else write.said = [textOf(rng, pool, lone)];
+    } else {
       // A value cut earlier, written again: one held now, said once more.
       const v = held.length ? rng.pick(held) : rng.pick(pool);
       write.said = [`${word(rng, 6)} ${v} ${word(rng, 5)}`];
@@ -232,7 +255,8 @@ const timelinesOf = (state, seen) => runTimelines({
 });
 
 /** Seed `seed`'s run in a store, after each step: the followed store's page past the client's cursor, applied, and its
- *  view, against a page from the start and the view of the fresh store, its cuts forgotten first. */
+ *  view, against a page from the start and the view of the fresh store, its cuts forgotten first and none kept while it
+ *  reads. */
 async function inStore({ followed, fresh }, script) {
   const runId = `run-${script.seed}`;
   await followed.runs.create({ id: runId, agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { message: "Work." }, title: "Work", place: { mode: "runner" } } });
@@ -250,7 +274,10 @@ async function inStore({ followed, fresh }, script) {
     forgetServed(fresh, runId);
     const before = cutPasses.count;
     const freshSeen = {};
-    const freshPage = await timelinesOf(state, freshSeen).page(fresh, runId, 0, 0, 10_000);
+    const budget = cutBudget.bytes;
+    cutBudget.bytes = 0;
+    const freshPage = await timelinesOf(state, freshSeen).page(fresh, runId, 0, 0, 10_000).finally(() => { cutBudget.bytes = budget; });
+    assert.equal(cutsKeptOf(fresh).texts, 0, "the fresh store kept no cut");
     assert.ok(cutPasses.count > before, "the fresh store cut the run's texts itself");
     const at = where(script, step, held);
     assert.deepEqual(shown([...client.rows.values()]), shown(freshPage.rows), `${at}: the followed store's pages, applied, show the rows a fresh store's page shows`);
@@ -260,11 +287,11 @@ async function inStore({ followed, fresh }, script) {
 }
 
 const tally = (scripts) => {
-  const total = { grown: 0, grownShown: 0, rotated: 0, reordered: 0, split: 0, again: 0 };
+  const total = { grown: 0, grownShown: 0, rotated: 0, reordered: 0, split: 0, again: 0, twins: 0 };
   for (const { did } of scripts) for (const k of Object.keys(total)) total[k] += did[k];
   return total;
 };
-const told = (n, total, used) => `${n} runs of ${STEPS} steps from seed ${FIRST_SEED}: ${total.grown} values saved (${total.grownShown} of them shown before), ${total.rotated} rotated, ${total.reordered} reordered, ${total.split} split across two writes, ${total.again} said again; ${((used.user + used.system) / 1e6).toFixed(1)} s of CPU`;
+const told = (n, total, used) => `${n} runs of ${STEPS} steps from seed ${FIRST_SEED}: ${total.grown} values saved (${total.grownShown} of them shown before), ${total.rotated} rotated, ${total.reordered} reordered, ${total.split} split across two writes, ${total.again} said again, ${total.twins} said again with another lone surrogate; ${((used.user + used.system) / 1e6).toFixed(1)} s of CPU`;
 
 test("a followed run's rows, applied page by page, are byte for byte a fresh render's, as its values are saved, rotated and reordered", async (t) => {
   const scripts = Array.from({ length: RUNS }, (_, i) => scriptOf(FIRST_SEED + i));
