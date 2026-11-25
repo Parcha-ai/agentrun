@@ -486,7 +486,7 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     });
     return {
       agent: id, runs: rows, total_runs: rows.length, unknown_cost_runs: 0, unknown_path_runs: 0,
-      workflows: takeover ? [{ workflow: LEARNING_WORKFLOW, digest: LEARNING_DIGEST, state: "serving", served: { runs: served.length, mean_usd: mean(served.map((r) => r.cost_usd)) }, by_hand: byHand.length ? { runs: byHand.length, mean_usd: mean(byHand.map((r) => r.cost_usd)) } : null, unknown_cost_runs: 0 }] : [],
+      workflows: takeover ? [{ workflow: LEARNING_WORKFLOW, digest: LEARNING_DIGEST, state: "serving", reason: null, served: { runs: served.length, mean_usd: mean(served.map((r) => r.cost_usd)) }, by_hand: byHand.length ? { runs: byHand.length, mean_usd: mean(byHand.map((r) => r.cost_usd)) } : null, unknown_cost_runs: 0 }] : [],
       summary: {
         takeover: takeover ? { n: takeover.n, run_id: takeover.run_id } : null,
         before: before.length ? { runs: before.length, mean_usd: agentMean } : null,

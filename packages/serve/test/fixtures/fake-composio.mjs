@@ -8,11 +8,13 @@
 // `toolkitsCursor`, a cursor every page of it answers as its next (its first page again each time, a cursor that never ends);
 // `toolkitsPad`, that many bytes more in each page of it. As the real one, a toolkit's own answer says
 // no_auth only as `auth_config_details[].mode` "NO_AUTH" (only the toolkit list has a `no_auth` field). `authConfigs`: by toolkit slug, the auth configs
-// it already has (`{ id, is_composio_managed, status? }`), each read alone by GET /auth_configs/{id} with that toolkit. `active`: toolkit slugs the user already has an ACTIVE connected account for, under the auth config the
+// it already has (`{ id, is_composio_managed, status? }`), each read alone by GET /auth_configs/{id} with that toolkit
+// (`anyCase`: that read finds one by its id in any letter case, answering the id as it keeps it). `active`: toolkit slugs the user already has an ACTIVE connected account for, under the auth config the
 // call names. `accounts`: by toolkit slug, the user's accounts as `{ status, auth_config, id?, created_at?, shown?, user? }` (an ACTIVE one under another
 // config, say; `shown`, more fields its listing answers: alias, word_id, state; `user`, the Composio user it is another's of, else the one
 // asked for; null, answered with no user_id, as Composio's docs say it will stop answering one); as the real one, `auth_config_ids` narrows the list to those under it, and `user_ids` to that user's, unless `ignoreUserIds`
-// (a Composio that answers every user's accounts under the config).
+// (a Composio that answers every user's accounts under the config); and the list is paged by `cursor` and `next_cursor`,
+// at most `limit` a page (`accountsPage`: at most that many, whatever `limit` asks).
 // `accounts` is read at each call, so a test changes it between two (an account connected meanwhile). `noTools`: its MCP endpoint serves no tool at all. `listStatus`: its MCP endpoint answers every request after the first handshake with that HTTP status (an outage, not an answer "no"). `fail`: `{ path, status, method? }`
 // makes the call whose path ends in `path` (or for which `path`, a function, holds) answer that status; a list of them
 // fails each. With `times`, only that many such calls fail (the rest are answered as usual); with `wait`, a promise, the
@@ -97,7 +99,7 @@ const mcpGate = (mcpAccounts, toolkits) => (url, message) => {
   return undefined;
 };
 
-export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, authConfigs = {}, active = [], accounts = {}, fail, noTools = false, listStatus, subscription, triggerTypes = { github: [ISSUE_ADDED, STAR_ADDED] }, pageSize, toolsPage, toolkitsPage, toolkitsCursor, toolkitsPad, ignoreUserIds = false, instancePage, madeSecret, mcpAccounts } = {}) {
+export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, authConfigs = {}, anyCase = false, active = [], accounts = {}, accountsPage, fail, noTools = false, listStatus, subscription, triggerTypes = { github: [ISSUE_ADDED, STAR_ADDED] }, pageSize, toolsPage, toolkitsPage, toolkitsCursor, toolkitsPad, ignoreUserIds = false, instancePage, madeSecret, mcpAccounts } = {}) {
   const calls = [];
   const strays = [];
   const mcpKeys = [];
@@ -187,7 +189,7 @@ export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, au
     // One auth config, as the real one answers it: its toolkit, whether Composio manages it, and its status.
     if (req.method === "GET" && config) {
       for (const [kit, list] of [...Object.entries(madeConfigs), ...Object.entries(authConfigs)]) {
-        const found = list.find((c) => c.id === config[1]);
+        const found = list.find((c) => c.id === config[1] || (anyCase && c.id.toLowerCase() === config[1].toLowerCase()));
         if (found) return reply(200, { id: found.id, is_composio_managed: found.is_composio_managed === true, status: found.status ?? "ENABLED", toolkit: { slug: found.toolkit?.slug ?? kit } });
       }
       return reply(404, { error: { message: `Auth config ${config[1]} not found` } });
@@ -215,7 +217,11 @@ export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, au
       const under = url.searchParams.get("auth_config_ids");
       const listed = [...(accounts[kit] ?? []), active.includes(kit) ? { status: "ACTIVE", auth_config: under ?? "ac_unnamed" } : { status: "INITIATED", auth_config: under ?? "ac_unnamed" }];
       const user = url.searchParams.get("user_ids") ?? "agentrun";
-      return reply(200, { items: listed.filter((a) => (!under || a.auth_config === under) && (ignoreUserIds || (a.user ?? user) === user)).map((a) => ({ id: a.id ?? `ca_fake_${kit}${a.status === "ACTIVE" ? "" : `_${a.status.toLowerCase()}`}`, ...(a.user === null ? {} : { user_id: a.user ?? user }), status: a.status, toolkit: { slug: kit }, auth_config: { id: a.auth_config }, created_at: a.created_at ?? ACCOUNT_MADE, ...(a.shown ?? {}) })) });
+      const all = listed.filter((a) => (!under || a.auth_config === under) && (ignoreUserIds || (a.user ?? user) === user));
+      const from = Number(url.searchParams.get("cursor") ?? 0);
+      const size = Math.min(Number(url.searchParams.get("limit") ?? all.length) || all.length, accountsPage ?? all.length);
+      const items = all.slice(from, from + size).map((a) => ({ id: a.id ?? `ca_fake_${kit}${a.status === "ACTIVE" ? "" : `_${a.status.toLowerCase()}`}`, ...(a.user === null ? {} : { user_id: a.user ?? user }), status: a.status, toolkit: { slug: kit }, auth_config: { id: a.auth_config }, created_at: a.created_at ?? ACCOUNT_MADE, ...(a.shown ?? {}) }));
+      return reply(200, { items, next_cursor: from + size < all.length ? String(from + size) : null });
     }
     if (req.method === "POST" && url.pathname === "/api/v3/connected_accounts/link") {
       const started = `ca_link_${++links}`;
@@ -295,6 +301,8 @@ export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, au
     baseUrl: `http://127.0.0.1:${http.address().port}${own}`,
     /** Its MCP endpoint's origin, where every MCP server it makes is: the server's and runner's composioMcpOrigin seam. */
     mcpOrigin,
+    /** Its MCP endpoint's requests, each `{ path, method, tool }` (fake-mcp-server.mjs's log; none for an empty one). */
+    mcpLog: mcp.log ?? [],
     apiKey, calls, strays, mcpKeys, mcpId: id, mcpIds, mcpLive,
     /** The auth configs it made that it still has, by toolkit slug; and the connected accounts its links started that it
      *  still has. */

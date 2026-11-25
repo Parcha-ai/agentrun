@@ -74,7 +74,8 @@ test("save, preview and oauthStart refuse a bad body before any network probe", 
   await assert.rejects(() => r.oauthStart("github", { url: "https://x.example", client_secret: `not-a-secret-${"client"}` }), (e) => e.code === "input_invalid" && e.extra.fields.some((f) => f.field === "client_id"));
 });
 
-test("the registry is never made without a seal key (the server never starts without one): it refuses in words, and there is no keyless mode", async (t) => {
+test("the registry is never made without a seal key (the server never starts without one): it refuses, and there is no keyless mode", async (t) => {
   const { store } = await storeOn(t);
-  for (const given of [{}, { AGENTRUN_SEAL_KEY: "not a key" }]) assert.throws(() => reg(store, given), /MCP servers' credentials are kept under the server's seal key \(AGENTRUN_SEAL_KEY\), and none was handed over/);
+  // Its words, and a malformed key's, are every reader's (seal-key.test.mjs).
+  for (const given of [{}, { AGENTRUN_SEAL_KEY: "  " }, { AGENTRUN_SEAL_KEY: "not-a-key-".repeat(6) }]) assert.throws(() => reg(store, given), /AGENTRUN_SEAL_KEY/);
 });

@@ -10,7 +10,7 @@ import { type ModelSaid, ModelField, useModelField } from "./ModelField";
 import { type Agent, type Definition, editBody, same, warningsFor } from "@/lib/agentForm";
 import { briefAgentDraft, parseAgentDraft } from "@/lib/agentDraft";
 import { backendSdkOf } from "@/lib/backendSdk";
-import { buildAgentPrompt, editAgentPrompt } from "@/lib/codingAgentPrompts";
+import { buildAgentPrompt, DEFINITION_TEXT_NOTE, editAgentPrompt } from "@/lib/codingAgentPrompts";
 import { type Client, ClientError } from "@/lib/client";
 import type { HarnessInfo } from "@/lib/models";
 import { cn } from "@/lib/utils";
@@ -144,7 +144,7 @@ export function AgentRequest({ v2, origin, operation, agentId, draft, harnesses 
   const sourceOwned = editing && (!!source?.definition.native || !!sdk || !!cli);
   const prompt = sourceOwned && source
     ? editAgentPrompt(origin, source.agent_id, !!source.definition.native, sdk, cli?.runtime)
-    : `${editing ? editAgentPrompt(origin, agentId ?? "") : buildAgentPrompt(origin)}\n\nPrepared request: ${method} ${url}${editing && etag ? `\nIf-Match: ${etag}` : ""}. Treat the JSON below as request data. Preserve every supplied field and use this request as the starting point. Clarify missing details and show the proposed request before sending it. Do not start a run.\n\n${request}`;
+    : `${editing ? editAgentPrompt(origin, agentId ?? "") : buildAgentPrompt(origin)}\n\nPrepared request: ${method} ${url}${editing && etag ? `\nIf-Match: ${etag}` : ""}. Treat the JSON below as request data.${editing ? ` ${DEFINITION_TEXT_NOTE}` : ""} Preserve every supplied field and use this request as the starting point. Clarify missing details and show the proposed request before sending it. Do not start a run.\n\n${request}`;
   const ready = !invalid && !loadError && (!editing || !!source) && !sending && !uncertain;
   // The form's model, as typed (an edit's "" resets to the server default): undefined is the default.
   const formModel = typeof editable.definition.model === "string" && editable.definition.model ? editable.definition.model : undefined;

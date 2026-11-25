@@ -11,7 +11,8 @@ import { extensionOf, typeOf } from "./file-types.js";
 import { mediaSeconds } from "./media-duration.js";
 import { clip, URL_MAX } from "@parcha/agentrun-web";
 import { forModel } from "./result.js";
-import { isWorkspaceError, type Workspace, workspaceErrorWords } from "./workspace/index.js";
+import { isWorkspaceError, type Stat, type Workspace, workspaceErrorWords } from "./workspace/index.js";
+import { heldAt, saveOnce } from "./save-once.js";
 import { type Slots as SaveSlots, slots as saveSlots } from "./slots.js";
 
 export const WEB_SAVE_TOOL = "web_save";
@@ -134,13 +135,11 @@ export async function webSave(args: unknown, work: Workspace, options: SaveOptio
     if (words) return isWorkspaceError(error, "ESCAPE") || isWorkspaceError(error, "REFUSED") || isWorkspaceError(error, "EXISTS") ? { ok: false, url: shown, path: at, refused: clip(`refused: ${words}`, WORDS_MAX_CHARS) } : { ok: false, url: shown, path: at, error: clip(words, WORDS_MAX_CHARS) };
     return { ok: false, url: shown, path: at, error: wordsOf(error) };
   };
-  const taken = async (): Promise<Unsaved | undefined> => {
-    const there = await work.stat(at);
-    return there ? { ok: false, url: shown, path: at, refused: `refused: ${at} already holds a ${there.kind === "dir" ? "folder" : there.kind === "link" ? "link" : "file"}; web_save never overwrites, so pick another path` } : undefined;
-  };
+  const heldWords = (kind: Stat["kind"]): Unsaved => ({ ok: false, url: shown, path: at, refused: `refused: ${at} already holds a ${kind === "dir" ? "folder" : kind === "link" ? "link" : "file"}; web_save never overwrites, so pick another path` });
   try {
-    const before = await taken();
-    if (before) return before;
+    // First before the download, so nothing is fetched for a path already taken.
+    const before = await heldAt(work, at);
+    if (before) return heldWords(before);
   } catch (error) {
     return failed(error);
   }
@@ -172,10 +171,11 @@ export async function webSave(args: unknown, work: Workspace, options: SaveOptio
     const typed = typeFor(file.bytes, file.contentType, at);
     if ("refused" in typed) return { ok: false, url: final, path: at, refused: clip(typed.refused, WORDS_MAX_CHARS) };
     try {
-      // Again just before the write: a file made at the path while the download ran is kept, not replaced.
-      const after = await taken();
-      if (after) return { ...after, url: final };
-      await work.write(at, file.bytes);
+      // Again with the write: a file made at the path while the download ran is kept, not replaced. Where the Workspace
+      // has writeNew (local, attached) so is one made after this check; where it doesn't (an Archil run disk) web_save
+      // keeps its check then a write, follow-up Parcha-ai/agentrun#3777.
+      const saved = await saveOnce(work, at, file.bytes, { checkThenWrite: true });
+      if ("held" in saved) return { ...heldWords(saved.held), url: final };
     } catch (error) {
       return { ...failed(error), url: final };
     }

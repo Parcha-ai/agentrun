@@ -807,10 +807,11 @@ was deleted.
   reported as a policy. `network(ref, policy)` returns the policy when it is the computer's (an allowlist with the same
   entries, normalized, in any order); any change is refused: a Docker computer's network is fixed at create, since
   Docker cannot move a container with no network onto one, and an allowlist needs its volume mounted at create.
-- `release(ref, "stop" | "delete")` runs `docker stop`, or `docker rm --force --volumes`, then stops or removes the
-  computer's egress proxy and, on delete, its volume, each found by its label (below); `capabilities().release`
-  declares both, and `stopDeletes` is false: a stopped container is kept until it is deleted. A computer already gone is
-  ok.
+- `release(ref, "stop" | "delete")` finds the computer's egress proxy by its label (below), then runs `docker stop` on
+  the computer and then the proxy, or one `docker rm --force --volumes` of the computer and the proxy together, then on
+  delete removes its volume, found by its label too. A computer whose own stop or removal fails still has its proxy and
+  volume stopped or removed, and the computer's failure is the answer. `capabilities().release` declares both, and
+  `stopDeletes` is false: a stopped container is kept until it is deleted. A computer already gone is ok.
 - Only containers with the label `agentrun.computer=1` and a computer's name count for `attach`, `list` and `network`;
   any other container is `not_found`.
 
@@ -890,13 +891,18 @@ key.
   then `docker pull` for one that is not; a failed pull fails create in words, with nothing made). It then makes the
   volume, starts the proxy and waits for its ready line (`egress.readyMs`, 10 s), then runs the computer; both runs
   take `--pull never`, so no pull happens between the volume and the computer. A proxy that ends first, or is not ready in time, fails create in its own words; the proxy and the
-  volume are removed, and the computer is never run. `release` removes the proxy and the volume after the computer, each
-  found by the label `agentrun.computer.egress=<computer>`, never by name alone, so the janitor's sweep and
-  `releaseOlder` remove them too. Parts left with no computer (one removed by hand, or a provider that died between its
+  volume are removed, and the computer is never run. `release` removes the proxy with the computer, in the same
+  `docker rm`, and then the volume, each found by the label `agentrun.computer.egress=<computer>`, never by name alone,
+  so the janitor's sweep and `releaseOlder` remove them too. A release cut off once that call is made leaves no proxy
+  running without its computer. Parts left with no computer (one removed by hand, or a provider that died between its
   proxy and its computer) the sweep removes too (`sweepLeftovers`): a proxy or volume with the egress label, and the
-  sweep's labels, whose deadline label has passed, or whose computer is gone and that is older than a create could
-  take (its ready wait and two minutes), removed by what the label found. The volume carries the computer's deadline
-  and the spec's labels for this. Until then the proxy stops forwarding at its deadline.
+  sweep's labels, past its deadline label or older than a create could take (its ready wait and two minutes), and
+  whose computer is not there, read by name right before that part's removal (a read that fails keeps it). A sweep
+  given `mine` removes only the ones whose labels it answers true for, asked before the computer is read, so callers
+  sharing a Docker host each remove their own (serve: a run of its store that no claim holds). A part with an owner
+  label is never removed: Docker makes no agent's computer. Each is removed by what the label found, never by a name.
+  The volume carries the computer's deadline and the spec's labels for this. Until then the proxy stops forwarding at
+  its deadline.
 - **Read-back.** `network`, `list` and `attach` read open or the allowlist from Docker: network mode none, the egress volume
   read-only at its path, init's relay in its command, and a proxy container that carries the computer's label and
   deadline, runs while the computer runs, is hardened and bounded as above (its memory and swap, pids limit, private
@@ -1733,9 +1739,13 @@ launch line E2B's dial runs (`dialLaunch`), with no rootOnly paths here. The URL
 env, which the command inherits, and is on no command line. A session Daytona refuses fails create in its words, and
 the sandbox is deleted. So the snapshot's entrypoint is not relied on: a box snapshot registered without one (name,
 image and resources alone) dials too, and one whose entrypoint is the box CMD sleeps, with no `AGENTRUN_ATTACH_URL` in
-its env, so `agentrun-dial` never runs twice. A machine that does not dial within `createMs` fails with that command's
-log, read once by the id its start returned, its last 10 lines within 800 characters (`dialLog`; the adapter replaces
-every machine token in it by `<token>`), or "agentrun-dial never started" when create started none. No Archil mount, no GPU, and not `image: "default"` (Daytona's default snapshot holds
+its env, so `agentrun-dial` never runs twice on its own. While create waits for the socket, it reads that command's
+exit (`dialExit`, the session's command of the id its start returned): an `agentrun-dial` that exited fails create at
+once, and an exit of 3 (its daemon fetch failed, after its own retries) or 5 (its init never listened, and was ended)
+starts it once more, by the same line, in a session of its own, `agentrun-dial-2` (`redial`), with a create note. One
+that runs and keeps writing is waited for past `createMs`, up to twice it. A machine that does not dial fails with that
+command's log first, its last 10 lines within 800 characters (`dialLog`; the adapter replaces every machine token in it
+by `<token>`), or "agentrun-dial never started" when create started none. No Archil mount, no GPU, and not `image: "default"` (Daytona's default snapshot holds
 no `agentrun-dial`): `check()` refuses each in words. Labels as on exec. A dial sandbox may be a desktop
 (`kind: "desktop"`): the box snapshot's X server, started over the socket it dialed, and xfwm4, which computerd starts
 (init's `--window-manager`), at the snapshot's 2 CPUs and 4 GiB, with no GPU. On exec a Daytona computer is kind
@@ -1790,7 +1800,9 @@ What each part of a dial sandbox rests on:
   `attachEgress` (`DAYTONA_ATTACH_EGRESS` in Settings), `<IPv4 relay>:<port>`, checked at construction: create puts it
   in the boot env as `AGENTRUN_ATTACH_EGRESS`, and `agentrun-dial`'s daemon fetch (curl `--connect-to`) and
   `computerd attach` both open TCP to it and speak TLS and HTTP to the public host through it, so the SNI, the
-  certificate checked and `Host` stay the public host's and TLS is end to end. Unset, nothing changes.
+  certificate checked and `Host` stay the public host's and TLS is end to end. Unset, nothing changes. A relay that
+  closes a connection during TLS (curl exit 35) or resets it (56) costs a retry: the fetch is tried again after 1, 2, 4
+  then 8 s, for at most 45 s, on any failed connection or HTTP 5xx, and never on a 4xx (exit 7).
 - **No GPU on dial**, refused in words: `daytona-gpu` holds no `agentrun-dial`, and Daytona runs a GPU sandbox
   unprivileged (`Privileged: gpuIndex == nil`,
   [runner container_configs.go:205](https://github.com/daytonaio/daytona/blob/b5a5d9e7/apps/runner/pkg/docker/container_configs.go#L205)),
@@ -2716,8 +2728,10 @@ the API's control URL) is a later change: `platform: "ios"` is refused in words.
 - **create** asks for `timeout_seconds` = the lifetime, and the phone harness ends the session then, whatever happens.
   The lifetime includes the boot, so a phone ready past its deadline fails `timeout`.
   - Each POST carries an Idempotency-Key, and a create whose answer is uncertain is found by it, never sent twice.
-    Only a refusal (a 4xx, or `phones_busy`) says nothing was made. No answer, a 5xx, or a 2xx with no session is
-    uncertain: create asks `GET /sessions/requests/<key>` before it forgets the key, and records the phone it finds.
+    Only a refusal (a 4xx, or `phones_busy`) says nothing was made. No answer, a 5xx, a redirect, or a 2xx with no
+    session is uncertain: create asks `GET /sessions/requests/<key>` before it forgets the key, and records the phone it
+    finds. A redirect is never followed: the API's calls go through the shared REST client (`hosted/rest.ts`), which
+    refuses it in its own words. Its answer is unread, and a 303 after a create is the usual answer to a POST.
   - A create cancelled during its POST is recovered by its key all the same, and the phone the service made is ended.
   - A phone that fails, or is not ready within `readyMs` (240 s), is ended.
   - Each request has a bound of its own, `requestMs` (30 s), beside the caller's signal, and a readiness read takes no

@@ -4,11 +4,10 @@
 // only when it is unambiguous: flipped forms that list different prices leave the model unpriced (a refusal beats a
 // wrong cap). The exact id always wins, and a price the host gives (AGENT_MODEL_PRICE) wins over the catalog.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { createServer } from "node:net";
 import { test } from "node:test";
 import * as modelModule from "../dist/model.js";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
+import { freePort } from "./fixtures/ports.mjs";
 import { agent, follow, serve, withEnv } from "./support.mjs";
 
 const { MODEL_PROVIDER, runModels } = modelModule;
@@ -19,26 +18,6 @@ const NAMES = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_API_KEY", "AG
 const GATEWAY_KEY = `not-a-secret-${"gateway"}`;
 /** Every answer's usage: 1000 tokens in, 100 out, none cached. */
 const USAGE = { input: 1000, output: 100 };
-
-/** A port free on 127.0.0.1 now, below the kernel's ephemeral range (no listen(0) or outbound connection is handed it). */
-async function freePort() {
-  let low = 32768;
-  try {
-    low = Number(readFileSync("/proc/sys/net/ipv4/ip_local_port_range", "utf8").trim().split(/\s+/)[0]) || 32768;
-  } catch {}
-  const to = Math.min(low, 32768);
-  const from = Math.max(1024, Math.min(20000, to - 1000));
-  for (let tries = 0; tries < 200; tries++) {
-    const port = from + Math.floor(Math.random() * (to - from));
-    const free = await new Promise((resolve) => {
-      const probe = createServer();
-      probe.once("error", () => resolve(false));
-      probe.listen(port, "127.0.0.1", () => probe.close(() => resolve(true)));
-    });
-    if (free) return port;
-  }
-  throw new Error(`no free port in ${from}-${to - 1}`);
-}
 
 test("a gateway model named with its version's separators flipped (gpt-6-1-sol) is priced as the catalog's gpt-6.1-sol, and keeps its own id", async () => {
   const { models, unpriced } = await runModels({ AGENT_MODEL_BASE_URL: "http://127.0.0.1:9/v1", AGENT_MODEL: "gpt-6-1-sol" }, undefined);

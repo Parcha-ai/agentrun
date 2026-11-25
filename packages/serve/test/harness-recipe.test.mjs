@@ -55,6 +55,13 @@ async function release(t, extra = "", pack = "bz2", { sidecar } = {}) {
   return { bytes, tree, archiveSha: sha256(bytes), treeSha: await treeDigest(tree) };
 }
 
+/** The allowFile in Goose's form, which the stand-in reads where Goose does: it runs the tools named there unasked. */
+const ALLOW_FILE = { path: ".config/goose/permission.yaml", form: "goose-permission" };
+/** A recipe that declares the title tie instead of an allowFile, as Cursor's does: its agent asks for each of our calls,
+ *  and the adapter answers allow_once for one its announces field named (`allowFile: undefined` drops the default, as
+ *  JSON does). The stand-in names its calls where Goose does. */
+const TIED = { allowFile: undefined, announces: { tool: "_meta.goose.toolCall.toolName" }, quirks: { permissionTie: "title" } };
+
 /** A recipe for the stand-in agent, `over` merged over it. */
 const recipeOf = (archiveSha = "0".repeat(64), over = {}) => ({
   id: "model-agent",
@@ -65,6 +72,7 @@ const recipeOf = (archiveSha = "0".repeat(64), over = {}) => ({
   files: { ".config/model-agent/settings.json": "{\"telemetry\": false}\n" },
   state: [".model-agent/sessions"],
   declares: { load: true, mcp: "http" },
+  allowFile: ALLOW_FILE,
   ...over,
 });
 
@@ -116,6 +124,67 @@ function refusalOf(recipe) {
   assert.fail("the recipe was not refused");
 }
 
+test("the loader passes a recipe's allowFile and its title tie through, to the adapter's recipe as they are", async () => {
+  const { acpRecipeFor } = await import("../dist/harness-recipe-entry.js");
+  const allowing = parseRecipe(JSON.stringify(recipeOf()));
+  assert.deepEqual(allowing.allowFile, { path: ".config/goose/permission.yaml", form: "goose-permission" });
+  const tied = parseRecipe(JSON.stringify(recipeOf(undefined, TIED)));
+  assert.equal(tied.allowFile, undefined);
+  assert.deepEqual(tied.quirks, { permissionTie: "title" });
+  const route = { on: "keys" };
+  assert.deepEqual(acpRecipeFor(allowing, "/opt/agent", allowing.release.archives[PLATFORM], route).allowFile, { path: ".config/goose/permission.yaml", form: "goose-permission" });
+  assert.deepEqual(acpRecipeFor(tied, "/opt/agent", tied.release.archives[PLATFORM], route).quirks, { permissionTie: "title" });
+});
+
+test("the loader passes a recipe's announces field through to the adapter's recipe, and refuses one in another shape with words that give its shape", async () => {
+  // Which tool of ours an agent's tool_call names is read from the field this names, never from its title.
+  const { acpRecipeFor } = await import("../dist/harness-recipe-entry.js");
+  const announces = { tool: "rawInput.toolName", server: "rawInput.providerIdentifier", args: "rawInput.args" };
+  const named = parseRecipe(JSON.stringify(recipeOf(undefined, { announces })));
+  assert.deepEqual(named.announces, announces);
+  assert.deepEqual(acpRecipeFor(named, "/opt/agent", named.release.archives[PLATFORM], { on: "keys" }).announces, announces);
+  assert.equal(parseRecipe(JSON.stringify(recipeOf())).announces, undefined);
+  // agy's (the Antigravity example's): our server's prefix as agy writes it, and its own field beside the arguments.
+  const agy = { tool: "name", prefix: "mcp_agentrun_", extras: ["toolSummary"] };
+  const agyNamed = parseRecipe(JSON.stringify(recipeOf(undefined, { announces: agy })));
+  assert.deepEqual(acpRecipeFor(agyNamed, "/opt/agent", agyNamed.release.archives[PLATFORM], { on: "keys" }).announces, agy);
+  const bads = [{}, { tool: 7 }, { tool: "rawInput..toolName" }, { tool: "rawInput.toolName", title: "title" }];
+  // A prefix that names no server of ours, or names it beside `server`; extras that are no field names.
+  bads.push({ tool: "name", prefix: "" }, { tool: "name", prefix: "mcp_" }, { tool: "name", prefix: "mcp_github_" }, { tool: "name", prefix: "agentrunx_" });
+  bads.push({ tool: "rawInput.toolName", server: "rawInput.providerIdentifier", prefix: "agentrun__" });
+  bads.push({ tool: "name", extras: [] }, { tool: "name", extras: "toolSummary" }, { tool: "name", extras: ["a.b"] }, { tool: "name", extras: [7] });
+  for (const bad of bads) {
+    const refused = refusalOf(recipeOf(undefined, { announces: bad }));
+    assert.equal(refused.code, RECIPE_CODES.invalid, JSON.stringify(bad));
+    assert.match(refused.message, /announces is \{ "tool"/, JSON.stringify(bad));
+  }
+});
+
+test("the loader refuses a recipe with the title tie and no announces field, in words that say the tie needs it", () => {
+  // Before: it loaded, and its tie could never fire: every request for our tools went to the gate.
+  const refused = refusalOf(recipeOf(undefined, { allowFile: undefined, quirks: { permissionTie: "title" } }));
+  assert.equal(refused.code, RECIPE_CODES.invalid, refused.message);
+  assert.deepEqual([...new Set(refused.codes)], [RECIPE_CODES.invalid], refused.message);
+  assert.match(refused.message, /title tie .*needs announces/);
+  assert.deepEqual(parseRecipe(JSON.stringify(recipeOf(undefined, TIED))).quirks, { permissionTie: "title" }, "with the field it loads");
+});
+
+test("the loader refuses an announces path that starts at the update's title, toolCallId, kind, status, rawOutput, content, locations or sessionUpdate: one through them would let a title name a call again", () => {
+  // Before: any dotted path loaded, so `{ "tool": "title" }` named a call by a title of exactly `agentrun__write`.
+  for (const said of [{ tool: "title" }, { tool: "title.text" }, { tool: "toolCallId" }, { tool: "toolCallId.x" }, { tool: "kind.name" }, { tool: "status" }, { tool: "rawInput.toolName", server: "kind" }, { tool: "rawInput.toolName", args: "status" }]) {
+    const refused = refusalOf(recipeOf(undefined, { announces: said }));
+    assert.equal(refused.code, RECIPE_CODES.invalid, JSON.stringify(said));
+    assert.match(refused.message, /announces is \{ "tool"/, JSON.stringify(said));
+  }
+});
+
+test("the loader takes an announces path anywhere else in the update: only Goose's _meta path is read from a real release, so no other agent's shape is pinned", () => {
+  // Before: only paths under _meta or rawInput loaded, a rule fitted to Cursor's rawInput as only our fake sends it.
+  for (const said of [{ tool: "toolName" }, { tool: "titled.toolName" }, { tool: "statusOf.tool" }, { tool: "rawInput.toolName", args: "rawInput" }]) {
+    assert.deepEqual(parseRecipe(JSON.stringify(recipeOf(undefined, { announces: said }))).announces, said, JSON.stringify(said));
+  }
+});
+
 // One recipe per rule, each breaking it alone, with the code it is refused by.
 const BROKEN = [
   ["rule 1, own keys only: a key the server holds for a model provider", RECIPE_CODES.keys, () => recipeOf(undefined, { keys: ["OPENROUTER_API_KEY"] })],
@@ -135,6 +204,10 @@ const BROKEN = [
   }],
   ["rule 3, private paths: a file outside HOME", RECIPE_CODES.paths, () => recipeOf(undefined, { files: { "/etc/model-agent.json": "{}" } })],
   ["rule 3, private paths: state that climbs out of HOME", RECIPE_CODES.paths, () => recipeOf(undefined, { state: ["../shared/sessions"] })],
+  ["rule 3, private paths: an allowFile outside HOME", RECIPE_CODES.paths, () => recipeOf(undefined, { allowFile: { path: "/etc/goose/permission.yaml", form: "goose-permission" } })],
+  ["an allowFile in a form no agent reads", RECIPE_CODES.invalid, () => recipeOf(undefined, { allowFile: { path: ".config/goose/permission.yaml", form: "yaml" } })],
+  ["an allowFile at a path its files also write", RECIPE_CODES.invalid, () => recipeOf(undefined, { files: { ".config/goose/permission.yaml": "{}" } })],
+  ["a title tie other than \"title\"", RECIPE_CODES.invalid, () => recipeOf(undefined, { quirks: { permissionTie: "name" } })],
   ["rule 4, the owner installs it: an install step of its own", RECIPE_CODES.install, () => recipeOf(undefined, { install: "curl -fsSL https://example.invalid/install.sh | sh" })],
   ["rule 5, an allowlist environment: the host's environment passed through", RECIPE_CODES.env, () => recipeOf(undefined, { passEnv: true })],
   ["rule 5, an allowlist environment: a value read from the host's environment", RECIPE_CODES.env, () => recipeOf(undefined, { env: { MODEL_AGENT_CACHE: "$HOME/.cache" } })],
@@ -421,22 +494,30 @@ function checkStep(body) {
   if (results.length) return { text: `RESULT ${JSON.stringify(results[0].content).slice(0, 80)}` };
   const prompt = typeof last?.content === "string" ? last.content : JSON.stringify(last?.content ?? "");
   // The last ask in the prompt: a restarted agent's prompt holds the conversation's note before it.
-  const use = [...prompt.matchAll(/Use the (check_\w+) tool once, with the text argument set to (\w+)/g)].at(-1);
+  const use = [...prompt.matchAll(/Use the (check_\w+) tool once, with the text argument set to (\w+)(?: and the path argument set to (\w+\.\w+))?/g)].at(-1);
   if (use) {
     const tool = tools.find((name) => name.endsWith(use[1]));
-    return tool ? { tool, input: { text: use[2] } } : { text: `NO ${use[1]} among ${tools}` };
+    return tool ? { tool, input: { text: use[2], ...(use[3] ? { path: use[3] } : {}) } } : { text: `NO ${use[1]} among ${tools}` };
   }
   return { text: "ready" };
 }
 
-test("harness-check passes an agent that keeps the rules: stages 2 and 3, and the three facts printed", { skip: linux, timeout: 120_000 }, async (t) => {
+test("harness-check passes an agent that keeps the rules: stages 2 and 3, and the three facts printed; its recipe's allowFile means it asks nothing for our tools", { skip: linux, timeout: 120_000 }, async (t) => {
   const { data, file, origin, env } = await installed(t, recipeOf());
   const run = await check(t, file, data, env);
   t.diagnostic(run.stdout);
   assert.equal(run.status, 0, `${run.stdout}\n${run.stderr}\n${JSON.stringify(run.report?.stage2)}`);
-  for (const line of ["resume: load", "tool_gate: permission", "billing: proxy", "harness-check: passed"]) assert.ok(run.stdout.split("\n").includes(line), `${line} in:\n${run.stdout}`);
+  // Before: the agent asked for each call of ours and the adapter answered allow_once on its title (tool_gate:
+  // permission). Now the recipe's allowFile lists our tools, so it asks nothing and the gate asks at the MCP call.
+  for (const line of ["resume: load", "tool_gate: config", "billing: proxy", "harness-check: passed"]) assert.ok(run.stdout.split("\n").includes(line), `${line} in:\n${run.stdout}`);
   const { report } = run;
-  assert.deepEqual(report.facts, { resume: "load", tool_gate: "permission", billing: "proxy" });
+  assert.deepEqual(report.facts, { resume: "load", tool_gate: "config", billing: "proxy" });
+  assert.equal(report.stage3.mcp_tool.permissionAsks, 0);
+  assert.deepEqual(report.gate.permissionsAsked, []);
+  assert.deepEqual(report.gate.asked.filter((g) => g.tool === "check_echo"), [{ tool: "check_echo", answer: "allow" }], "the gate asked once, at the MCP call");
+  // The file the agent was given at each start: exactly that start's tools, by the names it calls them.
+  const systems = origin.messages().map((r) => JSON.stringify(r.body.system ?? null));
+  assert.ok(systems.length >= 5 && systems.every((text) => text.includes("permission file: agentrun__check_denied,agentrun__check_echo")), systems.join("\n"));
   assert.deepEqual(report.stage2.tools_off.firstRequest.sort(), ["agentrun__check_denied", "agentrun__check_echo"]);
   assert.deepEqual(report.stage2.env_allowlist.beyondAllowlist, []);
   assert.deepEqual(report.stage2.env_allowlist.hostSecretsSeen, []);
@@ -447,6 +528,7 @@ test("harness-check passes an agent that keeps the rules: stages 2 and 3, and th
   assert.equal(report.stage3.resume.loaded, true);
   assert.equal(report.stage3.denied_call.ran, 0);
   assert.equal(report.stage3.mcp_tool.calls, 1);
+  assert.match(JSON.stringify(origin.messages()[0].body.messages), /the path argument set to proof\.txt/, "check_echo is asked with a path, the argument Goose summarizes in its title");
   assert.equal(report.stage3.other_runner.loaded, true);
   assert.ok(report.spendUsd > 0, "the turns were booked");
   // The provider got the turns' requests alone, each with the server's key, never the agent's.
@@ -479,8 +561,77 @@ test("harness-check fails an agent whose own tools are on: its model request is 
   assert.equal(existsSync(join(data, "harnesses", "model-agent.checked")), false, "a failed check notes no pass, so no server runs it");
 });
 
-test("harness-check fails an agent whose title for our tool the adapter can't tie (`github: check echo`): its permission is the agent's own, refused, so mcp_tool fails", { skip: linux, timeout: 120_000 }, async (t) => {
-  const { data, file, env } = await installed(t, recipeOf(undefined, { env: { MODEL_AGENT_MODE: "untied" } }));
+test("harness-check fails an agent that asks permission for our tool on a recipe with no allowFile and no title tie: refused at the host's gate, and mcp_tool says it asked", { skip: linux, timeout: 120_000 }, async (t) => {
+  // Before: the adapter answered allow_once on the title (`agentrun__check_echo`) and the check passed. The stand-in
+  // runs check_echo after the refusal (ask-anyway), under the toolCallId it asked with: the request is ours by that id
+  // and by check_echo's arguments, and counts once.
+  const { data, file, env } = await installed(t, recipeOf(undefined, { allowFile: undefined, env: { MODEL_AGENT_MODE: "ask-anyway" } }));
+  const run = await check(t, file, data, env);
+  assert.equal(run.status, 1, `${run.stdout}\n${run.stderr}\n${JSON.stringify(run.report?.gate)}`);
+  assert.match(run.stdout, /stage 3 mcp_tool: FAIL/);
+  assert.equal(run.report.stage3.mcp_tool.calls, 1, "the check echo call ran after the refused request");
+  assert.equal(run.report.stage3.mcp_tool.permissionAsks, 1);
+  assert.equal(run.report.stage3.mcp_tool.ourAsks, 1);
+  assert.match(run.report.stage3.mcp_tool.problem, /asked permission for our tool/);
+  assert.ok(run.report.gate.asked.some((g) => g.tool === "acp_other" && g.answer === "deny"), JSON.stringify(run.report.gate.asked));
+});
+
+test("harness-check counts a refused request for our tool that never runs by check_echo's arguments: no allowFile, Goose-style, so mcp_tool fails with the allowFile hint", { skip: linux, timeout: 120_000 }, async (t) => {
+  // Before: only a request under the id a check_echo call then ran with was ours, so a refused one that never ran
+  // counted as the agent's own (ourAsks 0) and the row lost the hint.
+  const { data, file, env } = await installed(t, recipeOf(undefined, { allowFile: undefined }));
+  const run = await check(t, file, data, env);
+  const row = run.report?.stage3?.mcp_tool;
+  assert.equal(run.status, 1, `${run.stdout}\n${run.stderr}\n${JSON.stringify(run.report?.gate)}`);
+  assert.equal(row.ok, false);
+  assert.equal(row.calls, 0, "the check echo call never ran");
+  assert.equal(row.permissionAsks, 1);
+  assert.equal(row.ourAsks, 1, JSON.stringify(row));
+  assert.match(row.problem, /asked permission for our tool[^]*allowFile/);
+  assert.ok(run.report.gate.asked.some((g) => g.tool === "acp_other" && g.answer === "deny"), JSON.stringify(run.report.gate.asked));
+});
+
+test("harness-check counts an agent's permission request for a call of its own apart from ours: refused at the host's gate, it fails no stage when our tool then runs unasked", { skip: linux, timeout: 120_000 }, async (t) => {
+  // Before: every request counted as one for our tool, so an agent asking about its own `read` failed mcp_tool.
+  const { data, file, env } = await installed(t, recipeOf(undefined, { env: { MODEL_AGENT_MODE: "own-ask" } }));
+  const run = await check(t, file, data, env);
+  const row = run.report?.stage3?.mcp_tool;
+  assert.equal(row?.permissionAsks, 1, `${run.stdout}\n${run.stderr}\n${JSON.stringify(run.report?.gate)}`);
+  assert.equal(row.ok, true, JSON.stringify(row));
+  assert.equal(row.ourAsks, 0);
+  assert.equal(row.problem, undefined);
+  assert.equal(row.calls, 1);
+  assert.equal(row.turn, "completed");
+  assert.ok(run.report.gate.permissionsAsked.some((p) => p.kind === "read" && String(p.toolCallId).startsWith("own-")), JSON.stringify(run.report.gate.permissionsAsked));
+  assert.ok(run.report.gate.asked.some((g) => g.tool === "acp_read" && g.answer === "deny"), JSON.stringify(run.report.gate.asked));
+});
+
+test("harness-check counts an agent's own write of check_echo's text apart from our tool: its request carries the nonce in another field, refused, and fails no stage when our tool then runs unasked", { skip: linux, timeout: 120_000 }, async (t) => {
+  // Before: a request whose input held the nonce anywhere counted as one for check_echo, so an agent that also writes
+  // proof.txt with the nonce through its own editor (Goose's developer__text_editor, file_text) failed mcp_tool.
+  const { data, file, env } = await installed(t, recipeOf(undefined, { env: { MODEL_AGENT_MODE: "own-write" } }));
+  const run = await check(t, file, data, env);
+  const row = run.report?.stage3?.mcp_tool;
+  assert.equal(row?.permissionAsks, 1, `${run.stdout}\n${run.stderr}\n${JSON.stringify(run.report?.gate)}`);
+  assert.equal(row.ourAsks, 0, JSON.stringify(row));
+  assert.equal(row.ok, true, JSON.stringify(row));
+  assert.equal(row.problem, undefined);
+  assert.equal(row.calls, 1);
+  assert.ok(run.report.gate.asked.some((g) => g.tool === "acp_other" && g.answer === "deny"), JSON.stringify(run.report.gate.asked));
+});
+
+test("harness-check passes an agent that asks for each of our calls on a recipe that declares the title tie (quirks.permissionTie, Cursor's way): the loader passes it through", { skip: linux, timeout: 120_000 }, async (t) => {
+  const { data, file, env } = await installed(t, recipeOf(undefined, TIED));
+  const run = await check(t, file, data, env);
+  assert.equal(run.status, 0, `${run.stdout}\n${run.stderr}\n${JSON.stringify(run.report?.gate)}`);
+  assert.equal(run.report.facts.tool_gate, "permission");
+  assert.equal(run.report.stage3.mcp_tool.permissionAsks, 1);
+  assert.equal(run.report.stage3.mcp_tool.ourAsks, 1, "the request was for our tool, and the tie answers it");
+  assert.equal(run.report.stage3.mcp_tool.problem, undefined);
+});
+
+test("harness-check fails an agent whose title for our tool the adapter can't tie (`github: check echo`), on a recipe that declares the tie: its permission is the agent's own, refused, so mcp_tool fails", { skip: linux, timeout: 120_000 }, async (t) => {
+  const { data, file, env } = await installed(t, recipeOf(undefined, { ...TIED, env: { MODEL_AGENT_MODE: "untied" } }));
   const run = await check(t, file, data, env);
   assert.equal(run.status, 1, `${run.stdout}\n${run.stderr}\n${JSON.stringify(run.report?.gate)}`);
   assert.match(run.stdout, /stage 3 mcp_tool: FAIL/);
@@ -533,7 +684,7 @@ test("the check's egress proxy lists what a client asks it to reach (absolute-fo
 test("harness-check passes a plan-billed agent that reaches its vendor through HTTPS_PROXY: the hosts its recipe names are tunneled, the rest refused", { skip: linux, timeout: 120_000 }, async (t) => {
   const planned = (origin) => {
     const vendor = new URL(origin.url).host;
-    return recipeOf(undefined, { keys: ["MODEL_AGENT_API_KEY"], env: { MODEL_AGENT_MODE: "plan", MODEL_AGENT_VENDOR: vendor, MODEL_AGENT_MODEL: "vendor-model" }, model: { billing: "plan", maxTurns: 8, maxToolCalls: 8, hosts: [vendor] } });
+    return recipeOf(undefined, { ...TIED, keys: ["MODEL_AGENT_API_KEY"], env: { MODEL_AGENT_MODE: "plan", MODEL_AGENT_VENDOR: vendor, MODEL_AGENT_MODEL: "vendor-model" }, model: { billing: "plan", maxTurns: 8, maxToolCalls: 8, hosts: [vendor] } });
   };
   const { data, file, origin } = await installed(t, planned);
   const run = await check(t, file, data, cliEnv({ MODEL_AGENT_API_KEY: "fake-test-key" }));
@@ -612,7 +763,7 @@ const shapeOf = (report) => ({
 test("a plan-billed recipe's check keeps its rows and codes: passed, a host it does not name refused, a key it lacks refused", { skip: linux, timeout: 120_000 }, async (t) => {
   const planned = (hosts) => (origin) => {
     const vendor = new URL(origin.url).host;
-    return recipeOf(undefined, { keys: ["MODEL_AGENT_API_KEY"], env: { MODEL_AGENT_MODE: "plan", MODEL_AGENT_VENDOR: vendor, MODEL_AGENT_MODEL: "vendor-model" }, model: { billing: "plan", maxTurns: 8, maxToolCalls: 8, hosts: hosts ?? [vendor] } });
+    return recipeOf(undefined, { ...TIED, keys: ["MODEL_AGENT_API_KEY"], env: { MODEL_AGENT_MODE: "plan", MODEL_AGENT_VENDOR: vendor, MODEL_AGENT_MODEL: "vendor-model" }, model: { billing: "plan", maxTurns: 8, maxToolCalls: 8, hosts: hosts ?? [vendor] } });
   };
   const keyed = cliEnv({ MODEL_AGENT_API_KEY: "fake-test-key" });
   const passed = await installed(t, planned());
@@ -985,6 +1136,10 @@ test("the Antigravity example recipe loads under the five rules: agy CLI 1.5.14,
   // SQLite files in .gemini/antigravity-cli/conversations, which a new process loads from there).
   assert.deepEqual(recipe.declares, { load: true, mcp: "stdio" });
   assert.deepEqual(recipe.state, [".gemini/antigravity-cli/conversations"]);
+  // agy names a call of ours in its tool_call's `name` (`mcp_agentrun_<tool>`), reports its toolSummary beside the
+  // arguments, and asks permission for every MCP call, ours included: the title tie answers those.
+  assert.deepEqual(recipe.announces, { tool: "name", prefix: "mcp_agentrun_", extras: ["toolSummary"] });
+  assert.deepEqual(recipe.quirks, { permissionTie: "title" });
 });
 
 test("AgentRun never reads, refreshes or sends an agent's sign-in, and has no usage reader: no harness source or ACP adapter source names a credential file or Google's account and quota APIs", () => {
@@ -1586,4 +1741,137 @@ test("a trigger's message never runs in a session its claim started on its owner
   const heard = origin.messages().filter((r) => JSON.stringify(r.body).includes("A new event came in"));
   assert.deepEqual(heard.map((r) => r.headers["x-api-key"] === TOKEN ? "the owner's sign-in" : "a key"), [], "the vendor heard no turn of the trigger's message");
   assert.deepEqual(rows.map((c) => /started on its owner's own sign-in/.test(c.refused ?? "")), [true], JSON.stringify(rows.map((c) => c.refused)));
+});
+
+test("a held run on a plan-billed recipe whose model was refused at its create is laid no key saved for its harness: its claim opens none and still builds its adapter, and its runner answers its process none; the same run not held gets them", { timeout: 60_000 }, async (t) => {
+  const [{ harnessRecipesEnv }, { cliRunSpecFromLaunch }, { heldFor }, { openSqliteStore }, { BACKGROUND_CONTEXT: ctx }, { createModels }, { createRegistry, Harness }] = await Promise.all([
+    import("../dist/harness-table.js"), import("../dist/runner/cli-run-spec.js"), import("../dist/runner/run-child-host.js"), import("../dist/store/index.js"),
+    import("@earendil-works/chord/context"), import("@earendil-works/pi-ai/models"), import("@earendil-works/pi-durable"),
+  ]);
+  const KEY = "not-a-secret-held-harness-key";
+  const refused = { message: "model-agent/default has no price here, so a run capped at $1 cannot run it.", fields: [], details: { unbound: [], missing: {} } };
+  const data = join(await scratch(t), "agents");
+  const built = await release(t);
+  const plan = planOn({ url: "http://127.0.0.1:9" });
+  const file = await recipeFile(t, { ...plan, release: { ...plan.release, archives: { [PLATFORM]: { ...plan.release.archives[PLATFORM], sha256: built.archiveSha } } } });
+  await installRecipe(loadRecipe(file).recipe, file, data, { fetch: servedFetch(built.bytes) });
+  await noteChecked(data, file);
+  const env = { ...harnessRecipesEnv([file], data), PATH: process.env.PATH };
+  const seal = randomBytes(32);
+  const dir = await scratch(t);
+  const server = await openSqliteStore({ dataDir: dir, role: "server" });
+  const store = await openSqliteStore({ dataDir: dir, role: "runner" });
+  const specs = [];
+  t.after(async () => {
+    for (const { spec, harness } of specs) {
+      await spec.release?.().catch(() => {});
+      await harness.close(ctx).catch(() => {});
+    }
+    await store.close().catch(() => {});
+    await server.close().catch(() => {});
+  });
+  const saved = new HarnessKeysOverStore(server, seal, planRecipesOf(env), data);
+  await saved.save(saved.recipe("model-agent"), "MODEL_AGENT_API_KEY", { value: KEY });
+  const body = { instructions: "Answer.", harness: "model-agent", model: "model-agent/default", tools: ["read"] };
+  await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body });
+  // Each read of a key saved for a harness, by its row's name: what a claim opens (harness-keys.ts openHarnessKeys).
+  const asked = [];
+  const get = store.sealedKeys.get.bind(store.sealedKeys);
+  store.sealedKeys.get = async (name) => (name.startsWith("harness:") && asked.push(name), get(name));
+  const launchOf = (hold) => ({ input: { content: "Do the task." }, title: "t", place: { mode: "runner" }, harness: "model-agent", ...(hold ? { hold } : {}) });
+  /** Run `id`'s claim on the runner, its spec built as the runner builds a CLI harness's: the harness keys it read. */
+  const claimOf = async (id, hold) => {
+    const launch = launchOf(hold);
+    await server.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
+    await server.flush?.();
+    const [claim] = await store.runs.claimMany("runner-a", 1, { leaseMs: 60_000 });
+    const registry = createRegistry();
+    let models = createModels();
+    const harness = await Harness.open(store.journal(claim), { models: () => models, registry, onReport: () => {} }, ctx);
+    const deps = { env, data, journal: (c) => store.journal(c), store, sealKey: seal, routeOf: async () => assert.fail("a CLI run takes no pi route"), computerForClaim: async () => ({ release: async () => {} }) };
+    asked.length = 0;
+    const spec = await cliRunSpecFromLaunch(launch, { harness, registry, setModels: (given) => (models = given) }, deps, claim);
+    specs.push({ spec, harness });
+    return { spec, asked: [...asked] };
+  };
+  const unheld = await claimOf("run-1");
+  assert.deepEqual(unheld.asked, ["harness:model-agent:MODEL_AGENT_API_KEY"], "a run not held opens the key saved for its harness at its claim, as before");
+  const held = await claimOf("run-2", { minutes: 5, refused });
+  assert.deepEqual(held.asked, [], "a held run its model kept from running opens no key saved for its harness at its claim: its agent never starts");
+  assert.ok(held.spec.adapter, "and its claim still builds its agent's adapter, so it holds its computer");
+  // A run's own process asks its runner (run-child-host.ts heldFor) for its harness's keys, by the recipe file it loaded.
+  const digest = planRecipesOf(env)[0].digest;
+  const seam = (launch) => heldFor({ store: server, sealKey: seal, env, data }, { claim: { runId: "run-3", epoch: 1 }, run: { agentId: "agent-1", revisionId: "rev-1", signInHanded: null }, launch, revision: { kind: "agentic", body }, claimed: {} }, (text) => text, () => {}).held;
+  assert.deepEqual(await seam(launchOf()).harnessKeys(digest), { MODEL_AGENT_API_KEY: KEY }, "a run not held is answered the keys saved for its harness, as before");
+  assert.deepEqual(await seam(launchOf({ minutes: 5, refused })).harnessKeys(digest), {}, "a held run its model kept from running is answered none, whatever its process asks");
+});
+
+/** A hold whose model was refused at its create. */
+const HELD = { minutes: 5, refused: { message: "model-agent/default has no price here, so a run capped at $1 cannot run it.", fields: [], details: { unbound: [], missing: {} } } };
+
+/** One claim of a run on a plan-billed recipe (planOn's, `over` beside it), its spec built as a runner builds a CLI
+ *  harness's, every key of the recipe saved for its harness. `installed: false` installs and checks nothing. Where
+ *  `perRunProcess`, the claim is built as a run's own process builds it: no seal key, its runner asked through heldFor
+ *  (this process's seam), and no server in the process holding the keys saved on its data directory
+ *  (harnessKeysSavedHere), which only a server's own HarnessKeysOverStore sets. Resolves to the spec; rejects as the
+ *  claim fails. */
+async function planClaim(t, { over = {}, installed = true, perRunProcess = false, hold } = {}) {
+  const [{ harnessRecipesEnv }, { cliRunSpecFromLaunch }, { heldFor }, { setHeld }, { openSqliteStore }, { BACKGROUND_CONTEXT: ctx }, { createModels }, { createRegistry, Harness }] = await Promise.all([
+    import("../dist/harness-table.js"), import("../dist/runner/cli-run-spec.js"), import("../dist/runner/run-child-host.js"), import("../dist/runner/held.js"), import("../dist/store/index.js"),
+    import("@earendil-works/chord/context"), import("@earendil-works/pi-ai/models"), import("@earendil-works/pi-durable"),
+  ]);
+  const data = join(await scratch(t), "agents");
+  const built = await release(t);
+  const plan = planOn({ url: "http://127.0.0.1:9" }, over);
+  const file = await recipeFile(t, { ...plan, release: { ...plan.release, archives: { [PLATFORM]: { ...plan.release.archives[PLATFORM], sha256: built.archiveSha } } } });
+  if (installed) {
+    await installRecipe(loadRecipe(file).recipe, file, data, { fetch: servedFetch(built.bytes) });
+    await noteChecked(data, file);
+  }
+  const env = { ...harnessRecipesEnv([file], data), PATH: process.env.PATH };
+  const seal = randomBytes(32);
+  const dir = await scratch(t);
+  const server = await openSqliteStore({ dataDir: dir, role: "server" });
+  const store = await openSqliteStore({ dataDir: dir, role: "runner" });
+  let spec;
+  let harness;
+  t.after(async () => {
+    setHeld(undefined);
+    await spec?.release?.().catch(() => {});
+    await harness?.close(ctx).catch(() => {});
+    await store.close().catch(() => {});
+    await server.close().catch(() => {});
+  });
+  // In a run's own process no server marks its data directory's saved keys: the runner's server is another process.
+  const saved = new HarnessKeysOverStore(server, seal, planRecipesOf(env), perRunProcess ? await scratch(t) : data);
+  for (const name of loadRecipe(file).recipe.keys) await saved.save(saved.recipe("model-agent"), name, { value: `not-a-secret-${name.toLowerCase()}` });
+  const body = { instructions: "Answer.", harness: "model-agent", model: "model-agent/default", tools: ["read"] };
+  await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body });
+  const launch = { input: { content: "Do the task." }, title: "t", place: { mode: "runner" }, harness: "model-agent", ...(hold ? { hold } : {}) };
+  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
+  await server.flush?.();
+  const [claim] = await store.runs.claimMany("runner-a", 1, { leaseMs: 60_000 });
+  if (perRunProcess) setHeld(heldFor({ store: server, sealKey: seal, env, data }, { claim, run: { agentId: "agent-1", revisionId: "rev-1", signInHanded: null }, launch, revision: { kind: "agentic", body }, claimed: {} }, (text) => text, () => {}).held);
+  const registry = createRegistry();
+  let models = createModels();
+  harness = await Harness.open(store.journal(claim), { models: () => models, registry, onReport: () => {} }, ctx);
+  const deps = { env, data, journal: (c) => store.journal(c), store, sealKey: perRunProcess ? undefined : seal, routeOf: async () => assert.fail("a CLI run takes no pi route"), computerForClaim: async () => ({ release: async () => {} }) };
+  spec = await cliRunSpecFromLaunch(launch, { harness, registry, setModels: (given) => (models = given) }, deps, claim);
+  return spec;
+}
+
+test("a held run on a plan-billed recipe that hands a saved key under another name (keys' env) still builds its adapter at its claim, so it holds its computer; the same run not held builds it too", { timeout: 60_000 }, async (t) => {
+  const over = { keys: [{ name: "MODEL_AGENT_GEMINI_API_KEY", env: "GEMINI_API_KEY" }] };
+  assert.ok((await planClaim(t, { over })).adapter, "a run not held builds its adapter, the key handed under the name its agent reads");
+  assert.ok((await planClaim(t, { over, hold: HELD })).adapter, "a held run its model kept from running builds its adapter on no key, so it holds its computer");
+});
+
+test("a run's own process, its harness's keys saved and no owner sign-in: a held claim on a plan-billed recipe builds its adapter, so it holds its computer, and one whose recipe is not installed is still refused; the same run not held builds it on the keys its runner hands", { timeout: 60_000 }, async (t) => {
+  assert.ok((await planClaim(t, { perRunProcess: true })).adapter, "a run not held builds its adapter on the keys its runner hands");
+  assert.ok((await planClaim(t, { perRunProcess: true, hold: HELD })).adapter, "a held run its model kept from running asks for no key and builds its adapter, so it holds its computer");
+  await assert.rejects(planClaim(t, { perRunProcess: true, hold: HELD, installed: false }), (error) => {
+    assert.doesNotMatch(error.message, /HARNESS_KEYS_NOT_SAVED/, `a held claim is never refused for its keys: ${error.message}`);
+    assert.match(error.message, /HARNESS_RECIPE_NOT_INSTALLED|not installed/, `a recipe that is not installed is refused whether held or not: ${error.message}`);
+    return true;
+  });
 });

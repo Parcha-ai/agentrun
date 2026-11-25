@@ -171,7 +171,8 @@ export function messagesOfResponses(body: Json, reasons: boolean): { request: Js
 /** What this edge asks an Ollama model past the Messages body: the JSON schema its answer is held to (Ollama's `format`),
  *  its temperature and top_p, and no thinking (effort "none"). Handed to the route's Messages fetch on the in-process
  *  call's init (`edgeAsks`; model-route.ts messagesFetch reads it on an Ollama model alone), never in the body, so the
- *  Messages wire a Messages client speaks stays as it is: its own fields of these names reach Ollama as before, not at all. */
+ *  Messages body a Messages client sends is never rewritten. That client's output schema rides the same field
+ *  (model-route.ts forMessagesClients); its own temperature, top_p and thinking reach Ollama as before, not at all. */
 export type EdgeAsks = { format?: Json; temperature?: number; top_p?: number; think?: false };
 
 /** `field` of `body` (temperature, top_p) as this edge asks it of Ollama (EdgeAsks): a number as it is, null or absent as

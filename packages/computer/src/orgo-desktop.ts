@@ -506,14 +506,13 @@ export class OrgoDesktopProvider implements ComputerProvider {
 		if (os !== "windows" && os !== "macos") throw new Error(`os is "windows" or "macos" for an Orgo desktop Orgo's API answers, not ${JSON.stringify(os)}`);
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, an Orgo API key, is required");
 		if (workspaceId !== undefined && (typeof workspaceId !== "string" || !WORKSPACE_ID.test(workspaceId))) throw new Error("options.workspaceId, the Orgo workspace this deployment's computers live in, is an Orgo workspace id when given");
-		const url = new URL(httpsBase(apiUrl, "the Orgo API URL"));
-		if (url.username !== "" || url.password !== "") throw new Error("the Orgo API URL holds no credentials: the key goes to it");
+		const base = httpsBase(apiUrl, "the Orgo API URL");
 		if (!Number.isSafeInteger(maxLifetimeMs) || maxLifetimeMs <= 0 || maxLifetimeMs > MAX_LIFETIME_MS) throw new Error(`maxLifetimeMs must be a whole number of ms above 0 and at most 720 h (${MAX_LIFETIME_MS} ms)`);
 		const merged = { ...DEFAULTS, ...timeouts };
 		for (const [key, value] of Object.entries(merged)) {
 			if (!Number.isSafeInteger(value) || value <= 0 || value > 2 ** 31 - 1) throw new Error(`timeouts.${key} must be a whole number of ms above 0`);
 		}
-		this.#rest = orgoRest({ apiKey, apiUrl: url.href, ...(fetch ? { fetch } : {}) });
+		this.#rest = orgoRest({ apiKey, apiUrl: base, ...(fetch ? { fetch } : {}) });
 		this.#workspace = workspaceHolder(workspaceId, this.#rest, merged.requestMs);
 		this.#profile = PROFILES[os];
 		this.#maxLifetimeMs = maxLifetimeMs;

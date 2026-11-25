@@ -12,7 +12,7 @@ import { watchCommandsAt, wakeCommands } from "../command-wake.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { JOURNAL_FIRST_ID, RunStorage } from "../journal/storage.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
-import { COMMANDS_ONE_ANSWER, COMPUTER_INTERVALS, COMPUTER_INTERVALS_ADDED, COMPUTER_INTERVALS_RUN, DDL, diskUpgrade, HAND_BACKS, HAND_BACKS_AT, HAND_BACKS_KEPT_MS, HAND_BACKS_RUN, IMPORTED_TEMPLATES, LEARNING_LEDGER, LEARNING_LEDGER_AGENT, LEARNING_SPEND, LEARNING_SPEND_AGENT, LEARNING_SPEND_OF_RUN, listingUpgrade, MINTED_TOKENS, purgeUpgrade, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUN_ATTEMPTS, RUNNERS, RUNNERS_ADDED, RUN_LAUNCH_CENSUS, RUN_LAUNCH_CENSUS_ERASED, RUN_LAUNCH_CENSUS_ERASED_MADE, RUN_LAUNCH_CENSUS_SETTLE, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, TRIGGERS_TEMPLATE_ID } from "../schema.js";
+import { COMMANDS_ONE_ANSWER, COMPUTER_INTERVALS, COMPUTER_INTERVALS_ADDED, COMPUTER_INTERVALS_RUN, DDL, diskUpgrade, HAND_BACKS, HAND_BACKS_AT, HAND_BACKS_KEPT_MS, HAND_BACKS_RUN, IMPORTED_TEMPLATES, LEARNING_LEDGER, LEARNING_LEDGER_AGENT, LEARNING_LEDGER_BY_HAND, LEARNING_SPEND, LEARNING_SPEND_AGENT, LEARNING_SPEND_OF_RUN, ledgerUpgrade, listingUpgrade, MINTED_TOKENS, purgeUpgrade, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUN_ATTEMPTS, RUNNERS, RUNNERS_ADDED, RUN_LAUNCH_CENSUS, RUN_LAUNCH_CENSUS_ERASED, RUN_LAUNCH_CENSUS_ERASED_MADE, RUN_LAUNCH_CENSUS_SETTLE, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, STORE_META_LEDGER_BACKFILLED, TRIGGERS_TEMPLATE_ID } from "../schema.js";
 import {
   ActiveRuns, AgentArchived, AgentDeleting, AgentPurged, CommandTaken, ExternalBodyConflict, Fenced, FiringMoved, RunFinal, RunPurged, RunsMadeFromLeft, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreAwaitsServer, StoreBusy, StoreConstraint, StoreFromEarlierVersion, TriggerFull, TriggersLeft, UPLOAD_PREFIX, type AgentRow, type Agents,
   type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
@@ -43,9 +43,10 @@ const seqOf = (cursor: RunChangeCursor): number => {
 import { cleanText, type Dialect, settledBody } from "../dialect.js";
 import { inMemory } from "./memory.js";
 import { Connection, DEFAULT_BUSY_TIMEOUT_MS, type SqliteExecutor, type SqliteValue, type Statement, type StoreConnection, type Tx } from "./connection.js";
-import { applyRunPatch, EXACT_COST_USD, NOT_A_LEARNING_RUN, recordLedger, refuseLeftovers, REOPEN_SET, reopenableWhere, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
+import { applyRunPatch, backfillLedger, BY_HAND_BEFORE, EXACT_COST_USD, NOT_A_LEARNING_RUN, recordLedger, refuseLeftovers, REOPEN_SET, reopenableWhere, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
 import { launchDiskOf, readableJson,readLaunch, readLearningStarts, readSeededBefore, readUsageMetadata, writeLaunch, writeLaunchSealed } from "./run-launch.js";
 import { canonical } from "../agent-body.js";
+import { mcpRecordKeys } from "../mcp-record-keys.js";
 import type { LedgerRow, SpendRow } from "../../learn/ledger.js";
 import { readProjectCheckpoints } from "./project-checkpoints.js";
 import { aadOf, sealedAt } from "../seal.js";
@@ -339,6 +340,10 @@ async function versionOf(db: Connection): Promise<number | null> {
  *  the store, is set again. */
 const EARLIER_ROOT_FILES = ["mcp-servers.json", "triggers.json", "tool-keys.json", "trigger-secrets.json", ".door-token"];
 
+/** The store's earlier versions the server upgrades in place at its open (openSqliteStore), which a runner waits for
+ *  (StoreAwaitsServer); store-schema reports from the same set. */
+export const SQLITE_UPGRADES: ReadonlySet<number> = new Set([11, 12, 13, 14, 15]);
+
 /** The columns a runner of this build needs that an earlier build of this same version may not have: the server adds each
  *  at its start (openSqliteStore), and a runner on a file without one waits for that server (StoreAwaitsServer, in `why`'s
  *  words; exit 3). store-schema reads the same list, so its report says "waits" where the runner would. */
@@ -472,8 +477,10 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     // it. Version 12 names no minting runner on a machine's token and keeps no runner's relay: the server adds them
     // (schema.ts relayUpgrade). Version 13 keeps no purge time on a run or an agent: the server adds them (schema.ts
     // purgeUpgrade). Version 14 keeps no disk on a run: the server adds it and writes each run's from its launch (schema.ts
-    // diskUpgrade). A runner refuses 11 to 14 until that server has.
-    const upgrading = found === 11 || found === 12 || found === 13 || found === 14;
+    // diskUpgrade). Version 15 keeps each ledger row's epoch: the server repairs the rows that release could leave wrong
+    // and drops it (the ledger's step below, then ledgerUpgrade). A runner refuses 11 to 15 until that server has, and a
+    // runner of 15, whose end writes the epoch, refuses 16 (SchemaVersionUnknown), or stops at its next floor read.
+    const upgrading = found !== null && SQLITE_UPGRADES.has(found);
     if (upgrading && role === "runner") throw new StoreAwaitsServer(`bring this store from version ${found} to ${SCHEMA_VERSION}`);
     if (found !== SCHEMA_VERSION && !upgrading) throw new SchemaVersionUnknown(file, found, SCHEMA_VERSION);
     const columns = new Set((await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('revisions')")).map((column) => column.name));
@@ -542,7 +549,9 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
       throw new StoreAwaitsServer("keep each claim's turn and attempt (run_attempts)");
     }
     // A run's end writes its ledger row and spend rows (schema.ts LEARNING_LEDGER, LEARNING_SPEND) in its own transaction:
-    // a runner waits for the server that adds the tables (STORE_DDL at its start).
+    // a runner waits for the server that adds the tables (STORE_DDL at its start). The `epoch` version 15 kept on the
+    // ledger, which this build's end does not write, is the version's: a runner refuses 15 above.
+    const metaColumns = new Set((await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('store_meta')")).map((column) => column.name));
     if (role === "runner" && (await connection.all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name IN ('learning_ledger', 'learning_spend')")).length < 2) {
       throw new StoreAwaitsServer("write each run's learning ledger row and spend at its end (learning_ledger, learning_spend)");
     }
@@ -582,10 +591,13 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
         { sql: COMPUTER_INTERVALS_RUN },
         // Nor any claim's turn and attempt (schema.ts RUN_ATTEMPTS): a claim made before it has no row.
         { sql: RUN_ATTEMPTS },
-        // Nor any learning ledger (schema.ts LEARNING_LEDGER, LEARNING_SPEND): a run that ended before it has no row, and
-        // its reader records it from its run row.
+        // Nor any learning ledger (schema.ts LEARNING_LEDGER, LEARNING_SPEND; version 15's, with each row's `epoch`, is
+        // repaired and its epoch dropped by ledgerUpgrade below). Nor the mark that every ended run has its row
+        // (STORE_META_LEDGER_BACKFILLED), nor the by-hand index (LEARNING_LEDGER_BY_HAND).
+        ...(metaColumns.has("ledger_backfilled") ? [] : [{ sql: STORE_META_LEDGER_BACKFILLED }]),
         { sql: LEARNING_LEDGER },
         { sql: LEARNING_LEDGER_AGENT },
+        { sql: LEARNING_LEDGER_BY_HAND },
         { sql: LEARNING_SPEND },
         { sql: LEARNING_SPEND_AGENT },
         { sql: LEARNING_SPEND_OF_RUN },
@@ -610,11 +622,14 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
         const minted = new Set((await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('minted_tokens')")).map((column) => column.name));
         await connection.write(relayUpgrade(minted).map((sql) => ({ sql })), { full: true });
       }
-      if (upgrading) {
+      if (upgrading && found !== null) {
         const named = async (table: string) => new Set((await connection.all<{ name: string }>(`SELECT name FROM pragma_table_info('${table}')`)).map((column) => column.name));
-        if (found !== 14) await connection.write(purgeUpgrade(await named("runs"), await named("agents")).map((sql) => ({ sql })), { full: true });
-        await connection.write(diskUpgrade(await named("runs")).map((sql) => ({ sql })), { full: true });
+        if (found <= 13) await connection.write(purgeUpgrade(await named("runs"), await named("agents")).map((sql) => ({ sql })), { full: true });
+        if (found <= 14) await connection.write(diskUpgrade(await named("runs")).map((sql) => ({ sql })), { full: true });
+        await connection.write(ledgerUpgrade(await named("learning_ledger")).map((sql) => ({ sql })), { full: true });
       }
+      // Every run an earlier build ended gets its ledger row once, here, on the schema this build reads.
+      await backfillLedger(connection, options.now ?? Date.now);
     }
   } catch (error) {
     await connection.close().catch(() => undefined);
@@ -1792,6 +1807,10 @@ class SqliteStore implements Store {
      *  writes or removes the row, so an owner's save, which drops the mark in the transaction that writes its row
      *  (dropTokensMark), never lands in between. */
     const recordJson = readableJson(d, "settings.value");
+    /** A new row's created_at, its two `?` now and three the name's record keys (mcpRecordKeys) then now again: now, or past
+     *  every `of` the name's records still hold, even within its millisecond or on a clock stepped back. created_at is the
+     *  row's identity (the `of` its records name): a record about an earlier row of the name is never a later row's. */
+    const madeAfterRecords = `${d.greatest}(${d.bigintParam}, COALESCE((SELECT MAX(${d.jsonNumber(recordJson, ["of"])}) FROM settings WHERE settings.key IN (?, ?, ?)), ${d.bigintParam} - 1) + 1)`;
     const tokensMarked = `EXISTS (SELECT 1 FROM settings WHERE settings.key = ? AND ${d.jsonText(recordJson, ["by"])} = 'token' AND ${d.jsonValue(recordJson, ["of"])} = CAST(mcp_servers.created_at AS TEXT))`;
 
     /** A write of the saved server `name` that the token's mark decides (McpTokensMark, McpOwnersMark): one transaction that
@@ -1850,12 +1869,12 @@ class SqliteStore implements Store {
           params: [...values, updated, listed, credentialAt, ...stamp.params, left, name, expected.auth, ...(expected.changedAt === null ? [] : [expected.changedAt]), ...(tokens ? [tokens.record] : []), ...stamp.params],
         }
         : {
-          sql: `INSERT INTO mcp_servers (name, url, auth, protocol, tools, prices, server_info, instructions, sealed, created_at, updated_at, listed_at, credential_changed_at, token_until) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${stamp.sql} + ${d.bigintParam})
+          sql: `INSERT INTO mcp_servers (name, url, auth, protocol, tools, prices, server_info, instructions, sealed, created_at, updated_at, listed_at, credential_changed_at, token_until) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ${madeAfterRecords}, ?, ?, ?, ${stamp.sql} + ${d.bigintParam})
             ON CONFLICT (name) DO UPDATE SET url = excluded.url, auth = excluded.auth, protocol = excluded.protocol, tools = excluded.tools,
               prices = excluded.prices, server_info = excluded.server_info, instructions = excluded.instructions, sealed = excluded.sealed, refresh_holder = NULL, refresh_until = NULL, updated_at = ${lastEdit(updatedAt, "excluded.updated_at")}, listed_at = excluded.listed_at, credential_changed_at = excluded.credential_changed_at, token_until = excluded.token_until
               ${expected === null ? "WHERE 1 = 0" : ""}
             RETURNING ${mcpServerColumnsAt(stamp)}`,
-          params: [name, ...values, at, updated, listed, credentialAt, ...stamp.params, left, ...stamp.params],
+          params: [name, ...values, at, ...mcpRecordKeys(name), at, updated, listed, credentialAt, ...stamp.params, left, ...stamp.params],
         };
       const written = await writeMcpRow(name, statement, tokens, owns);
       return written && mcpServerOf(written);
@@ -2097,24 +2116,24 @@ class SqliteStore implements Store {
       ledger: async (agentId, runIds) => {
         // One statement over both tables (a UNION ALL, each row marked by its table): one snapshot on either database, so
         // an end committed between two reads never mixes its row with another end's spend.
-        type Part = { part: "row" | "spend"; run_id: string; agent_id: string; started_at: number | string | null; path: string | null; workflow: string | null; digest: string | null; not_served: string | null; job_usd: number | null; look_back_usd: number | null; cost: string | null; epoch: number | string | null; kind: string | null; round: number | string | null; of_run: string | null; usd: number | null };
+        type Part = { part: "row" | "spend"; run_id: string; agent_id: string; started_at: number | string | null; path: string | null; workflow: string | null; digest: string | null; not_served: string | null; job_usd: number | null; look_back_usd: number | null; cost: string | null; kind: string | null; round: number | string | null; of_run: string | null; usd: number | null };
         if (runIds !== undefined && runIds.length === 0) return { rows: [], spend: [] };
         const list = runIds === undefined ? "" : runIds.map(() => "?").join(", ");
         const rowsOf = runIds === undefined ? { sql: "", params: [] } : { sql: ` AND run_id IN (${list})`, params: [...runIds] };
         const spendOf = runIds === undefined ? { sql: "", params: [] } : { sql: ` AND (run_id IN (${list}) OR of_run IN (${list}))`, params: [...runIds, ...runIds] };
         const text = "CAST(NULL AS TEXT)", whole = "CAST(NULL AS BIGINT)", usd = "CAST(NULL AS DOUBLE PRECISION)";
         const parts = await db.all<Part>(
-          `SELECT 'row' AS part, run_id, agent_id, started_at, path, workflow, digest, not_served, job_usd, look_back_usd, cost, epoch, ${text} AS kind, ${whole} AS round, ${text} AS of_run, ${usd} AS usd
+          `SELECT 'row' AS part, run_id, agent_id, started_at, path, workflow, digest, not_served, job_usd, look_back_usd, cost, ${text} AS kind, ${whole} AS round, ${text} AS of_run, ${usd} AS usd
              FROM learning_ledger WHERE agent_id = ?${rowsOf.sql}
            UNION ALL
-           SELECT 'spend' AS part, run_id, agent_id, ${whole}, ${text}, workflow, digest, ${text}, ${usd}, ${usd}, ${text}, ${whole}, kind, round, of_run, usd
+           SELECT 'spend' AS part, run_id, agent_id, ${whole}, ${text}, workflow, digest, ${text}, ${usd}, ${usd}, ${text}, kind, round, of_run, usd
              FROM learning_spend WHERE agent_id = ?${spendOf.sql}`,
           agentId, ...rowsOf.params, agentId, ...spendOf.params,
         );
         const usdOf = (value: number | null) => (value === null ? null : Number(value));
-        const rows = parts.filter((one) => one.part === "row").map((row): LedgerRow & { epoch: number } => ({
+        const rows = parts.filter((one) => one.part === "row").map((row): LedgerRow => ({
           runId: row.run_id, agentId: row.agent_id, startedAt: Number(row.started_at), path: row.path as LedgerRow["path"], workflow: row.workflow, digest: row.digest,
-          notServed: row.not_served as LedgerRow["notServed"], jobUsd: usdOf(row.job_usd), lookBackUsd: usdOf(row.look_back_usd), cost: row.cost as LedgerRow["cost"], epoch: Number(row.epoch),
+          notServed: row.not_served as LedgerRow["notServed"], jobUsd: usdOf(row.job_usd), lookBackUsd: usdOf(row.look_back_usd), cost: row.cost as LedgerRow["cost"],
         }));
         const spend = parts.filter((one) => one.part === "spend").map((row): SpendRow => ({
           runId: row.run_id, round: Number(row.round), agentId: row.agent_id, kind: row.kind as SpendRow["kind"], ofRun: row.of_run, workflow: row.workflow, digest: row.digest, usd: usdOf(row.usd),
@@ -2124,6 +2143,10 @@ class SqliteStore implements Store {
           rows: rows.sort((a, b) => a.startedAt - b.startedAt || byText(a.runId, b.runId)),
           spend: spend.sort((a, b) => byText(a.runId, b.runId) || byText(a.kind, b.kind) || a.round - b.round),
         };
+      },
+      byHandBefore: async (agentId, before, limit) => {
+        const rows = await db.all<{ run_id: string; started_at: number | string; job_usd: number }>(BY_HAND_BEFORE, agentId, before.startedAt, before.id, limit);
+        return rows.map((row) => ({ id: row.run_id, startedAt: Number(row.started_at), jobUsd: Number(row.job_usd) }));
       },
     };
 
@@ -3044,7 +3067,10 @@ class SqliteStore implements Store {
       );
       await writeLaunch(tx, run.id, run.launch, at);
       await new RunStorage(this.#db, { runId: run.id, epoch: 0 }, this.#now).applyIn(tx, run.transcript, row!.inserted_rowid ?? "this-transaction");
-      return runOf(row!);
+      // Its ledger row, as an end writes one (applyRunPatch), in this same commit.
+      const imported = runOf(row!);
+      if (FINAL_STATES.includes(imported.state)) await recordLedger(tx, imported, at);
+      return imported;
     });
   }
 

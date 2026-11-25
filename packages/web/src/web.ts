@@ -1,20 +1,19 @@
 // One run's web search and fetch (createWeb). The providers asked are data (WebConfig.order); everything from outside
 // comes in through the config. Every answer comes with a Receipt, which is never put in front of the model.
 import { AsyncLocalStorage } from "node:async_hooks";
-import { type WebLog, type FetchProvider, type Pages, type WebPage, webFetch, webFetchText } from "./fetch.js";
+import type { WebDecider } from "./decide/decider.js";
+import { decideFetch, type FetchAnswer, judgePart } from "./decide/fetch.js";
+import { guardPage, type InjectionVerdict, type PageGuard, type WallVerdict } from "./decide/page-guard.js";
+import { decisionPay, type DecisionRecord, type Sift, type StepOptions } from "./decide/record.js";
+import { type DecidePolicy, policyOf, siftSearch } from "./decide/search.js";
+import { missesOf, type Pages, type Readers, type WebLog, type WebRead, webFetchText, webPart, webRead } from "./fetch.js";
 import { type Fee, type Pay, unmetered } from "./fees.js";
 import type { Guard, GuardOptions } from "./guard.js";
 import { askedUrl, type Page, type Part, partProblem } from "./page.js";
-import { exaLimitOf, exaSearch } from "./providers/exa-keyless.js";
-import { firecrawlFetch, type FirecrawlOptions, firecrawlSearch, type KeylessFetch } from "./providers/firecrawl-keyless.js";
+import { holdingWords, type NativeSearch, type ProviderRun, readerOf } from "./provider.js";
 import type { Words } from "./providers/mcp.js";
-import { type Extract, parallelExtract, parallelSearched } from "./providers/parallel.js";
-import { type Backend, type Breaker, breakers, fitSearch, type Search, type SearchBounds, type Searched, searchArgs, searchInTurn, searchText, type Try } from "./search.js";
-
-export type ProviderId = "parallel" | "firecrawl-keyless" | "exa-keyless" | "native" | "direct";
-export type SearchProvider = Exclude<ProviderId, "direct">;
-/** The run's own model provider's hosted search. `signal` is the caller's; it keeps its own bounds. */
-export type NativeSearch = (query: string, n: number, signal?: AbortSignal) => Promise<Searched>;
+import { type FetchProvider, type KeyedProvider, type ProviderId, providerOf, type ProviderSettings, type SearchProvider, settingsProblemsOf } from "./providers/registry.js";
+import { type Breaker, breakers, fitSearch, type Holding, type Limit, withKeyBreaker, type Search, type SearchBounds, searchArgs, searchInTurn, searchText, type Try } from "./search.js";
 
 /** What an answer took and cost. `out` is the answer as the model reads it; `cache` is "hit" when a fetch came from the
  *  run's pages. */
@@ -23,101 +22,232 @@ export type Receipt = {
   asked: string;
   provider: ProviderId | null;
   tries: Try[];
-  classifier: "off";
-  wall: { verdict: "unjudged" };
-  injection: "unjudged";
+  classifier: "off" | DecisionRecord;
+  /** The page guard's verdicts on a fetched page, when `pageGuard` is on; "unjudged" otherwise. */
+  wall: WallVerdict;
+  injection: InjectionVerdict;
   out: { bytes: number; chars: number };
   cost: { usd: number; lines: Fee[] };
   cache?: "hit";
+  /** With a classifier in the run: the text a web with none would have given the model for this call (a fetch's part
+   *  as asked, without looking_for), set beside what it read to see what the step saved. */
+  unsifted?: string;
 };
 
-/** `order.fetch` names the providers ahead of the direct fetch ("direct" in it). No `keys.parallel`: Parallel answers
- *  that the run holds none. No `guard`: nothing is fetched directly and no URL goes to a provider. No `pay`: unmetered. */
+/** `order` names the providers each tool asks, in turn, by their registry ids (providers/registry.ts); `order.fetch`
+ *  ends with "direct" where a page may be fetched directly. An id no provider has, or a provider for a tool it does not
+ *  serve, throws here. No key for a keyed provider in an order (`keys`): it answers that the run holds none, unsent.
+ *  `settings`: a provider's, by its id (ProviderSettings); one a provider does not take throws here, before anything is
+ *  sent. No `guard`: nothing is fetched directly and no URL goes to a provider. No `pay`: unmetered. `endpoints` and
+ *  `send`: where a provider's requests go, and through what, by its id. */
 export type WebConfig = {
   order: { search: readonly SearchProvider[]; fetch: readonly FetchProvider[] };
-  keys?: { parallel?: string };
+  keys?: Partial<Record<KeyedProvider, string>>;
+  settings?: ProviderSettings;
   native?: NativeSearch;
   guard?: Guard;
   pay?: Pay;
-  endpoints?: { "firecrawl-keyless"?: string };
-  send?: Partial<Record<"parallel" | "firecrawl-keyless" | "exa-keyless", typeof fetch>>;
+  endpoints?: Partial<Record<ProviderId, string>>;
+  send?: Partial<Record<ProviderId, typeof fetch>>;
   words?: Words;
   now?: () => number;
-  bounds?: SearchBounds & { checkMs?: number };
+  bounds?: SearchBounds & { checkMs?: number; decideMs?: number };
   log?: WebLog;
+  /** Holds known before the Web is made (Hold): each holds its breaker from the start, the Web's and a call's own alike;
+   *  one already over holds nothing. */
+  holds?: readonly Hold[];
+  /** Given each limit a breaker reads that leaves it holding (Hold): the tool's, or its key's. */
+  onHold?: (hold: Hold) => void;
+  /** Sifts each search's results and judges each fetched part; none: nothing is sifted, as before the step. */
+  decider?: WebDecider;
+  /** How a search's results reach the model once the decider has scored them ("drop" by default); checked when the
+   *  web is made. */
+  policy?: DecidePolicy;
+  /** The page guard: with a decider, each page a fetch reads is asked once a run whether it is a wall or holds
+   *  instructions addressed to an AI reader. Off unless true; true without a decider throws. */
+  pageGuard?: boolean;
 };
-/** `breakers`: the search breakers this call reads and trips (default the Web's own). `bounds`: this call's deadlines,
- *  each in place of the Web's (WebConfig.bounds) where given. */
-export type SearchOptions = { n?: number; signal?: AbortSignal; breakers?: (name: string) => Breaker; bounds?: SearchBounds };
-/** `lookup` and `fetchImpl`: the resolver and transport this call's guard dials through. */
-export type FetchOptions = Part & GuardOptions;
+/** `breakers`: the search breakers this call reads and trips (default the Web's own). `keyLimits`: where a quota of a
+ *  provider's whole key goes (search.ts Failure.covers): the Web's key breakers, shared with web_fetch ("web", the
+ *  default without `breakers`), or the call's own breakers ("call", the default with them). `task`: what the caller
+ *  needs, which a decider judges against (a search without one is judged on its query). `bounds`: this call's
+ *  deadlines, each in place of the Web's (WebConfig.bounds) where given. */
+export type SearchOptions = { n?: number; signal?: AbortSignal; breakers?: (name: string) => Breaker; keyLimits?: "web" | "call"; task?: string; bounds?: SearchBounds };
+/** `lookup` and `fetchImpl`: the resolver and transport this call's guard dials through. `lookingFor`: what the caller
+ *  is looking for on the page (the tool's looking_for). With a decider, the answer is the chunks of the whole page most
+ *  likely to hold it (findInPage), `offset` and `maxChars` aside; without one, or when the step fails, the part asked
+ *  for, saying looking_for was not applied. Blank: none. */
+export type FetchOptions = Part & GuardOptions & { task?: string; lookingFor?: string };
+/** `sift`, only when a decider is given: what it did, for the model to read. */
+/** A provider a Web's tool asks: its id, how it is reached (`keyed`, on the run's key; `unkeyed`, a keyed provider the
+ *  run holds no key for, so never sent; `keyless`, a service's free use; `none`, neither: the model provider's own search
+ *  or the guarded direct fetch), and what holds it now (the tool's breaker, else its key's), if anything. */
+export type Destination = { id: ProviderId; access: "keyed" | "unkeyed" | "keyless" | "none"; held?: Holding };
+/** A provider's breaker for `tool` ("key": its key's, across both tools) holding as `kind` until `until` (epoch ms;
+ *  Infinity: for the Web's life). */
+export type Hold = { provider: ProviderId; tool: "search" | "fetch" | "key"; kind: Limit["kind"]; until: number };
+/** Each tool's providers, in the order it asks them. */
+export type Destinations = { search: Destination[]; fetch: Destination[] };
+/** `destinations`: where each tool goes now (Destinations), for a run's start line; never a key. */
 export type Web = {
-  search(query: string, options?: SearchOptions): Promise<{ answer: Search; receipt: Receipt }>;
-  fetch(url: unknown, options?: FetchOptions): Promise<{ answer: WebPage | Page; receipt: Receipt }>;
+  search(query: string, options?: SearchOptions): Promise<{ answer: Search & Sift; receipt: Receipt }>;
+  fetch(url: unknown, options?: FetchOptions): Promise<{ answer: FetchAnswer; receipt: Receipt }>;
+  destinations(): Destinations;
 };
+
+/** One tool's destinations in words: each id, how it is reached, and what holds it ("none" for an empty order). */
+const toolWords = (order: readonly Destination[]): string =>
+  order.map(({ id, access, held }) => {
+    const notes = [...(access === "none" ? [] : [access === "unkeyed" ? "keyed, no key" : access]), ...(held ? [holdingWords(held)] : [])];
+    return notes.length ? `${id} (${notes.join(", ")})` : id;
+  }).join(" > ") || "none";
+/** Each tool's destinations in words, for a log line's fields. */
+export const destinationsWords = ({ search, fetch }: Destinations): { search: string; fetch: string } => ({ search: toolWords(search), fetch: toolWords(fetch) });
+/** Both tools' destinations on one line: "search: …; fetch: …". */
+export function destinationsLine(destinations: Destinations): string {
+  const { search, fetch } = destinationsWords(destinations);
+  return `search: ${search}; fetch: ${fetch}`;
+}
 
 /** The fees of the requests sent within one call. */
 const feesOfCall = new AsyncLocalStorage<Fee[]>();
 const usd = (lines: Fee[]) => Math.round(lines.reduce((sum, fee) => sum + fee.usd, 0) * 1e6) / 1e6;
 const outOf = (text: string) => ({ bytes: Buffer.byteLength(text), chars: text.length });
-const judged = { classifier: "off", wall: { verdict: "unjudged" }, injection: "unjudged" } as const;
-/** A provider's failure: the error alone for the model, the limit it met for the breaker. */
-const failedWith = (error: string, limit: Searched["limit"]): Searched => ({ answer: { error }, ...(limit ? { limit } : {}) });
+const unjudged = { wall: { verdict: "unjudged" }, injection: "unjudged" } as const;
+
+/** `shared`, a guard check another call started, or as soon as `signal` stops this call, the page left unjudged as a
+ *  stopped check leaves it (code "aborted"). The shared check is not stopped: another call may still need it. */
+function guardUntilStopped(shared: Promise<PageGuard>, signal?: AbortSignal): Promise<PageGuard> {
+  if (!signal) return shared;
+  const stopped = (): PageGuard => ({ wall: { verdict: "unjudged", error: { code: "aborted", message: String((signal.reason as Error)?.message ?? signal.reason).slice(0, 500) } }, injection: "unjudged" });
+  if (signal.aborted) return Promise.resolve(stopped());
+  return new Promise((resolve, reject) => {
+    const onStop = () => resolve(stopped());
+    signal.addEventListener("abort", onStop, { once: true });
+    shared.then(
+      (guard) => (signal.removeEventListener("abort", onStop), resolve(guard)),
+      (error: unknown) => (signal.removeEventListener("abort", onStop), reject(error)),
+    );
+  });
+}
 
 export function createWeb(config: WebConfig): Web {
+  const problems = settingsProblemsOf(config.settings);
+  if (problems.length) throw new Error(`web settings: ${problems.join("; ")}`);
+  for (const op of ["search", "fetch"] as const) for (const id of config.order[op]) if (!providerOf(id).ops.includes(op)) throw new Error(`web: ${id} gives no ${op}`);
   const now = config.now ?? Date.now;
+  const policy = policyOf(config.policy);
+  if (config.pageGuard !== undefined && typeof config.pageGuard !== "boolean") throw new TypeError(`pageGuard must be true or false (it was ${JSON.stringify(config.pageGuard)})`);
+  if (config.pageGuard && !config.decider) throw new TypeError("pageGuard needs a decider: the page guard asks the run's decider about each page");
+  /** The page guard's verdict on each read the run's pages hold, kept with the read: it goes when the page is evicted,
+   *  and a page read again is asked about again, as is one whose guard failed. */
+  const pageVerdicts = new WeakMap<WebRead, Promise<PageGuard>>();
+  const guardOf = (decider: WebDecider, url: string, read: WebRead, step: StepOptions): Promise<PageGuard> => {
+    const known = pageVerdicts.get(read);
+    // A later caller waits on the check another started only until its own signal stops it; the check goes on.
+    if (known) return guardUntilStopped(known, step.signal);
+    const asked = guardPage(decider, url, read, step);
+    pageVerdicts.set(read, asked);
+    void asked.then((verdict) => verdict.wall.error && pageVerdicts.delete(read));
+    return asked;
+  };
+  /** A receipt's `unsifted`, only in a run with a classifier. */
+  const unsifted = (text: () => string) => (config.decider ? { unsifted: text() } : {});
   const runBreakers = breakers(now);
+  const fetchBreakers = breakers(now);
+  // Each provider's own across both tools: a quota of the whole key holds web_search and web_fetch alike.
+  const keyBreakers = breakers(now);
   const pages: Pages = new Map();
+  // Each breaker takes the holds known at the start once, at its first use: the Web's, and each a call brings.
+  const seeded = new WeakSet<Breaker>();
+  const watched = (tool: Hold["tool"], provider: ProviderId, breaker: Breaker): Breaker => {
+    if (!seeded.has(breaker)) {
+      seeded.add(breaker);
+      for (const hold of config.holds ?? []) {
+        const at = now();
+        if (hold.provider !== provider || hold.tool !== tool || !(hold.until > at)) continue;
+        const limit: Limit = hold.until === Number.POSITIVE_INFINITY ? { kind: hold.kind } : { kind: hold.kind, retryAfter: (hold.until - at) / 1_000 };
+        breaker.read({ answer: { error: "held" }, limit });
+      }
+    }
+    if (!config.onHold) return breaker;
+    const onHold = config.onHold;
+    return {
+      ...breaker,
+      read(searched) {
+        const answer = breaker.read(searched);
+        const holding = searched.limit ? breaker.holding() : undefined;
+        if (holding) onHold({ provider, tool, ...holding });
+        return answer;
+      },
+    };
+  };
+  const toolBreaker = (tool: "search" | "fetch", id: ProviderId, own: Breaker, key: Breaker): Breaker => withKeyBreaker(watched(tool, id, own), watched("key", id, key));
   // A fee goes on the call's receipt once its request is sent, whatever the cap then books.
   const pay: Pay = (fee, send) => (config.pay ?? unmetered)(fee, () => (feesOfCall.getStore()?.push(fee), send()));
 
-  const firecrawl: Omit<FirecrawlOptions, "signal"> = {};
-  const exa: { send?: typeof fetch; words?: Words } = {};
-  if (config.endpoints?.["firecrawl-keyless"]) firecrawl.endpoint = config.endpoints["firecrawl-keyless"];
-  if (config.send?.["firecrawl-keyless"]) firecrawl.send = config.send["firecrawl-keyless"];
-  if (config.send?.["exa-keyless"]) exa.send = config.send["exa-keyless"];
-  if (config.words) firecrawl.words = exa.words = config.words;
-
-  let parallel: Extract | null | undefined;
-  const parallelOf = () => (parallel ??= config.keys?.parallel === undefined ? null : parallelExtract(config.keys.parallel, config.send?.parallel ?? fetch, pay));
-  let keyless: KeylessFetch | undefined;
-  const firecrawlOf = () => (keyless ??= firecrawlFetch(firecrawl, now));
-
-  const backendOf = (name: SearchProvider, args: Record<string, unknown>, signal: AbortSignal | undefined, firecrawlSearchMs: number | undefined): Backend => {
-    const { query, n } = searchArgs(args);
-    if (name === "parallel") return { name, ask: () => parallelSearched(args, parallelOf(), signal) };
-    if (name === "native") return { name, ask: async () => (config.native ? config.native(query, n, signal) : { answer: { error: "web_search: no native search was given" } }) };
-    if (name === "firecrawl-keyless") {
-      return { name, ask: async (deadline) => {
-        const found = await firecrawlSearch(query, n, { ...firecrawl, signal: deadline, ...(firecrawlSearchMs === undefined ? {} : { timeoutMs: firecrawlSearchMs }) });
-        // Which limit Firecrawl met is the breaker's to read, never the model's.
-        return "error" in found ? failedWith(found.error, "limit" in found ? found.limit : undefined) : { answer: found };
-      } };
+  // Each provider an order names is made once per Web, at its first use, from the run's parts for it: one client a
+  // provider, so a key refused by one tool is refused by both.
+  const runs = new Map<ProviderId, ProviderRun>();
+  const runOf = (id: ProviderId): ProviderRun => {
+    let run = runs.get(id);
+    if (!run) {
+      const key = (config.keys as Partial<Record<string, string>> | undefined)?.[id];
+      const endpoint = config.endpoints?.[id];
+      const send = config.send?.[id];
+      const settings = (config.settings as Partial<Record<string, unknown>> | undefined)?.[id];
+      run = providerOf(id).make({
+        ...(key === undefined ? {} : { key }),
+        ...(endpoint ? { endpoint } : {}),
+        ...(send ? { send } : {}),
+        ...(settings === undefined ? {} : { settings }),
+        ...(config.guard ? { guard: config.guard } : {}),
+        ...(config.words ? { words: config.words } : {}),
+        ...(config.native ? { native: config.native } : {}),
+        ...(config.bounds ? { bounds: config.bounds } : {}),
+        pay,
+        now,
+      });
+      runs.set(id, run);
     }
-    return { name, ask: async (deadline) => {
-      const found = await exaSearch(query, n, { ...exa, signal: deadline });
-      return "limit" in found ? failedWith(found.error, exaLimitOf(found)) : { answer: found };
-    } };
+    return run;
+  };
+  let readers: Readers | undefined;
+  // A provider that ends the order is made by webRead for each read, never here.
+  const readersOf = (): Readers => (readers ??= Object.fromEntries(config.order.fetch.filter((id) => !providerOf(id).fetch?.ends).map((id) => [id, readerOf(runOf(id), toolBreaker("fetch", id, fetchBreakers(id), keyBreakers(id)))])));
+
+  const destinationOf = (id: ProviderId, tool: "search" | "fetch", own: (name: string) => Breaker): Destination => {
+    const provider = providerOf(id);
+    const keyed = (config.keys as Partial<Record<string, string>> | undefined)?.[id] !== undefined;
+    const access = provider.key ? (keyed ? "keyed" : "unkeyed") : provider.keyless ? "keyless" : "none";
+    const held = toolBreaker(tool, id, own(id), keyBreakers(id)).holding();
+    return { id, access, ...(held ? { held } : {}) };
   };
 
   return {
-    async search(query, { n, signal, breakers: breakerOf = runBreakers, bounds } = {}) {
+    destinations: () => ({ search: config.order.search.map((id) => destinationOf(id, "search", runBreakers)), fetch: config.order.fetch.map((id) => destinationOf(id, "fetch", fetchBreakers)) }),
+    async search(query, { n, signal, breakers: given, keyLimits = given ? "call" : "web", task, bounds } = {}) {
+      const ownOf = given ?? runBreakers;
+      const breakerOf = (name: string) => toolBreaker("search", name as ProviderId, ownOf(name), keyLimits === "web" ? keyBreakers(name) : ownOf(`${name} key`));
       const lines: Fee[] = [];
       const tries: Try[] = [];
-      const args = { query, ...(n === undefined ? {} : { n }) };
+      const ask = searchArgs({ query, ...(n === undefined ? {} : { n }) });
       const order = config.order.search;
       const searchMs = bounds?.searchMs ?? config.bounds?.searchMs;
-      const firecrawlMs = bounds?.firecrawlMs ?? config.bounds?.firecrawlMs;
-      // Parallel's search answers an empty query itself; every other provider is asked only with one.
-      const found: Search = !order.includes("parallel") && !searchArgs(args).query ? { error: "web_search needs a query" }
+      // No provider is asked an empty query.
+      const found: Search = !ask.query ? { error: "web_search needs a query" }
         : !order.length ? { error: "web_search has no provider to ask" }
-        : await feesOfCall.run(lines, () => searchInTurn(order.map((name) => backendOf(name, args, signal, firecrawlMs)), breakerOf, signal, searchMs, tries));
-      const answer = fitSearch(found);
-      const receipt: Receipt = { op: "search", asked: query, provider: "error" in answer ? null : answer.provider, tries, ...judged, out: outOf(searchText(answer)), cost: { usd: usd(lines), lines } };
+        : await feesOfCall.run(lines, () => searchInTurn(order.map((id) => ({ name: id, ask: (deadline: AbortSignal) => runOf(id).search!(ask, deadline, signal, bounds) })), breakerOf, signal, searchMs, tries));
+      // Sifted before it is fitted, so the fit sees only the kept results; fitSearch keeps every other field.
+      const sifted = config.decider ? await siftSearch(config.decider, found, { task, signal, ms: config.bounds?.decideMs, pay: decisionPay(config.pay ?? unmetered, lines), policy }) : { answer: found, classifier: "off" as const };
+      const answer: Search & Sift = fitSearch(sifted.answer);
+      const { classifier } = sifted;
+      const receipt: Receipt = { op: "search", asked: query, provider: "error" in answer ? null : answer.provider, tries, classifier, ...unjudged, out: outOf(searchText(answer)), cost: { usd: usd(lines), lines }, ...unsifted(() => searchText(fitSearch(found))) };
       return { answer, receipt };
     },
-    // Only the call's part, resolver, transport and signal are read: the guard, its bound and the order stay the Web's.
-    async fetch(url, { offset, maxChars, lookup, fetchImpl, signal } = {}) {
+    // Only the call's part, resolver, transport, signal, task and looking_for are read: the guard, its bound, the order
+    // and the readers stay the Web's.
+    async fetch(url, { offset, maxChars, task, lookingFor, lookup, fetchImpl, signal } = {}) {
       const asked = typeof url === "string" ? url : "";
       const lines: Fee[] = [];
       const tries: Try[] = [];
@@ -125,35 +255,35 @@ export function createWeb(config: WebConfig): Web {
       const problem = partProblem({ offset, maxChars });
       if (problem) {
         const refused: Page = { ok: false, url: askedUrl(asked), status: 0, title: "", text: "", links: [], error: problem };
-        return { answer: refused, receipt: { op: "fetch", asked, provider: null, tries, ...judged, out: outOf(webFetchText(refused)), cost: { usd: 0, lines } } };
+        const classifier = config.decider ? (await judgePart(config.decider, asked, refused, {})).classifier : "off";
+        return { answer: refused, receipt: { op: "fetch", asked, provider: null, tries, classifier, ...unjudged, out: outOf(webFetchText(refused)), cost: { usd: 0, lines }, ...unsifted(() => webFetchText(refused)) } };
       }
       const cached = typeof url === "string" && pages.has(url);
-      const order = config.order.fetch;
-      const extract = order.includes("parallel") ? parallelOf() : null;
-      const page = await feesOfCall.run(lines, () =>
-        webFetch(url, {
+      const whole = await feesOfCall.run(lines, () =>
+        webRead(url, {
           ...(lookup ? { lookup } : {}),
           ...(fetchImpl ? { fetchImpl } : {}),
           ...(signal ? { signal } : {}),
-          parallel: extract,
-          firecrawl: order.includes("firecrawl-keyless") ? firecrawlOf() : null,
+          readers: readersOf(),
           pages,
-          order,
+          order: config.order.fetch,
           ...(config.guard ? { guard: config.guard } : {}),
           ...(config.bounds?.checkMs === undefined ? {} : { checkMs: config.bounds.checkMs }),
-          ...(offset === undefined ? {} : { offset }),
-          ...(maxChars === undefined ? {} : { maxChars }),
           ...(config.log ? { log: config.log } : {}),
-          // Each provider the read asks, told as it answers: Firecrawl failing ahead of Parallel's page, or with nothing behind it, too.
-          tried: (one) => void tries.push(one),
-          ...(order.includes("parallel") && !extract ? { noParallel: "not tried: this run holds no Parallel key" } : {}),
+          tries,
         }),
       );
-      const answer: WebPage = page;
-      const provider = answer.ok && answer.via !== "stopped" && answer.via !== "none" ? answer.via : null;
+      const part = webPart(whole, { ...(offset === undefined ? {} : { offset }), ...(maxChars === undefined ? {} : { maxChars }) });
+      const provider = part.ok && part.via !== "stopped" && part.via !== "none" ? part.via : null;
+      const { decider } = config;
+      const guard = config.pageGuard && decider && whole.ok ? (options: StepOptions) => guardOf(decider, asked, whole, options) : undefined;
+      const decided = await decideFetch(decider, asked, whole, part, { task, lookingFor, signal, ms: config.bounds?.decideMs, pay: config.pay ?? unmetered, lines, guard });
+      // What looking_for found names each provider asked ahead that gave no page, as the part does.
+      const answer: FetchAnswer = "found" in decided.answer ? { ...decided.answer, ...missesOf(whole) } : decided.answer;
+      const { classifier, guard: verdicts } = decided;
       // Copies: a read this call stopped waiting for goes on, and its later turns and fees are not on this receipt.
       const spent = [...lines];
-      const receipt: Receipt = { op: "fetch", asked, provider, tries: [...tries], ...judged, out: outOf(webFetchText(answer)), cost: { usd: usd(spent), lines: spent }, ...(cached ? { cache: "hit" as const } : {}) };
+      const receipt: Receipt = { op: "fetch", asked, provider, tries: [...tries], classifier, ...(verdicts ? { wall: verdicts.wall, injection: verdicts.injection } : unjudged), out: outOf(webFetchText(answer)), cost: { usd: usd(spent), lines: spent }, ...(cached ? { cache: "hit" as const } : {}), ...unsifted(() => webFetchText(part)) };
       return { answer, receipt };
     },
   };
