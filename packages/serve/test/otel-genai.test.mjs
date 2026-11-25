@@ -412,6 +412,14 @@ test("an unknown OTLP header's spaced value is held whole, never its tail alone;
   }
 });
 
+test("an OTLP endpoint's query parameter is held when a whole word of its name says credential, never for a word that only starts like one", () => {
+  const [access, signature, camel] = [`access-${"dummy"}-token-1212`, `sig-${"dummy"}-value-3434`, `camel-${"dummy"}-key-5656`];
+  const endpoint = `https://collector.invalid/v1/traces?authority=collector-east-7&keyspace=spans-main&access_token=${access}&X-Amz-Signature=${signature}&apiKey=${camel}`;
+  const values = runnerSecrets({ OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: endpoint });
+  for (const [what, value] of [["access_token", access], ["X-Amz-Signature", signature], ["apiKey", camel]]) assert.ok(values.includes(value), `${what}'s value is held`);
+  for (const [what, value] of [["authority", "collector-east-7"], ["keyspace", "spans-main"]]) assert.equal(values.includes(value), false, `${what}'s value is not held`);
+});
+
 test("a short OTLP header value is cut from the tracer's own error text, at any length; a standard header's value is left as it is", async (t) => {
   const short = `hc${"7"}x1`;
   const env = { ...ON, OTEL_EXPORTER_OTLP_HEADERS: `x-honeycomb-team=${short},Content-Type=application/json`, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `x-team=${short}` };
