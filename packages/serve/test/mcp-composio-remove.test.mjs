@@ -124,7 +124,7 @@ test("a Composio server the token saved, its key read from COMPOSIO_API_KEY: the
   assert.ok(await store.settings.get(composioMadeKey("hn")), "and what it stands on at Composio is still recorded");
 });
 
-test("a save writes its row and its record in its server's turn: the owner's save made between the token's row and the token's mark waits for both, so the mark never lands on the owner's row and the token never removes it", async (t) => {
+test("a save writes its row and its record in its server's turn: the owner's save made right after the token's row and mark waits for the token's save, so the mark never lands on the owner's row and the token never removes it", async (t) => {
   const { store, registry } = await servers(t);
   registry.loopback = true;
   const [fake, owners] = [await startFakeMcp(), await startFakeMcp({ name: "owners-mcp" })];
@@ -140,26 +140,25 @@ test("a save writes its row and its record in its server's turn: the owner's sav
     if (armed) asked();
     return turn.call(this, name, work);
   };
+  // The seam: right after the token's write of its row, which writes its mark in the same transaction. The owner's save
+  // starts there and the token's save waits for it to reach the name's turn (or, with no turn, to write its row).
+  let owner;
+  let marked;
   const putIf = store.mcp.putIfCredential;
   store.mcp.putIfCredential = async function (row, expected, tokens, ...owns) {
     const written = await putIf.call(this, row, expected, tokens, ...owns);
     if (armed && !tokens) wrote();
-    return written;
-  };
-  // The seam: the token's mark, right after the token's row is written. The owner's save starts there and the mark waits
-  // for it to reach the name's turn (or, with no turn, to write its row).
-  let owner;
-  const put = store.settings.put;
-  store.settings.put = async function (key, value) {
-    if (key === mcpSourceKey("hn") && value?.by === "token" && !owner) {
+    if (tokens && written && !owner) {
+      marked = (await store.settings.get(mcpSourceKey("hn")))?.by;
       armed = true;
       owner = registry.save("hn", { url: owners.url });
       await Promise.race([askedTurn, ownerWrote]);
     }
-    return put.call(this, key, value);
+    return written;
   };
   await registry.save("hn", { url: fake.url }, undefined, undefined, undefined, undefined, undefined, undefined, true);
-  assert.ok(owner, "the owner's save started between the token's row and its mark");
+  assert.ok(owner, "the owner's save started right after the token's row was written");
+  assert.equal(marked, "token", "the token's mark was written with its row");
   assert.equal((await owner)?.name, "hn");
   const row = await store.mcp.server("hn");
   assert.equal(row?.url, owners.url, "the owner's save stands");
