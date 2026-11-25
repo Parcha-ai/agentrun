@@ -23,6 +23,7 @@ import { withToolSearch } from "./fixtures/claude-tool-search.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { startFakeOAuth } from "./fixtures/fake-oauth-server.mjs";
 import { stranger } from "./fixtures/stranger.mjs";
+import { fakeClock } from "./runner-support.mjs";
 
 const TOOLS = ["add", "slow_write", "delete_thing", "paid"];
 /** The owner's sign-in phrase, made up for these tests. */
@@ -875,19 +876,21 @@ for (const down of ["503", "timeout"]) {
 
 test("a sign-in whose endpoint's name lookup outlives the request's time says that endpoint could not be reached, and why", { timeout: 120_000 }, async (t) => {
   const key = sealKey();
-  // Every bound this process sets with AbortSignal.timeout runs 50 times faster in this case (a request's 15 s, the MCP
-  // server's own address check's 15 s): the lookups below never answer, so each is waited out, and the order of the
-  // bounds is kept. The words still name the bound the server sets.
-  const timeout = AbortSignal.timeout.bind(AbortSignal);
-  t.mock.method(AbortSignal, "timeout", (ms) => timeout(Math.ceil(ms / 50)));
-  // A resolver that never answers: each request's own timeout ends its lookup (an unreferenced timer, as in a server that
-  // has other work: this test keeps the process up meanwhile).
-  const up = setInterval(() => {}, 1_000);
-  t.after(() => clearInterval(up));
+  // Every bound this process sets with AbortSignal.timeout in this case (a request's 15 s, the MCP server's own address
+  // check's 15 s) runs out on a clock the case moves: a lookup that never answers moves it to the next bound once its
+  // caller listens, so each is run out in the order the real clock would, and none is waited for. The words still name
+  // the bound the server sets.
+  const clock = fakeClock();
+  t.mock.method(AbortSignal, "timeout", (ms) => {
+    const bound = new AbortController();
+    clock.setTimeout(() => bound.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError")), ms);
+    return bound.signal;
+  });
+  const never = () => (setImmediate(() => clock.toNext()), new Promise(() => {}));
   // The MCP server's own address check is answered (a public address); every lookup after it, its sign-in's endpoints',
   // never is.
   let lookups = 0;
-  const net = { network: { lookup: () => (lookups++ === 0 ? Promise.resolve(["192.0.2.10"]) : new Promise(() => {})), fetch: async () => new Response("", { status: 404 }) } };
+  const net = { network: { lookup: () => (lookups++ === 0 ? Promise.resolve(["192.0.2.10"]) : never()), fetch: async () => new Response("", { status: 404 }) } };
   const store = await storeOn(t, key, net);
   await assert.rejects(store.oauthStart("pub", { url: "https://mcp.example.test/mcp" }), (error) => {
     assert.equal(error.code, "upstream_failed");
@@ -895,7 +898,7 @@ test("a sign-in whose endpoint's name lookup outlives the request's time says th
     return true;
   });
   // The server's own name never answers: its address check says so, and nothing is sent.
-  const hung = await storeOn(t, key, { network: { lookup: () => new Promise(() => {}), fetch: async () => assert.fail("nothing is sent") } });
+  const hung = await storeOn(t, key, { network: { lookup: never, fetch: async () => assert.fail("nothing is sent") } });
   await assert.rejects(hung.oauthStart("pub", { url: "https://mcp.example.test/mcp" }), (error) => {
     assert.equal(error.code, "upstream_failed");
     assert.match(error.message, /^Could not reach the MCP server at https:\/\/mcp\.example\.test \(DNS lookup timed out after \d+ s\)\.$/);

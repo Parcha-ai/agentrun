@@ -50,7 +50,7 @@ test("a script on a desktop that mounts no folder: bash's setting holds shell.ru
 
 test("a script's files.write is held to write's setting and files.read, list and stat to read's; apps and input to the computer kind's, whose deny refuses every op first", async () => {
   const { runners } = await stores({ runners: 1 });
-  const gate = await adapterRunGate(runners[0], { runId: "run-1" }, { kind: "agentic", body: { approvals: "ask", toolSettings: { write: { permission: "deny" }, read: { permission: "ask" } } } }, root(), "none", { facts: undefined });
+  const gate = await adapterRunGate(runners[0], { runId: "run-1" }, { kind: "agentic", body: { approvals: "ask", tools: ["read", "write"], toolSettings: { write: { permission: "deny" }, read: { permission: "ask" } } } }, root(), "none", { facts: undefined });
   const wrote = await gate(op("files.write", { path: "/tmp/a", data: "x" }));
   assert.equal(typeof wrote, "object", "files.write: refused by write's deny");
   assert.match(wrote.deny, /write is set to deny/, wrote.deny);

@@ -61,7 +61,8 @@
 //   grow: {bytes}: at each save of a session, append `bytes` random bytes to <sessions>/store.db-wal and rewrite a
 //         store.db-shm beside it: a store that grows each turn, as Cursor's SQLite WAL does.
 //   holdInit: a file; while it exists, initialize is not answered, so the host can send this process nothing.
-// A script step {hang: true} is a model that never answers (until a cancel the agent heeds).
+// A script step {hang: true} is a model that never answers (until a cancel the agent heeds). A step {lastWords, afterMs}
+// closes the agent's stdout, says `lastWords` on stderr `afterMs` later (default 300), then exits 1.
 // The step the model takes is the number it took before: its session's history (calls, native calls, answers), plus the
 // calls a recovery or context note names that its history does not hold, as a resumed model reads its conversation.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -369,6 +370,13 @@ async function takeTurn(client, session, prompt, signal) {
       // Killed mid-turn (SIGKILL), as a host's kill takes it: no answer, no exit of its own.
       said({ type: "die" });
       process.kill(process.pid, "SIGKILL");
+    }
+    if ("lastWords" in s) {
+      // Its stdout closed first, its last words on stderr `afterMs` later, then exit 1: an agent whose connection ends
+      // before its stderr does, as a dying process's pipes can be read in either order.
+      said({ type: "lastWords" });
+      process.stdout.end(() => setTimeout(() => process.stderr.write(`${s.lastWords}\n`, () => process.exit(1)), s.afterMs ?? 300));
+      await new Promise(() => {});
     }
     if ("hang" in s) {
       said({ type: "hang" });

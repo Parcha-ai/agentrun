@@ -56,6 +56,9 @@ export const START_MS = 60_000;
 export const CALL_ID_WAIT_MS = 10_000;
 /** How long a drive's end waits for the agent's process to go. */
 const EXIT_WAIT_MS = 5_000;
+/** How long a failure read off an agent that went waits for its process's close, which comes once its stderr is read to
+ *  the end: its connection closes at its stdout's end, which can come first. */
+const LAST_WORDS_MS = 5_000;
 /** How long an agent past the plan's limit of tool calls has to end its turn after session/cancel before its process is
  *  ended: past the limit, each moment it goes on is spent on the owner's plan. */
 export const LIMIT_STOP_MS = 3_000;
@@ -164,6 +167,14 @@ type CallRecord = { type: "seen" | "answered"; callId: string; tool?: string; ar
 type PermissionRecord = { type: "asked" | "answered" | "given" | "reasked"; callId: string; toolCallId?: string; title?: string; kind?: string; input?: unknown; answer?: "allow" | "deny"; words?: string; settled?: true; turn?: string; instead?: string };
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+/** An agent that ended, or whose connection closed: its stderr read to the end (its process's close), for at most
+ *  LAST_WORDS_MS, so its last words (a refusal it names on its way out) are in its tail. One still running: at once. */
+async function stderrRead(agent: AgentProcess): Promise<void> {
+  if (agent.alive() && !agent.connection.signal.aborted) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([agent.exited, new Promise<void>((resolve) => { timer = setTimeout(resolve, LAST_WORDS_MS); })]);
+  clearTimeout(timer);
+}
 const message = (error: unknown) => String((error as Error)?.message ?? error);
 const clip = (text: string, max: number) => (text.length <= max ? text : `${text.slice(0, max)}… [${text.length - max} more characters]`);
 const indent = (text: string) => text.split("\n").map((line) => `    ${line}`).join("\n");
@@ -694,7 +705,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
         within(unlessAborted(run(), signal), startMs, what).catch(async (error: unknown) => {
           if (signal.aborted) throw signal.reason;
           // An agent that says why on its way out: its stderr is read once it has ended.
-          if (!live.alive() || live.connection.signal.aborted) await Promise.race([live.exited, sleep(500)]);
+          await stderrRead(live);
           const named = refusalIn(`${live.stderrTail()}\n${message(error)}`);
           if (named) throw new Error(named);
           if (!live.alive() || live.connection.signal.aborted) throw new Error(`${ACP_CODES.agentExited}: the agent ended during ${what}: ${whyEnded(live, error)}`);
@@ -911,6 +922,8 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
       let outcome: Outcome;
       if (turn.limitHit) outcome = { status: "failed", error: turn.limitHit };
       else if (failure !== undefined) {
+        // An agent that says why on its way out: its stderr is read once it has ended.
+        await stderrRead(agent.agent);
         const named = refusalIn(`${agent.agent.stderrTail()}\n${message(failure)}`);
         outcome = { status: "failed", error: named ?? (agent.agent.alive() && !agent.agent.connection.signal.aborted ? `acp: session/prompt failed: ${agentSaid(failure)}` :`${ACP_CODES.agentExited}: the agent ended during the turn: ${whyEnded(agent.agent, failure)}`) };
       } else {
