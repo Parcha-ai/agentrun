@@ -37,7 +37,7 @@ import { DECISION_PROVIDER_KEYS } from "../tool-plane.js";
 import { learningEndOfRun } from "./learning-end.js";
 import { cutDeep, type HeldRedact, type Redact, runnerSecrets } from "./redact.js";
 import { storeSecrets } from "./store-secrets.js";
-import { FAUX_ENV, FAUX_PROVIDER, GATEWAY_KEY_ENV } from "../model.js";
+import { FAUX_ENV, GATEWAY_KEY_ENV } from "../model.js";
 import { SAVED_GATEWAY_ENV, savedGatewayIn } from "../model-gateway.js";
 import { FAUX_VENDOR_API_ENV } from "../tools.js";
 import { withinCarried } from "../paid-calls.js";
@@ -1311,24 +1311,21 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
         const savedGateway = savedGatewayIn(claimEnv);
         // The run's own keys: those its claim opens (claim-secrets.ts), the one list its loop in this process read. Its model
         // keys are its pinned model's (claimSecrets scopes them by the launch's model), the one its route sends: never the
-        // host's default's now, where its revision names no model and a key saved since moved that default.
+        // host's default's now, where its revision names no model and a key saved since moved that default. A --faux start
+        // is pinned to the faux model (model.ts chooseModel), which sends no key: its process is handed no model key, not
+        // even its revision's model's.
         const claimed = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: claimEnv, redact: loopDeps.redact }, revisionRow as never, launch, claim.runId);
-        // A --faux start alone is pinned to the faux model (model.ts chooseModel), which stands in for its revision's and
-        // sends no key: its process is handed its revision's model's key with them, as a run of that model is handed it.
-        // Only on a runner in faux mode too: a faux launch claimed where FAUX_ENV is unset gets no second claim. A held run its
-        // model kept from running at its create (hold.refused) is laid no model key here either: its model runs nowhere.
-        const ofRevision: NodeJS.ProcessEnv = launch.model?.provider === FAUX_PROVIDER && claimEnv[FAUX_ENV] ? await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: claimEnv, redact: loopDeps.redact }, revisionRow as never, { ...(launch.plane ? { plane: launch.plane } : {}), ...(launch.hold ? { hold: launch.hold } : {}) }) : {};
         // A run that holds a model key of its own (model_key, its launch's) spends that key alone: its process is handed
         // none of the server's model keys, as its spec drops them from its tools' (claim-secrets.ts withoutModelKeys).
         // Copies: the runner's own reads (heldFor's `claimed`: what the run's learning must never keep) stay whole.
         const keyed = (await openRunModelKey({ store: deps.store, sealKey: deps.sealKey }, claim.runId)) !== undefined;
-        const toProcess = keyed ? [withoutModelKeys({ ...claimed }), withoutModelKeys({ ...ofRevision })] : [claimed, ofRevision];
+        const toProcess = keyed ? withoutModelKeys({ ...claimed }) : claimed;
         // The saved gateway's key, kept off the claim's tool keys (claimSecrets), is handed for the run's model routes alone,
         // read as the server's model keys are (savedModelKeys, over the claim's environment the gateway was laid over), as a
         // run in this process reads it from its environment by name; none to a run that brings its own key, and none to a
         // held run its model kept from running, which routes no model.
         const gatewayKey = savedGateway && !launch.hold?.refused ? (keyed ? {} : await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: claimEnv }))[GATEWAY_KEY_ENV] || undefined : undefined;
-        const handed = (name: string): string | undefined => (name === GATEWAY_KEY_ENV && savedGateway ? gatewayKey : toProcess.map((from) => from[name]).find((value): value is string => typeof value === "string" && value !== ""));
+        const handed = (name: string): string | undefined => (name === GATEWAY_KEY_ENV && savedGateway ? gatewayKey : toProcess[name] || undefined);
         const keys = encode(SECRET_NAMES.flatMap((name) => {
           const value = handed(name);
           return value === undefined ? [] : [[name, value] as const];
