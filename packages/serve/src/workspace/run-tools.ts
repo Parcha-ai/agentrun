@@ -92,6 +92,14 @@ function agentsOwn(computer: RunComputer | undefined): RunComputer | undefined {
   return { ...computer, hello: { ...computer.hello, groups: computer.hello.groups.filter((group) => !PROGRAM_GROUPS.has(group)) } };
 }
 
+/** The run's folder `workspace` attached to the computer `claimed`, as runHands attaches it, when that computer mounts the
+ *  folder; undefined when none does. For what the runner itself writes in a Mode 2 run's folder while the computer's mount
+ *  holds the disk's write delegation (run-child-host.ts, the claim's MCP). */
+export async function attachedIn(workspace: Workspace, claimed: RunComputer | undefined): Promise<Workspace | undefined> {
+  const mounted = mountedIn(agentsOwn(claimed));
+  return mounted === undefined ? undefined : await workspace.attach(mounted.computer, mounted.check);
+}
+
 /** Whether a computer's tool is bound for a script's nested calls alone (deferred: never listed to the model) under
  *  `surface`: computer_op always (a script's `computer` reaches the computer's other ops through it); under "code",
  *  every one but the hand-over, which a script can't wait on. */
@@ -154,6 +162,8 @@ export type RunHands = {
   readonly surface?: AgentComputer["surface"];
   /** A desktop's or a phone's computer as a codemode script gets it bound; none for any other computer. */
   readonly computer?: ScriptComputer;
+  /** A desktop or a phone the run's folder is not mounted in: its own disk holds none of the run's files. */
+  readonly apart?: "desktop" | "phone";
   /** The run's end, after its background processes are ended and before the computer is let go: bash's full outputs
    *  and its TMPDIR swept, through the computer when it mounts the folder. */
   sweep(): Promise<void>;
@@ -209,6 +219,7 @@ export async function runHands(workspace: Workspace, claimed: RunComputer | unde
     executors: { read: executor(read), write: executor(tools.write!), edit: executor(tools.edit!), ...(shell === "none" ? {} : { bash: executor(tools.bash!) }) },
     ...((computer?.kind === "desktop" || computer?.kind === "phone") && computer.surface ? { surface: computer.surface } : {}),
     ...(script ? { computer: script } : {}),
+    ...((computer?.kind === "desktop" || computer?.kind === "phone") && mounted === undefined ? { apart: computer.kind } : {}),
     async sweep() {
       // Through the Workspace the run wrote them through: the computer's when it mounts the folder, since on Archil the
       // run's own Workspace is the disk's file API, which the mount's write delegation refuses until the computer's
@@ -302,6 +313,9 @@ export type RunTools = {
   /** A desktop's or a phone's computer as a codemode script gets it bound: the run's spec hands it to the session's
    *  codemode (adapter-loop.ts AdapterRunSpec.computer). None for any other computer. */
   readonly computer?: ScriptComputer;
+  /** A desktop or a phone the run's folder is not mounted in, and whether the run has computer_screenshot (whose save_as
+   *  saves into the run's files): what the model is told once (computer-deps.ts computerFilesNote). None for any other. */
+  readonly apart?: { readonly kind: "desktop" | "phone"; readonly screenshot: boolean };
   /** The registry's tools `names` names, as the kernel's HostTool an adapter's session takes, each call through the
    *  run's gate decided before its intent, each answer kept in `results` (bindTools). */
   hostTools(names: readonly string[], results?: ToolResults): HostTool[];
@@ -333,6 +347,7 @@ export async function runTools(workspace: Workspace, computer: RunComputer | und
     shell: run.shell,
     kindTools,
     ...(run.computer ? { computer: run.computer } : {}),
+    ...(run.apart ? { apart: { kind: run.apart, screenshot: kindTools.includes("computer_screenshot") } } : {}),
     hostTools: (names, results) => bindTools(run, registry, names, results ? { results } : {}),
     async settleProject() {
       const before = await run.hands.processes?.list() ?? [];

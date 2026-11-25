@@ -807,8 +807,7 @@ export function startRunner(options: RunnerOptions): Runner {
     if (!store.settings) return false;
     try {
       const kept = await readKept(store.settings, claim.runId);
-      const ours = (options.presence ?? presence)?.incarnation;
-      return kept?.runner !== undefined && !keptBy(kept, ours ? { runner: name, incarnation: ours } : undefined);
+      return kept?.runner !== undefined && !keptBy(kept, incarnation ? { runner: name, incarnation } : undefined);
     } catch {
       return true;
     }
@@ -964,9 +963,8 @@ export function startRunner(options: RunnerOptions): Runner {
     let heldNow: Held | undefined;
     // This runner's process as its word in the store names it (presence.ts), for the claim's computer: a park that keeps one
     // only this runner can reach again pins it to this runner and this incarnation (computer-kept.ts pinnedOf).
-    const ours = (options.presence ?? presence)?.incarnation;
     const loop = loopsOf({
-      ...(ours ? { incarnation: ours } : {}),
+      ...(incarnation ? { incarnation } : {}),
       journal: (forClaim) => fenced(store.journal(forClaim), fence, forClaim.runId, () => ending()),
       flush: () => store.flush(),
       signal: abort.signal,
@@ -1239,6 +1237,8 @@ export function startRunner(options: RunnerOptions): Runner {
   // Its word in the store that a runner that claims is here (presence.ts), for as long as it runs: a server reads a
   // refusal left by an earlier runner as over once this is there. One its caller keeps is its caller's to close.
   const presence = options.presence ? undefined : store.runners ? keepPresence(store.runners, name, null, { warn: (line) => emit({ type: "error", step: "presence", message: line }), slots: loops, ...(options.incarnation ? { incarnation: options.incarnation } : {}) }) : undefined;
+  // Its incarnation, read once here before the first poll: each claim's computer and the stop's kept-row check use it.
+  const incarnation = (options.presence ?? presence)?.incarnation;
   poll();
   commandTimer = setTimeout(deliverAll, commandPollMs);
   // A run queued in this process is claimed now (claimNow). A command written for a run this runner holds is handed on
@@ -1300,7 +1300,6 @@ export function startRunner(options: RunnerOptions): Runner {
     for (const held of runs.values()) clock.clearTimeout(held.deadline);
   };
 
-  const incarnation = (options.presence ?? presence)?.incarnation;
   return {
     name,
     ...(incarnation ? { incarnation } : {}),

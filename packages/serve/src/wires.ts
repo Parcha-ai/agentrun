@@ -20,10 +20,11 @@ export const modelWire = (wire: HarnessWire): wire is Wire => wire !== "plan";
 export const wireOf = (wire: HarnessWire): (typeof WIRES)[Wire] | undefined => (modelWire(wire) ? WIRES[wire] : undefined);
 
 /** The providers whose models the runner's model route translates onto a wire, each with the wires it translates them
- *  onto (runner/model-route.ts routeOf, its own fetch: messagesFetch): an Ollama model of this machine (ollama-provider.ts)
- *  onto Anthropic's Messages. Every harness on such a wire is offered those models and runs them through the route, at
- *  their price, whatever harness it is: the wire decides, never a harness's id. A leaf's data: provider ids by name. */
-export const TRANSLATED: Readonly<Record<string, readonly Wire[]>> = Object.freeze({ ollama: Object.freeze(["anthropic-messages"] as const) });
+ *  onto (runner/model-route.ts TRANSLATORS: messagesFetch, and responsesFetch over it): an Ollama model of this machine
+ *  (ollama-provider.ts) onto Anthropic's Messages and OpenAI's Responses. Every harness on such a wire is offered those
+ *  models and runs them through the route, at their price, whatever harness it is: the wire decides, never a harness's
+ *  id. A leaf's data: provider ids by name. */
+export const TRANSLATED: Readonly<Record<string, readonly Wire[]>> = Object.freeze({ ollama: Object.freeze(["anthropic-messages", "openai-responses"] as const) });
 
 /** Whether `model`'s requests on a harness of `wire` go through the route's translation (TRANSLATED). */
 export const routed = (wire: HarnessWire, model: { readonly provider: string }): boolean =>
