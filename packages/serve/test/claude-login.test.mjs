@@ -1959,6 +1959,37 @@ test("a run asked while a refresh that found the login's folder mended is still 
   chmodSync(folder, 0o700);
 });
 
+// A turn-off asked while that refresh makes the offers again waits for it, and lands after it: a run asked after the
+// turn-off is refused for a key, as the login is off. A refresh that looked at the folders before the turn-off and handed
+// over after it would put back the login the turn-off removed. The log says when the turn-off, then the run's refresh,
+// waits on the sign-ins' queue (claude_login_wait), so both are queued, in that order, before the probe is let go.
+const OFF_WHY = "a run asked after a turn-off that waited for a refresh went on the login the turn-off removed";
+test("a turn-off asked while a refresh that found the login's folder mended is still making the offers again lands after it and wins: a run asked after it is refused for a key, claude-agent is not offered and the view reads off", { skip: process.platform === "win32" ? "no modes" : process.geteuid() === 0 ? "root may write anywhere" : false, timeout: 120_000 }, async (t) => {
+  const { api, folder, start, waits, store } = await mendedLater(t);
+  chmodSync(folder, 0o700);
+  const probe = held.hold((env) => claudeLoginOf(env) !== undefined);
+  t.after(() => probe.release());
+  const asking = api("GET", "/capabilities");
+  await probe.reached;
+  const turningOff = api("DELETE", "/settings/claude-login");
+  const offQueued = await Promise.race([waits(1).then(() => true), turningOff.then(() => false)]);
+  const running = start();
+  const runQueued = await Promise.race([waits(2).then(() => true), running.then(() => false)]);
+  probe.release();
+  const [off, run] = await Promise.all([turningOff, running, asking]);
+  assert.equal(off.status, 200, JSON.stringify(off.body));
+  assert.equal(off.body.state, "off", JSON.stringify(off.body));
+  assert.equal(run.status, 409, `${OFF_WHY}: ${JSON.stringify(run.body)}`);
+  assert.match(run.body.error.message, /claude-agent needs ANTHROPIC_API_KEY/);
+  assert.deepEqual([offQueued, runQueued], [true, true], "the turn-off, then the run's refresh, waited behind the refresh in flight");
+  const offer = await offerOf(api);
+  assert.equal(offer.available, false, `claude-agent is offered after the turn-off: ${JSON.stringify(offer)}`);
+  assert.equal((await api("GET", "/settings/claude-login")).body.state, "off");
+  assert.equal(await store.settings.get(CLAUDE_LOGIN_SETTING), undefined, "the turn-off removed the setting");
+  const again = await start();
+  assert.equal(again.status, 409, `a run after both is refused for a key: ${JSON.stringify(again.body)}`);
+});
+
 // A folder its group may write in (a home or a folder on a volume whose group is set for a pod, 2775, or one made under
 // a umask of 002, 0775) is refused, and a chmod mends it: a start keeps the setting, logs why, and turns nothing off.
 // One refused for the switch or for more than one owner is still turned off, as before.
