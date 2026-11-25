@@ -16,11 +16,13 @@ export const NOT_A_LEARNING_RUN = "id NOT IN (SELECT learning_run_id FROM learni
 
 /** Learning.byHandBefore on both stores (agent, the window's oldest run's start and id, how many): the agent's newest
  *  rows on the `agent` path (the one by-hand rule, learn/ledger.ts record) before that run, of a known cost, on no named
- *  disk, neither imported, archived, purged nor a learning run. It walks schema.ts LEARNING_LEDGER_BY_HAND newest first
- *  and stops at `limit`: no sort of the agent's ledger. */
+ *  disk, neither imported, archived, purged, a learning run nor a workflow revision's run (a standalone workflow's row is
+ *  on the `agent` path, and the window, store-reads/learning.ts ledgerReadOf, leaves those runs out too). It walks
+ *  schema.ts LEARNING_LEDGER_BY_HAND newest first and stops at `limit`: no sort of the agent's ledger. */
 export const BY_HAND_BEFORE = `SELECT l.run_id, l.started_at, l.job_usd FROM learning_ledger l JOIN runs ON runs.id = l.run_id
   WHERE l.agent_id = ? AND l.path = 'agent' AND (l.started_at, l.run_id) < (?, ?) AND l.cost = 'known' AND l.job_usd IS NOT NULL
     AND runs.${NOT_A_LEARNING_RUN} AND runs.disk IS NULL AND runs.imported_from IS NULL AND runs.archived_at IS NULL AND runs.purged_at IS NULL
+    AND NOT EXISTS (SELECT 1 FROM revisions WHERE revisions.id = runs.revision_id AND revisions.kind = 'workflow')
   ORDER BY l.started_at DESC, l.run_id DESC LIMIT ?`;
 
 

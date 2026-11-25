@@ -152,8 +152,9 @@ export function record(end: RunEnd): { row: LedgerRow; spend: SpendRow[] } {
   // look-back's cost unknown the two can't be told apart, and the job is what it had cost when it answered.
   const job = !looked || asAnswered === null || back === null ? asAnswered : rowUsd === null ? null : Math.max(asAnswered, rowUsd - back);
   const audited = metrics.path === "audit" || end.auditOf !== undefined;
-  // The one by-hand rule (the window's read and Learning.byHandBefore read the row's path alone): a run whose end named
-  // no path is the agent's when its launch does not learn; one that learns and named none is unknown (null).
+  // The one by-hand rule (the window's read and Learning.byHandBefore read the row's path, each leaving a workflow
+  // revision's runs out): a run whose end named no path is the agent's when its launch does not learn; one that learns
+  // and named none is unknown (null).
   const named = RUN_PATHS.includes(metrics.path as RunPath) ? (metrics.path as RunPath) : null;
   const path = audited ? "audit" : named ?? (end.learns === false ? "agent" : null);
   const audit = objectOf(metrics.audit);
