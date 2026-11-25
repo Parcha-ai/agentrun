@@ -272,6 +272,23 @@ test("a run's process holds at most OPEN_MAX requests and OPEN_MAX tool calls op
   assert.equal(tools.some((span) => span.attributes["gen_ai.tool.call.id"] === `call-${OPEN_MAX}`), false, "a call past OPEN_MAX has none");
 });
 
+test("the runner's side of a run's posts keeps at most OPEN_MAX requests open by itself, whatever its tracing does with them", () => {
+  // A tracing that opens every request it is asked for and never refuses one: only tracePosts' own bound is left.
+  let asked = 0;
+  const trace = { known: () => {}, request: () => { asked += 1; return () => {}; }, event: () => {}, end: async () => {} };
+  const posts = tracePosts({ open: () => trace, flush: async () => {} }, "run-bound", keepText);
+  posts.post("open", [Date.now()]);
+  posts.post("known", [{ runId: "run-bound", harness: "pi", model: "m" }]);
+  // OPEN_MAX + 3 started and never ended, one of them again under an id still open; then one ended frees its place.
+  for (let i = 0; i < OPEN_MAX + 3; i++) posts.post("request", [i, "m", undefined]);
+  posts.post("request", [0, "m", undefined]);
+  assert.equal(asked, OPEN_MAX, "OPEN_MAX requests opened, none past that and none again under an open id");
+  posts.post("ended", [0, { input: 1, output: 1, usd: 0 }, { end: "answered", usd: 0 }]);
+  posts.post("request", [OPEN_MAX + 10, "m", undefined]);
+  posts.post("request", [OPEN_MAX + 11, "m", undefined]);
+  assert.equal(asked, OPEN_MAX + 1, "one more once one ended, and no more past that");
+});
+
 test("the model rule: a known model as asked; an unknown one by its route's model; with none, through the redactor and capped", () => {
   const known = (model) => model === "claude-sonnet-4.5";
   assert.equal(tracedModel("claude-sonnet-4.5", { known, routed: "other" }), "claude-sonnet-4.5");
