@@ -6,6 +6,7 @@
 import { parentPort, workerData } from "node:worker_threads";
 import { type Packed, packed, packInto } from "./record-key.js";
 import { addNew, addRecord, ownerOf, recordIndex } from "./record-index.js";
+import { DROPS_CURSOR, type InternalReadOptions } from "./internal.js";
 import { READERS } from "./readers/index.js";
 import type { Locator } from "./reader.js";
 
@@ -53,7 +54,9 @@ parentPort!.on("message", async ({ id, source, locator }: PoolAsk) => {
     },
   } as unknown as Set<string>;
   try {
-    const result = await reader.read(locator, undefined, { turns: false, totals: true, seen, maxLine, dropsCursor: true });
+    // The cursor is never sent back: the read makes no copy for it.
+    const options: InternalReadOptions = { turns: false, totals: true, seen, maxLine, [DROPS_CURSOR]: true };
+    const result = await reader.read(locator, undefined, options);
     settle();
     const counts = result.sessions.flatMap(({ counts }) => (counts ? [counts.model.buffer, counts.values.buffer, counts.has.buffer] : [])) as ArrayBuffer[];
     parentPort!.postMessage({ id, ok: true, sessions: result.sessions, mine, missed }, [...new Set([...buffers(mine), ...buffers(missed), ...counts])]);

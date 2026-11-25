@@ -11,6 +11,7 @@ import { childrenOf, inOrder, type Readers, readerOf, sessionLocators } from "./
 import { type Env, type Locator, locatorKey, type SessionRead } from "./reader.js";
 import { READERS, SOURCES, type Source } from "./readers/index.js";
 import { AT, HAS_LONG, HAS_REASONING, HAS_USAGE, STRIDE, USAGE_FIELDS } from "./counts.js";
+import { DROPS_CURSOR, type InternalReadOptions } from "./internal.js";
 import { OLD_MB, type PoolRead, ReadPool, readAheadBytes } from "./pool.js";
 import { addDisjoint, addNew, addRecord, dropOwner, locatorNumber, markOf, ownAll, ownerOf, type RecordIndex, recordIndex, someRecord, undoTo } from "./record-index.js";
 import { type Packed, packed, packInto } from "./record-key.js";
@@ -447,7 +448,9 @@ async function readSource(home: string, source: string, readers: Readers, env: E
           return made.sessions;
         }
       }
-      const result = await reader.read(locator, cursor, { turns: false, totals: true, seen, dropsCursor: !kept }).catch((error: unknown) => void unread.push({ locator, error }));
+      // With no state the cursor is dropped: the read makes no copy for it.
+      const options: InternalReadOptions = { turns: false, totals: true, seen, [DROPS_CURSOR]: !kept };
+      const result = await reader.read(locator, cursor, options).catch((error: unknown) => void unread.push({ locator, error }));
       if (!result) {
         // A locator read before that cannot be read now gives up its cursor and the records it held, as a fresh pass
         // would hold none of them: the next pass reads it from its start. A locator that found them already read (a

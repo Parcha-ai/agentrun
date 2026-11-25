@@ -9,6 +9,10 @@ import { anthropicUsage, claudeAnswer, claudeFile, claudeUser, jsonl, tempHome, 
 
 const claude = READERS["claude-code"];
 const STRIDE = 7;
+// The option is the package's own (src/internal.ts), keyed by a symbol no caller's ReadOptions can name. Loaded so, a
+// build from before it still runs the tests below (the first one then fails, as it should).
+const DROPS_CURSOR = await import("../dist/internal.js").then(({ DROPS_CURSOR }) => DROPS_CURSOR, () => undefined);
+const dropping = DROPS_CURSOR === undefined ? {} : { [DROPS_CURSOR]: true };
 
 /** One session file of `n` requests, each a user line and its answer. */
 const records = (n, from = 0) =>
@@ -69,8 +73,9 @@ test("a dropped cursor and a kept one read on from the same place to the same re
   const home = await tempHome(t);
   const file = await writeJsonl(claudeFile(home), records(40));
   const options = { turns: false, totals: true };
-  const dropped = await claude.read({ file }, undefined, { ...options, dropsCursor: true });
+  const dropped = await claude.read({ file }, undefined, { ...options, ...dropping });
   const kept = await claude.read({ file }, undefined, options);
+  if (DROPS_CURSOR !== undefined) assert.equal(dropped.cursor.state.counts, dropped.sessions[0].counts, "the dropped cursor is the untrimmed one");
   assert.equal(dropped.cursor.offset, kept.cursor.offset);
   assert.equal(dropped.cursor.mark, kept.cursor.mark);
   await appendFile(file, jsonl(records(25, 40)));
@@ -81,4 +86,14 @@ test("a dropped cursor and a kept one read on from the same place to the same re
   const totals = ({ sessions: [{ session, counts }] }) => ({ session, n: counts.n, values: [...counts.values.subarray(0, counts.n * STRIDE)], model: [...counts.model.subarray(0, counts.n)], has: [...counts.has.subarray(0, counts.n)] });
   assert.deepEqual(totals(fromDropped), totals(fromKept));
   assert.equal(fromKept.sessions[0].counts.n, 65);
+});
+
+test("the option is no caller's: the package exports it nowhere, and a ReadOptions naming it keeps the trimmed copy", async (t) => {
+  const exported = await import("../dist/index.js");
+  assert.ok(!Object.keys(exported).some((name) => /drops|internal/i.test(name)));
+  await assert.rejects(import("@parcha/agentrun-import/dist/internal.js"), { code: "ERR_PACKAGE_PATH_NOT_EXPORTED" });
+  const file = await writeJsonl(claudeFile(await tempHome(t)), records(10));
+  const result = await claude.read({ file }, undefined, { turns: false, totals: true, dropsCursor: true });
+  assert.notEqual(result.cursor.state.counts, result.sessions[0].counts);
+  assert.equal(result.cursor.state.counts.model.length, 10);
 });

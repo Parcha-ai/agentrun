@@ -4,6 +4,7 @@
 // takes only the bytes written since.
 import { type FileHandle, open } from "node:fs/promises";
 import { addRequest, type Counts, counts, trimmed } from "./counts.js";
+import { DROPS_CURSOR, type InternalReadOptions } from "./internal.js";
 import { type Env, type Locator, type Reader, type ReadOptions, type ReadResult, rememberUser } from "./reader.js";
 import { isObject, mostEffortOf, timeOf } from "./text.js";
 import { ACTIVE_GAP_MS, type Answer, type SessionOf, type Turn } from "./types.js";
@@ -124,7 +125,7 @@ const overlay = (base: Set<string>): Set<string> => {
 };
 
 /** One session file of `spec`'s source, read from its start or from `cursor`. */
-async function readLines<S extends string, O>(spec: LineSource<S, O>, file: string, cursor: FileCursor | undefined, { turns: keep = true, totals: asked = false, seen, keepsCursor = true, dropsCursor = false, maxLine = Infinity }: ReadOptions = {}): Promise<ReadResult<S, FileCursor>> {
+async function readLines<S extends string, O>(spec: LineSource<S, O>, file: string, cursor: FileCursor | undefined, { turns: keep = true, totals: asked = false, seen, keepsCursor = true, [DROPS_CURSOR]: dropsCursor = false, maxLine = Infinity }: InternalReadOptions = {}): Promise<ReadResult<S, FileCursor>> {
   const { source } = spec;
   const totals = asked && !keep && spec.totals === true;
   const handle = await open(file, "r");
