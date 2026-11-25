@@ -1355,8 +1355,9 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   // One server per data root: the store's owner lock (StoreOwned), then the data root's own (server-lock.ts), both taken
   // when startHolding opens the store; a data directory an earlier version wrote is refused there too
   // (StoreFromEarlierVersion), in words, to start fresh. No oldHomes/oldLayout checks, no migration.
-  // What a start that fails stops: the webhook deliveries it began, which would write the next server's outbox, and the
-  // store handle it opened.
+  // What a start that fails stops: first the timers it set (each put at the front, so none ticks on a closing store), then
+  // the rest in the order they began: the store handle it opened, its locks, and the webhook deliveries it began, which
+  // would write the next server's outbox.
   const stops: Array<() => Promise<void>> = [];
   try {
     return await startHolding(options, data, { maxRuns, minFreeBytes, learning, boxAllow, templates, ollamaHost }, stops);
@@ -1523,8 +1524,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     ? setInterval(() => void attach.tick().catch((error: unknown) => attachLog("computer_route_tick_failed", { error: error instanceof Error ? error.message : String(error) })), PAIRED_ROUTE_MS)
     : undefined;
   routeTick?.unref();
-  // A start that fails after this point clears it as the close does: never left ticking on the store that start closed.
-  stops.push(async () => clearInterval(routeTick));
+  // A start that fails after this point clears it as the close does. Each timer's stop goes first (unshift), ahead of
+  // the store's close: a failed start stops its timers and waits out their sweeps, then closes the store, so no tick or
+  // sweep ever reads a store that is closing.
+  stops.unshift(async () => clearInterval(routeTick));
   // This server's own key on every environment it reads its secrets from, so a reader opens what this store holds with the
   // key checked against it, never another data directory's that this process booted too (secrets.ts holds one made key).
   const own = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => withSealKey(env, seal.text);
@@ -2246,7 +2249,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     };
     const uploadsTimer = setInterval(sweepUploads, UPLOAD_SWEEP_EVERY_MS);
     uploadsTimer.unref();
-    stops.push(async () => {
+    stops.unshift(async () => {
       clearInterval(uploadsTimer);
       await sweeping;
     });
@@ -2319,7 +2322,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   };
   const refusedTimer = setInterval(() => void sweepRefused(), REFUSED_SWEEP_MS);
   refusedTimer.unref();
-  stops.push(async () => {
+  stops.unshift(async () => {
     refusedStopped = true;
     clearInterval(refusedTimer);
     await refusedSweep;
@@ -2371,7 +2374,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   };
   const localSourceTimer = setInterval(() => void sweepLocalSources(), 30_000);
   localSourceTimer.unref();
-  stops.push(async () => {
+  // As close() does: aborted first, so a sync in flight stops instead of being waited out.
+  stops.unshift(async () => {
+    stopping.abort();
     clearInterval(localSourceTimer);
     await localSourceSweep;
   });
