@@ -37,3 +37,20 @@ test("a held value an HTML escape wrote (&amp;, &lt;, &gt;, &quot;, &apos;) is r
   // Control: an "&" before a word no escape writes (a URL's query) stays as it is.
   assert.equal(withheldWhole("see p&ampss1234word here", ["p&ss1234word"]), false);
 });
+
+test("a single-quoted dict (Python's repr) gets the join view: a held login reads across its name and value, a held value across two of its strings", () => {
+  for (const [text, value] of [
+    ["{'alice': 'secretpw'}", "alice:secretpw"],
+    ["{'title': 'see abcd', 'snippet': 'efgh more'}", "abcdefgh"],
+    [`{'a': 'say "hi" abcd', 'b': 'efgh'}`, "abcdefgh"],
+  ]) {
+    assert.equal(withheldWhole(text, [value]), true, text);
+    assert.equal(redacted(text, [value]), "[redacted]", text);
+  }
+  // JSON's rules hold as they did: an apostrophe inside a "..." string is text, and one outside any string still reads
+  // as part of the value beside it.
+  assert.equal(withheldWhole(`{"a":"don't abcd","b":"efgh"}`, ["abcdefgh"]), true);
+  assert.equal(withheldWhole(`"abcd" e'fgh`, ["abcde'fgh"]), true);
+  // Control: another value under the held login's name is no spelling of it.
+  assert.equal(withheldWhole("{'alice': 'other'}", ["alice:secretpw"]), false);
+});
