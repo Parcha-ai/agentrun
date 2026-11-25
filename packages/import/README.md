@@ -126,7 +126,8 @@ of the sources that write a chain (`CACHE_SOURCES`: Claude Code, Codex and pi; a
 one file at a time: `hitRate` over the session's requests and its subagents', and its breaks. A session's files (a Codex
 thread that goes on in a new rollout) are one conversation in the import's order: a file's first turn is compared with
 the last turn of the file before it (its model, time and cache life carried over), and turns count on across them. Two
-sessions are never compared. Each subagent is a conversation of its own, its breaks with its `subagent` number.
+sessions are never compared. Each subagent is a conversation of its own, its breaks with its `subagent` number: a
+subagent's thread that goes on in a new rollout is one, its files joined the same way.
 `analyzeCache` hands back the `last` turn it compared, for the next file's `before`. `cacheTotals(sessions)` counts the breaks and sums their priced extra cost by
 cause.
 

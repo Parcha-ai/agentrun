@@ -3,7 +3,7 @@
 // the session's chain (ChainRecord: ids, parents and hashes, never text), so it hands back numbers and cause names only.
 import { groupsOf, keyOf, type ParseOptions, type Pricer, ReadFailures, readSource, requestsIn, requestsOf } from "./home.js";
 import { type CalculateCost, type Catalog, builtinCatalog, priceRequests } from "./price.js";
-import { locatorKey, type SessionRead } from "./reader.js";
+import { type Locator, locatorKey, type SessionRead } from "./reader.js";
 import { READERS, type Source } from "./readers/index.js";
 import type { Answer, ChainRecord, SessionOf, Usage } from "./types.js";
 
@@ -218,11 +218,14 @@ export async function cacheHome(home: string, { sources = CACHE_SOURCES, readers
         read += usage.cacheRead;
         prompt += promptOf(usage);
       }
-      const breaks = await sessionBreaks(
-        parts.map((part) => ({ file: reports.get(locatorKey(part.locator)), requests: requestsOf(part.read) })),
-        subagents.map((part) => reports.get(locatorKey(part.locator))),
-        priced,
-      );
+      const fileOf = (part: Part): JoinedFile => ({ file: reports.get(locatorKey(part.locator)), requests: requestsOf(part.read) });
+      // Each subagent a conversation of its own, in the import's order: a thread that goes on in another rollout is one.
+      const conversations = new Map<string, Part[]>();
+      for (const part of subagents) {
+        const key = conversationOf(part.locator, part.read.session);
+        (conversations.get(key) ?? conversations.set(key, []).get(key)!).push(part);
+      }
+      const breaks = await sessionBreaks(parts.map(fileOf), [...conversations.values()].map((files) => files.map(fileOf)), priced);
       const first = parts[0]!;
       out.push({ ...keyOf(home, first.locator), source, id: first.read.session.id, hitRate: prompt > 0 ? round(read / prompt, 4) : null, breaks });
     }
@@ -242,14 +245,16 @@ export async function fileCache(session: Pick<SessionOf, "turns" | "chain" | "mo
   return { alone: await analyzed(session, options, false), long: await analyzed(session, options, true), ...headOf(session) };
 }
 
-/** A session's breaks: its files in the import's order (`parts`: each one's FileCache, none for a file not read, and its
- *  requests), one conversation, each file's first turn compared with the last turn before it in the files before and its
- *  turns counted on from theirs; then each subagent's file's own, in its own conversation (`subagent`: n from 1). */
-export async function sessionBreaks(parts: readonly { file: FileCache | undefined; requests: number }[], subagents: readonly (FileCache | undefined)[], options: Omit<CacheOptions, "before"> = {}): Promise<SessionCache["breaks"]> {
-  const breaks: SessionCache["breaks"] = [];
+/** A file of a conversation as sessionBreaks joins it: its FileCache (none for a file not read) and its requests. */
+export type JoinedFile = { file: FileCache | undefined; requests: number };
+
+/** One conversation's breaks: its files in the import's order, each file's first turn compared with the last turn before
+ *  it in the files before, its turns counted on from theirs, and a 1h cache write held until a file writes again. */
+async function joined(files: readonly JoinedFile[], options: Omit<CacheOptions, "before">): Promise<CacheBreak[]> {
+  const breaks: CacheBreak[] = [];
   let counted = 0;
   let carry: CacheCarry | undefined;
-  for (const { file, requests } of parts) {
+  for (const { file, requests } of files) {
     if (!file) continue;
     if (carry && file.head) {
       const {
@@ -264,11 +269,24 @@ export async function sessionBreaks(parts: readonly { file: FileCache | undefine
     carry = mine.last ?? (carry && { ...carry, compacted: carry.compacted === true || mine.compacted });
     counted += requests;
   }
-  subagents.forEach((file, n) => {
-    for (const found of file?.alone.breaks ?? []) breaks.push({ ...found, subagent: n + 1 });
-  });
   return breaks;
 }
+
+/** A session's breaks: its own files (`parts`), one conversation, then each subagent's (`subagents`: each one's files,
+ *  conversationOf's groups, in the import's order), its breaks with its `subagent` number from 1. */
+export async function sessionBreaks(parts: readonly JoinedFile[], subagents: readonly (readonly JoinedFile[])[], options: Omit<CacheOptions, "before"> = {}): Promise<SessionCache["breaks"]> {
+  const breaks: SessionCache["breaks"] = await joined(parts, options);
+  for (const [n, files] of subagents.entries()) for (const found of await joined(files, options)) breaks.push({ ...found, subagent: n + 1 });
+  return breaks;
+}
+
+/** Which conversation a subagent's file holds, as a key: a thread naming its parent (a Codex subagent) is its thread, in
+ *  however many rollouts; any other file (a Claude Code subagent's, whose name a workflow's may share a folder deeper) is
+ *  its own. */
+export const conversationOf = (locator: Locator, session: Pick<SessionOf, "id" | "child" | "parent">): string => (session.child && session.parent ? `thread\0${session.id}` : `file\0${locatorKey(locator)}`);
+
+/** A file of a session as groupsOf hands it on: its locator and its read, slimmed. */
+type Part = ReturnType<typeof groupsOf>[number]["parts"][number];
 
 /** The breaks of `sessions` by cause, each cause there with 0 where none: how many, and their extra cost (USD, of the
  *  priced ones); `unpriced`, the breaks whose extra cost is unknown. */

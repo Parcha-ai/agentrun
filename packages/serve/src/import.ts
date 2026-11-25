@@ -14,7 +14,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { AssistantEntry, ROOT_CONVERSATION_ID, type StorageWrite, ToolResultEntry, UserEntry } from "@earendil-works/pi-durable";
 import { type EntryLike, REQUEST_COST, type RunMetrics, runMetricsOf } from "./timeline/index.js";
 import { defaultData } from "./files.js";
-import { type Answer, CACHE_SOURCES, cacheTotals, childrenOf, fileCache, HARNESS_OF, inOrder, type Locator, locatorKey, locatorOf, locatorParent, type LocatorSize, locatorSize, mirroredIn, mostEffortOf, ownRequests, priceRequests, READERS, readSession, type Session, SOURCE_NAMES, SOURCES, type Source, sessionKey, sessionLocators, type Turn, sessionBreaks, withSubagentCosts } from "@parcha/agentrun-import";
+import { type Answer, CACHE_SOURCES, cacheTotals, childrenOf, conversationOf, fileCache, HARNESS_OF, inOrder, type JoinedFile, type Locator, locatorKey, locatorOf, locatorParent, type LocatorSize, locatorSize, mirroredIn, mostEffortOf, ownRequests, priceRequests, READERS, readSession, type Session, SOURCE_NAMES, SOURCES, type Source, sessionKey, sessionLocators, type Turn, sessionBreaks, withSubagentCosts } from "@parcha/agentrun-import";
 import { type Found, hoursOf, type OpenAt, summaryLines } from "./import-summary.js";
 import { stopOnce } from "./stop-signals.js";
 import { catalogPrices, type Listed, providerModels } from "./model.js";
@@ -1247,11 +1247,16 @@ async function runCacheOf(parts: readonly Session[], subagents: readonly Session
     read += turn.usage.cacheRead;
     prompt += turn.usage.input + turn.usage.cacheRead + turn.usage.cacheWrite;
   }
-  const files = [];
-  for (const part of parts) files.push({ file: await fileCache(part, options), requests: part.turns.filter((turn) => turn.role === "assistant").length });
-  const children = [];
-  for (const child of subagents) children.push(await fileCache(child, options));
-  const { sessions: _sessions, ...totals } = cacheTotals([{ breaks: await sessionBreaks(files, children, options) }]);
+  const fileOf = async (session: Session): Promise<JoinedFile> => ({ file: await fileCache(session, options), requests: session.turns.filter((turn) => turn.role === "assistant").length });
+  const files: JoinedFile[] = [];
+  for (const part of parts) files.push(await fileOf(part));
+  // Each subagent a conversation of its own, in the order read: a thread that goes on in another rollout is one.
+  const conversations = new Map<string, JoinedFile[]>();
+  for (const child of subagents) {
+    const key = conversationOf(locatorOf(child), child);
+    (conversations.get(key) ?? conversations.set(key, []).get(key)!).push(await fileOf(child));
+  }
+  const { sessions: _sessions, ...totals } = cacheTotals([{ breaks: await sessionBreaks(files, [...conversations.values()], options) }]);
   return { read, prompt, ...totals };
 }
 

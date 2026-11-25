@@ -308,8 +308,8 @@ test("a cursor read with a chain goes on with it; one read without is no place t
 });
 
 /** A Codex rollout of `steps` ([input, cached] each, from second `i`), its file named for `name`; `id` its thread. */
-async function rollout(home, name, id, steps, i, model = "gpt-fixture") {
-  const records = [codexMeta(id), ctx(i++, model)];
+async function rollout(home, name, id, steps, i, model = "gpt-fixture", parent) {
+  const records = [codexMeta(id, parent), ctx(i++, model)];
   let total = 0;
   for (const [input, cached] of steps) records.push(codexUser(`${PROMPT} ${i}`, i++), codexAnswer("Fixture answer.", i++), tokens(input, cached, (total += input), i++));
   return writeJsonl(codexFile(home, `rollout-2026-01-01T00-00-0${name}-fixture.jsonl`), records);
@@ -330,6 +330,32 @@ test("--cache compares a session's files across their boundary, in the import's 
   await rollout(idle, "1", "thread-1", [[1000, 0], [1200, 1000]], 1);
   await rollout(idle, "2", "thread-1", [[1300, 50]], 1000);
   assert.deepEqual(JSON.parse(run(idle, "--cache", "--sources", "codex").stdout.split("\n")[0]).breaks.map(({ turn, cause }) => [turn, cause]), [[3, "idle"]]);
+});
+
+test("a subagent thread that goes on in another rollout is one conversation: the drop across its files is a break of it", async (t) => {
+  const home = await tempHome(t);
+  await rollout(home, "1", "thread-1", [[1000, 0], [1200, 1000]], 1);
+  // Its subagent's thread in two rollouts, the first's last turn reading 1000 and the second's first 50; and a second
+  // subagent's thread in one, which drops at its third turn.
+  await rollout(home, "2", "child-1", [[1000, 0], [1200, 1000]], 10, "gpt-fixture", "thread-1");
+  await rollout(home, "3", "child-2", [[1000, 0], [1200, 1000], [1300, 40]], 20, "gpt-fixture", "thread-1");
+  await rollout(home, "4", "child-1", [[1300, 50], [1400, 1250]], 40, "gpt-fixture", "thread-1");
+  const result = run(home, "--cache", "--sources", "codex");
+  assert.equal(result.status, 0, result.stderr);
+  const [line, totals] = result.stdout.trim().split("\n").map((text) => JSON.parse(text));
+  assert.deepEqual(line.breaks.map(({ turn, cause, subagent }) => [subagent, turn, cause]).sort(), [[1, 3, "unknown"], [2, 3, "unknown"]]);
+  assert.equal(totals.totals.sessions, 1);
+});
+
+test("a Claude Code session's subagent files are conversations of their own, a workflow's of the same name too: the next one's first turn is no break", async (t) => {
+  const home = await tempHome(t);
+  await writeJsonl(claudeFile(home), linear([{ read: 1000, i: 10 }, { read: 1100, i: 20 }]));
+  // Two subagents named alike (a workflow's sits a folder deeper): each file is read as session "agent-a1".
+  await writeJsonl(subagentFile(home, SESSION, "agent-a1"), linear([{ read: 1000, i: 30, sidechain: true }, { read: 1100, i: 40, sidechain: true }], 10));
+  await writeJsonl(subagentFile(home, SESSION, "workflows/run-1/agent-a1"), linear([{ read: 50, i: 50, sidechain: true }, { read: 60, i: 60, sidechain: true }], 20));
+  const result = run(home, "--cache", "--sources", "claude-code");
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout.split("\n")[0]).breaks, []);
 });
 
 test("--cache never compares two sessions: a thread's first turn is its turn 1 whatever another read last", async (t) => {
