@@ -814,8 +814,8 @@ export type ClaudeLoginSignOut = { confirmed: boolean; message?: string; login: 
  *  (signOutLeft, `confirmed` false), and the others, the reader's drop and the server's reread of the keys still happen.
  *  So with the CLI's step: a throw finding the CLI or loading the harness is named in the answer (signOutCliFailed), and
  *  every removal still runs.
- *  Where the folder is a link (put there after the turn-on, which refuses one), the link alone is removed: no CLI runs
- *  through it, nothing it leads to is touched, and the answer names it. Runs already going are left as a turn-off
+ *  Where the folder is a link (put there after the turn-on, which refuses one), the link alone is removed, with the
+ *  login's signed-in note: no CLI runs through it, nothing it leads to is touched, and the answer names it. Runs already going are left as a turn-off
  *  leaves them: each keeps the token its CLI holds, and fails in
  *  LOGIN_SIGNED_OUT's words at its next read of the login; one claimed on it and started while the mode is off is refused
  *  at its start (claude-login-token.ts LOGIN_CHANGED_SINCE_CLAIM). That check is of the folder, not the account, so one
@@ -845,12 +845,14 @@ export async function signOutClaudeLogin(deps: ClaudeLoginDeps): Promise<ClaudeL
       const dir = agentRunLoginDir(deps.data);
       const linked = loginFolderLink(deps.data);
       if (linked === undefined && !existsSync(dir)) return;
+      const note = answerFile(deps.data, { dir, profiles: join(dir, "anthropic") });
       try {
         if (linked !== undefined) {
           // A link put there after the turn-on (which refuses one, loginFolderIsLink): the link alone goes, no CLI runs
-          // through it, and nothing it leads to is touched.
+          // through it, and nothing it leads to is touched. The login's signed-in note, in the data folder, goes too.
           signedOut = false;
           remove("the link", dir, { force: true });
+          remove("the login's signed-in note", note, { force: true });
           left.push(`${linked}, where the link ${dir} led, left as it was`);
           return;
         }
@@ -874,7 +876,7 @@ export async function signOutClaudeLogin(deps: ClaudeLoginDeps): Promise<ClaudeL
         }
         remove("the login's folder", dir, { recursive: true, force: true });
         remove("the CLI's older lock", `${beside}${loginRefresh.legacyLockSuffix}`, { recursive: true, force: true });
-        remove("the login's signed-in note", answerFile(deps.data, { dir, profiles: join(dir, "anthropic") }), { force: true });
+        remove("the login's signed-in note", note, { force: true });
       } finally {
         (await import("./claude-login-token.js")).forgetLoginTokens(dir);
       }
