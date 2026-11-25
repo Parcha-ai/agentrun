@@ -361,7 +361,8 @@ younger than 20 s, and exits 0 only when both hold: that is a runner's health ch
 ### A runner on a disk of its own
 
 A runner needs no share of the server's disk when the store is Postgres and runs' folders are on Archil (Mode 2: the
-Archil settings saved, or `AGENTRUN_ARCHIL_REGION`, and `AGENTRUN_ARCHIL_S3_URL` when the server has it, set on both). Start it with
+Archil settings saved, or `AGENTRUN_ARCHIL_REGION`, and `AGENTRUN_ARCHIL_S3_URL` when the server has it, set on both;
+any runner given the region without the S3 URL claims nothing while the server's S3 URL may be another). Start it with
 `AGENTRUN_STORE_URL`, `AGENTRUN_SEAL_KEY` and a `--data` of its own, a local directory: it holds only the runner's
 heartbeat, its runs' uid slots, their scratch and the harnesses it installs at a claim. It never reads the server's.
 
