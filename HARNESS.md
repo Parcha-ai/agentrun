@@ -190,8 +190,9 @@ adds a row to [docs/examples.md](docs/examples.md) with:
 A recipe fits an ACP agent that the [ACP registry](https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json)
 lists with a binary release packed as `.tar.bz2`, `.tar.gz` or `.zip`. A recipe is installed, signed in where its
 agent signs a person in, checked, and then run by a server that names it ([Run it](#run-it)). A whole one, for Google Antigravity
-(a `.zip`, a key handed under the name the agent reads, and a person's own sign-in), is in
-[examples/harness-recipe](examples/harness-recipe/README.md).
+(a `.tar.gz` pinned by sha512, a key handed under the name the agent reads, and a person's own sign-in), ships with the
+ACP adapter and goes by its name, `antigravity`, wherever a recipe file does
+([examples/harness-recipe](examples/harness-recipe/README.md)).
 
 ### What you need
 
@@ -517,7 +518,9 @@ token. The routes are `GET /v2/settings/harness-keys` and `PUT`/`DELETE /v2/sett
 
 Each saved key is bound to the recipe file it was saved for (the file's sha256) and to the seal key it was sealed under.
 A later recipe file that takes the same id, even one naming the same keys, never opens them: the page lists each to
-paste again, with why (`recipe_changed`, `seal_key_changed`, `file_unreadable`). A recipe the server is no longer
+paste again, with why (`recipe_changed`, `seal_key_changed`, `file_unreadable`). A recipe AgentRun ships is a recipe
+file too: an AgentRun release that changes it (a new agy pin) asks for a new check and the keys pasted again, as an edit
+of your own file would. A recipe the server is no longer
 started with keeps its keys sealed, and still cut, but no run gets them. The page lists them under its id, and `DELETE`
 removes each, as it removes a key that its recipe no longer runs on.
 

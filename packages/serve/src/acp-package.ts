@@ -30,6 +30,10 @@ export type AcpPackage = {
   cursorRecipe(options: { command: string; limits: { readonly maxTurns: number; readonly maxToolCalls: number }; model?: string }): AcpRecipe;
   /** The folder Cursor was installed into, from its launcher's path and the pin's `cmd`; undefined when it is not there. */
   cursorRootOf(binary: string, cmd: string): string | undefined;
+  /** The recipes the package ships whole, by name (Google Antigravity's), and the file of each: absent from a package
+   *  older than them. */
+  readonly BUNDLED_RECIPES?: readonly string[];
+  bundledRecipePath?(name: string): string | undefined;
   /** The form a model id an ACP agent lists takes (Cursor's `gpt-5.4-nano[reasoning=medium]` among them). */
   readonly MODEL_ID: RegExp;
   /** The form a sign-in method's id an ACP agent lists takes (`gemini-api-key`): a recipe's keyMethod is checked by it. */

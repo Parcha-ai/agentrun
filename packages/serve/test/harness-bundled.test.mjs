@@ -62,7 +62,10 @@ test("--harness-recipe antigravity adds the shipped recipe's harness to a server
   const data = scratchDir(t);
   const env = table.harnessRecipesEnv(["antigravity"], data);
   assert.deepEqual(JSON.parse(env[table.HARNESS_RECIPES_ENV]).files, [SHIPPED]);
-  assert.ok(table.harnessIds(env).includes("antigravity"));
+  // In the table, so a run naming it is refused in words; not installed, so listed nowhere, its hint naming it by name.
+  assert.ok(table.tableIds(env).includes("antigravity"));
+  assert.equal(table.harnessIds(env).includes("antigravity"), false);
+  assert.match(table.harnessOf(env, "antigravity").hidden(env), new RegExp(`^HARNESS_NOT_INSTALLED: .*Install it with: agentrun harness install antigravity --data ${data}`));
 });
 
 test("agentrun-serve install-harness antigravity installs the shipped recipe's release, and says which recipe it is; with --recipe too it is refused", (t) => {

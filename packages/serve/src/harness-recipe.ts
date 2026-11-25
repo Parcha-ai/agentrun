@@ -347,24 +347,50 @@ export function parseRecipe(text: string): Recipe {
   });
 }
 
-/** The recipe file at `path`, read and loaded. */
-export function loadRecipe(path: string): { recipe: Recipe; file: string; sha256: string } {
-  const file = resolve(path);
+/** The file `given` names, from `cwd`: the recipe the ACP package ships (bundledRecipePath: Google Antigravity's) when
+ *  `given` is its name, else the file at that path. A name a file in `cwd` also holds is refused, saying both, so the
+ *  owner's own file is never passed over silently (`./<name>` names the file). A bundled name is never a built-in
+ *  harness's id: the recipe's own id is that name, and a built-in id is refused as a recipe's (parseRecipe). */
+export function resolveRecipe(given: string, cwd: string = process.cwd()): { file: string; bundled: boolean } {
+  const local = resolve(cwd, given);
+  const shipped = acpPackage()?.bundledRecipePath?.(given);
+  // The shipped file named by its path is the shipped recipe too.
+  if (!shipped) return { file: local, bundled: bundledName(local) !== undefined };
+  if (existsSync(local)) throw new RecipeRefused(RECIPE_CODES.invalid, [{ code: RECIPE_CODES.invalid, words: `${given} names both the recipe AgentRun ships (${shipped}) and the file ${local} in this directory: write ./${given} for your file, or name the shipped one from another directory` }]);
+  return { file: shipped, bundled: true };
+}
+
+/** The name of the recipe at `file` when the ACP package ships it, else undefined. */
+const bundledName = (file: string): string | undefined => {
+  const acp = acpPackage();
+  return acp?.BUNDLED_RECIPES?.find((each) => acp.bundledRecipePath?.(each) === resolve(file));
+};
+
+/** The word a printed command names the recipe at `file` by: its bundled name, else the file. */
+const recipeWord = (file: string): string => bundledName(file) ?? shellWord(file);
+
+/** Which recipe resolved, as a command says it before anything else: the one AgentRun ships, or the owner's file. */
+export const recipeSaid = (label: string, file: string, bundled: boolean): string =>
+  `${label}: ${bundled ? `the recipe AgentRun ships (${file})` : `the recipe file ${file}`}`;
+
+/** The recipe at `path` (a file, or the name of a recipe AgentRun ships: resolveRecipe), read and loaded. */
+export function loadRecipe(path: string): { recipe: Recipe; file: string; sha256: string; bundled: boolean } {
+  const { file, bundled } = resolveRecipe(path);
   let text: string;
   try {
     text = readFileSync(file, "utf8");
   } catch (error) {
     throw new RecipeRefused(RECIPE_CODES.invalid, [{ code: RECIPE_CODES.invalid, words: `the recipe file ${file} cannot be read (${(error as NodeJS.ErrnoException).code ?? (error as Error).message})` }]);
   }
-  return { recipe: parseRecipe(text), file, sha256: createHash("sha256").update(text).digest("hex") };
+  return { recipe: parseRecipe(text), file, sha256: createHash("sha256").update(text).digest("hex"), bundled };
 }
 
 /** The recipe's release for `platform` (this host's by default), or undefined where it lists none. */
 export const releaseFor = (recipe: Recipe, platform: string | undefined = archivePlatform()): RecipeArchive | undefined => (platform ? recipe.release.archives[platform] : undefined);
 
-/** The owner's command that installs the recipe at `file` into `data`. */
+/** The owner's command that installs the recipe at `file` into `data` (one AgentRun ships by its name, as goose's is). */
 export const recipeInstallLine = (file: string, data: string, env: NodeJS.ProcessEnv = process.env): string =>
-  `agentrun harness install --recipe ${shellWord(file)}${resolve(data) === commandData(env) ? "" : ` --data ${shellWord(data)}`}`;
+  `agentrun harness install ${bundledName(file) ?? `--recipe ${shellWord(file)}`}${resolve(data) === commandData(env) ? "" : ` --data ${shellWord(data)}`}`;
 
 /** Where the recipe's binary is once installed: `<data>/harnesses/<id>/<cmd>`. */
 export const recipeBinaryOf = (data: string, recipe: Recipe, release: RecipeArchive): string => join(installDirOf(data, recipe.id), insideHome(release.cmd)!);
@@ -440,7 +466,7 @@ export const signedInNoteOf = (data: string, id: string): string => join(harness
 
 /** The owner's command that signs the recipe at `file` in, on `data`. */
 export const recipeSignInLine = (file: string, data: string, env: NodeJS.ProcessEnv = process.env): string =>
-  `agentrun harness sign-in --recipe ${shellWord(file)}${resolve(data) === commandData(env) ? "" : ` --data ${shellWord(data)}`}`;
+  `agentrun harness sign-in --recipe ${recipeWord(file)}${resolve(data) === commandData(env) ? "" : ` --data ${shellWord(data)}`}`;
 
 /** Whether the agent's own sign-in ended well on `data` (signedInNoteOf): nothing in its folder is read to say so.
  *  Whether the sign-in still holds is the agent's to say when it runs (an ACP -32000, Authentication required). */
@@ -490,4 +516,4 @@ export async function installRecipe(recipe: Recipe, file: string, data: string, 
 
 /** The owner's command that checks the recipe at `file`, installed into `data`. */
 export const recipeCheckLine = (file: string, data: string, env: NodeJS.ProcessEnv = process.env): string =>
-  `agentrun harness-check --recipe ${shellWord(file)}${resolve(data) === commandData(env) ? "" : ` --data ${shellWord(data)}`}`;
+  `agentrun harness-check --recipe ${recipeWord(file)}${resolve(data) === commandData(env) ? "" : ` --data ${shellWord(data)}`}`;

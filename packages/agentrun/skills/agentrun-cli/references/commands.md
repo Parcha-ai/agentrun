@@ -533,11 +533,11 @@ Route: `PUT /files/{file_id}`.
 
 ### `agentrun harness install HARNESS`
 
-Install a harness AgentRun runs only once its owner installs it (goose, cursor, or a recipe file's), then restart AgentRun.
+Install a harness AgentRun runs only once its owner installs it (goose, cursor, antigravity, or a recipe file's), then restart AgentRun.
 
 Route: none, it runs on this machine.
 
-- `--recipe FILE` (string, this CLI's own): in place of HARNESS: a recipe file (HARNESS.md#a-recipe), checked against its five rules before anything is downloaded
+- `--recipe FILE` (string, this CLI's own): in place of HARNESS: a recipe file (HARNESS.md#a-recipe), checked against its five rules before anything is downloaded; a recipe AgentRun ships by its name (antigravity), unless a file of that name is here (./NAME names it)
 - `--data DIR` (string, this CLI's own): the data directory of the AgentRun it is for (default ~/.agentrun, where npx @parcha/agentrun keeps it)
 
 ### `agentrun harness keys`
@@ -554,7 +554,7 @@ Sign a recipe's agent in to your own account with the agent's own sign-in, in th
 
 Route: none, it runs on this machine.
 
-- `--recipe FILE` (string, this CLI's own): the recipe file, whose signIn names the agent's own sign-in flags; its agent installed first with agentrun harness install --recipe FILE
+- `--recipe FILE` (string, this CLI's own): the recipe file, whose signIn names the agent's own sign-in flags, or a recipe AgentRun ships by its name (antigravity); its agent installed first with agentrun harness install
 - `--data DIR` (string, this CLI's own): the data directory the recipe's agent was installed into (default ~/.agentrun)
 
 ## harness-check
@@ -565,7 +565,7 @@ Run a recipe's installed agent for real and check it (tools off, env allowlist, 
 
 Route: none, it runs on this machine.
 
-- `--recipe FILE` (string, this CLI's own): the recipe file (HARNESS.md#a-recipe); its agent installed first with agentrun harness install --recipe FILE
+- `--recipe FILE` (string, this CLI's own): the recipe file (HARNESS.md#a-recipe), or a recipe AgentRun ships by its name (antigravity); its agent installed first with agentrun harness install
 - `--model PROVIDER/MODEL` (string, this CLI's own): the run's model, for a recipe billed through the proxy (openrouter/anthropic/claude-haiku-4.5, anthropic/claude-haiku-4-5)
 - `--report FILE` (string, this CLI's own): where the JSON report goes (default ./harness-check-ID.json)
 - `--cap USD` (string, this CLI's own): the most the check may spend (default 0.25)

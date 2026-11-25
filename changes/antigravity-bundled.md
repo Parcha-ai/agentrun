@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-harness-acp, @parcha/agentrun-serve, @parcha/agentrun
+kind: feature
+---
+Google Antigravity's recipe ships with the ACP adapter, and every command takes its name where it takes a recipe file: `agentrun harness install antigravity`, `agentrun harness-check --recipe antigravity`, `agentrun harness sign-in --recipe antigravity` and `agentrun-serve --harness-recipe antigravity` (or `AGENTRUN_SERVE_HARNESS_RECIPES=antigravity`). It is still a recipe, with the same pins, check, keys page and sign-in. Each command says which recipe it resolved. A file of that name in the directory is never passed over: the command is refused, saying both, and `./antigravity` names the file. The hints a recipe prints (install, check, sign-in) name a shipped recipe by its name, not by where the package is installed. The recipe file moved from `examples/harness-recipe/antigravity.json` to the package's `recipes/bundled/antigravity.json`. An AgentRun release that changes it asks for a new check and the keys to be saved again, as an edit of your own recipe file would.
