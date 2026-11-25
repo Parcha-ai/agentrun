@@ -259,18 +259,41 @@ export async function exportBundle(input: ExportInput): Promise<{ body: string; 
     key === "rows" ? each(value, at, walkRow)
       : key === "graph" ? each(value, at, (item, here, field) => (field === "effects" ? each(item, here, walkEffect) : walk(item, here)))
       : walk(value, at);
+  // A file's content is cut knowing its path (a .env* file or one under ~/.ssh is dropped whole); then its bytes and digest
+  // are the carried text's. The caps hold for those bytes, as a share host checks them: a cut can make a file longer than it
+  // was read (a marker longer than the value), so one whose cut text is over the file cap, or the files' total, is left out
+  // as filesOf leaves one out, its cuts with it. Files are cut first so their omissions are cut with the rest of `omitted`;
+  // their records still follow every other part's, in the order the body is written in.
+  const files: Record<string, unknown>[] = [];
+  let total = 0;
+  for (const file of carried) {
+    const index = files.length;
+    const before = { cuts: cuts.length, restored: restored.length, seen: new Set(seen.keys()) };
+    const path = await cutString(file.path, `/files/${index}/path`);
+    const content = await cutString(file.content, `/files/${index}/content`, { path: file.path });
+    const bytes = Buffer.byteLength(content);
+    const over = bytes > caps.fileBytes ? "too_large" : total + bytes > caps.filesBytes ? "over_total" : undefined;
+    if (over) {
+      cuts.splice(before.cuts);
+      restored.splice(before.restored);
+      for (const id of [...seen.keys()]) if (!before.seen.has(id)) seen.delete(id);
+      omitted.push({ what: "file", path: file.path, why: over });
+      continue;
+    }
+    total += bytes;
+    files.push({ path, bytes, sha256: packageSha256([{ path, encoding: "utf8", content }]), encoding: "utf8", content });
+  }
+  const fileCuts = cuts.splice(0);
+  const fileRestored = restored.splice(0);
+  // The omissions in their order: files by path, then the listing's and the recordings'.
+  const byPath = (a: Omitted, b: Omitted) => (a.what !== "file" || b.what !== "file" ? 0 : a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+  parts.omitted = [...omitted.filter((one) => one.what === "file").sort(byPath), ...omitted.filter((one) => one.what !== "file")];
   const cutParts: Record<string, unknown> = {};
   for (const key of Object.keys(parts).sort()) {
     if (key !== "files") cutParts[key] = await walkPart(key, parts[key], `/${key}`);
   }
-  // A file's content is cut knowing its path (a .env* file or one under ~/.ssh is dropped whole); then its bytes and digest
-  // are the carried text's.
-  const files: Record<string, unknown>[] = [];
-  for (const [index, file] of carried.entries()) {
-    const path = await cutString(file.path, `/files/${index}/path`);
-    const content = await cutString(file.content, `/files/${index}/content`, { path: file.path });
-    files.push({ path, bytes: Buffer.byteLength(content), sha256: packageSha256([{ path, encoding: "utf8", content }]), encoding: "utf8", content });
-  }
+  cuts.push(...fileCuts);
+  restored.push(...fileRestored);
 
   // Every id the restore named must be a restorable cut's: the scrubber kept those, and only those.
   const refused = input.restore.filter((id) => seen.get(id) !== true);
