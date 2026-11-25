@@ -27,6 +27,7 @@ import runToEnd from "./run-to-end.mjs";
 import takeOver from "./take-over.mjs";
 import askDone from "./ask-done.mjs";
 import secretsWriteOnly from "./secrets-write-only.mjs";
+import apiKeys from "./api-keys.mjs";
 import templateApply from "./template-apply.mjs";
 import templateUnattended from "./template-unattended.mjs";
 import templateUnattendedNavigation from "./template-unattended-navigation.mjs";
@@ -35,10 +36,12 @@ import screenSteps from "./screen-steps.mjs";
 import screenUnopened from "./screen-unopened.mjs";
 import serverDeny from "./server-deny.mjs";
 import computersKeys from "./computers-keys.mjs";
+import computersRunning from "./computers-running.mjs";
 import workspaceArchil from "./workspace-archil.mjs";
 import triggerRowLabel from "./trigger-row-label.mjs";
 import computerStep from "./computer-step.mjs";
 import agentCardFooter from "./agent-card-footer.mjs";
+import connectAgentTabs from "./connect-agent-tabs.mjs";
 import costPerRun from "./cost-per-run.mjs";
 import playgroundPaneLines from "./playground-pane-lines.mjs";
 import learningBill from "./learning-bill.mjs";
@@ -47,8 +50,11 @@ import replayButton from "./replay-button.mjs";
 import learningLoop from "./learning-loop.mjs";
 import gradeRun from "./grade-run.mjs";
 import toolCards from "./tool-cards.mjs";
+import toolsStepScroll from "./tools-step-scroll.mjs";
 import narrowLayouts from "./narrow-layouts.mjs";
+import eventSearch from "./event-search.mjs";
 import playgroundOperationWidth from "./playground-operation-width.mjs";
+import playgroundAgentWidth from "./playground-agent-width.mjs";
 import devToolsPanelWidth from "./dev-tools-panel-width.mjs";
 import suggestAgents from "./suggest-agents.mjs";
 
@@ -62,6 +68,7 @@ export const flows = [
   demoMode,
   connectGitHub,
   githubTrigger,
+  eventSearch,
   { name: "github-trigger-create", pending: "waits on a connected GitHub App without GitHub: the server's GitHub API (githubApi) is a programmatic option only, not a flag the built server takes" },
   templateApply,
   templateUnattended,
@@ -76,11 +83,14 @@ export const flows = [
   signedOutElsewhere,
   serverDeny,
   secretsWriteOnly,
+  apiKeys,
   computersKeys,
+  computersRunning,
   workspaceArchil,
   triggerRowLabel,
   computerStep,
   agentCardFooter,
+  connectAgentTabs,
   costPerRun,
   learningBill,
   workflowReplay,
@@ -88,8 +98,10 @@ export const flows = [
   learningLoop,
   gradeRun,
   toolCards,
+  toolsStepScroll,
   ...narrowLayouts,
   playgroundOperationWidth,
+  playgroundAgentWidth,
   devToolsPanelWidth,
   playgroundPaneLines,
   ...suggestAgents,

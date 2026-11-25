@@ -5,7 +5,8 @@
 // case builds a daemon of another version, and the screen and input cases a computerd-fixture for linux/amd64 (E2B's
 // architecture). Every computer lives at most 30 minutes (E2B's timeout is its lifetime; the conformance module caps
 // it). The runner deletes every computer it made; the after hook kills any sandbox still made by this run, pass or
-// fail; wrap the run in dist/conformance/e2b-sweep.js --before and --after for the rest.
+// fail. A run under the live sweep (dist/conformance/sweep.js) is the conformance CLI's, given --run: this one mints its
+// own id.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { chmodSync, mkdtempSync, rmSync } from "node:fs";

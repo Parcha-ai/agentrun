@@ -611,7 +611,8 @@ export interface ModelProxyOptions {
    *  after the client's, so the client can neither set nor override them, and before the credential's. Checked when the
    *  proxy starts (`hostHeaderProblems`). */
   headers?: Readonly<Record<string, string>>;
-  /** For tests: the fetch the proxy forwards with. */
+  /** The fetch the proxy forwards with: the host's route for a model it translates onto the wire (a test's recorder,
+   *  too); absent, the network. */
   fetch?: typeof fetch;
   /** Told, with CONTENT_FILTERED, once an answer the provider stopped on its content filter has been passed and booked
    *  (`ProviderPolicy.filtered`): the harness halts the turn with it, before its client asks for the answer again. */
@@ -1739,6 +1740,10 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       }
       res.end();
       answered = { ok: upstream.ok };
+      // An upstream that ends its answer on this proxy's abort without throwing (a route's own fetch: pi-ai's stream ends
+      // in its "aborted" error event, and the route closes it) is a stop all the same: its client left, and this proxy's
+      // abort, not the provider, ended it. Never one read on past its client (keepReading: the signal was never aborted).
+      stoppedByClient = clientLeft && upstream.ok && controller.signal.aborted;
     } catch (error) {
       // Its client had left before this (a stop): read now, as the proxy's own end below closes the response too.
       // Before any header too: the request left, and the provider may have begun it, as a stop part way. Only this proxy's
@@ -1820,8 +1825,9 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
         // the model's first token, then a rate limit or an overload as an error event): refused, never run, so it cost
         // nothing. Never once the model's content streamed with no usage said, nor once the stream shows it began its
         // output with none of it streamed (outputBeganIn: hidden reasoning, a block a translation held): that was run,
-        // and is booked at an unknown cost as any answer cut short. Missing content is no proof of a refusal.
-        if (failed !== undefined && reported === undefined && !(policy.contentBytesOf && sentOf.bytes("content") > 0) && !outputBeganIn(kept)) {
+        // and is booked at an unknown cost as any answer cut short. Missing content is no proof of a refusal, and the error
+        // a stop's abort ends a stream in (stoppedByClient) is ours, never the provider's refusal: the stop counts it.
+        if (!stoppedByClient && failed !== undefined && reported === undefined && !(policy.contentBytesOf && sentOf.bytes("content") > 0) && !outputBeganIn(kept)) {
           refusedIn = wordsOf(failed.words);
           say(`model proxy (${policy.id}): the provider refused the request inside its answer (${failed.rateLimit ? "a rate limit" : "an error"}); booked at nothing`);
         }

@@ -38,8 +38,8 @@ const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$
 /** A path part that is not plain, or a character no package path holds (a control character, a backslash). */
 const NOT_PLAIN = (path: string) => /[\0-\x1f\x7f\\]/.test(path) || path.split("/").some((part) => part === "" || part === "." || part === "..");
 
-/** An upload's files ({path, encoding, content}) as the package's bytes by path: 422 under files.<i> for one that is not
- *  that shape; the GitHub import's own refusals (ImportRefused "package") for a path that is not plain or is there twice,
+/** An upload's files ({path, encoding, content}) as the package's bytes by path, each hidden path left out: 422 under
+ *  files.<i> for one that is not that shape; the GitHub import's own refusals (ImportRefused "package") for a path that is not plain or is there twice,
  *  over its count and over the bytes it keeps. */
 function uploadFiles(raw: unknown): Map<string, Buffer> {
   const shape = "files is a list of {path, encoding, content}: each file of the package, its encoding utf8 or base64";
@@ -59,6 +59,9 @@ function uploadFiles(raw: unknown): Map<string, Buffer> {
   let kept = 0;
   for (const [path, data] of read) {
     if (NOT_PLAIN(path)) throw new ImportRefused("package", `The package holds ${JSON.stringify(path)}, a path that is not plain: refused.`);
+    // A hidden file or folder (.env, .DS_Store, .cache/) is no part of a package (templates.ts reads none): left out here,
+    // before anything is counted, stored or hashed, so a client's .env is never kept.
+    if (path.split("/").some((part) => part.startsWith("."))) continue;
     if (files.has(path)) throw new ImportRefused("package", `The package holds ${JSON.stringify(path)} twice: refused.`);
     kept += data.length;
     if (kept > IMPORT_LIMITS.packageBytes) throw new ImportRefused("package", `The package's files are over the ${IMPORT_LIMITS.packageBytes} bytes an import keeps.`);

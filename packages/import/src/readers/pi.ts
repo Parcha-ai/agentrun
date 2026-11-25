@@ -2,7 +2,7 @@
 import { basename, join } from "node:path";
 import { type LineSource, lineReader, type ReadContext } from "../lines.js";
 import { entries } from "../reader.js";
-import { argsOf, effortOf, isObject, str, textOf, timeOf } from "../text.js";
+import { argsOf, effortOf, FAILED, isObject, str, textOf, timeOf } from "../text.js";
 import type { ToolCall } from "../types.js";
 import { normalizeUsage } from "../usage.js";
 
@@ -58,7 +58,7 @@ function record(value: Record<string, unknown>, at: number, { state, keep, add }
     session.state = message.stopReason === "error" ? "failed" : message.stopReason === "aborted" ? "stopped" : "completed";
     // A request cut before its end has only the start of its counts: unknown, as a live run's.
     const tokens = message.stopReason === "aborted" ? undefined : normalizeUsage("pi", message.usage);
-    // Without turns, no answer text, nor a failed request's error message: the request is kept for its counts.
+    // Without turns, no answer text: the request is kept for its counts, in the result and the cursor alike.
     add({
       role: "assistant",
       text: keep ? text : "",
@@ -68,7 +68,7 @@ function record(value: Record<string, unknown>, at: number, { state, keep, add }
       ...(session.model ? { model: session.model } : {}),
       ...(state.effort ? { effort: state.effort } : {}),
       ...(tokens ? { usage: tokens } : {}),
-      ...(message.stopReason === "error" ? { error: keep ? (str(message.errorMessage) ?? "unknown error") : "API error" } : {}),
+      ...(message.stopReason === "error" ? { error: keep ? (str(message.errorMessage) ?? "unknown error") : FAILED } : {}),
     });
   }
 }
@@ -88,6 +88,7 @@ const spec: LineSource<"pi", undefined> = {
   },
   start: () => undefined,
   record,
+  totals: true,
   idOf: (file) => basename(file, ".jsonl").split("_").pop()!,
 };
 

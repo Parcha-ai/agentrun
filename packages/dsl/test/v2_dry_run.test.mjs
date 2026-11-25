@@ -203,3 +203,15 @@ test("a dry run that passed hands the workflow's output to onOutput, a value its
   assert.equal(outputs.length, 1);
   assert.deepEqual(Object.keys(outputs[0]).sort(), ["code", "rationale", "verdict"]);
 });
+
+test("a declared input whose schema is a list is not synthesized: the dry run asks for the input instead", async () => {
+  const workflow = {
+    ...wf({ node: "chain", steps: [
+      { node: "agent", label: "gather", instructions: "g", out: "Finding", as: "evidence" },
+      { node: "code", label: "assemble", code: "(s) => ({ final: { verdict: 'x', code: null, rationale: 'r' } })" },
+    ] }, { ...SCHEMAS, Items: { type: "array", items: { type: "string" } } }),
+    input: { schemaId: "Items" },
+  };
+  const result = await dryRunWorkflow(workflow);
+  assert.deepEqual(result.skipped, ["Could not synthesize a valid input object. Supply input explicitly to dryRunWorkflow or the dry-run CLI."], `a list input schema is not synthesized: ${JSON.stringify(result)}`);
+});

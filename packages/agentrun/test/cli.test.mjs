@@ -6,10 +6,9 @@ import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
-import { createServer } from "node:net";
 import { join } from "node:path";
 import { test } from "node:test";
-import { scratch as scratchOf, server } from "./support.mjs";
+import { dropping, scratch as scratchOf, server } from "./support.mjs";
 
 const BIN = new URL("../bin/agentrun.mjs", import.meta.url).pathname;
 const ROOT = new URL("../../../", import.meta.url).pathname;
@@ -17,17 +16,6 @@ const GENERATOR = join(ROOT, "scripts", "generate-clients.mjs");
 const TABLE = join(ROOT, "packages", "agentrun", "lib", "commands.generated.mjs");
 
 const scratch = () => scratchOf("cli");
-
-/** A server that is never reached: a listener of this test's own, open until the test ends, that drops every connection
- *  it takes (Node 24's fetch then fails with the cause UND_ERR_SOCKET). `connections()` counts them. The CLI must run
- *  beside it (`run`, not a blocking spawnSync) whenever it may connect. */
-async function dropping(t) {
-  let connections = 0;
-  const server = createServer((socket) => (connections++, socket.destroy()));
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
-  return { base: `http://127.0.0.1:${server.address().port}/v2`, connections: () => connections };
-}
 
 /** The server on DIR/data with a faux model (support.mjs server). */
 const serve = (t, dir, env) => server(t, { data: join(dir, "data"), env, faux: 'export default (context, faux) => faux.message("The answer is 42.");\n' });
@@ -419,6 +407,13 @@ test("learning approve, which takes the owner's console session and refuses ever
   assert.doesNotMatch(cli(["learning"]).out, /approve/);
 });
 
+test("the server no test reaches fails every request with the cause UND_ERR_SOCKET, many at once: never ECONNRESET, which a close before the request is read can give", async (t) => {
+  const nobody = await dropping(t);
+  const causes = await Promise.all(Array.from({ length: 50 }, () => fetch(`${nobody.base}/agents`, { headers: { authorization: "Bearer fake-test-key" } }).then(() => "answered", (error) => error?.cause?.code ?? error?.name)));
+  assert.deepEqual([...new Set(causes)], ["UND_ERR_SOCKET"], JSON.stringify(causes));
+  assert.equal(nobody.connections(), 50);
+});
+
 test("with no server answering at the address, the hint names --base-url for a server on another port", async (t) => {
   const { env } = scratch(t);
   const nobody = await dropping(t);
@@ -782,6 +777,51 @@ test("the token kept with an address is found with or without /v2, and is never 
     assert.ok(!`${refused.out}${refused.err}`.includes("not-a-secret"));
   }
   assert.equal(home.requests.length + other.requests.length, seen, "nothing was sent");
+});
+
+test("AGENTRUN_TOKEN, the name the setup page gives the server's token, is the token of the server on this machine alone: another address with no token kept for it is refused (exit 4) and sent nothing, AGENTRUN_API_KEY and a token kept for the address win, and a local server started with its token in the environment takes it", async (t) => {
+  const { dir, env } = scratch(t);
+  const server = await listener(t, () => [200, "application/json", '{"agents":[],"next_cursor":null}']);
+  const prefix = server.base.replace(/\/v2$/, "");
+  const nowhere = ["--data", join(dir, "nowhere")];
+  // Every value this test plants: none is ever printed.
+  const PLANTED = ["fake-test-token", "fake-test-key", "not-a-secret"];
+  const quiet = (done) => PLANTED.every((value) => !`${done.out}${done.err}`.includes(value));
+  const sent = async (extra, args = ["--base-url", prefix, ...nowhere]) => {
+    const listed = await run(env, ["agents", "list", ...args], { extra });
+    assert.equal(listed.code, 0, listed.err);
+    assert.ok(quiet(listed), `${listed.out}${listed.err}`);
+    return server.requests.at(-1).headers.authorization;
+  };
+  /** A list at `args` refused for want of a token, with nothing sent anywhere. */
+  const refused = async (extra, args = ["--base-url", prefix, ...nowhere]) => {
+    const seen = server.requests.length;
+    const listed = await run(env, ["agents", "list", ...args], { extra });
+    assert.equal(listed.code, 4, listed.err);
+    assert.match(listed.err, /No token for/);
+    assert.ok(quiet(listed), `${listed.out}${listed.err}`);
+    assert.equal(server.requests.length, seen, "nothing was sent");
+  };
+  // Another address, no token kept for it: AGENTRUN_TOKEN is the local server's, so it is not sent there.
+  await refused({ AGENTRUN_TOKEN: "fake-test-token" });
+  await refused({ AGENTRUN_TOKEN: "" });
+  assert.equal(await sent({ AGENTRUN_TOKEN: "fake-test-token", AGENTRUN_API_KEY: "fake-test-key" }), "Bearer fake-test-key");
+  mkdirSync(join(dir, ".config", "agentrun"), { recursive: true, mode: 0o700 });
+  writeFileSync(join(dir, ".config", "agentrun", "config.json"), JSON.stringify({ base_url: prefix, api_key: "not-a-secret" }), { mode: 0o600 });
+  assert.equal(await sent({ AGENTRUN_TOKEN: "fake-test-token" }), "Bearer not-a-secret", "the token kept for this address");
+  rmSync(join(dir, ".config", "agentrun", "config.json"));
+  // The server on this machine, started with AGENTRUN_TOKEN (no .token file): the same variable is its token here.
+  const data = join(dir, "data");
+  mkdirSync(data, { mode: 0o700 });
+  writeFileSync(join(data, ".server.json"), JSON.stringify({ base_url: server.base, pid: process.pid }), { mode: 0o600 });
+  assert.equal(await sent({ AGENTRUN_TOKEN: "fake-test-token" }, ["--data", data]), "Bearer fake-test-token");
+  // With that server recorded, another address still gets no AGENTRUN_TOKEN.
+  const other = await listener(t, () => [200, "application/json", '{"agents":[],"next_cursor":null}']);
+  const before = other.requests.length;
+  const elsewhere = await run(env, ["agents", "list", "--data", data, "--base-url", other.base], { extra: { AGENTRUN_TOKEN: "fake-test-token" } });
+  assert.equal(elsewhere.code, 4, elsewhere.err);
+  assert.ok(quiet(elsewhere), `${elsewhere.out}${elsewhere.err}`);
+  assert.equal(other.requests.length, before, "nothing was sent to the other address");
 });
 
 test("login --base-url takes the address without /v2 too: it checks the token at PREFIX/v2 and keeps the API base, which the next command finds", async (t) => {

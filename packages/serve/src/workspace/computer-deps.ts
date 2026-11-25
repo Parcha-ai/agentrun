@@ -31,8 +31,9 @@ import { BOX_CPUS_ENV, BOX_MEMORY_ENV, BOX_PIDS_ENV } from "../start-switches.js
 import { readLaunchBody } from "../run-launch.js";
 import type { Store } from "../store/index.js";
 import { SERVER_NOTE_LABEL } from "@parcha/agentrun-kernel/kernel/cap";
+import type { PairedRelay } from "./attached-computers.js";
 import { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type ComputerRun, type ComputerSaid, type KeptKind, type OpenComputerView, type Replaced } from "./computer-for-claim.js";
-import { computerLapsedWords, KEEP_WORDS } from "./computer-kept.js";
+import { computerHeldWords, computerLapsedWords, computerLostWords, KEEP_WORDS } from "./computer-kept.js";
 import { storeLedger } from "./computer-ledger.js";
 import { computerProviderFactories, computerProviderMakers, type ProviderLoad } from "./computer-providers.js";
 import { aLabel, type ComputerSettingKind, type KindRegistry, needsNetwork, noNetworkRefusal, type ProviderEntry, vendorNetworkOnly } from "./resolve-computer.js";
@@ -139,8 +140,12 @@ export interface ComputerDepsOptions {
    *  computers (a test's stand-in may have none). */
   readonly store: Pick<Store, "sealedKeys" | "computerLedger"> & { readonly pairedComputers?: Pick<Store["pairedComputers"], "list"> };
   /** The server's AttachHub, where this runner shares the server's process (runner/beside.ts): a paired computer's
-   *  socket is there. Absent: a runner of its own process, which refuses a paired computer in words. */
+   *  socket is there. Absent: a runner of its own process, which reaches a paired computer through its relay
+   *  (`pairedRelay`), or refuses one in words where it keeps none. */
   readonly hub?: AttachHub;
+  /** The relay of a runner in a process of its own (dial-relay.ts RunnerRelay.paired): the server moves a paired
+   *  computer's socket onto its hub for the run. Absent: none. */
+  readonly pairedRelay?: PairedRelay;
   /** The server's dial (Serve.dial), where this runner shares the server's process: every remote provider's create
    *  takes it, and one whose host dials the server (facts.connect "dial") mints its machine's token there. Absent: a
    *  runner of its own process, where such a provider's create refuses in words. */
@@ -267,13 +272,24 @@ export const computerStartingWords = ({ provider, kind }: Pick<ComputerSaid, "pr
  *  replaced an earlier claim's (`replaced`) says it is a new one, never why the old one went (a lost runner, a crash, a
  *  server's stop, a park: the words fit each), and, where the run's folder is on Archil and mounted in it
  *  (`folderKept`), that the folder is kept. The one kept through the run's park (`kept`) says it is the same; a new one
- *  after a kept one's time passed (`replaced.lapsed`) says why first. */
+ *  after a kept one's time passed (`replaced.lapsed`) says why first, as does one after a kept one pinned to a runner
+ *  that was gone by the resume (`replaced.lost`, computerLostWords), or still there and ending it itself
+ *  (`replaced.elsewhere`, computerHeldWords), and one after the kept one's provider refused to attach it again
+ *  (`replaced.refused`, in the provider's words). */
 export const computerReadyWords = ({ provider, kind, hello, replaced, kept }: ComputerSaid): string => {
   const ready = `The ${kind} is ready: ${[OS_NAMES[hello.os] ?? hello.os, hello.osVersion].filter(Boolean).join(" ")} (${hello.arch}), from ${provider}.`;
   if (kept) return `${ready} It's the same ${kind}, as the wait left it.`;
   if (!replaced) return ready;
-  const lapsed = replaced.lapsed ? ` ${computerLapsedWords(kind)}` : "";
-  return `${ready}${lapsed} It's a new ${kind}: the one before is gone, with what was on it.${replaced.folderKept ? " The run folder is kept." : ""}`;
+  const why = replaced.refused
+    ? ` The ${kind} kept before could not be taken back: ${replaced.refused.replace(/[.!?]+$/, "")}.`
+    : replaced.lost
+      ? ` ${computerLostWords(kind)}`
+      : replaced.elsewhere
+        ? ` ${computerHeldWords(kind)}`
+        : replaced.lapsed
+          ? ` ${computerLapsedWords(kind)}`
+          : "";
+  return `${ready}${why} It's a new ${kind}: the one before is gone, with what was on it.${replaced.folderKept ? " The run folder is kept." : ""}`;
 };
 
 /** The run's timeline phase as its run parks with its computer kept (ClaimComputer.keeps), such as "The desktop is kept
@@ -353,21 +369,18 @@ export function computerDepsFrom(options: ComputerDepsOptions): { computerForCla
     const addresses = read ? unionOf(read, namedAddresses).addresses : (namedAddresses ?? []);
     return { ...(volume ?? {}), ...(addresses.length > 0 ? { egress: { hostAddresses: addresses } } : {}) };
   };
-  /** The server's own values of the environment variables a provider declares it reads on this machine (hostEnv: Local
-   *  Chrome's, where it finds Chrome), and no other variable of the server's. */
-  const hostEnvOf = (names: readonly string[]): Record<string, string> => Object.fromEntries(names.flatMap((name) => (env[name] === undefined ? [] : [[name, String(env[name])]])));
   /** The options a provider takes beside its keys, by what its descriptor declares, never by its id: for a local one,
-   *  its image source and its host options; for a remote one, the server's dial; the host environment it reads. */
+   *  its image source and its host options; for a remote one, the server's dial. The host environment it reads is the
+   *  makers' (computerProviderMakers' `env`). */
   const declaredOptions = async (id: string, boxAllow: readonly string[] | "none" | undefined): Promise<Record<string, unknown>> => {
     const entry = kinds.PROVIDERS.find((one) => one.id === id);
     return {
       ...(entry?.local ? { image: preparedImage, ...(await localHostOptions(boxAllow)) } : options.dial ? { dial: options.dial } : {}),
-      ...(entry?.hostEnv ? { env: hostEnvOf(entry.hostEnv) } : {}),
     };
   };
   const load = options.load ?? (providerFor as unknown as ProviderLoad);
   // The claim and Settings → Computers' test alike.
-  const providers = computerProviderMakers({ load: async (id, given, claim) => load(id, { ...given, ...(await declaredOptions(id, claim?.boxAllow)) }) });
+  const providers = computerProviderMakers({ env: env as NodeJS.ProcessEnv, load: async (id, given, claim) => load(id, { ...given, ...(await declaredOptions(id, claim?.boxAllow)) }) });
   const computerDeps: ComputerDeps = {
     kinds,
     providers,
@@ -385,7 +398,7 @@ export function computerDepsFrom(options: ComputerDepsOptions): { computerForCla
     ...(options.hostWhy ? { hostWhy: (provider: string): string | undefined => (Object.hasOwn(options.hostWhy!, provider) ? options.hostWhy![provider] : undefined) } : {}),
     ...(options.daemon ? { daemon: options.daemon } : { daemon: dockerDaemonOf(env) }),
     ...(options.openComputerView ? { openComputerView: options.openComputerView } : {}),
-    ...(store.pairedComputers ? { attached: { rows: () => store.pairedComputers!.list(), ...(options.hub ? { hub: options.hub } : {}) } } : {}),
+    ...(store.pairedComputers ? { attached: { rows: () => store.pairedComputers!.list(), ...(options.hub ? { hub: options.hub } : {}), ...(options.pairedRelay ? { relay: options.pairedRelay } : {}) } } : {}),
   };
   const factories = { ...computerProviderFactories(providers, (id) => storeLedger(store.computerLedger, id)), ...faux?.factories };
   return { computerForClaim: claimComputer, computerDeps, factories };

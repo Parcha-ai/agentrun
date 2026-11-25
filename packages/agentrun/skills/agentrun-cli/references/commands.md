@@ -212,6 +212,14 @@ Check native CLI and sign-in without a paid model call.
 
 Route: `POST /agents/{agent_id}/native/verify`.
 
+## api-keys
+
+### `agentrun api-keys list`
+
+The API keys made for this server's apps; never a key.
+
+Route: `GET /settings/api-keys`.
+
 ## capabilities
 
 ### `agentrun capabilities get-capacity`
@@ -433,8 +441,8 @@ Route: `POST /templates/import`, `POST /templates/{template}/apply`.
 - `--yes` (boolean, this CLI's own): apply without asking (needed off a terminal)
 - `--force` (boolean, this CLI's own): replace an agent edited on the target since the last deploy
 - `--params FILE` (string, this CLI's own): the package's parameters, a JSON object
-- `--pause-source` (boolean, this CLI's own): an install agent: turn its schedules off on this install once deployed (else they fire in both places)
-- `--agent ID|new` (string, this CLI's own): with no lock for the target: deploy onto its agent ID, or make another agent (new), where it has one this package made with these parameters; with a lock, only the lock's agent
+- `--pause-source` (boolean, this CLI's own): an install agent: turn its schedules off on this install once deployed (else they fire in both places); exits 1, once deployed, when it could not turn every one off
+- `--agent ID|new` (string, this CLI's own): with no lock for the target: deploy onto its agent ID, or make another agent (new), where it has one this package made with these parameters; with a lock, only the lock's agent while it is there (one gone from the target, any)
 
 ### `agentrun deploy delete SOURCE`
 
@@ -472,7 +480,7 @@ Write an agent's current revision as a template package folder, and say what the
 
 Route: `GET /agents/{agent_id}/package`.
 
-- `--out DIR` (string, this CLI's own): the folder to write: a new one, or an empty one
+- `--out DIR` (string, this CLI's own): the folder to write: a new one, or an empty one, named as the package is (another name is refused, naming the folder to use)
 
 ## files
 
@@ -784,11 +792,23 @@ The repositories this server's GitHub App is installed on.
 
 Route: `GET /integrations/github/repositories`.
 
+### `agentrun local list-marketplace-templates`
+
+The marketplace's templates: every package on marketplace.agentrun.ai, each with the package here that it is.
+
+Route: `GET /marketplace/templates`.
+
 ### `agentrun local list-mcp-server-names`
 
 The names of the MCP servers saved here, and nothing else of them.
 
 Route: `GET /settings/mcp-server-names`.
+
+### `agentrun local list-running-computers`
+
+Every run still going that has a computer.
+
+Route: `GET /computers/running`.
 
 ### `agentrun local list-suggestions`
 
@@ -1017,6 +1037,8 @@ The files the run wrote.
 
 Route: `GET /runs/{run_id}/files`.
 
+- `--cut run` (string, one of these): `run`: each file also has its `name`, its path under the run's own cut (each value the cut holds and each secret shape replaced by `[redacted]` in place, as a cut read cuts a file's text), whatever its type. A run whose end erased what its caller handed it lists no `name`. A run whose cut can't be read is `403 forbidden`, as without `cut`. A server that doesn't know `cut` lists no `name`.
+
 ### `agentrun runs get RUN_ID`
 
 One run.
@@ -1076,6 +1098,10 @@ Route: `GET /runs`.
 - `--status queued|working|paused|input_required|completed|failed|cancelled` (string, one of these): Only runs with this status.
 - `--archived` (boolean): true lists only archived runs; false, the default, the others.
 - `--label STRING` (string): Only runs holding this label: `<key>:<value>`, split at the first `:` (a key holds none). Once per request; a second `label`, or one that does not read as a label, is 400.
+- `--source STRING` (string): Only runs imported from this source, a source's name as the run's `imported_from.source` holds it (`claude-code`, `codex`, ...), or `live` for the runs made here, not imported. A name no run holds lists none. Once per request; a second `source`, or one that does not read as a name, is 400.
+- `--from STRING` (string): Only runs started at or after this instant: an RFC 3339 date-time with its zone (`2026-11-01T00:00:00Z`, or an offset such as `+01:00`, sent as `%2B01:00`), to the millisecond. With `to`, the window [from, to): a run started at `from` is in it. Once per request; a second `from`, one that is no instant with its zone, or one after `to`, is 400.
+- `--to STRING` (string): Only runs started before this instant: an RFC 3339 date-time with its zone, to the millisecond. A run started at `to` is not in the window. Once per request; a second `to`, or one that is no instant with its zone, is 400.
+- `--model STRING` (string): Only runs that sent at least one request to this model, named as a run's metrics name it: `provider/model` (`anthropic/claude-sonnet-5`, `openai/gpt-5`, ...), matched exactly: no prefix, no case folding. A run counts from its first finished turn: its metrics are written each time a turn ends, covering every turn so far, so a run in its first turn is not listed yet, and a model it first uses in a later turn counts once that turn ends. A model no run used lists none. Once per request; a second `model`, or an empty one, is 400.
 - `--all` (boolean, this CLI's own): every page: follows next_cursor and prints one list, its next_cursor null; stops past 1000 pages, exit 1
 
 ### `agentrun runs message RUN_ID`
@@ -1113,6 +1139,7 @@ One file's raw bytes.
 Route: `GET /runs/{run_id}/files/{path}`. It prints the answer's bytes as they are. PATH keeps its slashes.
 
 - `--download INTEGER` (integer): `1` forces a download.
+- `--cut run` (string, one of these): `run`: the file's text cut of every value the run's own cut holds (the server's keys, the keys a person saved, its secret stores' values, the sign-in refs the run was handed, and what its caller handed it: its own model key, tool keys and MCP servers' credentials), each one and each secret shape replaced by `[redacted]` in place, as the run's timeline cuts its calls; the text is `[redacted]` whole when a value still shows in a form not cut in place. The run's end erases what its caller handed it and counts where those values sat in each of its text files, never the values; from then a file is cut where that count says, while its bytes are the ones counted. A file the count cut in more than 256 places reads `[redacted]` whole. A file not counted as it is now (written or changed since the end, past the count's limits of 2,000 files, 64 MiB read and 512 KiB of count, or a run whose end made no count) is `403 forbidden`. That holds for good: once a run handed secrets has ended a turn, a file a later turn writes or changes is withheld from cut reads, whether or not that turn was handed secrets of its own (read it raw). A secret of no known shape passes as written. Answered `text/plain; charset=utf-8` with `x-agentrun-cut: run` (a server that doesn't know `cut` answers the raw bytes, without it), the whole file (`Range` is not read). A file whose type is not text (text/*, JSON, NDJSON, or an extension the server doesn't type), or whose bytes are not UTF-8 or hold a NUL, is `415 unsupported_media_type`; one over 262144 bytes is `413 payload_too_large`; a run whose cut can't be read (the sign-in it was handed, or what its caller handed it, doesn't open here) is `403 forbidden`. Without `cut`, the file's bytes as written.
 - `--range STRING` (string): One byte range, `bytes=<start>-<end>`.
 
 ### `agentrun runs resume RUN_ID`
@@ -1174,8 +1201,8 @@ Route: `GET /runs/{run_id}/timeline`.
 
 - `--after INTEGER` (integer): The change cursor last applied, from `next_after` or the last SSE `id`. 0 is the start.
 - `--wait-ms INTEGER` (integer): JSON only. How long to hold the request for a change after `after`.
-- `--limit INTEGER` (integer): At most this many rows in a page (1 to 500, default 500); has_more says when another waits.
-- `--calls whole` (string, one of these): `whole`: each `tool_use` row carries its call's arguments (`tool_input`) and each `tool_result` row the head of its output to 8000 characters (`tool_result_text`; a web call's every url, only its long texts cut), both through the run's redaction, for a reader that grades the run (a template eval). Its rows are another page sequence: a cursor (`after`, `Last-Event-ID`) from one read goes with the same `calls`.
+- `--limit INTEGER` (integer): At most this many rows in a page (1 to 500, default 500; with `calls=whole`, 1 to 100, default 100); has_more says when another waits.
+- `--calls whole` (string, one of these): `whole`: each `tool_use` row carries its call's arguments (`tool_input`) and each `tool_result` row its output whole to 120000 characters (`tool_result_text`; a web call's every url, only its long texts cut), both through the run's redaction, for a reader that grades the run (a template eval). Its rows are another page sequence: a cursor (`after`, `Last-Event-ID`) from one read goes with the same `calls`.
 - `--last-event-id STRING` (string): SSE reconnect. Same meaning as `after`, and wins over it.
 - `--follow` (boolean, this CLI's own): the timeline as it changes, one page per line (NDJSON), until the run ends; resumes a dropped connection
 
@@ -1300,7 +1327,7 @@ Route: none, it runs on this machine.
 - `--port N` (string, this CLI's own): the port to listen on (default: the first free from 7340; 7340 with --tailscale)
 - `--data DIR` (string, this CLI's own): the data directory (default ~/.agentrun)
 - `--tailscale` (boolean, this CLI's own): also serve it over HTTPS on your own tailnet only (tailscale serve, never Funnel); --no-tailscale takes it off
-- `--env KEY=VALUE` (string, this CLI's own): a local model's variable for the server, a start-time switch or the usage counts' switch: AGENT_MODEL_BASE_URL, AGENT_MODEL_GATEWAY_IDS, AGENT_MODEL, AGENT_MODEL_PRICE, AGENT_MODEL_API_KEY (none), AGENTRUN_MCP_ALLOW_LOOPBACK (1), AGENTRUN_WEBHOOK_PRIVATE_TARGETS (1), AGENTRUN_TELEMETRY, DO_NOT_TRACK; kept until KEY= removes it; repeatable
+- `--env KEY=VALUE` (string, this CLI's own): a local model's variable for the server or where Ollama listens, a start-time switch, the marketplace the server reads or the usage counts' switch: AGENT_MODEL_BASE_URL, AGENT_MODEL_GATEWAY_IDS, AGENT_MODEL, AGENT_MODEL_PRICE, AGENT_MODEL_API_KEY (none), OLLAMA_HOST, OLLAMA_CONTEXT_LENGTH, AGENTRUN_MCP_ALLOW_LOOPBACK (1), AGENTRUN_WEBHOOK_PRIVATE_TARGETS (1), AGENTRUN_MARKETPLACE, AGENTRUN_TELEMETRY, DO_NOT_TRACK; kept until KEY= removes it; repeatable
 - `--public-url URL` (string, this CLI's own): the https address people open it at, through a proxy you run in front of it (your own tailscale serve, a reverse proxy); kept for every restart
 
 ### `agentrun service logs`
@@ -1555,6 +1582,16 @@ The triggers: schedules and signed webhooks that start an agent's capped runs or
 
 Route: `GET /triggers`.
 
+### `agentrun triggers release-firing TRIGGER_ID FIRING_ID`
+
+The launch hook's host releases a firing it took and will start no run for.
+
+Route: `POST /triggers/{trigger_id}/firings/{firing_id}/release`.
+
+- `--error STRING` (string, required): Why the host starts no run for the firing, in plain words: a failure's code or reason, never a person's data or a key.
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
 ### `agentrun triggers update TRIGGER_ID`
 
 Change a trigger, or turn it off and on.
@@ -1632,3 +1669,13 @@ Route: `POST /workflows/validate`.
 
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+## wrapped
+
+### `agentrun wrapped`
+
+A year of the work under this machine's session files.
+
+Route: `GET /wrapped`.
+
+- `--year INTEGER` (integer): A four-digit year, in the server's local zone. Default the current year.

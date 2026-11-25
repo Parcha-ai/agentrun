@@ -16,7 +16,7 @@ const provider = (id: string, name: string, extra: Record<string, unknown> = {})
 const DRIVEN = ["image", "persistent", "surface", "exec", "record"];
 const CAN = { available: true };
 const KINDS = [
-  { kind: "none", offered: true, groups: [], tools: ["read"], settings: [], record: { available: false, why: "with no computer, there is no screen to record" }, providers: [] },
+  { kind: "none", offered: true, groups: [], tools: ["read"], settings: [], record: { available: false, why: "fixture: no computer" }, providers: [] },
   { kind: "sandbox", offered: true, groups: ["exec"], tools: ["read", "bash"], settings: ["image", "persistent", "gpu"], record: { available: false, why: "fixture: a sandbox has no screen to record" }, providers: [
     provider("docker", "Docker"),
     provider("modal", "Modal", { images: ["py"], persistent: { images: ["py"] }, gpu: { types: ["T4"], max: 2 } }),

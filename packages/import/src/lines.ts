@@ -1,12 +1,18 @@
 // A Reader for a source that writes each session as a JSONL file (Claude Code, Codex, pi): the file read a line at a time
-// into a Session, a line that is not JSON, or not a record its source knows, passed over. Each read takes the whole file.
-import { createReadStream } from "node:fs";
+// into a Session, a line that is not JSON, or not a record its source knows, passed over. A read goes on from a cursor:
+// the file's identity (device, inode), the byte after the last whole line read, and the read's state, so a later read
+// takes only the bytes written since.
+import { type FileHandle, open } from "node:fs/promises";
+import { addRequest, type Counts, counts, trimmed } from "./counts.js";
 import { type Env, type Locator, type Reader, type ReadOptions, type ReadResult, rememberUser } from "./reader.js";
 import { isObject, mostEffortOf, timeOf } from "./text.js";
 import { ACTIVE_GAP_MS, type Answer, type SessionOf, type Turn } from "./types.js";
 
-/** One file's read so far. `answers` holds every request read, whether turns are kept or not: what a total counts.
- *  `own` is the source's own (LineSource.start). */
+/** One file's read so far, all of it plain data (no function, Maps and Sets allowed), so a cursor can carry it and
+ *  structuredClone or v8.serialize can copy it. `answers` holds every request read, whether turns are kept or not: what
+ *  a total counts; a totals read's are in `counts` instead, each its model, usage and time alone. `own` is the source's own (LineSource.start). A turns: true read's holds the session's text (its
+ *  turns, prompts, titles, tool output, working directory); a turns: false read's cursor holds none of it, only counts,
+ *  ids and the like (see LineSource.forget). */
 export type ReadState<O = unknown> = {
   session: SessionOf;
   turns: Turn[];
@@ -21,6 +27,10 @@ export type ReadState<O = unknown> = {
   last?: number;
   activeMs: number;
   own: O;
+  /** A totals read's requests (ReadOptions.totals), in place of `answers`. */
+  counts?: Counts;
+  /** The records seen, when the caller shares none across files. */
+  seen?: Set<string>;
 };
 
 /** What a source's record and finish are handed: the file's state, the records seen across the import's files ("u:"
@@ -43,64 +53,173 @@ export type LineSource<S extends string, O> = Pick<Reader<S>, "source" | "name" 
   /** One record read: false for one read already (a copy), which moves no time. */
   record: (value: Record<string, unknown>, at: number, context: ReadContext<O>) => boolean | void;
   /** The session as the file ends, from `out` (a copy of the state's session, its turns `turns`): it may set more of
-   *  `out` and return the turns in their order. */
+   *  `out` and return the turns in their order. It never changes the state, which a later read goes on from. */
   finish?: (out: SessionOf, turns: Turn[], context: ReadContext<O>) => Turn[];
   /** The session's id when no record named one. */
   idOf: (file: string) => string;
+  /** `own` without the session's text (prompts, titles, tool output), for the cursor of a turns: false read. */
+  forget?: (own: O) => O;
+  /** true when a totals read (ReadOptions.totals) may keep each request's model, usage and time alone, as it is
+   *  added: the source sets no turn's model, usage or time after adding it, or keeps its requests in `counts` itself. Without it a totals
+   *  read is a turns: false read, its requests whole. */
+  totals?: true;
 };
 
-/** One session file of `spec`'s source, read whole. */
-async function readLines<S extends string, O>(spec: LineSource<S, O>, file: string, { turns: keep = true, seen }: ReadOptions = {}): Promise<ReadResult<S>> {
-  const { source } = spec;
-  const state: ReadState<O> = { session: { source, id: "", file, state: "completed", child: false, turns: [], users: 0, activeMs: 0, copies: 0 }, turns: [], answers: [], names: new Map(), priced: { sum: 0, unknown: false }, activeMs: 0, own: spec.start() };
-  const context: ReadContext<O> = {
-    state,
-    seen: seen ?? new Set(),
-    keep,
-    add: (turn: Turn) => {
-      rememberUser(state.session, turn);
-      if (keep) state.turns.push(turn);
-      if (turn.role === "assistant") state.answers.push(turn);
-    },
-  };
-  const line = (text: string) => {
-    let value: unknown;
-    try {
-      value = JSON.parse(text);
-    } catch {
-      return;
-    }
-    if (!isObject(value)) return;
-    const at = timeOf(value.timestamp);
-    // A copy of a record read already moves no time: its time was counted where it was first read.
-    const copy = spec.record(value, at ?? state.last ?? 0, context) === false;
-    if (copy) state.session.copies += 1;
-    if (at !== undefined && !copy) {
-      state.first ??= at;
-      // A record older than the latest (a block a resumed file repeats) moves no time either.
-      if (state.last === undefined || at >= state.last) {
-        if (state.last !== undefined && at - state.last <= ACTIVE_GAP_MS) state.activeMs += at - state.last;
-        state.last = at;
-      }
-    }
-  };
-  let rest: Buffer[] = [];
-  for await (const chunk of createReadStream(file, { highWaterMark: 1 << 20 }) as AsyncIterable<Buffer>) {
-    let from = 0;
-    for (let nl = chunk.indexOf(10); nl !== -1; nl = chunk.indexOf(10, from)) {
-      const whole = rest.length ? Buffer.concat([...rest, chunk.subarray(from, nl)]) : chunk.subarray(from, nl);
-      rest = [];
-      line(whole.toString("utf8", 0, whole.length && whole[whole.length - 1] === 13 ? whole.length - 1 : whole.length));
-      from = nl + 1;
-    }
-    if (from < chunk.length) rest.push(chunk.subarray(from));
+/** The bytes a read takes from its file at once. */
+const CHUNK = 1 << 20;
+
+/** A line longer than the read's maxLine (ReadOptions): the read ends before decoding it. */
+export class LineTooLong extends Error {
+  constructor(readonly file: string, readonly offset: number, readonly bytes: number, readonly maxLine: number) {
+    super(`${file}: a line at byte ${offset} is longer than ${maxLine} bytes (${bytes} so far)`);
+    this.name = "LineTooLong";
   }
-  // A last line with no newline is read like any other: whole JSON counts, a line still being written is passed over.
-  if (rest.length) line(Buffer.concat(rest).toString("utf8"));
-  return { sessions: [{ locator: { file }, session: finish(spec, file, state, context), requests: state.answers }] };
 }
 
-/** The session the file holds, as read. */
+/** What a listing reads from the session's text: a turns: false cursor keeps none of it, and a read resumed from one
+ *  gives none (it would describe only what was written since). */
+const withoutText = <T extends SessionOf>(session: T): T => {
+  const { firstPrompt: _prompt, titleText: _title, cwd: _cwd, sourceTitle: _source, ...rest } = session;
+  return rest as T;
+};
+
+/** Where a read of a file stopped, and what it had read. Plain data (Maps, Sets and shared objects, no function):
+ *  structuredClone or v8.serialize keeps it whole. Read it through its reader alone. A turns: true read's cursor
+ *  holds the session's text, as its state does (ReadState); keep or send it as you would the session. */
+export type FileCursor = {
+  source: string;
+  dev: number;
+  ino: number;
+  /** The byte after the last newline read: a last line with none is read again next time. */
+  offset: number;
+  /** The last bytes before `offset` (up to 64, base64): a file rewritten in place to at least the same length no longer
+   *  has them there, and is read from its start. */
+  mark: string;
+  /** Whether the read kept turns, and whether it was a totals read: a cursor of another kind is no place to go on from. */
+  keep: boolean;
+  totals?: boolean;
+  state: ReadState;
+};
+
+/** The up to 64 bytes before `offset` in the open file, base64. */
+async function markOf(handle: FileHandle, offset: number): Promise<string> {
+  const n = Math.min(64, offset);
+  if (n === 0) return "";
+  const bytes = Buffer.alloc(n);
+  const { bytesRead } = await handle.read(bytes, 0, n, offset - n);
+  return bytes.subarray(0, bytesRead).toString("base64");
+}
+
+/** The records seen, as a source asks: `extra` over `base`, so a line read that is not kept leaves `base` as it was. */
+const overlay = (base: Set<string>): Set<string> => {
+  const extra = new Set<string>();
+  return { has: (key: string) => extra.has(key) || base.has(key), add: (key: string) => extra.add(key) } as Set<string>;
+};
+
+/** One session file of `spec`'s source, read from its start or from `cursor`. */
+async function readLines<S extends string, O>(spec: LineSource<S, O>, file: string, cursor: FileCursor | undefined, { turns: keep = true, totals: asked = false, seen, keepsCursor = true, maxLine = Infinity }: ReadOptions = {}): Promise<ReadResult<S, FileCursor>> {
+  const { source } = spec;
+  const totals = asked && !keep && spec.totals === true;
+  const handle = await open(file, "r");
+  try {
+    const stats = await handle.stat();
+    const resumed = cursor !== undefined && cursor.source === source && cursor.keep === keep && (cursor.totals ?? false) === totals && cursor.dev === stats.dev && cursor.ino === stats.ino && stats.size >= cursor.offset && (await markOf(handle, cursor.offset)) === cursor.mark;
+    const state = (
+      resumed
+        ? structuredClone(cursor.state)
+        : { session: { source, id: "", file, state: "completed", child: false, turns: [], users: 0, activeMs: 0, copies: 0 }, turns: [], answers: [], names: new Map(), priced: { sum: 0, unknown: false }, activeMs: 0, own: spec.start(), ...(totals ? { counts: counts() } : {}), ...(seen ? {} : { seen: new Set<string>() }) }
+    ) as ReadState<O>;
+    const context: ReadContext<O> = {
+      state,
+      seen: seen ?? (state.seen ??= new Set()),
+      keep,
+      add: (turn: Turn) => {
+        rememberUser(state.session, turn);
+        if (keep) state.turns.push(turn);
+        if (turn.role !== "assistant") return;
+        if (state.counts) addRequest(state.counts, turn.model, turn.usage, turn.at);
+        else state.answers.push(turn);
+      },
+    };
+    const line = (text: string) => {
+      let value: unknown;
+      try {
+        value = JSON.parse(text);
+      } catch {
+        return;
+      }
+      if (!isObject(value)) return;
+      const at = timeOf(value.timestamp);
+      // A copy of a record read already moves no time: its time was counted where it was first read.
+      const copy = spec.record(value, at ?? state.last ?? 0, context) === false;
+      if (copy) state.session.copies += 1;
+      if (at !== undefined && !copy) {
+        state.first ??= at;
+        // A record older than the latest (a block a resumed file repeats) moves no time either.
+        if (state.last === undefined || at >= state.last) {
+          if (state.last !== undefined && at - state.last <= ACTIVE_GAP_MS) state.activeMs += at - state.last;
+          state.last = at;
+        }
+      }
+    };
+    const start = resumed ? cursor.offset : 0;
+    let offset = start;
+    let read = 0;
+    let rest: Buffer[] = [];
+    let restBytes = 0;
+    const tooLong = (bytes: number) => {
+      if (bytes > maxLine) throw new LineTooLong(file, offset, bytes, maxLine);
+    };
+    if (stats.size > start) {
+      // The open handle, so the bytes read are the file stat described, whatever the path names now. One buffer for the
+      // whole read: a new one a chunk leaves freed native memory behind on every thread that reads (the read pool's).
+      const buffer = Buffer.allocUnsafeSlow(CHUNK);
+      for (let at = start; ; ) {
+        const { bytesRead } = await handle.read(buffer, 0, CHUNK, at);
+        if (!bytesRead) break;
+        at += bytesRead;
+        const chunk = buffer.subarray(0, bytesRead);
+        read += chunk.length;
+        let from = 0;
+        for (let nl = chunk.indexOf(10); nl !== -1; nl = chunk.indexOf(10, from)) {
+          tooLong(restBytes + nl - from);
+          const whole = rest.length ? Buffer.concat([...rest, chunk.subarray(from, nl)]) : chunk.subarray(from, nl);
+          rest = [];
+          restBytes = 0;
+          line(whole.toString("utf8", 0, whole.length && whole[whole.length - 1] === 13 ? whole.length - 1 : whole.length));
+          offset += whole.length + 1;
+          from = nl + 1;
+        }
+        // The buffer is read into again: a line's start is kept as a copy.
+        if (from < chunk.length) {
+          restBytes += chunk.length - from;
+          tooLong(restBytes);
+          rest.push(Buffer.from(chunk.subarray(from)));
+        }
+      }
+    }
+    // A last line with no newline yet may be a record still being written: read into this result when it is whole JSON,
+    // but the cursor stays before it, its state without it. A caller that keeps the cursor reads the line again from it,
+    // so its `seen` is left untouched by it; one that keeps none (readSession) has it in `seen` like any other line.
+    let kept = state;
+    if (rest.length) {
+      kept = structuredClone(state);
+      if (keepsCursor) context.seen = overlay(context.seen);
+      line(Buffer.concat(rest).toString("utf8"));
+    }
+    const mark = await markOf(handle, offset);
+    let session = finish(spec, file, state, context);
+    if (!keep) {
+      kept = { ...kept, session: withoutText(kept.session), own: spec.forget ? spec.forget(kept.own) : kept.own, ...(kept.counts ? { counts: trimmed(kept.counts) } : {}) };
+      if (resumed) session = withoutText(session);
+    }
+    return { sessions: [{ locator: { file }, session, requests: state.answers, ...(state.counts ? { counts: state.counts } : {}) }], cursor: { source, dev: stats.dev, ino: stats.ino, offset, mark, keep, ...(totals ? { totals } : {}), state: kept as ReadState }, read, resumed };
+  } finally {
+    await handle.close();
+  }
+}
+
+/** The session as read so far, the state left as it is. */
 function finish<S extends string, O>(spec: LineSource<S, O>, file: string, state: ReadState<O>, context: ReadContext<O>): SessionOf<S> {
   const out = { ...state.session, file } as SessionOf<S>;
   const turns = spec.finish ? spec.finish(out, context.keep ? [...state.turns] : [], context) : context.keep ? [...state.turns] : [];
@@ -114,17 +233,17 @@ function finish<S extends string, O>(spec: LineSource<S, O>, file: string, state
   return out;
 }
 
-/** The Reader of a JSONL source: each file one locator. */
-export function lineReader<S extends string, O>(spec: LineSource<S, O>): Reader<S> {
-  const { source, name, harness, order, children, idOf } = spec;
+/** The Reader of a JSONL source: each file one locator, its cursor a FileCursor. */
+export function lineReader<S extends string, O>(spec: LineSource<S, O>): Reader<S, FileCursor> {
+  const { source, name, harness, order, children } = spec;
   return {
     source,
     name,
     harness,
-    idOf: (locator) => idOf(locator.file),
     ...(order ? { order } : {}),
     discover: async (home, env) => (await spec.files(home, env)).map((file): Locator => ({ file })),
-    read: (locator, options) => readLines(spec, locator.file, options),
+    idOf: ({ file }) => spec.idOf(file),
+    read: (locator, cursor, options) => readLines(spec, locator.file, cursor, options),
     ...(children ? { children: async (home: string, env?: Env) => (await children(home, env)).map(({ file, of }) => ({ locator: { file }, of: { file: of } })) } : {}),
   };
 }

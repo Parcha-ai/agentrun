@@ -6,6 +6,10 @@ import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { agent, flowAgent, follow, serve, withEnv } from "./support.mjs";
 import * as refusal from "../dist/key-refusal.js";
+import { CALL_RESULT_CHARS, scrubUrls, timelineOf } from "../dist/timeline/index.js";
+import { cut } from "../dist/timeline/util.js";
+import { linkCheck } from "../dist/link-check.js";
+import { assistant, call, result, user } from "./timeline-lib-support.mjs";
 
 const { redactedAnswer, redactedOutput } = refusal;
 
@@ -77,8 +81,10 @@ test("an answer one character past a timeline row's cap (2001) is served whole b
   assert.equal(answer, `On ${content}: done.`);
 });
 
-test("a workflow's output carrying a held key in a string field is served with it redacted, the record's shape kept", { timeout: 60_000 }, async (t) => {
-  withEnv(t, { AGENT_MODEL: "openai/gpt-6.1-sol", OPENAI_API_KEY: CUT_KEY }, NAMES);
+// A workflow whose output is { note: "kept <held key> here", n: 7 }, run on a server whose environment adds `vars`: the
+// run as GET /runs/{id} serves it.
+async function keyedRun(t, vars = {}) {
+  withEnv(t, { AGENT_MODEL: "openai/gpt-6.1-sol", OPENAI_API_KEY: CUT_KEY, ...vars }, [...NAMES, "OTEL_EXPORTER_OTLP_HEADERS", "OTEL_EXPORTER_OTLP_TRACES_HEADERS"]);
   const { api } = await serve(t);
   const flow = {
     v: 2, name: "keyed",
@@ -94,9 +100,19 @@ test("a workflow's output carrying a held key in a string field is served with i
   const started = await api("POST", "/agents/keyed/runs", { input: { question: "x" } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   await follow(api, started.body.run_id, ["completed"], { deadlineMs: 50_000 });
-  const run = (await api("GET", `/runs/${started.body.run_id}`)).body;
+  return (await api("GET", `/runs/${started.body.run_id}`)).body;
+}
+
+test("a workflow's output carrying a held key in a string field is served with it redacted, the record's shape kept", { timeout: 60_000 }, async (t) => {
+  const run = await keyedRun(t);
   noKey(JSON.stringify(run), "the run");
   assert.deepEqual(run.result.output, { note: "kept [redacted] here", n: 7 });
+});
+
+test("a short OTLP header value (X-Scope-OrgID=7) is held by no list: a workflow's output number 7 is served as 7, never \"[redacted]\"", { timeout: 60_000 }, async (t) => {
+  const run = await keyedRun(t, { OTEL_EXPORTER_OTLP_HEADERS: "X-Scope-OrgID=7" });
+  noKey(JSON.stringify(run), "the run");
+  assert.deepEqual(run.result.output, { note: "kept [redacted] here", n: 7 }, `the served output keeps its number: ${JSON.stringify(run.result.output)}`);
 });
 
 test("a workflow output carrying a held key as a property name, nested too, is served with no piece of it", { timeout: 60_000 }, async (t) => {
@@ -167,6 +183,200 @@ test("an answer of about 1 MB made of sk- runs is redacted in time linear in its
   assert.equal(out, "[redacted] ".repeat(128));
   // Each sk- run started again at every third character took about 5 s here; read once, it takes well under a second.
   assert.ok(took < 1500, `took ${Math.round(took)} ms`);
+});
+
+test("a call's result of about 120,000 characters of sk- runs, as a grader's read shows it, is read in pieces: each run redacted whole, in time linear in its length", () => {
+  const text = `${"sk-".repeat(2730)} `.repeat(15);
+  const began = performance.now();
+  const out = refusal.redactedCall(text, [CUT_KEY], 120_000);
+  const took = performance.now() - began;
+  assert.equal(out, "[redacted] ".repeat(15));
+  assert.ok(took < 1500, `took ${Math.round(took)} ms`);
+});
+
+test("a held value split by whitespace across the edge of a call's result's pieces withholds the result whole; one whole at that edge is cut in place", () => {
+  // The first piece ends at its last whitespace before 8,192 characters: here the line break after the value's head.
+  const [head, rest] = [CUT_KEY.slice(0, 12), CUT_KEY.slice(12)];
+  const before = `${"y ".repeat(4089)} `;
+  assert.equal(`${before}${head}`.length, 8191);
+  const after = " the words after it. ".repeat(2000);
+  assert.equal(refusal.redactedCall(`${before}${head}\n${rest}${after}`, [CUT_KEY], 120_000), "[redacted]");
+  const whole = refusal.redactedCall(`${before}${CUT_KEY}${after}`, [CUT_KEY], 120_000);
+  assert.equal(whole, `${before}[redacted]${after}`);
+});
+
+test("a held value split by a line break just past the head a grader is shown withholds the call's result whole: no prefix of it shows", () => {
+  // The last piece read ends at the line break, 120,005 characters in: the value's rest is past it.
+  const text = `${"y ".repeat(59_994)}${CUT_KEY.slice(0, 16)}\n${CUT_KEY.slice(16)}${"z".repeat(5000)}`;
+  assert.equal(refusal.redactedCall(text, [CUT_KEY], 120_000), "[redacted]");
+});
+
+test("a held value split by a line break before a run too long to read withholds the text whole: its head never shows", () => {
+  const text = `the key: ${CUT_KEY.slice(0, 16)}\n${CUT_KEY.slice(16)}${"z".repeat(9000)} end`;
+  assert.equal(redactedAnswer(text, [CUT_KEY]), "[redacted]");
+  assert.equal(refusal.redactedCall(text, [CUT_KEY], 120_000), "[redacted]");
+  // A shorter held value at the head of that run is still read raw there, so the longer one it ends stays whole.
+  const shorter = ["other", "held", "value", "abcdefgh"].join("-");
+  const longer = `${["not", "a", "secret", "prefix"].join("-")}-${shorter}`;
+  const both = `the key: ${longer.slice(0, 20)}\n${longer.slice(20)}${"z".repeat(9000)} end`;
+  assert.equal(redactedAnswer(both, [longer, shorter]), "[redacted]");
+  assert.equal(refusal.redactedCall(both, [longer, shorter], 120_000), "[redacted]");
+});
+
+/** A held value of 64 characters in no secret's shape, made at runtime. */
+const SPLIT = `${["not-a-secret", "split-key"].join("-")}-${"0123456789abcdef".repeat(3)}`.slice(0, 64);
+/** A call's tool_result_text as a served calls read shows it: the run's redactor is redactedCall, eliding URLs per piece. */
+const resultTextOf = (text, secrets = [SPLIT], tool = "bash", input = { command: "run" }) => {
+  const options = { calls: { result: CALL_RESULT_CHARS, redact: (part) => refusal.redactedCall(part, secrets, CALL_RESULT_CHARS, scrubUrls) } };
+  const rows = timelineOf([user("Run it."), assistant([call("c1", tool, input)]), result("c1", tool, text)], options);
+  return rows.find((row) => row.kind === "tool_result" && row.tool_use_id === "c1").tool_result_text;
+};
+
+test("a held value split by a line break where a call's read stops shows none of it, after a run its pieces took back", () => {
+  // A run cut at a quote crosses the head, then goes unread and is taken back; the read stops again at the line break.
+  const text = `${"y ".repeat(59_000)}["${"a".repeat(7000)}",${"B".repeat(30_000)} ${"y ".repeat(975)}${SPLIT.slice(0, 40)}\n${SPLIT.slice(40)}${"z".repeat(9000)} end`;
+  const shown = cut(refusal.redactedCall(text, [SPLIT], CALL_RESULT_CHARS), CALL_RESULT_CHARS);
+  assert.ok(!shown.includes(SPLIT.slice(0, 8)), shown.slice(-80));
+  assert.ok(!resultTextOf(text).includes(SPLIT.slice(0, 8)));
+});
+
+test("a call's result whose URLs lose their query values shows no held value's prefix past what its redaction read, and words past 120,000 raw characters reach the grader", () => {
+  // 21 query values of 5,000 and 6,000 characters elided bring text past the head the redaction read into the 120,000.
+  const urls = Array.from({ length: 20 }, () => `https://h.example/p?q=${"a".repeat(5000)} `).join("");
+  const text = `${urls}${"y ".repeat(10_000)}https://h.example/u?q=${"b".repeat(6000)} ${"y ".repeat(400)}${SPLIT.slice(0, 40)}\n${SPLIT.slice(40)}${"z".repeat(9000)} end`;
+  const shown = resultTextOf(text);
+  assert.ok(!shown.includes(SPLIT.slice(0, 8)), `${shown.length}: ${shown.slice(-80)}`);
+  // The read counts what its pieces show once elided: words past 120,000 raw characters, well inside 120,000 shown ones,
+  // reach the grader.
+  const figure = `${urls}${"y ".repeat(10_000)}https://h.example/u?q=${"b".repeat(6000)} the figure is 4,217. end`;
+  assert.ok(figure.indexOf("4,217") > CALL_RESULT_CHARS);
+  assert.ok(resultTextOf(figure).endsWith("the figure is 4,217. end"), resultTextOf(figure).slice(-80));
+  // As a web_fetch's page text, each string read alone, the same.
+  const page = JSON.stringify({ ok: true, url: "https://h.example/page", status: 200, title: "A page", text });
+  const web = resultTextOf(page, [SPLIT], "web_fetch", { url: "https://h.example/page" });
+  assert.ok(!web.includes(SPLIT.slice(0, 8)), `${web.length}: ${web.slice(-80)}`);
+});
+
+test("a call's result is redacted as it came, then its URLs lose their query values: a held value in a URL's query, fragment or password, or split by a line break after one, shows no part of it", () => {
+  // Elided first, each of these held values is cut apart (at "&", "#", "@", or the query's end) and no longer reads as
+  // itself, so a part of it would show. (The user and password are joined here so no URL with a password is written.)
+  const login = ["deploy", "P@ss#word123456"].join(":");
+  const cases = [
+    ["https://api.example.com/v1/login?user=me&pass=Pw7&kq9Lm2xZ8vR4", "Pw7&kq9Lm2xZ8vR4", "https://api.example.com/v1/login?user=…&pass=…"],
+    ["https://h.example/hook?c2VjcmV0LXNpZ25pbmcta2V5LTEy==", "secret-signing-key-12", "https://h.example/hook?[redacted]=…"],
+    ["https://h.example/files/Pw7kq9Lm#2xZ8vR4/x", "Pw7kq9Lm#2xZ8vR4", "https://h.example/files/[redacted]/x"],
+    ["https://h.example/cb?Zq8VbN3xLmT6pR2w\nYk9HsD4fGj7Ac5Ue ok", "Zq8VbN3xLmT6pR2wYk9HsD4fGj7Ac5Ue", "[redacted]"],
+    [`https://${login}@git.example.com/repo.git`, "P@ss#word123456", "https[redacted]@git.example.com/repo.git"],
+  ];
+  for (const [text, key, shows] of cases) {
+    assert.equal(resultTextOf(text, [key]), shows, text);
+    assert.equal(cut(refusal.redactedCall(text, [key], CALL_RESULT_CHARS, scrubUrls), CALL_RESULT_CHARS), shows, text);
+  }
+  // A web_fetch's page url, read through the same redactor.
+  const page = JSON.stringify({ ok: true, url: cases[0][0], status: 200, title: "Login", text: "signed in" });
+  const web = resultTextOf(page, [cases[0][1]], "web_fetch", { url: "https://h.example/page" });
+  assert.ok(web.includes('"url":"https://api.example.com/v1/login?user=…&pass=…"') && !web.includes("kq9Lm2"), web);
+});
+
+test("where a call's read stops inside a run cut at a quote, the rest of that run is read: no URL password the stop split shows in part", () => {
+  // One held value of 32 characters; the password's quote and comma are past what its peek would read.
+  const key = ["not-a-secret", "p2-key", "0123456789ab"].join("-");
+  const login = ["admin", "hunterTWO-secretpw"].join(":");
+  const text = `${"y ".repeat(Math.floor((120_000 - 8139) / 2))}{"a":"${"x".repeat(8100)}","u":"https://${login}",${"x".repeat(300)}@db.example/"} end ${"w ".repeat(5000)}`;
+  const shown = cut(refusal.redactedCall(text, [key], CALL_RESULT_CHARS, scrubUrls), CALL_RESULT_CHARS);
+  assert.ok(!shown.includes("hunterTWO"), shown.slice(-80));
+  assert.ok(!resultTextOf(text, [key]).includes("hunterTWO"));
+});
+
+test("a held value split where a call's read stops, its rest past \"+\" or percent-encoded whitespace, shows none of it; whitespace runs read as one space, in time", () => {
+  // The matcher decodes "+" and encoded whitespace, so the value reads whole across them; the read past the stop must
+  // reach its rest, however much padding there is up to a piece.
+  for (const pad of ["+".repeat(400), "%20".repeat(400), "%0A".repeat(200), "%E3%80%80".repeat(100)]) {
+    const text = `${"y ".repeat(59_940)}${CUT_KEY.slice(0, 16)}\n${pad}${CUT_KEY.slice(16)}${"z".repeat(9000)} end`;
+    const shown = cut(refusal.redactedCall(text, [CUT_KEY], CALL_RESULT_CHARS), CALL_RESULT_CHARS);
+    assert.ok(!shown.includes(CUT_KEY.slice(0, 8)), `${pad.slice(0, 9)}: ${shown.slice(-60)}`);
+  }
+  // Padding longer than a piece is more than the read past the stop reads: the text is withheld.
+  const long = `${"y ".repeat(59_940)}${CUT_KEY.slice(0, 16)}${"+".repeat(20_000)}${CUT_KEY.slice(16)} end`;
+  assert.equal(refusal.redactedCall(long, [CUT_KEY], CALL_RESULT_CHARS), "[redacted]");
+  // 20,000,000 spaces after the stop read as one: the value past them is seen, in well under a second and a half.
+  const started = Date.now();
+  const spaced = `${"y ".repeat(59_940)}${CUT_KEY.slice(0, 16)}${" ".repeat(20_000_000)}${CUT_KEY.slice(16)} end`;
+  assert.equal(refusal.redactedCall(spaced, [CUT_KEY], CALL_RESULT_CHARS), "[redacted]");
+  assert.ok(Date.now() - started < 1500, `${Date.now() - started} ms`);
+  // The same texts with no held value split there are served, cut where the read stopped.
+  const plain = `${"y ".repeat(59_940)}${"q".repeat(16)}\n${"+".repeat(400)}${"z".repeat(9000)} end`;
+  assert.ok(refusal.redactedCall(plain, [CUT_KEY], CALL_RESULT_CHARS).startsWith("y y "));
+});
+
+test("a call's result that shows as almost nothing once its URLs lose their query values is not read to its end", () => {
+  // 32.7 MB of URLs whose queries elide: it shows as 4,000 short URLs, so a read stopped by what it shows reads it all.
+  const text = ` https://e.com/?x=${"q".repeat(8150)}`.repeat(4000);
+  const began = Date.now();
+  const shown = refusal.redactedCall(text, [CUT_KEY], CALL_RESULT_CHARS, scrubUrls);
+  assert.ok(Date.now() - began < 1500, `${Date.now() - began} ms`);
+  assert.ok(shown.startsWith(" https://e.com/?x=… https://e.com/?x=…") && shown.length < 120_000, shown.slice(0, 80));
+  // Stopped short of 120,000 shown characters, it still ends as a cut result does ("..."), so the link check names the
+  // call as cut: 60 such URLs, then a link past where the read stopped.
+  const short = `${` https://e.com/?x=${"q".repeat(8150)}`.repeat(60)} see https://example.org/report end`;
+  const served = resultTextOf(short);
+  assert.ok(served.endsWith("...") && !served.includes("example.org"), served.slice(-80));
+  assert.match(linkCheck("The report: https://example.org/report", [{ name: "bash", result: served }]), /call 1's links were cut/);
+  // Read to its end, a result that shows as little is not marked.
+  assert.ok(!resultTextOf(` https://e.com/?x=${"q".repeat(8150)} end`).endsWith("..."));
+});
+
+test("compact JSON past a piece with no whitespace is read in pieces cut at its quotes (an array of numbers, at its commas), never withheld for its length; a held value in it is cut in place", () => {
+  const ids = Array.from({ length: 2000 }, (_, i) => `id-${i}`);
+  const json = JSON.stringify({ ids });
+  const numbers = JSON.stringify(Array.from({ length: 3000 }, (_, i) => i * 7919));
+  for (const text of [json, numbers]) assert.ok(text.length > 8192 && !/\s/.test(text), "one run past a piece");
+  for (const secrets of [[], [CUT_KEY]]) {
+    for (const text of [json, numbers]) {
+      assert.equal(refusal.redactedCall(text, secrets, 120_000), text);
+      assert.equal(redactedAnswer(text, secrets), text);
+    }
+  }
+  // A URL's password may hold a quote and a comma, where a run is cut: the joined pieces are read for every secret shape,
+  // so one cut there withholds the text whole. (The user and password are joined here so no URL with a password is
+  // written in this file.)
+  const login = ["alice", "prefix"].join(":");
+  const url = `"${"x".repeat(8100)}https://${login}",rest@host.example/${"z".repeat(3000)}`;
+  assert.ok(!/\s/.test(url) && url.indexOf('",rest') < 8192 && url.length > 8192);
+  assert.equal(redactedAnswer(url, []), "[redacted]");
+  assert.equal(refusal.redactedCall(url, [], 120_000), "[redacted]");
+  // A run cut at a quote that goes on past a piece with no place to cut is unread from its start: no piece of it shows,
+  // so neither does the head of a password the cut split.
+  const unread = `say "${"x".repeat(8100)}https://${login}",${"r".repeat(9000)}@host end`;
+  assert.equal(redactedAnswer(unread, []), "say [redacted] end");
+  assert.equal(refusal.redactedCall(unread, [], 120_000), "say [redacted] end");
+  // No run is cut inside a URL's authority, so a password longer than any held value is never split where a call's read
+  // stops: here the quote in it would be the last cut before 120,000 characters, and the run is read whole or not at all.
+  const ftp = `${"y ".repeat(59_000)}ftp://${login}${"p".repeat(3000)}",${"q".repeat(1000)}@host/${"r".repeat(9000)} end`;
+  for (const secrets of [[], [CUT_KEY]]) {
+    assert.equal(refusal.redactedCall(ftp, secrets, 120_000), `${"y ".repeat(59_000)}[redacted] end`);
+    assert.equal(redactedAnswer(ftp, secrets), `${"y ".repeat(59_000)}[redacted] end`);
+  }
+  // A URL whose authority ends at the next URL's "://" (no "/" between them) leaves that URL's user and password kept
+  // whole too.
+  const user = ["user", ""].join(":");
+  const chained = `${"y ".repeat(59_000)}socks5://h:1080,https://${user}${"P".repeat(3000)}",${"s".repeat(9000)}@host.com/x end`;
+  for (const secrets of [[], [CUT_KEY]]) {
+    for (const shown of [cut(refusal.redactedCall(chained, secrets, 120_000, scrubUrls), 120_000), redactedAnswer(chained, secrets)]) {
+      assert.ok(!shown.includes("PPPPPPPP"), shown.slice(-80));
+    }
+  }
+  // A URL with no path, then more JSON with no "/", "?", "#" or "@" after it: no "@" ends its authority, so it holds no
+  // password, and the quotes after it are cut as anywhere else.
+  const linked = JSON.stringify({ url: "https://example.com", ids });
+  assert.ok(linked.length > 8192 && !/[\s@]/.test(linked));
+  for (const secrets of [[], [CUT_KEY]]) {
+    assert.equal(refusal.redactedCall(linked, secrets, 120_000), linked);
+    assert.equal(redactedAnswer(linked, secrets), linked);
+  }
+  const holding = JSON.stringify({ ids: [...ids.slice(0, 1000), CUT_KEY, ...ids.slice(1000)] });
+  assert.equal(refusal.redactedCall(holding, [CUT_KEY], 120_000), holding.replace(CUT_KEY, "[redacted]"));
+  assert.equal(redactedAnswer(holding, [CUT_KEY]), holding.replace(CUT_KEY, "[redacted]"));
 });
 
 test("an sk- run, a key after a dash inside it, and a held value inside one are redacted as before", () => {

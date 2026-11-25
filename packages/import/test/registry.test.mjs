@@ -1,17 +1,18 @@
-// The registry's interface: a reader discovers locators ({ file, id? }) under a home, reads a locator into sessions, and
-// names the id of a session no record names (idOf). A source that keeps many sessions in one file (OpenCode's SQLite database) is one more
+// The registry's interface: a reader discovers locators ({ file, id? }) under a home and reads a locator, from an opaque
+// cursor it owns, into sessions. A source that keeps many sessions in one file (OpenCode's SQLite database) is one more
 // reader with no change anywhere else: its sessions are keyed by `relpath#id`.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { locatorKey, parseHome, READERS, readSession } from "../dist/index.js";
+import { locatorKey, parseHome, READERS, readSession, SOURCES } from "../dist/index.js";
 import { anthropicUsage, claudeAnswer, claudeFile, claudeUser, piAnswer, piFile, piMeta, piUser, SESSION, tempHome, writeJsonl } from "./fixtures.mjs";
 
 const sha = (text) => createHash("sha256").update(text).digest("hex");
 
-/** A reader of a made-up format: one JSON file holding many sessions, each with its requests' usage. */
+/** A reader of a made-up format: one JSON file holding many sessions, each with its requests' usage. Its cursor is a
+ *  count of the reads so far, to show the engine hands back whatever the reader returned. */
 const manyInOne = {
   source: "many",
   name: "Many In One",
@@ -19,8 +20,7 @@ const manyInOne = {
   async discover(home) {
     return [{ file: join(home, ".many", "store.json") }];
   },
-  idOf: (locator) => locator.id ?? "",
-  async read(locator) {
+  async read(locator, cursor = 0) {
     const { readFile } = await import("node:fs/promises");
     const rows = JSON.parse(await readFile(locator.file, "utf8"));
     const sessions = rows
@@ -30,11 +30,22 @@ const manyInOne = {
         const session = { source: "many", id: row.id, file: locator.file, state: "completed", child: false, turns: [], users: row.users, activeMs: 0, copies: 0 };
         return { locator: { file: locator.file, id: row.id }, session, requests };
       });
-    return { sessions };
+    return { sessions, cursor: cursor + 1, read: 0, resumed: cursor > 0 };
   },
 };
 
-test("a built-in reader discovers locators and reads one into sessions", async (t) => {
+test("each built-in reader has discover, idOf and read, and carries its harness and display name", () => {
+  for (const source of SOURCES) {
+    const reader = READERS[source];
+    assert.equal(typeof reader.discover, "function");
+    assert.equal(typeof reader.idOf, "function");
+    assert.equal(typeof reader.read, "function");
+    assert.equal(typeof reader.harness, "string");
+    assert.equal(typeof reader.name, "string");
+  }
+});
+
+test("a built-in reader discovers locators and reads one into sessions with an opaque cursor", async (t) => {
   const home = await tempHome(t);
   const file = await writeJsonl(claudeFile(home), [claudeUser({ uuid: "u1", text: "Fixture question.", i: 0 }), claudeAnswer({ uuid: "a1", msg: "m1", req: "r1", usage: anthropicUsage(1, 2), i: 1 })]);
   const reader = READERS["claude-code"];
@@ -44,9 +55,12 @@ test("a built-in reader discovers locators and reads one into sessions", async (
   assert.deepEqual(first.sessions[0].locator, { file });
   assert.equal(first.sessions[0].session.id, SESSION);
   assert.equal(first.sessions[0].requests.length, 1);
+  const again = await reader.read({ file }, first.cursor);
+  assert.equal(again.resumed, true);
+  assert.equal(again.read, 0);
 });
 
-test("a pi file whose session record names no id: idOf gives the id its read gives, the last _ part of its name", async (t) => {
+test("idOf names the session a read names when no record does: a pi file's from its name, OpenCode's from its locator", async (t) => {
   const home = await tempHome(t);
   const { id: _id, ...nameless } = piMeta("pi-nameless-7");
   const file = await writeJsonl(piFile(home, "pi-nameless-7"), [nameless, piUser("Fixture question."), piAnswer({ input: 1, output: 2, cacheRead: 0, cacheWrite: 0 })]);
@@ -54,6 +68,8 @@ test("a pi file whose session record names no id: idOf gives the id its read giv
   assert.equal(read.id, "pi-nameless-7");
   assert.equal(READERS.pi.idOf({ file }), read.id);
   assert.equal(READERS["claude-code"].idOf({ file: claudeFile(home) }), SESSION);
+  assert.equal(READERS.opencode.idOf({ file: join(home, "opencode.db"), id: "ses_fixture1" }), "ses_fixture1");
+  assert.equal(READERS.opencode.idOf({ file: join(home, "storage", "session", "global", "ses_fixture2.json") }), "ses_fixture2");
 });
 
 test("a fourth reader that keeps many sessions in one file: parseHome keys each by relpath#id, readSession picks one by id", async (t) => {

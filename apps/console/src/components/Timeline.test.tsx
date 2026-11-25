@@ -35,6 +35,17 @@ describe("Timeline, a tool result", () => {
       expect(h).not.toContain("text-destructive-text");
     }
   });
+  // QA: a script stopped at a refused call read a red Error while every other refused step read Refused. Its row is
+  // refused now. Its chip covers both ways a script is refused (before it starts, as a spend cap does, or at a call inside
+  // it) and points at its nested rows for which calls ran: it never says that nothing ran, nor that some did.
+  it("a codemode script that stopped at a refused call reads Refused in a neutral chip that says it stopped there", () => {
+    const h = html(row({ tool_name: "codemode", tool_status: "failed", refused: true, summary: "Refused: codemode: Permission denied: block is set to deny on this server." }));
+    expect(h).toMatch(/>Refused</);
+    expect(h).not.toMatch(/>Error</);
+    expect(h).toContain('title="Refused before it started, or stopped at a refused call: the calls under it say which ran"');
+    expect(h).not.toContain("Not run: refused before it ran");
+    expect(html(row({ tool_name: "web_fetch", tool_status: "failed", refused: true, summary: "Refused: web_fetch" }))).toContain('title="Not run: refused before it ran"');
+  });
 });
 
 // QA: a browser step read "run" or "snapshot" above what it did: the browser tool's wire name. It reads as the timeline

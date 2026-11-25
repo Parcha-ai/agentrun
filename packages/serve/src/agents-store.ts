@@ -20,7 +20,7 @@ import {
   type ModelTiers, type RevisionComputer, type RevisionPlace, type RevisionRow, type Store, StoreConstraint, type TemplatePackage, type ToolSettings, type WorkflowBody,
 } from "./store/index.js";
 import { canonicalToolSettings, settingsIssues, type ToolSettingsMap } from "./tool-plane.js";
-import { computerOfPlace, type PlaceView, settingOfDefinition } from "./computer-setting.js";
+import { settingOfDefinition } from "./computer-setting.js";
 import { type DefinitionBody, type Json, skillIssues, skillNames } from "./validate.js";
 
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -112,8 +112,9 @@ function revisionInputOf(definition: Json, files: Record<string, string>): Revis
   // A workflow keeps its approvals too ("never": it runs unattended), so its call nodes are checked with them (runnable.ts,
   // permissionOf with the revision's approvals): a call node on a tool set to ask runs under never, as on main.
   if (isObject(definition.workflow)) return { kind: "workflow", workflow: definition.workflow, ...(definition.approvals === "never" ? { approvals: "never" as const } : {}), ...common, ...capped };
-  // true, false or the loop's numbers (learning-setting.ts), checked by validate.ts and again by the body.
-  const learning = definition.learning !== undefined && learningSettingIssue(definition.learning) === undefined ? { learning: definition.learning as LearningSetting } : {};
+  // true, false or the loop's numbers (learning-setting.ts), checked by validate.ts and again by the body, read as stored
+  // here: an edit that leaves learning out carries the saved one (agree_on paths a write now refuses included).
+  const learning = definition.learning !== undefined && learningSettingIssue(definition.learning, "learning", true) === undefined ? { learning: definition.learning as LearningSetting } : {};
   return {
     kind: "agentic",
     instructions: definition.instructions as string,
@@ -438,6 +439,9 @@ export const etagOf = (entry: AgentEntry) => `"${entry.revision?.id ?? "none"}"`
 export function definitionOf(agent: AgentRow, revision: RevisionRow, version: number): Json {
   const body = revision.body as Body;
   const common = { ...(body.maxCostUsd !== undefined ? { max_cost_usd: body.maxCostUsd } : {}), ...(body.maxRequests !== undefined ? { max_requests: body.maxRequests } : {}) };
+  // A revision saved before the computer setting keeps its place alone; one that names neither has no computer here
+  // (the host's default applies).
+  const computer = settingOfDefinition(body)?.computer;
   const kindBody = revision.kind === "agentic"
     ? { instructions: (body as AgenticBody).instructions, ...((body as AgenticBody).model ? { model: (body as AgenticBody).model } : {}), ...((body as AgenticBody).modelTiers ? { model_tiers: (body as AgenticBody).modelTiers } : {}), ...((body as AgenticBody).thinking ? { thinking: (body as AgenticBody).thinking } : {}), ...(learningSettingForBody(body) !== undefined ? { learning: learningSettingForBody(body) } : {}), ...((body as AgenticBody).inputSchema !== undefined ? { input_schema: (body as AgenticBody).inputSchema } : {}), ...((body as AgenticBody).outputSchema !== undefined ? { output_schema: (body as AgenticBody).outputSchema } : {}), ...((body as AgenticBody).checkout !== undefined ? { checkout: (body as AgenticBody).checkout } : {}), ...common }
     : { workflow: (body as WorkflowBody).workflow, ...common };
@@ -454,9 +458,7 @@ export function definitionOf(agent: AgentRow, revision: RevisionRow, version: nu
     approvals: approvalsOf((body as { approvals?: unknown }).approvals),
     harness: harnessOfBody(body),
     ...(body.place ? { place: body.place } : {}),
-    // A revision's computer as the API shows it: its own, else the one its place says (a revision saved before the
-    // setting keeps its place alone); none when it names neither (the host's default applies).
-    ...(body.computer ? { computer: body.computer } : body.place ? { computer: computerOfPlace(body.place as PlaceView) } : {}),
+    ...(computer ? { computer } : {}),
     skills: skillNames(Object.keys(body.skills ?? {})),
     tools: body.tools,
     ...(body.toolSettings ? { tool_settings: body.toolSettings } : {}),

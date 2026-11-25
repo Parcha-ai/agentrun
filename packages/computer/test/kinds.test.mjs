@@ -27,6 +27,7 @@ import {
 	serves,
 	servingRefusals,
 } from "../dist/index.js";
+import * as computer from "../dist/index.js";
 import { Agent37Provider } from "../dist/agent37.js";
 import { MorphProvider } from "../dist/morph.js";
 import { BoxdProvider } from "../dist/boxd.js";
@@ -127,13 +128,20 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	assert.deepEqual(Object.entries(extra).filter(([, one]) => one.imageEnv !== undefined).map(([id, one]) => [id, one.imageEnv]), [["daytona", "AGENTRUN_DAYTONA_SNAPSHOT"]]);
 	assert.deepEqual(extra["phone-harness"].ledger, { option: "ledger" });
 	assert.deepEqual(extra.orgo.ledger, { option: "ledger" });
-	// Local Chrome reads where Chrome is from the server's own environment: the names its findChrome reads, then PATH.
-	assert.deepEqual(extra["local-chrome"].hostEnv, [...CHROME_ENV, "PATH"]);
+	// Local Chrome reads where Chrome is from the server's own environment: the names its findChrome reads, then what
+	// Chrome itself reads (PATH first), which its supervisor and Chrome hold and nothing else.
+	// By the namespace, so a package without the lists fails here, in words, and not at the import.
+	const { ADB_ENV_NAMES, CHROME_ENV_NAMES, DOCKER_ENV_NAMES } = computer;
+	assert.ok(Array.isArray(ADB_ENV_NAMES) && Array.isArray(CHROME_ENV_NAMES) && Array.isArray(DOCKER_ENV_NAMES), "the package exports the names adb, Chrome and docker read (ADB_ENV_NAMES, CHROME_ENV_NAMES, DOCKER_ENV_NAMES)");
+	assert.deepEqual(extra["local-chrome"].hostEnv, [...CHROME_ENV, ...CHROME_ENV_NAMES]);
+	assert.equal(CHROME_ENV_NAMES[0], "PATH");
+	// Docker's CLI is handed what it reads of the server's environment, and nothing else.
+	assert.deepEqual(extra.docker.hostEnv, DOCKER_ENV_NAMES);
 	// The cloud browsers read the gateway a server reaches them through.
 	assert.deepEqual(extra.browserbase.hostEnv, ["BROWSERBASE_BASE_URL", "BROWSERBASE_CONNECT_BASE_URL"]);
 	assert.deepEqual(extra.kernel.hostEnv, ["KERNEL_BASE_URL"]);
 	// The phone harness reads the APKs every phone installs, each pinned by its sha256: the operator's setting.
-	assert.deepEqual(extra["phone-harness"].hostEnv, ["PHONE_HARNESS_APKS"]);
+	assert.deepEqual(extra["phone-harness"].hostEnv, ["PHONE_HARNESS_APKS", ...ADB_ENV_NAMES]);
 	// Orgo offers its Linux desktop; its Windows and macOS desktops are parked, each with why, and offered by no
 	// configuration.
 	assert.deepEqual(extra.orgo.parked.map((one) => one.image), ["windows", "macos"]);
@@ -151,7 +159,7 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 		if (!["modal", "e2b", "daytona"].includes(id)) assert.equal(fields.settings, undefined, id);
 		if (!["docker", "agent37", "modal", "e2b", "boxd", "morph", "cloudflare", "fly", "smolcloud", "groundbox"].includes(id)) assert.deepEqual([fields.prepareImage, fields.local], [undefined, undefined], id);
 		if (id !== "phone-harness" && id !== "orgo") assert.equal(fields.ledger, undefined, id);
-		if (!["local-chrome", "browserbase", "kernel", "phone-harness"].includes(id)) assert.equal(fields.hostEnv, undefined, id);
+		if (!["local-chrome", "browserbase", "kernel", "phone-harness", "docker"].includes(id)) assert.equal(fields.hostEnv, undefined, id);
 		if (id !== "orgo") assert.equal(fields.parked, undefined, id);
 	}
 	// Kinds are derived by serves() (the test below); every kind but none has a provider that serves it.

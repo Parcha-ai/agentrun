@@ -53,36 +53,129 @@ test("--known-answer exits 1 with one stderr line per unreadable file, its key a
   for (const text of [PROMPT, "work-fixture", SESSION, dir]) assert.equal(result.stderr.includes(text), false, `stderr holds no ${text}`);
 });
 
-test("a read that fails partway adds none of the records it read: a later file's copy of them counts, as if the failed file were not there", async (t) => {
+test("an OpenCode database that cannot be opened is a failure, never an OpenCode history of no sessions", async (t) => {
+  const { mkdir, writeFile } = await import("node:fs/promises");
+  const { join } = await import("node:path");
   const dir = await tempHome(t);
-  const ORIGINAL = "00000000-0000-4000-8000-0000000000a1";
-  const RESUMED = "00000000-0000-4000-8000-0000000000b2";
-  const shared = [claudeUser({ uuid: "u1", text: PROMPT, i: 0, session: ORIGINAL }), claudeAnswer({ uuid: "a1", msg: "msg_1", req: "req_1", usage: anthropicUsage(10, 20), i: 1, session: ORIGINAL })];
-  const original = await writeJsonl(claudeFile(dir, ORIGINAL), [...shared, claudeUser({ uuid: "u2", text: "More.", i: 2, session: ORIGINAL })]);
-  const resumed = await writeJsonl(claudeFile(dir, RESUMED), [...shared.map((r) => ({ ...r, sessionId: RESUMED })), claudeUser({ uuid: "u3", text: "More.", i: 10, session: RESUMED })]);
-  await utimes(original, 1_000, 1_000);
-  await utimes(resumed, 2_000, 2_000);
-  // Claude Code's reader, failing on the original's third record, after it has noted the shared ones: an I/O error midway.
+  const data = join(dir, ".local", "share", "opencode");
+  await mkdir(data, { recursive: true });
+  await writeFile(join(data, "opencode.db"), "not a database, not even close to one");
+  const failures = [];
+  assert.deepEqual(await parseHome(dir, { sources: ["opencode"], catalog: false, failures }), []);
+  assert.deepEqual(failures.map(({ key, source }) => ({ key, source })), [{ key: sha(".local/share/opencode/opencode.db"), source: "opencode" }]);
+  await assert.rejects(parseHome(dir, { sources: ["opencode"], catalog: false }), (error) => error.failures?.length === 1);
+  // OPENCODE_DB may name a database of any name: one that does not open fails the same way.
+  await writeFile(join(dir, "history.sqlite"), "not a database either");
+  const named = [];
+  await parseHome(dir, { sources: ["opencode"], catalog: false, failures: named, env: { XDG_DATA_HOME: join(dir, "elsewhere"), OPENCODE_DB: join(dir, "history.sqlite") } });
+  assert.deepEqual(named.map(({ key }) => key), [sha("history.sqlite")]);
+});
+
+test("a read that fails partway leaves the state as it was: a retry with the same state gives the fresh pass's totals", async (t) => {
+  const dir = await tempHome(t);
+  await writeJsonl(claudeFile(dir), [
+    claudeUser({ uuid: "u1", text: PROMPT, i: 0 }),
+    claudeAnswer({ uuid: "a1", msg: "msg_1", req: "req_1", usage: anthropicUsage(10, 20), i: 1 }),
+    claudeUser({ uuid: "u2", text: "More.", i: 2 }),
+    claudeAnswer({ uuid: "a2", msg: "msg_2", req: "req_2", usage: anthropicUsage(5, 6), i: 3 }),
+  ]);
+  // Claude Code's reader, failing after it has noted three records: an I/O error midway through the file.
   const real = READERS["claude-code"];
   const failing = {
     ...real,
-    read: (locator, options) => {
-      if (locator.file !== original) return real.read(locator, options);
+    read: (locator, cursor, options) => {
+      let noted = 0;
       const seen = {
         has: (key) => options.seen.has(key),
         add(key) {
-          if (key === "u:u2") throw Object.assign(new Error("injected"), { code: "EIO" });
+          if (++noted > 3) throw Object.assign(new Error("injected"), { code: "EIO" });
           options.seen.add(key);
           return this;
         },
       };
-      return real.read(locator, { ...options, seen });
+      return real.read(locator, cursor, { ...options, seen });
+    },
+  };
+  const state = {};
+  const failures = [];
+  assert.deepEqual(await parseHome(dir, { sources: ["claude-code"], readers: { "claude-code": failing }, state, failures, catalog: false }), []);
+  assert.equal(failures.length, 1);
+  const retry = await parseHome(dir, { sources: ["claude-code"], state, catalog: false });
+  const fresh = await parseHome(dir, { sources: ["claude-code"], catalog: false });
+  assert.equal(fresh[0].calls, 2);
+  assert.deepEqual(retry, fresh);
+});
+
+test("an OpenCode storage session with a file or folder that cannot be read is a failure, never a session of fewer messages; a malformed record is passed over", { skip }, async (t) => {
+  const { join } = await import("node:path");
+  const { buildLegacy } = await import("./fixtures/opencode/fixture.mjs");
+  const dir = await tempHome(t);
+  const storage = join(dir, ".local", "share", "opencode", "storage");
+  await buildLegacy(storage);
+  // The fixture's malformed parts ("[]", "{not json") are no failure.
+  const clean = [];
+  const whole = await parseHome(dir, { sources: ["opencode"], catalog: false, failures: clean });
+  assert.deepEqual(clean, []);
+  assert.deepEqual(whole.map(({ id }) => id), ["ses_A"]);
+  const key = sha(".local/share/opencode/storage/session/prj_fixture/ses_A.json");
+  for (const path of ["part/msg_A2/prt_A2c.json", "message/ses_A/msg_A3.json", "part/msg_A2", "message/ses_A", "session/prj_fixture/ses_A.json"]) {
+    const at = join(storage, path);
+    await chmod(at, 0);
+    try {
+      const failures = [];
+      const rows = await parseHome(dir, { sources: ["opencode"], catalog: false, failures });
+      assert.deepEqual(failures.map(({ key, source }) => ({ key, source })), [{ key, source: "opencode" }], path);
+      assert.equal(rows.some(({ id }) => id === "ses_A"), false, `${path}: no totals of part of the session`);
+    } finally {
+      await chmod(at, path.endsWith(".json") ? 0o644 : 0o755);
+    }
+  }
+});
+
+test("a session whose size query fails is a failure when its read fails too, never left out unsaid; one its reader says is gone is passed over", async (t) => {
+  const { mkdir, writeFile } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const dir = await tempHome(t);
+  const db = join(dir, ".local", "share", "opencode", "opencode.db");
+  await mkdir(join(db, ".."), { recursive: true });
+  await writeFile(db, "");
+  const broken = Object.assign(new Error("database disk image is malformed"), { code: "ERR_SQLITE_ERROR" });
+  // Listed with two sessions; ses_gone no longer there by its size, ses_bad's size and read both failing (a database
+  // damaged after it was listed).
+  const reader = {
+    ...READERS.opencode,
+    discover: async () => [{ file: db, id: "ses_bad" }, { file: db, id: "ses_gone" }],
+    stat: async ({ id }) => {
+      if (id === "ses_gone") return null;
+      throw broken;
+    },
+    read: async () => {
+      throw broken;
     },
   };
   const failures = [];
-  const totals = await parseHome(dir, { sources: ["claude-code"], readers: { "claude-code": failing }, failures, catalog: false });
-  assert.equal(failures.length, 1);
-  assert.equal(totals.length, 1);
-  assert.equal(totals[0].calls, 1, "the copy holds the shared request");
-  assert.equal(totals[0].turns, 2, "and the shared prompt");
+  assert.deepEqual(await parseHome(dir, { sources: ["opencode"], readers: { opencode: reader }, catalog: false, failures }), []);
+  assert.deepEqual(failures.map(({ key, source }) => ({ key, source })), [{ key: sha(".local/share/opencode/opencode.db#ses_bad"), source: "opencode" }]);
+});
+
+test("a resumed read that fails gives up the records it held: copies in later files count, as in a fresh pass, and the next pass reads it from its start", async (t) => {
+  const dir = await tempHome(t);
+  const ORIGINAL = "00000000-0000-4000-8000-0000000000a1";
+  const RESUMED = "00000000-0000-4000-8000-0000000000b2";
+  const shared = [claudeUser({ uuid: "u1", text: PROMPT, i: 0, session: ORIGINAL }), claudeAnswer({ uuid: "a1", msg: "msg_1", req: "req_1", usage: anthropicUsage(10, 20), i: 1, session: ORIGINAL })];
+  const original = await writeJsonl(claudeFile(dir, ORIGINAL), shared);
+  const resumed = await writeJsonl(claudeFile(dir, RESUMED), [...shared.map((r) => ({ ...r, sessionId: RESUMED })), claudeUser({ uuid: "u2", text: "More.", i: 10, session: RESUMED })]);
+  await utimes(original, 1_000, 1_000);
+  await utimes(resumed, 2_000, 2_000);
+  const real = READERS["claude-code"];
+  // The original cannot be read this once (an I/O error), the copy can.
+  const failing = { ...real, read: (locator, cursor, options) => (locator.file === original ? Promise.reject(Object.assign(new Error("injected"), { code: "EIO" })) : real.read(locator, cursor, options)) };
+  const scan = (readers, state) => parseHome(dir, { sources: ["claude-code"], catalog: false, failures: [], ...(readers ? { readers: { "claude-code": readers } } : {}), ...(state ? { state } : {}) });
+  const state = {};
+  await scan(undefined, state);
+  const failed = await scan(failing, state);
+  assert.deepEqual(failed, await scan(failing), "the failed pass is the fresh pass with the same failure");
+  assert.equal(failed[0].calls, 1, "the copy holds the shared request");
+  const after = await scan(undefined, state);
+  assert.deepEqual(after, await scan(), "the next pass is the fresh pass");
 });
