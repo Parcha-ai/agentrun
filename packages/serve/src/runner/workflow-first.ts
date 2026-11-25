@@ -397,14 +397,14 @@ export function firstChoice(facts: FirstFacts): FirstAsk | FirstChosen {
     return done("past_unread");
   }
   const line = costLineOf(facts.past, chosen.name, digest);
-  if (line.served.runs < COST_WINDOW) return done("served", serve);
+  const stopped = stopReasonOf(line);
+  if (!stopped) return done("served", serve);
   // Fails closed: COST_WINDOW served runs and no by-hand cost to hold them to leave the run to the agent, never served
   // unchecked, and ask for no revision (there is no by-hand figure to say).
-  if (line.by_hand === null) {
+  if (stopped === "no_by_hand_cost") {
     said.push(`workflow-first: no by-hand cost to hold ${chosen.name} to (no run of known cost on the agent's path since the reset, among its newest ${PAST_RUNS} runs or the ${COST_WINDOW} by hand before them); the agent takes this run`);
     return done("no_by_hand_cost");
   }
-  if (!overLine(line)) return done("served", serve);
   const { stop, words } = stopOf(chosen.name, digest, line);
   said.push(`workflow-first: ${words}; it does not run first until a new revision of it; the agent takes this run`);
   return done("cost_stop", { ...champion, revise: { ...stop, revision: launch.learning.seed, ...shaped } });
@@ -418,10 +418,12 @@ function stopOf(name: string, digest: string, line: ReturnType<typeof costLineOf
 }
 
 /** The money rule over the learned workflows a run's own learned_workflow tool runs (`flows`, runner/promotion.ts
- *  toolFlowsFor), whoever would call them: one over the line at the digest the tool runs (costLineOf over the agent's
- *  runs, `past`, overLine) leaves the tool (`flows`), and is a stop that asks for its revision (`stops`, Revise), as
- *  firstChoice's cost_stop is for the platform's call. Past runs it can't read (`unread`) leave the tool none: it fails
- *  closed, as firstChoice does. `said`: the log lines. Pure. */
+ *  toolFlowsFor), whoever would call them, by the stop firstChoice reads (stopReasonOf over costLineOf of the agent's
+ *  runs, `past`, at the digest the tool runs): over the line (`over_line`) it leaves the tool (`flows`) and is a stop that
+ *  asks for its revision (`stops`, Revise), as firstChoice's cost_stop; with COST_WINDOW served runs and no by-hand cost
+ *  to hold them to (`no_by_hand_cost`) it leaves the tool with no stop, as firstChoice's no_by_hand_cost (no by-hand
+ *  figure for a revision to beat). Past runs it can't read (`unread`) leave the tool none: it fails closed, as
+ *  firstChoice does. `said`: the log lines. Pure. */
 export function toolStopsOf(past: PastRuns | { readonly unread: string }, flows: readonly LearnedWorkflow[]): { flows: LearnedWorkflow[]; stops: Revise[]; said: string[] } {
   if (!flows.length) return { flows: [], stops: [], said: [] };
   if ("unread" in past) return { flows: [], stops: [], said: [`workflow-first: the money rule could not read the agent's past runs (${past.unread}); the learned_workflow tool runs none of ${flows.map((one) => one.name).join(", ")}`] };
@@ -431,8 +433,13 @@ export function toolStopsOf(past: PastRuns | { readonly unread: string }, flows:
   for (const flow of flows) {
     const digest = workflowDigest(flow);
     const line = costLineOf(past, flow.name, digest);
-    if (!overLine(line)) {
+    const stopped = stopReasonOf(line);
+    if (!stopped) {
       kept.push(flow);
+      continue;
+    }
+    if (stopped === "no_by_hand_cost") {
+      said.push(`workflow-first: no by-hand cost to hold ${flow.name} to (${line.served.runs} served runs and no run of known cost on the agent's path); the learned_workflow tool leaves it out`);
       continue;
     }
     const { stop, words } = stopOf(flow.name, digest, line);
