@@ -103,13 +103,15 @@ function answersOf(text: string, questions: DecisionRequest["questions"]): Recor
   if (!isRecord(given)) return "an answer that is not a JSON object";
   const ids = Object.keys(questions);
   if (Object.keys(given).length !== ids.length || Object.keys(given).some((id) => !Object.hasOwn(questions, id))) return "answers that do not match the questions asked";
-  const answers: Record<string, ProviderAnswer> = {};
+  // Built from entries (Object.fromEntries defines each key as its own): a question may be named __proto__, which an
+  // assignment on a plain object would take as its prototype.
+  const answers: Array<[string, ProviderAnswer]> = [];
   for (const id of ids) {
     const question = questions[id]!;
     const value = given[id];
     if (question.type === "noul") {
       if (!isUnit(value)) return `no probability for "${id}"`;
-      answers[id] = { type: "noul", noul: value };
+      answers.push([id, { type: "noul", noul: value }]);
       continue;
     }
     const options = optionsOf(question);
@@ -118,9 +120,9 @@ function answersOf(text: string, questions: DecisionRequest["questions"]): Recor
     if (!(sum > 0)) return `probabilities that sum to 0 for "${id}"`;
     const probabilities = Object.fromEntries(options.map((option) => [option, Math.abs(sum - 1) < 1e-9 ? (value[option] as number) : (value[option] as number) / sum]));
     const choice = options.reduce((best, option) => (probabilities[option]! > probabilities[best]! ? option : best), options[0]!);
-    answers[id] = { type: "choice", choice, probabilities };
+    answers.push([id, { type: "choice", choice, probabilities }]);
   }
-  return answers;
+  return Object.fromEntries(answers);
 }
 
 /** An outcome, and the temperature its request carried (temperatureFor) with whether the model applied it. */
