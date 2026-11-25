@@ -8,7 +8,7 @@ import { basename, join } from "node:path";
 import { test } from "node:test";
 import { request } from "node:http";
 import { execFileSync } from "node:child_process";
-import { keptReads, wrappedView } from "../dist/wrapped.js";
+import { keptReads, within, wrappedView } from "../dist/wrapped.js";
 import { agent, follow, serve } from "./support.mjs";
 
 const WORDS = "Fixture prompt, never reported.";
@@ -50,7 +50,7 @@ test("GET /wrapped reads the year under the home: tokens, days, hours, models, h
   assert.equal(body.hours[9], 2);
   assert.equal(body.weekdays[1], 2);
   assert.equal(body.active_ms, 30_000);
-  assert.deepEqual(body.models.map((m) => [m.model, m.requests, m.tokens]), [["anthropic/claude-fixture-1", 2, 440]]);
+  assert.deepEqual(body.models.map((m) => [m.model, m.requests, m.tokens, m.unpriced_requests]), [["anthropic/claude-fixture-1", 2, 440, body.unpriced_requests]], "a model's own unpriced count: here its two are all the year's");
   assert.deepEqual(body.sources, [{ source: "claude-code", sessions: 0, requests: 2 }]);
   assert.deepEqual(body.harnesses.map((h) => [h.harness, h.sources]), [["claude-agent", ["claude-code"]]], "each harness row names the sources behind it, for the console's links to their runs");
   assert.deepEqual(body.imported.map((g) => [g.source, g.runs]).sort(), [["claude-code", 2], ["codex", 1]]);
@@ -164,24 +164,24 @@ test("a process a test starts with the test's environment has the empty home for
   assert.match(basename(home), /^agentrun-home-/);
 });
 
-test("a read past the wait answers 503 with a retry while it goes on; its year then comes at once, kept", { timeout: 120_000 }, async (t) => {
+test("a read past the wait answers 503 with a retry while it goes on", { timeout: 120_000 }, async (t) => {
   const home = await homeWith(t);
   const { api } = await serve(t, { sessionsHome: { home }, wrappedWaitMs: 0 });
-  // No wait: the worker has not even started when the answer is due.
+  // No wait: the worker has not even started when the answer is due. That the read goes on, and is then kept, is keptReads'.
   const early = await api("GET", "/wrapped?year=2026");
   assert.deepEqual([early.status, early.body.error?.code, early.body.error?.retry_after_ms], [503, "unavailable", 5_000], JSON.stringify(early.body));
-  let body;
-  for (const deadline = Date.now() + 60_000; Date.now() < deadline; await new Promise((r) => setTimeout(r, 200))) {
-    const asked = await api("GET", "/wrapped?year=2026");
-    if (asked.status === 200) {
-      body = asked.body;
-      break;
-    }
-    assert.equal(asked.status, 503, JSON.stringify(asked.body));
-  }
-  assert.equal(body?.requests, 2, "the read went on and ended");
-  // Kept: with no wait at all, only a read already done can answer 200.
-  assert.equal((await api("GET", "/wrapped?year=2026")).status, 200);
+});
+
+test("within answers the read when it comes in time and undefined at the wait's end, on the clock it is given", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let resolve;
+  const slow = within(new Promise((r) => (resolve = r)), 15_000);
+  t.mock.timers.tick(15_000);
+  assert.equal(await slow, undefined, "still going at the wait's end");
+  resolve(READ);
+  const quick = within(Promise.resolve(READ), 15_000);
+  assert.equal(await quick, READ);
+  await assert.rejects(within(Promise.reject(new Error("the worker ended")), 15_000), /the worker ended/, "a read that fails in time fails the wait");
 });
 
 test("Wrapped prices at serve's catalog: a model serve lists and pi-ai's built-in list does not is priced, not unpriced", { timeout: 120_000 }, async (t) => {
@@ -243,15 +243,19 @@ test("keptReads keeps a year already over until the server stops, and reads each
   assert.deepEqual(calls.map((call) => call.year), [2025, 2024]);
 });
 
-test("keptReads drops a read that failed: the next ask reads again", async (t) => {
+test("keptReads keeps a read that failed for a minute, as it keeps one that read: the next ask gets its failure, not a second read", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: new Date(2026, 5, 1).getTime() });
   const { calls, kept } = keptOver();
   const failed = kept(2025);
   calls[0].reject(new Error("the worker ended"));
   await assert.rejects(failed, /the worker ended/);
   await settled();
+  t.mock.timers.tick(59_000);
+  assert.equal(kept(2025), failed, "the failure is kept within the minute: a home past the worker's heap is not read again on every ask");
+  assert.equal(calls.length, 1);
+  t.mock.timers.tick(2_000);
   const again = kept(2025);
-  assert.notEqual(again, failed);
+  assert.notEqual(again, failed, "read again past the minute, even for a year already over");
   assert.equal(calls.length, 2);
   calls[1].resolve(READ);
   assert.equal(await again, READ);
