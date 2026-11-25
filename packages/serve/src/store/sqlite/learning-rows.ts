@@ -5,7 +5,7 @@
 // notes and rewrites each workflow version that held a file it wrote, file by file (rewriteWorkflow).
 import { randomBytes } from "node:crypto";
 import type { Learning, LearningAt, LearningChangeKind, LearningDiff, LearningItem, LearningItemKind, LearningRecord, LearningRecordKind, LearningRecordWrite, LearningSave, LearningSaveBy } from "../store.js";
-import { workflowRunOf, WORKFLOWS_DIR } from "../../learn/workflow-draft.js";
+import { learnedStatus, retiredLearned, workflowRunOf, WORKFLOWS_DIR } from "../../learn/workflow-draft.js";
 import type { SqliteExecutor, SqliteValue, StoreConnection, Tx } from "./connection.js";
 
 type SaveKind = "init" | "run" | "person" | "purged";
@@ -64,11 +64,12 @@ const filesIn = (body: string | null): Record<string, string> => (body === null 
  *  version held before and none holds after (`lost`: their promotions and audits are of the run's text alone), and
  *  whether no version is left (`gone`). */
 async function rewriteWorkflow(tx: Tx, agentId: string, runId: string, name: string): Promise<{ lost: string[]; gone: boolean }> {
-  const rows = await tx.all<{ version: number | string; body: string | null; writers: string | null; by_run: string | null; digest: string | null; save_kind: SaveKind; save_run: string | null }>(
-    `SELECT i.version, i.body, i.writers, i.by_run, i.digest, s.kind AS save_kind, s.by_run AS save_run
+  const rows = await tx.all<{ version: number | string; body: string | null; writers: string | null; by_run: string | null; digest: string | null; person: number | string; change: string; save_kind: SaveKind; save_run: string | null }>(
+    `SELECT i.version, i.body, i.writers, i.by_run, i.digest, i.person, i.change, s.kind AS save_kind, s.by_run AS save_run
        FROM learning_items i JOIN learning_saves s ON s.agent_id = i.agent_id AND s.version = i.version
       WHERE i.agent_id = ? AND i.kind = 'workflow' AND i.name = ? ORDER BY i.version`, agentId, name);
   const json = `${WORKFLOWS_DIR}/${name}/workflow.json`;
+  const readme = `${WORKFLOWS_DIR}/${name}/README.md`;
   const digests = new Map<string, string>();
   for (const row of rows) {
     const text = filesIn(row.body)[json];
@@ -94,6 +95,17 @@ async function rewriteWorkflow(tx: Tx, agentId: string, runId: string, name: str
         continue;
       }
       if (file.writer !== runId) state.set(path, file);
+    }
+    // A person's retire is the owner's decision on the workflow, not on the run's text: it stays on the version that
+    // comes back (its README.md retired as a retire writes it, its writer the text's), so a purge never serves again
+    // what the owner stopped. A README.md that cannot be retired so reads retired already (learnedStatus).
+    const front = state.get(readme);
+    if (Number(row.person) === 1 && row.change === "retired" && front && learnedStatus(front.text) !== "retired") {
+      try {
+        state.set(readme, { text: retiredLearned(front.text), writer: front.writer });
+      } catch {
+        // Unreadable front matter: retired as it reads.
+      }
     }
     was = now;
     const paths = [...state.keys()].sort(byBytes);
