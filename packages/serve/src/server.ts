@@ -1839,7 +1839,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   let asked: Promise<void> | undefined;
   /** The login runs here go on, as its folders are now (loginOf, one look at them), handed over where it differs from
    *  the one held. The held one is the start's or the last turn's, and a folder mended with a chmod since (or refused
-   *  since) changes it with no turn: a run's check, a save's and capabilities ask this first, so they agree with the Settings view, which looks at the folders itself (loginAt). It answers once env,
+   *  since) changes it with no turn: a run's check, a save's, a template's plan or apply (prepareApply) and capabilities
+   *  ask this first, so they agree with the Settings view, which looks at the folders itself (loginAt). It answers once env,
    *  needs and the offers are made from the login it found, so no request sees a new login with the offers made before
    *  it. The look and the hand-over are one turn on the sign-ins' queue, the one way the setting changes, so a turn on or
    *  off asked meanwhile lands before the look or after the hand-over, never between them. The reading after the
@@ -3841,6 +3842,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // one is made only while it is still this agent's (TriggerOwn.onAgent), so one a PATCH moves away meanwhile is left.
     const had = onto ? await store.triggers.list(onto.agent.id) : [];
     if (onto && !plan && options.templateApplyRead) await options.templateApplyRead(onto.agent.id);
+    // Claude Code's login as its folders are now, before the choice, the harness and the model are read from env and the
+    // offers made with it.
+    await loginNow();
     // A model choice's own keys are needed as the package's are: missing, the apply is refused and nothing is made. Under
     // the run-keys setting, a tool key is each run's to carry (run-keys.ts): its agent is made, the warning says so, and a
     // run that does not carry it is refused. A model key is still the server's, and so is monid's: the agent's monid tools
