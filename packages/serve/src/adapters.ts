@@ -97,6 +97,15 @@ const freeName = (base: string, exists: (path: string) => boolean): string => {
   return name;
 };
 
+/** Set by the agentrun launcher (start.mjs) on the server it starts when the installer's command (install.sh's
+ *  <root>/bin/agentrun) is what runs it: that command's path. The person's login shell has that command, never npx or
+ *  the installer's Node, so a refusal names it. */
+export const INSTALLED_COMMAND_ENV = "AGENTRUN_INSTALLED_COMMAND";
+
+/** The installer's command as the person types it: `agentrun` when its folder is on PATH (the installer adds it to the
+ *  login shell's), else its path. */
+const typedCommand = (command: string, env: NodeJS.ProcessEnv): string => ((env.PATH ?? "").split(":").includes(dirname(command)) ? "agentrun" : shellWord(command));
+
 /**
  * A start the agentrun launcher made (NPX_PACKAGE_ENV: by npx, or by the installer's bin/agentrun and its service, the
  * same launcher) that a data directory refused because an earlier version wrote it (store.ts StoreFromEarlierVersion,
@@ -104,13 +113,14 @@ const freeName = (base: string, exists: (path: string) => boolean): string => {
  * then the two ways on as commands to paste. That command keeps its data in ~/.agentrun wherever it is run, so a new
  * folder alone is not a new AgentRun. First, the old folder moved aside whole, so the same command starts this version
  * where it was, and the earlier version still opens what it holds; then this version on a new, empty folder: the same
- * command with --data. Nothing is deleted either way.
+ * command with --data. Nothing is deleted either way. The command is the one that started this server, as the launcher
+ * says (INSTALLED_COMMAND_ENV): the installer's, else npx's; never read from what the folder holds.
  *
- * The installer keeps its Node, its packages and the command in the folder beside the data (install.sh: node/, lib/,
- * bin/agentrun), and that command or its service may be what started this: there may be no npx, the moved command points
- * at the paths it left, and the service starts on the refused folder whatever another command says. So there the one
- * way on is the folder moved aside, then the installer run again. Any other error, or a start the launcher did not make,
- * is undefined: the refusal's own words stand.
+ * The installer keeps its Node, its packages and its command in the folder beside the data (install.sh: node/, lib/,
+ * bin/agentrun). When that command started this from the folder refused, it or its service has no npx at hand, moving
+ * the folder takes the command, and the service starts on the refused folder whatever another command says. So there the
+ * one way on is the folder moved aside, then the installer run again for this same version (by default it installs the
+ * latest). Any other error, or a start the launcher did not make, is undefined: the refusal's own words stand.
  */
 export function earlierDataRefusal(error: unknown, data: string, env: NodeJS.ProcessEnv = {}, exists: (path: string) => boolean = existsSync): string | undefined {
   const refused = error as { name?: unknown; message?: unknown; found?: unknown; known?: unknown } | undefined;
@@ -118,18 +128,22 @@ export function earlierDataRefusal(error: unknown, data: string, env: NodeJS.Pro
   const { launcher, yes, flags } = startedAs(env);
   if (!earlier || typeof refused?.message !== "string" || launcher === undefined) return undefined;
   const dir = resolve(data);
-  const command = `npx ${yes}${launcher}`;
+  const installed = env[INSTALLED_COMMAND_ENV] ? resolve(env[INSTALLED_COMMAND_ENV]) : undefined;
+  const command = installed === undefined ? `npx ${yes}${launcher}` : typedCommand(installed, env);
   // The launcher's own folder when --data names none (agentrun start.mjs): this same command opens `dir` again with no
   // --data only when `dir` is it.
   const launcherData = resolve(commandData(env));
   const aside = freeName(`${dir}-earlier`, exists);
   const mv = `mv ${shellWord(dir)} ${shellWord(aside)}`;
+  const back = `The earlier version opens the old data with --data ${shellWord(aside)}.`;
   // The store's own refusal already says to add them again; an earlier release's schema says it only in the lines cut here.
   const again = refused.name === "SchemaVersionUnknown" ? " Add your agents, MCP servers, keys and sign-ins again in this version." : "";
-  if (exists(join(dir, "bin", "agentrun"))) {
+  if (installed === join(dir, "bin", "agentrun")) {
+    const version = launcher.slice(launcher.lastIndexOf("@") + 1);
     return [
       refused.message.split("\n")[0],
-      `To keep all of it and start this version in ${dir}: ${mv}, then run the installer again. Moving the folder takes the installer's Node, packages and command with it (node/, lib/, bin/agentrun); the installer puts this version's back.`,
+      `To keep all of it and start this version in ${dir}: ${mv}, then run the installer again for this version: curl -fsSL https://agentrun.ai/install | sh -s -- --version ${version}. Moving the folder takes the installer's Node, packages and command with it (node/, lib/, bin/agentrun); the installer puts this version's back.`,
+      back,
       `Nothing is deleted.${again}`,
     ].join("\n");
   }
@@ -138,7 +152,7 @@ export function earlierDataRefusal(error: unknown, data: string, env: NodeJS.Pro
     refused.message.split("\n")[0],
     // Moved aside first: every later command (doctor, the harness commands) then finds this version where it looks with
     // nothing more to remember; a new folder means the same --data on each of them.
-    `To keep all of it where the earlier version still opens it and start this version in ${dir}: ${mv}, then ${command}${dir === launcherData ? "" : ` --data ${shellWord(dir)}`}${flags}. The earlier version opens the old data with --data ${shellWord(aside)}.`,
+    `To keep all of it where the earlier version still opens it and start this version in ${dir}: ${mv}, then ${command}${dir === launcherData ? "" : ` --data ${shellWord(dir)}`}${flags}. ${back}`,
     `Or start this version on a new, empty folder: ${command} --data ${shellWord(fresh)}${flags}`,
     `  (every later agentrun command then takes the same --data: without it, they open ${launcherData})`,
     `Either way, nothing is deleted.${again}`,

@@ -2,11 +2,12 @@
 // npx installs the two together and this command always runs the server it was released with. The server's own CLI picks
 // the port and whether to open the browser; this command passes its arguments through.
 import { execFileSync, spawn } from "node:child_process";
-import { closeSync, constants, fchmodSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
+import { closeSync, constants, fchmodSync, mkdirSync, openSync, readFileSync, realpathSync, writeSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
+import { fileURLToPath } from "node:url";
 import { main as cli, NOUNS, words } from "./cli.mjs";
 import { OWN_VERSION } from "./own.mjs";
 import { chosenPublicUrl } from "./public-url.mjs";
@@ -239,6 +240,31 @@ export const USAGE = `Usage: npx @parcha/agentrun [--port N] [--data DIR] [--no-
        npx @parcha/agentrun import|reset-password|runner|native|learning [--data DIR]   a server command (native: discover/connect an existing project)
        npx @parcha/agentrun <command> [args]   the server's API: agents, runs, triggers, ..., api (npx @parcha/agentrun help)`;
 
+/** A path's real path, or undefined when it is not there. */
+const realOf = (path) => {
+  try {
+    return realpathSync(path);
+  } catch {
+    return undefined;
+  }
+};
+
+/** The installer's command when it is what runs this very copy, else undefined (npx, a global install, a checkout).
+ *  install.sh keeps this package at <root>/lib/<version>/node_modules/@parcha/agentrun and its command at
+ *  <root>/bin/agentrun, which quotes the bin it runs: this copy's, or another's once an upgrade has replaced it. The
+ *  server's refusals then name that command (AGENTRUN_INSTALLED_COMMAND), which the person's login shell has, not npx. */
+export function installedCommand(own = dirname(dirname(fileURLToPath(import.meta.url)))) {
+  const command = join(own, "..", "..", "..", "..", "..", "bin", "agentrun");
+  let text;
+  try {
+    text = readFileSync(command, "utf8");
+  } catch {
+    return undefined;
+  }
+  const bin = realOf(join(own, "bin", "agentrun.mjs"));
+  return [...text.matchAll(/'([^']+)'/g)].some(([, path]) => realOf(path) === bin) ? realOf(command) : undefined;
+}
+
 /** The server's launcher, installed with this package (its dependency), or undefined. */
 export function installedServer(resolve = createRequire(import.meta.url).resolve) {
   try {
@@ -400,6 +426,10 @@ export async function main(argv, env = process.env) {
   const launcher = installedServer();
   if (launcher === undefined) return console.error(`AgentRun's server (${SERVE_PACKAGE}) is not installed beside this command; run it as npx ${OWN_SPEC}.`), 1;
   const childEnv = { AGENTRUN_LOG: "quiet", ...env, AGENTRUN_NPX_PACKAGE: OWN_SPEC };
+  // The installer's command when it runs this copy, said afresh: one inherited from another start never stands.
+  const installed = installedCommand();
+  if (installed === undefined) delete childEnv.AGENTRUN_INSTALLED_COMMAND;
+  else childEnv.AGENTRUN_INSTALLED_COMMAND = installed;
   // Started by npx, this runs under npm exec and its `sh -c`. A signal to npm alone (a process manager's SIGTERM or
   // SIGKILL) ends npm and leaves this, and the server, with nobody to stop them: this finds that npm now, at its start,
   // and stops the server when it goes. Started any other way, it watches nothing, so a shell's own rules apply (`&`,

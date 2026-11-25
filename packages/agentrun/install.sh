@@ -746,19 +746,29 @@ vps_install_docker() {
 }
 
 # A server that has just booted may still be running cloud-init's, apt-daily's or unattended-upgrades' apt. dpkg's lock
-# is waited for once (DPkg::Lock::Timeout): a dpkg still stuck after it stops the install. Every other lock apt-get could
-# not get, which that option does not cover (the archives' an install takes, the lists' an update takes), by trying
-# again until 600 s by the clock have passed since the first try. A try can itself wait up to 600 s for dpkg's lock before
-# another lock refuses it, so the clock, not the sleeps, bounds the whole wait: at most about 1200 s.
+# is waited for by apt-get itself (DPkg::Lock::Timeout): a dpkg still stuck after it stops the install. Every other lock
+# apt-get could not get, which that option does not cover (the archives' an install takes, the lists' an update takes),
+# by trying again, 5 s apart, until 600 s have passed since the first such refusal. That one deadline bounds both locks:
+# the first try waits up to 600 s for dpkg's, and each later try only for the time left before it, so the whole wait is
+# at most about 1200 s, and a first try that waited long for dpkg's lock still leaves the tries again their 600 s. Its
+# clock is the time since boot (/proc/uptime: --vps runs on Ubuntu and Debian alone), which the clock steps a just-booted
+# server takes (timesyncd, chrony) never move.
 # Under LC_ALL=C, so the words matched are apt's English ones on a server set to any language.
 vps_apt() {
-  apt_until=$(($(date +%s) + 600)) apt_said=
-  until LC_ALL=C DEBIAN_FRONTEND=noninteractive apt-get -y -qq -o Dpkg::Use-Pty=0 -o DPkg::Lock::Timeout=600 "$@" > "$work/apt.log" 2>&1; do
-    if [ "$(date +%s)" -lt "$apt_until" ] && grep 'Could not get lock' "$work/apt.log" | grep -qv '/var/lib/dpkg/'; then
-      [ -n "$apt_said" ] || say "Waiting for the apt-get another process is running ..."
-      apt_said=1
-      sleep 5
-      continue
+  apt_until= apt_said= apt_wait=600
+  until LC_ALL=C DEBIAN_FRONTEND=noninteractive apt-get -y -qq -o Dpkg::Use-Pty=0 -o DPkg::Lock::Timeout=$apt_wait "$@" > "$work/apt.log" 2>&1; do
+    if grep 'Could not get lock' "$work/apt.log" | grep -qv '/var/lib/dpkg/'; then
+      read -r apt_now _ < /proc/uptime
+      [ -n "$apt_until" ] || apt_until=$((${apt_now%%.*} + 600))
+      if [ "${apt_now%%.*}" -lt "$apt_until" ]; then
+        [ -n "$apt_said" ] || say "Waiting for the apt-get another process is running ..."
+        apt_said=1
+        sleep 5
+        read -r apt_now _ < /proc/uptime
+        apt_wait=$((apt_until - ${apt_now%%.*}))
+        [ "$apt_wait" -gt 0 ] || apt_wait=0
+        continue
+      fi
     fi
     tail -n 20 "$work/apt.log" >&2
     fail "apt-get $* failed (its last lines are above)"
