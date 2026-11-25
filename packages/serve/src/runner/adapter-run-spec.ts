@@ -184,6 +184,9 @@ export interface AdapterSpecDeps {
   readonly log?: (message: string) => void;
   /** For tests: a learning run's grade bound, as a signal (learning-dispatch.ts gradeBound). Default: GRADE_TIMEOUT_MS. */
   readonly gradeBound?: () => AbortSignal;
+  /** For tests: the most a native or SDK run's end waits on its cost and metrics read before it is written without them.
+   *  Default: END_PATCH_MS (loop.ts), as the adapter loop's spec.endPatchMs. */
+  readonly endPatchMs?: number;
   /** The one shared claim-time computer (computer-for-claim.ts), for both the pi and the CLI spec: none for a runner place.
    *  The runner gives it; a test gives its own. */
   readonly computerForClaim: ComputerForClaim;

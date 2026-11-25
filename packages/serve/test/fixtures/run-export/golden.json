@@ -1,0 +1,403 @@
+{
+  "agent": {
+    "kind": "agentic",
+    "name": "Golden agent"
+  },
+  "cuts": [
+    {
+      "at": "/rows/0/summary",
+      "end": 48,
+      "id": "c_824fbfa76a6ab5d4",
+      "kind": "label",
+      "restorable": true,
+      "rule": "secret-assign",
+      "shape": "alnum[20]",
+      "start": 24
+    },
+    {
+      "at": "/rows/0/summary",
+      "end": 87,
+      "id": "c_05af703d64842a4a",
+      "kind": "personal",
+      "restorable": true,
+      "rule": "email",
+      "shape": "email[32]",
+      "start": 71
+    },
+    {
+      "at": "/rows/0/text",
+      "end": 48,
+      "id": "c_66ac6506a31fb0a3",
+      "kind": "label",
+      "restorable": true,
+      "rule": "secret-assign",
+      "shape": "alnum[20]",
+      "start": 24
+    },
+    {
+      "at": "/rows/0/text",
+      "end": 87,
+      "id": "c_0d932a6e0c209068",
+      "kind": "personal",
+      "restorable": true,
+      "rule": "email",
+      "shape": "email[32]",
+      "start": 71
+    },
+    {
+      "at": "/rows/1/summary",
+      "end": 36,
+      "id": "c_ddc6e850c14b2a2e",
+      "kind": "format",
+      "restorable": false,
+      "rule": "sk-key",
+      "shape": "sk-proj-…[56]",
+      "start": 19
+    },
+    {
+      "at": "/rows/1/summary",
+      "end": 77,
+      "id": "c_f7943647e522a1a7",
+      "kind": "format",
+      "restorable": false,
+      "rule": "github-token",
+      "shape": "ghp_…[40]",
+      "start": 54
+    },
+    {
+      "at": "/rows/1/summary",
+      "end": 115,
+      "id": "c_a8ab72fa212a8757",
+      "kind": "format",
+      "restorable": false,
+      "rule": "aws-access-key",
+      "shape": "AKIA…[20]",
+      "start": 90
+    },
+    {
+      "at": "/rows/1/text",
+      "end": 36,
+      "id": "c_000c33075f8df77e",
+      "kind": "format",
+      "restorable": false,
+      "rule": "sk-key",
+      "shape": "sk-proj-…[56]",
+      "start": 19
+    },
+    {
+      "at": "/rows/1/text",
+      "end": 77,
+      "id": "c_9cb784599fd073e2",
+      "kind": "format",
+      "restorable": false,
+      "rule": "github-token",
+      "shape": "ghp_…[40]",
+      "start": 54
+    },
+    {
+      "at": "/rows/1/text",
+      "end": 115,
+      "id": "c_dccfb964f26a7525",
+      "kind": "format",
+      "restorable": false,
+      "rule": "aws-access-key",
+      "shape": "AKIA…[20]",
+      "start": 90
+    },
+    {
+      "at": "/rows/2/summary",
+      "end": 33,
+      "id": "c_c083f1a2ff4cc4cf",
+      "kind": "dump",
+      "restorable": false,
+      "rule": "env-dump",
+      "shape": "lines:4[80]",
+      "start": 6
+    },
+    {
+      "at": "/rows/2/text",
+      "end": 33,
+      "id": "c_6e1ecb6663633a46",
+      "kind": "dump",
+      "restorable": false,
+      "rule": "env-dump",
+      "shape": "lines:4[80]",
+      "start": 6
+    },
+    {
+      "at": "/rows/3/summary",
+      "end": 30,
+      "id": "c_4bc2de29bab2912d",
+      "kind": "personal",
+      "restorable": true,
+      "rule": "private-ip",
+      "shape": "ip[11]",
+      "start": 9
+    },
+    {
+      "at": "/rows/3/summary",
+      "end": 57,
+      "id": "c_12243d656f8c82d5",
+      "kind": "personal",
+      "restorable": true,
+      "rule": "home-path",
+      "shape": "home[8]",
+      "start": 51
+    },
+    {
+      "at": "/rows/3/text",
+      "end": 30,
+      "id": "c_2ee7ed2a38cba84e",
+      "kind": "personal",
+      "restorable": true,
+      "rule": "private-ip",
+      "shape": "ip[11]",
+      "start": 9
+    },
+    {
+      "at": "/rows/3/text",
+      "end": 57,
+      "id": "c_3e45833dfce59dde",
+      "kind": "personal",
+      "restorable": true,
+      "rule": "home-path",
+      "shape": "home[8]",
+      "start": 51
+    },
+    {
+      "at": "/rows/4/summary",
+      "end": 27,
+      "id": "c_e13c96e016a5f7b5",
+      "kind": "personal",
+      "restorable": true,
+      "rule": "email",
+      "shape": "email[32]",
+      "start": 11
+    },
+    {
+      "at": "/rows/4/summary",
+      "end": 46,
+      "id": "c_941ed45c120e5d3b",
+      "kind": "personal",
+      "restorable": true,
+      "rule": "home-path",
+      "shape": "home[8]",
+      "start": 40
+    },
+    {
+      "at": "/rows/4/summary",
+      "end": 74,
+      "id": "c_33f4fd2aa9d5aceb",
+      "kind": "format",
+      "restorable": false,
+      "rule": "sk-key",
+      "shape": "sk-proj-…[56]",
+      "start": 57
+    },
+    {
+      "at": "/rows/4/text",
+      "end": 27,
+      "id": "c_27ad257666b07fec",
+      "kind": "personal",
+      "restorable": true,
+      "rule": "email",
+      "shape": "email[32]",
+      "start": 11
+    },
+    {
+      "at": "/rows/4/text",
+      "end": 46,
+      "id": "c_b7ed7e5a5d321998",
+      "kind": "personal",
+      "restorable": true,
+      "rule": "home-path",
+      "shape": "home[8]",
+      "start": 40
+    },
+    {
+      "at": "/rows/4/text",
+      "end": 74,
+      "id": "c_4ae45f2c2f0dd13b",
+      "kind": "format",
+      "restorable": false,
+      "rule": "sk-key",
+      "shape": "sk-proj-…[56]",
+      "start": 57
+    },
+    {
+      "at": "/run/result/final_answer",
+      "end": 27,
+      "id": "c_7192e871f8749c00",
+      "kind": "personal",
+      "restorable": true,
+      "rule": "email",
+      "shape": "email[32]",
+      "start": 11
+    },
+    {
+      "at": "/run/result/final_answer",
+      "end": 46,
+      "id": "c_4b08d5130112f66e",
+      "kind": "personal",
+      "restorable": true,
+      "rule": "home-path",
+      "shape": "home[8]",
+      "start": 40
+    },
+    {
+      "at": "/run/result/final_answer",
+      "end": 74,
+      "id": "c_53573cd3656979a0",
+      "kind": "format",
+      "restorable": false,
+      "rule": "sk-key",
+      "shape": "sk-proj-…[56]",
+      "start": 57
+    },
+    {
+      "at": "/run/title",
+      "end": 48,
+      "id": "c_74b434b337661b96",
+      "kind": "label",
+      "restorable": true,
+      "rule": "secret-assign",
+      "shape": "alnum[20]",
+      "start": 24
+    },
+    {
+      "at": "/files/0/content",
+      "end": 33,
+      "id": "c_668ded26d7c9bbc6",
+      "kind": "held",
+      "restorable": false,
+      "rule": "held-value",
+      "shape": "alnum[33]",
+      "start": 12
+    },
+    {
+      "at": "/files/1/content",
+      "end": 40,
+      "id": "c_fa8e13aa17be7563",
+      "kind": "held",
+      "restorable": false,
+      "rule": "held-value",
+      "shape": "alnum[33]",
+      "start": 19
+    },
+    {
+      "at": "/files/1/content",
+      "end": 71,
+      "id": "c_92bace0459877f72",
+      "kind": "personal",
+      "restorable": true,
+      "rule": "email",
+      "shape": "email[32]",
+      "start": 55
+    }
+  ],
+  "files": [
+    {
+      "bytes": 34,
+      "content": "held again: [redacted:held-value]\n",
+      "encoding": "utf8",
+      "path": "out/notes.txt",
+      "sha256": "efdd5f66d0c235a6969ba4a9f61ab7c73331592b558403e90c29906539049a3d"
+    },
+    {
+      "bytes": 79,
+      "content": "# Report\nThe token [redacted:held-value] opened it, as [redacted:email] asked.\n",
+      "encoding": "utf8",
+      "path": "out/report.md",
+      "sha256": "c299d6234ac9663cd504c582e527345132fe5411df5b973a97186cfbedee59ca"
+    }
+  ],
+  "format": "agentrun.share/1",
+  "graph": null,
+  "omitted": [
+    {
+      "path": "out/shot.png",
+      "what": "file",
+      "why": "binary"
+    },
+    {
+      "what": "recordings",
+      "why": "never"
+    }
+  ],
+  "restored": [],
+  "rows": [
+    {
+      "created_at": "2026-11-23T10:00:01.000Z",
+      "id": "row_1",
+      "kind": "message",
+      "summary": "Connect with PGPASSWORD=[redacted:secret-assign] psql -h db, then mail [redacted:email]",
+      "text": "Connect with PGPASSWORD=[redacted:secret-assign] psql -h db, then mail [redacted:email]",
+      "timestamp": "2026-11-23T10:00:01.000Z"
+    },
+    {
+      "created_at": "2026-11-23T10:00:02.000Z",
+      "id": "row_2",
+      "kind": "text_block",
+      "summary": "Set OPENAI_API_KEY=[redacted:sk-key] and GITHUB_TOKEN=[redacted:github-token]; the AWS id [redacted:aws-access-key].",
+      "text": "Set OPENAI_API_KEY=[redacted:sk-key] and GITHUB_TOKEN=[redacted:github-token]; the AWS id [redacted:aws-access-key].",
+      "timestamp": "2026-11-23T10:00:02.000Z"
+    },
+    {
+      "created_at": "2026-11-23T10:00:03.000Z",
+      "id": "row_3",
+      "kind": "tool_result",
+      "summary": "$ env\n[redacted:env-dump 4 lines]\n$ echo done",
+      "text": "$ env\n[redacted:env-dump 4 lines]\n$ echo done",
+      "timestamp": "2026-11-23T10:00:03.000Z"
+    },
+    {
+      "created_at": "2026-11-23T10:00:04.000Z",
+      "id": "row_4",
+      "kind": "text_block",
+      "summary": "The host [redacted:private-ip] answered from {home}/<user>/work.",
+      "text": "The host [redacted:private-ip] answered from {home}/<user>/work.",
+      "timestamp": "2026-11-23T10:00:04.000Z"
+    },
+    {
+      "created_at": "2026-11-23T10:00:05.000Z",
+      "id": "row_5",
+      "kind": "final_answer",
+      "summary": "Done. Mail [redacted:email] about {home}/<user>/work; key [redacted:sk-key].",
+      "text": "Done. Mail [redacted:email] about {home}/<user>/work; key [redacted:sk-key].",
+      "timestamp": "2026-11-23T10:00:05.000Z"
+    }
+  ],
+  "run": {
+    "approvals": "ask",
+    "budget_refused_calls": 0,
+    "cost": {
+      "basis": "booked",
+      "usd": 0.0123
+    },
+    "created_at": "2026-11-23T10:00:00.000Z",
+    "effort": "medium",
+    "ended_at": "2026-11-23T10:05:00.000Z",
+    "error": null,
+    "imported_from": {
+      "source": "claude-code"
+    },
+    "kind": "agentic",
+    "result": {
+      "final_answer": "Done. Mail [redacted:email] about {home}/<user>/work; key [redacted:sk-key].",
+      "output": null
+    },
+    "review": null,
+    "state": "completed",
+    "status": "completed",
+    "stopped_for": null,
+    "title": "Connect with PGPASSWORD=[redacted:secret-assign] psql -h db"
+  },
+  "sha256": "3206083b01206826af267b9e9ee2ee3319577ca5897e1b83f291778a09c9faaa",
+  "source": {
+    "agentrun": "0.0.0-golden",
+    "scrubber": {
+      "rules": "aa1b4bf9b43632e60b9f18435f5d2e889c5320bd5e822d7239aae271be328385",
+      "version": 1
+    }
+  }
+}
