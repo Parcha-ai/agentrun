@@ -36,6 +36,18 @@ test("run workspace (Mode 2): opening sweeps what a killed exec left in the spil
   assert.deepEqual(logged, []);
 });
 
+test("run workspace (Mode 2), sweep: false: a Workspace that only writes files, opened beside the run's own, sweeps the spill folder neither at its open nor at its end", async () => {
+  const disk = new FakeArchilDisk();
+  disk.files.set(`${OUT}/exec-in-flight.out`, Buffer.from("an exec of the run's other Workspace"));
+  disk.dirs.add(OUT);
+  const run = await openRunWorkspace({ mode: 2, agentId: AGENT, runId: RUN, archil: claimOf(disk), log: () => {}, sweep: false });
+  await run.workspace.write("evidence/a.txt", "filed");
+  await run.end();
+  assert.equal(text(disk.files.get(`${OUT}/exec-in-flight.out`) ?? new Uint8Array()), "an exec of the run's other Workspace", "the other exec's spill file stays");
+  assert.deepEqual(disk.calls.filter((call) => call.op === "listPage" && call.recursive === true && call.prefix === `${OUT}/`), [], "no sweep listing");
+  assert.equal(text(disk.files.get(`${WORK}/evidence/a.txt`)), "filed", "it writes over the disk's file API");
+});
+
 test("run workspace (Mode 2): end() sweeps the spill folder, once", async () => {
   const disk = new FakeArchilDisk();
   const run = await openRunWorkspace({ mode: 2, agentId: AGENT, runId: RUN, archil: claimOf(disk), log: () => {} });

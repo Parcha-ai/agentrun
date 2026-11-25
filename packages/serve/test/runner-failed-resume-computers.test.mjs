@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { readBackOf } from "@parcha/agentrun-computer";
+import { archilControlFetch } from "./archil-control-fake.mjs";
 import { closeOpenSessions, scriptedOrigin } from "./conformance-pi-adapter.mjs";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
 import { KINDS } from "./workspace-kinds-fixture.mjs";
@@ -24,7 +25,9 @@ const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-sp
 const { sendCommand } = await import("../dist/runner/commands.js");
 const { computerForClaim } = await import("../dist/workspace/index.js");
 const { runEndComputers } = await import("../dist/workspace/run-end-computers.js");
-const { deleteKept, endKept, KEEP_MS, keptKeyOf, readKept } = await import("../dist/workspace/computer-kept.js");
+const { ARCHIL_API_KEY_ROW, saveArchilSettings } = await import("../dist/archil-settings.js");
+const { putSealedKey } = await import("../dist/server-keys.js");
+const { deleteKept, endKept, KEEP_MS, keepKept, keptKeyOf, readKept } =await import("../dist/workspace/computer-kept.js");
 
 const RUN = "run-1";
 const SEAL_KEY = Buffer.alloc(32, 7);
@@ -268,10 +271,199 @@ test("a stopped run's end on another runner deletes a dial machine kept by a liv
   await runEndComputers({ store: run.server, computers, log: (line) => logged.push(line), retryMs: 50 })({ runId: RUN, epoch: 3 });
   assert.deepEqual(run.docker.left(), [], "the stopped run's machine kept by runner-a is deleted with the earlier claim's");
   assert.deepEqual(logged, [`run ${RUN} is over: let go of the computers an earlier claim left on docker, c1, c2`]);
-  // runner-a's own end at the keep's time finds its machine gone: a delete that reads not_found is as good as done.
-  const ended = await endKept(run.server.settings, RUN, kept, async () => void (await deleteKept(run.docker.provider(), kept)));
-  assert.equal(ended, true, "runner-a's end marks its row ended");
+  assert.deepEqual(await readKept(run.server.settings, RUN), { ...kept, ended: true }, "the run's end marked the row ended once its delete took the machine");
+  // runner-a's own end at the keep's time finds its row ended already: it deletes nothing, and the row stays ended.
+  const deleted = [];
+  const ended = await endKept(run.server.settings, RUN, kept, async () => void deleted.push(kept.id));
+  assert.equal(ended, false, "runner-a's end finds its row ended by the run's end");
+  assert.deepEqual(deleted, [], "and asks no delete");
   assert.equal((await readKept(run.server.settings, RUN))?.ended, true);
+});
+
+test("a stopped run's end marks its kept row ending before it deletes the machine, whichever runner kept it or claim is taking it back, so a follow-up that queues the run again never takes that machine back mid-delete", { timeout: 60_000 }, async (t) => {
+  const run = await opened(t);
+  assert.equal(await run.server.runners.put({ runner: "runner-a", incarnation: "inc-a", refused: null }), true, "runner-a is there");
+  const kept = { provider: "docker", kind: "sandbox", id: "c2", name: "c2", epoch: 2, until: Date.now() + KEEP_MS, runner: "runner-a", incarnation: "inc-a" };
+  const computers = { kinds: KINDS, providers: { docker: () => run.docker.provider() } };
+  for (const row of [kept, { ...kept, taking: 3 }]) {
+    run.docker.held.set("c2", { ref: { id: "c2", name: "c2" }, labels: { "agentrun.run": RUN, "agentrun.epoch": "2" } });
+    await run.server.settings.put(keptKeyOf(RUN), row);
+    /** The row as the run's end's delete finds it. */
+    let atDelete;
+    const listed = run.docker.provider;
+    run.docker.provider = (...args) => {
+      const provider = listed(...args);
+      return { ...provider, release: async (...rest) => ((atDelete ??= await readKept(run.server.settings, RUN)), provider.release(...rest)) };
+    };
+    await runEndComputers({ store: run.server, computers, log: () => {}, retryMs: 50 })({ runId: RUN, epoch: 3 });
+    run.docker.provider = listed;
+    assert.deepEqual(atDelete, { ...kept, ending: true }, `the run is final: ${JSON.stringify(row)} reads ending before the delete, so no claim takes its machine back`);
+    assert.deepEqual(await readKept(run.server.settings, RUN), { ...kept, ended: true }, "and ended once the delete took it");
+    assert.deepEqual(run.docker.left(), [], "and the machine is deleted");
+  }
+});
+
+test("a stopped run that a follow-up queues again within the keep's time keeps the follow-up's new machine at its park: the stop's end marks the kept row ended once its delete took that machine, so the park writes its own keep instead of deleting its machine; a kept machine the end's list never showed stays ending for its keeper", { timeout: 60_000 }, async (t) => {
+  const run = await opened(t);
+  const computers = { kinds: KINDS, providers: { docker: () => run.docker.provider() } };
+  const kept = { provider: "docker", kind: "sandbox", id: "c2", name: "c2", epoch: 2, until: Date.now() + KEEP_MS };
+  run.docker.held.set("c2", { ref: { id: "c2", name: "c2" }, labels: { "agentrun.run": RUN, "agentrun.epoch": "2" } });
+  await run.server.settings.put(keptKeyOf(RUN), kept);
+  // A person's stop: the claim at epoch 3 ends the run, and its end deletes the kept machine.
+  await runEndComputers({ store: run.server, computers, log: () => {}, retryMs: 50 })({ runId: RUN, epoch: 3 });
+  assert.deepEqual(run.docker.left(), [], "the stop's end deleted the kept machine");
+  const afterStop = await readKept(run.server.settings, RUN);
+  // The follow-up's claim (epoch 4) made c3 and parks it within the old keep's time: the park's write.
+  const next = { provider: "docker", kind: "sandbox", id: "c3", name: "c3", epoch: 4, until: Date.now() + KEEP_MS };
+  assert.deepEqual(await keepKept(run.server.settings, RUN, next, {}), next, `the follow-up's park keeps its new machine over the stop's row ${JSON.stringify(afterStop)}`);
+  assert.deepEqual(await readKept(run.server.settings, RUN), next);
+  assert.deepEqual(afterStop, { ...kept, ended: true }, "the stop's end marked its row ended");
+
+  // A machine kept on runner-a's own engine, which this end's list does not show: never deleted here, so its row stays
+  // ending for runner-a's end at its time, which deletes it.
+  const pinned = { ...kept, id: "c8", name: "c8", runner: "runner-a", incarnation: "inc-a" };
+  await run.server.settings.put(keptKeyOf(RUN), pinned);
+  await runEndComputers({ store: run.server, computers, log: () => {}, retryMs: 50 })({ runId: RUN, epoch: 5 });
+  assert.deepEqual(await readKept(run.server.settings, RUN), { ...pinned, ending: true }, "a machine this end did not delete keeps its row ending");
+});
+
+test("a run's end whose delete takes the kept machine but not another marks the kept row ended at that machine's own delete, so a follow-up's park keeps its new machine; a kept machine its vendor says is gone, or that a later try's list no longer shows, ends its row the same way", { timeout: 60_000 }, async (t) => {
+  const run = await opened(t);
+  const computers = { kinds: KINDS, providers: { docker: () => run.docker.provider() } };
+  const kept = { provider: "docker", kind: "sandbox", id: "c2", name: "c2", epoch: 2, until: Date.now() + KEEP_MS };
+  // How each machine's delete answers: "ok"; "fail", the vendor refuses it on every try; "gone", the vendor ended it
+  // already (not_found, and its list no longer shows it); "stale", not_found while its list still shows it, so no later
+  // list proves it gone and the end asks until its bound; "lost", deleted, but the answer never came back (an error).
+  const cases = [
+    { answers: { c1: "fail", c2: "ok" }, left: ["c1@1"], failed: true },
+    { answers: { c1: "ok", c2: "gone" }, left: [], failed: false },
+    { answers: { c1: "ok", c2: "stale" }, left: ["c2@2"], failed: true },
+    { answers: { c1: "ok", c2: "lost" }, left: [], failed: false },
+  ];
+  /** The case's answers, by machine. */
+  let answering = {};
+  const listed = run.docker.provider;
+  t.after(() => {
+    run.docker.provider = listed;
+  });
+  run.docker.provider = (...args) => {
+    const provider = listed(...args);
+    return {
+      ...provider,
+      async release(ref, how) {
+        const answer = answering[ref.id];
+        if (answer === "fail") return { ok: false, error: { code: "unavailable", message: `the vendor refused to delete ${ref.id}` } };
+        if (answer === "gone" || answer === "lost") run.docker.held.delete(ref.id);
+        if (answer === "gone" || answer === "stale") return { ok: false, error: { code: "not_found", message: `${ref.id} is not there` } };
+        if (answer === "lost") return { ok: false, error: { code: "unreachable", message: `the delete of ${ref.id} was not answered` } };
+        return provider.release(ref, how);
+      },
+    };
+  };
+  for (const [at, { answers, left, failed }] of cases.entries()) {
+    const words = JSON.stringify(answers);
+    answering = answers;
+    run.docker.held.clear();
+    for (const epoch of [1, 2]) run.docker.held.set(`c${epoch}`, { ref: { id: `c${epoch}`, name: `c${epoch}` }, labels: { "agentrun.run": RUN, "agentrun.epoch": String(epoch) } });
+    await run.server.settings.put(keptKeyOf(RUN), kept);
+    const logged = [];
+    // A person's stop: the claim at epoch 3 ends the run; a delete that keeps failing is asked again until the bound.
+    await runEndComputers({ store: run.server, computers, log: (line) => logged.push(line), retryMs: 50, timeoutMs: 600 })({ runId: RUN, epoch: 3 });
+    assert.deepEqual(run.docker.left(), left, `${words}: the machines left`);
+    assert.equal(logged.some((line) => line.includes("could not be let go")), failed, `${words}: a delete that never went through is said: ${JSON.stringify(logged)}`);
+    assert.deepEqual(await readKept(run.server.settings, RUN), { ...kept, ended: true }, `${words}: the kept row ended once its own machine was gone, whatever came of the other delete`);
+    // The follow-up's claim made a new machine and parks it within the old keep's time.
+    const next = { provider: "docker", kind: "sandbox", id: `c${10 + at}`, name: `c${10 + at}`, epoch: 4, until: Date.now() + KEEP_MS };
+    assert.deepEqual(await keepKept(run.server.settings, RUN, next, {}), next, `${words}: the follow-up's park keeps its new machine`);
+  }
+});
+
+test("a run's end whose mark comes late leaves a later claim's keep as that claim wrote it: a follow-up that reopened the run and parked a new machine, or is taking the old one back, keeps its machine", { timeout: 60_000 }, async (t) => {
+  const run = await opened(t);
+  const computers = { kinds: KINDS, providers: { docker: () => run.docker.provider() } };
+  // The claim at epoch 3 ended the run, and its end waited on the store. Meanwhile a follow-up queued the run again, and
+  // its claim (epoch 4) either parked a new machine on runner-b, or marked the old keep taking to attach it.
+  const parked = { provider: "docker", kind: "sandbox", id: "c4", name: "c4", epoch: 4, until: Date.now() + KEEP_MS, runner: "runner-b", incarnation: "inc-b" };
+  const taking = { provider: "docker", kind: "sandbox", id: "c2", name: "c2", epoch: 2, until: Date.now() + KEEP_MS, runner: "runner-a", incarnation: "inc-a", taking: 4 };
+  for (const row of [parked, taking]) {
+    run.docker.held.clear();
+    run.docker.held.set(row.id, { ref: { id: row.id, name: row.id }, labels: { "agentrun.run": RUN, "agentrun.epoch": String(row.epoch) } });
+    await run.server.settings.put(keptKeyOf(RUN), row);
+    await runEndComputers({ store: run.server, computers, log: () => {}, retryMs: 50 })({ runId: RUN, epoch: 3 });
+    assert.deepEqual(await readKept(run.server.settings, RUN), row, `the later claim's keep reads as it wrote it: ${JSON.stringify(row)}`);
+    assert.deepEqual(run.docker.left(), [`${row.id}@${row.epoch}`], "and its machine is left");
+  }
+});
+
+test("a run's end whose kept-row mark the store fails tries it again, and deletes the kept machine only once its row reads ending; marked on no try, that machine is left for its row's time, said in the log", { timeout: 60_000 }, async (t) => {
+  const run = await opened(t);
+  const computers = { kinds: KINDS, providers: { docker: () => run.docker.provider() } };
+  const kept = { provider: "docker", kind: "sandbox", id: "c2", name: "c2", epoch: 2, until: Date.now() + KEEP_MS, runner: "runner-a", incarnation: "inc-a" };
+  /** How many of the next marks the store fails. */
+  let fails = 0;
+  const bound = (target) => (name) => (typeof target[name] === "function" ? target[name].bind(target) : target[name]);
+  const flaky = new Proxy(run.server.settings, {
+    get: (target, name) => (name === "replaceIf" ? async (...args) => {
+      if (fails > 0) {
+        fails -= 1;
+        throw new Error("the store did not answer");
+      }
+      return target.replaceIf(...args);
+    } : bound(target)(name)),
+  });
+  const store = new Proxy(run.server, { get: (target, name) => (name === "settings" ? flaky : bound(target)(name)) });
+  for (const [failing, then] of [[2, "taken"], [Number.POSITIVE_INFINITY, "never"]]) {
+    run.docker.held.clear();
+    for (const epoch of [1, 2]) run.docker.held.set(`c${epoch}`, { ref: { id: `c${epoch}`, name: `c${epoch}` }, labels: { "agentrun.run": RUN, "agentrun.epoch": String(epoch) } });
+    await run.server.settings.put(keptKeyOf(RUN), kept);
+    fails = failing;
+    const logged = [];
+    await runEndComputers({ store, computers, log: (line) => logged.push(line), retryMs: 50 })({ runId: RUN, epoch: 3 });
+    fails = 0;
+    if (then === "taken") {
+      assert.deepEqual(run.docker.left(), [], "the mark, tried again, landed, and then the kept machine is deleted with the rest");
+      assert.deepEqual(await readKept(run.server.settings, RUN), { ...kept, ended: true }, "its row ended once the delete took it");
+    } else {
+      assert.deepEqual(run.docker.left(), ["c2@2"], "a row never marked ending: its machine is left for the row's time, so no claim attaches a machine being deleted");
+      assert.deepEqual(await readKept(run.server.settings, RUN), kept, "its row as its park wrote it");
+      assert.ok(logged.some((line) => line.includes("could not be marked ending") && line.includes("the store did not answer") && line.includes("c2")), `said in the log: ${JSON.stringify(logged)}`);
+    }
+  }
+});
+
+// A kept machine that held the run's folder on Archil carries its park's mount credential. The run's end that deletes it
+// removes that credential before it marks the row ended, since an ended row is one no janitor pass removes a credential
+// for; a remove that fails leaves the row ending, so the janitor's kept pass removes it and ends the row.
+test("a stopped run's end that deletes a machine kept on Archil removes the park's mount credentials up to its epoch at Archil, then marks the row ended; a remove Archil refuses leaves the row ending for the janitor, said in the log", { timeout: 60_000 }, async (t) => {
+  const run = await opened(t);
+  const disk = "dsk-0000000000000001";
+  await saveArchilSettings(run.server, { region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" });
+  await putSealedKey(run.server, SEAL_KEY, ARCHIL_API_KEY_ROW, "fake-test-key");
+  const computers = { kinds: KINDS, providers: { docker: () => run.docker.provider() } };
+  const kept = { provider: "docker", kind: "sandbox", id: "c2", name: "c2", epoch: 2, until: Date.now() + KEEP_MS, folder: "archil", disk };
+  for (const refuse of [false, true]) {
+    // run-1's credentials of epochs 1 and 2 (the park's), the ending claim's (3), and another run's.
+    const archil = archilControlFetch({
+      existing: ["agentrun:run-1:1", "agentrun:run-1:2", "agentrun:run-1:3", "agentrun:run-2:2"].map((nickname, n) => ({ type: "token", identifier: `tok-${n}`, nickname, disk })),
+      answer: ({ method }) => (refuse && method === "DELETE" ? { status: 500, body: { error: "Archil is down" } } : undefined),
+    });
+    const nicknames = () => [...archil.users.values()].map((user) => user.nickname).sort();
+    run.docker.held.set("c2", { ref: { id: "c2", name: "c2" }, labels: { "agentrun.run": RUN, "agentrun.epoch": "2" } });
+    await run.server.settings.put(keptKeyOf(RUN), kept);
+    const logged = [];
+    // A person's stop: the claim at epoch 3 ends the run, and its end deletes the kept machine.
+    await runEndComputers({ store: run.server, computers, log: (line) => logged.push(line), retryMs: 50, env: {}, sealKey: SEAL_KEY, mountControl: { baseUrl: archil.baseUrl, fetch: archil.fetch } })({ runId: RUN, epoch: 3 });
+    assert.deepEqual(run.docker.left(), [], `refuse ${refuse}: the kept machine is deleted`);
+    if (!refuse) {
+      assert.deepEqual(nicknames(), ["agentrun:run-1:3", "agentrun:run-2:2"], "the park's credential and an earlier one's removed with the machine, not left for their 24-hour ttl; the ending claim's and another run's stand");
+      assert.ok(archil.requests.every((request) => request.authorization === "Bearer fake-test-key"), "with the server's saved Archil key");
+      assert.deepEqual(await readKept(run.server.settings, RUN), { ...kept, ended: true }, "the row ended once the credential was removed");
+    } else {
+      assert.deepEqual(nicknames(), ["agentrun:run-1:1", "agentrun:run-1:2", "agentrun:run-1:3", "agentrun:run-2:2"], "Archil refused the remove");
+      assert.deepEqual(await readKept(run.server.settings, RUN), { ...kept, ending: true }, "the row left ending, so the janitor's kept pass removes the credential and ends it");
+      assert.ok(logged.some((line) => line.includes("mount credential") && line.includes("janitor")), `said in the log: ${JSON.stringify(logged)}`);
+    }
+  }
 });
 
 test("a run whose only claim ends it lets its own sandbox go at its end, and the run's end asks the provider nothing more", { timeout: 120_000 }, async (t) => {

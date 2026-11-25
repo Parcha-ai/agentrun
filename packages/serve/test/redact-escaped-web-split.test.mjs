@@ -72,6 +72,33 @@ test("a held value split across two strings of a web call's JSON withholds the c
   assert.equal(webHeld("web_search", split, (joined) => withheldWhole(joined, [KEY])), true);
 });
 
+// The base's web check read a web call's strings decoded and joined through every view the whole text has: "+" as a
+// space among them (form encoding), and JSON's escaped quote as a quote. The join of the strings keeps both readings, so
+// a "+" at the end of one string's half, or a held value's own quote, still reads the value whole across two strings.
+test("a held value split across two strings of a web call's JSON, a \"+\" after its head, withholds the call's result, its preview and the stored answer", async () => {
+  const split = search(`see ${HEAD}+`, `${REST} more`);
+  assert.equal(resultTextOf(split, [KEY], "web_search"), "[redacted]");
+  assert.equal(resultRowOf(split, [KEY], "web_search", false).tool_result_preview, "[redacted]");
+  const context = { callId: "c1", signal: new AbortController().signal };
+  const tool = { name: "web_search", description: "", inputSchema: {}, replay: "safe", call: async () => ({ text: split }) };
+  assert.equal((await answersCut(tool, secretRedactor([KEY])).call({}, context)).text, "[redacted]");
+  // Control: a "+" between two strings with no held value split there is served.
+  assert.deepEqual(JSON.parse(resultTextOf(search("see a+", "b more"), [KEY], "web_search")).results[0].title, "see a+");
+});
+
+test("a held value with a quote of its own, split across two strings of a web call's JSON, withholds the call's result and the stored answer; whole in one string, it is cut in place", async () => {
+  const QUOTED = `${HEAD}"${REST}`;
+  const split = search(`see ${HEAD}"${REST.slice(0, 8)}`, `${REST.slice(8)} more`);
+  assert.equal(resultTextOf(split, [QUOTED], "web_search"), "[redacted]");
+  assert.equal(resultRowOf(split, [QUOTED], "web_search", false).tool_result_preview, "[redacted]");
+  const context = { callId: "c1", signal: new AbortController().signal };
+  const tool = { name: "web_search", description: "", inputSchema: {}, replay: "safe", call: async () => ({ text: split }) };
+  assert.equal((await answersCut(tool, secretRedactor([QUOTED])).call({}, context)).text, "[redacted]");
+  // Control: whole in one string, cut in place, the JSON still parsing.
+  const whole = resultTextOf(search(`see ${QUOTED}`, "more"), [QUOTED], "web_search");
+  assert.deepEqual(JSON.parse(whole).results[0], { url: "https://h.example/a", title: "see [redacted]", snippet: "more" });
+});
+
 test("a held value split where a call's read stops, its rest past \\uXXXX escapes of whitespace, shows none of it; other escapes count as one character each", () => {
   // The matcher decodes each escape, so the value reads whole across escaped whitespace: the read past the stop counts
   // an escape as the character it decodes to, so padding of them up to a piece never hides the rest.
@@ -149,25 +176,80 @@ test("a web call's property names are read: a held value in one is cut (two cut 
   assert.equal(webHeld("web_search", split, holds), true);
 });
 
-test("a held value split where a call's read stops, its rest past JSON's one-character escapes of whitespace (one level and two) or past characters that render as nothing, shows none of it; escaped quotes and backslashes count as one character each", () => {
-  // The JSON view decodes "\n", "\t", "\r" (and "\\n", JSON in JSON) to whitespace, so the value reads whole across
-  // them: the read past the stop counts each as the character it decodes to, whitespace as nothing. Counted as their
-  // raw characters (2 or 3 each), 300 of them are more than the read past the stop reads, and the rest is never read.
-  // The views drop characters that render as nothing too: a zero-width space or a soft hyphen, written as it is, counts
-  // as nothing, so 500 of them (more than the read reads at one each) never hide the rest either. Nor do 400 of them
-  // percent-encoded (%E2%80%8B): the percent view decodes each to a zero-width space and drops it.
+test("a held value split where a call's read stops, its rest past JSON's one-character escapes of whitespace or quotes (one level and two) or past characters that render as nothing, shows none of it; escaped backslashes count as one character each", () => {
+  // The JSON view decodes "\n", "\t", "\r" (and "\\n", JSON in JSON) to whitespace, and an escaped quote ("\"", or
+  // "\\\"" in JSON in JSON) to nothing, where a string in a string ends: the value reads whole across them, and the read
+  // past the stop counts each as what the views keep of it, nothing. Counted as their raw characters (2 or 4 each), 300
+  // of them are more than the read past the stop reads, and the rest is never read. The views drop characters that
+  // render as nothing too: a zero-width space or a soft hyphen, written as it is, counts as nothing, so 500 of them
+  // (more than the read reads at one each) never hide the rest either. Nor do 400 of them percent-encoded (%E2%80%8B):
+  // the percent view decodes each to a zero-width space and drops it.
   const B = String.fromCharCode(92);
   const [ZWSP, SHY] = [0x200b, 0xad].map((code) => String.fromCharCode(code));
-  for (const pad of [`${B}n`.repeat(300), `${B}t`.repeat(300), `${B}r`.repeat(300), `${B}r${B}n`.repeat(150), `${B}${B}n`.repeat(300), `${B}${B}t${B}${B}r`.repeat(150), ZWSP.repeat(500), SHY.repeat(500), "%E2%80%8B".repeat(400)]) {
+  for (const pad of [`${B}n`.repeat(300), `${B}t`.repeat(300), `${B}r`.repeat(300), `${B}r${B}n`.repeat(150), `${B}${B}n`.repeat(300), `${B}${B}t${B}${B}r`.repeat(150), `${B}"`.repeat(300), `${B}${B}${B}"`.repeat(300), ZWSP.repeat(500), SHY.repeat(500), "%E2%80%8B".repeat(400)]) {
     const text = `${"y ".repeat(59_940)}${HEAD}\n${pad}${REST}${"z".repeat(9000)} end`;
     const shown = redactedCall(text, [KEY], CALL_RESULT_CHARS).slice(0, CALL_RESULT_CHARS);
     assert.ok(!shown.includes(HEAD.slice(0, 8)), `${pad.slice(0, 6)}: ${shown.slice(-60)}`);
   }
-  // Control: an escaped quote or backslash decodes to a character the view keeps, so 300 of them stand between the
-  // head and the rest, no held value reads across them, and the text is served, the head in it as written.
-  for (const pad of [`${B}"`.repeat(300), `${B}${B}`.repeat(300)]) {
+  // Control: an escaped backslash decodes to a character the view keeps, so 300 of them stand between the head and the
+  // rest, no held value reads across them, and the text is served, the head in it as written.
+  for (const pad of [`${B}${B}`.repeat(300)]) {
     const text = `${"y ".repeat(59_940)}${HEAD}\n${pad}${REST}${"z".repeat(9000)} end`;
     const shown = redactedCall(text, [KEY], CALL_RESULT_CHARS).slice(0, CALL_RESULT_CHARS);
     assert.ok(shown.startsWith("y y ") && shown.includes(HEAD), `${pad.slice(0, 4)}: ${shown.slice(-60)}`);
+  }
+});
+
+test("a held hex identifier split where a call's read stops, its rest past dots or dashes, shows none of it: the read past the stop counts separators as nothing when a held value folds", () => {
+  // The fold view drops "-", "_", ":" and "." however many stand in a row, so a held UUID reads whole across 300 dots
+  // (the #3626 review's text). Counted as one each, they were more than the read past the stop reads (hold, 232 for a
+  // UUID), the rest was never read, and the head showed while withheldWhole withheld the same text.
+  const U = ["3f9a1c2e", "7b4d", "4e8f", "9a01", "b2c3d4e5f607"].join("-");
+  for (const pad of [".".repeat(300), "-".repeat(300)]) {
+    const text = `${"y ".repeat(59_940)}${U.slice(0, 18)}\n${pad}${U.slice(18)}${"z".repeat(9000)} end`;
+    assert.equal(withheldWhole(text, [U]), true);
+    const shown = redactedCall(text, [U], CALL_RESULT_CHARS).slice(0, CALL_RESULT_CHARS);
+    assert.ok(!shown.includes(U.slice(0, 8)), `${pad[0]}: ${shown.slice(-60)}`);
+  }
+  // Control: a held value with no hex identifier in it folds nowhere, so no view reads it across the dashes; they count
+  // one each, and the text is served, the head in it as written.
+  const text = `${"y ".repeat(59_940)}${HEAD}\n${"-".repeat(300)}${REST}${"z".repeat(9000)} end`;
+  const shown = redactedCall(text, [KEY], CALL_RESULT_CHARS).slice(0, CALL_RESULT_CHARS);
+  assert.ok(shown.startsWith("y y ") && shown.includes(HEAD), shown.slice(-60));
+});
+
+test("a held value split where a call's read stops, its rest past character references to a space, shows none of it: the read past the stop counts a reference as the character it stands for", () => {
+  // The views decode "&#32;" and "&#x20;" to a space, which they drop. Counted as their five or six raw characters, 300
+  // of them were more than the read past the stop reads, and the rest was never read.
+  for (const pad of ["&#32;".repeat(300), "&#x20;".repeat(300)]) {
+    const text = `${"y ".repeat(59_940)}${HEAD}\n${pad}${REST}${"z".repeat(9000)} end`;
+    const shown = redactedCall(text, [KEY], CALL_RESULT_CHARS).slice(0, CALL_RESULT_CHARS);
+    assert.ok(!shown.includes(HEAD.slice(0, 8)), `${pad.slice(0, 6)}: ${shown.slice(-60)}`);
+  }
+});
+
+test("a held value split across two strings where a call's read stops, empty strings between, shows none of it: the read past the stop counts quotes and JSON's punctuation as nothing", () => {
+  // The join view reads a JSON text's strings joined and drops its quotes and punctuation, so ["<H>", "", "", ..., "<R>"]
+  // reads the value whole. The read stops right after the head's string; counted as one each, 900 characters of empty
+  // strings were more than the read past the stop reads, and the rest was never read.
+  const text = `${"y ".repeat(59_990)}["${HEAD}",\n${'"",'.repeat(300)}"${REST}"]${"z".repeat(9000)} end`;
+  const shown = redactedCall(text, [KEY], CALL_RESULT_CHARS).slice(0, CALL_RESULT_CHARS);
+  assert.ok(!shown.includes(HEAD.slice(0, 8)), shown.slice(-60));
+});
+
+test("a held value split by combining marks past U+FFFF, its head ending the piece before a run too long to read and its rest in that run, shows none of its head in a call's result", () => {
+  // 500 U+1D165 marks (a combining mark written as two UTF-16 units, or as two \uXXXX escapes) between the head and the
+  // rest: the views drop each whole, so the value reads whole across them. "y " x 4085 puts a piece's edge right after
+  // the head and its space, and the run after it is too long to read: the read of the run's head counts each mark as
+  // the views do, nothing, so it reaches the rest. Counted one per UTF-16 unit, 500 marks are more than it reads.
+  const B = String.fromCharCode(92);
+  const runsOf = (shown) => Array.from({ length: HEAD.length - 7 }, (_, i) => HEAD.slice(i, i + 8)).filter((run) => shown.includes(run));
+  for (const [what, marks] of [["as they are", String.fromCodePoint(0x1d165).repeat(500)], ["as \\uXXXX escapes", `${B}ud834${B}udd65`.repeat(500)]]) {
+    const text = `${"y ".repeat(4085)}${HEAD} ${marks}${REST}${"a".repeat(9000)} end`;
+    assert.equal(withheldWhole(text, [KEY]), true, what);
+    const shown = resultTextOf(text, [KEY], "bash");
+    assert.deepEqual(runsOf(shown), [], `${what}: ${shown.slice(-60)}`);
+    // Control: with no held value in the text, the same layout shows, its head as written and the run as "[redacted]".
+    assert.ok(resultTextOf(text, ["not-in-this-text-0123456789abcdef"], "bash").endsWith(`${HEAD} [redacted] end`), what);
   }
 });
