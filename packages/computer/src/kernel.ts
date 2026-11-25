@@ -34,9 +34,11 @@ import {
 	checkBrowser,
 	createUncertain,
 	DEFAULT_CONFIRM,
+	ATTEMPT_LABEL,
 	convergedBrowser,
 	type HeldBrowser,
 	heldBrowser,
+	newAttempt,
 	defaultSleep,
 	idProblem,
 	labelsOf,
@@ -236,7 +238,9 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 			const ensured = await this.#ensureProfile(options.profile.pointer, signal);
 			if (!ensured.ok) return causedFail(ensured.error.code, `the profile could not be made ready: ${ensured.error.message}; no browser was made`, causeOf(ensured), "kernel");
 		}
-		const written = { [CREATE_LABEL]: request, ...spec.labels };
+		// The request's label, which a retry and a converge find it by, and this POST's own, which its recovery finds it by.
+		const attempt = { [ATTEMPT_LABEL]: newAttempt() };
+		const written = { [CREATE_LABEL]: request, ...attempt, ...spec.labels };
 		const body = {
 			...(options !== undefined ? { stealth: false } : {}),
 			...(options?.viewport ? { viewport: { width: options.viewport.width, height: options.viewport.height } } : {}),
@@ -251,10 +255,10 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 		} catch (error) {
 			const failed = vendorFailure("kernel", NAME, "POST /browsers", error);
 			if (failed.ok || !createUncertain(error)) return failed;
-			// The browser may have been made though its answer never came: found by its create label and deleted, and the
-			// request is ended, so it is never made again.
+			// The browser may have been made though its answer never came: found by this POST's attempt label and deleted,
+			// and the request is ended, so it is never made again.
 			this.#requests.end(request);
-			return causedFail(failed.error.code, `${failed.error.message}; ${await this.#recover(written)}`, causeOf(failed), "kernel");
+			return causedFail(failed.error.code, `${failed.error.message}; ${await this.#recover(attempt)}`, causeOf(failed), "kernel");
 		}
 		const browser = (made.json ?? {}) as KernelBrowser;
 		const id = text(browser.session_id);
@@ -264,7 +268,7 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 			const failed = vendorFailure("kernel", NAME, "POST /browsers", new BrowserVendorError(NAME, "POST /browsers", made.status, "no_session"));
 			if (failed.ok) return failed;
 			this.#requests.end(request);
-			return fail(failed.error.code, `${failed.error.message}; ${await this.#recover(written)}`);
+			return fail(failed.error.code, `${failed.error.message}; ${await this.#recover(attempt)}`);
 		}
 		this.#requests.made(request);
 		// Another process's create of this request may have made one too (#converge): the older is answered.
@@ -353,9 +357,9 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 
 	/**
 	 * The browsers a lost create made, released: what recoverCreate says of them. They are found as list finds any, by the
-	 * tags the create wrote (its create label first, so the query names it, then the run's), through #browsers: another
-	 * browser of the same run carries a create label of its own and is left alone. #browsers reads every state not
-	 * deleted, so a browser still starting is found and released too.
+	 * attempt label its POST wrote (ATTEMPT_LABEL), through #browsers: another create's browser, of this request or
+	 * another, carries an attempt label of its own and is left alone, even one another instance has answered. #browsers
+	 * reads every state not deleted, so a browser still starting is found and released too.
 	 */
 	#recover(labels: Record<string, string>): Promise<string> {
 		const find = async (signal: AbortSignal): Promise<Result<string[]>> => {

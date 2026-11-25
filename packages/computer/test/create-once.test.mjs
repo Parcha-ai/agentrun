@@ -261,6 +261,49 @@ for (const [id, cloud] of Object.entries(CLOUD_BROWSERS)) {
 		okOf(await one.release(kept, "delete"), "release");
 	});
 
+	test(`${id}: a create whose reply is lost releases the browser its own POST made, never the one another instance answered for the request`, async () => {
+		const fake = vendor.vendor();
+		const requestId = requestOf(`${id}-lost`);
+		const gate = () => {
+			let open;
+			const opened = new Promise((resolve) => (open = resolve));
+			return { open, opened };
+		};
+		// A's create is held until B has looked for the request's browser (and found none); B's until A's is answered.
+		const looked = gate();
+		const answered = gate();
+		const isPost = (input, init) => (init.method ?? "GET") === "POST" && new URL(String(input)).pathname === cloud.post;
+		const fetchA = async (input, init = {}) => {
+			if (isPost(input, init)) await looked.opened;
+			return fake.fetch(input, init);
+		};
+		const fetchB = async (input, init = {}) => {
+			if (isPost(input, init)) {
+				await answered.opened;
+				await fake.fetch(input, init);
+				// The vendor made B's browser, and its reply never comes.
+				throw new TypeError("fetch failed");
+			}
+			const answer = await fake.fetch(input, init);
+			if ((init.method ?? "GET") === "GET" && new URL(String(input)).pathname === cloud.post) setTimeout(looked.open, 10);
+			return answer;
+		};
+		const one = await vendor.make({ ...fake, fetch: fetchA });
+		const two = await vendor.make({ ...fake, fetch: fetchB });
+		const first = one.create(vendor.spec(), { requestId }).then((result) => {
+			answered.open();
+			return result;
+		});
+		const [a, b] = await Promise.all([first, two.create(vendor.spec(), { requestId })]);
+		const kept = okOf(a, "A's create");
+		assert.equal(b.ok, false, "B's create, its reply lost");
+		const [mine, theirs] = cloud.ids(fake);
+		assert.equal(kept.id, mine);
+		assert.equal(cloud.live(fake, mine), true, "the browser A answered still runs");
+		assert.equal(cloud.live(fake, theirs), false, "the browser B's lost create made is released");
+		okOf(await one.release(kept, "delete"), "release");
+	});
+
 	test(`${id}: a create whose browser is the newer, the older ended before it is answered, releases its own and is refused exists`, async () => {
 		const fake = vendor.vendor();
 		const requestId = requestOf(`${id}-gone`);

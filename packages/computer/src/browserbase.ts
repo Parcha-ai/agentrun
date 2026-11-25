@@ -38,9 +38,11 @@ import {
 	checkBrowser,
 	createUncertain,
 	DEFAULT_CONFIRM,
+	ATTEMPT_LABEL,
 	convergedBrowser,
 	type HeldBrowser,
 	heldBrowser,
+	newAttempt,
 	defaultSleep,
 	idProblem,
 	labelsOf,
@@ -429,7 +431,9 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 			return ok(refOf({ id: found.id }));
 		}
 		const browser = spec.browser;
-		const written = { [CREATE_LABEL]: request, ...spec.labels };
+		// The request's label, which a retry and a converge find it by, and this POST's own, which its recovery finds it by.
+		const attempt = { [ATTEMPT_LABEL]: newAttempt() };
+		const written = { [CREATE_LABEL]: request, ...attempt, ...spec.labels };
 		// Browserbase solves CAPTCHAs unless told not to: a browser's options say so either way, the solver only with stealth.
 		const browserSettings = {
 			...(browser?.viewport ? { viewport: { width: browser.viewport.width, height: browser.viewport.height } } : {}),
@@ -450,14 +454,14 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 		} catch (error) {
 			const failed = vendorFailure("browserbase", NAME, "POST /v1/sessions", error);
 			if (failed.ok || !createUncertain(error)) return failed;
-			// The session may have been made though its answer never came: found by its create label and released, and
-			// the request is ended, so it is never made again.
+			// The session may have been made though its answer never came: found by this POST's attempt label and
+			// released, and the request is ended, so it is never made again.
 			this.#requests.end(request);
-			return causedFail(failed.error.code, `${failed.error.message}; ${await this.#recover(written)}`, causeOf(failed), "browserbase");
+			return causedFail(failed.error.code, `${failed.error.message}; ${await this.#recover(attempt)}`, causeOf(failed), "browserbase");
 		}
 		if (idProblem(made?.id, NAME) !== undefined) {
 			this.#requests.end(request);
-			return vendorFail("browserbase",`Browserbase POST /v1/sessions answered with no session id, so there is no session to connect to; ${await this.#recover(written)}`);
+			return vendorFail("browserbase",`Browserbase POST /v1/sessions answered with no session id, so there is no session to connect to; ${await this.#recover(attempt)}`);
 		}
 		this.#requests.made(request);
 		// Another process's create of this request may have made one too (#converge): the older is answered.
@@ -588,8 +592,9 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 
 	/**
 	 * The sessions a lost create made, released: what recoverCreate says of them. They are found as list finds any, by
-	 * the labels the create wrote (its create label first, so the query names it, then the run's), through #sessions and
-	 * its metadata-key mapping: another session of the same run carries a create label of its own and is left alone.
+	 * the attempt label its POST wrote (ATTEMPT_LABEL), through #sessions and its metadata-key mapping: another create's
+	 * session, of this request or another, carries an attempt label of its own and is left alone, even one another
+	 * instance has answered.
 	 */
 	#recover(labels: Record<string, string>): Promise<string> {
 		const find = async (signal: AbortSignal): Promise<Result<string[]>> => {

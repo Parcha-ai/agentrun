@@ -2595,9 +2595,12 @@ browsers, so after the vendor's answer a create lists the label again: where an 
 there, it releases its own and answers the older, refused `exists` when the older has ended by then, and the oldest
 keeps its own. The browser's own options (viewport, stealth, profile) are not read back from the vendor, so a create
 from another process compares the labels alone. A browser released here leaves its request refused `exists`. A create whose outcome is unknown (its reply lost, cut short, answered 5xx or with no browser, or the caller's signal
-aborted it) never sends a second create: it finds the browsers carrying that label as list does, in every state not
-ended, under a signal of its own bounded at `RECOVER_MS`, releases each, and its failure says so; that request is then
-refused `exists`. A 4xx refusal made nothing, so nothing is looked for. The label is the provider's own: `check()` refuses it in a spec, and no list or attach shows it.
+aborted it) never sends a second create: each POST also writes `agentrun.attempt` (`ATTEMPT_LABEL`), a random value of
+its own, and a lost create finds the browsers carrying its attempt label as list does, in every state not ended, under
+a signal of its own bounded at `RECOVER_MS`, releases each, and its failure says so; that request is then refused
+`exists`. Another create's browser of the same request, even one another process answered, carries another attempt
+label and is left running. A 4xx refusal made nothing, so nothing is looked for. Both labels are the provider's own:
+`check()` refuses them in a spec, and no list or attach shows them.
 
 The conformance CLI runs the browser case set for a provider of kind browser: the health cases, then `browser.*`
 (check past the cap, attach by id and by labels, list, CDP `Browser.getVersion` and `Runtime.evaluate` on a `data:`

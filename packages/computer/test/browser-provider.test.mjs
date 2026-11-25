@@ -60,6 +60,7 @@ const VENDORS = {
 		query: (key, value) => `user_metadata['${key.replaceAll(".", "_")}']:'${value}'`,
 		/** The create label's value a create wrote. */
 		createdBy: (call) => call.body.userMetadata.agentrun_create,
+		attemptOf: (call) => call.body.userMetadata.agentrun_attempt,
 	},
 	kernel: {
 		fake: fakeKernel,
@@ -94,6 +95,7 @@ const VENDORS = {
 		asked: (fake) => fake.only("GET", "/browsers").map((call) => Object.entries(call.query).filter(([key]) => key.startsWith("tags[")).map(([key, v]) => `${key}=${v}`).join("&")),
 		query: (key, value) => `tags[${key}]=${value}`,
 		createdBy: (call) => call.body.tags["agentrun.create"],
+		attemptOf: (call) => call.body.tags["agentrun.attempt"],
 	},
 };
 
@@ -163,9 +165,10 @@ for (const [id, vendor] of Object.entries(VENDORS)) {
 		const provider = await vendor.make(fake);
 		const created = value(await provider.create(spec(), newRequest()), "create");
 		assert.deepEqual(Object.keys(created).sort(), ["id", "name"]);
-		const { agentrun_create: byMetadata, "agentrun.create": byTags, ...held } = vendor.held(fake, created.id);
+		const { agentrun_create: byMetadata, "agentrun.create": byTags, agentrun_attempt: attemptByMetadata, "agentrun.attempt": attemptByTags, ...held } = vendor.held(fake, created.id);
 		assert.deepEqual(held, vendor.heldLabels, "the labels, as the vendor holds them");
 		assert.match(byMetadata ?? byTags, /^computer-[0-9a-f]{12}$/, "beside them, the create label: the request's name (computerNameFor)");
+		assert.match(attemptByMetadata ?? attemptByTags, /^[0-9a-f]{16}$/, "and the attempt label: a value of this POST's own");
 		assert.equal(vendor.lifetime(fake, created.id) !== undefined, true, "the lifetime rides the create");
 		value(await provider.create(spec({ labels: { "agentrun.run": "run-2" } }), newRequest()), "another run's");
 		const byId = value(await provider.attach({ id: created.id }), "attach by id");
@@ -260,7 +263,7 @@ for (const [id, vendor] of Object.entries(VENDORS)) {
 		}
 	});
 
-	test(`${id}: a lost create is looked for by the labels it was made with, through list's own label query, and another browser of the same run is left running`, async () => {
+	test(`${id}: a lost create is looked for by its POST's attempt label, through list's own label query, and another browser of the same run is left running`, async () => {
 		const knobs = {};
 		const fake = vendor.fake(knobs);
 		const provider = await vendor.make(fake);
@@ -271,10 +274,12 @@ for (const [id, vendor] of Object.entries(VENDORS)) {
 		assert.equal(lost.ok, false);
 		assert.match(lost.error.message, /released/, lost.error.message);
 		assert.ok(vendor.running(fake, sibling.id), "the run's other browser, which carries the same run labels, still runs");
-		const createdBy = vendor.createdBy(vendor.creates(fake)[1]);
-		const asked = vendor.asked(fake).slice(before);
+		const lostPost = vendor.creates(fake)[1];
+		// Before its POST, create looks for its request by the create label; after it is lost, by its attempt label alone.
+		const lookup = vendor.query("agentrun.create", vendor.createdBy(lostPost));
+		const asked = vendor.asked(fake).slice(before).filter((q) => q !== lookup);
 		assert.ok(asked.length > 0, "the lost create was looked for");
-		assert.ok(asked.every((q) => q === vendor.query("agentrun.create", createdBy)), `each read asks by the create label as list() maps a label key: ${asked.join(", ")}`);
+		assert.ok(asked.every((q) => q === vendor.query("agentrun.attempt", vendor.attemptOf(lostPost))), `each read asks by the attempt label as list() maps a label key: ${asked.join(", ")}`);
 		assert.deepEqual(value(await provider.list({ "agentrun.run": "run-1" }), "list").map((info) => info.ref.id), [sibling.id]);
 	});
 
@@ -303,7 +308,7 @@ for (const [id, vendor] of Object.entries(VENDORS)) {
 		}
 	});
 
-	test(`${id}: a create whose reply is lost, or whose caller cancels it, finds the browser it made by its create label and releases it`, async () => {
+	test(`${id}: a create whose reply is lost, or whose caller cancels it, finds the browser it made by its attempt label and releases it`, async () => {
 		for (const cancel of [false, true]) {
 			const controller = new AbortController();
 			const fake = vendor.fake({ loseCreate: () => (cancel ? controller.abort() : undefined) });
@@ -316,9 +321,9 @@ for (const [id, vendor] of Object.entries(VENDORS)) {
 			assert.ok(vendor.allReleased(fake), `${what}: the browser it made is released, not left billing to its timeout`);
 			assert.match(made.error.message, /released/, made.error.message);
 			assert.doesNotMatch(JSON.stringify(made), SECRET);
-			// The create label each create carries is the provider's own: no list or attach shows it.
+			// The create and attempt labels each create carries are the provider's own: no list or attach shows them.
 			const { body } = vendor.creates(fake)[0];
-			assert.equal(Object.keys(body.userMetadata ?? body.tags).length, 3, "the spec's two labels and the create label");
+			assert.equal(Object.keys(body.userMetadata ?? body.tags).length, 4, "the spec's two labels, the create label and the attempt label");
 		}
 		// A create the vendor refused (a 4xx) made nothing: nothing is looked for.
 		const refused = vendor.fake({ failCreate: 422 });
@@ -465,7 +470,7 @@ test("browserbase: a label's dots ride as underscores in userMetadata, which Bro
 	const provider = await VENDORS.browserbase.make(fake);
 	const labels = { "agentrun.conformance": "abc123", "agentrun.conformance.case": "labels", job: "j-42" };
 	const created = value(await provider.create(spec({ labels }), newRequest()), "create with dotted label keys");
-	const { agentrun_create: _, ...held } = fake.sessions.get(created.id).userMetadata;
+	const { agentrun_create: _, agentrun_attempt: __, ...held } = fake.sessions.get(created.id).userMetadata;
 	assert.deepEqual(held, { agentrun_conformance: "abc123", agentrun_conformance_case: "labels", job: "j-42" });
 	const listed = value(await provider.list({ "agentrun.conformance": "abc123" }), "list by a dotted label");
 	assert.deepEqual(listed.map((info) => info.ref), [created]);

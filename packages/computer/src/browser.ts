@@ -2,6 +2,7 @@
 // none). The provider answers hello and ping itself, from the vendor's API; connect hands over the vendor's signed CDP
 // URL, which a driver dials. That URL and the live view's are secrets: they live in memory (a UrlStore), and never reach
 // a ref, a list, an error's words or a report.
+import { randomBytes } from "node:crypto";
 import type { CallOptions } from "./client.js";
 import { type ComputerClient, type DaemonMethod, type DaemonMethods, type Group, type HelloResult, PROTOCOL_VERSION } from "./protocol.js";
 import type { BrowserFeatures, BrowserSpec, CallContext, ComputerCapabilities, ComputerProvider, ComputerRef, ComputerSpec, Refusal } from "./provider.js";
@@ -91,15 +92,25 @@ export const labelsOf = (held: unknown): Record<string, string> =>
 
 /**
  * The label every create writes beside the spec's, the name of its request (computerNameFor): a create retried, here or
- * in another process, finds the browser the first made by this label (heldBrowser), and a create whose reply is lost,
- * or whose caller cancels it, finds the browser it made by this label alone and releases it. The provider's own: check()
- * refuses it in a spec, and no list or attach shows it.
+ * in another process, finds the browser the first made by this label (heldBrowser), and a create that made one finds
+ * the request's others by it (convergedBrowser). The provider's own: check() refuses it in a spec, and no list or
+ * attach shows it.
  */
 export const CREATE_LABEL = "agentrun.create";
 
-/** Labels without the provider's create label. */
+/**
+ * The label each create's POST writes beside the create label, a random value of that POST's own (newAttempt): a create
+ * whose reply is lost, or whose caller cancels it, finds the browser its own POST made by this label alone and releases
+ * it, never another create's browser of the same request. The provider's own, as the create label is.
+ */
+export const ATTEMPT_LABEL = "agentrun.attempt";
+
+/** A create attempt's own value of ATTEMPT_LABEL. */
+export const newAttempt = (): string => randomBytes(8).toString("hex");
+
+/** Labels without the provider's own, the create and attempt labels. */
 export const withoutCreateLabel = (labels: Record<string, string>): Record<string, string> => {
-	const { [CREATE_LABEL]: _, ...rest } = labels;
+	const { [CREATE_LABEL]: _, [ATTEMPT_LABEL]: __, ...rest } = labels;
 	return rest;
 };
 
@@ -206,7 +217,11 @@ export function checkBrowser(spec: ComputerSpec, capabilities: ComputerCapabilit
 	if (labels !== undefined) {
 		const problem = labelsProblem(labels);
 		if (problem) refusals.push({ field: "labels", message: problem });
-		else if (Object.hasOwn(labels as object, CREATE_LABEL)) refusals.push({ field: "labels", message: `the label ${CREATE_LABEL} is the provider's own: each create writes it, so a lost create finds its browser` });
+		else {
+			for (const own of [CREATE_LABEL, ATTEMPT_LABEL]) {
+				if (Object.hasOwn(labels as object, own)) refusals.push({ field: "labels", message: `the label ${own} is the provider's own: each create writes it, so a retried or lost create finds its browser` });
+			}
+		}
 	}
 	// A browser declares no gpu: one asked is refused, in the words every provider shares.
 	refusals.push(...checkGpu(given.gpu, capabilities));
