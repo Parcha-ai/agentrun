@@ -505,30 +505,32 @@ export type CheckRow = { readonly of: string; readonly input: string; readonly a
 /** The field a check judges a whole answer as, with no agree_on. */
 export const WHOLE_ANSWER = "answer";
 
-/** A check row as learn/field-check.ts judges it: an input answered alone with one field per agree_on path (the draft's,
- *  the agent's and the grade's value there), else one field, the whole answer (`answer`), right as compareAnswers says
- *  (`compared`: equal, or the same decision by the grader's verdict its replay run kept) against its best known answer:
- *  a grade's expected answer written over the agent's (learn/promote.ts knownAnswerText), the grade saying whether the
- *  agent's was right; else the agent's answer, known wrong when a grade with no expected answer said so. The field's
- *  `grade` is the grade's own expected answer, the part its owner gave, which a disagreement shows the recompile (and
- *  a purge blanks). Field names are never taken from a grade: its keys are a
- *  person's data, which a run's purge must leave nowhere. Under agree_on a grade that said the answer was wrong, with no
- *  expected answer, names no field, so it changes nothing there. */
-function checkInputOf(row: CheckRow, on: readonly string[] | undefined, compared: Compared): CheckInput {
+/** A check row as learn/field-check.ts judges it, the one comparison a check and an audit make: an input answered alone
+ *  with one field per agree_on path (the draft's, the agent's and the grade's value there, compared as values: a path
+ *  that does not resolve on a side is never right), else one field, the whole answer (`answer`), right as compareAnswers
+ *  says (`compared`, answered with it: equal, or the same decision by the grader's verdict its run kept) against its
+ *  best known answer: a grade's expected answer written over the agent's (learn/promote.ts knownAnswerText), the grade
+ *  saying whether the agent's was right; else the agent's answer, known wrong when a grade with no expected answer said
+ *  so. The field's `grade` is the grade's own expected answer, the part its owner gave, which a disagreement shows the
+ *  recompile (and a purge blanks). Field names are never taken from a grade: its keys are a person's data, which a
+ *  run's purge must leave nowhere. Under agree_on a grade that said the answer was wrong, with no expected answer, names
+ *  no field, so it changes nothing there. */
+function checkInputOf(row: CheckRow, on: readonly string[] | undefined): { readonly input: CheckInput; readonly compared?: Compared } {
   const outcome = row.outcome === "skipped_write" ? "skipped" : row.outcome;
-  if (outcome !== "answered") return { input_id: row.of, outcome };
+  if (outcome !== "answered") return { input: { input_id: row.of, outcome } };
   if (on?.length) {
-    return { input_id: row.of, outcome, fields: Object.fromEntries(on.map((path): [string, FieldAnswers] => {
+    return { input: { input_id: row.of, outcome, fields: Object.fromEntries(on.map((path): [string, FieldAnswers] => {
       const grade = row.expected ? valueAtPath(row.expected, path) : undefined;
       return [path, { workflow: answerAt(row.answer, path), agent: answerAt(row.agent, path), ...(grade !== undefined ? { grade } : {}) }];
-    })) };
+    })) } };
   }
   // A grade that marked the agent's answer wrong, yet whose expected answer written over it is that answer, contradicts
   // itself: no known answer there, neither right nor wrong (unjudged).
   const contradicts = row.correct === false && row.expected !== undefined && row.agent !== null && sameAnswer(knownAnswerText(row.agent, row.expected), row.agent);
   const graded = contradicts ? { no_known: true as const } : row.expected ? { grade: row.expected, ...(row.correct !== undefined ? { agent_correct: row.correct } : {}) } : row.correct === false ? { agent_correct: false } : {};
+  const compared = compareAnswers(row.answer, row.expected ? knownAnswerText(row.agent, row.expected) : row.agent, row.compared);
   // The answers as sameAnswer reads them, so a draft that says the agent's answer in another dress repeats it.
-  return { input_id: row.of, outcome, fields: { [WHOLE_ANSWER]: { workflow: answerValue(row.answer), agent: answerValue(row.agent), agrees: compared.same, ...graded } } };
+  return { input: { input_id: row.of, outcome, fields: { [WHOLE_ANSWER]: { workflow: answerValue(row.answer), agent: answerValue(row.agent), agrees: compared.same, ...graded } } }, compared };
 }
 
 /** One answer judged as the check judges an input it answered alone (checkInputOf, learn/field-check.ts): `answer`
@@ -536,9 +538,7 @@ function checkInputOf(row: CheckRow, on: readonly string[] | undefined, compared
  *  says) where one exists, else `agent`'s. True: right on every field. False: wrong on one. Null: a field had no known
  *  answer and none was wrong (a grade that contradicts itself). The audit's one verdict (runner/audit.ts). */
 export function answerJudged(row: Pick<CheckRow, "agent" | "answer" | "compared" | "expected" | "correct">, on: readonly string[] | undefined): boolean | null {
-  const one: CheckRow = { of: "", input: "", outcome: "answered", ...row };
-  const compared = on?.length ? { same: false } : compareAnswers(one.answer, one.expected ? knownAnswerText(one.agent, one.expected) : one.agent, undefined, one.compared);
-  const { agreed, fields } = tallyOf([checkInputOf(one, on, compared)]);
+  const { agreed, fields } = tallyOf([checkInputOf({ of: "", input: "", outcome: "answered", ...row }, on).input]);
   if (agreed) return true;
   return Object.values(fields).some((by) => KNOWN.some((known) => (by[known]?.workflow_right ?? 0) < (by[known]?.n ?? 0))) ? false : null;
 }
@@ -638,16 +638,15 @@ async function settleCheck(deps: PromotionDeps, workflow: LearnedWorkflow, diges
  *  when it read any input's answers. */
 async function judgeRows(deps: Pick<DecideDeps, "shown">, bar: CheckBar, rows: readonly CheckRow[], before: CheckTurns | undefined) {
   const ran = rows.filter((row) => row.outcome !== "skipped_write");
-  // With no agree_on, the draft's answer is compared whole with its known answer (a grade's expected answer written over
-  // the agent's, knownAnswerText, else the agent's): equal, else the grader's verdict on that pair, which its replay run
-  // asked (with no grader, no fast model, they differ). Under agree_on, fields and grades are compared as values
-  // (checkInputOf).
+  // With no agree_on, the draft's answer is compared whole with its known answer: equal, else the grader's verdict on
+  // that pair, which its replay run asked (with no grader, no fast model, they differ). Under agree_on, fields and
+  // grades are compared as values (checkInputOf).
   const on = bar.agree_on?.length ? bar.agree_on : undefined;
-  const compared = new Map(ran.map((row): [CheckRow, Compared] => [row, on ? { same: false } : compareAnswers(row.answer, row.expected ? knownAnswerText(row.agent, row.expected) : row.agent, undefined, row.compared)]));
-  const verdict = checkFields(rows.map((row) => checkInputOf(row, on, compared.get(row) ?? { same: false })), bar, before ? tallyBefore(before, on) : undefined);
+  const judged = new Map(rows.map((row) => [row, checkInputOf(row, on)]));
+  const verdict = checkFields([...judged.values()].map((one) => one.input), bar, before ? tallyBefore(before, on) : undefined);
   const missed = new Map<string, string[]>();
   for (const miss of verdict.misses) missed.set(miss.input_id, [...(missed.get(miss.input_id) ?? []), miss.field]);
-  const grader = [...compared.values()].find((one) => one.grader !== undefined)?.grader;
+  const grader = [...judged.values()].find((one) => one.compared?.grader !== undefined)?.compared?.grader;
   const shown = await deps.shown();
   const cut = (text: string) => excerptShown(text, shown, CHECK_TEXT_MAX);
   // The known answers (a label's, a grade's) each input's draft missed, for the recompile: never the agent's own (shown);
@@ -659,7 +658,7 @@ async function judgeRows(deps: Pick<DecideDeps, "shown">, bar: CheckBar, rows: r
     known.set(miss.input_id, [...(known.get(miss.input_id) ?? []), { field: miss.field, known: miss.known, ...(value !== undefined ? { value } : {}) }]);
   }
   const disagreements: CheckDisagreement[] = [...(before?.disagreements ?? []), ...ran.filter((row) => row.outcome !== "answered" || missed.has(row.of)).map((row) => {
-    const differs = row.outcome === "answered" ? compared.get(row)!.differs_on : undefined;
+    const differs = judged.get(row)!.compared?.differs_on;
     const fields = row.outcome === "answered" ? missed.get(row.of) : undefined;
     const expected = row.outcome === "answered" ? known.get(row.of) : undefined;
     return {

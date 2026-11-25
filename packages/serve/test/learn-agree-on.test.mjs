@@ -9,7 +9,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, serve } from "./support.mjs";
 
-const { decideCheck, NEVER_WORD_FOR_WORD, replayView } = await import("../dist/runner/promotion.js");
+const { answerJudged, decideCheck, NEVER_WORD_FOR_WORD, replayView } = await import("../dist/runner/promotion.js");
 const { answersPair, forgetRunCopies, knownAnswerText, promotionsOf, recordPromotion, sameAnswer } = await import("../dist/learn/promote.js");
 const { learningSettingIssue, learningSettingOf, loopOf } = await import("../dist/learning-setting.js");
 const { secretsShown } = await import("../dist/learning.js");
@@ -230,36 +230,38 @@ test("check on dotted paths: verdict.decision agrees though the rationale differ
 });
 
 test("a path missing on either side, through a non-object, or an answer that is no JSON object, disagrees under agree_on", () => {
+  // The check's and the audit's one judgment of a draft (`b`) against the agent's answer (`a`), on agree_on's paths.
+  const agrees = (a, b, on) => answerJudged({ agent: a, answer: b }, on);
   const on = ["mcc", "riskTier"];
-  assert.equal(sameAnswer(agentSays(AGENT), draftSays(DRAFT), on), true);
-  assert.equal(sameAnswer(agentSays(AGENT), draftSays({ ...DRAFT, mcc: "7841" }), on), false, "a declared value differs");
+  assert.equal(agrees(agentSays(AGENT), draftSays(DRAFT), on), true);
+  assert.equal(agrees(agentSays(AGENT), draftSays({ ...DRAFT, mcc: "7841" }), on), false, "a declared value differs");
   const { riskTier: _, ...noTier } = DRAFT;
-  assert.equal(sameAnswer(agentSays(AGENT), draftSays(noTier), on), false, "missing on the draft's side");
-  assert.equal(sameAnswer(agentSays(noTier), draftSays(DRAFT), on), false, "missing on the agent's side");
-  assert.equal(sameAnswer(agentSays(noTier), draftSays(noTier), on), false, "missing on both: never agreement");
-  assert.equal(sameAnswer(agentSays(AGENT), draftSays([AGENT]), on), false, "an array is no object");
-  assert.equal(sameAnswer("mcc 7832, low risk", "mcc 7832, low risk", on), false, "text is no object, though the same");
-  assert.equal(sameAnswer(agentSays(AGENT), null, on), false);
-  assert.equal(sameAnswer(agentSays({ ...AGENT, tags: ["a", "b"] }), draftSays({ ...DRAFT, tags: ["b", "a"] }), ["tags"]), false, "arrays compare in order");
-  assert.equal(sameAnswer(agentSays({ ...AGENT, site: { live: true, host: "example.com" } }), draftSays({ ...DRAFT, site: { host: "example.com", live: true } }), ["site"]), true, "an object's keys in any order");
+  assert.equal(agrees(agentSays(AGENT), draftSays(noTier), on), false, "missing on the draft's side");
+  assert.equal(agrees(agentSays(noTier), draftSays(DRAFT), on), false, "missing on the agent's side");
+  assert.equal(agrees(agentSays(noTier), draftSays(noTier), on), false, "missing on both: never agreement");
+  assert.equal(agrees(agentSays(AGENT), draftSays([AGENT]), on), false, "an array is no object");
+  assert.equal(agrees("mcc 7832, low risk", "mcc 7832, low risk", on), false, "text is no object, though the same");
+  assert.equal(agrees(agentSays(AGENT), null, on), false);
+  assert.equal(agrees(agentSays({ ...AGENT, tags: ["a", "b"] }), draftSays({ ...DRAFT, tags: ["b", "a"] }), ["tags"]), false, "arrays compare in order");
+  assert.equal(agrees(agentSays({ ...AGENT, site: { live: true, host: "example.com" } }), draftSays({ ...DRAFT, site: { host: "example.com", live: true } }), ["site"]), true, "an object's keys in any order");
   assert.equal(sameAnswer("same words", " same words "), true, "without on: as before, trimmed text");
   assert.equal(sameAnswer(agentSays(AGENT), draftSays(DRAFT)), false, "without on: the whole value");
 
   // Dotted paths: each segment a key of an object; one that does not resolve in both answers disagrees.
   const step = (action, why = "fits the profile") => ({ next_step: { action, reason: `${action}: ${why}` } });
   const path = ["next_step.action"];
-  assert.equal(sameAnswer(agentSays(step("book_call")), draftSays(step("book_call", "a strong fit on size and region")), path), true, "the nested value agrees, the sibling reason does not count");
-  assert.equal(sameAnswer(agentSays(step("book_call")), draftSays(step("nurture")), path), false);
-  assert.equal(sameAnswer(agentSays(step("book_call")), draftSays({ next_step: { reason: "no action" } }), path), false, "the leaf missing on one side");
-  assert.equal(sameAnswer(agentSays({ next_step: {} }), draftSays({ next_step: {} }), path), false, "missing on both: never agreement");
-  assert.equal(sameAnswer(agentSays({ next_step: "book_call" }), draftSays({ next_step: "book_call" }), path), false, "a segment through a string does not resolve");
-  assert.equal(sameAnswer(agentSays({ next_step: ["book_call"] }), draftSays({ next_step: ["book_call"] }), ["next_step.0"]), false, "a segment into an array does not resolve");
-  assert.equal(sameAnswer(agentSays({ next_step: null }), draftSays({ next_step: null }), path), false, "a segment through null does not resolve");
-  assert.equal(sameAnswer(agentSays({ a: { b: { c: null } } }), draftSays({ a: { b: { c: null } } }), ["a.b.c"]), true, "a present null is a value: equal");
-  assert.equal(sameAnswer(agentSays({ a: { b: { c: 1 } } }), draftSays({ a: { b: { c: 1, d: 2 } } }), ["a.b"]), false, "a path to an object compares it whole");
-  assert.equal(sameAnswer(agentSays({ "a.b": 1 }), draftSays({ "a.b": 1 }), ["a.b"]), false, "a dot always splits: a key holding a dot is never named");
-  assert.equal(sameAnswer(agentSays({ constructor: 1 }), draftSays({}), ["constructor"]), false, "only own keys resolve");
-  assert.equal(sameAnswer(agentSays({}), draftSays({}), ["toString"]), false, "an inherited key never resolves");
+  assert.equal(agrees(agentSays(step("book_call")), draftSays(step("book_call", "a strong fit on size and region")), path), true, "the nested value agrees, the sibling reason does not count");
+  assert.equal(agrees(agentSays(step("book_call")), draftSays(step("nurture")), path), false);
+  assert.equal(agrees(agentSays(step("book_call")), draftSays({ next_step: { reason: "no action" } }), path), false, "the leaf missing on one side");
+  assert.equal(agrees(agentSays({ next_step: {} }), draftSays({ next_step: {} }), path), false, "missing on both: never agreement");
+  assert.equal(agrees(agentSays({ next_step: "book_call" }), draftSays({ next_step: "book_call" }), path), false, "a segment through a string does not resolve");
+  assert.equal(agrees(agentSays({ next_step: ["book_call"] }), draftSays({ next_step: ["book_call"] }), ["next_step.0"]), false, "a segment into an array does not resolve");
+  assert.equal(agrees(agentSays({ next_step: null }), draftSays({ next_step: null }), path), false, "a segment through null does not resolve");
+  assert.equal(agrees(agentSays({ a: { b: { c: null } } }), draftSays({ a: { b: { c: null } } }), ["a.b.c"]), true, "a present null is a value: equal");
+  assert.equal(agrees(agentSays({ a: { b: { c: 1 } } }), draftSays({ a: { b: { c: 1, d: 2 } } }), ["a.b"]), false, "a path to an object compares it whole");
+  assert.equal(agrees(agentSays({ "a.b": 1 }), draftSays({ "a.b": 1 }), ["a.b"]), false, "a dot always splits: a key holding a dot is never named");
+  assert.equal(agrees(agentSays({ constructor: 1 }), draftSays({}), ["constructor"]), false, "only own keys resolve");
+  assert.equal(agrees(agentSays({}), draftSays({}), ["toString"]), false, "an inherited key never resolves");
 });
 
 const LIST_WORDS = "learning.agree_on is a list of 1 to 16 distinct dotted paths into the answer's JSON object (e.g. verdict.decision)";

@@ -163,7 +163,8 @@ asked no more; what it spent before is booked as any cut request is, and a stopp
 not the verdict, a request that failed twice, one cut by its deadline, and a cap refusal differ, never agree by default,
 in words ("the comparison could not be read: ...", "the cap held the comparison"). The verdict is a root journal entry
 (`agentrun.learning.compared`) that the run's metrics keep (`replay.compared`), naming the two answers it read (`pair`,
-a digest of both); the check reads it through compareAnswers, the one comparison the audit makes too. A verdict whose
+a digest of both); the check reads it through checkInputOf (compareAnswers on a whole answer), the one comparison the
+audit makes too (answerJudged). A verdict whose
 pair is not the two answers read at the check (the agent's run answered again after its replay was compared: a
 follow-up) is stale, and that input differs ("the comparison read an earlier answer: ..."), as one with no verdict
 does: no claim asks the grader again. The record keeps `check.grader` (the

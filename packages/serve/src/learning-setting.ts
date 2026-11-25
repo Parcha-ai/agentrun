@@ -11,7 +11,7 @@
 //   hold_window, hold_disagree: it stops serving (a hold) when its last hold_window audit rows hold at least
 //     hold_disagree disagreements;
 //   stop_window: a second hold within this many served runs of the first stops it for good.
-// Both compare two answers (learn/promote.ts sameAnswer) on agree_on, the definition's dotted paths into the answer's
+// Both judge an answer (runner/promotion.ts checkInputOf, one field each) on agree_on, the definition's dotted paths into the answer's
 // JSON object that say the decision (`verdict.decision`); absent, the whole answer. Nothing is read off the output
 // schema: its enum can be an echo of the owner's setting, not the decision, and a wrong field that promotes is worse than
 // none.

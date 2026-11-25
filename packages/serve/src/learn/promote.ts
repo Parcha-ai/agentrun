@@ -643,38 +643,22 @@ function valueOf(answer: string): unknown {
   }
 }
 
-/** Not there: a path of agree_on that does not resolve in an answer. */
-const MISSING = Symbol("missing");
+/** Whether two answers say the same: equal as JSON values, else as trimmed text. */
+export function sameAnswer(a: string | null, b: string | null): boolean {
+  return a !== null && b !== null && sameValue(valueOf(a), valueOf(b));
+}
 
-/** The value at a dotted path (learning-setting.ts pathSegments) of a JSON value: each segment an own key of an object
- *  (never an array's index, never through text or null); MISSING when one is not. */
-function valueAt(value: unknown, path: string): unknown {
+/** The value at a dotted path (learning-setting.ts pathSegments: an agree_on path) of a JSON value (an answer's, a
+ *  grade's expected answer): each segment an own key of an object (never an array's index, never through text or null);
+ *  undefined where one is not, so the path does not resolve, and a field there is never right (learn/field-check.ts). */
+export function valueAtPath(value: unknown, path: string): unknown {
   let here = value;
   for (const segment of pathSegments(path)) {
-    if (!isObject(here) || !Object.hasOwn(here, segment)) return MISSING;
+    if (!isObject(here) || !Object.hasOwn(here, segment)) return undefined;
     here = here[segment];
   }
   return here;
 }
-
-/** Whether two answers say the same: equal as JSON values, else as trimmed text. On `on` (the revision's agree_on,
- *  dotted paths into the answer's JSON object): each path resolves in both answers to equal values; a path that does
- *  not resolve in either (a key missing, a segment through an array, text or null) disagrees, on both sides too. */
-export function sameAnswer(a: string | null, b: string | null, on?: readonly string[]): boolean {
-  if (a === null || b === null) return false;
-  const [va, vb] = [valueOf(a), valueOf(b)];
-  if (!on?.length) return sameValue(va, vb);
-  return on.every((path) => {
-    const [x, y] = [valueAt(va, path), valueAt(vb, path)];
-    return x !== MISSING && y !== MISSING && sameValue(x, y);
-  });
-}
-
-/** The value at dotted `path` of a JSON value (a grade's expected answer), undefined where it does not resolve (valueAt). */
-export const valueAtPath = (value: unknown, path: string): unknown => {
-  const at = valueAt(value, path);
-  return at === MISSING ? undefined : at;
-};
 
 /** The value at dotted `path` of an answer (its JSON, valueOf), undefined where it does not resolve or there is none. */
 export const answerAt = (answer: string | null, path: string): unknown => (answer === null ? undefined : valueAtPath(valueOf(answer), path));
@@ -697,7 +681,8 @@ export function knownAnswerText(agent: string | null, expected: unknown): string
 // The grader: with no agree_on, the agent's fast model reads two answers to one input and says whether they reach the same
 // decision. One request per pair, its reply {"same": boolean, "differs_on": string | null}. A replay run and an audit's
 // shadow run ask it at their end, on their own cap (runner/compare-end.ts), and keep its verdict on their record
-// (metrics `compared`); the check and the audit read it there through compareAnswers, the one comparison both make.
+// (metrics `compared`); the check and the audit read it there through runner/promotion.ts checkInputOf (compareAnswers on
+// a whole answer), the one comparison both make.
 
 /** The grader's instructions, word for word as they were measured on the live demo's check pairs. */
 export const GRADER_PROMPT = [
@@ -775,14 +760,13 @@ export async function gradeAnswers(input: string, agent: string, draft: string, 
   return verdict.same ? { same: true, ...by } : { same: false, ...by, differs_on: verdict.differs_on ?? "a decision it did not name" };
 }
 
-/** The one comparison a check and an audit make of two answers (`a`, `b`; either null: they differ). With agree_on
- *  (`on`) named: sameAnswer on those paths, no model. Else two answers equal byte for byte or as JSON values agree with
- *  no model, and two that differ take the grader's verdict on that pair when it was asked (`compared`, kept on the run
- *  that asked it); with none (no fast model) they differ, compared whole. A verdict whose `pair` is not these two
- *  answers' (one answered again since it was read) is stale: they differ, in its words (COMPARE_STALE), as with none. */
-export function compareAnswers(a: string | null, b: string | null, on: readonly string[] | undefined, compared?: Compared): Compared {
+/** Two whole answers compared (`a`, `b`; either null: they differ), as a check and an audit judge one with no agree_on
+ *  (runner/promotion.ts checkInputOf): equal byte for byte or as JSON values, they agree with no model; two that differ
+ *  take the grader's verdict on that pair when it was asked (`compared`, kept on the run that asked it); with none (no
+ *  fast model) they differ. A verdict whose `pair` is not these two answers' (one answered again since it was read) is
+ *  stale: they differ, in its words (COMPARE_STALE), as with none. */
+export function compareAnswers(a: string | null, b: string | null, compared?: Compared): Compared {
   if (a === null || b === null) return { same: false };
-  if (on?.length) return { same: sameAnswer(a, b, on) };
   if (sameAnswer(a, b)) return { same: true };
   if (compared?.grader === undefined) return { same: false };
   return compared.pair === answersPair(a, b) ? compared : { same: false, grader: compared.grader, differs_on: COMPARE_STALE };
