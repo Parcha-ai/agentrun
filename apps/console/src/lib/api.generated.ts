@@ -491,6 +491,10 @@ export interface components {
           keys: string[];
         }>;
         pin_broken?: true;
+        file?: {
+          folder: string;
+          show: string[];
+        };
       } | {
         permission?: "allow" | "ask" | "deny";
       } | {
@@ -3987,6 +3991,10 @@ export interface operations {
             pin?: Record<string, string | number | boolean | null | (string | number | boolean | null)[] | {
               keys: string[];
             }>;
+            file?: {
+              folder: string;
+              show: string[];
+            };
           }[];
         }[];
         parameters: Record<string, unknown>;
@@ -4540,6 +4548,10 @@ export interface operations {
             pin?: Record<string, string | number | boolean | null | (string | number | boolean | null)[] | {
               keys: string[];
             }>;
+            file?: {
+              folder: string;
+              show: string[];
+            };
           }[];
         }[];
         parameters: Record<string, unknown>;
@@ -5502,6 +5514,10 @@ export interface operations {
             pin?: Record<string, string | number | boolean | null | (string | number | boolean | null)[] | {
               keys: string[];
             }>;
+            file?: {
+              folder: string;
+              show: string[];
+            };
           }[];
         }[];
         parameters: Record<string, unknown>;

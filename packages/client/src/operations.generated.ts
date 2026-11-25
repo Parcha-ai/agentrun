@@ -5874,6 +5874,10 @@ export type GetTemplateResponse = {
         pin?: Record<string, string | number | boolean | null | Array<string | number | boolean | null> | {
           keys: Array<string>;
         }>;
+        file?: {
+          folder: string;
+          show: Array<string>;
+        };
       }>;
     }>;
     parameters: Record<string, unknown>;
@@ -5976,6 +5980,10 @@ export type ImportTemplateResponse = {
         pin?: Record<string, string | number | boolean | null | Array<string | number | boolean | null> | {
           keys: Array<string>;
         }>;
+        file?: {
+          folder: string;
+          show: Array<string>;
+        };
       }>;
     }>;
     parameters: Record<string, unknown>;
@@ -6071,6 +6079,10 @@ export type ListTemplatesResponse = {
         pin?: Record<string, string | number | boolean | null | Array<string | number | boolean | null> | {
           keys: Array<string>;
         }>;
+        file?: {
+          folder: string;
+          show: Array<string>;
+        };
       }>;
     }>;
     parameters: Record<string, unknown>;
