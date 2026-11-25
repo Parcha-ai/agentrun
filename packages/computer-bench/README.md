@@ -239,9 +239,12 @@ missing.
    after the agent's end, the run ends as its agent did; released before the start, it ends cancelled.
 4. The agent's steps come from `GET /runs/{run_id}/timeline`: each `tool_use` and its `tool_result` row (the tool's
    name, its input preview, success or failure), and on the tool_result row the computer calls the tool call made
-   (`computer_calls`: method, ok, ms, the error's code, ui.act's steps with their routes and readbacks, its expect, and
-   where serve has them `at` and `words`; `computer_calls_dropped` past serve's bound). Each computer call is a step;
-   each tool call is a turn. No journal route.
+   (`computer_calls`: method, `started_at`, ok, ms, the error's code, ui.act's steps with their routes and readbacks,
+   its expect, and `words` where serve has it; `computer_calls_dropped` past serve's bound). A codemode script's own
+   rows carry none: each computer call it makes is a nested call, with its own rows under the script's call
+   (`parent_tool_use_id`, the same `conversation_id`), and those are the script's steps. A subagent's rows, in a
+   conversation of their own, are not the agent's. Each computer call is a step; each tool call of the model's is a
+   turn. No journal route.
 5. `GET /runs/{run_id}` answers `computer {state, provider, why, held {state, minutes, until, why}}`, `cost {usd,
    so_far_usd}`, `result {final_answer}` once the run completed, and `error {code}`; a platform failure's code is one of
    `computer_unavailable`, `provider_error`, `model_unavailable`, `upstream_error`, `internal`, `runner_lost`. The
