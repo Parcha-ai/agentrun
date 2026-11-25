@@ -1,11 +1,11 @@
 // Promotion (champion/challenger): a learned workflow's new revision (a new digest) serves a run first only once its one
-// check passes: replayed on the inputs of the agent's last compile_after completed runs, of those it ran on it answered
-// at least alone_min alone, and at least agree_min of those said what the agent's own recorded answer said (sameAnswer,
-// checkPasses; the bar is the agent definition's, learning-setting.ts). No grade is read for it. A replay runs the
-// workflow alone on a run's recorded input (a run of its own, at workflow cost, runner/promotion.ts); a step it hands
-// back on is not an answer alone. This module is the arithmetic and the two records the store keeps (the agent's grades,
-// its workflows' promotion records), as learning records (Store.learning records); the orchestration is
-// runner/promotion.ts. Grades are what a person or an eval said of a run (PUT /runs/{id}/grade).
+// check passes: replayed on the inputs of the agent's last compile_after completed runs, judged field by field against
+// each input's best known answer (a grade's expected answer, else the agent's own recorded answer: learn/field-check.ts;
+// the bar is the agent definition's, learning-setting.ts). A replay runs the workflow alone on a run's recorded input (a
+// run of its own, at workflow cost, runner/promotion.ts); a step it hands back on is not an answer alone. This module is
+// the answer comparison and the two records the store keeps (the agent's grades, its workflows' promotion records), as
+// learning records (Store.learning records); the orchestration is runner/promotion.ts. Grades are what a person or an
+// eval said of a run (PUT /runs/{id}/grade).
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type { RunPath } from "../learning-cost.js";
@@ -15,6 +15,7 @@ import { answerJson } from "../answer-json.js";
 import { pathSegments } from "../learning-setting.js";
 import { isObject } from "../validate.js";
 import type { Skipped } from "./replay-calls.js";
+import { type CheckTally, type FieldVerdict, sameValue } from "./field-check.js";
 import type { ReplayOutcome } from "../runner/workflow-first.js";
 
 /** How many grades an agent keeps (newest kept). */
@@ -51,10 +52,10 @@ export interface Grade {
 }
 
 /** What a replay says, the shape a replay's read keeps (SPEC: replay {n, agree, agent_acc, wf_acc, delta}): `n` inputs;
- *  `agree`, how many the workflow answered alone with the agent's recorded answer; `agent_acc`, the agent's accuracy on
- *  them (1: the agent's own answers are the label); `wf_acc`, the workflow's, a hand-back counting as the agent's answer;
- *  `delta` = wf_acc - agent_acc; `handed_back`, how many it handed back (it answered n - handed_back alone:
- *  answersAlone). Accuracies to 1e-4. */
+ *  `agree`, how many the workflow answered alone right on every field (CheckRecord.agreed); `agent_acc`, the agent's
+ *  accuracy on them (1: the agent's own answers are the label); `wf_acc`, the workflow's, a hand-back counting as the
+ *  agent's answer; `delta` = wf_acc - agent_acc; `handed_back`, how many it handed back (it answered n - handed_back
+ *  alone). Accuracies to 1e-4. */
 export interface ReplayScore {
   readonly n: number;
   readonly agree: number;
@@ -63,10 +64,6 @@ export interface ReplayScore {
   readonly delta: number;
   readonly handed_back: number;
 }
-
-/** Whether a replay answered alone on at least one of its inputs: one that hands back every input would never serve. The
- *  one spelling of it (the compile's held line); the count is n - handed_back. */
-export const answersAlone = (score: Pick<ReplayScore, "n" | "handed_back">): boolean => score.handed_back < score.n;
 
 /** A learned workflow's promotion record at one digest. `decided`: `promote` (it serves first), `hold` (it does not: the
  *  champion, championOf, takes its runs, else the agent, until a new revision) or `replaying` (its check's replay runs,
@@ -154,10 +151,22 @@ export interface CheckDisagreement {
   readonly failed?: true;
   /** The decision the grader said they differ on, or why its verdict could not be had (cut to CHECK_TEXT_MAX). */
   readonly differs_on?: string;
+  /** The fields the draft's answer had wrong on it, against each field's known answer (CheckRecord.fields): agree_on's
+   *  paths (the definition's names), else `answer`, the whole answer. Never a name taken from a grade. */
+  readonly fields?: readonly string[];
+  /** Of those, each one known from a label or a grade (never the agent's own answer, `agent` above): the known answer
+   *  (its text or JSON, cut to CHECK_TEXT_MAX) and where it came from, which the recompile is asked to say; or
+   *  "unknown", no value, where a grade marked the agent's answer wrong without giving the right one. */
+  readonly expected?: readonly CheckKnown[];
 }
 
-/** A check's numbers, once decided: `n` inputs it ran on (a skipped write is none), `agreed` of them answered alone with
- *  the agent's recorded answer (sameAnswer), `alone` answered alone (no escalate, no failed step); the inputs (`of`, the
+/** A known answer a draft missed on one field of one input: the field, its source, and the value as text; none when the
+ *  grade gave no right answer ("unknown"). */
+export type CheckKnown = { readonly field: string; readonly known: "label" | "grade" | "unknown"; readonly value?: string };
+
+/** A check's numbers, once decided: `n` inputs it ran on (a skipped write is none), `agreed` of them answered alone right
+ *  on every field, `alone` answered alone (no escalate, no failed step), each field's verdict (`fields`,
+ *  learn/field-check.ts: its counts, the source of its known answer, whether it passed and why); the inputs (`of`, the
  *  agent's runs), what its replay runs cost, their outcomes (one per input: a replay run never created by the deadline
  *  failed), how many of its replay runs were never created (`unstarted`, when any), the tools that stopped its skipped
  *  inputs, the inputs it did not agree on, and `stopped` when a recompile's check held it too (nothing compiles again). */
@@ -165,6 +174,11 @@ export type CheckRecord = CheckBar & {
   readonly n?: number;
   readonly agreed?: number;
   readonly alone?: number;
+  /** Of `alone`, how many the agent's own answers were right on every field, against the same known answers (an answer
+   *  graded wrong is its miss): the agent's side of `agreed`. Absent on a record kept before it was counted, which was
+   *  judged against the agent's own answers only (so all of them). */
+  readonly agent_agreed?: number;
+  readonly fields?: Readonly<Record<string, FieldVerdict>>;
   readonly of?: readonly string[];
   readonly cost_usd?: number | null;
   readonly outcomes?: ReplayOutcomes;
@@ -189,13 +203,15 @@ export type CheckRecord = CheckBar & {
 };
 
 /** A connected agent's checked native turns before its check decides, counted as a decided check counts its inputs:
- *  `n` turns, `agreed` and `alone` of them, the agent's runs (`of`, newest first), one outcome per turn (a turn past its
- *  deadline failed), each turn it did not agree on, and the shadows' fresh reads. Each is compared on its own turn, its
- *  texts cut as a decided check's are. */
+ *  `n` turns, `agreed` and `alone` of them, each field's counts (`fields`, learn/field-check.ts CheckTally), the agent's
+ *  runs (`of`, newest first), one outcome per turn (a turn past its deadline failed), each turn it did not agree on, and
+ *  the shadows' fresh reads. Each is compared on its own turn, its texts cut as a decided check's are. */
 export interface CheckTurns {
   readonly n: number;
   readonly agreed: number;
   readonly alone: number;
+  readonly agent_agreed?: number;
+  readonly fields?: CheckTally["fields"];
   readonly of: readonly string[];
   readonly outcomes: ReplayOutcomes;
   readonly disagreements?: readonly CheckDisagreement[];
@@ -205,16 +221,10 @@ export interface CheckTurns {
 /** The most characters of an input or an answer a check's disagreement keeps. */
 export const CHECK_TEXT_MAX = 1_200;
 
-/** A check's two shares: `agreement`, of the inputs the draft answered alone those that say what the agent said (0 when
- *  it answered none alone); `alone`, of the inputs it ran on those it answered alone (0 when none ran). */
+/** A check's two shares: `agreement`, of the inputs the draft answered alone those right on every field (0 when it
+ *  answered none alone); `alone`, of the inputs it ran on those it answered alone (0 when none ran). */
 export const checkShares = (score: { readonly n: number; readonly agreed: number; readonly alone: number }): { agreement: number; alone: number } =>
   ({ agreement: score.alone ? score.agreed / score.alone : 0, alone: score.n ? score.alone / score.n : 0 });
-
-/** Whether a check promotes its draft: agreement at least the bar's agree_min, and alone at least its alone_min. */
-export const checkPasses = (score: { readonly n: number; readonly agreed: number; readonly alone: number }, bar: Pick<CheckBar, "agree_min" | "alone_min">): boolean => {
-  const shares = checkShares(score);
-  return score.n > 0 && score.alone > 0 && shares.agreement >= bar.agree_min - 1e-9 && shares.alone >= bar.alone_min - 1e-9;
-};
 
 /** What a replay's runs are launched with (PromotionRecord.launch). */
 export interface ReplayLaunch {
@@ -325,12 +335,16 @@ export const dropGrades = (rows: LearningRecords, agentId: string, runId: string
   rows.changeRecords(agentId, "grade", (records) => (records.some((one) => (one.data as Grade).run === runId) ? { records: records.filter((one) => (one.data as Grade).run !== runId).map((one) => keptWrite(one)), result: undefined } : { result: undefined }));
 
 /** A check's disagreement with what it copied from its run blanked: its run id and which way the draft went (an answer,
- *  a hand-back, a failed step) kept, its input, the agent's answer, the draft's and the grader's words gone. */
+ *  a hand-back, a failed step) and the fields it had wrong (the definition's names, no run text) and where each known
+ *  answer came from kept, its input, the agent's answer, the draft's, the known answers' values and the grader's words
+ *  gone. */
 const blankCheck = (one: CheckDisagreement): CheckDisagreement => ({
   run: one.run, input: "", agent: null,
   ...(one.draft !== undefined ? { draft: "" } : {}),
   ...(one.escalated !== undefined ? { escalated: "" } : {}),
   ...(one.failed ? { failed: true as const } : {}),
+  ...(one.fields ? { fields: one.fields } : {}),
+  ...(one.expected ? { expected: one.expected.map(({ field, known, value }) => ({ field, known, ...(value !== undefined ? { value: "" } : {}) })) } : {}),
 });
 
 /** An audit's disagreement blanked the same way: its run ids and whether a grade wrote it kept. */
@@ -536,16 +550,6 @@ function valueOf(answer: string): unknown {
   }
 }
 
-/** JSON values equal as values: keys in any order. */
-function same(a: unknown, b: unknown): boolean {
-  if (a === b) return true;
-  if (typeof a !== typeof b || a === null || b === null || typeof a !== "object") return false;
-  if (Array.isArray(a) !== Array.isArray(b)) return false;
-  if (Array.isArray(a)) return a.length === (b as unknown[]).length && a.every((one, i) => same(one, (b as unknown[])[i]));
-  const [ka, kb] = [Object.keys(a as object), Object.keys(b as object)];
-  return ka.length === kb.length && ka.every((key) => same((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key]));
-}
-
 /** Not there: a path of agree_on that does not resolve in an answer. */
 const MISSING = Symbol("missing");
 
@@ -566,11 +570,35 @@ function valueAt(value: unknown, path: string): unknown {
 export function sameAnswer(a: string | null, b: string | null, on?: readonly string[]): boolean {
   if (a === null || b === null) return false;
   const [va, vb] = [valueOf(a), valueOf(b)];
-  if (!on?.length) return same(va, vb);
+  if (!on?.length) return sameValue(va, vb);
   return on.every((path) => {
     const [x, y] = [valueAt(va, path), valueAt(vb, path)];
-    return x !== MISSING && y !== MISSING && same(x, y);
+    return x !== MISSING && y !== MISSING && sameValue(x, y);
   });
+}
+
+/** The value at dotted `path` of a JSON value (a grade's expected answer), undefined where it does not resolve (valueAt). */
+export const valueAtPath = (value: unknown, path: string): unknown => {
+  const at = valueAt(value, path);
+  return at === MISSING ? undefined : at;
+};
+
+/** The value at dotted `path` of an answer (its JSON, valueOf), undefined where it does not resolve or there is none. */
+export const answerAt = (answer: string | null, path: string): unknown => (answer === null ? undefined : valueAtPath(valueOf(answer), path));
+
+/** An answer as the value sameAnswer compares (its JSON, else its trimmed text), undefined when there is none. */
+export const answerValue = (answer: string | null): unknown => (answer === null ? undefined : valueOf(answer));
+
+/** The known answer a whole-answer check compares a draft with, given a grade's `expected` answer, as JSON: the agent's
+ *  answer (`agent`, its JSON) with the grade's keys written over it when both are JSON objects, so a grade that names
+ *  only the keys it corrects leaves the rest of the agent's answer standing; else the expected answer whole. Own keys
+ *  only, and never one named `__proto__`. A replay run's grader (runner/compare-end.ts) and the check
+ *  (runner/promotion.ts judgeRows) read the same text, so its verdict's pair is this answer's. */
+export function knownAnswerText(agent: string | null, expected: unknown): string {
+  const said = agent === null ? undefined : valueOf(agent);
+  if (!isObject(said) || !isObject(expected)) return JSON.stringify(expected);
+  const own = (value: Readonly<Record<string, unknown>>) => Object.entries(value).filter(([key]) => key !== "__proto__");
+  return JSON.stringify(Object.fromEntries([...own(said), ...own(expected)]));
 }
 
 // The grader: with no agree_on, the agent's fast model reads two answers to one input and says whether they reach the same
@@ -594,8 +622,12 @@ export const graderUserText = (input: string, agent: string, draft: string): str
 /** How a pair of answers compared: `same`, the grader's model when it was asked (`grader`; none when they were equal,
  *  compared on agree_on, or compared whole), what they differ on when they do (`differs_on`: the grader's words, or
  *  why its verdict could not be had), and the two answers the grader read (`pair`, answersPair): its verdict is of that
- *  pair alone. */
-export type Compared = { readonly same: boolean; readonly grader?: string; readonly differs_on?: string; readonly pair?: string };
+ *  pair alone. A replay's verdict keeps the grade of its source run it was asked against (`graded`: whether the agent
+ *  was right, and its expected answer when it gave one; null: none), so the check judges that input on that grade
+ *  (runner/promotion.ts checkRows), never on one given after the grader was asked, whose pair it is not. */
+export type Compared = { readonly same: boolean; readonly grader?: string; readonly differs_on?: string; readonly pair?: string; readonly graded?: ComparedGrade | null };
+/** The grade a replay's verdict was asked against (Compared.graded). */
+export type ComparedGrade = { readonly correct: boolean; readonly expected?: Readonly<Record<string, unknown>> };
 
 /** The two answers a grader's verdict is of, as one digest: the sha256 of each answer's sha256, the two in order, so
  *  the pair reads the same whichever side is named first and no two answers run together. */
@@ -666,8 +698,15 @@ export function compareAnswers(a: string | null, b: string | null, on: readonly 
 /** A `compared` as a run's record keeps it (metrics `compared`), else undefined. */
 export function comparedOf(value: unknown): Compared | undefined {
   if (!isObject(value) || typeof value.same !== "boolean") return undefined;
-  return { same: value.same, ...(typeof value.grader === "string" ? { grader: value.grader } : {}), ...(typeof value.differs_on === "string" ? { differs_on: value.differs_on } : {}), ...(typeof value.pair === "string" ? { pair: value.pair } : {}) };
+  const graded = value.graded === null ? null : isObject(value.graded) && typeof value.graded.correct === "boolean"
+    ? { correct: value.graded.correct, ...(isObject(value.graded.expected) && Object.keys(value.graded.expected).length ? { expected: value.graded.expected } : {}) }
+    : undefined;
+  return { same: value.same, ...(typeof value.grader === "string" ? { grader: value.grader } : {}), ...(typeof value.differs_on === "string" ? { differs_on: value.differs_on } : {}), ...(typeof value.pair === "string" ? { pair: value.pair } : {}), ...(graded !== undefined ? { graded } : {}) };
 }
+
+/** A run's newest grade as a check judges it (an empty expected answer is none), null for none. */
+export const comparedGrade = (grade: Grade | undefined): ComparedGrade | null =>
+  grade ? { correct: grade.correct, ...(grade.expected && Object.keys(grade.expected).length ? { expected: grade.expected } : {}) } : null;
 
 /** A grade as the API answers it (PUT /runs/{id}/grade; GET /runs/{id}/learning's `graded`, without `expected`). */
 export const gradeView = (grade: Grade) => ({

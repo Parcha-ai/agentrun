@@ -1286,11 +1286,10 @@ export function answersCut(tool: HostTool, cut: Redact): HostTool {
 /** Whether `cut`, a redactor that does not know its values, takes from `joined` (`parts` joined by line breaks) what it
  *  does not take from the parts each read alone: a held value split across two parts. Its cut of the join whole being
  *  "[redacted]" is not enough: it reads a text longer than a piece in pieces of 8,192 characters (key-refusal.ts
- *  redactedAnswer), and a value split inside one piece withholds only that piece, the rest of the join served. So the
- *  join's cut is set beside the parts' cuts joined: no value split across parts is in any part to cut, so the two differ
- *  wherever the join holds one, in one piece or across two. Where nothing spans two parts they are the same: every piece
- *  ends at whitespace or inside a run of more than a piece (the same run in a part as in the join, cut at the same
- *  places), and a line break ends each part. */
+ *  redactedAnswer), and a value split inside one piece withholds only that piece, the rest of the join served. It misses
+ *  nothing: no value split across parts is in a part to cut, so the join's cut and the parts' differ wherever the join
+ *  holds one; where nothing spans two parts they are the same, as every piece ends at whitespace or inside a run longer
+ *  than a piece, and a line break ends each part. */
 function joinCut(joined: string, parts: readonly string[], cut: (text: string) => string): boolean {
   const whole = cut(joined);
   return whole === "[redacted]" || whole !== parts.map(cut).join("\n");

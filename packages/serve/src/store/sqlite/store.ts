@@ -12,7 +12,7 @@ import { watchCommandsAt, wakeCommands } from "../command-wake.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { JOURNAL_FIRST_ID, RunStorage } from "../journal/storage.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
-import { COMMANDS_ONE_ANSWER, COMPUTER_INTERVALS, COMPUTER_INTERVALS_ADDED, COMPUTER_INTERVALS_RUN, DDL, diskUpgrade, HAND_BACKS, HAND_BACKS_AT, HAND_BACKS_KEPT_MS, HAND_BACKS_RUN, IMPORTED_TEMPLATES, LEARNING_LEDGER, LEARNING_LEDGER_AGENT, LEARNING_ROWS, LEARNING_SPEND, LEARNING_SPEND_AGENT, LEARNING_SPEND_OF_RUN, listingUpgrade, MINTED_TOKENS, purgeUpgrade, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUN_ATTEMPTS, RUNNERS, RUNNERS_ADDED, RUN_LAUNCH_CENSUS, RUN_LAUNCH_CENSUS_PENDING, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, TRIGGERS_TEMPLATE_ID } from "../schema.js";
+import { COMMANDS_ONE_ANSWER, COMPUTER_INTERVALS, COMPUTER_INTERVALS_ADDED, COMPUTER_INTERVALS_RUN, DDL, diskUpgrade, HAND_BACKS, HAND_BACKS_AT, HAND_BACKS_KEPT_MS, HAND_BACKS_RUN, IMPORTED_TEMPLATES, LEARNING_LEDGER, LEARNING_LEDGER_AGENT, LEARNING_ROWS, LEARNING_SPEND, LEARNING_SPEND_AGENT, LEARNING_SPEND_OF_RUN, listingUpgrade, MINTED_TOKENS, purgeUpgrade, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUN_ATTEMPTS, RUNNERS, RUNNERS_ADDED, RUN_LAUNCH_CENSUS, RUN_LAUNCH_CENSUS_ERASED, RUN_LAUNCH_CENSUS_ERASED_MADE, RUN_LAUNCH_CENSUS_SETTLE, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, TRIGGERS_TEMPLATE_ID } from "../schema.js";
 import {
   ActiveRuns, AgentArchived, AgentDeleting, AgentPurged, CommandTaken, ExternalBodyConflict, Fenced, FiringMoved, RunFinal, RunPurged, RunsMadeFromLeft, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreAwaitsServer, StoreBusy, StoreConstraint, StoreFromEarlierVersion, TriggerFull, TriggersLeft, UPLOAD_PREFIX, type AgentRow, type Agents,
   type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
@@ -116,6 +116,10 @@ type FiringRecord = {
 /** No audit's shadow run (learn/audit.ts SHADOW_PREFIX "audit."): the prefix compared as it is, which LIKE does not on
  *  SQLite (it folds case). */
 const NOT_A_SHADOW_RUN = "substr(runs.id, 1, 6) <> 'audit.'";
+/** A runs list's `model` (ListedFilter.model, `provider/model`) as SQL taking the model as its one `?`: the runs that sent at
+ *  least one request to it, a key of the requests their metrics count per model (metrics.models), exactly (no prefix, no case
+ *  folding). A run with no metrics yet sent none. */
+const runUsedModel = (d: Dialect): string => d.jsonObjectHasKey("runs.metrics", ["models"]);
 /** A runner holds the run's claim at `now` (SQL), and the run is not over. */
 const heldAt = (now: string) => `(runs.runner IS NOT NULL AND runs.claimed_until >= ${now} AND runs.state NOT IN ('ended', 'stopped', 'failed'))`;
 /** The run's listing is behind at `now` (SQL; its parameters twice, `params`): built before the latest write that moved
@@ -500,11 +504,19 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
       await connection.write([{ sql: RUNS_LABELS }], { full: true });
     }
     // An earlier build of this version kept no census on a run's launch (schema.ts RUN_LAUNCH_CENSUS): the server adds the
-    // column, nullable, every run ended before reading as never handed a secret, and marks each launch that holds one now
-    // as pending (store.ts CENSUS_PENDING). A runner writes it at each end, so it waits for that server.
+    // column, nullable: every run ended before reads as never handed a secret, and a launch that holds one now as not yet
+    // counted (its end counts it). A runner writes it at each end, so it waits for that server.
     if (!(await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('run_launch')")).some((column) => column.name === "census")) {
       if (role === "runner") throw new StoreAwaitsServer("add each run's census");
-      await connection.write([{ sql: RUN_LAUNCH_CENSUS }, { sql: RUN_LAUNCH_CENSUS_PENDING }], { full: true });
+      await connection.write([{ sql: RUN_LAUNCH_CENSUS }], { full: true });
+    }
+    // A store no server of this build opened yet holds no RUN_LAUNCH_CENSUS_ERASED (an end that erases sealed bytes with
+    // no census, as an earlier runner's does, writes "unscanned"). The server makes it, and in the same write settles each
+    // "pending" 0.1.0-beta.57 left (RUN_LAUNCH_CENSUS_SETTLE), so a run live at the upgrade is counted at its end. Every
+    // later open reads only that the trigger is there. A runner leaves both: an end over a "pending" writes the marker,
+    // and its files are withheld, never read uncut.
+    if (role === "server" && (await connection.all(RUN_LAUNCH_CENSUS_ERASED_MADE)).length === 0) {
+      await connection.write([{ sql: RUN_LAUNCH_CENSUS_SETTLE }, { sql: RUN_LAUNCH_CENSUS_ERASED }], { full: true });
     }
     // An earlier build of this version kept no package mark on a trigger (schema.ts TRIGGERS_TEMPLATE_ID): the server adds
     // the column, nullable, every trigger made before reading as no package's. A runner reads each trigger through it, so
@@ -1483,7 +1495,7 @@ class SqliteStore implements Store {
       },
       // A list's page from the rows alone: filtered, ordered and cut to the page in the query, one read whatever the number
       // of runs, each row with its listing (schema.ts RUN_LISTING_COLUMNS) and its agent's archive time.
-      listed: async ({ agentId, revisionId, labels, archived, status, going, after, limit, offset = 0 }) => {
+      listed: async ({ agentId, revisionId, labels, source, startedFrom, startedBefore, model, archived, status, going, after, limit, offset = 0 }) => {
         const n = clock();
         const behind = listingBehind(n.sql);
         // Neither a built-in learning run nor an audit's shadow run (learn/audit.ts SHADOW_PREFIX, matched as it is, case and all).
@@ -1492,6 +1504,12 @@ class SqliteStore implements Store {
         if (agentId !== undefined) (where.push("runs.agent_id = ?"), params.push(agentId));
         if (revisionId !== undefined) (where.push("runs.revision_id = ?"), params.push(revisionId));
         for (const [key, value] of Object.entries(labels ?? {})) (where.push(d.jsonObjectHas("runs.labels")), params.push(key, value));
+        if (source === "live") where.push("runs.imported_from IS NULL");
+        else if (source !== undefined) (where.push(`${d.jsonText("runs.imported_from", ["source"])} = ?`), params.push(source));
+        // The window [startedFrom, startedBefore): a run started at its start is in it, one started at its end is not.
+        if (startedFrom !== undefined) (where.push("runs.started_at >= ?"), params.push(startedFrom));
+        if (startedBefore !== undefined) (where.push("runs.started_at < ?"), params.push(startedBefore));
+        if (model !== undefined) (where.push(runUsedModel(d)), params.push(model));
         where.push(`COALESCE(runs.archived_at, agents.archived_at) IS ${archived ? "NOT NULL" : "NULL"}`, "runs.purged_at IS NULL");
         if (status !== undefined) (where.push("runs.list_status = ?"), params.push(status));
         // A run still going (no settled status on its row) whose listing is behind: its list_status may say what it was.

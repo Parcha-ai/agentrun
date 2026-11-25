@@ -6,12 +6,12 @@
 // AGENTRUN_CLAUDE_CODE_LOGIN=off, where claude-agent runs on the model keys as it does without it.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, constants, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { createRequire, syncBuiltinESMExports } from "node:module";
-import { homedir, hostname, tmpdir } from "node:os";
+import { homedir, hostname, tmpdir, userInfo } from "node:os";
 import { delimiter, dirname, join, relative } from "node:path";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import * as claude from "@parcha/agentrun-harness-claude";
 import { CLAUDE_LOGIN_ENV, CLAUDE_LOGIN_SETTING, claudeLoginOf, claudeLoginSwitchedOff, claudeLoginView, envAtPlace, LOGIN_ANSWERS_DIR, LOGIN_SIGNED_OUT, LOGIN_UNKNOWN, loginAt, loginBeforeRun, loginForRun, loginOnRunnerOnly, loginServes, settingFor, startLoginHere, turnOffClaudeLogin, turnOnBody, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
 import { ClaudeSignIns } from "../dist/claude-sign-in.js";
@@ -27,6 +27,10 @@ const MODEL_VARS = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_FAST", "
 const OPERATIONS = [["GET", "/settings/claude-login", "getClaudeLogin"], ["PUT", "/settings/claude-login", "turnOnClaudeLogin"], ["DELETE", "/settings/claude-login", "turnOffClaudeLogin"], ["POST", "/settings/claude-login/login", "startClaudeLogin"]];
 const SIGNED_OUT = { loggedIn: false, authMethod: "none", apiProvider: "firstParty" };
 const SIGNED_IN = { loggedIn: true, authMethod: "claude.ai", apiProvider: "firstParty", email: "person@example.com", orgName: "Example", subscriptionType: "max" };
+/** A person's home for the tests that read paths alone: a folder of the test's own user, as the server's HOME must be to
+ *  count as the person's (claude-login.ts homeOf). Nothing is written in it. */
+const UP = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "claude-login-person-"));
+after(() => rmSync(UP, { recursive: true, force: true }));
 
 /** A fake Claude Code CLI for test `t`: `status` sets what its `auth status` answers; `calls()` are its calls, each its
  *  arguments and the variables it got that matter here. */
@@ -147,15 +151,15 @@ test("a run on a signed-out login is refused in words, asked of the pinned CLI, 
 const FAKE_DOCKER = new URL("./fixtures/fake-docker.mjs", import.meta.url).pathname;
 const RUNNER_ONLY = "Claude Code's login on this machine runs agents on the runner only, and this agent runs in the docker box";
 /** A server for test `t` with a Docker box (a fake `docker`) and no model key, and the fake CLI that answers for its
- *  login. */
-async function withDockerBox(t) {
+ *  login; `vars` set where it starts. */
+async function withDockerBox(t, vars = {}) {
   const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-docker-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   mkdirSync(join(dir, "bin"));
   mkdirSync(join(dir, "state"));
   writeFileSync(join(dir, "bin", "docker"), `#!/bin/sh\nexec '${process.execPath}' '${FAKE_DOCKER}' "$@"\n`, { mode: 0o755 });
   const fake = await fakeCli(t);
-  withEnv(t, { PATH: [dirname(fake.cli), join(dir, "bin"), process.env.PATH].join(delimiter), FAKE_DOCKER_STATE: join(dir, "state"), AGENTRUN_BOXES: "docker" }, [...MODEL_VARS, "AGENTRUN_DOCKER_IMAGE", "AGENTRUN_BOX_ALLOW"]);
+  withEnv(t, { PATH: [dirname(fake.cli), join(dir, "bin"), process.env.PATH].join(delimiter), FAKE_DOCKER_STATE: join(dir, "state"), AGENTRUN_BOXES: "docker", ...vars }, [...MODEL_VARS, "AGENTRUN_DOCKER_IMAGE", "AGENTRUN_BOX_ALLOW"]);
   const { api } = await serve(t, { faux: undefined, harnesses: false });
   return { api, fake };
 }
@@ -203,6 +207,25 @@ test("an agent on Claude Agent in a box on an OpenRouter model, while the login 
   assert.equal(own.status, 409, JSON.stringify(own.body));
   assert.ok(own.body.error.message.includes(RUNNER_ONLY), own.body.error.message);
   assert.equal(own.body.error.details.login_on_runner, true, JSON.stringify(own.body.error.details));
+});
+
+// An agent that names no model runs on the host's default for its harness, on the runner too: AGENT_MODEL first, when
+// the harness runs it (model.ts hostModel). Where that is an OpenRouter model, the moved agent still needs OpenRouter's
+// key, so the move is not offered; where it is Anthropic's own, the login runs it and the move is.
+test("an agent on Claude Agent in a box that names no model, on a host whose AGENT_MODEL is an OpenRouter model, is offered no move to the runner while the login reads signed in; on a host whose AGENT_MODEL is Anthropic's own it is", { timeout: 120_000 }, async (t) => {
+  for (const [model, offered] of [["openrouter/anthropic/claude-sonnet-5.5", false], ["anthropic/claude-sonnet-5-5", true]]) {
+    await t.test(model, async (t) => {
+      const { api, fake } = await withDockerBox(t, { AGENT_MODEL: model });
+      fake.status(SIGNED_IN);
+      assert.equal((await api("PUT", "/settings/claude-login", { only_me: true })).body.state, "signed_in");
+      assert.equal((await api("POST", "/agents", agent("unnamed", { harness: "claude-agent", place: { mode: "sandbox", box: "docker" } }))).status, 201);
+      const run = await api("POST", "/agents/unnamed/runs", { input: { content: "Say hi." } });
+      assert.equal(run.status, 409, JSON.stringify(run.body));
+      assert.equal(run.body.error.code, "agent_not_runnable");
+      assert.equal(run.body.error.message.includes(RUNNER_ONLY), offered, `the refusal of a box agent with no model, on a host whose AGENT_MODEL is ${model}, ${offered ? "does not offer" : "offers"} the move to the runner: ${run.body.error.message}`);
+      assert.equal(run.body.error.details.login_on_runner, offered ? true : undefined, `details.login_on_runner on a host whose AGENT_MODEL is ${model}: ${JSON.stringify(run.body.error.details)}`);
+    });
+  }
 });
 
 test("the switch, unset, follows the listen address: 0.0.0.0 has the mode off, 127.0.0.1 has it; off wins on loopback, on turns it on past it", () => {
@@ -264,7 +287,7 @@ test("AGENTRUN_CLAUDE_CODE_LOGIN=off: every route is 404 by name, a saved turn-o
   const saved = { get: async () => row };
   assert.equal(await loginForRun(saved, own, env, "claude-agent", { mode: "runner" }), undefined);
   // On, a runner place goes on the login (with the person's home, the env's HOME) and a sandbox place on the keys.
-  assert.deepEqual(await loginForRun(saved, own, { HOME: "/u/p" }, "claude-agent", { mode: "runner" }), { dir: join(own, "claude-login"), profiles: join(own, "claude-login", "anthropic"), userHome: "/u/p" });
+  assert.deepEqual(await loginForRun(saved, own, { HOME: UP }, "claude-agent", { mode: "runner" }), { dir: join(own, "claude-login"), profiles: join(own, "claude-login", "anthropic"), userHome: UP });
   assert.equal(await loginForRun(saved, own, {}, "claude-agent", { mode: "sandbox", box: "e2b" }), undefined);
 });
 
@@ -510,10 +533,10 @@ test("a turn-on that moves the login to another place ends a sign-in that waits,
 });
 
 test("this machine's login is the folder the CLI uses: CLAUDE_CONFIG_DIR when the server has it as an absolute path, else ~/.claude; the view names it", { timeout: 120_000 }, async (t) => {
-  assert.equal(loginAt("machine", "/d", { HOME: "/u/p" }).dir, "/u/p/.claude");
-  assert.deepEqual(loginAt("machine", "/d", { HOME: "/u/p", CLAUDE_CONFIG_DIR: "/u/p/elsewhere" }), { dir: "/u/p/elsewhere", profiles: "/u/p/.config/anthropic", userHome: "/u/p" });
-  assert.equal(loginAt("machine", "/d", { HOME: "/u/p", CLAUDE_CONFIG_DIR: "elsewhere" }).dir, "/u/p/.claude", "a relative one is read against a working directory the server does not share");
-  assert.equal(loginAt("agentrun", "/d", { HOME: "/u/p", CLAUDE_CONFIG_DIR: "/u/p/elsewhere" }).dir, "/d/claude-login", "AgentRun's own login is in its data");
+  assert.equal(loginAt("machine", "/d", { HOME: UP }).dir, `${UP}/.claude`);
+  assert.deepEqual(loginAt("machine", "/d", { HOME: UP, CLAUDE_CONFIG_DIR: `${UP}/elsewhere` }), { dir: `${UP}/elsewhere`, profiles: `${UP}/.config/anthropic`, userHome: UP });
+  assert.equal(loginAt("machine", "/d", { HOME: UP, CLAUDE_CONFIG_DIR: "elsewhere" }).dir, `${UP}/.claude`, "a relative one is read against a working directory the server does not share");
+  assert.equal(loginAt("agentrun", "/d", { HOME: UP, CLAUDE_CONFIG_DIR: `${UP}/elsewhere` }).dir, "/d/claude-login", "AgentRun's own login is in its data");
 
   const folder = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-config-dir-"));
   const { api, data, fake, home } = await signInServer(t, "sign", {}, { CLAUDE_CONFIG_DIR: folder });
@@ -566,8 +589,8 @@ test("this machine's login on the CLI's default folder is asked as the person's 
   }
   // The login carries `home` only on the default folder: that is what tells its variables apart. Every login carries the
   // person's home as `userHome`, where the status check, the sign-in and a run on macOS run.
-  assert.deepEqual(loginAt("machine", "/d", { HOME: "/u/p" }), { dir: "/u/p/.claude", profiles: "/u/p/.config/anthropic", home: "/u/p", userHome: "/u/p" });
-  assert.equal(loginAt("machine", "/d", { HOME: "/u/p", CLAUDE_CONFIG_DIR: "/u/p/elsewhere" }).home, undefined);
+  assert.deepEqual(loginAt("machine", "/d", { HOME: UP }), { dir: `${UP}/.claude`, profiles: `${UP}/.config/anthropic`, home: UP, userHome: UP });
+  assert.equal(loginAt("machine", "/d", { HOME: UP, CLAUDE_CONFIG_DIR: `${UP}/elsewhere` }).home, undefined);
 });
 
 test("Open the CLI's sign-in here on the CLI's default folder signs in where the person's own claude keeps its login: the account in ~/.claude.json, none in ~/.claude", { timeout: 120_000 }, async (t) => {
@@ -589,34 +612,34 @@ test("Open the CLI's sign-in here on the CLI's default folder signs in where the
 // item named with its hash); set and empty, in ~/.claude (on macOS the item with no suffix). The account stays where the
 // config dir says. "This machine" on a server started with it is asked and signed in so, and a run reaches the same tokens.
 test("this machine's login honours CLAUDE_SECURESTORAGE_CONFIG_DIR in the server's environment as the person's own claude does: the status check, the sign-in, the shown line and a run name its credentials there, and the view says so", { timeout: 120_000 }, async (t) => {
-  const profiles = "/u/p/.config/anthropic";
-  const at = (vars) => loginAt("machine", "/d", { HOME: "/u/p", ...vars });
+  const profiles = `${UP}/.config/anthropic`;
+  const at = (vars) => loginAt("machine", "/d", { HOME: UP, ...vars });
   // The CLI's default folder, its credentials elsewhere.
-  const own = at({ CLAUDE_SECURESTORAGE_CONFIG_DIR: "/u/p/secure" });
+  const own = at({ CLAUDE_SECURESTORAGE_CONFIG_DIR: `${UP}/secure` });
   for (const platform of ["darwin", "linux"]) {
-    assert.deepEqual(claude.claudeSignInEnv(own, platform), { HOME: "/u/p", CLAUDE_SECURESTORAGE_CONFIG_DIR: "/u/p/secure", ANTHROPIC_CONFIG_DIR: profiles }, platform);
-    assert.deepEqual(claude.claudeLoginEnv(own, platform), { CLAUDE_SECURESTORAGE_CONFIG_DIR: "/u/p/secure", ANTHROPIC_CONFIG_DIR: profiles }, platform);
+    assert.deepEqual(claude.claudeSignInEnv(own, platform), { HOME: UP, CLAUDE_SECURESTORAGE_CONFIG_DIR: `${UP}/secure`, ANTHROPIC_CONFIG_DIR: profiles }, platform);
+    assert.deepEqual(claude.claudeLoginEnv(own, platform), { CLAUDE_SECURESTORAGE_CONFIG_DIR: `${UP}/secure`, ANTHROPIC_CONFIG_DIR: profiles }, platform);
   }
   // Set and empty: on macOS empty still (the item with no suffix); elsewhere the folder it means, ~/.claude, absolute,
   // since a status check or a run has a home of its own.
   const empty = at({ CLAUDE_SECURESTORAGE_CONFIG_DIR: "" });
-  assert.deepEqual(claude.claudeSignInEnv(empty, "darwin"), { HOME: "/u/p", CLAUDE_SECURESTORAGE_CONFIG_DIR: "", ANTHROPIC_CONFIG_DIR: profiles });
+  assert.deepEqual(claude.claudeSignInEnv(empty, "darwin"), { HOME: UP, CLAUDE_SECURESTORAGE_CONFIG_DIR: "", ANTHROPIC_CONFIG_DIR: profiles });
   assert.deepEqual(claude.claudeLoginEnv(empty, "darwin"), { CLAUDE_SECURESTORAGE_CONFIG_DIR: "", ANTHROPIC_CONFIG_DIR: profiles });
-  assert.deepEqual(claude.claudeSignInEnv(empty, "linux"), { HOME: "/u/p", CLAUDE_SECURESTORAGE_CONFIG_DIR: "/u/p/.claude", ANTHROPIC_CONFIG_DIR: profiles });
-  assert.deepEqual(claude.claudeLoginEnv(empty, "linux"), { CLAUDE_SECURESTORAGE_CONFIG_DIR: "/u/p/.claude", ANTHROPIC_CONFIG_DIR: profiles });
+  assert.deepEqual(claude.claudeSignInEnv(empty, "linux"), { HOME: UP, CLAUDE_SECURESTORAGE_CONFIG_DIR: `${UP}/.claude`, ANTHROPIC_CONFIG_DIR: profiles });
+  assert.deepEqual(claude.claudeLoginEnv(empty, "linux"), { CLAUDE_SECURESTORAGE_CONFIG_DIR: `${UP}/.claude`, ANTHROPIC_CONFIG_DIR: profiles });
   // A CLAUDE_CONFIG_DIR folder: the account there, the credentials where the variable says.
-  const folder = at({ CLAUDE_CONFIG_DIR: "/u/p/elsewhere", CLAUDE_SECURESTORAGE_CONFIG_DIR: "/u/p/secure" });
+  const folder = at({ CLAUDE_CONFIG_DIR: `${UP}/elsewhere`, CLAUDE_SECURESTORAGE_CONFIG_DIR: `${UP}/secure` });
   for (const platform of ["darwin", "linux"]) {
-    assert.deepEqual(claude.claudeSignInEnv(folder, platform), { CLAUDE_CONFIG_DIR: "/u/p/elsewhere", CLAUDE_SECURESTORAGE_CONFIG_DIR: "/u/p/secure", ANTHROPIC_CONFIG_DIR: profiles }, platform);
-    assert.deepEqual(claude.claudeLoginEnv(folder, platform), { CLAUDE_SECURESTORAGE_CONFIG_DIR: "/u/p/secure", ANTHROPIC_CONFIG_DIR: profiles }, platform);
+    assert.deepEqual(claude.claudeSignInEnv(folder, platform), { CLAUDE_CONFIG_DIR: `${UP}/elsewhere`, CLAUDE_SECURESTORAGE_CONFIG_DIR: `${UP}/secure`, ANTHROPIC_CONFIG_DIR: profiles }, platform);
+    assert.deepEqual(claude.claudeLoginEnv(folder, platform), { CLAUDE_SECURESTORAGE_CONFIG_DIR: `${UP}/secure`, ANTHROPIC_CONFIG_DIR: profiles }, platform);
   }
-  const folderEmpty = at({ CLAUDE_CONFIG_DIR: "/u/p/elsewhere", CLAUDE_SECURESTORAGE_CONFIG_DIR: "" });
-  assert.deepEqual(claude.claudeSignInEnv(folderEmpty, "darwin"), { CLAUDE_CONFIG_DIR: "/u/p/elsewhere", CLAUDE_SECURESTORAGE_CONFIG_DIR: "", ANTHROPIC_CONFIG_DIR: profiles });
-  assert.deepEqual(claude.claudeSignInEnv(folderEmpty, "linux"), { CLAUDE_CONFIG_DIR: "/u/p/elsewhere", CLAUDE_SECURESTORAGE_CONFIG_DIR: "/u/p/.claude", ANTHROPIC_CONFIG_DIR: profiles });
+  const folderEmpty = at({ CLAUDE_CONFIG_DIR: `${UP}/elsewhere`, CLAUDE_SECURESTORAGE_CONFIG_DIR: "" });
+  assert.deepEqual(claude.claudeSignInEnv(folderEmpty, "darwin"), { CLAUDE_CONFIG_DIR: `${UP}/elsewhere`, CLAUDE_SECURESTORAGE_CONFIG_DIR: "", ANTHROPIC_CONFIG_DIR: profiles });
+  assert.deepEqual(claude.claudeSignInEnv(folderEmpty, "linux"), { CLAUDE_CONFIG_DIR: `${UP}/elsewhere`, CLAUDE_SECURESTORAGE_CONFIG_DIR: `${UP}/.claude`, ANTHROPIC_CONFIG_DIR: profiles });
   assert.deepEqual(claude.claudeLoginEnv(folderEmpty, "darwin"), { CLAUDE_SECURESTORAGE_CONFIG_DIR: "", ANTHROPIC_CONFIG_DIR: profiles });
   // A relative one is not taken, as with CLAUDE_CONFIG_DIR; AgentRun's own login never reads it.
-  assert.deepEqual(claude.claudeSignInEnv(at({ CLAUDE_SECURESTORAGE_CONFIG_DIR: "secure" }), "linux"), { HOME: "/u/p", ANTHROPIC_CONFIG_DIR: profiles });
-  assert.deepEqual(loginAt("agentrun", "/d", { HOME: "/u/p", CLAUDE_SECURESTORAGE_CONFIG_DIR: "/u/p/secure" }), { dir: "/d/claude-login", profiles: "/d/claude-login/anthropic", userHome: "/u/p" });
+  assert.deepEqual(claude.claudeSignInEnv(at({ CLAUDE_SECURESTORAGE_CONFIG_DIR: "secure" }), "linux"), { HOME: UP, ANTHROPIC_CONFIG_DIR: profiles });
+  assert.deepEqual(loginAt("agentrun", "/d", { HOME: UP, CLAUDE_SECURESTORAGE_CONFIG_DIR: `${UP}/secure` }), { dir: "/d/claude-login", profiles: "/d/claude-login/anthropic", userHome: UP });
 
   // A server started with it: the view names it, and the sign-in and every status check keep the tokens there.
   const secure = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-secure-dir-"));
@@ -1188,7 +1211,7 @@ test("the machine's id is a file of the owner's alone (0600) in the data folder,
 });
 
 // The person's home: the status check, the sign-in and a run on macOS all run in it. It is read once, where the login is
-// made (loginAt: the server's HOME when absolute, else os.homedir()), and every use takes it from the login, so a server
+// made (homeOf: the server's HOME when its user owns it, else that user's own home), and every use takes it from the login, so a server
 // handed an env whose HOME is not os.homedir()'s answer runs them all in one home.
 test("the person's home is read once, where the login is made: with the server's HOME apart from os.homedir(), the status check, the sign-in and a run's status check all run in that HOME, on AgentRun's own folder and on a CLAUDE_CONFIG_DIR folder", { skip: process.platform === "win32" ? "a sh stand-in CLI" : false, timeout: 120_000 }, async (t) => {
   const fake = await fakeCli(t);
@@ -1215,6 +1238,55 @@ test("the person's home is read once, where the login is made: with the server's
     assert.ok(calls.some((call) => call.argv === "auth status --json") && calls.some((call) => call.argv === "auth login --claudeai"), JSON.stringify(calls));
     for (const call of calls) assert.equal(call.home, person, `${place}: ${call.argv} runs in the server's HOME: ${JSON.stringify(call)}`);
   }
+});
+
+// The person's home is the home of the user the server runs as. A server started under a sudo that keeps HOME (root, with
+// the person's HOME) would otherwise sign the CLI in there as root, leaving root-owned files the person's own CLI can't
+// read; a service account that inherited someone's HOME would read that person's login as its own. "/" stands for a HOME
+// another user owns (root's, and this test is not root); no file in either home is read or written.
+test("a HOME the server's user does not own is not the person's home: the login is in that user's own home, as the system has it", { skip: process.platform === "win32" ? "no uid" : process.geteuid() === 0 ? "root owns /" : false }, async (t) => {
+  const own = userInfo().homedir;
+  assert.equal(statSync(own).uid, process.geteuid(), "this test's user owns its own home");
+  assert.notEqual(statSync("/").uid, process.geteuid());
+  assert.deepEqual(loginAt("machine", "/d", { HOME: "/" }), { dir: join(own, ".claude"), profiles: join(own, ".config", "anthropic"), home: own, userHome: own });
+  const data = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-data-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  const saved = { get: async () => settingFor("agentrun", data) };
+  assert.deepEqual(await loginForRun(saved, data, { HOME: "/" }, "claude-agent", { mode: "runner" }), { dir: join(data, "claude-login"), profiles: join(data, "claude-login", "anthropic"), userHome: own }, "a run's CLI runs in that user's own home");
+});
+
+// Where the server's user owns neither its HOME nor its own home (a service account whose home is /nonexistent, with a
+// HOME it inherited), there is no home its login could be written in. `uid` stands in for a user that owns neither: one
+// past this test's own, so the HOME (a folder of the test's) and the test's own home are another user's to it.
+test("a server whose user owns neither its HOME nor its own home refuses the login in words: the view says why and offers no sign-in, a turn-on and the CLI's sign-in are refused, and nothing is written, asked or started", { skip: process.platform === "win32" ? "no uid" : false }, async (t) => {
+  const rig = await loginRig(t);
+  const uid = process.geteuid() + 1;
+  const asked = [];
+  const claude = {
+    claudeLoginCommand: () => "claude auth login",
+    claudeLoginStatus: async () => (asked.push("status"), { signedIn: true, method: "claude.ai" }),
+    startClaudeLogin: () => (asked.push("sign-in"), { ended: new Promise(() => {}), stop: () => {} }),
+  };
+  const writes = [];
+  const settings = { ...rig.settings, put: async (...args) => (writes.push(args[0]), rig.settings.put(...args)) };
+  const deps = rig.deps({ uid, claude: async () => claude, settings });
+  const why = new RegExp(`^Claude Code's login on this machine needs a home this server's user owns: it runs as uid ${uid}, and neither its HOME \\(${rig.data.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\) nor that user's own home \\(.+\\) is a folder it owns\\.`);
+
+  const view = await claudeLoginView(deps);
+  assert.match(view.refused ?? "", why, JSON.stringify(view));
+  assert.equal(view.can_start, false);
+  assert.equal(view.state, "off", "a login turned on here is none while no home is the server's user's");
+  await assert.rejects(startLoginHere(deps), (error) => error.code === "forbidden" && error.message === view.refused);
+  rig.rows.clear();
+  await assert.rejects(turnOnClaudeLogin(deps, { only_me: true }), (error) => error.code === "forbidden" && error.message === view.refused);
+  assert.deepEqual(writes, [], "no setting written");
+  assert.deepEqual(asked, [], "the CLI was not asked, and no sign-in started");
+  assert.deepEqual(rig.started, []);
+  // The server's own user, which owns that HOME, has its login there.
+  rig.rows.set(CLAUDE_LOGIN_SETTING, settingFor("agentrun", rig.data));
+  const ownView = await claudeLoginView(rig.deps({ claude: async () => claude }));
+  assert.equal(ownView.refused, undefined, JSON.stringify(ownView));
+  assert.equal(ownView.state, "signed_in");
 });
 
 // A status check copies the account file into a folder of its own in the temporary folder and removes it when it ends;

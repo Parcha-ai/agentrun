@@ -442,6 +442,68 @@ test("a server whose Docker daemon is another machine's, by DOCKER_HOST, DOCKER_
   }
 });
 
+// A server whose computerd build for its Docker's architecture is not there (`npm run build` without `npm run
+// build:daemon`) can't run a Docker computer: each would fail at its create. The start says so, with the command that
+// builds it, where the other reasons are: the boxes line, capabilities, a new agent's place and a run's start, which
+// refuses a run naming one. The architecture is the one Docker's start probe read; the test names the directory the build
+// would be in (fauxDaemonDir), and the fake Docker names its architecture (docker-arch). With the build there, nothing
+// changes.
+const NO_DAEMON = (dir, arch = "amd64") => `no daemon for Docker's ${arch} at ${join(dir, `computerd-linux-${arch}`)}: run npm run build:daemon -w @parcha/agentrun-computer, then restart AgentRun`;
+test("a server with no computerd build for its Docker's architecture: Docker isn't offered, its boxes line, banner, capabilities and a run's start say how to build it, and Docker is asked once; with the build there nothing changes", { timeout: 240_000 }, async (t) => {
+  const builds = await scratch(t);
+  const fake = await containerDocker(t, { mounts: [], marks: { "docker-arch": "amd64\n" } });
+  const versions = () => jsonLines(join(fake.state, "argv.jsonl")).filter((args) => args[0] === "version");
+  const start = async () => {
+    const lines = [];
+    const server = await serve(t, { data: await dataDir(t), faux: PROBE, fauxDaemonDir: builds, log: (line) => lines.push(line) });
+    return { ...server, boxes: lines.filter((line) => line.includes(" event=boxes ")) };
+  };
+
+  const { api, boxes, boxesLine } = await start();
+  const offer = await docker(api);
+  assert.deepEqual([offer.available, offer.state, offer.reason], [false, "unavailable", NO_DAEMON(builds)], JSON.stringify(offer));
+  assert.equal(boxes.length, 1, JSON.stringify(boxes));
+  assert.ok(boxes[0].includes("unavailable=docker,") && boxes[0].includes("npm run build:daemon -w @parcha/agentrun-computer"), boxes[0]);
+  assert.ok(boxesLine.includes(NO_DAEMON(builds)), boxesLine);
+  // Docker is asked once at the start: the probe names its version and its architecture.
+  assert.equal(versions().length, 1, JSON.stringify(versions()));
+  assert.ok(versions()[0].some((arg) => arg.includes("{{.Server.Arch}}")), JSON.stringify(versions()));
+
+  // A run naming a Docker computer is refused at its start, in those words, never at its create; a new agent gets the runner.
+  const made = await api("POST", "/agents", { definition: { id: "boxed-computer", name: "boxed", instructions: "Probe.", computer: { kind: "sandbox", provider: "docker" } } });
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const started = await api("POST", "/agents/boxed-computer/runs", { input: { content: "Probe." } });
+  assert.equal(started.status, 409, JSON.stringify(started.body));
+  assert.equal(started.body.error.code, "agent_not_runnable");
+  const field = started.body.error.fields.find((one) => one.field === "definition.computer");
+  assert.equal(field?.message, `This agent's computer is a Docker sandbox, and this server cannot run it: ${NO_DAEMON(builds)}.`, JSON.stringify(started.body));
+  // So is one placed in the Docker box.
+  const placed = await api("POST", "/agents", { definition: { id: "boxed-place", name: "boxed", instructions: "Probe.", place: { mode: "sandbox", box: "docker" } } });
+  assert.equal(placed.status, 201, JSON.stringify(placed.body));
+  const inBox = await api("POST", "/agents/boxed-place/runs", { input: { content: "Probe." } });
+  assert.equal(inBox.status, 409, JSON.stringify(inBox.body));
+  assert.ok(JSON.stringify(inBox.body.error).includes(NO_DAEMON(builds)), JSON.stringify(inBox.body));
+  const plain = await api("POST", "/agents", { definition: { id: "plain", name: "plain", instructions: "Answer." } });
+  assert.equal(plain.status, 201, JSON.stringify(plain.body));
+  assert.equal((await api("GET", "/agents/plain")).body.place?.mode ?? "runner", "runner");
+  assert.deepEqual(fake.runs(), [], "no box or computer is made");
+
+  // The build there: Docker is offered as before, and its line says nothing of a build.
+  await writeFile(join(builds, "computerd-linux-amd64"), "a stand-in for computerd\n", { mode: 0o755 });
+  const built = await start();
+  const ready = await docker(built.api);
+  assert.deepEqual([ready.available, ready.state, ready.reason], [true, "ready", undefined], JSON.stringify(ready));
+  assert.ok(built.boxes[0].includes("available=docker ") && !built.boxes[0].includes("build:daemon"), built.boxes[0]);
+  const fresh = await built.api("POST", "/agents", { definition: { id: "fresh", name: "fresh", instructions: "Answer." } });
+  assert.deepEqual(fresh.body.definition.place, { mode: "sandbox", box: "docker" }, JSON.stringify(fresh.body));
+
+  // The architecture is Docker's: an arm64 Docker needs the arm64 build, whatever else is built.
+  await writeFile(join(fake.state, "docker-arch"), "arm64\n");
+  const arm = await docker((await start()).api);
+  assert.deepEqual([arm.available, arm.reason], [false, NO_DAEMON(builds, "arm64")], JSON.stringify(arm));
+  assert.deepEqual(fake.runs(), []);
+});
+
 // A CLI server in a container under --faux (the --vps walk's) names its mountinfo in its own environment, which the
 // runner beside it does not inherit (runner/main.ts besideRunEnv): the server hands it over with the other switches.
 test("a --faux server hands its runner the mountinfo it reads, from its options or its own environment", async (t) => {
