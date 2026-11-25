@@ -483,8 +483,8 @@ export const draftFailedDigest = (runId: string): string => createHash("sha256")
  *  does (the agent's next due run compiles once more: learn/compile.ts newCompileAttempt); a recompile's (a revision of
  *  a held workflow, or a new one after a first compile's failed drafts) stops (compileStoppedOf, heldNamesOf): nothing
  *  compiles it again. A revision of a connected agent's hold on give-backs is no recompile (runner/promotion.ts
- *  reviseAttemptOf). One record per run (its digest is the run's), written once: a claim that ends the run again
- *  writes none. */
+ *  reviseAttemptOf). One record per run (its digest is the run's, and the record is the run's: its purge takes it, and
+ *  one written after that purge writes nothing), written once: a claim that ends the run again writes none. */
 export async function recordDraftFailed(deps: Pick<LearningEndDeps, "store" | "log">, input: { runId: string; agentId: string; compile: CompileAsk; workflow: string; errors: readonly string[] }): Promise<void> {
   try {
     const records = await promotionsOf(deps.store.learning, input.agentId);
@@ -495,7 +495,7 @@ export async function recordDraftFailed(deps: Pick<LearningEndDeps, "store" | "l
     const failed = input.errors.join("; ").slice(0, CHECK_TEXT_MAX) || "no draft passed";
     const reason = `${DRAFT_FAILED}: ${failed}. ${attempt === 2 ? "It was the recompile, so it stops: nothing compiles again until its owner acts" : "It is not promoted; the next due run compiles it once more"}`;
     const check = { compile_after, agree_min, alone_min, attempt, n: 0, agreed: 0, alone: 0, of: [], ...(attempt === 2 ? { stopped: true as const } : {}) };
-    const kept = await recordPromotion(deps.store.learning, input.agentId, { workflow, digest, at: new Date().toISOString(), decided: "hold", reason, check }, (was) => was === undefined, { anyDigest: true });
+    const kept = await recordPromotion(deps.store.learning, input.agentId, { workflow, digest, at: new Date().toISOString(), decided: "hold", reason, check }, (was) => was === undefined, { anyDigest: true, runId: input.runId });
     if (kept.won) deps.log?.(`learning: run ${input.runId}: the compile of ${workflow} failed its checks (attempt ${attempt}${attempt === 2 ? ", stopped" : ""})`);
   } catch (error) {
     deps.log?.(`learning: run ${input.runId}: the compile's failed drafts were not recorded: ${error instanceof Error ? error.message : String(error)}`);

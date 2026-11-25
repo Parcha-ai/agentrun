@@ -609,3 +609,92 @@ for (const [what, drop] of [["a reset", (store) => store.learning.reset(AGENT)],
   await dropping;
   assert.deepEqual(await store.learning.records(AGENT, "promotion"), [], "the write that held the lock is in before the delete, and goes with it");
 });
+
+/** Run `id` of agent-1 made, ended and purged through the store (Runs.purge: its learning rows go in its transaction). */
+async function purgedRun(store, id) {
+  const { queued } = await import("./store-helpers.mjs");
+  await queued(store, id);
+  const claim = await store.claim(id, "runner-a", { leaseMs: 60_000 });
+  await store.runs.update(claim, { state: "ended", costUsd: 0.1 });
+  await store.runs.purge(id, { meters: null, spend: { usd: 0.1, basis: "list" }, learning: null });
+}
+
+// A correction line is the owner's new words appended to the newest corrections.md: it copies nothing from the run's
+// seed, so a purge since the seed (of another run) never refuses it. A draft from the same seed still is.
+test("an owner's correction on a run seeded before another run's purge lands: a correction-only merge copies no seed bytes", async (t) => {
+  const { store } = await storeOn(t);
+  const learning = learningOf(store, AGENT);
+  await merge(learning, { runId: "run_q", files: flow("x", "QWORD") });
+  const seed = (await store.learning.newest(AGENT)).save.id;
+  await merge(learning, { runId: "run_r", files: flow("y", "RWORD") });
+  await store.learning.purgeRun(AGENT, "run_r");
+  const done = await learningCommit(learning, { runId: "run_s", reason: "run_s reason words", seed, mustHold: seed, files: [], correction: "The DOB field is MM/DD." });
+  assert.equal(done.ok, true, JSON.stringify(done));
+  assert.match(await corrections(learning), /The DOB field is MM\/DD\./, "the owner's line lands");
+  const draft = await learningCommit(learning, { runId: "run_t", reason: "run_t reason words", seed, mustHold: seed, files: flow("x", "TWORD"), correction: "Use the TWORD rule." });
+  assert.deepEqual([draft.ok, draft.reason], [false, "purged"], "a draft read at the same seed is still refused");
+  assert.doesNotMatch(await everything(store), /TWORD/);
+});
+
+// A promotion's `commit` names the save its champion's text is read at. One written after a purge, with a commit read
+// before it (a claim seeded at the purged run's save), names a save that holds its digest: moved in its own write.
+test("a promotion written after a purge, with a commit the purge rewrote, names the newest save that holds its digest: the champion serves", async (t) => {
+  const { store } = await storeOn(t);
+  const { recordPromotion } = await import("../dist/learn/promote.js");
+  const learning = learningOf(store, AGENT);
+  const same = flow("x", "SAME");
+  const alpha = await merge(learning, { runId: "run_alpha", files: same });
+  await merge(learning, { runId: "run_bravo", files: flow("x", "BRAVO") });
+  const charlie = await merge(learning, { runId: "run_charlie", files: same });
+  const digest = (await store.learning.versions(AGENT, "workflow", "x"))[0].digest;
+  await store.learning.purgeRun(AGENT, "run_charlie");
+  const done = await recordPromotion(store.learning, AGENT, { workflow: "x", digest, at: "2026-11-25T00:00:00.000Z", decided: "promote", reason: "checked: promoted", commit: charlie.commit }, () => true);
+  assert.equal(done.won, true);
+  const [record] = await store.learning.records(AGENT, "promotion");
+  assert.equal(record.data.commit, alpha.commit, "its commit names run_alpha's save, the newest that holds the digest");
+  assert.equal((await readAt(learning, record.data.commit)).text("workflows/x/workflow.json"), same[1].text, "the champion's text is read there");
+  const added = await store.learning.addRecord(AGENT, "promotion", { runId: null, workflow: "x", digest, data: { workflow: "x", digest, decided: "promote", commit: charlie.commit } });
+  assert.equal(added.data.commit, alpha.commit, "a raw add is moved the same way");
+  assert.equal((await store.learning.records(AGENT, "promotion")).at(-1).data.commit, alpha.commit);
+});
+
+// A compile whose drafts all failed keeps a hold record naming its workflow and the check errors; its digest is its
+// run's, which no version holds. It is the run's: its purge takes it, and one written after the purge writes nothing.
+test("a purged run's failed-draft hold goes with its purge, and one written after its purge writes nothing", async (t) => {
+  const { store } = await storeOn(t);
+  const { recordDraftFailed } = await import("../dist/runner/learning-end.js");
+  const { promotionsOf } = await import("../dist/learn/promote.js");
+  const failed = (runId) => recordDraftFailed({ store }, { runId, agentId: AGENT, compile: { mode: "new" }, workflow: `acme-${runId}-escalation`, errors: [`workflows/acme-${runId}-escalation/workflow.json: FAILWORD`] });
+  const { queued } = await import("./store-helpers.mjs");
+  await queued(store, "run_f");
+  await failed("run_f");
+  assert.equal((await promotionsOf(store.learning, AGENT)).length, 1, "the hold is kept");
+  const claim = await store.claim("run_f", "runner-a", { leaseMs: 60_000 });
+  await store.runs.update(claim, { state: "ended", costUsd: 0.1 });
+  await store.runs.purge("run_f", { meters: null, spend: { usd: 0.1, basis: "list" }, learning: null });
+  assert.doesNotMatch(await everything(store), /FAILWORD|acme-run_f/, "the purged run's failed-draft hold is gone");
+  await failed("run_f");
+  assert.doesNotMatch(await everything(store), /FAILWORD|acme-run_f/, "one written after the purge writes nothing");
+});
+
+// A promotion's check and audit copy a run's input and answer into their disagreements. A purged run's copies are
+// blanked by its purge's own transaction (one written before it), and in the write of one written after it (a check
+// that read its rows before the purge): no record keeps a purged run's words.
+test("a promotion record never keeps a purged run's input or answer: blanked in the purge's transaction, and in the write of one made after it", async (t) => {
+  const { store } = await storeOn(t);
+  const { recordPromotion } = await import("../dist/learn/promote.js");
+  const learning = learningOf(store, AGENT);
+  await merge(learning, { runId: "run_q", files: flow("x", "QWORD") });
+  await merge(learning, { runId: "run_p", files: flow("y", "PWORD") });
+  const [x, y] = [(await store.learning.versions(AGENT, "workflow", "x"))[0].digest, (await store.learning.versions(AGENT, "workflow", "y"))[0].digest];
+  const told = (run, word) => ({ run, input: `${word} input`, agent: `${word} answer`, draft: `${word} draft` });
+  const hold = (workflow, digest, gone) => ({ workflow, digest, at: "2026-11-25T00:00:00.000Z", decided: "hold", reason: "checked: held", check: { compile_after: 3, agree_min: 1, alone_min: 1, attempt: 1, n: 2, agreed: 1, alone: 0, of: [], disagreements: [told(gone, "GONE"), told("run_live", "LIVE")] } });
+  await recordPromotion(store.learning, AGENT, { ...hold("x", x, "run_before"), audit: { disagreements: [{ run: "run_live", served: "run_before", input: "GONE served input", agent: "GONE served answer", draft: null }] } }, () => true);
+  await purgedRun(store, "run_before");
+  assert.doesNotMatch(await everything(store), /GONE/, "a record written before the purge is blanked in its transaction");
+  await purgedRun(store, "run_after");
+  await recordPromotion(store.learning, AGENT, hold("y", y, "run_after"), () => true);
+  assert.doesNotMatch(await everything(store), /GONE/, "a record written after the purge is blanked in its write");
+  assert.match(await everything(store), /LIVE input/, "another run's copy stays");
+  assert.deepEqual((await store.learning.records(AGENT, "promotion")).map((one) => one.data.decided), ["hold", "hold"], "each decision stays");
+});

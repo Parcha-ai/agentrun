@@ -64,8 +64,8 @@ function failure(error: unknown): LearningCommitResult {
 /**
  * A run's merge on the agent's learning, one save: its files (a held README with `status: pending`) and its owner's
  * correction appended to corrections.md. `ok` with the new version and the paths it changed; `conflict` when a file is
- * not at the newest version as it was at the run's seed; `purged` when a run's purge came after its seed (or a revised
- * workflow's base), nothing written; `refused` when the correction holds what must never be stored,
+ * not at the newest version as it was at the run's seed; `purged` when the merge gives files and a run's purge came after
+ * its seed (or a revised workflow's base), nothing written; `refused` when the correction holds what must never be stored,
  * or, with no draft beside it, would take corrections.md past its cap (nothing written); `unavailable` when the store
  * failed. The draft and the correction are judged apart: a correction past the cap beside a draft (the file filled by
  * another write after the run's check, correctionRefused) is left out alone, and the draft merges, `ok` with the cap's
@@ -87,8 +87,10 @@ export async function learningCommit(learning: AgentLearning, change: LearningCh
       const at = change.bases?.[path] ?? change.seed;
       return at ? [{ at, path }] : [];
     });
-    // Every save the merge was read at: a purge after any of them refuses it whole (its correction too).
-    const readAt = [...new Set([change.seed, change.mustHold, ...Object.values(change.bases ?? {})].filter((id): id is string => id !== undefined))];
+    // Every save the merge's files were read at: a purge after any of them refuses it whole (its correction too). A
+    // correction alone copies nothing from them (its line is the owner's new words, appended to the newest
+    // corrections.md), so a purge since never refuses it; its `mustHold` still refuses it after a reset.
+    const readAt = drafts.length ? [...new Set([change.seed, change.mustHold, ...Object.values(change.bases ?? {})].filter((id): id is string => id !== undefined))] : [];
     const done = await writeLearning<Computed>(learning, async (read) => {
       const writes = [...drafts];
       let refusedCorrection: Problem[] | undefined;

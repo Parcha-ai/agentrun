@@ -526,7 +526,9 @@ export interface Learning {
    *  takes the records' lock before it changes a version, so none goes between the read and the write. Each record the
    *  write adds (or moves to another workflow, digest or run) is checked in that transaction: a promotion's or an
    *  audit's digest must be held by a version of its workflow (unless it is `anyDigest`, a failed draft's, which no
-   *  version holds), and no record names a purged run. Else the write throws LearningRecordRefused and writes nothing. */
+   *  version holds), and its run (the `runId` column) is not purged. Else the write throws LearningRecordRefused and
+   *  writes nothing. A promotion written (added or changed) is kept with its `commit` a save that holds its digest, and
+   *  with each purged run's copies its data names blanked (learn/promote.ts forgetRunIn). */
   changeRecords<T>(agentId: string, kind: LearningRecordKind, update: (records: readonly LearningRecord[], held?: (workflow: string, digest: string) => boolean) => { records: readonly LearningRecordWrite[]; result: T } | { result: T }, options?: { readonly anyDigest?: string }): Promise<T>;
   /** Agent `agentId`'s ledger (learn/ledger.ts), in one read (one snapshot of both tables): every run's row its end
    *  recorded, oldest first, each with the end it was recorded for (`epoch`, its run's epoch then), and every spend row.

@@ -279,7 +279,9 @@ async function updateKept<T>(settings: Pick<Settings, "get" | "putIfAbsent" | "r
 /** A record's write as it was read: its seq kept, so changeRecords keeps it in place. */
 const keptWrite = (one: LearningRecord, data: unknown = one.data): LearningRecordWrite => ({ seq: one.seq, runId: one.runId, workflow: one.workflow, digest: one.digest, data });
 const gradeWrite = (grade: Grade): LearningRecordWrite => ({ runId: grade.run, workflow: grade.workflow ?? null, digest: grade.digest ?? null, data: grade });
-const promotionWrite = (record: PromotionRecord): LearningRecordWrite => ({ runId: null, workflow: record.workflow, digest: record.digest, data: record });
+/** A promotion record's write: no run's (a check's decision outlives each run it read), unless `runId`, the run whose
+ *  record it is alone (a failed draft's hold: its run's purge takes it, and a write after that purge writes nothing). */
+const promotionWrite = (record: PromotionRecord, runId: string | null = null): LearningRecordWrite => ({ runId, workflow: record.workflow, digest: record.digest, data: record });
 
 /** A learned workflow revision an agent's learning reset deleted (DELETE /agents/{id}/learning, learning-reset.ts): its
  *  workflow, its digest and its K (its check's compile_after; null when its records named none), nothing else of its
@@ -354,7 +356,7 @@ const blankAudit = (one: AuditDisagreement): AuditDisagreement => ({ run: one.ru
  *  agent's collected turn too; an audit's served run or shadow run), and the grader's words its reason quotes from one
  *  (differentDecisionWords' example). Its decision, numbers and run ids stay. The record itself when it names no such
  *  disagreement. */
-function forgetRunIn(record: PromotionRecord, runId: string): PromotionRecord {
+export function forgetRunIn(record: PromotionRecord, runId: string): PromotionRecord {
   if (!record || typeof record !== "object") return record;
   const check = record.check?.disagreements?.some((one) => one.run === runId);
   const turns = record.check?.turns?.disagreements?.some((one) => one.run === runId);
@@ -373,6 +375,17 @@ function forgetRunIn(record: PromotionRecord, runId: string): PromotionRecord {
     } } : {}),
     ...(audit && record.audit ? { audit: { ...record.audit, disagreements: record.audit.disagreements.map((one) => (one.run === runId || one.served === runId ? blankAudit(one) : one)) } } : {}),
   };
+}
+
+/** The runs whose copies `record` holds (forgetRunIn blanks them): each disagreement's run, a connected agent's collected
+ *  turn's, an audit's served run and shadow run. */
+export function runsNamedIn(record: PromotionRecord): string[] {
+  if (!record || typeof record !== "object") return [];
+  return [...new Set([
+    ...(record.check?.disagreements ?? []).map((one) => one.run),
+    ...(record.check?.turns?.disagreements ?? []).map((one) => one.run),
+    ...(record.audit?.disagreements ?? []).flatMap((one) => [one.run, one.served]),
+  ].filter((run): run is string => typeof run === "string"))];
 }
 
 /** What agent `agentId`'s learning copied from run `runId`, gone (the run's purge, agent-delete.ts): its kept grades
@@ -519,8 +532,9 @@ const blankedRuns = (record: PromotionRecord | undefined): string[] =>
  *  of a digest no version of its workflow holds (a run's purge took it since the record's check or reservation read it)
  *  writes nothing, not won, read in the same write (Store.learning changeRecords `held`), so no replay, hold or promote
  *  of a purged run's text lands; `anyDigest`, a failed draft's record (its digest is its run's, which no version holds),
- *  is the one exception. One transaction (Store.learning changeRecords). */
-export function recordPromotion(rows: LearningRecords, agentId: string, record: PromotionRecord, still: (now: PromotionRecord | undefined, items: readonly PromotionRecord[]) => boolean, options: { readonly anyDigest?: true } = {}): Promise<Recorded> {
+ *  is the one exception, written as its run's (`runId`): its run's purge takes it. One transaction (Store.learning
+ *  changeRecords), which also blanks a purged run's copies the record holds (forgetRunIn). */
+export function recordPromotion(rows: LearningRecords, agentId: string, record: PromotionRecord, still: (now: PromotionRecord | undefined, items: readonly PromotionRecord[]) => boolean, options: { readonly anyDigest?: true; readonly runId?: string } = {}): Promise<Recorded> {
   return rows.changeRecords<Recorded>(agentId, "promotion", (saved, held) => {
     const kept0 = saved.filter((one) => DECIDED.includes((one.data as PromotionRecord)?.decided));
     const items = kept0.map((one) => one.data as PromotionRecord);
@@ -528,7 +542,7 @@ export function recordPromotion(rows: LearningRecords, agentId: string, record: 
     if (!options.anyDigest && held !== undefined && !held(record.workflow, record.digest)) return { result: { record: now, won: false } };
     if (!still(now, items)) return { result: { record: now, won: false } };
     const kept = blankedRuns(now).reduce(forgetRunIn, record);
-    return { records: [...saved.map((one) => keptWrite(one)), promotionWrite(kept)], result: { record: kept, won: true } };
+    return { records: [...saved.map((one) => keptWrite(one)), promotionWrite(kept, options.runId ?? null)], result: { record: kept, won: true } };
   }, options.anyDigest ? { anyDigest: record.digest } : undefined);
 }
 

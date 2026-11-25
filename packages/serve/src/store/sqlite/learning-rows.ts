@@ -7,6 +7,7 @@
 import { randomBytes } from "node:crypto";
 import { type Learning, type LearningAt, type LearningChangeKind, type LearningDiff, type LearningItem, type LearningItemKind, type LearningRecord, type LearningRecordKind, LearningRecordRefused, type LearningRecordWrite, type LearningSave, type LearningSaveBy } from "../store.js";
 import { learnedStatus, restoredLearned, retiredLearned, workflowRunOf, WORKFLOWS_DIR } from "../../learn/workflow-draft.js";
+import { forgetRunIn, type PromotionRecord, runsNamedIn } from "../../learn/promote.js";
 import type { SqliteExecutor, SqliteValue, StoreConnection, Tx } from "./connection.js";
 
 type SaveKind = "init" | "run" | "person" | "purged";
@@ -147,27 +148,64 @@ async function rewriteWorkflow(tx: Tx, agentId: string, runId: string, name: str
   };
 }
 
+/** The save a promotion of workflow `name` at `digest` names (its `commit`, where its champion's text is read), read
+ *  inside the caller's transaction: `commit` when workflow `name` there holds the digest; else the save of the newest
+ *  version that holds it (a purge rewrote the save it named: a shared champion goes on serving); `commit` when none does
+ *  (no record of such a digest is kept: the purge deleted them, and a write of one is refused). */
+async function commitHolding(tx: Tx, agentId: string, name: string, digest: string, commit: string): Promise<string> {
+  const save = await tx.get<{ version: number | string }>("SELECT version FROM learning_saves WHERE agent_id = ? AND id = ?", agentId, commit);
+  const held = save && await tx.get<{ digest: string | null }>("SELECT digest FROM learning_items WHERE agent_id = ? AND kind = 'workflow' AND name = ? AND version <= ? ORDER BY version DESC LIMIT 1", agentId, name, save.version);
+  if (held?.digest === digest) return commit;
+  const holds = await tx.get<{ id: string }>(`SELECT s.id FROM learning_items i JOIN learning_saves s ON s.agent_id = i.agent_id AND s.version = i.version
+    WHERE i.agent_id = ? AND i.kind = 'workflow' AND i.name = ? AND i.digest = ? ORDER BY i.version DESC LIMIT 1`, agentId, name, digest);
+  return holds?.id ?? commit;
+}
+
+/** A promotion's data as its write keeps it, inside the caller's transaction (under the records' lock, which a run's
+ *  purge takes after it marks the run purged): its `commit` a save that holds its digest (commitHolding), and each
+ *  purged run's copies it holds blanked (forgetRunIn: a check that read a run's rows before its purge never writes them
+ *  after it). Another kind's data as it is. */
+async function keptData(tx: Tx, kind: LearningRecordKind, agentId: string, record: LearningRecordWrite): Promise<unknown> {
+  if (kind !== "promotion" || !record.data || typeof record.data !== "object") return record.data ?? null;
+  let data = record.data as PromotionRecord & { commit?: unknown };
+  if (typeof data.commit === "string" && record.workflow !== null && record.digest !== null) {
+    const commit = await commitHolding(tx, agentId, record.workflow, record.digest, data.commit);
+    if (commit !== data.commit) data = { ...data, commit };
+  }
+  for (const run of runsNamedIn(data)) {
+    if (await tx.get("SELECT 1 AS one FROM runs WHERE id = ? AND purged_at IS NOT NULL", run)) data = forgetRunIn(data, run);
+  }
+  return data;
+}
+
 /** Workflow `name`'s promotions that a purge kept (another version holds their digest), each moved, inside the caller's
  *  transaction, to the save of the newest version that holds it when the save it names (`commit`, where its text is
- *  read) holds it no more: a shared champion goes on serving. */
+ *  read) holds it no more (commitHolding): a shared champion goes on serving. */
 async function moveCommits(tx: Tx, agentId: string, name: string): Promise<void> {
   const records = await tx.all<{ seq: number | string; digest: string | null; data: string }>("SELECT seq, digest, data FROM learning_records WHERE agent_id = ? AND kind = 'promotion' AND workflow = ?", agentId, name);
   for (const record of records) {
     const data = JSON.parse(record.data) as Record<string, unknown>;
     if (typeof data.commit !== "string" || record.digest === null) continue;
-    const save = await tx.get<{ version: number | string }>("SELECT version FROM learning_saves WHERE agent_id = ? AND id = ?", agentId, data.commit);
-    const held = save && await tx.get<{ digest: string | null }>("SELECT digest FROM learning_items WHERE agent_id = ? AND kind = 'workflow' AND name = ? AND version <= ? ORDER BY version DESC LIMIT 1", agentId, name, save.version);
-    if (held?.digest === record.digest) continue;
-    const holds = await tx.get<{ id: string }>(`SELECT s.id FROM learning_items i JOIN learning_saves s ON s.agent_id = i.agent_id AND s.version = i.version
-      WHERE i.agent_id = ? AND i.kind = 'workflow' AND i.name = ? AND i.digest = ? ORDER BY i.version DESC LIMIT 1`, agentId, name, record.digest);
-    if (holds) await tx.run("UPDATE learning_records SET data = ? WHERE agent_id = ? AND kind = 'promotion' AND seq = ?", JSON.stringify({ ...data, commit: holds.id }), agentId, record.seq);
+    const commit = await commitHolding(tx, agentId, name, record.digest, data.commit);
+    if (commit !== data.commit) await tx.run("UPDATE learning_records SET data = ? WHERE agent_id = ? AND kind = 'promotion' AND seq = ?", JSON.stringify({ ...data, commit }), agentId, record.seq);
+  }
+}
+
+/** Each promotion of agent `agentId` that holds run `runId`'s copies (a check's or an audit's disagreement naming it),
+ *  blanked inside the caller's transaction (forgetRunIn): its decision, numbers and run ids stay. */
+async function forgetRunRecords(tx: Tx, agentId: string, runId: string): Promise<void> {
+  const records = await tx.all<{ seq: number | string; data: string }>("SELECT seq, data FROM learning_records WHERE agent_id = ? AND kind = 'promotion'", agentId);
+  for (const record of records) {
+    const data = JSON.parse(record.data) as PromotionRecord;
+    if (!runsNamedIn(data).includes(runId)) continue;
+    await tx.run("UPDATE learning_records SET data = ? WHERE agent_id = ? AND kind = 'promotion' AND seq = ?", JSON.stringify(forgetRunIn(data, runId)), agentId, record.seq);
   }
 }
 
 /** Run `runId`'s learning rows gone from its agent `agentId`'s, inside the caller's transaction (its purge, its
  *  delete), every statement scoped to that agent: each workflow it wrote a file of rewritten without its files
- *  (rewriteWorkflow), with the promotions and audits of each digest no version holds then; its notes; its grades and
- *  audits; and its saves' words (each save's version, id and merge key stay), a person's save left with no item (an
+ *  (rewriteWorkflow), with the promotions and audits of each digest no version holds then; its notes; its records (its
+ *  grades and audits, a failed draft's hold); every other promotion's copies of it (forgetRunIn); and its saves' words (each save's version, id and merge key stay), a person's save left with no item (an
  *  approve of its draft, a removal of its line) with them: that save's words name what the run wrote. Every other save
  *  names none of the paths only it wrote, nor a workflow gone with it. When any row changed, the purge is a save of its
  *  own at the agent's newest version + 1 (the host's, kind `purged`, at `at`): a save computed before it is stale, and a
@@ -197,6 +235,7 @@ export async function dropRunLearning(tx: Tx, agentId: string, runId: string, at
   }
   await tx.run("DELETE FROM learning_items WHERE agent_id = ? AND kind = 'note' AND by_run = ?", agentId, runId);
   await tx.run("DELETE FROM learning_records WHERE agent_id = ? AND run_id = ?", agentId, runId);
+  await forgetRunRecords(tx, agentId, runId);
   for (const version of persons) {
     if (!(await tx.get("SELECT 1 AS one FROM learning_items WHERE agent_id = ? AND version = ?", agentId, version))) {
       await tx.run("UPDATE learning_saves SET kind = 'purged', by_run = NULL, change = '{}' WHERE agent_id = ? AND version = ? AND kind = 'person'", agentId, version);
@@ -248,8 +287,12 @@ export function learningRows(db: StoreConnection, now: () => number): Rows {
   const newest = (ex: Reader, agentId: string) => saveBy(ex, agentId, "version = (SELECT MAX(version) FROM learning_saves WHERE agent_id = ?)", agentId);
   /** A record's columns from its data: the run it is of, its workflow and digest. */
   const columnsOf = (record: LearningRecordWrite): SqliteValue[] => [record.runId, record.workflow, record.digest, JSON.stringify(record.data ?? null)];
-  const insertRecord = async (tx: Tx, agentId: string, kind: LearningRecordKind, record: LearningRecordWrite, seq: number, at: number) =>
-    tx.run(`INSERT INTO learning_records (agent_id, kind, seq, run_id, workflow, digest, data, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, agentId, kind, seq, ...columnsOf(record), at);
+  /** Inserts `record` as its write keeps it (keptData); the data written. */
+  const insertRecord = async (tx: Tx, agentId: string, kind: LearningRecordKind, record: LearningRecordWrite, seq: number, at: number): Promise<unknown> => {
+    const data = await keptData(tx, kind, agentId, record);
+    await tx.run(`INSERT INTO learning_records (agent_id, kind, seq, run_id, workflow, digest, data, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, agentId, kind, seq, ...columnsOf({ ...record, data }), at);
+    return data;
+  };
   const recordsIn = async (ex: Reader, agentId: string, kind: LearningRecordKind) =>
     (await ex.all<RecordRow>(`SELECT ${RECORD_COLUMNS} FROM learning_records WHERE agent_id = ? AND kind = ? ORDER BY seq`, agentId, kind)).map(recordOf);
   /** Whether a version of each workflow holds a digest, read inside the records' transaction (under its lock, which a
@@ -361,8 +404,8 @@ export function learningRows(db: StoreConnection, now: () => number): Rows {
       await checkAdded(tx, agentId, kind, [record], await heldIn(tx, agentId));
       const seq = Number((await tx.get<{ s: number | string | null }>("SELECT MAX(seq) AS s FROM learning_records WHERE agent_id = ? AND kind = ?", agentId, kind))?.s ?? 0) + 1;
       const at = now();
-      await insertRecord(tx, agentId, kind, record, seq, at);
-      return { seq, runId: record.runId, workflow: record.workflow, digest: record.digest, data: JSON.parse(JSON.stringify(record.data ?? null)) as unknown, at };
+      const data = await insertRecord(tx, agentId, kind, record, seq, at);
+      return { seq, runId: record.runId, workflow: record.workflow, digest: record.digest, data: JSON.parse(JSON.stringify(data)) as unknown, at };
     }),
     changeRecords: (agentId, kind, update, options) => db.transaction(async (tx) => {
       await d.lockKey(tx, `learning.records:${agentId}`);
@@ -384,7 +427,7 @@ export function learningRows(db: StoreConnection, now: () => number): Rows {
         }
         kept.add(old.seq);
         if (JSON.stringify(old.data) !== JSON.stringify(record.data ?? null) || old.runId !== record.runId || old.workflow !== record.workflow || old.digest !== record.digest) {
-          await tx.run("UPDATE learning_records SET run_id = ?, workflow = ?, digest = ?, data = ? WHERE agent_id = ? AND kind = ? AND seq = ?", ...columnsOf(record), agentId, kind, old.seq);
+          await tx.run("UPDATE learning_records SET run_id = ?, workflow = ?, digest = ?, data = ? WHERE agent_id = ? AND kind = ? AND seq = ?", ...columnsOf({ ...record, data: await keptData(tx, kind, agentId, record) }), agentId, kind, old.seq);
         }
       }
       for (const one of before) if (!kept.has(one.seq)) await tx.run("DELETE FROM learning_records WHERE agent_id = ? AND kind = ? AND seq = ?", agentId, kind, one.seq);
