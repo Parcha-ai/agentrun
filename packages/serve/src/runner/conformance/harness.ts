@@ -22,7 +22,7 @@ import { AnswerTaken, dropPostgresSchema, openPostgresStore, openStore, RunFinal
 import { sendCommand } from "../commands.js";
 import { callsOf, journalRecords, messagesOf, type CallRecord, type MessageRecord } from "../journal-reader.js";
 import { type AnswerData, KINDS, MESSAGE_SENT_AGAIN } from "../journal-kinds.js";
-import type { EndOfRunAnswer, EndOfRunTurn, LoopDeps, LoopFactory } from "../loop-contract.js";
+import type { EndOfRunAnswer, EndOfRunTurn, LoopFactory } from "../loop-contract.js";
 import { timelineReducer, type TimelineEvent } from "../../timeline/index.js";
 import { emptyState, translate } from "../../live/translate.js";
 import { servedTimelineRows } from "../../run-timeline-served.js";
@@ -259,7 +259,7 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
    *  it (Claim.lost names that same runner), gives it back as a run it still holds, and the runner that then takes it over
    *  claims a released run, not a lost one: the timeline never says the run went on after the crashed runner was lost. */
   const claimsSettled = async (name: string) => void (await Promise.allSettled([...(claiming.get(name) ?? [])]));
-  const start = async (name: string, setup: ConformanceSetup, holder?: { runner?: Runner }, more: Pick<LoopDeps, "endOfRun"> = {}) => {
+  const start = async (name: string, setup: ConformanceSetup, holder?: { runner?: Runner }) => {
     const store = await openCaseStore({ dataDir: dir, role: "runner", url, env, clockFile });
     stores.push(store);
     // Each journal commit's outcome, by the claim's epoch (as child.ts records its process's): what a loop wrote, and
@@ -268,7 +268,6 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
     const observedLoop: LoopFactory = (deps) => {
       const loop = factory({
         ...deps,
-        ...more,
         journal: (claim) =>
           new Proxy(deps.journal(claim), {
             get(target, property) {
@@ -1134,7 +1133,7 @@ const CASES: readonly Case[] = [
         answers.push(await input.ask(prompt, { origin: "reflect", deadlineMs: 10_000 }));
         return undefined;
       };
-      await w.start("runner-a", { script: [{ say: "the job's answer" }, { say: "a note" }], tools, hooks: quiet, agentId: "agent-1" }, undefined, { endOfRun });
+      await w.start("runner-a", { script: [{ say: "the job's answer" }, { say: "a note" }], tools, hooks: quiet, agentId: "agent-1", endOfRun });
       await w.ended("ended");
       assert.equal(answers.length, 1, "asked once");
       const answer = answers[0]!;

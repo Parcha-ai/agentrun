@@ -7,7 +7,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { syncBuiltinESMExports } from 'node:module';
 import { READERS } from '@parcha/agentrun-import';
 import { scratch } from './support.mjs';
-import { claudeSession, codexSession, copilotSession } from './fixtures/import-sessions.mjs';
+import { claudeSession, codexSession, copilotSession, piSession, sessionId } from './fixtures/import-sessions.mjs';
 import { exportRemoteHistory } from '../dist/import.js';
 import { remoteHistorySessions } from '../dist/native/history.js';
 
@@ -116,4 +116,18 @@ test('copilot: a session names its project in session.start, and a run the CLI s
  assert.equal(preview.total,1);
  assert.deepEqual(preview.skipped,[{reason:'Subagent history is not a separate session.',count:1}]);
  assert.ok(readFileSync(file).length>0);
+});
+
+test('a pi session whose session record names no id is exported under the id its reader gives it, not skipped as changed',async t=>{
+ const f=await fixture(t),target={...f.target,runtime:'pi'};
+ const file=piSession(f.home,f.project,7);
+ // pi names the session in its file too (<time>_<id>.jsonl): with no id in the record, that is the session's id.
+ const records=readFileSync(file,'utf8').trim().split('\n').map(line=>JSON.parse(line));
+ delete records[0].id;
+ const stat=statSync(file);writeFileSync(file,records.map(r=>JSON.stringify(r)).join('\n')+'\n');utimesSync(file,stat.atime,stat.mtime);
+ const preview=await exportRemoteHistory(target,{...f.options,preview:true});
+ assert.equal(preview.total,1);
+ const exported=await exportRemoteHistory(target,{...f.options,inventory:preview.inventory});
+ assert.deepEqual(exported.skipped,[]);
+ assert.deepEqual(exported.sessions.map(s=>s.id),[sessionId(7)]);
 });

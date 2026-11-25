@@ -29,7 +29,7 @@ import { type Interfaces, RunnerLiveRefused, runnerLiveOf } from "../live-reach.
 import { bootSealKey } from "../seal-key.js";
 import { SECRET_NAMES } from "../secrets.js";
 import type { Settings, Store } from "../store/store.js";
-import { SEAL_KEY_ENV } from "../tool-keys.js";
+import { notASealKey, SEAL_KEY_ENV, sealKeyOf } from "../tool-keys.js";
 import { LAUNCH_HOOK_SECRET_ENV } from "../trigger-launch-hook.js";
 
 /** The store.settings key a server keeps the names of its run-facing environment under at each start: `{ v: 1, names }`. */
@@ -193,6 +193,9 @@ export async function checkRunnerEnv(options: RunnerEnvCheckOptions): Promise<Ch
       } catch (error) {
         rows.push({ state: given ? "bad" : "missing", name: SEAL_KEY_ENV, why: (error as Error)?.message ?? String(error) });
       }
+    } else if (given && !sealKeyOf(given)) {
+      // A key's shape needs no store: one that is not a key is bad here as the start refuses it, by length, never its value.
+      rows.push({ state: "bad", name: SEAL_KEY_ENV, why: `set, but ${notASealKey(given)}` });
     } else rows.push(given ? { state: "skipped", name: SEAL_KEY_ENV, why: "set, and not checked against the store, which did not open" } : { state: "missing", name: SEAL_KEY_ENV, why: "the seal key the store's secrets are sealed under: unset" });
 
     const names = store ? await serverRunEnv(store) : undefined;

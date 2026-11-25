@@ -78,8 +78,25 @@ type LedgerRefusal = Refusal;
 const microUsd = (usd: number) => Math.ceil(Math.round(usd * 1e12) / 1e6) / 1e6;
 /** A browser charge as its BROWSER_CHARGED record holds it. */
 type Booked = { tool: "browser"; charged_by: string; call: string | null; usd: number | null; seconds: number; tag: string; conversation: number; at: string; final: boolean };
-type Open = { cid: number; reserve: Hold; at: number; call: string | null };
+/** An open session: its conversation, its reserve, the through of its last charge and its last call. `refused`: the cap
+ *  refused its reserve (askReserve), so nothing is held for it, and its next charge asks again. */
+type Open = { cid: number; reserve: Hold; at: number; call: string | null; refused?: boolean };
 export { BROWSER_CHARGED };
+/** Each browser step that is owed, by name: booked and held past the cap's rule (kernel/cap port.ts), for money its
+ *  provider is already owed outside any call. The one place this file sets owed (owed-pin.test.mjs pins the list and
+ *  each name's one use): a new owed step is named here, and reviewed there. */
+const OWED = {
+  /** A charge's time, as charged (bookOnLedger): under no call too (a release, its top-up). */
+  charge: { owed: true },
+  /** A kept session's reserve, held from the reopen (its time since its last charge and its next stretch). */
+  reopenReserve: { owed: true },
+  /** That reserve held again at one stretch once its charge booked the time before it. */
+  reserveAgain: { owed: true },
+  /** A delayed release's hold, until its release is billed. */
+  delayedRelease: { owed: true },
+  /** A person's carried time, until the session's next charge books it. */
+  personTime: { owed: true },
+} as const;
 /** The tool a browser step on the run's one ledger names (main's charge's `tool`, the timeline's BROWSER_CHARGE): the run
  *  view folds its charge into its call's row, as main's. */
 const BROWSER_TOOL = "browser";
@@ -190,6 +207,29 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
   const calls = new Map<string, { cid: number; hold: Hold; givenBack: Promise<void>; reserves: Promise<void>[] }>();
   const take = (hold: Hold | undefined, usd: number) => void (hold && (hold.usd = Math.max(0, hold.usd - usd)));
 
+  /** Session `tag`'s reserve, one stretch, asked of the cap and not owed: a new session's, or one whose reserve the cap
+   *  refused before, asked again. Under `call` it is asked once the call's hold is given back (after), in the room that
+   *  hold kept for it, and the call returns only once it is held, or refused and acted on (reserves): until then the
+   *  call's own hold covers the session. Refused, its next stretch is held nowhere: that is said, and the cap's own
+   *  refusal pauses the run, as an ask's refused time does (personTime), so its next request is refused in the cap's words
+   *  and it parks for a raise. The session is then marked (Open.refused) while this is still its reserve, so its next
+   *  charge asks again, and once the cap is raised its next stretch is held. A refusal that is not the cap's (a lost
+   *  claim's) marks nothing: no raise mends it, and the next claim's reopen holds the session. */
+  const askReserve = (tag: string, basis: string, call: { givenBack: Promise<void>; reserves: Promise<void>[] } | undefined): Hold => {
+    const reserve = holdOf("this browser session's reserve", stretch, basis, { tag, ...(call ? { after: call.givenBack } : {}) });
+    const acted = reserve.admitted.then(async (answer) => {
+      if (answer.refused === undefined) return;
+      const open = sessions.get(tag);
+      if (answer.refusal && open?.reserve === reserve.hold) open.refused = true;
+      log(logLine("browser_reserve_refused", { said: `the reserve of browser session ${tag} was not held on the run's ledger (${answer.refused.slice(0, 200)}): its next stretch is held nowhere` }));
+      if (answer.refusal && ledger.pause) await ledger.pause(answer.refusal);
+    }).catch((error: unknown) => void log(logLine("browser_reserve_refused", { said: `the run could not be paused on the refused reserve of browser session ${tag} (${String((error as Error)?.message ?? error).slice(0, 200)})` })));
+    pending.add(acted);
+    void acted.finally(() => pending.delete(acted));
+    call?.reserves.push(acted);
+    return reserve.hold;
+  };
+
   /** Recorded in the commit that bills it: a BROWSER_CHARGED under the call that ran it (a release's, under its session's
    *  last call), its money the ledger step's (booked), what it cost or null when its time has no price, and the seconds it
    *  was for, with what `booked` needs. A free provider's time books nothing and holds nothing. */
@@ -210,7 +250,7 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
     // Held at its charge (known: it was billed): a claim lost before its settle leaves it booked at that, never unknown
     // (the kernel's bookCut books an owed step at its hold). A charge of an unknown amount holds nothing.
     const owes = typeof data.usd === "number" && Number.isFinite(data.usd) && data.usd > 0 ? data.usd : 0;
-    const step = paidStep(booking, data.call ?? undefined, { name: "this browser session's time", holdUsd: owes, basis: `${provider}'s session time, billed as it was charged`, by: data.charged_by, tool: BROWSER_TOOL, tag: data.tag, owed: true, ref: chargeRef(data) }, async () => undefined, () => data.usd).then(
+    const step = paidStep(booking, data.call ?? undefined, { name: "this browser session's time", holdUsd: owes, basis: `${provider}'s session time, billed as it was charged`, by: data.charged_by, tool: BROWSER_TOOL, tag: data.tag, ...OWED.charge, ref: chargeRef(data) }, async () => undefined, () => data.usd).then(
       (stepped) => void ("refused" in stepped && log(logLine("browser_spend_unbooked", { said: `a browser charge of ${data.tag} was not booked on the run's ledger (${stepped.refused.slice(0, 200)}): the next claim's reopen books it` }))),
       (error: unknown) => void log(logLine("browser_spend_unbooked", { said: `a browser charge of ${data.tag} was not booked on the run's ledger (${String((error as Error)?.message ?? error).slice(0, 200)}): the next claim's reopen books it` })),
     );
@@ -249,9 +289,14 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
       // takes the place of was: the session is open and its provider bills its time whatever the cap says, so a refusal
       // would only leave that time unheld (a new session's reserve is the cap's to refuse: its room is its call's hold's).
       // Asked once the old one is given back on the ledger (after), so the two are never held side by side there.
-      if (session.reserve.usd !== stretch) {
+      // A session whose reserve the cap refused holds nothing on the ledger: its reserve is asked again (askReserve), not
+      // owed, as a new session's is, so a raise since holds its next stretch, and a cap still full refuses it again.
+      if (session.refused) {
+        session.refused = false;
+        session.reserve = askReserve(data.tag, `${provider}'s next stretch of session time, asked again once the cap refused it`, data.call === null ? undefined : calls.get(data.call));
+      } else if (session.reserve.usd !== stretch) {
         const givenBack = session.reserve.drop();
-        session.reserve = holdOf("this browser session's reserve", stretch, `${provider}'s next stretch of session time, held again once its charge booked the time before it`, { owed: true, tag: data.tag, after: givenBack }).hold;
+        session.reserve = holdOf("this browser session's reserve", stretch, `${provider}'s next stretch of session time, held again once its charge booked the time before it`, { ...OWED.reserveAgain, tag: data.tag, after: givenBack }).hold;
       }
       Object.assign(session, { at: through, call: data.call ?? session.call });
     } else {
@@ -259,22 +304,10 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
       take(call?.hold, usd + stretch);
       // Its call's hold is two stretches, one of them for this reserve, but on the run's ledger that hold keeps its
       // admitted figure until the call returns: asked beside it, the reserve would be judged twice and refused for room
-      // the run has. So it is asked once the call's hold is given back (after), in the room that hold kept for it, and the
-      // call returns only once it is held (reserves): until then the call's own hold covers the session. A charge under no
-      // call still running asks at once.
-      const reserve = holdOf("this browser session's reserve", stretch, `${provider}'s next stretch of session time, held until its release is booked`, { tag: data.tag, ...(call ? { after: call.givenBack } : {}) });
-      sessions.set(data.tag, { cid: data.conversation, reserve: reserve.hold, at: through, call: data.call });
-      // A new session's reserve is the cap's to refuse (starting a session is a choice), and refused, its next stretch is
-      // held nowhere: that is said, and the cap's own refusal pauses the run, as an ask's refused time does (personTime),
-      // so its next request is refused in the cap's words and it parks for a raise.
-      const acted = reserve.admitted.then(async (answer) => {
-        if (answer.refused === undefined) return;
-        log(logLine("browser_reserve_refused", { said: `the reserve of browser session ${data.tag} was not held on the run's ledger (${answer.refused.slice(0, 200)}): its next stretch is held nowhere` }));
-        if (answer.refusal && ledger.pause) await ledger.pause(answer.refusal);
-      }).catch((error: unknown) => void log(logLine("browser_reserve_refused", { said: `the run could not be paused on the refused reserve of browser session ${data.tag} (${String((error as Error)?.message ?? error).slice(0, 200)})` })));
-      pending.add(acted);
-      void acted.finally(() => pending.delete(acted));
-      call?.reserves.push(acted);
+      // the run has. So it is asked once the call's hold is given back, in the room that hold kept for it (askReserve). A
+      // charge under no call still running asks at once. A new session's reserve is the cap's to refuse (starting a
+      // session is a choice).
+      sessions.set(data.tag, { cid: data.conversation, reserve: askReserve(data.tag, `${provider}'s next stretch of session time, held until its release is booked`, call), at: through, call: data.call });
     }
   }
 
@@ -313,7 +346,7 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
       if (!Number.isFinite(at) || record?.spent.final) continue;
       // Its reserve carries the down time, so its calls count what it runs from here (`at` now), not the down time again.
       const now = Date.now();
-      sessions.set(row.tag, { cid: row.conversationId, reserve: holdOf("this browser session's reserve", stretch + usdOf(Math.max(0, now - at) / 1000), `${provider}'s session time since its last charge and its next stretch, held from the reopen`, { owed: true, tag: row.tag }).hold, at: now, call: null });
+      sessions.set(row.tag, { cid: row.conversationId, reserve: holdOf("this browser session's reserve", stretch + usdOf(Math.max(0, now - at) / 1000), `${provider}'s session time since its last charge and its next stretch, held from the reopen`, { ...OWED.reopenReserve, tag: row.tag }).hold, at: now, call: null });
     }
   }
 
@@ -328,7 +361,7 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
       if (rate === 0 || row.state !== "releasing" || row.resourceId !== null || sessions.has(row.tag)) continue;
       const usd = usdOf(CREATE_DEADLINE_S + stretchS);
       take([...calls.values()].find((c) => c.cid === row.conversationId)?.hold, usd);
-      sessions.set(row.tag, { cid: row.conversationId, reserve: holdOf("this browser session's delayed release", usd, `${provider}'s session time for its create's deadline and a stretch, until its release is billed`, { owed: true, tag: row.tag }).hold, at: Date.now(), call: null });
+      sessions.set(row.tag, { cid: row.conversationId, reserve: holdOf("this browser session's delayed release", usd, `${provider}'s session time for its create's deadline and a stretch, until its release is billed`, { ...OWED.delayedRelease, tag: row.tag }).hold, at: Date.now(), call: null });
     }
   }
 
@@ -478,7 +511,7 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
     const from = Math.max(to - seconds * 1000, sessions.get(tag)?.at ?? -Infinity);
     if (!(to > from)) return;
     // Spent at the provider already: held on the run's ledger until a charge books it.
-    const { hold } = holdOf("a person's time in the browser", microUsd(usdOf((to - from) / 1000)), `${provider}'s session time a person used, until the session's next charge books it`, { owed: true, tag });
+    const { hold } = holdOf("a person's time in the browser", microUsd(usdOf((to - from) / 1000)), `${provider}'s session time a person used, until the session's next charge books it`, { ...OWED.personTime, tag });
     carried.set(tag, [...(carried.get(tag) ?? []), { hold, from, to }]);
   }
 

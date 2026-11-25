@@ -6,7 +6,7 @@
 //     booked figure. Before, the end went on without it: the stored cost was unknown and the view read pi's own figure.
 //   - a booking slower than the bound on that wait (bookingWriteMs): the end goes on, says so, and every reader reads the
 //     cost unknown alike.
-//   - the end's metrics read past its bound (endPatchMs): the cost, read apart, is still stored.
+//   - the end's metrics read past its bound (END_PATCH_MS): the cost, read apart, is still stored.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -25,6 +25,8 @@ const { listRuns } = await import("../dist/store-reads/runs.js");
 const { runTimeline } = await import("../dist/store-reads/journal.js");
 const { viewOverStore } = await import("../dist/store-view.js");
 const { withPlan } = await import("../dist/chatgpt-plan.js");
+const { END_PATCH_MS } = await import("../dist/runner/loop.js");
+const { fakeClock } = await import("./runner-support.mjs");
 after(closeOpenSessions);
 
 const TIMING = { leaseMs: 30_000, renewEveryMs: 1_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
@@ -304,7 +306,17 @@ test("a ChatGPT plan request whose booking is slower than the end's bound: the e
 
 test("the end's metrics read past its bound: the cost, read apart from them, is still stored", { timeout: 120_000 }, async (t) => {
   t.mock.method(console, "warn", () => {});
-  const { row, view, listed } = await endedRun(t, (spec) => ({ ...spec, endPatchMs: 500, endPatch: async (data) => (await sleep(1_500), spec.endPatch(data)) }));
+  // The end's bound runs out on this clock once its cost is read and the metrics are still out: the metrics answer late,
+  // after the bound, never after a real wait.
+  const clock = fakeClock();
+  let costRead;
+  const read = new Promise((resolve) => (costRead = resolve));
+  const { row, view, listed } = await endedRun(t, (spec) => ({
+    ...spec,
+    endPatchTimer: clock,
+    endCost: async () => { const cost = await spec.endCost(); costRead(); return cost; },
+    endPatch: async (data) => { await read; await new Promise((resolve) => setImmediate(resolve)); clock.advance(END_PATCH_MS); return spec.endPatch(data); },
+  }));
   assert.equal(row.state, "ended");
   assert.equal(row.costUsd, REQUEST_USD, "the cost is kept when the metrics are not");
   assert.equal(row.metrics, null, "the metrics are unknown");
