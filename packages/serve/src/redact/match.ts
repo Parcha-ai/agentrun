@@ -846,35 +846,34 @@ const JSON_ESCAPE_QUOTED = jsonEscape(false);
  *  two levels JSON_ESCAPE reads make the escaped backslash and what follows it one escape; so does one with a quote of
  *  its own, written once. */
 const JSON_ESCAPE_ONCE = jsonEscape(false, 1);
-/** Python's escapes as its repr writes a str: an escaped apostrophe ("\'", in a string that holds both quotes) is an
- *  apostrophe, "\x" and two hex digits the character they number, and the rest as JSON_ESCAPE_ONCE reads them ("\\",
- *  "\n", "\u" and four hex digits). Each reads at most six characters. */
-const PYTHON_ESCAPE: Decoder = {
+/** One of Python's own escapes at `at`, as its repr writes a str: an escaped apostrophe ("\'", in a string that holds
+ *  both quotes) is an apostrophe, "\x" and two hex digits the character they number; with `levels` 2, either written
+ *  once more as a JSON string's text too ("\\'", "\\x41": a dict a model wrote in a call's arguments, read one level
+ *  down). The character and where it ends; undefined where none starts. It reads at most five characters. key-refusal.ts's
+ *  peek counts an escape by it (both levels), so the read past a call's stop counts "\x20" as the views that read
+ *  Python's escapes do: a space. */
+export function pythonEscapeAt(text: string, at: number, levels: 1 | 2 = 2): { char: string; end: number } | undefined {
+  if (text[at] !== "\\") return undefined;
+  scanned.chars += Math.min(5, text.length - at);
+  const from = levels === 2 && text[at + 1] === "\\" ? at + 2 : at + 1;
+  if (text[from] === "'") return { char: "'", end: from + 1 };
+  if (text[from] !== "x" || !HEX(text.charCodeAt(from + 1)) || !HEX(text.charCodeAt(from + 2))) return undefined;
+  return { char: String.fromCharCode(Number.parseInt(text.slice(from + 1, from + 3), 16)), end: from + 3 };
+}
+/** Python's escapes (pythonEscapeAt) at `levels`, and the rest as `json` reads them: a single-quoted dict's strings as
+ *  its repr wrote them, with one level of JSON's escapes ("\\", "\n", "\u" and four hex digits); and, written in a
+ *  JSON string, both levels of each ("\\'" and "\\x41", "\\\\" and "\\n"). */
+const pythonEscape = (levels: 1 | 2, json: Decoder): Decoder => ({
   trigger: "\\",
   decode(text, at, unit) {
-    const next = text[at + 1];
-    if (next === "'") {
-      scanned.chars += 2;
-      unit("'", at, at + 2);
-      return at + 2;
-    }
-    if (next !== "x") return JSON_ESCAPE_ONCE.decode(text, at, unit);
-    scanned.chars += Math.min(4, text.length - at);
-    if (!HEX(text.charCodeAt(at + 2)) || !HEX(text.charCodeAt(at + 3))) return -1;
-    unit(String.fromCharCode(Number.parseInt(text.slice(at + 2, at + 4), 16)), at, at + 4);
-    return at + 4;
+    const found = pythonEscapeAt(text, at, levels);
+    if (!found) return json.decode(text, at, unit);
+    unit(found.char, at, found.end);
+    return found.end;
   },
-};
-/** What PYTHON_ESCAPE reads at `at`, where JSON_ESCAPE reads no escape ("\'", "\x" and two hex digits): the character
- *  it decodes to and where it ends; undefined where it reads none. key-refusal.ts's peek counts an escape by it too, so
- *  the read past a call's stop counts "\x20" as the view that reads Python's escapes does: a space. */
-export function pythonEscapeAt(text: string, at: number): { char: string; end: number } | undefined {
-  let char = "";
-  const end = PYTHON_ESCAPE.decode(text, at, (decoded) => {
-    char = decoded;
-  });
-  return end < 0 ? undefined : { char, end };
-}
+});
+const PYTHON_ESCAPE = pythonEscape(1, JSON_ESCAPE_ONCE);
+const PYTHON_ESCAPE_TWICE = pythonEscape(2, JSON_ESCAPE_QUOTED);
 /** What JSON_ESCAPE reads at `at`: the character the escape there decodes to, through both levels ("" for an escaped
  *  quote, which decodes to nothing), and where it ends; undefined where no escape starts (the "\" is then itself).
  *  key-refusal.ts's peek counts an escape by it, so the read past a call's stop and the JSON view see the same
@@ -995,7 +994,9 @@ const viewSpec = (when: (has: Families) => boolean, decoders: readonly Decoder[]
  *  - for a text with an apostrophe in it, its strings joined whole with an apostrophe opening one too (a Python repr's
  *    single-quoted dict), one level of JSON's escapes decoded. A view of its own, so the views before it read an
  *    apostrophe outside a "..." string as they did; and the same decoded through Python's escapes, where the text holds
- *    one ("\'" in a string with both quotes, "\x41"), beside it, so a backslash read as itself there still is.
+ *    one ("\'" in a string with both quotes, "\x41"), beside it, so a backslash read as itself there still is; and
+ *    through both levels of them, where the text also holds an escaped backslash (a dict written in a JSON string,
+ *    "\\'" and "\\x41"). The quoted join reads a JSON string's text for a dict written in it too.
  *  The decoders of a view decode in one pass: each reads at its own trigger character, so a view costs one read of the
  *  text whatever it decodes. Each view is lowered for hexes and flattened for folded identifiers in holds. */
 const VIEWS: readonly ViewSpec[] = [
@@ -1014,6 +1015,7 @@ const VIEWS: readonly ViewSpec[] = [
   viewSpec((has) => has.quote && has.deep, [JSON_ESCAPE_QUOTED], "strings"),
   viewSpec((has) => has.apostrophe, [JSON_ESCAPE_ONCE], "quoted"),
   viewSpec((has) => has.apostrophe && has.python, [PYTHON_ESCAPE], "quoted"),
+  viewSpec((has) => has.apostrophe && has.python && has.deep, [PYTHON_ESCAPE_TWICE], "quoted"),
 ];
 
 // ---- The join view: a JSON text's strings read joined, so a held value split across two of them reads whole.
@@ -1050,10 +1052,14 @@ function unitAt(text: string, at: number, to: number, level: 0 | 1): { char: str
  *  each run of characters outside a string that are neither whitespace nor JSON's punctuation. A string with no closing
  *  quote runs to `to`. Any text is read so, JSON or not: a quote in prose opens a string as one in JSON does. With
  *  `quoted`, an apostrophe opens a string too, closed by the next apostrophe (a quote inside it is text, as an
- *  apostrophe inside a "..." string is). Each character is read at most three times (at level 0, at level 1, and in the
- *  whitespace after a string looking for a ":"). */
+ *  apostrophe inside a "..." string is), and at level 0 a value written in quotes is also read again at level 1 the same
+ *  way (a dict written in a JSON string: a call's arguments), its parts after all of the text's. Each character is read
+ *  at most three times (at level 0, at level 1, and in the whitespace after a string looking for a ":"). */
 function partsOf(text: string, from: number, to: number, level: 0 | 1, out: Part[], kind: JoinKind = "nested"): void {
   let bare = -1;
+  // With `quoted` at level 0, each value string's contents, read again at level 1 once the text is read: its parts come
+  // after the text's, so the text's own stay as they are, each beside the one it is beside in the text.
+  const written: [number, number][] = [];
   const endBare = (end: number) => {
     if (bare >= 0) out.push({ from: bare, to: end, name: false });
     bare = -1;
@@ -1089,10 +1095,14 @@ function partsOf(text: string, from: number, to: number, level: 0 | 1, out: Part
     }
     if (next === ":") out.push({ from: end, to: close, name: true });
     else if (level === 0 && kind === "nested") partsOf(text, end, close, 1, out);
-    else out.push({ from: end, to: close, name: false });
+    else {
+      out.push({ from: end, to: close, name: false });
+      if (level === 0 && kind === "quoted" && char === '"') written.push([end, close]);
+    }
     at = after;
   }
   endBare(to);
+  for (const [start, end] of written) partsOf(text, start, end, 1, out, "quoted");
 }
 
 /** `text`'s join of `kind` (JoinKind): its parts (partsOf) read three times over, each time joined, each part followed by a space (gone
@@ -1114,9 +1124,14 @@ function joinOf(text: string, kind: JoinKind, cuts?: readonly Span[]): { text: s
   const passes: readonly ((part: Part) => boolean)[] = [(part) => !part.name, (part) => part.name, () => true];
   for (const pass of passes) {
     let cut = 0;
+    let last = 0;
     for (const part of parts) {
       if (!pass(part)) continue;
       scanned.chars++;
+      // The quoted join's parts read again inside its strings come after the rest (partsOf), from the text's start: the
+      // cursor starts over there, once a pass.
+      if (part.from < last) cut = 0;
+      last = part.from;
       if (cuts) {
         while (cut < cuts.length && cuts[cut]![1] <= part.from) {
           cut++;

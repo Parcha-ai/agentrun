@@ -317,13 +317,14 @@ function visible(text: string, from: number, count: number, to: number, fold: bo
   }
   return { parts, found, span };
 }
-/** The character text[at] starts, as the views read it: a JSON escape's (jsonEscapeAt), else one of Python's
- *  (pythonEscapeAt: "\x20" is a space), or a character reference's (entityAt), else the UTF-16 unit itself (`raw`), and
- *  where it ends. */
+/** The character text[at] starts, as the views read it: one of Python's escapes (pythonEscapeAt, at either level:
+ *  "\x20" and "\\x20" are a space), else a JSON escape's (jsonEscapeAt), or a character reference's (entityAt), else
+ *  the UTF-16 unit itself (`raw`), and where it ends. Python's first: where JSON's escapes read "\\x20" as a backslash
+ *  and three characters, the view that reads Python's twice reads a space; counting less only reads further. */
 function charAt(text: string, at: number): { char: string; end: number; raw: boolean } {
   let escape: { char: string; end: number } | undefined;
   if (
-    (text[at] === "\\" && ((escape = jsonEscapeAt(text, at)) !== undefined || (escape = pythonEscapeAt(text, at)) !== undefined)) ||
+    (text[at] === "\\" && ((escape = pythonEscapeAt(text, at)) !== undefined || (escape = jsonEscapeAt(text, at)) !== undefined)) ||
     (text[at] === "&" && (escape = entityAt(text, at)) !== undefined)
   )
     return { ...escape, raw: false };
