@@ -156,14 +156,16 @@ test("a Python client takes its inputs as one dict: an input named as the client
   assert.equal(got.length, 1);
 });
 
-// The one name for a server's address is AGENTRUN_BASE_URL (packages/client, python/, the CLI), and it holds the address
-// with or without /v2. A suggested agent's client reads that name and takes every such value, so an app that has the
-// variable for AgentRun's own client sets nothing twice.
+// The one name for a server's address is AGENTRUN_BASE_URL (packages/client, python/, the CLI). The server prints its
+// value ending in /v2 when it starts (print.ts), and those clients take it with or without. A suggested agent's client
+// reads that name and takes every such value, so an app that has the variable for AgentRun's own client sets nothing
+// twice; and what tells a person the value (the pull request, the page of HTTP calls) gives the /v2 form the server prints.
 test("every client reads AGENTRUN_BASE_URL as AgentRun's own clients do: the address with or without /v2, and never another name", async (t) => {
   const got = [];
   let polls = 0;
   const server = createServer((req, res) => {
-    got.push(`${req.method} ${req.url}`);
+    // The client's requests alone, by the key they carry: a probe of a new loopback listener from this machine is none.
+    if (req.headers.authorization === "Bearer fake-test-key") got.push(`${req.method} ${req.url}`);
     req.resume();
     req.on("end", () => {
       res.setHeader("content-type", "application/json");
@@ -185,11 +187,20 @@ test("every client reads AGENTRUN_BASE_URL as AgentRun's own clients do: the add
   const files = { "typed.mjs": ts.transpileModule(typed, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText, "plain.mjs": render("javascript", "src/a.mjs"), "triage.py": render("python", "app/triage.py") };
   for (const [name, content] of Object.entries(files)) writeFileSync(join(dir, name), content);
   const page = render("other", "docs/triage.md");
-  for (const [name, content] of [...Object.entries({ typed, page, ...files }), ["the pull request", pullText(s, { repo: "acme/app", commit: "a".repeat(40), agentId: "agent_1" }).body]]) {
+  const at = { repo: "acme/app", commit: "a".repeat(40), agentId: "agent_1" };
+  const pull = pullText(s, at).body;
+  for (const [name, content] of [...Object.entries({ typed, page, ...files }), ["the pull request", pull]]) {
     assert.match(content, /AGENTRUN_BASE_URL/, `${name} names the address`);
     assert.doesNotMatch(content, /AGENTRUN_URL/, `${name} names it one way`);
   }
-  assert.match(page, /curl -sS -X POST "\$AGENTRUN_BASE_URL\/v2\/agents\/\$AGENTRUN_AGENT_TICKET_TRIAGE\/runs"/);
+  // The value a person is given ends in /v2, as the server's banner gives it, and the page's curl adds none.
+  const row = (body) => body.split("\n").find((line) => line.startsWith("| `AGENTRUN_BASE_URL` |"));
+  assert.equal(row(pullText(s, { ...at, publicUrl: "https://agents.example.test/" }).body), "| `AGENTRUN_BASE_URL` | `https://agents.example.test/v2` |");
+  assert.equal(row(pullText(s, { ...at, publicUrl: "https://example.test/agents" }).body), "| `AGENTRUN_BASE_URL` | `https://example.test/agents/v2` |");
+  assert.equal(row(pull), "| `AGENTRUN_BASE_URL` | your AgentRun server's address, ending in `/v2` |");
+  assert.match(page, /curl -sS -X POST "\$AGENTRUN_BASE_URL\/agents\/\$AGENTRUN_AGENT_TICKET_TRIAGE\/runs"/);
+  assert.match(page, /curl -sS "\$AGENTRUN_BASE_URL\/runs\/<run_id>"/);
+  assert.match(page, /`AGENTRUN_BASE_URL` is the AgentRun server's API, ending in `\/v2`, like `https:\/\/agentrun\.example\.com\/v2`/);
 
   const node = "const [file, input] = process.argv.slice(1); const m = await import(file); console.log(JSON.stringify(await m.runTicketTriage(JSON.parse(input))));";
   const python = "import importlib.util, json, sys\nspec = importlib.util.spec_from_file_location('triage', sys.argv[1])\nmod = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(mod)\nprint(json.dumps(mod.run_ticket_triage(json.loads(sys.argv[2]))))";
@@ -213,6 +224,10 @@ test("every client reads AGENTRUN_BASE_URL as AgentRun's own clients do: the add
     // With no address, it says the name to set and sends nothing.
     got.length = 0;
     await assert.rejects(run(name, {}), (error) => /Set AGENTRUN_BASE_URL, AGENTRUN_API_KEY and AGENTRUN_AGENT_TICKET_TRIAGE to run the ticket-triage agent\./.test(error.stderr), `${name} with no address`);
+    // An address that is no http or https URL is refused by the variable's name, before anything is sent.
+    for (const address of ["agentrun.example.com", "localhost:7340", "ftp://agentrun.example.com", "http://"]) {
+      await assert.rejects(run(name, { AGENTRUN_BASE_URL: address }), (error) => /AGENTRUN_BASE_URL must be an http or https URL, like https:\/\/agentrun\.example\.com\/v2\./.test(error.stderr), `${name} at ${address}`);
+    }
     assert.deepEqual(got, []);
   }
 });

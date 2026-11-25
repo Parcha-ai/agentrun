@@ -135,7 +135,7 @@ export type SuggestionsDeps = {
   makeAgent(id: string, origin: { source: string; sha: string; publisher: string }, files: ReadonlyMap<string, Buffer>): Promise<{ agentId: string; warnings: InputIssue[] }>;
   /** The agent made here from the imported template `id` at commit `sha`, not archived; undefined when there is none. */
   agentFrom(id: string, sha: string): Promise<string | undefined>;
-  /** This server's public URL, which the pull request names as AGENTRUN_BASE_URL. */
+  /** This server's public URL: the pull request gives it, with /v2, as AGENTRUN_BASE_URL (the banner's line, print.ts). */
   readonly publicUrl?: string;
   /** Told each time a scan starts, a suggestion is discarded and a suggested agent's pull request opens: the anonymous
    *  counts' `used` (telemetry.ts), which hears the event's name and nothing else. It never fails the request. */
@@ -343,7 +343,7 @@ function header(s: Suggestion, repo: string, commit: string, mark: string): stri
     `wire it in at ${oneLine(s.integration.call_site.path)}:${s.integration.call_site.line}. ${oneLine(s.integration.call_site.note)}`,
     "",
     "Configure in the app's environment (never commit the key):",
-    ...[["AGENTRUN_BASE_URL", "the AgentRun server, like https://agentrun.example.com (with or without /v2)"], ["AGENTRUN_API_KEY", "an API key of that server (make one in its console: Settings > AgentRun API keys)"], [agentVariable(s.key), "the agent's id there (the pull request that added this file names it)"]].map(([name, what], _, all) => `  ${name!.padEnd(Math.max(...all.map(([n]) => n!.length)) + 2)}${what}`),
+    ...[["AGENTRUN_BASE_URL", "the AgentRun server's API, like https://agentrun.example.com/v2 (the /v2 may be left out)"],["AGENTRUN_API_KEY", "an API key of that server (make one in its console: Settings > AgentRun API keys)"], [agentVariable(s.key), "the agent's id there (the pull request that added this file names it)"]].map(([name, what], _, all) => `  ${name!.padEnd(Math.max(...all.map(([n]) => n!.length)) + 2)}${what}`),
   ];
   return lines.map((line) => (line ? `${mark} ${line}` : mark)).join("\n");
 }
@@ -383,7 +383,9 @@ ${cjs ? "async function" : "export async function"} ${fn}(input${t(`: ${input}`)
   const agent = env.${env};
   if (!address || !key || !agent) throw new Error("Set AGENTRUN_BASE_URL, AGENTRUN_API_KEY and ${env} to run the ${s.key} agent.");
   // The address with or without /v2, as AgentRun's own clients and CLI take AGENTRUN_BASE_URL.
-  const base = new URL(address).pathname.split("/").includes("v2") ? address : \`\${address}/v2\`;
+  const url = (() => { try { return new URL(address); } catch { return undefined; } })();
+  if (!url || !/^https?:$/.test(url.protocol)) throw new Error("AGENTRUN_BASE_URL must be an http or https URL, like https://agentrun.example.com/v2.");
+  const base = url.pathname.split("/").includes("v2") ? address : \`\${address}/v2\`;
   const headers = { authorization: \`Bearer \${key}\`, "content-type": "application/json" };
   const started = await fetch(\`\${base}/agents/\${encodeURIComponent(agent)}/runs\`, { method: "POST", headers, body: JSON.stringify({ input }), signal: options.signal });
   if (!started.ok) throw new Error(\`AgentRun did not start the ${s.key} agent (HTTP \${started.status}): \${await started.text()}\`);
@@ -451,7 +453,13 @@ def run_${py}(inputs: ${input}, timeout_s: float = 300.0) -> Dict[str, Any]:
     if not address or not key or not agent:
         raise RuntimeError("Set AGENTRUN_BASE_URL, AGENTRUN_API_KEY and ${env} to run the ${s.key} agent.")
     # The address with or without /v2, as AgentRun's own clients and CLI take AGENTRUN_BASE_URL.
-    base = address if "v2" in urllib.parse.urlsplit(address).path.split("/") else f"{address}/v2"
+    try:
+        url = urllib.parse.urlsplit(address)
+    except ValueError:
+        url = None
+    if url is None or url.scheme not in ("http", "https") or not url.netloc:
+        raise RuntimeError("AGENTRUN_BASE_URL must be an http or https URL, like https://agentrun.example.com/v2.")
+    base = address if "v2" in url.path.split("/") else f"{address}/v2"
     run = _call("POST", f"{base}/agents/{agent}/runs", key, {"input": fields})
     until = time.monotonic() + timeout_s
     while run.get("status") not in _ENDED:
@@ -477,14 +485,14 @@ Added by AgentRun's agent scout from a scan of ${repo}${commit ? ` at ${commit.s
 
 Start a run, then read it until its \`status\` is \`completed\`; the answer is its \`result.output\`.
 
-\`AGENTRUN_BASE_URL\` is the AgentRun server's address, like \`https://agentrun.example.com\`. Where yours already ends
-in \`/v2\`, leave \`/v2\` out of the two paths below.
+\`AGENTRUN_BASE_URL\` is the AgentRun server's API, ending in \`/v2\`, like \`https://agentrun.example.com/v2\`: the value
+the pull request that added this file gives, and the one the server prints when it starts.
 
 \`\`\`sh
-curl -sS -X POST "$AGENTRUN_BASE_URL/v2/agents/$${env}/runs" \\
+curl -sS -X POST "$AGENTRUN_BASE_URL/agents/$${env}/runs" \\
   -H "authorization: Bearer $AGENTRUN_API_KEY" -H "content-type: application/json" \\
   -d '${JSON.stringify({ input: example }).replace(/'/g, "'\\''")}'
-curl -sS "$AGENTRUN_BASE_URL/v2/runs/<run_id>" -H "authorization: Bearer $AGENTRUN_API_KEY"
+curl -sS "$AGENTRUN_BASE_URL/runs/<run_id>" -H "authorization: Bearer $AGENTRUN_API_KEY"
 \`\`\`
 
 | Answer field | Type | What it holds |
@@ -525,7 +533,7 @@ The app's own code is not changed: nothing calls the agent until you wire it in.
 
 | Variable | Value |
 | --- | --- |
-| \`AGENTRUN_BASE_URL\` | ${at.publicUrl ? `\`${at.publicUrl}\`` : "your AgentRun server's address"} |
+| \`AGENTRUN_BASE_URL\` | ${at.publicUrl ? `\`${at.publicUrl.replace(/\/+$/, "")}/v2\`` : "your AgentRun server's address, ending in `/v2`"} |
 | \`AGENTRUN_API_KEY\` | an API key of that server, made in its console under ${at.publicUrl ? `[Settings → AgentRun API keys](${at.publicUrl.replace(/\/+$/, "")}${API_KEYS_PAGE})` : "Settings → AgentRun API keys"} and shown once: keep it in your secrets, never in the repository |
 | \`${agentVariable(s.key)}\` | \`${at.agentId}\` |
 

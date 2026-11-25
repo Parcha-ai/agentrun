@@ -16,14 +16,15 @@ const apiError = (e: unknown): ApiError => (e instanceof ClientError ? e.toApiEr
 /** The longest name a key takes (the server's API_KEY_NAME_MAX). */
 const NAME_MAX = 64;
 
-/** The two lines an app's environment takes for this server: where it is, and the key. */
-export const envLines = (origin: string, key: string): string => `AGENTRUN_BASE_URL=${origin}\nAGENTRUN_API_KEY=${key}`;
+/** The two lines an app's environment takes for this server: its API's address, with /v2 as the server prints it when
+ *  it starts (serve's print.ts), and the key. */
+export const envLines = (origin: string, key: string): string => `AGENTRUN_BASE_URL=${origin}/v2\nAGENTRUN_API_KEY=${key}`;
 
 /** Settings → AgentRun API keys (GET and POST /v2/settings/api-keys, DELETE .../{id}, a serve extension): the keys an
  *  app sends to call this server. Each key's name, when it was created and when it was last used; a form that creates one,
  *  whose value is shown only in the answer that created it, copied with one press, and never kept in the page after Done;
  *  and Revoke for each, asked first. Creating and revoking take the owner's session (`writable`); any session reads the
- *  list. `origin`: the address this console is open at, which the copied lines name as AGENTRUN_BASE_URL. */
+ *  list. `origin`: the address this console is open at; the copied lines give its /v2 as AGENTRUN_BASE_URL. */
 export function ApiKeysPage({ v2, writable, whyNot = "sign_in", origin }: { v2: Client; writable: boolean; whyNot?: SecretsWhyNot; origin: string }) {
   const [keys, setKeys] = useState<ApiKey[] | null>(null);
   const [limit, setLimit] = useState<number | null>(null);
