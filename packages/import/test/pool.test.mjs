@@ -8,6 +8,7 @@ import { availableParallelism, freemem } from "node:os";
 import { relative } from "node:path";
 import { parseHome, READERS } from "../dist/index.js";
 import * as poolModule from "../dist/pool.js";
+import { recordIndex } from "../dist/record-index.js";
 
 const { memoryLimit, ReadPool, readAheadBytes, stringBytes } = poolModule;
 import { anthropicUsage, claudeAnswer, claudeFile, claudeUser, codexAnswer, codexContext, codexFile, codexMeta, codexTokens, codexUser, openaiUsage, subagentFile, tempHome, writeJsonl } from "./fixtures.mjs";
@@ -394,4 +395,27 @@ test("a record a worker asked about but never added: a copy when an earlier file
   const byId = Object.fromEntries(one.map((row) => [row.id, row]));
   assert.deepEqual([FIRST, OPEN, BARE, AFTER].map((id) => byId[id].calls), [1, 0, 1, 1]);
   for (const opts of THREADS.flatMap(each)) assert.deepEqual(await parseHome(home, { catalog: false, ...opts }), one, JSON.stringify(opts));
+});
+
+// What the read-ahead budget counts a read waiting with (pool.ts heldBytes): every array of its indexes, the slots' tags
+// (tables of 1024 slots and more) with them. Two reads alike but for the tags, each made waiting by the pool's own path
+// (made, as a worker's reply is), differ in the bytes held by the tags' bytes.
+test("the read-ahead budget counts a tagged index's tags bytes", () => {
+  const pool = new ReadPool(0, Infinity);
+  try {
+    const tagged = recordIndex(2048);
+    const untagged = recordIndex(2048);
+    delete untagged.uuids.tags;
+    delete untagged.others.tags;
+    const tags = tagged.uuids.tags.byteLength + tagged.others.tags.byteLength;
+    assert.ok(tags > 0, "the tables carry tags");
+    const held = (mine) => {
+      const before = pool.held;
+      pool.made({ id: -1, state: "running", bytes: 0 }, { ok: true, sessions: [], mine, missed: recordIndex(16) });
+      return pool.held - before;
+    };
+    assert.equal(held(tagged) - held(untagged), tags);
+  } finally {
+    pool.close();
+  }
 });
