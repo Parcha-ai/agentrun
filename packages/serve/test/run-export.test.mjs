@@ -200,6 +200,27 @@ test("files: UTF-8 text within the caps is carried with its bytes and sha256 as 
   assert.equal(read, 0);
 });
 
+test("files: a held value wrapped over line breaks in a run's file is not carried in part: a file is cut as the served cut read cuts it before the scrubber reads it", async () => {
+  // Wrapped over two line breaks, as a terminal or a PEM-style writer wraps it: the scrubber's held rule finds a form
+  // split by one run of blanks, and its final check reads only its own cut text; the served read withholds the text.
+  const held = `Wq${hex("wrapped-held", 34)}`;
+  const pieces = [held.slice(0, 12), held.slice(12, 24), held.slice(24)];
+  for (const content of [`deploy key: ${pieces.join("\n")}\n`, `token=${pieces[0]}\n${pieces[1]}\n\n${pieces[2]}\n`, `${pieces.join("\r\n")}`]) {
+    const { body, doc } = await build({ held: [held], files: [textFile("out/wrapped.txt", content)] });
+    for (const piece of pieces) assert.ok(!body.includes(piece), `${JSON.stringify(content.slice(0, 20))}: a piece of the held value is carried`);
+    assert.deepEqual(doc.files.map((file) => file.path), ["out/wrapped.txt"], "the file is still carried, cut");
+  }
+});
+
+test("files: a census-cut run (its end erased a value it was handed, so the cut set no longer holds it) carries no file through runExport, whatever a file holds", async () => {
+  const erased = `Er${hex("erased-handed", 30)}`;
+  const reads = { ...readsOf({ rows: [] }), files: async () => ({ files: [textFile("out/key.txt", `the key: ${erased}\n`)], truncated: false }), cut: async () => ({ values: [], censusDigest: "d".repeat(64) }) };
+  const { body, doc } = await exported(reads);
+  assert.deepEqual(doc.files, []);
+  assert.deepEqual(doc.omitted, [{ what: "files", why: "uncounted" }, { what: "recordings", why: "never" }]);
+  assert.ok(!body.includes(erased) && !body.includes("out/key.txt"), "no file's content or name");
+});
+
 test("files: a run whose cut is its census's carries no file and names none, reading none; a file whose read fails is left out as unreadable", async () => {
   let reads = 0;
   const counted = (file) => ({ ...file, read: async (limit) => ((reads += 1), file.read(limit)) });
