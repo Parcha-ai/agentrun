@@ -561,10 +561,10 @@ test("an OTLP endpoint's query parameter named jwt or session, or ending in pass
   assert.deepEqual(heldParams(["sessions", "sessioncount"]), [], "a count of sessions is not held");
 });
 
-test("an OTLP endpoint's lowercase *key query parameter is held only when the compound names a credential: apikey, accesskey, writekey are; routingkey, sortkey, primarykey, partitionkey, cachekey are not", () => {
-  const names = ["apikey", "accesskey", "secretkey", "privatekey", "writekey", "clientkey", "authkey", "signingkey", "sessionkey", "subscriptionkey", "datadogapikey"];
-  assert.deepEqual(names.filter((name) => !heldParams(names).includes(name)), [], "every credential *key name's value is held");
-  assert.deepEqual(heldParams(["routingkey", "sortkey", "primarykey", "partitionkey", "cachekey", "keyspace"]), [], "a *key that names no credential is not held");
+test("an OTLP endpoint's query parameter whose lowercase name ends in key is held, whatever comes before it (hmackey, accountkey, storagekey, routingkey); keyspace is not", () => {
+  const names = ["apikey", "accesskey", "writekey", "datadogapikey", "hmackey", "accountkey", "storagekey", "sharedkey", "consumerkey", "instrumentationkey", "routingkey", "sortkey"];
+  assert.deepEqual(names.filter((name) => !heldParams(names).includes(name)), [], "every name ending in key has its value held");
+  assert.deepEqual(heldParams(["keyspace", "keys"]), [], "a name that only starts with key is not held");
 });
 
 test("an OTLP header value carrying a credential-named name=value pair or a URL with a credential in it is held and cut of that credential alone; a harmless pair is left whole", () => {
@@ -711,6 +711,83 @@ test("a quoted URL's short password, under the held lists' floor, is still cut f
     }
   }
   assert.deepEqual(missed, [], "a quoted URL's user and password are read inside its quotes, so the [otel] cut takes them at any length");
+});
+
+// Where a credential sits inside an OTLP header value, past what a URL's own reading covers. Each row: [what, the header
+// (an OTEL_EXPORTER_OTLP_TRACES_HEADERS part), the credentials held and cut alone, what is on no held list]. Each row's
+// [otel] line also carries ordinary words, none of which may be cut.
+const innerUserinfo = (name, secret) => [name, secret].join(":");
+const innerToken = (n) => `tok-${"dummy"}-${n}`;
+const SENTRY_KEY = `sentry-${"dummy"}-key-8181`;
+const INNER_ROWS = [
+  ["a credential pair after a ; in an unquoted URL's query", `Cookie=upstream=https://relay.invalid/v1?region=us;session=${innerToken(1201)}`, [innerToken(1201)], ["us"]],
+  ["a credential pair after an & in an unquoted URL's query", `Cookie=upstream=https://relay.invalid/v1?region=us&session=${innerToken(1202)}`, [innerToken(1202)], ["us"]],
+  ["an access_token in an unquoted URL's fragment", `X-Upstream=upstream=https://relay.invalid/v1#access_token=${innerToken(1203)}`, [innerToken(1203)], []],
+  ["a credential pair after a ; in an unquoted URL's fragment", `X-Upstream=upstream=https://relay.invalid/v1#x;session=${innerToken(1204)}`, [innerToken(1204)], []],
+  ["a URL nested in another URL's query", `X-Upstream=https://relay.invalid/go?next=https://${innerUserinfo(`u2-${"dummy"}-user`, `p2-${"dummy"}-pass`)}@inner.invalid/`, [`u2-${"dummy"}-user`, `p2-${"dummy"}-pass`], []],
+  ["a URL nested in another URL's path", `X-Upstream=https://relay.invalid/go/https://${innerUserinfo(`u3-${"dummy"}-user`, `p3-${"dummy"}-pass`)}@inner.invalid/x`, [`u3-${"dummy"}-user`, `p3-${"dummy"}-pass`], []],
+  ["an unquoted URL with a raw ' in its password", `X-Upstream=https://${innerUserinfo(`user-${"dummy"}`, `pa'ss-${"dummy"}-99`)}@host.invalid/`, [`user-${"dummy"}`, `pa'ss-${"dummy"}-99`], []],
+  ["sentry's key between commas written %2C", `X-Sentry-Auth=Sentry sentry_version=7%2C sentry_key=${SENTRY_KEY}%2C sentry_client=x`, [SENTRY_KEY], [`${SENTRY_KEY},`, `${SENTRY_KEY}%2C`]],
+  ["sentry's key between raw commas", `X-Sentry-Auth=Sentry sentry_version=7, sentry_key=${SENTRY_KEY}, sentry_client=x`, [SENTRY_KEY], [`${SENTRY_KEY},`]],
+  ["a scheme-relative URL's user", `X-Upstream=//key-${"dummy"}-1234@host.invalid`, [`key-${"dummy"}-1234`], []],
+  ["a JSON-escaped URL's user and password", `X-Upstream=https:\\/\\/${innerUserinfo(`u-${"dummy"}-12`, `p-${"dummy"}-34`)}@host.invalid`, [`u-${"dummy"}-12`, `p-${"dummy"}-34`], []],
+  ["a single-quoted credential pair's value", `X-Upstream=token='${innerToken(5678)}'`, [innerToken(5678)], []],
+  ["a bare URL with no path, then an & pair holding an @", "X-Upstream=https://relay.invalid&contact=ops@team.invalid", [], ["relay.invalid"]],
+  ["the same URL as a pair's value", "X-Upstream=upstream=https://relay.invalid&contact=ops@team.invalid", [], ["relay.invalid"]],
+];
+
+test("an OTLP header value's credential pair is read anywhere in the value, a URL's query and fragment too, and every URL in it is read, one nested in another, one with a raw ' in its password, scheme-relative or JSON-escaped; a hostname and ordinary words are left", () => {
+  const words = "2 spans passed, contact ops, region us v1 relay";
+  const missed = [];
+  for (const [what, header, held, unheld] of INNER_ROWS) {
+    const env = { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: header };
+    for (const [list, values] of [["runnerSecrets", runnerSecrets(env)], ["hostSecrets", hostSecrets(env)]]) {
+      for (const value of held) if (!values.includes(value)) missed.push(`${what}: ${value} not held (${list})`);
+      for (const value of unheld) if (values.includes(value)) missed.push(`${what}: ${value} held (${list})`);
+    }
+    const shown = unheld.filter((value) => !held.some((credential) => value.includes(credential)));
+    const line = `401 from relay: ${held.map((value) => `got ${value}`).join(", ")}; ${words} ${shown.join(" ")}`;
+    const cut = `401 from relay: ${held.map(() => "got [redacted]").join(", ")}; ${words} ${shown.join(" ")}`;
+    const otel = otlpHeaderCut(env)(line);
+    if (otel !== cut) missed.push(`${what}: the [otel] cut shows ${otel}`);
+    const runner = secretRedactor(runnerSecrets(env))(line);
+    if (runner !== cut) missed.push(`${what}: the runner's redactor shows ${runner}`);
+  }
+  assert.deepEqual(missed, [], "every credential is held and cut alone; the hostname, a comma after a key and the ordinary words are not");
+});
+
+test("an OTLP header value of 16 KB holding 8,000 @ starts the tracer and cuts an [otel] line in well under a second, and still holds its URL's user as RFC 3986 reads it (before the last @)", () => {
+  const user = `${"a@".repeat(7999)}a`;
+  const header = `X-Upstream=https://${user}@relay.invalid`;
+  // In a child bounded by its own timeout, so a reading that grows with the @ count fails here by time, never hangs the file.
+  const script = [
+    "const dist = process.env.TRACER_DIST;",
+    "const { genAiTracing } = await import(`${dist}otel/tracer.js`);",
+    "const { runnerSecrets, secretRedactor } = await import(`${dist}runner/redact.js`);",
+    "const { otlpHeaderCut } = await import(`${dist}secrets.js`);",
+    "const exporter = { export: (spans, done) => done({ code: 0 }), shutdown: async () => {}, forceFlush: async () => {} };",
+    "const on = { OTEL_EXPORTER_OTLP_ENDPOINT: 'http://otlp.invalid:4318' };",
+    "await genAiTracing(on, { exporter, log: () => {} });",
+    "const env = { ...on, OTEL_EXPORTER_OTLP_TRACES_HEADERS: process.env.TRACER_HEADER };",
+    "const line = `401 from relay: user ${process.env.TRACER_USER}; 2 spans passed`;",
+    "const started = performance.now();",
+    "await genAiTracing(env, { exporter, log: () => {} });",
+    "const otel = otlpHeaderCut(env)(line);",
+    "const runner = secretRedactor(runnerSecrets(env))(line);",
+    "const ms = performance.now() - started;",
+    "const held = runnerSecrets(env).includes(process.env.TRACER_USER);",
+    "console.log(JSON.stringify({ ms, held, otel, runner }));",
+    "process.exit(0);",
+  ].join("\n");
+  const env = { ...process.env, AGENTRUN_TELEMETRY: "0", TRACER_DIST: new URL("../dist/", import.meta.url).href, TRACER_HEADER: header, TRACER_USER: user };
+  delete env.NODE_TEST_CONTEXT;
+  const child = spawnSync(process.execPath, ["--max-old-space-size=1024", "--input-type=module", "-e", script], { encoding: "utf8", env, timeout: 20_000, maxBuffer: 16 * 1024 * 1024 });
+  assert.equal(child.error?.code ?? child.signal ?? child.status, 0, `the tracer started within 20 s and the child ended on its own (stderr: ${(child.stderr ?? "").slice(-300)})`);
+  const { ms, held, otel, runner } = JSON.parse(child.stdout.trim().split("\n").at(-1));
+  assert.ok(ms < 1000, `the tracer started and cut a line in ${Math.round(ms)} ms, under 1 s`);
+  assert.equal(held, true, "the URL's user before the last @ is held");
+  assert.equal(otel, "401 from relay: user [redacted]; 2 spans passed", "the [otel] cut takes the user");
+  assert.equal(runner, "401 from relay: user [redacted]; 2 spans passed", "the runner's redactor takes the user");
 });
 
 test("a short OTLP header value is cut from the tracer's own error text, at any length; a standard header's value is left as it is", async (t) => {
