@@ -9,7 +9,8 @@
 // it on every call, and gets it from this step's memory). The disk token a computer's mount takes
 // (ArchilWorkspace.mountSpec) is no saved row: it is minted per run, at Archil's control plane with that key, the first
 // time a mount asks (archil-mount-credential.ts), so a run with no computer never has one; revoke() removes it at the
-// computer's release and the run's end, and its ttl (the run's lifetime bound) ends it if no remove ever comes.
+// computer's release and the run's end, a remove that fails there is left for the janitor (leave, mount-revoke-left.ts),
+// and its ttl (the run's lifetime bound) ends it if no remove ever comes.
 //
 // The values live in this step's memory only: never in the environment, the journal, a command row or a log line. Both
 // go in `secrets`, for the redaction set. release(), or the claim's signal aborting, drops them; a call after that is
