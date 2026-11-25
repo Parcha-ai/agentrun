@@ -28,6 +28,11 @@ import { agentAttributes, chatAttributes, spanName, toolAttributes, written, typ
 /** The most the runner's closing flush waits for its spans' export. */
 export const FLUSH_MS = 3_000;
 
+/** The most model requests, and apart the most tool calls, one claim's trace holds open at once: one started past it
+ *  has no span. A run's process posts its own trace (tracePosts) and runs the agent's code, so one that starts calls and
+ *  never ends them can't grow its runner's memory without bound. */
+export const OPEN_MAX = 512;
+
 /** The OTLP exporter's settings from `env`, as the spec reads them: the traces endpoint as given, else the endpoint's
  *  /v1/traces; the headers (the traces' over the general ones); the timeout. */
 export function exporterConfig(env: NodeJS.ProcessEnv): { url: string; headers: Record<string, string>; timeoutMillis?: number } {
@@ -137,7 +142,9 @@ function usageOf(value: unknown): ModelUsage {
  *  - a call's id is shown cut (TraceEvent.shownId); its raw id, and a parent's, only match a call's end and children;
  *  - a route's name a request gives only finds its route; it is on no span;
  *  - a request's end and usage are rebuilt (endedOf, usageOf): error.type comes from the kernel's labels alone;
- *  - a turn's status is one of TurnStatus's, else `failed`; the claim's failure is a code's shape, else `run-error`.
+ *  - a turn's status is one of TurnStatus's, else `failed`; the claim's failure is a code's shape, else `run-error`;
+ *  - at most OPEN_MAX requests, and OPEN_MAX calls, are open at once: one started past that, or again under an id still
+ *    open, has no span.
  *  `end`: the claim's end, for a process that is gone without ending its trace (after its own end, nothing is left). */
 export function tracePosts(tracing: GenAiTracing, runId: string, redact?: (text: string) => string): { post(method: string, args: readonly unknown[]): void; end(failed: string): Promise<void> } {
   let trace: RunTrace | undefined;
@@ -160,7 +167,9 @@ export function tracePosts(tracing: GenAiTracing, runId: string, redact?: (text:
         const run = fields(args[0]);
         const routes = run.routes instanceof Map ? new Map([...run.routes].flatMap(([key, route]) => (typeof key === "string" ? [[key, via(route)] as const] : []))) : undefined;
         trace.known({ runId, harness: name(run.harness) ?? "unknown", ...(run.plan === true ? { plan: true } : {}), ...via(run), ...(routes ? { routes } : {}) });
-      } else if (method === "request" && typeof args[0] === "number") requests.set(args[0], trace.request(name(args[1]), text(args[2])));
+      } else if (method === "request" && typeof args[0] === "number") {
+        if (!requests.has(args[0]) && requests.size < OPEN_MAX) requests.set(args[0], trace.request(name(args[1]), text(args[2])));
+      }
       else if (method === "ended" && typeof args[0] === "number") {
         requests.get(args[0])?.(usageOf(args[1]), endedOf(args[2]));
         requests.delete(args[0]);
@@ -308,7 +317,7 @@ async function made(env: NodeJS.ProcessEnv, test?: TracingTest): Promise<GenAiTr
           rootContext = api.trace.setSpan(api.ROOT_CONTEXT, root);
         },
         request: (model, route) => {
-          if (!run || run.plan) return () => {};
+          if (!run || run.plan || chats.size >= OPEN_MAX) return () => {};
           const on = run;
           const asked = { ...(model ? { model } : {}), ...(route === undefined ? {} : { route }) };
           const span = child(spanName.chat(model ?? on.model), api.SpanKind.CLIENT, chatAttributes(on, asked));
@@ -328,7 +337,7 @@ async function made(env: NodeJS.ProcessEnv, test?: TracingTest): Promise<GenAiTr
           // that ends with no event before (its drive failed at once) has one too, from its end.
           if (on.plan && !turn) turn = child(spanName.chat(on.model), api.SpanKind.CLIENT, chatAttributes(on, {}));
           if (event.type === "tool_start") {
-            if (tools.has(event.callId)) return;
+            if (tools.has(event.callId) || tools.size >= OPEN_MAX) return;
             const parent = event.parent ? tools.get(event.parent)?.span : undefined;
             // A call its harness refused (a tool the session does not have) is never named: the name is the model's words.
             const name = event.refused ? undefined : event.name;

@@ -18,9 +18,9 @@ import { agent, follow, serve, whenFree, withEnv } from "./support.mjs";
 
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
-const { genAiTracing, otelOn, traceIdOf, tracePosts } = await import("../dist/otel/tracer.js");
+const { genAiTracing, OPEN_MAX, otelOn, traceIdOf, tracePosts } = await import("../dist/otel/tracer.js");
 const { chatAttributes, routeTrace, toolAttributes, tracedModel, USAGE_ATTRIBUTES, WRITTEN_MAX } = await import("../dist/otel/genai.js");
-const { runnerSecrets, secretRedactor } = await import("../dist/runner/redact.js");
+const { keepText, runnerSecrets, secretRedactor } = await import("../dist/runner/redact.js");
 const { hostSecrets, otlpHeaderCut } = await import("../dist/secrets.js");
 const { piAdapter } = await import("../dist/runner/adapters/pi.js");
 const { exporterConfig } = await import("../dist/otel/tracer.js");
@@ -248,6 +248,30 @@ test("a run's process's posts are data to its runner: a refused call is unnamed,
   assert.ok(spans.every((span) => span.name.length <= "execute_tool ".length + WRITTEN_MAX), "every name capped");
 });
 
+test("a run's process holds at most OPEN_MAX requests and OPEN_MAX tool calls open in its runner's trace: one started past that has no span", async () => {
+  const exporter = new InMemorySpanExporter();
+  const posts = tracePosts(await genAiTracing(ON, { exporter }), "run-open", keepText);
+  posts.post("open", [Date.now()]);
+  posts.post("known", [{ runId: "run-open", harness: "pi", model: "m" }]);
+  // Each started and never ended, OPEN_MAX + 3 times; then one ended, which frees its place for one more.
+  for (let i = 0; i < OPEN_MAX + 3; i++) {
+    posts.post("request", [i, "m", undefined]);
+    posts.post("event", [{ type: "tool_start", callId: `call-${i}`, name: "bash" }]);
+  }
+  posts.post("request", [0, "m", undefined]);
+  posts.post("ended", [0, { input: 1, output: 1, usd: 0 }, { end: "answered", usd: 0 }]);
+  posts.post("event", [{ type: "tool_end", callId: "call-0", isError: false }]);
+  posts.post("request", [OPEN_MAX + 10, "m", undefined]);
+  posts.post("event", [{ type: "tool_start", callId: "call-late", name: "bash" }]);
+  posts.post("end", [undefined]);
+  const spans = exporter.getFinishedSpans();
+  assert.equal(chatSpans(spans).length, OPEN_MAX + 1, "OPEN_MAX open requests, and one more once one ended");
+  const tools = spans.filter((span) => span.attributes["gen_ai.operation.name"] === "execute_tool");
+  assert.equal(tools.length, OPEN_MAX + 1, "OPEN_MAX open calls, and one more once one ended");
+  assert.ok(tools.some((span) => span.attributes["gen_ai.tool.call.id"] === "call-late"), "the call after an end has its span");
+  assert.equal(tools.some((span) => span.attributes["gen_ai.tool.call.id"] === `call-${OPEN_MAX}`), false, "a call past OPEN_MAX has none");
+});
+
 test("the model rule: a known model as asked; an unknown one by its route's model; with none, through the redactor and capped", () => {
   const known = (model) => model === "claude-sonnet-4.5";
   assert.equal(tracedModel("claude-sonnet-4.5", { known, routed: "other" }), "claude-sonnet-4.5");
@@ -341,6 +365,26 @@ test("an OTLP header value of 8 or more is held but a standard one's, under any 
     for (const value of ["application/json", "application/x-protobuf", "agentrun-otel", "gzip"]) assert.equal(values.includes(value), false, `${value} (a standard header's) is not held (${list})`);
   }
   assert.equal(otlpHeaderCut(env)(`401 for x-honeycomb-team: ${short}`), "401 for x-honeycomb-team: [redacted]", "the tracer's cut takes a short value");
+});
+
+test("an OTLP credential is held as an error may quote it: a scheme's credential alone, the SDK's own reading of a value, an endpoint's user, password and key parameter", () => {
+  const basic = Buffer.from(`otlp-user:${"dummy"}-pass-5521`).toString("base64");
+  const apiKey = `api-${"dummy"}-key-6634`;
+  const sentry = `sentry-${"dummy"}-key-2207`;
+  // A value with a `;` that ours can't decode: the SDK still sends what comes before the `;` (core parseKeyPairsIntoRecord).
+  const property = `team-${"dummy"}-value-7710`;
+  const [user, password, query] = [`user-${"dummy"}-4410`, `pass-${"dummy"}-8812`, `query-${"dummy"}-key-9931`];
+  const env = {
+    OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: `https://${user}:${password}@collector.invalid/v1/traces?region=us-east-1&api_key=${query}`,
+    OTEL_EXPORTER_OTLP_HEADERS: `Authorization=Basic%20${basic},X-Api=Api-Key ${apiKey},x-sentry-auth=sentry sentry_key=${sentry},x-team=${property};%ZZ`,
+  };
+  const values = runnerSecrets(env);
+  for (const [what, value] of [["Basic's credential", basic], ["Api-Key's credential", apiKey], ["the sentry scheme's credential", `sentry_key=${sentry}`], ["the SDK's reading", property], ["the endpoint's user", user], ["its password", password], ["its api_key", query]]) {
+    assert.ok(values.includes(value), `${what} is held`);
+  }
+  assert.equal(values.includes("us-east-1"), false, "a parameter named like no credential is not held");
+  const said = otlpHeaderCut(env)(`401 from https://${user}:${password}@collector.invalid/v1/traces?region=us-east-1&api_key=${query}: bad credential ${basic}, ${apiKey}, ${property}`);
+  assert.equal(said, "401 from https://[redacted]:[redacted]@collector.invalid/v1/traces?region=us-east-1&api_key=[redacted]: bad credential [redacted], [redacted], [redacted]");
 });
 
 test("a short OTLP header value is cut from the tracer's own error text, at any length; a standard header's value is left as it is", async (t) => {
