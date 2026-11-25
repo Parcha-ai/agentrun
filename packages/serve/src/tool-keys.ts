@@ -74,8 +74,8 @@ export const unlocksTool = (unlock: string, name: string): boolean => unlock ===
 export const keyOf = (name: string): string | undefined => TOOL_KEYS.find((row) => (row.unlocks as readonly string[]).some((unlock) => unlocksTool(unlock, name)))?.id;
 
 /** Why a stored value does not open, in the order a re-entry names one: sealed under another key than the server's, or
- *  its row damaged. */
-export const UNREADABLE = ["seal_key_changed", "file_unreadable"] as const;
+ *  its row damaged (server-keys.ts: the one list every sealed key's view reads). */
+export { UNREADABLE } from "./server-keys.js";
 
 /** The check of a key the server was started with (tool-keys-store.ts checkServer): a KeyCheck, or refused by its provider, why in
  *  plain words. Held in memory only, for this start. */

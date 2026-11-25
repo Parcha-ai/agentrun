@@ -24,8 +24,9 @@ test("the resolver: on OpenRouter, auto never picks a harness's own search, and 
   assert.equal(search({ harness: "codex", openRouter: true, override: "native" }), "unavailable: no native search for codex on OpenRouter");
   assert.equal(search({ harness: "claude-agent", openRouter: true, override: "native" }), "unavailable: no native search for claude-agent on OpenRouter");
   assert.equal(search({ harness: "claude-agent", openRouter: true }), "firecrawl-keyless", "claude-agent's auto already skips its own search");
-  // Off OpenRouter, unchanged.
-  assert.equal(search({ harness: "codex" }), "native", "codex on OpenAI's own API keeps its own search");
+  // Off OpenRouter: auto is agentrun's own search, and Codex's own search, picked, runs.
+  assert.equal(search({ harness: "codex" }), "firecrawl-keyless", "codex on OpenAI's own API, auto: Codex's own search an explicit pick");
+  assert.equal(search({ harness: "codex", override: "native" }), "native", "codex on OpenAI's own API, native picked");
   assert.equal(search({ harness: "claude-agent", override: "native" }), "native");
 });
 
@@ -40,12 +41,13 @@ test("capabilities: on OPENROUTER_API_KEY alone codex's web_search resolves to k
   assert.equal(native.resolves.codex, "unavailable: no native search for codex on OpenRouter");
   assert.equal(native.resolves["claude-agent"], "unavailable: no native search for claude-agent on OpenRouter");
   assert.match(native.why.codex, /OpenRouter/);
-  // OpenAI's own key: Codex's own search, as before.
-  assert.equal(view({ OPENAI_API_KEY: fake("openai") }).resolves.codex, "native");
+  // OpenAI's own key: Codex's own search where it is picked; auto is agentrun's own search.
+  assert.equal(view({ OPENAI_API_KEY: fake("openai") }).resolves.codex, "firecrawl-keyless");
+  assert.equal(view({ OPENAI_API_KEY: fake("openai") }, { web_search: { provider: "native" } }).resolves.codex, "native");
 });
 
-test("a run's plane follows the route its model requests take, the one providerFor sends them on", () => {
-  const plane = (env, model) => planeFor(env, { harness: "codex", tools: ["web_search"], ...(model ? { model } : {}) }, {}).web_search;
+test("a run's plane follows the route its model requests take, the one providerFor sends them on: native picked, Codex's own search off OpenRouter, unavailable on it", () => {
+  const plane = (env, model) => planeFor(env, { harness: "codex", tools: ["web_search"], ...(model ? { model } : {}) }, { web_search: { provider: "native" } }).web_search;
   const cases = [
     [{ OPENROUTER_API_KEY: fake("or") }, undefined],
     [{ OPENROUTER_API_KEY: fake("or") }, "openai/gpt-6.1-sol"],
@@ -58,7 +60,9 @@ test("a run's plane follows the route its model requests take, the one providerF
     const slash = named.indexOf("/");
     const ref = { provider: named.slice(0, slash), modelId: named.slice(slash + 1) };
     const viaOpenRouter = providerFor("openai-responses", env, ref, "codex").origin === OPENROUTER_BASE;
-    assert.equal(plane(env, model), viaOpenRouter ? "firecrawl-keyless" : "native", `${JSON.stringify(Object.keys(env))} ${named}: ${viaOpenRouter ? "OpenRouter" : "OpenAI"}`);
+    const said = `${JSON.stringify(Object.keys(env))} ${named}: ${viaOpenRouter ? "OpenRouter" : "OpenAI"}`;
+    if (viaOpenRouter) assert.match(plane(env, model), /^unavailable: no native search for codex /, said);
+    else assert.equal(plane(env, model), "native", said);
   }
 });
 

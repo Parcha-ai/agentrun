@@ -5,6 +5,7 @@ import { SuggestionsPage } from "./SuggestionsPage";
 import { ToastProvider } from "@/components/ui";
 import { route } from "@/App";
 import { createClient } from "@/lib/client";
+import { agentFixture } from "@/fixtures";
 import { keepReturn, permissionLabel, RETURN_KEY, scanLine, takeReturn } from "@/lib/suggestions";
 
 // Suggested agents over /v2/suggestions: not connected, the page explains itself and connects GitHub with the write
@@ -33,7 +34,7 @@ const SHORT = { ...READY, ready: false, reason: "permission_missing", message: "
 type Call = { method: string; path: string; query: string; body: unknown };
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 type Listing = { repositories: { full_name: string; private: boolean; account: string; installation: number }[]; truncated: boolean; unread: { account: string; why: string }[] };
-function server(state: { connected: boolean; suggestions: typeof SUGGESTION[]; readiness: typeof READY | typeof SHORT; repos?: Listing }) {
+function server(state: { connected: boolean; suggestions: typeof SUGGESTION[]; readiness: typeof READY | typeof SHORT; repos?: Listing; agents?: Record<string, { runs: number; live?: number; harness?: string }> }) {
   const calls: Call[] = [];
   const fetch = (async (url: string, init?: RequestInit) => {
     const call = { method: init?.method ?? "GET", path: new URL(String(url), "http://serve.test").pathname, query: new URL(String(url), "http://serve.test").search, body: init?.body ? JSON.parse(String(init.body)) : undefined };
@@ -42,6 +43,12 @@ function server(state: { connected: boolean; suggestions: typeof SUGGESTION[]; r
     if (call.path === "/v2/suggestions" && call.method === "GET") return json(200, { github: state.connected ? { connected: true, app: "agentrun-acme", installations: [{ account: "acme" }], install_url: READY.install_url } : { connected: false, app: null, installations: [], install_url: null }, repositories: state.connected ? [SCANNED] : [], suggestions: state.suggestions.filter((s) => s.status !== "discarded") });
     if (call.path === "/v2/integrations/github/connect") return json(200, { action: "https://github.com/settings/apps/new?state=st_1", manifest: { name: "x" }, state: "st_1" });
     if (call.path === "/v2/integrations/github/repositories") return json(200, state.repos ?? { repositories: [{ full_name: REPO, private: true, account: "acme", installation: 7 }], truncated: false, unread: [] });
+    const agentId = /^\/v2\/agents\/([^/]+)$/.exec(call.path)?.[1];
+    const made = agentId && state.agents?.[decodeURIComponent(agentId)];
+    if (made) {
+      const base = agentFixture("invoice-checker");
+      return json(200, { ...base, agent_id: decodeURIComponent(agentId!), definition: { ...base.definition, name: "Support ticket triage", harness: made.harness }, runs: { count: made.runs, live: made.live ?? 0 } });
+    }
     if (one && call.path.endsWith("/discard")) { one.status = "discarded"; return json(200, one); }
     if (one && call.path.endsWith("/restore")) { one.status = "open"; return json(200, one); }
     if (one && call.path.endsWith("/create")) {
@@ -82,6 +89,27 @@ describe("Suggested agents", () => {
     expect(calls.find((c) => c.path.endsWith("/connect"))?.body).toEqual({ contents: "write" });
     expect(submits).toBe(1);
     expect(sessionStorage.getItem(RETURN_KEY)).toBe("#/suggestions");
+  });
+
+  it("reads a pasted github.com address or @name as the organization's login, and sends nothing for what is no login", async () => {
+    const type = async (host: HTMLElement, value: string) => {
+      const input = host.querySelector<HTMLInputElement>('input[placeholder^="your-org"]')!;
+      await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value); input.dispatchEvent(new Event("input", { bubbles: true })); });
+    };
+    for (const [typed, org] of [["https://github.com/Mise-En-POP", "Mise-En-POP"], ["github.com/acme/shop", "acme"], ["@acme", "acme"], [" acme ", "acme"]] as const) {
+      const { v2, calls } = server({ connected: false, suggestions: [], readiness: READY });
+      const { host, click } = await page(v2);
+      await type(host, typed);
+      await click(/^Connect GitHub$/);
+      expect(calls.find((c) => c.path.endsWith("/connect"))?.body, typed).toEqual({ org, contents: "write" });
+      act(() => root?.unmount()); root = undefined; document.body.innerHTML = "";
+    }
+    const { v2, calls } = server({ connected: false, suggestions: [], readiness: READY });
+    const { host, click } = await page(v2);
+    await type(host, "not an org!");
+    await click(/^Connect GitHub$/);
+    expect(calls.some((c) => c.path.endsWith("/connect"))).toBe(false);
+    expect(host.querySelector('[role="alert"]')!.textContent).toContain("isn't a GitHub organization");
   });
 
   it("unticked, Connect asks for no write, and the permissions say read-only", async () => {
@@ -135,6 +163,64 @@ describe("Suggested agents", () => {
     expect(dialog().textContent).toMatch(/AGENTRUN_AGENT_TICKET_TRIAGEagent_77/);
   });
 
+  describe("what was created", () => {
+    const CREATED = (created: Record<string, unknown>) => ({ ...SUGGESTION, status: "created", decided_at: "2026-11-21T09:00:00.000Z", created: { agent_id: "agent_77", template_id: `github:${REPO}/.agentrun/agents/ticket-triage`, branch: "agentrun/ticket-triage", pull_request: { number: 12, url: `https://github.com/${REPO}/pull/12` }, pull_error: null, ...created } }) as unknown as typeof SUGGESTION;
+    const card = () => document.querySelector<HTMLElement>('[data-created="ticket-triage"]')!;
+    const step = (label: string) => card().querySelector<HTMLElement>(`[data-step="${label}"]`);
+
+    it("is a card that says how far the agent is along: made, its pull request open, waiting for its first call from the line the app calls it at; reviewing the pull request is the one main action", async () => {
+      const { v2 } = server({ connected: true, suggestions: [CREATED({})], readiness: READY, agents: { agent_77: { runs: 0 } } });
+      await page(v2);
+      expect(card().textContent).toContain("Created");
+      expect(card().querySelector('[data-agent-icon] [role="img"]')!.getAttribute("aria-label"), "its harness, as every agent card leads with").toBe("Pi");
+      expect(card().querySelector('[aria-label="What it takes and answers"]')!.textContent).toBe("subjectbody?Support ticket triagecategoryreason");
+      expect([step("Agent")!.dataset.tone, step("Pull request")!.dataset.tone, step("First call")!.dataset.tone]).toEqual(["done", "done", "waiting"]);
+      expect(step("Agent")!.querySelector("a")!.getAttribute("href")).toBe("#/agents/agent_77");
+      expect(step("Pull request")!.querySelector("a")!.getAttribute("href")).toBe(`https://github.com/${REPO}/pull/12`);
+      // The pull request adds the agent's files and a client and changes none of the app's code: merging it calls nothing.
+      expect(step("First call")!.textContent).toBe("First call: not yetWire its client in at src/support/inbox.ts:42, and set the variables #12 lists");
+      expect(document.body.textContent).toContain(`One agent from ${REPO}. A pull request changes none of your code: your app calls its agent once you wire in the client it adds.`);
+      expect(document.body.textContent).not.toMatch(/once it is merged|Merge a pull request and your app calls/);
+      const primary = [...card().querySelectorAll("a, button")].filter((e) => e.className.includes("primary"));
+      expect(primary.map((e) => [e.textContent, e.getAttribute("href")]), "one main action").toEqual([["Review #12", `https://github.com/${REPO}/pull/12`]]);
+    });
+
+    it("counts the runs its app has made, live ones too, here and in the section's line", async () => {
+      const { v2 } = server({ connected: true, suggestions: [CREATED({})], readiness: READY, agents: { agent_77: { runs: 3, live: 1, harness: "claude-agent" } } });
+      const { host } = await page(v2);
+      expect(step("Called")!.dataset.tone).toBe("done");
+      expect(step("Called")!.textContent).toContain("3 runs · 1 live");
+      expect(card().querySelector('[data-agent-icon] [role="img"]')!.getAttribute("aria-label")).toBe("Claude");
+      expect(host.textContent).toContain(`One agent from ${REPO}, 3 runs so far.`);
+    });
+
+    it("Refresh reads the created agents again: a first call made since shows", async () => {
+      const agents = { agent_77: { runs: 0 } };
+      const { v2 } = server({ connected: true, suggestions: [CREATED({})], readiness: READY, agents });
+      const { click } = await page(v2);
+      expect(step("First call")!.dataset.tone).toBe("waiting");
+      agents.agent_77 = { runs: 2 };
+      await click(/^Read the suggestions and repositories again$/);
+      expect(step("Called")!.textContent).toContain("2 runs");
+    });
+
+    it("a pull request that did not open says why, and opening it is the main action", async () => {
+      const { v2 } = server({ connected: true, suggestions: [CREATED({ pull_request: null, branch: null, pull_error: "GitHub refused the branch." })], readiness: READY, agents: { agent_77: { runs: 0 } } });
+      const { button } = await page(v2);
+      expect(step("Pull request")!.dataset.tone).toBe("problem");
+      expect(step("Pull request")!.textContent).toContain("GitHub refused the branch.");
+      expect(step("First call")!.textContent, "no pull request, so no client to wire in yet").toBe("First call: not yetFrom src/support/inbox.ts:42");
+      expect(button(/^Open the pull request$/)!.className).toContain("primary");
+    });
+
+    it("an agent removed from this server is said so, with no link to it", async () => {
+      const { v2 } = server({ connected: true, suggestions: [CREATED({})], readiness: READY });
+      await page(v2);
+      expect(step("Agent")!.textContent).toBe("Agent: doneRemoved from this server");
+      expect(card().querySelector('a[href="#/agents/agent_77"]')).toBeNull();
+    });
+  });
+
   it("a name typed in Create renders the preview with it, and Create waits for that preview: the files shown are the files pushed", async () => {
     const state = { connected: true, suggestions: [structuredClone(SUGGESTION)], readiness: READY as typeof READY | typeof SHORT };
     const { v2, calls } = server(state);
@@ -156,6 +242,13 @@ describe("Suggested agents", () => {
 });
 
 describe("Suggested agents' repositories", () => {
+  it("says what the app is across the whole width the suggestions take, both columns, not a reading column's", async () => {
+    const { v2 } = server({ connected: true, suggestions: [structuredClone(SUGGESTION)], readiness: READY });
+    const { host } = await page(v2);
+    const said = [...host.querySelectorAll("section p")].find((p) => p.textContent === SCANNED.scan.app);
+    expect(said).toBeDefined();
+    expect(said!.className).not.toMatch(/max-w-/);
+  });
   it("shows a repository's suggestions whatever the case of its name: GitHub reads owner/name without regard to case", async () => {
     const { v2 } = server({ connected: true, suggestions: [{ ...SUGGESTION, repo: "ACME/Shop" }], readiness: READY });
     const { host } = await page(v2);

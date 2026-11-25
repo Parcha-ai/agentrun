@@ -7,14 +7,13 @@
 // save/remove return a promise the handler awaits (durable before the 204). The reads are served from an in-memory
 // snapshot the server (the one writer of these rows) loads once at start (load()) and keeps in step with every write, so a
 // read answers without a round trip.
-import { createHmac } from "node:crypto";
 import { decisionsOf } from "./decisions.js";
 import { ApiError, invalid } from "./errors.js";
 import { checkKey, type KeyCheck } from "./key-check.js";
-import { putSealedKey, removeSealedKey } from "./server-keys.js";
-import { handedNoSealKey, rowSecrets, rowUnlocks, SEAL_KEY_ENV, sealKeyOf, type StartCheck, TOOL_KEYS, UNREADABLE } from "./tool-keys.js";
+import { type Opened, openSealed, putSealedKey, removeSealedKey, sealFingerprint, UNREADABLE, type Unreadable } from "./server-keys.js";
+import { handedNoSealKey, rowSecrets, rowUnlocks, SEAL_KEY_ENV, sealKeyOf, type StartCheck, TOOL_KEYS } from "./tool-keys.js";
 import { toolsView } from "./tools.js";
-import { type SealedKeys, sealColumn, sealedAt, type Settings, unsealColumn } from "./store/index.js";
+import { type SealedKeys, sealColumn, sealedAt, type Settings } from "./store/index.js";
 import { isObject, unknownFields } from "./validate.js";
 
 /** Where the per-key checks and seal-key fingerprints live in store.settings: one row, outside the sealed values. */
@@ -24,8 +23,6 @@ const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
 
 /** Every field a person may save (the fields of every key row). */
 const FIELDS: readonly string[] = TOOL_KEYS.flatMap((row) => row.fields);
-type Unreadable = (typeof UNREADABLE)[number];
-type Opened = { value: string } | { unreadable: Unreadable };
 
 /** The check a key kept before this server checked keys reads as: none was made. */
 const UNCHECKED: KeyCheck = { state: "not_checked", reason: "Saved before this server checked keys; save it again to check it" };
@@ -38,10 +35,6 @@ const keptCheck = (entry: unknown): KeyCheck | undefined =>
 
 /** The store slice this layer reads and writes: the sealed key rows and the one settings row for checks. */
 type ToolKeysStore = { readonly sealedKeys: Pick<SealedKeys, "all" | "put" | "remove">; readonly settings: Pick<Settings, "get" | "put">; flush(): Promise<void> };
-
-/** The fingerprint of a seal key: an HMAC of a fixed label under it, stable across restarts, so a value whose fingerprint
- *  no longer matches was sealed under another key (seal_key_changed), told apart from one that is simply damaged. */
-const fingerprint = (key: Buffer): string => createHmac("sha256", key).update("agentrun-serve sealed_keys key check").digest("base64url");
 
 /** The one snapshot the server reads from and keeps in step with every write. `fields` holds each stored field's opened
  *  result (value, or why it does not open); `checks` the per-key provider checks; `seals` the seal-key fingerprint each
@@ -75,7 +68,7 @@ class ToolKeysOverStore {
       throw new Error(`tool keys are kept under the server's seal key (${SEAL_KEY_ENV}), and ${handedWhy ? `${handedWhy}: the server does not start with it` : "none was handed over: the server does not start without one"}`);
     }
     this.key = key;
-    this.sealCheck = fingerprint(key);
+    this.sealCheck = sealFingerprint(key);
   }
 
   /** Reads the store once into the snapshot: each sealed field opened now, the checks and the fingerprints beside them.
@@ -86,7 +79,7 @@ class ToolKeysOverStore {
     const changed = new Map<string, number>();
     for (const row of await this.store.sealedKeys.all()) {
       if (!FIELDS.includes(row.name)) continue; // the sealed_keys table also holds Archil's keys, which are not tool keys
-      fields.set(row.name, this.openAt(row.name, row.sealed, seals.get(row.name)));
+      fields.set(row.name, openSealed(this.key, row.name, row.sealed, seals.get(row.name)));
       changed.set(row.name, row.updatedAt);
     }
     this.snapshot = { fields, checks, seals, changed };
@@ -102,17 +95,6 @@ class ToolKeysOverStore {
       if (isObject(read.seals)) for (const [name, fp] of Object.entries(read.seals)) if (typeof fp === "string") seals.set(name, fp);
     }
     return { checks, seals };
-  }
-
-  /** Opens a field's sealed bytes now, or why not: a fingerprint that no longer matches (seal_key_changed); else unseal,
-   *  which fails as file_unreadable. */
-  private openAt(name: string, sealed: Uint8Array, fp: string | undefined): Opened {
-    if (fp !== undefined && fp !== this.sealCheck) return { unreadable: "seal_key_changed" };
-    try {
-      return { value: unsealColumn(this.key, sealedAt.sealedKey(name), sealed).toString("utf8") };
-    } catch {
-      return { unreadable: "file_unreadable" };
-    }
   }
 
   /** The stored value of the field `name`, opened; undefined with none, or one that does not open: never a clear fallback. */

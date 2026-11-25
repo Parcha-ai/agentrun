@@ -61,6 +61,7 @@ your harness's name. The ones that change what an owner sees:
 | Fact | What serve does with it |
 | --- | --- |
 | `wire` | Which models the harness is offered and which key rows name it. On `anthropic-messages` that is Anthropic's models, on the Anthropic and OpenRouter key rows; on `openai-responses`, OpenAI's, on the OpenAI and OpenRouter rows. |
+| `wire` (a translated route) | The models the runner's route translates onto that wire are offered too, whatever the harness. Today that is this machine's Ollama models on `anthropic-messages` and on `openai-responses`, at $0, with no key. Such a model's provider comes with a `fetch`: the route's own, answering at the provider's `origin`. A harness forwards its model requests with it: a module hands `ModuleLaunch.fetch` to its model proxy (`startModelProxy`'s `fetch`), and a built-in adapter passes it as its `fetch` option. A harness that drops it sends those requests to the network, where nothing answers. |
 | `ownModel` | Set it when the harness runs only its wire's vendor's models, never the gateway's default. |
 | `normalizeModel` | How the model id is written for your provider (Anthropic's ids have dashes where OpenRouter's have dots). |
 | `steer` | Whether a message sent mid-turn reaches the turn in flight. ACP has no steer, so an ACP agent says `false`. |
@@ -338,10 +339,11 @@ with the archive's owners and permissions dropped; AgentRun makes none of the zi
 the host's `tar` extracts (symbolic links included). Either way the archive is the one the recipe pins by its digest,
 and every file it unpacks to is pinned by the tree's digest (rule 2).
 
-A digest the recipe leaves out is recorded at the first install, one file each under
-`~/.agentrun/harnesses/.first-seen/`: `<id>@<version>-<platform>.sha256` for the binary and `.tree.sha256` for the
-tree. A record is written once and never over another; to take a new release, change `version` in the recipe. A
-release whose binary or tree differs from its record is refused at every check, sign-in and reinstall.
+A tree digest the recipe leaves out is recorded at the first install, in
+`~/.agentrun/harnesses/.first-seen/<id>@<version>-<platform>.tree.sha256`. The tree holds the binary too, so no
+binary digest is recorded; one the recipe pins (`binarySha256`) is checked at the install. A record is written once and
+never over another; to take a new release, change `version` in the recipe. A release whose binary or any file beside
+it differs from its record is refused at every check, sign-in, start and reinstall.
 
 A failure names its code and the command to try again: `HARNESS_PLATFORM_UNSUPPORTED` (no archive for this platform),
 `HARNESS_DOWNLOAD_FAILED`, `HARNESS_ARCHIVE_MISMATCH` (the archive's sha256 or sha512 is not the recipe's),
@@ -512,6 +514,12 @@ the link). That page is offered once the server is started with such a recipe. E
 seal key in the store, named `harness:<id>:<KEY>`, so a key saved for one harness never reaches another harness's run,
 even under the same name. Saving or removing one is a secret write: the owner's signed-in session alone, never the API
 token. The routes are `GET /v2/settings/harness-keys` and `PUT`/`DELETE /v2/settings/harness-keys/{harness_id}/{key}`.
+
+Each saved key is bound to the recipe file it was saved for (the file's sha256) and to the seal key it was sealed under.
+A later recipe file that takes the same id, even one naming the same keys, never opens them: the page lists each to
+paste again, with why (`recipe_changed`, `not_bound`, `seal_key_changed`, `file_unreadable`). A recipe the server is no longer
+started with keeps its keys sealed, and still cut, but no run gets them. The page lists them under its id, and `DELETE`
+removes each, as it removes a key that its recipe no longer runs on.
 
 Each claim of a run on the harness opens that harness's keys, and lays no other harness's. A runner apart opens them
 for its run's own process. They are laid all or none, and only on the agent's start: the vendor's agent process gets

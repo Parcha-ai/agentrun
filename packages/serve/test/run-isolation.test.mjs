@@ -217,7 +217,7 @@ test("a host that won't let the runner start its helper (spawn EPERM, thrown at 
 // ---------------------------------------------------------------------------------------------------------------------
 // The store, as a run's process reaches it: bound to its claim.
 
-test("the store a run's process reaches is bound to its claim: another run's journal, run or claim, another agent's revision, and a call off the list are refused unread", async () => {
+test("the store a run's process reaches is bound to its claim: another run's journal, run or claim, another agent's revision, a row not its own run's browser rows, and a call off the list are refused unread; its own browser rows are written", async () => {
   const called = [];
   const store = {
     readJournal: (runId) => void called.push(`readJournal ${runId}`),
@@ -226,7 +226,12 @@ test("the store a run's process reaches is bound to its claim: another run's jou
       update: async (claim) => void called.push(`runs.update ${claim.runId}`),
     },
     agents: { revision: async (id) => (called.push(`agents.revision ${id}`), { id, agentId: id === "rev-own" ? "agent-own" : "agent-other" }) },
-    settings: { set: async () => void called.push("settings.set") },
+    settings: {
+      set: async () => void called.push("settings.set"),
+      put: async (key) => void called.push(`settings.put ${key}`),
+      remove: async (key) => void called.push(`settings.remove ${key}`),
+      get: async (key) => (called.push(`settings.get ${key}`), undefined),
+    },
   };
   const bound = { claim: { runId: "run-own", epoch: 3 }, agentId: "agent-own", revisionId: "rev-own" };
   const lines = [];
@@ -235,10 +240,22 @@ test("the store a run's process reaches is bound to its claim: another run's jou
   await assert.rejects(call("runs.get", ["run-other"]), /of another run or agent/);
   await assert.rejects(call("runs.update", [{ runId: "run-own", epoch: 2 }, {}]), /of another run or agent/);
   await assert.rejects(call("settings.set", ["k", "v"]), /may not call the store's settings\.set/);
+  // The only rows it writes: its own run's browser wait and browser take; another run's, or any other row, never.
+  await assert.rejects(call("settings.put", ["browser_hold:run-other", {}]), /of another run or agent/);
+  await assert.rejects(call("settings.remove", ["browser_wait_ended:run-other"]), /of another run or agent/);
+  await assert.rejects(call("settings.put", ["tool-settings", {}]), /of another run or agent/);
+  await assert.rejects(call("settings.get", ["browser_hold:run-other"]), /of another run or agent/);
   assert.deepEqual(called, [], "a refused call reached the store");
   await assert.rejects(call("agents.revision", ["rev-other"]), /only its own agent's revisions/);
   assert.deepEqual(await call("runs.get", ["run-own"]), { id: "run-own" });
   assert.deepEqual(await call("agents.revision", ["rev-own"]), { id: "rev-own", agentId: "agent-own" });
+  // Its own browser's rows, which the server reads for the run's Screen tab and computer state: written, read, removed.
+  for (const key of ["browser_hold:run-own", "browser_wait_ended:run-own"]) {
+    await call("settings.put", [key, { at: "x" }]);
+    await call("settings.get", [key]);
+    await call("settings.remove", [key]);
+  }
+  assert.deepEqual(called.slice(-6), ["settings.put browser_hold:run-own", "settings.get browser_hold:run-own", "settings.remove browser_hold:run-own", "settings.put browser_wait_ended:run-own", "settings.get browser_wait_ended:run-own", "settings.remove browser_wait_ended:run-own"]);
   assert.ok(lines.some((line) => /asked the store for readJournal, which a run's process may not/.test(line)), lines.join("\n"));
   assert.ok(lines.some((line) => /asked for another agent's revision/.test(line)), lines.join("\n"));
 });

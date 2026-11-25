@@ -81,15 +81,43 @@ const js = `"use strict";
   var drive = $("drive");
   var handsEl = $("hands");
   function focusScreen() { try { sink.focus({ preventScroll: true }); } catch (e) { canvas.focus(); } }
+  // The newest frame's image, kept to draw again when the stage changes size.
+  var shown = null;
+  // The screen's box: the frame's shape fitted in the stage, counted in device pixels, and the canvas's own pixels the
+  // same as the device's under it (its CSS size times devicePixelRatio). The frame is then scaled once, by drawImage at
+  // its best smoothing, never again by the browser: a canvas of the frame's own size, stretched by CSS to a box of
+  // another size, came out soft. What is left beside it is kept even, so the centred canvas starts on a whole pixel.
   function fit() {
-    if (!canvas.width || !canvas.height) return;
+    if (!shown) return;
     var box = stage.getBoundingClientRect();
-    var scale = Math.min(box.width / canvas.width, box.height / canvas.height);
+    var dpr = window.devicePixelRatio > 0 ? window.devicePixelRatio : 1;
+    var scale = Math.min(box.width / shown.width, box.height / shown.height);
     if (!(scale > 0)) return;
-    canvas.style.width = Math.floor(canvas.width * scale) + "px";
-    canvas.style.height = Math.floor(canvas.height * scale) + "px";
+    var across = Math.round(box.width * dpr), down = Math.round(box.height * dpr);
+    var w = Math.min(across, Math.round(shown.width * scale * dpr)), h = Math.min(down, Math.round(shown.height * scale * dpr));
+    w -= (across - w) % 2; h -= (down - h) % 2;
+    if (!(w > 0 && h > 0)) return;
+    if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+    canvas.style.width = w / dpr + "px";
+    canvas.style.height = h / dpr + "px";
+    paint();
+  }
+  // A canvas given a new size resets its context, so the smoothing is set on every draw.
+  function paint() {
+    if (!shown || !canvas.width) return;
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(shown, 0, 0, canvas.width, canvas.height);
   }
   if (typeof ResizeObserver === "function") new ResizeObserver(fit).observe(stage); else window.addEventListener("resize", fit);
+  // The window moved to a screen of another density: its CSS size is the same, its device pixels are not.
+  function watchDensity() {
+    if (typeof window.matchMedia !== "function") return;
+    var query = window.matchMedia("(resolution: " + (window.devicePixelRatio || 1) + "dppx)");
+    var changed = function () { query.removeEventListener("change", changed); fit(); watchDensity(); };
+    query.addEventListener("change", changed);
+  }
+  watchDensity();
 
   var fatal = false;
   function say(text, isFatal) {
@@ -147,9 +175,10 @@ const js = `"use strict";
     var h = view.getUint16(2);
     var bytes = new Uint8Array(buffer, 4);
     createImageBitmap(new Blob([bytes], { type: formatOf(bytes) })).then(function (bitmap) {
-      if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) { canvas.width = bitmap.width; canvas.height = bitmap.height; fit(); }
-      ctx.drawImage(bitmap, 0, 0);
-      if (bitmap.close) bitmap.close();
+      var before = shown;
+      shown = bitmap;
+      if (!before || before.width !== bitmap.width || before.height !== bitmap.height) fit(); else paint();
+      if (before && before.close) before.close();
       frame = { w: w || bitmap.width, h: h || bitmap.height };
       document.body.dataset.frames = String(Number(document.body.dataset.frames || "0") + 1);
     }, function () {}).then(function () { raw({ type: "ack" }); });
@@ -182,7 +211,8 @@ const js = `"use strict";
       ready = true; kind = m.kind; input = m.input; holding = m.held === true;
       $("phone").hidden = kind !== "phone";
       document.body.dataset.kind = kind;
-      showHands(); setDrive(m.drive); say(""); focusScreen();
+      // Focus comes in only for a person who holds the computer: the page that frames the viewer keeps its own otherwise.
+      showHands(); setDrive(m.drive); say(""); if (holding) focusScreen();
     }
     else if (m.type === "hold") {
       holding = m.held === true;
@@ -276,6 +306,8 @@ const js = `"use strict";
   var justComposed = null;
   function onKeyDown(e) {
     justComposed = null;
+    // Tab is the computer's only while the person holds it; else it moves the focus on, out of the viewer.
+    if (e.key === "Tab" && !holding) return;
     if (e.isComposing || e.keyCode === 229 || e.key === "Dead") return;
     if ((e.ctrlKey || e.metaKey) && (e.key === "v" || e.key === "V")) return;
     e.preventDefault();

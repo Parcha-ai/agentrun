@@ -9,6 +9,7 @@ import test from "node:test";
 import { codeOfError } from "../dist/hosted/process.js";
 import * as registry from "../dist/providers.js";
 import { API_URL, fakeAgent37, fakeRest, KEY, keyPair, MAX_SESSIONS, PROXY } from "./fake-agent37.mjs";
+import { refusesHttp } from "./https-refusal.mjs";
 
 const agent37 = await import("../dist/agent37.js");
 const { Agent37Provider, create, workspaceOf } = agent37;
@@ -122,7 +123,12 @@ test("the provider takes the key and the SSH key as options, a key's contents ne
 		return true;
 	});
 	assert.throws(() => new Agent37Provider({ apiKey: KEY, sshKey: SSH_KEY, ssh2: {} }), /ssh2 package/);
-	assert.throws(() => new Agent37Provider({ apiKey: KEY, sshKey: SSH_KEY, ssh2, apiUrl: "http://api.agent37.com" }), /https URL/);
+	for (const apiUrl of ["http://api.agent37.com", "http://127.0.0.1:8080", "http://localhost:8080"]) {
+		assert.throws(() => new Agent37Provider({ apiKey: KEY, sshKey: SSH_KEY, ssh2, apiUrl }), refusesHttp("the Agent37 API URL", apiUrl, KEY));
+	}
+	assert.throws(() => new Agent37Provider({ apiKey: KEY, sshKey: SSH_KEY, ssh2, apiUrl: "https://api.agent37.com/v1?x=1" }), /the Agent37 API URL takes no query or fragment/);
+	// The words give the scheme and host, not a query that may carry a key.
+	assert.throws(() => new Agent37Provider({ apiKey: KEY, sshKey: SSH_KEY, ssh2, apiUrl: "https://api.agent37.com/v1?key=fake-test-key" }), (error) => /takes no query or fragment/.test(error.message) && !error.message.includes("fake-test-key") && error.message.endsWith("https://api.agent37.com"));
 	assert.throws(() => new Agent37Provider({ apiKey: KEY, sshKey: SSH_KEY, ssh2, type: "gpu" }), /vm or default/);
 	assert.throws(() => new Agent37Provider({ apiKey: KEY, sshKey: SSH_KEY, ssh2, region: "mars" }), /us, eu or ap-south/);
 	assert.throws(() => new Agent37Provider({ apiKey: KEY, sshKey: SSH_KEY, ssh2, region: "eu", type: "default" }), /takes type vm/);

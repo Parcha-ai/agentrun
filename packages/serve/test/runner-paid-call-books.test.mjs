@@ -11,7 +11,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { specFor } from "./runner-spec-support.mjs";
 
-const { bookedIn, parallelSearchFee } = await import("../dist/paid-calls.js");
+const { bookedIn } = await import("../dist/paid-calls.js");
+const { parallelSearchFee } = await import("@parcha/agentrun-web");
 const { paidBookings, toolLedger } = await import("./support.mjs");
 const { CANARY } = await import("./fixtures/faux-parallel.mjs");
 

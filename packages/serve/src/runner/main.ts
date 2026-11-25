@@ -20,6 +20,7 @@ import { join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { type HostedDial, PROVIDERS } from "@parcha/agentrun-computer";
 import { type RunnerRelay, startRunnerRelay } from "../dial-relay.js";
+import type { PairedRelay } from "../workspace/attached-computers.js";
 import { freeModelRequestsOf } from "@parcha/agentrun-kernel/kernel/cap";
 import { ArchilSettingsEnvInvalid, archilSettingsFromEnv } from "../archil-settings.js";
 import { dockerPathsForRuns } from "../box-paths.js";
@@ -50,6 +51,7 @@ import { type ComputerDeps, computerDepsFrom, type ComputerDepsOptions } from ".
 import { startJanitor } from "../workspace/computer-janitor.js";
 import { projectRunEnded } from "../source-sync/checkpoints.js";
 import { runEndComputers } from "../workspace/run-end-computers.js";
+import { sayLoginRunner } from "../claude-login-token.js";
 import { createDispatchLoop } from "./dispatch.js";
 import { resolveRunnerLoop } from "./harness-loops.js";
 import type { LoopFactory } from "./loop-contract.js";
@@ -57,6 +59,7 @@ import { routeOf } from "./model-route.js";
 import { RUN_PROCESS_MIB, runnerMemory } from "./memory-claim.js";
 import { childLoops, isolationLoops, type RunIsolation, RunIsolationRefused, runIsolationOf } from "./run-child-host.js";
 import { sweepEndedScratch } from "./scratch-sweep.js";
+import { runCensus } from "../run-census.js";
 import { RUNNER_LOOPS, RUNNER_RENEW_EVERY_MS, runnerName, startRunner, type Runner, type RunnerEvent, type RunnerMemory } from "./runner.js";
 import { keepPresence, type Presence } from "./presence.js";
 import { diskFreeGate } from "./disk-free.js";
@@ -81,8 +84,9 @@ export interface RunnerProcessOptions {
   /** This runner's name in the runs it claims, its lines and its heartbeat. Default runner.ts runnerName(). */
   name?: string;
   /** Each claimed run's loop; default the runner's dispatch over the store (runnerLoop), with the computers it composed.
-   *  A factory of the store is given the runner's dial too, where it has a relay (dial-relay.ts). */
-  createLoop?: LoopFactory | ((store: Store, sealKey: Buffer, dial?: HostedDial) => LoopFactory | RunnerParts);
+   *  A factory of the store is given the runner's dial and its paired computers' relay too, where it has a relay
+   *  (dial-relay.ts). */
+  createLoop?: LoopFactory | StoreFactory;
   /** Run the computer janitor (workspace/computer-janitor.ts) over the computers createLoop composed: at the start, then
    *  on its interval. Only the runner subcommand asks for it; a test that does not ask runs none. */
   janitor?: boolean;
@@ -151,8 +155,10 @@ export async function openRunnerStore(dataDir: string, env: NodeJS.ProcessEnv, w
 /** The runner's own secrets, which a run never gets, not even in the runner's in-process environment: the server's
  *  tokens (the token and the token list) and API key, the seal key (the runner holds it as its sealKey), the store's connection (its URL holds a
  *  database password), the launch hook's signing secret (the server's alone), and the Composio account key, which the
- *  runner's claim alone reads (composio-made.ts composioEnvKey) and sends only as a granted Composio server's MCP header. */
-const RUNNER_ONLY = (name: string): boolean => name === "AGENTRUN_TOKEN" || name === "AGENTRUN_TOKENS" || name === "AGENTRUN_API_KEY" || name === SEAL_KEY_ENV || name === LAUNCH_HOOK_SECRET_ENV || name === COMPOSIO_KEY_ENV || name.startsWith("AGENTRUN_STORE_");
+ *  runner's claim alone reads (composio-made.ts composioEnvKey) and sends only as a granted Composio server's MCP header.
+ *  And every OpenTelemetry setting (OTEL_*: OTEL_EXPORTER_OTLP_HEADERS holds a backend's key): a run's process is handed
+ *  them on its pipe (secrets.ts OTEL_PAIR), never in an environment, so no harness, tool or computer of a run has them. */
+const RUNNER_ONLY = (name: string): boolean => name === "AGENTRUN_TOKEN" || name === "AGENTRUN_TOKENS" || name === "AGENTRUN_API_KEY" || name === SEAL_KEY_ENV || name === LAUNCH_HOOK_SECRET_ENV || name === COMPOSIO_KEY_ENV || name.startsWith("AGENTRUN_STORE_") || name.startsWith("OTEL_");
 
 /** A run's environment as the runner hands its loops (AdapterSpecDeps.env): this process's, less the runner's own
  *  secrets, with every other secret the launcher's pipe handed it (a model key, a tool key, a box key) readable by name
@@ -175,7 +181,7 @@ export function runEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv 
  *  provider loader in place of the computer package's. Under --faux (the runs' environment names the faux model, as a
  *  --faux server's and a `runner --faux` give it), --faux's computers are beside them, as the server's start check
  *  reads them (server.ts computerReady): a run on the faux desktop is claimed, and its live view opened, the real way. */
-export const runnerComputers = (store: Store, env: KeyEnv, sealKey: Buffer, own: Pick<ComputerDepsOptions, "kinds" | "load" | "dockerPaths" | "hostAddresses" | "hostWhy" | "hub" | "dial"> = {}) =>
+export const runnerComputers = (store: Store, env: KeyEnv, sealKey: Buffer, own: Pick<ComputerDepsOptions, "kinds" | "load" | "dockerPaths" | "hostAddresses" | "hostWhy" | "hub" | "dial" | "pairedRelay"> = {}) =>
   // A runner on another host than its server (AGENTRUN_RUNNER_LIVE_HOST): its viewers answer there (live-reach.ts).
   computerDepsFrom({ env, store, sealKey, openComputerView: claimViewOpener(runnerLiveOf(env, sealKey)), ...(envValue(env, FAUX_ENV) ? { faux: fauxComputers() } : {}), ...own });
 
@@ -194,7 +200,7 @@ export function besideRunEnv(env: NodeJS.ProcessEnv, switches: NodeJS.ProcessEnv
  *  its launch (harness-loops.ts resolveRunnerLoop), with the data directory, the run environment (runEnv), the store's
  *  journal, the seal key and the model route. `booted`: the seal key startRunnerProcess booted against the store (else
  *  this process's, as it was handed or booted). Refused in words with no seal key. */
-export function runnerLoop(store: Store, dataDir: string, env: NodeJS.ProcessEnv = process.env, booted?: Buffer, isolation?: RunIsolation, dial?: HostedDial): RunnerParts {
+export function runnerLoop(store: Store, dataDir: string, env: NodeJS.ProcessEnv = process.env, booted?: Buffer, isolation?: RunIsolation, dial?: HostedDial, paired?: PairedRelay): RunnerParts {
   const handed = secret(SEAL_KEY_ENV) ?? env[SEAL_KEY_ENV];
   const sealKey = booted ?? sealKeyOf(handed);
   if (!sealKey) {
@@ -206,8 +212,9 @@ export function runnerLoop(store: Store, dataDir: string, env: NodeJS.ProcessEnv
   // agent's setting, its keys read from the run environment first, then the store's sealed rows; a Docker computer's
   // mounts by where this process's Docker has the data directory (box-paths.ts), read once; a desktop's or a phone's live
   // view opened with it. A machine that dials goes to this runner's own hub, through the server's relay (`dial`, its
-  // relay's: dial-relay.ts); with none, its provider refuses.
-  const computers = runnerComputers(store, runs, sealKey, { dockerPaths: () => dockerPathsForRuns(runs, dataDir), hostAddresses: () => hostAddressesOnce(runs), hostWhy: hostCommandRefusals(PROVIDERS, process.env.PATH), ...(dial ? { dial } : {}) });
+  // relay's: dial-relay.ts); with none, its provider refuses. A paired computer is brought onto that same hub for the run
+  // (`paired`, the relay's); with none, it is refused in words.
+  const computers = runnerComputers(store, runs, sealKey, { dockerPaths: () => dockerPathsForRuns(runs, dataDir), hostAddresses: () => hostAddressesOnce(runs), hostWhy: hostCommandRefusals(PROVIDERS, process.env.PATH), ...(dial ? { dial } : {}), ...(paired ? { pairedRelay: paired } : {}) });
   const loopback = runnerLoopback(env);
   // The operator's bound on owner-allowed private hosts (mcp-private-hosts.ts), read by every dial this runner and its
   // runs' processes make (they inherit it, runEnv): said at the start when it narrows the owner's list.
@@ -312,26 +319,32 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
     // tokens and proofs name the same one, so the server's "restarted since" and the runner's row speak of one process.
     // The presence first, then the relay says where it answers on the presence's row.
     // Its row says this build's version and the most runs it holds (its loops), for the server's capacity read.
-    presence = keepPresence(store.runners, name, null, { warn, incarnation: randomUUID(), slots: options.loops ?? RUNNER_LOOPS });
+    const incarnation = randomUUID();
+    presence = keepPresence(store.runners, name, null, { warn, incarnation, slots: options.loops ?? RUNNER_LOOPS });
     // Its relay (dial-relay.ts), where its environment names the server's public address: a machine that dials the
     // server lands in this runner's hub, through the server. Its log lines are the runner's warnings.
     relay = await startRunnerRelay({ store, sealKey: seal.key, runner: name, presence, env, log: warn });
-    const made = options.createLoop ?? ofStore((opened, sealKey, dial) => runnerLoop(opened, options.dataDir, undefined, sealKey, undefined, dial));
+    const made = options.createLoop ?? ofStore((opened, sealKey, dial, paired) => runnerLoop(opened, options.dataDir, undefined, sealKey, undefined, dial, paired));
     // A factory of the store (marked by ofStore) is given the store; a loop factory is used as is.
-    const parts = isStoreFactory(made) ? made(store, seal.key, relay?.dial) : made;
+    const parts = isStoreFactory(made) ? made(store, seal.key, relay?.dial, relay?.paired) : made;
     const createLoop = typeof parts === "function" ? parts : parts.createLoop;
     // The janitor sweeps with the computers the loop composed, never a second composition. Its lines are the runner's
     // warnings, said where the runner says its others (warn: stderr unless a test gives its own).
-    if (options.janitor && typeof parts !== "function") janitor = startJanitor({ store, computers: parts.computers, env: parts.env, log: warn });
+    // It sweeps as this runner (its name and its presence's incarnation): a computer kept at a park pinned to another
+    // runner still there is that runner's to end (computer-kept.ts sweepKept).
+    if (options.janitor && typeof parts !== "function") janitor = startJanitor({ store, computers: parts.computers, env: parts.env, log: warn, self: { runner: name, incarnation } });
     // Before it claims: the scratch folders of runs that ended after their runner died (scratch-sweep.ts), said as warnings.
     await sweepEndedScratch(store, options.dataDir, { log: warn });
-    // A run's end lets go of what its earlier claims' computers left, with the same computers (run-end-computers.ts).
-    const runEnded = projectRunEnded(store, typeof parts !== "function" ? runEndComputers({ store, computers: parts.computers, log: warn }) : undefined);
+    // A run's end lets go of what its earlier claims' computers left, with the same computers (run-end-computers.ts), as
+    // this runner, as the janitor sweeps: a computer kept pinned to another runner still keeping it is that runner's.
+    const runEnded = projectRunEnded(store, typeof parts !== "function" ? runEndComputers({ store, computers: parts.computers, log: warn, self: () => ({ runner: name, incarnation }) }) : undefined);
     runner = startRunner({
       store,
       createLoop,
       name,
       presence,
+      // Each end counts where in the run's files what its caller handed it sits, as the server reads them.
+      census: runCensus(store, { data: options.dataDir, sealKey: seal.key, env }),
       ...(options.loops ? { loops: options.loops } : {}),
       ...(options.drainMs ? { drainMs: options.drainMs } : {}),
       memory,
@@ -418,12 +431,15 @@ function watchFloor(store: Store, known: number, everyMs: number): { readonly ou
 }
 
 const storeFactories = new WeakSet<object>();
-/** Marks `make` as a function of the store (startRunnerProcess gives it the store it opens, and its relay's dial). */
-export function ofStore<Made extends LoopFactory | RunnerParts>(make: (store: Store, sealKey: Buffer, dial?: HostedDial) => Made): (store: Store, sealKey: Buffer, dial?: HostedDial) => Made {
+/** A function of the store: startRunnerProcess gives it the store it opens, and its relay's dial and paired computers'
+ *  relay where it has a relay. */
+type StoreFactory = (store: Store, sealKey: Buffer, dial?: HostedDial, paired?: PairedRelay) => LoopFactory | RunnerParts;
+/** Marks `make` as a function of the store (StoreFactory). */
+export function ofStore<Made extends LoopFactory | RunnerParts>(make: (store: Store, sealKey: Buffer, dial?: HostedDial, paired?: PairedRelay) => Made): (store: Store, sealKey: Buffer, dial?: HostedDial, paired?: PairedRelay) => Made {
   storeFactories.add(make);
   return make;
 }
-const isStoreFactory = (made: LoopFactory | ((store: Store, sealKey: Buffer, dial?: HostedDial) => LoopFactory | RunnerParts)): made is (store: Store, sealKey: Buffer, dial?: HostedDial) => LoopFactory | RunnerParts => storeFactories.has(made);
+const isStoreFactory = (made: LoopFactory | StoreFactory): made is StoreFactory => storeFactories.has(made);
 
 /** How long a runner process lets each busy run finish its turn on SIGTERM, unless --drain-timeout or
  *  AGENTRUN_DRAIN_TIMEOUT says: the image's server drain (its CMD's --drain-timeout 6s), so a runner beside a --no-runner
@@ -641,6 +657,9 @@ export async function runnerMain(argv: readonly string[], given: NodeJS.ProcessE
   holds = { ...holds, loops: isolationLoops(isolation, holds.loops) };
   let started: RunnerProcess;
   const runnerOf = name ?? runnerName();
+  // Said on the data folder before it claims: whether its runs on Claude Code's login stay in this process, its CLI on
+  // the login's folder (claude-login-token.ts sayLoginRunner), for a runner whose runs are users of their own to read.
+  sayLoginRunner(args.dataDir, runnerOf, isolation.kind === "uid" ? "uid" : "process");
   // The last resort, in this process only (never the library, the server's CLI or the runner beside a server): an error
   // nothing handled is said with its stack, and the process exits 1 at once (lastResort: crashing is the safe failure).
   const fatal = lastResort(runnerOf);
@@ -665,7 +684,7 @@ export async function runnerMain(argv: readonly string[], given: NodeJS.ProcessE
       drainMs: holds.drainMs,
       // Each run a process of its own (`isolation`); its computer, with this runner's relay's dial, held here in the
       // runner, which the run's process asks for it over its channel (run-child-host.ts, held.ts computer).
-      createLoop: ofStore((store, sealKey, dial) => runnerLoop(store, args.dataDir, env, sealKey, isolation, dial)),
+      createLoop: ofStore((store, sealKey, dial, paired) => runnerLoop(store, args.dataDir, env, sealKey, isolation, dial, paired)),
       // Each run's own process weighed beside its harness's run (memory-claim.ts RUN_PROCESS_MIB).
       processMib: RUN_PROCESS_MIB,
       // The runner subcommand ends what a crashed runner of this server left (never under --faux).

@@ -15,12 +15,18 @@
 // at all (its key is not in this runner's environment or the store) is not. Either is said in the runner's log, and the
 // run's end stands. The janitor (computer-janitor.ts) ends a computer of a run that is over on its next sweep too, for a
 // server that stopped before this ran, or a vendor that stayed down past the bound.
-import { releaseOlder } from "@parcha/agentrun-computer";
+//
+// Nor a computer the run's park kept pinned to a runner other than this one while that keep lasts (computer-kept.ts: its
+// row names that runner, and is neither ending nor ended): a stop or cancel ends the run on whichever runner claims it,
+// and the machine is the keeping runner's to end, at its time or its janitor's pass. A vendor's list (a dial machine's)
+// shows it here too; it is left out of the list, so nothing under its id is deleted from here.
+import { type ComputerProvider, releaseOlder } from "@parcha/agentrun-computer";
 import { KEY_TABLE, providerOptions } from "../computer-keys.js";
 import { readLaunchBody } from "../run-launch.js";
 import type { Store } from "../store/index.js";
 import { settingOf } from "./computer-for-claim.js";
 import type { ComputerDeps } from "./computer-deps.js";
+import { keptBy, type KeptHolder, readKept } from "./computer-kept.js";
 import { storeLedger } from "./computer-ledger.js";
 import { type ComputerSetting, providerKeys } from "./resolve-computer.js";
 import { endingDeletes, intervalWrites } from "./computer-intervals.js";
@@ -52,15 +58,33 @@ const pause = (ms: number, signal: AbortSignal): Promise<boolean> =>
     signal.addEventListener("abort", done, { once: true });
   });
 
+/** `provider` with the computer `id` left out of its lists: releaseOlder never sees it, so never deletes it. */
+const sparing = (provider: ComputerProvider, id: string): ComputerProvider =>
+  new Proxy(provider, {
+    get(target, key) {
+      if (key !== "list") {
+        const value: unknown = Reflect.get(target, key, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      }
+      return async (...args: Parameters<ComputerProvider["list"]>) => {
+        const listed = await target.list(...args);
+        return listed.ok ? { ...listed, value: listed.value.filter((info) => info.ref.id !== id) } : listed;
+      };
+    },
+  });
+
 export interface RunEndComputersDeps {
   /** The run's row and launch (its revision and place) and the agent's revision, where its computer setting is; the
    *  computer ledger, for a provider that keeps one. */
-  readonly store: Pick<Store, "agents" | "computerLedger"> & { readonly runs: Pick<Store["runs"], "get" | "launch">; readonly computerIntervals?: Store["computerIntervals"] };
+  readonly store: Pick<Store, "agents" | "computerLedger" | "settings"> & { readonly runs: Pick<Store["runs"], "get" | "launch">; readonly computerIntervals?: Store["computerIntervals"] };
   /** The run's computers as the runner composed them (computer-deps.ts computerDepsFrom): the registry, the provider
    *  makers, the key reader, and --faux's launch with the providers it takes. */
   readonly computers: Pick<ComputerDeps, "kinds" | "providers" | "keyOf" | "keyTable" | "settings" | "launch" | "launches">;
   /** Where what was let go, and a provider that failed, are said. */
   readonly log: (line: string) => void;
+  /** The runner this end runs in (its name and presence incarnation), read at each end: a computer kept pinned to it is
+   *  its own to let go here. Absent: every kept row that names a runner is another's. */
+  readonly self?: () => KeptHolder | undefined;
   /** The bound on every try. Default RUN_END_COMPUTERS_MS. */
   readonly timeoutMs?: number;
   /** The pause between tries. Default RUN_END_RETRY_MS. */
@@ -94,6 +118,12 @@ export function runEndComputers(deps: RunEndComputersDeps): (claim: { readonly r
     // A throw from here on is the vendor's or the daemon's (Docker's architecture asked): asked again.
     return endingDeletes(await make(options.options, { ledger: storeLedger(store.computerLedger, entry.id) }), entry.id, writes);
   };
+  /** The id of the run's computer its park kept pinned to a runner other than this one, while the keep lasts; a read
+   *  that fails throws, and is asked again (a delete from here must not guess). */
+  const keptElsewhere = async (runId: string): Promise<string | undefined> => {
+    const kept = await readKept(store.settings, runId);
+    return kept && kept.runner !== undefined && !kept.ending && !kept.ended && !keptBy(kept, deps.self?.()) ? kept.id : undefined;
+  };
   return async ({ runId, epoch }) => {
     if (epoch <= 1) return;
     const bound = deps.timeoutMs ?? RUN_END_COMPUTERS_MS;
@@ -111,8 +141,9 @@ export function runEndComputers(deps: RunEndComputersDeps): (claim: { readonly r
         try {
           const provider = await providerOf(runId, epoch);
           if (!provider) return;
+          const spared = await keptElsewhere(runId);
           // Every claim's at or below this one's: a computer of a later epoch fences the call (a later claim holds the run).
-          const released = await releaseOlder(provider, runId, epoch + 1, { signal });
+          const released = await releaseOlder(spared === undefined ? provider : sparing(provider, spared), runId, epoch + 1, { signal });
           if (released.ok) {
             const names = released.value.released.map((ref) => ref.name);
             if (names.length > 0) log(`run ${runId} is over: let go of ${names.length === 1 ? "the computer" : "the computers"} an earlier claim left on ${provider.id}, ${names.join(", ")}`);

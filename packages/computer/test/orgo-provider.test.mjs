@@ -11,6 +11,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { kindOf, serves, sweep } from "../dist/index.js";
 import { API, fakeOrgoApi, fakeOrgoChannel, KEY, LABELS_PATH, VNC, WORKSPACE } from "./fake-orgo.mjs";
+import { refusesHttp } from "./https-refusal.mjs";
 
 const orgo = await import("../dist/orgo.js");
 const { create, OrgoProvider } = orgo;
@@ -57,7 +58,11 @@ test("Orgo: the provider takes its key and workspace as options, reads no enviro
 	// No workspace named: it is built, and reads the key's account's one workspace when first needed (orgo-workspaces.test.mjs).
 	assert.ok(create({ apiKey: KEY, fetch: api.fetch }) instanceof OrgoProvider);
 	assert.throws(() => create({ apiKey: KEY, workspaceId: "../other", fetch: api.fetch }), (error) => /workspaceId/.test(error.message) && !error.message.includes(KEY));
-	assert.throws(() => create({ apiKey: KEY, workspaceId: WORKSPACE, fetch: api.fetch, apiUrl: "http://orgo.example/api" }), /https/);
+	for (const apiUrl of ["http://orgo.example/api", "http://127.0.0.1:8080/api"]) {
+		assert.throws(() => create({ apiKey: KEY, workspaceId: WORKSPACE, fetch: api.fetch, apiUrl }), refusesHttp("the Orgo API URL", apiUrl, KEY));
+	}
+	assert.throws(() => create({ apiKey: KEY, workspaceId: WORKSPACE, fetch: api.fetch, apiUrl: "https://agentrun@orgo.example/api" }), /the Orgo API URL holds no credentials/);
+	assert.deepEqual(api.requests, []);
 	assert.throws(() => create({ apiKey: KEY, workspaceId: WORKSPACE, fetch: api.fetch, user: "0:0" }), /root/);
 	const built = create({ apiKey: KEY, workspaceId: WORKSPACE, fetch: api.fetch });
 	assert.ok(built instanceof OrgoProvider);

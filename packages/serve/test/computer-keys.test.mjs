@@ -129,6 +129,11 @@ test("computer keys: a provider that cannot be made, or that throws, is a failed
   const made = await testConnection("modal", { keys: { MODAL_TOKEN_ID: KEY, MODAL_TOKEN_SECRET: SECRET } }, throwing);
   assert.deepEqual([made.ok, made.error.code], [false, "invalid"]);
   assert.match(made.error.message, /^Modal's settings are not valid\. \(the vendor said: the Modal provider refuses \[the key\]\)$/);
+  // A provider whose vendor SDK is not installed (npm install --omit=optional) says the install step alone: no setting
+  // is wrong, and no vendor said anything.
+  const unsdked = { e2b: async () => { throw Object.assign(new Error("E2B needs the e2b package: npm install e2b@2.63.0"), { code: "sdk_missing" }); } };
+  const missing = await testConnection("e2b", { keys: { E2B_API_KEY: KEY } }, unsdked);
+  assert.deepEqual([missing.ok, missing.error.code, missing.error.message], [false, "sdk_missing", "E2B needs the e2b package: npm install e2b@2.63.0"]);
   const exploding = fakeModule(() => { throw new Error(`socket closed near ${KEY}`); });
   const thrown = await testConnection("orgo", { keys: { ORGO_API_KEY: KEY, ORGO_WORKSPACE_ID: "ws-1" } }, { orgo: exploding.create });
   assert.deepEqual([thrown.ok, thrown.error.code], [false, "unreachable"]);

@@ -42,3 +42,7 @@ export const facts: AdapterFacts = Object.freeze<AdapterFacts>({
   schemaProblems: (tool: string, schema: Record<string, unknown>) => [...toolSchemaProblems(tool, schema), ...["anyOf", "allOf", "oneOf"].filter((key) => key in schema).map((key) => `/${key}: the Claude Agent CLI drops a tool whose root has ${key}`)],
   policy: (options) => anthropicPolicy({ model: options.model, tools: options.tools, ...(options.auth ? { auth: options.auth } : {}), ...(options.webSearch === true ? { webSearch: true, ...(options.webSearchAllowance ? { webSearchAllowance: options.webSearchAllowance } : {}) } : {}), ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}) }),
 });
+
+// The pinned CLI's renewal of a login (login-refresh.ts), here too so a host that renews a login in the CLI's place
+// reads it without loading the adapter and its SDK.
+export { LOGIN_REFRESH as loginRefresh } from "./login-refresh.js";

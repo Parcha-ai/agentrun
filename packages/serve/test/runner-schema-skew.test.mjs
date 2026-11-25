@@ -81,9 +81,9 @@ test("the server records which migrations break runners: the floor is the newest
   const { schema, sql } = await schemaFor(t);
   assert.deepEqual(await runnerFloorOf(sql, schema), { version: null, runnerFloor: null }, "nothing set up");
   await migrateTo(sql, schema, []);
-  assert.deepEqual(await runnerFloorOf(sql, schema), { version: KNOWN, runnerFloor: LAST_UNMARKED });
+  assert.deepEqual(await runnerFloorOf(sql, schema), { version: KNOWN, runnerFloor: floorAt(KNOWN) });
   await migrateTo(sql, schema, [later(false)]);
-  assert.deepEqual(await runnerFloorOf(sql, schema), { version: KNOWN + 1, runnerFloor: LAST_UNMARKED }, "an additive migration leaves the floor");
+  assert.deepEqual(await runnerFloorOf(sql, schema), { version: KNOWN + 1, runnerFloor: floorAt(KNOWN) }, "an additive migration leaves the floor");
   await migrateTo(sql, schema, [later(false), later(true, KNOWN + 2), later(false, KNOWN + 3)]);
   assert.deepEqual(await runnerFloorOf(sql, schema), { version: KNOWN + 3, runnerFloor: KNOWN + 2 }, "a breaking one raises it to its version, and the next additive one leaves it there");
   const marks = (await sql.query(`SELECT version, runners_breaking FROM ${schema}.schema_migrations WHERE version > $1 ORDER BY version`, [KNOWN])).rows;
@@ -92,12 +92,13 @@ test("the server records which migrations break runners: the floor is the newest
 
 test("a ledger an earlier server kept, with no breaking marks, has its version as its floor", ONLY, async (t) => {
   const { schema, sql } = await schemaFor(t);
-  await migrateTo(sql, schema, []);
+  // An earlier server's ledger: no breaking marks, and so no migration past LAST_UNMARKED (the marks came with 0023).
+  await migrate(sql, schema, Date.now(), migrationsIn().slice(0, LAST_UNMARKED));
   await sql.query(`ALTER TABLE ${schema}.schema_migrations DROP COLUMN runners_breaking`);
-  assert.deepEqual(await runnerFloorOf(sql, schema), { version: KNOWN, runnerFloor: KNOWN });
-  // This build's server marks it again at its next start.
+  assert.deepEqual(await runnerFloorOf(sql, schema), { version: LAST_UNMARKED, runnerFloor: LAST_UNMARKED });
+  // This build's server marks it at its next start, and marks each migration it applies past it.
   await migrateTo(sql, schema, []);
-  assert.deepEqual(await runnerFloorOf(sql, schema), { version: KNOWN, runnerFloor: LAST_UNMARKED });
+  assert.deepEqual(await runnerFloorOf(sql, schema), { version: KNOWN, runnerFloor: floorAt(KNOWN) });
 });
 
 test("after an additive migration, a runner of the earlier build opens the schema ahead of it and runs a run to its end", ONLY, async (t) => {
@@ -108,7 +109,7 @@ test("after an additive migration, a runner of the earlier build opens the schem
   const started = await runner(t, schema, { name: "runner-old", createLoop: fauxLoops({ turns: 2, turnMs: 10 }).createLoop, warn: (line) => said.push(line) });
   let closed = false;
   t.after(() => (closed ? undefined : started.close()));
-  assert.ok(said.some((line) => line.includes(`the store is at schema version ${KNOWN + 1}, ahead of this runner's ${KNOWN}; its runner floor is ${LAST_UNMARKED}`)), said.join(" | "));
+  assert.ok(said.some((line) => line.includes(`the store is at schema version ${KNOWN + 1}, ahead of this runner's ${KNOWN}; its runner floor is ${floorAt(KNOWN)}`)), said.join(" | "));
   await until(async () => (await row(sql, schema, "run-1")).state === "ended", "the run ends on the newer schema", 15_000);
   await until(async () => (await row(sql, schema, "run-1")).runner === null, "its release");
   await started.close();
@@ -212,9 +213,9 @@ test("store-schema reads the live schema and floor beside this build's version, 
   await migrate(sql, schema, Date.now(), migrationsIn().slice(0, -1));
   assert.deepEqual(await read(), { store: "postgres", where, schema: KNOWN - 1, runnerFloor: floorAt(KNOWN - 1), build: KNOWN, server: "migrates", runner: "waits" });
   await migrateTo(sql, schema, []);
-  assert.deepEqual(await read(), { store: "postgres", where, schema: KNOWN, runnerFloor: LAST_UNMARKED, build: KNOWN, server: "opens", runner: "opens" });
+  assert.deepEqual(await read(), { store: "postgres", where, schema: KNOWN, runnerFloor: floorAt(KNOWN), build: KNOWN, server: "opens", runner: "opens" });
   await migrateTo(sql, schema, [later(false)]);
-  assert.deepEqual(await read(), { store: "postgres", where, schema: KNOWN + 1, runnerFloor: LAST_UNMARKED, build: KNOWN, server: "refuses", runner: "opens" }, "a rollback across a migration: this build's server refuses, its runner still opens");
+  assert.deepEqual(await read(), { store: "postgres", where, schema: KNOWN + 1, runnerFloor: floorAt(KNOWN), build: KNOWN, server: "refuses", runner: "opens" }, "a rollback across a migration: this build's server refuses, its runner still opens");
   await migrateTo(sql, schema, [later(false), later(true, KNOWN + 2)]);
   assert.deepEqual(await read(), { store: "postgres", where, schema: KNOWN + 2, runnerFloor: KNOWN + 2, build: KNOWN, server: "refuses", runner: "refused" });
   const ledger = (await sql.query(`SELECT * FROM ${schema}.schema_migrations ORDER BY version`)).rows;
