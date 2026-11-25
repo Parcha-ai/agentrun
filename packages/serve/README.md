@@ -1741,7 +1741,7 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `bash_signal` | Send a background process's group `TERM`, `INT` or `KILL`: `{id, signal}` | an agentic definition whose place is a sandbox | no, no |
 | `bash_list` | List the run's background processes: id, state or exit code, output size, start time and command | an agentic definition whose place is a sandbox | no, no |
 | `ask_person` | Ask the person who started the run; the turn ends until a message answers | nothing | no, no |
-| `web_fetch` | Read one web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked ([search and fetch](#search-and-fetch)), a part at a time: `{url, offset?, max_chars?, objective?}` in (`objective`, what the page is read for, is passed to the run's Web; with no classifier in the run it changes nothing), a Page out, `{ok, url, status, title, text, chars, truncated?, original_chars?, beyond_read?, offset?, next_offset?, html_chars?, converted?, links, links_omitted?, via, parallel?, refused?, error?}` | nothing (`PARALLEL_API_KEY` for Parallel, one billed extract a page a run) | yes, yes |
+| `web_fetch` | Read one web page from a public host through Parallel's extract where the server holds a Parallel key (the default, `auto`), else keyless Firecrawl, with the guarded direct fetch behind either, or the guarded direct fetch alone where `kernel` is picked ([search and fetch](#search-and-fetch)), a part at a time: `{url, offset?, max_chars?, objective?}` in (`objective`, what the page is read for, is passed to the run's Web; with no classifier in the run it changes nothing), a Page out, `{ok, url, status, title, text, chars, truncated?, original_chars?, beyond_read?, offset?, next_offset?, html_chars?, converted?, links, links_omitted?, via, parallel?, refused?, error?}` | nothing (`PARALLEL_API_KEY` for Parallel, one billed extract a page a run) | yes, yes |
 | `web_search` | Search the web, natively where the harness or the model's provider can, else through Parallel where the server holds its key, else keyless through Exa, or through the provider picked ([search and fetch](#search-and-fetch)): `{objective, queries?, n?}` in (`query` is deprecated: a model's call must give `objective`, which the schema requires; a workflow call node's `{query}` alone is still searched as the objective and its one query), `{provider, objective, queries, results: [{url, title, snippet, published?}], text?}` or `{error}` out | nothing (`PARALLEL_API_KEY` for Parallel) | yes, yes |
 | `web_save` | Download one file from a public URL into the run's `work/` and keep it there, for a link that expires (a generated image, audio or video): `{url, path}` in, `path` relative to `work/` and a bare name under `media/`; `{ok: true, path, bytes, content_type, duration_s?, url}` or `{ok: false, url, refused \| error}` out, `duration_s` its length in seconds when it is audio or video whose bytes give it (below). Never overwrites | nothing | no, no |
 | `browser` | A hosted browser, Browserbase's or Kernel's, on pi-browser's durable adapter: `snapshot`, `run`, `screenshot`, `browser_read`, `browser_release`, `browser_relaunch`, `browser_downloads` and `browser_upload` (into and from the run's `work/`); Kernel keeps no downloads, so a run on Kernel has no `browser_downloads` | `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`, or `KERNEL_API_KEY` | yes, no |
@@ -1926,7 +1926,7 @@ runner's own switch can add off for the runs that host claims, never turn it bac
 | `web_search`, `off` | unavailable (`web_search is turned off in settings`): nothing is searched | the same | the same |
 | `web_search`, `firecrawl-keyless` | Firecrawl's public MCP search, keyless Exa's behind it, a host tool | the same | the same |
 | `web_search`, `exa-keyless` | Exa's public MCP search alone, a host tool | the same | the same |
-| `web_fetch`, `auto` (the default) | the guarded direct fetch where the server holds a Parallel key, else keyless Firecrawl | the same | the same |
+| `web_fetch`, `auto` (the default) | Parallel's extract where the server holds a Parallel key, the guarded direct fetch behind it; else keyless Firecrawl | the same | the same |
 | `web_fetch`, `firecrawl-keyless` | Firecrawl's public MCP scrape, the guarded direct fetch behind it: Firecrawl is sent each URL | the same | the same |
 | `web_fetch`, `kernel` | the guarded direct fetch | the same | the same |
 | either, `parallel` | Parallel's search and extract, host tools | the same | the same |
@@ -1965,10 +1965,11 @@ Upgrading to the tool gate: a workflow whose call node's tool is set to ask, by 
 run (`409` with `details.asks`); set that tool to allow for the agent (`definition.tool_settings`). Built-in tools are
 allowed by default; catalog (`monid:<provider>/<endpoint>`) and MCP tools, which ask by default, are no call node's tools here.
 
-Upgrading: a server holding `PARALLEL_API_KEY` used to read every `web_fetch` page through Parallel's extract on its own.
-Now `web_fetch` on `auto` is the guarded direct fetch on such a server (keyless Firecrawl on one with no Parallel key)
-unless Parallel is picked; to keep the old behaviour, set
-`PUT /v2/settings/tools {"web_fetch": {"provider": "parallel"}}` once (or `tool_settings` in an agent). Parallel's key reaches an agentic run only when one of its capabilities resolves to Parallel (see
+Upgrading: on a server holding `PARALLEL_API_KEY`, `web_fetch` on `auto` reads each page through Parallel's extract
+first, with the guarded direct fetch behind it, as `web_search` on `auto` searches through Parallel (keyless Firecrawl on
+a server with no Parallel key). To keep every URL on the server instead, set
+`PUT /v2/settings/tools {"web_fetch": {"provider": "kernel"}}` once (or `tool_settings` in an agent). Both tools'
+`auto` order is one table in the source (`DEFAULT_WEB_ORDER`, tool-plane.ts). Parallel's key reaches an agentic run only when one of its capabilities resolves to Parallel (see
 [Decision workflows](#decision-workflows)), and a web tool reaches Parallel only where its own capability does.
 
 pi's native `web_search` is one standalone request, as Claude's CLI runs its WebSearch: one user turn carrying the

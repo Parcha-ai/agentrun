@@ -3,13 +3,13 @@
 // agent's own (`definition.tool_settings`) over the server's (`PUT /v2/settings/tools`), optional; (2) for web_search,
 // Parallel where the server holds its key (env or saved, which then bills it); (3) the keyless fallback: Firecrawl's
 // public keyless MCP endpoint (@parcha/agentrun-web providers/firecrawl-keyless.ts), with Exa's
-// (providers/exa-keyless.ts) behind it. web_fetch's `auto` is the guarded direct fetch where the server holds a
-// Parallel key (as before keyless Firecrawl), else keyless Firecrawl with the guarded direct fetch behind it, and
-// Parallel's extract is a pick. Through Firecrawl web_fetch sends each URL to a third party, and its `why` says so; a URL
-// the public-host guard refuses never goes (web-fetch.ts). The native search, a harness's own (Claude's WebSearch,
-// Codex's live search) or on pi one request to the run's own model provider with its hosted search (hosted-search.ts),
-// runs only where it is picked, `native`: `auto` never resolves to it, on any harness. `off` turns web_search off.
-// web_search's default, `auto`, is that order; a pick of `native` is native only,
+// (providers/exa-keyless.ts) behind it. web_fetch's `auto` is Parallel's extract where the server holds a Parallel key,
+// with the guarded direct fetch behind it, else keyless Firecrawl with the guarded direct fetch behind it. Both tools'
+// `auto` order is one table, DEFAULT_WEB_ORDER. Through Firecrawl web_fetch sends each URL to a third party, and its
+// `why` says so; a URL the public-host guard refuses never goes (web-fetch.ts). The native search, a harness's own
+// (Claude's WebSearch, Codex's live search) or on pi one request to the run's own model provider with its hosted search
+// (hosted-search.ts), runs only where it is picked, `native`: `auto` never resolves to it, on any harness.
+// `off` turns web_search off. web_search's default, `auto`, is that order; a pick of `native` is native only,
 // unavailable where there is none, never a keyless search. A grant names a capability, never a provider. A pick of parallel without
 // PARALLEL_API_KEY resolves unavailable, never to something else. The server resolves a run's tools at its first
 // launch, from its pinned revision and the settings then, keeps them for the run's life (runs.ts), and hands the run's
@@ -59,9 +59,9 @@ export const CAPABILITIES = ["read", "write", "edit", "web_search", "web_fetch",
 const DIRECT_FETCH = "kernel" as const;
 /** The providers a user may pick for each capability that has a choice, its default first: `auto`, for web_search the
  *  Parallel where the server holds its key, else keyless Firecrawl, on every harness (a native search is never `auto`,
- *  only `native`); for web_fetch the guarded direct fetch where the
- *  server holds a Parallel key, else keyless Firecrawl; `native`, the harness's own tool or its model provider's hosted
- *  one, and nothing else; `firecrawl-keyless`, Firecrawl's public MCP endpoint, no key, with keyless Exa behind it for
+ *  only `native`); for web_fetch Parallel's extract where the server holds a Parallel key (the guarded direct fetch
+ *  behind it), else keyless Firecrawl (both in DEFAULT_WEB_ORDER); `native`, the harness's own tool or its model
+ *  provider's hosted one, and nothing else; `firecrawl-keyless`, Firecrawl's public MCP endpoint, no key, with keyless Exa behind it for
  *  web_search and the guarded direct fetch behind it for web_fetch; `exa-keyless`, Exa's public MCP endpoint alone, no
  *  key; `kernel`, the guarded direct fetch; `parallel`, Parallel's Search and Extract APIs on PARALLEL_API_KEY; `off`,
  *  web_search turned off: nothing is searched, and an
@@ -277,7 +277,7 @@ function explained(capability: Pickable, input: ResolveInput): { resolves: Resol
   if (capability === "web_fetch") {
     if (chosen === DIRECT_FETCH) return { resolves: DIRECT_FETCH, why: `the guarded direct fetch, ${picked}` };
     if (chosen === "firecrawl-keyless") return { resolves: "firecrawl-keyless", why: `keyless Firecrawl, ${picked}: ${FIRECRAWL_FETCH}` };
-    return input.parallelKey ? { resolves: DIRECT_FETCH, why: `the guarded direct fetch: the server holds ${key}, so no URL goes to a keyless service` } : { resolves: "firecrawl-keyless", why: FIRECRAWL_FETCH };
+    return autoWeb("web_fetch", input);
   }
   if (capability === "browser") return browserBy(chosen, picked, input.browserKeys);
   if (chosen === "exa-keyless") return { resolves: "exa-keyless", why: `keyless Exa, ${picked}: Exa's free search, no key` };
@@ -289,10 +289,32 @@ function explained(capability: Pickable, input: ResolveInput): { resolves: Resol
     if (without !== undefined) return { resolves: `unavailable: no native search for ${without.id}`, why: `no native search for ${without.id}` };
     return input.permission === "ask" && input.facts !== undefined ? { resolves: NATIVE_ASKS, why: "native search cannot wait for an approval: it runs inside the harness's CLI" } : { resolves: "native", why: nativeWhy(input) };
   }
-  // `auto` never resolves native, on any harness: Parallel on the server's key, else keyless Firecrawl. Where a native
-  // search would run, auto's why names it as the pick it is; where none runs (noNative), it says why not.
-  if (without === undefined) return input.parallelKey ? { resolves: "parallel", why: key } : { resolves: "firecrawl-keyless", why: `${FIRECRAWL_SEARCH}; ${ownSearch(input)} is an explicit pick` };
-  return input.parallelKey ? { resolves: "parallel", why: `${without.why}; ${key}` } : { resolves: "firecrawl-keyless", why: `${without.why}; ${FIRECRAWL_SEARCH}` };
+  return autoWeb("web_search", input);
+}
+
+/** The order `auto` asks for each web tool: the first provider here the server can run is what auto resolves to
+ *  (Parallel only where the server holds its key; keyless Firecrawl, keyless Exa and the guarded direct fetch always),
+ *  keyless Firecrawl where none can. Capabilities' `why` and every run's plane read it (autoWeb). Parallel is first for
+ *  both. To put Firecrawl first, swap the two ids in a list: that one line is the whole change. */
+export const DEFAULT_WEB_ORDER: Readonly<{ web_search: readonly AutoSearch[]; web_fetch: readonly AutoFetch[] }> = Object.freeze({ web_search: Object.freeze(["parallel", "firecrawl-keyless"] as const), web_fetch: Object.freeze(["parallel", "firecrawl-keyless"] as const) });
+type AutoSearch = "parallel" | "firecrawl-keyless" | "exa-keyless";
+type AutoFetch = "parallel" | "firecrawl-keyless" | typeof DIRECT_FETCH;
+
+/** What `auto` resolves `capability` to on a run of `input`, and why, by `order` (DEFAULT_WEB_ORDER). `auto` never
+ *  resolves native, on any harness: where a native search would run, web_search's why names it as the pick it is;
+ *  where none runs (noNative), it says why not. */
+export function autoWeb(capability: "web_search" | "web_fetch", input: ResolveInput, order: typeof DEFAULT_WEB_ORDER = DEFAULT_WEB_ORDER): { resolves: Resolution; why: string } {
+  const runs = (id: string): boolean => id !== "parallel" || input.parallelKey;
+  const id = order[capability].find(runs) ?? "firecrawl-keyless";
+  const key = `your Parallel key (${input.parallelKeyFrom ?? "server"})`;
+  if (capability === "web_fetch") {
+    if (id === "parallel") return { resolves: "parallel", why: `Parallel's extract on ${key}, the guarded direct fetch behind it` };
+    return id === DIRECT_FETCH ? { resolves: DIRECT_FETCH, why: "the guarded direct fetch" } : { resolves: "firecrawl-keyless", why: FIRECRAWL_FETCH };
+  }
+  const said = id === "parallel" ? key : id === "exa-keyless" ? "Exa's free search, no key" : FIRECRAWL_SEARCH;
+  const without = noNative(input);
+  if (without !== undefined) return { resolves: id as Resolution, why: `${without.why}; ${said}` };
+  return { resolves: id as Resolution, why: id === "parallel" ? said : `${said}; ${ownSearch(input)} is an explicit pick` };
 }
 
 /** What `capability` resolves to on a run of `input`. */
