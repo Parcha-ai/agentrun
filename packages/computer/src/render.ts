@@ -14,9 +14,11 @@
 // is not the name's, and keep: a computer's labels never change (Render moves no timeout, so there is no extend).
 //
 // Every vendor fact below is from @renderinc/sdk 1.11.0's OpenAPI schema (dist/generated/schema.d.ts, S) or its client
-// (dist/sandboxes/index.js, C), or a live probe (11-25: root, HOME=/root, a Render kernel, egress https, and a command
-// started under setsid by runs/sync living on after the call); one neither settles says unverified, and the live Core
-// run (packages/serve/scripts/dial-conformance.mjs) is what settles it.
+// (dist/sandboxes/index.js, C), a live probe (11-25: root, HOME=/root, a Render kernel, egress https, and a command
+// started under setsid by runs/sync living on after the call), or the live Core run (11-25, packages/serve/scripts/
+// dial-conformance.mjs: the sandbox's env reaches a runs/sync command, root makes network namespaces in the microVM, the
+// builds API imports the public ghcr.io box image with no credential, and a process escaped with setsid ends with the
+// sandbox's release). One none of these settles says unverified.
 import { boxImageRef, boxRecipeHash } from "./box-image.js";
 import { RENDER } from "./descriptors/render.js";
 import { COMPUTER_LABEL, DEFAULT_CPUS, DEFAULT_MEMORY_MB, show } from "./drift.js";
@@ -204,7 +206,7 @@ class RenderHost implements MachineHost {
 		// Render ends a sandbox at its timeoutSeconds (S), which create sets to the lifetime.
 		lifetime: "vendor",
 		maxLifetimeMs: MAX_LIFETIME_MS,
-		// The box image is built for amd64 alone (release.yml's box job). Unverified: S names no arch.
+		// The box image is built for amd64 alone (release.yml's box job), and the live Core run ran it and its amd64 daemon.
 		arch: "amd64",
 		// Unverified: the agent that answers runs inside the sandbox listens where S does not say. None declared.
 		vendorAgentPorts: [],
@@ -455,7 +457,8 @@ class RenderHost implements MachineHost {
 	 * named agentrun-box-<recipe hash>, so a new recipe is a new build: a succeeded one of that name is kept (GET
 	 * …/builds?name&status=succeeded), else POST …/builds { name, sourceImage } imports the box image's public tag (S: "converts
 	 * a container image into an image that sandboxes can use"), and Render's answer is read until it succeeded or failed.
-	 * `building` is told before the import. Unverified: that Render pulls the public ghcr.io image with no credential.
+	 * `building` is told before the import. Render pulls the public ghcr.io image with no credential (the live Core run's
+	 * import took 104 s); a tag the release has not published yet is Render's 400, "source image unavailable".
 	 */
 	async boxBuild(building: () => void, signal: AbortSignal | undefined): Promise<string> {
 		if (this.#built !== undefined) return this.#built;

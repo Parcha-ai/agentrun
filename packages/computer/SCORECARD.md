@@ -54,7 +54,7 @@ Of 30 rows (26 vendors; Google, Fly.io, Beam and boxes.dev have two rows each): 
 | [Northflank Sandboxes](https://northflank.com/docs/v1/application/sandboxes) | microVMs as Northflank services | fits if (unverified: root makes a network namespace in the microVM; the exec proxy has no idle cut) | 280-300 | [framedExec][fe] (pid wrapper), [backstopAt][bs] |
 | [OpenSandbox](https://github.com/opensandbox-group/OpenSandbox) | self-hosted containers, or microVMs with Kata | needs a workaround (an exec of ours over execd's PTY socket; isolation set per deployment; the fence needs user namespaces allowed) | about 280 | [packed labels][pl], [prepareImage][pi] |
 | [Railway Sandboxes](https://docs.railway.com/sandboxes) | VMs in a project environment | needs a workaround (no name or labels: labels kept in create's variables and read by exec; errors mapped by message text) | 420-470 | [prepareImage][pi] |
-| [Render Sandboxes](https://render.com/docs/sandboxes) | Firecracker microVMs | needs a workaround (built as a dial sandbox, `src/render.ts`: no stdin, so the sandbox dials the server, `agentrun-dial` started by one `runs/sync` call; no label, so the labels live in a file in the sandbox; unverified: the sandbox's env reaches a run's processes, root makes a network namespace, amd64) | 505, built | [dial][dl], [prepareImage][pi] |
+| [Render Sandboxes](https://render.com/docs/sandboxes) | Firecracker microVMs | needs a workaround (built as a dial sandbox, `src/render.ts`: no stdin, so the sandbox dials the server, `agentrun-dial` started by one `runs/sync` call; no label, so the labels live in a file in the sandbox; Core passed live over dial) | 505, built | [dial][dl], [prepareImage][pi] |
 | [Runloop Devboxes](https://docs.runloop.ai/docs/devboxes/overview.md) | VMs | needs a workaround (two SSE feeds merged by hand) | 270-290 | [framedExec][fe] with [sse][ss], [backstopAt][bs], [prepareImage][pi] |
 | [Together Code Sandbox](https://docs.together.ai/docs/together-code-sandbox.md) | Firecracker microVMs booted from snapshots | fits if (unverified: root makes a network namespace; the SSE feed holds 75 s of silence; the `ttl` cap; the tag value limit; amd64) | 240-270 | [framedExec][fe] with [sse][ss], [packed labels][pl], [prepareImage][pi] |
 | [Vercel Sandbox](https://vercel.com/docs/sandbox) | Firecracker microVMs | fits if (unverified: the log stream keeps a character split across two chunks whole and holds 75 s of silence; a taken name's status reads as `exists`; root makes a network namespace) | 230-290 | [framedExec][fe], [packed labels][pl], [prepareImage][pi] |
@@ -446,9 +446,10 @@ provider spec.
   [prepareImage](PROVIDERS.md#wire-it-up); a create names it as `buildName`, or a build id (`sbb-…`) as `buildId`.
 - **Network:** the sandbox's own policy is allow-all, since it must reach the server; `none`, `open` and an allow list
   are init's.
-- **Open:** unverified, until a live Core run: the sandbox's env reaches a run's processes, root makes a network
-  namespace in the microVM, the arch is amd64, the build imports the public box image with no credential. The vendor's:
-  a label on the sandbox record, and a stdin call.
+- **Verified live** (Core over dial, 11-25): the sandbox's env reaches a run's processes, root makes network namespaces
+  in the microVM (every `provider.network-*` case), the build imports the public box image with no credential, and a
+  process escaped with `setsid` ends with the release.
+- **Open:** the vendor's, a label on the sandbox record, and a stdin call.
 
 ### Runloop Devboxes
 
