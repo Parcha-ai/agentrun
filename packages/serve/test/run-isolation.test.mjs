@@ -290,7 +290,13 @@ test("a run's process writes its own browser rows only as its claim's: the claim
     [ENDED, { at, why: "x".repeat(64 * 1024), epoch: 3 }],
     [HOLD, { session: "s".repeat(64 * 1024), at, epoch: 3 }],
   ];
-  for (const [key, row] of refused) await assert.rejects(call("settings.put", [key, row]), /may not call the store's settings\.put/, `${key} ${JSON.stringify(row)?.slice(0, 80)} was refused`);
+  // Each one tried, so a failure names every row let through, not the first.
+  const accepted = [];
+  for (const [key, row] of refused) {
+    const error = await call("settings.put", [key, row]).then(() => undefined, (thrown) => thrown);
+    if (!/may not call the store's settings\.put/.test(String(error?.message))) accepted.push(`${key} ${JSON.stringify(row)?.slice(0, 80)}`);
+  }
+  assert.deepEqual(accepted, [], "rows a run's process may not write were accepted");
   assert.deepEqual(written, [], "a refused row reached the store");
   const hold = { session: "s1", at, epoch: 3 };
   const ended = { at, why: "The browser was released while the run waited for you: the cap has no room.", epoch: 3 };
