@@ -230,6 +230,21 @@ test("P2 13 (ruling H): the error path cuts the run's held values out of the err
   assertNoValue(line, s, "error line");
 });
 
+test("P3 (11-25 read): the error path's held values are the run's cut read before the count, so an error naming a key the run was handed is cut", async (t) => {
+  const s = planted();
+  const { store } = await dataDir(t);
+  t.after(() => store.close());
+  const key = randomBytes(32);
+  const handed = `hk${randomBytes(16).toString("hex")}`;
+  const id = "sealed-err";
+  await store.runs.create({ id, agentId: "a1", revisionId: "r1" }, { body: { input: { content: "Call it." }, title: "Call", place: { mode: "runner" } }, sealed: sealRunLaunch(key, id, { keys: { CALL_API_KEY: handed } }) });
+  const held = await scrubCommand.errorHeld(store, id, { serverSecrets: () => [s.held], sealKey: key });
+  assert.ok(held.includes(handed) && held.includes(s.held), "the run's handed key and the server's secrets");
+  assertNoValue(await couldNotCount(id, new Error(`workspace read failed near ${handed}`), held), { ...s, handed }, "error line");
+  // A cut that can't be read here leaves the server's secrets.
+  assert.deepEqual(await scrubCommand.errorHeld(store, id, { serverSecrets: () => [s.held], sealKey: undefined }), [s.held]);
+});
+
 /** An imported session whose one tool call (`name` with `input`) printed `output`, that output alone in its result. */
 async function oneCallRun(store, id, name, input, output) {
   const at = Date.now();

@@ -1728,6 +1728,67 @@ test("LVI: a line that runs an env command among others is one dump of its whole
   }
 });
 
+test("LVI (11-25 read): an env command's output is cut whole, from its first character to its last, whatever its first line opens with", async () => {
+  const seed = "Tallow4quarry62";
+  const region = "basin-orchard-41";
+  const pino = '{"level":30,"time":1764000000000,"pid":7,"msg":"server started"}';
+  // A first line that opens like a JSON field, or a text that opens and closes with a quote, is no head to start after:
+  // a cut that starts inside a string ends at that string's quote, and the rest of the dump would be carried.
+  for (const [text, command] of [
+    [`{"status":"ok"}\n${seed}`, "curl -s localhost:8080/health; printenv APP_SEED"],
+    [`${pino}\nAPP_REGION=${region}`, "node server.js & sleep 2 && env | grep APP"],
+    [`"a" ${seed} "b"`, "printenv APP_SEED; false"],
+    [`{"note":"x"} ${seed}`, "printenv APP_SEED"],
+  ]) {
+    const out = await gone(text, [seed, region].filter((v) => text.includes(v)), { command });
+    assert.deepEqual(out.cuts.map((cut) => [cut.rule, cut.kind, cut.restorable]), [["env-dump", "dump", false]], `${command}: ${JSON.stringify(out.cuts)}`);
+    assert.equal(out.text, `[redacted:env-dump ${text.split("\n").length} lines]`, command);
+  }
+  // The same in a text that holds the command itself: printenv's value line is cut from its own start.
+  const inText = await gone(`$ printenv APP_SEED\n{"a": "x"} ${seed}`, [seed]);
+  assert.equal(inText.text, "$ printenv APP_SEED\n[redacted:env-dump 1 lines]");
+});
+
+test("LVI (11-25 read): every way a line can run an env command is read so, and a line too long to read is a dump", async () => {
+  const seed = "Tallow4quarry62";
+  const region = "basin-orchard-41";
+  const text = `APP_REGION=${region}\nAPP_SEED ${seed}`;
+  for (const command of [
+    // Grouped, substituted, in a branch or a loop, behind a wrapper, a path or an assignment.
+    "(env)", "{ env; }", "echo $(env)", "echo `env`", "if true; then env; fi", "for v in A B; do printenv $v; done",
+    "exec env", "command env", "/usr/bin/env", "sudo -E env", "time env", "nice -n 5 printenv APP_SEED", "FOO=1 printenv APP_SEED",
+    // Redirected, flagged, piped on.
+    "env 2>&1", "env -0", "env -u HOME", "env > /tmp/e; cat /tmp/e", "printenv APP_SEED | cat", "export", "export -p", "declare -p APP_SEED",
+    // An echo of variables, quoted or not; a shell's -c script.
+    'echo "x=$APP_SEED"', "echo $APP_REGION $APP_SEED", "make && bash -c 'env'", 'bash -c "cd /opt/app && env"',
+    // Split by a line break or a lone `&` (a mutant that drops either leaves the env command inside another's piece).
+    "npm test\nenv", "sleep 1 & env",
+    // Past 64 pieces, and past what is read of a line at all.
+    `${"true; ".repeat(70)}printenv APP_SEED`, `true # ${"x".repeat(70_000)}`,
+  ]) {
+    const out = await gone(text, [seed, region], { command });
+    assert.equal(out.text, "[redacted:env-dump 2 lines]", command.slice(0, 80));
+  }
+  // Still no dump: an env that runs a command, set with options, an env word as an argument, echo of no variable, a
+  // redirection's `&`.
+  for (const command of ["env FOO=1 npm test", "set -e; make", "set -o pipefail; make", "grep env notes.txt", "echo ok", "make 2>&1 | tee build.log", "export APP_REGION=north && npm test", "make; ls"]) {
+    const out = await scrub(text.replace(seed, "gold"), { mode: "count", command });
+    assert.deepEqual(out.cuts, [], `${command}: ${JSON.stringify(out.cuts)}`);
+  }
+});
+
+test("LVI (11-25 read): a lone env command's output is one dump too: a value's later lines and what follows them are its", async () => {
+  const seed = "Tallow4quarry62";
+  // A multi-line value ends env's NAME=value run; every line after it is still env's output.
+  const multi = await gone(`A=1\nB=l1\nl2\nC=${seed}`, [seed], { command: "env" });
+  assert.equal(multi.text, "[redacted:env-dump 4 lines]");
+  const named = await gone(`l1\n${seed}`, [seed], { command: "printenv APP_SEED" });
+  assert.equal(named.text, "[redacted:env-dump 2 lines]");
+  // Exact: the line after printenv's value is cut with it.
+  const lone = await gone(`${seed}\nnext step`, [seed], { command: "printenv APP_SEED" });
+  assert.equal(lone.text, "[redacted:env-dump 2 lines]");
+});
+
 test("LIX: a dotted name is no code evidence alone; a self./this./cls. root, a trailing `;` or an environment root is", async () => {
   const wrappers = [
     (s) => s,
