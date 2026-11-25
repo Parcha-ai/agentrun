@@ -888,6 +888,18 @@ describe("a trigger's typed input and its agent picker", () => {
     expect(calls.filter((c) => c.method === "PATCH").map((c) => c.body)).toEqual([{ name: "kyb nightly" }]);
   });
 
+  it("says on an event trigger's JSON input that the event comes in its content, and not on a schedule's", async () => {
+    const { v2 } = server({ agents });
+    const hook = await open(v2, { trigger: null, kind: "webhook" });
+    await hook.set("agent", "filters");
+    expect(hook.text()).toContain('The event comes in its "content"');
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const cron = await open(server({ agents }).v2, { trigger: null });
+    await cron.set("agent", "filters");
+    expect(cron.text()).toContain("The agent takes its whole input as JSON");
+    expect(cron.text()).not.toContain('The event comes in its "content"');
+  });
+
   it("takes an agent's whole input as JSON when its schema can't be shown as fields, and keeps it on an edit", async () => {
     const { v2, calls } = server({ agents });
     const n = await open(v2, { trigger: null });
@@ -898,7 +910,7 @@ describe("a trigger's typed input and its agent picker", () => {
     await n.type(box, '{"filters": {"risk": "high"}}');
     await n.set("maxCost", "2");
     await n.click(/^Create schedule$/);
-    expect((calls.find((c) => c.method === "POST")!.body as { target: { input: unknown } }).target.input).toEqual({ filters: { risk: "high" }, content: "" });
+    expect((calls.find((c) => c.method === "POST")!.body as { target: { input: unknown } }).target.input).toEqual({ filters: { risk: "high" } });
     act(() => root?.unmount()); document.body.innerHTML = "";
     const made: Trigger = { ...NIGHTLY, target: { kind: "start_run", agent_id: "filters", input: { filters: { risk: "high" }, content: "Look." }, max_cost_usd: 2 } };
     const e = server({ triggers: [made], agents });

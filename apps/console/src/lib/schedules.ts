@@ -39,43 +39,45 @@ const fieldShows = (x: unknown) => scalar(x) || (Array.isArray(x) && x.every(sca
 export const inputText = (input: Record<string, unknown>): ParameterText =>
   Object.fromEntries(Object.entries(input).flatMap(([k, v]): [string, string][] => (k === "content" || !fieldShows(v) ? [] : [[k, Array.isArray(v) ? v.map(String).join("\n") : String(v)]])));
 
-/** `input` with the run's message, "" where it has none. A trigger's event (a webhook's body, a feed's item, an email)
- *  and the line saying what fired the run are added to input.content, and only when that is text (serve's triggers.ts),
- *  so a run whose input the form made without a message would start without its event. */
+/** `input` with the run's message, "" where it has none. serve adds a trigger's event (a webhook's body, a feed's item,
+ *  an email) and the line saying what fired the run to input.content, and only when that is text (triggers.ts), so a
+ *  run whose typed input left the message out would start without its event. */
 const withMessage = (input: Record<string, unknown>): Record<string, unknown> => (Object.hasOwn(input, "content") ? input : { ...input, content: "" });
 
 /** The input a trigger's run is given, or what is wrong with it under `target.input`: the message alone; the message
  *  (optional when the agent's schema requires another field) and the typed fields; or, for a schema the fields can't
  *  show, the whole input as JSON, an object. An edited trigger's input starts as read, and only a field or the message
  *  whose text was changed is taken from the form: a key no field has, a value a field can't show, and a field the
- *  schema now requires but the input never had all go as stored until edited, so a rename never changes the input. An
- *  input the form makes or edits carries the message, "" when it is left blank (withMessage). */
-export function targetInputOf(d: { content: string } & InputDraft, issues: Record<string, string>): Record<string, unknown> {
+ *  schema now requires but the input never had all go as stored until edited, so a rename never changes the input.
+ *  `event`: the trigger's runs come with an event, which needs the message, so typed fields go with it even when it is
+ *  blank (withMessage). Whole JSON goes exactly as written: the schema can refuse a key the form would add (its
+ *  maxProperties), and the form says there that the event comes in `content`. */
+export function targetInputOf(d: { content: string } & InputDraft, issues: Record<string, string>, event = false): Record<string, unknown> {
   const read = d.inputRead ?? {};
   const shape = d.shape;
   if (shape?.kind === "json") {
     const text = d.json ?? shape.example.text;
     let input: unknown;
     try { input = JSON.parse(text); } catch { input = undefined; }
-    if (isRecord(input)) return d.inputRead && text === JSON.stringify(d.inputRead, null, 2) ? input : withMessage(input);
+    if (isRecord(input)) return input;
     issues["target.input"] = text.trim() ? "The agent's input is a JSON object: this is not." : "Give the agent's input, as JSON.";
     return {};
   }
   if (shape?.kind === "fields") {
     if (shape.form.contentRequired && !d.content.trim()) issues["target.input"] = "Say what each run is asked.";
     const typed = d.values ?? fieldStartText(shape.form);
-    const fromForm = withMessage(inputOf(shape.form, d.content, typed));
+    const made = inputOf(shape.form, d.content, typed);
+    const fromForm = event ? withMessage(made) : made;
     if (!d.inputRead) return fromForm;
     // A value rebuilt from a field's text can differ from the one stored (a list's text is trimmed, its blank items
     // dropped: ["a\nb", ""] would go back as ["a", "b"]), so only a field whose text changed is rebuilt. A field's
     // text as read is "" for a value it can't show or none.
     const asRead = inputText(read);
     const input: Record<string, unknown> = { ...read };
-    let edited = false;
-    const take = (k: string) => { edited = true; if (Object.hasOwn(fromForm, k)) input[k] = fromForm[k]; else delete input[k]; };
+    const take = (k: string) => { if (Object.hasOwn(fromForm, k)) input[k] = fromForm[k]; else delete input[k]; };
     for (const [k] of shape.form.fields) if ((typed[k] ?? "") !== (asRead[k] ?? "")) take(k);
     if (d.content !== (typeof read.content === "string" ? read.content : "")) take("content");
-    return edited ? withMessage(input) : input;
+    return input;
   }
   if (!d.content.trim()) issues["target.input"] = "Say what each run is asked.";
   return { ...read, content: d.content };
@@ -699,7 +701,7 @@ export function githubBodyOf(d: GitHubDraft, capOptional: boolean | CapRule = fa
 /** A create body from its source and the run it starts (bodyOf's rules for the target), or what is missing. */
 function createOf(d: { name: string; agentId: string; content: string; maxCost: string } & InputDraft, source: TriggerCreate["source"], issues: Record<string, string>, capOptional: boolean | CapRule, what: string): { body?: TriggerCreate; issues?: Record<string, string> } {
   if (!d.agentId) issues["target.agent_id"] = "Pick an agent.";
-  const input = targetInputOf(d, issues);
+  const input = targetInputOf(d, issues, true);
   const { cap, issue } = capUnder(d.maxCost, capOptional, `A cost cap is needed: every run ${what} starts is capped.`);
   if (issue) issues["target.max_cost_usd"] = issue;
   if (Object.keys(issues).length) return { issues };

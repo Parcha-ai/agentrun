@@ -500,10 +500,11 @@ const capPlaceholder = (agentCap: number | undefined) => (agentCap !== undefined
  *  cost cap under `capRule`, the rule the form's body builder takes too: for a connected agent (`none`) no field, only the
  *  words saying why, with a refusal the server still names under the cap. `input`: how the picked agent takes its input
  *  and the server's issues at its fields (useTriggerCreate). `edit`: a change to the draft's run fields. `what` names the
- *  trigger in the cap's hint; `skips`: the agent warning's note for a schedule. */
-function RunTargetFields({ v2, draft, edit, issues, agents, input, agentCap, capRule, what, asked, skips }: {
+ *  trigger in the cap's hint; `skips`: the agent warning's note for a schedule. `event`: each run comes with an event
+ *  (every trigger but a schedule), which reaches it in the input's message (RunInput). */
+function RunTargetFields({ v2, draft, edit, issues, agents, input, agentCap, capRule, what, asked, skips, event }: {
   v2: Client; draft: RunDraft; edit: (patch: Partial<RunDraft>) => void;
-  issues: Record<string, string>; agents: Agent[] | null; input: RunInputState; agentCap: number | undefined; capRule: CapRule; what: string; asked?: string; skips?: boolean;
+  issues: Record<string, string>; agents: Agent[] | null; input: RunInputState; agentCap: number | undefined; capRule: CapRule; what: string; asked?: string; skips?: boolean; event?: boolean;
 }) {
   // Another agent's input starts afresh (its fields as they start, its example), and the issues at the last one's fields go.
   const pick = (agentId: string) => {
@@ -516,7 +517,7 @@ function RunTargetFields({ v2, draft, edit, issues, agents, input, agentCap, cap
       <AgentPick agents={agents} value={draft.agentId} onChange={pick} />
     </Field>
     <UnattendedWarning v2={v2} agentId={draft.agentId} skips={skips} />
-    <RunInput shape={input.shape} draft={draft} onChange={edit} issue={issues["target.input"]} fieldIssues={input.fieldIssues} setFieldIssues={input.setFieldIssues} hint={asked} />
+    <RunInput shape={input.shape} draft={draft} onChange={edit} issue={issues["target.input"]} fieldIssues={input.fieldIssues} setFieldIssues={input.setFieldIssues} hint={asked} event={event} />
     {capRule === "none" ? (
       <UiField className="min-w-0" group label="Cost cap" error={issues["target.max_cost_usd"] ? <span data-issue="target.max_cost_usd">{issues["target.max_cost_usd"]}</span> : undefined}>
         <p data-no-cap role="note" className="text-body text-muted-foreground">{CONNECTED_NO_CAP}</p>
@@ -561,15 +562,15 @@ type RunInputState = { shape: AgentInput | undefined; keys: string[]; fieldIssue
  *  the message and the agent's typed fields under it (the message optional when the schema requires another field), each
  *  with the server's issues at it (`target.input.<key>`); or, for a schema the fields can't show, the whole input as JSON.
  *  `hint`: what else each run is given (an event's payload). */
-function RunInput({ shape, draft, onChange, issue, fieldIssues, setFieldIssues, hint }: {
+function RunInput({ shape, draft, onChange, issue, fieldIssues, setFieldIssues, hint, event }: {
   shape: AgentInput | undefined; draft: { content: string } & InputDraft; onChange: (patch: { content?: string } & InputDraft) => void; issue?: string;
-  fieldIssues: FieldIssue[]; setFieldIssues: RunInputState["setFieldIssues"]; hint?: string;
+  fieldIssues: FieldIssue[]; setFieldIssues: RunInputState["setFieldIssues"]; hint?: string; event?: boolean;
 }) {
   if (shape?.kind === "json") {
     const fields = shape.example.fields.map((f) => f.name).join(", ");
     return (
       <Field label="Each run's input, as JSON" field="target.input" issue={issue} required
-        hint={`The agent takes its whole input as JSON${fields ? `: ${fields}` : ""}.${hint ? ` ${hint}` : ""}`}>
+        hint={`The agent takes its whole input as JSON${fields ? `: ${fields}` : ""}.${hint ? ` ${hint}` : ""}${event ? ` The event comes in its "content": leave "content" out and each run starts without it.` : ""}`}>
         <Textarea name="input" rows={6} spellCheck={false} className="p-3 font-mono leading-[1.6]" value={draft.json ?? shape.example.text} onChange={(e) => onChange({ json: e.target.value })} />
       </Field>
     );
@@ -838,7 +839,7 @@ function EmailForm({ v2, go, minEvery }: FormProps) {
               options={(["seconds", "minutes", "hours"] as const).map((u) => ({ value: u, label: u }))} />
           </span>
         </Field>
-        <RunTargetFields v2={v2} draft={draft} edit={(patch) => setDraft((d) => ({ ...d, ...patch }))} issues={issues} agents={agents} input={input} agentCap={agentCap} capRule={capRule} what="trigger" asked="The message comes with it: its sender, subject and text." />
+        <RunTargetFields event v2={v2} draft={draft} edit={(patch) => setDraft((d) => ({ ...d, ...patch }))} issues={issues} agents={agents} input={input} agentCap={agentCap} capRule={capRule} what="trigger" asked="The message comes with it: its sender, subject and text." />
         <div>
           <label className="flex items-center gap-2 text-body"><input type="checkbox" name="enabled" checked={draft.enabled} onChange={(e) => set("enabled")(e.target.checked)} className="accent-primary" /> On from now (off: made paused)</label>
           {issues.enabled && <p className="mt-1 text-small text-destructive-text" role="alert" data-issue="enabled">{issues.enabled}</p>}
@@ -916,7 +917,7 @@ function WebhookForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
         </fieldset>
         <p className="text-small text-muted-foreground">Events from an app Composio connects start runs through an app trigger instead: <a href="#/triggers/new-composio" className="underline underline-offset-2">New app trigger</a></p>
         <WebhookFilter signature={draft.signature} rules={draft.accept} onChange={set("accept")} issues={issues} cap={null} />
-        <RunTargetFields v2={v2} draft={draft} edit={(patch) => setDraft((d) => ({ ...d, ...patch }))} issues={issues} agents={agents} input={input} agentCap={agentCap} capRule={capRule} what="webhook" />
+        <RunTargetFields event v2={v2} draft={draft} edit={(patch) => setDraft((d) => ({ ...d, ...patch }))} issues={issues} agents={agents} input={input} agentCap={agentCap} capRule={capRule} what="webhook" />
       </div>
       <div className="mt-6 flex flex-wrap gap-2">
         <Button type="submit" size="lg" variant="solid" disabled={saving}>{saving ? "Creating" : "Create webhook"}</Button>
@@ -984,7 +985,7 @@ function GitHubForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
       <div className={`mt-5 ${formColumnsClass}`}>
         <Field label="Name" field="name" issue={issues.name}><Input name="name" value={draft.name} onChange={(e) => set("name")(e.target.value)} placeholder="review PRs" /></Field>
         <GitHubEvents picks={draft} onChange={(picks) => setDraft((d) => ({ ...d, ...picks }))} issues={issues} />
-        <RunTargetFields v2={v2} draft={draft} edit={(patch) => setDraft((d) => ({ ...d, ...patch }))} issues={issues} agents={agents} input={input} agentCap={agentCap} capRule={capRule} what="trigger" asked="The event's payload comes with it." />
+        <RunTargetFields event v2={v2} draft={draft} edit={(patch) => setDraft((d) => ({ ...d, ...patch }))} issues={issues} agents={agents} input={input} agentCap={agentCap} capRule={capRule} what="trigger" asked="The event's payload comes with it." />
       </div>
       <div className="mt-6 flex flex-wrap gap-2">
         <Button type="submit" size="lg" variant="solid" disabled={saving}>{saving ? "Creating" : "Create GitHub trigger"}</Button>
@@ -1139,7 +1140,7 @@ function ComposioForm({ v2, go, noAddress }: { v2: Client; go: (hash: string) =>
             <AppFilter where={draft.where} onChange={set("where")} issues={issues} />
           </>
         )}
-        <RunTargetFields v2={v2} draft={draft} edit={(patch) => edit((d) => ({ ...d, ...patch }))} issues={issues} agents={agents} input={input} agentCap={agentCap} capRule={capRule} what="trigger" asked="What Composio delivered comes with it." />
+        <RunTargetFields event v2={v2} draft={draft} edit={(patch) => edit((d) => ({ ...d, ...patch }))} issues={issues} agents={agents} input={input} agentCap={agentCap} capRule={capRule} what="trigger" asked="What Composio delivered comes with it." />
       </div>
       {elsewhere && (
         <div role="alertdialog" aria-label="Move the subscription here?" className="mt-6 space-y-3 border border-warning/50 p-4 text-body">
@@ -1429,7 +1430,7 @@ function FeedForm({ v2, go, trigger, minEvery }: FormProps & { trigger?: FeedTri
           </div>
         </fieldset>
         {!trigger && <>
-          <RunTargetFields v2={v2} draft={draft} edit={(patch) => setDraft((d) => ({ ...d, ...patch }))} issues={issues} agents={agents} input={input} agentCap={agentCap} capRule={capRule} what="trigger" asked="The item comes with it: its title, link, summary and feed." />
+          <RunTargetFields event v2={v2} draft={draft} edit={(patch) => setDraft((d) => ({ ...d, ...patch }))} issues={issues} agents={agents} input={input} agentCap={agentCap} capRule={capRule} what="trigger" asked="The item comes with it: its title, link, summary and feed." />
         </>}
       </div>
       <div className="mt-6 flex flex-wrap gap-2">
