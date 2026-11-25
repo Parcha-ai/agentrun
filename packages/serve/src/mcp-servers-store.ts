@@ -417,8 +417,9 @@ export class McpServersOverStore {
         // saved row only while that row still carries its mark (savedByToken), both in the store's one statement: the
         // check and the write are one step, so an owner's save that lands after the gate's read is never written over.
         : changedMeanwhile(name, await saveMcpServerIfCredential(this.store, this.sealKey, { ...fields(was), ...(credential ? { credential } : {}) }, against, { githubMcpOrigin: this.appOrigin, ...(byToken ? { tokens: { record: mcpSourceKey(name), ...(first ? { made: recordOf } : {}) } } : {}), ...(owns ? { owns } : {}) }));
-      // A row the token made with no source given: url with none, as an unrecorded row reads (sourceOf), marked.
-      if (!first && (source || (mark && !wasToken))) await this.store.settings.put(mcpSourceKey(name), recordOf(saved));
+      // A save over a saved row that names its source records it after the row (the first save's went with its row): the
+      // record is marked only when the token saves over a row it saved (mark is wasToken here).
+      if (!first && source) await this.store.settings.put(mcpSourceKey(name), recordOf(saved));
       // The Composio MCP server the row named before, when the preset made it (the row was a preset server) and the row names
       // it no longer: a preset save over it made a new one, or an ordinary save moved the row off Composio.
       const madeBefore = wasPreset && (made || moved) ? composioServerId(was!.url) : undefined;
@@ -474,10 +475,12 @@ export class McpServersOverStore {
     return this.view(saved);
   }
 
-  /** `work` in the turn of the saved server `name`, after every save of that name already in it: a save writes its row and
-   *  then its source record (mcp-sources.ts), so the token's mark, written after its row, never lands on a row an owner's
-   *  save wrote between the two. One server holds a store (StoreOwned), so the turn is this process's. A delete takes
-   *  none: its statement compares the mark itself (Mcp.removeIfCredential). */
+  /** `work` in the turn of the saved server `name`, after every save of that name already in it: a save over a saved row
+   *  writes the row and then its source record (mcp-sources.ts), so a token's mark it keeps never lands on a row an owner's
+   *  save wrote between the two. The token's first save of the name writes its row and marked record in one transaction
+   *  (McpTokensMark made), with no moment between them. One server holds a store (StoreOwned), so the turn is this
+   *  process's. A delete takes none: its statement compares the mark itself (Mcp.removeIfCredential), and it drops a
+   *  record only while it is the one it read (Settings.removeIf). */
   private async nameTurn<T>(name: string, work: () => Promise<T>): Promise<T> {
     const mine = (this.nameTurns.get(name) ?? Promise.resolve()).then(work);
     const held = mine.then(() => undefined, () => undefined);
