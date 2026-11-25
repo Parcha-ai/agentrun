@@ -4,6 +4,7 @@
 // files/download is not. The daemon's read is the check: a file it refuses is never copied, and the copy, opened as its
 // user, holds what that user can read and nothing more, whatever the path names by the time it is copied.
 import { randomBytes } from "node:crypto";
+import { posix } from "node:path";
 import type { MachineHost } from "../host.js";
 import { type ComputerClient, type DaemonMethod, type DaemonMethods, type FilesReadParams, MAX_CHUNK_BYTES } from "../protocol.js";
 import { ok, type Result } from "../result.js";
@@ -17,8 +18,15 @@ export interface DownloadBounds {
 	downloadMs: number;
 }
 
+/**
+ * An absolute path as computerd's files.read opens it: cleaned first (filepath.Clean, files.go cleanPath), so a ".."
+ * takes off the name before it, a symlinked directory's or not. read-stage's cat opens the path as given, where a ".."
+ * after a link leaves the link's target: it is given this one, the file the daemon read.
+ */
+const cleaned = (path: string) => posix.resolve(path);
+
 /** A read the daemon may answer from a copy: an absolute path outside /proc (whose self is the reader's), a whole chunk. */
-const copyable = ({ path, length }: FilesReadParams) => path.startsWith("/") && !path.startsWith("/proc/") && (length === undefined || length === MAX_CHUNK_BYTES);
+const copyable = ({ path, length }: FilesReadParams) => path.startsWith("/") && !cleaned(path).startsWith("/proc/") && (length === undefined || length === MAX_CHUNK_BYTES);
 
 /**
  * client, with every files.read past one chunk read from one downloaded copy after its first chunk. A first chunk (offset
@@ -76,7 +84,7 @@ export function downloadingClient(host: MachineHost, download: NonNullable<Machi
 				copies.delete(read.path);
 				const first = await client.call(method, params, options);
 				const answer = first.ok ? (first.value as DaemonMethods["files.read"]["result"]) : undefined;
-				if (answer !== undefined && !answer.eof && answer.size > MAX_CHUNK_BYTES && copyable(read)) copies.set(read.path, copyOf(read.path, answer.size));
+				if (answer !== undefined && !answer.eof && answer.size > MAX_CHUNK_BYTES && copyable(read)) copies.set(read.path, copyOf(cleaned(read.path), answer.size));
 				return first;
 			}
 			const copying = copies.get(read.path);
