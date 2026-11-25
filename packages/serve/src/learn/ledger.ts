@@ -47,7 +47,8 @@ export type SpendRow = {
 };
 
 /** What record() reads of an ended run: its row (its cost, the bound beside it, its metrics: the run-end classifier's
- *  path, workflow and digest, runner/workflow-first.ts pathMetrics) and every round its learning kept (learning_proposals). */
+ *  path, workflow and digest, runner/workflow-first.ts pathMetrics), every round its learning kept (learning_proposals)
+ *  and, for an audit's shadow run, the run its launch audits (`auditOf`: its end may name no audit, when it failed first). */
 export type RunEnd = {
   readonly id: string;
   readonly agentId: string;
@@ -56,11 +57,17 @@ export type RunEnd = {
   readonly costAtMostUsd: number | null;
   readonly metrics: unknown;
   readonly rounds: readonly { readonly round: number; readonly proposal: unknown }[];
+  readonly auditOf?: string | null;
 };
 
 const usdOrNull = (value: unknown): number | null => (typeof value === "number" && Number.isFinite(value) ? value : null);
 const textOrNull = (value: unknown): string | null => (typeof value === "string" ? value : null);
 const objectOf = (value: unknown): Record<string, unknown> => (value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {});
+
+/** RunEnd.auditOf of run `runId` from its stored launch body (`body`, undefined with none): the run its launch audits
+ *  (null when it names none) for an audit's shadow run (learn/audit.ts SHADOW_PREFIX "audit."), undefined for any other. */
+export const auditOfLaunch = (runId: string, body: unknown): string | null | undefined =>
+  runId.startsWith("audit.") ? textOrNull(objectOf(objectOf(body).audit).of) : undefined;
 /** A sum of parts, null once one is unknown; 0 for none. */
 const sumOf = (parts: readonly (number | null)[]): number | null => (parts.some((one) => one === null) ? null : noiseOff(parts.reduce<number>((total, one) => total + one!, 0)));
 
@@ -138,9 +145,9 @@ export function record(end: RunEnd): { row: LedgerRow; spend: SpendRow[] } {
   // What the row holds past the answer and its look-back is a later turn's spend, unknown once the row's cost is; with the
   // look-back's cost unknown the two can't be told apart, and the job is what it had cost when it answered.
   const job = !looked || asAnswered === null || back === null ? asAnswered : rowUsd === null ? null : Math.max(asAnswered, rowUsd - back);
-  const path = RUN_PATHS.includes(metrics.path as RunPath) ? (metrics.path as RunPath) : null;
+  const audited = metrics.path === "audit" || end.auditOf !== undefined;
+  const path = audited ? "audit" : RUN_PATHS.includes(metrics.path as RunPath) ? (metrics.path as RunPath) : null;
   const audit = objectOf(metrics.audit);
-  const audited = path === "audit";
   const workflow = textOrNull(audited ? audit.workflow : metrics.workflow);
   const digest = textOrNull(audited ? audit.digest : metrics.workflow_digest);
   // A hand-back a restart cut (pathMetrics workflow_cut) is `cut`, never the workflow's own `back`.
@@ -153,16 +160,8 @@ export function record(end: RunEnd): { row: LedgerRow; spend: SpendRow[] } {
   const base = { runId: end.id, agentId: end.agentId };
   const spend: SpendRow[] = compilesIn(rounds).map((one) => ({ ...base, round: one.round, kind: "compile", ofRun: null, workflow: one.workflow, digest: one.digest, usd: one.usd }));
   if (path === "replay") spend.push({ ...base, round: 0, kind: "check", ofRun: null, workflow, digest, usd: rowUsd });
-  if (audited) spend.push({ ...base, round: 0, kind: "audit", ofRun: textOrNull(audit.of), workflow, digest, usd: rowUsd });
+  if (audited) spend.push({ ...base, round: 0, kind: "audit", ofRun: textOrNull(audit.of) ?? end.auditOf ?? null, workflow, digest, usd: rowUsd });
   return { row, spend };
-}
-
-/** The audit spend row of shadow run `shadow` of run `ofRun`, from its row alone: for a shadow whose end named no audit
- *  (it failed before its end wrote its metrics), found by its id (learn/audit.ts shadowRunId). Its cost is the row's,
- *  null when unknown or only a bound. */
-export function shadowSpend(shadow: Pick<RunEnd, "id" | "agentId" | "costUsd" | "costAtMostUsd">, ofRun: string): SpendRow {
-  const usd = typeof shadow.costAtMostUsd === "number" ? null : shadow.costUsd;
-  return { runId: shadow.id, agentId: shadow.agentId, round: 0, kind: "audit", ofRun, workflow: null, digest: null, usd };
 }
 
 /** An audit's shadow run of a run, as the reader finds it: `open` while it is queued or running (its cost not known yet),

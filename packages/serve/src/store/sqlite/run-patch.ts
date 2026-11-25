@@ -7,8 +7,8 @@ import { CENSUS_UNSCANNED, endedReason, FINAL_STATES, Fenced, type AlsoRow, type
 import { type Dialect, settledBody, SQLITE } from "../dialect.js";
 import type { SqliteExecutor, SqliteValue } from "./connection.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
-import { readableJson, writeLaunch } from "./run-launch.js";
-import { record } from "../../learn/ledger.js";
+import { readableJson, readLaunch, writeLaunch } from "./run-launch.js";
+import { auditOfLaunch, record } from "../../learn/ledger.js";
 
 /** A WHERE condition on `runs`: the run is no built-in learning run (one a kept learning names, queued with it), which no
  *  list of runs names. */
@@ -129,10 +129,12 @@ export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get" | "al
  *  or server of the build before the ledger, ending the run again, writes none, and its row reads as stale until a later
  *  end writes it again. A cancel that wins an end (refuseLeftovers, after this) moves ended_at, never the epoch: the row
  *  still stands. */
-export async function recordLedger(tx: Pick<SqliteExecutor, "run" | "all">, run: RunRow, now: number): Promise<void> {
+export async function recordLedger(tx: Pick<SqliteExecutor, "run" | "all" | "get">, run: RunRow, now: number): Promise<void> {
   const rounds = (await tx.all<{ round: number; proposal: string }>("SELECT round, proposal FROM learning_proposals WHERE run_id = ? ORDER BY round", run.id))
     .map((one) => ({ round: Number(one.round), proposal: JSON.parse(one.proposal) as unknown }));
-  const { row, spend } = record({ id: run.id, agentId: run.agentId, startedAt: run.startedAt, costUsd: run.costUsd, costAtMostUsd: run.costAtMostUsd, metrics: run.metrics, rounds });
+  // An audit's shadow is booked on the run its launch audits, whatever its end named (one that failed first names none).
+  const auditOf = auditOfLaunch(run.id, run.id.startsWith("audit.") ? (await readLaunch(tx, run.id).catch(() => undefined))?.body : undefined);
+  const { row, spend } = record({ id: run.id, agentId: run.agentId, startedAt: run.startedAt, costUsd: run.costUsd, costAtMostUsd: run.costAtMostUsd, metrics: run.metrics, rounds, ...(auditOf === undefined ? {} : { auditOf }) });
   await tx.run(
     `INSERT INTO learning_ledger (run_id, agent_id, started_at, path, workflow, digest, not_served, job_usd, look_back_usd, cost, epoch) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (run_id) DO UPDATE SET agent_id = excluded.agent_id, started_at = excluded.started_at, path = excluded.path, workflow = excluded.workflow, digest = excluded.digest,

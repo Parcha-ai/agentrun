@@ -791,14 +791,15 @@ test("(r4) a drawn run whose cap leaves under a run's smallest cap (or a spend n
 
 // Review on #3061 r4 (PRRT_kwDOUmdVMs64QkBr): A8's rule, null while unknown, never $0.
 test("(r4) a served run's all-in is unknown while its shadow is queued or running, never $0; once the shadow ended it is served + shadow", async () => {
-  const { figuresOf, record, shadowCostOf, shadowSpend, spendByRun } = await import("../dist/learn/ledger.js");
+  const { figuresOf, record, shadowCostOf, spendByRun } = await import("../dist/learn/ledger.js");
   const { row } = record({ id: "served-1", agentId: "a", startedAt: 0, costUsd: 0.2, costAtMostUsd: null, metrics: { path: "workflow", workflow: "w", workflow_digest: "d".repeat(16) }, rounds: [] });
   const allInOf = (shadows, spend = []) => {
     const figures = figuresOf(row, { compile: 0, shadow: shadowCostOf("served-1", spendByRun(spend).audit, shadows), share: 0 });
     return { cost_usd: figures.usd, learning_usd: figures.series_learning_usd, total_usd: figures.series_total_usd, all_in_usd: figures.all_in_usd };
   };
   assert.deepEqual(allInOf(new Map([["served-1", "open"]])), { cost_usd: 0.2, learning_usd: null, total_usd: null, all_in_usd: null }, "queued or running: unknown, not the served part");
-  const ended = shadowSpend({ id: "audit.served-1", agentId: "a", costUsd: 0.25, costAtMostUsd: null }, "served-1");
+  // A shadow whose end named no audit is booked on the run its launch audits.
+  const [ended] = record({ id: "audit.served-1", agentId: "a", startedAt: 1, costUsd: 0.25, costAtMostUsd: null, metrics: {}, rounds: [], auditOf: "served-1" }).spend;
   assert.deepEqual(allInOf(new Map([["served-1", "ended"]]), [ended]), { cost_usd: 0.2, learning_usd: 0.25, total_usd: 0.45, all_in_usd: 0.45 });
   assert.deepEqual(allInOf(new Map([["served-1", "ended"]]), [{ ...ended, usd: null }]), { cost_usd: 0.2, learning_usd: null, total_usd: null, all_in_usd: null }, "ended at an unknown cost: unknown");
   assert.deepEqual(allInOf(new Map()), { cost_usd: 0.2, learning_usd: 0, total_usd: 0.2, all_in_usd: 0.2 }, "never drawn: nothing beside it");
