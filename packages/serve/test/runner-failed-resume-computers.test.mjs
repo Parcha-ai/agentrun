@@ -324,6 +324,55 @@ test("a stopped run that a follow-up queues again within the keep's time keeps t
   assert.deepEqual(await readKept(run.server.settings, RUN), { ...pinned, ending: true }, "a machine this end did not delete keeps its row ending");
 });
 
+test("a run's end whose delete takes the kept machine but not another marks the kept row ended at that machine's own delete, so a follow-up's park keeps its new machine; a kept machine its vendor says is gone, or that a later try's list no longer shows, ends its row the same way", { timeout: 60_000 }, async (t) => {
+  const run = await opened(t);
+  const computers = { kinds: KINDS, providers: { docker: () => run.docker.provider() } };
+  const kept = { provider: "docker", kind: "sandbox", id: "c2", name: "c2", epoch: 2, until: Date.now() + KEEP_MS };
+  // How each machine's delete answers: "ok"; "fail", the vendor refuses it on every try; "gone", the vendor ended it
+  // already (not_found, and its list no longer shows it); "lost", deleted, but the answer never came back (an error).
+  const cases = [
+    { answers: { c1: "fail", c2: "ok" }, left: ["c1@1"], failed: true },
+    { answers: { c1: "ok", c2: "gone" }, left: [], failed: false },
+    { answers: { c1: "ok", c2: "lost" }, left: [], failed: false },
+  ];
+  /** The case's answers, by machine. */
+  let answering = {};
+  const listed = run.docker.provider;
+  t.after(() => {
+    run.docker.provider = listed;
+  });
+  run.docker.provider = (...args) => {
+    const provider = listed(...args);
+    return {
+      ...provider,
+      async release(ref, how) {
+        const answer = answering[ref.id];
+        if (answer === "fail") return { ok: false, error: { code: "unavailable", message: `the vendor refused to delete ${ref.id}` } };
+        if (answer === "gone" || answer === "lost") run.docker.held.delete(ref.id);
+        if (answer === "gone") return { ok: false, error: { code: "not_found", message: `${ref.id} is not there` } };
+        if (answer === "lost") return { ok: false, error: { code: "unreachable", message: `the delete of ${ref.id} was not answered` } };
+        return provider.release(ref, how);
+      },
+    };
+  };
+  for (const [at, { answers, left, failed }] of cases.entries()) {
+    const words = JSON.stringify(answers);
+    answering = answers;
+    run.docker.held.clear();
+    for (const epoch of [1, 2]) run.docker.held.set(`c${epoch}`, { ref: { id: `c${epoch}`, name: `c${epoch}` }, labels: { "agentrun.run": RUN, "agentrun.epoch": String(epoch) } });
+    await run.server.settings.put(keptKeyOf(RUN), kept);
+    const logged = [];
+    // A person's stop: the claim at epoch 3 ends the run; a delete that keeps failing is asked again until the bound.
+    await runEndComputers({ store: run.server, computers, log: (line) => logged.push(line), retryMs: 50, timeoutMs: 600 })({ runId: RUN, epoch: 3 });
+    assert.deepEqual(run.docker.left(), left, `${words}: the machines left`);
+    assert.equal(logged.some((line) => line.includes("could not be let go")), failed, `${words}: a delete that never went through is said: ${JSON.stringify(logged)}`);
+    assert.deepEqual(await readKept(run.server.settings, RUN), { ...kept, ended: true }, `${words}: the kept row ended once its own machine was gone, whatever came of the other delete`);
+    // The follow-up's claim made a new machine and parks it within the old keep's time.
+    const next = { provider: "docker", kind: "sandbox", id: `c${10 + at}`, name: `c${10 + at}`, epoch: 4, until: Date.now() + KEEP_MS };
+    assert.deepEqual(await keepKept(run.server.settings, RUN, next, {}), next, `${words}: the follow-up's park keeps its new machine`);
+  }
+});
+
 test("a run's end whose mark comes late leaves a later claim's keep as that claim wrote it: a follow-up that reopened the run and parked a new machine, or is taking the old one back, keeps its machine", { timeout: 60_000 }, async (t) => {
   const run = await opened(t);
   const computers = { kinds: KINDS, providers: { docker: () => run.docker.provider() } };
