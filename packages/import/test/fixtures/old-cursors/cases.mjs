@@ -43,3 +43,24 @@ export function summary(result) {
     counts: c ? { n: c.n, models: c.models, model: Array.from(c.model.subarray(0, c.n)), values: Array.from(c.values.subarray(0, c.n * 7)), has: Array.from(c.has.subarray(0, c.n)) } : undefined,
   };
 }
+
+/** The home a saved cursor names in place of the one it was made in. */
+export const HOME = "<home>";
+
+/** `value` (a cursor, or any part of one) with every string at or under `from` moved to `to`, in place: objects, arrays,
+ *  Maps and Sets walked, each once (a cursor's state shares objects). */
+export function rehomed(value, from, to, done = new Set()) {
+  const move = (v) => (typeof v === "string" && (v === from || v.startsWith(`${from}/`)) ? to + v.slice(from.length) : rehomed(v, from, to, done));
+  if (value === null || typeof value !== "object" || ArrayBuffer.isView(value) || done.has(value)) return value;
+  done.add(value);
+  if (value instanceof Map) for (const [k, v] of [...value]) {
+    value.delete(k);
+    value.set(move(k), move(v));
+  }
+  else if (value instanceof Set) for (const v of [...value]) {
+    value.delete(v);
+    value.add(move(v));
+  }
+  else for (const k of Object.keys(value)) value[k] = move(value[k]);
+  return value;
+}

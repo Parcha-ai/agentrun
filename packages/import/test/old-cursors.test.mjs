@@ -9,7 +9,7 @@ import { test } from "node:test";
 import { deserialize } from "node:v8";
 import { READERS } from "../dist/index.js";
 import { tempHome, writeJsonl } from "./fixtures.mjs";
-import { CASES, jsonl, summary } from "./fixtures/old-cursors/cases.mjs";
+import { CASES, HOME, jsonl, rehomed, summary } from "./fixtures/old-cursors/cases.mjs";
 import SAVED from "./fixtures/old-cursors/cursors.json" with { type: "json" };
 
 /** The sources whose cursor state changed shape since the release that saved these. */
@@ -20,9 +20,9 @@ for (const { name, mode, cursor, resumed: then } of SAVED) {
   test(`${name} ${JSON.stringify(mode)}: an earlier release's cursor gives the requests its own resume gave`, async (t) => {
     const home = await tempHome(t);
     const file = await writeJsonl(join(home, path), one);
-    // The cursor as saved, on this file: the same bytes, at another device and inode.
+    // The cursor as saved, on this file: the same bytes, in this home, at this file's device and inode.
     const { dev, ino } = await stat(file);
-    const saved = { ...deserialize(Buffer.from(cursor, "base64")), dev, ino };
+    const saved = { ...rehomed(deserialize(Buffer.from(cursor, "base64")), HOME, home), dev, ino };
     await appendFile(file, jsonl(two));
     const now = summary(await READERS[source].read({ file }, saved, mode));
     // As cursors.json holds it: JSON, no undefined field.
