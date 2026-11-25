@@ -137,11 +137,11 @@ test("this repository's shards cover every test file of every suite once, and ci
   assert.deepEqual(leanTests.strategy.matrix.shard, leanShards, 'test-lean runs the lean pool\'s shards');
   for (const key of ['name', 'needs', 'runs-on', 'timeout-minutes', 'steps']) assert.deepEqual(leanTests[key], testJob[key], `test-lean's ${key} is the test job's`);
   assert.deepEqual(leanTests.strategy.matrix.node, testJob.strategy.matrix.node, 'on the same Node');
-  // The lean job waits for the lean pool's shards and no other; verify fails on a red shard of either job, and on a red
-  // share of the store's suite on Postgres.
+  // The lean job waits for the lean pool's shards and no other; verify fails on a red shard of either job, on a red
+  // share of the store's suite on Postgres, and on an import scanner that its source does not rebuild byte for byte.
   assert.deepEqual(workflow.jobs.lean.needs, ['test-lean']);
   const verify = workflow.jobs.verify;
-  assert.deepEqual(verify.needs, ['test', 'test-lean', 'serve-postgres', 'console']);
+  assert.deepEqual(verify.needs, ['test', 'test-lean', 'serve-postgres', 'console', 'import-wasm']);
   const gate = verify.steps.find((step) => step.env);
   for (const job of verify.needs) {
     const name = Object.entries(gate.env).find(([, value]) => value === `\${{ needs.${job}.result }}`)?.[0];
