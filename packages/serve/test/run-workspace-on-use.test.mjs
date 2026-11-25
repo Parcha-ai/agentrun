@@ -37,8 +37,9 @@ test("openedAtUse: a use after the release opens nothing and is refused", async 
   const held = heldOpen();
   const run = openedAtUse(held.open);
   await run.end();
-  await assert.rejects(run.workspace(), { name: "WorkspaceError", code: "UNAVAILABLE" });
+  const use = run.workspace();
   assert.equal(held.seen.opens, 0, "nothing opened after the release");
+  await assert.rejects(use, { name: "WorkspaceError", code: "UNAVAILABLE" });
 });
 
 test("openedAtUse: a use after the release of an opened Workspace is refused, and the Workspace is not ended again", async () => {
