@@ -275,7 +275,7 @@ export async function dropAgentLearning(tx: Tx, agentId: string): Promise<void> 
   await tx.run("DELETE FROM learning_records WHERE agent_id = ?", agentId);
 }
 
-type Rows = Pick<Learning, "seed" | "newest" | "itemsAt" | "saves" | "saveOf" | "versions" | "diff" | "save" | "purgeRun" | "reset" | "erase" | "records" | "addRecord" | "changeRecords">;
+type Rows = Pick<Learning, "seed" | "newest" | "newestPurge" | "itemsAt" | "saves" | "saveOf" | "versions" | "diff" | "save" | "purgeRun" | "reset" | "erase" | "records" | "addRecord" | "changeRecords">;
 
 /** Store.learning's rows, over `db`; `now`, the store's clock. */
 export function learningRows(db: StoreConnection, now: () => number): Rows {
@@ -332,6 +332,7 @@ export function learningRows(db: StoreConnection, now: () => number): Rows {
       const save = await newest(db, agentId);
       return save ? atSave(db, agentId, save) : undefined;
     },
+    newestPurge: async (agentId) => (await db.get<{ id: string }>("SELECT id FROM learning_saves WHERE agent_id = ? AND kind = 'purged' ORDER BY version DESC LIMIT 1", agentId))?.id,
     itemsAt: async (agentId, id) => {
       const save = await saveBy(db, agentId, "id = ?", id);
       return save ? atSave(db, agentId, save) : undefined;

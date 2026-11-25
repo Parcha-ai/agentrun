@@ -577,6 +577,35 @@ test("an SDK start whose champion's writer is purged between its text read and i
   assert.deepEqual(delivered.filter(([digest]) => digest === digestOf(v1)), [], `the purged run's v1 is not delivered, as no run's or any: ${JSON.stringify(delivered)}`);
 });
 
+// A start reads its selection again only when a purge moved under it (only a purge rewrites what it read, in place): a
+// normal save during each of its reads (another run's merge) never refuses it.
+test("an SDK start whose selection sees a normal save land during every read is not refused: only a purge reads it again", async (t) => {
+  const { api, store, data } = await serve(t, { runner: false });
+  const id = "sdk-busy";
+  const tool = { name: "mcp:backend/status", description: "Read release status.", input_schema: { type: "object" }, permission: "allow", price_usd: 0 };
+  const body = { runtime: "claude-agent-sdk", input: "Check release status.", instructions: "Use the backend tools.", workflow_tools: [tool] };
+  const v1 = JSON.stringify({ v: 2, name: "status", schemas: { Input: { type: "object" }, Answer: { type: "object", properties: { ready: { type: "boolean" } }, required: ["ready"] } }, input: { schemaId: "Input" }, output: { schemaId: "Answer", path: "answer" }, root: { node: "call", label: "status", via: "tool", tool: tool.name, args: {}, out: "Answer", as: "answer", deadline_s: 5 } });
+  assert.equal((await api("POST", "/agents", { definition: { id, name: id, instructions: body.instructions, sdk: { runtime: body.runtime }, learning: true, tools: [] } })).status, 201);
+  assert.equal((await api("POST", `/agents/${id}/sdk-runs`, body, { "Idempotency-Key": "first" })).status, 201);
+  await endedRuns(api, store, id, ["busy-writer"], false);
+  const readme = { path: "workflows/status/README.md", text: "---\nname: status\ndescription: Read release status.\n---\n" };
+  const merge = await learned(store, id, (learning) => learningCommit(learning, { runId: "busy-writer", reason: "It learned status.", files: [{ path: "workflows/status/workflow.json", text: v1 }, readme] }));
+  await putPromotions(store, id, [recordOf("status", digestOf(v1), "promote", merge)]);
+  const { SdkRuns } = await import("../dist/sdk/runs.js");
+  const { sdkWorkflowManifest } = await import("../dist/sdk/workflows.js");
+  let saves = 0;
+  const learning = Object.create(store.learning, { itemsAt: { value: async (agentId, save) => {
+    const at = await store.learning.itemsAt(agentId, save);
+    // Another run's correction lands: a normal save, the newest moves.
+    await learned(store, id, (rows) => learningCommit(rows, { runId: `busy-${++saves}`, reason: "A note.", files: [], correction: `Note ${saves}.` }));
+    return at;
+  } } });
+  const sdk = new SdkRuns(Object.create(store, { learning: { value: learning } }), data, "sdk-secret");
+  const selected = await sdk.selectedWorkflows(id, merge, sdkWorkflowManifest([tool], undefined));
+  assert.ok(saves > 0, "a save landed during the selection");
+  assert.deepEqual(selected.workflows.map((flow) => digestOf(typeof flow.workflow === "string" ? flow.workflow : JSON.stringify(flow.workflow))), [digestOf(v1)], "the start is given the champion");
+});
+
 // Row-level cases over the store alone (Store.learning purgeRun), as the learning store's contract states them.
 /** A store with agent `agentId`, learning. */
 async function rowsOn(t, agentId = "agent-one") {

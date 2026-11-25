@@ -489,6 +489,9 @@ export interface Learning {
   seed(agentId: string): Promise<LearningAt>;
   /** The agent's learning at its newest save, as seed reads it; undefined before its first save (none is made). */
   newest(agentId: string): Promise<LearningAt | undefined>;
+  /** The id of the agent's newest purge save (a run's purge, the host's save of kind `purged`), undefined when none: the
+   *  one save that rewrites saves before it in place, so a read across two reads that this moved under reads again. */
+  newestPurge(agentId: string): Promise<string | undefined>;
   /** The agent's learning as save `id` (a version id) left it, read now: a purged run's rows are gone from every
    *  version. Undefined when the agent's learning holds no such save (a reset removed it, or it never was). */
   itemsAt(agentId: string, id: string): Promise<LearningAt | undefined>;

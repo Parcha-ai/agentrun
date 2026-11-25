@@ -485,10 +485,11 @@ export class SdkRuns {
   /** The workflows a start delivers, each the seed's or its champion's text read at its record's save, and the run whose
    *  text each is (`writers`); the drafts a check may take, and the run whose text each is (`drafts`, by name). A text and
    *  its writer are two reads, and a purge rewrites the saves they read in place: it adds a save of its own after the
-   *  newest (Store.learning purgeRun), so a selection the newest save moved under is read again, and one that keeps moving
-   *  refuses the start, to start again. Never the purged run's text named as no run's. */
+   *  newest (Store.learning purgeRun), so a selection a purge save moved under is read again (a normal save rewrites
+   *  nothing it read), and one that keeps moving refuses the start, to start again. Never the purged run's text named as
+   *  no run's. */
   private async selectedWorkflows(agentId: string, revision: string | null, binding: NonNullable<ReturnType<typeof sdkWorkflowManifest>>): Promise<{ workflows: LearnedWorkflow[]; writers: Map<LearnedWorkflow, string>; candidates: LearnedWorkflow[]; drafts: Record<string, string> }> {
-    const newest = async () => (await this.store.learning.newest(agentId))?.save.id;
+    const newest = () => this.store.learning.newestPurge(agentId);
     for (let attempt = 0; attempt < 3; attempt++) {
       const before = await newest();
       const selected = await this.selectedOnce(agentId, revision, binding);
