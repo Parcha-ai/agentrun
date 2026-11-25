@@ -81,6 +81,10 @@ export type SdkInbox = {
   /** The learning commit each of learning_workflows was read at, by name (its seed's, or its champion record's): where
    *  the receipt asks whether a purged run wrote it (receipt). */
   learning_commits?: Record<string, string>;
+  /** The learned workflow a learned_workflow start names, by its call's id, where its input is stored withheld (a held
+   *  value split across its arguments, withheldParts): the parent check of a callback nested in it reads its name here
+   *  (checkToolParents). Only a name of learning_workflows, never what the caller wrote otherwise. */
+  workflow_calls?: Record<string, string>;
   /** A compiled draft reserved for a shadow check, never supplied to the native agent. */
   learning_check?: SdkWorkflowCheck;
   /** Server cleaning changed evidence: two different secret-bearing answers must never agree by their placeholder. */
@@ -183,8 +187,9 @@ const writableInbox = (row: SdkInbox) => {
 };
 
 /** Parents are evidence relationships within this inbox, never caller-chosen labels that hide top-level work. Check
- *  inside modify's compare-and-replace so a concurrent upload cannot change the history we validated. */
-function checkToolParents(row: SdkInbox, events: readonly SdkEvent[]): void {
+ *  inside modify's compare-and-replace so a concurrent upload cannot change the history we validated. A learned_workflow
+ *  start stored withheld names its workflow in `named` (the row's workflow_calls and this batch's). */
+function checkToolParents(row: SdkInbox, events: readonly SdkEvent[], named: Readonly<Record<string, string>> = {}): void {
   const calls = new Map<string, { name: string; parent?: string; workflow?: string; open: boolean }>();
   const openChildren = new Map<string, number>();
   const tools = new Map<string, ReadonlySet<string>>();
@@ -204,7 +209,7 @@ function checkToolParents(row: SdkInbox, events: readonly SdkEvent[]): void {
         openChildren.set(event.parent_tool_use_id, (openChildren.get(event.parent_tool_use_id) ?? 0) + 1);
       }
       calls.set(event.id, { name: event.name, parent: event.parent_tool_use_id, open: true,
-        ...(event.name === "learned_workflow" && isObject(event.input) && typeof event.input.name === "string" ? { workflow: event.input.name } : {}),
+        ...(event.name === "learned_workflow" && isObject(event.input) && typeof event.input.name === "string" ? { workflow: event.input.name } : event.name === "learned_workflow" && Object.hasOwn(named, event.id) ? { workflow: named[event.id] } : {}),
       });
     } else {
       if (openChildren.get(event.id)) refuse("SDK workflow callbacks must finish before their parent workflow.");
@@ -653,6 +658,14 @@ export class SdkRuns {
       return event;
     });
     const batch = this.clean({ sequence: body.sequence as number, events: shown }, runId);
+    // The workflow a learned_workflow start names, where its input is stored withheld: kept apart from it, for the
+    // parent check of a callback nested in it (SdkInbox.workflow_calls), when the run was given that workflow.
+    const named: Record<string, string> = {};
+    for (const [i, event] of events.entries()) {
+      const stored = batch.events[i];
+      if (event.type === "tool" && stored?.type === "tool" && event.name === "learned_workflow" && event.status === "started" && stored.input === REDACTED && isObject(event.input) && typeof event.input.name === "string")
+        named[event.id] = event.input.name;
+    }
     const checkRedacted = canonical(events) !== canonical(batch.events);
     const known = (await sdkInbox(this.store, runId)).batches.find((item) => item.sequence === batch.sequence);
     if (known) {
@@ -674,14 +687,17 @@ export class SdkRuns {
         if (row.completion) throw new ApiError("not_continuable", "SDK run completion is already recorded.");
         if (batch.sequence !== row.batches.length + 1)
           throw new ApiError("idempotency_mismatch", "SDK event sequences must be contiguous.");
-        checkToolParents(row, batch.events);
+        const given = new Set((row.learning_workflows ?? []).map((flow) => flow.name));
+        const kept = Object.fromEntries(Object.entries(named).filter(([, name]) => given.has(name)));
+        const calls = { ...row.workflow_calls, ...kept };
+        checkToolParents(row, batch.events, calls);
         const checks = [...row.batches.flatMap(item => item.events), ...batch.events].filter((event): event is SdkWorkflowCheckEvent => event.type === "workflow_check");
         if (checks.length > 1) refuse("Only one workflow check may be delivered per SDK run.");
         for (const check of checks) if (!row.learning_check || check.id !== row.learning_check.id || check.digest !== row.learning_check.digest)
           refuse("The workflow check must name this SDK run's reserved candidate.");
         // Every accepted batch, an empty one too, keeps the inbox open another hour, up to a day after its start.
         const expires = Math.max(row.expires_at, Math.min(Date.now() + SDK_OPEN_MS, row.created_at + SDK_MAX_OPEN_MS));
-        return { ...row, batches: [...row.batches, batch], expires_at: expires, ...(checkRedacted ? { check_redacted: true, ...(launch.cli_learning ? { evidence_incomplete: true as const } : {}) } : {}) };
+        return { ...row, batches: [...row.batches, batch], expires_at: expires, ...(Object.keys(kept).length ? { workflow_calls: calls } : {}), ...(checkRedacted ? { check_redacted: true, ...(launch.cli_learning ? { evidence_incomplete: true as const } : {}) } : {}) };
       },
       EVIDENCE_LIMIT,
     );
