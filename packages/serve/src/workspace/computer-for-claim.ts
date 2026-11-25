@@ -1170,8 +1170,8 @@ export async function computerForClaim(
    *  revoke removes only one its claim minted or took on), so the run's folder is its own again before its tools touch
    *  it. It is taken on only once this claim's end holds the row (endKept's compare-and-set): a later claim that took the
    *  computer back first holds its mount. The delete and the revoke are bounded (KEPT_DELETE_MS) and end at the run's
-   *  stop; one that fails or does not answer leaves the row ending, for the janitor, which removes the credential too.
-   *  Never throws. */
+   *  stop; one that fails or does not answer leaves the row ending, said, for the janitor, which removes the credential
+   *  too. Never throws. */
   const endKeptNow = async (): Promise<void> => {
     const record = kept;
     kept = undefined;
@@ -1186,12 +1186,12 @@ export async function computerForClaim(
             const provider = await vendorProvider(entry, await side.keysOf(entry.id), {});
             if (await deleteKept(provider, record)) await writes.ended(entry.id, record.id);
           } finally {
-            await deps.revokeMount?.().catch(() => undefined);
+            await deps.revokeMount?.();
           }
         })(), deps.signal);
       });
-    } catch {
-      // Left ending for the janitor.
+    } catch (error) {
+      (deps.log ?? stderrLog)(`the ${record.kind} kept for run ${launch.runId} was left for the janitor's next pass: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
   // The run's computer turned off by an earlier claim's deny: none is started, and the one a park kept goes now.
