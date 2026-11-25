@@ -1053,8 +1053,10 @@ __all__ = [
     "RunSummarySdkUsage",
     "RunSummaryTrigger",
     "RunSummaryWorkflow",
+    "RunSummaryWorkflowCallsItem",
     "RunTrigger",
     "RunWorkflow",
+    "RunWorkflowCallsItem",
     "RunsResource",
     "SaveCalendarBody",
     "SaveCalendarResponse",
@@ -3275,6 +3277,8 @@ class RunSummary(_RunSummaryRequired, total=False):
     trigger: RunSummaryTrigger | None
     path: Literal["agent", "handed_back", "workflow", "replay", "audit"] | None
     workflow: RunSummaryWorkflow | None
+    workflow_calls: list[RunSummaryWorkflowCallsItem] | None
+    first_choice: Literal["served", "replay", "replay_missing", "none_laid", "off", "none_fit", "many_fit", "not_promoted", "champion_misfit", "many_champions", "cost_stop", "held"] | None
 
 
 RunStatus: TypeAlias = "Literal[\"queued\", \"working\", \"paused\", \"input_required\", \"completed\", \"failed\", \"cancelled\"]"
@@ -3561,6 +3565,14 @@ class RunSummaryWorkflow(TypedDict):
     name: str | None
     digest: str | None
     repick: Literal["found", "missed"] | None
+
+
+class RunSummaryWorkflowCallsItem(TypedDict):
+    workflow: str
+    digest: str
+    caller: Literal["platform", "agent"]
+    outcome: Literal["answered", "handed_back", "failed"]
+    usd: float | None
 
 
 class SetSourceSyncBody(TypedDict):
@@ -5552,6 +5564,8 @@ class Run(_RunRequired, total=False):
     audit_of: str | None
     path: Literal["agent", "handed_back", "workflow", "replay", "audit"] | None
     workflow: RunWorkflow | None
+    workflow_calls: list[RunWorkflowCallsItem] | None
+    first_choice: Literal["served", "replay", "replay_missing", "none_laid", "off", "none_fit", "many_fit", "not_promoted", "champion_misfit", "many_champions", "cost_stop", "held"] | None
 
 
 class _RunResultRequired(TypedDict):
@@ -5802,6 +5816,14 @@ class RunWorkflow(TypedDict):
     name: str | None
     digest: str | None
     repick: Literal["found", "missed"] | None
+
+
+class RunWorkflowCallsItem(TypedDict):
+    workflow: str
+    digest: str
+    caller: Literal["platform", "agent"]
+    outcome: Literal["answered", "handed_back", "failed"]
+    usd: float | None
 
 
 class ListSuggestionsResponse(TypedDict):

@@ -10,12 +10,13 @@ import { runLearningBody } from "../learning-routes.js";
 import { learningStartOf, learningStartOfStored, readLaunchBody, type RunLaunch, seedFailed } from "../run-launch.js";
 import { said, seedStopped } from "../learning-words.js";
 import { type Impact, type ImpactLearning, learningImpact } from "../learning-run.js";
-import { type Bill, type BillHold, type CostReplay, type CostRun, type CostSummary, JOB_PATHS, RUN_PATHS, type RunPath, SERVED_PATHS } from "../learning-cost.js";
+import { type Bill, type BillHold, type CostReplay, type CostRun, type CostSummary, JOB_PATHS, RUN_PATHS, type RunPath, SERVED_PATHS, type WorkflowCall, workflowCallsIn } from "../learning-cost.js";
 import { type Answered, answeredOf, figuresOf, type LedgerRead, type LedgerRow, record, type RevisionAt, roundsLooked, roundsSpentIn, type RunEnd, type RunFigures, type Shadow, shadowCostOf, shadowSpend, type SpendRow, spendByRun, summarize, type Summarized } from "../learn/ledger.js";
 import { COMPILE_AFTER_DEFAULT } from "../learning-setting.js";
-import { modelsOwn, runPathOf, workflowNameOf } from "../runner/learning-end.js";
+import { modelsOwn, runPathOf } from "../runner/learning-end.js";
 import { feedbackStatus } from "../runner/feedback-round.js";
-import { costStopOf, NO_PAST_RUNS, PAST_RUNS, type PastRuns, servedAnswerOf, servedAnswerStands, servedOf, workflowCostsOf } from "../runner/workflow-first.js";
+import { costStopOf, FIRST_REASONS, type FirstReason, NO_PAST_RUNS, PAST_RUNS, type PastRuns, pathMetrics, servedAnswerOf, servedAnswerStands, servedOf, workflowCostsOf } from "../runner/workflow-first.js";
+import { workflowCallsOf } from "../runner/workflow-calls.js";
 import { type Reflect, reflects } from "../reflect-range.js";
 import { correctionCount } from "../learn/corrections.js";
 import type { RunRow } from "../agent-rows.js";
@@ -509,15 +510,17 @@ export const costStopOverStore = async (store: Store, agentId: string) => costSt
  *  metrics.workflow, metrics.workflow_digest: workflow-first.ts pathMetrics, written at the run's end) and its cost per run
  *  reads (pathOfRow). A run its learned workflow served first (its WORKFLOW_FIRST entry, servedOf): `workflow` when it
  *  answered and its answer is still the run's last (servedAnswerStands), `handed_back` when it handed back or a follow-up's
- *  new answer is the agent's, with its digest. Else, for a run its launch offered a learned workflow, its timeline
- *  (runner/learning-end.ts runPathOf, the agent calling the tool itself): `workflow` when its job did only that,
- *  `handed_back` when the agent went on, with the workflow its job called last. Any other run's path is `agent`. Both
- *  read the run's rows less its feedback rounds' (withoutFeedbackRounds): a grade's round never moves the path. `cut` on a
- *  hand-back a restart cut (servedOf: the workflow's call ended `interrupted`), never one the workflow made itself. */
-export async function runPathOverStore(store: Store, runId: string, started: RunLaunch["learning"], redact?: (text: string) => string): Promise<{ path: RunPath; workflow: string | null; digest?: string; promotion?: number; cut?: true }> {
-  const entries = await runEntries(store, runId, BACKGROUND_CONTEXT);
+ *  new answer is the agent's, with its digest. Else, for a run whose agent called a learned workflow itself (a call's
+ *  record, runner/workflow-calls.ts workflowCallsOf: a workflow ran), its timeline (runner/learning-end.ts runPathOf):
+ *  `workflow` when its job did only that, `handed_back` when the agent went on, with the workflow it called last. Any
+ *  other run's path is `agent`. Both read the run's rows less its feedback rounds' (withoutFeedbackRounds): a grade's
+ *  round never moves the path. `cut` on a hand-back a restart cut (servedOf: the workflow's call ended `interrupted`),
+ *  never one the workflow made itself. `entries`: the run's (runEntries), when the caller read them already. */
+export async function runPathOverStore(store: Store, runId: string, started: RunLaunch["learning"], redact?: (text: string) => string, entries?: readonly EntryLike[]): Promise<{ path: RunPath; workflow: string | null; digest?: string; promotion?: number; cut?: true }> {
+  entries ??= await runEntries(store, runId, BACKGROUND_CONTEXT);
   const served = servedOf(entries);
-  if (!served && !started?.workflows?.length) return { path: "agent", workflow: null };
+  const called = served ? [] : workflowCallsOf(entries).filter((call) => call.caller === "agent");
+  if (!served && !called.length) return { path: "agent", workflow: null };
   // The path is who wrote the run's final answer, read on the job's own rows: a grade's feedback round asks the agent no
   // turn of the job's, so its words and its rows never change it (withoutFeedbackRounds).
   const rows = withoutFeedbackRounds(await runTimeline(store, runId, BACKGROUND_CONTEXT, { settled: false, caps: { text: Number.POSITIVE_INFINITY } }));
@@ -531,8 +534,20 @@ export async function runPathOverStore(store: Store, runId: string, started: Run
     return { path: alone ? "workflow" : "handed_back", workflow: served.workflow, ...(served.digest ? { digest: served.digest } : {}), ...(served.promotion !== undefined ? { promotion: served.promotion } : {}), ...(served.cut ? { cut: true as const } : {}) };
   }
   const path = runPathOf(rows);
-  // Only a name the launch offered: a call's raw `name` (a failed call's included) is the model's text, never shown.
-  return { path, workflow: path === "agent" ? null : offeredName(workflowNameOf([...callArgsOf(entries).values()]), started?.workflows) };
+  // Only a name the launch offered (offeredName), as every view of the run names it.
+  return { path, workflow: path === "agent" ? null : offeredName(called.at(-1)!.workflow, started?.workflows) };
+}
+
+/** The run-record fields run `runId`'s end writes for its path (runner/workflow-first.ts pathMetrics), the one writer
+ *  every harness's end calls: the run's entries read once (runEntries, every conversation: a call's booking is read),
+ *  classified (runPathOverStore, for a run that learns) and kept with its calls (`workflow_calls`) and why its ending
+ *  claim's first choice did or did not serve (`choice`, firstChoice's reason). `redact`: the run's cut, as its
+ *  follow-up showed a served answer. */
+export async function runPathMetricsOverStore(store: Store, runId: string, launch: RunLaunch, { redact, choice }: { readonly redact?: (text: string) => string; readonly choice?: FirstReason } = {}): Promise<ReturnType<typeof pathMetrics>> {
+  if (!launch.learning && !launch.audit) return {};
+  const entries = await runEntries(store, runId, BACKGROUND_CONTEXT);
+  const classified = launch.learning ? await runPathOverStore(store, runId, launch.learning, redact, entries) : undefined;
+  return pathMetrics(launch, classified, entries, choice);
 }
 
 /** A run's path and learned workflow as its record keeps them (`metrics`: runPathOverStore at its end); `agent` for a run
@@ -552,11 +567,20 @@ function pathOfRow(metrics: unknown, started: RunLaunch["learning"]): { path: Ru
  *  .../learning/cost never disagree). `path` is null for a run not ended, a workflow revision's run, and a run that learns
  *  whose record names none; `workflow` names the learned workflow and its revision only on a run it served (path
  *  `workflow` or `handed_back`; the name only when its launch offered one, the digest null when its record names none,
- *  and whether its answer re-picked, repickOfRow), else null. */
-export function pathViewOf(run: Pick<RunRecord, "metrics" | "state">, kind: string, started: RunLaunch["learning"]): { path: RunPath | null; workflow: { name: string | null; digest: string | null; repick: Repick | null } | null } {
+ *  and whether its answer re-picked, repickOfRow), else null. `workflow_calls`: every learned workflow call its record
+ *  keeps (learning-cost.ts workflowCallsIn: the platform's and the agent's, each with its digest, caller, outcome and
+ *  booked $), none when it made none, null where `path` is; `first_choice`: why its ending claim's first choice served
+ *  or did not (runner/workflow-first.ts FIRST_REASONS), null where its record names none. */
+export function pathViewOf(run: Pick<RunRecord, "metrics" | "state">, kind: string, started: RunLaunch["learning"]): { path: RunPath | null; workflow: { name: string | null; digest: string | null; repick: Repick | null } | null; workflow_calls: WorkflowCall[] | null; first_choice: FirstReason | null } {
   const placed = kind === "workflow" || !FINAL_STATES.includes(run.state) ? undefined : pathOfRow(run.metrics, started);
   const served = placed && SERVED_PATHS.includes(placed.path);
-  return { path: placed?.path ?? null, workflow: served ? { name: placed.workflow, digest: revisionOfRow(run)?.digest ?? null, repick: repickOfRow(run) } : null };
+  const chose = (run.metrics as { first_choice?: unknown } | null | undefined)?.first_choice;
+  return {
+    path: placed?.path ?? null,
+    workflow: served ? { name: placed.workflow, digest: revisionOfRow(run)?.digest ?? null, repick: repickOfRow(run) } : null,
+    workflow_calls: placed ? workflowCallsIn(run.metrics) : null,
+    first_choice: placed && FIRST_REASONS.includes(chose as FirstReason) ? (chose as FirstReason) : null,
+  };
 }
 
 /** How a served run's answer re-picked (learn/check.ts: a quote miss re-picks it once before it hands back): `found` when

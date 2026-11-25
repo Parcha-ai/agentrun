@@ -134,10 +134,10 @@ export async function recordLedger(tx: Pick<SqliteExecutor, "run" | "all">, run:
     .map((one) => ({ round: Number(one.round), proposal: JSON.parse(one.proposal) as unknown }));
   const { row, spend } = record({ id: run.id, agentId: run.agentId, startedAt: run.startedAt, costUsd: run.costUsd, costAtMostUsd: run.costAtMostUsd, metrics: run.metrics, rounds });
   await tx.run(
-    `INSERT INTO learning_ledger (run_id, agent_id, started_at, path, workflow, digest, not_served, job_usd, look_back_usd, cost, epoch) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO learning_ledger (run_id, agent_id, started_at, path, workflow, digest, not_served, job_usd, look_back_usd, cost, epoch, workflow_calls) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (run_id) DO UPDATE SET agent_id = excluded.agent_id, started_at = excluded.started_at, path = excluded.path, workflow = excluded.workflow, digest = excluded.digest,
-        not_served = excluded.not_served, job_usd = excluded.job_usd, look_back_usd = excluded.look_back_usd, cost = excluded.cost, epoch = excluded.epoch`,
-    row.runId, row.agentId, row.startedAt, row.path, row.workflow, row.digest, row.notServed, row.jobUsd, row.lookBackUsd, row.cost, run.epoch,
+        not_served = excluded.not_served, job_usd = excluded.job_usd, look_back_usd = excluded.look_back_usd, cost = excluded.cost, epoch = excluded.epoch, workflow_calls = excluded.workflow_calls`,
+    row.runId, row.agentId, row.startedAt, row.path, row.workflow, row.digest, row.notServed, row.jobUsd, row.lookBackUsd, row.cost, run.epoch, JSON.stringify(row.workflowCalls),
   );
   await tx.run("DELETE FROM learning_spend WHERE run_id = ?", run.id);
   for (const one of spend) {

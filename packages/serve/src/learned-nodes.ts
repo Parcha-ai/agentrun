@@ -3,11 +3,13 @@
 // call's result row as `learned_nodes`). Its own module, so the timeline's reader needs none of the tool's imports.
 import type { Skipped } from "./learn/replay-calls.js";
 
-/** The journal entry a learned_workflow call keeps beside itself: `{ call, workflow, nodes, loops? }`, its call's
- *  id, the workflow's name, each of its nodes that ran (LearnedNode, at most LEARNED_NODES_MAX) and every loop exit
- *  (LoopRow), never capped (a map over more items than the trace holds keeps each); on a replay run's call that a write
- *  stopped (learn/replay-calls.ts: one the agent's recording does not have), `replay_skipped: { tool, step }` too; and
- *  `ended`, how the workflow ended (LearnedEnded), on a call that ended (a replay run's call always keeps its entry). */
+/** The journal entry a learned_workflow call keeps beside itself, its record, whatever ran: `{ call, workflow, digest,
+ *  caller, nodes, loops? }`, its call's id, the workflow's name and digest (runner/workflow-first.ts workflowDigest), who
+ *  called it (`platform` or `agent`: learning-cost.ts WorkflowCaller), each of its nodes that ran (LearnedNode, at most
+ *  LEARNED_NODES_MAX) and every loop exit (LoopRow), never capped (a map over more items than the trace holds keeps
+ *  each); on a replay run's call that a write stopped (learn/replay-calls.ts: one the agent's recording does not have),
+ *  `replay_skipped: { tool, step }` too; and `ended`, how the workflow ended (LearnedEnded), on a call that ended. A run's
+ *  `workflow_calls` read these (runner/workflow-calls.ts). */
 export const LEARNED_NODES = "agentrun.learned_nodes";
 /** How a learned workflow's call ended: `complete` (it answered), `escalated` (it handed back: an escalate node,
  *  however many nodes failed on the way and were recovered, a map's collected item say), or `failed` (it threw, or was

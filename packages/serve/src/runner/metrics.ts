@@ -177,6 +177,23 @@ export function bookedDecisionsOf(entries: readonly EntryLike[], ids: ReadonlySe
   return bookedSpend(entries.filter((e) => !(e.kind === RUNNER_RECORDS.request || e.kind === RUNNER_RECORDS.turn) || kept.has(turnOf(e))), "decisions");
 }
 
+/** What one call of a tool booked, over `entries` (every conversation of the run's journal, in log order), by the run's
+ *  one rule (runCostOf): each request whose record names the call or one nested in it (`call`: `callId`, or
+ *  `callId/...`), and each request of host work (a side or host call, a paid tool call, a decision) admitted after the
+ *  call's start (`from`, an index in `entries`) and at or before its end (`to`). The caller holds the window to the one
+ *  call (runner/workflow-calls.ts). $0 for none; null once one has no known cost. */
+export function callCostOf(entries: readonly EntryLike[], callId: string, from: number, to: number): number | null {
+  const keyed = sessionConversations(entries);
+  const hosted = new Set([keyed.get(TOOL_SESSION), keyed.get(DECISION_SESSION)].filter((one) => one !== undefined));
+  const ours = (e: EntryLike, at: number) => {
+    const d = (e.data ?? {}) as { call?: unknown; host?: unknown; side?: unknown };
+    if (typeof d.call === "string" && (d.call === callId || d.call.startsWith(`${callId}/`))) return true;
+    return at > from && at <= to && (typeof d.host === "string" || d.side === true || hosted.has(Number(e.conversationId)));
+  };
+  const kept = new Set(entries.flatMap((e, at) => (e.kind === RUNNER_RECORDS.request && ours(e, at) ? [turnOf(e)] : [])));
+  return runCostOf(entries.filter((e) => !(e.kind === RUNNER_RECORDS.request || e.kind === RUNNER_RECORDS.turn) || kept.has(turnOf(e)))).usd;
+}
+
 /** A sum of charges with its float noise rounded off, nothing more (as the decisions row rounds, decision-rows.ts): a
  *  decision costs millionths of a dollar, so a sum rounded to the millionth would lose it. */
 const floatNoiseOff = (usd: number): number => Math.round(usd * 1e12) / 1e12;

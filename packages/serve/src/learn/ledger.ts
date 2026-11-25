@@ -3,7 +3,7 @@
 // transaction (store/sqlite/run-patch.ts); summarize() is the one reading of them, which GET /agents/{id}/learning/cost,
 // GET /runs/{id}'s cost and the money rule (runner/workflow-first.ts costLineOf, over RunFigures) all take. Pure: no
 // store, no clock.
-import { amortize, type Bill, billOf, costSummary, type CostRun, type CostSummary, JOB_PATHS, NOT_SERVED, type NotServed, noiseOff, type RevisionSpend, RUN_PATHS, type RunPath, SERVED_PATHS, tookOverOf } from "../learning-cost.js";
+import { amortize, type Bill, billOf, costSummary, type CostRun, type CostSummary, JOB_PATHS, NOT_SERVED, type NotServed, noiseOff, type RevisionSpend, RUN_PATHS, type RunPath, SERVED_PATHS, tookOverOf, type WorkflowCall, workflowCallsIn } from "../learning-cost.js";
 
 /** A run's own cost as its row stores it: `known`, an exact figure; `unknown`, none; `at_most`, only a bound (a request
  *  cut at its cap hold), never shown as a cost. */
@@ -13,7 +13,9 @@ export type CostState = (typeof COST_STATES)[number];
 /** One ended run: who answered it (`path`, null when its end named none), the learned workflow revision that ran it
  *  (`workflow` at `digest`; for an audit's shadow, the revision it audits), why that workflow did not serve it alone,
  *  the job's own $ (`jobUsd`: what it had cost when its answer was final, its look-back left out) and everything its
- *  rounds looked back for (`lookBackUsd`: its compile turns and its follow-up rounds' turns); each null when unknown. */
+ *  rounds looked back for (`lookBackUsd`: its compile turns and its follow-up rounds' turns); each null when unknown; and
+ *  every learned workflow call it made (`workflowCalls`: its metrics' `workflow_calls`, the platform's and the agent's,
+ *  each with its digest, caller, outcome and booked $), none for a run that made none. */
 export type LedgerRow = {
   readonly runId: string;
   readonly agentId: string;
@@ -25,6 +27,7 @@ export type LedgerRow = {
   readonly jobUsd: number | null;
   readonly lookBackUsd: number | null;
   readonly cost: CostState;
+  readonly workflowCalls: readonly WorkflowCall[];
 };
 
 /** What a spend row paid for: a compile turn that drafted a revision (`compile`), a replay run checking one (`check`), or
@@ -148,7 +151,7 @@ export function record(end: RunEnd): { row: LedgerRow; spend: SpendRow[] } {
   const notServed = cut ? "cut" : NOT_SERVED.includes(metrics.not_served as NotServed) ? (metrics.not_served as NotServed) : null;
   const row: LedgerRow = {
     runId: end.id, agentId: end.agentId, startedAt: end.startedAt, path, workflow, digest, notServed,
-    jobUsd: job === null ? null : noiseOff(job), lookBackUsd: back === null ? null : noiseOff(back), cost,
+    jobUsd: job === null ? null : noiseOff(job), lookBackUsd: back === null ? null : noiseOff(back), cost, workflowCalls: workflowCallsIn(metrics),
   };
   const base = { runId: end.id, agentId: end.agentId };
   const spend: SpendRow[] = compilesIn(rounds).map((one) => ({ ...base, round: one.round, kind: "compile", ofRun: null, workflow: one.workflow, digest: one.digest, usd: one.usd }));

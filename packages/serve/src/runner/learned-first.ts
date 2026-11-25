@@ -55,7 +55,7 @@ export async function learnedFirst(deps: LearnedFirstDeps, laid: readonly Learne
   const laidFlows = replayLaid(launch, laid);
   if (launch.learning && !launch.replay && !launch.audit) await settleAudits({ store, agentId, revisionId, context, log, folder, shown, ...own });
   const promotion = claimPromotion({ store, agentId, runId, revisionId, launch, context, log, folder, shown, ...own });
-  const choice = learnsWorkflows(deps.kind, laidFlows) ? await workflowFirstOf(deps.kind, laidFlows, launch, log, () => pastRunsOverStore(store, agentId), promotionGate(promotion), deps.outputSchema) : {};
+  const choice = learnsWorkflows(deps.kind, laidFlows) ? await workflowFirstOf(deps.kind, laidFlows, launch, log, () => pastRunsOverStore(store, agentId), promotionGate(promotion), deps.outputSchema) : { reason: "none_laid" as const };
   // A replay run runs only its revision, while it still replays: else its claim is refused (the run ends failed, no agent).
   await replayClaimed(store, agentId, runId, launch, choice);
   const recorded = await replayRecordedFor(store, launch, context);

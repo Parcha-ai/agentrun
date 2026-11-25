@@ -27,7 +27,7 @@ import { HARNESS_ID_PATTERN, HARNESSES } from "./harness.js";
 import { HARNESS_KEY_REENTER } from "./server-keys.js";
 import { LEARNING_LABEL, LEARNING_MODES, LEARNING_REASONS, LEARNING_STATES, RUN_LEARNING_USE } from "./learning.js";
 import { AUDIT_DEFAULTS, AUDIT_MAX, REPICK_MAX_CHARS_DEFAULT, REPICK_MAX_CHARS_MAX } from "./learning-setting.js";
-import { AFTER_STATES, CHEAPER_AFTER_RUNS, COST_CSV_COLUMNS, COST_WINDOW, COST_RUNS_DEFAULT, COST_RUNS_MAX, RUN_PATHS } from "./learning-cost.js";
+import { AFTER_STATES, CHEAPER_AFTER_RUNS, COST_CSV_COLUMNS, COST_WINDOW, COST_RUNS_DEFAULT, COST_RUNS_MAX, RUN_PATHS, WORKFLOW_CALL_OUTCOMES, WORKFLOW_CALLERS } from "./learning-cost.js";
 import { FEEDBACK_ROUNDS, FEEDBACK_STATUSES } from "./runner/feedback-round.js";
 import { COMPILE_AFTER_MAX } from "./learning-setting.js";
 import { LOOP_COMPILES_MAX } from "./store-reads/loop.js";
@@ -72,7 +72,7 @@ import { tableTools } from "./tool-list.js";
 import { SECRET_META_SCHEMA } from "./secret-writes.js";
 import { LABEL_KEY, MAX_LABEL_VALUE, MAX_LABELS } from "./run-labels.js";
 import { COST_BASES } from "./runner/metrics.js";
-import { PAST_RUNS } from "./runner/workflow-first.js";
+import { FIRST_REASONS, PAST_RUNS } from "./runner/workflow-first.js";
 import { BASH_POLICIES } from "./bash-read-only.js";
 // The modules that own the computer and Archil key writes: loading the document loads their secret-write predicates
 // (secret-writes.ts registerSecretWrite), so every operation the document marks has its predicate wherever it is read.
@@ -1332,6 +1332,25 @@ const RUN_PATH: Record<string, Json> = {
       repick: { oneOf: [{ enum: ["found", "missed"] }, { type: "null" }], description: "`found` or `missed`: the answer's quote re-pick ran and found, or still missed, its quotes. Null: no re-pick ran." },
     }), { type: "null" }],
     description: "The learned workflow that served the run, as its end recorded it: present on a run with `path` `workflow` (its answer is the workflow's) or `handed_back` (its answer is the agent's), null on every other run. Read off the run's record, so every row of a runs list carries it.",
+    "x-agentrun-serve": "path/1",
+  },
+  workflow_calls: {
+    oneOf: [{
+      type: "array",
+      items: closed({
+        workflow: { type: "string", description: "The learned workflow called, by name." },
+        digest: { type: "string", description: "The revision that ran: the first 16 hex of its workflow.json's sha256." },
+        caller: { enum: [...WORKFLOW_CALLERS], description: "`platform`: it ran first, before the agent's first turn; `agent`: the agent called it itself." },
+        outcome: { enum: [...WORKFLOW_CALL_OUTCOMES], description: "`answered`; `handed_back`, it escalated, or the platform took its answer back to the agent; `failed`, it threw, was refused or was stopped." },
+        usd: { type: ["number", "null"], description: "What its nodes' requests booked, in dollars; null when that is not known or can't be told apart from other work of the run (another call ran beside it)." },
+      }),
+    }, { type: "null" }],
+    description: "Every learned workflow call the run made, in call order, as its end recorded it: the platform's and the agent's own. The money rule counts a run that called a workflow on that workflow's served side, whoever called it. An empty list on an ended run that called none; null where `path` is null.",
+    "x-agentrun-serve": "path/1",
+  },
+  first_choice: {
+    oneOf: [{ enum: [...FIRST_REASONS] }, { type: "null" }],
+    description: "Why the platform ran a learned workflow first on the run's last claim, or why not: `served`; `replay`, a replay run serves the workflow it replays; `replay_missing`; `none_laid`, the agent learns no workflow (or its run is not agentic); `off`, its launch set `workflow_first: false`; `none_fit`, no workflow takes its input; `many_fit`, more than one does; `not_promoted`, the one that does is not checked to serve yet; `champion_misfit`, the revision serving in its place does not take the input; `many_champions`; `cost_stop`, the money rule stopped it; `held`, a check refused the claim's workflow. Null on a run whose end recorded none (one that does not learn, or an SDK or native run).",
     "x-agentrun-serve": "path/1",
   },
 };

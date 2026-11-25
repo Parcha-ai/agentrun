@@ -1055,6 +1055,14 @@ export interface components {
       digest: string | null;
       repick: "found" | "missed" | null;
     } | null;
+    workflow_calls?: {
+      workflow: string;
+      digest: string;
+      caller: "platform" | "agent";
+      outcome: "answered" | "handed_back" | "failed";
+      usd: number | null;
+    }[] | null;
+    first_choice?: "served" | "replay" | "replay_missing" | "none_laid" | "off" | "none_fit" | "many_fit" | "not_promoted" | "champion_misfit" | "many_champions" | "cost_stop" | "held" | null;
   };
   RunCreate: {
     input: Record<string, unknown>;
@@ -1306,6 +1314,14 @@ export interface components {
       digest: string | null;
       repick: "found" | "missed" | null;
     } | null;
+    workflow_calls?: {
+      workflow: string;
+      digest: string;
+      caller: "platform" | "agent";
+      outcome: "answered" | "handed_back" | "failed";
+      usd: number | null;
+    }[] | null;
+    first_choice?: "served" | "replay" | "replay_missing" | "none_laid" | "off" | "none_fit" | "many_fit" | "not_promoted" | "champion_misfit" | "many_champions" | "cost_stop" | "held" | null;
   };
   SecretMeta: {
     name: string;

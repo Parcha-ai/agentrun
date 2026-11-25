@@ -242,7 +242,8 @@ export const RUN_ATTEMPTS = `CREATE TABLE IF NOT EXISTS run_attempts (
  *  Gone with the run's purge or delete (its cost stays on the run's tombstone). Figures only, no run text. In STORE_DDL,
  *  and made at a server open on a store an earlier build of this version made: a run that ended before it has no row,
  *  and one a runner of that build ended again has a row for an earlier end; its reader records it from its run row
- *  either way (store-reads/learning.ts). */
+ *  either way (store-reads/learning.ts). `workflow_calls`: its learned workflow calls (LedgerRow.workflowCalls) as JSON,
+ *  `[]` for none; added where missing at a server open (LEARNING_LEDGER_ADDED). */
 export const LEARNING_LEDGER = `CREATE TABLE IF NOT EXISTS learning_ledger (
     run_id TEXT PRIMARY KEY,
     agent_id TEXT NOT NULL,
@@ -254,8 +255,14 @@ export const LEARNING_LEDGER = `CREATE TABLE IF NOT EXISTS learning_ledger (
     job_usd REAL,
     look_back_usd REAL,
     cost TEXT NOT NULL CHECK (cost IN ('known', 'unknown', 'at_most')),
-    epoch INTEGER NOT NULL
+    epoch INTEGER NOT NULL,
+    workflow_calls TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(workflow_calls))
   ) STRICT`;
+/** The columns a learning_ledger an earlier build of this version made lacks, each added at a server open where missing:
+ *  its rows' calls none (`[]`) until their run's next end writes them. */
+export const LEARNING_LEDGER_ADDED: Readonly<Record<string, string>> = {
+  workflow_calls: "ALTER TABLE learning_ledger ADD COLUMN workflow_calls TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(workflow_calls))",
+};
 export const LEARNING_LEDGER_AGENT = "CREATE INDEX IF NOT EXISTS learning_ledger_agent ON learning_ledger (agent_id)";
 /** Each learning cost, by the revision it is for (learn/ledger.ts SpendRow): a compile turn (`round`, the round that asked
  *  it), a check's replay run or an audit's shadow run (round 0, `of_run` the run it audits), with its $ (null: unknown).

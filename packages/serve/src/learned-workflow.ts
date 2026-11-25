@@ -56,6 +56,7 @@ import type { JsonValue, NestedCalls, Refusal } from "@parcha/agentrun-kernel";
 import type { RunDecisions } from "@parcha/agentrun-kernel/kernel/cap";
 import { workflowNodes } from "./model.js";
 import { type ReplayCalls, SKIPPED_WRITE, toolWord, unmarkedWords } from "./learn/replay-calls.js";
+import { WORKFLOW_FIRST_CALL, workflowDigest } from "./runner/workflow-first.js";
 
 /** What a learned_workflow call's approval card says of its MCP actions' arguments: a `{name}` in one is filled in as
  *  the workflow runs. */
@@ -365,12 +366,13 @@ export function learnedWorkflowTool(run: LearnedWorkflowRun): ToolRegistration {
       const loops: LoopRow[] = [];
       // A replay's write the recording did not have (learn/replay-calls.ts) rides on the same entry, ran a node or not; so
       // does how the workflow ended (`ended`, LearnedEnded), the one thing a replay's outcome reads (workflow-first.ts
-      // pathMetrics): a replay run keeps its entry whatever ran, so a refusal before any node is read as one.
+      // pathMetrics). The entry is the call's record whatever ran (runner/workflow-calls.ts workflowCallsOf): its
+      // workflow's digest, who called it (the platform's call before the agent's first turn, WORKFLOW_FIRST_CALL, or the
+      // agent's own), so a refusal before any node is one call too, and a call stopped part way one with no `ended`.
+      const record = { call: ledger.call, workflow: flow.name, digest: workflowDigest(flow), caller: ledger.call === WORKFLOW_FIRST_CALL ? "platform" : "agent" };
       const keep = (signal: Context, ended?: LearnedEnded) => {
         const skipped = run.replay?.skipped;
-        // A loop's exit counts too: a loop over an empty map ends no node, yet its row is the run's (metrics `loops`).
-        if (!trace.length && !loops.length && !skipped && !(run.replay && ended)) return undefined;
-        return api.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: LEARNED_NODES, data: { call: ledger.call, workflow: flow.name, nodes: trace, ...(loops.length ? { loops } : {}), ...(skipped ? { replay_skipped: skipped } : {}), ...(ended ? { ended } : {}) } as never })), signal).catch(() => undefined);
+        return api.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: LEARNED_NODES, data: { ...record, nodes: trace, ...(loops.length ? { loops } : {}), ...(skipped ? { replay_skipped: skipped } : {}), ...(ended ? { ended } : {}) } as never })), signal).catch(() => undefined);
       };
       let said: Awaited<ReturnType<typeof runLearned>>;
       try {
