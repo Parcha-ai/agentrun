@@ -2,6 +2,7 @@
 // subagents' locators, and one session read.
 import type { Stats } from "node:fs";
 import { lstat, stat } from "node:fs/promises";
+import { DROPS_CURSOR, type InternalReadOptions } from "./internal.js";
 import type { Env, Locator, Reader, ReadOptions } from "./reader.js";
 import { READERS, type Source } from "./readers/index.js";
 import type { SessionOf } from "./types.js";
@@ -51,7 +52,9 @@ export async function childrenOf(home: string, source: string, { env, readers }:
  *  listing shows. A locator whose session is not there throws. */
 export async function readSession(locator: Locator | string, source: string, { readers, ...options }: ReadOptions & { readers?: Readers } = {}): Promise<Session> {
   const at = typeof locator === "string" ? { file: locator } : locator;
-  const { sessions } = await readerOf(source, readers).read(at, undefined, { ...options, keepsCursor: false });
+  // The cursor is dropped: the read makes no copy for it.
+  const read: InternalReadOptions = { ...options, keepsCursor: false, [DROPS_CURSOR]: true };
+  const { sessions } = await readerOf(source, readers).read(at, undefined, read);
   const found = at.id === undefined ? sessions[0] : sessions.find(({ locator }) => locator.id === at.id);
   if (!found) throw new Error(`no session ${at.id ?? ""} in ${at.file}`);
   const session = found.session as Session;

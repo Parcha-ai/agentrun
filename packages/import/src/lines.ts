@@ -215,16 +215,18 @@ async function readLines<S extends string, O>(spec: LineSource<S, O>, file: stri
     // A last line with no newline yet may be a record still being written: read into this result when it is whole JSON,
     // but the cursor stays before it, its state without it. A caller that keeps the cursor reads the line again from it,
     // so its `seen` is left untouched by it; one that keeps none (readSession) has it in `seen` like any other line.
+    // A caller that drops the cursor (DROPS_CURSOR) gets one on the read's own state, that line in it: no copy of the
+    // whole state (the file's request index and counts with it) is made to leave the line out.
     let kept = state;
     if (rest.length) {
-      kept = structuredClone(state);
+      if (!dropsCursor) kept = structuredClone(state);
       if (keepsCursor) context.seen = overlay(context.seen);
       line(Buffer.concat(rest).toString("utf8"));
     }
     const mark = await markOf(handle, offset);
     let session = finish(spec, file, state, context);
     if (!keep) {
-      kept = { ...kept, session: withoutText(kept.session), own: spec.forget ? spec.forget(kept.own) : kept.own, ...(kept.counts ? { counts: dropsCursor ? kept.counts : trimmed(kept.counts) } : {}) };
+      if (!dropsCursor) kept = { ...kept, session: withoutText(kept.session), own: spec.forget ? spec.forget(kept.own) : kept.own, ...(kept.counts ? { counts: trimmed(kept.counts) } : {}) };
       if (resumed) session = withoutText(session);
     }
     return { sessions: [{ locator: { file }, session, requests: state.answers, ...(state.counts ? { counts: state.counts } : {}) }], cursor: { source, dev: stats.dev, ino: stats.ino, offset, mark, keep, ...(totals ? { totals } : {}), state: kept as ReadState }, read, resumed };
