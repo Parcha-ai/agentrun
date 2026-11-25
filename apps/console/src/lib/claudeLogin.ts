@@ -2,11 +2,22 @@ import type { ClaudeLoginView } from "@/lib/v2";
 
 /** The row's name, and the mode's, in the words AgentRun uses for it: Claude Code is Anthropic's CLI, never ours. */
 export const LOGIN_ROW = "Use Claude Code's login on this machine";
+/** The harness that runs on the login (Claude Agent): an agent on it has a model while the login reads signed in. */
+export const LOGIN_HARNESS = "claude-agent";
+/** Whether a run on the login's harness that names `model` goes on the login: one naming none (the login's default is
+ *  Anthropic's) or one of Anthropic's own (`anthropic/<id>`). Any other, Anthropic's through OpenRouter
+ *  (`openrouter/anthropic/<id>`) included, goes on its provider's key whatever the login says. Serve's own loginServes
+ *  (claude-login.ts) decides it on the server, for providerFor and for the refusal's offer to move a box agent to the
+ *  runner; the console reads no server code, so the rule is copied here, and claudeLogin.test.ts names the cases serve's
+ *  claude-login test names. */
+export const loginServes = (model: unknown): boolean => model === undefined || model === "" || (typeof model === "string" && model.startsWith("anthropic/"));
 /** What the mode does, under the row's name. */
 export const LOGIN_RUNS = "Claude Agent runs on your Claude plan through the Claude Code CLI on this server's machine. The CLI keeps the login and calls Anthropic itself; AgentRun only asks it whether it is signed in.";
 /** The owner's word, asked before it turns on. */
 export const ONLY_ME = "Only I run agents on this server";
 export const ONLY_ME_WHY = "Runs here would use your Claude plan, which is yours alone.";
+/** Beside Turn on while it waits for the owner's word. */
+export const ONLY_ME_FIRST = `Tick "${ONLY_ME}" to turn it on.`;
 /** The view as the row reads it: a server from before the view named its folders answers with no `folder` or `machine`
  *  (and no `sign_in`), and the row then shows what it showed before them. */
 export type LoginView = Omit<ClaudeLoginView, "folder" | "machine"> & Partial<Pick<ClaudeLoginView, "folder" | "machine">>;
@@ -20,6 +31,12 @@ export function placeWords(place: ClaudeLoginView["place"], v: LoginView): strin
 export const checksFolder = (folder: string): string => `AgentRun asks the CLI about the login in ${folder}.`;
 /** Said of this machine's login where the server's environment names no CLAUDE_CONFIG_DIR. */
 export const MACHINE_DEFAULT_FOLDER = "That is Claude Code's default folder. If your Claude Code keeps its login in another one (it runs with CLAUDE_CONFIG_DIR set), start AgentRun with CLAUDE_CONFIG_DIR set to that folder as well.";
+/** Said of this machine's login where the server's environment sets CLAUDE_SECURESTORAGE_CONFIG_DIR (`credentials`, the
+ *  view's `machine.credentials`): the CLI keeps the tokens there, apart from the folder. */
+export const machineCredentials = (credentials: string): string =>
+  credentials
+    ? `Its credentials are read from ${credentials}, as CLAUDE_SECURESTORAGE_CONFIG_DIR in the server's environment says.`
+    : "Its credentials are read where CLAUDE_SECURESTORAGE_CONFIG_DIR set empty in the server's environment puts them: ~/.claude, and on macOS the Keychain item with no suffix.";
 
 /** "10 minutes", "30 seconds": a sign-in's limit in words. */
 export function limitWords(ms: number): string {
@@ -55,10 +72,12 @@ export const SIGNED_OUT = "Not signed in. Run this in a terminal on the server's
 export const NO_CLI = "No Claude Code CLI here yet: the first Claude Agent run installs it. Or run this with a claude CLI of your own:";
 export const UNKNOWN = "The Claude Code CLI didn't say whether it is signed in. Sign in again with:";
 export const OTHER_MACHINE = "Turned on for another machine: Claude Agent runs here use the model keys.";
+/** Said of a login kept while the server refuses its folders (state `refused`), above the server's own words for why. */
+export const KEPT_REFUSED = "Turned on, and not used while this server refuses its folders: Claude Agent runs here use the model keys. It is used again once that is mended, or turn it off.";
 /** A plan's requests in dollars: none. A run on the login says it on hover, as a ChatGPT plan run does. */
 export const LOGIN_NO_DOLLARS = "Requests on your Claude plan through Claude Code's login cost no dollars here; your plan's own limits apply.";
 
-const STATES: ReadonlySet<string> = new Set(["off", "other_machine", "signed_in", "signed_out", "no_cli", "unknown"]);
+const STATES: ReadonlySet<string> = new Set(["off", "other_machine", "refused", "signed_in", "signed_out", "no_cli", "unknown"]);
 /** GET /settings/claude-login's answer (and a write's) when it is one (a server with the mode switched off answers 404),
  *  else null. A `folder` or `machine` that is not the shape this console knows is left out, as an older server's is. */
 export function claudeLoginView(body: unknown): LoginView | null {

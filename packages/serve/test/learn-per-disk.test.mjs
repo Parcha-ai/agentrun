@@ -157,7 +157,7 @@ test("learning reads only runs on no named disk since the reset: compile_after's
   await ended("post-default", null);
   await ended("post-served", null, served);
   assert.deepEqual((await lastOwnRuns(store, "agent-1", 10)).map((row) => row.id), ["post-default"], "compile_after's count and a check's inputs");
-  const past = await pastRunsOverStore(store, "agent-1");
+  const past = (await pastRunsOverStore(store, "agent-1")).runs;
   assert.deepEqual(past.map((run) => run.startedAt), [at + 4_000, at + 3_000], "the money rule's past runs: post-served and post-default");
   assert.equal(await notAuditableOf(store, "agent-1", "answer", DIGEST, { stop_window: 10 }), 1, "the audit's served runs: post-served alone");
 });
@@ -211,7 +211,7 @@ async function world(t) {
     const requests = [];
     const spec = piAdapterSpec({ script: learns ? [{ say: "42" }, { say: DRAFT }] : [{ say: "42" }], tools: {}, hooks: quiet }, { requests });
     const createLoop = (deps) => {
-      const job = createAdapterLoop(async (claim, r) => ({ ...(await spec(claim, r)), agentId: "agent-1", input: content }))({ ...deps, endOfRun });
+      const job = createAdapterLoop(async (claim, r) => ({ ...(await spec(claim, r)), agentId: "agent-1", input: content, ...(endOfRun ? { endOfRun } : {}) }))(deps);
       let mine = false;
       let release;
       const parked = new Promise((resolve) => (release = resolve));

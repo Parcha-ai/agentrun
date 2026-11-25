@@ -168,7 +168,7 @@ test("the gate's settings: ask offered where the kernel runs the approved call i
   assert.equal(resolveOnBuiltin("web_search", { ...base, harness: "codex", permission: "ask" }), "firecrawl-keyless", "a CLI's own search cannot wait for a person");
   assert.equal(resolveOnBuiltin("web_search", { ...base, harness: "codex", permission: "ask", pick: "native" }), "unavailable: native search cannot wait for an approval", "native only stays native only");
   assert.equal(resolveOnBuiltin("web_search", { ...base, harness: "codex", permission: "ask", pick: "parallel", parallelKey: true }), "parallel");
-  assert.equal(resolveOnBuiltin("web_search", { ...base, harness: "pi", model: "anthropic/claude-sonnet-5-5", permission: "ask" }), "native", "pi's native search is a tool of the run's, which the gate holds");
+  assert.equal(resolveOnBuiltin("web_search", { ...base, harness: "pi", model: "anthropic/claude-sonnet-5-5", permission: "ask", pick: "native" }), "native", "pi's native search, picked, is a tool of the run's, which the gate holds");
 });
 
 test("a run's gate reads the server's settings at each call: a change reaches the next call, the revision's own stays over it, and an MCP server's wildcard is kept", async (t) => {
@@ -209,8 +209,8 @@ test("capabilities and an agent's tools show each tool's permission, its default
   const after = byName((await api("GET", "/capabilities")).body.tools);
   assert.equal(after[ENRICH], undefined);
   assert.deepEqual([after.web_fetch.permission, after.web_fetch.default_permission, after.read.permission], ["ask", "allow", "deny"]);
-  // Every harness the server has (main's opencode among them), each as before: pi's native, claude-agent's keyless Firecrawl.
-  assert.deepEqual(after.web_search.resolves, { ...after.web_search.resolves, pi: "native", "claude-agent": "firecrawl-keyless" }, "web_search allowed: as before");
+  // Every harness the server has (main's opencode among them), each as before: agentrun's own keyless Firecrawl on auto.
+  assert.deepEqual(after.web_search.resolves, { ...after.web_search.resolves, pi: "firecrawl-keyless", "claude-agent": "firecrawl-keyless" }, "web_search allowed: as before");
 
   const made = await retried(api)("POST", "/agents",agent("set", { tools: ["read", "web_fetch"], tool_settings: { read: { permission: "allow" }, web_fetch: { permission: "deny" }, "mcp:srv/*": { permission: "ask" } } }));
   assert.equal(made.status, 201, JSON.stringify(made.body));
@@ -861,7 +861,8 @@ test("a stop while an approval waits and a later turn runs withdraws the call an
   const answer = await owner(server);
   const { api } = server;
   assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
-  for (const end of ["stop", "cancel"]) {
+  // The stop's run and the cancel's, side by side: each waits out its own turn's 8 s.
+  await Promise.all(["stop", "cancel"].map(async (end) => {
     const runId = await fetching(api, `turn-${end}`, "pi");
     const approval = (await parked(api, runId)).view.pending.id;
     // The message declines the waiting call, and the gate's resume is the one turn that follows: it streams for 8 s
@@ -901,7 +902,7 @@ test("a stop while an approval waits and a later turn runs withdraws the call an
       assert.ok(!after.some((row) => (row.text ?? "").includes("Done slowly.")), "the turn was cut");
     }
     assert.equal((await answer(runId, approval, { decision: "allow" })).status, 409, `${end}: a later allow`);
-  }
+  }));
   await sleep(2_000);
   assert.deepEqual(await dialled(), [], "the call never ran");
 });

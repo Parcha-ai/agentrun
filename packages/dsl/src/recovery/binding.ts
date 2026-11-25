@@ -2,6 +2,7 @@
 // per-input digests let a refused open name the inputs that moved.
 import { canonicalHash } from "./canonical-hash.js";
 import { RecoveryError } from "./errors.js";
+import { isRecord } from "../record.js";
 
 /** The digest of each input a binding covers, named by its path: one entry per key of `parts`, and
  *  one per key of a part that is itself an object ("config.question", "binding.budget"). Stored beside
@@ -12,8 +13,8 @@ export function bindingDigests(parts: Record<string, unknown>): Record<string, s
   const digests: Record<string, string> = {};
   for (const [name, value] of Object.entries(parts)) {
     if (value === undefined) continue;
-    if (value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length) {
-      for (const [key, inner] of Object.entries(value as Record<string, unknown>)) if (inner !== undefined) digests[`${name}.${key}`] = canonicalHash(inner);
+    if (isRecord(value) && Object.keys(value).length) {
+      for (const [key, inner] of Object.entries(value)) if (inner !== undefined) digests[`${name}.${key}`] = canonicalHash(inner);
     } else digests[name] = canonicalHash(value);
   }
   return digests;

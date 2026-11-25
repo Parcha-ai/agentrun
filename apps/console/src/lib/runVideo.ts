@@ -51,6 +51,10 @@ export function videoSteps(rows: readonly TimelineRow[], recording: Pick<RunReco
     .sort((a, b) => a.at - b.at);
 }
 
+/** The tool call a step is, by the call's id: a call's row, or its result's once the result folded into it (lib/timeline's
+ *  `steps`). Null for a step that is no call (a phase, a message). The run's trace knows the call by the same id. */
+export const stepCall = (step: Step): string | null => ((step.row.kind === "tool_use" || step.row.kind === "tool_result") && step.row.tool_use_id ? step.row.tool_use_id : null);
+
 /** The step the video is at: the last that happened at or before `seconds`, by its place in `told` (in the video's
  *  order, as videoSteps gives it); -1 before the first. */
 export function stepAt(told: readonly VideoStep[], seconds: number): number {
@@ -58,6 +62,15 @@ export function stepAt(told: readonly VideoStep[], seconds: number): number {
   for (let i = 0; i < told.length; i += 1) if (told[i]!.at <= seconds) at = i;
   return at;
 }
+
+/** What a player's clock may read short of the time it was sent to. Chrome keeps a video's time in whole microseconds
+ *  and cuts the rest, so a video sent to 4.023 s says 4.022999: read as it is, the step it was sent to has not happened
+ *  yet and the one before is marked, and opened. Half a millisecond covers the cut, and is under the millisecond the
+ *  timeline keeps its times to, so no step is reached before one that is a different time. */
+export const CLOCK_SLACK = 0.0005;
+
+/** The step a player is at by its own clock (`video.currentTime`): stepAt, with the clock's cut allowed for. */
+export const stepAtClock = (told: readonly VideoStep[], clock: number): number => stepAt(told, clock + CLOCK_SLACK);
 
 /** A time on the video as a player says it: "0:07", "12:40", "1:02:05". */
 export function videoClock(seconds: number): string {

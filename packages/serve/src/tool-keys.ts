@@ -74,8 +74,8 @@ export const unlocksTool = (unlock: string, name: string): boolean => unlock ===
 export const keyOf = (name: string): string | undefined => TOOL_KEYS.find((row) => (row.unlocks as readonly string[]).some((unlock) => unlocksTool(unlock, name)))?.id;
 
 /** Why a stored value does not open, in the order a re-entry names one: sealed under another key than the server's, or
- *  its row damaged. */
-export const UNREADABLE = ["seal_key_changed", "file_unreadable"] as const;
+ *  its row damaged (server-keys.ts: the one list every sealed key's view reads). */
+export { UNREADABLE } from "./server-keys.js";
 
 /** The check of a key the server was started with (tool-keys-store.ts checkServer): a KeyCheck, or refused by its provider, why in
  *  plain words. Held in memory only, for this start. */
@@ -96,4 +96,17 @@ export function rowSecrets(row: { kind: "tool" | "model" }, fields: readonly { n
 export function sealKeyOf(text: string | undefined): Buffer | undefined {
   const trimmed = text?.trim() ?? "";
   return /^[A-Za-z0-9+/_-]{43}=?$/.test(trimmed) ? Buffer.from(trimmed, "base64") : undefined;
+}
+
+/** Why `text`, handed as a seal key, is none (sealKeyOf), by its length alone: never its value, a secret. A host whose
+ *  generator counts bytes where characters were meant hands 60 characters, and the refusal that stops a start says so. */
+export function notASealKey(text: string): string {
+  const length = text.trim().length;
+  return `is not 32 bytes in base64 (43 characters, or 44 ending in =; it has ${length}${length === 43 || length === 44 ? ", but not in that form" : ""})`;
+}
+
+/** For a reader that got no seal key from `text` (sealKeyOf): "the one handed is not …" when one was handed (not blank),
+ *  else undefined, so the reader says none was. The words every such refusal uses, by length, never the value. */
+export function handedNoSealKey(text: string | undefined): string | undefined {
+  return text?.trim() ? `the one handed ${notASealKey(text)}` : undefined;
 }

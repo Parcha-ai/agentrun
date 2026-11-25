@@ -18,6 +18,7 @@ import { ApiError, type InputIssue } from "./errors.js";
 import { handedSecretOf } from "./handed-secret.js";
 import { FAUX_ENV, GATEWAY_KEY_ENV, MODEL_PROVIDER, PROVIDER_KEYS } from "./model.js";
 import { gatewayBase } from "./provider.js";
+import type { RunLaunch } from "./run-launch.js";
 
 /** The longest model key a run takes: a header value, never a document. */
 export const MAX_MODEL_KEY_CHARS = 4096;
@@ -68,6 +69,13 @@ export const modelKeyRequired = (message: boolean): ApiError =>
 
 /** What of a run says where its model requests go: its kind and its launch's pinned model. */
 export type ModelKeyTarget = { readonly kind: "agentic" | "workflow" | string; readonly model?: { readonly provider: string; readonly modelId: string } | undefined; readonly native?: boolean };
+
+/** A created run's ModelKeyTarget: its revision's kind and its launch's pinned model. A held run its model kept from
+ *  running (run-launch.ts hold.refused) pins none and makes no model call: no key is required for it, and one handed
+ *  with it is refused as never used (modelKeyMisfit). */
+export function keyTargetOf(launch: Pick<RunLaunch, "model" | "native">, revision: { readonly kind: string }): ModelKeyTarget {
+  return { kind: revision.kind, ...(launch.model ? { model: launch.model } : {}), native: Boolean(launch.native) };
+}
 
 /** The variables a run's model route reads its key from when that route goes to the model gateway (a workflow's model
  *  nodes, pi's and codex's models, a CLI harness on Anthropic's wire where ANTHROPIC_BASE_URL is the gateway's origin);

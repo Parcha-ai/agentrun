@@ -8,7 +8,7 @@ import { isDeepStrictEqual } from "node:util";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { CAPS, type EntryLike, isMessageRow, type TimelineEvent } from "./timeline/index.js";
 import { runLink } from "./console-links.js";
-import { redacted, redactedAnswer, redactedOutput, withoutLoopback } from "./key-refusal.js";
+import { redacted, redactedAnswer, redactedOutput, redactedOutputWhole, withheldWhole, withoutLoopback } from "./key-refusal.js";
 import { structuredAnswer } from "./answer-json.js";
 import { isObject } from "./validate.js";
 import { currentLearning, holdsForOk, type ItemStatus, type Learning, learningView, LEARNING_LABEL, secretsShown, shortOf, type Shown } from "./learning.js";
@@ -153,10 +153,11 @@ export function forgetServed(store: Store, runId: string): string[] {
 /** A run's answer as served: redactedAnswer's, once per answer and held value set. */
 const servedOnce = (store: Store, runId: string, input: string, values: readonly string[], since: number): string =>
   keptOnce(store, `answer ${runId}`, input, values, since, () => redactedAnswer(input, values));
-/** Whether a run's input is served (store-view's `input`): only when the cut a run's words get (redactedOutput) leaves it
- *  exactly as given, so "Run again" never sends an altered task. Read once per input and held value set. */
+/** Whether a run's input is served (store-view's `input`): only when the cut a run's words get, read whole first
+ *  (redactedOutputWhole: a held value split across two of its fields withholds it), leaves it exactly as given, so "Run
+ *  again" never sends an altered task. Read once per input and held value set. */
 const inputWhole = (store: Store, runId: string, input: Record<string, unknown>, values: readonly string[], since: number): boolean =>
-  keptOnce(store, `input ${runId}`, JSON.stringify(input), values, since, () => isDeepStrictEqual(redactedOutput(input, values), input));
+  keptOnce(store, `input ${runId}`, JSON.stringify(input), values, since, () => isDeepStrictEqual(redactedOutputWhole(input, values), input));
 
 /** A run's whole answer as answerOfRun read it from the rows: its newest final-answer row, never the learning turn's, and
  *  never an earlier turn's: a final answer row before the person's last message belongs to the turn that message
@@ -403,7 +404,8 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   // Its final answer whole (store-reads/journal.ts wholeAnswers), as main served a run's answer: a row's cut is no answer's.
   // A run that ended reads settled, and its usage row says its cost ("Cost: …"), never what it has cost so far. One
   // looking back is still going: its look-back's rows come yet.
-  const timelineOptions = { settled: terminal && !lookingBack, ended: terminal && !lookingBack, redact: (text: string) => redacted(text, values) };
+  // A call's arguments, or a web call's output, split across two strings are withheld whole (TimelineOptions.holds).
+  const timelineOptions = { settled: terminal && !lookingBack, ended: terminal && !lookingBack, redact: (text: string) => redacted(text, values), holds: (text: string) => withheldWhole(text, values) };
   // Rendered from the records read above, so its usage row and the cost's `plan` (bookedSpend over the same entries) are
   // of one read.
   const timeline = withAsks(await wholeAnswers(store, runId, context, await runTimeline(store, runId, context, timelineOptions, records), timelineOptions, wholeAnswerFor(values), since));
@@ -746,10 +748,11 @@ async function viewOfRun(store: Store, runId: string, deps: ViewDeps, run: Store
   const finalAnswer = row.kind === "workflow" || unshown ? null : answerOf(run.rows) ?? row.summary ?? null;
   // A workflow run's output, as its end kept it; an agentic run's, its final answer's structured part when its agent has
   // an output schema and the answer's json block (answer-json.ts jsonBlockOf) meets it (storeRunOf's `structured`), else none. Served as
-  // runs.ts serves it (servedOutput): each string in it cut of the values the run holds, its shape kept; none while the
-  // run's sign-in can't be read back.
+  // runs.ts serves it (servedOutput): read whole first, so a held value split across two of its fields withholds it as
+  // "[redacted]" (redactedOutputWhole), else each string in it cut of the values the run holds, its shape kept; none
+  // while the run's sign-in can't be read back.
   const ownOutput = row.kind === "workflow" ? output : status === "completed" && structured && "value" in structured ? structured.value : null;
-  const servedOutput = !unshown && ownOutput !== null && ownOutput !== undefined ? redactedOutput(ownOutput, values) : null;
+  const servedOutput = !unshown && ownOutput !== null && ownOutput !== undefined ? redactedOutputWhole(ownOutput, values) : null;
   // A run its cap ended once its cost passed it (spend_cap_reached) keeps the answer it paid for, as main kept it: the
   // response that crossed the cap was answered and billed, so its text is the run's answer, cut as it came.
   // Its answer is the newest answer row, else (a response cut at its length) the newest text it said; never the row's

@@ -158,6 +158,40 @@ test("several connected accounts: refused, naming each with when it was made, an
   assert.equal((await s.api("GET", "/triggers")).body.triggers.length, 0);
 });
 
+test("an account Composio answers as another user's is never the one a trigger runs as: with no account of the server's user, it is refused as not connected, and nothing is made", async (t) => {
+  // A Composio that answers every user's accounts under the config, whatever user_ids names.
+  const s = await setup(t, { connected: false, composio: { ignoreUserIds: true, accounts: { github: [{ id: "ca_someone_github", user: "someone-else", status: "ACTIVE", auth_config: "ac_managed", created_at: "2026-11-10T08:00:00.000Z" }] } } });
+  const res = await s.api("POST", "/triggers", issueTrigger());
+  assert.equal(res.body.error?.code, "composio_not_connected", JSON.stringify(res.body));
+  assert.deepEqual(upsertedAs(s.composio), [], "no trigger instance runs as another user's account");
+  assert.equal((await s.api("GET", "/triggers")).body.triggers.length, 0);
+});
+
+test("an account Composio answers with no user_id is never the one a trigger runs as: refused as not connected, and nothing is made", async (t) => {
+  const s = await setup(t, { connected: false, composio: { accounts: { github: [{ id: "ca_nouser_github", user: null, status: "ACTIVE", auth_config: "ac_managed", created_at: "2026-11-10T08:00:00.000Z" }] } } });
+  const res = await s.api("POST", "/triggers", issueTrigger());
+  assert.equal(res.body.error?.code, "composio_not_connected", JSON.stringify(res.body));
+  assert.deepEqual(upsertedAs(s.composio), [], "no trigger instance runs as an account of no named user");
+  assert.equal((await s.api("GET", "/triggers")).body.triggers.length, 0);
+});
+
+for (const [blank, said] of [[" ", "a space"], ["", "empty"]]) {
+  test(`a trigger on a server whose saved Composio user is blank (${said}) is refused before Composio is asked anything: no account read, no connect link`, async (t) => {
+    const s = await setup(t, { connected: false });
+    // A row whose URL names a blank user (an older or damaged save; a save itself refuses one). Only a URL with no user_id
+    // at all takes the default user.
+    const row = await s.server.store.mcp.server("gh");
+    const url = new URL(row.url);
+    url.searchParams.set("user_id", blank);
+    await s.server.store.mcp.put({ ...row, url: url.href });
+    const before = s.composio.calls.length;
+    const res = await s.api("POST", "/triggers", issueTrigger());
+    assert.deepEqual([res.status, res.body.error?.fields?.map((f) => f.field)], [422, ["source.server"]], JSON.stringify(res.body));
+    assert.deepEqual(s.composio.calls.slice(before).map((call) => `${call.method} ${call.path}`), [], "Composio was asked nothing: no connected accounts, no connect link");
+    assert.equal((await s.api("GET", "/triggers")).body.triggers.length, 0);
+  });
+}
+
 // A server saved with auth_config_id stands on that config: its MCP server serves only the accounts under it, so its
 // triggers run as one of those, and its connect link is made under it. The user here has a GitHub account under the
 // managed config too, which that server never serves.
@@ -221,6 +255,20 @@ test("a server with no recorded auth config (saved before one was): its trigger 
   t.after(() => none.close());
   const bare = new ComposioTriggers({ control: { baseUrl: none.baseUrl }, publicUrl: PUBLIC, sealed, credential: async () => ({ key: none.apiKey, user: "agentrun-qa", toolkit: "github" }), holders: async () => [], say: () => {} });
   await assert.rejects(bare.make(source, "trg_b", true, async (s) => s), (error) => error.code === "composio_not_connected" && error.extra.details?.connect_url === "https://connect.composio.test/link/ac_managed");
+});
+
+test("a trigger whose server's Composio user is no Composio user id (a blank one) never asks for its accounts, and runs as none of them", async (t) => {
+  // A Composio that answers every user's accounts, with no user_id on them, as it would for a user_ids it trims to empty.
+  const accounts = { github: [{ id: "ca_anyone_github", user: null, status: "ACTIVE", auth_config: "ac_managed", created_at: "2026-11-11T08:00:00.000Z" }] };
+  const composio = await startFakeComposio({ toolkits: { github: { no_auth: false, tools: TOOLS } }, authConfigs: BOTH_CONFIGS, accounts, ignoreUserIds: true });
+  t.after(() => composio.close());
+  const kept = new Map();
+  const sealed = { get: (scope, field) => kept.get(`${scope}/${field}`), set: async (scope, field, value) => void kept.set(`${scope}/${field}`, value), remove: async (scope) => void [...kept.keys()].filter((k) => k.startsWith(`${scope}/`)).forEach((k) => kept.delete(k)) };
+  const triggers = new ComposioTriggers({ control: { baseUrl: composio.baseUrl }, publicUrl: PUBLIC, sealed, credential: async () => ({ key: composio.apiKey, user: " ", toolkit: "github" }), holders: async () => [], say: () => {} });
+  const source = { kind: "composio", server: "gh", event: "GITHUB_ISSUE_ADDED_EVENT", config: { owner: "many-drop", repo: "agentrun-scratch" } };
+  await triggers.make(source, "trg_blank", true, async (s) => s).catch(() => undefined);
+  assert.deepEqual(composio.calls.filter((call) => call.method === "GET" && call.path === "/api/v3/connected_accounts").map((call) => call.query), [], "Composio's connected accounts were never asked for a blank user");
+  assert.deepEqual(upsertedAs(composio), [], "no trigger instance runs as an account of no one user");
 });
 
 // The create reads the server's credential first and again just before it saves. A save over the server in between, with

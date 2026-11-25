@@ -2,9 +2,10 @@ import { act, type ReactElement, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { Banner, Button, Checkbox, Chip, ConfirmDialog, CopyButton, Dialog, Field, fieldBoxClass, Input, Menu, MenuItem, NavItem, Picker, Segmented, Spinner, tabPanelProps, Tabs, Textarea, ToastProvider, useToast } from ".";
+import { Banner, Button, Checkbox, Chip, ConfirmDialog, CopyButton, Dialog, Field, fieldBoxClass, Input, Menu, MenuItem, NavItem, Picker, SearchPicker, type SearchPickerOption, Segmented, Spinner, tabPanelProps, Tabs, Textarea, ToastProvider, useToast } from ".";
 import * as foundations from "@/design/Foundations.stories";
 import * as primitives from "./Primitives.stories";
+import { searchPick, searchPicker, shownIn } from "@/test/search-picker";
 
 // What each primitive promises a person on a keyboard or a screen reader (docs/console-design-system.md), checked on the
 // rendered DOM.
@@ -383,5 +384,64 @@ describe("Picker, steady", () => {
     expect(sizers(host)).toEqual([]);
     await click(host.querySelector("button")!);
     expect(document.querySelector("[data-picker-list]")!.className).not.toContain("w-max");
+  });
+});
+
+describe("SearchPicker", () => {
+  const events: SearchPickerOption[] = [
+    { value: "GITHUB_ISSUE_ADDED_EVENT", label: "Issue Added", keywords: ["GITHUB_ISSUE_ADDED_EVENT", "A new issue is opened."] },
+    { value: "GITHUB_STAR_ADDED_EVENT", label: "Star Added", keywords: ["GITHUB_STAR_ADDED_EVENT", "Someone stars the repository."] },
+    { value: "GITHUB_COMMIT_EVENT", label: "Commit", keywords: ["GITHUB_COMMIT_EVENT", "A commit is pushed."], disabled: true, title: "Not for this account" },
+  ];
+  function Search({ onSubmit = () => {} }: { onSubmit?: () => void }) {
+    const [value, setValue] = useState("");
+    return (
+      <form onSubmit={(e) => { e.preventDefault(); onSubmit(); }}>
+        <Field label="Event" note="What starts a run." error={value ? undefined : "Pick an event."}>
+          <SearchPicker label="Event" name="event" value={value} onChange={setValue} options={events} placeholder="Search or pick an event" nothing={(q) => `No event matches “${q}”`} />
+        </Field>
+      </form>
+    );
+  }
+
+  it("is one field its Field names, describes and marks refused, its list filtered by every word typed in its words or keywords", async () => {
+    const host = mount(<Search />);
+    const field = searchPicker(host, "Event")!;
+    expect(field.getAttribute("role")).toBe("combobox");
+    expect(host.querySelector(`label[for="${field.id}"]`)?.textContent).toBe("Event");
+    expect(field.getAttribute("aria-describedby")?.split(" ").map((id) => document.getElementById(id)?.textContent)).toEqual(["What starts a run.", "Pick an event."]);
+    expect(field.getAttribute("aria-invalid")).toBe("true");
+    expect(field.placeholder).toBe("Search or pick an event");
+    expect((await shownIn(field)).options.map((o) => o.text), "the chevron opens the whole list").toEqual(["Issue Added", "Star Added", "Commit"]);
+    expect((await shownIn(field, "added")).options.map((o) => o.value)).toEqual(["GITHUB_ISSUE_ADDED_EVENT", "GITHUB_STAR_ADDED_EVENT"]);
+    expect((await shownIn(field, "repository star")).options.map((o) => o.text), "every word, in any order, keywords too").toEqual(["Star Added"]);
+    expect((await shownIn(field, "COMMIT")).options, "case aside; a disabled option is listed and says so").toEqual([{ text: "Commit", value: "GITHUB_COMMIT_EVENT", disabled: true }]);
+    const none = await shownIn(field, "nothing-like-it");
+    expect([none.options, none.nothing]).toEqual([[], "No event matches “nothing-like-it”"]);
+  });
+
+  it("puts the picked option's words in the field and its value in the form; a search left unpicked goes back to them; Enter never submits", async () => {
+    const sent = vi.fn();
+    const host = mount(<Search onSubmit={sent} />);
+    const field = searchPicker(host, "Event")!;
+    await searchPick(field, "GITHUB_STAR_ADDED_EVENT", "star");
+    expect([field.value, field.getAttribute("data-value"), (host.querySelector('input[type="hidden"][name="event"]') as HTMLInputElement | null)?.value]).toEqual(["Star Added", "GITHUB_STAR_ADDED_EVENT", "GITHUB_STAR_ADDED_EVENT"]);
+    expect(field.getAttribute("aria-invalid"), "picked, its Field's error is gone").toBeNull();
+    await shownIn(field, "iss");
+    await key(field, "Escape");
+    expect(field.value, "Esc puts the picked words back").toBe("Star Added");
+    await shownIn(field, "issue");
+    const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+    await act(async () => { field.dispatchEvent(enter); });
+    await settle();
+    expect([enter.defaultPrevented, sent.mock.calls.length]).toEqual([true, 0]);
+    await key(field, "ArrowDown");
+    await key(field, "Enter");
+    expect(sent).not.toHaveBeenCalled();
+  });
+
+  it("is off whole when disabled", () => {
+    const host = mount(<SearchPicker label="Event" value="" onChange={() => {}} options={events} disabled placeholder="Composio offers no event for this toolkit" />);
+    expect(searchPicker(host, "Event")!.disabled).toBe(true);
   });
 });

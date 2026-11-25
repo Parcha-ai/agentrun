@@ -24,6 +24,7 @@ import { answerFlow, scratch, serve, withEnv } from "./support.mjs";
 
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { heldField, heldRoute, runComputerRead } = await import("../dist/computer-held-routes.js");
+const { clearBrowserHeld, markBrowserHeld } = await import("../dist/browser-hold.js");
 const { HOLD_MAX_MINUTES, HOLD_MINUTES, heldIn, holdIssues, holdOf } = await import("../dist/computer-held.js");
 const { CALL_KIND, PROTOCOL_METHODS } = await import("../dist/computer-channel.js");
 const { keptChord } = await import("../dist/timeline/computer.js");
@@ -485,7 +486,7 @@ test("the protocol's methods are the spec's, and a call row names one with its p
   assert.equal((await sendCommand(sink, "run-1", { kind: "computer_release" })).kind, "computer_release");
 });
 
-test("the run read's computer field reads the run's journal at most once, and never for a sandbox run that holds nothing", async (t) => {
+test("the run read's computer field reads the run's journal at most once, and never for a sandbox run that holds nothing; a browser's take is its one settings row, never the journal", async (t) => {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "computer-held-read-"));
   const store = await openSqliteStore({ dataDir: dir, role: "server" });
   t.after(async () => {
@@ -500,6 +501,7 @@ test("the run read's computer field reads the run's journal at most once, and ne
   await runOf("held-box", { kind: "sandbox", provider: "docker" }, true);
   await runOf("desk", { kind: "desktop", provider: "e2b" });
   await runOf("held-desk", { kind: "desktop", provider: "e2b" }, true);
+  await runOf("web", { kind: "browser", provider: "local-chrome" });
   /** The field as a running run's GET reads it, and how many times it read the run's journal. */
   const reads = async (id) => {
     let count = 0;
@@ -510,6 +512,15 @@ test("the run read's computer field reads the run's journal at most once, and ne
   assert.deepEqual(await reads("held-box"), ["ready", 1], "a held sandbox reads its hold");
   assert.deepEqual(await reads("desk"), ["ready", 1], "a desktop reads who drives");
   assert.deepEqual(await reads("held-desk"), ["ready", 1], "who drives and the hold, from one read");
+  assert.deepEqual(await reads("web"), ["ready", 0], "a browser no one took");
+  await markBrowserHeld(store.settings, "web", { session: "ar-web-1", at: new Date().toISOString() }, 1);
+  assert.deepEqual(await reads("web"), ["taken_over", 0], "the owner drives the browser: Running now's You drive");
+  await clearBrowserHeld(store.settings, "web", 1, "ar-web-other");
+  assert.deepEqual(await reads("web"), ["taken_over", 0], "another session's end leaves this take");
+  await clearBrowserHeld(store.settings, "web", 1, "ar-web-1");
+  assert.deepEqual(await reads("web"), ["ready", 0], "handed back");
+  await markBrowserHeld(store.settings, "web", { session: "ar-web-2", at: new Date().toISOString() }, 1);
+  assert.deepEqual((await runComputerRead(store, "web", { status: "completed" }, { context: ctx })).computer?.state, "ended", "an ended run's browser is no one's, whatever row is left");
 });
 
 test("served: hold on a run's create, the run read's computer.held, and the three routes, each refusing in words where the run is not up", async (t) => {

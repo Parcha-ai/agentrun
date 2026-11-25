@@ -11,6 +11,7 @@ import {
   GENERATIVE_NODE_KINDS, JUDGMENT_NODE_KINDS, type WorkflowNodeKind,
 } from "./vocabulary.js";
 import { QUOTE_MIN_CHARS } from "./predicates.js";
+import { isRecord } from "./record.js";
 
 /** What a host adds to the author contract. It names the host's own vocabulary and rules and never
  *  restates or changes the language: the package renders it once, after the language section. */
@@ -195,8 +196,7 @@ export interface CandidatePolicyOptions {
   host?: AuthorHostAddendum;
 }
 
-const record = (value: unknown): Record<string, unknown> | undefined =>
-  value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+const record = (value: unknown): Record<string, unknown> | undefined => isRecord(value) ? value : undefined;
 
 /** Author policy over a candidate, checked before validation so a refused candidate never evaluates code. */
 export function candidatePolicyErrors(candidate: unknown, options: CandidatePolicyOptions): string[] {

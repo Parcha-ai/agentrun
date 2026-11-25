@@ -7,7 +7,8 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { serve } from "./support.mjs";
 
-const { keepPresence, PRESENCE_STALE_MS } = await import("../dist/runner/presence.js");
+const { keepPresence } = await import("../dist/runner/presence.js");
+const { RUNNER_STALE_MS } = await import("../dist/store/index.js");
 const { capacityOverStore, capacityWindowOf, CAPACITY_WINDOW_MAX_MINUTES, CAPACITY_WINDOW_MINUTES } = await import("../dist/capacity.js");
 const { gaugeLine, metricLine, startRunnerGauge } = await import("../dist/runner/runner-metrics.js");
 
@@ -32,7 +33,7 @@ async function runnersRegistered(runners, want, { withinMs = 5000 } = {}) {
   const deadline = Date.now() + withinMs;
   let seen = [];
   while (Date.now() < deadline) {
-    seen = (await runners.live(PRESENCE_STALE_MS)).map((row) => row.runner);
+    seen = (await runners.live(RUNNER_STALE_MS)).map((row) => row.runner);
     if (typeof want === "number" ? seen.length >= want : want.every((name) => seen.includes(name))) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }

@@ -1,5 +1,5 @@
 {
-  "secretBody": ["saveToolKey", "saveMcpServer", "previewMcpServer", "startMcpOAuth", "listComposioTools", "saveComposioServer", "rotateTriggerSecret", "rotateWebhookSecret", "saveSlack", "saveModelGateway", "testModelGateway"],
+  "secretBody": ["saveToolKey", "saveMcpServer", "previewMcpServer", "startMcpOAuth", "listComposioTools", "listComposioToolkits", "saveComposioServer", "rotateTriggerSecret", "rotateWebhookSecret", "saveSlack", "saveModelGateway", "testModelGateway"],
   "publicFields": {
     "saveMcpServer": ["url", "auth.type"],
     "previewMcpServer": ["url", "auth.type", "name"],
@@ -81,6 +81,7 @@
     "getRunGraph": ["runs", "graph"],
     "getRunTrace": ["runs", "trace"],
     "getRunUsage": ["runs", "usage"],
+    "getRunExport": ["runs", "export"],
     "listRunFiles": ["runs", "files"],
     "readRunFile": ["runs", "read-file"],
     "getRunLearning": ["runs", "learning"],
@@ -132,6 +133,7 @@
     "getMcpPrivateHosts": ["mcp-servers", "private-hosts"],
     "getToolSettings": ["tool-settings", "get"],
     "putToolSettings": ["tool-settings", "save"],
+    "listApiKeys": ["api-keys", "list"],
     "getWebhook": ["webhook", "get"],
     "saveWebhook": ["webhook", "save"],
     "rotateWebhookSecret": ["webhook", "rotate-secret"],

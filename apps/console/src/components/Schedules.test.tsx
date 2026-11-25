@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SchedulesPage, type ScheduleView } from "./Schedules";
 import { createClient } from "@/lib/client";
 import type { Firing, Trigger } from "@/lib/v2";
-import { pick, picker, valueOf } from "@/test/picker";
+import { optionsOf, pick, picker, valueOf } from "@/test/picker";
 
 // Schedules (serve's trigger/1): the list, the form that makes or edits one with the server's 422 under the field it
 // names, and one schedule's page: pause, resume, edit, delete, run now (once per click), and its firings.
@@ -35,7 +35,7 @@ const refuse = (fields: { field: string; reason: string; message: string }[]) =>
  *  now answers once `release` is called (so a second click lands while the first is out). While `hold.on`, a read of a
  *  schedule or its firings answers as things stood when it was asked, but only once `releaseHeld` is called: a late,
  *  stale background read. */
-function server({ triggers = [NIGHTLY], firings = {} as Record<string, Firing[]>, write }: { triggers?: Trigger[]; firings?: Record<string, Firing[]>; write?: (call: Call) => Response | undefined } = {}) {
+function server({ triggers = [NIGHTLY], firings = {} as Record<string, Firing[]>, write, agents = AGENTS }: { triggers?: Trigger[]; firings?: Record<string, Firing[]>; write?: (call: Call) => Response | undefined; agents?: unknown[] } = {}) {
   const calls: Call[] = [];
   let release: () => void = () => {};
   const hold = { on: false };
@@ -45,9 +45,9 @@ function server({ triggers = [NIGHTLY], firings = {} as Record<string, Firing[]>
     const call = { method: init?.method ?? "GET", path: new URL(String(url), "http://serve.test").pathname, body: init?.body ? JSON.parse(String(init.body)) : undefined, key: new Headers(init?.headers).get("idempotency-key") };
     calls.push(call);
     const m = /^\/v2\/triggers\/([^/]+)(\/fire|\/firings)?$/.exec(call.path);
-    if (call.path === "/v2/agents") return json(200, { agents: AGENTS, next_cursor: null });
+    if (call.path === "/v2/agents") return json(200, { agents, next_cursor: null });
     const agentRead = /^\/v2\/agents\/([^/]+)$/.exec(call.path);
-    if (agentRead) { const a = AGENTS.find((x) => x.agent_id === decodeURIComponent(agentRead[1])); return a ? json(200, a) : json(404, { error: { code: "not_found", message: "no agent", retryable: false } }); }
+    if (agentRead) { const a = (agents as typeof AGENTS).find((x) => x.agent_id === decodeURIComponent(agentRead[1])); return a ? json(200, a) : json(404, { error: { code: "not_found", message: "no agent", retryable: false } }); }
     if (call.path === "/v2/triggers" && call.method === "GET") return json(200, { triggers });
     if (call.path === "/v2/triggers" && call.method === "POST") {
       const answer = write?.(call);
@@ -818,5 +818,133 @@ describe("a one-time schedule that has run", () => {
     const t = await open(server({ triggers: [PAUSED] }).v2, { trigger: "trg_paused" });
     expect(t.button(/^Resume$/)).toBeDefined();
     expect(t.text()).not.toContain("Done");
+  });
+});
+
+// QA on the console (11-20): an agent whose input_schema requires fields (a KYB template's company and country) was
+// refused by the server ("input.company is required") with no way to give those fields in a trigger form, and several
+// agents made from one template read as identical options in the Agent picker. A trigger's run takes the agent's typed
+// input as the run bar does (lib/inputForm.ts), and agents that share a name each say their id.
+describe("a trigger's typed input and its agent picker", () => {
+  const KYB_SCHEMA = { type: "object", properties: { content: { type: "string" }, company: { type: "string", title: "Company" }, country: { type: "string", title: "Country" } }, required: ["company", "country"] };
+  const KYB = { agent_id: "kyb_1", kind: "agentic", definition: { name: "KYB due diligence", input_schema: KYB_SCHEMA }, archived_at: null };
+  const KYB_2 = { ...KYB, agent_id: "kyb_2" };
+  // A schema the fields can't show (an object property): its whole input is typed as JSON.
+  const FILTERS = { agent_id: "filters", kind: "agentic", definition: { name: "Filters", input_schema: { type: "object", properties: { filters: { type: "object" } }, required: ["filters"] } }, archived_at: null };
+  const agents = [...AGENTS, KYB, KYB_2, FILTERS];
+  const fieldBox = (host: Element, key: string) => host.querySelector<HTMLInputElement>(`[data-field="target.input.${key}"] input`)!;
+
+  it("shows the picked agent's typed fields under the message, and sends them beside it", async () => {
+    const { v2, calls } = server({ agents });
+    const t = await open(v2, { trigger: null });
+    await t.set("cron", "30 1 * * *");
+    await t.set("agent", "kyb_1");
+    // The schema requires company and country, not the message: the message is optional.
+    expect(t.text()).toContain("Each run is asked (optional)");
+    await t.type(fieldBox(t.host, "company"), "Acme GmbH");
+    await t.type(fieldBox(t.host, "country"), "DE");
+    await t.set("content", "Check them.");
+    await t.set("maxCost", "2");
+    await t.click(/^Create schedule$/);
+    expect((calls.find((c) => c.method === "POST")!.body as { target: unknown }).target).toEqual({ kind: "start_run", agent_id: "kyb_1", input: { content: "Check them.", company: "Acme GmbH", country: "DE" }, max_cost_usd: 2 });
+    expect(t.went).toEqual(["#/triggers/trg_new"]);
+  });
+
+  it("says the server's refusal of a typed field at that field", async () => {
+    const { v2 } = server({ agents, write: () => refuse([{ field: "target.input.company", reason: "missing", message: "input.company is required" }]) });
+    const t = await open(v2, { trigger: null, kind: "webhook" });
+    await t.set("agent", "kyb_1");
+    await t.type(fieldBox(t.host, "country"), "DE");
+    await t.set("maxCost", "2");
+    await t.click(/^Create webhook$/);
+    const at = t.host.querySelector('[data-field="target.input.company"] [role="alert"]');
+    expect(at?.textContent).toBe("Company is required.");
+    // Said at the field alone: not again above the form, nor under the message.
+    expect(t.text()).not.toContain("input.company is required");
+    expect(t.issue("target.input")).toBeNull();
+    // Typed, the issue goes.
+    await t.type(fieldBox(t.host, "company"), "Acme GmbH");
+    expect(t.host.querySelector('[data-field="target.input.company"] [role="alert"]')).toBeNull();
+  });
+
+  it("an edited schedule opens with its typed input, and saves it changed without losing what the form doesn't show", async () => {
+    const kyb: Trigger = { ...NIGHTLY, target: { kind: "start_run", agent_id: "kyb_1", input: { content: "Check.", company: "Acme GmbH", country: "DE", note: { from: "api" } }, max_cost_usd: 2 } };
+    const { v2, calls } = server({ triggers: [kyb], agents });
+    const t = await open(v2, { trigger: "trg_1", edit: true });
+    expect(fieldBox(t.host, "company").value).toBe("Acme GmbH");
+    expect(fieldBox(t.host, "country").value).toBe("DE");
+    await t.type(fieldBox(t.host, "country"), "FR");
+    await t.click(/^Save changes$/);
+    expect(calls.filter((c) => c.method === "PATCH").map((c) => c.body)).toEqual([{ target: { kind: "start_run", agent_id: "kyb_1", input: { content: "Check.", company: "Acme GmbH", country: "FR", note: { from: "api" } }, max_cost_usd: 2 } }]);
+  });
+
+  it("an edit that picks another agent sends that agent's input afresh, none of the last agent's keys", async () => {
+    const kyb: Trigger = { ...NIGHTLY, target: { kind: "start_run", agent_id: "kyb_1", input: { content: "Check.", company: "Acme GmbH", country: "DE", note: { from: "api" } }, max_cost_usd: 2 } };
+    const { v2, calls } = server({ triggers: [kyb], agents });
+    const t = await open(v2, { trigger: "trg_1", edit: true });
+    await t.set("agent", "triage");
+    await t.click(/^Save changes$/);
+    expect(calls.filter((c) => c.method === "PATCH").map((c) => c.body)).toEqual([{ target: { kind: "start_run", agent_id: "triage", input: { content: "Check." }, max_cost_usd: 2 } }]);
+  });
+
+  it("a name changed alone leaves a typed input as it is", async () => {
+    const kyb: Trigger = { ...NIGHTLY, target: { kind: "start_run", agent_id: "kyb_1", input: { company: "Acme GmbH", country: "DE" }, max_cost_usd: 2 } };
+    const { v2, calls } = server({ triggers: [kyb], agents });
+    const t = await open(v2, { trigger: "trg_1", edit: true });
+    await t.set("name", "kyb nightly");
+    await t.click(/^Save changes$/);
+    expect(t.issue("target.input")).toBeNull();
+    expect(calls.filter((c) => c.method === "PATCH").map((c) => c.body)).toEqual([{ name: "kyb nightly" }]);
+  });
+
+  it("says on a trigger's JSON input that what comes with each run is added to its content", async () => {
+    for (const kind of ["webhook", undefined] as const) {
+      const t = await open(server({ agents }).v2, { trigger: null, ...(kind ? { kind } : {}) });
+      await t.set("agent", "filters");
+      expect(t.text()).toContain('is added to its "content"');
+      act(() => root?.unmount()); document.body.innerHTML = "";
+    }
+  });
+
+  it("takes an agent's whole input as JSON when its schema can't be shown as fields, and keeps it on an edit", async () => {
+    const { v2, calls } = server({ agents });
+    const n = await open(v2, { trigger: null });
+    await n.set("cron", "30 1 * * *");
+    await n.set("agent", "filters");
+    const box = n.host.querySelector<HTMLTextAreaElement>('textarea[name="input"]')!;
+    expect(JSON.parse(box.value)).toEqual({ filters: {} });
+    await n.type(box, '{"filters": {"risk": "high"}}');
+    await n.set("maxCost", "2");
+    await n.click(/^Create schedule$/);
+    expect((calls.find((c) => c.method === "POST")!.body as { target: { input: unknown } }).target.input).toEqual({ filters: { risk: "high" } });
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const made: Trigger = { ...NIGHTLY, target: { kind: "start_run", agent_id: "filters", input: { filters: { risk: "high" }, content: "Look." }, max_cost_usd: 2 } };
+    const e = server({ triggers: [made], agents });
+    const u = await open(e.v2, { trigger: "trg_1", edit: true });
+    expect(JSON.parse(u.host.querySelector<HTMLTextAreaElement>('textarea[name="input"]')!.value)).toEqual({ filters: { risk: "high" }, content: "Look." });
+    await u.set("name", "filtered");
+    await u.click(/^Save changes$/);
+    expect(e.calls.filter((c) => c.method === "PATCH").map((c) => c.body)).toEqual([{ name: "filtered" }]);
+  });
+
+  it("a trigger's page says its typed input beside the message", async () => {
+    const kyb: Trigger = { ...NIGHTLY, target: { kind: "start_run", agent_id: "kyb_1", input: { content: "Check.", company: "Acme GmbH", country: "DE" }, max_cost_usd: 2 } };
+    const t = await open(server({ triggers: [kyb], agents }).v2, { trigger: "trg_1" });
+    const given = t.host.querySelector("[data-input]")!;
+    expect([...given.querySelectorAll("li")].map((li) => li.textContent)).toEqual(["company: Acme GmbH", "country: DE"]);
+    expect(t.text()).toContain("Check.");
+  });
+
+  it("names each agent that shares its name by its id too, in every trigger form's picker; a name of its own stays as it is", async () => {
+    for (const kind of [undefined, "webhook"] as const) {
+      const t = await open(server({ agents }).v2, { trigger: null, ...(kind ? { kind } : {}) });
+      const labels = (await optionsOf(picker(t.host, "Agent")!)).map((o) => o.text);
+      expect(labels).toContain("KYB due diligence (kyb_1)");
+      expect(labels).toContain("KYB due diligence (kyb_2)");
+      expect(labels).not.toContain("KYB due diligence");
+      expect(labels).toContain("Triage");
+      expect(labels).toContain("Refund flow (workflow)");
+      act(() => root?.unmount()); document.body.innerHTML = "";
+    }
   });
 });

@@ -9,7 +9,8 @@
 // onComputerHold is the change signal for whoever else in the runner's process shows the hold (tl-browser's run-side
 // viewer and its bar): it fires after each computer.hold change entry is committed, with that change's Timeline words.
 // A run in a process of its own commits there and its viewer is its runner's: the change crosses to the runner first.
-import type { Context } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
+import { type Harness, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { HOST_PHASE } from "../timeline/index.js";
 import {
   COMPUTER_HAND_BACK, COMPUTER_HANDOVER_KIND, COMPUTER_HOLD_KIND, COMPUTER_TAKE_OVER, ENDS, holdIn, holdWords, STATES, takeEndedWords,
@@ -26,6 +27,21 @@ import type { Command, CommandOutcome } from "./loop-contract.js";
  *  says it replaces one even when nothing of the earlier claim's is left to let go (a server's stop, a park). */
 export async function hadComputer(journal: JournalReads, context: Context): Promise<boolean> {
   return (await journalEntries(journal, context)).some((entry) => entry.kind === KINDS.computerMade);
+}
+
+/** The kind of the run's computer when an earlier claim's deny turned it off for the rest of the run (KINDS.computerOff,
+ *  recordComputerOff): a claim that finds it starts no computer, and its gate refuses each call of that computer's tools
+ *  short (RunGate.turnOff). Undefined while the run's computer is on. */
+export async function computerTurnedOff(journal: JournalReads, context: Context): Promise<string | undefined> {
+  const off = (await journalEntries(journal, context)).find((entry) => entry.kind === KINDS.computerOff);
+  const kind = (off?.data as { computer?: unknown } | undefined)?.computer;
+  return typeof kind === "string" ? kind : undefined;
+}
+
+/** Writes on the run's root, through the claim's Harness, that the run's `kind` computer is off for the rest of the run:
+ *  what computerTurnedOff reads back at a later claim. */
+export async function recordComputerOff(harness: Pick<Harness, "commit">, kind: string): Promise<void> {
+  await harness.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: KINDS.computerOff, data: { computer: kind } })), BACKGROUND_CONTEXT);
 }
 
 /** One root entry, as the run's journal takes it. */

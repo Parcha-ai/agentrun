@@ -1,6 +1,6 @@
 // The one matcher served text is redacted with (learn/secrets.ts redactSecrets and redactLearned run on it): the secret
 // and bank shapes as scanners, the held values' forms found as they stand, and the whole-text check over the views a
-// value can hide in (whitespace gone, NFKC, percent-decoded, folded). Nothing here reads attacker text with a
+// value can hide in (whitespace gone, NFKC, percent-decoded, folded, a JSON text's strings joined). Nothing here reads attacker text with a
 // backtracking regex: each shape is a prefix found with indexOf, then runs of a character class read forward, and a
 // start inside a run already read is not read again. So a text costs time in proportion to its length, whatever it
 // repeats. The few bank shapes that stay regexes are tried only at their words, each reading a bounded head and one
@@ -13,9 +13,13 @@
 
 export type Span = [start: number, end: number];
 
-/** The characters the shape scanners have visited in this process: the text each prefix search passes over, each run
- *  read, each guard read back. A test sets it to 0, redacts, and reads it: a scanner that read a run once per start
- *  inside it would count the square of the run's length. */
+/** The characters the redaction pipeline has visited in this process: the text each prefix search passes over, each
+ *  run read, each guard read back (the shape scanners); each form, hex, folded and plain needle's search, and the text
+ *  it passes over (find); each view built (its special characters found, its blanks, its decoders' reads, its non-ASCII
+ *  stretches squeezed, each cut its cover passes), lowered and flattened; each covered stretch a find in a view is
+ *  checked against (inside); the finds merged and the text cut; and
+ *  key-refusal.ts's reads of a text in pieces. A test sets it to 0, redacts, and reads it: a stage that read again from
+ *  the start at each find would count the text once per find. */
 export const scanned = { chars: 0 };
 
 // ---- Character classes, as the regexes they replace wrote them.
@@ -79,6 +83,13 @@ function seek(hay: string, prefix: string, from: number): number {
   return at < 0 ? Number.POSITIVE_INFINITY : at;
 }
 
+/** Where `needle` next stands in `hay` at or after `from`, or -1: a needle's search, counted as seek counts a prefix's. */
+function find(hay: string, needle: string, from: number): number {
+  const at = hay.indexOf(needle, from);
+  scanned.chars += Math.max(0, (at < 0 ? hay.length : at + needle.length) - from);
+  return at;
+}
+
 /** `text` with A-Z lowered and nothing else changed, so each offset is the same in both. */
 export const asciiLower = (text: string): string => text.replace(/[A-Z]+/g, (upper) => upper.toLowerCase());
 
@@ -121,26 +132,225 @@ const prefixFixed = (kind: string, prefixes: readonly string[], cls: Class, coun
   scan: (text, at, prefix) => (fixed(text, at + prefix.length, count, cls) ? { start: at, end: at + prefix.length + count, next: at + 1 } : none(at + 1)),
 });
 
-const PRIVATE_KEY_HEADER = only(` ${UPPER}${DIGIT}`);
-/** A private key block's header: "-----BEGIN", its key type (RSA, EC, OPENSSH, ENCRYPTED) at most 64 characters each
- *  side of "PRIVATE KEY", then "-----". Each start reads at most 140 characters. */
+const PRIVATE_KEY_TYPE = only(` ${UPPER}${DIGIT}`);
+/** Where a private key block's armor line at `at` ends, past its closing "-----", or -1. Its opening ("-----BEGIN" or
+ *  "-----END", `head` characters) is already read; then its key type (RSA, EC, OPENSSH, ENCRYPTED, an armored key's
+ *  "PGP ... BLOCK"), at most 64 characters each side of "PRIVATE KEY", then "-----". It reads at most 140 characters,
+ *  and 11 at each place "PRIVATE KEY" may stand. */
+function armorEnd(text: string, at: number, head: number): number {
+  const from = at + head;
+  let end = from;
+  while (end < text.length && end - from < 140 && PRIVATE_KEY_TYPE(text.charCodeAt(end))) end++;
+  scanned.chars += end - from + 1;
+  const length = end - from;
+  if (length >= 140 || !text.startsWith("-----", end)) return -1;
+  for (let i = Math.max(0, length - 75); i <= Math.min(64, length - 11); i++) {
+    scanned.chars += 11;
+    if (text.startsWith("PRIVATE KEY", from + i)) return end + 5;
+  }
+  return -1;
+}
+
+/** The most characters between a key's header and its END line, and the most base64 characters on a body line. */
+const KEY_BODY_MAX = 16384;
+/** The most lines of a key's body read when no END line is in reach. */
+const KEY_LINES = 1024;
+/** The most characters of a legacy PEM's or armored key's header line after its colon. */
+const KEY_HEADER_MAX = 256;
+const KEY_BASE64 = only(`${ALNUM}+=`);
+/** A header line's text: any character but a line break, a backslash, a quote or a "<". */
+const KEY_HEADER_TEXT: Class = (code) =>
+  code !== 10 && code !== 13 && code !== 92 && code !== 34 && code !== 39 && code !== 60;
+const KEY_HEADER_WORDS = ["Proc-Type:", "DEK-Info:", "Version:", "Comment:"];
+
+/** How many backslashes stand at `at`, at most 9 read: an escape takes 1 to 8 (a string four deep); 9 is too many. */
+function backslashes(text: string, at: number): number {
+  let end = at;
+  while (end < text.length && end - at < 9 && text.charCodeAt(end) === 92) end++;
+  scanned.chars += end - at + 1;
+  return end - at;
+}
+
+/** Where an escape at `at` of one of `chars`, after 1 to 8 backslashes, ends, or -1. */
+function escapeEnd(text: string, at: number, chars: string): number {
+  const count = backslashes(text, at);
+  const ok = count >= 1 && count <= 8 && at + count < text.length && chars.includes(text[at + count]!);
+  return ok ? at + count + 1 : -1;
+}
+
+/** Where each spelling of a line break at `at` ends, in the order the key's reading tries them: CRLF, then CR alone;
+ *  LF; an escaped CR followed by an escaped LF, then the CR alone; an escaped LF. */
+function keyBreaks(text: string, at: number): number[] {
+  if (at >= text.length) return [];
+  scanned.chars += 2;
+  const code = text.charCodeAt(at);
+  if (code === 13) return text.charCodeAt(at + 1) === 10 ? [at + 2, at + 1] : [at + 1];
+  if (code === 10) return [at + 1];
+  if (code !== 92) return [];
+  const count = backslashes(text, at);
+  if (count > 8) return [];
+  const after = text[at + count];
+  if (after === "n") return [at + count + 1];
+  if (after !== "r") return [];
+  const lf = escapeEnd(text, at + count + 1, "n");
+  return lf >= 0 ? [lf, at + count + 1] : [at + count + 1];
+}
+
+/** Where the blanks at `at` end: spaces, tabs and escaped tabs. */
+function keyBlanks(text: string, at: number): number {
+  let end = at;
+  for (;;) {
+    const code = text.charCodeAt(end);
+    scanned.chars += 1;
+    if (code === 32 || code === 9) end++;
+    else if (code !== 92) return end;
+    else {
+      const tab = escapeEnd(text, end, "t");
+      if (tab < 0) return end;
+      end = tab;
+    }
+  }
+}
+
+/** Where the base64 at `at` ends: at most KEY_BODY_MAX of its characters, each a letter, a digit, "+", "=" or a "/"
+ *  (maybe escaped, "\/"). */
+function keyBase64(text: string, at: number): number {
+  let end = at;
+  for (let count = 0; count < KEY_BODY_MAX; count++) {
+    const code = text.charCodeAt(end);
+    scanned.chars += 1;
+    if (KEY_BASE64(code) || code === 47) end++;
+    else if (code !== 92) return end;
+    else {
+      const slash = escapeEnd(text, end, "/");
+      if (slash < 0) return end;
+      end = slash;
+    }
+  }
+  return end;
+}
+
+/** Where a legacy PEM's or armored key's header line at `at` ends ("Proc-Type:", "DEK-Info:", "Version:" or "Comment:",
+ *  then at most KEY_HEADER_MAX characters of its text), or -1. */
+function keyHeaderLine(text: string, at: number): number {
+  for (const word of KEY_HEADER_WORDS) {
+    scanned.chars += word.length;
+    if (!text.startsWith(word, at)) continue;
+    const from = at + word.length;
+    let end = from;
+    while (end < text.length && end - from < KEY_HEADER_MAX && KEY_HEADER_TEXT(text.charCodeAt(end))) end++;
+    scanned.chars += end - from + 1;
+    return end;
+  }
+  return -1;
+}
+
+/** Whether a body line may end at `at`: a line break or a closing quote (either maybe escaped), a tag's "<", the text's
+ *  end. */
+function keyLineEnds(text: string, at: number): boolean {
+  if (at >= text.length) return true;
+  scanned.chars += 1;
+  const code = text.charCodeAt(at);
+  if (code === 10 || code === 13 || code === 34 || code === 39 || code === 60) return true;
+  return code === 92 && escapeEnd(text, at, `rn"'`) >= 0;
+}
+
+/** Where a body line at `at` ends, or -1: blanks, then base64, or a header line, or nothing, then blanks, at a place a
+ *  line may end. Each is tried in that order and the first that ends at such a place is the line. */
+function keyLine(text: string, at: number): number {
+  const start = keyBlanks(text, at);
+  const base64 = keyBase64(text, start);
+  if (base64 > start) {
+    const end = keyBlanks(text, base64);
+    if (keyLineEnds(text, end)) return end;
+  }
+  const header = keyHeaderLine(text, start);
+  if (header >= 0) {
+    const end = keyBlanks(text, header);
+    if (keyLineEnds(text, end)) return end;
+  }
+  return keyLineEnds(text, start) ? start : -1;
+}
+
+/** Where a line break at `at` and the body line after it end, the break's spellings tried in order, or -1. */
+function keyNextLine(text: string, at: number): number {
+  for (const start of keyBreaks(text, at)) {
+    const end = keyLine(text, start);
+    if (end >= 0) return end;
+  }
+  return -1;
+}
+
+/** Where the END line of a block whose header ends at `header` ends, or -1: the first "-----" after the header, at most
+ *  KEY_BODY_MAX characters on, must start one. The search stops at that "-----", so a reading from one header never
+ *  passes the next header's dashes. */
+function keyEndLine(text: string, header: number): number {
+  const dashes = find(text, "-----", header);
+  if (dashes < 0 || dashes - header > KEY_BODY_MAX) return -1;
+  scanned.chars += 3;
+  return text.startsWith("-----END", dashes) ? armorEnd(text, dashes, 8) : -1;
+}
+
+/** Where the body lines after a header that ends at `header` end, or -1 when not even an empty line stands there: a
+ *  first line (after a line break, or glued to the header), then at most KEY_LINES - 1 more, each after a line break,
+ *  as long as one follows. */
+function keyBodyLines(text: string, header: number): number {
+  let end = keyNextLine(text, header);
+  if (end < 0) end = keyLine(text, header);
+  for (let lines = 1; end >= 0 && lines < KEY_LINES; lines++) {
+    const next = keyNextLine(text, end);
+    if (next < 0) break;
+    end = next;
+  }
+  return end;
+}
+
+/** A private key block, whole: its BEGIN line through its body to its END line, the key itself, not its header alone (a
+ *  cut read serves a run's whole file). Ported from #3617's rule, one regex there, read here by hand with every
+ *  character counted.
+ *  - With its END line within KEY_BODY_MAX characters, all between is cut, whatever wraps the body's lines (a code
+ *    string literal on each, a "#" or ">" before each, an XML or HTML line break, an escape, an armored key's headers):
+ *    the body is any character but a "-" that starts "-----", so the END line can only start at the first "-----"
+ *    after the header, and the reading from one header stops there.
+ *  - With no END line in reach (a key cut short, one past the bound, one the edge of a window key-refusal.ts reads
+ *    crosses), it is cut through its body's lines: the first maybe glued to its header, at most KEY_LINES in all. A
+ *    line break is LF, CRLF or CR, or one escaped in a quoted string ("\n", "\r\n", "\\n" in a string within a string:
+ *    at most 8 backslashes, four strings deep). A line is blanks (a space, a tab, or an escaped tab), then base64 of at
+ *    most KEY_BODY_MAX characters (its slashes maybe escaped, "\/"), or a legacy PEM's or armored key's header
+ *    (Proc-Type, DEK-Info, Version, Comment) of at most KEY_HEADER_MAX after its colon, or nothing (a blank line), then
+ *    blanks; it ends at a line break or a closing quote (either maybe escaped), an XML or HTML tag's "<", or the text's
+ *    end. Text after the body that is no such line (prose, a field) stays.
+ *  - A header with not even an empty line after it (prose on its line, another header glued to it) is cut alone, as
+ *    the header shape before this one cut it.
+ *  A block read whole or through its lines reads on from its end: a "-----BEGIN" inside it can only stand in a header
+ *  line's text, already cut. Each part is bounded, a line break's spellings try the line after it at most three times,
+ *  and the search for the END line stops at the next "-----": the reading stays linear. */
 const PRIVATE_KEY: Shape = {
   kind: "private key block",
   prefixes: ["-----BEGIN"],
   scan(text, at) {
-    const from = at + 10;
-    let end = from;
-    while (end < text.length && end - from < 140 && PRIVATE_KEY_HEADER(text.charCodeAt(end))) end++;
-    scanned.chars += end - from + 1;
-    const length = end - from;
-    if (length >= 140 || !text.startsWith("-----", end)) return none(at + 1);
-    for (let i = Math.max(0, length - 75); i <= Math.min(64, length - 11); i++) {
-      scanned.chars += 11;
-      if (text.startsWith("PRIVATE KEY", from + i)) return { start: at, end: end + 5, next: at + 1 };
-    }
-    return none(at + 1);
+    const header = armorEnd(text, at, 10);
+    if (header < 0) return none(at + 1);
+    const whole = keyEndLine(text, header);
+    if (whole >= 0) return { start: at, end: whole, next: whole };
+    const lines = keyBodyLines(text, header);
+    return lines >= 0 ? { start: at, end: lines, next: lines } : { start: at, end: header, next: at + 1 };
   },
 };
+
+/** Where the private key block whose "-----BEGIN" stands at `at` ends, past its END line, or -1: no key's header there,
+ *  or no END line in reach, as PRIVATE_KEY reads it whole. key-refusal.ts reads it so that no piece of an answer ends
+ *  inside a block. Whether any "-----" stands within KEY_BODY_MAX of the header is read back from there first (the
+ *  header's own closing dashes stop that read), so a header with none after it reads no further. */
+export function privateKeyEnd(text: string, at: number): number {
+  if (!text.startsWith("-----BEGIN", at)) return -1;
+  const header = armorEnd(text, at, 10);
+  if (header < 0) return -1;
+  const reach = Math.min(text.length, header + KEY_BODY_MAX);
+  const last = text.lastIndexOf("-----", reach);
+  scanned.chars += reach - Math.max(last, header - 5);
+  return last < header ? -1 : keyEndLine(text, header);
+}
 
 /** A JWT: three base64url parts, the first two JSON objects ("eyJ"), each 8 characters or more after it. It starts at
  *  the first "eyJ" of a run of a part's characters, wherever that run starts ("token-eyJ…", "x9eyJ…"): a later "eyJ" in
@@ -272,8 +482,9 @@ const BEARER_TOKEN: Shape = {
   },
 };
 
-/** Each name a credential parameter goes by, as written after "?" or "&" and lowered. */
-const CREDENTIAL_NAMES = new Set([
+/** Each name a credential parameter goes by, as written after "?" or "&" and lowered; and each key, lowered, of a held
+ *  JSON value whose string is held as itself (learn/secrets.ts heldFields). */
+export const CREDENTIAL_NAMES: ReadonlySet<string> = new Set([
   ...["api", "access", "auth", "id", "refresh", "client"].flatMap((head) => {
     const tail = head === "api" ? "key" : head === "client" ? "secret" : "token";
     return [`${head}${tail}`, `${head}_${tail}`, `${head}-${tail}`];
@@ -301,6 +512,32 @@ const URL_CREDENTIAL: Shape = {
   },
 };
 
+const isUpper = (code: number) => code >= 65 && code <= 90;
+/** An API key made in this server's console (api-keys.ts): `ar_key_` and its 32 random bytes in base64url, 43
+ *  characters or more to the end of that run, so a key glued to more of its characters is cut whole. The server keeps
+ *  no copy of such a key (only a keyed hash), so its shape is the one way it is found in a text, and it is found
+ *  whatever stands before it: after a word's character too (the `n` of a line break as JSON text writes it, a name
+ *  glued to it). What tells a key from a long name that only holds the prefix's letters (`similar_key_for_the_...`) is
+ *  in the run itself: a capital or a digit, which 32 random bytes all but always hold and a snake_case name does not.
+ *  A start inside a run already read ends where that run ends and holds no more of it, so it is not read again. */
+const AGENTRUN_API_KEY: Shape = {
+  kind: "AgentRun API key",
+  prefixes: ["ar_key_"],
+  scan(text, at, prefix) {
+    const from = at + prefix.length;
+    let end = from;
+    let mixed = false;
+    for (; end < text.length; end++) {
+      const code = text.charCodeAt(end);
+      if (!PART(code)) break;
+      mixed ||= isDigit(code) || isUpper(code);
+    }
+    scanned.chars += end - from + 1;
+    const next = end - (prefix.length - 1);
+    return end - from >= 43 && mixed ? { start: at, end, next } : none(next);
+  },
+};
+
 /** Text shaped like a secret, by kind. The same shapes the Pi learning loop's guard refuses. */
 export const SECRET_SHAPES: readonly Shape[] = [
   prefixFixed("AWS access key id", ["AKIA", "ASIA"], only(UPPER + DIGIT), 16),
@@ -309,6 +546,7 @@ export const SECRET_SHAPES: readonly Shape[] = [
   prefixRun("GitHub token", ["ghp_", "gho_", "ghu_", "ghs_", "ghr_"], ALNUM_CLASS, 30),
   prefixRun("GitHub token", ["github_pat_"], WORD, 20),
   prefixRun("sk- key", ["sk-"], PART, 20, (text, at) => at === 0 || !ALNUM_CLASS(text.charCodeAt(at - 1))),
+  AGENTRUN_API_KEY,
   prefixRun("Slack token", [..."abposre"].map((kind) => `xox${kind}-`).concat("xapp-"), only(`${ALNUM}-`), 10),
   JWT,
   WEBHOOK_SECRET,
@@ -344,8 +582,10 @@ const besideWord = (kind: string, words: readonly string[], pattern: RegExp, hea
 const ACCOUNT_NUMBER = /\b(?:bank\s{1,3})?(?:account|acct|a\/c)(?:\s{1,3}(?:number|no\.?|num))?\s{0,3}(?:#|:|\bis\b)?\s{0,3}(?!\d{4}-\d{2}-\d{2}\b)\d(?:[ -]?\d){5,}/;
 /** An IBAN beside its word: two letters, two check digits, then ten to thirty letters or digits, spaces between. */
 const IBAN = /\bIBAN\s{0,3}(?:#|:|\bis\b)?\s{0,3}[A-Z]{2}\d{2}(?:\s?[A-Z0-9]){10,30}/;
-/** A US routing (ABA) number beside its word: nine digits. */
-const ROUTING_NUMBER = /\b(?:routing|ABA)(?:\s{1,3}(?:number|no\.?|num))?\s{0,3}(?:#|:|\bis\b)?\s{0,3}\d{9}\b/;
+/** A US routing (ABA) number beside its word: nine digits. The word ends at a word end, so an id or hash whose hex
+ *  holds "aba" glued to nine digits (a UUID's last group, a sha cut to twelve) is none. The other words hold a letter
+ *  no hex does, so no id spells them. */
+const ROUTING_NUMBER = /\b(?:routing|ABA)\b(?:\s{1,3}(?:number|no\.?|num))?\s{0,3}(?:#|:|\bis\b)?\s{0,3}\d{9}\b/;
 /** A UK sort code beside its word: three pairs of digits. */
 const SORT_CODE = /\bsort\s{1,3}code\s{0,3}(?:#|:|\bis\b)?\s{0,3}\d{2}[- ]?\d{2}[- ]?\d{2}\b/;
 
@@ -421,18 +661,22 @@ export function shapeKinds(text: string, shapes: readonly Shape[]): string[] {
  *  - `folds`: a hex identifier's digits, found in any case with one separator ("-", "_", ":", ".") allowed between any
  *    two, and cut in place;
  *  - `plain`: what the whole-text check looks for in each squeezed view (with `hexes` in it lowered, `folds` in it
- *    folded). */
+ *    folded);
+ *  - `joined`: a held value that holds a "," or a ":", squeezed, with them gone: what the whole-text check also looks
+ *    for in the join view alone, which drops JSON's punctuation between strings, so a value JSON split there
+ *    ({"alice":"<rest>"}, two strings of an array) reads as itself. */
 export type Needles = {
   readonly forms: readonly string[];
   readonly hexes: readonly string[];
   readonly folds: readonly string[];
   readonly plain: readonly string[];
+  readonly joined?: readonly string[];
 };
 
 /** Adds each place `needle` stands in `hay` to `out`, overlapping places too. */
 function places(hay: string, needle: string, out: Span[]): void {
   if (!needle) return;
-  for (let at = hay.indexOf(needle); at >= 0; at = hay.indexOf(needle, at + 1)) out.push([at, at + needle.length]);
+  for (let at = find(hay, needle, 0); at >= 0; at = find(hay, needle, at + 1)) out.push([at, at + needle.length]);
 }
 
 const isSeparator = (code: number) => code === 45 || code === 95 || code === 58 || code === 46;
@@ -441,6 +685,8 @@ const isSeparator = (code: number) => code === 45 || code === 95 || code === 58 
  *  two. Found in the text lowered with its separators gone, each character's offset in the text kept, and a place kept
  *  only where no two of its digits are more than one separator apart. */
 function foldSpans(text: string, folds: readonly string[], out: Span[]): void {
+  // The text lowered, then read once for its separators.
+  scanned.chars += 2 * text.length;
   const lower = asciiLower(text);
   const at = new Int32Array(text.length);
   const parts: string[] = [];
@@ -460,7 +706,7 @@ function foldSpans(text: string, folds: readonly string[], out: Span[]): void {
   for (let k = 1; k < count; k++) stretch[k] = at[k]! - at[k - 1]! > 2 ? k : stretch[k - 1]!;
   for (const needle of folds) {
     if (!needle) continue;
-    for (let i = flat.indexOf(needle); i >= 0; i = flat.indexOf(needle, i + 1)) {
+    for (let i = find(flat, needle, 0); i >= 0; i = find(flat, needle, i + 1)) {
       const last = i + needle.length - 1;
       if (stretch[last]! <= i) out.push([at[i]!, at[last]! + 1]);
     }
@@ -469,6 +715,8 @@ function foldSpans(text: string, folds: readonly string[], out: Span[]): void {
 
 /** `found` in order, each run of overlapping or touching spans as one. */
 export function merged(found: readonly (readonly [number, number])[]): Span[] {
+  // Each find read once: they come as one sorted run per form, hex, fold and shape, which the sort merges.
+  scanned.chars += found.length;
   const out: Span[] = [];
   for (const [start, end] of [...found].sort((a, b) => a[0] - b[0])) {
     const last = out.at(-1);
@@ -480,6 +728,7 @@ export function merged(found: readonly (readonly [number, number])[]): Span[] {
 
 /** `text` with each of `spans` (merged, in order) replaced by "[redacted]". */
 export function cutAt(text: string, spans: readonly Span[]): string {
+  scanned.chars += text.length;
   let out = "";
   let from = 0;
   for (const [start, end] of spans) {
@@ -497,6 +746,20 @@ type View = { readonly text: string; readonly covered: readonly Span[] };
 
 const HEX = only("0123456789abcdefABCDEF");
 const BLANKS = /[\t-\r ]+/y;
+/** A character that renders as nothing (a zero-width space, a soft hyphen, a byte order mark, a variation selector). */
+const IGNORABLE = /\p{Default_Ignorable_Code_Point}+/gu;
+const GONE = /[\s\p{Default_Ignorable_Code_Point}]+/gu;
+
+/** Combining marks: an accent, a cedilla, an enclosing circle. */
+const MARKS = /\p{M}+/gu;
+
+/** `text` as a view reads it, and as a held value's needles are read: decomposed (NFKD), its combining marks dropped,
+ *  then NFKC, with its whitespace and its characters that render as nothing gone, before (so one between a letter and
+ *  its accent hides neither) and after. A held value with a zero-width space or a soft hyphen between its characters
+ *  reads as itself; so does one with a combining mark after a letter, which NFKC alone composes into another letter
+ *  ("Z" and U+0301 into "Ź"), and one written with a precomposed letter in place of its own ("Ź" for "Z"). A held
+ *  value's accents are dropped the same way, so it reads as itself with them or without: more cutting, never less. */
+export const squeeze = (text: string): string => text.replace(IGNORABLE, "").normalize("NFKD").replace(MARKS, "").normalize("NFKC").replace(GONE, "");
 
 /** What a view decodes where its trigger character stands: given the text and that place, the end of what it decoded,
  *  each character it decodes to handed to `unit` with the text it came from; or -1 where nothing there decodes. */
@@ -509,34 +772,314 @@ const PERCENT: Decoder = {
   decode(text, at, unit) {
     let end = at;
     while (text[end] === "%" && HEX(text.charCodeAt(end + 1)) && HEX(text.charCodeAt(end + 2))) end += 3;
+    // Each byte read, and the three characters past the run that end it.
+    scanned.chars += end - at + 3;
     if (end === at) return -1;
     decoded(text, at, end, unit);
     return end;
   },
 };
 /** "+" as a space, as a form's encoding writes one. */
-const PLUS: Decoder = { trigger: "+", decode: (_text, at, unit) => (unit(" ", at, at + 1), at + 1) };
+const PLUS: Decoder = { trigger: "+", decode: (_text, at, unit) => (scanned.chars++, unit(" ", at, at + 1), at + 1) };
+/** What JSON's one-character escapes stand for. */
+const ESCAPED: Readonly<Record<string, string>> = {
+  n: "\n", r: "\r", t: "\t", '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f",
+};
+/** A character of `text` at `at` read through one level of JSON's escapes, and where it ends: a "\" and one of
+ *  ESCAPED's keys, or "\u" and four hex digits (a UTF-16 unit), or else the character as it stands. */
+type Char = { char: string; end: number };
+function unescaped(text: string, at: number): Char | undefined {
+  // Counted as the most it reads, six characters ("\u" and four hex digits), whatever it reads.
+  if (at >= text.length) return undefined;
+  scanned.chars += Math.min(6, text.length - at);
+  if (text[at] !== "\\") return { char: text[at]!, end: at + 1 };
+  const next = text[at + 1];
+  if (next !== undefined && ESCAPED[next] !== undefined) return { char: ESCAPED[next]!, end: at + 2 };
+  if (next !== "u") return undefined;
+  for (let i = at + 2; i < at + 6; i++) if (!HEX(text.charCodeAt(i))) return undefined;
+  return { char: String.fromCharCode(Number.parseInt(text.slice(at + 2, at + 6), 16)), end: at + 6 };
+}
+/** JSON's escapes, decoded twice: a held value a JSON writer wrote, every character or some ("\n", a "\u" and four hex
+ *  digits), and one written again as a JSON string's text (JSON in JSON: "\\n", "\\u0041"). Where one level's "\"
+ *  starts an escape of the next, each character that escape decodes to comes from all of the raw text the two levels
+ *  read; a "\" that starts none is itself. A surrogate pair is two escapes, two units, NFKC'd together as any non-ASCII
+ *  stretch is. Line breaks written "\r\n" decode to whitespace, gone from the view. An escaped quote, at either level
+ *  (a backslash and a quote, or one more level of it, or the "\u" escape whose digits are 0022), decodes to nothing
+ *  with `dropQuote`: it is where a string written in a string starts or ends, and a held value split across it reads
+ *  whole, as one split across two strings does in the join view (joinOf). Without it, a quote, as the base's view of
+ *  JSON's escapes alone read it (a held value with a quote of its own, written escaped). With `levels` 1, the first level
+ *  alone: a "\\" is a backslash, read no further. */
+const jsonEscape = (dropQuote: boolean, levels: 1 | 2 = 2): Decoder => ({
+  trigger: "\\",
+  decode(text, at, unit) {
+    const put = (char: string, end: number) => {
+      if (!dropQuote || char !== '"') unit(char, at, end);
+      return end;
+    };
+    const first = unescaped(text, at);
+    if (!first) return -1;
+    if (levels === 1 || first.char !== "\\") return put(first.char, first.end);
+    // The first level decoded a "\": what follows it, itself read through the first level, may be a second escape.
+    const second = unescaped(text, first.end);
+    if (second && ESCAPED[second.char] !== undefined) return put(ESCAPED[second.char]!, second.end);
+    if (second?.char === "u") {
+      let end = second.end;
+      let digits = "";
+      for (let i = 0; i < 4; i++) {
+        const digit = unescaped(text, end);
+        if (!digit || !HEX(digit.char.charCodeAt(0))) break;
+        digits += digit.char;
+        end = digit.end;
+      }
+      if (digits.length === 4) return put(String.fromCharCode(Number.parseInt(digits, 16)), end);
+    }
+    unit("\\", at, first.end);
+    return first.end;
+  },
+});
+const JSON_ESCAPE = jsonEscape(true);
+/** JSON's escapes as the base's one-family view read them: an escaped quote is a quote. */
+const JSON_ESCAPE_QUOTED = jsonEscape(false);
+/** JSON's escapes, decoded once: a "\" that starts an escape and what follows it, as one character, an escaped quote a
+ *  quote: a JSON string's text as JSON.parse reads it. A held value that holds a backslash before a character an escape
+ *  starts with ("\n", "A" as written), written by a JSON writer ("\\n", "\u0041"), reads as itself here, where the
+ *  two levels JSON_ESCAPE reads make the escaped backslash and what follows it one escape; so does one with a quote of
+ *  its own, written once. */
+const JSON_ESCAPE_ONCE = jsonEscape(false, 1);
+/** What JSON_ESCAPE reads at `at`: the character the escape there decodes to, through both levels ("" for an escaped
+ *  quote, which decodes to nothing), and where it ends; undefined where no escape starts (the "\" is then itself).
+ *  key-refusal.ts's peek counts an escape by it, so the read past a call's stop and the JSON view see the same
+ *  characters. */
+export function jsonEscapeAt(text: string, at: number): { char: string; end: number } | undefined {
+  let char = "";
+  const end = JSON_ESCAPE.decode(text, at, (decoded) => {
+    char = decoded;
+  });
+  return end < 0 ? undefined : { char, end };
+}
 
+const DECIMAL = only(DIGIT);
+/** The character an HTML numeric character reference at `at` stands for ("&#" and 1 to 7 decimal digits, or "&#x" or
+ *  "&#X" and 1 to 6 hex digits, then ";"), and where it ends; undefined where none starts, or it stands for no
+ *  character (zero, a surrogate, past U+10FFFF). It reads at most 11 characters. key-refusal.ts's peek counts a
+ *  reference by it, so the read past a call's stop and the views see the same characters. */
+export function entityAt(text: string, at: number): { char: string; end: number } | undefined {
+  scanned.chars += Math.min(11, text.length - at);
+  if (text[at] !== "&" || text[at + 1] !== "#") return undefined;
+  const hex = text[at + 2] === "x" || text[at + 2] === "X";
+  const from = at + (hex ? 3 : 2);
+  const digit = hex ? HEX : DECIMAL;
+  let end = from;
+  while (end < text.length && end - from < (hex ? 6 : 7) && digit(text.charCodeAt(end))) end++;
+  if (end === from || text[end] !== ";") return undefined;
+  const code = Number.parseInt(text.slice(from, end), hex ? 16 : 10);
+  if (code === 0 || (code >= 0xd800 && code <= 0xdfff) || code > 0x10ffff) return undefined;
+  return { char: String.fromCodePoint(code), end: end + 1 };
+}
+/** An HTML numeric character reference (entityAt), as the character it stands for (a character past U+FFFF as its two
+ *  UTF-16 units, each from the whole reference). */
+const ENTITY: Decoder = {
+  trigger: "&",
+  decode(text, at, unit) {
+    const found = entityAt(text, at);
+    if (!found) return -1;
+    for (let i = 0; i < found.char.length; i++) unit(found.char[i]!, at, found.end);
+    return found.end;
+  },
+};
+
+/** What a text holds that a view decodes or joins, each found by one read of the text (familiesOf): a percent-encoded
+ *  byte, one of JSON's escapes, an escaped quote (at either level, or as its "\u" escape), an HTML numeric character
+ *  reference's start, a "+", a quote, an escaped backslash (or its "\u" escape: where a second level of JSON's escapes
+ *  can start). */
+type Families = { percent: boolean; escape: boolean; quoteEscape: boolean; entity: boolean; plus: boolean; quote: boolean; deep: boolean };
+const PERCENT_BYTE = /%[0-9a-fA-F]{2}/;
+const JSON_ESCAPED = /\\(?:u[0-9a-fA-F]{4}|["\\/bfnrt])/;
+const QUOTE_ESCAPED = /\\"|\\u00[2]2/;
+const BACKSLASH_ESCAPED = /\\\\|\\u005[cC]/;
+function familiesOf(text: string): Families {
+  // Seven reads of the text, each to its first find at most.
+  scanned.chars += 7 * text.length;
+  return { percent: PERCENT_BYTE.test(text), escape: JSON_ESCAPED.test(text), quoteEscape: QUOTE_ESCAPED.test(text), entity: text.includes("&#"), plus: text.includes("+"), quote: text.includes('"'), deep: BACKSLASH_ESCAPED.test(text) };
+}
+
+/** Which join of a JSON text's strings a view reads (joinOf): `nested`, each string's contents, a value's read again for
+ *  the strings written in it (JSON in a string); `strings`, each string's contents whole, as JSON.parse gives them. */
+type JoinKind = "nested" | "strings";
 /** A view the whole-text check reads: the text decoded by `decoders`, then squeezed (viewOf), read only where `when`
- *  says the text holds what a decoder decodes. `special`: where viewOf stops to do more than copy. */
-type ViewSpec = { readonly when: (text: string) => boolean; readonly decoders: readonly Decoder[]; readonly special: RegExp };
-const viewSpec = (when: (text: string) => boolean, decoders: readonly Decoder[]): ViewSpec => ({
+ *  says the text holds what a decoder decodes (familiesOf). `special`: where viewOf stops to do more than copy. `join`:
+ *  the view reads that join of the text's JSON strings (joinOf) in place of the text. */
+type ViewSpec = { readonly when: (has: Families) => boolean; readonly decoders: readonly Decoder[]; readonly special: RegExp; readonly join?: JoinKind };
+const viewSpec = (when: (has: Families) => boolean, decoders: readonly Decoder[], join?: JoinKind): ViewSpec => ({
   when,
   decoders,
   special: new RegExp(`[\\s${decoders.map((decoder) => `\\${decoder.trigger}`).join("")}\\u0080-\\uffff]`, "g"),
+  ...(join ? { join } : {}),
 });
-/** The views of a text read for each held value, in order: squeezed; percent-decoded; percent-decoded with "+" as a
- *  space. Each is lowered for hexes and flattened for folded identifiers in holds. */
+/** The views of a text read for each held value, in order:
+ *  - squeezed;
+ *  - the views of one family each, as they were before the stacked ones: percent-decoded; percent-decoded with "+" as a
+ *    space; JSON's escapes decoded twice, an escaped quote a quote; and decoded once, where the text holds an escape that
+ *    decodes to a backslash (elsewhere the two levels read as one does). Each reads a held value that holds another
+ *    family's text of its own (a literal "\n", a literal "%41", "&#65;") as itself, which a stacked view decodes, so
+ *    keeping them keeps every find they made;
+ *  - stacked: its percent-encoded bytes, JSON's escapes (twice, an escaped quote as nothing) and HTML's numeric character
+ *    references each decoded where it stands, so a value split by an encoded space of one family and an escaped one of
+ *    another, or written half in each, or split by an escaped quote, reads whole; and the same with "+" as a space. Each
+ *    is read only where it can read otherwise than the one-family views: the text has a character reference, an escaped
+ *    quote, or both percent-encoding and JSON's escapes (and, with "+", any of JSON's escapes);
+ *  - for a text with a quote in it, its JSON strings joined (joinOf), each string's contents read again for the strings
+ *    written in it, decoded as the stacked view;
+ *  - for a text with a quote in it, its JSON strings joined whole, read as the base's check of a web call's strings read
+ *    them (decoded as JSON.parse decodes them, then through the one-family views): one level of JSON's escapes, an
+ *    escaped quote a quote, so a held value with a quote of its own reads whole across two strings; the same
+ *    percent-decoded, and with "+" as a space (a "+" after a held value's head in one string and its rest in the next);
+ *    and JSON's escapes decoded twice, an escaped quote a quote (only where the text has an escaped backslash: otherwise
+ *    it reads as the first). Each is read only where the text holds what it decodes.
+ *  The decoders of a view decode in one pass: each reads at its own trigger character, so a view costs one read of the
+ *  text whatever it decodes. Each view is lowered for hexes and flattened for folded identifiers in holds. */
 const VIEWS: readonly ViewSpec[] = [
   viewSpec(() => true, []),
-  viewSpec((text) => /%[0-9a-fA-F]{2}/.test(text), [PERCENT]),
-  viewSpec((text) => text.includes("+"), [PERCENT, PLUS]),
+  viewSpec((has) => has.percent, [PERCENT]),
+  viewSpec((has) => has.plus, [PERCENT, PLUS]),
+  viewSpec((has) => has.escape, [JSON_ESCAPE_QUOTED]),
+  viewSpec((has) => has.deep, [JSON_ESCAPE_ONCE]),
+  viewSpec((has) => has.entity || has.quoteEscape || (has.percent && has.escape), [PERCENT, JSON_ESCAPE, ENTITY]),
+  viewSpec((has) => has.plus && (has.entity || has.escape), [PERCENT, PLUS, JSON_ESCAPE, ENTITY]),
+  viewSpec((has) => has.quote, [PERCENT, JSON_ESCAPE, ENTITY], "nested"),
+  viewSpec((has) => has.quote, [JSON_ESCAPE_ONCE], "strings"),
+  viewSpec((has) => has.quote && has.percent, [PERCENT, JSON_ESCAPE_ONCE], "strings"),
+  viewSpec((has) => has.quote && has.plus, [PERCENT, PLUS, JSON_ESCAPE_ONCE], "strings"),
+  viewSpec((has) => has.quote && has.deep, [JSON_ESCAPE_QUOTED], "strings"),
 ];
 
-/** `text` as the whole-text check reads it: decoded by `spec`'s decoders, NFKC, and its whitespace gone, as
- *  learn/secrets.ts has always squeezed it. NFKC is applied to each stretch of non-ASCII characters with the ASCII
- *  character before it, which gives what it gives over the whole text (an ASCII character is a starter nothing composes
- *  onto), and each character it makes comes from that whole stretch. With `cuts` (merged spans of `text`), the view's
+// ---- The join view: a JSON text's strings read joined, so a held value split across two of them reads whole.
+
+/** A stretch of a text the join view reads: a string's contents (a property name's, `name`), or a run of characters
+ *  outside any string (a number, a word, a line after the JSON). */
+type Part = { from: number; to: number; name: boolean };
+
+/** JSON's punctuation between its values. */
+const STRUCTURE = only("{}[],:");
+
+/** The character of a JSON text at `at` (before `to`) as `level` reads it, and where it ends: at level 0 each raw
+ *  character is itself; at level 1, the text of a string, an escape is the character it stands for ("\" and one
+ *  character, "\u" and four hex digits), so a string written in that string has its quotes as "\"". */
+function unitAt(text: string, at: number, to: number, level: 0 | 1): { char: string; end: number } {
+  if (level === 0 || text[at] !== "\\" || at + 1 >= to) {
+    scanned.chars++;
+    return { char: text[at]!, end: at + 1 };
+  }
+  const next = text[at + 1]!;
+  if (next === "u" && at + 6 <= to) {
+    scanned.chars += 6;
+    let hex = true;
+    for (let i = at + 2; i < at + 6; i++) hex &&= HEX(text.charCodeAt(i));
+    if (hex) return { char: String.fromCharCode(Number.parseInt(text.slice(at + 2, at + 6), 16)), end: at + 6 };
+  }
+  scanned.chars += 2;
+  return { char: ESCAPED[next] ?? next, end: at + 2 };
+}
+
+/** The parts of text[from, to) as JSON at `level`, in order, added to `out`: each string's contents, a property name's
+ *  (a string the next character after whitespace of which is ":") whole; a value's, at level 0 with `nested`, read again
+ *  at level 1 for the strings written in it (JSON in a string), each of its parts added in its place, and else whole; and
+ *  each run of characters outside a string that are neither whitespace nor JSON's punctuation. A string with no closing
+ *  quote runs to `to`. Any text is read so, JSON or not: a quote in prose opens a string as one in JSON does. Each
+ *  character is read at most three times (at level 0, at level 1, and in the whitespace after a string looking for a
+ *  ":"). */
+function partsOf(text: string, from: number, to: number, level: 0 | 1, out: Part[], nested = true): void {
+  let bare = -1;
+  const endBare = (end: number) => {
+    if (bare >= 0) out.push({ from: bare, to: end, name: false });
+    bare = -1;
+  };
+  for (let at = from; at < to; ) {
+    const { char, end } = unitAt(text, at, to, level);
+    const code = char.charCodeAt(0);
+    if (char !== '"') {
+      if (isSpace(code) || STRUCTURE(code)) endBare(at);
+      else if (bare < 0) bare = at;
+      at = end;
+      continue;
+    }
+    endBare(at);
+    // The string: to its closing quote, each escape (a "\" and the character after it) passed over whole.
+    let close = end;
+    while (close < to) {
+      const inner = unitAt(text, close, to, level);
+      if (inner.char === '"') break;
+      close = inner.char === "\\" && inner.end < to ? unitAt(text, inner.end, to, level).end : inner.end;
+    }
+    const after = close < to ? unitAt(text, close, to, level).end : to;
+    // A name, when the next character past whitespace is a ":".
+    let ahead = after;
+    let next = "";
+    while (ahead < to) {
+      const unit = unitAt(text, ahead, to, level);
+      if (!isSpace(unit.char.charCodeAt(0))) {
+        next = unit.char;
+        break;
+      }
+      ahead = unit.end;
+    }
+    if (next === ":") out.push({ from: end, to: close, name: true });
+    else if (level === 0 && nested) partsOf(text, end, close, 1, out);
+    else out.push({ from: end, to: close, name: false });
+    at = after;
+  }
+  endBare(to);
+}
+
+/** `text`'s join of `kind` (JoinKind): its parts (partsOf) read three times over, each time joined, each part followed by a space (gone
+ *  from the view, and no escape reads past it): the values and the runs outside strings; the property names; then all
+ *  of them. Each pass is closed by a NUL, which the view keeps and no held value holds, so no value reads across two
+ *  passes. A held value split across two values with a name between them ({"title":"see <H>","snippet":"<R> more"}),
+ *  across two names, across a name and its value, across a quote of JSON written in a string, or across a string and
+ *  the line after the JSON reads whole in one of them. A view decodes and squeezes the join as any text (viewOf), each
+ *  part's characters keeping their source: with `cuts` (merged spans of `text`), the spans of each part a cut covers
+ *  are moved to where the part stands in the join (`cuts` of the join), so a value the finds cut in place in each
+ *  string is covered there too. The cuts' cursor only goes forward within a pass: each cut is passed once a pass. A
+ *  join is the same for every view that reads it: holds builds each kind once per text. */
+function joinOf(text: string, kind: JoinKind, cuts?: readonly Span[]): { text: string; cuts?: Span[] } {
+  const parts: Part[] = [];
+  partsOf(text, 0, text.length, 0, parts, kind === "nested");
+  const pieces: string[] = [];
+  const moved: Span[] = [];
+  let length = 0;
+  const passes: readonly ((part: Part) => boolean)[] = [(part) => !part.name, (part) => part.name, () => true];
+  for (const pass of passes) {
+    let cut = 0;
+    for (const part of parts) {
+      if (!pass(part)) continue;
+      scanned.chars++;
+      if (cuts) {
+        while (cut < cuts.length && cuts[cut]![1] <= part.from) {
+          cut++;
+          scanned.chars++;
+        }
+        for (let k = cut; k < cuts.length && cuts[k]![0] < part.to; k++) {
+          scanned.chars++;
+          const start = Math.max(part.from, cuts[k]![0]);
+          const end = Math.min(part.to, cuts[k]![1]);
+          if (start < end) moved.push([length + start - part.from, length + end - part.from]);
+        }
+      }
+      pieces.push(text.slice(part.from, part.to), " ");
+      length += part.to - part.from + 1;
+    }
+    pieces.push("\u0000");
+    length++;
+  }
+  // The join written once.
+  scanned.chars += length;
+  return { text: pieces.join(""), ...(cuts ? { cuts: moved } : {}) };
+}
+
+/** `text` as the whole-text check reads it: decoded by `spec`'s decoders, then squeezed (squeeze: NFKC, its whitespace
+ *  and its characters that render as nothing gone), as a held value's needles are. The squeeze is applied to each
+ *  stretch of non-ASCII characters with the ASCII character before it, which gives what it gives over the whole text (an
+ *  ASCII character is a starter nothing composes onto), and each character it makes comes from that whole stretch. With `cuts` (merged spans of `text`), the view's
  *  covered stretches: where every character comes from inside one cut. */
 function viewOf(text: string, spec: ViewSpec, cuts?: readonly Span[]): View {
   const out: string[] = [];
@@ -553,8 +1096,13 @@ function viewOf(text: string, spec: ViewSpec, cuts?: readonly Span[]): View {
     if (to <= from) return;
     out.push(text.slice(from, to));
     if (cuts) {
-      while (cut < cuts.length && cuts[cut]![1] <= from) cut++;
+      // The cover's cursor only goes forward: each cut is passed once in the whole view.
+      while (cut < cuts.length && cuts[cut]![1] <= from) {
+        cut++;
+        scanned.chars++;
+      }
       for (let k = cut; k < cuts.length && cuts[k]![0] < to; k++) {
+        scanned.chars++;
         const start = Math.max(from, cuts[k]![0]);
         const end = Math.min(to, cuts[k]![1]);
         if (start < end) cover(length + start - from, length + end - from);
@@ -567,7 +1115,10 @@ function viewOf(text: string, spec: ViewSpec, cuts?: readonly Span[]): View {
     if (!chars) return;
     out.push(chars);
     if (cuts) {
-      while (cut < cuts.length && cuts[cut]![1] <= from) cut++;
+      while (cut < cuts.length && cuts[cut]![1] <= from) {
+        cut++;
+        scanned.chars++;
+      }
       if (cut < cuts.length && cuts[cut]![0] <= from && to <= cuts[cut]![1]) cover(length, length + chars.length);
     }
     length += chars.length;
@@ -581,15 +1132,17 @@ function viewOf(text: string, spec: ViewSpec, cuts?: readonly Span[]): View {
     if (held && !isSpace(held.char.charCodeAt(0))) emit(held.char, held.from, held.to);
     held = undefined;
   };
-  const nfkc = (chars: string) => chars.normalize("NFKC").replace(/\s+/gu, "");
   const flushGroup = () => {
     if (!group) return;
-    const made = nfkc(group.chars);
+    // The stretch squeezed twice: whole, and without its lead.
+    scanned.chars += 2 * group.chars.length;
+    const made = squeeze(group.chars);
     const { lead } = group;
-    const rest = lead ? nfkc(group.chars.slice(lead.char.length)) : "";
+    const rest = lead ? squeeze(group.chars.slice(lead.char.length)) : "";
     // Where nothing composed onto the ASCII character, it comes from itself alone: a value cut in place right before
-    // a non-ASCII character is still covered to its last character.
-    if (lead && made === nfkc(lead.char) + rest) {
+    // a non-ASCII character is still covered to its last character. A stretch that squeezes to nothing (characters that
+    // render as nothing) adds nothing to the view, as whitespace adds nothing.
+    if (lead && made === squeeze(lead.char) + rest) {
       held = lead;
       flushHeld();
       emit(rest, lead.to, group.to);
@@ -617,6 +1170,8 @@ function viewOf(text: string, spec: ViewSpec, cuts?: readonly Span[]): View {
     special.lastIndex = at;
     const hit = special.exec(text);
     const stop = hit ? hit.index : text.length;
+    // The characters copied as they are, and the special one that stopped the search.
+    scanned.chars += (hit ? stop + 1 : stop) - at;
     if (stop > at) {
       flushGroup();
       flushHeld();
@@ -633,6 +1188,7 @@ function viewOf(text: string, spec: ViewSpec, cuts?: readonly Span[]): View {
       // character after it could compose onto.
       BLANKS.lastIndex = stop;
       BLANKS.test(text);
+      scanned.chars += BLANKS.lastIndex - stop;
       flushGroup();
       flushHeld();
       held = { char: text[BLANKS.lastIndex - 1]!, from: BLANKS.lastIndex - 1, to: BLANKS.lastIndex };
@@ -658,6 +1214,8 @@ function decoded(text: string, from: number, to: number, unit: Sink): void {
     for (let at = from; at < to; at += 3) unit(String.fromCharCode(Number.parseInt(text.slice(at + 1, at + 3), 16)), at, at + 3);
     return;
   }
+  // The run read three times: its hex parsed, decoded whole, and decoded one sequence at a time.
+  scanned.chars += 3 * (to - from);
   const bytes = Buffer.from(text.slice(from, to).replaceAll("%", ""), "hex");
   const whole = bytes.toString("utf8");
   const pieces: [string, number, number][] = [];
@@ -674,6 +1232,7 @@ function decoded(text: string, from: number, to: number, unit: Sink): void {
 
 /** A view with its separators ("-", "_", ":", ".") gone, its covered stretches moved to match. */
 function flatOf(view: View): View {
+  scanned.chars += view.text.length + view.covered.length;
   const parts: string[] = [];
   const kept = new Int32Array(view.text.length + 1);
   let from = 0;
@@ -698,11 +1257,13 @@ function flatOf(view: View): View {
   return { text: parts.join(""), covered };
 }
 
-/** Whether [start, end) of a view lies in one of its covered stretches. */
+/** Whether [start, end) of a view lies in one of its covered stretches: a binary search, each stretch it visits
+ *  counted. */
 function inside(covered: readonly Span[], start: number, end: number): boolean {
   let lo = 0;
   let hi = covered.length - 1;
   while (lo <= hi) {
+    scanned.chars++;
     const mid = (lo + hi) >> 1;
     if (covered[mid]![0] <= start) lo = mid + 1;
     else hi = mid - 1;
@@ -715,26 +1276,38 @@ function holdsIn(view: string, covered: readonly Span[] | undefined, needles: re
   for (const needle of needles) {
     if (!needle) continue;
     if (!covered) {
-      if (view.includes(needle)) return true;
+      if (find(view, needle, 0) >= 0) return true;
       continue;
     }
-    for (let at = view.indexOf(needle); at >= 0; at = view.indexOf(needle, at + 1)) if (!inside(covered, at, at + needle.length)) return true;
+    for (let at = find(view, needle, 0); at >= 0; at = find(view, needle, at + 1)) if (!inside(covered, at, at + needle.length)) return true;
   }
   return false;
 }
 
 /** Whether `text` holds a held value in a form the cut does not find as it stands: split by whitespace, percent or
- *  form encoded, an NFKC variant, its hex in any case, a hex identifier folded (`fold`). With `cuts`, a value whose
- *  every character the view read comes from inside the cuts is not held: it is cut in place. */
+ *  form encoded, an NFKC variant, its hex in any case, a hex identifier folded (`fold`), split across two strings of a
+ *  JSON text (joinOf; a "+" after its head or a quote of its own in it too), or split there at its own "," or ":"
+ *  (`joined`). With `cuts`, a value whose every character the view read comes from inside the cuts is not held: it is
+ *  cut in place. */
 export function holds(text: string, needles: Needles, { fold = true, cuts }: { fold?: boolean; cuts?: readonly Span[] } = {}): boolean {
   const folds = fold ? needles.folds : [];
   if (!needles.plain.length && !needles.hexes.length && !folds.length) return false;
+  const has = familiesOf(text);
+  const joins = new Map<JoinKind, { text: string; cuts?: Span[] }>();
+  const joinFor = (kind: JoinKind) => {
+    let join = joins.get(kind);
+    if (!join) joins.set(kind, (join = joinOf(text, kind, cuts)));
+    return join;
+  };
   for (const spec of VIEWS) {
-    if (!spec.when(text)) continue;
-    const view = viewOf(text, spec, cuts);
+    if (!spec.when(has)) continue;
+    const join = spec.join ? joinFor(spec.join) : undefined;
+    const view = join ? viewOf(join.text, spec, join.cuts) : viewOf(text, spec, cuts);
     const covered = cuts ? view.covered : undefined;
     if (holdsIn(view.text, covered, needles.plain)) return true;
+    if (spec.join && needles.joined?.length && holdsIn(view.text, covered, needles.joined)) return true;
     if (!needles.hexes.length && !folds.length) continue;
+    scanned.chars += view.text.length;
     const lower = { text: asciiLower(view.text), covered: view.covered };
     if (holdsIn(lower.text, covered, needles.hexes)) return true;
     if (!folds.length) continue;
