@@ -13,6 +13,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { memorySessionStore } from "@parcha/agentrun-kernel/testing";
 import { mcpGateway } from "../dist/mcp-gateway.js";
+import { saveOnce } from "../dist/save-once.js";
+import { localWorkspace } from "../dist/workspace/index.js";
 import { bookedIn } from "../dist/paid-calls.js";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 
@@ -53,7 +55,7 @@ const completed = (index, request_id, result, endpoint = VOICE) => ({
 
 /** One run's gateway pinned to fal's address (the fake answering), whose wait_for_jobs answers `answer()` as one text
  *  block, the JSON text fal sends. `work`: the run's files. `paid`: every hold and settlement the call booked. */
-async function runOn(t, answer) {
+async function runOn(t, answer, { wrap } = {}) {
   const fake = await startFakeMcp({ token: TOKEN });
   t.after(() => fake.close());
   const said = [];
@@ -78,7 +80,7 @@ async function runOn(t, answer) {
   const gateway = mcpGateway({
     pin: { fal: { url: FAL, tools: [{ name: "wait_for_jobs", inputSchema: { type: "object" } }], meter: "fal" } },
     credentials: { fal: { url: FAL, headers: { authorization: `Bearer ${TOKEN}` } } },
-    work: () => work,
+    work: () => (wrap ? wrap(work) : work),
     commit: () => async (change) => change({ appendEntry: async () => undefined }),
     capped: true,
     fetch: (input, init) => fetch(String(input instanceof Request ? input.url : input).replace(FAL, fake.url), init),
@@ -244,4 +246,43 @@ test("fal's meter reads each tool's completed jobs: run_model's own answer, each
   // An answer that is not JSON, or no object, files nothing.
   assert.deepEqual(falResults.of("wait_for_jobs", { content: [{ type: "text", text: "not json" }] }), []);
   assert.deepEqual(falResults.of("wait_for_jobs", text([completed(0, a, image)])), []);
+});
+
+/** `dir`'s local Workspace, whose stat of `at` says nothing is there, and then a file holding `bytes` is made there
+ *  before the call goes on: a file that lands between the check and the create. */
+function racedAt(dir, at, bytes) {
+  const real = localWorkspace(dir);
+  return new Proxy(real, {
+    get(target, key) {
+      if (key === "stat") {
+        return async (path) => {
+          if (path !== at) return target.stat(path);
+          const there = await target.stat(path);
+          await mkdir(join(dir, at, ".."), { recursive: true });
+          await writeFile(join(dir, at), bytes);
+          return there;
+        };
+      }
+      const value = Reflect.get(target, key, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
+test("a file made at the path between the check and the create is kept: the create never replaces it, and a sibling is filed", async (t) => {
+  const raced = "01a1fb40-2b3c-7d4e-8f5a-6b7c8d9e0f1a";
+  const sibling = "01a1fb40-2b3c-7d4e-8f5a-6b7c8d9e0f1b";
+  const at = `evidence/fal/${raced}.json`;
+  const run = await runOn(t, () => ({ all_terminal: true, jobs: [completed(0, raced, voiceResult(3)), completed(1, sibling, voiceResult(2))] }), { wrap: (dir) => racedAt(dir, at, "RACED IN") });
+  await run.wait();
+  assert.equal(await readFile(join(run.work, at), "utf8"), "RACED IN", "the file that landed first is kept, never replaced");
+  assert.deepEqual(await filed(run.work, sibling), voiceResult(2), "the sibling is filed");
+});
+
+test("saveOnce, which web_save shares: a file made between its check and its create is held, not replaced", async (t) => {
+  const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "save-once-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const saved = await saveOnce(racedAt(dir, "media/clip.mp3", "FIRST"), "media/clip.mp3", "SECOND");
+  assert.deepEqual(saved, { held: "file" }, "what is there is reported held");
+  assert.equal(await readFile(join(dir, "media/clip.mp3"), "utf8"), "FIRST", "and kept");
 });
