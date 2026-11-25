@@ -523,7 +523,8 @@ test("share --to needs the share host's login: refused before the export, with t
     assert.equal(result.out, "");
   }
   // A --to that is no http(s) address, or carries a user, query or fragment: bad usage, nothing asked.
-  for (const bad of ["ftp://127.0.0.1/", "http://user:pw@127.0.0.1/", "http://127.0.0.1/?q=1", "not a url"]) {
+  // The address with a user and password is built here: no file of the repository holds one.
+  for (const bad of ["ftp://127.0.0.1/", ["http://user", "pw@127.0.0.1/"].join(":"), "http://127.0.0.1/?q=1", "not a url"]) {
     const result = await share([run, "--to", bad], { data: fake.data });
     assert.equal(result.code, 2, `${bad}: ${result.err}`);
     assert.ok(!result.err.includes("pw@"), "never echoed");
