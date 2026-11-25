@@ -71,6 +71,20 @@ test("a claude-agent request whose Claude Code session the same import reads is 
   assert.deepEqual([alone.ses_K.tokens, alone.ses_K.cost, alone.ses_K.calls], [tokens(18, 5), 0.9375, 4]);
 });
 
+test("the mirrored request counts once whatever the sources' order, and a requests sink takes OpenCode's own requests alone", async (t) => {
+  const home = await openCodeHome(t);
+  await claudeSession(home);
+  const first = await parseHome(home, { sources: ["claude-code", "opencode"], catalog: false, env: {} });
+  // OpenCode read before Claude Code: its totals wait for every source, so K2 and K3 are still Claude Code's.
+  assert.deepEqual(await parseHome(home, { sources: ["opencode", "claude-code"], catalog: false, env: {} }), first);
+  // With a sink every part keeps its requests to the totals (Unpriced): the same totals, and ses_K's own two, K4 and K5.
+  const sunk = new Map();
+  const lines = await parseHome(home, { sources: ["opencode", "claude-code"], catalog: false, env: {}, requests: (totals, requests) => sunk.set(totals.id, requests) });
+  assert.deepEqual(lines, first);
+  assert.deepEqual(sunk.get("ses_K").map(({ usage }) => [usage.input, usage.output]), [[5, 1], [6, 1]]);
+  assert.equal(sunk.get("claude-session-1").length, 2);
+});
+
 test("a cursor: an unchanged session is not read again, a changed one is, and a replaced database is read from its start", async (t) => {
   const home = await openCodeHome(t);
   const db = join(home, DATA, "opencode.db");
