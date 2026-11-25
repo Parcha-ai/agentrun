@@ -15,7 +15,7 @@ import { type Answered, answeredOf, auditOfLaunch, figuresOf, type LedgerRead, t
 import { COMPILE_AFTER_DEFAULT } from "../learning-setting.js";
 import { modelsOwn, runPathOf, workflowNameOf } from "../runner/learning-end.js";
 import { feedbackStatus } from "../runner/feedback-round.js";
-import { costStopOf, meanOf, NO_PAST_RUNS, PAST_RUNS, type PastRuns, servedAnswerOf, servedAnswerStands, servedOf, workflowCostsOf } from "../runner/workflow-first.js";
+import { costStopOf, meanOf, PAST_RUNS, type PastRuns, servedAnswerOf, servedAnswerStands, servedOf, workflowCostsOf } from "../runner/workflow-first.js";
 import { type Reflect, reflects } from "../reflect-range.js";
 import { correctionCount } from "../learn/corrections.js";
 import type { RunRow } from "../agent-rows.js";
@@ -27,7 +27,7 @@ import { KINDS } from "../runner/journal-kinds.js";
 import type { LoopRow } from "../learned-nodes.js";
 import { promotedOf, sinceReset } from "../learn/compile.js";
 import { isShadowRun, shadowRunId } from "../learn/audit.js";
-import { championOf, checkShares, gradesOf, gradeView, type PromotionRecord, promotionsOf, type Refused, type ResetRevision, resetLedgerOf } from "../learn/promote.js";
+import { championOf, checkShares, type CostStop, gradesOf, gradeView, type PromotionRecord, promotionsOf, type Refused, type ResetRevision, resetLedgerOf } from "../learn/promote.js";
 import type { LearningProposal, Store } from "../store/store.js";
 
 /** A run's learning end: the Learning fields its end sets. */
@@ -522,10 +522,10 @@ export async function pastRunsOverStore(store: Store, agentId: string): Promise<
 }
 
 /** The money rule's decision for agent `agentId` (runner/workflow-first.ts costStopOf) over the runs a run's launch reads
- *  (pastRunsOverStore), as the launch reads them; runs that can't be read stop nothing here (the view's state), while a
- *  launch then leaves the run to the agent (workflowFirstOf fails closed). What the promotions read and the learning view
- *  fold into each workflow's state (learn/promote.ts servingStateOf). */
-export const costStopOverStore = async (store: Store, agentId: string) => costStopOf(await pastRunsOverStore(store, agentId).catch(() => NO_PAST_RUNS));
+ *  (pastRunsOverStore), as the launch reads them. Runs it can't read stop every workflow, as a launch then leaves the run
+ *  to the agent (workflowFirstOf fails closed): the view never says serving when it can't tell. What the promotions read
+ *  and the learning view fold into each workflow's state (learn/promote.ts servingStateOf). */
+export const costStopOverStore = async (store: Store, agentId: string): Promise<CostStop> => pastRunsOverStore(store, agentId).then(costStopOf, () => () => true);
 
 /** The path run `runId` took and the learned workflow it ran, the one classifier its run record keeps (metrics.path,
  *  metrics.workflow, metrics.workflow_digest: workflow-first.ts pathMetrics, written at the run's end) and its cost per run

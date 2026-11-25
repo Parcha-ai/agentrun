@@ -92,8 +92,6 @@ type Mean = { readonly runs: number; readonly mean_usd: number };
  *  mean job's own $ of the ones on the `agent` path, learning left out; when they hold none of known cost, of the newest
  *  COST_WINDOW before them, pastRunsRead) with the by-hand runs it left out for an unknown cost (`by_hand_unknown`). */
 export type PastRuns = { readonly runs: readonly PastRun[]; readonly by_hand: Mean | null; readonly by_hand_unknown: number };
-/** No runs read: nothing to stop. */
-export const NO_PAST_RUNS: PastRuns = { runs: [], by_hand: null, by_hand_unknown: 0 };
 /** How many of the agent's newest runs on no named disk the money rule reads, both sides (store-reads/learning.ts
  *  pastRunsOf): a launch's read is bounded whatever the agent's history, and the cost page reads the same window. */
 export const PAST_RUNS = 500;
@@ -130,9 +128,13 @@ export const overLine = (line: ReturnType<typeof costLineOf>): boolean =>
   line.served.runs >= COST_WINDOW && line.by_hand !== null && line.served.mean_usd !== null && line.served.mean_usd >= line.by_hand.mean_usd;
 
 /** The money rule's decision over the agent's runs (`past`, store-reads/learning.ts pastRunsOverStore): whether it stops a
- *  workflow at a digest from running first (overLine), the one workflowFirstOf reads at a claim. Each workflow's state
- *  (learn/promote.ts servingStateOf) folds it in at its champion's digest. */
-export const costStopOf = (past: PastRuns): CostStop => (workflow, digest) => overLine(costLineOf(past, workflow, digest));
+ *  workflow at a digest from running first (overLine, or COST_WINDOW served runs with no by-hand cost to hold them to),
+ *  as workflowFirstOf decides at a claim. Each workflow's state (learn/promote.ts servingStateOf) folds it in at its
+ *  champion's digest. */
+export const costStopOf = (past: PastRuns): CostStop => (workflow, digest) => {
+  const line = costLineOf(past, workflow, digest);
+  return overLine(line) || (line.served.runs >= COST_WINDOW && line.by_hand === null);
+};
 
 /** Each learned workflow that has served one of the agent's runs (`past`) first, at the digest its newest served run
  *  ran, with the money rule's two sides there, the runs they left out for an unknown all-in, and where it stands:
