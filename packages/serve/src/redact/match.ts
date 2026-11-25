@@ -846,6 +846,25 @@ const JSON_ESCAPE_QUOTED = jsonEscape(false);
  *  two levels JSON_ESCAPE reads make the escaped backslash and what follows it one escape; so does one with a quote of
  *  its own, written once. */
 const JSON_ESCAPE_ONCE = jsonEscape(false, 1);
+/** Python's escapes as its repr writes a str: an escaped apostrophe ("\'", in a string that holds both quotes) is an
+ *  apostrophe, "\x" and two hex digits the character they number, and the rest as JSON_ESCAPE_ONCE reads them ("\\",
+ *  "\n", "\u" and four hex digits). Each reads at most six characters. */
+const PYTHON_ESCAPE: Decoder = {
+  trigger: "\\",
+  decode(text, at, unit) {
+    const next = text[at + 1];
+    if (next === "'") {
+      scanned.chars += 2;
+      unit("'", at, at + 2);
+      return at + 2;
+    }
+    if (next !== "x") return JSON_ESCAPE_ONCE.decode(text, at, unit);
+    scanned.chars += Math.min(4, text.length - at);
+    if (!HEX(text.charCodeAt(at + 2)) || !HEX(text.charCodeAt(at + 3))) return -1;
+    unit(String.fromCharCode(Number.parseInt(text.slice(at + 2, at + 4), 16)), at, at + 4);
+    return at + 4;
+  },
+};
 /** What JSON_ESCAPE reads at `at`: the character the escape there decodes to, through both levels ("" for an escaped
  *  quote, which decodes to nothing), and where it ends; undefined where no escape starts (the "\" is then itself).
  *  key-refusal.ts's peek counts an escape by it, so the read past a call's stop and the JSON view see the same
@@ -912,17 +931,19 @@ const ENTITY: Decoder = {
 /** What a text holds that a view decodes or joins, each found by one read of the text (familiesOf): a percent-encoded
  *  byte, one of JSON's escapes, an escaped quote (at either level, or as its "\u" escape), an HTML character reference's
  *  start (a numeric one's "&#", or a named one of NAMED whole), a "+", a quote, an apostrophe, an escaped backslash (or
- *  its "\u" escape: where a second level of JSON's escapes can start). */
-type Families = { percent: boolean; escape: boolean; quoteEscape: boolean; entity: boolean; plus: boolean; quote: boolean; apostrophe: boolean; deep: boolean };
+ *  its "\u" escape: where a second level of JSON's escapes can start), one of Python's own escapes ("\'" or "\x" and
+ *  two hex digits). */
+type Families = { percent: boolean; escape: boolean; quoteEscape: boolean; entity: boolean; plus: boolean; quote: boolean; apostrophe: boolean; deep: boolean; python: boolean };
 const PERCENT_BYTE = /%[0-9a-fA-F]{2}/;
 const JSON_ESCAPED = /\\(?:u[0-9a-fA-F]{4}|["\\/bfnrt])/;
 const QUOTE_ESCAPED = /\\"|\\u00[2]2/;
 const BACKSLASH_ESCAPED = /\\\\|\\u005[cC]/;
+const PYTHON_ESCAPED = /\\(?:'|x[0-9a-fA-F]{2})/;
 const ENTITY_START = /&(?:#|(?:amp|lt|gt|quot|apos|nbsp|AMP|LT|GT|QUOT);)/;
 function familiesOf(text: string): Families {
-  // Eight reads of the text, each to its first find at most.
-  scanned.chars += 8 * text.length;
-  return { percent: PERCENT_BYTE.test(text), escape: JSON_ESCAPED.test(text), quoteEscape: QUOTE_ESCAPED.test(text), entity: ENTITY_START.test(text), plus: text.includes("+"), quote: text.includes('"'), apostrophe: text.includes("'"), deep: BACKSLASH_ESCAPED.test(text) };
+  // Nine reads of the text, each to its first find at most.
+  scanned.chars += 9 * text.length;
+  return { percent: PERCENT_BYTE.test(text), escape: JSON_ESCAPED.test(text), quoteEscape: QUOTE_ESCAPED.test(text), entity: ENTITY_START.test(text), plus: text.includes("+"), quote: text.includes('"'), apostrophe: text.includes("'"), deep: BACKSLASH_ESCAPED.test(text), python: PYTHON_ESCAPED.test(text) };
 }
 
 /** Which join of a JSON text's strings a view reads (joinOf): `nested`, each string's contents, a value's read again for
@@ -963,7 +984,8 @@ const viewSpec = (when: (has: Families) => boolean, decoders: readonly Decoder[]
  *    it reads as the first). Each is read only where the text holds what it decodes;
  *  - for a text with an apostrophe in it, its strings joined whole with an apostrophe opening one too (a Python repr's
  *    single-quoted dict), one level of JSON's escapes decoded. A view of its own, so the views before it read an
- *    apostrophe outside a "..." string as they did.
+ *    apostrophe outside a "..." string as they did; and the same decoded through Python's escapes, where the text holds
+ *    one ("\'" in a string with both quotes, "\x41"), beside it, so a backslash read as itself there still is.
  *  The decoders of a view decode in one pass: each reads at its own trigger character, so a view costs one read of the
  *  text whatever it decodes. Each view is lowered for hexes and flattened for folded identifiers in holds. */
 const VIEWS: readonly ViewSpec[] = [
@@ -981,6 +1003,7 @@ const VIEWS: readonly ViewSpec[] = [
   viewSpec((has) => has.quote && has.plus, [PERCENT, PLUS, JSON_ESCAPE_ONCE], "strings"),
   viewSpec((has) => has.quote && has.deep, [JSON_ESCAPE_QUOTED], "strings"),
   viewSpec((has) => has.apostrophe, [JSON_ESCAPE_ONCE], "quoted"),
+  viewSpec((has) => has.apostrophe && has.python, [PYTHON_ESCAPE], "quoted"),
 ];
 
 // ---- The join view: a JSON text's strings read joined, so a held value split across two of them reads whole.
