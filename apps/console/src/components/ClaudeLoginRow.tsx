@@ -37,9 +37,12 @@ export function ClaudeLoginRow({ v2, writable, whyNot = "sign_in", onChange, ava
   const onlyMeFirst = useId();
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
-  // Sign out asks first (`confirming`), then says what became of it (`signedOut`) until the mode is turned on again.
+  // Sign out asks first (`confirming`), then says what became of it (`signedOut`) until the row changes again: any later
+  // write that succeeds, or a read that finds the mode on, drops the words for good, so a later Turn off never shows them.
   const [confirming, setConfirming] = useState(false);
   const [signedOut, setSignedOut] = useState<string | null>(null);
+  const leftOff = view !== null && view.state !== "off";
+  useEffect(() => { if (leftOff) setSignedOut(null); }, [leftOff]);
   // A read's answer is shown only if no other read or write began or ended since it was asked (`asked`), and none starts
   // while a write is out (`writing`): a status read that raced a turn on or off never puts back what it replaced.
   const asked = useRef(0);
@@ -94,6 +97,7 @@ export function ClaudeLoginRow({ v2, writable, whyNot = "sign_in", onChange, ava
     asked.current++;
     try {
       const next = claudeLoginView(await write());
+      setSignedOut(null);
       if (availableNow.current) setView(next);
       if (changes) onChange?.();
       return true;
