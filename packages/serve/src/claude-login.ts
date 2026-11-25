@@ -13,9 +13,9 @@
 // for a server one person runs: it is refused where more than one person can start runs, `on` included, and the owner
 // confirms they alone run agents here. It runs only in a runner place, on the machine the owner turned it on for.
 import { createHash, randomBytes } from "node:crypto";
-import { accessSync, chmodSync, closeSync, constants, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, renameSync, rmSync, type Stats, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, closeSync, constants, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
-import { delimiter, dirname, isAbsolute, join } from "node:path";
+import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import type { ClaudeAgentLogin, ClaudeLoginStatus, ClaudeLoginToken } from "@parcha/agentrun-harness-claude";
 import { facts as claudeFacts } from "@parcha/agentrun-harness-claude/facts";
 import { registerSecretWrite } from "./secret-writes.js";
@@ -116,14 +116,19 @@ export function machineId(data: string): string {
  *  `credentials`: the server's `CLAUDE_SECURESTORAGE_CONFIG_DIR` when it sets one the CLI takes as it is (an absolute
  *  path, or empty: `~/.claude`, and on macOS the Keychain item with no suffix), where the CLI keeps the tokens apart
  *  from the folder; a relative one is not taken, as above. `uid`: the server's user, whose home (homeOf) holds the
- *  default folder. */
+ *  default folder. The folder is the real path the CLI is handed (resolvedFolder), as the home is. */
 export function machineFolder(env: Readonly<Record<string, string | undefined>> = process.env, uid: number | undefined = process.geteuid?.()): { folder: string; source: "CLAUDE_CONFIG_DIR" | "default"; credentials?: string } {
   const secure = env.CLAUDE_SECURESTORAGE_CONFIG_DIR;
   const credentials = secure === "" || (secure && isAbsolute(secure)) ? { credentials: secure } : {};
   const config = absolute(env, "CLAUDE_CONFIG_DIR");
-  if (config) return { folder: config, source: "CLAUDE_CONFIG_DIR", ...credentials };
+  if (config) return { folder: resolvedFolder(uid, config), source: "CLAUDE_CONFIG_DIR", ...credentials };
   return { folder: join(homeOf(env, uid).home, ".claude"), source: "default", ...credentials };
 }
+
+/** A folder the env gives the login, as the CLI is handed it: the real path ownedFolder gives where user `uid` owns it
+ *  (or would make it in a folder it owns), else as given, which loginRefused refuses, so nothing runs or signs in on
+ *  it. Where there is no uid (Windows), as given. */
+const resolvedFolder = (uid: number | undefined, dir: string): string => (uid === undefined ? dir : (ownedFolder(uid, dir, true) ?? dir));
 
 /** The env's `name` when it is an absolute path, else undefined. */
 const absolute = (env: Readonly<Record<string, string | undefined>>, name: string): string | undefined => {
@@ -133,77 +138,90 @@ const absolute = (env: Readonly<Record<string, string | undefined>>, name: strin
 
 /** The most links one path may pass through, as Linux's own limit (past it, ELOOP). */
 const MAX_LINKS = 40;
-
-/** Whether others than its owner may write in a folder: anyone, or, for one of root's, its group too. A folder of the
- *  user's own may be open to its group (a group of that user alone, where the system gives each user one). */
-const othersWrite = (folder: Stats): boolean => (folder.mode & (folder.uid === 0 ? 0o022 : 0o002)) !== 0;
+/** A folder's mode bits that let its group or anyone write in it, and the sticky bit, which keeps each entry in such a
+ *  folder its maker's (/tmp, say). */
+const GROUP_OR_OTHER_WRITE = 0o022;
 const STICKY = 0o1000;
 
-/** `dir` (absolute) walked one name at a time from the root, as the system walks it when the CLI opens it: a link
- *  followed where it is met, a `..` going up from where the walk is, an empty name (a doubled or trailing slash) or `.`
- *  staying there, so a link is judged wherever it is on the way, its last name with a trailing slash included. Every
- *  folder on the way must be user `uid`'s or root's, and none that others may write in (othersWrite) unless the sticky
- *  bit keeps each entry its maker's (/tmp, say); every link on the way must be one that user or root made. Else another
- *  user could put a folder or link of theirs in the place of a name after the check has looked, and the CLI would write
- *  the login there. Gives the folder the walk ends in (`at`) and the names still to make in it (`missing`, none where
- *  `dir` is there), or undefined where the way fails, or a name past one still to make is `..`. */
-function walk(uid: number, dir: string): { at: string; missing: string[] } | undefined {
-  if (!isAbsolute(dir)) return undefined;
+/** `dir` (absolute, resolved: no trailing slash, no `.` or `..` of its own) walked one name at a time from the root, as
+ *  the system walks it: each link is followed where it is met, and must be one user `uid` or root made, as must each
+ *  link in the chain it leads through (another user's could be pointed elsewhere once this has looked). Gives the real
+ *  folder the walk ends in (`real`: no link on its way) and the names still to make in it (`missing`, none where `dir`
+ *  is there), or undefined where a link fails, a name past one still to make is `..` (from a link), or there is no way
+ *  to look. */
+function followLinks(uid: number, dir: string): { real: string; missing: string[] } | undefined {
   try {
     const names = dir.split("/");
-    let at = "/";
+    let real = "/";
     let links = 0;
     for (let name = names.shift(); name !== undefined; name = names.shift()) {
-      const folder = lstatSync(at);
-      if (!folder.isDirectory() || (folder.uid !== uid && folder.uid !== 0) || (othersWrite(folder) && (folder.mode & STICKY) === 0)) return undefined;
       if (name === "" || name === ".") continue;
       if (name === "..") {
-        at = dirname(at);
+        real = dirname(real);
         continue;
       }
-      const next = join(at, name);
+      const next = join(real, name);
       const entry = lstatSync(next, { throwIfNoEntry: false });
-      if (entry === undefined) return names.includes("..") ? undefined : { at, missing: [name, ...names].filter((left) => left !== "" && left !== ".") };
+      if (entry === undefined) {
+        const missing = [name, ...names].filter((left) => left !== "" && left !== ".");
+        return missing.includes("..") ? undefined : { real, missing };
+      }
       if (!entry.isSymbolicLink()) {
-        at = next;
+        real = next;
         continue;
       }
       if ((entry.uid !== uid && entry.uid !== 0) || ++links > MAX_LINKS) return undefined;
       const target = readlinkSync(next);
-      if (isAbsolute(target)) at = "/";
+      if (isAbsolute(target)) real = "/";
       names.unshift(...target.split("/"));
     }
-    return { at, missing: [] };
+    return { real, missing: [] };
   } catch {
-    // A file where a folder should be, or no way to look: nothing the login may use.
+    // A file where a folder should be, or no way to look.
     return undefined;
   }
 }
 
-/** Whether `dir` (absolute) is a folder user `uid` owns, reached by a way no other user can change (walk), and not one
- *  others may write in (othersWrite, sticky or not: they could put their files in it). A link there counts by the
- *  folder it leads to. This is the one ownership rule for the login's folders, the home's (homeOf) and those the env
- *  gives it (loginRefused). */
-function owns(uid: number, dir: string): boolean {
-  const walked = walk(uid, dir);
-  return walked !== undefined && walked.missing.length === 0 && ownFolder(uid, walked.at);
-}
-
-/** Whether user `uid` owns `dir` (owns), or, where it is not there yet, the nearest folder above it that is: the CLI,
- *  run as that user, makes it there as its own. */
-function ownsOrMakes(uid: number, dir: string): boolean {
-  const walked = walk(uid, dir);
-  return walked !== undefined && ownFolder(uid, walked.at);
-}
-
-/** Whether `folder`, where a walk ended (no link), is a folder of user `uid`'s that others may not write in. */
-function ownFolder(uid: number, folder: string): boolean {
+/** Whether no user but `uid` and root can change what `real` (a real path, followLinks') leads to: each folder above it,
+ *  from the root down, is a folder (no link) of that user's or root's that neither its group nor anyone else may write
+ *  in, unless the sticky bit keeps each entry there its maker's. */
+function wayHeld(uid: number, real: string): boolean {
   try {
-    const at = lstatSync(folder);
-    return at.isDirectory() && at.uid === uid && !othersWrite(at);
+    for (let at = dirname(real), last = real; at !== last; last = at, at = dirname(at)) {
+      const folder = lstatSync(at);
+      if (!folder.isDirectory() || (folder.uid !== uid && folder.uid !== 0) || ((folder.mode & GROUP_OR_OTHER_WRITE) !== 0 && (folder.mode & STICKY) === 0)) return false;
+    }
+    return true;
   } catch {
     return false;
   }
+}
+
+/** Whether `real` is a folder (no link) of user `uid`'s that neither its group nor anyone else may write in, sticky or
+ *  not: they could put files of theirs in it, or, where the CLI makes a folder in it, make that folder first. */
+function heldFolder(uid: number, real: string): boolean {
+  try {
+    const folder = lstatSync(real);
+    return folder.isDirectory() && folder.uid === uid && (folder.mode & GROUP_OR_OTHER_WRITE) === 0;
+  } catch {
+    return false;
+  }
+}
+
+/** The folder `dir` names, as the CLI is to get it, where it is one user `uid` owns; else undefined. `dir` is resolved
+ *  first (path.resolve: a trailing slash, `.` and `..` go), so no slash hides a link. Then every link on its way is
+ *  judged and followed (followLinks), every folder above the real folder it leads to is held (wayHeld), and that folder
+ *  is the user's own (heldFolder). `make`: where `dir` is not there yet, the nearest folder above it that is must be the
+ *  user's own (heldFolder), since the CLI, run as that user, makes the rest there. The answer is the real path (no link
+ *  left on it, plus the names still to make), which is what the login hands the CLI, so a link changed after this has
+ *  looked redirects nothing, and no other user can change a folder on the way. This is the one ownership rule for the
+ *  login's folders, the home's (homeOf) and those the env gives it (loginRefused, loginAt). */
+function ownedFolder(uid: number, dir: string, make: boolean): string | undefined {
+  if (!isAbsolute(dir)) return undefined;
+  const walked = followLinks(uid, resolve(dir));
+  if (walked === undefined || (walked.missing.length > 0 && !make)) return undefined;
+  if (!wayHeld(uid, walked.real) || !heldFolder(uid, walked.real)) return undefined;
+  return walked.missing.length > 0 ? join(walked.real, ...walked.missing) : walked.real;
 }
 
 /** The user `uid` as a refusal names it: its uid, and its name where this process runs as it. */
@@ -218,23 +236,27 @@ function userWords(uid: number): string {
 }
 
 /** The person's home: the home of the user this server runs as (`uid`, its effective uid), whose files the login's CLI
- *  writes. The env's `HOME` when it is an absolute path to a folder that user owns (owns), else that user's own home as
- *  the system has it (`os.userInfo()`), when it owns that. So a server under a sudo that keeps `HOME` (root, with the
- *  person's) keeps its login in root's home, never root-owned files in the person's, and a service account that
- *  inherited someone's `HOME` reads its own. Neither: `refused` says why in words, and `home` is only what the view
- *  shows (nothing is written there). Where there is no uid (Windows), the env's `HOME` when absolute, else
- *  `os.homedir()`. */
-export function homeOf(env: Readonly<Record<string, string | undefined>>, uid: number | undefined = process.geteuid?.()): { home: string; refused?: string } {
+ *  writes. The env's `HOME` when it is an absolute path to a folder that user owns (ownedFolder), else that user's own
+ *  home as the system has it (`os.userInfo()`), when it owns that; either as its real path (ownedFolder's), which the
+ *  CLI is handed. So a server under a sudo that keeps `HOME` (root, with the person's) keeps its login in root's home,
+ *  never root-owned files in the person's, and a service account that inherited someone's `HOME` reads its own. `apart`:
+ *  the env gave a `HOME` and it was not that user's, so a terminal with that env's `HOME` is not in this home either,
+ *  and the line the view shows carries it (the harness's loginCommand). Neither: `refused` says why in words, and `home`
+ *  is only what the view shows (nothing is written there). Where there is no uid (Windows), the env's `HOME` when
+ *  absolute, else `os.homedir()`. */
+export function homeOf(env: Readonly<Record<string, string | undefined>>, uid: number | undefined = process.geteuid?.()): { home: string; apart?: true; refused?: string } {
   const given = absolute(env, "HOME");
   if (uid === undefined) return { home: given ?? homedir() };
-  if (given && owns(uid, given)) return { home: given };
+  const real = given && ownedFolder(uid, given, false);
+  if (real) return { home: real };
   let own: string | undefined;
   try {
     own = userInfo().homedir || undefined;
   } catch {
     // No entry for this user on this system.
   }
-  if (own && owns(uid, own)) return { home: own };
+  const ownReal = own && ownedFolder(uid, own, false);
+  if (ownReal) return { home: ownReal, ...(given ? { apart: true as const } : {}) };
   return {
     home: own ?? given ?? homedir(),
     refused: `Claude Code's login on this machine needs a home this server's user owns: it runs as ${userWords(uid)}, and neither its HOME (${env.HOME || "unset"}) nor that user's own home (${own ?? "none on this system"}) is a folder it owns. Start the server as the person whose Claude plan it is.`,
@@ -260,14 +282,15 @@ function envFolders(env: Readonly<Record<string, string | undefined>>): Array<re
 
 /** Why a login at `place` may not be used by this server's user (`uid`, its effective uid), in words; undefined when it
  *  may. The home first (homeOf). Then, for this machine's login, each folder the env gives it (envFolders): one the
- *  user owns, or would make in a folder it owns (ownsOrMakes), else the CLI run as that user (root under a sudo that
- *  keeps the env, say) leaves its files in another user's folder. AgentRun's own login keeps its folders in its data,
- *  and `place` undefined (not known yet) asks the home alone. Where there is no uid (Windows), nothing is refused. */
+ *  user owns, or would make in a folder it owns, on a way no other user can change (ownedFolder), else the CLI run as
+ *  that user (root under a sudo that keeps the env, say) leaves its files in another user's folder, or in one another
+ *  user can swap for theirs. AgentRun's own login keeps its folders in its data, and `place` undefined (not known yet)
+ *  asks the home alone. Where there is no uid (Windows), nothing is refused. */
 export function loginRefused(place: LoginPlace | undefined, env: Readonly<Record<string, string | undefined>>, uid: number | undefined = process.geteuid?.()): string | undefined {
   const home = homeOf(env, uid);
   if (home.refused || uid === undefined || place !== "machine") return home.refused;
   for (const [name, folder] of envFolders(env)) {
-    if (!ownsOrMakes(uid, folder)) return `Claude Code's login on this machine needs its folders to be this server's user's own: it runs as ${userWords(uid)}, and ${folder}, the folder ${name} gives it, is not a folder it owns, nor one it would make in a folder it owns. Start the server as the person whose Claude plan it is.`;
+    if (ownedFolder(uid, folder, true) === undefined) return `Claude Code's login on this machine needs its folders to be this server's user's own: it runs as ${userWords(uid)}, and ${folder}, the folder ${name} gives it, is not a folder it owns, nor one it would make in a folder it owns. Start the server as the person whose Claude plan it is.`;
   }
   return undefined;
 }
@@ -280,15 +303,20 @@ export function loginRefused(place: LoginPlace | undefined, env: Readonly<Record
  *  (empty: `~/.claude`, `unsuffixed`), so the CLI keeps the tokens where the person's own CLI with it does. A status
  *  check at either place runs on a copy of the account file (the harness's claudeLoginStatus). Every login carries the
  *  person's home as `userHome`, read here once (homeOf), so the status check, the sign-in and a run on macOS all run in
- *  that one home whatever reads it later (the harness's personHome). Which of these folders the server's user may use
- *  is loginRefused's to say; `uid` is that user's (its effective uid unless given). */
+ *  that one home whatever reads it later (the harness's personHome), and `homeApart` where the env's HOME was not that
+ *  home (homeOf's `apart`). The home and the folders the env gives are their real paths (homeOf, resolvedFolder), so the
+ *  CLI writes where loginRefused looked. Which of these folders the server's user may use is loginRefused's to say;
+ *  `uid` is that user's (its effective uid unless given). */
 export function loginAt(place: LoginPlace, data: string, env: Readonly<Record<string, string | undefined>> = process.env, uid: number | undefined = process.geteuid?.()): ClaudeAgentLogin {
-  const { home } = homeOf(env, uid);
-  if (place === "agentrun") return { dir: join(data, "claude-login"), profiles: join(data, "claude-login", "anthropic"), userHome: home };
+  const { home, apart } = homeOf(env, uid);
+  const homeAt = { userHome: home, ...(apart ? { homeApart: true } : {}) };
+  if (place === "agentrun") return { dir: join(data, "claude-login"), profiles: join(data, "claude-login", "anthropic"), ...homeAt };
   const { folder, source, credentials } = machineFolder(env, uid);
-  const secure = credentials === undefined ? {} : credentials === "" ? { secure: join(home, ".claude"), unsuffixed: true } : { secure: credentials };
-  const profiles = absolute(env, "ANTHROPIC_CONFIG_DIR") ?? join(absolute(env, "XDG_CONFIG_HOME") ?? join(home, ".config"), "anthropic");
-  return { dir: folder, profiles, ...(source === "default" ? { home } : {}), ...secure, userHome: home };
+  const secure = credentials === undefined ? {} : credentials === "" ? { secure: join(home, ".claude"), unsuffixed: true } : { secure: resolvedFolder(uid, credentials) };
+  const xdg = absolute(env, "XDG_CONFIG_HOME");
+  const given = absolute(env, "ANTHROPIC_CONFIG_DIR") ?? (xdg && join(xdg, "anthropic"));
+  const profiles = given ? resolvedFolder(uid, given) : join(home, ".config", "anthropic");
+  return { dir: folder, profiles, ...(source === "default" ? { home } : {}), ...secure, ...homeAt };
 }
 
 /** The setting as saved, or undefined when the mode is not on (or the row is not one this reads). */

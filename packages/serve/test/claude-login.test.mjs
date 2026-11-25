@@ -1249,11 +1249,12 @@ test("a HOME the server's user does not own is not the person's home: the login 
   const own = userInfo().homedir;
   assert.equal(statSync(own).uid, process.geteuid(), "this test's user owns its own home");
   assert.notEqual(statSync("/").uid, process.geteuid());
-  assert.deepEqual(loginAt("machine", "/d", { HOME: "/" }), { dir: join(own, ".claude"), profiles: join(own, ".config", "anthropic"), home: own, userHome: own });
+  // `homeApart`: the env's HOME is not this home, so the line a person runs carries it.
+  assert.deepEqual(loginAt("machine", "/d", { HOME: "/" }), { dir: join(own, ".claude"), profiles: join(own, ".config", "anthropic"), home: own, userHome: own, homeApart: true });
   const data = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-data-"));
   t.after(() => rmSync(data, { recursive: true, force: true }));
   const saved = { get: async () => settingFor("agentrun", data) };
-  assert.deepEqual(await loginForRun(saved, data, { HOME: "/" }, "claude-agent", { mode: "runner" }), { dir: join(data, "claude-login"), profiles: join(data, "claude-login", "anthropic"), userHome: own }, "a run's CLI runs in that user's own home");
+  assert.deepEqual(await loginForRun(saved, data, { HOME: "/" }, "claude-agent", { mode: "runner" }), { dir: join(data, "claude-login"), profiles: join(data, "claude-login", "anthropic"), userHome: own, homeApart: true }, "a run's CLI runs in that user's own home");
 });
 
 // Where the server's user owns neither its HOME nor its own home (a service account whose home is /nonexistent, with a
