@@ -956,9 +956,13 @@ the run's end with what is on it. `computer_screenshot`'s `save_as` (a path rela
 saves the screenshot into the run's files through the run's own file writer, on any computer; a path outside the folder
 is refused in words before the computer is asked. A screenshot with `save_as` is a file written, so `write`'s setting holds
 it too, after the kind's deny: the stricter decides (`write` set to deny refuses it before the computer is asked, set to
-ask puts it to a person); one with no `save_as` is held to the kind's setting alone. On a desktop or a phone the run's folder is not mounted in (one with
-`exec: false`, or a provider that mounts none), the model is told this once in the run, as the server's note, after a
-due cap wrap-up.
+ask puts it to a person); one with no `save_as` is held to the kind's setting alone. `save_as` needs `write` among the
+agent's tools: an agent not given `write` is not offered it, and the gate refuses one anyway whatever `write`'s setting
+says. A script's `computer.files.write` needs `write` among the agent's tools the same way. `save_as` is offered only
+where the gate would let a save through: not with `write` set to deny, nor set to ask on a server where no one can
+approve. On a desktop or a phone the run's folder is not mounted in (one with `exec: false`, or a provider that mounts
+none), the model is told this once in the run, as the server's note, after a due cap wrap-up; a run whose saves the
+gate would refuse is told instead that screenshots can't be saved to the run's files.
 
 A kind with no provider, a provider that does not serve the kind, or a provider whose required keys are not saved is
 refused before anything starts, in words that name the fix in Settings → Computers. A Docker computer needs a Docker
