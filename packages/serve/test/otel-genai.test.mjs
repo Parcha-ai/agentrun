@@ -586,6 +586,43 @@ test("an OTLP header value carrying a credential-named name=value pair or a URL 
   );
 });
 
+test("an OTLP header value's URL is read with its whole user and password before the value is split at ; & and spaces: a password with ; & or = in it is held whole with its user, and cut", () => {
+  const userinfo = (name, secret) => [name, secret].join(":");
+  const user = `relayuser-${"dummy"}-5705`;
+  const passwords = [["a ; in the password", `relay;${"dummy"}-pass-6806`], ["an & and an = in the password", `relay&${"dummy"}=pass-7907`]];
+  const missed = [];
+  for (const [what, password] of passwords) {
+    const env = { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Upstream=https://${userinfo(user, password)}@relay.invalid/v1` };
+    for (const [list, values] of [["runnerSecrets", runnerSecrets(env)], ["hostSecrets", hostSecrets(env)]]) {
+      for (const [part, value] of [["the user", user], ["the password", password]]) if (!values.includes(value)) missed.push(`${what}: ${part} (${list})`);
+    }
+    const line = `401 from relay: user ${user}, password ${password}`;
+    const cut = "401 from relay: user [redacted], password [redacted]";
+    if (otlpHeaderCut(env)(line) !== cut) missed.push(`${what}: the [otel] cut shows ${otlpHeaderCut(env)(line)}`);
+    if (secretRedactor(runnerSecrets(env))(line) !== cut) missed.push(`${what}: the runner's redactor shows ${secretRedactor(runnerSecrets(env))(line)}`);
+  }
+  assert.deepEqual(missed, [], "a URL's user and its whole password are held alone and cut, whatever the password holds");
+  const session = `session-${"dummy"}-tok-9109`;
+  const values = runnerSecrets({ OTEL_EXPORTER_OTLP_HEADERS: `X-Relay=https://relay.invalid;session=${session};contact=ops@team.invalid` });
+  assert.equal(values.includes(session), true, "a credential-named pair inside what reads as a URL's user is still held alone");
+});
+
+test("an OTLP header value's URL with a percent-encoded password is held as written and decoded, and no piece of the decoded password is cut from other words", () => {
+  const userinfo = (name, secret) => [name, secret].join(":");
+  const user = `relayuser-${"dummy"}-5705`;
+  const written = `pass%40word%3B${"dummy"}-8008`;
+  const plain = decodeURIComponent(written);
+  const env = { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Upstream=https://${userinfo(user, written)}@relay.invalid/v1` };
+  for (const [list, values] of [["runnerSecrets", runnerSecrets(env)], ["hostSecrets", hostSecrets(env)]]) {
+    assert.deepEqual([["the user", user], ["the password as written", written], ["the password decoded", plain]].filter(([, value]) => !values.includes(value)).map(([what]) => what), [], `the user and the password both ways are held (${list})`);
+  }
+  assert.equal(
+    otlpHeaderCut(env)(`401 from relay: password ${written} (${plain}); 2 spans passed`),
+    "401 from relay: password [redacted] ([redacted]); 2 spans passed",
+    "an [otel] line quoting the password either way is cut of it, and no piece of it is cut from other words",
+  );
+});
+
 test("a short OTLP header value is cut from the tracer's own error text, at any length; a standard header's value is left as it is", async (t) => {
   const short = `hc${"7"}x1`;
   const env = { ...ON, OTEL_EXPORTER_OTLP_HEADERS: `x-honeycomb-team=${short},Content-Type=application/json`, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `x-team=${short}` };
