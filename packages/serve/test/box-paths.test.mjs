@@ -4,11 +4,14 @@
 // `docker` first on PATH (fixtures/fake-docker.mjs; no daemon is reached). Where it cannot, docker is unavailable, saying
 // why.
 import assert from "node:assert/strict";
-import { realpathSync } from "node:fs";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { closeSync, constants, openSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { mkdir, open, readFile, rm, writeFile } from "node:fs/promises";
 import { release } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { setImmediate as macrotask } from "node:timers/promises";
+import { takeServerLock } from "../dist/server-lock.js";
 import { jsonLines, scratch, serve, withEnv } from "./support.mjs";
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
@@ -245,6 +248,140 @@ test("compose's layout, the read failing at the start, and a later check failing
   assert.equal(hostReads(fake).length, 1, "the start's read alone");
 });
 
+/** Whether the fake docker has a container named `name`. */
+const hasContainer = (fake, name) => readdirSync(join(fake.state, "containers")).some((one) => one.endsWith(".json") && JSON.parse(readFileSync(join(fake.state, "containers", one), "utf8")).Name === name);
+/** The read's container name in `args`, a `docker run`'s. */
+const nameIn = (args) => args[args.indexOf("--name") + 1];
+/** The fake docker's calls from the `from`th on, each its verb and its last argument. */
+const callsFrom = (fake, from) => jsonLines(join(fake.state, "argv.jsonl")).slice(from).map((args) => [args[0], args.at(-1)]);
+/** A retry wait (hostReadWait) the test ends when it says; each one begun is in `waits`. */
+const testWaits = () => {
+  const waits = [];
+  const hostReadWait = (ms, signal) => new Promise((go) => {
+    waits.push({ ms, go, signal });
+    signal.addEventListener("abort", () => go(), { once: true });
+  });
+  return { waits, hostReadWait };
+};
+
+// The retry's read in flight at the close: its docker client stalled, its container made and running, then the client
+// killed by a signal from outside (the OOM killer's), so it answers no exit code. The read still removes its container
+// by name, and the close answers only after that removal: stop() awaits the retry. Two fifos in the fake's state order
+// it, with no clock: `host-addresses-held` gives the stalled client's pid, and `rm-gate` holds the removal until the test
+// has begun the close.
+test("compose's layout, the read failing at the start: a close while the retry's read is in flight answers only after that read's removal ran, its client killed by an outside signal", { timeout: 120_000 }, async (t) => {
+  const data = await dataDir(t);
+  const fake = await containerDocker(t, COMPOSE_MOUNTS(data));
+  withEnv(t, {}, ["AGENTRUN_DOCKER_HOST_ADDRESSES"]);
+  await writeFile(join(fake.state, "host-addresses-fail"), "");
+  const { waits, hostReadWait } = testWaits();
+  const { close } = await serve(t, { data, faux: PROBE, fauxMountinfo: fake.mountinfo, hostReadWait, runner: false });
+  assert.equal(waits.length, 1, "the retry began");
+  await rm(join(fake.state, "host-addresses-fail"));
+  await writeFile(join(fake.state, "host-addresses-hold"), "");
+  const held = join(fake.state, "host-addresses-held");
+  const gate = join(fake.state, "rm-gate");
+  execFileSync("mkfifo", [held, gate]);
+  waits[0].go();
+  const pid = Number(await readFile(held, "utf8"));
+  const name = nameIn(hostReads(fake).at(-1));
+  assert.equal(hasContainer(fake, name), true, "the stalled read's container is made");
+  process.kill(pid, "SIGKILL");
+  const from = jsonLines(join(fake.state, "argv.jsonl")).length;
+  let atClose;
+  const closed = close().then(() => (atClose = { there: hasContainer(fake, name), calls: callsFrom(fake, from) }));
+  assert.equal(waits[0].signal.aborted, true, "the close began");
+  // Opened once the read's removal reads it: the removal waited for the close to begin. A close that answers first
+  // didn't wait for it; the gate is then opened here, so its writer (and this file) doesn't hang, and the case fails.
+  const opened = writeFile(gate, "go");
+  const first = await Promise.race([opened.then(() => "removal"), closed.then(() => "close")]);
+  if (first === "close") {
+    closeSync(openSync(gate, constants.O_RDONLY | constants.O_NONBLOCK));
+    await opened.catch(() => undefined);
+  }
+  await closed;
+  assert.deepEqual([first, atClose], ["removal", { there: false, calls: [["rm", name], ["inspect", name]] }]);
+  assert.equal(hostReads(fake).length, 2, "the start's read and the retry's");
+  assert.equal(waits.length, 1, "no wait after the close");
+});
+
+// The close cuts the retry's read where it stalls (its client killed, not left to READ_MS's 60 s, which outlives a
+// stop's deadline: stop-signals.ts, compose's 15 s grace) and answers once its container is removed. The store closes
+// first: with the removal held at `rm-gate`, the data root's lock (released right after the store closes) is free, so a
+// stop cut at its deadline cuts only the cleanup. No clock: the case's timeout, under READ_MS, bounds a close that waited
+// out the read or held the store until the removal.
+test("compose's layout, the read failing at the start: a close while the retry's read stalls kills that read at once, closes the store, then answers once its container is removed by name", { timeout: 30_000 }, async (t) => {
+  const data = await dataDir(t);
+  const fake = await containerDocker(t, COMPOSE_MOUNTS(data));
+  withEnv(t, {}, ["AGENTRUN_DOCKER_HOST_ADDRESSES"]);
+  await writeFile(join(fake.state, "host-addresses-fail"), "");
+  const { waits, hostReadWait } = testWaits();
+  const { close } = await serve(t, { data, faux: PROBE, fauxMountinfo: fake.mountinfo, hostReadWait, runner: false });
+  assert.equal(waits.length, 1, "the retry began");
+  await rm(join(fake.state, "host-addresses-fail"));
+  await writeFile(join(fake.state, "host-addresses-hold"), "");
+  const held = join(fake.state, "host-addresses-held");
+  const gate = join(fake.state, "rm-gate");
+  execFileSync("mkfifo", [held, gate]);
+  waits[0].go();
+  const pid = Number(await readFile(held, "utf8"));
+  const name = nameIn(hostReads(fake).at(-1));
+  assert.equal(hasContainer(fake, name), true, "the stalled read's container is made");
+  const from = jsonLines(join(fake.state, "argv.jsonl")).length;
+  let answered = false;
+  const closed = close().then(() => (answered = true));
+  // The removal waits at the gate; the store's close, ahead of it, frees the data root's lock.
+  let lock;
+  while (lock === undefined) {
+    try {
+      lock = takeServerLock(data);
+    } catch (error) {
+      if (error?.code !== "SERVER_LOCK_HELD") throw error;
+      await macrotask();
+    }
+  }
+  lock.release();
+  assert.equal(answered, false, "the store closed while the removal was still held, and the close waits for the removal");
+  // A writer's open of the gate answers once the removal holds it, and the removal begins only once the killed read's
+  // client has exited (execFile answers after the child is reaped): only then is its pid sure to be gone.
+  const gateWriter = await open(gate, "w");
+  assert.throws(() => process.kill(pid, 0), { code: "ESRCH" }, "the stalled read's client is killed");
+  await gateWriter.writeFile("go");
+  await gateWriter.close();
+  await closed;
+  assert.deepEqual([hasContainer(fake, name), callsFrom(fake, from)], [false, [["rm", name], ["inspect", name]]]);
+});
+
+// The start's read fails and keeps its container's name (Docker didn't answer the check), but the operator's
+// AGENTRUN_DOCKER_HOST_ADDRESSES is set, so Docker is offered on those: the retry still starts, to remove that container,
+// reading nothing and changing no box.
+test("compose's layout, the read failing at the start with AGENTRUN_DOCKER_HOST_ADDRESSES set: Docker is offered on the operator's addresses, and the retry removes the container the failed read kept, reading nothing and changing no box", { timeout: 120_000 }, async (t) => {
+  const data = await dataDir(t);
+  const fake = await containerDocker(t, COMPOSE_MOUNTS(data));
+  withEnv(t, { AGENTRUN_DOCKER_HOST_ADDRESSES: "198.51.100.9" });
+  await writeFile(join(fake.state, "host-addresses-fail"), "");
+  await writeFile(join(fake.state, "inspect-fail-reads"), "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?");
+  const { waits, hostReadWait } = testWaits();
+  const lines = [];
+  const { api, close } = await serve(t, { data, faux: PROBE, fauxMountinfo: fake.mountinfo, hostReadWait, runner: false, log: (line) => lines.push(line) });
+  const offer = await docker(api);
+  assert.deepEqual([offer.available, offer.host_addresses], [true, ["198.51.100.9"]], JSON.stringify(offer));
+  assert.equal(waits.length, 1, "the retry began, the operator's addresses set");
+  assert.equal(waits[0].ms, 15_000);
+  const name = nameIn(hostReads(fake)[0]);
+  // The daemon answers checks again; the retry's removal is held at the gate until the test has seen it begin.
+  await rm(join(fake.state, "inspect-fail-reads"));
+  const gate = join(fake.state, "rm-gate");
+  execFileSync("mkfifo", [gate]);
+  const from = jsonLines(join(fake.state, "argv.jsonl")).length;
+  waits[0].go();
+  await writeFile(gate, "go");
+  await close();
+  assert.deepEqual(callsFrom(fake, from), [["rm", name], ["inspect", name]], "the kept name removed, nothing read");
+  assert.equal(hostReads(fake).length, 1, "the start's read alone");
+  assert.equal(lines.filter((line) => / event=boxes( |$)/.test(line)).length, 1, "the start's boxes, not made again");
+});
+
 test("compose's layout under AGENTRUN_BOX_ALLOW=none: no address is needed, none is read, and Docker is offered with no network", { timeout: 120_000 }, async (t) => {
   const data = await dataDir(t);
   const fake = await containerDocker(t, COMPOSE_MOUNTS(data));
@@ -303,6 +440,68 @@ test("a server whose Docker daemon is another machine's, by DOCKER_HOST, DOCKER_
     assert.deepEqual([offer.available, offer.reason], [false, words(endpoint)], JSON.stringify({ given, offer }));
     assert.deepEqual(fake.runs(), []);
   }
+});
+
+// A server whose computerd build for its Docker's architecture is not there (`npm run build` without `npm run
+// build:daemon`) can't run a Docker computer: each would fail at its create. The start says so, with the command that
+// builds it, where the other reasons are: the boxes line, capabilities, a new agent's place and a run's start, which
+// refuses a run naming one. The architecture is the one Docker's start probe read; the test names the directory the build
+// would be in (fauxDaemonDir), and the fake Docker names its architecture (docker-arch). With the build there, nothing
+// changes.
+const NO_DAEMON = (dir, arch = "amd64") => `no daemon for Docker's ${arch} at ${join(dir, `computerd-linux-${arch}`)}: run npm run build:daemon -w @parcha/agentrun-computer, then restart AgentRun`;
+test("a server with no computerd build for its Docker's architecture: Docker isn't offered, its boxes line, banner, capabilities and a run's start say how to build it, and Docker is asked once; with the build there nothing changes", { timeout: 240_000 }, async (t) => {
+  const builds = await scratch(t);
+  const fake = await containerDocker(t, { mounts: [], marks: { "docker-arch": "amd64\n" } });
+  const versions = () => jsonLines(join(fake.state, "argv.jsonl")).filter((args) => args[0] === "version");
+  const start = async () => {
+    const lines = [];
+    const server = await serve(t, { data: await dataDir(t), faux: PROBE, fauxDaemonDir: builds, log: (line) => lines.push(line) });
+    return { ...server, boxes: lines.filter((line) => line.includes(" event=boxes ")) };
+  };
+
+  const { api, boxes, boxesLine } = await start();
+  const offer = await docker(api);
+  assert.deepEqual([offer.available, offer.state, offer.reason], [false, "unavailable", NO_DAEMON(builds)], JSON.stringify(offer));
+  assert.equal(boxes.length, 1, JSON.stringify(boxes));
+  assert.ok(boxes[0].includes("unavailable=docker,") && boxes[0].includes("npm run build:daemon -w @parcha/agentrun-computer"), boxes[0]);
+  assert.ok(boxesLine.includes(NO_DAEMON(builds)), boxesLine);
+  // Docker is asked once at the start: the probe names its version and its architecture.
+  assert.equal(versions().length, 1, JSON.stringify(versions()));
+  assert.ok(versions()[0].some((arg) => arg.includes("{{.Server.Arch}}")), JSON.stringify(versions()));
+
+  // A run naming a Docker computer is refused at its start, in those words, never at its create; a new agent gets the runner.
+  const made = await api("POST", "/agents", { definition: { id: "boxed-computer", name: "boxed", instructions: "Probe.", computer: { kind: "sandbox", provider: "docker" } } });
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const started = await api("POST", "/agents/boxed-computer/runs", { input: { content: "Probe." } });
+  assert.equal(started.status, 409, JSON.stringify(started.body));
+  assert.equal(started.body.error.code, "agent_not_runnable");
+  const field = started.body.error.fields.find((one) => one.field === "definition.computer");
+  assert.equal(field?.message, `This agent's computer is a Docker sandbox, and this server cannot run it: ${NO_DAEMON(builds)}.`, JSON.stringify(started.body));
+  // So is one placed in the Docker box.
+  const placed = await api("POST", "/agents", { definition: { id: "boxed-place", name: "boxed", instructions: "Probe.", place: { mode: "sandbox", box: "docker" } } });
+  assert.equal(placed.status, 201, JSON.stringify(placed.body));
+  const inBox = await api("POST", "/agents/boxed-place/runs", { input: { content: "Probe." } });
+  assert.equal(inBox.status, 409, JSON.stringify(inBox.body));
+  assert.ok(JSON.stringify(inBox.body.error).includes(NO_DAEMON(builds)), JSON.stringify(inBox.body));
+  const plain = await api("POST", "/agents", { definition: { id: "plain", name: "plain", instructions: "Answer." } });
+  assert.equal(plain.status, 201, JSON.stringify(plain.body));
+  assert.equal((await api("GET", "/agents/plain")).body.place?.mode ?? "runner", "runner");
+  assert.deepEqual(fake.runs(), [], "no box or computer is made");
+
+  // The build there: Docker is offered as before, and its line says nothing of a build.
+  await writeFile(join(builds, "computerd-linux-amd64"), "a stand-in for computerd\n", { mode: 0o755 });
+  const built = await start();
+  const ready = await docker(built.api);
+  assert.deepEqual([ready.available, ready.state, ready.reason], [true, "ready", undefined], JSON.stringify(ready));
+  assert.ok(built.boxes[0].includes("available=docker ") && !built.boxes[0].includes("build:daemon"), built.boxes[0]);
+  const fresh = await built.api("POST", "/agents", { definition: { id: "fresh", name: "fresh", instructions: "Answer." } });
+  assert.deepEqual(fresh.body.definition.place, { mode: "sandbox", box: "docker" }, JSON.stringify(fresh.body));
+
+  // The architecture is Docker's: an arm64 Docker needs the arm64 build, whatever else is built.
+  await writeFile(join(fake.state, "docker-arch"), "arm64\n");
+  const arm = await docker((await start()).api);
+  assert.deepEqual([arm.available, arm.reason], [false, NO_DAEMON(builds, "arm64")], JSON.stringify(arm));
+  assert.deepEqual(fake.runs(), []);
 });
 
 // A CLI server in a container under --faux (the --vps walk's) names its mountinfo in its own environment, which the

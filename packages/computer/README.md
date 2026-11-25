@@ -628,7 +628,9 @@ by its rectangle), so a longer one ends the connection before anything is alloca
   answers once none of its windows shows and none of its launches runs, a launch that never showed a window included.
 - `screen.shot` is a PNG of the root window or a region inside it (one outside is `invalid`), with `scale` 1 and
   `cursor` from `QueryPointer`. A connection holds one shot, until it is read to its end or the next shot; a
-  `screen.read` of another id is `not_found`.
+  `screen.read` of another id is `not_found`. A cancelled shot stops waiting for the server's replies at once and
+  gives the display back. Known limit: a shot cancelled while its request is still being written, to an X server that
+  has stopped reading its socket, waits out that write's 30 s bound first.
 - `input.actions` checks the whole batch first, as `checkActions` does, and on X11 also refuses: a touch action
   (`unsupported`: X11 has no touch), a pixel scroll (`unsupported`: the wheel turns in clicks), a point or click count
   that is not whole (`invalid`), an unknown field, and text with a character no key types (a control character other
@@ -837,14 +839,21 @@ key.
   makes its Unix socket there (0600); the computer mounts it read-only at `/opt/agentrun/egress` (`EGRESS_MOUNT`).
 - **The proxy container** `computer-<hex>-egress`: `node` in `EGRESS_IMAGE` (node:22.23.5-trixie-slim, pinned by
   digest; `new DockerProvider({ daemonPath, egress: { image } })` replaces it) runs `dist/docker/egress-main.js`, this
-  package's own build, bound read-only with its `package.json`. It is on Docker's default bridge alone, publishes no
-  port, and runs as the computer's uid:gid with a read-only root, `--cap-drop ALL`, `no-new-privileges`, 256 MiB, 64
+  package's own build, bound read-only with its `package.json`. It is on the provider's egress bridge alone (below),
+  publishes no port, and runs as the computer's uid:gid with a read-only root, `--cap-drop ALL`, `no-new-privileges`, 256 MiB, 64
   pids, half a CPU (a fixed quota, not the computer's own cpus), 1024 open files and a bounded log. Its argv holds the list (or `--open public`), the computer's deadline (it ends itself then), this machine's own
   public addresses (refused as `this-host`), and `egress.hint`, the words a refusal adds (printable ASCII).
   `EGRESS_IMAGE` is the one place its digest is written. `create` pulls it at the first allow computer when the host
   lacks it (see Lifetime), so a host with no registry access pulls it ahead, reading the name from this package:
   `docker pull "$(node --input-type=module -e 'import { EGRESS_IMAGE } from "@parcha/agentrun-computer"; console.log(EGRESS_IMAGE)')"`
   (in this repository, from `packages/computer` after a build: `node -e 'import("./dist/index.js").then((m) => console.log(m.EGRESS_IMAGE))'`).
+- **The egress bridge** `agentrun-egress`: one user-defined bridge every proxy on the Docker host shares, with
+  inter-container traffic off (`com.docker.network.bridge.enable_icc=false`) and the label
+  `agentrun.computer.egress-network=1`. The first allow or open `create` makes it, and nothing removes it. No other
+  workload's container is on it, so none can reach a proxy or ARP-spoof the gateway the proxies go out through, as one
+  with `NET_RAW` could on Docker's default bridge. A `create` that finds a network of that name made otherwise (inter-container
+  traffic on, internal, not a local bridge, or without the label) refuses in words and makes nothing; remove that
+  network (`docker network rm agentrun-egress`) and create again. A proxy on any other network reads back as other.
 - **The computer**: init gets `--egress /opt/agentrun/egress/egress.sock`, listens on port 3128 of its own loopback,
   carries each connection to the socket, and gives every program it starts `HTTP_PROXY` and `HTTPS_PROXY` (and their
   lowercase forms) naming that port, with `NO_PROXY` naming the loopback itself. A program that ignores them reaches
@@ -1229,7 +1238,7 @@ vendor's types: the shared adapter's release, a create that deletes its machine,
 ## Modal
 
 ```ts
-import { ModalClient } from "modal"; // the host's own client: this package imports nothing from the SDK
+import { ModalClient } from "modal"; // this package's optional dependency; it imports nothing from the SDK at load
 import { ModalProvider } from "@parcha/agentrun-computer/modal";
 
 const modal = new ModalProvider({
@@ -1368,8 +1377,8 @@ unless they start with `modal_proto/`. Docs: modal.com, read 2026-11-05.
 `create(options)` in `dist/modal.js` builds a real client from `options.tokenId` and `options.tokenSecret`, and the
 provider in `options.app` (required: without it, it refuses in words naming the option, before any client). It reads no
 setting from the environment (see [Settings](#settings)) and passes the token to `ModalClient` explicitly, so a
-`MODAL_TOKEN_ID` or `MODAL_TOKEN_SECRET` on the host is never used. The key goes only to `options.serverUrl`, else the
-SDK's default `https://api.modal.com:443`: since the client cannot take a server, it refuses while `MODAL_SERVER_URL`
+`MODAL_TOKEN_ID` or `MODAL_TOKEN_SECRET` on the host is never used. The key goes only to `options.serverUrl` (https
+alone), else the SDK's default `https://api.modal.com:443`: since the client cannot take a server, it refuses while `MODAL_SERVER_URL`
 is set, and sets it to its choice only while it constructs the client, one construction at a time and put back after
 each, so neither `MODAL_PROFILE` nor a profile in `MODAL_CONFIG_PATH` or `~/.modal.toml` can redirect the key. The
 daemon is uploaded from `options.daemonPath`, else `dist/computerd-linux-amd64`, so a run publishes nothing.
@@ -1862,7 +1871,7 @@ repository's main; the docs were read on 2026-11-05.
 ```ts
 import { providerFor } from "@parcha/agentrun-computer";
 
-// The key is the caller's to pass (serve's E2B_API_KEY), and the e2b package is the host's own (npm e2b 2.63.0).
+// The key is the caller's to pass (serve's E2B_API_KEY); the e2b package (2.63.0) is an optional dependency.
 const e2b = await providerFor("e2b", { apiKey });
 const made = await e2b.create({ image: "desktop", lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
 ```
@@ -1883,8 +1892,10 @@ and its X11 shim drives it. With `kind: "linux"` it is kind `linux` on any templ
 provider, minus the X server, so it costs nothing to offer. A caller that names a template (`create({ image })`) gets
 that one: E2B Desktop's own, `desktop`, still works for kind `desktop`, since computerd needs only Xvfb and xfwm4 from
 it. Every call goes through the host's E2B JS SDK, the `e2b` package's `Sandbox` class, whose types `src/e2b.ts` imports
-as types only (held as `typeof Sandbox` inside, `object` in the published types), so nothing loads from it at import; the package is the host's to install, as
-Modal's is. `@e2b/desktop` is not used: it starts Xvfb and Xfce with `commands.run`, outside computerd's process table
+as types only (held as `typeof Sandbox` inside, `object` in the published types), so nothing loads from it at import. The
+package is one of this package's `optionalDependencies`, pinned exactly, as Modal's, boxd's, ssh2 and Archil's `disk`
+are: a plain `npm install` brings it, and after `npm install --omit=optional` `create` refuses with `E2B needs the e2b
+package: npm install e2b@2.63.0`. `@e2b/desktop` is not used: it starts Xvfb and Xfce with `commands.run`, outside computerd's process table
 and with no bound or abort (`@e2b/desktop@2.5.0` `dist/index.mjs:387-415`), and the provider needs none of its other
 calls.
 
@@ -2149,7 +2160,7 @@ A live run must show:
 ```ts
 import { providerFor } from "@parcha/agentrun-computer";
 
-// Both keys are the caller's to pass (serve's AGENT37_API_KEY and AGENT37_SSH_KEY), and ssh2 is the host's own (npm ssh2 1.17.0).
+// Both keys are the caller's to pass (serve's AGENT37_API_KEY and AGENT37_SSH_KEY); ssh2 (1.17.0) is an optional dependency.
 const agent37 = await providerFor("agent37", { apiKey, sshKey });
 const made = await agent37.create({ image: "agent37-base", lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
 ```
@@ -2303,7 +2314,7 @@ the live runs above.
 ```ts
 import { providerFor } from "@parcha/agentrun-computer";
 
-// The key is the caller's to pass (serve's MORPH_API_KEY), and ssh2 is the host's own.
+// The key is the caller's to pass (serve's MORPH_API_KEY); ssh2 is an optional dependency.
 const morph = await providerFor("morph", { apiKey });
 const box = await morph.prepareImage(); // the box image as a snapshot in the key's account
 const made = await morph.create({ image: box.value, lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
@@ -2749,7 +2760,7 @@ through `ui.observe` (`src/conformance/cases/settings.ts`):
 ```ts
 import { providerFor } from "@parcha/agentrun-computer";
 
-// The key is the caller's to pass (serve's BOXD_API_KEY), and the @boxd-sh/sdk package is the host's own (npm 0.3.1).
+// The key is the caller's to pass (serve's BOXD_API_KEY); the @boxd-sh/sdk package (0.3.1) is an optional dependency.
 const boxd = await providerFor("boxd", { apiKey, org: "my-org", region: "fra" });
 const made = await boxd.create({ image: "default", lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
 ```
@@ -2762,7 +2773,7 @@ to a machine, and `src/hosted/provider.ts` does everything that is not boxd's ow
 create, the upload, the install, init's start, the stdio bridge, the probe, the janitor's extend, delete-then-wait-gone,
 the sweep of a create that lands late). Every call goes through the host's boxd TypeScript SDK, the `@boxd-sh/sdk`
 package's `Boxd` class, of which `src/boxd.ts` names only the slice it calls and imports nothing at load. The package is
-the host's to install, as E2B's and Modal's are; this repository pins it as a root devDependency for the live tests.
+an optional dependency, pinned exactly, as E2B's and Modal's are.
 
 ### The desktop snapshot
 
@@ -2807,7 +2818,7 @@ explicitly, so the SDK takes none of them from the environment.
 | `apiKey` | the boxd API key | required |
 | `org` | the org machines are made in and listed from, by name or id | the key's own |
 | `region` | the region machines are made in (`fra`, `nyc`) | the API's home region |
-| `baseUrl` | the API's address | `https://boxd.sh:9443` |
+| `baseUrl` | the API's address, https alone | `https://boxd.sh:9443` |
 | `vcpu`, `memory` | a boxd size: 1 and `4G`, 2 and `8G`, 4 and `16G`, or 8 and `32G`; both or neither; a sandbox's alone | the org's default |
 | `kind` | `linux` or `desktop` (from the desktop snapshot) | `linux` |
 | `maxLifetimeMs` | the longest lifetime `check` takes, at most 30 days | 24 h |
@@ -2931,7 +2942,7 @@ node packages/computer/dist/conformance/sweep.js --provider smolcloud --before /
 ```
 
 The conformance module, `dist/conformance/smolcloud.js`, checks `AGENTRUN_COMPUTER_LIVE_SMOLCLOUD=1` first, then reads
-`COMPUTER_SMOLCLOUD_API_KEY` (`apiKey`, required), `COMPUTER_SMOLCLOUD_API_URL` (`apiUrl`) and
+`COMPUTER_SMOLCLOUD_API_KEY` (`apiKey`, required), `COMPUTER_SMOLCLOUD_API_URL` (`apiUrl`, https alone) and
 `COMPUTER_SMOLCLOUD_IMAGE` (the run's image, default the box image), never `SMOLCLOUD_API_KEY`. Every computer of a run
 lives at most 30 minutes. The live sweep is the shared one; its scope is the key's account.
 
@@ -3003,8 +3014,7 @@ What Groundbox refuses or this host works around:
   should Groundbox start it after all; every other dropped socket closes with 4000, which leaves it running. A new
   socket counts as reading on only once Groundbox says something on it, so a peer that takes each attach and stays
   silent fails the stream after 5 minutes instead of holding `wait()` forever.
-- The API URL is https; http is taken only to a loopback host (127.0.0.0/8, `::1`, `localhost`), since the key rides
-  every call and the stream's upgrade.
+- The API URL is https alone, loopback included, since the key rides every call and the stream's upgrade.
 - On the box image and any other public image Groundbox runs a command as root. On Groundbox's own image and its
   templates it runs as the image's user, `runner` (uid 1001), with passwordless sudo, which the adapter's scripts use;
   `daemonUser` may not be 1001 there.

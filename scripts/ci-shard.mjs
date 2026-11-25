@@ -129,9 +129,10 @@ for (const command of commands(shard)) {
   else if (status !== 0) console.log(`::error::ci-shard: ${shown(command)} exited with status ${status}`);
   if (status !== 0) failed.push(shown(command));
 }
-// Its time against its model, whatever the result: a shard far over it means scripts/ci-timings.json is stale.
+// Its time against its model, whatever the result: a shard far over it means scripts/ci-timings.json is stale. ci.yml sets
+// CI_SHARD_UNTIMED_RUNNER on GitHub's runners, which the weights were not measured on.
 const took = Math.round((Date.now() - shardStarted) / 1000);
 console.log(`ci-shard: ${wanted} ran ${took} s, modelled ${shard.seconds} s`);
-const drift = timingDrift(wanted, shard.seconds, took);
+const drift = timingDrift(wanted, shard.seconds, took, { untimedRunner: Boolean(process.env.CI_SHARD_UNTIMED_RUNNER) });
 if (drift) console.log(drift);
 if (failed.length) { console.error(`failed: ${failed.join(', ')}`); process.exit(1); }

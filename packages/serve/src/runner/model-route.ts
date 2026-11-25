@@ -19,7 +19,7 @@ import type { ThinkingLevelMap } from "../port-models.js";
 import type { Wire } from "@parcha/agentrun-kernel";
 import { onOpenRouter, openRouterAttribution, ROUTE_ORIGIN, streamErrorOf } from "@parcha/agentrun-kernel/host";
 import type { ToolsAs } from "../local-models.js";
-import { chooseModel, MODEL_PROVIDER, type PinnedModel, runModels, type Tier } from "../model.js";
+import { chooseModel, FAUX_PROVIDER, MODEL_PROVIDER, type PinnedModel, runModels, type Tier } from "../model.js";
 import { OLLAMA_PROVIDER, type OllamaAsks } from "../ollama-provider.js";
 import { gatewayHeadersAt, providerFor } from "../provider.js";
 import { keepText, type Redact, runnerSecrets, secretRedactor } from "./redact.js";
@@ -62,6 +62,11 @@ export interface ModelRoute {
   readonly price?: (model: string, usage: RouteUsage) => number | null;
   /** The upstream fetch: the route's own, for a model that does not speak Messages. Absent: the network. */
   readonly fetch?: typeof fetch;
+  /** Where the route's own translation (`fetch`) sends the model's requests: the origin pi-ai's catalog entry gives it
+   *  (OpenRouter's, Particle's, this machine's Ollama). A run's GenAI trace names its host, never `provider.origin`
+   *  (ROUTE_ORIGIN, a name no request leaves for). Absent on a route with no translation, and under the faux model,
+   *  whose requests go nowhere. */
+  readonly upstreamOrigin?: string;
   /** The catalog's cost of the model, tiers included: what the cap prices a request at before it leaves. */
   readonly cost?: RouteCost;
   /** True when serve has no price for the model (runModels' `unpriced`): `cost` is then a placeholder of zeros, which the
@@ -142,7 +147,9 @@ export async function routeOf(model: string | PinnedModel | undefined, env: Node
   // before Ollama would cut the prompt.
   const local = target.provider === OLLAMA_PROVIDER;
   const like = target.provider === "particle" ? { ...settings, ...LEVELS_BY_NAME, translatedChatCompletions: true } : local ? { ...settings, ...(target.reasoning ? LEVELS_BY_NAME : {}) } : target.reasoning ? { ...sees, ...LEVELS_BY_NAME } : undefined;
-  return { ...route, ...(like ? { like } : {}), ...(local ? { local: true } : {}), provider: { api: "anthropic-messages", origin: ROUTE_ORIGIN, credential: () => "model-route" }, fetch: messagesFetch(models as unknown as PiModels, target, redact ?? secretRedactor(runnerSecrets(env)), upstream, env) };
+  // Where pi-ai sends the translated requests (its model's baseUrl), for the run's trace: none under the faux model.
+  const upstreamOrigin = target.provider !== FAUX_PROVIDER && target.baseUrl ? { upstreamOrigin: target.baseUrl } : {};
+  return { ...route, ...(like ? { like } : {}), ...(local ? { local: true } : {}), ...upstreamOrigin, provider: { api: "anthropic-messages", origin: ROUTE_ORIGIN, credential: () => "model-route" }, fetch: messagesFetch(models as unknown as PiModels, target, redact ?? secretRedactor(runnerSecrets(env)), upstream, env) };
 }
 
 /** Whether pi-ai sends `target`'s requests to OpenRouter (pi-ai's own test, utils/openrouter-cost.js isOpenRouterModel). */

@@ -47,10 +47,15 @@ const u64 = (n) => {
   return bytes;
 };
 
+/** 1970-01-01 in an MP4 header's seconds since 1904-01-01. */
+const MP4_EPOCH_S = 2_082_844_800;
+
 /** A fragmented MP4 as ffmpeg writes one (empty moov, a moof and mdat per fragment, each sample's duration in its trun, the
- *  mfra trailer at its end once finished): `fragments` is each fragment's sample durations, in units of `timescale`. */
-function fmp4(fragments, { timescale = 1000, finished = true } = {}) {
-  const moov = box("moov", box("trak", box("mdia", box("mdhd", full(0, 0), u32(0, 0, timescale, 0, 0)))), box("mvex", box("trex", full(0, 0), u32(1, 1, 0, 0, 0))));
+ *  mfra trailer at its end once finished): `fragments` is each fragment's sample durations, in units of `timescale`;
+ *  `created` (ms) the start its header says, as computer-record.ts has ffmpeg write it. */
+function fmp4(fragments, { timescale = 1000, finished = true, created } = {}) {
+  const mvhd = created === undefined ? [] : [box("mvhd", full(0, 0), u32(MP4_EPOCH_S + Math.floor(created / 1000), MP4_EPOCH_S + Math.floor(created / 1000), 1000, 0), Buffer.alloc(80))];
+  const moov = box("moov", ...mvhd, box("trak", box("mdia", box("mdhd", full(0, 0), u32(0, 0, timescale, 0, 0)))), box("mvex", box("trex", full(0, 0), u32(1, 1, 0, 0, 0))));
   const parts = [box("ftyp", Buffer.from("isom\0\0\0\0isom", "latin1")), moov];
   let at = 0;
   for (const samples of fragments) {
@@ -98,6 +103,41 @@ test("recordingsOf lists each file: its computer, its seconds from its fragments
   writeFileSync(join(folder, `${TAG}-2.mp4`), fmp4([[1500], [500, 500]]));
   assert.deepEqual((await recordingsOf(folder, null))[1], { path: `recordings/${TAG}-2.mp4`, computer: TAG, seconds: 2.5, bytes: fmp4([[1500], [500, 500]]).length, finished: true });
   assert.deepEqual(await recordingsOf(join(data, "none"), null), [], "no folder: nothing recorded");
+});
+
+test("recordingsOf lists a run's computers in the order they recorded, not by name", async () => {
+  const folder = tempDir("agentrun-rec-order-");
+  // A run's desktop released at its question and a new one taken at its answer: the second's id sorts first by name.
+  writeFileSync(join(folder, "faux-desktop-7.mp4"), fmp4([[1000]]));
+  await sleep(20);
+  writeFileSync(join(folder, "faux-desktop-17.mp4"), fmp4([[1000]]));
+  assert.deepEqual((await recordingsOf(folder, null)).map((one) => one.computer), ["faux-desktop-7", "faux-desktop-17"]);
+});
+
+test("recordingsOf keeps a run's computers in the order they started while the first records on", async () => {
+  const folder = tempDir("agentrun-rec-steady-");
+  const first = join(folder, "browser-b.mp4");
+  const second = join(folder, "browser-a.mp4");
+  const order = async () => (await recordingsOf(folder, null)).map((one) => one.computer);
+  // Two sessions recording at once: their headers say when each started, and the first's file changes after the second's.
+  // The second's file is made first here, so its making (birth time) says the opposite of the headers.
+  const start = Date.parse("2026-11-24T12:00:00Z");
+  writeFileSync(second, fmp4([[1000]], { created: start + 5_000, finished: false }));
+  await sleep(20);
+  writeFileSync(first, fmp4([[1000]], { created: start, finished: false }));
+  utimesSync(first, new Date(start + 60_000), new Date(start + 60_000));
+  utimesSync(second, new Date(start + 6_000), new Date(start + 6_000));
+  assert.deepEqual(await order(), ["browser-b", "browser-a"], "by the starts the headers say, not by name, making or last change");
+  // With no start in their headers, the first read's making stands while a file grows.
+  const plain = tempDir("agentrun-rec-plain-");
+  writeFileSync(join(plain, "faux-desktop-7.mp4"), fmp4([[1000]], { finished: false }));
+  await sleep(20);
+  writeFileSync(join(plain, "faux-desktop-17.mp4"), fmp4([[1000]], { finished: false }));
+  const plainOrder = async () => (await recordingsOf(plain, null)).map((one) => one.computer);
+  assert.deepEqual(await plainOrder(), ["faux-desktop-7", "faux-desktop-17"]);
+  await sleep(20);
+  writeFileSync(join(plain, "faux-desktop-7.mp4"), fmp4([[1000], [1000]], { finished: false }));
+  assert.deepEqual(await plainOrder(), ["faux-desktop-7", "faux-desktop-17"], "the first records on: it stays first");
 });
 
 test("recordingsOf reads ffmpeg's own fragmented MP4 the length ffprobe says", async (t) => {
@@ -150,6 +190,11 @@ test("a recording being written is on disk as it goes: a quiet screen's few fram
     }
     [listed] = await recordingsOf(folder, null);
     assert.equal(listed.finished, true, `${format}: ffmpeg wrote its trailer at the stop`);
+    // Its header says when it started (mvhd's creation time), which orders a run's computers.
+    const bytes = readFileSync(join(folder, "c1.mp4"));
+    const mvhd = bytes.indexOf("mvhd", 0, "latin1");
+    const started = (bytes.readUInt32BE(mvhd + 8) - MP4_EPOCH_S) * 1000;
+    assert.ok(mvhd > 0 && Math.abs(Date.now() - started) < 5 * 60_000, `${format}: the header's start ${new Date(started).toISOString()}`);
   }
 });
 

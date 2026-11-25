@@ -37,5 +37,6 @@
   "keys": [{ "name": "ANTIGRAVITY_GEMINI_API_KEY", "env": "GEMINI_API_KEY" }],
   "keyMethod": "gemini-api-key",
   "signIn": { "args": ["--login"], "homeArg": "--gemini-dir", "terms": "https://antigravity.google/terms" },
-  "declares": { "load": true, "mcp": "http" }
+  "state": [".gemini/antigravity-cli/conversations"],
+  "declares": { "load": true, "mcp": "stdio" }
 }

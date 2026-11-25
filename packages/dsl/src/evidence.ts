@@ -5,6 +5,7 @@
 // evidence is capped. Every cap and the budget count CODE POINTS, so a character outside the Basic Multilingual Plane
 // counts once, as it shows.
 import type { DecisionEvidence } from "./decision-provider.js";
+import { isRecord } from "./record.js";
 
 /** The longest title an item keeps, in code points. */
 export const EVIDENCE_TITLE_MAX = 300;
@@ -50,8 +51,8 @@ export function evidenceOf(raw: unknown, { excerpts: withExcerpts = true }: Evid
   let left = EVIDENCE_TEXT_MAX;
   for (const item of Array.isArray(raw) ? raw : []) {
     if (kept.length >= EVIDENCE_ITEMS_MAX || left <= 0) break;
-    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
-    const { url: rawUrl, title: rawTitle, excerpts: rawExcerpts, scope: rawScope } = item as Record<string, unknown>;
+    if (!isRecord(item)) continue;
+    const { url: rawUrl, title: rawTitle, excerpts: rawExcerpts, scope: rawScope } = item;
     const url = webUrl(rawUrl);
     if (!url) continue;
     const title = typeof rawTitle === "string" ? plain(rawTitle, Math.min(EVIDENCE_TITLE_MAX, left)) : null;

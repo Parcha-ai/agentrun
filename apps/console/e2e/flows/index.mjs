@@ -27,6 +27,7 @@ import runToEnd from "./run-to-end.mjs";
 import takeOver from "./take-over.mjs";
 import askDone from "./ask-done.mjs";
 import secretsWriteOnly from "./secrets-write-only.mjs";
+import apiKeys from "./api-keys.mjs";
 import templateApply from "./template-apply.mjs";
 import templateUnattended from "./template-unattended.mjs";
 import templateUnattendedNavigation from "./template-unattended-navigation.mjs";
@@ -51,6 +52,7 @@ import gradeRun from "./grade-run.mjs";
 import toolCards from "./tool-cards.mjs";
 import narrowLayouts from "./narrow-layouts.mjs";
 import playgroundOperationWidth from "./playground-operation-width.mjs";
+import playgroundAgentWidth from "./playground-agent-width.mjs";
 import devToolsPanelWidth from "./dev-tools-panel-width.mjs";
 import suggestAgents from "./suggest-agents.mjs";
 
@@ -78,6 +80,7 @@ export const flows = [
   signedOutElsewhere,
   serverDeny,
   secretsWriteOnly,
+  apiKeys,
   computersKeys,
   computersRunning,
   workspaceArchil,
@@ -94,6 +97,7 @@ export const flows = [
   toolCards,
   ...narrowLayouts,
   playgroundOperationWidth,
+  playgroundAgentWidth,
   devToolsPanelWidth,
   playgroundPaneLines,
   ...suggestAgents,

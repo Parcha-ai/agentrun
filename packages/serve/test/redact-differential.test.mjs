@@ -5,7 +5,10 @@
 // matcher makes on purpose: its whole-text check reads the text as it came, so a held value only part of which a cut
 // covers (P2-4: a credential parameter's value cut in place, the rest of the held value past a line break) withholds the
 // text whole, where the old check read the text after its cut and showed the rest. Each such text holds a held value
-// as the old matcher itself reads it.
+// as the old matcher itself reads it. A second difference, also on purpose: the routing number's word must end at a word
+// end, so "aba" glued to nine digits (an id's hex) is no longer cut. The first test's texts could make one only by
+// chance (a pointer's last group, or a key's first half, reading "aba" and nine digits), and the seeded ones hold none;
+// the second test's pieces never can ("aba" in them is only "a" or "AIza" before "bank ").
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { learnedSecretShapes, redactLearned, redactSecrets, secretShapes, valueMatcher } from "../dist/learn/secrets.js";
@@ -73,16 +76,29 @@ test("over 4,000 random texts of held values' forms and shapes' pieces, redactSe
   t.diagnostic(`withheld where the old redactor showed part of a held value: ${withheld}; shown, cut, where it withheld for a shape its partial cut made: ${shown}`);
 });
 
-test("over 4,000 random texts of the shapes' pieces, the kinds of secret and bank shapes found are the old ones", () => {
+// The kinds found are the old ones. What is cut is the old cut, but past a private key header: the old shape cut the
+// header alone, the key block's reading cuts on through the lines after it (base64 pieces, blanks, line breaks). Where
+// the two differ, the text holds a header, the new cut is the shorter (or the text is withheld whole on either side),
+// and the old redactor finds nothing more to cut in what the new one shows.
+test("over 4,000 random texts of the shapes' pieces, the kinds of secret and bank shapes found are the old ones", (t) => {
   const next = random(20261124);
   const pieces = ["github_pat_", "ghp_", "gh", "eyJ", "sk-", "xoxb-", "xapp-", ".", "_", "-", "a", "Z", "0", "7", " ", "\n", "github", "_pat_", "abcdefgh",
     "Bearer ", "bearer  ", "?token=", "&sig=", "?x-amz-signature=", "=", "abcdefgh01234567", "://", "u:", "p@", "@", "/", "whsec_", "AKIA", "AIza",
     "-----BEGIN ", "PRIVATE KEY", "-----", "RSA ", "account ", "acct: ", "a/c is ", "bank ", "123456", "1 ", "2024-01-02", "IBAN ", "GB00", "routing ",
     "number ", "123456789", "sort code ", "12-34-56", "sed -n 's|https://", "[^:]*", ":\\(\\[^@]*\\)@", "host", "|\\1|p'", "x9", ";", "("];
+  let past = 0;
   for (let i = 0; i < 4013; i++) {
     const text = Array.from({ length: 2 + Math.floor(next() * 40) }, () => pick(next, pieces)).join("");
     assert.deepEqual(secretShapes(text), before.secretShapes(text), JSON.stringify(text));
     assert.deepEqual(learnedSecretShapes(text), before.learnedSecretShapes(text), JSON.stringify(text));
-    assert.equal(redactLearned(text, [], 1 << 20), before.redactLearned(text, [], 1 << 20), JSON.stringify(text));
+    const got = redactLearned(text, [], 1 << 20);
+    const was = before.redactLearned(text, [], 1 << 20);
+    if (got === was) continue;
+    const said = `${JSON.stringify(text)}: ${JSON.stringify(got)}, before ${JSON.stringify(was)}`;
+    assert.ok(before.secretShapes(text).includes("private key block"), said);
+    assert.ok(got === "[redacted]" || was === "[redacted]" || got.length < was.length, said);
+    assert.equal(before.redactLearned(got, [], 1 << 20), got, said);
+    past++;
   }
+  t.diagnostic(`cut past a private key header, where the old shape cut the header alone: ${past}`);
 });
