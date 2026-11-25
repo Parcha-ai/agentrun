@@ -2,11 +2,13 @@
 // first other box that answers. An agentic definition that names no place and would be given the default box (it names
 // no tools, so it would get a shell, or names a tool that runs only in a box) is refused 422 at its create, and at an
 // edit that would save such a revision, listing the boxes this server has and never picking one. A workflow, a
-// definition that names its place (the runner included), and one whose tools need no shell save as before. Tests run
-// with AGENTRUN_BOXES=none (support.mjs): no box is set up here.
+// definition that names its place (the runner included), and one whose tools need no shell save as before. Only where
+// the runner has no shell (Mode 1): on Mode 2 the runner's exec is a shell, and a new agent with no place runs there as
+// before. capabilities' places.default_place says which: Docker's box, the runner on Mode 2, or null (name a box), with
+// default_reason exactly when null. Tests run with AGENTRUN_BOXES=none (support.mjs): no box is set up here.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { defaultPlaceOf, newAgentPlace } from "../dist/place.js";
+import { defaultPlaceOf, newAgentPlace, noBoxRefusal, placesOf } from "../dist/place.js";
 import { agent, flowAgent, serve } from "./support.mjs";
 
 const NONE_WORDS = "name a box: this server has no Docker box for a new agent. Set place to {mode: sandbox, box: <none is set up>}, or to {mode: runner} to run without a shell.";
@@ -37,8 +39,34 @@ test("the default box is Docker's by its id: with Docker down and another box av
   assert.deepEqual(newAgentPlace([{ id: "docker", available: true }, { id: "e2b", available: true }]), { place: { mode: "sandbox", box: "docker" } });
 });
 
+test("default_place per mode: Docker's box where it is here; with no Docker, null and the refusal's words where the runner has no shell (Mode 1), the runner where it has one (Mode 2), with no default_reason", () => {
+  const docker = [{ id: "docker", available: true }];
+  const noDocker = [{ id: "docker", available: false, reason: "Docker isn't running on this machine" }, { id: "e2b", available: true }];
+  const NAMED = "name a box: this server has no Docker box for a new agent. Set place to {mode: sandbox, box: <one of: e2b>}, or to {mode: runner} to run without a shell.";
+  for (const shell of [false, true]) {
+    const withDocker = placesOf(docker, "none", shell);
+    assert.deepEqual(withDocker.default_place, { mode: "sandbox", box: "docker" });
+    assert.equal("default_reason" in withDocker, false);
+  }
+  const mode1 = placesOf(noDocker, "none", false);
+  assert.equal(mode1.default_place, null, "no default: name a box");
+  assert.equal(mode1.default_reason, NAMED, "the words a no-place create is refused in");
+  assert.deepEqual(Object.keys(mode1), ["modes", "default_place", "default_reason", "boxes", "allow"]);
+  const mode2 = placesOf(noDocker, "none", true);
+  assert.deepEqual(mode2.default_place, { mode: "runner" }, "Mode 2: the runner's shell");
+  assert.equal("default_reason" in mode2, false, "default_reason only with a null default_place");
+  assert.deepEqual(Object.keys(mode2), ["modes", "default_place", "boxes", "allow"]);
+  assert.equal(noBoxRefusal(undefined, noDocker, flags, false)?.message, NAMED, "Mode 1: no tools named is refused");
+  assert.equal(noBoxRefusal(undefined, noDocker, flags, true), undefined, "Mode 2: never refused for its place");
+  assert.equal(noBoxRefusal(["bash"], noDocker, flags, true), undefined);
+});
+
 test("with no Docker box, a new agent that names no place and no tools, or a tool that runs only in a box, is refused 422 in words that name a box; nothing is saved", { timeout: 60_000 }, async (t) => {
   const { api } = await serve(t);
+  // Mode 1 (the runner has no shell): capabilities say there is no default place, in the refusal's words.
+  const { places } = (await api("GET", "/capabilities")).body;
+  assert.equal(places.default_place, null);
+  assert.equal(places.default_reason, NONE_WORDS);
   refusedForPlace(await api("POST", "/agents", plain("plain")));
   assert.equal((await api("GET", "/agents/plain")).status, 404, "nothing saved");
   refusedForPlace(await api("POST", "/agents", plain("shell", { tools: ["read", "bash"] })));

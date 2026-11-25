@@ -176,7 +176,7 @@ test("with no docker, a new agent that names no place and no tools is refused, i
   const { api, data } = await serve(t, { faux: PROBE });
   const places = await placesOf(api);
   assert.equal("default" in places, false);
-  assert.deepEqual(places.default_place, RUNNER);
+  assert.equal(places.default_place, null, "no default: a new agent names its place");
   const refused = await api("POST", "/agents", fresh("plain"));
   assert.equal(refused.status, 422, JSON.stringify(refused.body));
   assert.deepEqual(refused.body.error.fields.map((one) => [one.field, one.message]), [["definition.place", NAME_A_BOX]]);
@@ -234,7 +234,7 @@ test("a revision that names no place runs where default_place says, as a new age
   assert.deepEqual(flow.body.place, RUNNER);
 });
 
-test("a revision with no place and bash, saved while docker was there, is refused at a run once default_place is the runner: a 409 that says why, never bash on the runner; one with the browser stays on the runner when docker comes", { timeout: 120_000 }, async (t) => {
+test("a revision with no place and bash, saved while docker was there, is refused at a run once default_place is null: a 409 that says why, never bash on the runner; one with the browser stays on the runner when docker comes", { timeout: 120_000 }, async (t) => {
   withEnv(t, { AGENTRUN_BOXES: "none" });
   const data = join(await scratch(t), "agents");
   const first = await startServe({ data, port: 0, faux: PROBE, drainTimeout: "5s" });
@@ -256,10 +256,10 @@ test("a revision with no place and bash, saved while docker was there, is refuse
   if (browsing.status === 202) assert.deepEqual(browsing.body.place, RUNNER);
   else refusedNotForPlace(browsing);
   await second.close();
-  // Docker is gone: default_place is the runner, and the revision with bash is refused, saying why, before anything runs.
+  // Docker is gone: default_place is null (name a box), and the revision with bash is refused, saying why, before anything runs.
   withEnv(t, { AGENTRUN_BOXES: "none" });
   const { api } = await serve(t, { data, faux: PROBE });
-  assert.deepEqual((await placesOf(api)).default_place, RUNNER);
+  assert.equal((await placesOf(api)).default_place, null);
   const before = (await api("GET", "/runs?agent=shell")).body.runs.length;
   const refused = await api("POST", "/agents/shell/runs", { input: { content: JSON.stringify({ probe: [{ tool: "bash", args: { command: "echo hi" } }] }) } });
   assert.equal(refused.status, 409, JSON.stringify(refused.body));

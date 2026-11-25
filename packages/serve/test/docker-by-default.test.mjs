@@ -20,7 +20,6 @@ const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAKE = new URL("./fixtures/fake-docker.mjs", import.meta.url).pathname;
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const DOCKER = { mode: "sandbox", box: "docker" };
-const RUNNER = { mode: "runner" };
 const ON_BY_DEFAULT = "Boxes: docker (on by default; set AGENTRUN_BOXES to change).";
 const NO_DOCKER = "Docker isn't running on this machine (no docker command on PATH): install or start Docker, then restart AgentRun";
 const NO_DAEMON = "Docker isn't running on this machine, or this user may not use it (docker version failed: exit 1): start Docker, or add this user to the docker group, then restart AgentRun";
@@ -107,7 +106,7 @@ test("with AGENTRUN_BOXES not set and no docker command on PATH, a new agent tha
   const server = await serve(t, { faux: PROBE });
   const places = await placesOf(server.api);
   assert.deepEqual(dockerOf(places), { id: "docker", available: false, state: "unavailable", reason: NO_DOCKER });
-  assert.deepEqual(places.default_place, RUNNER);
+  assert.equal(places.default_place, null);
   assert.equal(places.default_reason, NAME_A_BOX);
   assert.equal(server.boxesLine, `Boxes: none, so a new agent must name its place: a box, or the runner. ${NO_DOCKER}.`);
   const refused = await server.api("POST", "/agents", fresh("plain"));
@@ -280,7 +279,7 @@ test("an explicit AGENTRUN_BOXES wins: a list probes only what it names, so dayt
   const places = await placesOf(server.api);
   assert.deepEqual(dockerOf(places), { id: "docker", available: false, state: "unavailable", reason: "not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker,daytona" });
   assert.equal(places.boxes.find((box) => box.id === "daytona").reason, "needs DAYTONA_API_KEY");
-  assert.deepEqual(places.default_place, RUNNER);
+  assert.equal(places.default_place, null);
   assert.deepEqual(docker.calls(), [], "no docker command ran");
   assert.ok(server.boxesLine.startsWith("Boxes: none is ready, so sandbox agents do not run here."), server.boxesLine);
   assert.ok(!server.boxesLine.includes("on by default"), server.boxesLine);
@@ -294,7 +293,7 @@ for (const value of ["", "none", " none "]) {
     const places = await placesOf(server.api);
     assert.ok(places.boxes.every((box) => !box.available), JSON.stringify(places.boxes));
     assert.equal(dockerOf(places).reason, NOT_ENABLED);
-    assert.deepEqual(places.default_place, RUNNER);
+    assert.equal(places.default_place, null);
     assert.equal(places.default_reason, NAME_A_BOX);
     assert.deepEqual(docker.calls(), [], "no docker command ran");
     assert.ok(server.boxesLine.startsWith("Boxes: none is ready, so sandbox agents do not run here."), server.boxesLine);
