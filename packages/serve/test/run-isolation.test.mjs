@@ -219,6 +219,7 @@ test("a host that won't let the runner start its helper (spawn EPERM, thrown at 
 
 test("the store a run's process reaches is bound to its claim: another run's journal, run or claim, another agent's revision, a row not its own run's browser rows, and a call off the list are refused unread; its own browser rows are written", async () => {
   const called = [];
+  const saved = new Map();
   const store = {
     readJournal: (runId) => void called.push(`readJournal ${runId}`),
     runs: {
@@ -228,9 +229,10 @@ test("the store a run's process reaches is bound to its claim: another run's jou
     agents: { revision: async (id) => (called.push(`agents.revision ${id}`), { id, agentId: id === "rev-own" ? "agent-own" : "agent-other" }) },
     settings: {
       set: async () => void called.push("settings.set"),
-      put: async (key) => void called.push(`settings.put ${key}`),
+      put: async (key, value) => void (called.push(`settings.put ${key}`), saved.set(key, value)),
       remove: async (key) => void called.push(`settings.remove ${key}`),
-      get: async (key) => (called.push(`settings.get ${key}`), undefined),
+      removeIf: async (key) => (called.push(`settings.remove ${key}`), saved.delete(key)),
+      get: async (key) => (called.push(`settings.get ${key}`), saved.get(key)),
     },
   };
   const bound = { claim: { runId: "run-own", epoch: 3 }, agentId: "agent-own", revisionId: "rev-own" };
@@ -256,14 +258,23 @@ test("the store a run's process reaches is bound to its claim: another run's jou
     await call("settings.get", [key]);
     await call("settings.remove", [key]);
   }
-  assert.deepEqual(called.slice(-6), ["settings.put browser_hold:run-own", "settings.get browser_hold:run-own", "settings.remove browser_hold:run-own", "settings.put browser_wait_ended:run-own", "settings.get browser_wait_ended:run-own", "settings.remove browser_wait_ended:run-own"]);
+  // Each remove reads the row first: one a later claim wrote is not its to remove.
+  const rowCalls = (key) => [`settings.put ${key}`, `settings.get ${key}`, `settings.get ${key}`, `settings.remove ${key}`];
+  assert.deepEqual(called.slice(-8), [...rowCalls("browser_hold:run-own"), ...rowCalls("browser_wait_ended:run-own")]);
   assert.ok(lines.some((line) => /asked the store for readJournal, which a run's process may not/.test(line)), lines.join("\n"));
   assert.ok(lines.some((line) => /asked for another agent's revision/.test(line)), lines.join("\n"));
 });
 
 test("a run's process writes its own browser rows only as its claim's: the claim's epoch, the row's shape and a bounded size", async () => {
   const written = [];
-  const store = { settings: { put: async (key, value) => void written.push([key, value]), remove: async (key) => void written.push([key]) } };
+  const saved = new Map();
+  const store = {
+    settings: {
+      put: async (key, value) => void (written.push([key, value]), saved.set(key, value)),
+      get: async (key) => saved.get(key),
+      removeIf: async (key) => (written.push([key]), saved.delete(key)),
+    },
+  };
   const bound = { claim: { runId: "run-own", epoch: 3 }, agentId: "agent-own", revisionId: "rev-own" };
   const call = (method, args) => storeCall(store, method, args, bound, () => {});
   const at = "2026-11-25T00:00:00.000Z";

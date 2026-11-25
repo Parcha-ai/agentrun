@@ -451,8 +451,24 @@ const ownSettings = (bound: Bound): ReadonlySet<string> => new Set([
 /** Whether a run's process may read setting `key`. */
 export const settingReadable = (key: unknown, bound: Bound): boolean => typeof key === "string" && (SHARED_SETTINGS.has(key) || ownSettings(bound).has(key));
 const readableSetting: Check = (args, bound) => settingReadable(args[0], bound);
-/** Whether a run's process may remove setting `key`: only its own run's browser rows (ownWrittenSettings). */
+/** Whether a run's process may remove setting `key`: only its own run's browser rows (ownWrittenSettings), and only one no
+ *  later claim wrote (removeOwnRow, which reads the row). */
 const removableSetting: Check = (args, bound) => typeof args[0] === "string" && ownWrittenSettings(bound).has(args[0]);
+
+/** The remove of one of the claim's own browser rows (removableSetting): a row a later claim of the run wrote stays, as
+ *  a write takes only the claim's own epoch (writableSetting), so a claim still closing never clears the take or the
+ *  ended wait of the claim that holds the run now. The row goes only while it is the one read (Settings.removeIf), so a
+ *  later claim's write that lands between the read and the remove stays too. A key with no row is left as it is. */
+async function removeOwnRow(settings: Pick<Store["settings"], "get" | "removeIf">, key: string, bound: Bound, log: (line: string) => void): Promise<void> {
+  const row = await settings.get(key);
+  if (row === undefined) return;
+  const epoch = typeof row === "object" && row !== null ? (row as { epoch?: unknown }).epoch : undefined;
+  if (typeof epoch === "number" && epoch > bound.claim.epoch) {
+    log(`run ${bound.claim.runId}: its process asked the store for settings.remove of ${key}, which a later claim (epoch ${epoch}) wrote and a run's process may not remove`);
+    throw new ClaimRefused("a run's process may not call the store's settings.remove of a row a later claim wrote");
+  }
+  await settings.removeIf(key, row);
+}
 /** Whether a run's process may write `value` to setting `key`: one of its own run's browser rows, with that row's fields
  *  alone, each a string, the claim's own epoch, and at most OWN_ROW_MAX_BYTES. A row with a later epoch would be kept by
  *  every clear of this claim (browser-hold.ts), so a later claim would read a take nobody holds. */
@@ -516,6 +532,7 @@ export async function storeCall(store: object, method: string, args: unknown[], 
     throw new ClaimRefused(`a run's process may not call the store's ${method}${check ? " of another run or agent" : ""}`);
   }
   if (method === "readJournal") return journalRead(store as Store, args);
+  if (method === "settings.remove") return removeOwnRow((store as Store).settings, args[0] as string, bound, log);
   const path = method.split(".");
   let target: unknown = store;
   for (const part of path.slice(0, -1)) target = (target as Record<string, unknown>)[part];
