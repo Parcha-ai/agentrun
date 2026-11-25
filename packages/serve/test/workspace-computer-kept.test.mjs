@@ -187,8 +187,8 @@ async function server({ setting = E2B_DESKTOP, mode = 1, groups = DESKTOP_GROUPS
     return computerForClaim({ runId: "run-1", epoch, computer: setting, ...launch }, runners ? { ...store, runners } : store, { ...deps, check: { readBackOf, epoch }, ...extra });
   };
   // `self` and `runners`: the janitor of a runner (its name and incarnation), reading which runners are there. `now`: its
-  // process's own clock, where it is not the store's.
-  const janitor = ({ self, runners, now = () => clock.now } = {}) => sweepKeptComputers({ store: runners ? { ...store, runners } : store, computers: { kinds: KINDS, providers, keyOf: (name) => getSealedKey(store, sealKey, name) }, env: {}, sealKey, ...mountControl, now, ...(self ? { self } : {}) });
+  // process's own clock, where it is not the store's. `log`: where it says what it did.
+  const janitor = ({ self, runners, now = () => clock.now, log } = {}) => sweepKeptComputers({ store: runners ? { ...store, runners } : store, computers: { kinds: KINDS, providers, keyOf: (name) => getSealedKey(store, sealKey, name) }, env: {}, sealKey, ...mountControl, now, ...(self ? { self } : {}), ...(log ? { log } : {}) });
   // A full janitor pass as the runner process runs it (startJanitor's first: the kept pass, then every provider's sweep),
   // as runner `self` reading `runners`; one vendor account behind every provider, as a dial vendor's (or one Docker
   // engine) both runners list. The store without its agents, so no server id is minted. What it logged.
@@ -518,6 +518,24 @@ test("Mode 2, a resume that took the parked desktop parks it again: its row keep
   assert.equal(await resumed.park("approval"), true);
   const row = await readKept(one.store.settings, "run-1");
   assert.deepEqual([row?.epoch, row?.disk], [3, DISK]);
+});
+
+test("Mode 2, a kept Archil desktop whose row names no disk: the janitor ends it with no call to Archil and says, naming the run, that its credential lapses at its ttl", async () => {
+  const archil = mountUsers();
+  const one = await server({ mode: 2, archil });
+  await (await one.claim(3)).park();
+  const key = keptKeyOf("run-1");
+  const { disk, ...noDisk } = await one.store.settings.get(key);
+  assert.equal(disk, DISK);
+  await one.store.settings.put(key, noDisk);
+  assert.equal((await readKept(one.store.settings, "run-1"))?.folder, "archil");
+  one.store.runs.set("run-1", "stopped");
+  const logged = [];
+  const swept = await one.janitor({ log: (line) => void logged.push(line) });
+  assert.deepEqual([swept.ended, swept.failed], [["c1"], []]);
+  assert.deepEqual(archil.requests, [], "no disk, so nothing asked of Archil");
+  assert.equal(nicknames(archil).length, 4, "every credential left to its ttl");
+  assert.ok(logged.some((line) => /run-1/.test(line) && /no disk/.test(line) && /ttl/.test(line)), logged.join("\n"));
 });
 
 test("a kept desktop whose folder is not on Archil: the janitor ends it with no call to Archil", async () => {
