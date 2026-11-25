@@ -1895,6 +1895,70 @@ test("a login kept at the start while its folder is refused runs once the folder
   chmodSync(folder, 0o700);
 });
 
+// A refresh that finds the folder mended (a run's check, a save's or capabilities, each asking it first) hands the server
+// the login, then makes env, what a revision needs and the offers again from it, and the offers are a probe of the
+// harnesses that can take seconds. A request asked meanwhile must wait for that: one that saw the new login and checked
+// the offers made before it would refuse a run for a key it does not need. The probe is held at claude-agent's check by
+// the held table (fixtures/held-offers.cjs), with no timers; the server logs claude_login_wait when a turn on the
+// sign-ins' queue is asked while a refresh makes the offers again, so a test knows a request waits before it lets the
+// probe go.
+
+/** A server for test `t` with the held table, on a data folder whose login was turned on and signed in at a
+ *  CLAUDE_CONFIG_DIR folder, with an agent `planned` on claude-agent and no key; the folder was opened to its group before
+ *  the start, so the login is kept and refused. `start()`: a run of `planned`; `waits(n)`: resolves once the server has
+ *  logged claude_login_wait `n` times. */
+async function mendedLater(t) {
+  const folder = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-config-dir-"));
+  t.after(() => rmSync(folder, { recursive: true, force: true }));
+  const first = await signInServer(t, "sign", {}, { CLAUDE_CONFIG_DIR: folder });
+  assert.equal((await first.api("PUT", "/settings/claude-login", { only_me: true, place: "machine" })).status, 200);
+  assert.equal((await first.api("POST", "/settings/claude-login/login")).status, 200);
+  await until(() => existsSync(first.fake.ended), "the CLI's sign-in ended");
+  assert.equal((await signInSettled(first.api)).state, "signed_in");
+  assert.equal((await first.api("POST", "/agents", agent("planned", { harness: "claude-agent" }))).status, 201);
+  await first.stop();
+
+  chmodSync(folder, 0o775);
+  t.after(() => held.answer(undefined));
+  let count = 0;
+  const waiting = [];
+  const log = (line) => {
+    if (!line.includes(" event=claude_login_wait ")) return;
+    count += 1;
+    for (const wait of waiting.filter((one) => one.times <= count)) wait.resolve();
+  };
+  const server = await serve(t, { faux: undefined, harnesses: false, runner: false, data: first.data, harnessTable: HELD_TABLE, log });
+  const waits = (times) => new Promise((resolve) => (count >= times ? resolve() : waiting.push({ times, resolve })));
+  const start = () => server.api("POST", "/agents/planned/runs", { input: { content: "Say hi." } });
+  const kept = (await server.api("GET", "/settings/claude-login")).body;
+  assert.equal(kept.state, "refused", JSON.stringify(kept));
+  const refused = await start();
+  assert.equal(refused.status, 409, `refused at the start: ${JSON.stringify(refused.body)}`);
+  assert.match(refused.body.error.message, /claude-agent needs ANTHROPIC_API_KEY/);
+  return { ...server, folder, start, waits };
+}
+
+const REFRESH_WHY = "a run asked while a refresh that found the folder mended was making the offers again checked the offers made before it";
+test("a run asked while a refresh that found the login's folder mended is still making the offers again waits for them: it is not refused for a key, and the capabilities that refresh answers offer claude-agent", { skip: process.platform === "win32" ? "no modes" : process.geteuid() === 0 ? "root may write anywhere" : false, timeout: 120_000 }, async (t) => {
+  const { api, folder, start, waits } = await mendedLater(t);
+  chmodSync(folder, 0o700);
+  const probe = held.hold((env) => claudeLoginOf(env) !== undefined);
+  t.after(() => probe.release());
+  // Capabilities refresh first, and hold in their probe of the offers made from the mended login.
+  const asking = api("GET", "/capabilities");
+  await probe.reached;
+  const running = start();
+  const first = await Promise.race([waits(1).then(() => "the run waited"), running.then(() => "the run answered"), asking.then(() => "capabilities answered")]);
+  probe.release();
+  const [run, capabilities] = await Promise.all([running, asking]);
+  assert.equal(run.status, 202, `${REFRESH_WHY}: ${JSON.stringify(run.body)}`);
+  assert.equal((await api("POST", `/runs/${run.body.run_id}/cancel`)).status < 300, true);
+  const offer = claudeAgentIn(capabilities.body.harnesses);
+  assert.equal(offer.available, true, `the capabilities whose refresh found the folder mended answered with the offers made before it: ${JSON.stringify(offer)}`);
+  assert.equal(first, "the run waited", "the run, or the capabilities, answered before the probe of the offers made from the mended login was let go");
+  chmodSync(folder, 0o700);
+});
+
 // A folder its group may write in (a home or a folder on a volume whose group is set for a pod, 2775, or one made under
 // a umask of 002, 0775) is refused, and a chmod mends it: a start keeps the setting, logs why, and turns nothing off.
 // One refused for the switch or for more than one owner is still turned off, as before.
