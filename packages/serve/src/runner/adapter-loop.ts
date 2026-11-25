@@ -184,7 +184,7 @@ export interface AdapterRunSpec {
   /** How long a park waits for the calls pi started beside the parked one (siblingsSettled) before it seals. Default
    *  PARK_SIBLINGS_MS. */
   readonly parkSiblingsMs?: number;
-  /** The run's agent: named to the end-of-run step (LoopDeps.endOfRun), which a spec without it cannot be asked. */
+  /** The run's agent: named to the end-of-run step (endOfRun, below), which a spec without it cannot be asked. */
   readonly agentId?: string;
   /** The learned workflow the run starts on, before its agent's first turn (runner/workflow-first.ts workflowFirstOf):
    *  run once through the session's own learned_workflow tool (its gate, record, ledger and cap), its answer the run's
@@ -195,7 +195,7 @@ export interface AdapterRunSpec {
    *  takes the run. The stop asks for no revision. */
   readonly workflowRevise?: WorkflowRevise;
   /** The run's end-of-run step, when its spec builds one (over the per-claim resources it holds, its Archil claim among
-   *  them): it wins over LoopDeps.endOfRun and is asked where that one is, in the end turn while the claim is held, before
+   *  them), the run's only one (none without it): asked in the end turn while the claim is held, before
    *  a tool host's beforeRelease and the run's release, its rows in the end's commit. */
   readonly endOfRun?: EndOfRunTurn;
   /** What the claim laid of the run's learning seed (runner/learning-seed.ts): the learned workflows it was given, by
@@ -3723,10 +3723,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   }
 
   /** How the job's own turn ended (`data`, and a CLI's error answer `failedWith`), as this claim decided it, kept on the
-   *  root before the end-of-run step asks its first turn (KINDS.jobEnd), for a run with a step to ask (stepOf). Kept with
-   *  its time, now, which it answers; with no step to ask, nothing is kept. */
+   *  root before the end-of-run step asks its first turn (KINDS.jobEnd), for a run with a step to ask (its spec's endOfRun).
+   *  Kept with its time, now, which it answers; with no step to ask, nothing is kept. */
   async function keepJobEnd(on: Harness, conversation: Conversation, spec: AdapterRunSpec, data: EndData, failedWith: string | undefined): Promise<number | undefined> {
-    if (!stepOf(spec)) return undefined;
+    if (!spec.endOfRun) return undefined;
     const kept = jobEndOf(data, failedWith, now());
     await on.commit((tx) => tx.appendEntry(conversation.id, { kind: KINDS.jobEnd, data: kept as unknown as JsonValue }), context);
     return kept.endedAt;
@@ -3894,10 +3894,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     };
   }
 
-  /** The run's end-of-run step: its spec's (AdapterRunSpec.endOfRun) when it has one, else the loop's deps'. */
-  const stepOf = (spec: AdapterRunSpec): EndOfRunTurn | undefined => spec.endOfRun ?? deps.endOfRun;
-
-  /** The end-of-run step (stepOf: the spec's, else LoopDeps.endOfRun), asked once: the rows to stage with the end; `stopped` when a person's stop
+  /** The end-of-run step (its spec's endOfRun; none without one), asked once: the rows to stage with the end; `stopped` when a person's stop
    *  came during it; `interrupted` when the claim was lost or the runner is closing (no end is written, and the next claim
    *  asks it again). A step that throws on its own writes the end without rows: the run's end never waits on it. `over`:
    *  the claim's overCap, read after each turn the step asks (askEndOfRun). */
@@ -3907,7 +3904,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       if (stopReason || deps.signal.aborted) return { kind: "interrupted" };
       return undefined;
     };
-    const step = stepOf(spec);
+    const step = spec.endOfRun;
     if (!step) return { kind: "rows", also: [] };
     if (!spec.agentId) throw new Error("the run's spec names no agent, so its end-of-run step cannot be asked");
     // Every request from here is learning's, between the step's asks too, until the claim ends (reflecting).
@@ -3930,11 +3927,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     }
   }
 
-  /** What a run cut before it could look back keeps beside its end (LoopDeps.endOfRun with `cut`, never asking): a
+  /** What a run cut before it could look back keeps beside its end (its spec's endOfRun with `cut`, never asking): a
    *  person's stop, before or during the end-of-run turn, or a fault. Bounded (CUT_STEP_MS): a step that reads a stalled
    *  store, or throws, keeps nothing, and the end is never held up by it. */
   async function cutRows(claim: Claim, spec: AdapterRunSpec, cut: "stopped" | "stopped-looking" | "faulted"): Promise<readonly AlsoRow[]> {
-    const step = stepOf(spec);
+    const step = spec.endOfRun;
     if (!step || !spec.agentId) return [];
     const refuse = () => Promise.reject(new Error("a cut run's end-of-run step asks nothing"));
     let timer: NodeJS.Timeout | undefined;

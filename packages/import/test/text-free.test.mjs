@@ -164,3 +164,24 @@ test("OpenCode: parseHome's state (turns false) holds no prompt, title or workin
   const listed = await readSession({ file: join(data, "opencode.db"), id: "ses_C" }, "opencode", { turns: false });
   assert.deepEqual([listed.firstPrompt, listed.sourceTitle, listed.cwd], ["Port the reader to v2.", "Port the reader", "/fixture/v2"], "a listing read from the start has them");
 });
+
+test("a failed request read with turns false keeps no error text, only that it failed: not in its requests nor a home's totals", async (t) => {
+  const home = await tempHome(t);
+  // Claude Code's own turn for an API error, and pi's request that stopped on one: each holds the error's words.
+  await writeJsonl(claudeFile(home), [
+    claudeUser({ uuid: "u1", text: "Fixture prompt.", i: 0 }),
+    { ...claudeAnswer({ uuid: "a1", msg: "msg_1", req: "req_1", usage: anthropicUsage(0, 0), i: 1, model: "<synthetic>", block: { type: "text", text: WORDS } }), isApiErrorMessage: true },
+  ]);
+  const failed = { type: "message", timestamp: at(2), message: { role: "assistant", provider: "fixture", model: "fixture-model", content: [], stopReason: "error", errorMessage: WORDS, usage: { input: 10, output: 0 } } };
+  await writeJsonl(piFile(home), [piMeta(), piUser("Fixture prompt."), failed]);
+  for (const [source, file] of [["claude-code", claudeFile(home)], ["pi", piFile(home)]]) {
+    const result = await READERS[source].read({ file }, undefined, { turns: false });
+    // The same mark as OpenCode's: one word for "it failed" whatever the source.
+    assert.equal(result.sessions[0].requests[0].error, FAILED, `${source}: the error, without its words`);
+    holdsNoText(result);
+    const kept = await READERS[source].read({ file }, undefined, { turns: true });
+    assert.equal(kept.sessions[0].requests[0].error, WORDS, `${source}: turns true keeps it`);
+  }
+  const totals = await parseHome(home, { sources: ["claude-code", "pi"], catalog: false });
+  assert.equal(serialize(totals).includes(Buffer.from(WORDS)), false, "the totals hold no error text");
+});

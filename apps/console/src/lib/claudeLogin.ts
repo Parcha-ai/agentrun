@@ -72,10 +72,12 @@ export const SIGNED_OUT = "Not signed in. Run this in a terminal on the server's
 export const NO_CLI = "No Claude Code CLI here yet: the first Claude Agent run installs it. Or run this with a claude CLI of your own:";
 export const UNKNOWN = "The Claude Code CLI didn't say whether it is signed in. Sign in again with:";
 export const OTHER_MACHINE = "Turned on for another machine: Claude Agent runs here use the model keys.";
+/** Said of a login kept while the server refuses its folders (state `refused`), above the server's own words for why. */
+export const KEPT_REFUSED = "Turned on, and not used while this server refuses its folders: Claude Agent runs here use the model keys. It is used again once that is mended, or turn it off.";
 /** A plan's requests in dollars: none. A run on the login says it on hover, as a ChatGPT plan run does. */
 export const LOGIN_NO_DOLLARS = "Requests on your Claude plan through Claude Code's login cost no dollars here; your plan's own limits apply.";
 
-const STATES: ReadonlySet<string> = new Set(["off", "other_machine", "signed_in", "signed_out", "no_cli", "unknown"]);
+const STATES: ReadonlySet<string> = new Set(["off", "other_machine", "refused", "signed_in", "signed_out", "no_cli", "unknown"]);
 /** GET /settings/claude-login's answer (and a write's) when it is one (a server with the mode switched off answers 404),
  *  else null. A `folder` or `machine` that is not the shape this console knows is left out, as an older server's is. */
 export function claudeLoginView(body: unknown): LoginView | null {

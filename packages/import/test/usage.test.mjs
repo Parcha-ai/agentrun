@@ -1,6 +1,7 @@
 // One usage shape for every source: `input` is the input neither read from nor written to the cache. Each provider's
 // counts below are worked by hand.
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 import { normalizeUsage, otelUsage, priceRequests, readSession } from "../dist/index.js";
 import { codexAnswer, codexContext, codexFile, codexMeta, codexTokens, codexUser, openaiUsage, parseHome, tempHome, writeJsonl } from "./fixtures.mjs";
@@ -131,4 +132,22 @@ test("priceRequests prices each request at its own provider's catalog entry, a 1
   assert.equal(await priceRequests([{ model: "p/m1" }], catalog), undefined);
   // A request of no tokens costs nothing at any price.
   assert.equal(await priceRequests([{ model: "q/unlisted", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }], catalog), 0);
+});
+
+test("a pi-ai that fails to load fails the price with its reason: never a cost of null that says nothing why", () => {
+  const index = new URL("../dist/index.js", import.meta.url).href;
+  // A loader hook that makes every @earendil-works/pi-ai specifier unresolvable, as a broken install.
+  const hooks = `data:text/javascript,${encodeURIComponent('export async function resolve(s, c, next) { if (s.startsWith("@earendil-works/pi-ai")) { const e = new Error("Cannot find package " + s); e.code = "ERR_MODULE_NOT_FOUND"; throw e; } return next(s, c); }')}`;
+  const register = `data:text/javascript,${encodeURIComponent(`import { register } from "node:module"; register(${JSON.stringify(hooks)}, ${JSON.stringify(index)});`)}`;
+  const script = `
+    const { builtinCatalog, priceRequests } = await import(${JSON.stringify(index)});
+    const catalog = new Map([["m1", [{ provider: "p", cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } }]]]);
+    for (const call of [() => priceRequests([{ model: "p/m1", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } }], catalog), () => builtinCatalog()])
+      console.log(await call().then((value) => "resolved " + value, (error) => "rejected " + error.message));
+  `;
+  const result = spawnSync(process.execPath, ["--import", register, "--input-type=module", "-e", script], { encoding: "utf8", env: { PATH: process.env.PATH } });
+  assert.equal(result.status, 0, result.stderr);
+  const lines = result.stdout.trim().split("\n");
+  assert.equal(lines.length, 2);
+  for (const line of lines) assert.match(line, /^rejected Cannot find package @earendil-works\/pi-ai/);
 });
