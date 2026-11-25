@@ -1681,11 +1681,15 @@ has the row **Use Claude Code's login on this machine**, over these routes:
   The login's folders must be the server's user's own: at either place its home, and on `machine` each folder the
   server's environment gives it (`CLAUDE_CONFIG_DIR`, `CLAUDE_SECURESTORAGE_CONFIG_DIR`, and `ANTHROPIC_CONFIG_DIR`
   or else `XDG_CONFIG_HOME`'s `anthropic`). Each is a folder that user owns, or one still to make in a folder it owns,
-  reached through no other user's link or folder, and writable by its owner alone; a folder on the way may be open to
+  reached through no other user's link or folder, and writable by no one else; a folder on the way may be open to
   all where the sticky bit is set, as on `/tmp`. Else the turn-on and the sign-in answer `403` in words, no run goes
   on the login, and a setting saved before is kept but not used, the start logging why. A folder its group may write
-  in is refused in words that name it, its mode and the `chmod g-w,o-w` that closes it. A umask of 002, which some
-  distributions (Ubuntu's user-private groups among them) give each user, makes new folders so. A folder of the login
+  in is the user's alone where that group is the user's private one: its primary group, which no other user has as
+  theirs and `/etc/group` lists with no other member, as the user-private groups of Ubuntu and Fedora are, so a
+  umask of 002 under one refuses nothing. Any other group (one shared with other users, one that is not the user's
+  primary group, one `/etc/group` lacks, or account files with a `+` or `-` line, whose members a directory service
+  holds), and a folder anyone may write in, are refused in words that name the folder, its mode and the
+  `chmod g-w,o-w` that closes it. A folder of the login
   still to make is made by AgentRun at the turn-on and before the CLI's sign-in, 0700 whatever the umask, so the login
   the CLI signs in there is not refused after.
 - `GET /v2/settings/claude-login` says `state`: `off`, `signed_in` (with the `account` the CLI names: method, email,

@@ -1,0 +1,11 @@
+---
+packages: @parcha/agentrun-serve
+kind: fix
+---
+Claude Code's login on this machine, after a chmod of its folders, follow-ups to the config-folders change (#3759):
+
+- A request that finds the login's folders changed (a run's check, a save's, capabilities) swaps the login in one turn on the sign-ins' queue and makes the offers again outside it. A sign-in, a turn-on or a turn-off asked meanwhile no longer waits for that probe of the offers; a run, save or capabilities request still waits for it.
+- Where making the offers again fails after the login was swapped, the next request makes them again, rather than going on with the offers made from the login as it was.
+- A template's plan and apply (`POST /v2/templates/{name}/apply`, with or without `dry_run`) now look at the login's folders first too, so the harness they pick and the model choice they check agree with a run's check right after a chmod.
+- A request that finds the login as it is waits for a turn-on's or turn-off's offers still being made, and `claude_login_wait` is logged with `why` (`queue`, `refresh` or `turn`) for each wait.
+- A login folder its group may write in is allowed where that group is the user's private one: its primary group, which no other user has as theirs and `/etc/group` lists with no other member. A umask of 002 under such a group (Ubuntu's and Fedora's user-private groups) no longer refuses the login. A group another user is in, one that is not the user's primary group, one `/etc/group` lacks, account files with a `+` or `-` line, and a folder anyone may write in are refused as before, in the same words.
