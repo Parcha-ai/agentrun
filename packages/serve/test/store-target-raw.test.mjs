@@ -26,10 +26,12 @@ test("a raw SQLite write waits out this process's own open store transaction, wh
     await held;
   });
   await opened;
-  // The holder goes on at this thread's next turn of timers: its commit needs this thread free while the write waits.
-  setTimeout(release, 20);
+  // raw() is open before the release is scheduled, so its worker's start can never outlast the hold: the write below
+  // always begins while the transaction is still held.
   const db = await raw(file, { timeout: 5_000 });
   try {
+    // The holder goes on at this thread's next turn of timers: its commit needs this thread free while the write waits.
+    setTimeout(release, 20);
     assert.deepEqual(await db.run("INSERT INTO t VALUES (2)"), { changes: 1 }, "written once the holder committed");
   } finally {
     await db.close();
