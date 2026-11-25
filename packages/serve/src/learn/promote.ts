@@ -61,9 +61,9 @@ export interface Grade {
 
 /** What a replay says, the shape a replay's read keeps (SPEC: replay {n, agree, agent_acc, wf_acc, delta}): `n` inputs;
  *  `agree`, how many the workflow answered alone right on every field (CheckRecord.agreed); `agent_acc`, the agent's
- *  accuracy on them (1: the agent's own answers are the label); `wf_acc`, the workflow's, a hand-back counting as the
- *  agent's answer; `delta` = wf_acc - agent_acc; `handed_back`, how many it handed back (it answered n - handed_back
- *  alone). Accuracies to 1e-4. */
+ *  accuracy on them against the same known answers (CheckRecord.agent_agreed); `wf_acc`, the workflow's, a hand-back
+ *  counting as the agent's answer; `delta` = wf_acc - agent_acc; `handed_back`, how many it handed back (it answered
+ *  n - handed_back alone). Accuracies to 1e-4. */
 export interface ReplayScore {
   readonly n: number;
   readonly agree: number;
