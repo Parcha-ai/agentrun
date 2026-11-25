@@ -31,7 +31,9 @@ function callRecordOf(method, params, answer, ms) {
  *  SERVE_CONTRACT names them) 404 "no route" or 405, an agent or run it doesn't have 404 not_found, and, once it has the
  *  agent, a runs body field it keeps none of (`keepsNo`) 422 not_allowed. Its OpenAPI document has RunCreate.hold unless
  *  it keeps no hold, and Run.computer.held unless `noHeld`, which leaves held out of its run reads too. */
-async function fakeServe({ holdPolls = 1, endAs, cost = 0.01, refuseRuns = 0, lacks = [], lackStatus = 404, keepsNo = [], noHeld = false, agents: extraAgents = {}, words = false, maxCalls = 200, lateRows = false } = {}) {
+async function fakeServe({ holdPolls = 1, endAs, cost = 0.01, refuseRuns = 0, lacks = [], lackStatus = 404, keepsNo = [], noHeld = false, agents: extraAgents = {}, words = false, maxCalls = 200, lateRows = false, skewMs = 0 } = {}) {
+	/** The fake serve's own clock, `skewMs` off the bench's: every time it writes is on it. */
+	const serveNow = (at = Date.now()) => new Date(at + skewMs).toISOString();
 	const agents = new Map();
 	const runs = new Map();
 	const requests = [];
@@ -115,7 +117,9 @@ async function fakeServe({ holdPolls = 1, endAs, cost = 0.01, refuseRuns = 0, la
 			if (run.held !== "waiting") return send(409, { error: { code: "computer_not_live", message: "not waiting" } });
 			run.held = "started";
 			const agent = { ...FAKE_AGENTS, ...extraAgents }[run.definition.harness];
-			const row = (fields) => run.timeline.push({ id: `r${run.timeline.length + 1}`, seq: run.timeline.length + 1, timestamp: new Date().toISOString(), tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, text: null, ...fields });
+			const row = (fields) => run.timeline.push({ id: `r${run.timeline.length + 1}`, seq: run.timeline.length + 1, timestamp: serveNow(), tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, text: null, ...fields });
+			// The turn's start, as serve's loop writes the run's input when its agent starts.
+			row({ kind: "user_message", text: "the task" });
 			// The agent's surface as serve gives it (its definition's computer.surface): "tools", one computer method per tool
 			// call; "code", one script per tool call and no per-step tool; absent, both. computer.exec false: no shell. Each
 			// tool call is a tool_use row and its tool_result row, which carries the computer calls it made, as serve's does.
@@ -133,7 +137,7 @@ async function fakeServe({ holdPolls = 1, endAs, cost = 0.01, refuseRuns = 0, la
 			const computerCall = async (calls, method, params) => {
 				const t = Date.now();
 				const answer = exec === false && (method === "exec.run" || method.startsWith("process.")) ? { ok: false, error: { code: "denied", message: "this agent's computer has no shell" } } : await run.world.call(method, params);
-				calls.push({ ...callRecordOf(method, params, answer, Date.now() - t), ...(words ? { words: `${method} said ${answer.ok ? "ok" : answer.error.code}`, at: new Date(t).toISOString() } : {}) });
+				calls.push({ ...callRecordOf(method, params, answer, Date.now() - t), ...(words ? { words: `${method} said ${answer.ok ? "ok" : answer.error.code}`, at: serveNow(t) } : {}) });
 				return answer;
 			};
 			const given = {
@@ -284,6 +288,25 @@ test("serve: steps are computer calls: one script of six calls is six steps and 
 		for (let i = 1; i < steps.length; i += 1) assert.ok(steps[i].t_ms >= steps[i - 1].t_ms, "calls in the order the script made them");
 	} finally {
 		await serve.close();
+	}
+});
+
+test("serve: a step's time is on serve's clock at both ends, so a serve clock an hour off the bench's shifts no step", async () => {
+	for (const skewMs of [3_600_000, -3_600_000]) {
+		const serve = await fakeServe({ agents: { six }, words: true, skewMs });
+		try {
+			const s = store();
+			const backend = withTask(serveBackend({ baseUrl: serve.baseUrl, token: TOKEN, pollMs: 5 }), serve);
+			const [result] = await runBench({ tasks: fakeTasks("fake.settings.dark-theme"), arms: [arm("six", "six", "code")], seeds: [1], backend, store: s, grade: "never" });
+			assert.equal(result.outcome, "pass", result.why);
+			const steps = recordOf(s, result.run).filter((entry) => entry.kind === ENTRY.step && (entry.data.phase === "tool" || entry.data.phase === "agent")).map((entry) => entry.data);
+			assert.equal(steps.length, 7, "the search and the script's six calls");
+			// The fake agent runs in milliseconds: every step falls within a minute of its start, whichever way the clock is off.
+			assert.ok(steps.every((step) => step.t_ms < 60_000), `skew ${skewMs}: ${steps.map((step) => step.t_ms).join(", ")}`);
+			for (let i = 1; i < steps.length; i += 1) assert.ok(steps[i].t_ms >= steps[i - 1].t_ms, `skew ${skewMs}: steps in order`);
+		} finally {
+			await serve.close();
+		}
 	}
 });
 
