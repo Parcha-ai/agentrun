@@ -843,6 +843,20 @@ const SEMI_ROWS = [
     [";", "dark"],
     ["parse error at ; near theme", "parse error at ; near theme"],
   ],
+  [
+    "a header value's credential pair holding a lone quote",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: "X-Relay=token=' theme=dark" },
+    [],
+    ["'", "dark"],
+    ["parse error at ' near theme", "parse error at ' near theme"],
+  ],
+  [
+    "a header value's credential pair holding a lone quote written %27",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: "X-Relay=token=%27 theme=dark" },
+    [],
+    ["'", "%27", "dark"],
+    ["parse error at ' near theme", "parse error at ' near theme"],
+  ],
 ];
 
 test("an OTLP endpoint's or header value's credential with a raw ; in it is held whole and as each pair after a ;, and a line quoting it is cut to [redacted] with no piece after the ; left", () => {
