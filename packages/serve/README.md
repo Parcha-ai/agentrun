@@ -1771,12 +1771,26 @@ seconds), and a run on any other model, a key's default included, never asks Oll
 - Cost: $0, booked as a known cost. Its requests never count toward the server's [limit on free
   requests](#a-limit-on-free-requests): there is no shared quota behind them. An agent's own `max_requests` counts them,
   with its other free requests, so a run on Ollama that keeps calling tools still stops there.
-- Harness: pi, and every harness on a wire the route translates. That wire is Anthropic's Messages: claude-agent,
-  Goose, and a harness module on it. Its requests go through the same translation as pi's: the same `/api/chat`,
-  `num_ctx`, tools and cost. A Messages client's token count (`/v1/messages/count_tokens`) is answered there without
-  asking the model, an answer it asks for unstreamed comes back whole (or as a 500 error with words when part of the
-  stream doesn't read), and every model id it sends (Claude Code's small model too) runs the one tag. claude-agent turns its own tool search off on these models. codex and opencode, on
-  OpenAI's Responses, never list them.
+- Harness: pi, and every harness on a wire the route translates. Those wires are Anthropic's Messages (claude-agent,
+  Goose, a harness module on it) and OpenAI's Responses (codex, opencode, a harness module on it). Their requests go
+  through the same translation as pi's: the same `/api/chat`, `num_ctx`, tools and cost. A Messages client's token
+  count (`/v1/messages/count_tokens`) is answered there without asking the model, an answer it asks for unstreamed
+  comes back whole (or as a 500 error with words when part of the stream doesn't read), and every model id it sends
+  (Claude Code's small model too) runs the one tag. claude-agent turns its own tool search off on these models.
+- On OpenAI's Responses, each request is the whole conversation: `store: true` and `previous_response_id` are
+  refused, since nothing is stored here. Function tools only: a custom (freeform) tool such as Codex's `apply_patch`
+  grammar, `local_shell` and `web_search` are refused with words, never dropped, and codex offers no live web search
+  on these models. A `tool_choice` that forces a call (`"required"`, or one naming a function) is refused too: Ollama
+  can't be made to call a tool. `"auto"` and `"none"` are taken. `text.format` `json_schema` is Ollama's own `format`
+  (the answer held to the schema; `json_object` to any object), refused beside tools sent, since a model held to it
+  can't call one. `temperature` and `top_p` reach Ollama's options; `reasoning.effort` turns a thinking model's
+  thinking on, `"none"` off. An effort or a format the route doesn't know is refused. `parallel_tool_calls: false` gets
+  an answer's first call alone, and the calls it drops are logged by tool name. A request streams only with
+  `stream: true`; one that names no stream is answered whole. Replayed reasoning, OpenAI's encrypted reasoning
+  included, is dropped, not refused. An answer cut at its output limit ends `response.incomplete` with its usage, so it
+  is booked and codex ends the turn rather than asking again. Every model id the client sends (a title or compaction
+  request's too) runs the one tag. codex and opencode are given the model's window as the route runs it (its `num_ctx`,
+  at most 64k), so they compact before Ollama would cut the prompt, and its output ceiling (half that, at most 16,384).
 - Cloud models: an Ollama cloud model (a `-cloud` tag, with `remote_host` and `remote_model` in `/api/tags` or
   `/api/show`) runs on ollama.com, not here, so it is never listed: never local, never $0, never the default.
 - Default: with no model key held (and no `AGENT_MODEL`, ChatGPT sign-in or gateway), pi and every harness on a wire the
@@ -2479,8 +2493,9 @@ preset: you give your Composio API key, a toolkit (`github`, `slack`...), the ac
 toolkit's list) and a server name, and the server has Composio make a managed MCP server for them, then saves it as an
 ordinary MCP server with the key sealed as an `x-api-key` header. `POST /v2/settings/mcp-servers/composio/tools`
 `{api_key, toolkit}` lists the actions, and `POST /v2/settings/mcp-servers/composio/toolkits` `{api_key}` lists the
-toolkits Composio offers (`{toolkits: [{slug, name}]}`, by name) for the console's toolkit picker; `PUT /v2/settings/mcp-servers/{name}/composio` `{api_key, toolkit, tools,
-user_id?, auth_config_id?, price_usd?}` makes and saves the server. In place of `api_key`, `"api_key_env":
+toolkits Composio offers (`{toolkits: [{slug, name}]}`, by name) for the console's toolkit picker;
+`PUT /v2/settings/mcp-servers/{name}/composio` `{api_key, toolkit, tools, user_id?, auth_config_id?, price_usd?}` makes
+and saves the server. In place of `api_key`, `"api_key_env":
 "COMPOSIO_API_KEY"` reads the key from that variable, as the server and each runner were started with it, at each use and keeps no copy: the
 way an [API-only](#api-only) server's token saves one. That key is only ever sent to Composio's own origin, fixed in
 code, so a server saved so whose address is anywhere else is refused by name and sent nothing. The body names no
@@ -2494,12 +2509,15 @@ server. `price_usd` (0 or more, as a `prices` value) is what each call costs you
 price, so a call is held under its run's cap and booked as the run's tool cost (its trace span's `usd`, the run's
 `cost.usd`), as any priced MCP tool's. A re-save that names no price keeps the server's prices for the actions it still
 lists. Composio's server can leave out an action it was allowed (it did for `HACKERNEWS_GET_FRONTPAGE`), so the answer's
-`not_served` names any chosen action the saved server doesn't list. These routes are the owner's session alone. A refresh of a saved Composio server also reads its account at Composio,
-and every read of the server then says it as `composio_account: {state, labels?, checked_at}`: `connected` with each
-account's label (its alias, else the name Composio shows, else its word id; never its id or a token), `pending` while
-its connect link is unfinished, `expired`, `none`, or `unknown` when Composio didn't answer. An account Composio answers as
-another user's is never the server's, and a server whose recorded user is empty or `per_run` is never asked about (`unknown`).
-The API token sees `composio_account` too, in a server's full read: its label may be the account's email.
+`not_served` names any chosen action the saved server doesn't list. These routes are the owner's session alone.
+
+A refresh of a saved Composio server also reads its account at Composio, and every read of the server then says it as
+`composio_account: {state, labels?, checked_at}`: `connected` with each account's label (its alias, else the name
+Composio shows, else its word id; never its id or a token), `pending` while its connect link is unfinished, `expired`,
+`none`, or `unknown` when Composio didn't answer. An account Composio answers as another user's is never the server's,
+and only one it names as the server's user's gives a label. A per-run server has none; an empty recorded user reads
+`unknown`. The API token sees `composio_account` too, in a server's full read: its label may be the account's email.
+
 A saved Composio server is gated, approved and shown on the Timeline as any MCP server's tools are, "not metered" until
 you price them (`price_usd`, or the server's `prices`). Composio's own meta tools stay refused, and the helper actions
 that connect an account are left off the server's address. Deleting the server in Settings deletes what its save made in Composio too, with the saved key: the Composio MCP server, the connected account its connect link started (the link with it) and the auth config it made (Composio's "already gone" is fine). What another saved server uses is kept until the last of them goes, and what was there before the save (an auth config or account you had) is never deleted. The `DELETE` answers `200 {deleted: true, composio: {removed, note}}`: the note says what it removed, what it kept and why, and, when Composio refuses or does not answer, what is left to remove in Composio yourself (`removed: false`; the server is still forgotten here). The console shows it. A save that fails removes in Composio what it made there and never what it found, and its error names what is left when Composio refuses that too (a 422 on a field says it in `details.composio` as well). A save over a preset server removes, once it is saved, the Composio MCP server its earlier save made, and what that save made and the new one no longer stands on (the account of another `user_id`, the auth config of another toolkit), with the key it was made with, unless another saved server uses it, and answers `composio: {removed, note}` saying so. An ordinary `PUT` that moves a preset server to another address makes it another service's server: it removes what the preset made for it in Composio as its delete would, and answers `composio` too. While Composio triggers use the server, that move, and a preset save over it as another `user_id` or auth config, are refused as its delete is (`409 composio_in_use`, naming them). Preset saves and MCP server deletes run one at a time, so a delete never removes what a save in progress reuses; an ordinary save of a preset server lists its tools at once and takes its turn only to write the server and clean up.
@@ -3363,8 +3381,9 @@ Create; no run ever holds a token that can write.
      then applies it here (an apply refused takes the package back, deletes the branch and makes nothing). The push is
      recorded on the suggestion first, so a create after a write that failed finds the agent made from that template at
      that commit and reuses it, never making a second one;
-   - opens the pull request, naming the agent's id and the variables the client reads (`AGENTRUN_URL`,
-     `AGENTRUN_API_KEY`, `AGENTRUN_AGENT_<KEY>`). A pull request GitHub refuses keeps the agent (`502 github_failed`,
+   - opens the pull request, naming the agent's id and the variables the client reads (`AGENTRUN_BASE_URL`, given
+     with `/v2` as the server prints it and taken with or without, as AgentRun's own clients take it;
+     `AGENTRUN_API_KEY`; `AGENTRUN_AGENT_<KEY>`). A pull request GitHub refuses keeps the agent (`502 github_failed`,
      `details.agent_id`), and the next create opens the pull request alone. A created suggestion answers `200` as it is.
 
 `--faux-github` (with `--faux`) serves the list, the checks and the create from its fake App: its installation holds
@@ -4292,19 +4311,20 @@ Never bypass the store lock. This local-store operation has no server endpoint t
 machine; importing into a different local store does not populate a remote console. Build, edit, run, query and
 connection handoffs use the shared coding-agent selector and target this server's matching skill, MCP endpoint and API.
 
-`agentrun-serve import --data DIR` reads the Claude Code, Codex and pi sessions in your own home (`~/.claude/projects`,
-`~/.codex/sessions`, `~/.pi/agent/sessions`) into the data directory, once. Each project folder becomes an agent, with its
+`agentrun-serve import --data DIR` reads the Claude Code, Codex, pi, OpenCode and Copilot CLI sessions in your own home
+(`~/.claude/projects`, `~/.codex/sessions`, `~/.pi/agent/sessions`, `~/.local/share/opencode`, `~/.copilot/session-state`) into the data directory,
+once. Each project folder becomes an agent, with its
 CLAUDE.md or AGENTS.md and its skill folders, and each session becomes a run you can read but not continue. Nothing leaves
 this machine, and the values of key-shaped environment variables are cut out of what it writes. Run it again and it takes
 only what it has not taken already. Sessions written in the last 10 minutes wait for the next import.
 
-A run's cost is what its source recorded (Claude Code's and pi's). A session its source did not price, such as a Codex
+A run's cost is what its source recorded (Claude Code's, pi's and OpenCode's). A session its source did not price, such as a Codex or Copilot CLI
 session, keeps the model catalog's estimate for its tokens beside an unknown cost, and every place that shows a run's
 cost reads that estimate, as an estimate: the run (`cost.usd`, basis `estimate`), its usage row, `GET /stats` and its
 analytics, and `GET /usage`. A session on a model the catalog does not price stays unknown.
 
 - `--dry-run` lists what it would import and writes nothing.
-- `--from claude-code,codex,pi` picks the sources.
+- `--from claude-code,codex,pi,opencode,copilot` picks the sources.
 - `--include-deleted` also imports the sessions of project folders that no longer exist, such as a git worktree you
   deleted. Each such folder is still its own agent, with no instructions or skills to read.
 - `--all` keeps those too, as well as sessions of temporary folders and sessions with no message of yours.
@@ -4408,7 +4428,7 @@ The agent's Learning tab and Learning Dojo show missing setup for that agent's a
 `ready` means the route and credentials are configured, not that quota or provider availability has been verified.
 These reads make no paid request, and saving a matching key refreshes the setup guidance.
 
-Importing Claude Code, Codex or pi session history does not replay learning or connect a live learning stream.
+Importing Claude Code, Codex, pi or Copilot CLI session history does not replay learning or connect a live learning stream.
 Before/after cost and duration are observations, not an accuracy evaluation.
 
 **Existing CLI capture.** A project enrolled with `cli_learning` keeps running in its original Codex CLI or Claude

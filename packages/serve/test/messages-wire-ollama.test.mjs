@@ -59,14 +59,15 @@ async function moduleLaunch(env, tag) {
   return messagesLaunches().at(-1);
 }
 
-test("the rule is data: the route translates an Ollama model onto Anthropic's Messages and onto no other wire; no other provider, nor a name off the object's prototype", () => {
-  assert.deepEqual(Object.keys(WIRES).filter((wire) => routed(wire, { provider: "ollama" })), [MESSAGES]);
+test("the rule is data: the route translates an Ollama model onto Anthropic's Messages and OpenAI's Responses and onto no other wire (a plan's); no other provider, nor a name off the object's prototype", () => {
+  assert.deepEqual(Object.keys(WIRES).filter((wire) => routed(wire, { provider: "ollama" })), [MESSAGES, "openai-responses"]);
+  assert.equal(routed("plan", { provider: "ollama" }), false, "a harness on its own plan");
   for (const provider of ["anthropic", "openai", "openrouter", "particle", "constructor", "toString", "__proto__", ""]) {
     assert.deepEqual(Object.keys(WIRES).filter((wire) => routed(wire, { provider })), [], provider);
   }
 });
 
-test("on every harness of the wire, built-in or a module's, an Ollama model's provider is the route's origin with no key, its tag the model, priced at its own entry; a harness on another wire still refuses it", async (t) => {
+test("on every harness of the wire, built-in or a module's, an Ollama model's provider is the route's origin with no key, its tag the model, priced at its own entry", async (t) => {
   const { env } = await onOllama(t);
   for (const id of ["claude-agent", "goose", MESSAGES_MODULE]) {
     const provider = providerFor(MESSAGES, env, ollamaRef(TOOLS), id);
@@ -76,7 +77,6 @@ test("on every harness of the wire, built-in or a module's, an Ollama model's pr
     assert.equal(typeof provider.fetch, "function", `${id}: the route's own fetch`);
     assert.equal(provider.credential(), "model-route", `${id}: no key`);
   }
-  for (const id of ["codex", "opencode"]) assert.throws(() => providerFor("openai-responses", env, ollamaRef(TOOLS), id), (error) => error instanceof HarnessUnavailable, id);
   // Behind serve's gateway every request is the gateway's: no route of serve's own, so an Ollama model is refused there.
   const gateway = { ...env, AGENT_MODEL_BASE_URL: "http://127.0.0.1:9/v1", AGENT_MODEL: "synth-gateway", AGENT_MODEL_API_KEY: "fake-test-key" };
   for (const id of ["claude-agent", MESSAGES_MODULE]) assert.throws(() => providerFor(MESSAGES, gateway, ollamaRef(TOOLS), id), (error) => error instanceof HarnessUnavailable, `${id} behind the gateway`);
@@ -248,7 +248,7 @@ test("with no key and no Ollama, a harness on the wire says to start Ollama, as 
   const env = { OLLAMA_HOST: `127.0.0.1:${await freePort()}`, AGENTRUN_SERVE_DATA: await scratch(t) };
   const { why } = await modelOn(MESSAGES, env, undefined, "claude-agent");
   assert.match(why, /^No model yet for claude-agent: start Ollama and pull a model with tools, or add an OpenRouter or Anthropic key/, why);
-  assert.doesNotMatch((await modelOn("openai-responses", env, undefined, "codex")).why, /Ollama/, "a harness on a wire the route does not translate onto is not told so");
+  assert.match((await modelOn("openai-responses", env, undefined, "codex")).why, /^No model yet: start Ollama and pull a model with tools, or /, "codex, on Responses, the route's too");
 });
 
 test("a claude-agent run on an Ollama model, on the real Claude CLI through serve: its tool call writes the file, every request reaches /api/chat with num_ctx at the tag, $0, none counted toward a limit of 1, booked as ollama/<tag>", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
@@ -303,4 +303,23 @@ test("a Goose run on an Ollama model through serve: its requests reach /api/chat
   assert.equal(view.cost?.usd, 0, JSON.stringify(view.cost));
   const lines = (await api("GET", `/runs/${run.body.run_id}/usage`)).body.lines.filter((line) => line.meter === "tokens");
   assert.deepEqual([...new Set(lines.map((line) => `${line.provider}/${line.model}`))], [`ollama/${TOOLS}`]);
+});
+
+// The Messages wire stays as #3619 proved it: what the Responses edge asks Ollama past the Messages body (a format, its
+// sampling, no thinking) rides that edge's own in-process call (responses-fetch.ts EdgeAsks), so a Messages client's
+// own temperature, top_p, output_config.format and effort "none" reach Ollama as they did: not at all.
+test("guard: a Messages client's temperature, top_p, output_config.format and effort \"none\" never reach Ollama, with tools or without", async (t) => {
+  const { ollama, env } = await onOllama(t);
+  const { fetch: send } = await moduleLaunch(env, TOOLS);
+  const asked = { temperature: 0.3, top_p: 0.5, thinking: { type: "disabled" }, output_config: { effort: "none", format: { type: "json_schema", schema: { type: "object" } } } };
+  for (const body of [request(asked), request({ ...asked, tools: undefined })]) {
+    const events = await eventsOf(await post(send, body));
+    assert.equal(events.at(-1)?.type, "message_stop", JSON.stringify(events));
+    const sent = ollama.got.chat.at(-1);
+    assert.equal(sent.options?.temperature, undefined, "temperature");
+    assert.equal(sent.options?.top_p, undefined, "top_p");
+    assert.equal(sent.format, undefined, "format");
+    assert.equal(sent.think, undefined, "think");
+  }
+  assert.equal(ollama.got.chat.length, 2);
 });

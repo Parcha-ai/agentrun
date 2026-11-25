@@ -760,8 +760,10 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     // or refused); never its folder or its refresh token. Each token is carried into the runner's redactor for this run
     // (redact.ts carry) before it is handed, a renewed one too: model text that repeats it is cut from the run's journal
     // as the runner writes it (runner.ts fenced), from what it stages and from its rows, as the run's own tool keys are.
-    // This answer is the claim's one decision whether it goes on the login: none, it does not; a login other than
-    // AgentRun's own folder is refused in words, never left to a model key. The process reads no setting or machine id.
+    // This answer is the claim's one decision whether it goes on the login: none, it does not. A login other than
+    // AgentRun's own folder was refused at the claim (staysInRunner, LOGIN_MACHINE_NEEDS_SERVER_USER); one handed here by
+    // a claim read that check did not make is refused again in LOGIN_NOT_HANDED's words, never left to a model key. The
+    // process reads no setting or machine id.
     claudeLogin: async () => {
       if (await runKeyed()) return undefined;
       // The login its claim read (staysInRunner), never a second read of the setting.

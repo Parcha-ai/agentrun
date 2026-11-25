@@ -1,6 +1,7 @@
 // web_save: one public file saved into the run's Workspace (a bare name under media/), so a link that expires becomes a
 // file the run keeps. It downloads through the public-host guard's bytes variant (pi-browser publicDownload, web_fetch's
 // hop loop) and writes once through the Workspace, never over a path in use, a media type only when its bytes agree.
+import { isUtf8 } from "node:buffer";
 import { extname } from "node:path";
 import type { JsonValue } from "@earendil-works/chord/json";
 import type { TSchema } from "typebox";
@@ -74,6 +75,12 @@ const MEDIA_TYPES = new Set(MEDIA.flatMap((kind) => kind.types));
 const ALIASES: ReadonlyMap<string, string> = new Map([["image/jpg", "image/jpeg"], ["image/pjpeg", "image/jpeg"], ["audio/mp3", "audio/mpeg"], ["audio/x-wav", "audio/wav"], ["audio/wave", "audio/wav"], ["audio/vnd.wave", "audio/wav"], ["audio/x-m4a", "audio/mp4"], ["audio/m4a", "audio/mp4"]]);
 /** Declared types that say nothing about the bytes. */
 const UNTYPED = new Set(["", "application/octet-stream", "binary/octet-stream", "application/binary"]);
+/** Declared XML: saved as plain text alone (.txt), so no browser parses it as XML or XHTML. */
+const XML_DECLARED = new Set(["application/xml", "text/xml"]);
+/** Where untyped or XML text is saved: plain text or CSV, served as that text with nosniff (run-files.ts), never as a page. */
+const TEXT_SAVED = new Set(["text/plain", "text/csv"]);
+/** Bytes that are text: no NUL anywhere in the whole file, and UTF-8 throughout (a BOM is UTF-8). */
+const isText = (bytes: Uint8Array): boolean => bytes.indexOf(0) === -1 && isUtf8(bytes);
 /** A Content-Type as its bare type, lower case, its parameters dropped and its aliases resolved. */
 const bare = (type: string | undefined): string => {
   const plain = (type ?? "").split(";")[0]!.trim().toLowerCase();
@@ -100,6 +107,10 @@ export function typeFor(bytes: Uint8Array, declared: string, path: string): { ty
   }
   if (MEDIA_TYPES.has(said)) return { refused: `refused: the host says ${said}, but the bytes are not ${said}` };
   if (named !== undefined && named === said) return { type: said };
+  // A list a government publishes often comes untyped (the UK's CSV) or as XML (the UN's): it saves as plain text or
+  // CSV when its bytes are text, served back as that text with nosniff, so nothing renders or parses it as a page.
+  if (named !== undefined && TEXT_SAVED.has(named) && (UNTYPED.has(said) || (XML_DECLARED.has(said) && named === "text/plain")))
+    return isText(bytes) ? { type: named } : { refused: `refused: ${said || "a file with no type"} saves as ${named} only when its bytes are UTF-8 text with no NUL, and these are not` };
   return { refused: `refused: ${said ? `${said} is` : "a file with no type is"} not a media type this server plays${named ? `, and the path's extension ${ext} says ${named}` : ", and the path's extension does not say it is"}` };
 }
 
@@ -191,7 +202,7 @@ export const savedText = (answer: Saved | Unsaved): string => JSON.stringify(ans
 export function webSaveTool(work: () => Promise<Workspace> | Workspace, guard: () => Promise<Omit<PublicFetchOptions, "maxBytes" | "signal">> | Omit<PublicFetchOptions, "maxBytes" | "signal">, slots?: SaveSlots): ToolRegistration<TSchema, JsonValue> {
   return defineTool({
     name: WEB_SAVE_TOOL,
-    description: `Download one file from a public URL into this run's folder, where it stays (the run's Files show and play it): use it for a generated image, audio or video a service answered with a link that expires. path is where to save it, relative to the run's folder; a bare name (cat.png) goes under ${MEDIA_DIR}/. A path that already holds a file is refused, never overwritten. The file must be a type its bytes show: an image (png, jpeg, gif, webp), audio (mp3, wav, ogg, m4a) or video (mp4, webm), and the path must have an extension of that type (cat.png, not cat or cat.bin); any other type (a page, a PDF, text) is saved only to a path whose extension names the type the host declares. At most ${SAVE_MAX_BYTES / (1024 * 1024)} MiB and ${SAVE_TIMEOUT_MS / 60_000} minutes. A private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused, at every redirect too. Answers JSON: { ok: true, path, bytes, content_type, duration_s?, url } (url the final one, after redirects; duration_s an audio or video file's length in seconds, when its bytes give it: ${LENGTH_TYPES}), or { ok: false, url, refused } when it was refused, { ok: false, url, error } when it failed; nothing is left at the path when it does not save.`,
+    description: `Download one file from a public URL into this run's folder, where it stays (the run's Files show and play it): use it for a generated image, audio or video a service answered with a link that expires. path is where to save it, relative to the run's folder; a bare name (cat.png) goes under ${MEDIA_DIR}/. A path that already holds a file is refused, never overwritten. The file must be a type its bytes show: an image (png, jpeg, gif, webp), audio (mp3, wav, ogg, m4a) or video (mp4, webm), and the path must have an extension of that type (cat.png, not cat or cat.bin); any other type (a page, a PDF, text) is saved only to a path whose extension names the type the host declares, except text: a file the host sends with no type (application/octet-stream or none) saves to a .txt or a .csv, and one it declares XML saves to a .txt alone, each only when its bytes are UTF-8 text with no NUL. At most ${SAVE_MAX_BYTES / (1024 * 1024)} MiB and ${SAVE_TIMEOUT_MS / 60_000} minutes. A private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused, at every redirect too. Answers JSON: { ok: true, path, bytes, content_type, duration_s?, url } (url the final one, after redirects; duration_s an audio or video file's length in seconds, when its bytes give it: ${LENGTH_TYPES}), or { ok: false, url, refused } when it was refused, { ok: false, url, error } when it failed; nothing is left at the path when it does not save.`,
     parameters: {
       type: "object",
       additionalProperties: false,

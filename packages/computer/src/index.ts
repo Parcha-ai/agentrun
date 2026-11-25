@@ -51,6 +51,7 @@ export {
 	recipeHash,
 	recipeTag,
 } from "./docker/image.js";
+export { BASE_ENV_NAMES, CHROME_ENV_NAMES, childEnv, chromeEnv, DOCKER_ENV_NAMES, dockerEnv, type HostEnv } from "./child-env.js";
 export { EGRESS_IMAGE, EGRESS_LABEL, EGRESS_MOUNT, EGRESS_SOCKET } from "./docker/egress.js";
 export {
 	ARCHIL_HELPER,
