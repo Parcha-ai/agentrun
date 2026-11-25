@@ -58,19 +58,26 @@ export function callContexts(rows: readonly unknown[]): Map<string, CallContext>
  *  result is in), its own tool_use_id null: the call it tells of. */
 const OUTCOME_ROW = /^approval:(.+?)(?::after)?:outcome$/;
 
-/** The field of a served Timeline row that holds a call's output, with that call's context: a tool_result row's
- *  `tool_result_preview`, and an approval outcome row's `text`, which shows the approved call's result again. The outcome's
- *  whole text takes the context, its head sentence included (ruled so: never split on run-view's words). Undefined for
- *  any other row, for a call with no context, or a field that holds no text. */
-export function rowOutput(row: unknown, contexts: ReadonlyMap<string, CallContext>): { field: "tool_result_preview" | "text"; context: CallContext } | undefined {
+/** A result row's summary that words nothing the call printed (timeline.ts: `<tool label>: ok`), on a row that did not
+ *  fail: a failed row's summary is always its output's first line. */
+const OK_SUMMARY = /^[^\n]+: ok$/;
+
+/** The fields of a served Timeline row that hold a call's output, with that call's context: a tool_result row's
+ *  `tool_result_preview` and its `summary` (a failed call's is its output's first line) unless it is a plain ok, and an approval outcome row's
+ *  `text`, which shows the approved call's result again. The outcome's whole text takes the context, its head sentence
+ *  included (ruled so: never split on run-view's words). Undefined for any other row, for a call with no context, or a
+ *  row with no such field that holds text. */
+export function rowOutput(row: unknown, contexts: ReadonlyMap<string, CallContext>): { fields: readonly ("tool_result_preview" | "summary" | "text")[]; context: CallContext } | undefined {
   if (!isRecord(row)) return undefined;
   if (row.kind === "tool_result") {
     const context = typeof row.tool_use_id === "string" ? contexts.get(row.tool_use_id) : undefined;
-    return context !== undefined && typeof row.tool_result_preview === "string" ? { field: "tool_result_preview", context } : undefined;
+    // The summary words what the call printed (a failure's first line, an outcome's words), but for a plain "<tool>: ok".
+    const fields = (["tool_result_preview", "summary"] as const).filter((field) => typeof row[field] === "string" && !(field === "summary" && row.tool_status !== "failed" && OK_SUMMARY.test(row[field] as string)));
+    return context !== undefined && fields.length ? { fields, context } : undefined;
   }
   const call = typeof row.id === "string" ? OUTCOME_ROW.exec(row.id)?.[1] : undefined;
   const context = call !== undefined ? contexts.get(call) : undefined;
-  return context !== undefined && typeof row.text === "string" ? { field: "text", context } : undefined;
+  return context !== undefined && typeof row.text === "string" ? { fields: ["text"], context } : undefined;
 }
 
 /** A workflow graph's call (graph-view.ts `effects[i]`): its `output` takes the context of its own `tool` and `input`. */

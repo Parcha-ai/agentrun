@@ -71,13 +71,15 @@ export interface ShareText extends CallContext {
   readonly text: string;
 }
 
-/** A served Timeline row's strings, the one that holds a call's output (share-context.ts rowOutput: a result's preview, an
- *  approval outcome's text) with that call's context. */
+/** A served Timeline row's strings, those that hold a call's output (share-context.ts rowOutput: a result's preview and
+ *  summary, an approval outcome's text) with that call's context. */
 function rowTexts(row: unknown, contexts: ReadonlyMap<string, CallContext>): (string | ShareText)[] {
   const output = rowOutput(row, contexts);
   if (output === undefined) return stringsOf(row);
   const fields = row as Record<string, unknown>;
-  return [...stringsOf({ ...fields, [output.field]: null }), { text: fields[output.field] as string, ...output.context }];
+  const rest = { ...fields };
+  for (const field of output.fields) rest[field] = null;
+  return [...stringsOf(rest), ...output.fields.map((field) => ({ text: fields[field] as string, ...output.context }))];
 }
 
 /** A workflow graph's strings, each call's output (`effects[i].output`, every string in it) with that call's own context

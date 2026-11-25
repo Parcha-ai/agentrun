@@ -2090,7 +2090,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   });
   // The outbound webhook's secret, as it stands (set by a PUT, gone with a DELETE), and each it held before.
   stops.push(() => webhooks.close());
-  await webhooks.load();
+  // A share host sends no message: a data folder it reuses may hold a webhook, a Slack URL and messages left queued, about
+  // runs it neither runs nor answers for. Its outboxes are never read, so nothing is resumed or sent.
+  if (!options.shareHost) await webhooks.load();
   // Where an earlier version kept the webhook: no longer read.
   if (existsSync(join(data, WEBHOOK_FILE))) log?.(logLine("webhook", { condition: "webhook_left_over", file: join(data, WEBHOOK_FILE), effect: "not read: the webhook is kept in the store now; set it again with PUT /v2/settings/webhook" }));
   secretStores.add("webhook", () => webhooks.signingSecrets());
@@ -2105,7 +2107,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     serverSecrets: () => serverSecrets(),
   });
   stops.push(() => slack.close());
-  await slack.load();
+  if (!options.shareHost) await slack.load();
   secretStores.add("slack", () => slack.urlForms());
   const uploads = new Uploads(join(data, UPLOADS_DIR));
   // Under the data directory's lock and before this server answers anything, so no PUT of its own is in flight: an upload
@@ -7132,7 +7134,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // A run that stands at a person's stop waits too (tellWait reads its view: one its stop ended reads no wait).
     for (const row of rows) if (!closing && (letGo(row) || stopRow(row)) && !(await tellWait(row).catch((error: Error) => (sayUnread(row.id, error.message), false)))) waitsLeft.add(row.id);
   };
-  followChanges();
+  // Nor does a share host follow the runs' changes: it tells no one of a run's end or wait.
+  if (!options.shareHost) followChanges();
   const setupUrl = owner && !owner.hasPassword() ? owner.setupLink() : undefined;
   /** The server's stop: once (`close` keeps its promise). */
   let stopped: Promise<void> | undefined;
