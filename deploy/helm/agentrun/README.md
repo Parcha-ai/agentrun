@@ -8,7 +8,7 @@ helm install agentrun oci://ghcr.io/parcha-ai/charts/agentrun --devel --namespac
 ```
 
 Each release publishes the chart at its own version, installing that release's image. Releases are betas for now,
-and Helm skips a prerelease unless told: `--devel` takes the newest, `--version 0.1.0-beta.56` a given one. From a
+and Helm skips a prerelease unless told: `--devel` takes the newest, `--version 0.1.0-beta.58` a given one. From a
 checkout, `helm install agentrun deploy/helm/agentrun` installs this one.
 
 Then open the console. The install's notes print the two commands: a port-forward, and the one that reads your token

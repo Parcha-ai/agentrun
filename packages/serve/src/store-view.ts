@@ -83,6 +83,9 @@ export interface ViewDeps {
   readonly origin: string;
   readonly serverSecrets: () => string[];
   readonly signIns?: SignInReader;
+  /** The server's seal key, which opens what a run's caller handed it while its launch holds it (run-cut.ts runCutValues);
+   *  undefined when it has none, and a run that holds some is then withheld. */
+  readonly sealKey: Buffer | undefined;
   /** The server's clock (ms), for the claim-lease check that decides a run is live; defaults to Date.now. The server
    *  passes the same clock the store uses, so a test on a moved clock reads a fresh claim as live. */
   readonly now?: () => number;
@@ -938,7 +941,7 @@ export type RunStated = { readonly kind: string; readonly revision: string; read
 
 /** A run's live moment from the store (momentOf), for the one acceptance each act a run takes reads. A run no runner holds
  *  (ended, or running with no live claim) reads live false. */
-export async function momentOverStore(store: Store, runId: string, deps: ViewDeps = { origin: "", serverSecrets: () => [] }): Promise<RunMoment | undefined> {
+export async function momentOverStore(store: Store, runId: string, deps: ViewDeps = { origin: "", serverSecrets: () => [], sealKey: undefined }): Promise<RunMoment | undefined> {
   const run = await storeRunOf(store, runId, deps);
   if (!run) return undefined;
   // What is archived of it: its agent (whose archive holds its runs too, so it is said first: unarchiving the run alone would

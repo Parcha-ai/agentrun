@@ -15,7 +15,9 @@ const STATE: Record<Stage["state"], { icon: typeof Check; word: string; ink: str
   watch: { icon: Eye, word: "Watch", ink: "text-foreground", edge: "border-t-border-strong" },
 };
 
-export function LoopStory({ stages }: { stages: readonly Stage[] }) {
+/** `compact`: the figures above (LearningGlance) already say each stage's numbers, so a stage shows its title, state and
+ *  value, and its detail is its hover text and a screen reader's. */
+export function LoopStory({ stages, compact = false }: { stages: readonly Stage[]; compact?: boolean }) {
   if (!stages.length) return null;
   return (
     <section className="border" aria-label="The learning loop" data-testid="loop-story">
@@ -25,13 +27,15 @@ export function LoopStory({ stages }: { stages: readonly Stage[] }) {
           const s = STATE[stage.state];
           const Icon = s.icon;
           return (
-            <li key={stage.key} data-testid={`stage-${stage.key}`} data-state={stage.state} className={cn("min-w-0 border-t-2 bg-card px-4 py-3 sm:[&:last-child:nth-child(odd)]:col-span-2 lg:[&:last-child:nth-child(odd)]:col-span-1", s.edge)}>
+            <li key={stage.key} data-testid={`stage-${stage.key}`} data-state={stage.state} title={compact ? stage.detail : undefined} className={cn("min-w-0 border-t-2 bg-card px-4 py-3 sm:[&:last-child:nth-child(odd)]:col-span-2 lg:[&:last-child:nth-child(odd)]:col-span-1", s.edge)}>
               <p className="flex items-center gap-1.5 font-mono text-label">
-                <span className="caps text-muted-foreground">{i + 1} · {stage.title}</span>
-                <span className={cn("ml-auto inline-flex items-center gap-1", s.ink)}><Icon className="size-3.5" aria-hidden /><span className="caps">{s.word}</span></span>
+                <span className="caps min-w-0 text-muted-foreground">{i + 1} · {stage.title}</span>
+                {/* The state as its icon (never its colour alone), its word on hover and to a screen reader: a stage's
+                    cell is narrow, and the word beside its title wrapped the title. */}
+                <span className={cn("ml-auto inline-flex shrink-0 items-center", s.ink)} title={s.word}><Icon className="size-3.5" aria-hidden /><span className="sr-only">{s.word}</span></span>
               </p>
               <p className="mt-1 break-words font-mono text-lead font-semibold" data-testid={`stage-${stage.key}-value`}>{stage.value}</p>
-              <p className="mt-0.5 break-words text-small text-muted-foreground">{stage.detail}</p>
+              <p className={compact ? "sr-only" : "mt-0.5 break-words text-small text-muted-foreground"}>{stage.detail}</p>
             </li>
           );
         })}

@@ -9,12 +9,10 @@
 // refused unless --force. `deploy rollback` makes the agent's previous revision current; `deploy delete` deletes the
 // agent there and the lock here. Exit codes: 0 done or up to date, 2 refused (bad input, a link in the folder, edited on
 // the target, not confirmed), 3 not runnable yet (keys or MCP servers the target lacks: nothing is made, the setup page
-// printed when the target gives one), 1 the target refused otherwise or could not be reached, 4 no token for it, 5 an
-// operation the target does not offer.
-import { spawnSync } from "node:child_process";
+// printed when the target gives one), 1 the target refused otherwise or could not be reached, or deployed but
+// --pause-source left a schedule on, 4 no token for it, 5 an operation the target does not offer.
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync, statSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { homedir, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -58,29 +56,6 @@ async function serverManifest(fail) {
   }
 }
 
-/** The package checked as the target's import checks it, before anything is sent: the server installed beside this
- *  command runs the import's own check (its `check-upload` command, template-import.ts checkUpload) on the body this
- *  deploy is about to send. A package the target would refuse (a category it has not, an answer's schema it would not
- *  read, a file over its limits) exits 2 here, in the target's words, with no request made. The check runs in a process
- *  of its own, started as this node on the server's cli.js, never through its shell launcher, which runs nowhere without
- *  a POSIX shell: loading the server here would take every key out of this command's environment (secrets.ts), the
- *  target's token among them. */
-async function checkedHere(files, fail) {
-  // Loaded here: start.mjs loads cli.mjs, which loads this module.
-  const { SERVE_PACKAGE } = await import("./start.mjs");
-  let cli;
-  try {
-    cli = join(dirname(createRequire(import.meta.url).resolve(`${SERVE_PACKAGE}/package.json`)), "dist", "cli.js");
-  } catch {
-    throw fail(2, `AgentRun's server (${SERVE_PACKAGE}) is not installed beside this command, and it is the server's import that checks a package: nothing was sent.`);
-  }
-  const checked = spawnSync(process.execPath, [cli, "check-upload"], { input: JSON.stringify({ files: filesBody(files) }), encoding: "utf8", maxBuffer: 4 * MAX_BYTES, windowsHide: true });
-  if (checked.status === 0) return;
-  const reasons = (checked.stderr ?? "").trim().split("\n").filter(Boolean);
-  if (checked.status === 1 && reasons.length) throw fail(2, `The package does not check, so nothing was sent: ${reasons.join("; ")}`);
-  throw fail(2, `The server beside this command could not check the package (${checked.error?.code ?? `exit ${checked.status ?? checked.signal}`}): nothing was sent.`);
-}
-
 /** The answer's schema file agent.md names (`output: {schema}`) when it is a file at the package's root other than
  *  agent.md. One under skills/, rules/ or evals/ goes with its tree, and the target takes no other folder. None when
  *  the manifest names none or does not parse: the target refuses it then, in its own words. */
@@ -92,10 +67,10 @@ function rootSchemaOf(manifest, manifestOf) {
 
 /** A folder's package by path, each file its bytes: agent.md, the skills/, rules/ and evals/ trees, and the answer's
  *  schema file the manifest names at the root. Nothing else of the folder is sent (a .env, a key, a README, another
- *  folder), nor a hidden file or folder inside the trees. Each hidden path left out, at the top or in a tree, is said by
- *  name before anything is sent (a hidden folder once, never what it holds; this CLI's own .agentrun/ is not said). No
- *  agent.md, a symbolic link, or anything that is neither a file nor a folder refuses the deploy with nothing sent. */
-async function readFolder(dir, fail, io) {
+ *  folder), nor a hidden file or folder inside the trees: `hidden` names each one left out, at the top or in a tree (a
+ *  hidden folder once, never what it holds; this CLI's own .agentrun/ is not named). No agent.md, a symbolic link, or
+ *  anything that is neither a file nor a folder refuses the deploy with nothing sent. */
+async function readFolder(dir, fail) {
   const files = new Map();
   const hidden = [];
   const leftOut = (rel, entry) => hidden.push(`${rel}${entry.isDirectory() ? "/" : ""}`);
@@ -136,8 +111,7 @@ async function readFolder(dir, fail, io) {
   const entry = schema === undefined ? undefined : entryOf(schema);
   if (entry && !entry.isDirectory()) take(schema, entry);
   for (const one of readdirSync(dir, { withFileTypes: true })) if (one.name.startsWith(".") && one.name !== LOCK_DIR) leftOut(one.name, one);
-  if (hidden.length) say(io, `Left out, hidden: ${hidden.sort().join(", ")}`);
-  return files;
+  return { files, hidden: hidden.sort() };
 }
 
 /** The files as an upload sends them: text as it is, unless JSON's escapes make it longer than base64 would (a file of
@@ -151,7 +125,7 @@ const filesBody = (files) => [...files].sort(([a], [b]) => (a < b ? -1 : a > b ?
 
 /** The package folder `dir` as a deploy uploads it (POST /templates/import's `files`); `fail(code, message)` makes the
  *  refusal a folder that is no package throws. */
-export const packageFiles = async (dir, fail) => filesBody(await readFolder(dir, fail));
+export const packageFiles = async (dir, fail) => filesBody((await readFolder(dir, fail)).files);
 
 /** A lock read back from its file's text (none when there is no file): its fields as written, or a refusal naming the
  *  file. */
@@ -424,7 +398,12 @@ async function sourceOf({ values, args, env, io, cli, releases }, fail) {
     const lock = folderLock(dir, cli);
     releases.push(lock.hold());
     const write = (written) => (lock.write(written), cliFiles(env, cli).learn(written.target));
-    return { kind: "folder", dir, lock: { ...lock, write }, files: () => readFolder(dir, fail, io) };
+    const files = async () => {
+      const { files, hidden } = await readFolder(dir, fail);
+      if (hidden.length) say(io, `Left out, hidden: ${hidden.join(", ")}`);
+      return files;
+    };
+    return { kind: "folder", dir, lock: { ...lock, write }, files };
   }
   if (/[\\/]/.test(given) || given.startsWith(".")) throw fail(2, `${given} is not a folder: deploy takes a package folder or an agent id of this install.`);
   // The install the agent is on: --base-url, else as every command finds it; never with AGENTRUN_API_KEY, which is the
@@ -494,7 +473,6 @@ async function deploy(ctx) {
   const fail = cli.fail;
   const from = await sourceOf(ctx, fail);
   const files = await from.files();
-  await checkedHere(files, fail);
   const sha = packageSha256(files);
   let parameters;
   if (values.params !== undefined) {
@@ -698,7 +676,7 @@ export const DEPLOY = {
     ["--pause-source", "an install agent: turn its schedules off on this install once deployed (else they fire in both places); exits 1, once deployed, when it could not turn every one off"],
     ["--agent ID|new", "with no lock for the target: deploy onto its agent ID, or make another agent (new), where it has one this package made with these parameters; with a lock, only the lock's agent while it is there (one gone from the target, any)"],
     ["", TOKEN],
-    ["", "Exit codes: 0 deployed or up to date, 2 refused (bad input, edited on the target, an agent there this package made that no lock names, not confirmed), 3 not runnable yet there (nothing made), 1 the target refused or was not reached."],
+    ["", "Exit codes: 0 deployed or up to date, 2 refused (bad input, edited on the target, an agent there this package made that no lock names, not confirmed), 3 not runnable yet there (nothing made), 1 the target refused or was not reached, or deployed but --pause-source left a schedule on."],
   ],
   options: { to: { type: "string" }, yes: { type: "boolean" }, force: { type: "boolean" }, params: { type: "string" }, "pause-source": { type: "boolean" }, agent: { type: "string" } },
   run: ending(deploy),

@@ -6,6 +6,7 @@ import { runWorkflow, validateWorkflow, type Workflow } from "./workflow.js";
 import { dryRunWorkflow } from "./dry-run.js";
 import { demoScenarios, runTriageDemo, supportTriage, type DemoScenario } from "./demo.js";
 import { inspectWorkflow, formatWorkflowTree } from "./inspection.js";
+import { isRecord } from "./record.js";
 
 const help = `AgentRun DSL — build, test, and run agent workflows
 
@@ -87,7 +88,7 @@ async function main(args: string[]) {
     let parsed: unknown;
     try { parsed = JSON.parse(await readFile(resolve(positional[1]), "utf8")); }
     catch (error) { throw new Error(`Cannot read input JSON file "${positional[1]}": ${error instanceof Error ? error.message : String(error)}`); }
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Input JSON must be an object.");
+    if (!isRecord(parsed)) throw new Error("Input JSON must be an object.");
     input = parsed as Record<string, unknown>;
   }
   if (command === "validate") {

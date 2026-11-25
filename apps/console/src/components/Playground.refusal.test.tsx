@@ -4,6 +4,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Playground, startFailure } from "./Playground";
 import { agentFixture, recorded } from "@/fixtures";
 import { ClientError, createClient } from "@/lib/client";
+import type { Agent } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 
 // A start the server refuses keeps everything the server said: a sandbox agent's run on a box this server does not
 // have is a 409 agent_not_runnable whose details name the box, and the playground says its reason and that box.
@@ -50,5 +52,31 @@ describe("a refused start", () => {
     expect(alert.textContent).toContain(`The run did not start: ${first}`);
     expect(alert.textContent).toContain(`input at #/properties/c: ${second}`);
     expect(alert.textContent?.split(first).length).toBe(2);
+  });
+
+  it("each answer gets an offer of its own: sent again and refused again, in the same words and the same milliseconds, after the last offer was taken, the move is offered again", async () => {
+    const agent = { ...SERVED_AGENT, agent_id: "boxed", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null, definition: { version: 1, name: "Boxed", instructions: "Answer.", harness: "claude-agent", skills: [], tools: [] } } as Agent;
+    const body = { error: { code: "agent_not_runnable", message: "No model yet for claude-agent: move it to the runner to run it on the login, or add a key.", retryable: false, details: { unbound: [], missing: {}, login_on_runner: true } } };
+    const moved: string[] = [];
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(Playground, {
+      agents: [agent], efforts: [], origin: "http://serve.test", agentId: agent.agent_id,
+      onSend: async () => ({ status: 409, ms: 5, body }),
+      onMoveToRunner: async (id: string) => { moved.push(id); return { revision: "rv2", saved: true, dropped: [] }; },
+    })));
+    const settle = async () => { for (let i = 0; i < 6; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
+    const button = (words: string) => [...host.querySelectorAll("button")].find((b) => b.textContent?.trim() === words);
+    const ta = host.querySelector("textarea")!;
+    act(() => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(ta, "Answer this."); ta.dispatchEvent(new Event("input", { bubbles: true })); });
+    await act(async () => button("Send request")!.click());
+    await settle();
+    await act(async () => button("Move it to the runner")!.click());
+    await settle();
+    expect(host.textContent).toContain("Moved to the runner.");
+    await act(async () => button("Send request")!.click());
+    await settle();
+    expect(button("Move it to the runner"), "the second refusal, answered in the same milliseconds as the first, kept the first one's taken offer").toBeDefined();
+    expect(moved).toEqual([agent.agent_id]);
   });
 });

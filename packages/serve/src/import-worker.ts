@@ -2,22 +2,26 @@
 // every session line happen here, so neither holds up a request the server answers. `plan` counts what an import would
 // take, and names its projects for the owner to choose from; `import` takes it, only the projects chosen when some were
 // (`projects`). The message "stop" ends either between two files or two sessions; what is written stays, and
-// the next import goes on from there. Its one message back is its answer.
+// the next import goes on from there. `wrapped` reads a year of the home for GET /v2/wrapped (wrapped.ts), priced at
+// serve's own catalog; it writes nothing, so the server ends it outright when it closes. Its one message back is its answer.
 // Before anything loads node:sqlite, as in the server's own thread: its ExperimentalWarning is not the server's to print.
 import "./quiet-sqlite-warning.js";
 import { parentPort, workerData } from "node:worker_threads";
+import type { ReadFailure } from "@parcha/agentrun-import";
 import { candidatesOf, type ImportCandidate, ownSecrets, planImport, runImport, sessionsOf } from "./import.js";
 import { importStoreProxy } from "./import-proxy.js";
+import { catalogPrices } from "./model.js";
+import type { WrappedRead } from "./wrapped.js";
 import { toolKeysOverStore } from "./tool-keys-store.js";
 
 /** `secrets`: the server's own, cut out of everything the import writes and never put in an environment; the seal key
  *  among them, so the worker opens the saved tool keys the import cuts too (read over the port from the server's store). */
-export type ImportTask = { task: "plan" | "import"; data: string; home: string; temp?: string; secrets?: Record<string, string>; projects?: readonly string[] };
+export type ImportTask = { task: "plan" | "import" | "wrapped"; data: string; home: string; temp?: string; secrets?: Record<string, string>; projects?: readonly string[]; year?: number };
 /** `took`: what this start's import took (stopped too: what it took before it stopped), its agents by id, so the server
  *  adds it to what earlier starts took. */
-export type ImportAnswer = { projects: number; sessions: number; candidates: ImportCandidate[] } | { took: { agents: string[]; runs: number; skipped: number }; stopped?: true } | { stopped: true };
+export type ImportAnswer = { projects: number; sessions: number; candidates: ImportCandidate[] } | { took: { agents: string[]; runs: number; skipped: number }; stopped?: true } | { stopped: true } | WrappedRead;
 
-const { task, data, home, temp, secrets = {}, projects } = workerData as ImportTask;
+const { task, data, home, temp, secrets = {}, projects, year } = workerData as ImportTask;
 const stop = new AbortController();
 parentPort!.on("message", (message) => void (message === "stop" && stop.abort()));
 // The port does not keep the thread alive on its own: the task does (the proxy references it only while it waits for the
@@ -29,6 +33,11 @@ const env: NodeJS.ProcessEnv = { ...process.env };
 for (const [name, value] of Object.entries(secrets)) Object.defineProperty(env, name, { value, enumerable: false });
 const options = { home, ...(temp ? { temp } : {}), env, signal: stop.signal };
 const answer = async (): Promise<ImportAnswer> => {
+  if (task === "wrapped") {
+    const failures: ReadFailure[] = [];
+    const { wrappedHome } = await import("@parcha/agentrun-import");
+    return { wrapped: await wrappedHome(home, year!, { failures, catalog: await catalogPrices() }), unread: failures.length };
+  }
   if (task === "plan") {
     // A count keeps no transcript: no key scan (a whole history read through secretlint at every start).
     const plan = await planImport({ ...options, keys: false });

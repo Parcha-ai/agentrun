@@ -236,12 +236,14 @@ const ORDER: HarnessId[] = ["pi", "claude-agent", "codex", "opencode"];
 
 /** The harness choices: pi, Claude, Codex and OpenCode as the server lists them (`GET /v2/capabilities` `harnesses`), then
  *  any other harness it lists (one its harness modules add), by the label it gives, else its id; each one the server does
- *  not run shown disabled with its reason. A harness the server does not list is not offered. With `decision` (a new
- *  agent), the starters follow them: Decision, available when the server runs decision workflows, and Workflow,
- *  available on every server. */
-export function harnessOptions(harnesses: { id: string; label?: string; available: boolean; reason?: string }[], decision?: { available: boolean }) {
-  const option = (h: { id: string; label?: string; available: boolean; reason?: string }, label: string) => ({ id: h.id, label, available: h.available, reason: h.reason });
-  const options: { id: string; label: string; available: boolean; reason?: string }[] = [
+ *  not run shown disabled with its reason. One off only for want of a model key (its `needs`: pi with no key and no
+ *  ChatGPT sign-in) is `wantsKey`: a save of it is taken, with a warning, and it runs once a key is added, so it stays a
+ *  choice. A harness the server does not list is not offered. With `decision` (a new agent), the starters follow them:
+ *  Decision, available when the server runs decision workflows, and Workflow, available on every server. */
+type ServedHarness = { id: string; label?: string; available: boolean; reason?: string; needs?: readonly string[] };
+export function harnessOptions(harnesses: ServedHarness[], decision?: { available: boolean }) {
+  const option = (h: ServedHarness, label: string) => ({ id: h.id, label, available: h.available, reason: h.reason, ...(!h.available && h.needs?.length ? { wantsKey: true as const } : {}) });
+  const options: { id: string; label: string; available: boolean; reason?: string; wantsKey?: true }[] = [
     ...ORDER.flatMap((id) => {
       const h = harnesses.find((x) => x.id === id);
       return h ? [option(h, LABEL[id])] : [];

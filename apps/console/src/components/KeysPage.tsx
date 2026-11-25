@@ -4,6 +4,7 @@ import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "rea
 import { WhatRunsHere } from "@/components/ChatGPTSignIn";
 import { RunError } from "@/components/RunError";
 import { ProviderIcon } from "@/components/ProviderIcon";
+import { HarnessName } from "@/components/HarnessIcon";
 import { SecretRow } from "@/components/SecretRow";
 import { ListSkeleton } from "@/components/Skeleton";
 import { Button } from "@/components/ui/button";
@@ -167,7 +168,7 @@ function KeyRow({ tool: k, writable, again, open, problem, onOpen, onSave, onRem
           <p className="mt-1.5 font-mono text-small text-muted-foreground">
             {k.kind === "model" ? "Model provider" : `Unlocks ${k.unlocks.join(", ")}`}
             {/* A key no harness reads (one only a decision provider uses) names no harnesses, not an empty list. */}
-            {k.harnesses.length > 0 && ` · Harnesses ${k.harnesses.length === 1 ? `${k.harnesses[0]} only` : k.harnesses.join(", ")}`}
+            {k.harnesses.length > 0 && <> · {k.harnesses.length === 1 ? "Harness" : "Harnesses"} {k.harnesses.map((h, i) => <span key={h}>{i ? ", " : ""}<HarnessName harness={h} /></span>)}{k.harnesses.length === 1 && " only"}</>}
           </p>
           {keyHelp(k.id)?.note && <p className="mt-1.5 text-small text-muted-foreground">{keyHelp(k.id)!.note}</p>}
           {checkLine(k.label, k.check) && <p className={`mt-1.5 text-small ${k.check?.state === "accepted" ? "text-success-text" : "text-muted-foreground"}`}>{checkLine(k.label, k.check)}</p>}

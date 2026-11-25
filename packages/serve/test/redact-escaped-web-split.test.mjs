@@ -8,6 +8,7 @@ import { redacted, redactedAnswer, redactedCall, withheldWhole } from "../dist/k
 import { answersCut } from "../dist/runner/adapter-run-spec.js";
 import { secretRedactor } from "../dist/runner/redact.js";
 import { CALL_RESULT_CHARS, scrubUrls, timelineOf, webShownOf, webWithin } from "../dist/timeline/index.js";
+import { webHeld } from "../dist/timeline/web-calls.js";
 import { assistant, call, result, user } from "./timeline-lib-support.mjs";
 
 // A held value of 32 characters in no secret's shape, made at runtime, and its two halves.
@@ -65,9 +66,9 @@ test("a held value split across two strings of a web call's JSON withholds the c
   // Whole in one string, cut in place: the result is still its JSON, every url whole.
   const whole = resultTextOf(search(`see ${KEY}`, `${REST} more`), [KEY], "web_search");
   assert.deepEqual(JSON.parse(whole).results, [{ url: "https://h.example/a", title: "see [redacted]", snippet: `${REST} more` }]);
-  // webShownOf without `holds` reads each string alone, as before.
+  // webShownOf reads each string alone; webHeld reads them joined.
   assert.ok(webWithin(webShownOf("web_search", split), 1000).includes(HEAD));
-  assert.equal(webWithin(webShownOf("web_search", split, (part) => part, (joined) => withheldWhole(joined, [KEY])), 1000), "[redacted]");
+  assert.equal(webHeld("web_search", split, (joined) => withheldWhole(joined, [KEY])), true);
 });
 
 test("a held value split where a call's read stops, its rest past \\uXXXX escapes of whitespace, shows none of it; other escapes count as one character each", () => {
@@ -121,15 +122,39 @@ test("a web call's join is read as it came: one string's cut taking the value's 
   // The url's cut (its query value elided, the head redacted in place) takes the head; read as shown, the join no longer
   // holds it and the title's rest would show.
   const text = search(`${REST} more`, "s", `https://h.example/a?token=${HEAD}`);
-  assert.equal(webWithin(webShownOf("web_search", text, callEach([KEY]), (joined) => withheldWhole(joined, [KEY])), 1000), "[redacted]");
+  assert.equal(webHeld("web_search", text, (joined) => withheldWhole(joined, [KEY])), true);
   assert.equal(resultTextOf(text, [KEY], "web_search"), "[redacted]");
 });
 
 test("a web call's property names are read: a held value in one is cut (two cut to one name both kept, the later numbered), one split across a name and its value withholds the result", () => {
   const holds = (joined) => withheldWhole(joined, [KEY]);
   const named = JSON.stringify({ query: "q", results: [{ url: "https://h.example/a", title: "t", [KEY]: "x", [Buffer.from(KEY).toString("hex")]: "y" }] });
-  const shown = JSON.parse(webWithin(webShownOf("web_search", named, callEach([KEY]), holds), 1000));
+  assert.equal(webHeld("web_search", named, holds), false);
+  const shown = JSON.parse(webWithin(webShownOf("web_search", named, callEach([KEY])), 1000));
   assert.deepEqual(shown.results[0], { url: "https://h.example/a", title: "t", "[redacted]": "x", "[redacted] (2)": "y" });
   const split = JSON.stringify({ query: "q", results: [{ url: "https://h.example/a", [`n ${HEAD}`]: `${REST} v` }] });
-  assert.equal(webWithin(webShownOf("web_search", split, callEach([KEY]), holds), 1000), "[redacted]");
+  assert.equal(webHeld("web_search", split, holds), true);
+});
+
+test("a held value split where a call's read stops, its rest past JSON's one-character escapes of whitespace (one level and two) or past characters that render as nothing, shows none of it; escaped quotes and backslashes count as one character each", () => {
+  // The JSON view decodes "\n", "\t", "\r" (and "\\n", JSON in JSON) to whitespace, so the value reads whole across
+  // them: the read past the stop counts each as the character it decodes to, whitespace as nothing. Counted as their
+  // raw characters (2 or 3 each), 300 of them are more than the read past the stop reads, and the rest is never read.
+  // The views drop characters that render as nothing too: a zero-width space or a soft hyphen, written as it is, counts
+  // as nothing, so 500 of them (more than the read reads at one each) never hide the rest either. Nor do 400 of them
+  // percent-encoded (%E2%80%8B): the percent view decodes each to a zero-width space and drops it.
+  const B = String.fromCharCode(92);
+  const [ZWSP, SHY] = [0x200b, 0xad].map((code) => String.fromCharCode(code));
+  for (const pad of [`${B}n`.repeat(300), `${B}t`.repeat(300), `${B}r`.repeat(300), `${B}r${B}n`.repeat(150), `${B}${B}n`.repeat(300), `${B}${B}t${B}${B}r`.repeat(150), ZWSP.repeat(500), SHY.repeat(500), "%E2%80%8B".repeat(400)]) {
+    const text = `${"y ".repeat(59_940)}${HEAD}\n${pad}${REST}${"z".repeat(9000)} end`;
+    const shown = redactedCall(text, [KEY], CALL_RESULT_CHARS).slice(0, CALL_RESULT_CHARS);
+    assert.ok(!shown.includes(HEAD.slice(0, 8)), `${pad.slice(0, 6)}: ${shown.slice(-60)}`);
+  }
+  // Control: an escaped quote or backslash decodes to a character the view keeps, so 300 of them stand between the
+  // head and the rest, no held value reads across them, and the text is served, the head in it as written.
+  for (const pad of [`${B}"`.repeat(300), `${B}${B}`.repeat(300)]) {
+    const text = `${"y ".repeat(59_940)}${HEAD}\n${pad}${REST}${"z".repeat(9000)} end`;
+    const shown = redactedCall(text, [KEY], CALL_RESULT_CHARS).slice(0, CALL_RESULT_CHARS);
+    assert.ok(shown.startsWith("y y ") && shown.includes(HEAD), `${pad.slice(0, 4)}: ${shown.slice(-60)}`);
+  }
 });
