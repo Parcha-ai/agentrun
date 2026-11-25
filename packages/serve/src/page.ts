@@ -17,6 +17,10 @@ import { hostPort, hostRefusedPage, movedPage } from "./host-check.js";
 // icon from it (apps/console/src/components/ProviderIcon.tsx), sent with no referrer. Everything else is this origin's.
 const CSP = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https://www.google.com https://t0.gstatic.com https://t1.gstatic.com https://t2.gstatic.com https://t3.gstatic.com; base-uri 'none'; form-action https://github.com; frame-ancestors 'none'";
 const SECURITY = { "content-security-policy": CSP, "x-content-type-options": "nosniff", "referrer-policy": "no-referrer", "cache-control": "no-store" };
+/** The share page's CSP (share.html at /share/<run>): this origin's scripts, styles, data and images, and nothing from
+ *  anywhere else. It is the page a share host serves, under the same policy; no favicon host, so a URL in a run's answer
+ *  can never make a third party fetch anything. */
+export const SHARE_PAGE_CSP = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 const HTML = "text/html; charset=utf-8";
 /** Strict-Transport-Security for a server whose public address (AGENTRUN_PUBLIC_URL) is https: a browser that saw it
  *  once opens the address over https only, for a year. None over http or with no public address (a browser would pin
@@ -141,7 +145,7 @@ const redirect = (res: ServerResponse, location: string, headers: Record<string,
 
 /** A file of the console: a known type inside `dir`, read through no link that leaves it. Vite's hashed assets are cached
  *  for a year; index.html is no-store. */
-async function file(req: IncomingMessage, res: ServerResponse, raw: string, dir: string, rel: string, status = 200): Promise<void> {
+async function file(req: IncomingMessage, res: ServerResponse, raw: string, dir: string, rel: string, status = 200, headers: Record<string, string> = {}): Promise<void> {
   const missing = () => refuse(req, res, new ApiError("not_found", `no file ${raw} in the console`));
   const type = CONSOLE_TYPES[extname(rel).toLowerCase()];
   if (!type || !rel.split("/").every((segment) => CONSOLE_SEGMENT.test(segment))) return missing();
@@ -151,7 +155,7 @@ async function file(req: IncomingMessage, res: ServerResponse, raw: string, dir:
     return rel === "index.html" ? send(req, res, status === 200 ? 404 : status, "text/plain; charset=utf-8", "This server was built without its console: run npm ci && npm run build at the repository's root, which builds the console first, then start the server again.\n") : missing();
   }
   if (!real.startsWith(root + sep) || !(await stat(real)).isFile()) return missing();
-  send(req, res, status, type, await readFile(real), { "cache-control": rel.startsWith("assets/") ? "public, max-age=31536000, immutable" : "no-store" });
+  send(req, res, status, type, await readFile(real), { "cache-control": rel.startsWith("assets/") ? "public, max-age=31536000, immutable" : "no-store", ...headers });
 }
 
 async function answer(req: IncomingMessage, res: ServerResponse, raw: string, server: PageServer, held: boolean): Promise<void> {
@@ -202,7 +206,7 @@ async function share(req: IncomingMessage, res: ServerResponse, raw: string, dir
     if (given === "none") server.authFailed?.("/share", "no_session");
     return send(req, res, 401, HTML, SIGN_IN_FIRST);
   }
-  return file(req, res, raw, dir, "share.html");
+  return file(req, res, raw, dir, "share.html", 200, { "content-security-policy": SHARE_PAGE_CSP });
 }
 
 /** The requests the owner's password session sends from the page (a write only from this server's own origin, with a

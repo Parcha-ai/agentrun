@@ -85,7 +85,7 @@ export function ShareView({ bundle, preview }: { bundle: ShareBundle; preview?: 
               {view === "graph" && bundle.graph && (
                 <div className="-mx-5 border-y md:-mx-8">
                   {/* Files are in the bundle as text, never served: the graph links none. */}
-                  <RunGraphView data={bundle.graph as RunGraph} fileUrl={() => ""} />
+                  <RunGraphView data={bundle.graph as RunGraph} fileUrl={() => ""} shared />
                 </div>
               )}
               {view === "files" && <Files bundle={bundle} open={open} onOpen={setOpen} />}

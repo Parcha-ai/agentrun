@@ -195,6 +195,14 @@ function runFile(href: string, files: LinkedFiles): string | null {
   } catch { return null; }
 }
 
+/** With images off (a shared run's page): no element or attribute the sanitizer would keep that loads a URL. An <img>
+ *  stays, its source gone, to be drawn as its alt text; an SVG image, a video's poster, an image button, a picture's
+ *  sources, audio, a table's background and an inline style are dropped. */
+const NO_IMAGES = {
+  FORBID_TAGS: ["svg", "image", "video", "audio", "picture", "source", "track", "input"],
+  FORBID_ATTR: ["src", "srcset", "poster", "background", "style", "xlink:href"],
+};
+
 /** Markdown from a run, as safe HTML: parsed by marked, then sanitized (no scripts, no handlers, no foreign frames).
  *  A link with no scheme (a relative path, a path from the root, a fragment, //host) would be read against the console's
  *  own address and take its tab away (a fragment changes its route), so it is never a link here: one that names a run
@@ -202,7 +210,7 @@ function runFile(href: string, files: LinkedFiles): string | null {
  *  its text. A link to a page (http:, https:, ftp:) opens in a new tab, with no opener and no referrer; one that hands off
  *  to another app (mailto:, tel:) is as marked and the sanitizer leave it. */
 export function markdown(text: string, files?: LinkedFiles): string {
-  const body = DOMPurify.sanitize(marked.parse(text, { async: false }) as string, { RETURN_DOM: true }) as HTMLElement;
+  const body = DOMPurify.sanitize(marked.parse(text, { async: false }) as string, { RETURN_DOM: true, ...(files?.images === false ? NO_IMAGES : {}) }) as HTMLElement;
   if (files?.images === false) for (const img of [...body.querySelectorAll("img")]) img.replaceWith(img.getAttribute("alt") ?? "");
   // A code block wraps inside its box (a long line breaks, never runs past the page's edge).
   for (const pre of [...body.querySelectorAll("pre")]) pre.classList.add("whitespace-pre-wrap", "break-words", "[overflow-wrap:anywhere]");
