@@ -64,9 +64,10 @@ export async function learnedFirst(deps: LearnedFirstDeps, laid: readonly Learne
   await replayClaimed(store, agentId, runId, launch, choice);
   const recorded = await replayRecordedFor(store, launch, context);
   // The tool runs what serves, never a revision not promoted (promotion.ts toolFlowsFor), nor one the money rule stops,
-  // whoever made its calls (workflow-first.ts toolStopsOf): a learning run's, not a replay's or a shadow's.
+  // whoever made its calls (workflow-first.ts toolStopsOf): a learning run's, not a replay's (it runs its revision, read
+  // past or not). A shadow has no learning start (runner/audit.ts): it lays no workflow and reads no past.
   let workflows = await toolFlowsFor(promotion, launch, laidFlows, choice);
-  if (learns && launch.learning && !launch.replay && !launch.audit && workflows.length) {
+  if (learns && launch.learning && !launch.replay && workflows.length) {
     const money = toolStopsOf(await past().catch((error: unknown) => ({ unread: error instanceof Error ? error.message : String(error) })), workflows);
     for (const line of money.said) log(line);
     workflows = money.flows;
