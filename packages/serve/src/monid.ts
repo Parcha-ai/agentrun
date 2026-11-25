@@ -6,9 +6,9 @@
 // monid's listing (a provider's wildcard: every endpoint it lists, GET /v1/endpoints; one endpoint: POST /v1/inspect),
 // and the pin is stamped on the revision, a grant its current revision made too carried unread. A grant monid does not
 // list is refused in words, so is one that cannot be read now (no key, monid unreachable). A read monid refuses for its
-// rate, fails (5xx) or leaves unanswered past its limit is sent again inside the save's time (READ_BUDGET_MS), and one
-// server's saves share each read (monidReads): saves that arrive together read the listing once. A run reads only its
-// pin.
+// rate, fails (5xx) or leaves unanswered past its limit is sent again inside the save's time (READ_BUDGET_MS, from the
+// save's start), and one server's saves share each read (monidReads): saves that arrive together read the listing once,
+// each waiting on it no longer than its own time. A run reads only its pin.
 //
 // An endpoint priced by usage (per result, per unit, metered, a matrix or tier with a usage part) is pinned too, with no
 // fixed price, and the save's warnings name it (usageWords): monid can't cap what such a call charges. Its maxCost
@@ -51,12 +51,17 @@ const MIN_READ_MS = 100;
 /** How many inspects a save has out at once. */
 const INSPECTS_AT_ONCE = 8;
 /** A save's read of the listing or an inspect, refused for the rate (429), failed by monid (5xx) or not answered in
- *  time, is sent again after what monid says to wait (Retry-After, 2 s when it says nothing, at most READ_WAIT_MS),
- *  while that read's waits add up to at most READ_WAITS_MS and the save is inside READ_BUDGET_MS of its first read: a
- *  burst of saves on one key waits out monid's rate inside the save's own time, and only then is refused. */
+ *  time, is sent again after what monid says to wait (Retry-After, 2 s when it says nothing, at least READ_WAIT_MIN_MS
+ *  and at most READ_WAIT_MS), at most READ_RESENDS times, while that read's waits add up to at most READ_WAITS_MS and
+ *  the save is inside READ_BUDGET_MS of its start: a burst of saves on one key waits out monid's rate inside the save's
+ *  own time, and only then is refused. */
+const READ_WAIT_MIN_MS = 250;
 const READ_WAIT_MS = 10_000;
 const READ_WAITS_MS = 20_000;
+const READ_RESENDS = 20;
 const READ_BUDGET_MS = 45_000;
+/** Why a save's read is not sent, or not waited on, past its time (READ_BUDGET_MS). */
+const OUT_OF_TIME = "no answer within the save's time";
 /** How long one server's saves share a read of monid's listing or an inspect that answered (monidReads). */
 const SHARED_READ_MS = 60_000;
 
@@ -88,6 +93,8 @@ export type MonidOptions = {
   /** The most a run is waited for, its first request and every read together (150 s: monid's runs take 1 to 120 s). */
   waitMs?: number;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  /** When a save's reads (the listing, an inspect) stop being sent (epoch ms); READ_BUDGET_MS after the first, unset. */
+  readsEnd?: number;
 };
 
 const pause = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve) => {
@@ -157,17 +164,18 @@ export function monidClient(options: MonidOptions) {
     }
   };
   const answer = (res: { status: number; body: Json }): MonidAnswer => (res.status >= 200 && res.status < 300 ? res.body : failure(res.status, res.body));
-  /** When this client's reads stop being sent again (READ_BUDGET_MS after its first). */
-  let readsEnd: number | undefined;
+  /** When this client's reads stop being sent (READ_BUDGET_MS after its first, unless given). */
+  let readsEnd = options.readsEnd;
   /** A save's read, safe to repeat (READ_WAITS_MS, READ_BUDGET_MS); any other refusal (401, 403, 404), or monid out of
    *  reach (a request that failed before its limit), is its answer. */
   const read = async (method: string, path: string, body: Json | undefined, signal?: AbortSignal) => {
     const end = (readsEnd ??= Date.now() + READ_BUDGET_MS);
-    for (let waited = 0; ; ) {
+    if (Date.now() >= end) return { status: 0, body: { message: OUT_OF_TIME } };
+    for (let waited = 0, resends = 0; ; resends++) {
       const res = await call(method, path, body, signal, Math.min(requestMs, Math.max(MIN_READ_MS, end - Date.now())));
-      const wait = Math.min(READ_WAIT_MS, (res.retryAfter ?? 2) * 1000);
+      const wait = Math.min(READ_WAIT_MS, Math.max(READ_WAIT_MIN_MS, (res.retryAfter ?? 2) * 1000));
       const again = res.status === 429 || res.status >= 500 || res.timedOut === true;
-      if (!again || signal?.aborted || waited + wait > READ_WAITS_MS || Date.now() + wait >= end) return res;
+      if (!again || signal?.aborted || resends >= READ_RESENDS || waited + wait > READ_WAITS_MS || Date.now() + wait >= end) return res;
       waited += wait;
       await sleep(wait, signal);
     }
@@ -302,13 +310,19 @@ export type MonidReads = Map<string, { answer: Promise<unknown>; at?: number }>;
 export const monidReads = (): MonidReads => new Map();
 
 /** `read`'s answer, shared through `reads` under `id` (monidReads): joined while it is out, kept while `kept` says it
- *  answered. Without `reads`, read alone. */
-function sharedRead<T>(reads: MonidReads | undefined, id: string, read: () => Promise<T>, kept: (answer: T) => boolean): Promise<T> {
+ *  answered. A save that joins a read another started waits on it until its own `end` at most, then has `late()`.
+ *  Without `reads`, read alone. */
+function sharedRead<T>(reads: MonidReads | undefined, id: string, read: () => Promise<T>, kept: (answer: T) => boolean, end: number, late: () => T): Promise<T> {
   if (!reads) return read();
   const now = Date.now();
   for (const [one, entry] of reads) if (entry.at !== undefined && now - entry.at >= SHARED_READ_MS) reads.delete(one);
   const had = reads.get(id);
-  if (had) return had.answer as Promise<T>;
+  if (had) {
+    if (had.at !== undefined) return had.answer as Promise<T>;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const lateness = new Promise<T>((resolve) => (timer = setTimeout(() => resolve(late()), Math.max(0, end - now))));
+    return Promise.race([had.answer as Promise<T>, lateness]).finally(() => clearTimeout(timer));
+  }
   const entry: { answer: Promise<T>; at?: number } = {
     answer: read().then(
       (answer) => {
@@ -333,7 +347,9 @@ function sharedRead<T>(reads: MonidReads | undefined, id: string, read: () => Pr
  *  A grant monid lists nothing for is refused, as is every grant to read with no key or monid unreadable. An endpoint
  *  with no fixed price (fixedUsd) is pinned with none, and warned of (usageWords). Undefined when no grant is monid's.
  *  With `shared` (monidReads), the listing and each inspect are read once for the saves that ask at once. */
-export async function pinMonid(grants: readonly string[], options: { key: string | undefined; fetch?: typeof fetch; signal?: AbortSignal; sleep?: MonidOptions["sleep"]; shared?: MonidReads; previous?: { grants: readonly string[]; pin: MonidPinBody | null } }): Promise<MonidPinOutcome | undefined> {
+export async function pinMonid(grants: readonly string[], options: { key: string | undefined; fetch?: typeof fetch; signal?: AbortSignal; sleep?: MonidOptions["sleep"]; shared?: MonidReads; budgetMs?: number; previous?: { grants: readonly string[]; pin: MonidPinBody | null } }): Promise<MonidPinOutcome | undefined> {
+  // The save's reads stop READ_BUDGET_MS (or `budgetMs`) after it starts, a wait on another save's read included.
+  const readsEnd = Date.now() + (options.budgetMs ?? READ_BUDGET_MS);
   const pin: Record<string, MonidPinBody[string]> = {};
   const before = options.previous;
   const named = grants.flatMap((tool) => {
@@ -348,7 +364,7 @@ export async function pinMonid(grants: readonly string[], options: { key: string
   // A named grant of an endpoint a kept wildcard carried is carried with it.
   const reads = named.filter((grant) => grant.read && !(grant.parsed.kind === "monid" && pin[grant.tool]));
   if (reads.length && !options.key) return { refused: reads.map(({ tool }) => ({ tool, message: `${tool} is pinned to what monid lists when the agent is saved, and there is no monid key here to read it with: save the monid key in Settings → API Keys first.` })) };
-  const refused = reads.length ? await readPins(reads, pin, { ...options, key: options.key! }) : [];
+  const refused = reads.length ? await readPins(reads, pin, { ...options, key: options.key!, readsEnd }) : [];
   // Two endpoints the harnesses would call by one name (wireName folds `.` and `/`): neither could be told apart.
   const wires = new Map<string, string>();
   for (const tool of Object.keys(pin).sort()) {
@@ -364,8 +380,9 @@ export async function pinMonid(grants: readonly string[], options: { key: string
 }
 
 /** The grants `reads` read against monid's listing into `pin`; why each that could not be is refused. */
-async function readPins(named: readonly { tool: string; parsed: ToolName }[], pin: Record<string, MonidPinBody[string]>, options: { key: string; fetch?: typeof fetch; signal?: AbortSignal; sleep?: MonidOptions["sleep"]; shared?: MonidReads }): Promise<{ tool: string; message: string }[]> {
-  const client = monidClient({ key: options.key, ...(options.fetch ? { fetch: options.fetch } : {}), ...(options.sleep ? { sleep: options.sleep } : {}) });
+async function readPins(named: readonly { tool: string; parsed: ToolName }[], pin: Record<string, MonidPinBody[string]>, options: { key: string; fetch?: typeof fetch; signal?: AbortSignal; sleep?: MonidOptions["sleep"]; shared?: MonidReads; readsEnd: number }): Promise<{ tool: string; message: string }[]> {
+  const { readsEnd } = options;
+  const client = monidClient({ key: options.key, readsEnd, ...(options.fetch ? { fetch: options.fetch } : {}), ...(options.sleep ? { sleep: options.sleep } : {}) });
   // monid's own words, which a save's refusal returns to its caller: the key they were read with cut from them, in
   // every form a run's error is redacted of (key-refusal.ts redacted).
   const key = options.key;
@@ -393,7 +410,7 @@ async function readPins(named: readonly { tool: string; parsed: ToolName }[], pi
         cursor = typeof res.cursor === "string" && res.cursor ? res.cursor : undefined;
       }
       return { listed };
-    }, (answer) => "listed" in answer);
+    }, (answer) => "listed" in answer, readsEnd, () => ({ error: OUT_OF_TIME }));
     if ("error" in listing) return named.map(({ tool }) => ({ tool, message: `${tool} could not be pinned: monid's listing could not be read (${said(listing.error)}).` }));
     const { listed } = listing;
     for (const { tool, parsed } of named) {
@@ -410,7 +427,7 @@ async function readPins(named: readonly { tool: string; parsed: ToolName }[], pi
   const inspectOne = async (): Promise<void> => {
     for (let next = queue.shift(); next; next = queue.shift()) {
       const [tool, at] = next;
-      const res = await sharedRead(options.shared, `${keyId} inspect ${JSON.stringify([at.provider, at.endpoint])}`, () => client.inspect(at, options.signal), (answer) => answer.error === undefined);
+      const res = await sharedRead(options.shared, `${keyId} inspect ${JSON.stringify([at.provider, at.endpoint])}`, () => client.inspect(at, options.signal), (answer) => answer.error === undefined, readsEnd, (): MonidAnswer => ({ error: OUT_OF_TIME }));
       if (res.status === 404) refused.push({ tool, message: `monid lists no endpoint ${at.endpoint} of a provider ${at.provider}.` });
       else if (res.error !== undefined) refused.push({ tool, message: `${tool} could not be pinned: monid's listing of it could not be read (${said(res.error)}).` });
       else pin[tool] = { description: [res.description, res.summary].find((said): said is string => typeof said === "string" && said.trim() !== "")?.trim() ?? `${at.provider} ${at.endpoint}, an endpoint of monid's.`, input: inputSchema(res.input), usd: fixedUsd(res.price) ?? null };

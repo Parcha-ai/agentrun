@@ -124,6 +124,38 @@ test("a save's read refused as sent (403, 404) is its answer at once, never sent
   });
 });
 
+test("a read monid refuses for its rate with Retry-After 0 is sent again after 250 ms at least, 20 times at most", async () => {
+  const sent = [];
+  const waits = [];
+  const zero = async (url) => (sent.push(new URL(url).pathname), new Response(JSON.stringify({ message: "Rate limited." }), { status: 429, headers: { "retry-after": "0" } }));
+  const pinned = await pinMonid(["monid:apollo/*"], { key: KEY, fetch: zero, sleep: async (ms) => void waits.push(ms), budgetMs: 2_000 });
+  assert.deepEqual(pinned, { refused: [{ tool: "monid:apollo/*", message: "monid:apollo/* could not be pinned: monid's listing could not be read (monid answered 429: Rate limited.)." }] });
+  assert.deepEqual(waits, Array(20).fill(250), "each wait at least 250 ms");
+  assert.equal(sent.length, 21, "sent once, then 20 times again at most");
+});
+
+test("a save's time runs from its start: one that joins another save's slow read of the listing waits on it no longer than its own time, and the one that started it stops at its own", async () => {
+  const shared = monidReads();
+  // monid's listing never answers: each read of it ends at its request's limit or its caller's stop.
+  const slow = async (url, init) => (new URL(url).pathname === "/v1/endpoints" ? new Promise((_, reject) => init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true })) : fakeMonid(url, init));
+  const first = new AbortController();
+  const stop = setTimeout(() => first.abort(), 3_000);
+  const started = pinMonid(["monid:apollo/*"], { key: KEY, fetch: slow, shared, signal: first.signal });
+  const at = Date.now();
+  const joined = await pinMonid(["monid:faux/*"], { key: KEY, fetch: slow, shared, budgetMs: 200 });
+  const took = Date.now() - at;
+  assert.deepEqual(joined, { refused: [{ tool: "monid:faux/*", message: "monid:faux/* could not be pinned: monid's listing could not be read (no answer within the save's time)." }] });
+  assert.ok(took < 2_000, `the joining save stopped at its own time, not the read's: ${took} ms`);
+  first.abort();
+  clearTimeout(stop);
+  assert.ok("refused" in (await started), "the save that started the read is refused once it is stopped");
+  // A save alone on a listing that never answers is refused at its own time too, its request cut to what is left.
+  const alone = Date.now();
+  const timed = await pinMonid(["monid:apollo/*"], { key: KEY, fetch: slow, budgetMs: 300 });
+  assert.match(timed.refused[0].message, /^monid:apollo\/\* could not be pinned: monid's listing could not be read \(monid could not be reached: no answer in 0\.\d+ s\)\.$/);
+  assert.ok(Date.now() - alone < 2_000, `refused at its own time: ${Date.now() - alone} ms`);
+});
+
 test("saves sharing one server's reads (monidReads) read the listing and each inspect once while they are out together; a read that failed is not kept", async () => {
   const sent = [];
   const counted = async (url, init) => {
