@@ -32,19 +32,28 @@ function sources() {
 }
 
 /** The owed steps, by the name each file gives them in its own OWED table (`name: { owed: true },`), the one place it
- *  sets owed. browser-cost.ts: the charge under no call (a release, its top-up), the reserve held from a reopen, that
- *  reserve held again at one stretch, a delayed release, a person's carried time. compute-cost.ts (#3338), money its
- *  provider is owed once the computer is made: the time it ran, booked each stretch and at its settle, and the first
- *  stretch of a computer already made. A computer not yet made is never held owed: the hold before its create is the
- *  cap's to refuse. */
+ *  sets owed, each with the words of the one step that uses it: a name moved onto another step fails here.
+ *  browser-cost.ts: the charge under no call (a release, its top-up), the reserve held from a reopen, that reserve held
+ *  again at one stretch, a delayed release, a person's carried time. compute-cost.ts (#3338), money its provider is owed
+ *  once the computer is made: the time it ran, booked each stretch and at its settle, and the first stretch of a computer
+ *  already made. A computer not yet made is never held owed: the hold before its create is the cap's to refuse. */
 const OWED_STEPS = {
-  "serve/src/browser-cost.ts": ["charge", "reopenReserve", "reserveAgain", "delayedRelease", "personTime"],
-  "serve/src/compute-cost.ts": ["bookedTime", "madeFirstStretch"],
+  "serve/src/browser-cost.ts": {
+    charge: /name: "this browser session's time"/,
+    reopenReserve: /held from the reopen/,
+    reserveAgain: /held again once its charge booked the time before it/,
+    delayedRelease: /this browser session's delayed release/,
+    personTime: /a person's time in the browser/,
+  },
+  "serve/src/compute-cost.ts": {
+    bookedTime: /name: `\$\{one\.provider\}'s computer time \(\$\{tag\}\)`/,
+    madeFirstStretch: /holdOf\(provider, stretchUsd\(priced\), basisOf\(provider, priced\), OWED\.madeFirstStretch\)/,
+  },
 };
 /** A source line with its comments' lines left out (a comment may name OWED and sets nothing). */
 const code = (line) => !/^\s*(\/\/|\*|\/\*)/.test(line);
 
-test("owed is set only in the OWED tables of browser-cost.ts and compute-cost.ts, each named step used once, for money already owed outside a call; elsewhere only passed on", () => {
+test("owed is set only in the OWED tables of browser-cost.ts and compute-cost.ts, each named step used once and on its own step, for money already owed outside a call; elsewhere only passed on", () => {
   const setters = [];
   const passes = [];
   const texts = new Map();
@@ -63,12 +72,13 @@ test("owed is set only in the OWED tables of browser-cost.ts and compute-cost.ts
   // Every setter is an entry of its file's OWED table, by its name.
   const strays = setters.filter(({ file, line }) => !(file in OWED_STEPS) || !/^\s*\w+: \{ owed: true \},?\s*$/.test(line));
   assert.deepEqual(strays.map(({ where }) => where), [], "owed is set only as an entry of an OWED table, in browser-cost.ts or compute-cost.ts");
-  for (const [file, names] of Object.entries(OWED_STEPS)) {
+  for (const [file, steps] of Object.entries(OWED_STEPS)) {
     const named = setters.filter((setter) => setter.file === file).map(({ line }) => /^\s*(\w+):/.exec(line)[1]);
-    assert.deepEqual(named, names, `${file}'s OWED table names exactly these owed steps`);
-    for (const name of names) {
+    assert.deepEqual(named, Object.keys(steps), `${file}'s OWED table names exactly these owed steps`);
+    for (const [name, words] of Object.entries(steps)) {
       const uses = texts.get(file).filter((line) => new RegExp(`\\bOWED\\.${name}\\b`).test(line));
       assert.equal(uses.length, 1, `${file}: OWED.${name} marks one step: ${JSON.stringify(uses)}`);
+      assert.match(uses[0], words, `${file}: OWED.${name} marks its own step, the one in these words`);
     }
   }
   assert.deepEqual(passes.filter(({ passedOn }) => !passedOn), [], "every other `owed: true as const` only passes on the owed it was given");
