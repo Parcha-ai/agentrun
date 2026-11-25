@@ -428,6 +428,7 @@ ${s.agent.output.map((f) => `#   ${f.name}: ${oneLine(f.description)}`).join("\n
 import json
 import os
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any, Dict, Optional, TypedDict
@@ -438,10 +439,20 @@ _REQUIRED = (${required.join(", ")}${required.length === 1 ? "," : ""})
 _ENDED = {"completed", "failed", "cancelled", "input_required", "paused"}
 
 
+# urllib copies the authorization header onto a redirect to any host, http included: no redirect is followed, so the key
+# goes to AGENTRUN_BASE_URL alone, as AgentRun's SDK sends it.
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(req.full_url, code, f"AgentRun answered {req.get_method()} with a redirect (HTTP {code}); not followed, so the API key stays with AGENTRUN_BASE_URL", headers, fp)
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
 def _call(method: str, url: str, key: str, body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     data = json.dumps(body).encode("utf-8") if body is not None else None
     request = urllib.request.Request(url, data=data, method=method, headers={"authorization": f"Bearer {key}", "content-type": "application/json"})
-    with urllib.request.urlopen(request, timeout=60) as response:
+    with _OPENER.open(request, timeout=60) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
