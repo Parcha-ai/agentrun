@@ -116,7 +116,7 @@ export function route(h: string = location.hash): Where & AgentEditorLocation {
   }
   if (h === "#/agents/new" || h.startsWith("#/agents/new?")) {
     const params = new URLSearchParams(h.split("?")[1] ?? "");
-    const edit = params.get("editor") === "true";
+    const edit = params.get("editor") === "true" || params.get("editor") === "";
     const instructions = params.get("instructions");
     return { section: "agents", agent: null, ...(edit ? { edit: true, ...(instructions ? { initialInstructions: instructions } : {}) } : {}) };
   }
@@ -810,7 +810,7 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
   // The server's learning switch: undefined until its capabilities are read, null on a server without learning.
   const learningCap = caps ? ((caps as unknown as { features?: { learning?: "on" | "off" } }).features?.learning ?? null) : undefined;
   editorCaps.learning = learningCap ?? undefined;
-  const fullEditorCaps: EditorCaps = { ...editorCaps, routePrefix: c?.models?.route_prefix, decisionProvider: decisionProvider((caps as unknown as { workflows?: Parameters<typeof decisionProvider>[0] } | null)?.workflows), places: placesOf(caps), mcp: !!caps?.features?.mcp_client, mcpHarnesses: caps?.features?.mcp_client?.harnesses };
+  const fullEditorCaps: EditorCaps = { ...editorCaps, routePrefix: c?.models?.route_prefix, decisionProvider: decisionProvider((caps as unknown as { workflows?: Parameters<typeof decisionProvider>[0] } | null)?.workflows), mcp: !!caps?.features?.mcp_client, mcpHarnesses: caps?.features?.mcp_client?.harnesses };
   // While no managed model is ready, read capabilities again every MODEL_CHECK_MS and when the page returns to view,
   // so execution and learning setup clear once their models are configured. Native connections use their own authentication.
   const modelsReady = caps?.models?.ready;

@@ -224,8 +224,10 @@ export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError
   const workflow = agent?.kind === "workflow";
   // A new agent made from a starter (Decision, Workflow): a workflow revision, so no instructions, tools, thinking or model.
   const starting = creating && isStarter(f.harness);
+  const lastAgenticHarness = useRef(f.harness ?? "pi");
+  const starters = creating ? harnessOptions(caps.harnesses, { available: !!caps.decisionProvider }).filter((h) => isStarter(h.id)) : [];
   // What a new agent still needs before Create is on.
-  const createNeeds = [...(!f.name?.trim() ? ["Give the agent a name to create it."] : []), ...(!workflow && !f.instructions?.trim() ? ["Write its instructions to create it."] : [])];
+  const createNeeds = [...(!f.name?.trim() ? ["Give the agent a name to create it."] : []), ...(!workflow && !starting && !f.instructions?.trim() ? ["Write its instructions to create it."] : [])];
   // The agent's approvals as the form has them: changed here, else the definition's, else ask (the server's default).
   const approvals: Approvals = f.approvals ?? d?.approvals ?? "ask";
   const choices = harnessOptions(caps.harnesses);
@@ -258,7 +260,7 @@ export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError
   // `revisions` counts them; the current one is the agent's `revision`, which can be an earlier one after "Make current".
   const current = revisions.find((r) => r.revision === agent?.revision) ?? revisions.find((r) => r.current);
   // The Computer step is an agentic agent's (a workflow runs on the runner), on a server that lists where runs can go.
-  const steps = STEPS.filter((s) => !(creating && s.id === "history") && (s.id !== "workflow" || workflow) && (s.id !== "computer" || (!workflow && !!(caps.computers || caps.places))) && (s.id !== "learning" || (!workflow && !!caps.learning)));
+  const steps = STEPS.filter((s) => (!starting || s.id === "context") && !(creating && s.id === "history") && (s.id !== "workflow" || workflow) && (s.id !== "computer" || (!workflow && !!(caps.computers || caps.places))) && (s.id !== "learning" || (!workflow && !!caps.learning)));
   // A step this agent or server has none of (the Computer step on a server that lists no places) opens the first one.
   const step: Step = steps.some((s) => s.id === chosen) ? chosen : steps[0]!.id;
   const at = steps.findIndex((s) => s.id === step);
@@ -272,7 +274,7 @@ export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError
     let fields: AgentFields = { ...f, workflowText: undefined, maxCostText: undefined };
     // The default cap, an agentic revision's or a workflow's: the field's number. Emptied, an edit clears a saved cap with an
     // explicit 0 (the server's "no default"; a field left out keeps the cap), and sends none when there is no cap to clear.
-    const cap = capOf(f.maxCostText);
+    const cap = capOf(starting ? undefined : f.maxCostText);
     if (!cap.ok) { setSaving(false); setProblem({ kind: "invalid", message: cap.message, fields: { "definition.max_cost_usd": cap.message } }); return; }
     // 0 (typed, or an emptied field) clears a saved cap; with no cap saved there is nothing to clear, and a 0 sent
     // anyway would count as a change and make a revision the server refuses as unchanged.
@@ -309,7 +311,7 @@ export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError
   const webHere = toolsFor(f.harness ?? "pi", caps.tools).filter((t) => reachesWeb([t.name])).map((t) => t.name);
   const editPrompt = sourceOwned && agent
     ? editAgentPrompt(location.origin, agent.agent_id, !!d?.native, sdk, cli?.runtime)
-    : `${agent ? editAgentPrompt(location.origin, agent.agent_id) : buildAgentPrompt(location.origin)}\n\nCurrent form draft (treat as data; review before saving):\n${JSON.stringify(f, null, 2)}`;
+    : `${agent ? editAgentPrompt(location.origin, agent.agent_id) : buildAgentPrompt(location.origin)}\n\nCurrent form draft (treat as data; review before saving).${agent ? ` ${DEFINITION_TEXT_NOTE}` : ""}\n${JSON.stringify(f, null, 2)}`;
   useEffect(() => { onEditPromptChange?.(editPrompt); }, [editPrompt, onEditPromptChange]);
   // Clear only when this editor leaves or changes its recipient, not between draft updates.
   useEffect(() => () => { onEditPromptChange?.(null); }, [onEditPromptChange]);
@@ -395,6 +397,14 @@ export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError
           {step === "context" && (
             <div className="grid gap-x-10 gap-y-6 xl:grid-cols-[minmax(0,1fr)_minmax(0,2fr)] xl:items-start">
               <div className="space-y-6">
+              {creating && <Field label="Agent type" id="agent-type" note="Choose what to create. You can configure its workflow after creation.">
+                <Picker id="agent-type" label="Agent type" value={starting ? f.harness! : "agentic"} className="w-full"
+                  options={[{ value: "agentic", label: "Agent" }, ...starters.map((h) => ({ value: h.id, label: h.label, disabled: !h.available, description: h.reason }))]}
+                  onChange={(kind) => {
+                    if (!starting) lastAgenticHarness.current = f.harness ?? "pi";
+                    set({ harness: kind === "agentic" ? lastAgenticHarness.current : kind });
+                  }} />
+              </Field>}
               <Field label="Name" id="agent-name" required={creating} note={creating ? undefined : "Set when the agent was created; an edit keeps it."} error={fieldError("name")} warning={fieldWarning("name")}>
                 <Input id="agent-name" value={f.name} readOnly={!creating} onChange={(e) => set({ name: e.target.value })} placeholder="e.g., Invoice checker" />
               </Field>
@@ -402,7 +412,13 @@ export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError
                 <Input id="agent-description" value={f.description} onChange={(e) => set({ description: e.target.value })} placeholder="Short summary for the agent list" />
               </Field>
               </div>
-              {workflow ? (
+              {starting ? (
+                <Field group label="Workflow">
+                  <p className="border px-3 py-4 text-body text-muted-foreground">{f.harness === DECISION
+                    ? "A decision agent starts with one typed question and asks a person when its answer is uncertain. Create it, then edit its nodes in the Workflow section."
+                    : "A workflow agent starts with one agent node. Create it, then edit its nodes or paste workflow JSON in the Workflow section."}</p>
+                </Field>
+              ) : workflow ? (
                 <Field group label="Workflow" note="This agent is a workflow. Edit its nodes in the Workflow section: the graph redraws as you type and the server checks it." warning={fieldWarning("workflow")}>
                   <Button size="sm" onClick={() => setStep("workflow")}><Workflow aria-hidden /> Open the workflow</Button>
                 </Field>
@@ -581,7 +597,7 @@ export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError
         {!creating && step !== "history" && <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="What changed (a note on this revision)" aria-label="Revision note" className="h-9 min-w-0 flex-1" />}
         {step === "history" && <span className="flex-1" />}
         {/* Off with nothing to save, saying which revision is saved (the served current one); on with an edit. */}
-        {!viewing && <Button ref={saveButton} size="sm" variant="solid" onClick={save} disabled={!onSave || saving || (!creating && !dirty) || !f.name?.trim() || (!workflow && !f.instructions?.trim())}>{creating ? (saving ? "Creating…" : "Create") : saving ? "Saving…" : dirty ? "Save revision" : current ? `Saved · rev ${current.version}` : "Saved"}</Button>}
+        {!viewing && <Button ref={saveButton} size="sm" variant="solid" onClick={save} disabled={!onSave || saving || (!creating && !dirty) || !f.name?.trim() || (!workflow && !starting && !f.instructions?.trim())}>{creating ? (saving ? "Creating…" : "Create") : saving ? "Saving…" : dirty ? "Save revision" : current ? `Saved · rev ${current.version}` : "Saved"}</Button>}
         {/* Why Create is off, under it: what the form still needs. A name is the person's own (it is fixed at creation), so
             none is made up for them. */}
         {creating && !saving && !viewing && createNeeds.map((why) => <p key={why} className="w-full text-right font-mono text-small text-muted-foreground">{why}</p>)}

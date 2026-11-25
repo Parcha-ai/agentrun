@@ -877,10 +877,10 @@ describe("App, the no-model bar", () => {
     expect(bar(host)).toBeNull();
   });
 
-  it("opens the editor, creating, from Build's link: the one place a Decision or a Workflow agent is made", async () => {
+  it("opens the shared editor directly and keeps the legacy creation link", async () => {
     serve(() => ({ source: "providers", default: null, ready: false, needs: "key" }), true, undefined, agentsList());
     const host = await mount("#/agents/new");
-    await until(() => !!host.querySelector('a[href="#/agents/new?editor"]'));
+    await until(() => !!host.querySelector("#agent-name"));
     await act(async () => { location.hash = "#/agents/new?editor"; });
     const heading = () => [...host.querySelectorAll("h1")].map((h) => h.textContent);
     await until(() => heading().includes("New agent"));
