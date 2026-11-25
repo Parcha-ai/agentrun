@@ -439,8 +439,11 @@ describe("Settings → MCP servers, the saved ones", () => {
     const p = await open(s.v2);
     const account = () => p.row("gmail").querySelector<HTMLElement>("[data-composio-account]");
     expect(account()?.dataset.composioAccount).toBe("pending");
+    expect(account()?.textContent).toContain("not connected");
+    expect(account()?.textContent).toContain("connect it on Composio, then Refresh");
     await p.click(/^Refresh$/, p.row("gmail"));
     expect(account()?.dataset.composioAccount).toBe("connected");
+    expect(account()?.textContent).toContain("connected");
     expect(account()?.textContent).toContain("person@example.com");
   });
 

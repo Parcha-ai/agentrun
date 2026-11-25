@@ -143,6 +143,15 @@ test("the toolkits listing has one deadline for every page: a page Composio hold
   assert.match(res.body.error.message, /Composio did not answer while listing the toolkits: no toolkit was listed\./);
 });
 
+test("the toolkits listing takes its deadline once, for all its pages, not one for each page", async (t) => {
+  let asked = 0;
+  const s = await setup(t, { toolkitsPage: 1 }, { listDeadline: () => (asked++, new AbortController().signal) });
+  const res = await s.api("POST", "/settings/mcp-servers/composio/toolkits", { api_key: s.composio.apiKey });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(res.body.toolkits.length, Object.keys(TOOLKITS).length, "every page was listed, one toolkit a page");
+  assert.equal(asked, 1, `one deadline for the ${Object.keys(TOOLKITS).length} pages`);
+});
+
 test("a toolkits listing the console stops (Cancel, a key edit) stops at Composio too: no page is asked for after it", async (t) => {
   const s = await setup(t, { toolkitsPage: 1 });
   const held = s.composio.hold("/api/v3/toolkits", "GET");
@@ -177,6 +186,29 @@ test("an account of another Composio user under the same auth config is never th
   assert.notEqual(res.body.server.composio_account?.state, "connected", "another user's account does not connect this server's");
   assert.equal(res.body.server.composio_account?.labels, undefined, "no label of another user's account is shown");
   assert.ok(!storeBytes(s.server.data).includes("other@example.com"), "nor kept");
+});
+
+test("an account a refresh kept before the user filter (0.1.0-beta.57 and beta.58 took any ACTIVE account) is never shown: the server says no account until a refresh since then", async (t) => {
+  const s = await setup(t, { active: ["gmail"] });
+  assert.equal((await s.api("PUT", "/settings/mcp-servers/gmail/composio", { api_key: s.composio.apiKey, toolkit: "gmail", tools: ["add"] })).status, 200);
+  assert.equal((await s.api("POST", "/settings/mcp-servers/gmail/refresh")).status, 200);
+  // The row as those releases wrote it: the same server, toolkit, user and auth config, connected and labelled with
+  // another user's email, and nothing else.
+  const stored = await s.server.store.settings.get("mcp.composio-account/gmail");
+  const { of, user, toolkit, auth_config, checked_at } = stored;
+  await s.server.store.settings.put("mcp.composio-account/gmail", { of, user, toolkit, auth_config, state: "connected", labels: ["other.person@example.com"], checked_at });
+  const read = (await s.api("GET", "/settings/mcp-servers")).body.servers.find((server) => server.name === "gmail");
+  assert.ok(read, "the list has the server");
+  assert.equal(read.composio_account, undefined, `an account kept before the user filter is not shown: ${JSON.stringify(read.composio_account)}`);
+  const one = await s.api("GET", "/settings/mcp-servers/gmail");
+  assert.equal(one.status, 200, JSON.stringify(one.body));
+  assert.ok(!JSON.stringify(one.body).includes("other.person@example.com"), "nor on the server's own read");
+
+  // A refresh reads it again, for the server's user alone, and the server says its account once more.
+  const again = await s.api("POST", "/settings/mcp-servers/gmail/refresh");
+  assert.equal(again.status, 200, JSON.stringify(again.body));
+  assert.equal(again.body.server.composio_account?.state, "connected", "a refresh since the filter is shown");
+  assert.ok(!JSON.stringify(again.body).includes("other.person@example.com"));
 });
 
 for (const [what, made, says] of [["empty", { user: "" }, "says unknown"], ["per-run", { user: "per_run", per_run: true }, "shows no account: each run names its own"]]) {

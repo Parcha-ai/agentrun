@@ -232,6 +232,20 @@ test("a server with no recorded auth config (saved before one was): its trigger 
   await assert.rejects(bare.make(source, "trg_b", true, async (s) => s), (error) => error.code === "composio_not_connected" && error.extra.details?.connect_url === "https://connect.composio.test/link/ac_managed");
 });
 
+test("a trigger whose server's Composio user is no Composio user id (a blank one) never asks for its accounts, and runs as none of them", async (t) => {
+  // A Composio that answers every user's accounts, with no user_id on them, as it would for a user_ids it trims to empty.
+  const accounts = { github: [{ id: "ca_anyone_github", user: null, status: "ACTIVE", auth_config: "ac_managed", created_at: "2026-11-11T08:00:00.000Z" }] };
+  const composio = await startFakeComposio({ toolkits: { github: { no_auth: false, tools: TOOLS } }, authConfigs: BOTH_CONFIGS, accounts, ignoreUserIds: true });
+  t.after(() => composio.close());
+  const kept = new Map();
+  const sealed = { get: (scope, field) => kept.get(`${scope}/${field}`), set: async (scope, field, value) => void kept.set(`${scope}/${field}`, value), remove: async (scope) => void [...kept.keys()].filter((k) => k.startsWith(`${scope}/`)).forEach((k) => kept.delete(k)) };
+  const triggers = new ComposioTriggers({ control: { baseUrl: composio.baseUrl }, publicUrl: PUBLIC, sealed, credential: async () => ({ key: composio.apiKey, user: " ", toolkit: "github" }), holders: async () => [], say: () => {} });
+  const source = { kind: "composio", server: "gh", event: "GITHUB_ISSUE_ADDED_EVENT", config: { owner: "many-drop", repo: "agentrun-scratch" } };
+  await triggers.make(source, "trg_blank", true, async (s) => s).catch(() => undefined);
+  assert.deepEqual(composio.calls.filter((call) => call.method === "GET" && call.path === "/api/v3/connected_accounts").map((call) => call.query), [], "Composio's connected accounts were never asked for a blank user");
+  assert.deepEqual(upsertedAs(composio), [], "no trigger instance runs as an account of no one user");
+});
+
 // The create reads the server's credential first and again just before it saves. A save over the server in between, with
 // another key or now on another auth config, would leave the trigger on an account the server no longer serves: refused,
 // and what the create made is undone. Driven here by a credential that answers otherwise on its second read.
