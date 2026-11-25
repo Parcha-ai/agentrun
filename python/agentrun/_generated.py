@@ -569,6 +569,7 @@ __all__ = [
     "GetTemplateResponseTemplateComputerHereComputer",
     "GetTemplateResponseTemplateMcpItem",
     "GetTemplateResponseTemplateMcpItemToolsItem",
+    "GetTemplateResponseTemplateMcpItemToolsItemFile",
     "GetTemplateResponseTemplateMcpItemToolsItemPinValue",
     "GetTemplateResponseTemplateModel",
     "GetTemplateResponseTemplateModelChoicesItem",
@@ -668,6 +669,7 @@ __all__ = [
     "ImportTemplateResponseTemplateComputerHereComputer",
     "ImportTemplateResponseTemplateMcpItem",
     "ImportTemplateResponseTemplateMcpItemToolsItem",
+    "ImportTemplateResponseTemplateMcpItemToolsItemFile",
     "ImportTemplateResponseTemplateMcpItemToolsItemPinValue",
     "ImportTemplateResponseTemplateModel",
     "ImportTemplateResponseTemplateModelChoicesItem",
@@ -819,6 +821,7 @@ __all__ = [
     "ListTemplatesResponseTemplatesItemComputerHereComputer",
     "ListTemplatesResponseTemplatesItemMcpItem",
     "ListTemplatesResponseTemplatesItemMcpItemToolsItem",
+    "ListTemplatesResponseTemplatesItemMcpItemToolsItemFile",
     "ListTemplatesResponseTemplatesItemMcpItemToolsItemPinValue",
     "ListTemplatesResponseTemplatesItemModel",
     "ListTemplatesResponseTemplatesItemModelChoicesItem",
@@ -9421,10 +9424,16 @@ class _GetTemplateResponseTemplateMcpItemToolsItemRequired(TypedDict):
 
 class GetTemplateResponseTemplateMcpItemToolsItem(_GetTemplateResponseTemplateMcpItemToolsItemRequired, total=False):
     pin: dict[str, str | float | bool | None | list[str | float | bool | None] | GetTemplateResponseTemplateMcpItemToolsItemPinValue]
+    file: GetTemplateResponseTemplateMcpItemToolsItemFile
 
 
 class GetTemplateResponseTemplateMcpItemToolsItemPinValue(TypedDict):
     keys: list[str]
+
+
+class GetTemplateResponseTemplateMcpItemToolsItemFile(TypedDict):
+    folder: str
+    show: list[str]
 
 
 class _GetTemplateResponseTemplateBudgetRequired(TypedDict):
@@ -9567,10 +9576,16 @@ class _ImportTemplateResponseTemplateMcpItemToolsItemRequired(TypedDict):
 
 class ImportTemplateResponseTemplateMcpItemToolsItem(_ImportTemplateResponseTemplateMcpItemToolsItemRequired, total=False):
     pin: dict[str, str | float | bool | None | list[str | float | bool | None] | ImportTemplateResponseTemplateMcpItemToolsItemPinValue]
+    file: ImportTemplateResponseTemplateMcpItemToolsItemFile
 
 
 class ImportTemplateResponseTemplateMcpItemToolsItemPinValue(TypedDict):
     keys: list[str]
+
+
+class ImportTemplateResponseTemplateMcpItemToolsItemFile(TypedDict):
+    folder: str
+    show: list[str]
 
 
 class _ImportTemplateResponseTemplateBudgetRequired(TypedDict):
@@ -9694,10 +9709,16 @@ class _ListTemplatesResponseTemplatesItemMcpItemToolsItemRequired(TypedDict):
 
 class ListTemplatesResponseTemplatesItemMcpItemToolsItem(_ListTemplatesResponseTemplatesItemMcpItemToolsItemRequired, total=False):
     pin: dict[str, str | float | bool | None | list[str | float | bool | None] | ListTemplatesResponseTemplatesItemMcpItemToolsItemPinValue]
+    file: ListTemplatesResponseTemplatesItemMcpItemToolsItemFile
 
 
 class ListTemplatesResponseTemplatesItemMcpItemToolsItemPinValue(TypedDict):
     keys: list[str]
+
+
+class ListTemplatesResponseTemplatesItemMcpItemToolsItemFile(TypedDict):
+    folder: str
+    show: list[str]
 
 
 class _ListTemplatesResponseTemplatesItemBudgetRequired(TypedDict):

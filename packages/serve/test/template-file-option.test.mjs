@@ -15,10 +15,11 @@ import { scratch, serve, whenFree } from "./support.mjs";
 
 const FILE = { folder: "stripe", show: ["successful", "data.has_more", "data.data.-1.id"] };
 
-/** A package of the fake MCP server's add and delete_thing, its mcp entry ending in `entry` (YAML); its folder. */
-function packageWith(dir, name, entry) {
+/** A package of the fake MCP server's add and delete_thing (from `source`), its mcp entry ending in `entry` (YAML); its
+ *  folder. */
+function packageWith(dir, name, entry, source = "url") {
   mkdirSync(join(dir, name), { recursive: true });
-  writeFileSync(join(dir, name, "agent.md"), `---\nname: ${name}\nversion: 1.0.0\ndescription: Uses the fake MCP server.\nharness: [pi]\nmcp:\n  - source: url\n    toolkit: fake\n    tools: [add, delete_thing]\n    required: true\n    allow: [add]\n${entry}\napprovals: never\n---\nCall the tool you are asked to call.\n`);
+  writeFileSync(join(dir, name, "agent.md"), `---\nname: ${name}\nversion: 1.0.0\ndescription: Uses the fake MCP server.\nharness: [pi]\nmcp:\n  - source: ${source}\n    toolkit: fake\n    tools: [add, delete_thing]\n    required: true\n    allow: [add]\n${entry}\napprovals: never\n---\nCall the tool you are asked to call.\n`);
   return join(dir, name);
 }
 
@@ -75,12 +76,13 @@ test("an agent's own tool settings take a file option on an MCP tool's own key a
 
 test("through the API: apply writes the file setting on the agent; the owner may take it out; the export carries it back into the package", { timeout: 120_000 }, async (t) => {
   const dir = join(await scratch(t), "templates");
-  packageWith(dir, "filer", "    file: { add: { folder: stripe, show: [successful, data.has_more, data.data.-1.id] } }");
-  const server = await serve(t, { templates: dir });
+  // From Composio, so its export travels (a url server on this machine's loopback is blocked from an export).
+  packageWith(dir, "filer", "    file: { add: { folder: stripe, show: [successful, data.has_more, data.data.-1.id] } }", "composio");
+  const server = await serve(t, { templates: dir, mcpStandIns: true });
   const { api } = server;
   const fake = await startFakeMcp();
   t.after(() => fake.close());
-  assert.equal((await api("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" }, toolkit: "fake" })).status, 200);
+  assert.equal((await api("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" }, source: "composio", toolkit: "fake" })).status, 200);
   const listed = (await api("GET", "/templates")).body;
   const view = (listed.templates ?? listed.data ?? listed).find((one) => one.name === "filer");
   assert.deepEqual(view.mcp[0].tools.find((tool) => tool.name === "add").file, FILE, "the list shows it");
@@ -94,7 +96,8 @@ test("through the API: apply writes the file setting on the agent; the owner may
   assert.equal(exported.status, 200, JSON.stringify(exported.body));
   const bytesOf = (file) => Buffer.from(file.content, file.encoding === "base64" ? "base64" : "utf8");
   const manifest = parseYaml(bytesOf(exported.body.files.find((file) => file.path === "agent.md")).toString("utf8").split("---\n")[1]);
-  assert.deepEqual(manifest.mcp[0].file, { add: FILE }, "the export carries it");
+  assert.deepEqual(exported.body.report.blocked, [], JSON.stringify(exported.body.report));
+  assert.deepEqual(manifest.mcp?.[0]?.file, { add: FILE }, "the export carries it");
   assert.deepEqual(readPackage(memoryFiles(exported.body.name, "the export", new Map(exported.body.files.map((file) => [file.path, bytesOf(file)])))).mcp[0].file, { add: FILE });
 
   // The owner takes it out: the agent's tool answers the model as before.
