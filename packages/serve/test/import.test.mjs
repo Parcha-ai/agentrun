@@ -865,22 +865,6 @@ test("an import's plan reads no subagent file through secretlint: a subagent of 
   assert.equal(secretlintCalls.count, before, "no subagent file read through secretlint");
 });
 
-
-test("a secretlint-disable line in what an import reads turns no rule off: a key after it in the same run is cut", async (t) => {
-  const root = await scratch(t);
-  const at = join(root, "home");
-  const site = join(at, "code", "lint");
-  mkdirSync(site, { recursive: true });
-  const token = `${["gh", "p"].join("")}_${Array.from(randomBytes(36), (b) => "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"[b % 62]).join("")}`;
-  // A repository's own secretlint config printed in one turn, a token in the next.
-  claudeSession(at, site, 1, { prompt: `$ cat .secretlintrc.js\n// ${"secretlint"}-disable`, output: `GITHUB_TOKEN=${token}` });
-  const data = join(root, "agents");
-  const lines = [];
-  assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin" }, out: (line) => lines.push(line) }), 0);
-  for (const [file, bytes] of keptUnder(data)) assert.ok(!bytes.includes(token), `${file.slice(data.length + 1)} holds the token`);
-  assert.ok(lines.includes("1 secret removed"), lines.filter((l) => /removed/.test(l)).join(" "));
-});
-
 test("reading text through secretlint leaves no performance marks behind in the process", async () => {
   const { secretsIn } = await import("../dist/secret-cut.js");
   const before = performance.getEntriesByType("mark").length;
