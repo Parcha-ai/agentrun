@@ -649,16 +649,21 @@ export async function startLoginHere(deps: ClaudeLoginDeps): Promise<ClaudeLogin
 }
 
 /** At the server's start: a setting saved where the mode is now off or refused (`why`: the switch, a listen address past
- *  loopback, a second token, the API-only profile; else, for the setting's place, folders the server's user may not use,
- *  loginRefused with `env`) goes, so no runner, in this process or another, runs on it; the reason is logged. A turn on
- *  `signIns`' queue, as every change of the setting is. */
+ *  loopback, a second token, the API-only profile) goes, so no runner, in this process or another, runs on it; the
+ *  reason is logged. One whose folders the server's user may not use (loginRefused with `env`, for the setting's place)
+ *  stays, and the reason is logged: every read refuses it in words while they are so (no run, no sign-in, the view's
+ *  `refused`), and the person mends that with a chmod or by starting the server as the right user, which a deleted
+ *  setting would have turned off for good. A turn on `signIns`' queue, as every change of the setting is. */
 export async function dropRefusedLogin(signIns: Pick<ClaudeSignIns, "serial">, settings: Pick<Settings, "get" | "remove">, why: string | undefined, env: Readonly<Record<string, string | undefined>>, log: (line: string) => void): Promise<void> {
   await signIns.serial(async () => {
     const setting = await claudeLoginSetting(settings);
-    const refused = setting && (why ?? loginRefused(setting.place, env));
-    if (!refused) return;
-    await settings.remove(CLAUDE_LOGIN_SETTING);
-    log(`Claude Code's login on this machine turned off: ${refused}`);
+    if (!setting) return;
+    if (why) {
+      await settings.remove(CLAUDE_LOGIN_SETTING);
+      return log(`Claude Code's login on this machine turned off: ${why}`);
+    }
+    const refused = loginRefused(setting.place, env);
+    if (refused) log(`Claude Code's login on this machine is kept, and not used while it is refused: ${refused}`);
   });
 }
 

@@ -1617,7 +1617,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // landed or were undone, never by a key taken out for a removal that then fails.
   // The sign-in this server starts, kept for this process (claude-sign-in.ts). Its queue is the one way the login's
   // setting changes, the drop here included. A server whose user may not use the saved login's folders (its home, or
-  // those its env gives this machine's login: loginRefused) drops it too.
+  // those its env gives this machine's login: loginRefused) keeps it, refused in words, and logs why.
   const claudeSignIns = new ClaudeSignIns({ limitMs: options.claudeSignInLimitMs });
   await dropRefusedLogin(claudeSignIns, store.settings, loginOff ?? oneOwner.refused(), base, (line) => (log ? log(logLine("claude_login", { line })) : void process.stderr.write(`agentrun-serve: ${line}\n`)));
   // The status checks' folders a server killed mid-check left in the temporary folder, each with a copy of the account
