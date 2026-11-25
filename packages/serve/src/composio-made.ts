@@ -35,8 +35,7 @@ export const COMPOSIO_ORIGIN = "https://backend.composio.dev";
 export type Cleanup = { remove: Thing[]; kept: (Thing & { by?: string })[] };
 export type Thing = { kind: "account" | "auth_config"; id: string };
 
-/** The store.settings key a server's record lives under. */
-export const composioMadeKey = (name: string): string => `mcp.composio/${name}`;
+export { composioAccountKey, composioMadeKey } from "./store/mcp-record-keys.js";
 
 /** The settings value a record is stored as, bound to the server row it was written for. */
 export const storedMade = (made: ComposioMade, row: { createdAt: number }): ComposioMade & { of: number } => ({ ...made, of: row.createdAt });

@@ -1,0 +1,72 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "osworld.4d117223",
+  "version": 1,
+  "title": "Set every regular file under the folder to mode 644",
+  "split": "heldout",
+  "source": {
+    "suite": "OSWorld-Verified",
+    "id": "os/4d117223-a354-47fb-8b45-62ab1390a95f",
+    "revision": "0ad41bee56565efe7bb3c3a5ebc67590a1b8276f",
+    "licence": "Apache-2.0 (Copyright 2024 XLANG NLP Lab); the instruction is copied word for word, and setup.sh and eval.sh are OSWorld's (from its file cache) with the changes their headers name",
+    "changes": "OSWorld's /home/user is the run's folder, /tmp/computer-bench-<nonce>. OSWorld opened GNOME Terminal with Ctrl+Alt+T and typed `cd testDir`; setup here opens Xfce's terminal in testDir, with HOME set to the run's folder. eval.sh also fails when testDir no longer holds its three files, which the original let pass."
+  },
+  "tags": ["osworld", "os", "terminal"],
+  "needs": {
+    "os": "linux",
+    "kind": "desktop",
+    "capabilities": [
+      { "id": "xfce4-terminal", "kind": "exec", "why": "Xfce's terminal, xdotool, which setup places its window with, and bash, which the check runs.", "argv": ["sh", "-c", "command -v xfce4-terminal && command -v xdotool && command -v bash"] }
+    ]
+  },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "OSWorld's setup.sh: testDir with three files in three folders, at modes 755, 644 and 777.",
+      "params": { "argv": ["bash", "-c", "{{file:setup.sh}}"], "timeoutMs": 20000 }
+    },
+    {
+      "method": "process.start",
+      "why": "Open Xfce's terminal in testDir, with HOME set to the run's folder: it stands in for OSWorld's /home/user.",
+      "params": { "argv": ["sh", "-c", "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); export HOME=/tmp/computer-bench-{{nonce}}; cd /tmp/computer-bench-{{nonce}}/testDir && echo $$ > /tmp/computer-bench-{{nonce}}-terminal.pid && exec xfce4-terminal --disable-server --working-directory=/tmp/computer-bench-{{nonce}}/testDir"] }
+    },
+    {
+      "method": "exec.run",
+      "why": "Wait for the terminal's window (20 s at most), make it fill the screen, put the pointer on it and activate it: a window manager gives the keys to the window activated, and with none they go to the window under the pointer.",
+      "params": { "argv": ["sh", "-c", "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); w=$(timeout 20 xdotool search --sync --onlyvisible --class xfce4-terminal | head -n1); [ -n \"$w\" ] || { echo no terminal window in 20 s >&2; exit 1; }; eval $(xdotool getdisplaygeometry --shell); xdotool windowmove $w 0 0 windowsize $w $WIDTH $HEIGHT; xdotool mousemove $((WIDTH / 2)) $((HEIGHT / 2)); xdotool windowactivate $w 2>/dev/null; sleep 1"], "timeoutMs": 30000 }
+    }
+  ],
+  "exec": "deny",
+  "instruction": "Change the permission of all regular files under current directory tree to 644",
+  "budget": { "steps": 100, "usd": 3, "wall_s": 900 },
+  "checks": [
+    {
+      "id": "eval",
+      "kind": "exec",
+      "why": "OSWorld's eval.sh: every regular file under testDir is -rw-r--r--, and (ours) all three are still there. Setup left two at 755 and 777, so an agent that does nothing fails.",
+      "argv": ["bash", "-c", "{{file:eval.sh}}"],
+      "timeoutMs": 20000,
+      "stdout": { "contains": "All files have the correct permissions." }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Close the run's apps by the pids setup kept beside the folder (a desktop may have others open), and delete the run's folder and its siblings.",
+      "params": { "argv": ["sh", "-c", "for f in /tmp/computer-bench-{{nonce}}-*.pid; do [ -f \"$f\" ] && kill -9 \"$(cat \"$f\")\" 2>/dev/null; done; rm -rf /tmp/computer-bench-{{nonce}} /tmp/computer-bench-{{nonce}}-*; true"], "timeoutMs": 20000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "input.actions",
+      "why": "Type a find that runs chmod 644 on every regular file, and run it.",
+      "params": {
+        "actions": [
+          { "type": "type", "text": "find . -type f -exec chmod 644 {} +" },
+          { "type": "key", "keys": ["enter"] },
+          { "type": "wait", "ms": 1500 }
+        ]
+      }
+    }
+  ]
+}

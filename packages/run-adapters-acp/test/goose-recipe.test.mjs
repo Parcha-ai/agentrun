@@ -46,6 +46,22 @@ test('its config turns every one of the eight bundled extensions off, and names 
   assert.deepEqual(Object.keys(recipeFile('goose').files), ['.config/goose/config.yaml']);
 });
 
+test("its allowFile is Goose's permission file, in Goose's own form, and it declares no title tie: Goose asks nothing for our tools, and every request it does make goes to the host's gate", () => {
+  const file = recipeFile('goose');
+  assert.deepEqual(file.allowFile, { path: '.config/goose/permission.yaml', form: 'goose-permission' });
+  assert.equal(file.quirks?.permissionTie, undefined);
+});
+
+test('recipeProblems refuses an allowFile outside HOME, one in a form no agent reads, one at a path the recipe also writes, and a title tie other than "title"', () => {
+  const base = { id: 'x', command: BINARY, declares: { load: true, mcp: 'http' }, billing: { kind: 'proxy' } };
+  assert.deepEqual(recipeProblems({ ...base, allowFile: { path: '.config/goose/permission.yaml', form: 'goose-permission' }, announces: { tool: '_meta.goose.toolCall.toolName' }, quirks: { permissionTie: 'title' } }), []);
+  assert.match(recipeProblems({ ...base, allowFile: { path: '/etc/goose/permission.yaml', form: 'goose-permission' } }).join(' '), /allowFile .*inside the private HOME/);
+  assert.match(recipeProblems({ ...base, allowFile: { path: '.config/goose/permission.yaml', form: 'yaml' } }).join(' '), /allowFile .*form/);
+  assert.match(recipeProblems({ ...base, allowFile: { path: '.config/goose/permission.yaml' } }).join(' '), /allowFile .*form/);
+  assert.match(recipeProblems({ ...base, allowFile: { path: 'p.yaml', form: 'goose-permission' }, files: { 'p.yaml': '' } }).join(' '), /allowFile .*files/);
+  assert.match(recipeProblems({ ...base, quirks: { permissionTie: 'name' } }).join(' '), /permissionTie/);
+});
+
 test('a run\'s recipe adds the binary and GOOSE_MODEL, and recipeProblems finds none', () => {
   const recipe = gooseRecipe({ command: BINARY, model: 'claude-sonnet-5-5' });
   assert.deepEqual(recipeProblems(recipe), []);
@@ -64,4 +80,45 @@ test('a recipe that could not run is refused: a relative binary, a model that is
 test('the package ships its recipes', () => {
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   assert.ok(pkg.files.includes('recipes'));
+});
+
+test('recipeProblems refuses the title tie without an announces field: the tie answers only a request for a call that field named, so without it the tie never fires', () => {
+  // Before: both loaded, and every request for our tools then went to the gate, parked or denied.
+  const base = { id: 'x', command: BINARY, declares: { load: true, mcp: 'http' }, billing: { kind: 'proxy' } };
+  assert.match(recipeProblems({ ...base, quirks: { permissionTie: 'title' } }).join(' '), /title tie .*needs announces/);
+  assert.deepEqual(recipeProblems({ ...base, announces: { tool: 'rawInput.toolName', server: 'rawInput.providerIdentifier', args: 'rawInput.args' }, quirks: { permissionTie: 'title' } }), []);
+});
+
+test("recipeProblems refuses an announces path that starts at the update's title, toolCallId, kind, status, rawOutput, content, locations or sessionUpdate: one through them would let a title or a tool's output name a call again", () => {
+  // Before: any dotted path loaded, so `{ "tool": "title" }` named a call by a title of exactly `agentrun__write`, and
+  // `{ "tool": "rawOutput.toolName" }` by a native read whose output held `toolName: "agentrun__write"`.
+  const base = { id: 'x', command: BINARY, declares: { load: true, mcp: 'http' }, billing: { kind: 'proxy' } };
+  for (const said of [{ tool: 'title' }, { tool: 'title.text' }, { tool: 'toolCallId' }, { tool: 'toolCallId.x' }, { tool: 'kind.name' }, { tool: 'status' }, { tool: 'rawInput.toolName', server: 'kind' }, { tool: 'rawInput.toolName', args: 'status' }, { tool: 'rawOutput.toolName' }, { tool: 'rawOutput' }, { tool: 'rawInput.toolName', server: 'rawOutput.server' }, { tool: 'content.text' }, { tool: 'locations.path' }, { tool: 'sessionUpdate' }]) {
+    assert.match(recipeProblems({ ...base, announces: said }).join(' '), /announces is/, JSON.stringify(said));
+  }
+});
+
+test("recipeProblems takes an announces path anywhere else in the update: only Goose's _meta path is read from a real release, so no other agent's shape is pinned", () => {
+  // Before: only paths under _meta or rawInput loaded, a rule fitted to Cursor's rawInput as only our fake sends it.
+  const base = { id: 'x', command: BINARY, declares: { load: true, mcp: 'http' }, billing: { kind: 'proxy' } };
+  for (const said of [{ tool: 'toolName' }, { tool: 'titled.toolName' }, { tool: 'statusOf.tool' }, { tool: 'rawOutputs.toolName' }, { tool: 'contents.tool' }, { tool: 'rawInput.toolName', args: 'rawInput' }]) {
+    assert.deepEqual(recipeProblems({ ...base, announces: said }), [], JSON.stringify(said));
+  }
+});
+
+test("its announces field names a call by Goose 1.59.2's _meta.goose.toolCall.toolName (`agentrun__<tool>`, the name the model calls), never by its title", () => {
+  // Goose's tool_call carries the tool's prefixed name in _meta (goose-acp conversion.rs goose_tool_call_meta); its title
+  // is for people (`agentrun: write · proof.txt`) and is never read.
+  assert.deepEqual(recipeFile('goose').announces, { tool: '_meta.goose.toolCall.toolName' });
+});
+
+test('recipeProblems refuses an announces field with no tool path, a path that is not dotted names, or a key it does not know', () => {
+  const base = { id: 'x', command: BINARY, declares: { load: true, mcp: 'http' }, billing: { kind: 'proxy' } };
+  assert.deepEqual(recipeProblems({ ...base, announces: { tool: '_meta.goose.toolCall.toolName' } }), []);
+  assert.deepEqual(recipeProblems({ ...base, announces: { tool: 'rawInput.toolName', server: 'rawInput.providerIdentifier', args: 'rawInput.args' } }), []);
+  assert.match(recipeProblems({ ...base, announces: {} }).join(' '), /announces/);
+  assert.match(recipeProblems({ ...base, announces: { tool: 7 } }).join(' '), /announces/);
+  assert.match(recipeProblems({ ...base, announces: { tool: 'rawInput..toolName' } }).join(' '), /announces/);
+  assert.match(recipeProblems({ ...base, announces: { tool: 'rawInput.toolName', server: '' } }).join(' '), /announces/);
+  assert.match(recipeProblems({ ...base, announces: { tool: 'rawInput.toolName', title: 'title' } }).join(' '), /announces/);
 });

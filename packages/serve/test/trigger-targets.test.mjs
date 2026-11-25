@@ -10,6 +10,8 @@ import { after, test } from "node:test";
 const { openSqliteStore } = await import("../dist/store/index.js");
 const { triggerTargets, previousCarriedWords, previousResultTooLarge, RECIPE_MESSAGE_PERSON_ONLY } = await import("../dist/trigger-targets.js");
 const { readLaunchBody } = await import("../dist/run-launch.js");
+const { ApiError } = await import("../dist/errors.js");
+const handedValues = await import("../dist/handed-values.js");
 const { runnersRefused } = await import("../dist/runner/presence.js");
 const { carriesPrevious } = await import("../dist/trigger-adapter.js");
 const { TRIGGER_ADAPTERS } = await import("../dist/trigger-adapters.js");
@@ -310,6 +312,19 @@ test("a firing's message is sent in its run's agent's delete turn (runWrite): re
   }));
   await assert.rejects(() => t.message({ kind: "message_run", run_id: "run-1", input: { content: "hi" } }, { content: "hi" }, "f1", from, BOUND), (error) => error === purged);
   assert.deepEqual(turns, [["a1", "run-1"]], "in the turn of its run's agent");
+  assert.equal((await store.commands("run-1", 0)).length, 0, "nothing written");
+  assert.notEqual((await store.triggers.firing("t1", "f1")).status, "sent", "its firing is not marked sent");
+});
+
+test("a firing's message to a run whose launch's sealed part doesn't open here is skipped in words, nothing written and its firing not sent: its text can't be cut of what the run was handed", async () => {
+  const store = await freshStore();
+  await store.runs.create({ id: "run-1", agentId: "a1", revisionId: "r1" });
+  await dueFirings(store, ["f1"]);
+  const withheld = new ApiError("not_continuable", handedValues.WITHHELD_MESSAGE, { details: { reason: "withheld" } });
+  const t = triggerTargets(store, deps({ cutHeld: async () => { throw withheld; } }));
+  const answer = await t.message({ kind: "message_run", run_id: "run-1", input: { content: "hi" } }, { content: "hi" }, "f1", from, BOUND);
+  assert.deepEqual(answer, { skipped: handedValues.WITHHELD_MESSAGE });
+  assert.equal(typeof handedValues.WITHHELD_MESSAGE, "string");
   assert.equal((await store.commands("run-1", 0)).length, 0, "nothing written");
   assert.notEqual((await store.triggers.firing("t1", "f1")).status, "sent", "its firing is not marked sent");
 });

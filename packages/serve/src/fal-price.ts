@@ -14,12 +14,10 @@
 // request: a server at fal's own host scopes each key to the run before it leaves (falKeys).
 import { createHash } from "node:crypto";
 import type { PublicFetchOptions } from "@parcha/pi-browser";
-import type { McpKeys, McpMeter, McpQuote } from "./mcp-gateway.js";
+import type { McpKeys, McpMeter, McpQuote, McpResults } from "./mcp-gateway.js";
 import { mediaSeconds, voiceSeconds } from "./media-duration.js";
 import { SAVE_MAX_BYTES, type SaveSlots, SERVER_SLOTS } from "./web-save.js";
-
-/** In whole millionths of a dollar, so a sum of prices is the price. */
-const usd = (dollars: number) => Math.round(dollars * 1e6) / 1e6;
+import { micro } from "./micro.js";
 
 /** The host of fal's hosted MCP server (its key endpoint /mcp and its sign-in endpoint /mcp-relay). */
 export const FAL_MCP_HOST = "mcp.fal.ai";
@@ -199,10 +197,12 @@ type Tier = { rate: number; words: string } | { why: string };
  *    (get_pricing's) and $0.20 at 720p. Their resolution has no default (their OpenAPI).
  *  An endpoint not listed here is priced at get_pricing's one rate, whatever its settings, unless it falls in a family
  *  fal bills by its settings (TIERED_FAMILIES): there only ONE_RATE's endpoints are, and any other is unpriceable. */
-type Tiers = { base: number; rate: (input: Record<string, unknown>) => Tier; perUnitUsd?: (input: Record<string, unknown>) => { usd: number; words: string } | { why: string } | undefined };
+/** `unit`: the unit get_pricing stated `base` in when the rates were decided; a rate in another is not one of these. */
+type Tiers = { base: number; unit: string; rate: (input: Record<string, unknown>) => Tier; perUnitUsd?: (input: Record<string, unknown>) => { usd: number; words: string } | { why: string } | undefined };
 /** A rate set by one setting: `rates` by value. */
-const byOne = (field: string, base: number, rates: ReadonlyMap<unknown, number>, fallback?: unknown): Tiers => ({
+const byOne = (unit: string, field: string, base: number, rates: ReadonlyMap<unknown, number>, fallback?: unknown): Tiers => ({
   base,
+  unit,
   rate: (input) => {
     const setting = settingOf(input, field, [...rates.keys()], fallback);
     return "why" in setting ? setting : { rate: rates.get(setting.value)!, words: setting.words };
@@ -214,6 +214,7 @@ const audio = (off: number, on: number) => ({ off, on });
  *  audio (on by default). */
 const veo = (base: number, rates: Readonly<Record<string, { off: number; on: number }>>): Tiers => ({
   base,
+  unit: "seconds",
   rate: (input) => {
     const sound = settingOf(input, "generate_audio", [true, false], true);
     if ("why" in sound) return sound;
@@ -231,6 +232,7 @@ const VEO31_LITE = veo(0.05, { "720p": audio(0.03, 0.05), "1080p": audio(0.05, 0
  *  no rate for voice control. */
 const kling = (base: number, page: { off: number; on: number; voice?: number }, floor = 0): Tiers => ({
   base,
+  unit: "seconds",
   rate: (input) => {
     const sound = settingOf(input, "generate_audio", [true, false], true);
     if ("why" in sound) return sound;
@@ -245,32 +247,32 @@ const kling = (base: number, page: { off: number; on: number; voice?: number }, 
     return { rate: held(sound.value ? page.on : page.off), words: sound.words };
   },
 });
-const IDEOGRAM_V3 = byOne("rendering_speed", 0.03, new Map([["TURBO", 0.03], ["BALANCED", 0.06], ["QUALITY", 0.09]]), "BALANCED");
+const IDEOGRAM_V3 = byOne("images", "rendering_speed", 0.03, new Map([["TURBO", 0.03], ["BALANCED", 0.06], ["QUALITY", 0.09]]), "BALANCED");
 /** A web search's charge, per unit: $0.015 when enable_web_search is true (its default is false). */
 const webSearch = (input: Record<string, unknown>): { usd: number; words: string } | { why: string } | undefined => {
   const search = settingOf(input, "enable_web_search", [true, false], false);
   return "why" in search ? search : search.value ? { usd: 0.015, words: "a web search" } : undefined;
 };
-const NANO_BANANA_PRO: Tiers = { ...byOne("resolution", 0.15, new Map([["1K", 0.15], ["2K", 0.15], ["4K", 0.3]]), "1K"), perUnitUsd: webSearch };
+const NANO_BANANA_PRO: Tiers = { ...byOne("images", "resolution", 0.15, new Map([["1K", 0.15], ["2K", 0.15], ["4K", 0.3]]), "1K"), perUnitUsd: webSearch };
 /** Nano Banana 2: by its resolution, plus a web search's charge and high thinking's ($0.002, thinking_level "high"; none
  *  for "minimal" or none, its default), each per unit. */
 const NANO_BANANA_2: Tiers = {
-  ...byOne("resolution", 0.08, new Map([["0.5K", 0.06], ["1K", 0.08], ["2K", 0.12], ["4K", 0.16]]), "1K"),
+  ...byOne("images", "resolution", 0.08, new Map([["0.5K", 0.06], ["1K", 0.08], ["2K", 0.12], ["4K", 0.16]]), "1K"),
   perUnitUsd: (input) => {
     const search = webSearch(input);
     if (search && "why" in search) return search;
     const thinking = settingOf(input, "thinking_level", [null, "minimal", "high"], null);
     if ("why" in thinking) return thinking;
     const added = [...(search ? [search] : []), ...(thinking.value === "high" ? [{ usd: 0.002, words: "high thinking" }] : [])];
-    return added.length ? { usd: usd(added.reduce((sum, one) => sum + one.usd, 0)), words: added.map((one) => one.words).join(" and ") } : undefined;
+    return added.length ? { usd: micro(added.reduce((sum, one) => sum + one.usd, 0)), words: added.map((one) => one.words).join(" and ") } : undefined;
   },
 };
 const KLING_PRO = kling(0.14, { off: 0.112, on: 0.168, voice: 0.196 }, 0.14);
 const KLING_STANDARD = kling(0.14, { off: 0.084, on: 0.126, voice: 0.154 }, 0.14);
-const FABRIC = byOne("resolution", 0.08, new Map([["480p", 0.08], ["720p", 0.15]]));
+const FABRIC = byOne("seconds", "resolution", 0.08, new Map([["480p", 0.08], ["720p", 0.15]]));
 const RATE_TIERS: ReadonlyMap<string, Tiers> = new Map<string, Tiers>([
   ...["", "/edit", "/remix", "/reframe", "/replace-background", "/generate-transparent"].map((variant) => [`fal-ai/ideogram/v3${variant}`, IDEOGRAM_V3] as const),
-  ...["", "/edit", "/remix"].map((variant) => [`fal-ai/ideogram/character${variant}`, byOne("rendering_speed", 0.05, new Map([["TURBO", 0.1], ["BALANCED", 0.15], ["QUALITY", 0.2]]), "BALANCED")] as const),
+  ...["", "/edit", "/remix"].map((variant) => [`fal-ai/ideogram/character${variant}`, byOne("images", "rendering_speed", 0.05, new Map([["TURBO", 0.1], ["BALANCED", 0.15], ["QUALITY", 0.2]]), "BALANCED")] as const),
   ...["", "/image-to-video", "/first-last-frame-to-video", "/reference-to-video"].map((variant) => [`fal-ai/veo3.1${variant}`, VEO31] as const),
   ["fal-ai/veo3.1/extend-video", veo(0.4, { "720p": audio(0.2, 0.4) })],
   ...["/fast", "/fast/image-to-video", "/fast/first-last-frame-to-video", "/fast/reference-to-video"].map((variant) => [`fal-ai/veo3.1${variant}`, VEO31_FAST] as const),
@@ -283,7 +285,7 @@ const RATE_TIERS: ReadonlyMap<string, Tiers> = new Map<string, Tiers>([
   ["fal-ai/kling-video/v3/standard/image-to-video", KLING_STANDARD],
   ["fal-ai/kling-video/v3/standard/text-to-video", KLING_STANDARD],
   ["fal-ai/kling-video/v3/4k/image-to-video", kling(0.42, { off: 0.42, on: 0.42 })],
-  ["fal-ai/sync-lipsync/v2", byOne("model", 3, new Map([["lipsync-2", 3], ["lipsync-2-pro", 5]]), "lipsync-2")],
+  ["fal-ai/sync-lipsync/v2", byOne("minutes", "model", 3, new Map([["lipsync-2", 3], ["lipsync-2-pro", 5]]), "lipsync-2")],
   ["fal-ai/nano-banana-pro", NANO_BANANA_PRO],
   ["fal-ai/nano-banana-pro/edit", NANO_BANANA_PRO],
   ["fal-ai/gemini-3-pro-image-preview", NANO_BANANA_PRO],
@@ -291,7 +293,7 @@ const RATE_TIERS: ReadonlyMap<string, Tiers> = new Map<string, Tiers>([
   ...["fal-ai/nano-banana-2", "fal-ai/nano-banana-2/edit", "fal-ai/gemini-3.1-flash-image-preview", "fal-ai/gemini-3.1-flash-image-preview/edit"].map((endpoint) => [endpoint, NANO_BANANA_2] as const),
   ["veed/fabric-1.0", FABRIC],
   ["veed/fabric-1.0/text", FABRIC],
-  ["veed/fabric-1.0/fast", byOne("resolution", 0.1, new Map([["480p", 0.1], ["720p", 0.2]]))],
+  ["veed/fabric-1.0/fast", byOne("seconds", "resolution", 0.1, new Map([["480p", 0.1], ["720p", 0.2]]))],
 ]);
 /** The families fal bills by their settings: an endpoint is in one when it is the family's id or under it. Ideogram v4's
  *  pages (read 2026-11-23 13:13Z) bill by rendering_speed and megapixels, and get_pricing (13:20:43Z) states most of
@@ -323,7 +325,7 @@ export function decidedRates(): { families: string[]; tiered: string[]; oneRate:
 
 /** The rate a job of `endpoint` is billed at, against get_pricing's (in `unit`): `ratio`, its tier's rate over the rate
  *  get_pricing states (RATE_TIERS), `perUnitUsd` a charge added to each unit's price, and `words` the settings they came from (none at
- *  get_pricing's own rate); or `unknown`, why it can't be known. 1 and nothing for an endpoint with one rate; unknown for
+ *  get_pricing's own rate); or `unknown`, why it can't be known (get_pricing stating it in another unit than its tiers' among them). 1 and nothing for an endpoint with one rate; unknown for
  *  an endpoint in a family fal bills by its settings whose rate is not decided here (TIERED_FAMILIES). */
 export function rateOf(endpoint: string, unit: string, input: unknown): { ratio: number; perUnitUsd: number; words: string[] } | { unknown: string } {
   const tiers = RATE_TIERS.get(endpoint);
@@ -333,6 +335,8 @@ export function rateOf(endpoint: string, unit: string, input: unknown): { ratio:
     if (family && !ONE_RATE.has(endpoint)) return { unknown: `fal bills ${family} by its settings and ${endpoint} has no rate decided here` };
     return { ratio: 1, perUnitUsd: 0, words: [] };
   }
+  // The ratios and the model page's rates hold only in the unit they were decided in: per second, minute or image.
+  if (unit !== tiers.unit) return { unknown: `get_pricing states ${endpoint} per ${oneOf(unit)}, and its rates were decided per ${oneOf(tiers.unit)}` };
   if (!isObject(input)) return { ratio: 1, perUnitUsd: 0, words: [] };
   const bills = `fal bills ${endpoint} per ${oneOf(unit)} at a rate`;
   const tier = tiers.rate(input);
@@ -450,7 +454,7 @@ function bodyOf(result: Record<string, unknown>): unknown {
   }
 }
 
-const shown = (n: number) => String(usd(n));
+const shown = (n: number) => String(micro(n));
 
 /** How a MediaReader reads: under `maxBytes` (lower than its own cap; never higher), with `httpsOnly` refusing http
  *  on the first hop and at every redirect, and following at most `maxRedirects` (0 to 5; default 5). */
@@ -504,7 +508,7 @@ function chargeOfJob(quote: Priced | Unpriced, item: unknown): number | null {
   if (!("holdUsd" in quote)) return null;
   const after = item.status === "completed" ? unitsAfter(quote.unit, item.result) : undefined;
   if (after === undefined) return quote.holdUsd;
-  return usd(quote.unitPrice * (quote.step ? roundedUp(after, quote.unit, quote.step) : after));
+  return micro(quote.unitPrice * (quote.step ? roundedUp(after, quote.unit, quote.step) : after));
 }
 
 /** `units` of `unit` (seconds or minutes) rounded up to a whole `step` of seconds, in `unit`. Rounded to the
@@ -523,7 +527,7 @@ const hex16 = (text: string) => createHash("sha256").update(text).digest("hex").
 /** What a run adds to each key: `.` and 16 hex. */
 const KEY_TAIL = 17;
 /** The longest submission_key an agent can send fal in a run: fal's KEY_MAX less the run's KEY_TAIL. */
-export const KEY_ROOM = KEY_MAX - KEY_TAIL;
+const KEY_ROOM = KEY_MAX - KEY_TAIL;
 
 /** The submission keys of a call of fal's `tool`: its own, and for submit_jobs each request's. */
 const keysOf = (tool: string, args: Record<string, unknown>): unknown[] => [args.submission_key, ...(tool === "submit_jobs" && Array.isArray(args.requests) ? args.requests.map((one: unknown) => (isObject(one) ? one.submission_key : undefined)) : [])];
@@ -555,22 +559,82 @@ export function falKeys(run: string): McpKeys {
   };
 }
 
+/** Where a fal job's result is filed in the run's files: evidence/fal/<request_id>.json. */
+export const FAL_RESULTS_DIR = "evidence/fal";
+/** fal's request ids: UUIDs. Only one names a file: anything else (a path, a dot name, a name past a filename's
+ *  limit, a plain name fal never gives) is never filed. */
+export const FAL_REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** fal's tools whose answers carry completed jobs: run_model's one, submit_jobs' and wait_for_jobs' each. */
+const WITH_RESULTS = new Set(["run_model", "submit_jobs", "wait_for_jobs"]);
+
+/** The completed jobs of fal's answer to `tool`, each by its request_id with its `result` as fal answered it: the answer
+ *  itself (run_model), and each entry of a list in it (submit_jobs', wait_for_jobs' `jobs`). A job is completed when
+ *  fal says so (`status` "completed") and it carries a `result`. One whose request_id is not a UUID is left out, and a
+ *  request_id twice in one answer is filed from its first entry. */
+export const falResults: McpResults = {
+  dir: FAL_RESULTS_DIR,
+  of(tool, reply) {
+    if (!WITH_RESULTS.has(tool)) return [];
+    const body = bodyOf(reply);
+    if (!isObject(body)) return [];
+    const entries = [body, ...Object.values(body).flatMap((value) => (Array.isArray(value) ? value : []))];
+    const seen = new Set<string>();
+    return entries.flatMap((entry) => {
+      if (!isObject(entry) || entry.status !== "completed" || !Object.hasOwn(entry, "result")) return [];
+      const id = entry.request_id;
+      if (typeof id !== "string" || !FAL_REQUEST_ID.test(id) || seen.has(id)) return [];
+      seen.add(id);
+      return [{ name: id, value: entry.result }];
+    });
+  },
+};
+
 /** A fal server's meter: fal's unit prices read through the gateway's `ask`, kept per endpoint for PRICE_TTL_MS.
  *  `media` reads an input media file (none: such a job is unpriceable); `now`, the clock. */
 export function falMeter({ media, now = Date.now }: { media?: MediaReader; now?: () => number } = {}): McpMeter {
+  type Read = { unitPrice: number; unit: string; at: number } | { why: string };
   const prices = new Map<string, { unitPrice: number; unit: string; at: number }>();
-  const unitPrice = async (endpoint: string, ask: Parameters<McpMeter["quote"]>[2]): Promise<{ unitPrice: number; unit: string; at: number } | { why: string }> => {
-    const kept = prices.get(endpoint);
-    if (kept && now() - kept.at < PRICE_TTL_MS) return kept;
-    const answer = await ask("get_pricing", { endpoint_id: endpoint });
+  /** The reads under way, by endpoint: calls sent together share one get_pricing call rather than each sending its own.
+   *  `signal` is the signal of the call that sent it. */
+  const reading = new Map<string, { read: Promise<Read>; signal: AbortSignal }>();
+  const readPrice = async (endpoint: string, ask: Parameters<McpMeter["quote"]>[2]): Promise<Read> => {
     const unread = (why: string) => ({ why: `fal's price for ${endpoint} could not be read (its get_pricing ${why})` });
+    // get_pricing reads a price and runs no job: an error or no answer is asked once more, never kept as the price.
+    let answer = await ask("get_pricing", { endpoint_id: endpoint });
+    if (!answer || answer.isError === true) answer = await ask("get_pricing", { endpoint_id: endpoint });
     if (!answer) return unread("did not answer");
     if (answer.isError === true) return unread("answered an error");
     const price = priceIn(bodyOf(answer), endpoint);
     if (!price) return unread("lists no USD price for it");
+    // fal bills its jobs: a rate of $0 is no price, so the job is unpriceable (refused under a cap, booked as unknown).
+    if (price.unitPrice === 0) return unread(`states $0 per ${oneOf(price.unit)} for it, which is no price`);
     const read = { ...price, at: now() };
     prices.set(endpoint, read);
     return read;
+  };
+  const unitPrice = async (endpoint: string, ask: Parameters<McpMeter["quote"]>[2], signal: AbortSignal): Promise<Read> => {
+    for (;;) {
+      const kept = prices.get(endpoint);
+      if (kept && now() - kept.at < PRICE_TTL_MS) return kept;
+      const shared = reading.get(endpoint);
+      if (!shared) break;
+      try {
+        const read = await shared.read;
+        // A read whose call stopped (its deadline, its run's abort) got no answer from fal, which says nothing of the
+        // price: a call still live reads again, with its own ask. A read that failed while its call was live stands.
+        if (!("why" in read) || !shared.signal.aborted || signal.aborted) return read;
+      } catch {
+        // The call that sent it threw: this one reads with its own ask.
+      }
+      if (reading.get(endpoint) === shared) reading.delete(endpoint);
+    }
+    const mine = { read: readPrice(endpoint, ask), signal };
+    reading.set(endpoint, mine);
+    try {
+      return await mine.read;
+    } finally {
+      if (reading.get(endpoint) === mine) reading.delete(endpoint);
+    }
   };
   /** The longest of the media at `urls`, in seconds by `measure`, or the URL whose length could not be read. */
   const longest = async (urls: readonly string[], signal: AbortSignal, read?: MediaRead, measure: (bytes: Uint8Array) => number | undefined = mediaSeconds): Promise<number | { unread: string }> => {
@@ -585,7 +649,7 @@ export function falMeter({ media, now = Date.now }: { media?: MediaReader; now?:
   };
   const quoteJob = async (job: FalJob, ask: Parameters<McpMeter["quote"]>[2], signal: AbortSignal): Promise<Priced | Unpriced> => {
     if (!job.endpoint) return { job, why: "this job names no endpoint_id to price" };
-    const price = await unitPrice(job.endpoint, ask);
+    const price = await unitPrice(job.endpoint, ask, signal);
     if ("why" in price) return { job, why: price.why };
     // The rate its settings are billed at, before any media is read for a job that can't be priced.
     const rate = rateOf(job.endpoint, price.unit, job.input);
@@ -605,12 +669,22 @@ export function falMeter({ media, now = Date.now }: { media?: MediaReader; now?:
     if ("unknown" in units) return { job, why: units.unknown };
     const step = price.unit === "seconds" || price.unit === "minutes" ? BILLING_STEP.get(job.endpoint) : undefined;
     if (step) units = { units: roundedUp(units.units, price.unit, step), from: `${units.from}, in whole ${step === 60 ? "minutes" : "seconds"}` };
-    const rated = price.unitPrice * rate.ratio + rate.perUnitUsd;
-    const words = [`fal's price for ${job.endpoint}: $${price.unitPrice} per ${oneOf(price.unit)}`, ...rate.words, `× ${shown(units.units)} (${units.from})`].join(" ");
-    return { job, holdUsd: usd(rated * units.units), unitPrice: rated, unit: price.unit, at: price.at, words, ...(step ? { step } : {}) };
+    // The ratios were decided against get_pricing's rate as it stood (page.base). When fal states another, the scaled
+    // rate can fall under what its model page bills this tier, and the hold and the booking (the same unitPrice) with it:
+    // the job is held at the higher of the two.
+    const scaled = price.unitPrice * rate.ratio;
+    const base = RATE_TIERS.get(job.endpoint)?.base;
+    // The tier's rate on the model page: the ratio was decided as that rate over base (rateOf).
+    const page = base === undefined ? undefined : micro(base * rate.ratio);
+    const moved = base !== undefined && page !== undefined && price.unitPrice !== base && page > scaled;
+    const rated = (moved ? page : scaled) + rate.perUnitUsd;
+    const drift = moved ? [`(get_pricing states $${price.unitPrice}, not the $${base} its rates were decided at: held at the model page's $${page} per ${oneOf(price.unit)})`] : [];
+    const words = [`fal's price for ${job.endpoint}: $${price.unitPrice} per ${oneOf(price.unit)}`, ...rate.words, ...drift, `× ${shown(units.units)} (${units.from})`].join(" ");
+    return { job, holdUsd: micro(rated * units.units), unitPrice: rated, unit: price.unit, at: price.at, words, ...(step ? { step } : {}) };
   };
   return {
     bills: falBills,
+    results: falResults,
     async quote(tool, args, ask, signal): Promise<McpQuote> {
       const quotes: (Priced | Unpriced)[] = [];
       // One at a time: each endpoint's price is read once, the next job's from what the last one kept.
@@ -618,7 +692,7 @@ export function falMeter({ media, now = Date.now }: { media?: MediaReader; now?:
       const priced = quotes.filter((quote): quote is Priced => "holdUsd" in quote);
       const unpriced = quotes.find((quote): quote is Unpriced => "why" in quote);
       const basis = priced.length ? `${priced.map((quote) => quote.words).join("; ")}, from get_pricing at ${new Date(Math.min(...priced.map((quote) => quote.at))).toISOString()}` : "fal's price for it could not be worked out";
-      const holdUsd = usd(priced.reduce((sum, quote) => sum + quote.holdUsd, 0));
+      const holdUsd = micro(priced.reduce((sum, quote) => sum + quote.holdUsd, 0));
       return {
         holdUsd,
         basis: unpriced && priced.length ? `${basis}; not counting what could not be priced` : basis,
@@ -639,7 +713,7 @@ export function falMeter({ media, now = Date.now }: { media?: MediaReader; now?:
             if (charge === null) return null;
             total += charge;
           }
-          return usd(total);
+          return micro(total);
         },
       };
     },

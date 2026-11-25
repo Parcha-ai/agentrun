@@ -106,6 +106,9 @@ export interface RunnerOptions {
    *  answers on the same row, under the same incarnation): used as is, never closed here. Default: one of its own,
    *  removed at its close. */
   presence?: Presence;
+  /** The incarnation its own presence says (no `presence` given): the runner beside a server runs under the one the
+   *  server gave it (Serve.beside), which its paired computers' routes name. Default: a new one. */
+  incarnation?: string;
   /** Most runs held at once. */
   loops?: number;
   /** How long a claim lasts unless renewed. */
@@ -478,6 +481,18 @@ export function startRunner(options: RunnerOptions): Runner {
     });
   };
 
+  /** When a claim answered now (a claim's, or a renew's, asked at `sentAt`) is lost unless renewed, on `clock`: its
+   *  lease less the stop margin. On a store whose lease clock is this process's own (Store.leaseClock: SQLite) that is
+   *  the claim's `until`, read on that clock now, less the margin: the store granted the lease from when the call held
+   *  the writer lock, so a call that waited in line for it (another write holding the lock, this runner's own calls
+   *  before it on a loaded disk) keeps what it was granted. Otherwise (Postgres: the database's clock) it is reckoned
+   *  from when the call was asked, which is never later than its lock. Either way it falls the margin before the
+   *  store's lease runs out, and another runner may claim the run. */
+  const deadlineOf = (claim: Claim, sentAt: number): number => {
+    const leaseNow = store.leaseClock?.();
+    return leaseNow === undefined ? sentAt + leaseMs - stopMarginMs : clock.now() + (claim.until - leaseNow) - stopMarginMs;
+  };
+
   const armDeadline = (held: Held, at: number) => {
     clock.clearTimeout(held.deadline);
     held.deadline = clock.setTimeout(() => loseClaim(held, "not-renewed"), Math.max(0, at - clock.now()));
@@ -529,7 +544,7 @@ export function startRunner(options: RunnerOptions): Runner {
         if (isFenced(result)) loseClaim(held, "fenced");
         else {
           held.claim = result as Claim;
-          armDeadline(held, sentAt + leaseMs - stopMarginMs);
+          armDeadline(held, deadlineOf(held.claim, sentAt));
         }
       });
     } catch (error) {
@@ -792,8 +807,7 @@ export function startRunner(options: RunnerOptions): Runner {
     if (!store.settings) return false;
     try {
       const kept = await readKept(store.settings, claim.runId);
-      const ours = (options.presence ?? presence)?.incarnation;
-      return kept?.runner !== undefined && !keptBy(kept, ours ? { runner: name, incarnation: ours } : undefined);
+      return kept?.runner !== undefined && !keptBy(kept, incarnation ? { runner: name, incarnation } : undefined);
     } catch {
       return true;
     }
@@ -949,9 +963,8 @@ export function startRunner(options: RunnerOptions): Runner {
     let heldNow: Held | undefined;
     // This runner's process as its word in the store names it (presence.ts), for the claim's computer: a park that keeps one
     // only this runner can reach again pins it to this runner and this incarnation (computer-kept.ts pinnedOf).
-    const ours = (options.presence ?? presence)?.incarnation;
     const loop = loopsOf({
-      ...(ours ? { incarnation: ours } : {}),
+      ...(incarnation ? { incarnation } : {}),
       journal: (forClaim) => fenced(store.journal(forClaim), fence, forClaim.runId, () => ending()),
       flush: () => store.flush(),
       signal: abort.signal,
@@ -973,7 +986,7 @@ export function startRunner(options: RunnerOptions): Runner {
       clock.clearTimeout(held.deadline);
     };
     runs.set(claim.runId, held);
-    armDeadline(held, sentAt + leaseMs - stopMarginMs);
+    armDeadline(held, deadlineOf(claim, sentAt));
     emit({ type: "claimed", claim });
     void announceStart(claim);
     held.done = (async () => {
@@ -1223,7 +1236,9 @@ export function startRunner(options: RunnerOptions): Runner {
 
   // Its word in the store that a runner that claims is here (presence.ts), for as long as it runs: a server reads a
   // refusal left by an earlier runner as over once this is there. One its caller keeps is its caller's to close.
-  const presence = options.presence ? undefined : store.runners ? keepPresence(store.runners, name, null, { warn: (line) => emit({ type: "error", step: "presence", message: line }), slots: loops }) : undefined;
+  const presence = options.presence ? undefined : store.runners ? keepPresence(store.runners, name, null, { warn: (line) => emit({ type: "error", step: "presence", message: line }), slots: loops, ...(options.incarnation ? { incarnation: options.incarnation } : {}) }) : undefined;
+  // Its incarnation, read once here before the first poll: each claim's computer and the stop's kept-row check use it.
+  const incarnation = (options.presence ?? presence)?.incarnation;
   poll();
   commandTimer = setTimeout(deliverAll, commandPollMs);
   // A run queued in this process is claimed now (claimNow). A command written for a run this runner holds is handed on
@@ -1285,7 +1300,6 @@ export function startRunner(options: RunnerOptions): Runner {
     for (const held of runs.values()) clock.clearTimeout(held.deadline);
   };
 
-  const incarnation = (options.presence ?? presence)?.incarnation;
   return {
     name,
     ...(incarnation ? { incarnation } : {}),

@@ -29,7 +29,7 @@ describe("the conformance suite on a Docker desktop", { skip: LIVE ? false : "se
 
 	before(async () => {
 		// The provider's own image path: the Dockerfile alone, built once and tagged with its hash.
-		const built = await ensureImage({ recipe: readFileSync(DOCKERFILE, "utf8") });
+		const built = await ensureImage({ recipe: readFileSync(DOCKERFILE, "utf8") }, { env: process.env });
 		assert.ok(built.ok, built.ok || built.error.message);
 		const image = built.value;
 		const arch = docker("version", "--format", "{{.Server.Arch}}").trim();

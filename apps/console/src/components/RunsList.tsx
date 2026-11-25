@@ -22,11 +22,18 @@ import { cn } from "@/lib/utils";
 export const RUN_STATUSES: readonly RunStatus[] = ["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"];
 const STATUS_LABEL: Record<RunStatus, string> = { queued: "Queued", working: "Working", paused: "Paused", input_required: "Input required", completed: "Completed", failed: "Failed", cancelled: "Cancelled" };
 
+/** The window's button: its ends in this browser's time, to the minute. */
+const runsWindowLabel = ({ from, to }: RunsFilter): string => {
+  const at = (iso: string) => new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+  return from && to ? `${at(from)} to ${at(to)}` : from ? `Since ${at(from)}` : `Before ${at(to!)}`;
+};
+
 /** Every run on the server, newest first, as the hosted console's history table, with the status column it leaves out
  *  at desktop width. A row opens its run. With `onFilter`, a state filter and the archived runs, as the address keeps them.
  *  A read that failed says so in words, with Try again (`onRetry`); a failed Load more keeps the rows above it. */
 export function RunsList({ runs, agentName, onOpen, error, onRetry, onMore, loadingMore, filter = {}, onFilter, agentId, observations }: { runs: Run[] | null; agentName: (id: string) => string; onOpen: (id: string) => void; error?: Problem | null; onRetry?: () => void; onMore?: () => void; loadingMore?: boolean; filter?: RunsFilter; onFilter?: (filter: RunsFilter) => void; agentId?: string; observations?: ObservationRead }) {
   const archived = !!filter.archived;
+  const narrowed = !!(filter.source || filter.from || filter.to || filter.model);
   const connected = !archived && !filter.status && !agentId ? observations : undefined;
   const sourceAgents = !!connected?.data?.sessions.length;
   const sourceUnknown = !!connected && !connected.data && (connected.loading || !!connected.error);
@@ -39,15 +46,18 @@ export function RunsList({ runs, agentName, onOpen, error, onRetry, onMore, load
             <Picker label="Runs in one state" value={filter.status ?? ""} onChange={(v) => onFilter({ ...filter, status: (v || undefined) as RunStatus | undefined })} className="h-control-sm w-48"
               options={[{ value: "", label: "Any state" }, ...RUN_STATUSES.map((s) => ({ value: s, label: STATUS_LABEL[s] }))]} />
             <Button size="sm" variant={archived ? "primary" : "outline"} aria-pressed={archived} onClick={() => onFilter({ ...filter, archived: !archived })}><Archive aria-hidden /> Archived</Button>
+            {filter.source && <Button size="sm" variant="primary" aria-pressed onClick={() => onFilter({ ...filter, source: undefined })}><History aria-hidden /> {filter.source === "live" ? "Made here" : `From ${filter.source}`}</Button>}
+            {(filter.from || filter.to) && <Button size="sm" variant="primary" aria-pressed onClick={() => onFilter({ ...filter, from: undefined, to: undefined })}><History aria-hidden /> {runsWindowLabel(filter)}</Button>}
+            {filter.model && <Button size="sm" variant="primary" aria-pressed onClick={() => onFilter({ ...filter, model: undefined })}><History aria-hidden /> Used {filter.model}</Button>}
           </>
         )}
         <a href="#/races/new" className={buttonVariants({ variant: "outline", size: "sm" })}><Flag aria-hidden />New race</a>
-        <CodingAgentAction label="Ask about runs" prompt={`${queryRunsPrompt(location.origin, agentId)}\nCurrent view: ${filter.status ? `status ${filter.status}` : "all statuses"}; ${archived ? "archived runs" : "non-archived runs"}.`} playgroundHref={queryPlaygroundHref(agentId, filter)} />
+        <CodingAgentAction label="Ask about runs" prompt={`${queryRunsPrompt(location.origin, agentId)}\nCurrent view: ${filter.status ? `status ${filter.status}` : "all statuses"}; ${archived ? "archived runs" : "non-archived runs"}${filter.source && !agentId ? `; ${filter.source === "live" ? "runs made here" : `runs imported from ${filter.source}`}` : ""}${!agentId && (filter.from || filter.to) ? `; started ${filter.from ? `at or after ${filter.from}` : ""}${filter.from && filter.to ? " and " : ""}${filter.to ? `before ${filter.to}` : ""}` : ""}${filter.model && !agentId ? `; runs that used ${filter.model}` : ""}.`} playgroundHref={queryPlaygroundHref(agentId, filter)} />
       </header>
       <div className="min-h-0 flex-1 overflow-auto">
       {error && !runs ? <ProblemCard problem={error} onRetry={onRetry} className="" />
         : !runs ? <ListSkeleton label="Loading the runs" />
-        : !runs.length && (filter.status || archived) ? <p className="px-4 py-16 text-center text-body text-muted-foreground">{filter.status ? "No run matches." : "No archived runs."}</p>
+        : !runs.length && (filter.status || archived || narrowed) ? <p className="px-4 py-16 text-center text-body text-muted-foreground">{filter.status || narrowed ? "No run matches." : "No archived runs."}</p>
         : !runs.length && (sourceAgents || sourceUnknown) ? <div className="space-y-3 p-5 md:p-8">
           <h2 className="text-lg font-semibold">No captured runs yet</h2>
           <p className="text-body text-muted-foreground">Continue working with your agents. Completed prompts appear here when they are recorded.</p>

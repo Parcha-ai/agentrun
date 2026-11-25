@@ -426,7 +426,8 @@ async function fakeDocker(t) {
   const state = join(dir, "state");
   mkdirSync(bin);
   mkdirSync(state);
-  writeFileSync(join(bin, "docker"), `#!/bin/sh\nexec '${process.execPath}' '${new URL("./fixtures/fake-docker.mjs", import.meta.url).pathname}' "$@"\n`, { mode: 0o755 });
+  // Its state is set in its own program: the Docker provider hands docker only the names docker reads.
+  writeFileSync(join(bin, "docker"), `#!/bin/sh\nexport FAKE_DOCKER_STATE='${state}'\nexec '${process.execPath}' '${new URL("./fixtures/fake-docker.mjs", import.meta.url).pathname}' "$@"\n`, { mode: 0o755 });
   withEnv(t, { PATH: `${bin}:${process.env.PATH}`, FAKE_DOCKER_STATE: state, AGENTRUN_BOXES: "docker" }, ["AGENTRUN_DOCKER_IMAGE", "AGENTRUN_BOX_ALLOW"]);
   assert.equal(spawnSync("sh", ["-c", "command -v docker"], { encoding: "utf8" }).stdout.trim(), join(bin, "docker"), "the fake is the docker on PATH");
 }

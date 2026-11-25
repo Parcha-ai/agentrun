@@ -276,7 +276,8 @@ async function mediaOnLoopback(t, { cap, childRuns } = {}) {
   const { api } = await serve(t, { faux: FAUX, ...(childRuns ? { childRuns } : {}) });
   const asked = [];
   const media = createServer((request, response) => {
-    asked.push(request.url);
+    // Only the voice's own path counts: a host's port prober can GET / any new loopback port, and that is not the guard's read.
+    if (new URL(request.url ?? "/", "http://x").pathname === "/voice.mp3") asked.push(request.url);
     response.writeHead(200, { "content-type": "audio/mpeg" }).end(Buffer.from(SAMPLES.mp3Info.bytes));
   });
   await new Promise((done) => media.listen(0, "127.0.0.1", done));

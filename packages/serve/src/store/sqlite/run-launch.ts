@@ -2,7 +2,7 @@
 // trigger path (store.triggers.fire) both write a run's launch row inside their own transaction, through one
 // helper, with no second copy of the SQL. The launch body itself is opaque here (run-launch.ts owns its shape); sealed
 // bytes are the caller's, which the store never opens.
-import { CENSUS_PENDING, CENSUS_UNSCANNED, type LaunchSealed, type RunLaunchInput, type RunLaunchRow, type Runs, StoreLaunchMissing } from "../store.js";
+import { type LaunchSealed, type RunLaunchInput, type RunLaunchRow, type Runs, StoreLaunchMissing } from "../store.js";
 import type { Dialect } from "../dialect.js";
 import type { SqliteExecutor } from "./connection.js";
 
@@ -17,23 +17,9 @@ const runLaunchOf = (r: RunLaunchRecord): RunLaunchRow => ({ runId: r.run_id, bo
 export const readableJson = (dialect: Dialect, column: string): string => (dialect.name === "postgres" ? postgresReadableJson(column) : column);
 
 /** Writes a run's launch row inside `tx` (the same transaction as the queued run it belongs to): the run path and the
- *  trigger path both call it, so the row lands with its run or not at all. A launch with sealed bytes takes the census
- *  CENSUS_PENDING with them. */
+ *  trigger path both call it, so the row lands with its run or not at all. Its census is null until an end writes one. */
 export function writeLaunch(tx: Pick<SqliteExecutor, "run">, runId: string, launch: RunLaunchInput, at: number): Promise<void> {
-  const sealed = launch.sealed ?? null;
-  return tx.run("INSERT INTO run_launch (run_id, body, sealed, census, created_at) VALUES (?, ?, ?, ?, ?)", runId, JSON.stringify(launch.body ?? null), sealed, sealed === null ? null : CENSUS_PENDING, at);
-}
-
-/** The census a launch whose census is `census` and sealed bytes `sealed` takes when `next` is written as its sealed
- *  bytes: as it is when `next` holds none, or an end counted what it held before (its census); CENSUS_PENDING when it
- *  never held any; CENSUS_UNSCANNED over a CENSUS_PENDING whose sealed bytes an end erased without writing a census (a
- *  runner from before the census), so the files that end left are still read as uncounted. On Postgres the table holds
- *  the same rule too (migration 0027's trigger), for a server of an earlier build still writing during a rolling deploy.
- *  A SQLite store has one server, so no earlier server writes beside this one: the rule lives here alone. */
-export function censusOnSeal(census: string | null, sealed: Uint8Array | null, next: Uint8Array | null): string | null {
-  if (next === null) return census;
-  if (census === null) return CENSUS_PENDING;
-  return census === CENSUS_PENDING && sealed === null ? CENSUS_UNSCANNED : census;
+  return tx.run("INSERT INTO run_launch (run_id, body, sealed, created_at) VALUES (?, ?, ?, ?)", runId, JSON.stringify(launch.body ?? null), launch.sealed ?? null, at);
 }
 
 /** The disk a launch body names as the run's own (runs.disk, RunRow.disk): its `archil_disk` of kind "launch", by its id
@@ -48,13 +34,18 @@ export function launchDiskOf(launch: RunLaunchInput | undefined): string | null 
   return kind === "launch" && typeof id === "string" && id !== "" ? id : null;
 }
 
+/** The sealed bytes run `runId`'s launch holds now, read inside `tx`. */
+async function sealedOf(tx: Pick<SqliteExecutor, "get">, runId: string): Promise<Uint8Array | null> {
+  const row = await tx.get<{ sealed: Uint8Array | null }>("SELECT sealed FROM run_launch WHERE run_id = ?", runId);
+  return row?.sealed == null ? null : Uint8Array.from(row.sealed);
+}
+
 /** A message's launch secrets written over the run's (runs.command, runs.reopen), inside `tx`: the bytes as given, or a
- *  function's answer to the bytes the launch holds now, read in the same transaction. */
+ *  function's answer to the bytes the launch holds now, read in the same transaction. The census stays as the last end
+ *  wrote it: that end's count of where its turn's secrets sat, which the next end merges with its own (censusAfter). */
 export async function writeLaunchSealed(tx: Pick<SqliteExecutor, "run" | "get">, runId: string, launchSealed: LaunchSealed): Promise<void> {
-  const row = await tx.get<{ sealed: Uint8Array | null; census: string | null }>("SELECT sealed, census FROM run_launch WHERE run_id = ?", runId);
-  const sealed = row?.sealed == null ? null : Uint8Array.from(row.sealed);
-  const next = typeof launchSealed === "function" ? launchSealed(sealed) : launchSealed;
-  await tx.run("UPDATE run_launch SET sealed = ?, census = ? WHERE run_id = ?", next, censusOnSeal(row?.census ?? null, sealed, next), runId);
+  const next = typeof launchSealed === "function" ? launchSealed(await sealedOf(tx, runId)) : launchSealed;
+  await tx.run("UPDATE run_launch SET sealed = ? WHERE run_id = ?", next, runId);
 }
 
 /** The run's launch row, read by the runner at its claim (and the server for views). StoreLaunchMissing when the run has
