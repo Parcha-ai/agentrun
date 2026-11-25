@@ -2,7 +2,7 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { Archive, Bot, Copy, History, LayoutDashboard, MoreHorizontal, Pencil, Play, Plus, Trash2 } from "lucide-react";
 import { useId, useState } from "react";
 import { Block, Themes } from "@/design/Themes";
-import { Banner, Button, Checkbox, Chip, ConfirmDialog, CopyButton, Dialog, Field, Input, Menu, MenuItem, MenuSeparator, NavItem, Picker, Radio, Segmented, Spinner, Switch, tabPanelProps, Tabs, Textarea, Tip, ToastProvider, useToast } from ".";
+import { Banner, Button, Checkbox, Chip, ConfirmDialog, CopyButton, Dialog, Field, Input, Menu, MenuItem, MenuSeparator, NavItem, Picker, SearchPicker, Radio, Segmented, Spinner, Switch, tabPanelProps, Tabs, Textarea, Tip, ToastProvider, useToast } from ".";
 
 // Every primitive in every variant and state, in both themes. docs/console-design-system.md says which to reach for.
 const meta: Meta = { title: "Design system/Primitives" };
@@ -53,6 +53,7 @@ export const Chips: Story = {
 
 function FieldsDemo() {
   const [model, setModel] = useState("sonnet");
+  const [event, setEvent] = useState("");
   const [on, setOn] = useState(true);
   const [place, setPlace] = useState("sandbox");
   const group = useId();
@@ -67,6 +68,14 @@ function FieldsDemo() {
         <p id="model-label" className="caps mb-2 text-small font-semibold">Model (Picker)</p>
         <Picker label="Model" value={model} onChange={setModel} className="w-full" options={[{ value: "sonnet", label: "Claude Sonnet" }, { value: "opus", label: "Claude Opus" }, { value: "haiku", label: "Claude Haiku" }]} />
       </div>
+      <Field label="Event" note="Type to search the list by name, slug or description.">
+        <SearchPicker label="Event" value={event} onChange={setEvent} placeholder="Search or pick an event" nothing={(q) => `No event matches “${q}”`}
+          options={[
+            { value: "GITHUB_ISSUE_ADDED_EVENT", label: "Issue Added", keywords: ["GITHUB_ISSUE_ADDED_EVENT", "A new issue is opened."] },
+            { value: "GITHUB_PULL_REQUEST_EVENT", label: "Pull Request", keywords: ["GITHUB_PULL_REQUEST_EVENT", "A pull request is opened or updated."] },
+            { value: "GITHUB_STAR_ADDED_EVENT", label: "Star Added", keywords: ["GITHUB_STAR_ADDED_EVENT", "Someone stars the repository."] },
+          ]} />
+      </Field>
       <Field group label="Where it runs" note="A sandbox keeps the agent's files off this machine.">
         <div className="space-y-2">
           <Radio name={group} value="sandbox" checked={place === "sandbox"} onChange={() => setPlace("sandbox")} label="In a sandbox" note="A fresh box for every run." />

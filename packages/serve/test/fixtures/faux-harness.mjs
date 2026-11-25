@@ -44,13 +44,10 @@ const untilSignalled = (signal, action) => new Proxy(action, { has(target, key) 
  *  once the turn reaches it: the faux adapter asks whether an action is a hang first, after the request before it has
  *  been booked and has shown its text. */
 const hangSignalled = (signal) => new Proxy({ hang: true }, { has(target, key) { if (key === "hang") writeFileSync(signal, ""); return key in target; } });
-/** A hang the first time the faux adapter asks (writing `signal` then, as hangSignalled does), and `then` from the next:
- *  the adapter reads the script once per open, and a hang keeps its place, so a turn stopped there and a next turn in the
- *  same process come back to it. */
-const hangOnceSignalled = (signal, then) => {
-  let held = false;
-  return new Proxy(then, { has(target, key) { if (key !== "hang") return key in target; if (held) return false; held = true; writeFileSync(signal, ""); return true; } });
-};
+/** A hang until `signal` exists (writing it then, as hangSignalled does), and `then` once it does: a hang keeps its place,
+ *  so a turn stopped there and the next turn come back to it, and the adapter reads the script again at every open (a
+ *  reopened run's is a new one), so it is the file that says the hang was had. */
+const hangOnceSignalled = (signal, then) => new Proxy(then, { has(target, key) { if (key !== "hang") return key in target; if (existsSync(signal)) return false; writeFileSync(signal, ""); return true; } });
 
 /** Request `k` of a conversation that grows by a tool call and its result each request, as Claude Sonnet 5.5 bills it
  *  (faux-sonnet-priced.mjs): a 20,000-token prompt that grows 1,100 tokens a request, its body 4 bytes a token (the
@@ -269,10 +266,11 @@ export function script(spec, session = {}) {
   const boxed = /^Box calls: (\[.*\])$/m.exec(text)?.[1];
   const work = `${process.argv[process.argv.indexOf("--dir") + 1]}/work`;
   if (boxed) return [...JSON.parse(boxed.replaceAll("{work}", work)).map((step) => ({ ...step, usd: 0.001 })), { say: "Done in the box.", usd: 0.001 }];
-  // monid's run called, then the turn holds with no request open (writing the signal) until it is stopped; the next
-  // turn's request answers. A hold keeps its place in the script, so it holds once, and that place is the answer after.
-  const holdSignal = /Run monid's \/person\/enrich, then hold the turn \(signal (\S+)\)\./.exec(text)?.[1];
-  if (holdSignal) return [{ call: "monid__faux__person__enrich", args: { body: { name: "Ada" } }, usd: 0.001 }, hangOnceSignalled(holdSignal, { say: "Ran.", usd: 0.001 })];
+  // monid's $1 lookup called (a cap under $1 refuses it), then the turn holds with no request open (writing the signal)
+  // until it is stopped; the next turn's request answers. A hold keeps its place in the script, so it holds once, and
+  // that place is the answer after.
+  const holdSignal = /Run monid's \/person\/lookup, then hold the turn \(signal (\S+)\)\./.exec(text)?.[1];
+  if (holdSignal) return [{ call: "monid__faux__person__lookup", args: { body: { name: "Ada" } }, usd: 0.001 }, hangOnceSignalled(holdSignal, { say: "Ran.", usd: 0.001 })];
   // monid's run called, then called again (once a raised cap's follow-up opens the next turn), then the answer.
   const again = /Run monid's \/(\S+), called again after a raise\./.exec(text)?.[1];
   if (again) {
@@ -358,7 +356,8 @@ export function script(spec, session = {}) {
   // does), and the follow-up's turn answers.
   const failedBehind = /Fail a turn held until (\S+), with a follow-up behind it\./.exec(text)?.[1];
   if (failedBehind) return [{ call: "web_fetch", args: { url: `http://public.example/hold?until=${encodeURIComponent(failedBehind)}` }, usd: 0.001 }, { fail: "the faux turn failed" }, { say: "Answer 2.", usd: 0.001 }, { end: true, usd: 0.001 }];
-  // The same with a cap: an answer under the cap, then a request held until the cancel cuts it, booked then at $0.002 (over it).
+  // The same with a cap: an answer under the cap, then a request held until the cancel cuts it, booked then (a lost
+  // request: at what the cap held for it, never the $0.002 it says).
   const booked = /Answer, then hold a request the cancel cuts and books \(signal (\S+)\)\./.exec(text)?.[1];
   if (booked) return [{ say: "Done.", usd: 0.0005 }, cutBookedSignalled(booked, 0.002)];
   // A request admitted and never answered, until the file exists: a crash then cuts it.

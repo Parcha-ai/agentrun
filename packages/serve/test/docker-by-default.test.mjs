@@ -37,7 +37,8 @@ async function fakeDocker(t, boxes) {
   const state = join(dir, "state");
   await mkdir(bin);
   await mkdir(state);
-  await writeFile(join(bin, "docker"), `#!/bin/sh\nexec '${process.execPath}' '${FAKE}' "$@"\n`, { mode: 0o755 });
+  // Its state is set in its own program: the Docker provider hands docker only the names docker reads.
+  await writeFile(join(bin, "docker"), `#!/bin/sh\nexport FAKE_DOCKER_STATE='${state}'\nexec '${process.execPath}' '${FAKE}' "$@"\n`, { mode: 0o755 });
   withEnv(t, { PATH: `${bin}:${process.env.PATH}`, FAKE_DOCKER_STATE: state, ...(boxes === undefined ? {} : { AGENTRUN_BOXES: boxes }) }, ["AGENTRUN_BOXES", "AGENTRUN_DOCKER_IMAGE", "AGENTRUN_BOX_ALLOW", "DAYTONA_API_KEY"]);
   assert.equal(spawnSync("sh", ["-c", "command -v docker"], { encoding: "utf8" }).stdout.trim(), join(bin, "docker"), "the fake is the docker on PATH");
   return { calls: () => jsonLines(join(state, "argv.jsonl")), state };

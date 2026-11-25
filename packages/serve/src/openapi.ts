@@ -8,7 +8,7 @@ import { NATIVE_BINDING, NATIVE_RUN, NATIVE_PATHS } from "./native/schema.js";
 // not serve at all (NOT_SERVED) is left out of the document, and this server's own routes are added as operations marked
 // `x-agentrun-serve` (true, or the addition that made it, as `stats/1`), listed in `info.x-agentrun-serve`.
 import { readFileSync } from "node:fs";
-import { CALL_RESULT_CHARS, CALLS_PAGE_ROWS, CAPS, TRIGGER_SOURCES } from "./timeline/index.js";
+import { CALL_RESULT_CHARS, CALLS_PAGE_ROWS, TRIGGER_SOURCES } from "./timeline/index.js";
 import { EMAIL_SCOPES, PASSWORD_MAX, SCOPED_TOOLS, SEND_CAP } from "./email/names.js";
 import { PAYLOAD_KEPT_BYTES, type TriggerAdapter } from "./trigger-adapter.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
@@ -232,7 +232,7 @@ const ANALYTICS = closed({
   time: closed({ ended_runs: COUNT, wall_ms: { ...COUNT, description: "Ended minus started, summed over `ended_runs`." }, active_runs: COUNT, active_ms: { ...COUNT, description: "How long the runs were at work, summed over the `active_runs` whose metrics say." } }),
   by_harness_effort: { type: "array", description: "By the revision's harness (`pi` when it names none, `workflow` for a workflow revision), then the effort the run's metrics name (null: unset, or no metrics).", items: closed({ harness: { type: "string" }, effort: { type: ["string", "null"] }, ...GROUP }) },
   by_day: { type: "array", description: "By the UTC date the run started, oldest first.", items: closed({ day: { type: "string", format: "date" }, ...GROUP }) },
-  by_source: { type: "array", description: "`live`, run here, first, then each source runs were imported from.", items: closed({ source: { enum: ["live", "claude-code", "codex", "pi"] }, ...GROUP }) },
+  by_source: { type: "array", description: "`live`, run here, first, then each source runs were imported from.", items: closed({ source: { enum: ["live", "claude-code", "codex", "pi", "opencode"] }, ...GROUP }) },
   tools: { type: "array", maxItems: 20, description: "The 20 tools with the most calls, by name on a tie; `errors` counts the calls that failed (an error, a result the tool reads as failed such as a refused fetch, or no result at all).", items: closed({ tool: { type: "string", description: "The name the tool was called by." }, label: { type: "string", description: "What a person calls the tool, from the timeline's label registry; the name it was called by when it has none.", "x-agentrun-serve": "stats/3" }, calls: COUNT, errors: COUNT }) },
 }, "The runs' tokens, requests, time and tool calls from their metrics, over the runs not archived that the query picks; a run with no metrics counts in `runs` alone.");
 /** GET /stats's answer (stats.ts). */
@@ -653,7 +653,7 @@ const HARNESS_KEYS_VIEW = closed({
       ready: { type: "boolean", description: "Whether every one of `keys` is saved for this recipe file: then its runs run on them, a scheduled or triggered one too, ahead of its owner's own sign-in (--harness-sign-in)." },
       reenter: {
         type: "array",
-        description: "Each of `keys` with a value kept that its runs do not get, and why: recipe_changed (saved for another recipe file of this id, so a recipe that changed never inherits it), seal_key_changed (sealed under another seal key), file_unreadable (damaged). Saving it again replaces it.",
+        description: "Each of `keys` with a value kept that its runs do not get, and why: recipe_changed (saved for another recipe file of this id, so a recipe that changed never inherits it), not_bound (bound to no recipe file it opens with: saved before this release, which binds keys, or its save did not finish), seal_key_changed (sealed under another seal key), file_unreadable (damaged). Saving it again replaces it.",
         items: closed({ name: { type: "string" }, why: { enum: [...HARNESS_KEY_REENTER] } }),
       },
     }),
@@ -744,7 +744,7 @@ const MCP_SERVER_VIEW = {
       type: "object", additionalProperties: false, required: ["state", "checked_at"],
       properties: {
         state: { enum: ["connected", "pending", "expired", "none", "unknown"], description: "`connected`: an ACTIVE account of the server's Composio user under its auth config; `pending`: only one whose connect link is not finished; `expired`: only an expired one; `none`: no account (or only failed or inactive ones); `unknown`: Composio did not answer at the refresh." },
-        labels: { type: "array", items: { type: "string", maxLength: 120 }, maxItems: 10, description: "For `connected`: each connected account's own label, to tell which it is: its alias, else the name Composio shows for it, else the word id Composio gave it. Never its id, a token or the key." },
+        labels: { type: "array", items: { type: "string", maxLength: 120 }, maxItems: 10, description: "For `connected`: the label of each connected account Composio names as the server's user's, to tell which it is: its alias, else the name Composio shows for it, else the word id Composio gave it. Never its id, a token or the key." },
         checked_at: { type: "string", format: "date-time", description: "When a refresh read it at Composio." },
       },
       description: "A Composio server's account, as its last refresh (POST .../refresh) read it at Composio. Absent until a refresh reads it, after a save over the server as another user, toolkit or auth config, and on a server with no account of its own: a per-run one (each run names its own), one of a toolkit that needs no sign-in, or one saved before its save recorded what it stands on.",
@@ -3142,7 +3142,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/settings/mcp-servers/composio/toolkits": {
     post: {
       operationId: "listComposioToolkits", tags: ["local"], summary: "List the toolkits Composio offers, for the console's toolkit picker; stores nothing",
-      description: COMPOSIO_NOTE + " Every page of Composio's toolkit list (at most 20 of 200), each toolkit's slug (as a save takes it: a slug a save would refuse is left out) and its name, sorted by name. 422 `input_invalid` when Composio refuses the key (field `api_key`), the key is missing, or the body has another field; 424 `upstream_failed` when Composio does not answer or fails. The owner's signed-in session alone: 403 forbidden to the API token, which never sends a key.",
+      description: COMPOSIO_NOTE + " Every page of Composio's toolkit list (at most 20 of 200), each toolkit's slug (as a save takes it: a slug a save would refuse is left out) and its name, sorted by name. 422 `input_invalid` when Composio refuses the key (field `api_key`), the key is missing, or the body has another field; 424 `upstream_failed` when Composio does not answer or fails, or the whole list takes over 30 s. The owner's signed-in session alone: 403 forbidden to the API token, which never sends a key.",
       requestBody: { required: true, content: { "application/json": { schema: closed({ api_key: COMPOSIO_KEY }) } } },
       responses: { "200": json(closed({ toolkits: { type: "array", items: closed({ slug: COMPOSIO_TOOLKIT, name: { type: "string", description: "Its name as Composio shows it (the slug when it gives none)." } }) } }), "The toolkits Composio offers."), ...errors(400, 401, 403, 409, 415, 422, 429, 500), ...MCP_FAILED },
       "x-agentrun-serve": "mcpservers/1",
@@ -4098,7 +4098,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       type: ["object", "null"],
       additionalProperties: false,
       required: ["source", "session"],
-      properties: { source: { enum: ["claude-code", "codex", "pi"] }, session: { type: "string", description: "The session's id in its source." } },
+      properties: { source: { enum: ["claude-code", "codex", "pi", "opencode"] }, session: { type: "string", description: "The session's id in its source." } },
       description: "Imported history (`agentrun-serve import`): where the run was run, and its session there; else null. An imported run takes no message (`409 not_continuable`, `details.reason` `imported`); a stop or a cancel answers as for an ended run.",
       "x-agentrun-serve": "imported/1",
     },
@@ -4124,7 +4124,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       type: ["object", "null"],
       additionalProperties: false,
       required: ["source", "session"],
-      properties: { source: { enum: ["claude-code", "codex", "pi"] }, session: { type: "string", description: "The session's id in its source." } },
+      properties: { source: { enum: ["claude-code", "codex", "pi", "opencode"] }, session: { type: "string", description: "The session's id in its source." } },
       description: "Imported history (`agentrun-serve import`): where the run was run, and its session there; else null. An imported run takes no message (`409 not_continuable`, `details.reason` `imported`); a stop or a cancel answers as for an ended run.",
       "x-agentrun-serve": "imported/1",
     },
@@ -4154,7 +4154,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     refused: {
       const: true,
-      description: "On the `tool_result` row of a call refused before it ran: a tool set to deny, a pin, a person's deny, or a call held for an approval the run stopped or ended without. Its `summary` reads \"Refused: …\" and its `tool_status` stays `failed` (it did not do its work), but it never ran, so it never failed: a client shows it apart from a call that ran and failed (the console: a neutral Refused chip, never the red Error one). Absent on every other row.",
+      description: "On the `tool_result` row of a call refused before it ran: a tool set to deny, a pin, a person's deny, or a call held for an approval the run stopped or ended without. That call never ran, so it never failed. Also on a `codemode` script's or a `tools_call`'s row that stopped at such a call: there the calls it made before that one ran and may have done their work (their own rows say so), and that call and every call after it did not. Its `summary` reads \"Refused: …\" and its `tool_status` stays `failed` (it did not do its work): a client shows it apart from a call that ran and failed (the console: a neutral Refused chip, never the red Error one). Absent on every other row.",
       "x-agentrun-serve": "refused/1",
     },
     origin: {
@@ -4213,7 +4213,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     tool_input: {
       type: "object", additionalProperties: true,
-      description: `On a \`tool_use\` row of a timeline read with \`calls=whole\` alone: the call's arguments as the agent sent them, each string through the run's redaction (a value this server holds, or text shaped like a key, reads \`[redacted]\`) and cut at ${CAPS.text} characters. Its URLs keep their query values, as an approval's arguments do. Absent otherwise.`,
+      description: `On a \`tool_use\` row of a timeline read with \`calls=whole\` alone: the call's arguments as the agent sent them, each string through the run's redaction (a value this server holds, or text shaped like a key, reads \`[redacted]\`). Its names, values and brackets together are cut at ${CALL_RESULT_CHARS} characters, the bound \`tool_result_text\` has, in order, each name and value at least one character and each array or object its two brackets: the name or string that reaches it is cut there, a number, boolean or null that would pass it shows as \`...\`, an array or object then ends with one \`...\` (an item, or a \`...\` name), and a value past it shows as \`...\`. Its URLs keep their query values, as an approval's arguments do. Absent otherwise.`,
       "x-agentrun-serve": "callswhole/1",
     },
     tool_result_text: {
@@ -4409,7 +4409,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       items: {
         type: "object", additionalProperties: false, required: ["name", "summary", "nodes", "calls", "available", "harnesses", "permission", "default_permission", "permissions"],
         properties: {
-          name: { type: "string" }, summary: { type: "string" }, blurb: { type: "string", description: "One short line for people (the editor's Tools grid); the model never sees it. Absent for an MCP server's tool.", "x-agentrun-serve": "tool-blurb/1" }, nodes: { type: "boolean" }, calls: { type: "boolean" }, call_only: { type: "boolean", description: "Only a workflow's call node runs it (pdf_pages, llm): no agentic revision or model node names it." }, meta: { type: "boolean", description: "A host tool over the run's own tools (tools_search, tools_call, codemode): no revision, model node or call node names it, so it is no grant; Settings → Tools sets it (allow or deny: a deny is not offered)." }, sandbox_only: { type: "boolean", description: "Only an agent whose place is a sandbox names it (bash, and the background tools bash_background, bash_output, bash_input, bash_signal and bash_list): it runs in the box, and a runner has no shell, except in Mode 2, where bash alone runs on Archil's serverless exec." }, available: { type: "boolean" }, reason: { type: "string", description: "Why the tool is unavailable here, present whenever `available` is false: a provider pick's own words (`web_search is turned off in settings`, `parallel picked, no PARALLEL_API_KEY`), or `Needs` and the variables it is missing; for a sandbox-only tool (bash, the background tools) that no box this server has can run, `no box is set up on this server: …` with each box's own reason (`places.boxes`); in Mode 2 bash is available with no box." }, missing: { type: "array", items: { type: "string" } },
+          name: { type: "string" }, summary: { type: "string" }, blurb: { type: "string", description: "One short line for people (the editor's Tools grid); the model never sees it. Absent for an MCP server's tool.", "x-agentrun-serve": "tool-blurb/1" }, nodes: { type: "boolean" }, calls: { type: "boolean" }, call_only: { type: "boolean", description: "Only a workflow's call node runs it (pdf_pages, llm): no agentic revision or model node names it." }, meta: { type: "boolean", description: "A host tool over the run's own tools (tools_search, tools_call, codemode): no revision, model node or call node names it, so it is no grant; Settings → Tools sets it (allow or deny: a deny is not offered)." }, sandbox_only: { type: "boolean", description: "Only an agent whose place is a sandbox names it (bash, and the background tools bash_background, bash_output, bash_input, bash_signal and bash_list): it runs in the box, and a runner has no shell, except in Mode 2, where bash alone runs on Archil's serverless exec." }, runner_only: { type: "boolean", description: "Only an agent whose place is the runner (on the server) names it (the browser, which files the run's work from the server by path): a revision that names it in a sandbox place is refused (its blocker's reason `not_an_option`)." }, available: { type: "boolean" }, reason: { type: "string", description: "Why the tool is unavailable here, present whenever `available` is false: a provider pick's own words (`web_search is turned off in settings`, `parallel picked, no PARALLEL_API_KEY`), or `Needs` and the variables it is missing; for a sandbox-only tool (bash, the background tools) that no box this server has can run, `no box is set up on this server: …` with each box's own reason (`places.boxes`); in Mode 2 bash is available with no box." }, missing: { type: "array", items: { type: "string" } },
           harnesses: { type: "array", items: { type: "string", pattern: HARNESS_ID_PATTERN, examples: [...HARNESSES] }, description: "The harnesses that run the tool here, ids of capabilities' `harnesses`: a host tool, every one; another tool, pi and any harness an owner's harness module adds without adapter facts (it runs pi's tools). A revision naming it on another harness saves with a warning and its runs are 409 agent_not_runnable.", "x-agentrun-serve": "tool-harness/1" },
           providers: { type: "array", items: { type: "string" }, description: "A tool with a provider choice: the providers offered for it, its default first.", "x-agentrun-serve": "providers/1" },
           provider: { type: "string", description: "A tool with a provider choice: the server's, its default where it sets none.", "x-agentrun-serve": "providers/1" },
