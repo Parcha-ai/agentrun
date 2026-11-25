@@ -419,7 +419,11 @@ plus one, in the purge's transaction and under the agent's learning lock, as eve
   that its run is not purged; if not, it writes nothing (`LearningRecordRefused`; a promotion's write is not won). A
   failed draft's record, whose digest is its run's and is held by no version, is the one exception. A grade checks its
   run alone, never its digest: the purge keeps a live run's grade whatever revision served it, so a later grade of that
-  run is kept the same way.
+  run is kept the same way;
+- a promotion the purge keeps (another run's version holds its digest) is moved to the save of the newest version that
+  holds it when the save it named holds it no more: a shared champion goes on serving;
+- a reader that reads a text and its writer apart (an SDK start's workflows and the runs its receipt names) reads both
+  again when the newest save moved between them, so it never delivers the purged run's text as no run's.
 
 A purge that finds nothing of the run's (a run that learned nothing, a second purge) changes no row and adds no save.
 An agent's reset, its delete and its purge take the agent's learning lock and then its records lock, the order a run's

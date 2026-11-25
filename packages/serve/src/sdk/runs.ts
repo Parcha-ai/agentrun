@@ -462,8 +462,20 @@ export class SdkRuns {
     };
   }
   /** The workflows a start delivers, each the seed's or its champion's text read at its record's save, and the run whose
-   *  text each is (`writers`); the drafts a check may take, and the run whose text each is (`drafts`, by name). */
+   *  text each is (`writers`); the drafts a check may take, and the run whose text each is (`drafts`, by name). A text and
+   *  its writer are two reads, and a purge rewrites the saves they read in place: it adds a save of its own after the
+   *  newest (Store.learning purgeRun), so a selection the newest save moved under is read again, and one that keeps moving
+   *  refuses the start, to start again. Never the purged run's text named as no run's. */
   private async selectedWorkflows(agentId: string, revision: string | null, binding: NonNullable<ReturnType<typeof sdkWorkflowManifest>>): Promise<{ workflows: LearnedWorkflow[]; writers: Map<LearnedWorkflow, string>; candidates: LearnedWorkflow[]; drafts: Record<string, string> }> {
+    const newest = async () => (await this.store.learning.newest(agentId))?.save.id;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const before = await newest();
+      const selected = await this.selectedOnce(agentId, revision, binding);
+      if ((await newest()) === before) return selected;
+    }
+    throw new ApiError("unavailable", "The agent's learning changed while this run started: start it again.", { retry_after_ms: 1_000 });
+  }
+  private async selectedOnce(agentId: string, revision: string | null, binding: NonNullable<ReturnType<typeof sdkWorkflowManifest>>): Promise<{ workflows: LearnedWorkflow[]; writers: Map<LearnedWorkflow, string>; candidates: LearnedWorkflow[]; drafts: Record<string, string> }> {
     const learning = learningOf(this.store, agentId);
     const reads = new Map<string, Promise<LearningRead | undefined>>();
     const readSave = (save: string) => reads.get(save) ?? reads.set(save, readAt(learning, save)).get(save)!;

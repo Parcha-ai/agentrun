@@ -326,6 +326,25 @@ test("a purge keeps the promotion of a digest another run also wrote (changed th
   assert.deepEqual(await workflows(learning), [["x", "run_bravo"]]);
 });
 
+// A promotion names the save its revision's text is read at (its `commit`): a purge that keeps the record (another run's
+// version holds the digest) names a save that still holds it, so the champion still serves.
+test("a purge keeps a shared promotion serving: its record is moved to a save of a version that still holds its digest", async (t) => {
+  const { store } = await storeOn(t);
+  const learning = learningOf(store, AGENT);
+  const same = flow("x", "SAME");
+  const alpha = await merge(learning, { runId: "run_alpha", files: same });
+  await merge(learning, { runId: "run_bravo", files: flow("x", "BRAVO") });
+  const charlie = await merge(learning, { runId: "run_charlie", files: same });
+  const digest = (await store.learning.versions(AGENT, "workflow", "x"))[0].digest;
+  await store.learning.addRecord(AGENT, "promotion", { runId: null, workflow: "x", digest, data: { workflow: "x", digest, decided: "promote", commit: charlie.commit } });
+  await store.learning.purgeRun(AGENT, "run_charlie");
+  const [record] = await store.learning.records(AGENT, "promotion");
+  assert.ok(record, "run_alpha's version holds the digest: the promotion stays");
+  assert.equal(record.data.commit, alpha.commit, "its commit names run_alpha's save, the newest that holds the digest");
+  assert.equal((await readAt(learning, record.data.commit)).text("workflows/x/workflow.json"), same[1].text, "the champion's text is read there");
+  assert.deepEqual(await workflows(learning), [["x", "run_bravo"]]);
+});
+
 // Each file of a workflow is its writer's: the run that changed it to its text. A run's merge that gives a file as it
 // was at its base changes nothing of it, so the file stays its earlier writer's, and a purge takes each file back to
 // the text before its writer's (the view's `run`: workflow.json's writer).

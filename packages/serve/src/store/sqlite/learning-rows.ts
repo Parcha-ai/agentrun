@@ -147,6 +147,23 @@ async function rewriteWorkflow(tx: Tx, agentId: string, runId: string, name: str
   };
 }
 
+/** Workflow `name`'s promotions that a purge kept (another version holds their digest), each moved, inside the caller's
+ *  transaction, to the save of the newest version that holds it when the save it names (`commit`, where its text is
+ *  read) holds it no more: a shared champion goes on serving. */
+async function moveCommits(tx: Tx, agentId: string, name: string): Promise<void> {
+  const records = await tx.all<{ seq: number | string; digest: string | null; data: string }>("SELECT seq, digest, data FROM learning_records WHERE agent_id = ? AND kind = 'promotion' AND workflow = ?", agentId, name);
+  for (const record of records) {
+    const data = JSON.parse(record.data) as Record<string, unknown>;
+    if (typeof data.commit !== "string" || record.digest === null) continue;
+    const save = await tx.get<{ version: number | string }>("SELECT version FROM learning_saves WHERE agent_id = ? AND id = ?", agentId, data.commit);
+    const held = save && await tx.get<{ digest: string | null }>("SELECT digest FROM learning_items WHERE agent_id = ? AND kind = 'workflow' AND name = ? AND version <= ? ORDER BY version DESC LIMIT 1", agentId, name, save.version);
+    if (held?.digest === record.digest) continue;
+    const holds = await tx.get<{ id: string }>(`SELECT s.id FROM learning_items i JOIN learning_saves s ON s.agent_id = i.agent_id AND s.version = i.version
+      WHERE i.agent_id = ? AND i.kind = 'workflow' AND i.name = ? AND i.digest = ? ORDER BY i.version DESC LIMIT 1`, agentId, name, record.digest);
+    if (holds) await tx.run("UPDATE learning_records SET data = ? WHERE agent_id = ? AND kind = 'promotion' AND seq = ?", JSON.stringify({ ...data, commit: holds.id }), agentId, record.seq);
+  }
+}
+
 /** Run `runId`'s learning rows gone from its agent `agentId`'s, inside the caller's transaction (its purge, its
  *  delete), every statement scoped to that agent: each workflow it wrote a file of rewritten without its files
  *  (rewriteWorkflow), with the promotions and audits of each digest no version holds then; its notes; its grades and
@@ -173,6 +190,7 @@ export async function dropRunLearning(tx: Tx, agentId: string, runId: string, at
   for (const name of names) {
     const rewritten = await rewriteWorkflow(tx, agentId, runId, name);
     for (const digest of rewritten.lost) await tx.run("DELETE FROM learning_records WHERE agent_id = ? AND kind IN ('promotion', 'audit') AND workflow = ? AND digest = ?", agentId, name, digest);
+    if (rewritten.changed) await moveCommits(tx, agentId, name);
     if (rewritten.gone) gone.push(name);
     for (const path of rewritten.taken) taken.add(path);
     if (rewritten.changed) changed = true;

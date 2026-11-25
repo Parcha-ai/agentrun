@@ -60,6 +60,20 @@ test("the count is read once per save of the agent's learning: a list again read
   assert.equal(pendingTestHooks.reads, reads + 1, "one read for the new save");
 });
 
+test("a purge of a run that wrote a waiting draft is read again: its draft counts no more, though the save the count read stays", async (t) => {
+  const { api, store } = await serve(t, { learning: "on" });
+  assert.equal((await api("POST", "/agents", agent("purging", { learning: true }))).status, 201);
+  await commit(store, "purging", draft("held-one", true));
+  const gone = `run-hand-${merges}`;
+  await commit(store, "purging", draft("held-two", true));
+  assert.deepEqual((await api("GET", "/agents/purging")).body.learning, { pending: 2 });
+  const reads = pendingTestHooks.reads;
+  // The purge rewrites the saves in place; its own save (the host's, after the newest) is what tells the count to read.
+  await store.learning.purgeRun("purging", gone);
+  assert.deepEqual((await api("GET", "/agents/purging")).body.learning, { pending: 1 }, "the purged run's draft counts no more");
+  assert.equal(pendingTestHooks.reads, reads + 1, "one read for the purge");
+});
+
 test("pendingCount: learning it cannot read counts as unknown (undefined), not 0; an agent with no save counts 0", async (t) => {
   const { mkdtempSync, rmSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");

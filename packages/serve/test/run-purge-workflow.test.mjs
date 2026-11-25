@@ -540,6 +540,43 @@ test("an SDK start sent again never answers a workflow a purged run wrote: its r
   assert.deepEqual((await promotionsOf(store.learning, id)).map(({ digest, decided }) => [digest, decided]), [[digestOf(v2), "hold"]], "v1's promote went with its run");
 });
 
+// A start reads a champion's text at its record's save, then the run that wrote it: two reads. A purge of that run between
+// them rewrites the save in place, so the start would deliver the purged text with a receipt naming no run of it.
+test("an SDK start whose champion's writer is purged between its text read and its writer read delivers none of the purged run's text", async (t) => {
+  const { api, store, data } = await serve(t, { runner: false });
+  const id = "sdk-racing";
+  const tool = { name: "mcp:backend/status", description: "Read release status.", input_schema: { type: "object" }, permission: "allow", price_usd: 0 };
+  const body = { runtime: "claude-agent-sdk", input: "Check release status.", instructions: "Use the backend tools.", workflow_tools: [tool] };
+  const flowOf = (deadline) => ({ v: 2, name: "status", schemas: { Input: { type: "object" }, Answer: { type: "object", properties: { ready: { type: "boolean" } }, required: ["ready"] } }, input: { schemaId: "Input" }, output: { schemaId: "Answer", path: "answer" }, root: { node: "call", label: "status", via: "tool", tool: tool.name, args: {}, out: "Answer", as: "answer", deadline_s: deadline } });
+  const [v1, v2] = [JSON.stringify(flowOf(5)), JSON.stringify(flowOf(9))];
+  assert.equal((await api("POST", "/agents", { definition: { id, name: id, instructions: body.instructions, sdk: { runtime: body.runtime }, learning: true, tools: [] } })).status, 201);
+  assert.equal((await api("POST", `/agents/${id}/sdk-runs`, body, { "Idempotency-Key": "first" })).status, 201);
+  const writer = "sdk-racing-writer";
+  await endedRuns(api, store, id, [writer, "sdk-racing-other"], false);
+  const readme = { path: "workflows/status/README.md", text: "---\nname: status\ndescription: Read release status.\n---\n" };
+  const merge = await learned(store, id, (learning) => learningCommit(learning, { runId: writer, reason: "It learned status.", files: [{ path: "workflows/status/workflow.json", text: v1 }, readme] }));
+  const next = await learned(store, id, (learning) => learningCommit(learning, { runId: "sdk-racing-other", reason: "It waits longer.", files: [{ path: "workflows/status/workflow.json", text: v2 }, readme] }));
+  await putPromotions(store, id, [recordOf("status", digestOf(v1), "promote", merge), recordOf("status", digestOf(v2), "hold", next)]);
+  // The purge lands right after the selection's first read at the champion's save: its text read, its writer not yet.
+  // SdkRuns over this store, whose itemsAt purges the writer at that read (the start's selection, as the route calls it).
+  const { SdkRuns } = await import("../dist/sdk/runs.js");
+  const { sdkWorkflowManifest } = await import("../dist/sdk/workflows.js");
+  let purged = false;
+  const learning = Object.create(store.learning, { itemsAt: { value: async (agentId, save) => {
+    const at = await store.learning.itemsAt(agentId, save);
+    if (!purged && agentId === id && save === merge) {
+      purged = true;
+      await store.runs.purge(writer, { meters: null, spend: { usd: 0.1, basis: "list" }, learning: null });
+    }
+    return at;
+  } } });
+  const sdk = new SdkRuns(Object.create(store, { learning: { value: learning } }), data, "sdk-secret");
+  const selected = await sdk.selectedWorkflows(id, next, sdkWorkflowManifest([tool], undefined));
+  assert.ok(purged, "the purge ran inside the selection's reads");
+  const delivered = selected.workflows.map((flow) => [digestOf(typeof flow.workflow === "string" ? flow.workflow : JSON.stringify(flow.workflow)), selected.writers.get(flow) ?? null]);
+  assert.deepEqual(delivered.filter(([digest]) => digest === digestOf(v1)), [], `the purged run's v1 is not delivered, as no run's or any: ${JSON.stringify(delivered)}`);
+});
+
 // Row-level cases over the store alone (Store.learning purgeRun), as the learning store's contract states them.
 /** A store with agent `agentId`, learning. */
 async function rowsOn(t, agentId = "agent-one") {
