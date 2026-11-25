@@ -860,7 +860,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     // A computer that replaced an earlier claim's: the model is told once, on its next request (the loop's computer note).
     ...(computer.replaced ? { computerNote: computerReplacedNote(computer.replaced) } : {}),
     // A desktop or a phone that holds none of the run's files: the model is told once in the run where they are, or, not
-    // given write or with it set to deny, that it can't save files.
+    // given write or with it set to deny, that a screenshot can't be saved to them.
     ...(tools.apart ? { computerFilesNote: computerFilesNote({ ...tools.apart, writes: granted.includes("write") && gate.permissions.policy("write") !== "deny" }) } : {}),
     workRoot: root,
     // Where the CLI works (its working directory, the run's folder to its file tools): what its absolute paths are read

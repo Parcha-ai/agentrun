@@ -2,7 +2,7 @@
 // exec off): the model is told so once in the run, as the server's note (the model proxy's, as the replaced computer's
 // note is told), so it never takes a file it saved on the desktop for one the user gets; and computer_screenshot's
 // save_as puts the screen in the run's files, for an agent given write alone. A run not given write, or with write set to
-// deny, is told it can't save files instead. Through the runner, the pi spec and the adapter loop as they really run.
+// deny, is told instead that screenshots can't be saved to the run's files. Through the runner, the pi spec and the adapter loop as they really run.
 // A resumed claim (a park on a tool's approval, then the approval) never tells the files note again.
 //
 // The desktop is --faux's (faux-computers.ts): nothing is rented.
@@ -43,8 +43,9 @@ after(closeOpenSessions);
 const NOTE = "AgentRun server note: this desktop's own disk is not this run's files: nothing saved on the desktop reaches the user, and it is deleted when the run ends. Keep anything the user should get in the run's files, the folder your file tools work on; computer_screenshot with save_as saves the screen there as a PNG.";
 /** Its row on the run's timeline: the server's, labelled once. */
 const ROW = "AgentRun: This desktop's own disk is not this run's files: nothing saved on the desktop reaches the user, and it is deleted when the run ends. Keep anything the user should get in the run's files, the folder your file tools work on; computer_screenshot with save_as saves the screen there as a PNG.";
-/** The note of a run not given write, or with write set to deny: it can't save files, and no save_as is promised. */
-const NOTE_NO_FILES = "AgentRun server note: this desktop's own disk is not this run's files: nothing saved on the desktop reaches the user, and it is deleted when the run ends. This run can't save files for the user: put what you found in your answer.";
+/** The note of a run not given write, or with write set to deny: a screenshot can't be saved to its files, and no save_as
+ *  or file tool is promised. */
+const NOTE_NO_FILES = "AgentRun server note: this desktop's own disk is not this run's files: nothing saved on the desktop reaches the user, and it is deleted when the run ends. Screenshots can't be saved to the run's files here (write isn't offered): put what you found in your answer.";
 const NOTES = /AgentRun server note: this desktop's own disk[^<]*/g;
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
@@ -119,7 +120,7 @@ test("with the desktop allowed and write set to deny, a screenshot with save_as 
   const row = await rests(one, ["ended"]);
   assert.equal(row.state, "ended", JSON.stringify(row));
   assert.equal(one.requests.length, 2, "the refused screenshot, then the answer");
-  assert.equal(JSON.stringify(one.requests[0]).match(NOTES)?.[0], NOTE_NO_FILES, "the files note says the run can't save files, and promises no save_as");
+  assert.equal(JSON.stringify(one.requests[0]).match(NOTES)?.[0], NOTE_NO_FILES, "the files note says screenshots can't be saved here, and promises no save_as");
   const answered = JSON.stringify(one.requests[1]);
   assert.match(answered, /write is set to deny for this agent/, "the model reads write's deny");
   assert.match(answered, /save_as/, "and why it holds a screenshot");
@@ -144,7 +145,7 @@ test("an agent not given write: computer_screenshot offers no save_as, and a scr
   assert.ok(offered, `computer_screenshot is offered: ${JSON.stringify(one.requests[0].tools.map((tool) => tool.name))}`);
   assert.ok(!("save_as" in offered.input_schema.properties), `no save_as offered: ${JSON.stringify(offered.input_schema)}`);
   assert.doesNotMatch(offered.description, /save_as/, "nor named in its words");
-  assert.equal(JSON.stringify(one.requests[0]).match(NOTES)?.[0], NOTE_NO_FILES, "the files note says the run can't save files, and promises no save_as");
+  assert.equal(JSON.stringify(one.requests[0]).match(NOTES)?.[0], NOTE_NO_FILES, "the files note says screenshots can't be saved here, and promises no save_as");
   assert.equal(one.requests.length, 3, "the refused screenshot, the refused script, then the answer");
   const direct = JSON.stringify(one.requests[1].messages.at(-1));
   assert.match(direct, /save_as/, `the direct call is refused: ${direct}`);

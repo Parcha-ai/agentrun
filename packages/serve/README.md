@@ -960,7 +960,7 @@ ask puts it to a person); one with no `save_as` is held to the kind's setting al
 agent's tools: an agent not given `write` is not offered it, and the gate refuses one anyway whatever `write`'s setting
 says. On a desktop or a phone the run's folder is not mounted in (one with `exec: false`, or a provider that mounts
 none), the model is told this once in the run, as the server's note, after a due cap wrap-up; a run not given `write`,
-or with it set to deny, is told it can't save files for the user.
+or with it set to deny, is told instead that screenshots can't be saved to the run's files.
 
 A kind with no provider, a provider that does not serve the kind, or a provider whose required keys are not saved is
 refused before anything starts, in words that name the fix in Settings → Computers. A Docker computer needs a Docker
