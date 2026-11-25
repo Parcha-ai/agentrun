@@ -270,11 +270,14 @@ test("a dial whose runner is gone (its relay closed), whose listener does not an
   await until(async () => lines.find((line) => line.includes("machine_relay_refused") && line.includes("m-gone")), Boolean, "the server's refusal line");
   assert.match(lines.find((line) => line.includes("machine_relay_refused") && line.includes("m-gone")), /"a dial for run run-gone \(machine m-gone\): runner runner-gone, which made it, is not running now/, "the server's line says the run too");
 
-  // Not answering: its row names a port nothing listens on (a runner killed with no close).
+  // Not answering: its row names a port where every connection is dropped as it comes (a runner killed with no close).
+  // The port stays bound until the test ends: a port freed here could be taken by the next server this process starts,
+  // whose answer (a 401) would read as a runner that did not take the dial.
   const dead = createServer();
+  dead.on("connection", (socket) => socket.destroy());
   await new Promise((resolve) => dead.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => dead.close(resolve)));
   const port = dead.address().port;
-  await new Promise((resolve) => dead.close(resolve));
   await side.store.runners.put({ runner: "runner-dead", incarnation: "inc-dead", refused: null, host: "127.0.0.1", port });
   const { token: deadToken } = await mintedFor(side.store, "runner-dead", "inc-dead", "m-dead", "run-dead");
   const refusedDead = await Promise.race([machine(address, deadToken).opened, sleep(15_000).then(() => "hung")]);

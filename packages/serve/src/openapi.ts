@@ -108,6 +108,28 @@ const SOURCE_PARAMETER: Json = {
   "x-agentrun-serve": "runsource/1",
 };
 
+/** runwindow/1: GET /runs' window on when a run started, [from, to). */
+const FROM_PARAMETER: Json = {
+  name: "from", in: "query", required: false,
+  description: "Only runs started at or after this instant: an RFC 3339 date-time with its zone (`2026-11-01T00:00:00Z`, or an offset such as `+01:00`, sent as `%2B01:00`), to the millisecond. With `to`, the window [from, to): a run started at `from` is in it. Once per request; a second `from`, one that is no instant with its zone, or one after `to`, is 400.",
+  schema: { type: "string", format: "date-time" },
+  "x-agentrun-serve": "runwindow/1",
+};
+const TO_PARAMETER: Json = {
+  name: "to", in: "query", required: false,
+  description: "Only runs started before this instant: an RFC 3339 date-time with its zone, to the millisecond. A run started at `to` is not in the window. Once per request; a second `to`, or one that is no instant with its zone, is 400.",
+  schema: { type: "string", format: "date-time" },
+  "x-agentrun-serve": "runwindow/1",
+};
+
+/** runmodel/1: GET /runs' filter on the model a run used. */
+const MODEL_PARAMETER: Json = {
+  name: "model", in: "query", required: false,
+  description: "Only runs that sent at least one request to this model, named as a run's metrics name it: `provider/model` (`anthropic/claude-sonnet-5`, `openai/gpt-5`, ...), matched exactly: no prefix, no case folding. A run counts from its first finished turn: its metrics are written each time a turn ends, covering every turn so far, so a run in its first turn is not listed yet, and a model it first uses in a later turn counts once that turn ends. A model no run used lists none. Once per request; a second `model`, or an empty one, is 400.",
+  schema: { type: "string" },
+  "x-agentrun-serve": "runmodel/1",
+};
+
 /** Why each capability this server turns off answers 501, by the route's capability. */
 export const UNSUPPORTED: Readonly<Record<string, string>> = {
   quotes: "This server has no billing, so it gives no quotes.",
@@ -172,7 +194,7 @@ const WRAPPED: Json = closed({
   weekdays: { type: "array", minItems: 7, maxItems: 7, items: COUNT, description: "Requests by local weekday, Sunday first." },
   active_ms: { ...COUNT, description: "Time at work: the gaps between a session's requests, each counted when under 15 minutes." },
   harnesses: { type: "array", items: closed({ harness: { type: "string" }, sessions: COUNT, requests: COUNT, tokens: COUNT, sources: { type: "array", items: { type: "string" }, description: "The sources read for this harness, in the order of `sources`: several can share one. Each is a `source` of `sources` and of `imported`." } }), description: "By the harness that runs what each source ran, most tokens first." },
-  models: { type: "array", items: closed({ model: { type: "string", description: "`provider/model`, or `unknown` for a request that names none." }, requests: COUNT, tokens: COUNT, cost_usd: { type: "number", minimum: 0 } }), description: "By the request's model, most tokens first." },
+  models: { type: "array", items: closed({ model: { type: "string", description: "`provider/model`, or `unknown` for a request that names none." }, requests: COUNT, tokens: COUNT, cost_usd: { type: "number", minimum: 0, description: "The list price of the model's requests that could be priced." }, unpriced_requests: { ...COUNT, description: "Of the model's requests, those `cost_usd` leaves out: all of them when no price was known for it." } }), description: "By the request's model, most tokens first." },
   sources: { type: "array", items: closed({ source: { type: "string" }, sessions: COUNT, requests: COUNT }), description: "By the tool the sessions were read from." },
   imported: { type: "array", items: closed({ source: { type: "string" }, runs: COUNT }), description: "The runs imported here in the year, by source (never `live`)." },
   unread_files: { ...COUNT, description: "Session files that could not be read (gone since listed, or not openable by this user), so the numbers are short by them. A count only: no path." },
@@ -2302,6 +2324,9 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
         { name: "archived", in: "query", required: false, description: "true lists only archived runs; false, the default, the others.", schema: { type: "boolean" } },
         LABEL_PARAMETER,
         SOURCE_PARAMETER,
+        FROM_PARAMETER,
+        TO_PARAMETER,
+        MODEL_PARAMETER,
       ],
       responses: { "200": json(ref("schemas/RunList"), "One page of runs, newest first."), ...errors(400, 401, 429, 500) },
     },
@@ -2396,7 +2421,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/wrapped": {
     get: {
       operationId: "getWrapped", tags: ["runs"], summary: "A year of the work under this machine's session files",
-      description: "Reads the Claude Code, Codex, pi and other session files under the home of the machine this server runs on, and answers numbers and names only (no prompt, title, path or project). Everything is bucketed by each request's time in the server's local zone, so a session that spans New Year splits; a session counts for the year of its first request. Answered only by one owner's server on their own machine, reached at a loopback name: one bound past loopback, with a public URL, the API-only profile, more than one API token, an API key made in the console for an app, or a Postgres store is 403. The home is read on a worker thread; a read not done within 15 seconds is 503 `unavailable` with `retry_after_ms` while it goes on. The current year's answer is kept for a minute, an earlier year's until the server stops. A year after the current one is 400.",
+      description: "Reads the Claude Code, Codex, pi and other session files under the home of the machine this server runs on, and answers numbers and names only (no prompt, title, path or project). Everything is bucketed by each request's time in the server's local zone, so a session that spans New Year splits; a session counts for the year of its first request. Answered only by one owner's server on their own machine, reached at a loopback name: one bound past loopback, with a public URL, the API-only profile, more than one API token, an API key made in the console for an app, or a Postgres store is 403. The home is read on a worker thread; a read not done within 15 seconds is 503 `unavailable` with `retry_after_ms` while it goes on. The current year's answer is kept for a minute, an earlier year's until the server stops. A read that fails is kept for a minute too: each ask in it is 500 `internal`, the reason in the server's log, and the next ask after it reads again. A year after the current one is 400.",
       parameters: [
         { name: "year", in: "query", required: false, description: "A four-digit year, in the server's local zone. Default the current year.", schema: { type: "integer", minimum: 1000, maximum: 9999 } },
       ],
@@ -3348,7 +3373,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       operationId: "answerApproval", tags: ["runs"], summary: "Answer a tool call that waits for the owner's approval",
       description: "A tool set to ask parks its run at each call: status input_required, state waiting, and its view's and its summary's pending (kind approval) naming the call; a timeline row of kind tool_approval_requested follows the call's own rows (its call's, and its result's once it ran), then a row with what came of the answer. allow runs the call once, and the session goes on with its result: a read the runner lost mid-call may run again on its next claim, a call with a side effect never does; deny answers the call with the refusal, the note as its reason. The first answer wins: the same answer again is 204, another 409 not_continuable with details {reason: already_answered, decision}. A cancel of the run marks the call canceled, and a stop withdraws it. A person's message while it waits declines it, with the message as the reason: the run goes on in one turn with the refusal and their words, its row reads `Declined by your message`, their words show as their own message row between the approval row and the outcome, and a later answer is 409 with details.decision deny. Only the owner's password session answers, on the page's own origin with a JSON body: a bearer token is 403 forbidden, since a run's process, an agent's MCP client or a script may hold one.",
       parameters: [ref("parameters/RunId"), { name: "approval_id", in: "path", required: true, description: "The run's pending.id.", schema: { type: "string" } }],
-      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["decision"], properties: { decision: { enum: ["allow", "deny"] }, note: { type: "string", maxLength: 2000, description: "Why: with deny, the refusal's reason the model is told." }, confirm_destructive: { const: true, description: "The second confirm an allow of a destructive call needs (its pending's `destructive`): without it that allow is 422 on `confirm_destructive`, reason `missing`, and the call still waits. A deny needs none.", "x-agentrun-serve": "allowreads/1" } } } } } },
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["decision"], properties: { decision: { enum: ["allow", "deny"] }, note: { type: "string", maxLength: 2000, description: "Why: with deny, the refusal's reason the model is told. Cut of the keys the run holds before it is written; a run whose launch's sealed part doesn't open here refuses a note (409 not_continuable, details.reason withheld)." }, confirm_destructive: { const: true, description: "The second confirm an allow of a destructive call needs (its pending's `destructive`): without it that allow is 422 on `confirm_destructive`, reason `missing`, and the call still waits. A deny needs none.", "x-agentrun-serve": "allowreads/1" } } } } } },
       responses: { "204": { description: "Answered: the run goes on." }, ...errors(400, 401, 403, 404, 409, 415, 422, 429, 500) },
       "x-agentrun-serve": "approvals/1",
     },
