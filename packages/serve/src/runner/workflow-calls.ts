@@ -2,7 +2,8 @@
 // it ends (learned-nodes.ts LEARNED_NODES: the workflow, its digest, who called it, how it ended, the nodes that ran),
 // whoever called it, the platform before the agent's first turn (WORKFLOW_FIRST_CALL) or the agent itself. A run's
 // metrics keep the calls as `workflow_calls` (workflow-first.ts pathMetrics), which the ledger row and the money rule
-// read: a run that called a workflow counts on its served side whoever called it.
+// read: a run the platform served first counts on that workflow's served side alone, one only the agent called on the
+// side of each workflow it ran (workflow-first.ts costLineOf), and a call refused before any node ran on none.
 import { type WorkflowCall, type WorkflowCallOutcome, WORKFLOW_CALLERS, type WorkflowCaller } from "../learning-cost.js";
 import { learnedCallEntries } from "../learned-nodes.js";
 import type { EntryLike } from "../timeline/index.js";

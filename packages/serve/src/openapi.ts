@@ -1365,7 +1365,7 @@ const RUN_PATH: Record<string, Json> = {
         usd: { type: ["number", "null"], description: "What its nodes' requests booked, in dollars; null when that is not known or can't be told apart from other work of the run (another call ran beside it)." },
       }),
     }, { type: "null" }],
-    description: "Every learned workflow call the run made, in call order, as its end recorded it: the platform's and the agent's own. The money rule counts a run that called a workflow on that workflow's served side, whoever called it; a refused call counts on no side. An empty list on an ended run that called none; null where `path` is null.",
+    description: "Every learned workflow call the run made, in call order, as its end recorded it: the platform's and the agent's own. The money rule charges a run the platform served first to that workflow alone, and a run only the agent called to each workflow it ran; a refused call counts on no side. An empty list on an ended run that called none; null where `path` is null.",
     "x-agentrun-serve": "path/1",
   },
   first_choice: {
