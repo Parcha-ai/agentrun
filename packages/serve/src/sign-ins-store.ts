@@ -9,6 +9,7 @@
 // sign_in_handed list. The forget is one store transaction, which is the per-agent lock a launch shares: the store's one
 // writer serializes it with the launch that writes sign_in_handed.
 import { createHash } from "node:crypto";
+import { PROVIDERS } from "@parcha/agentrun-computer";
 import { ApiError } from "./errors.js";
 import { type SecretMeta, signInSecretMeta } from "./sign-ins-secrets.js";
 import { type Claim, sealColumn, sealedAt, SignInHandedTo, SignInMissing, type SignInRow, type Store, unsealColumn } from "./store/index.js";
@@ -196,7 +197,7 @@ export async function handedSignInReadsBack(store: Pick<Store, "signIns">, sealK
     const pointer = open(sealKey, run.agentId, row.provider, row.pointerSealed);
     if (pointer !== undefined) known.add(pointerHash(pointer));
   }
-  for (const provider of VENDORS) {
+  for (const provider of SIGN_IN_VENDORS) {
     for (const tomb of await store.signIns.tombstones(run.agentId, provider)) {
       const pointer = open(sealKey, run.agentId, provider, tomb.pointerSealed);
       if (pointer !== undefined) known.add(pointerHash(pointer));
@@ -281,26 +282,25 @@ export { SignInHandedTo, SignInMissing };
 // hash (store.signIns.handedHolder), and verified_at is the time a run last verified it (store column, written by the
 // run path through store.signIns.verify).
 
-/** Browserbase writes a saved context back after its session ends (pi-browser waits for it), so the saver's save lease must
- *  outlast its run leaving 'running' by this long, or the next run saves over a write-back in flight. A bound this server
- *  chose (Browserbase publishes none); the serve layer's policy, passed to the store as signInSettleMs. Kernel and others keep none. */
-export const BROWSERBASE_SETTLE_MS = 10_000;
+/** A browser the server keeps a sign-in for: a provider whose descriptor declares profiles. A local Chrome keeps none. */
+export type Vendor = string;
+/** Every vendor a sign-in is kept at, for a walk over an agent's tombstones: each provider that declares profiles. */
+export const SIGN_IN_VENDORS: readonly Vendor[] = PROVIDERS.filter((entry) => entry.profiles !== undefined).map((entry) => entry.id);
 
-/** The settle window a provider's save lease outlives its run leaving 'running' by: Browserbase's, and none for the rest. */
-const settleFor = (provider: string): number => (provider === "browserbase" ? BROWSERBASE_SETTLE_MS : 0);
+/** The settle window a provider's save lease outlives its run leaving 'running' by: its descriptor's profiles.settleMs,
+ *  the one its browser's own saver waits too (browser-computer.ts), passed to the store as signInSettleMs. A vendor that
+ *  writes a profile back after its saving session ends (Browserbase) has the next run save over that write-back in flight
+ *  unless the lease outlasts it; one that has written it back by then declares 0. */
+const settleFor = (provider: string): number => PROVIDERS.find((entry) => entry.id === provider)?.profiles?.settleMs ?? 0;
 
-/** A browser the server keeps a sign-in for; a local Chrome keeps none. */
-export type Vendor = "browserbase" | "kernel";
-/** Every vendor a sign-in is kept at, for a walk over an agent's tombstones. */
-const VENDORS: readonly Vendor[] = ["browserbase", "kernel"];
 /** A saved sign-in as GET /agents/{id} shows it (the v2 SignIn), never its pointer: its key, provider, state, holder and
  *  verified_at, and its one secret's metadata under `secret` (sign-ins-secrets.ts signInSecretMeta). */
 export type SignInView = { key: string; provider: Vendor; state: "ready" | "held" | "unreadable"; held_by: string | null; verified_at: string | null; secret: SecretMeta };
 
-/** The vendor a run's browser resolves to keeps a sign-in for: Browserbase's and Kernel's; a local Chrome is refused by
+/** The vendor a run's browser resolves to, where it keeps a sign-in (SIGN_IN_VENDORS); a local Chrome is refused by
  *  name; an unavailable browser has none. */
 export function vendorOf(resolution: string): Vendor | undefined {
-  if (resolution === "browserbase" || resolution === "kernel") return resolution;
+  if (SIGN_IN_VENDORS.includes(resolution)) return resolution;
   if (resolution === "chrome" || resolution === "cdp") throw new Error("a local Chrome keeps no saved sign-in: its cookies would sit on this server's disk");
   return undefined;
 }
@@ -408,7 +408,7 @@ export function signInsOverStore(store: SignInsStore, sealKey: Buffer, vendors: 
         }
       }
       const failed: string[] = [];
-      for (const provider of VENDORS) {
+      for (const provider of SIGN_IN_VENDORS) {
         for (const tomb of await store.signIns.tombstones(agentId, provider)) {
           const pointer = open(sealKey, agentId, provider, tomb.pointerSealed);
           if (pointer === undefined) continue;

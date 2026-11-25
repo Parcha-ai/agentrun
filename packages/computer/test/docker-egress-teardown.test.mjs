@@ -14,6 +14,10 @@ const ALLOW = ["pypi.org"];
 const SPEC = { image: "debian:bookworm-slim", lifetimeMs: 600_000, network: { allow: ALLOW } };
 const ref = (name) => ({ id: idOf(name), name });
 const proxyOf = (name) => `${name}-egress`;
+/** The bound a removal that never ends is waited for (the provider's settleMs), and the cap on a test that waits it out:
+ *  far below the provider's default 10 s, so the wait is the test's to set, never a fixed sleep. */
+const SETTLE = 300;
+const QUICK = { timeout: 5_000 };
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 /** Waits until `check` holds, inside the 60 s the fake holds a step for: each docker call is a process of its own, slow
  *  on a loaded host. */
@@ -21,8 +25,8 @@ const until = async (check) => {
 	for (const end = Date.now() + 50_000; Date.now() < end && !check(); ) await wait(20);
 };
 
-test("release(delete) removes the egress proxy even when the computer's own removal never ends, and fails naming the computer", async () => {
-	const { provider, names } = fakeDocker({ ...allowed({ name: A, allow: ALLOW }), removing: { [A]: null } });
+test("release(delete) removes the egress proxy even when the computer's own removal never ends, and fails naming the computer", QUICK, async () => {
+	const { provider, names } = fakeDocker({ ...allowed({ name: A, allow: ALLOW }), removing: { [A]: null }, settleMs: SETTLE });
 	const released = await provider.release(ref(A), "delete");
 	assert.equal(released.ok, false, "the computer is still there: the release says so");
 	assert.match(released.error.message, new RegExp(A));
@@ -46,10 +50,10 @@ test("a release that stops between its docker calls (the process that ran it end
 	}
 });
 
-test("create() cut off by its caller after the computer ran removes the proxy even when the computer's removal never ends", async () => {
+test("create() cut off by its caller after the computer ran removes the proxy even when the computer's removal never ends", QUICK, async () => {
 	const requestId = "teardown-cut";
 	const name = computerNameFor(requestId);
-	const { provider, calls, names, proceed } = fakeDocker({ hold: ["hello"], removing: { [name]: null } });
+	const { provider, calls, names, proceed } = fakeDocker({ hold: ["hello"], removing: { [name]: null }, settleMs: SETTLE });
 	const controller = new AbortController();
 	try {
 		const pending = provider.create(SPEC, { requestId, signal: controller.signal });
@@ -66,12 +70,12 @@ test("create() cut off by its caller after the computer ran removes the proxy ev
 	}
 });
 
-test("create() whose proxy is up and whose computer never started removes the proxy even when the computer's removal never ends", async () => {
+test("create() whose proxy is up and whose computer never started removes the proxy even when the computer's removal never ends", QUICK, async () => {
 	const requestId = "teardown-partial";
 	const name = computerNameFor(requestId);
 	// The computer's docker run makes its container and fails to start it (exit 125, left Created), and Docker never
-	// finishes removing it.
-	const { provider, names } = fakeDocker({ runFails: true, removing: { [name]: null } });
+	// finishes removing it. The bound is a second here: it also bounds the proxy's own removal after it, four docker calls.
+	const { provider, names } = fakeDocker({ runFails: true, removing: { [name]: null }, settleMs: 1_000 });
 	const made = await provider.create(SPEC, { requestId });
 	assert.equal(made.ok, false);
 	assert.match(made.error.message, /^docker run failed: /);

@@ -6,15 +6,15 @@
 //   test-affected.mjs: the root manifests, the lockfile, tsconfig.base.json, .nvmrc, .npmrc, scripts/, .github/) and not
 //   itself a test file: every suite may read one, and no import says which.
 // - Otherwise the tests test-affected picks (a changed test, its importers, a package's config, a file a test names, the
-//   smoke set), and every test of a package with a changed file that picks none, unless it is Markdown or was deleted: a
-//   Go source, a SQL migration or a fixture read by listing its folder reaches tests that no import or name shows. A
-//   deleted file no test names is one no test imports. A suite CI runs whole (pi-browser's) runs for a pick of its own,
-//   not for its smoke file: whole, it is no fast check.
+//   smoke set, and for any change the tests that read the whole tree, TREE_WIDE), and every test of a package with a
+//   changed file that picks none, unless it is Markdown or was deleted: a Go source, a SQL migration or a fixture read by
+//   listing its folder reaches tests that no import or name shows. A deleted file no test names is one no test imports.
+//   A suite CI runs whole (pi-browser's) runs for a pick of its own, not for its smoke file: whole, it is no fast check.
 // Every shard job of a run computes the same selection from the same checkout, and plans it the same way.
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { SHARED_ROOTS, SMOKE, readPackages, readTestSets, select } from './test-affected.mjs';
+import { SHARED_ROOTS, SMOKE, TREE_WIDE, readPackages, readTestSets, select } from './test-affected.mjs';
 
 const MARKDOWN = /\.md$/i;
 const inside = (path, dir) => path.startsWith(`${dir}/`);
@@ -31,11 +31,11 @@ export function changedPaths(root, base) {
  * files from the root, `suites` the suites with one (a whole suite runs when it has one), `paths` each changed path with
  * what it picked (test-affected's `{ path, kinds, note }`, and `widened` where its package's every test was added).
  */
-export function affectedTests(root, changed, { sets = readTestSets(root), packages = readPackages(root), smoke = SMOKE } = {}) {
+export function affectedTests(root, changed, { sets = readTestSets(root), packages = readPackages(root), smoke = SMOKE, treeWide = TREE_WIDE } = {}) {
   const testPaths = new Set(sets.flatMap((set) => set.files.map((file) => (set.dir === '.' ? file : `${set.dir}/${file}`))));
   const shared = changed.find((path) => !testPaths.has(path) && SHARED_ROOTS.some((re) => re.test(path)));
   if (shared) return { full: `${shared} is a shared root, which any suite may read` };
-  const result = select(root, changed, { sets, packages, smoke });
+  const result = select(root, changed, { sets, packages, smoke, treeWide });
   const files = new Set(), suites = new Set();
   const take = (set, file) => { files.add(set.dir === '.' ? file : `${set.dir}/${file}`); suites.add(set.name); };
   for (const suite of result.suites) {

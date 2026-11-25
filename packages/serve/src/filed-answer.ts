@@ -93,8 +93,8 @@ export function laidOut(text: string): string | undefined {
 /** The model's text for `text`, longer than `clip` characters: the filed text's first lines, whole, within `clip`, then
  *  a note naming the file (`<folder>/<stem>.txt`, or `.json` for JSON) and the read offset that goes on. A file that
  *  cannot be written still answers its start, saying why in the Workspace's words (never an error's message, which
- *  names paths). `clip` is at least FILED_LINE_MAX, so the start holds at least one line. */
-export async function filedAnswer(work: Workspace | (() => Workspace), folder: string, stem: string, text: string, clip: number): Promise<string> {
+ *  names paths), a Workspace that cannot be opened (`work` a thunk that rejects) too. `clip` is at least FILED_LINE_MAX, so the start holds at least one line. */
+export async function filedAnswer(work: Workspace | (() => Workspace | Promise<Workspace>), folder: string, stem: string, text: string, clip: number): Promise<string> {
   const filed = fileable(text);
   const lines = filed.text.split("\n");
   // Lines as read counts them ("Showing lines 1-560 of <total>"): one more than the newlines.
@@ -111,7 +111,7 @@ export async function filedAnswer(work: Workspace | (() => Workspace), folder: s
   const cut = `\n[cut at line ${shown} of ${total} (${head.length} of ${filed.text.length} characters${how.length ? `; ${how.join("; ")}` : ""}); `;
   const path = `${folder}/${stem}.${filed.json ? "json" : "txt"}`;
   try {
-    await (typeof work === "function" ? work() : work).write(path, filed.text);
+    await (await (typeof work === "function" ? work() : work)).write(path, filed.text);
   } catch (error) {
     return `${head}${cut}the whole answer could not be saved (${workspaceErrorWords(error) ?? (error as { code?: string })?.code ?? "write failed"})]`;
   }
