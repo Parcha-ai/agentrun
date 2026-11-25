@@ -4,7 +4,7 @@
 // Claude Agent SDK and codex's Codex are installed on first use into the data's harnesses directory and loaded from there
 // alone (harness-install.ts); opencode's pinned CLI that is missing says so with the one line that installs it: an npm
 // install beside serve, or, when serve runs from npx, the npx line that runs it with the missing package.
-import { accessSync, constants, existsSync, readFileSync, statSync } from "node:fs";
+import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterFacts, AgentAdapter, HarnessWire, SessionSpec } from "@parcha/agentrun-kernel";
@@ -102,9 +102,37 @@ const freeName = (base: string, exists: (path: string) => boolean): string => {
  *  the installer's Node, so a refusal names it. */
 export const INSTALLED_COMMAND_ENV = "AGENTRUN_INSTALLED_COMMAND";
 
-/** The installer's command as the person types it: `agentrun` when its folder is on PATH (the installer adds it to the
- *  login shell's), else its path. */
-const typedCommand = (command: string, env: NodeJS.ProcessEnv): string => ((env.PATH ?? "").split(":").includes(dirname(command)) ? "agentrun" : shellWord(command));
+/** Whether `a` and `b` name one file through any symlink (a home folder reached by a link): their real paths when both
+ *  are there, else the paths as given. */
+const sameFile = (a: string, b: string): boolean => {
+  try {
+    return realpathSync(a) === realpathSync(b);
+  } catch {
+    return resolve(a) === resolve(b);
+  }
+};
+
+/** The file a shell runs for `agentrun` on `path`: the first executable one in its folders, in order, or undefined. */
+const agentrunOnPath = (path: string): string | undefined => {
+  for (const dir of path.split(":")) {
+    if (!dir) continue;
+    const found = join(dir, "agentrun");
+    try {
+      if (statSync(found).isFile()) {
+        accessSync(found, constants.X_OK);
+        return found;
+      }
+    } catch {}
+  }
+  return undefined;
+};
+
+/** The installer's command as the person types it: `agentrun` when that is what their PATH runs (the installer adds its
+ *  folder to the login shell's), else its path, so a paste never starts another install's copy found earlier on PATH. */
+const typedCommand = (command: string, env: NodeJS.ProcessEnv): string => {
+  const first = agentrunOnPath(env.PATH ?? "");
+  return first !== undefined && sameFile(first, command) ? "agentrun" : shellWord(command);
+};
 
 /**
  * A start the agentrun launcher made (NPX_PACKAGE_ENV: by npx, or by the installer's bin/agentrun and its service, the
@@ -138,7 +166,8 @@ export function earlierDataRefusal(error: unknown, data: string, env: NodeJS.Pro
   const back = `The earlier version opens the old data with --data ${shellWord(aside)}.`;
   // The store's own refusal already says to add them again; an earlier release's schema says it only in the lines cut here.
   const again = refused.name === "SchemaVersionUnknown" ? " Add your agents, MCP servers, keys and sign-ins again in this version." : "";
-  if (installed === join(dir, "bin", "agentrun")) {
+  // Through real paths: a home folder reached by a link names the same command.
+  if (installed !== undefined && sameFile(installed, join(dir, "bin", "agentrun"))) {
     const version = launcher.slice(launcher.lastIndexOf("@") + 1);
     return [
       refused.message.split("\n")[0],

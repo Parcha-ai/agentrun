@@ -755,7 +755,7 @@ vps_install_docker() {
 # server takes (timesyncd, chrony) never move.
 # Under LC_ALL=C, so the words matched are apt's English ones on a server set to any language.
 vps_apt() {
-  apt_until= apt_said= apt_wait=600
+  apt_until='' apt_said='' apt_wait=600
   until LC_ALL=C DEBIAN_FRONTEND=noninteractive apt-get -y -qq -o Dpkg::Use-Pty=0 -o DPkg::Lock::Timeout=$apt_wait "$@" > "$work/apt.log" 2>&1; do
     if grep 'Could not get lock' "$work/apt.log" | grep -qv '/var/lib/dpkg/'; then
       read -r apt_now _ < /proc/uptime

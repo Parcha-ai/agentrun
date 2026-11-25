@@ -2,7 +2,7 @@
 // store does not read. The server refuses to start on one, naming the homes, rather than serve it as if it were empty.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { mkdir, readdir, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -199,12 +199,18 @@ test("started by npx on a folder that still holds an earlier install's bin/agent
 
 // The installed command on a --data of the person's own: moving that folder leaves the installer where it is, so the
 // installed command starts again on it. Its login shell has the command's folder on PATH (the installer adds it), never
-// the installer's Node, so the line names that command, never npx: by name when its folder is on PATH, else by path.
+// the installer's Node, so the line names that command, never npx: by name when it is the agentrun their PATH runs, else
+// by path, so a paste never starts another install's copy found earlier on PATH.
 test("started by the installed agentrun on a --data of the person's own, the folder moved aside starts again with that command, not npx", { timeout: 20_000 }, async (t) => {
   const root = await scratch(t);
   const data = join(root, "srv", "agents");
   await oldHome(data, "old");
   const command = join(root, "home", ".agentrun", "bin", "agentrun");
+  const other = join(root, "opt", "bin", "agentrun");
+  for (const one of [command, other]) {
+    await mkdir(dirname(one), { recursive: true });
+    await writeFile(one, "#!/bin/sh\n", { mode: 0o755 });
+  }
   const installed = { AGENTRUN_INSTALLED_COMMAND: command, PATH: dirname(process.execPath) };
   const byPath = await startByLauncher(t, data, join(root, "home"), installed);
   assert.equal(byPath.code, 1, byPath.err);
@@ -213,6 +219,24 @@ test("started by the installed agentrun on a --data of the person's own, the fol
   assert.doesNotMatch(byPath.err, /\bnpx\b|installer/, byPath.err);
   const byName = await startByLauncher(t, data, join(root, "home"), { ...installed, PATH: `${dirname(command)}:${dirname(process.execPath)}` });
   assert.ok(lineWith(byName.err, `mv ${data} ${data}-earlier, then agentrun --data ${data}${FLAGS}.`).at > 0, byName.err);
+  const behind = await startByLauncher(t, data, join(root, "home"), { ...installed, PATH: `${dirname(other)}:${dirname(command)}:${dirname(process.execPath)}` });
+  assert.ok(lineWith(behind.err, `mv ${data} ${data}-earlier, then ${command} --data ${data}${FLAGS}.`).at > 0, `another agentrun earlier on PATH: by path\n${behind.err}`);
+});
+
+// A home folder reached by a link: the launcher says its command by real path, the refused folder is named as given, and
+// both are the installer's folder, so the way on is still the installer, never that command, which the move takes away.
+test("started by the installed agentrun in the old folder through a symlinked home: still the installer for this version", { timeout: 20_000 }, async (t) => {
+  const root = await scratch(t);
+  const real = join(root, "disk", "me");
+  await mkdir(join(real, ".agentrun", "bin"), { recursive: true });
+  await writeFile(join(real, ".agentrun", "bin", "agentrun"), "#!/bin/sh\n", { mode: 0o755 });
+  await symlink(real, join(root, "me"));
+  const data = join(root, "me", ".agentrun");
+  await oldHome(data, "old");
+  const { err, code } = await startByLauncher(t, data, join(root, "me"), { AGENTRUN_INSTALLED_COMMAND: realpathSync(join(real, ".agentrun", "bin", "agentrun")) });
+  assert.equal(code, 1, err);
+  assert.ok(lineWith(err, `mv ${data} ${data}-earlier, then run the installer again for this version: curl -fsSL https://agentrun.ai/install | sh -s -- --version 0.4.22.`).at > 0, err);
+  assert.doesNotMatch(err, /\bnpx\b|then \S*agentrun --data/, err);
 });
 
 test("with no installed agentrun in the folder, the folder moved aside starts again with the launcher's command, not the installer", { timeout: 20_000 }, async (t) => {
