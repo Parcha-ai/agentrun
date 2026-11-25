@@ -28,6 +28,8 @@ export const facts: AdapterFacts = Object.freeze<AdapterFacts>({
   webSearch: "native",
   // Its model is Anthropic's, on its own settings, never the gateway's default for the other harnesses.
   ownModel: true,
+  // Its proxy forwards with the fetch it is handed: a model the route translates onto its wire runs on it.
+  forwardsRoute: true,
   // Anthropic's ids hold no dot; OpenRouter names the same models with dots (anthropic/claude-sonnet-5.5).
   normalizeModel: (model: { provider: string; modelId: string }) => (model.provider === "anthropic" ? { ...model, modelId: model.modelId.replaceAll(".", "-") } : model),
   install: Object.freeze({ npmLine: CLAUDE_AGENT_SDK_INSTALL, spec: `@anthropic-ai/claude-agent-sdk@${CLAUDE_AGENT_SDK_VERSION}`, codes: Object.freeze({ install: "CLAUDE_AGENT_NOT_INSTALLED", pins: "CLAUDE_AGENT_PIN_MISMATCH" }) }),
@@ -42,3 +44,7 @@ export const facts: AdapterFacts = Object.freeze<AdapterFacts>({
   schemaProblems: (tool: string, schema: Record<string, unknown>) => [...toolSchemaProblems(tool, schema), ...["anyOf", "allOf", "oneOf"].filter((key) => key in schema).map((key) => `/${key}: the Claude Agent CLI drops a tool whose root has ${key}`)],
   policy: (options) => anthropicPolicy({ model: options.model, tools: options.tools, ...(options.auth ? { auth: options.auth } : {}), ...(options.webSearch === true ? { webSearch: true, ...(options.webSearchAllowance ? { webSearchAllowance: options.webSearchAllowance } : {}) } : {}), ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}) }),
 });
+
+// The pinned CLI's renewal of a login (login-refresh.ts), here too so a host that renews a login in the CLI's place
+// reads it without loading the adapter and its SDK.
+export { LOGIN_REFRESH as loginRefresh } from "./login-refresh.js";

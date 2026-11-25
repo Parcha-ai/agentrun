@@ -6,5 +6,10 @@ export function queryPlaygroundHref(agentId?: string, filter: RunsFilter = {}): 
   if (agentId) params.set("agent", agentId);
   if (filter.status) params.set("status", filter.status);
   if (filter.archived) params.set("archived", "true");
+  // GET /v2/runs only: one agent's runs have no source, window or model filter.
+  if (filter.source && !agentId) params.set("source", filter.source);
+  if (filter.from && !agentId) params.set("from", filter.from);
+  if (filter.to && !agentId) params.set("to", filter.to);
+  if (filter.model && !agentId) params.set("model", filter.model);
   return `#/playground?${params}`;
 }

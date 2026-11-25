@@ -90,7 +90,7 @@ describe("a Docker computer whose network is an allowlist", { skip: LIVE ? false
 		const hash = createHash("sha256").update(recipe).update(readFileSync(join(FIXTURE, "preload.mjs"))).digest("hex").slice(0, 12);
 		image = `agentrun-computer-egress-test:${hash}`;
 		execFileSync("docker", ["build", "--quiet", "--tag", image, "-f", "-", FIXTURE], { input: recipe, stdio: ["pipe", "ignore", "inherit"] });
-		provider = new DockerProvider({ daemonPath, egress: { image, hint: HINT } });
+		provider = new DockerProvider({ env: process.env, daemonPath, egress: { image, hint: HINT } });
 		ref = await create();
 		const connected = await provider.connect(ref);
 		assert.equal(connected.ok, true, JSON.stringify(connected));

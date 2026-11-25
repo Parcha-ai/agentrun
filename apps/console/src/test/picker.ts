@@ -37,9 +37,9 @@ async function close(list: HTMLElement) {
 }
 
 /** A picker's options as its list shows them: each one's text, value and whether it can be picked. */
-export async function optionsOf(field: HTMLButtonElement): Promise<{ text: string; value: string; disabled: boolean }[]> {
+export async function optionsOf(field: HTMLButtonElement): Promise<{ text: string; value: string; disabled: boolean; tagTone: string | null }[]> {
   const list = await opened(field);
-  const options = [...list.querySelectorAll('[role="option"]')].map((o) => ({ text: o.textContent ?? "", value: o.getAttribute("data-value") ?? "", disabled: o.getAttribute("aria-disabled") === "true" }));
+  const options = [...list.querySelectorAll('[role="option"]')].map((o) => ({ text: o.textContent ?? "", value: o.getAttribute("data-value") ?? "", disabled: o.getAttribute("aria-disabled") === "true", tagTone: o.getAttribute("data-tag-tone") }));
   await close(list);
   return options;
 }

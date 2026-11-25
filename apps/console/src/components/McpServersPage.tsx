@@ -10,17 +10,41 @@ import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { Banner } from "@/components/ui/banner";
 import { Input } from "@/components/ui/field";
+import { Picker, type PickerOption } from "@/components/ui/picker";
 import { Switch } from "@/components/ui/switch";
 import { type Client, ClientError } from "@/lib/client";
 import { when } from "@/lib/format";
 import { type SecretsWhyNot, WHY_NOT_WORDS } from "@/lib/secrets";
 import { ownSettings, type ToolChoice } from "@/lib/toolSettings";
 import type { ComposioTriggers, Permission, ToolSettings } from "@/lib/v2";
-import { type ComposioTools, GITHUB_MCP_URL, MCP_URL_PRESETS, type McpAdd, type McpAuth, type McpPreset, type McpPreview, mcpProblem, type McpRefresh, type McpServer, type McpSource, PREVIEW_SCOPE_NOTE, signInFailure, SOURCE_LABEL, urlPresetOf } from "@/lib/mcp";
+import { type ComposioAccount, type ComposioAccountState, type ComposioToolkit, type ComposioTools, GITHUB_MCP_URL, MCP_URL_PRESETS, type McpAdd, type McpAuth, type McpPreset, type McpPreview, mcpProblem, type McpRefresh, type McpServer, type McpSource, PREVIEW_SCOPE_NOTE, signInFailure, SOURCE_LABEL, urlPresetOf } from "@/lib/mcp";
 
 type Problem = ReturnType<typeof mcpProblem>;
 type SignIn = { server: string; ok: boolean; error?: string };
 const MAX_HEADERS = 8;
+
+/** A Composio server's account, as its row says it: the chip's words and tone, and what to do. */
+const ACCOUNT: Record<ComposioAccountState, [string, "success" | "warning" | "plain", string]> = {
+  connected: ["connected", "success", ""],
+  pending: ["not connected", "warning", "Its connect link isn't finished: connect it on Composio, then Refresh."],
+  expired: ["connection expired", "warning", "Connect it again on Composio, then Refresh."],
+  none: ["no account connected", "warning", "Connect one on Composio, then Refresh."],
+  unknown: ["account unknown", "plain", "Composio didn't answer at the last Refresh."],
+};
+
+/** A saved Composio server's account, as its last Refresh read it: connected as which account (each one's label, never
+ *  its id), or not and what to do. */
+function AccountLine({ account }: { account: ComposioAccount }) {
+  const [words, tone, next] = ACCOUNT[account.state] ?? ACCOUNT.unknown;
+  const detail = account.state === "connected" ? (account.labels?.length ? `as ${account.labels.join(", ")}` : "Composio gives the account no name") : next;
+  return (
+    <p data-composio-account={account.state} className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-small">
+      <Chip tone={tone}>{words}</Chip>
+      <span className="break-all font-mono text-muted-foreground">{detail}</span>
+      <span className="font-mono text-muted-foreground">· checked {when(account.checked_at)}</span>
+    </p>
+  );
+}
 
 /** A saved server's credential, as its row says it. */
 const CREDENTIAL: Record<string, [string, "success" | "warning" | "plain"]> = {
@@ -178,6 +202,7 @@ function ServerRow({ v2, server: s, settings, settingsBusy, settingsProblem, onS
           <p className="flex flex-wrap items-center gap-2"><span className="font-mono text-prose font-semibold">{s.name}</span><Chip tone={tone}>{said}</Chip>{!!s.not_metered?.length && <Chip tone="plain">not metered</Chip>}
             {/* What a template's MCP need is matched on: where its tools come from and the toolkit they are. */}
             {s.source && <><Chip tone="muted">{SOURCE_LABEL[s.source]}</Chip><span data-toolkit className="font-mono text-small text-muted-foreground">{s.toolkit ? `toolkit ${s.toolkit}` : "no toolkit"}</span></>}</p>
+          {s.composio_account && <AccountLine account={s.composio_account} />}
           <p className="mt-1.5 break-all font-mono text-small text-muted-foreground">{s.url}</p>
           {s.auth.type === "github_app" && <p className="mt-1 font-mono text-small text-muted-foreground">Signed with this server's GitHub App: a token narrowed to the run's repository is made for each run{s.auth.headers?.length ? ` · headers ${s.auth.headers.join(", ")}` : ""}</p>}
           {oauth && s.oauth &&<p className="mt-1 font-mono text-small text-muted-foreground">Signed in with OAuth{s.oauth.scopes.length ? ` · ${s.oauth.scopes.join(" ")}` : ""}{s.oauth.client === "pre-registered" && s.oauth.client_id ? ` · client ${s.oauth.client_id}` : ""}{s.credential === "expired" ? " · sign-in expired: sign in again" : s.oauth.expires_at ? ` · token until ${when(s.oauth.expires_at)}` : ""}</p>}
@@ -410,6 +435,12 @@ function ComposioForm({ v2, add, onClose, onSaved }: { v2: Client; add?: Add; on
   const [toolkit, setToolkit] = useState(add?.toolkit ?? "");
   const [name, setName] = useState(add?.name ?? "");
   const [listed, setListed] = useState<ComposioTools | null>(null);
+  // The toolkits Composio offers, for the picker: loaded with the key typed (none until then). A template's toolkit is
+  // picked before any list is loaded. `typed`: the toolkit is typed as its slug instead, when the list failed or leaves
+  // it out; the actions route still checks it.
+  const [kits, setKits] = useState<ComposioToolkit[] | null>(null);
+  const [typed, setTyped] = useState(false);
+  const [hasKey, setHasKey] = useState(false);
   const [picked, setPicked] = useState<string[]>([]);
   const [query, setQuery] = useState("");
   // What a save says after it is saved: where to connect the account, the actions not served, and what a save over a
@@ -417,23 +448,42 @@ function ComposioForm({ v2, add, onClose, onSaved }: { v2: Client; add?: Add; on
   const [after, setAfter] = useState<{ connect?: string; notServed?: string[]; composio?: { removed: boolean; note: string } } | null>(null);
   const [problem, setProblem] = useState<Problem | null>(null);
   const [busy, setBusy] = useState(false);
+  // Cancel is off only while a save is out (its answer decides what the form shows next); a load never locks it.
+  const [saving, setSaving] = useState(false);
   const key = () => ((form.current?.elements.namedItem("composio-key") as HTMLInputElement | null)?.value ?? "").trim();
   const act = async (work: () => Promise<void>) => { setBusy(true); setProblem(null); try { await work(); } catch (e) { setProblem(mcpProblem(e)); } setBusy(false); };
-  // Each change of the key or toolkit (and each load) is a new ask: an answer to an older one is dropped, never shown
-  // under the toolkit now in the field.
+  // Each edit of the key or toolkit, and each load, is a new ask: the request under way is aborted, and an answer or a
+  // refusal to an older ask is dropped, never shown under the key or toolkit now in the form.
   const asked = useRef(0);
-  const changed = () => { asked.current++; setListed(null); };
-  const load = () => act(async () => {
-    const mine = ++asked.current;
-    setListed(null); setPicked([]); setQuery("");
-    const answer = await v2.composioTools(key(), toolkit.trim().toLowerCase());
-    if (mine !== asked.current) return;
+  const running = useRef<AbortController | null>(null);
+  const stale = () => { asked.current++; running.current?.abort(); running.current = null; };
+  useEffect(() => stale, []);
+  const asking = <T,>(send: (signal: AbortSignal) => Promise<T>, take: (answer: T) => void) => act(async () => {
+    stale();
+    const mine = asked.current;
+    const control = (running.current = new AbortController());
+    try {
+      const answer = await send(control.signal);
+      if (mine === asked.current) take(answer);
+    } catch (e) { if (mine === asked.current) throw e; }
+  });
+  const changed = () => { stale(); setListed(null); };
+  const load = () => { setListed(null); setPicked([]); setQuery(""); return asking((signal) => v2.composioTools(key(), toolkit.trim().toLowerCase(), signal), (answer) => {
     setListed(answer);
     // The template's actions ticked, those of them the toolkit lists, while the toolkit is still the one it needs.
     if (add?.tools && answer.toolkit === add.toolkit) setPicked(answer.tools.map((t) => t.slug).filter((slug) => add.tools!.includes(slug)));
-  });
+  }); };
+  // The toolkit list is the key's: each edit of the key drops it and the toolkit picked from it (a template's, or one
+  // typed, stays).
+  const keyChanged = () => { stale(); setKits(null); setToolkit((now) => (typed || (add?.toolkit && now === add.toolkit) ? now : "")); };
+  // A list that fails leaves the slug to be typed.
+  const loadKits = () => asking((signal) => v2.composioToolkits(key(), signal).catch((e: unknown) => { if (!signal.aborted) setTyped(true); throw e; }), (answer) => { setKits(answer.toolkits); setTyped(false); });
+  const kitOptions: PickerOption[] = (kits ?? []).map((k) => ({ value: k.slug, label: `${k.name} · ${k.slug}` }));
+  // A toolkit already chosen (a template's) that the list doesn't have stays an option, so the field still shows it.
+  if (toolkit && !kitOptions.some((o) => o.value === toolkit)) kitOptions.unshift({ value: toolkit, label: toolkit });
   const save = () => act(async () => {
-    const answer = await v2.saveComposioServer(name.trim(), key(), listed!.toolkit, picked);
+    setSaving(true);
+    const answer = await v2.saveComposioServer(name.trim(), key(), listed!.toolkit, picked).finally(() => setSaving(false));
     form.current?.reset();
     onSaved();
     if (answer.connect_url || answer.not_served?.length || answer.composio) setAfter({ connect: answer.connect_url, notServed: answer.not_served, composio: answer.composio }); else onClose();
@@ -453,12 +503,23 @@ function ComposioForm({ v2, add, onClose, onSaved }: { v2: Client; add?: Add; on
   }
   return (
     <form ref={form} autoComplete="off" onSubmit={(e) => { e.preventDefault(); if (listed && picked.length && name.trim()) void save(); }} aria-label="Add from Composio" className="space-y-4 border bg-card p-4"
-      onInput={(e) => { if ((e.target as HTMLInputElement).name === "composio-key") changed(); }}>
+      onInput={(e) => { if ((e.target as HTMLInputElement).name === "composio-key") { changed(); keyChanged(); setHasKey(!!key()); } }}>
       <p className="text-small text-muted-foreground">Composio runs the toolkit's actions for you. This saves an MCP server that grants only the actions you tick, with your Composio key sealed like any credential.</p>
       {add?.tools && <p role="note" className="text-small text-muted-foreground">A template uses {add.tools.join(", ")}: enter your key and load the actions, and those are ticked.</p>}
       <label className="block"><span className="caps mb-2 block text-small font-semibold">Composio API key</span><Input name="composio-key" {...secret} /></label>
-      <label className="block"><span className="caps mb-2 block text-small font-semibold">Toolkit</span>
-        <Input name="composio-toolkit" value={toolkit} onChange={(e) => { setToolkit(e.target.value); changed(); }} placeholder="github" spellCheck={false} /></label>
+      <div className="block" {...(kits ? { "data-toolkits-loaded": "" } : {})}><span className="caps mb-2 block text-small font-semibold">Toolkit</span>
+        {/* Composio's list, by name; or the slug typed, when the list failed or leaves the toolkit out. */}
+        <div className="flex gap-2">
+          {typed
+            ? <Input name="composio-toolkit" aria-label="Toolkit slug" className="min-w-0 flex-1" value={toolkit} placeholder="github" spellCheck={false} autoCapitalize="off" autoCorrect="off"
+                onChange={(e) => { setToolkit(e.target.value); changed(); }} />
+            : <Picker label="Toolkit" className="min-w-0 flex-1" value={toolkit} options={kitOptions} disabled={!kitOptions.length}
+                placeholder={kits ? "Pick a toolkit" : "Load the toolkits with your key"} onChange={(next) => { setToolkit(next); changed(); }} />}
+          <Button type="button" size="md" disabled={busy || !hasKey} onClick={() => void loadKits()}>Load toolkits</Button>
+        </div>
+        {kits && !kits.length && <p className="mt-1 font-mono text-small text-muted-foreground">Composio lists no toolkit for this key.</p>}
+        {kits && <Button type="button" size="xs" variant="ghost" className="mt-1" onClick={() => setTyped((now) => !now)}>{typed ? "Pick from the list" : "Not listed? Type its slug"}</Button>}
+      </div>
       {problem && <Said problem={problem} />}
       {listed && (
         <fieldset className="space-y-2">
@@ -480,7 +541,7 @@ function ComposioForm({ v2, add, onClose, onSaved }: { v2: Client; add?: Add; on
       <div className="flex flex-wrap gap-2">
         <Button type="button" size="sm" disabled={busy || !toolkit.trim()} onClick={() => void load()}>Load actions</Button>
         {listed && <Button type="submit" size="sm" variant="solid" disabled={busy || !picked.length || !name.trim()}>{busy ? "Working" : "Save"}</Button>}
-        <Button type="button" size="sm" disabled={busy} onClick={() => { form.current?.reset(); onClose(); }}>Cancel</Button>
+        <Button type="button" size="sm" disabled={saving} onClick={() => { stale(); form.current?.reset(); onClose(); }}>Cancel</Button>
       </div>
     </form>
   );

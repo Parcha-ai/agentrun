@@ -9,6 +9,7 @@
 //
 // They are the owner's: the server's token or the owner's session. A run never holds the server's token (runner/main.ts
 // RUNNER_ONLY), so no run's agent reaches its own computer this way: it drives it through its tools.
+import { browserHeld } from "./browser-hold.js";
 import { callComputer, callIssues, type ChannelOptions, type ChannelStore, sendRow, TAKE_MS } from "./computer-channel.js";
 import { type ComputerCallOptions, type ComputerCallStore, computerHoldOf, entriesOf, runOver } from "./computer-commands.js";
 import { COMPUTER_RELEASE, COMPUTER_START, heldIn, heldRefused, type HeldState, holdIssues } from "./computer-held.js";
@@ -49,33 +50,39 @@ export async function heldField(store: HeldStore, runId: string, options: HeldOp
 }
 
 /** Whether parked run `runId`'s computer of `kind` was let go: a park's claim releases it but for a desktop, a phone or a
- *  sandbox kept for the resume, until its keep's time (workspace/computer-kept.ts). A browser's is said on its own read. */
-async function releasedAtPark(store: Pick<Store, "settings">, runId: string, kind: string, now: number): Promise<boolean> {
+ *  sandbox kept for the resume, until its keep's time (workspace/computer-kept.ts). A browser's is said on its own read.
+ *  The keep's `until` was stamped on the store's clock (Kept.until), so its time is judged on it, as the run's computer
+ *  view judges it (server.ts getRunComputer); a clock that can't be read judges no time, as that view does. */
+async function releasedAtPark(store: Pick<Store, "settings" | "sealedKeys">, runId: string, kind: string): Promise<boolean> {
   if (kind === "browser") return false;
   const kept = await readKept(store.settings, runId).catch(() => undefined);
-  return !kept || kept.kind !== kind || kept.ended === true || kept.ending === true || now >= kept.until;
+  if (!kept || kept.kind !== kind || kept.ended === true || kept.ending === true) return true;
+  const at = await store.sealedKeys.clock().catch(() => undefined);
+  return at !== undefined && at >= kept.until;
 }
 
 /** The run read's `computer` field (`{ computer }`, or nothing for a run with none): its revision's computer setting, else
  *  the one its place says; released once a stop let it go, or while the run is parked with it let go (releasedAtPark); taken_over while the owner holds its desktop or phone (computerHoldOf, read from the run's
- *  journal only while that computer is up); with `held` for a run that holds its computer for its owner. The journal is
+ *  journal only while that computer is up) or its browser (browserHeld, one settings read while it is up); with `held` for a run that holds its computer for its owner. The journal is
  *  read at most once, and not at all for a run that neither can be taken over nor holds. `view` is the run read so far. */
-export async function runComputerRead(store: HeldStore & Pick<Store, "agents" | "settings">, runId: string, view: Record<string, unknown>, options: HeldOptions = {}): Promise<{ computer?: Record<string, unknown> }> {
+export async function runComputerRead(store: HeldStore & Pick<Store, "agents" | "settings" | "sealedKeys">, runId: string, view: Record<string, unknown>, options: HeldOptions = {}): Promise<{ computer?: Record<string, unknown> }> {
   const run = await store.runs.get(runId);
   const setting = run ? settingOfDefinition(((await store.agents.revision(run.revisionId))?.body ?? {}) as Definition)?.computer : undefined;
   if (!setting) return {};
   const error = view.error as { code?: unknown; message?: unknown } | null | undefined;
   // A stop lets the run's computer go (the run's row is final until a follow-up queues it again); a park keeps a desktop,
   // a phone or a sandbox only for its keep's time.
-  const released = run?.state === "stopped" || (run?.state === "parked" && (await releasedAtPark(store, runId, setting.kind, options.now?.() ?? Date.now())));
+  const released = run?.state === "stopped" || (run?.state === "parked" && (await releasedAtPark(store, runId, setting.kind)));
   const read = { id: runId, status: String(view.status), ...(error && typeof error.code === "string" ? { error: { code: error.code, message: String(error.message ?? "") } } : {}), ...(released ? { released } : {}) };
   // The run's journal, read at most once for the whole field (the hold and `held` both read it), and only when one needs
   // it: a long run's every poll would pay for a read that grows with it.
   let journal: Promise<Awaited<ReturnType<typeof entriesOf>>> | undefined;
   const once: HeldOptions = { ...options, entries: () => (journal ??= entriesOf(store, runId, options)) };
-  // Who drives: only a desktop or a phone is taken over (a sandbox or a browser never is here), and only while it is up.
+  // Who drives, only while the computer is up: a desktop's or a phone's hold from the run's journal; a browser's from the
+  // one row its live view's take keeps (browser-hold.ts); a sandbox is never taken over.
   const takeable = setting.kind === "desktop" || setting.kind === "phone";
-  const hold = takeable && runComputerField(setting, read)?.state === "ready" ? await computerHoldOf(store, runId, once) : "agent";
+  const up = runComputerField(setting, read)?.state === "ready";
+  const hold = !up ? "agent" : takeable ? await computerHoldOf(store, runId, once) : setting.kind === "browser" && (await browserHeld(store.settings, runId)) ? "person" : "agent";
   const field = runComputerField(setting, read, (_, state) => (hold === "person" ? "taken_over" : state));
   if (!field) return {};
   const held = await heldField(store, runId, once);

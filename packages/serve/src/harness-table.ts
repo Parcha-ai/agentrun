@@ -227,8 +227,9 @@ function adapterEntry(facts: AdapterFacts, make: (env: NodeJS.ProcessEnv, needs:
     ...extra,
     // Its wire's vendor's model, or that vendor's on OpenRouter; behind serve's gateway, on the wire it serves, any id,
     // which is the gateway's own string and names no provider here. One that runs on a ChatGPT plan, the plan's models.
-    // A model the route translates onto its wire (wires.ts routed: an Ollama model on Messages), except behind a gateway.
-    runs: (env, model) => (gateway && Boolean(env.AGENT_MODEL_BASE_URL)) || model.slice(0, Math.max(0, model.indexOf("/"))) === vendor || onOpenRouter(model, vendor) || (onPlan && model.startsWith(`${PLAN_PROVIDER}/`)) || (routedId(wire, model) && !env.AGENT_MODEL_BASE_URL),
+    // A model the route translates onto its wire (wires.ts routed: an Ollama model on Messages or Responses), where its
+    // proxy forwards with the route's fetch (its forwardsRoute fact), except behind a gateway.
+    runs: (env, model) => (gateway && Boolean(env.AGENT_MODEL_BASE_URL)) || model.slice(0, Math.max(0, model.indexOf("/"))) === vendor || onOpenRouter(model, vendor) || (onPlan && model.startsWith(`${PLAN_PROVIDER}/`)) || (facts.forwardsRoute === true && routedId(wire, model) && !env.AGENT_MODEL_BASE_URL),
     onWire: (env) => facts.ownModel || openRouterOnly(wire, env),
     model: async (env, ref, available) => (facts.ownModel && !available ? undefined : modelOn(wire, env, ref, id)),
     priceModel: (env, model) => priceModelFor(wire, env, model, id),
@@ -334,6 +335,10 @@ const ACP_PROMISES: HarnessPromises = Object.freeze({ resume: "load", tool_gate:
 /** As ACP_PROMISES, with a resume by a new session given the conversation so far: a module's ACP agent's, unless it
  *  says "load" (AcpEntryOptions.resume). */
 const ACP_RESTART_PROMISES: HarnessPromises = Object.freeze({ ...ACP_PROMISES, resume: "restart" });
+/** Goose's: as ACP_PROMISES, its tool calls held by its config. Its recipe's allowFile (Goose's permission file, written at
+ *  each start) allows each tool of the run by name, so Goose asks nothing for a call of ours and the host's gate is asked at
+ *  the MCP call. */
+const GOOSE_PROMISES: HarnessPromises = Object.freeze({ ...ACP_PROMISES, tool_gate: "config" });
 
 /** The code a module's ACP entry is refused by at its first launch when it promises resume "load" and its recipe
  *  declares no session/load (AcpEntryOptions.resume). */
@@ -562,7 +567,7 @@ const BUILTIN: Readonly<Record<HarnessId, HarnessEntry>> = Object.freeze({
         if ("missing" in found) throw gooseRefused(found.missing);
         return undefined;
       },
-      promises: ACP_PROMISES,
+      promises: GOOSE_PROMISES,
       hidden: gooseHidden,
     }),
   } : {}),
@@ -676,11 +681,13 @@ export function harnessTable(env: NodeJS.ProcessEnv): Readonly<Record<string, Ha
     // Then each recipe the owner names (HARNESS_RECIPES_ENV): loaded under its five rules, so a refused one, or one whose
     // id a module or another recipe already adds, refuses the start in words (a recipe never takes a built-in's id).
     for (const file of recipes?.files ?? []) {
-      const entry = recipeServerEntry(file, recipes!.data, { signIn: recipes!.signIn });
+      // One read: the entry, and the digest a run's keys are bound to, are of the same bytes.
+      const loadedFile = loadRecipe(file);
+      const entry = recipeServerEntry(loadedFile, recipes!.data, { signIn: recipes!.signIn });
       if (Object.hasOwn(built, entry.id)) throw new Error(`harness recipe ${file} names ${entry.id}, which a harness module or another recipe already adds`);
       built[entry.id] = entry;
-      const { recipe } = loadRecipe(file);
-      madeByRecipe.set(entry, { billing: recipe.model.billing, label: recipe.label, keys: Object.freeze([...recipe.keys]) });
+      const { recipe, sha256 } = loadedFile;
+      madeByRecipe.set(entry, { billing: recipe.model.billing, label: recipe.label, keys: Object.freeze([...recipe.keys]), digest: sha256 });
     }
     table = Object.freeze(built);
     loaded.set(key, table);
@@ -688,9 +695,9 @@ export function harnessTable(env: NodeJS.ProcessEnv): Readonly<Record<string, Ha
   return table;
 }
 
-/** What harnessTable kept of each entry it made from a recipe (HARNESS_RECIPES_ENV): its billing, its label and the names
- *  of the keys it runs on (recipe.keys). */
-type RecipeMade = { readonly billing: "proxy" | "plan"; readonly label: string; readonly keys: readonly string[] };
+/** What harnessTable kept of each entry it made from a recipe (HARNESS_RECIPES_ENV): its billing, its label, the names
+ *  of the keys it runs on (recipe.keys) and the sha256 of its file as loaded. */
+type RecipeMade = { readonly billing: "proxy" | "plan"; readonly label: string; readonly keys: readonly string[]; readonly digest: string };
 const madeByRecipe = new WeakMap<HarnessEntry, RecipeMade>();
 
 /** How `id` on `env`'s table is billed when it is a recipe's harness, else undefined. A recipe's install, its check's
@@ -702,22 +709,23 @@ export const recipeHarness = (env: NodeJS.ProcessEnv, id: string): "proxy" | "pl
   return entry === undefined ? undefined : madeByRecipe.get(entry)?.billing;
 };
 
-/** A harness on `env`'s table whose keys are saved for it alone (harness-keys.ts): a recipe billed to its vendor's plan. */
-export type PlanRecipe = { readonly id: string; readonly label: string; readonly keys: readonly string[] };
+/** A harness on `env`'s table whose keys are saved for it alone (harness-keys.ts): a recipe billed to its vendor's plan.
+ *  `digest`: its recipe file's sha256 as loaded, which each key saved for it is bound to, so a later file of the same id
+ *  (another agent, another vendor) never opens them. */
+export type PlanRecipe = { readonly id: string; readonly label: string; readonly keys: readonly string[]; readonly digest: string };
 
-/** The names of the keys `id` runs on when it is a plan-billed recipe's harness on `env`'s table, else undefined. */
-export const recipeKeysOf = (env: NodeJS.ProcessEnv, id: string): readonly string[] | undefined => {
-  const entry = Object.hasOwn(harnessTable(env), id) ? harnessTable(env)[id] : undefined;
-  const made = entry === undefined ? undefined : madeByRecipe.get(entry);
-  return made?.billing === "plan" ? made.keys : undefined;
+const planRecipe = (entry: HarnessEntry): PlanRecipe | undefined => {
+  const made = madeByRecipe.get(entry);
+  return made?.billing === "plan" ? { id: entry.id, label: made.label, keys: made.keys, digest: made.digest } : undefined;
 };
+
+/** `id` when it is a plan-billed recipe's harness on `env`'s table, else undefined. */
+export const planRecipeOf = (env: NodeJS.ProcessEnv, id: string): PlanRecipe | undefined =>
+  (Object.hasOwn(harnessTable(env), id) ? planRecipe(harnessTable(env)[id]!) : undefined);
 
 /** Every plan-billed recipe's harness on `env`'s table, in its order: what Settings → Harness keys lists. */
 export const planRecipesOf = (env: NodeJS.ProcessEnv): PlanRecipe[] =>
-  Object.values(harnessTable(env)).flatMap((entry) => {
-    const made = madeByRecipe.get(entry);
-    return made?.billing === "plan" ? [{ id: entry.id, label: made.label, keys: made.keys }] : [];
-  });
+  Object.values(harnessTable(env)).flatMap((entry) => planRecipe(entry) ?? []);
 
 /** The owner's setting that names harness modules when no option does: package names or paths, comma-separated. */
 export const HARNESS_MODULES_SETTING = "AGENTRUN_SERVE_HARNESS_MODULES";

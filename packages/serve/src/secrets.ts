@@ -112,13 +112,14 @@ const SECRET_NAME = /(?:^|_)(?:KEY|TOKEN|SECRET|PASSWORD)$/i;
 /** This host's secrets, for a scan of what a run wrote: each one the launcher lists, as this process holds it (never in
  *  the environment once handed over, so a scan of process.env alone sees none of them), and beside it the key a person
  *  saved under that name on the server `stored` reads for (a run that names its tool is handed it), and the value of
- *  every other key, token, secret or password `env` names. One shorter than the checker's MIN_SECRET,
- *  whitespace aside, matches too much text by chance to be refused, and is left out. */
+ *  every other key, token, secret or password `env` names, and each OTLP header value and endpoint credential
+ *  (keptSecrets). One shorter than the checker's MIN_SECRET, whitespace aside, matches too much text by chance to be
+ *  refused, and is left out, an OTLP header value's too. */
 export const hostSecrets = (env: NodeJS.ProcessEnv, stored?: StoredKeys): string[] => {
   // AGENTRUN_TOKENS's each secret too, not only the list whole (api-token.ts secretValues).
   const held = [...SECRET_NAMES.flatMap((name) => [...secretValues(name, secret(name) ?? ""), stored?.(name) ?? ""]), ...mcpSecretValues(mcpCredentials()), ...sealKeys.keys(), ...heldTokens];
   const named = Object.entries(env).filter(([name]) => SECRET_NAME.test(name) && !SECRET_NAMES.includes(name)).map(([, value]) => value ?? "");
-  return [...new Set([...held, ...named])].filter((value) => value.replace(/\s+/g, "").length >= MIN_SECRET);
+  return keptSecrets([...held, ...named], env);
 };
 
 /** The seal keys this process's open stores were booted with (seal-key.ts bootSealKey), by how many hold each: several
@@ -211,6 +212,23 @@ export function handover(names: readonly string[], stored?: StoredKeys): Buffer 
   }));
 }
 
+/** A `key=value,key=value` list (OTEL_EXPORTER_OTLP_HEADERS, OTEL_RESOURCE_ATTRIBUTES), each part percent-decoded; a
+ *  part that is not one is skipped. */
+export function keyValues(text: string | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const part of (text ?? "").split(",")) {
+    const at = part.indexOf("=");
+    if (at <= 0) continue;
+    try {
+      const key = decodeURIComponent(part.slice(0, at).trim());
+      if (key) out[key] = decodeURIComponent(part.slice(at + 1).trim());
+    } catch {
+      continue;
+    }
+  }
+  return out;
+}
+
 /** The MCP credentials this process was handed (MCP_AUTH), by server; none when it was handed none. */
 export function mcpCredentials(): Record<string, { url: string; headers?: Record<string, string>; unopened?: string }> {
   try {
@@ -219,6 +237,120 @@ export function mcpCredentials(): Record<string, { url: string; headers?: Record
   } catch {
     return {};
   }
+}
+
+/** The OTLP header names whose value is not held (otlpHeaderValues), matched in any case: the standard headers that say
+ *  how a body is sent, which carry no key. Every other header's value is held, an unknown name's too: a name not on this
+ *  list never means its value is safe. */
+export const OTLP_PLAIN_HEADERS: readonly string[] = ["content-type", "accept", "content-encoding", "user-agent"];
+
+/** `text` percent-decoded, or undefined when it can't be. */
+const decoded = (text: string): string | undefined => {
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    return undefined;
+  }
+};
+
+/** The OTLP header names whose value is on no held list but is cut from the tracer's own lines (otlpHeaderCut), matched
+ *  in any case: a backend's dataset or tenant, which says where spans go and carries no key. Such a value is often a
+ *  word like `production`, which a held list would find in nearly every project a source capture reads and in served
+ *  text. Only the names here: an unknown name's value is still held. */
+export const OTLP_CUT_ONLY_HEADERS: readonly string[] = ["x-honeycomb-dataset", "x-axiom-dataset", "x-scope-orgid"];
+
+/** An auth scheme before its credential, as a header writes it (`Bearer <token>`, `Basic <base64>`, `Api-Key <key>`,
+ *  `sentry sentry_key=<key>`): a token, then a space or its `%20`. */
+const AUTH_SCHEME = /^[A-Za-z][\w.+-]*(?:\s+|%20)/;
+
+/** The auth schemes a backend's header writes before its credential, in any case, under any header name. */
+const KNOWN_SCHEME = /^(?:bearer|basic|api-?key|api-?token|token|sentry|splunk|geniekey)(?:\s+|%20)/i;
+
+/** The words of a header's or an endpoint's query parameter's name that say its value is a credential
+ *  (`authorization`, `x-sentry-auth`, `x-api-key`, `access_token`, `apiKey`, `X-Amz-Signature`): a name is split at
+ *  each non-alphanumeric and at each lower-to-upper case change, and a word counts when it is one of CREDENTIAL_WORDS
+ *  or ends in one of CREDENTIAL_ENDING's (a lowercase compound: `accesstoken`, `writekey`, `clientsecret`). A word that
+ *  only starts like one says nothing (`authority`, `keyspace`). */
+const CREDENTIAL_WORDS = new Set(["authorization", "auth", "key", "apikey", "token", "secret", "password", "passwd", "pwd", "sig", "signature", "credential", "credentials"]);
+const CREDENTIAL_ENDING = /(?:key|token|secret|password|auth|sig|signature|credentials?)$/;
+const credentialNamed = (name: string): boolean =>
+  name.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9]+/).some((word) => CREDENTIAL_WORDS.has(word) || CREDENTIAL_ENDING.test(word));
+
+/** The OTLP exporter's header values `env` names (OTEL_EXPORTER_OTLP_HEADERS and OTEL_EXPORTER_OTLP_TRACES_HEADERS: a
+ *  tracing backend's key is one), at any length (keptSecrets floors them for the held list; otlpHeaderCut does not),
+ *  but those of a header OTLP_PLAIN_HEADERS names, and, for the held list (`held`), those OTLP_CUT_ONLY_HEADERS names.
+ *  Each is held as written (percent-encoded) and as sent (decoded); and as the SDK reads the same variable, which it
+ *  merges under ours (`headers`, tracer.ts exporterConfig) and which drops a `;` and what follows it, so a part ours
+ *  can't decode still sends that much; and, under a credential-named header (credentialNamed) or after a known auth
+ *  scheme (KNOWN_SCHEME), each of those without its first word (AUTH_SCHEME), the credential alone, as an error may
+ *  quote it. For the held list, any other header's value is held whole, never its tail alone; for the cut (`held`
+ *  false), every value is taken without any first word too, since cutting more of the tracer's own lines costs
+ *  nothing. A part whose name can't be decoded is held. Commas split the variable, so a comma inside a value must be
+ *  written `%2C`. */
+export const otlpHeaderValues = (env: NodeJS.ProcessEnv, held: boolean): string[] =>
+  [env.OTEL_EXPORTER_OTLP_HEADERS, env.OTEL_EXPORTER_OTLP_TRACES_HEADERS].flatMap((text) =>
+    (text ?? "").split(",").flatMap((part) => {
+      const at = part.indexOf("=");
+      if (at <= 0) return [];
+      const rawName = part.slice(0, at).trim();
+      const name = decoded(rawName) ?? rawName;
+      if (OTLP_PLAIN_HEADERS.includes(name.toLowerCase())) return [];
+      if (held && OTLP_CUT_ONLY_HEADERS.includes(name.toLowerCase())) return [];
+      const written = part.slice(at + 1).trim();
+      const property = written.indexOf(";");
+      const forms = [written, ...(property >= 0 ? [written.slice(0, property).trim()] : [])].flatMap((value) => [value, decoded(value) ?? value]);
+      const named = credentialNamed(name);
+      return forms.flatMap((value) => [value, ...(!held || named || KNOWN_SCHEME.test(value) ? [value.replace(AUTH_SCHEME, "")] : [])]);
+    })).filter((value) => value.trim() !== "");
+
+/** The credentials the OTLP endpoints `env` names write into their URLs (OTEL_EXPORTER_OTLP_ENDPOINT and
+ *  OTEL_EXPORTER_OTLP_TRACES_ENDPOINT): a user and password, and the value of each query parameter whose name says it is
+ *  one (credentialNamed), each as written and decoded. An exporter's error may quote the URL it posted to. */
+export const otlpEndpointValues = (env: NodeJS.ProcessEnv): string[] =>
+  [env.OTEL_EXPORTER_OTLP_ENDPOINT, env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT].flatMap((text) => {
+    let url: URL;
+    try {
+      url = new URL((text ?? "").trim());
+    } catch {
+      return [];
+    }
+    // A query writes a space as `+`; a user and password do not.
+    const query = url.search.slice(1).split("&").flatMap((pair) => {
+      const at = pair.indexOf("=");
+      const name = pair.slice(0, Math.max(at, 0)).replace(/\+/g, " ");
+      const value = pair.slice(at + 1);
+      return at > 0 && credentialNamed(decoded(name) ?? name) ? [value, decoded(value.replace(/\+/g, " ")) ?? value] : [];
+    });
+    return [...[url.username, url.password].flatMap((value) => [value, decoded(value) ?? value]), ...query];
+  }).filter((value) => value.trim() !== "");
+
+/** Every OTLP credential `env` names: its header values (otlpHeaderValues, a cut-only header's only when not `held`) and
+ *  its endpoints' (otlpEndpointValues). */
+const otlpValues = (env: NodeJS.ProcessEnv, held: boolean): string[] => [...otlpHeaderValues(env, held), ...otlpEndpointValues(env)];
+
+/** `values` and every OTLP credential `env` names (otlpValues: its header values but a cut-only header's, its
+ *  endpoints' user, password and key parameters) as the held list keeps them: each MIN_SECRET long or more, whitespace
+ *  aside. A shorter one matches too much text by chance to be held, and some readers of the list have no floor of their
+ *  own (a number equal to a held value is withheld, key-refusal.ts heldNumber; a source capture refuses a path or file
+ *  holding one), so a short header value is on no held list, nor is a dataset's or tenant's (OTLP_CUT_ONLY_HEADERS):
+ *  otlpHeaderCut alone cuts it, from the tracer's own lines. */
+export const keptSecrets = (values: readonly string[], env: NodeJS.ProcessEnv): string[] =>
+  [...new Set([...values, ...otlpValues(env, true)])].filter((value) => value.replace(/\s+/g, "").length >= MIN_SECRET);
+
+const CUT = "[redacted]";
+
+/** Text with every OTLP credential `env` names (otlpValues: its header values, a cut-only header's too, its endpoints'
+ *  user, password and key parameters) put as "[redacted]", at any length: the one cut without the MIN_SECRET floor.
+ *  The tracer's own lines take it, after the runner's redactor (otel/tracer.ts saidOf), since they are where one can
+ *  show: an exporter's error may quote a header it sent or the URL it posted to, and a run's process never holds one.
+ *  Every other cut keeps the floor on purpose: a needle of a few characters in every redactor would cut ordinary text
+ *  everywhere. Each value is matched exactly as held, the longest first, so one inside another is cut whole; a
+ *  "[redacted]" already in the text is left whole. */
+export function otlpHeaderCut(env: NodeJS.ProcessEnv): (text: string) => string {
+  const values = [...new Set(otlpValues(env, false))].sort((a, b) => b.length - a.length);
+  if (!values.length) return (text) => text;
+  const needle = new RegExp([CUT, ...values].map((value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "g");
+  return (text) => (text ? text.replace(needle, () => CUT) : text);
 }
 
 /** Every header value of `credentials`: what a secret scan refuses. */

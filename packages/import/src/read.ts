@@ -2,7 +2,7 @@
 // subagents' locators, and one session read.
 import type { Stats } from "node:fs";
 import { lstat, stat } from "node:fs/promises";
-import type { Env, Locator, Reader, ReadOptions } from "./reader.js";
+import type { Env, Locator, LocatorSize, Reader, ReadOptions } from "./reader.js";
 import { READERS, type Source } from "./readers/index.js";
 import type { SessionOf } from "./types.js";
 
@@ -27,17 +27,50 @@ export async function sessionLocators(home: string, source: string, { env, reade
   return out;
 }
 
-/** The locators of `source`, each with its file's stats (one gone since it was listed is passed over), in the import's
- *  order: the reader's (Claude Code's by project folder, oldest written first: the first file holding a copied record
- *  keeps it), else as they were listed. */
-export async function inOrder(locators: readonly Locator[], source: string, readers?: Readers): Promise<{ locator: Locator; stats: Stats }[]> {
-  const out: { locator: Locator; stats: Stats }[] = [];
+/** What the session at `locator` takes and when it was last written: the reader's stat, else its file's size and mtime.
+ *  null when it is gone (the reader says so, or its file is). Any other error (a database locked or damaged, no access)
+ *  is thrown: a session whose size cannot be had is not one that is gone. */
+export async function locatorSize(locator: Locator, source: string, readers?: Readers): Promise<LocatorSize | null> {
+  const own = readerOf(source, readers).stat;
+  if (own) return own(locator);
+  const stats = await stat(locator.file).catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT" || (error as NodeJS.ErrnoException).code === "ENOTDIR") return null;
+    throw error;
+  });
+  return stats && { bytes: stats.size, mtimeMs: stats.mtimeMs };
+}
+
+/** The session the one at `locator` ran under, as its reader tells it without reading the session (locatorSize's
+ *  `parent`, else the reader's bounded head read, parentOf): what ties a subagent too large to read to its run. */
+export async function locatorParent(locator: Locator, source: string, readers?: Readers): Promise<string | undefined> {
+  const reader = readerOf(source, readers);
+  const size = reader.stat ? await locatorSize(locator, source, readers).catch(() => null) : null;
+  return size?.parent ?? (await reader.parentOf?.(locator).catch(() => undefined));
+}
+
+/** The locators of `source`, each with its file's stats and its own size (locatorSize; one gone since it was listed is
+ *  passed over), in the import's order: the reader's (Claude Code's by project folder, oldest written first: the first
+ *  file holding a copied record keeps it), else as they were listed. One whose size cannot be had is kept, `failed` with
+ *  why and its file's size: the caller reads it (its read fails as it did) or says it is left out, never drops it unsaid. */
+export async function inOrder(locators: readonly Locator[], source: string, readers?: Readers): Promise<{ locator: Locator; stats: Stats; size: LocatorSize; failed?: unknown }[]> {
+  const out: { locator: Locator; stats: Stats; size: LocatorSize; failed?: unknown }[] = [];
   for (const locator of locators) {
     const stats = await stat(locator.file).catch(() => null);
-    if (stats) out.push({ locator, stats });
+    if (!stats) continue;
+    const file = { bytes: stats.size, mtimeMs: stats.mtimeMs };
+    if (!readerOf(source, readers).stat) {
+      out.push({ locator, stats, size: file });
+      continue;
+    }
+    const size = await locatorSize(locator, source, readers).then(
+      (size) => size && { size },
+      (failed: unknown) => ({ size: file, failed }),
+    );
+    if (size) out.push({ locator, stats, ...size });
   }
   const order = readerOf(source, readers).order;
-  if (order) out.sort((a, b) => order({ file: a.locator.file, mtimeMs: a.stats.mtimeMs }, { file: b.locator.file, mtimeMs: b.stats.mtimeMs }));
+  const key = ({ locator, stats, size }: (typeof out)[number]) => ({ file: locator.file, mtimeMs: stats.mtimeMs, ...(locator.id !== undefined ? { id: locator.id } : {}), ...(size.created !== undefined ? { created: size.created } : {}) });
+  if (order) out.sort((a, b) => order(key(a), key(b)));
   return out;
 }
 

@@ -38,12 +38,14 @@ describe("the agent page's header on a phone", () => {
   it("keeps the compact toolbar and named handoff actions reachable on a narrow screen", async () => {
     const host = await agentPage();
     const header = host.querySelector('header[aria-label="Agent toolbar"]')!;
-    const back = header.querySelector('button[aria-label="Back to agents"]');
+    const back = header.querySelector('button[aria-label="Back"]');
     expect(back).not.toBeNull();
     expect(header.textContent).toContain("Invoice checker");
     expect(classes(header)).toEqual(expect.arrayContaining(["min-h-12", "flex-wrap"]));
     expect(header.querySelector('button[aria-label="Choose coding agent for Edit agent"]')).not.toBeNull();
-    expect(header.querySelector('button[aria-label="Choose coding agent for Run agent"]')).not.toBeNull();
+    // A hosted agent runs from the run box under the bar, not a hand-off in it.
+    expect(header.querySelector('button[aria-label="Choose coding agent for Run agent"]')).toBeNull();
+    expect(host.querySelector('[data-run-here] section[aria-label="Start a run"]')).not.toBeNull();
     expect(host.querySelectorAll("h1")).toHaveLength(1);
     expect(host.querySelector('[aria-label="Agent overview"] h1')?.textContent).toBe("Invoice checker");
   });

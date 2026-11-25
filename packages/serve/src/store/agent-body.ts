@@ -75,7 +75,7 @@ export const cliLearningOf = (body: unknown): CliLearningBinding | undefined => 
 export function learningSettingForBody(body: unknown): LearningSetting | undefined {
   if (!isObject(body) || body.learning === undefined) return undefined;
   if (cliLearningOf(body) && body.learning === "notes") return true;
-  return learningSettingIssue(body.learning) === undefined ? body.learning as LearningSetting : undefined;
+  return learningSettingIssue(body.learning, "learning", true) === undefined ? body.learning as LearningSetting : undefined;
 }
 export type { SdkBinding } from "../sdk/runtimes.js";
 export type AgenticBody = { sourceSync?: SourceSyncBinding; cli_learning?: CliLearningBinding; sdk?: SdkBinding; native?: NativeBinding; instructions: string; skills: Record<string, string>; tools: string[]; model?: string; modelTiers?: ModelTiers; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; learning?: LearningSetting; toolSettings?: ToolSettings; maxCostUsd?: number; maxRequests?: number; approvals?: "ask" | "never"; inputSchema?: Record<string, unknown>; outputSchema?: Record<string, unknown>; checkout?: "pull_request" | "repository" };
@@ -167,7 +167,9 @@ export function bodyOf(input: RevisionBodyInput): { body: AgenticBody | Workflow
     if (typeof input.instructions !== "string") invalid("an agentic revision needs instructions (its prompt, possibly empty)");
     for (const field of ["model", "thinking"] as const) if (input[field] !== undefined && (typeof input[field] !== "string" || input[field] === "")) invalid(`the ${field} is not a non-empty string`);
     if (input.learning !== undefined) {
-      const wrong = learningSettingIssue(input.learning);
+      // Read as stored: an edit carries the saved setting forward (a `__proto__` agree_on segment it kept included); a
+      // write naming one is refused before it gets here (validate.ts, templates.ts).
+      const wrong = learningSettingIssue(input.learning, "learning", true);
       if (wrong) invalid(wrong);
     }
     if (input.inputSchema !== undefined && !isObject(input.inputSchema)) invalid("the inputSchema is not a JSON object");

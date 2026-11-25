@@ -2,9 +2,9 @@ import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "rea
 import { Button } from "@/components/ui/button";
 import { Chip, type ChipTone } from "@/components/ui/chip";
 import { Input } from "@/components/ui/field";
-import { harnessLabel } from "@/lib/agentForm";
-import { chatGPTView, EXPIRED, MANAGE_USAGE_URL, NOT_REVOKED, PASTE_STEP, PLAN_IS_YOURS, PLAN_RUNS, signedInAs, SIGNED_OUT } from "@/lib/chatgpt";
-import { type Client, ClientError } from "@/lib/client";
+import { HarnessName } from "@/components/HarnessIcon";
+import { chatGPTView, EXPIRED, MANAGE_USAGE_URL, NOT_REVOKED, PASTE_STEP, PLAN_IS_YOURS, planRuns, signedInAs, SIGNED_OUT } from "@/lib/chatgpt";
+import { type Capabilities, type Client, ClientError } from "@/lib/client";
 import { clock } from "@/lib/format";
 import { type HarnessInfo, modelLabel } from "@/lib/models";
 import { httpHref } from "@/lib/safeUrl";
@@ -175,7 +175,7 @@ const STATE: Record<ChatGPTView["state"], { tone: ChipTone; words: string }> = {
  *  usage; Sign out asks first and then says what is left to do in ChatGPT; expired, it says so and offers the sign-in
  *  again. Nothing on a server without the sign-in (its GET is not one). `onChange`: after a sign-in or a sign-out, which
  *  change the server's models. */
-export function ChatGPTRow({ v2, writable, whyNot, onChange }: { v2: Client; writable: boolean; whyNot?: SecretsWhyNot; onChange?: () => void }) {
+export function ChatGPTRow({ v2, writable, whyNot, onChange, source, defaultModel, routePrefix }: { v2: Client; writable: boolean; whyNot?: SecretsWhyNot; onChange?: () => void; source?: Capabilities["models"]["source"]; defaultModel?: string | null; routePrefix?: string | null }) {
   const [view, setView] = useState<ChatGPTView | null>(null);
   const [confirming, setConfirming] = useState(false);
   // `settings`: the note says to act in ChatGPT's settings, which it links beside its words.
@@ -210,7 +210,7 @@ export function ChatGPTRow({ v2, writable, whyNot, onChange }: { v2: Client; wri
         <span className="font-mono text-prose font-semibold">ChatGPT plan</span>
         <Chip tone={state.tone}>{state.words}</Chip>
       </p>
-      <p className="mt-1.5 font-mono text-small text-muted-foreground">{PLAN_RUNS}</p>
+      <p className="mt-1.5 font-mono text-small text-muted-foreground">{planRuns(source, defaultModel, routePrefix)}</p>
       <div className="mt-3 space-y-3">
         {view.state === "expired" && <p className="text-body text-warning-text">{EXPIRED}</p>}
         {view.state === "signed_in" && view.models?.length ? <p className="font-mono text-small text-muted-foreground">Models: {view.models.join(" · ")}</p> : null}
@@ -250,7 +250,7 @@ export function WhatRunsHere({ harnesses, routePrefix }: { harnesses: readonly H
           const chip = harnessChip(h);
           return (
             <li key={h.id} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b px-4 py-2.5 last:border-b-0">
-              <span className="font-mono text-body font-semibold">{harnessLabel(h.id)}</span>
+              <HarnessName harness={h.id} className="self-center font-mono text-body font-semibold" />
               <Chip tone={chip.tone}>{chip.text}</Chip>
               {h.available && !h.needs?.length
                 ? h.default_model && <span className="font-mono text-small text-muted-foreground">{modelLabel(h.default_model, routePrefix).text}</span>

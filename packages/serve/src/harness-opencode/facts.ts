@@ -21,6 +21,8 @@ export const facts: AdapterFacts = Object.freeze<AdapterFacts>({
   thinking: Object.freeze(["low", "medium", "high", "xhigh"] as const),
   // OpenCode's model requests carry no provider-hosted tool: no search of its own.
   ownModel: false,
+  // Its proxy forwards with the fetch it is handed: a model the route translates onto its wire runs on it.
+  forwardsRoute: true,
   normalizeModel: (model: { provider: string; modelId: string }) => model,
   // The server is named first, as the other lines name a package beside it: OpenCode's CLI is an optional peer of the
   // server's own.

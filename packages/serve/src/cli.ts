@@ -36,13 +36,12 @@ installEnvProxy();
 const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--faux-github] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--no-runner] [--harness-module MODULE ...] [--harness-recipe FILE ...] [--harness-sign-in]
        agentrun-serve reset-password [--data DIR]
        agentrun-serve validate-template DIR
-       agentrun-serve check-upload < BODY.json
        agentrun-serve install-harness goose|cursor [--data DIR]
        agentrun-serve install-harness --recipe FILE [--data DIR]
        agentrun-serve sign-in-harness --recipe FILE [--data DIR]
        agentrun-serve check-harness --recipe FILE [--model PROVIDER/MODEL] [--data DIR] [--report FILE] [--cap USD]
        agentrun-serve eval-template DIR [--case NAME ...] [--runs N] [--server URL | --on-data DIR] [--grader-model PROVIDER/MODEL] [--report FILE] [--faux MODULE]
-       agentrun-serve import [--data DIR] [--from claude-code,codex,pi] [--dry-run] [--include-deleted] [--all] [--verbose] [--port N]
+       agentrun-serve import [--data DIR] [--from claude-code,codex,pi,opencode,copilot] [--dry-run] [--include-deleted] [--all] [--verbose] [--port N]
        agentrun-serve learning connect|status|disconnect|retry --project PATH --runtime codex|claude-code [--url URL] [--data DIR] [--no-sync]
        agentrun-serve runner --data DIR [--loops N] [--drain-timeout D] [--name NAME]
        agentrun-serve runner --check --data DIR [--name NAME]
@@ -113,16 +112,22 @@ AGENTRUN_PUBLIC_URL, when set, is the address people open (a container's
 published port, or a proxy's URL), and the link printed uses it; with none, Render's RENDER_EXTERNAL_URL is.
 AGENTRUN_FREE_MODEL_REQUESTS (default 60) is the most requests on free models ($0 in the catalog) a run makes, capped
 or not (ChatGPT-plan requests don't count): the next is not sent and the run fails, spend_cap_reached. stdout gets one line per request, per run start and
-end, and per refused credential; AGENTRUN_LOG=quiet leaves out the request lines.
+end, and per refused credential; AGENTRUN_LOG=quiet leaves out the request lines. AGENTRUN_LOG=debug keeps them and
+also writes into a run's log one line per call an ACP agent announces, on a recipe that declares announces: its
+toolCallId, kind and the tool name the recipe's field holds when it names an AgentRun tool ("native" for
+any other call), never its input.
 
 AGENTRUN_TELEMETRY=0 (or DO_NOT_TRACK=1) turns off the anonymous usage counts (docs/telemetry.md): a random id, the
 version, the platform and how many runs as a range, never prompts, files or keys. Off in CI, under a test runner and under --faux too;
 AGENTRUN_TELEMETRY=debug prints each event on stderr and sends none.
 
+AGENTRUN_MARKETPLACE=off stops the console listing marketplace.agentrun.ai's templates beside this server's own (the list
+is read only when a page asks for it, kept 5 minutes); an https address reads that site's list instead. Under --faux it
+is off unless set to an address.
+
 AGENTRUN_API_ONLY=1 serves the run API alone, for a server behind its caller's backend (the routes in api-only.ts; every
-other address is a 404, and there are no accounts). With it, AGENTRUN_API_ONLY_MCP_ORIGINS (comma-separated origins, such
-as https://mcp.example.com) lets the token save a per_run MCP server at one of those origins (PUT
-/v2/settings/mcp-servers/NAME); unset, that save is a 404. A loopback origin also needs AGENTRUN_MCP_ALLOW_LOOPBACK=1.
+other address is a 404, and there are no accounts). AGENTRUN_API_ONLY_MCP_ORIGINS: the MCP origins the token may save a
+per_run MCP server at (README, API only).
 
 AGENTRUN_LAUNCH_HOOK_URL with AGENTRUN_LAUNCH_HOOK_SECRET (a whsec_ secret): each trigger firing that would start a run
 is POSTed to that URL, signed as Standard Webhooks, and the host starts the run through the API; this server starts
@@ -140,15 +145,16 @@ start: set it only on a machine you alone use, since loopback is this machine's 
 process reaches one only with the variable set in its own environment, on its own loopback (its own machine or
 container), never at a server's own port (${DEFAULT_PORT}, or where the server says it listens).
 
-\`agentrun-serve import\` reads the Claude Code, Codex and pi sessions in your own home (~/.claude/projects,
-~/.codex/sessions, ~/.pi/agent/sessions) into the data directory, once: each project directory an agent, with its
-CLAUDE.md or AGENTS.md and its skill folders, and each session a run you can read but not continue. Nothing leaves this
-machine; the values of key-shaped environment variables are cut out of what is written. --dry-run lists what it would
-import; run again, it imports only what it has not. Sessions written in the last 10 minutes wait for the next import;
-What is left out is counted by why; --verbose lists each file. --include-deleted keeps projects whose directory is gone (a
-deleted worktree's); --all keeps those and temporary ones too. Each run keeps what its session used (tokens, requests, tools,
-time at work), priced at the catalog's list prices when its source did not price it. Both end with a summary of every
-session found, those imported before included, and the address to open the console at (--port as the server takes it).
+\`agentrun-serve import\` reads the Claude Code, Codex, pi, OpenCode and Copilot CLI sessions in your own home
+(~/.claude/projects, ~/.codex/sessions, ~/.pi/agent/sessions, ~/.local/share/opencode, ~/.copilot/session-state) into
+the data directory, once: each project directory an agent, with its CLAUDE.md or AGENTS.md and its skill folders, and
+each session a run you can read but not continue. Nothing leaves this machine; the values of key-shaped environment
+variables are cut out of what is written. --dry-run lists what it would import; run again, it imports only what it has
+not. Sessions written in the last 10 minutes wait for the next import. What is left out is counted by why; --verbose
+lists each file. --include-deleted keeps projects whose directory is gone (a deleted worktree's); --all keeps those and
+temporary ones too. Each run keeps what its session used (tokens, requests, tools, time at work), priced at the
+catalog's list prices when its source did not price it. Both end with a summary of every session found, those imported
+before included, and the address to open the console at (--port as the server takes it).
 
 \`agentrun-serve store-schema\` prints, as one line of JSON, the store's schema version and runner floor (the oldest version
 a runner's build must know to run on it) beside the version this build knows, and what this build's server and runner do
@@ -248,12 +254,12 @@ if (process.argv[2] === "install-harness") {
     const data = resolve(values.data ?? defaultData());
     try {
       const { recipe, file } = loadRecipe(values.recipe);
-      const said = { downloaded: "the archive is downloaded and its sha256 matches the recipe", unpacked: "unpacked", verified: "the binary's sha256 is checked" } as const;
+      const said = { downloaded: "the archive is downloaded and its sha256 matches the recipe", unpacked: "unpacked", verified: "its files are checked" } as const;
       const { version, installed, binary, pinnedBy } = await installRecipe(recipe, file, data, { onStep: (step) => console.error(`${recipe.label}: ${said[step]}`) });
-      const held = { recipe: "the recipe's pin", "first-seen": "the first sha256 an earlier install recorded", recorded: "its sha256 recorded now, as the first one; a later binary that differs is refused" }[pinnedBy];
+      const held = { recipe: "the recipe's tree pin", "first-seen": "the tree an earlier install recorded", recorded: "their tree recorded now, as the first one; a later binary or file beside it that differs is refused" }[pinnedBy];
       console.log(installed === "already"
-        ? `${recipe.label} ${version} is installed in ${dirname(binary)} (already: the pinned binary is there, so nothing was downloaded; held to ${held}).`
-        : `${recipe.label} ${version} is installed in ${dirname(binary)} (now; the binary held to ${held}). Check it with: ${recipeCheckLine(file, data)} --model PROVIDER/MODEL`);
+        ? `${recipe.label} ${version} is installed in ${dirname(binary)} (already: the pinned files are there, so nothing was downloaded; held to ${held}).`
+        : `${recipe.label} ${version} is installed in ${dirname(binary)} (now; the binary and every file beside it held to ${held}). Check it with: ${recipeCheckLine(file, data)} --model PROVIDER/MODEL`);
       process.exit(0);
     } catch (error) {
       if (!(error instanceof ArchiveInstallFailed) && !(error instanceof RecipeRefused)) throw error;
@@ -338,35 +344,6 @@ if (process.argv[2] === "check-harness") {
   for (const line of printedFacts(report)) console.log(line);
   console.log(`report: ${file}`);
   process.exit(report.ok ? 0 : 1);
-}
-
-// An upload's body ({files}, as `agentrun deploy` sends POST /v2/templates/import) read from stdin and checked by the
-// import's own check (template-import.ts checkUpload), storing nothing: the package's name and sha as one JSON line and
-// 0, or each reason the import would refuse it, a line each, and 1; 2 when stdin is not JSON. Nothing in it runs. Stdin
-// is decoded once, whole: a character split between two of its chunks reads back as itself.
-if (process.argv[2] === "check-upload") {
-  const { checkUpload } = await import("./template-import.js");
-  const { ApiError } = await import("./errors.js");
-  parseArgs({ args: process.argv.slice(3), options: { data: { type: "string" } } });
-  const chunks: Buffer[] = [];
-  for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
-  let body: unknown;
-  try {
-    body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-  } catch {
-    console.error("agentrun-serve check-upload reads an upload's body, {files}, as JSON on stdin.");
-    process.exit(2);
-  }
-  try {
-    const { pkg } = checkUpload(typeof body === "object" && body !== null ? (body as { files?: unknown }).files : undefined);
-    console.log(JSON.stringify({ valid: true, name: pkg.name, sha: pkg.origin!.sha }));
-    process.exit(0);
-  } catch (error) {
-    if (!(error instanceof ApiError)) throw error;
-    const reasons = error.extra.fields?.map((field) => field.message) ?? [];
-    for (const reason of reasons.length ? reasons : [error.message]) console.error(reason);
-    process.exit(1);
-  }
 }
 
 // A template package folder checked by the one validator the server runs on the packages it ships (templates.ts): what
@@ -663,11 +640,12 @@ if (!values["no-runner"] && askedAt === undefined) {
     // its shell is taken out first, as the server's own environment drops it (runner/main.ts besideRunEnv).
     const { besideRunEnv } = await import("./runner/main.js");
     // With the computer janitor: what a crashed runner of this server left is ended (never under --faux). With the
-    // server's AttachHub: a paired computer's socket is in this process, so only this runner takes one (--no-runner's
-    // separate runners refuse it in words). Its runs reach an MCP server on loopback only when this server is a local
-    // install (Serve.localInstall).
+    // server's AttachHub and the name and incarnation the server gave it (Serve.beside): a paired computer's socket is in
+    // this process, and this runner's run holds it under a route that names it, so a runner apart (its own process,
+    // relaying through this server) takes it for no other run meanwhile. Its runs reach an MCP server on loopback only
+    // when this server is a local install (Serve.localInstall).
     // Each run a process of its own, as a user of its own where the image's helper can switch (run-child-host.ts).
-    runnerProc = await runnerBeside(data, { loops, loopsTold, drainMs, env: besideRunEnv(process.env, fauxEnvOf(serveOptions)), janitor: true, ownProcesses: true, hub: serve.attachHub, dial: serve.dial, mcpLoopback: serve.localInstall, mcpOwn: serve.own, ollamaHost: serve.ollamaHost, onRunEnded: telemetry.runEnded });
+    runnerProc = await runnerBeside(data, { loops, loopsTold, drainMs, env: besideRunEnv(process.env, fauxEnvOf(serveOptions)), janitor: true, ownProcesses: true, hub: serve.attachHub, beside: serve.beside, dial: serve.dial, mcpLoopback: serve.localInstall, mcpOwn: serve.own, ollamaHost: serve.ollamaHost, onRunEnded: telemetry.runEnded });
   } catch (error) {
     // A run isolation the runner cannot give (run-child-host.ts runIsolationOf) is said, and the server serves on with no
     // runner, as the runner subcommand stays up claiming nothing (runner/main.ts): a platform that restarts a stopped

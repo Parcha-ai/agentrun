@@ -68,6 +68,8 @@ const PHONE = { kind: "phone", provider: "phone-harness" };
 const GATEWAY_KEY = "not-a-secret-held-gateway-key";
 /** A model key and a tool key this host holds, a test's: never real ones. */
 const HOST_MODEL_KEY = "not-a-secret-held-host-model-key";
+/** Another provider's key the host holds, which no tier of the run routes. */
+const UNROUTED_KEY = "not-a-secret-held-unrouted-provider-key";
 const HOST_TOOL_KEY = "not-a-secret-held-host-tool-key";
 /** OpenCode's stand-in (fixtures/fake-opencode-serve.mjs), which speaks `opencode serve`'s protocol: no CLI is installed
  *  for the served opencode cases. */
@@ -167,8 +169,8 @@ const loadedSdk = async (version) => ({ sdk: { query() {} }, sdkVersion: version
 /** A claim of an opencode run of the revision model `openai/gpt-6.1-sol` on a runner with no model key, its spec built as
  *  the runner builds a CLI harness's (cli-run-spec.ts cliRunSpecFromLaunch) on the opencode stand-in and no computer (a
  *  runner place). `hold`: the launch's; `extra`: more of its launch (a replay's); `host`: more of the runner's environment,
- *  and the runner's model route (`routeOf`, which a CLI run's own model never takes). Resolves to the spec; rejects as the
- *  claim fails. */
+ *  the runner's model route (`routeOf`, which a CLI run's own model never takes), and `watch`, given the runner's store
+ *  before the spec is built. Resolves to the spec; rejects as the claim fails. */
 async function cliClaim(t, hold, extra = {}, host = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "held-model-key-cli-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
@@ -192,6 +194,7 @@ async function cliClaim(t, hold, extra = {}, host = {}) {
   harness = await Harness.open(store.journal(claim), { models: () => models, registry, onReport: () => {} }, ctx);
   const env = { ...host.env, [OPENCODE_STANDIN_ENV]: JSON.stringify({ command: process.execPath, args: [] }), PATH: process.env.PATH };
   const deps = { env, data: dir, journal: (c) => store.journal(c), store, sealKey: SEAL_KEY, routeOf: host.routeOf ?? (async () => assert.fail("a CLI run takes no pi route")), computerForClaim: async () => ({ release: async () => {} }) };
+  host.watch?.(store);
   built = await cliRunSpecFromLaunch(launch, { harness, registry, setModels: (given) => (models = given) }, deps, claim);
   return built;
 }
@@ -579,21 +582,87 @@ test("per-run process (run-child-host heldFor): the runner answers a held run it
     await store.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
   });
-  // A run granted subagent: its process asks the runner for every saved model key, for its tiers.
-  const revision = { kind: "agentic", body: { instructions: "Answer.", model: MODEL, tools: ["subagent"] } };
-  const seam = (launch) => heldFor({ store, sealKey: SEAL_KEY, env: { OPENROUTER_API_KEY: HOST_MODEL_KEY }, data: dir }, { claim: { runId: "run-1", epoch: 1 }, run: { agentId: "agent-1", revisionId: "rev-1", signInHanded: null }, launch, revision, claimed: {} }, (text) => text, () => {}).held;
+  // A run granted subagent whose fast tier runs on OpenRouter: its process asks the runner for its tiers' saved model keys.
+  const revision = { kind: "agentic", body: { instructions: "Answer.", model: MODEL, tools: ["subagent"], modelTiers: { fast: "openrouter/anthropic/claude-haiku-5.5" } } };
+  // The host holds another provider's key too, which no tier of it runs on.
+  const seam = (launch) => heldFor({ store, sealKey: SEAL_KEY, env: { OPENROUTER_API_KEY: HOST_MODEL_KEY, OPENAI_API_KEY: UNROUTED_KEY }, data: dir }, { claim: { runId: "run-1", epoch: 1 }, run: { agentId: "agent-1", revisionId: "rev-1", signInHanded: null }, launch, revision, claimed: {} }, (text) => text, () => {}).held;
   const launch = { input: { content: "Do the task." }, title: "t", place: { mode: "runner" }, harness: "pi" };
-  assert.equal((await seam(launch).savedModelKeys()).OPENROUTER_API_KEY, HOST_MODEL_KEY, "a run not held, granted subagent, is answered the host's model key for its tiers, as before");
+  assert.deepEqual(await seam(launch).subagentTierKeys(), { OPENROUTER_API_KEY: HOST_MODEL_KEY }, "a run not held, granted subagent, is answered the host's model key for its fast tier and no other provider's");
   const held = seam({ ...launch, hold: { minutes: 5, refused: REFUSAL } });
-  assert.deepEqual(await held.savedModelKeys(), {}, "a held run its model kept from running is answered no saved model key, though its process asks: its model runs nowhere");
+  assert.deepEqual(await held.subagentTierKeys(), {}, "a held run its model kept from running is answered no saved model key, though its process asks: its model runs nowhere");
   // A replay grades on its fast tier's model, whose provider's saved key its runner hands its process: not a held one's.
   const graded = { kind: "agentic", body: { instructions: "Answer.", model: MODEL, modelTiers: { fast: "openrouter/anthropic/claude-haiku-5.5" } } };
   const replaySeam = (hold) => heldFor({ store, sealKey: SEAL_KEY, env: { OPENROUTER_API_KEY: HOST_MODEL_KEY }, data: dir }, { claim: { runId: "run-2", epoch: 1 }, run: { agentId: "agent-1", revisionId: "rev-2", signInHanded: null }, launch: { ...launch, replay: { of: "run-asked", workflow: "answer", digest: "d".repeat(16) }, ...hold }, revision: graded, claimed: {} }, (text) => text, () => {}).held;
-  assert.deepEqual(await replaySeam({}).savedModelKeys(), { OPENROUTER_API_KEY: HOST_MODEL_KEY }, "a replay not held is answered its grader's provider's saved key, as before");
-  assert.deepEqual(await replaySeam({ hold: { minutes: 5, refused: REFUSAL } }).savedModelKeys(), {}, "a held replay its model kept from running is answered no grader's key either: it grades nothing");
-  assert.deepEqual((await held.tierModelKeys(["fast", "strong"])).keys, {}, "nor a tier's key");
+  assert.deepEqual(await replaySeam({}).subagentTierKeys(), { OPENROUTER_API_KEY: HOST_MODEL_KEY }, "a replay not held is answered its grader's provider's saved key, as before");
+  assert.deepEqual(await replaySeam({ hold: { minutes: 5, refused: REFUSAL } }).subagentTierKeys(), {}, "a held replay its model kept from running is answered no grader's key either: it grades nothing");
+  // Its learnedFirst is refused below, so it lays no learned workflow whose tiers it could ask for: this answer is that
+  // refusal's as much as tierModelKeys' own.
+  assert.deepEqual((await held.tierModelKeys(["fast", "strong"])).keys, {}, "and no tier's key: none is chosen, its learned workflows refused");
   assert.equal(await held.serverKeyless(), true, "its keyless check answers that no key of the server's pays for its spend, with no saved key read (this host has no gateway, so a read would answer false)");
   await assert.rejects(held.learnedFirst({ laid: false }), HELD_SPEND_WORDS, "nor a learning step: it settles no audit and starts no replay run");
+  // The same held run, learning: its end-of-run step would compile a draft over the server's decision keys and could start
+  // an audit on the server's key (claimSpendOff), were it asked.
+  const learning = seam({ ...launch, hold: { minutes: 5, refused: REFUSAL }, learning: { seed: "0".repeat(40), section: "" } });
+  const ended = { runId: "run-1", agentId: "agent-1", claim: { runId: "run-1", epoch: 1 }, outcome: "completed", ask: async () => assert.fail("a held run's end-of-run step asks nothing"), signal: new AbortController().signal };
+  await assert.rejects(learning.endOfRun(ended), HELD_SPEND_WORDS, "nor its end-of-run step, though it learns: it reads no saved key, compiles nothing and starts no audit");
+  // The control: the same learning run not held is not refused in those words. Its step runs as any claim's, against a test
+  // store with no seed, so how it ends here (an answer, or a failure of its own) is not this test's; only the refusal is.
+  const unheldEnd = await seam({ ...launch, learning: { seed: "0".repeat(40), section: "" } }).endOfRun({ ...ended, ask: async () => Promise.reject(new Error("the control's step asked its model")) })
+    .then(() => "answered", (error) => error.message);
+  assert.doesNotMatch(unheldEnd, HELD_SPEND_WORDS, "the same learning run not held is not refused its end-of-run step: only a held run its model kept from running is");
+  // And held, its hold carrying no refusal (its model fine): the refusal is the hold's refusal's, never the hold's.
+  const heldFineEnd = await seam({ ...launch, hold: { minutes: 5 }, learning: { seed: "0".repeat(40), section: "" } }).endOfRun({ ...ended, ask: async () => Promise.reject(new Error("the control's step asked its model")) })
+    .then(() => "answered", (error) => error.message);
+  assert.doesNotMatch(heldFineEnd, HELD_SPEND_WORDS, "a held learning run whose hold carries no refusal is not refused its end-of-run step either: only one its model kept from running is");
+});
+
+/** A learning start, as a learning run's launch carries it (run-launch.ts learningStartOf). */
+const LEARNS = { seed: "0".repeat(40), section: "" };
+
+/** A model gateway with no key for it: claimSpendOff's check (claim-secrets.ts serverKeyless) reads the saved keys. */
+const GATEWAY_ENV = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9" };
+
+/** A spy on a store's saved-key reads (server-keys.ts getSealedKey): `names` gets each one asked under claimSpendOff. */
+function spendOffReads() {
+  const names = [];
+  const watch = (store) => {
+    const get = store.sealedKeys.get.bind(store.sealedKeys);
+    store.sealedKeys.get = (name) => {
+      if (new Error().stack?.includes("claimSpendOff")) names.push(name);
+      return get(name);
+    };
+  };
+  return { names, watch };
+}
+
+test("pi (adapter-run-spec), end of run: a held refused run that learns carries no end-of-run step and reads no saved key for spend beside it; the same run not held does both", async (t) => {
+  withEnv(t, {}, KEYLESS);
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "held-model-key-end-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const body = { model: MODEL, computer: PHONE, learning: true };
+  // The control's route is specFor's stub: no key is needed for a claim that is not held to open.
+  const control = spendOffReads();
+  const { spec: unheld } = await specFor(t, { body, env: GATEWAY_ENV, launch: { model: undefined, learning: LEARNS }, computer: phoneOn(root), watch: control.watch });
+  assert.equal(typeof unheld.endOfRun, "function", "the run not held, learning, carries its end-of-run step, as before");
+  assert.ok(control.names.length > 0, "the run not held reads the saved keys for spend beside it (claimSpendOff), as before");
+  const reads = spendOffReads();
+  const { spec } = await specFor(t, { body, env: GATEWAY_ENV, launch: { model: undefined, hold: { minutes: 5, refused: REFUSAL }, learning: LEARNS }, computer: phoneOn(root), watch: reads.watch })
+    .catch((error) => assert.fail(`a held learning run opens its claim: ${error.message}`));
+  assert.equal(spec.endOfRun, undefined, "a held run carries no end-of-run step, though it learns: nothing is compiled and no audit starts");
+  assert.deepEqual(reads.names, [], "a held run reads no saved key for spend beside it (claimSpendOff is not called)");
+});
+
+test("CLI (cli-run-spec), end of run: a held refused opencode run that learns carries no end-of-run step and reads no saved key for spend beside it; the same run not held does both", async (t) => {
+  withEnv(t, {}, KEYLESS);
+  // The control's host holds opencode's key (the test's host model key), so the claim that is not held opens.
+  const control = spendOffReads();
+  const unheld = await cliClaim(t, undefined, { learning: LEARNS }, { env: { OPENAI_API_KEY: HOST_MODEL_KEY, ...GATEWAY_ENV }, watch: control.watch });
+  assert.equal(typeof unheld.endOfRun, "function", "the run not held, learning, carries its end-of-run step, as before");
+  assert.ok(control.names.length > 0, "the run not held reads the saved keys for spend beside it (claimSpendOff), as before");
+  const reads = spendOffReads();
+  const spec = await cliClaim(t, { minutes: 5, refused: REFUSAL }, { learning: LEARNS }, { env: GATEWAY_ENV, watch: reads.watch }).catch((error) => assert.fail(`a held learning opencode run opens its claim: ${error.message}`));
+  assert.equal(spec.endOfRun, undefined, "a held run carries no end-of-run step, though it learns");
+  assert.deepEqual(reads.names, [], "a held run reads no saved key for spend beside it (claimSpendOff is not called)");
 });
 
 test("pi: the stand-in route refuses every model request in the create's words, verbatim, and sends none", async (t) => {

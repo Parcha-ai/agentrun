@@ -22,7 +22,7 @@ describe("the synced folder's delta in a Docker computer", { skip: LIVE ? false 
 		const arch = execFileSync("docker", ["version", "--format", "{{.Server.Arch}}"], { encoding: "utf8" }).trim();
 		const daemonPath = fileURLToPath(new URL(`../../dist/computerd-linux-${arch}`, import.meta.url));
 		assert.ok(existsSync(daemonPath), `no daemon for Docker's arch at ${daemonPath}: run npm run build:daemon`);
-		const provider = new DockerProvider({ daemonPath });
+		const provider = new DockerProvider({ env: process.env, daemonPath });
 		const created = await provider.create({ image: "debian:bookworm-slim", lifetimeMs: 10 * 60_000, network: "none", labels: { "agentrun.test": "sync-folder" } }, newRequest("sync-folder"));
 		assert.equal(created.ok, true, JSON.stringify(created));
 		made.push(created.value.name);
