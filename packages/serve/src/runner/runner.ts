@@ -176,7 +176,7 @@ export interface RunnerOptions {
   onBeat?: () => void;
   /** Whether this runner may claim now: undefined while it may, else why not, in words a person can act on (runner/main.ts
    *  diskFreeGate: a runner whose data directory is not the server's, while the server keeps runs' folders on its own
-   *  disk). Asked before each poll's claims (`fresh` false: an answer a few seconds old will do) and again, fresh, once a
+   *  disk; a runner given an Archil region whose S3 URL may not be the server's). Asked before each poll's claims (`fresh` false: an answer a few seconds old will do) and again, fresh, once a
    *  poll claimed any, before a loop starts on them: a run claimed as the answer changed is released at once, untouched,
    *  for a runner that can serve it. While it refuses, the runner claims nothing and says why on its presence row, where
    *  the server reads it (presence.ts runnersRefused); a throw is said as an error and that poll claims nothing. Absent:

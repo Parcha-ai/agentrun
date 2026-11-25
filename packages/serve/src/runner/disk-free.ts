@@ -12,8 +12,8 @@
 import { randomBytes } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ARCHIL_SETTINGS_ENV, loadArchilSettings } from "../archil-settings.js";
-import type { KeyEnv } from "../key-meta.js";
+import { ARCHIL_SETTINGS_ENV, archilSettingsFromEnv, loadArchilSettings } from "../archil-settings.js";
+import { envValue, type KeyEnv } from "../key-meta.js";
 import type { Settings } from "../store/store.js";
 import { serverRunEnv } from "./runner-check.js";
 
@@ -57,11 +57,12 @@ export async function sharesServerDisk(store: { settings: Pick<Settings, "get"> 
 
 /** Whether the server is in Mode 2, by what the server holds, never by this runner's environment: the Archil settings
  *  saved in the store, or set in the server's own environment, whose names (never values) it says at each start
- *  (runner-check.ts RUN_ENV_KEY). */
+ *  (runner-check.ts RUN_ENV_KEY). The region is the one name a server in Mode 2 by its environment always has: its S3
+ *  URL is the region's when it sets none, and a server whose settings there are not whole does not start. */
 export async function serverInArchilMode(store: { settings: Pick<Settings, "get"> }): Promise<boolean> {
   if ((await loadArchilSettings(store)) !== undefined) return true;
   const names = await serverRunEnv(store);
-  return names !== undefined && [ARCHIL_SETTINGS_ENV.region, ARCHIL_SETTINGS_ENV.s3Url].every((name) => names.includes(name));
+  return names !== undefined && names.includes(ARCHIL_SETTINGS_ENV.region);
 }
 
 /** Why a runner on `dataDir` can't serve the runs its store holds now, or undefined while it can. On Postgres, a runner
@@ -83,19 +84,36 @@ export const DISK_FREE_MODE_1 =
 
 /** A disk-free runner's words while the server is in Mode 2 by its own environment and this runner holds no Archil settings. */
 export const DISK_FREE_NO_ARCHIL =
-  `this runner's data directory is not the server's, and the server keeps each run's folder on Archil (Mode 2) by the Archil settings in its environment, which this runner does not hold. Hand this runner the server's ${ARCHIL_SETTINGS_ENV.region} and ${ARCHIL_SETTINGS_ENV.s3Url} (and ${ARCHIL_SETTINGS_ENV.image} when the server has it), or save the Archil settings in the store.`;
+  `this runner's data directory is not the server's, and the server keeps each run's folder on Archil (Mode 2) by the Archil settings in its environment, which this runner does not hold. Hand this runner the server's ${ARCHIL_SETTINGS_ENV.region} (and ${ARCHIL_SETTINGS_ENV.s3Url} and ${ARCHIL_SETTINGS_ENV.image} when the server has them), or save the Archil settings in the store.`;
+
+/** Why a runner given a region without an S3 URL can't claim now, or undefined while it can. Such a runner reaches Archil
+ *  at the region's S3 URL (archil-settings.ts ARCHIL_S3_URLS), and the server's may be another: the server is started with
+ *  AGENTRUN_ARCHIL_S3_URL (its run-facing names say so, never the value, so one that is the region's own is refused too),
+ *  or it is in Mode 2 by saved settings whose s3Url is not the runner's. Any runner, on the server's disk or not, on either
+ *  store: a run's folder on Archil is reached by the runner and the server at one endpoint, or not claimed. */
+export async function archilS3Refusal(store: { settings: Pick<Settings, "get"> }, env: KeyEnv): Promise<string | undefined> {
+  if (envValue(env, ARCHIL_SETTINGS_ENV.region) === undefined || envValue(env, ARCHIL_SETTINGS_ENV.s3Url) !== undefined) return undefined;
+  const names = await serverRunEnv(store);
+  if (names?.includes(ARCHIL_SETTINGS_ENV.region)) return names.includes(ARCHIL_SETTINGS_ENV.s3Url) ? ARCHIL_S3_URL_NOT_HELD : undefined;
+  const saved = await loadArchilSettings(store);
+  return saved !== undefined && saved.s3Url !== archilSettingsFromEnv(env)?.s3Url ? ARCHIL_S3_URL_NOT_HELD : undefined;
+}
+
+/** A runner's words while it is given a region without an S3 URL and the server's S3 URL may be another (archilS3Refusal). */
+export const ARCHIL_S3_URL_NOT_HELD =
+  `this runner is given ${ARCHIL_SETTINGS_ENV.region} without ${ARCHIL_SETTINGS_ENV.s3Url}, so it would reach Archil at its region's S3 URL, and the server's may be another (the server is started with ${ARCHIL_SETTINGS_ENV.s3Url}, or its saved Archil settings hold another s3Url): a run's folder is reached at the server's or not at all. Hand this runner the server's S3 URL as ${ARCHIL_SETTINGS_ENV.s3Url}.`;
 
 /** How long a gate's answer is kept between polls (diskFreeGate): a change of mode reaches a runner within this. */
 export const DISK_FREE_GATE_MS = 5_000;
 
-/** The runner's claim gate (runner.ts claimGate) for a runner on `dataDir`: diskFreeRefusal, its answer kept for
- *  DISK_FREE_GATE_MS between polls and read again when asked fresh. */
+/** The runner's claim gate (runner.ts claimGate) for a runner on `dataDir`: archilS3Refusal, else diskFreeRefusal, its
+ *  answer kept for DISK_FREE_GATE_MS between polls and read again when asked fresh. */
 export function diskFreeGate(store: { settings: Pick<Settings, "get"> }, dataDir: string, env: KeyEnv, storeKind: string, now: () => number = Date.now): (fresh: boolean) => Promise<string | undefined> {
   let kept: { at: number; words: string | undefined } | undefined;
   return async (fresh) => {
     const at = now();
     if (!fresh && kept && at - kept.at < DISK_FREE_GATE_MS) return kept.words;
-    const words = await diskFreeRefusal(store, dataDir, env, storeKind);
+    const words = (await archilS3Refusal(store, env)) ?? (await diskFreeRefusal(store, dataDir, env, storeKind));
     kept = { at, words };
     return words;
   };
