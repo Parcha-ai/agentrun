@@ -233,12 +233,17 @@ test("a trace's agent read that fails is the agent's id alone, never a thrown ru
   assert.deepEqual(await agentOfRun({ get: async () => undefined }, "agt-gone-1"), { id: "agt-gone-1" });
 });
 
-test("where runs have users of their own and tracing is on, a run whose agent the runner can't read still runs and gives its slot back: its trace carries the agent's id alone, and the next run claims the runner's one slot", { timeout: 180_000 }, async (t) => {
+test("where runs have users of their own and tracing is on, a run whose agent the runner can't read still runs and gives its slot back: its trace carries the agent's id alone, and the next run, started once the first reads completed, waits for the runner's one slot and claims it, never refused", { timeout: 180_000 }, async (t) => {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runas-agent-read-"));
-  t.after(() => rm(dir, { recursive: true, force: true }));
-  // The image's helper, stood in for: `run` becomes the run's process as this user, the rest succeed.
+  // The image's helper, stood in for: `run` becomes the run's process as this user, the rest succeed. Its second reap,
+  // the first run's slot's at that run's end, waits for `go`: the first run reads completed (its process wrote its end)
+  // while the claim's cleanup still holds its slot, for as long as the test keeps `go` away. A test that fails before it
+  // writes `go` writes it first thing in its teardown, so no reap waits on into the runner's close.
   const helper = join(dir, "agentrun-runas");
-  writeFileSync(helper, `#!/bin/sh\ncase "$1" in\nrun) shift 2; while [ "$1" != -- ]; do shift; done; shift; exec "$@" ;;\nesac\nexit 0\n`);
+  const go = join(dir, "go");
+  t.after(() => writeFileSync(go, ""));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  writeFileSync(helper, `#!/bin/sh\nd="$(dirname "$0")"\ncase "$1" in\nrun) shift 2; while [ "$1" != -- ]; do shift; done; shift; exec "$@" ;;\nreap) echo reap >> "$d/reaps"; if [ "$(wc -l < "$d/reaps")" -eq 2 ]; then while [ ! -e "$d/go" ]; do sleep 0.05; done; fi ;;\nesac\nexit 0\n`);
   chmodSync(helper, 0o755);
   const exporter = new InMemorySpanExporter();
   const unread = "agt-unread-3";
@@ -257,12 +262,20 @@ test("where runs have users of their own and tracing is on, a run whose agent th
     return run.body.run_id;
   };
   const ended = (runId, deadlineMs) => follow(server.api, runId, ["completed", "failed"], { deadlineMs }).then(({ last }) => last.status, (error) => `never ended: ${error.message}`);
+  const why = async (runId) => JSON.stringify((await server.api("GET", `/runs/${runId}`)).body.error ?? null);
   const first = await start(unread, "unread-helper");
   const firstEnd = await ended(first, 60_000);
-  // A second run once the first ended: the runner has one slot, so it runs only if the first gave it back.
+  // A second run as soon as the first reads completed, its slot still held (the reap waits for `go`). The runner holds no
+  // more runs than its slots, so past three more of its beats (polls, each of which would claim the second had it a free
+  // slot) the second still waits: never claimed onto a held slot and refused for it.
   const second = await start("agt-read-4", "read-helper");
+  const seen = server.runnerBeats();
+  await until(() => server.runnerBeats() >= seen + 3, "three more runner beats", 30_000);
+  const waiting = (await server.api("GET", `/runs/${second}`)).body;
+  assert.equal(waiting.status, "queued", `the second waits while the first's slot is given back; its error ${JSON.stringify(waiting.error ?? null)}; the first ${firstEnd}, its error ${await why(first)}\n${lines.join("\n")}`);
+  // The first's slot given back: the second claims it.
+  writeFileSync(go, "");
   const secondEnd = await ended(second, 45_000);
-  const why = async (runId) => JSON.stringify((await server.api("GET", `/runs/${runId}`)).body.error ?? null);
   assert.deepEqual({ first: firstEnd, second: secondEnd }, { first: "completed", second: "completed" }, `the first's error ${await why(first)}; the second's ${await why(second)}\n${lines.join("\n")}`);
   assert.ok(faults > 0, "the runner's read of the agent failed");
   await flushTraces();
