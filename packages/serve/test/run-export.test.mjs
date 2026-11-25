@@ -370,6 +370,17 @@ test("LVI: a call's output is cut with its call's context, so a credential file'
   }
 });
 
+test("LVI: a failed call's summary, the first line of its output, is cut with the call's context as its preview is", async () => {
+  // A shell call that printed the file, then failed (a timeout): its result row's summary is its output's first line.
+  const output = `${CTX_PGPASS}\nCommand timed out after 5s`;
+  const { rows, calls } = callRows("Bash", { command: "cat ~/.pgpass; sleep 5" }, output);
+  const failed = (row) => (row.kind === "tool_result" ? { ...row, tool_status: "failed", summary: `Bash failed: ${CTX_PGPASS}` } : row);
+  const { doc, body } = await exported(readsOf({ rows: rows.map(failed), calls: calls.map(failed) }));
+  oneDump(doc, "/rows/1/tool_result_preview", "credential-file");
+  oneDump(doc, "/rows/1/summary", "credential-file");
+  assertNoPlanted(body, { pw: CTX_PW });
+});
+
 test("LVI: a read of an unrelated file, or a command that is no read or dump, is cut as it was: its prose kept as is", async () => {
   for (const [name, tool, input, output] of [
     ["Read notes.txt, prose", "Read", { file_path: "notes.txt" }, "The notes say: meet at noon by the north door."],
