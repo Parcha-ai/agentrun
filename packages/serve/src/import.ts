@@ -14,7 +14,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { AssistantEntry, ROOT_CONVERSATION_ID, type StorageWrite, ToolResultEntry, UserEntry } from "@earendil-works/pi-durable";
 import { type EntryLike, REQUEST_COST, type RunMetrics, runMetricsOf } from "./timeline/index.js";
 import { defaultData } from "./files.js";
-import { type Answer, childrenOf, HARNESS_OF, inOrder, type Locator, locatorKey, locatorOf, locatorParent, type LocatorSize, locatorSize, mirroredIn, mostEffortOf, ownRequests, priceRequests, READERS, readSession, type Session, SOURCE_NAMES, SOURCES, type Source, sessionKey, sessionLocators, type Turn, withSubagentCosts } from "@parcha/agentrun-import";
+import { type Answer, CACHE_SOURCES, cacheTotals, childrenOf, fileCache, HARNESS_OF, inOrder, type Locator, locatorKey, locatorOf, locatorParent, type LocatorSize, locatorSize, mirroredIn, mostEffortOf, ownRequests, priceRequests, READERS, readSession, type Session, SOURCE_NAMES, SOURCES, type Source, sessionKey, sessionLocators, type Turn, sessionBreaks, withSubagentCosts } from "@parcha/agentrun-import";
 import { type Found, hoursOf, type OpenAt, summaryLines } from "./import-summary.js";
 import { stopOnce } from "./stop-signals.js";
 import { catalogPrices, type Listed, providerModels } from "./model.js";
@@ -901,7 +901,7 @@ async function holdBack(children: Plan["children"], parts: readonly Session[], c
  *  files (Claude Code's), and those naming its thread (Codex's, whichever of its files they ran under). One gone or
  *  unreadable is passed over. All of them are held at once, so their sizes are taken from `budget` (what the run's own
  *  files left of MAX_RUN_BYTES) before each is read: RunTooLarge once it is spent, as one file over the cap alone spends it. */
-async function readChildren(plan: Plan, session: Session, parts: readonly Session[], seen: Set<string>, budget: Budget): Promise<Session[]> {
+async function readChildren(plan: Plan, session: Session, parts: readonly Session[], seen: Set<string>, budget: Budget, chain = false): Promise<Session[]> {
   const out: Session[] = [];
   const visited = new Set<string>();
   const under = async (owner: string): Promise<void> => {
@@ -914,7 +914,7 @@ async function readChildren(plan: Plan, session: Session, parts: readonly Sessio
       // Every subagent read is held with the run: one more than the run's cap holds ends the read, and the run is left out.
       // No subagent is passed over for its size: the run would be kept without its usage.
       if (!fits(budget, stats.bytes)) throw new RunTooLarge();
-      const child = await readSession(locator, session.source, { seen, lookups: lookupsOf(plan) }).catch(() => undefined);
+      const child = await readSession(locator, session.source, { seen, lookups: lookupsOf(plan), ...(chain ? { chain } : {}) }).catch(() => undefined);
       if (!child) continue;
       out.push(child);
       // A subagent's own subagents (Codex names each one's parent thread) are the run's too.
@@ -1227,6 +1227,34 @@ export function transcriptOf(
 /** What a run's requests cost at the catalog's list prices, each at its own provider's entry for its model: undefined when
  *  one request's tokens are unknown or its provider does not list its model (the request was served at a price no one
  *  lists here). A provider's $0 entry is $0. A request of no tokens costs nothing at any price. */
+/** Whether a source's runs are analyzed for their cache as they are imported: the sources that write a chain
+ *  (CACHE_SOURCES), read with it. */
+const cached = (source: Source): boolean => (CACHE_SOURCES as readonly string[]).includes(source);
+
+/** A run's cache as its metrics keep it (GET /v2/wrapped sums them): the cache read and the whole prompt (input, cache
+ *  read and write) of its requests and its subagents', its hit rate's parts; its breaks by cause, their extra cost
+ *  (USD) and how many are unpriced. Numbers alone. */
+export type RunCache = { read: number; prompt: number } & Omit<ReturnType<typeof cacheTotals>, "sessions">;
+
+/** `parts` (every file of a run read, in order, each with its chain) and its subagents analyzed as cacheHome analyzes a
+ *  session: each file alone, then joined into one conversation (sessionBreaks), at the catalog's prices. */
+async function runCacheOf(parts: readonly Session[], subagents: readonly Session[], catalog: ReadonlyMap<string, readonly Listed[]>): Promise<RunCache> {
+  const options = { catalog };
+  let read = 0;
+  let prompt = 0;
+  for (const turn of [...parts, ...subagents].flatMap((session) => session.turns)) {
+    if (turn.role !== "assistant" || !turn.usage) continue;
+    read += turn.usage.cacheRead;
+    prompt += turn.usage.input + turn.usage.cacheRead + turn.usage.cacheWrite;
+  }
+  const files = [];
+  for (const part of parts) files.push({ file: await fileCache(part, options), requests: part.turns.filter((turn) => turn.role === "assistant").length });
+  const children = [];
+  for (const child of subagents) children.push(await fileCache(child, options));
+  const { sessions: _sessions, ...totals } = cacheTotals([{ breaks: await sessionBreaks(files, children, options) }]);
+  return { read, prompt, ...totals };
+}
+
 async function estimateOf(entries: readonly EntryLike[], catalog: () => Promise<ReadonlyMap<string, readonly Listed[]>>): Promise<number | undefined> {
   // Unknown when one answer priced here has unknown tokens (a failed one's counts are its own, as runMetricsOf reads them).
   if (runMetricsOf(entries.filter((entry) => entry.kind === "pi.assistant")).unmetered > 0) return undefined;
@@ -1380,7 +1408,7 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
         over = true;
         break;
       }
-      const part = stats ? await readSession(locatorOf(entry), listed.source, { seen: seen(listed.source), lookups: lookupsOf(plan) }).catch((error: unknown) => void report.skipped.push(unread(file, error))) : void report.skipped.push({ what: file, why: "gone since it was listed", kind: "vanished" });
+      const part = stats ? await readSession(locatorOf(entry), listed.source, { seen: seen(listed.source), lookups: lookupsOf(plan), ...(cached(listed.source) ? { chain: true } : {}) }).catch((error: unknown) => void report.skipped.push(unread(file, error))) : void report.skipped.push({ what: file, why: "gone since it was listed", kind: "vanished" });
       if (!part || !stats) continue;
       searched.push(part);
       if (part.sourceTitle !== undefined && (!titled || stats.mtimeMs >= titled.at)) titled = { at: stats.mtimeMs, title: part.sourceTitle };
@@ -1407,7 +1435,7 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
     // holding a key counts among the keys removed.
     const keptAs = text(session.id) === session.id ? session.id : redactedId(session.id);
     session.id = keptAs;
-    const subagents = await readChildren(plan, session, searched, seen(listed.source), budget).catch((error: unknown) => {
+    const subagents = await readChildren(plan, session, searched, seen(listed.source), budget, cached(listed.source)).catch((error: unknown) => {
       if (!(error instanceof RunTooLarge)) throw error;
       report.skipped.push(tooLarge(listed));
     });
@@ -1424,6 +1452,8 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
     // A session its source did not price: the catalog's estimate, beside its cost (unknown), never written as it.
     const estimate = costUsd === undefined ? await estimateOf([...entries, ...subagents.flatMap(entriesOf)], catalog) : undefined;
     if (estimate !== undefined) Object.assign(metrics, { costUsdEst: estimate, costBasis: "catalog" });
+    // Its cache, for GET /v2/wrapped: numbers alone, from every file of it read (copies too, as cacheHome joins them).
+    if (cached(session.source)) Object.assign(metrics, { cache: await runCacheOf(searched, subagents, await catalog()) });
     const answer = session.turns.findLast((t) => t.role === "assistant" && t.text)?.text;
     // Cut, then put on one line and clipped: a key the clip cut short, or a passphrase whose spaces were changed, would
     // match no cut.

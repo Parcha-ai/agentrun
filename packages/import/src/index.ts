@@ -13,4 +13,4 @@ export { builtinCatalog, type CalculateCost, type Catalog, catalogOf, type Liste
 export { mirroredIn, ownRequests, sessionKey } from "./mirror.js";
 export { type HomeState, type ParseOptions, parseHome, type ReadFailure, ReadFailures, type SessionRequest, type SessionTotals, withSubagentCosts } from "./home.js";
 export { type Wrapped, wrappedHome } from "./wrapped.js";
-export { analyzeCache, BREAK_DROP, CACHE_SOURCES, cacheHome, cacheTotals, type SessionCache, type CacheBreak, type CacheCause, CACHE_CAUSES, type CacheOptions, type CacheReport, CACHE_TTL_LONG_MS, CACHE_TTL_MS } from "./cache.js";
+export { analyzeCache, BREAK_DROP, CACHE_SOURCES, cacheHome, cacheTotals, fileCache, type FileCache, sessionBreaks, type SessionCache, type CacheBreak, type CacheCause, CACHE_CAUSES, type CacheOptions, type CacheReport, CACHE_TTL_LONG_MS, CACHE_TTL_MS } from "./cache.js";

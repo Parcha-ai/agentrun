@@ -203,9 +203,9 @@ export async function cacheHome(home: string, { sources = CACHE_SOURCES, readers
     // rollout).
     // Each file alone two ways, the cache before it written for 5 minutes or for an hour (`long`): which holds is known
     // once the session's files before it are joined, and holds until the file writes the cache itself.
-    const reports = new Map<string, { alone: CacheReport; long: CacheReport; head?: Pick<SessionOf, "turns" | "chain" | "model">; skipped: number }>();
+    const reports = new Map<string, FileCache>();
     const { tops, children, unread } = await readSource(home, source, readers, env, undefined, lookups, UNPRICED, true, undefined, async (read): Promise<SessionRead> => {
-      reports.set(locatorKey(read.locator), { alone: await analyzed(read.session, priced, false), long: await analyzed(read.session, priced, true), ...headOf(read.session) });
+      reports.set(locatorKey(read.locator), await fileCache(read.session, priced));
       const { turns: _turns, chain: _chain, firstPrompt: _prompt, titleText: _title, sourceTitle: _source, cwd: _cwd, ...session } = read.session;
       return { locator: read.locator, session: { ...session, turns: [] }, requests: read.requests.map(({ at, usage }): Answer => ({ role: "assistant", text: "", calls: [], at, ...(usage ? { usage } : {}) })) };
     });
@@ -218,28 +218,11 @@ export async function cacheHome(home: string, { sources = CACHE_SOURCES, readers
         read += usage.cacheRead;
         prompt += promptOf(usage);
       }
-      const breaks: SessionCache["breaks"] = [];
-      // The session's files in the import's order, one conversation: each file's first turn compared with the last
-      // turn before it in the files before, its turns counted on from theirs.
-      let counted = 0;
-      let carry: CacheCarry | undefined;
-      for (const part of parts) {
-        const report = reports.get(locatorKey(part.locator));
-        if (!report) continue;
-        if (carry && report.head) {
-          const { breaks: [edge] } = await analyzeCache(report.head, { ...priced, before: carry });
-          if (edge) breaks.push({ ...edge, turn: edge.turn + report.skipped + counted });
-        }
-        // The file as the cache before it was written: a 1h write in an earlier file holds until this one writes.
-        const mine = carry?.long ? report.long : report.alone;
-        for (const found of mine.breaks) breaks.push({ ...found, turn: found.turn + counted });
-        // A file with no turn compared passes the carry on, with any compaction of its own.
-        carry = mine.last ?? (carry && { ...carry, compacted: carry.compacted === true || mine.compacted });
-        counted += requestsOf(part.read);
-      }
-      subagents.forEach((part, n) => {
-        for (const found of reports.get(locatorKey(part.locator))?.alone.breaks ?? []) breaks.push({ ...found, subagent: n + 1 });
-      });
+      const breaks = await sessionBreaks(
+        parts.map((part) => ({ file: reports.get(locatorKey(part.locator)), requests: requestsOf(part.read) })),
+        subagents.map((part) => reports.get(locatorKey(part.locator))),
+        priced,
+      );
       const first = parts[0]!;
       out.push({ ...keyOf(home, first.locator), source, id: first.read.session.id, hitRate: prompt > 0 ? round(read / prompt, 4) : null, breaks });
     }
@@ -247,6 +230,44 @@ export async function cacheHome(home: string, { sources = CACHE_SOURCES, readers
   if (failed.length && !failures) throw new ReadFailures(failed);
   failures?.push(...failed);
   return out.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+}
+
+/** One file of a session analyzed alone, both ways (the cache before it written for 5 minutes or for an hour, `long`):
+ *  which holds is known once the session's files before it are joined (sessionBreaks). With its first turn compared and
+ *  the chain up to it (`head`), to compare with the last turn of the file before; `skipped`, the turns before that one. */
+export type FileCache = { alone: CacheReport; long: CacheReport; head?: Pick<SessionOf, "turns" | "chain" | "model">; skipped: number };
+
+/** `session` (one file's read, with its chain) as sessionBreaks joins it. */
+export async function fileCache(session: Pick<SessionOf, "turns" | "chain" | "model">, options: Omit<CacheOptions, "before"> = {}): Promise<FileCache> {
+  return { alone: await analyzed(session, options, false), long: await analyzed(session, options, true), ...headOf(session) };
+}
+
+/** A session's breaks: its files in the import's order (`parts`: each one's FileCache, none for a file not read, and its
+ *  requests), one conversation, each file's first turn compared with the last turn before it in the files before and its
+ *  turns counted on from theirs; then each subagent's file's own, in its own conversation (`subagent`: n from 1). */
+export async function sessionBreaks(parts: readonly { file: FileCache | undefined; requests: number }[], subagents: readonly (FileCache | undefined)[], options: Omit<CacheOptions, "before"> = {}): Promise<SessionCache["breaks"]> {
+  const breaks: SessionCache["breaks"] = [];
+  let counted = 0;
+  let carry: CacheCarry | undefined;
+  for (const { file, requests } of parts) {
+    if (!file) continue;
+    if (carry && file.head) {
+      const {
+        breaks: [edge],
+      } = await analyzeCache(file.head, { ...options, before: carry });
+      if (edge) breaks.push({ ...edge, turn: edge.turn + file.skipped + counted });
+    }
+    // The file as the cache before it was written: a 1h write in an earlier file holds until this one writes.
+    const mine = carry?.long ? file.long : file.alone;
+    for (const found of mine.breaks) breaks.push({ ...found, turn: found.turn + counted });
+    // A file with no turn compared passes the carry on, with any compaction of its own.
+    carry = mine.last ?? (carry && { ...carry, compacted: carry.compacted === true || mine.compacted });
+    counted += requests;
+  }
+  subagents.forEach((file, n) => {
+    for (const found of file?.alone.breaks ?? []) breaks.push({ ...found, subagent: n + 1 });
+  });
+  return breaks;
 }
 
 /** The breaks of `sessions` by cause, each cause there with 0 where none: how many, and their extra cost (USD, of the
