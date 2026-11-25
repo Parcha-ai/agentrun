@@ -3,8 +3,9 @@
 // sign-in: a person could neither sign in fresh nor switch accounts. Sign out ends a sign-in that waits, runs the CLI's
 // own sign-out (`auth logout`) on AgentRun's own login folder, removes that folder (credentials, account, profiles, the
 // refresh locks), the signed-in note kept for it and the runner's token reader, and turns the mode off; the next Turn on
-// finds no login, and the console offers the sign-in. A run claimed on the login before it is refused at its start, as
-// at a turn-off. This machine's own login (the person's `~/.claude` or
+// finds no login, and the console offers the sign-in. A run claimed on the login before it and started while the mode
+// is off is refused at its start, as at a turn-off. A removal that fails is named and the rest still happen; a link at
+// the folder is removed alone, never followed. This machine's own login (the person's `~/.claude` or
 // CLAUDE_CONFIG_DIR) is theirs: AgentRun never signs it out, and says to run `claude auth logout` there.
 // A fake CLI stands in for the pinned one: signed in while its credentials file is in the credentials dir it is given,
 // `auth login` writes that file and the account, `auth logout` removes both and exits as the test says.

@@ -728,8 +728,11 @@ export type ClaudeLoginSignOut = { confirmed: boolean; message?: string; login: 
  *  Where the folder is a link (put there after the turn-on, which refuses one), the link alone is removed: no CLI runs
  *  through it, nothing it leads to is touched, and the answer names it.
  *  Runs already going are left as a turn-off leaves them: each keeps the token its CLI holds, and fails in
- *  LOGIN_SIGNED_OUT's words at its next read of the login; one claimed on it and not yet started is refused at its start
- *  (claude-login-token.ts LOGIN_CHANGED_SINCE_CLAIM). A login on this machine's own folder (`machine`) is the person's:
+ *  LOGIN_SIGNED_OUT's words at its next read of the login; one claimed on it and started while the mode is off is refused
+ *  at its start (claude-login-token.ts LOGIN_CHANGED_SINCE_CLAIM). That check is of the folder, not the account, so one
+ *  started after a turn-on and a new sign-in runs on that sign-in. A run whose CLI reads the folder itself (in the
+ *  runner's process) holds the refresh token and may write a renewed pair back after the folder goes; nothing here
+ *  removes it again. A login on this machine's own folder (`machine`) is the person's:
  *  refused (machineSignOutRefused), with nothing touched. */
 export async function signOutClaudeLogin(deps: ClaudeLoginDeps): Promise<ClaudeLoginSignOut> {
   let off = false;
