@@ -30,8 +30,8 @@ const OTHER_KEY = `not-a-secret-${"other-env-key-0004"}`;
 const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
 const ADD = { slug: "add", name: "Add", description: "Add two numbers." };
 const TOOLKITS = { gmail: { no_auth: false, tools: [ADD] } };
-// A run's user on an API-only server is one in the token's namespace, and its account one Composio lists under it
-// (api-only-composio-binding.test.mjs).
+// A run's user on an API-only server is none the owner calls as here (one in the token's namespace is one such), and its
+// account one Composio lists under it (api-only-composio-binding.test.mjs).
 const USER_A = "agentrun.token.grep-user-alice-0001";
 const ACCOUNT_A = "ca_alice_gmail_0001";
 const MCP_ACCOUNTS = { [USER_A]: [ACCOUNT_A] };

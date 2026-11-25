@@ -1,9 +1,11 @@
 // A run's Composio binding on an API-only server (AGENTRUN_API_ONLY=1), whose every caller is its API token: a per-run
 // Composio server's run calls as the composio_user_id and connected_account_id its caller hands in mcp_auth, so there the
-// user must be one in the token's own namespace (`agentrun.token.`), and a named account one Composio lists under that
-// user, read at the start (or the message) that hands it, refused when Composio can't answer. The claim refuses a
-// binding outside the namespace too (one sealed before this rule), and a Composio server the token saved whose address
-// calls as a user outside it (one saved before the namespace). The owner's runs, on the full profile, are as before.
+// user must be none the owner calls as here (the preset's default user, its tool-listing user, and each user a server the
+// owner saved stands on, in any letter case), and a named account one Composio lists under that user, read at the start
+// (or the message) that hands it, refused when Composio can't answer. Any other user is the caller's: a backend's bare
+// user id, or one in the token's namespace (`agentrun.token.`). The claim refuses a binding of the owner's user too (one
+// sealed before the check), and a Composio server the token saved whose address calls as a user outside the namespace
+// (one saved before the namespace). The owner's runs, on the full profile, are as before.
 // Fake Composio on loopback (fixtures/fake-composio.mjs, its MCP origin the composioMcpOrigin seam), the faux MCP model
 // (fixtures/faux-mcp.mjs). No key, no network.
 import assert from "node:assert/strict";
@@ -12,7 +14,7 @@ import { startFakeComposio } from "./fixtures/fake-composio.mjs";
 import { registryPin, storeOn } from "./store-helpers.mjs";
 import { asOwner, follow, serve, serverLog, withEnv } from "./support.mjs";
 
-const { composioMadeKey, storedMade } = await import("../dist/composio-made.js");
+const { composioAccountKey, composioMadeKey, storedMade } = await import("../dist/composio-made.js");
 const { mcpSourceKey, storedSource } = await import("../dist/mcp-sources.js");
 const { sealRunMcpAuth } = await import("../dist/store/index.js");
 const { holdApiOnlyMcpOrigins } = await import("../dist/mcp-api-only-origins.js");
@@ -33,8 +35,13 @@ const OWNERS_ACCOUNT = "ca_x_owner_gmail";
 /** A user in the token's namespace, with an account of its own. */
 const TOKENS = "agentrun.token.ops";
 const TOKENS_ACCOUNT = "ca_token_ops_gmail";
-const ACCOUNTS = { gmail: [{ status: "ACTIVE", auth_config: MANAGED, id: OWNERS_ACCOUNT, user: OWNER }, { status: "ACTIVE", auth_config: MANAGED, id: TOKENS_ACCOUNT, user: TOKENS }] };
-const FAKE = { authConfigs: { gmail: [{ id: MANAGED, is_composio_managed: true, status: "ENABLED" }] }, accounts: ACCOUNTS, mcpAccounts: { [OWNER]: [OWNERS_ACCOUNT], [TOKENS]: [TOKENS_ACCOUNT] } };
+/** A backend's own user, by its bare id (Grep's user id, say), with an account of its own. */
+const BARE = "u_123";
+const BARE_ACCOUNT = "ca_u123_gmail";
+const ACCOUNTS = { gmail: [{ status: "ACTIVE", auth_config: MANAGED, id: OWNERS_ACCOUNT, user: OWNER }, { status: "ACTIVE", auth_config: MANAGED, id: TOKENS_ACCOUNT, user: TOKENS }, { status: "ACTIVE", auth_config: MANAGED, id: BARE_ACCOUNT, user: BARE }] };
+const FAKE = { authConfigs: { gmail: [{ id: MANAGED, is_composio_managed: true, status: "ENABLED" }] }, accounts: ACCOUNTS, mcpAccounts: { [OWNER]: [OWNERS_ACCOUNT], [TOKENS]: [TOKENS_ACCOUNT], [BARE]: [BARE_ACCOUNT] } };
+/** The settings a run's claim reads on an API-only store: the list its server started with. */
+const ORIGINS = ["http://127.0.0.1:4001"];
 
 /** A server (API-only unless `full`) beside a fake Composio whose key is KEY (`fake`: more of its options), and the log. */
 async function setup(t, { full = false, fake = {} } = {}) {
@@ -61,22 +68,22 @@ const answerOf = async (s, id) => {
 };
 const lookups = (s, from = 0) => s.composio.calls.slice(from).filter((call) => call.method === "GET" && call.path === "/api/v3/connected_accounts");
 
-// The review's scenario: the token saves a per_run server under the shared managed config (no owner server stands on it,
-// so the save is 200), then runs it as the owner's user and account. Each binding outside the token's own is refused at
-// the start, in its field's words, before a run is made, and nothing reaches Composio's MCP endpoint.
+// The token saves a per_run server under the shared managed config (no owner server stands on it, so the save is 200),
+// then runs it bound to a user the owner calls as, or to an account that isn't the bound user's. Each is refused at the
+// start, in its field's words, before a run is made, and nothing reaches Composio's MCP endpoint. (The preset's default
+// user exactly is refused on every profile by the binding's shape, mcp-probe.ts; here it is the same user in other case.)
 const REFUSED = [
-  ["the owner's user and account", { composio_user_id: OWNER, connected_account_id: OWNERS_ACCOUNT }, "composio_user_id"],
-  ["the owner's user, no account", { composio_user_id: OWNER }, "composio_user_id"],
-  ["the namespace's prefix in another letter case", { composio_user_id: "Agentrun.Token.ops", connected_account_id: TOKENS_ACCOUNT }, "composio_user_id"],
+  ["the preset's default user in another letter case", { composio_user_id: "AgentRun" }, "composio_user_id"],
+  ["the preset's default user in capitals, with an account", { composio_user_id: "AGENTRUN", connected_account_id: OWNERS_ACCOUNT }, "composio_user_id"],
+  ["a bare user id, with the owner's account", { composio_user_id: BARE, connected_account_id: OWNERS_ACCOUNT }, "connected_account_id"],
   ["a user in the namespace, with the owner's account", { composio_user_id: "agentrun.token.other", connected_account_id: OWNERS_ACCOUNT }, "connected_account_id"],
   ["a user in the namespace, with another namespaced user's account", { composio_user_id: "agentrun.token.other", connected_account_id: TOKENS_ACCOUNT }, "connected_account_id"],
   ["a user in the namespace, with an account Composio doesn't list", { composio_user_id: TOKENS, connected_account_id: "ca_nobody_listed" }, "connected_account_id"],
-  ["the namespace's bare prefix, nothing after it", { composio_user_id: "agentrun.token." }, "composio_user_id"],
   // A Composio answering every user's accounts, whatever user_ids asks: the owner's comes back under the owner's user.
   ["a user in the namespace, with the owner's account Composio answers under the owner's user", { composio_user_id: TOKENS, connected_account_id: OWNERS_ACCOUNT }, "connected_account_id", { ignoreUserIds: true }],
 ];
 // Each refusal says which check refused it.
-const WHICH = { composio_user_id: /outside the API token's Composio namespace.*API token's own.*agentrun\.token\./, connected_account_id: /not listed under this run's composio_user_id.*Composio lists/ };
+const WHICH = { composio_user_id: /Composio user this server's owner calls as here.*never calls as the owner/, connected_account_id: /not listed under this run's composio_user_id.*Composio lists/ };
 for (const [shape, binding, field, fake] of REFUSED) {
   test(`API-only: a run bound to ${shape} is 422 not_allowed under mcp_auth.mail.${field}; no run is made and nothing reaches Composio's MCP endpoint`, async (t) => {
     withEnv(t, { [KEY_ENV]: KEY });
@@ -118,6 +125,79 @@ test("API-only: a run bound to a user in the token's namespace and an account Co
   // No account named: the namespace alone, nothing to look up.
   const bare = await runAs(s.token, { composio_user_id: TOKENS }, "mail-writer");
   assert.equal(bare.status, 202, JSON.stringify(bare.body));
+});
+
+// Option (b): a backend's own users keep their bare ids. A run bound to one, with an account Composio lists under it,
+// starts and calls as them; so does one the owner connected only in Composio's dashboard (no record here says so: the
+// residual the serve README names, since the per-run server lends the install's key).
+const ACCEPTED = [
+  ["a bare user id and an account Composio lists under it", { composio_user_id: BARE, connected_account_id: BARE_ACCOUNT }],
+  ["a bare user id, no account", { composio_user_id: BARE }],
+  ["a user connected only in Composio's dashboard (no record here) and its account", { composio_user_id: OWNER, connected_account_id: OWNERS_ACCOUNT }],
+];
+for (const [shape, binding] of ACCEPTED) {
+  test(`API-only: a run bound to ${shape} starts (202) and calls as them`, async (t) => {
+    withEnv(t, { [KEY_ENV]: KEY });
+    const s = await setup(t);
+    assert.equal((await s.token("PUT", "/settings/mcp-servers/mail/composio", SAVE)).status, 200);
+    const from = s.composio.calls.length;
+    const run = await runAs(s.token, binding);
+    assert.equal(run.status, 202, JSON.stringify(run.body));
+    assert.match(await answerOf(s, run.body.run_id), /The tool said: 5/);
+    const read = lookups(s, from);
+    if (binding.connected_account_id) assert.deepEqual([...new Set(read.map((call) => call.query?.user_ids))], [binding.composio_user_id], "the start read the bound user's accounts alone");
+    else assert.deepEqual(read, [], "no account named: nothing to look up");
+  });
+}
+
+/** A server the owner saved (no token's mark on its record, unless `byToken`) named `name`, standing on Composio's
+ *  `made` user (its preset record), `kept` (the account its last refresh kept) and `address` (the user its address
+ *  names), each when given. */
+async function ownersServer(s, name, { made, kept, address, byToken = false }) {
+  const { store } = s.server;
+  const query = address ? `?user_id=${encodeURIComponent(address)}` : "";
+  await store.mcp.put({ name, url: `${s.composio.mcpOrigin}/v3/mcp/srv_${name}/mcp${query}`, auth: "headers", tools: [ADD_TOOL], sealed: null });
+  const row = await store.mcp.server(name);
+  await store.settings.put(mcpSourceKey(name), storedSource({ source: "composio", toolkit: "gmail" }, row, false, byToken));
+  if (made) await store.settings.put(composioMadeKey(name), storedMade({ user: made, auth_config: { id: "ac_owners_own", made: false }, accounts: [], key_env: KEY_ENV }, row));
+  if (kept) await store.settings.put(composioAccountKey(name), { of: row.createdAt, user: kept, toolkit: "gmail", auth_config: "ac_owners_own", state: "ACTIVE", read_for: 1, checked_at: new Date().toISOString() });
+}
+
+// A user a server the owner saved stands on is the owner's here, by any of its records, even where the server the run
+// binds is per_run: 422 under composio_user_id before any account is looked up, no run made, nothing reaches Composio.
+const OWNERS_RECORDS = [
+  ["its preset record", { made: OWNER }, OWNER],
+  ["the account its refresh kept", { kept: "owner-kept" }, "owner-kept"],
+  ["its address", { address: "owner-address" }, "owner-address"],
+  ["its preset record, the binding in another letter case", { made: OWNER }, "Owner-Ops"],
+];
+for (const [where, records, user] of OWNERS_RECORDS) {
+  test(`API-only: a run bound to the user a server the owner saved names in ${where} is 422 not_allowed under mcp_auth.mail.composio_user_id; no lookup, no run, nothing reaches Composio's MCP endpoint`, async (t) => {
+    withEnv(t, { [KEY_ENV]: KEY });
+    const s = await setup(t);
+    assert.equal((await s.token("PUT", "/settings/mcp-servers/mail/composio", SAVE)).status, 200);
+    await ownersServer(s, "gmail-owner", records);
+    const before = await runCount(s);
+    const from = s.composio.calls.length;
+    const binding = { composio_user_id: user, connected_account_id: OWNERS_ACCOUNT };
+    const run = await runAs(s.token, binding);
+    assert.equal(run.status, 422, JSON.stringify(run.body));
+    assert.deepEqual(run.body.error?.fields?.map((issue) => [issue.field, issue.reason]), [["mcp_auth.mail.composio_user_id", "not_allowed"]], JSON.stringify(run.body.error));
+    assert.match(run.body.error.fields[0].message, WHICH.composio_user_id, run.body.error.fields[0].message);
+    for (const value of [user, OWNERS_ACCOUNT, "gmail-owner"]) assert.equal(JSON.stringify(run.body).includes(value), false, `the refusal never quotes ${value}`);
+    assert.deepEqual(lookups(s, from), [], "refused before any account is looked up");
+    assert.equal(await runCount(s), before, "no run made");
+    nothingAsBound(s, binding);
+  });
+}
+
+test("API-only: the same user on a server the token saved is not the owner's: a run bound to it starts (202)", async (t) => {
+  withEnv(t, { [KEY_ENV]: KEY });
+  const s = await setup(t);
+  assert.equal((await s.token("PUT", "/settings/mcp-servers/mail/composio", SAVE)).status, 200);
+  await ownersServer(s, "gmail-tokens", { made: OWNER, kept: OWNER, address: OWNER, byToken: true });
+  const run = await runAs(s.token, { composio_user_id: OWNER, connected_account_id: OWNERS_ACCOUNT });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
 });
 
 test("API-only: a run bound to an account in the token's namespace is refused when Composio's account listing fails, fail closed: no run is made and nothing reaches its MCP endpoint", async (t) => {
@@ -184,15 +264,16 @@ test("full profile: the owner's run of the owner's per-run Composio server is as
 /** A claim on an API-only store of a run granted mail's `add`, mail being a Composio server at the fake's MCP origin
  *  (`url`), read with COMPOSIO_API_KEY, saved by the token (`perRun`: one whose runs each name their account; else one
  *  calling as the user its address names), the run's launch sealing `handed` (its mcp_auth) when given. */
-async function claimed(t, composio, { url, perRun, handed }) {
+async function claimed(t, composio, { url, perRun, handed, owners }) {
   const { store } = await storeOn(t);
+  if (owners) await ownersServer({ server: { store }, composio }, "gmail-owner", owners);
   const sealKey = Buffer.alloc(32, 9);
   await store.mcp.put({ name: "mail", url, auth: "headers", tools: [ADD_TOOL], sealed: null });
   const row = await store.mcp.server("mail");
   await store.settings.put(mcpSourceKey("mail"), storedSource({ source: "composio", toolkit: "gmail" }, row, false, true));
   const user = new URL(url).searchParams.get("user_id");
   await store.settings.put(composioMadeKey("mail"), storedMade(perRun ? { user: "per_run", auth_config: { id: MANAGED, made: false }, accounts: [], per_run: true, key_env: KEY_ENV } : { user, auth_config: { id: MANAGED, made: false }, accounts: [], key_env: KEY_ENV }, row));
-  await holdApiOnlyMcpOrigins(store, true, []);
+  await holdApiOnlyMcpOrigins(store, true, ORIGINS);
   await store.agents.create({ id: "agent-1", name: "a" }, { id: "rev-1", kind: "agentic", body: {}, mcpPin: await registryPin(store) });
   const origin = new URL(url).origin;
   await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "go" }, title: "go", place: { mode: "runner" } }, sealed: handed ? sealRunMcpAuth(sealKey, "run-1", { mail: { composio: handed, origin } }) : null });
@@ -202,18 +283,37 @@ async function claimed(t, composio, { url, perRun, handed }) {
   return step;
 }
 
-test("claim, API-only: a run's binding sealed outside the token's namespace (before this rule) gets no entry but the refusal's words: its calls are refused unsent; one inside it is handed on", async (t) => {
+// The claim reads the start's check again (ownersComposioUser), with AGENTRUN_API_ONLY_MCP_ORIGINS held: a binding of a
+// user the owner calls as (sealed before the check, or before the owner's server was saved) gets no entry but the
+// refusal's words, its calls refused unsent; a backend's bare user id is handed on.
+const CLAIM_REFUSED = [
+  ["the preset's default user", { user_id: "agentrun" }],
+  ["the preset's tool-listing user", { user_id: "agentrun~tool-listing" }],
+  ["the user a server the owner saved names in its preset record", { user_id: OWNER, connected_account_id: OWNERS_ACCOUNT }, { made: OWNER }],
+];
+for (const [shape, handed, owners] of CLAIM_REFUSED) {
+  test(`claim, API-only: a run's binding sealed to ${shape} gets no entry but the refusal's words: its calls are refused unsent`, async (t) => {
+    withEnv(t, { [KEY_ENV]: KEY });
+    const composio = await startFakeComposio({ apiKey: KEY, toolkits: { gmail: { no_auth: false, tools: [ADD] } }, ...FAKE });
+    t.after(() => composio.close());
+    const url = `${composio.mcpOrigin}/v3/mcp/srv_tokens/mcp?include_composio_helper_actions=true`;
+    const refused = await claimed(t, composio, { url, perRun: true, handed, owners });
+    assert.match(refused.credentials.mail?.unopened ?? "", /owner calls as here.*never calls as the owner/, JSON.stringify(refused.credentials.mail));
+    assert.equal(refused.credentials.mail.query, undefined, "no query: nothing calls as the owner's user");
+    assert.equal(JSON.stringify(refused.credentials.mail).includes(handed.user_id), false, "the words never name the user");
+  });
+}
+
+test("claim, API-only: a run's binding sealed to a bare user id, or to a user in the token's namespace, is handed on", async (t) => {
   withEnv(t, { [KEY_ENV]: KEY });
   const composio = await startFakeComposio({ apiKey: KEY, toolkits: { gmail: { no_auth: false, tools: [ADD] } }, ...FAKE });
   t.after(() => composio.close());
   const url = `${composio.mcpOrigin}/v3/mcp/srv_tokens/mcp?include_composio_helper_actions=true`;
-  const refused = await claimed(t, composio, { url, perRun: true, handed: { user_id: OWNER, connected_account_id: OWNERS_ACCOUNT } });
-  assert.match(refused.credentials.mail?.unopened ?? "", /API token's own.*agentrun\.token\./, JSON.stringify(refused.credentials.mail));
-  assert.equal(refused.credentials.mail.query, undefined, "no query: nothing calls as the owner's user");
-  assert.equal(JSON.stringify(refused.credentials.mail).includes(OWNER), false, "the words never name the user");
-  const handed = await claimed(t, composio, { url, perRun: true, handed: { user_id: TOKENS, connected_account_id: TOKENS_ACCOUNT } });
-  assert.equal(handed.credentials.mail?.unopened, undefined, JSON.stringify(handed.credentials.mail));
-  assert.equal(handed.credentials.mail.query?.user_id, TOKENS);
+  for (const [user, account] of [[BARE, BARE_ACCOUNT], [TOKENS, TOKENS_ACCOUNT]]) {
+    const handed = await claimed(t, composio, { url, perRun: true, handed: { user_id: user, connected_account_id: account }, owners: { made: OWNER } });
+    assert.equal(handed.credentials.mail?.unopened, undefined, `${user}: ${JSON.stringify(handed.credentials.mail)}`);
+    assert.equal(handed.credentials.mail.query?.user_id, user);
+  }
 });
 
 test("claim, API-only: a Composio server the token saved calling as a user outside its namespace (saved before it) gets no entry but words that say to delete it; one calling as a namespaced user is handed its key", async (t) => {
