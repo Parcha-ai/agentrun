@@ -385,6 +385,9 @@ ${cjs ? "async function" : "export async function"} ${fn}(input${t(`: ${input}`)
   // The address with or without /v2, as AgentRun's own clients and CLI take AGENTRUN_BASE_URL.
   const url = (() => { try { return new URL(address); } catch { return undefined; } })();
   if (!url || !/^https?:$/.test(url.protocol)) throw new Error("AGENTRUN_BASE_URL must be an http or https URL, like https://agentrun.example.com/v2.");
+  // A user, a password or a query may be a key, and fetch's errors print the whole URL: AgentRun's SDK takes none of them,
+  // nor a fragment, and neither does this, naming the origin alone.
+  if (url.username || url.password || /[?#]/.test(address)) throw new Error(\`AGENTRUN_BASE_URL takes no user, password, query or fragment, like https://agentrun.example.com/v2: \${url.origin}\`);
   const base = url.pathname.split("/").includes("v2") ? address : \`\${address}/v2\`;
   const headers = { authorization: \`Bearer \${key}\`, "content-type": "application/json" };
   const started = await fetch(\`\${base}/agents/\${encodeURIComponent(agent)}/runs\`, { method: "POST", headers, body: JSON.stringify({ input }), signal: options.signal });
@@ -459,6 +462,11 @@ def run_${py}(inputs: ${input}, timeout_s: float = 300.0) -> Dict[str, Any]:
         url = None
     if url is None or url.scheme not in ("http", "https") or not url.netloc:
         raise RuntimeError("AGENTRUN_BASE_URL must be an http or https URL, like https://agentrun.example.com/v2.")
+    # A user, a password or a query may be a key, and an error may print the whole URL: AgentRun's SDK takes none of them,
+    # nor a fragment, and neither does this, naming the origin alone.
+    if "@" in url.netloc or "?" in address or "#" in address:
+        host = url.netloc.rpartition("@")[2].lower()
+        raise RuntimeError(f"AGENTRUN_BASE_URL takes no user, password, query or fragment, like https://agentrun.example.com/v2: {url.scheme}://{host}")
     base = address if "v2" in url.path.split("/") else f"{address}/v2"
     run = _call("POST", f"{base}/agents/{agent}/runs", key, {"input": fields})
     until = time.monotonic() + timeout_s

@@ -112,9 +112,12 @@ export function httpsBase(url: string, what: string): string {
 		throw new Error(`${what} is not a URL`);
 	}
 	if (parsed.protocol !== "https:") throw new Error(`${what} must be https, so the key never crosses in the clear: ${parsed.protocol}`);
+	// The words give the origin alone: a user, a password or a query may be a key.
+	if (parsed.username !== "" || parsed.password !== "") throw new Error(`${what} takes no user or password, since the key goes to it: ${parsed.origin}`);
+	if (parsed.search !== "" || parsed.hash !== "") throw new Error(`${what} takes no query or fragment: ${parsed.origin}`);
 	// The normalized form (lower-case scheme and host, a default port dropped), so a consumer that reads the scheme
 	// case-sensitively, as nice-grpc does for Modal's server, sees https.
-	return parsed.href.replace(/\/+$/, "");
+	return `${parsed.origin}${parsed.pathname}`.replace(/\/+$/, "");
 }
 
 export function rest(options: RestOptions): Rest {

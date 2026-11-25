@@ -2,12 +2,14 @@
 // costs nothing, given CHECK_MS to answer. A 401 is the provider refusing the key, and the save is refused with nothing
 // kept; a 2xx is the key accepted. A 403 is the provider knowing the key and not answering this call: a key scoped away
 // from it (an OpenAI restricted key without the Models permission) may still do its tools' work, so it is never refused.
-// That, no such call for the provider, no answer in time, the network, a redirect (never followed: Node's fetch carries
+// That, no such call for the provider, a base URL the key may not go to (never sent one), no answer in time, the network, a redirect (never followed: Node's fetch carries
 // a key's own header, x-api-key or x-bb-api-key, to wherever one points), or any other status keeps the key as not
 // checked, saying why: an answer that does not say whether a key works never stops a save.
 // Never a paid request: each call below cites the provider's pages that show it is not billed. No outcome holds the
 // key: the provider's first sentence is quoted only when it holds no KEY_PIECE characters of the key in a row.
+import { httpsBase } from "@parcha/agentrun-computer";
 import { MONID_API } from "./monid.js";
+import { ANTHROPIC_ORIGIN, gatewayBase } from "./provider.js";
 import { isObject } from "./validate.js";
 
 /** How long a provider has to answer a check. */
@@ -24,7 +26,9 @@ export type KeyCheck = { state: "accepted"; at: string } | { state: "not_checked
 export type CheckOutcome = KeyCheck | { state: "refused"; message: string };
 
 type Call = { url: string; headers: Record<string, string> };
-const base = (set: string | undefined, fallback: string) => (set?.trim() || fallback).replace(/\/+$/, "");
+/** The base a vendor's calls go to: `set`, the server's variable `name`, else the vendor's own, held to the rule for a URL a
+ *  key goes to (httpsBase), which throws in words naming the variable and the URL's origin alone. */
+const base = (set: string | undefined, fallback: string, name: string) => httpsBase(set?.trim() || fallback, name);
 
 /** Each provider's check, by key id (tool-keys.ts' TOOL_KEYS, and a model provider's key where the server keeps one),
  *  made with the key and the server's environment, at the base this server sends that provider's calls to. */
@@ -37,17 +41,18 @@ export const KEY_CHECKS: Record<string, (key: string, env: NodeJS.ProcessEnv) =>
   parallel: (key) => ({ url: "https://api.parallel.ai/v1/monitors?limit=1", headers: { "x-api-key": key } }),
   // A list of the key's projects: Browserbase bills a session's browser time and proxy bandwidth, and this opens no
   // session (https://docs.browserbase.com/reference/api/list-projects, https://docs.browserbase.com/account/billing/plans).
-  browserbase: (key, env) => ({ url: `${base(env.BROWSERBASE_BASE_URL, "https://api.browserbase.com")}/v1/projects`, headers: { "x-bb-api-key": key } }),
+  browserbase: (key, env) => ({ url: `${base(env.BROWSERBASE_BASE_URL, "https://api.browserbase.com", "BROWSERBASE_BASE_URL")}/v1/projects`, headers: { "x-bb-api-key": key } }),
   // A list of the key's browser sessions, one at most: Kernel bills a browser's running time, and this starts none
   // (https://www.kernel.sh/docs/api-reference/browsers/list-browser-sessions, https://www.kernel.sh/docs/info/pricing).
-  kernel: (key, env) => ({ url: `${base(env.KERNEL_BASE_URL, "https://api.onkernel.com")}/browsers?limit=1`, headers: { authorization: `Bearer ${key}` } }),
+  kernel: (key, env) => ({ url: `${base(env.KERNEL_BASE_URL, "https://api.onkernel.com", "KERNEL_BASE_URL")}/browsers?limit=1`, headers: { authorization: `Bearer ${key}` } }),
   // A list of the account's models: TypeSafe prices a System One request's input tokens
   // (https://docs.typesafe.ai/api/list-models, https://docs.typesafe.ai/models).
-  typesafe: (key, env) => ({ url: `${base(env.TYPESAFE_BASE_URL, "https://api.typesafe.ai")}/v1/models`, headers: { authorization: `Bearer ${key}` } }),
+  typesafe: (key, env) => ({ url: `${base(env.TYPESAFE_BASE_URL, "https://api.typesafe.ai", "TYPESAFE_BASE_URL")}/v1/models`, headers: { authorization: `Bearer ${key}` } }),
   // A model provider's key: its list of models, or OpenRouter's record of the key; each prices tokens, and these use none
   // (https://platform.claude.com/docs/en/api/models/list, https://openrouter.ai/docs/api-reference/limits). OpenAI's is
-  // in NOT_CHECKED.
-  anthropic: (key, env) => ({ url: `${base(env.ANTHROPIC_BASE_URL, "https://api.anthropic.com")}/v1/models?limit=1`, headers: { "x-api-key": key, "anthropic-version": "2023-06-01" } }),
+  // in NOT_CHECKED. ANTHROPIC_BASE_URL is the gateway the model path sends Anthropic's key to, under that path's rule
+  // (gatewayBase: plain http to this machine alone, one trailing /v1 off), so the check goes where the runs go.
+  anthropic: (key, env) => ({ url: `${env.ANTHROPIC_BASE_URL ? gatewayBase("ANTHROPIC_BASE_URL", env.ANTHROPIC_BASE_URL) : ANTHROPIC_ORIGIN}/v1/models?limit=1`, headers: { "x-api-key": key, "anthropic-version": "2023-06-01" } }),
   openrouter: (key) => ({ url: "https://openrouter.ai/api/v1/key", headers: { authorization: `Bearer ${key}` } }),
   // Particle bills inference tokens; its authenticated model listing performs no generation
   // (https://docs.particle.ai/models, https://docs.particle.ai/pricing).
@@ -88,7 +93,14 @@ export async function checkKey(row: { id: string; label: string }, key: string, 
   const check = Object.hasOwn(KEY_CHECKS, row.id) ? KEY_CHECKS[row.id] : undefined;
   if (!check) return notChecked(`${row.label} has no call that costs nothing to check a key with`);
   if (!fetcher) return notChecked(`This server runs on faux providers and has no fake ${row.label} to check the key with`);
-  const { url, ...init } = check(key, env);
+  let call: Call;
+  try {
+    call = check(key, env);
+  } catch (error) {
+    // A base URL the key may not go to, refused by the variable's name in words that give its origin at most: nothing is sent.
+    return notChecked(`${row.label} was not checked: ${(error as Error).message}`);
+  }
+  const { url, ...init } = call;
   let res: Response;
   try {
     res = await fetcher(url, { ...init, redirect: "manual", signal: stop ? AbortSignal.any([AbortSignal.timeout(ms), stop]) : AbortSignal.timeout(ms) });
