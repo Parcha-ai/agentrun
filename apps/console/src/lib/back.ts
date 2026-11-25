@@ -1,3 +1,5 @@
+import { holdsMove } from "@/lib/useUnsavedChangesGuard";
+
 /** Back, as a page's back arrow takes it: to the console page the person came from when there is one, else to `fallback`.
  *  The console numbers each history entry it moves through (`console_at` in history.state, kept by the browser across
  *  back, forward and reload), so an entry numbered above 0 has one of the console's own before it. An address opened
@@ -30,7 +32,17 @@ export function stepsBack(): number {
   return n === undefined ? -1 : at - n;
 }
 
+/** Every page's back arrow (the run's, the agent's, its editor's, a connected agent's) goes through here, so back is the
+ *  same everywhere: where the person came from, else the page's parent (`fallback`). The parent takes this entry's place
+ *  rather than a new one after it, and keeps its number (0): its own back arrow then goes to its parent too, never back
+ *  to this page (history.back() from an entry numbered 1 would). A page holding unsaved changes asks first, as any move
+ *  away does (holdsMove), and makes the move once the person leaves. */
 export function goBack(fallback: string) {
-  if (at > 0) history.back();
-  else location.hash = fallback;
+  if (at > 0) { history.back(); return; }
+  const replace = () => {
+    history.replaceState({ ...(history.state ?? {}), console_at: 0 }, "", fallback);
+    // replaceState moves no hash by itself: the router (and trackHistory, which reads the 0 kept here) hear of it.
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
+  };
+  if (!holdsMove(fallback, replace)) replace();
 }
