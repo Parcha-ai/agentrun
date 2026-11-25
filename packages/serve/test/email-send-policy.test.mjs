@@ -13,6 +13,13 @@ import { agent, call, clientOwnerSession, follow, serve } from "./support.mjs";
 import { fakeClock, firings, keyOf, until } from "./trigger-support.mjs";
 import { ADDRESS, checked, emailTrigger, FAUX_EMAIL, mailbox, saved, sawOf } from "./email-support.mjs";
 import { asksOf } from "../dist/run-view.js";
+import * as account from "../dist/email/account.js";
+
+// The starter's DMARC verdict (email/authentication.ts) and the provider's authserv-id (account.ts), or (before they are
+// there) ones that answer nothing, so a test fails on what it answers.
+const authentication = await import("../dist/email/authentication.js").catch(() => ({}));
+const dmarcPassed = authentication.dmarcPassed ?? (() => undefined);
+const authservIdOf = account.authservIdOf ?? (() => null);
 
 const TOOLS = ["email_search", "email_read", "email_draft", "email_send"];
 const calls = (list) => `Email calls: ${JSON.stringify(list)}`;
@@ -200,15 +207,43 @@ test("on a thread run with email_send on allow, a send to the thread's sender go
   assert.equal(faux.sent().length, 1);
 });
 
-test("on a thread run only the thread's starter skips the new-address check: a reply to a first-time sender goes unasked; a reply-all that reaches the stranger they Cc'd asks, naming the stranger alone as never sent to", { timeout: 150_000 }, async (t) => {
+/** The account saved as Gmail's (its servers the fake's): Gmail's receiving servers stamp Authentication-Results under
+ *  the authserv-id mx.google.com, so a starter's DMARC pass can be read. */
+const GMAIL = { preset: "gmail" };
+/** The receiving server's own Authentication-Results on a message from starter@example.com that passed DMARC, as Gmail
+ *  writes it (folded, with comments), its header.from in another case than the From's. */
+const GMAIL_PASS = "mx.google.com;\r\n       dkim=pass header.i=@example.com header.s=s1 header.b=abc;\r\n       spf=pass (google.com: domain of starter@example.com designates 192.0.2.1 as permitted sender) smtp.mailfrom=starter@example.com;\r\n       dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=Example.COM";
+/** A first-time sender's message (Cc a stranger) as the receiving server keeps it: `results`, the Authentication-Results
+ *  it put on top, then its Received line, then the sender's own headers, `lower` (Authentication-Results the sender wrote
+ *  itself) first among them. */
+function starterRaw({ results = [], lower = [], from = "Starter <starter@example.com>" } = {}) {
+  return [
+    ...results.map((one) => `Authentication-Results: ${one}`),
+    "Received: from mail.example.com (mail.example.com [192.0.2.1]) by mx.google.com with ESMTPS id q1; Mon, 01 Jun 2026 00:00:40 +0000",
+    ...lower.map((one) => `Authentication-Results: ${one}`),
+    `From: ${from}`,
+    `To: ${ADDRESS}`,
+    "Cc: Victim <victim@third.example>",
+    "Subject: Quote",
+    "Date: Mon, 01 Jun 2026 00:00:40 +0000",
+    "Message-ID: <q1@example.com>",
+    "MIME-Version: 1.0",
+    "Content-Type: text/plain; charset=utf-8",
+    "",
+    "Send us a quote, all of us.",
+    "",
+  ].join("\r\n");
+}
+const TO_STARTER = ["email_send", { to: ["starter@example.com"], subject: "Re: Quote", text: "Here it is.", in_reply_to: "<q1@example.com>" }];
+
+test("on a Gmail account's thread run whose message the receiving server marked dmarc=pass for its From's domain, only the starter skips the new-address check: a reply to them goes unasked; a reply-all that reaches the stranger they Cc'd asks, naming the stranger alone as never sent to", { timeout: 150_000 }, async (t) => {
   const server = await served(t);
   const faux = await mailbox(t);
-  await saved(server.api, faux);
-  const START = { from: "Starter <starter@example.com>", to: [ADDRESS], cc: ["Victim <victim@third.example>"], subject: "Quote", text: "Send us a quote, all of us.", messageId: "<q1@example.com>" };
+  await saved(server.api, faux, GMAIL);
   const runId = await fired(server, faux, "quoter", [
-    ["email_send", { to: ["starter@example.com"], subject: "Re: Quote", text: "Here it is.", in_reply_to: "<q1@example.com>" }],
+    TO_STARTER,
     ["email_send", { to: ["starter@example.com"], cc: ["victim@third.example"], subject: "Re: Quote", text: "Here it is, all of you.", in_reply_to: "<q1@example.com>" }],
-  ], START, { tool_settings: ALLOW });
+  ], { raw: starterRaw({ results: [GMAIL_PASS] }) }, { tool_settings: ALLOW });
   const { status, pending } = await settled(server.api, runId);
   assert.deepEqual(faux.sent().map((m) => m.to), [["starter@example.com"]], "the reply to the starter alone sent unasked, and nothing to the stranger");
   assert.equal(status, "input_required", `the reply-all asks: ${JSON.stringify(pending)}`);
@@ -217,6 +252,67 @@ test("on a thread run only the thread's starter skips the new-address check: a r
   assert.equal(await server.decide(runId, pending.id, "deny"), 204);
   await follow(server.api, runId, ["completed"], { deadlineMs: 55_000 });
   assert.equal(faux.sent().length, 1, "a deny sends nothing");
+});
+
+// A From the receiving server didn't vouch for: the starter is asked about as anyone the account never wrote to.
+for (const [why, message, account] of [
+  ["the message carries no Authentication-Results", {}],
+  ["the receiving server says dmarc=fail", { results: ["mx.google.com; spf=softfail smtp.mailfrom=starter@example.com; dmarc=fail (p=NONE sp=NONE dis=NONE) header.from=example.com"] }],
+  ["the receiving server says dmarc=none", { results: ["mx.google.com; spf=pass smtp.mailfrom=starter@example.com; dmarc=none header.from=example.com"] }],
+  ["the receiving server says dkim=pass for the From's domain and nothing of DMARC", { results: ["mx.google.com; dkim=pass header.i=@example.com header.d=example.com; spf=pass smtp.mailfrom=starter@example.com"] }],
+  ["a dmarc=pass under the provider's authserv-id sits below the receiving server's own header, which has no DMARC result (the sender wrote it)", { results: ["mx.google.com; spf=softfail (google.com: domain of transitioning starter@example.com does not designate 198.51.100.7 as permitted sender) smtp.mailfrom=starter@example.com"], lower: ["mx.google.com; dmarc=pass (p=REJECT) header.from=example.com"] }],
+  ["the topmost dmarc=pass carries another authserv-id than the provider's", { results: ["mx.attacker.example; dmarc=pass (p=REJECT) header.from=example.com"] }],
+  ["the receiving server's dmarc=pass is for another domain than the From's", { results: ["mx.google.com; dkim=pass header.d=attacker.example; dmarc=pass (p=NONE sp=NONE dis=NONE) header.from=attacker.example"] }],
+  ["the account's provider has no known authserv-id (not Gmail), though the header reads as Gmail's pass", { results: [GMAIL_PASS] }, {}],
+]) {
+  test(`on a thread run whose starter's DMARC pass can't be read off the receiving server's header, the reply to the starter asks, naming them as never sent to: ${why}`, { timeout: 150_000 }, async (t) => {
+    const server = await served(t);
+    const faux = await mailbox(t);
+    await saved(server.api, faux, account ?? GMAIL);
+    const runId = await fired(server, faux, "quoter", [TO_STARTER], { raw: starterRaw(message) }, { tool_settings: ALLOW });
+    const { status, pending } = await settled(server.api, runId);
+    assert.equal(status, "input_required", `the send to the starter asks: ${status}, sent ${JSON.stringify(faux.sent().map((m) => m.to))}`);
+    assert.deepEqual([pending?.kind, pending?.tool], ["approval", "email_send"]);
+    asksBecause(pending, /^starter@example\.com: this account has never sent to them$/);
+    assert.equal(faux.sent().length, 0, "nothing sent before the answer");
+    assert.equal(await server.decide(runId, pending.id, "deny"), 204);
+    await follow(server.api, runId, ["completed"], { deadlineMs: 55_000 });
+    assert.equal(faux.sent().length, 0, "a deny sends nothing");
+  });
+}
+
+test("a starter's DMARC verdict reads only the topmost Authentication-Results, only under the provider's authserv-id (Gmail's mx.google.com, none known elsewhere), and only dmarc=pass for the one From's own domain", () => {
+  assert.equal(authservIdOf({ preset: "gmail", imap: { host: "imap.gmail.com", port: 993 } }), "mx.google.com");
+  assert.equal(authservIdOf({ preset: "other", imap: { host: "imap.gmail.com", port: 993 } }), "mx.google.com", "Gmail by its IMAP host too");
+  for (const preset of ["fastmail", "icloud", "other"]) assert.equal(authservIdOf({ preset, imap: { host: `imap.${preset}.example`, port: 993 } }), undefined, preset);
+  const from = ["starter@example.com"];
+  const unfolded = GMAIL_PASS.replace(/\r\n[ \t]+/g, " ");
+  const passes = (results, addresses = from, id = "mx.google.com") => assert.equal(dmarcPassed(results, addresses, id), true, `passes: ${JSON.stringify([results, addresses, id])}`);
+  const fails = (results, addresses = from, id = "mx.google.com") => assert.equal(dmarcPassed(results, addresses, id), false, `fails: ${JSON.stringify([results, addresses, id])}`);
+  passes([unfolded]);
+  passes(["MX.Google.COM; dmarc=pass header.from=EXAMPLE.com"], ["Starter@Example.Com"]);
+  passes(['mx.google.com 1; dmarc = pass (p=REJECT) header.from="example.com"'], from);
+  passes(["mx.google.com; dmarc=pass header.from=example.com", "mx.google.com; dmarc=fail header.from=example.com"]);
+  fails([]);
+  fails(["mx.google.com; none"]);
+  fails(["mx.google.com; dmarc=fail header.from=example.com"]);
+  fails(["mx.google.com; dmarc=none header.from=example.com"]);
+  fails(["mx.google.com; dmarc=temperror header.from=example.com"]);
+  fails(["mx.google.com; dkim=pass header.d=example.com header.i=@example.com; spf=pass smtp.mailfrom=example.com"]);
+  fails(["mx.google.com; spf=pass smtp.mailfrom=example.com", "mx.google.com; dmarc=pass header.from=example.com"]);
+  fails(["mx.attacker.example; dmarc=pass header.from=example.com"]);
+  fails(["mx.google.com.attacker.example; dmarc=pass header.from=example.com"]);
+  fails(["mx.google.com; dmarc=pass header.from=attacker.example"]);
+  fails(["mx.google.com; dmarc=pass header.from=sub.example.com"]);
+  fails(["mx.google.com; dmarc=pass header.from=Kelvin.example"], ["starter@kelvin.example"]);
+  fails(["mx.google.com; dmarc=pass"]);
+  fails(["mx.google.com; dmarc=pass header.from=example.com"], ["starter@example.com", "other@example.com"]);
+  fails(["mx.google.com; dmarc=pass header.from=example.com"], []);
+  fails(["mx.google.com; dmarc=pass header.from=example.com"], from, undefined);
+  fails(["mx.google.com (dmarc=pass header.from=example.com); spf=none smtp.mailfrom=example.com"]);
+  fails(['mx.google.com; spf=none reason="dmarc=pass header.from=example.com"']);
+  fails(["mx.google.com; dmarc=pass header.from=example.com (unclosed"]);
+  fails(["mx.google.com; dmarc=pass header.from=example.com; dmarc=fail header.from=example.com"]);
 });
 
 test("the ask's reason is the gate's own field: a call whose own arguments carry asked_because asks with no reason, its arguments kept as the model wrote them", () => {
