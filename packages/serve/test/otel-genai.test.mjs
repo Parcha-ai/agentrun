@@ -753,7 +753,7 @@ test("an OTLP header value's credential pair is read anywhere in the value, a UR
     const runner = secretRedactor(runnerSecrets(env))(line);
     if (runner !== cut) missed.push(`${what}: the runner's redactor shows ${runner}`);
   }
-  assert.deepEqual(missed, [], "every credential is held and cut alone; the hostname, a comma after a key and the ordinary words are not");
+  assert.deepEqual(missed, [], "each row's credentials are on both held lists and each is cut alone to [redacted] by the [otel] cut and the runner's redactor; its unheld values (a hostname, a key with the raw comma after it) are on neither list, and the ordinary words are left");
 });
 
 // A credential with a raw ; in it, as an OTLP endpoint's query parameter or inside a header value. A query or a pair list
