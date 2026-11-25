@@ -115,7 +115,7 @@ export function AgentFactoryBoard({ cards, review, loading, refreshing, error, u
         {/* The loaded sessions counted once, on one row: each lane's own header counts the cards a filter leaves in it.
             The row ends with how the sessions are laid out, then Refresh: they keep the first line's right end, and
             in a narrow row the totals wrap beside them. */}
-        <div className="flex items-start gap-x-8 border-b pb-4">
+        <div className="flex items-start gap-x-8">
           <section aria-label="Loaded active session totals" className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-8 gap-y-2">
             <p className="font-mono text-body"><strong className="text-figure font-semibold">{cards.length}</strong> active sessions loaded</p>
             <dl className="flex flex-wrap items-baseline gap-x-6 gap-y-1">

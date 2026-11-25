@@ -53,6 +53,8 @@ describe("Agent Factory board", () => {
     expect(host.textContent).not.toContain("Sessions reported to this AgentRun server");
     const row = host.querySelector("header + div")!.firstElementChild!;
     expect(row.children).toHaveLength(2);
+    // No rule under the row: the filters follow it across the page's own gap.
+    expect([...row.classList].filter((name) => name.startsWith("border"))).toEqual([]);
     expect(row.firstElementChild!.getAttribute("aria-label")).toBe("Loaded active session totals");
     // The row's right end: how the sessions are laid out, then Refresh.
     const controls = row.lastElementChild!;
