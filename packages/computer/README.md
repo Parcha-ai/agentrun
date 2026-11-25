@@ -710,7 +710,7 @@ fixtures of every evasion it catches.
 ```ts
 import { DockerProvider } from "@parcha/agentrun-computer/docker";
 
-const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" });
+const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64", env: process.env });
 const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
 if (!made.ok) throw new Error(made.error.message);
 const connected = await docker.connect(made.value);
@@ -917,7 +917,7 @@ Docker): `/workspace` is only the mount.
 import { WORKSPACE } from "@parcha/agentrun-computer";
 import { DockerProvider } from "@parcha/agentrun-computer/docker";
 
-const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" });
+const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64", env: process.env });
 // The run folder must exist, by its canonical path, and be writable by docker.user (below).
 const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none", mount: { kind: "bind", path: "/data/runs/r1/work" } }, { requestId: "r1#3" });
 // In the computer: files.read({ path: `${WORKSPACE}/notes.md` }), exec.run({ argv: ["make"], cwd: WORKSPACE, ... })
@@ -1036,13 +1036,13 @@ no other process to wait on: Docker's own tag is the shared state.
 ```ts
 import { DockerProvider } from "@parcha/agentrun-computer/docker";
 
-const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" }); // image: the default recipe
+const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64", env: process.env }); // image: the default recipe
 const image = await docker.image({ signal });   // built once; one inspect when Docker has it
 if (!image.ok) throw new Error(image.error.message);
 const made = await docker.create({ image: image.value, lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
 ```
 
-- `ensureImage(source, { docker?, signal?, timeoutMs?, onWait? })` (`src/docker/image.ts`) gives the tag. `source` is
+- `ensureImage(source, { docker?, env?, signal?, timeoutMs?, onWait? })` (`src/docker/image.ts`) gives the tag. `source` is
   `{ recipe }`, a Dockerfile with no build context, or `{ image }`, an image by name.
   - A recipe is built with `docker build --quiet --label agentrun.computer.recipe=<sha256> --tag
     agentrun-computer:<first 12 hex digits> -`, the recipe on stdin (`recipeTag(recipe)`, `recipeHash(recipe)`,
@@ -1054,6 +1054,22 @@ const made = await docker.create({ image: image.value, lifetimeMs: 600_000, netw
   image (`DEFAULT_DOCKER_IMAGE`): `python:3.12-slim` pinned by its index digest (`DOCKER_BASE`), with git, curl,
   nodejs, npm, ripgrep and socat from apt. `docker.image({ signal?, timeoutMs?, onWait? })` is `ensureImage` of it with the
   provider's docker CLI. A source that is neither throws at construction, in words.
+- **The docker CLI gets only what it reads.** The provider reads no environment: its `env` option is the host's (serve
+  passes its own values of the docker descriptor's `hostEnv`), and every docker call it makes (`dockerArch`,
+  `ensureImage` and the provider's own, each taking `env` too) is started with the names of it docker reads
+  (`DOCKER_ENV_NAMES`), and none of the rest. Library callers pass `env` (serve does): without it docker gets no
+  environment at all, so a bare `docker` is found only on the default path (`/usr/bin:/bin`), not in `/usr/local/bin` or
+  a snap, and no credential helper is found on PATH; the `docker` option, the CLI's absolute path, is the other way to
+  name it. The names: PATH, HOME, TMPDIR, the
+  locale, `DOCKER_HOST`, `DOCKER_CONTEXT`, `DOCKER_CONFIG` and Docker's TLS, API and buildx settings, ssh's agent socket,
+  `XDG_RUNTIME_DIR` and the proxy (either case), for a daemon or registry that is not local, and the places a pull's
+  credential helper (`docker-credential-<name>` on PATH) looks: the Secret Service's bus, GnuPG's home and agent, an AWS
+  profile, region and config file, gcloud's config. No key passes (`AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`,
+  `AZURE_CLIENT_SECRET`, `DOCKER_CUSTOM_HEADERS`, a content trust passphrase), nor a name shaped as one, a pointer to a
+  credential included (`AWS_SHARED_CREDENTIALS_FILE`, `AWS_WEB_IDENTITY_TOKEN_FILE`,
+  `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`, `GOOGLE_APPLICATION_CREDENTIALS`, `PASSWORD_STORE_DIR`). A helper that
+  signs in from keys in the server's environment (ECR's, with access keys in env) gets none: give it a profile, the
+  default credentials file or a role instead.
 - **The image is an option only; there is no env name for it.** Another image is named with the `image` option, to
   `new DockerProvider(...)` or to `create({ image: { image: "..." } })`. The library reads no environment (see
   [Settings](#settings)), and Docker's conformance module reads no image name either: a `COMPUTER_DOCKER_IMAGE` in its
@@ -1217,7 +1233,7 @@ as a caller's labels, with no code of its own: Docker writes them with `--label`
 import { releaseOlder, runLabels } from "@parcha/agentrun-computer";
 import { DockerProvider } from "@parcha/agentrun-computer/docker";
 
-const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" });
+const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64", env: process.env });
 // A claim at epoch 3 takes the run over: the computers of epochs 1 and 2 go first.
 const older = await releaseOlder(docker, "r1", 3);
 if (!older.ok) throw new Error(older.error.message); // fenced, or a computer that could not be released
@@ -2588,7 +2604,11 @@ deadline, so the janitor's `sweep` also ends a browser whose supervisor was kill
 
 Finding Chrome: the `executablePath` option, else `PI_BROWSER_CHROME` or `CHROME_PATH` in the `env` option, else the
 first `google-chrome`, `google-chrome-stable`, `chromium` or `chromium-browser` on that env's `PATH`, else the usual
-install places. The library reads no environment of its own: the host passes `env`. With none found, `check()`,
+install places. The library reads no environment of its own: the host passes `env`. Of it, the supervisor and the Chrome
+it starts, and `testConnection()`'s Chrome, hold the names Chrome reads (`CHROME_ENV_NAMES`: PATH, HOME, TMPDIR, the
+locale, the display and `XAUTHORITY`, the XDG directories, fontconfig's files, the session bus, `CHROME_DEVEL_SANDBOX`)
+and nothing else, so no key the host holds reaches Chrome; serve passes its own values of these (the descriptor's
+`hostEnv`). With none found, `check()`,
 `create()` and `testConnection()` say what to install and which setting names one. `testConnection()` starts the Chrome
 once, headless on a blank page with a proxy that reaches nothing, to prove it starts here with its sandbox on. It
 keeps nothing.
