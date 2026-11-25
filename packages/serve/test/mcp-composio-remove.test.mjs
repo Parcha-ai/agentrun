@@ -11,7 +11,7 @@ import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { storeOn } from "./store-helpers.mjs";
 
-const { composioMadeKey, storedMade } = await import("../dist/composio-made.js");
+const { composioAccountKey, composioMadeKey, storedMade } = await import("../dist/composio-made.js");
 const { McpServersOverStore } = await import("../dist/mcp-servers-store.js");
 const { saveMcpServer } = await import("../dist/mcp-store.js");
 const { credentialMark } = await import("../dist/mcp-secret-writes.js");
@@ -199,4 +199,43 @@ test("a preset whose key does not open here is `unusable`, and a server that is 
   assert.deepEqual(await registry.remove("hn"), { composio: { unusable: true } });
   await plain(store);
   assert.deepEqual(await registry.remove("hn"), {});
+});
+
+test("a removal never drops a Composio record a server saved again under the name writes while it removes: each record goes only while it is the removed row's", async (t) => {
+  const clock = { now: 1_800_000_000_000 };
+  const { store } = await storeOn(t, { clock });
+  const registry = new McpServersOverStore(store, { AGENTRUN_SEAL_KEY: SEAL }, "test");
+  const made = { user: "per_run", auth_config: null, accounts: [], per_run: true, key_env: "COMPOSIO_API_KEY" };
+  const account = (row) => ({ of: row.createdAt, user: "per_run", toolkit: "hackernews", auth_config: "ac_1", state: "connected", checked_at: new Date(clock.now).toISOString() });
+  const old = await preset(store, "srv_old");
+  await store.settings.put(composioMadeKey("hn"), storedMade(made, old));
+  await store.settings.put(composioAccountKey("hn"), account(old));
+  // A server saved again under the name once the row is gone, each of its records written between the removal's read of
+  // that key and its removal of it: the row and its source at the source's read, then what its preset made, and what a
+  // refresh checked of its account, as each is its own write.
+  let again;
+  const landed = new Set();
+  const get = store.settings.get;
+  t.mock.method(store.settings, "get", async function (key) {
+    const value = await get.call(this, key);
+    if (!landed.has(key) && (await store.mcp.server("hn") === undefined || again !== undefined)) {
+      if (key === mcpSourceKey("hn")) {
+        clock.now += 1_000;
+        again = await preset(store, "srv_new");
+        landed.add(key);
+      } else if (again !== undefined && key === composioMadeKey("hn")) {
+        await store.settings.put(key, storedMade(made, again));
+        landed.add(key);
+      } else if (again !== undefined && key === composioAccountKey("hn")) {
+        await store.settings.put(key, account(again));
+        landed.add(key);
+      }
+    }
+    return value;
+  });
+  assert.equal((await registry.remove("hn")).composio?.id, "srv_old", "the removal answers the row it removed");
+  assert.deepEqual([...landed].sort(), [composioAccountKey("hn"), composioMadeKey("hn"), mcpSourceKey("hn")].sort(), "each record of the server saved again landed inside the removal, between its read and its removal");
+  assert.equal((await store.mcp.server("hn"))?.url.includes("srv_new"), true, "the server saved again is there");
+  const left = Object.fromEntries(await Promise.all([mcpSourceKey("hn"), composioMadeKey("hn"), composioAccountKey("hn")].map(async (key) => [key, (await get.call(store.settings, key))?.of])));
+  assert.deepEqual(left, { [mcpSourceKey("hn")]: again.createdAt, [composioMadeKey("hn")]: again.createdAt, [composioAccountKey("hn")]: again.createdAt }, "the removal dropped a record the server saved again wrote between its read of the key and its removal of it");
 });
