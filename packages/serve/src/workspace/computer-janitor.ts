@@ -45,7 +45,6 @@ import { MOUNT_TTL_MS } from "./archil-claim.js";
 import { storeLedger } from "./computer-ledger.js";
 import { providerKeys } from "./resolve-computer.js";
 import { intervalWrites } from "./computer-intervals.js";
-import { runDiskIdOf } from "./server-run-workspace.js";
 
 /** How often the janitor sweeps after its first sweep at the runner's start. */
 export const JANITOR_EVERY_MS = 10 * 60_000;
@@ -240,9 +239,10 @@ export async function sweepServerComputers(deps: Pick<JanitorDeps, "store" | "co
 /** The pass over the desktops and phones kept at a run's park (computer-kept.ts sweepKept): one past its time, or whose
  *  run ended, is ended through its provider, made with this server's keys, whatever its lifetime (a vendor's own end is
  *  hours away); one pinned to another runner still there (the store's runners) is left to that runner. One that held the
- *  run's folder on Archil has the run's mount credentials up to its epoch removed, by name, on the run's disk, with this
- *  server's Archil key read as the claims read it (archil-key.ts); a run no longer in the store names no disk, and its
- *  credential ends at its ttl. Past its keep's time plus MOUNT_TTL_MS no remove is asked: the credential was minted
+ *  run's folder on Archil has the run's mount credentials up to its epoch removed, by name, on the disk its row names
+ *  (the park's), with this server's Archil key read as the claims read it (archil-key.ts): no run lookup, so a run
+ *  deleted since, or an agent whose disk changed, still has it removed. A row that names no disk has none removed, and
+ *  its credential ends at its ttl. Past its keep's time plus MOUNT_TTL_MS no remove is asked: the credential was minted
  *  before the park, so it has ended at its ttl, and a remove that can never succeed (Archil turned off, its key gone, a
  *  refusal for good) no longer keeps the row ending and said at every pass. Undefined without the store's settings,
  *  where none is kept. Never throws. */
@@ -252,13 +252,11 @@ export async function sweepKeptComputers(deps: Pick<JanitorDeps, "store" | "comp
   const { settings } = store;
   if (!settings) return undefined;
   const now = (deps.now ?? Date.now)();
-  const revokeMount = async (runId: string, kept: Pick<Kept, "epoch" | "until">): Promise<void> => {
-    if (now >= kept.until + MOUNT_TTL_MS) return;
+  const revokeMount = async (runId: string, kept: Pick<Kept, "epoch" | "until" | "disk">): Promise<void> => {
+    const { disk } = kept;
+    if (disk === undefined || now >= kept.until + MOUNT_TTL_MS) return;
     const archil = await loadArchilSettings({ settings }, deps.env);
     if (!archil) throw new Error("its mount credential was not removed: this server's Archil settings are gone");
-    const run = await store.runs.get(runId);
-    const disk = run && (await runDiskIdOf({ runs: store.runs, settings }, runId, run.agentId));
-    if (!disk) return;
     const { value } = await archilApiKey({ env: deps.env, keys: store.sealedKeys, sealKey: deps.sealKey });
     await removeRunMountTokens({ region: archil.region, key: () => value, disk, ...deps.mountControl }, runId, kept.epoch);
   };

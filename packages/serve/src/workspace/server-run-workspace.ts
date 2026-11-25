@@ -60,7 +60,7 @@ export function readOnlyWorkspace(workspace: Workspace): Workspace {
 }
 
 /** The disk run `runId` keeps its folder on: its launch record's, else its agent's, or undefined when it has none yet. */
-export async function runDiskIdOf(store: Pick<Store, "runs" | "settings">, runId: string, agentId: string): Promise<string | undefined> {
+async function runDiskIdOf(store: Pick<Store, "runs" | "settings">, runId: string, agentId: string): Promise<string | undefined> {
   const named = await store.runs.launch(runId).then((row) => readLaunchBody(row.body)?.archilDisk, (error: unknown) => (error instanceof StoreLaunchMissing ? undefined : Promise.reject(error)));
   return named?.diskId ?? (await agentDiskOf(store, agentId))?.diskId;
 }

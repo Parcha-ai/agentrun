@@ -464,6 +464,17 @@ test("Mode 2, the agent's disk changed after the park: the janitor removes the r
   assert.ok(archil.requests.every((request) => request.path.startsWith(`/api/disks/${DISK}`)), archil.requests.map((request) => request.path).join("\n"));
 });
 
+test("Mode 2, a resume that took the parked desktop parks it again: its row keeps the disk the credential it took on is on, not the resuming claim's", async () => {
+  const one = await server({ mode: 2, archil: mountUsers() });
+  await (await one.claim(3)).park();
+  one.clock.now = T0 + 1;
+  const resumed = await one.claim(5, { hadComputer: async () => true, mountDisk: () => "dsk-0000000000000002" });
+  assert.equal(resumed.replaced, undefined, "the kept desktop attached again");
+  assert.equal(await resumed.park("approval"), true);
+  const row = await readKept(one.store.settings, "run-1");
+  assert.deepEqual([row?.epoch, row?.disk], [3, DISK]);
+});
+
 test("a kept desktop whose folder is not on Archil: the janitor ends it with no call to Archil", async () => {
   const archil = mountUsers();
   const one = await server({ archil });

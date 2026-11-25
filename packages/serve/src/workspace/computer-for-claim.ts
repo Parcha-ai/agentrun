@@ -168,6 +168,11 @@ export interface ComputerForClaimDeps {
   /** Removes the run's Archil mount credential (the Archil claim's revoke): called once the computer is released, and
    *  when a start fails after a mount was minted. Absent: nothing was minted (Mode 1). */
   readonly revokeMount?: () => Promise<void>;
+  /** The Archil disk this claim's mount credential is on (the Archil claim's disk id), asked only at a park: written into
+   *  the row of a computer kept holding the run's folder on Archil, so the janitor that ends the row removes the credential
+   *  there with no run lookup (computer-kept.ts Kept.disk). A computer taken back keeps the disk its row named. Absent:
+   *  nothing was minted (Mode 1). */
+  readonly mountDisk?: () => string;
   /** The live view's registration for a desktop or a phone (proxy-only). Absent: no view is opened. */
   readonly openComputerView?: OpenComputerView;
   /** Where the agent's setting asks for a video of its computer's screen (computer.record): the run's
@@ -946,8 +951,9 @@ export async function computerForClaim(
   let refused: string | undefined;
   /** What a park of this claim keeps (ClaimComputer.park): a desktop, a phone or a sandbox it made through its provider, or took
    *  back, with its provider, its connection's close and the claim epoch its labels carry; `pinned`: only this runner can
-   *  reach it again (computer-kept.ts pinnedOf), so the park names this claim's holder on its row. */
-  let keepable: { readonly provider: ComputerProvider; readonly entry: string; readonly kind: KeptKind; readonly computer: ProviderComputer; readonly pinned: boolean; epoch: number } | undefined;
+   *  reach it again (computer-kept.ts pinnedOf), so the park names this claim's holder on its row. `disk`: the Archil disk
+   *  of the mount credential a computer taken back carries (its row's); absent, this claim's (mountDisk). */
+  let keepable: { readonly provider: ComputerProvider; readonly entry: string; readonly kind: KeptKind; readonly computer: ProviderComputer; readonly pinned: boolean; epoch: number; disk: string | undefined } | undefined;
   /** Whether a computer of `entry` made with `configuration` is reachable again only by this runner: its options as
    *  vendorProvider makes it (the settings' options under the configuration's). */
   const pinnedHere = (entry: ProviderEntry, configuration: { readonly options?: Readonly<Record<string, unknown>> }): boolean =>
@@ -1036,9 +1042,12 @@ export async function computerForClaim(
       return again;
     },
     started: (name) => {
-      // A park after this keeps the new one, whose labels and mount are this claim's epoch's (a kept one taken back
-      // carried its park's).
-      if (keepable) keepable.epoch = launch.epoch;
+      // A park after this keeps the new one, whose labels and mount are this claim's epoch's and disk's (a kept one taken
+      // back carried its park's).
+      if (keepable) {
+        keepable.epoch = launch.epoch;
+        keepable.disk = undefined;
+      }
       deps.onComputerNote?.(lostRecreatedWords(name));
     },
     stop: (words) => (deps.stopRun ?? stopRun)(words),
@@ -1082,7 +1091,7 @@ export async function computerForClaim(
         // A sandbox taken back is started again when it is lost as one this claim made (lostAware): the new one is this
         // claim's, made from this claim's spec, its folder mounted.
         const again = record.kind === "sandbox" ? lostAware(taken, renewalOf(provider, entry, () => specOf(entry, provider, kind, configuration, deps.signal, gpu), folder)) : taken;
-        keepable = { provider, entry: entry.id, kind: record.kind, computer: again, pinned: pinnedHere(entry, configuration), epoch: record.epoch };
+        keepable = { provider, entry: entry.id, kind: record.kind, computer: again, pinned: pinnedHere(entry, configuration), epoch: record.epoch, disk: record.disk };
         ownKind = record.kind;
         const screen = record.kind === "sandbox" ? undefined : record.kind;
         made = { id: again.id, machine: again.machine, ...(again.watch && screen ? { watch: again.watch, gone: goneOf(provider, again.id, runLabels(launch.runId, record.epoch), screen) } : {}) };
@@ -1154,7 +1163,7 @@ export async function computerForClaim(
         const held = kind === "sandbox" && !pairedRow ? lostAware(fresh, renewalOf(provider, entry, async () => spec, mount?.kind)) : fresh;
         launched = held;
         if (!pairedRow) ownKind = kind as MadeKind;
-        if (!pairedRow && (kind === "desktop" || kind === "phone" || kind === "sandbox")) keepable = { provider, entry: entry.id, kind, computer: held, pinned: pinnedHere(entry, configuration), epoch: launch.epoch };
+        if (!pairedRow && (kind === "desktop" || kind === "phone" || kind === "sandbox")) keepable = { provider, entry: entry.id, kind, computer: held, pinned: pinnedHere(entry, configuration), epoch: launch.epoch, disk: undefined };
         if (!pairedRow && (releasedOlder || journalSays || lost || refused !== undefined)) replaced = { kind: kind as MadeKind, folderKept: deps.mode === 2 && mount !== undefined, ...(lost ? { lost: true as const } : lapsed ? { lapsed: true as const } : {}), ...(refused !== undefined ? { refused } : {}) };
       }
       made = { id: launched.id, machine: launched.machine, ...(launched.watch ? { watch: launched.watch, ...(kind === "desktop" || kind === "phone" ? { gone: goneOf(provider, launched.id, listedUnder, kind) } : {}) } : {}) };
@@ -1352,7 +1361,8 @@ export async function computerForClaim(
       }
       let row: Kept;
       try {
-        row = await writeKept(settings, launch.runId, { provider: keeps.entry, kind: keeps.kind, id: ref.id, name: ref.name, epoch: keeps.epoch, until: now() + KEEP_MS, ...(resolved.folder ? { folder: resolved.folder } : {}), ...(keeps.pinned && launch.holder ? { runner: launch.holder.runner, incarnation: launch.holder.incarnation } : {}) });
+        const disk = resolved.folder === "archil" ? keeps.disk ?? deps.mountDisk?.() : undefined;
+        row = await writeKept(settings, launch.runId, { provider: keeps.entry, kind: keeps.kind, id: ref.id, name: ref.name, epoch: keeps.epoch, until: now() + KEEP_MS, ...(resolved.folder ? { folder: resolved.folder } : {}), ...(disk ? { disk } : {}), ...(keeps.pinned && launch.holder ? { runner: launch.holder.runner, incarnation: launch.holder.incarnation } : {}) });
       } catch {
         // No row, nothing to find it by: it goes as at the run's end.
         await release();

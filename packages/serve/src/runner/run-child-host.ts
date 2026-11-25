@@ -912,7 +912,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
           hadComputer: async () => (await ask.hadComputer()) === true,
           ...(typeof ask.turnedOff === "string" ? { turnedOff: ask.turnedOff } : {}),
           ...(ask.signal instanceof AbortSignal ? { signal: ask.signal } : {}),
-          ...(made ? { revokeMount: () => made.revoke(), inheritMount: () => made.inherit() } : {}),
+          ...(made ? { revokeMount: () => made.revoke(), inheritMount: () => made.inherit(), mountDisk: () => made.disk.id } : {}),
           ...(typeof ask.onImageWait === "function" ? { onImageWait: ask.onImageWait } : {}),
           ...(typeof ask.onStarting === "function" ? { onStarting: ask.onStarting } : {}),
           ...(typeof ask.onConnected === "function" ? { onConnected: ask.onConnected } : {}),

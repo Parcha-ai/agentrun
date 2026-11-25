@@ -6,13 +6,14 @@
 // the kept computer is ended, and a later resume makes a new one, said as any replaced computer is, and why.
 //
 // One server setting per run holds it (`computer_kept:<run id>`): its provider, its kind, its ref, the claim epoch its
-// labels carry, and the time it is kept until. The claim that parks writes it; the claim that resumes in time takes it
-// off and attaches the computer. At its time it is ended by the parking runner's own timer and, whatever became of
+// labels carry, the Archil disk its mount credential is on (where it holds the run's folder there), and the time it is
+// kept until. The claim that parks writes it; the claim that resumes in time takes it off and attaches the computer. At its time it is ended by the parking runner's own timer and, whatever became of
 // that process (a server's restart), by the janitor (computer-janitor.ts), which reads every row at each sweep and wakes
 // at the earliest time still ahead. Ending one marks its row ending (no claim takes it after), deletes the computer and
 // removes the mount credential of a run folder it held on Archil, then marks the row ended, so the resume says why its
 // computer is new; a row left ending (its process died, or its delete or remove failed or hung mid-way) is ended again at
-// the janitor's next pass. A row whose run is final is removed, its computer deleted first.
+// the janitor's next pass, with no remove once the credential's ttl is past its time. A row whose run is final is
+// removed, its computer deleted first.
 //
 // A sandbox's run folder is the run's either way (bound from this machine, or on Archil, as before); what the keep adds is
 // the rest of the machine (its other files, its processes). A synced folder's delta lands on the disk at the park; what
@@ -95,6 +96,10 @@ export type Kept = {
   /** The kind of the run's folder it holds (a bind, an Archil mount or a synced folder); none: it holds none. A claim
    *  takes it back only to hold the folder the same way (computer-for-claim.ts reattach). */
   readonly folder?: MountKind;
+  /** The Archil disk the run's mount credential is on, where `folder` is archil: the janitor that ends the row removes
+   *  the credential there, whatever became of the run's row or its agent's disk since. Absent: none is removed, and the
+   *  credential ends at its ttl. */
+  readonly disk?: string;
   /** The runner that kept it and that runner's process (its presence incarnation), where only that runner can reach it
    *  again (pinnedOf): both or neither. Absent: any runner takes it back. */
   readonly runner?: string;
@@ -171,14 +176,15 @@ export type KeptSettings = Pick<Settings, "get" | "put" | "replaceIf" | "removeI
 /** A row's value as a Kept, or undefined for anything else. */
 export function keptOf(value: unknown): Kept | undefined {
   if (!value || typeof value !== "object") return undefined;
-  const { provider, kind, id, name, epoch, until, folder, runner, incarnation, ending, ended } = value as Record<string, unknown>;
+  const { provider, kind, id, name, epoch, until, folder, disk, runner, incarnation, ending, ended } = value as Record<string, unknown>;
   if (typeof provider !== "string" || (kind !== "desktop" && kind !== "phone" && kind !== "sandbox") || typeof id !== "string" || typeof name !== "string") return undefined;
   if (typeof epoch !== "number" || !Number.isSafeInteger(epoch) || typeof until !== "number" || !Number.isFinite(until)) return undefined;
   if (folder !== undefined && folder !== "bind" && folder !== "archil" && folder !== "sync") return undefined;
+  if (disk !== undefined && typeof disk !== "string") return undefined;
   // Its runner and incarnation together, or neither.
   if ((runner === undefined) !== (incarnation === undefined)) return undefined;
   if (runner !== undefined && (typeof runner !== "string" || typeof incarnation !== "string")) return undefined;
-  const held = { ...(folder === undefined ? {} : { folder: folder as MountKind }), ...(typeof runner === "string" && typeof incarnation === "string" ? { runner, incarnation } : {}) };
+  const held = { ...(folder === undefined ? {} : { folder: folder as MountKind }), ...(typeof disk === "string" ? { disk } : {}), ...(typeof runner === "string" && typeof incarnation === "string" ? { runner, incarnation } : {}) };
   if (ended === true) return { provider, kind, id, name, epoch, until, ...held, ended: true };
   return { provider, kind, id, name, epoch, until, ...held, ...(ending === true ? { ending: true as const } : {}) };
 }
@@ -187,6 +193,7 @@ export function keptOf(value: unknown): Kept | undefined {
 const rowOf = (kept: Kept, state?: "ending" | "ended"): Kept => ({
   provider: kept.provider, kind: kept.kind, id: kept.id, name: kept.name, epoch: kept.epoch, until: kept.until,
   ...(kept.folder === undefined ? {} : { folder: kept.folder }),
+  ...(kept.disk === undefined ? {} : { disk: kept.disk }),
   ...(kept.runner === undefined || kept.incarnation === undefined ? {} : { runner: kept.runner, incarnation: kept.incarnation }),
   ...(state === "ending" ? { ending: true as const } : state === "ended" ? { ended: true as const } : {}),
 });
