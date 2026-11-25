@@ -1638,7 +1638,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // The sign-in this server starts, kept for this process (claude-sign-in.ts). Its queue is the one way the login's
   // setting changes, the drop here included. A server whose user may not use the saved login's folders (its home, or
   // those its env gives this machine's login: loginRefused) keeps it, refused in words, and logs why.
-  const claudeSignIns = new ClaudeSignIns({ limitMs: options.claudeSignInLimitMs });
+  // Whether a refresh of the login (loginNow, below) holds the queue while env, needs and the offers are made again from
+  // the login it found: a turn asked meanwhile waits for that, and the log says so.
+  let rebuilding = false;
+  const claudeSignIns = new ClaudeSignIns({ limitMs: options.claudeSignInLimitMs, asked: () => void (rebuilding && log?.(logLine("claude_login_wait", { why: "refresh" }))) });
   await dropRefusedLogin(claudeSignIns, store.settings, loginOff ?? oneOwner.refused(), base, (line) => (log ? log(logLine("claude_login", { line })) : void process.stderr.write(`agentrun-serve: ${line}\n`)));
   // The status checks' folders a server killed mid-check left in the temporary folder, each with a copy of the account
   // file (the harness's sweepClaudeStatusFolders): this user's alone, and only once the check has ended by the end it
@@ -1785,36 +1788,68 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  key's save does. A sign-in this server starts opens a browser on its machine, so only where the console is on
    *  loopback here; it is kept for this process (claudeSignIns, above), and one still waiting is ended at the stop. */
   stops.push(async () => claudeSignIns.close());
-  const loginDeps = (): ClaudeLoginDeps => ({
-    signIns: claudeSignIns,
-    settings: store.settings,
-    data,
-    env: base,
-    pinned: async () => claudeCliIn(installDirOf(data, LOGIN_HARNESS), (await import("@parcha/agentrun-harness-claude")).claudeAgentPlatform()),
-    // `refused` and `turn`: the keys are counted when the refusal is asked (inside the turn-on's turn, the keys' own).
-    ...oneOwner,
-    sameMachine: isLoopback(host) && !options.publicUrl,
-    claude: () => import("@parcha/agentrun-harness-claude"),
-    saved: (login) => {
-      claudeLogin = login;
-    },
-    changed: keysChanged,
-  });
-  /** The login runs here go on, as its folders are now (loginOf, one look at them), handed over as a turn on or off
-   *  hands it (`saved`, then env read again) where it differs from the one held. The held one is the start's or the last
-   *  turn's, and a folder mended with a chmod since (or refused since) changes it with no turn: a run's check, a save's
-   *  and capabilities ask this first, so they agree with the Settings view, which looks at the folders itself (loginAt).
-   *  Read in a turn on the sign-ins' queue, the one way the setting changes, so a turn off that lands meanwhile is never
-   *  undone. */
-  const loginNow = async (): Promise<void> => {
-    if (loginOff !== undefined) return;
-    const changed = await claudeSignIns.serial(async () => {
-      const login = loginOf(await claudeLoginSetting(store.settings), data, base);
-      if (isDeepStrictEqual(login, claudeLogin)) return false;
-      claudeLogin = login;
-      return true;
-    });
-    if (changed) await keysChanged();
+  // The latest hand-over of the login (a turn on or off, or a refresh), until env, needs and the offers are made from
+  // it. It never fails: a failed reading is answered to the request that handed the login over, as a key's save is.
+  let handing: Promise<void> = Promise.resolve();
+  /** The server's login replaced by `login`, then env, needs and the offers made again from it (keysChanged). */
+  const handOver = (login: typeof claudeLogin): Promise<void> => {
+    claudeLogin = login;
+    const made = keysChanged();
+    handing = made.then(
+      () => {},
+      () => {},
+    );
+    return made;
+  };
+  const loginDeps = (): ClaudeLoginDeps => {
+    // A turn hands the login over inside its turn (`saved`) and waits for the reading after it (`changed`), outside the
+    // turn, so a sign-in pressed meanwhile never waits on it; a refresh asked meanwhile waits for it (`handing`).
+    let made: Promise<void> = Promise.resolve();
+    return {
+      signIns: claudeSignIns,
+      settings: store.settings,
+      data,
+      env: base,
+      pinned: async () => claudeCliIn(installDirOf(data, LOGIN_HARNESS), (await import("@parcha/agentrun-harness-claude")).claudeAgentPlatform()),
+      // `refused` and `turn`: the keys are counted when the refusal is asked (inside the turn-on's turn, the keys' own).
+      ...oneOwner,
+      sameMachine: isLoopback(host) && !options.publicUrl,
+      claude: () => import("@parcha/agentrun-harness-claude"),
+      saved: (login) => {
+        made = handOver(login);
+      },
+      changed: () => made,
+    };
+  };
+  // The refresh asked and not yet started: a request that asks for one meanwhile shares it, since its look at the
+  // folders comes after that request asked.
+  let asked: Promise<void> | undefined;
+  /** The login runs here go on, as its folders are now (loginOf, one look at them), handed over where it differs from
+   *  the one held. The held one is the start's or the last turn's, and a folder mended with a chmod since (or refused
+   *  since) changes it with no turn: a run's check, a save's and capabilities ask this first, so they agree with the
+   *  Settings view, which looks at the folders itself (loginAt). It answers once env, needs and the offers are made from
+   *  the login it found, so no request sees a new login with the offers made before it. The look, the hand-over and the
+   *  reading after it are one turn on the sign-ins' queue, the one way the setting changes: a turn on or off asked
+   *  meanwhile lands after the reading, never under it, and a refresh asked meanwhile looks again once it is done. A
+   *  refresh that finds the login as held waits for the latest hand-over's reading (a turn's, which goes on after its
+   *  turn) outside the queue. */
+  const loginNow = (): Promise<void> => {
+    if (loginOff !== undefined) return Promise.resolve();
+    asked ??= claudeSignIns
+      .serial(async () => {
+        asked = undefined;
+        const login = loginOf(await claudeLoginSetting(store.settings), data, base);
+        if (isDeepStrictEqual(login, claudeLogin)) return { made: handing };
+        rebuilding = true;
+        try {
+          await handOver(login);
+        } finally {
+          rebuilding = false;
+        }
+        return { made: handing };
+      })
+      .then(({ made }) => made);
+    return asked;
   };
   // The boxes a place may name, read once from the computers runs execute on (place-offers.ts): AGENTRUN_BOXES lists
   // them, docker alone when it is not set; docker by its probe, daytona and modal by their providers' keys, read as a
