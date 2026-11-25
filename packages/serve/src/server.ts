@@ -5953,10 +5953,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, over.note ? { ...saved, composio: over.note } : saved);
       }
       // Composio makes the managed MCP server; what is kept is the ordinary MCP save, so the key is a sealed header.
-      case "listComposioTools":
-        return send(res, 200, await composioTools(await bodyOf(req), options.composioControl ?? {}, stopping.signal), { "cache-control": "no-store" });
-      case "listComposioToolkits":
-        return send(res, 200, await composioToolkits(await bodyOf(req), options.composioControl ?? {}, stopping.signal), { "cache-control": "no-store" });
+      // A listing stops at Composio when the console stops asking (Cancel, a key edit: the response closes), or the server
+      // stops.
+      case "listComposioTools": {
+        const done = new AbortController();
+        res.once("close", () => done.abort());
+        return send(res, 200, await composioTools(await bodyOf(req), options.composioControl ?? {}, AbortSignal.any([stopping.signal, done.signal])), { "cache-control": "no-store" });
+      }
+      case "listComposioToolkits": {
+        const done = new AbortController();
+        res.once("close", () => done.abort());
+        return send(res, 200, await composioToolkits(await bodyOf(req), options.composioControl ?? {}, AbortSignal.any([stopping.signal, done.signal])), { "cache-control": "no-store" });
+      }
       case "saveComposioServer": {
         // The name is checked before Composio is called: a refused name leaves nothing made there.
         mcpNameOf(id);

@@ -144,15 +144,19 @@ function needsNoAuth(kit: Json): boolean {
 const notFound = (toolkit: string) => `Composio has no toolkit ${toolkit}: use its slug (github, slack, gmail...).`;
 
 /** Every page of the Composio listing at `path` (a query of its own, to which each page's cursor is added), at most `max`:
- *  their items, and whether the list ended within them (`complete`). A cursor Composio names a second time ends the list
- *  there, not complete. */
-async function pages(ask: Ask, step: string, path: string, max: number, missing?: string): Promise<{ items: unknown[]; complete: boolean }> {
-  const items: unknown[] = [];
+ *  what `keep` takes of each item (an item it answers undefined for is dropped), so no page is held past its own read,
+ *  and whether the list ended within them (`complete`). A cursor Composio names a second time ends the list there, not
+ *  complete. */
+async function pages<T>(ask: Ask, step: string, path: string, max: number, keep: (item: unknown) => T | undefined, missing?: string): Promise<{ items: T[]; complete: boolean }> {
+  const items: T[] = [];
   const seen = new Set<string>();
   let cursor: string | undefined;
   for (let page = 0; page < max; page++) {
     const listed = await ask(step, "GET", `${path}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`, undefined, missing);
-    if (Array.isArray(listed.items)) items.push(...listed.items);
+    if (Array.isArray(listed.items)) for (const item of listed.items) {
+      const kept = keep(item);
+      if (kept !== undefined) items.push(kept);
+    }
     cursor = text(listed.next_cursor) || undefined;
     if (!cursor) return { items, complete: true };
     if (seen.has(cursor)) break;
@@ -165,8 +169,8 @@ async function pages(ask: Ask, step: string, path: string, max: number, missing?
  *  base version (00000000_00), which leaves out the actions added since (linear 21 of 48, stripe 33 of 435, live 11-18),
  *  though its MCP servers serve them. `complete`: the list ended within MAX_PAGES. */
 async function toolkitTools(ask: Ask, toolkit: string): Promise<{ tools: ComposioTool[]; complete: boolean }> {
-  const { items, complete } = await pages(ask, "listing the toolkit's actions", `/api/v3/tools?toolkit_slug=${encodeURIComponent(toolkit)}&toolkit_versions=latest&limit=${PAGE}`, MAX_PAGES, notFound(toolkit));
-  const tools = items.flatMap((item) => (isObject(item) && text(item.slug) ? [{ slug: text(item.slug), name: text(item.name) || text(item.slug), description: text(item.description) }] : []));
+  const toolOf = (item: unknown): ComposioTool | undefined => (isObject(item) && text(item.slug) ? { slug: text(item.slug), name: text(item.name) || text(item.slug), description: text(item.description) } : undefined);
+  const { items: tools, complete } = await pages(ask, "listing the toolkit's actions", `/api/v3/tools?toolkit_slug=${encodeURIComponent(toolkit)}&toolkit_versions=latest&limit=${PAGE}`, MAX_PAGES, toolOf, notFound(toolkit));
   return { tools, complete };
 }
 
@@ -201,12 +205,13 @@ export async function composioToolkits(body: unknown, control: ComposioControl, 
   if (!key || key.length > 8192) throw invalid([issue("api_key", "missing", "Send your Composio API key.")]);
   const within = control.listDeadline?.() ?? AbortSignal.timeout(LIST_MS);
   const ask = asking(control, key, signal ? AbortSignal.any([signal, within]) : within, "no toolkit was listed");
-  const found = new Map<string, ComposioToolkit>();
-  const { items } = await pages(ask, "listing the toolkits", `/api/v3/toolkits?sort_by=alphabetically&limit=${PAGE}`, MAX_TOOLKIT_PAGES);
-  for (const item of items) {
+  const toolkitOf = (item: unknown): ComposioToolkit | undefined => {
     const slug = isObject(item) ? text(item.slug).trim().toLowerCase() : "";
-    if (TOOLKIT.test(slug) && !found.has(slug)) found.set(slug, { slug, name: text((item as Json).name).trim() || slug });
-  }
+    return TOOLKIT.test(slug) ? { slug, name: text((item as Json).name).trim() || slug } : undefined;
+  };
+  const found = new Map<string, ComposioToolkit>();
+  const { items } = await pages(ask, "listing the toolkits", `/api/v3/toolkits?sort_by=alphabetically&limit=${PAGE}`, MAX_TOOLKIT_PAGES, toolkitOf);
+  for (const kit of items) if (!found.has(kit.slug)) found.set(kit.slug, kit);
   return { toolkits: [...found.values()].sort((a, b) => a.name.localeCompare(b.name, "en", { sensitivity: "base" }) || a.slug.localeCompare(b.slug)) };
 }
 
