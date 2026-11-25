@@ -28,7 +28,8 @@
 // A per-run Composio server (composio-made.ts composioPerRun) is bound by each run's caller ({composio_user_id,
 // connected_account_id?} in mcp_auth, sealed in its launch): its entry carries them as `query` (mcp-gateway.ts). Each
 // open reads the owner's Composio users again (composio-owners.ts): a binding of one that the owner's session didn't hand
-// (the token's, or one sealed before the seal marked who handed it) is refused unsent (UNUSABLE.composioOwnersUser).
+// (the token's, or one sealed before the seal marked who handed it) is refused unsent (UNUSABLE.composioOwnersUser); on
+// an API-only store, any binding of one is (COMPOSIO_OWNERS_USER_WORDS).
 // A Composio server saved with api_key_env (composio-made.ts key_env) seals no key: each open reads the variable's value
 // as the runner was handed it at its start (secrets.ts secret, never its environment), for an address on Composio's origin
 // alone (composioEnvKey), and only for a server the run is granted: the run's process never holds it. Unset, or a row at
