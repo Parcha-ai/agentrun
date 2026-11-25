@@ -8,7 +8,7 @@
 // default_reason exactly when null. Tests run with AGENTRUN_BOXES=none (support.mjs): no box is set up here.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { defaultPlaceOf, newAgentPlace, noBoxRefusal, placesOf } from "../dist/place.js";
+import { boxesLine, defaultPlaceOf, newAgentPlace, noBoxRefusal, placesOf } from "../dist/place.js";
 import { agent, flowAgent, serve } from "./support.mjs";
 
 const NONE_WORDS = "name a box: this server has no Docker box for a new agent. Set place to {mode: sandbox, box: <none is set up>}, or to {mode: runner} to run without a shell.";
@@ -59,6 +59,12 @@ test("default_place per mode: Docker's box where it is here; with no Docker, nul
   assert.equal(noBoxRefusal(undefined, noDocker, flags, false)?.message, NAMED, "Mode 1: no tools named is refused");
   assert.equal(noBoxRefusal(undefined, noDocker, flags, true), undefined, "Mode 2: never refused for its place");
   assert.equal(noBoxRefusal(["bash"], noDocker, flags, true), undefined);
+});
+
+test("the start's Boxes line with no Docker box, by mode: a new agent names its place where the runner has no shell (Mode 1); in Mode 2 new agents run on the runner, as the line always said", () => {
+  const registry = [{ id: "docker", available: false, reason: "Docker isn't running on this machine" }];
+  assert.equal(boxesLine(registry, new Set(), "none", true, false), "Boxes: none, so a new agent must name its place: a box, or the runner. Docker isn't running on this machine.");
+  assert.equal(boxesLine(registry, new Set(), "none", true, true), "Boxes: none, so new agents run on the runner. Docker isn't running on this machine.");
 });
 
 test("with no Docker box, a new agent that names no place and no tools, or a tool that runs only in a box, is refused 422 in words that name a box; nothing is saved", { timeout: 60_000 }, async (t) => {
