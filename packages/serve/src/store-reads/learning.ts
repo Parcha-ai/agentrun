@@ -270,9 +270,8 @@ const zipWith = <K, V>(keys: readonly K[], values: readonly V[]): [K, V][] => ke
  *  them): the ledger rows of its ended runs that do a job or check one (neither imported nor archived, no workflow
  *  revision's run, no shadow), a run that does not learn on the `agent` path, each with the workflow name its launch
  *  offered; every spend row; each run's audit shadow (open or ended); and the runs on no named disk (learn/learning-of.ts:
- *  one on a named disk learns nothing and serves nothing). A run that ended with no row (it ended before the ledger, or
- *  under a runner of an earlier build), or whose row no longer stands for it (ledgerRowStands), is recorded here from its
- *  row and its rounds (learn/ledger.ts record), as its end would have; its next end writes it. `runIds`: the runs whose
+ *  one on a named disk learns nothing and serves nothing). A run that ended with no row (it ended before the ledger) is
+ *  recorded here from its row and its rounds (learn/ledger.ts record), as its end would have. `runIds`: the runs whose
  *  ledger is read (Learning.ledger), the agent's every run when absent. `named` false: no workflow name is read for the
  *  series' rows (a launch's learning start is read only for a row whose end named no path). */
 async function ledgerReadOf(store: Store, agentId: string, listed: readonly RunRecord[], records: RunRecords, { runIds, named = true }: { readonly runIds?: readonly string[]; readonly named?: boolean } = {}): Promise<Omit<LedgerRead, "revisions">> {
@@ -308,15 +307,11 @@ const shadowOf = (byId: ReadonlyMap<string, RunRecord>, runId: string): Shadow |
 };
 
 /** The ledger rows (by run) and spend rows of `runIds` (Learning.ledger; the agent's every run when absent), with each
- *  final run of `listed` that has no row, or whose row no longer stands for it, recorded here as its end would have. */
+ *  final run of `listed` that has no row recorded here as its end would have. */
 async function ledgerRowsOf(store: Store, agentId: string, listed: readonly RunRecord[], records: RunRecords, runIds?: readonly string[]): Promise<{ recorded: Map<string, LedgerRow>; spend: SpendRow[] }> {
   const ledger = await store.learning.ledger(agentId, runIds);
-  const byId = new Map(listed.map((run) => [run.id, run]));
-  // A row that no longer stands for its run (ledgerRowStands: an earlier build ended it again or healed its cost) is
-  // recorded again below, with its spend rows, as one with no row is.
-  const stale = new Set(ledger.rows.flatMap((row) => (byId.has(row.runId) && !ledgerRowStands(row, byId.get(row.runId)!) ? [row.runId] : [])));
-  const recorded = new Map<string, LedgerRow>(ledger.rows.flatMap((row) => (stale.has(row.runId) ? [] : [[row.runId, row] as const])));
-  const spend: SpendRow[] = ledger.spend.filter((one) => !stale.has(one.runId));
+  const recorded = new Map<string, LedgerRow>(ledger.rows.map((row) => [row.runId, row]));
+  const spend: SpendRow[] = [...ledger.spend];
   // The rest are read a few at a time (READS_AT_ONCE), each run's reads in one batch: a claim reads up to PAST_RUNS runs.
   const unrecorded = listed.filter((run) => !run.importedFrom && FINAL_STATES.includes(run.state) && !recorded.has(run.id));
   const made = await inBatches(unrecorded, async (run) => record(await runEndOf(records, run)));
@@ -325,17 +320,6 @@ async function ledgerRowsOf(store: Store, agentId: string, listed: readonly RunR
     spend.push(...made[at]!.spend);
   });
   return { recorded, spend };
-}
-
-/** Whether run `run`'s ledger row stands for it as it is now: written for the end the run has (`epoch`, the run's epoch
- *  after the end that wrote it: run-patch.ts recordLedger), with no cost healed since. A runner or server of the build
- *  before the ledger writes none: its end of a run again (a follow-up's, or a grade's round that keeps the end it had, at
- *  the same ended_at) moves the run's epoch, as every end and every claim does, and its heal of a cost (Runs.healCost:
- *  only over an unknown cost, at the same epoch and end) makes the cost known. Either leaves the row for the run as it
- *  was, and its reader records it again from the run's row (record), as for a run with no row. A cancel that wins an
- *  end moves its ended_at alone (run-patch.ts refuseLeftovers): the row stands. */
-export function ledgerRowStands(row: Pick<LedgerRow, "cost"> & { readonly epoch: number }, run: Pick<RunRecord, "epoch" | "costUsd" | "costAtMostUsd">): boolean {
-  return row.epoch === run.epoch && (row.cost !== "unknown" || (run.costUsd === null && run.costAtMostUsd === null));
 }
 
 /** What record() reads of an ended run: its row, every round its learning kept and, for a shadow, the run it audits. */

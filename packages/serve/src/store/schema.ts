@@ -249,11 +249,9 @@ export const RUN_ATTEMPTS = `CREATE TABLE IF NOT EXISTS run_attempts (
 /** The learning ledger (learn/ledger.ts): one row a run, written by each patch that leaves the run ended (applyRunPatch,
  *  in that patch's transaction) and by a healed cost: who answered it (`path`, null when its end named none), the
  *  revision that ran it, why it was not served alone, the job's own $ and its rounds' look-back, and whether its cost is
- *  known (`cost`), and the end it was written for (`epoch`: the run's epoch after that end, which every end moves).
- *  Gone with the run's purge or delete (its cost stays on the run's tombstone). Figures only, no run text. In STORE_DDL,
- *  and made at a server open on a store an earlier build of this version made: a run that ended before it has no row,
- *  and one a runner of that build ended again has a row for an earlier end; its reader records it from its run row
- *  either way (store-reads/learning.ts). */
+ *  known (`cost`). Gone with the run's purge or delete (its cost stays on the run's tombstone). Figures only, no run
+ *  text. In STORE_DDL, and made at a server open on a store an earlier build of this version made, which drops the
+ *  `epoch` an earlier build kept on it (LEARNING_LEDGER_EPOCH). */
 export const LEARNING_LEDGER = `CREATE TABLE IF NOT EXISTS learning_ledger (
     run_id TEXT PRIMARY KEY,
     agent_id TEXT NOT NULL,
@@ -264,10 +262,12 @@ export const LEARNING_LEDGER = `CREATE TABLE IF NOT EXISTS learning_ledger (
     not_served TEXT CHECK (not_served IS NULL OR not_served IN ('cost_stop', 'cut')),
     job_usd REAL,
     look_back_usd REAL,
-    cost TEXT NOT NULL CHECK (cost IN ('known', 'unknown', 'at_most')),
-    epoch INTEGER NOT NULL
+    cost TEXT NOT NULL CHECK (cost IN ('known', 'unknown', 'at_most'))
   ) STRICT`;
 export const LEARNING_LEDGER_AGENT = "CREATE INDEX IF NOT EXISTS learning_ledger_agent ON learning_ledger (agent_id)";
+/** The `epoch` an earlier build of this version kept on each ledger row (the run's epoch at the end that wrote it),
+ *  dropped at a server open where present; a runner waits while it is there (postgres 0030_learning_ledger_epoch.sql). */
+export const LEARNING_LEDGER_EPOCH = "ALTER TABLE learning_ledger DROP COLUMN epoch";
 /** Each learning cost, by the revision it is for (learn/ledger.ts SpendRow): a compile turn (`round`, the round that asked
  *  it), a check's replay run or an audit's shadow run (round 0, `of_run` the run it audits), with its $ (null: unknown).
  *  Written with its run's ledger row, replaced whole each time; gone with its run's purge or delete, and with the purge

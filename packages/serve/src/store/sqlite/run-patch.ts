@@ -122,13 +122,7 @@ export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get" | "al
 
 /** Writes run `run`'s ledger row and spend rows (learn/ledger.ts record) through `tx`, from its row and every round its
  *  learning kept, in place of any it had: the one writer of learning_ledger and learning_spend (a run's end, and a heal
- *  of its cost). Each row says the end it was written for (`epoch`: the run's epoch after that end), which a reader
- *  checks against the run's (store-reads/learning.ts ledgerRowStands). Every end moves the epoch (applyRunPatch's
- *  `ending`, Runs.failUnclaimed), on every build, and so does every claim before one; an end that keeps its job's end
- *  (`keepsEnd`: a grade's round) leaves ended_at where it was, so ended_at never says which end a row is for. A runner
- *  or server of the build before the ledger, ending the run again, writes none, and its row reads as stale until a later
- *  end writes it again. A cancel that wins an end (refuseLeftovers, after this) moves ended_at, never the epoch: the row
- *  still stands. */
+ *  of its cost). */
 export async function recordLedger(tx: Pick<SqliteExecutor, "run" | "all" | "get">, run: RunRow, now: number): Promise<void> {
   const rounds = (await tx.all<{ round: number; proposal: string }>("SELECT round, proposal FROM learning_proposals WHERE run_id = ? ORDER BY round", run.id))
     .map((one) => ({ round: Number(one.round), proposal: JSON.parse(one.proposal) as unknown }));
@@ -138,10 +132,10 @@ export async function recordLedger(tx: Pick<SqliteExecutor, "run" | "all" | "get
   const auditOf = auditOfLaunch(run.id, body);
   const { row, spend } = record({ id: run.id, agentId: run.agentId, startedAt: run.startedAt, costUsd: run.costUsd, costAtMostUsd: run.costAtMostUsd, metrics: run.metrics, rounds, learns: learnsOfLaunch(body), ...(auditOf === undefined ? {} : { auditOf }) });
   await tx.run(
-    `INSERT INTO learning_ledger (run_id, agent_id, started_at, path, workflow, digest, not_served, job_usd, look_back_usd, cost, epoch) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO learning_ledger (run_id, agent_id, started_at, path, workflow, digest, not_served, job_usd, look_back_usd, cost) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (run_id) DO UPDATE SET agent_id = excluded.agent_id, started_at = excluded.started_at, path = excluded.path, workflow = excluded.workflow, digest = excluded.digest,
-        not_served = excluded.not_served, job_usd = excluded.job_usd, look_back_usd = excluded.look_back_usd, cost = excluded.cost, epoch = excluded.epoch`,
-    row.runId, row.agentId, row.startedAt, row.path, row.workflow, row.digest, row.notServed, row.jobUsd, row.lookBackUsd, row.cost, run.epoch,
+        not_served = excluded.not_served, job_usd = excluded.job_usd, look_back_usd = excluded.look_back_usd, cost = excluded.cost`,
+    row.runId, row.agentId, row.startedAt, row.path, row.workflow, row.digest, row.notServed, row.jobUsd, row.lookBackUsd, row.cost,
   );
   await tx.run("DELETE FROM learning_spend WHERE run_id = ?", run.id);
   for (const one of spend) {
