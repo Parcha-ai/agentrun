@@ -200,6 +200,19 @@ test("files: UTF-8 text within the caps is carried with its bytes and sha256 as 
   assert.equal(read, 0);
 });
 
+test("files: a run whose cut is its census's carries no file and names none, reading none; a file whose read fails is left out as unreadable", async () => {
+  let reads = 0;
+  const counted = (file) => ({ ...file, read: async (limit) => ((reads += 1), file.read(limit)) });
+  const { doc } = await build({ filesUncounted: true, files: inputOf().files.map(counted) });
+  assert.deepEqual(doc.files, []);
+  assert.deepEqual(doc.omitted, [{ what: "files", why: "uncounted" }, { what: "recordings", why: "never" }]);
+  assert.equal(reads, 0, "no file read");
+  const gone = { path: "out/gone.txt", size: 4, read: async () => { throw Object.assign(new Error("refused"), { code: "REFUSED" }); } };
+  const { doc: left } = await build({ files: [gone, textFile("out/kept.txt", "kept\n")] });
+  assert.deepEqual(left.files.map((file) => file.path), ["out/kept.txt"]);
+  assert.deepEqual(left.omitted.filter((one) => one.what === "file"), [{ what: "file", path: "out/gone.txt", why: "unreadable" }]);
+});
+
 test("a document over its cap is refused 413 export_too_large, never truncated", async () => {
   await assert.rejects(build({ caps: { documentBytes: 2048 } }), (error) => error instanceof ApiError && error.status === 413 && error.code === "export_too_large");
   assert.ok(EXPORT_CAPS.documentBytes === 8 * 1024 * 1024 && EXPORT_CAPS.fileBytes === 256 * 1024 && EXPORT_CAPS.filesBytes === 4 * 1024 * 1024 && EXPORT_CAPS.files === 200);
@@ -218,6 +231,15 @@ test("restore: a label cut's id puts its value back and moves its record to rest
   // Only that one place: the same value elsewhere (the first row) is still cut, and nothing else is back.
   assert.ok(restored.rows[0].text.includes("[redacted:"), restored.rows[0].text);
   assertNoPlanted(body.replace(`PGPASSWORD=${PLANTED.pg} psql`, ""), PLANTED);
+});
+
+test("restore reads back only what it named: a value the cut pass never cuts (an object key) fails the export closed, a restore of another cut or not", async () => {
+  const { doc } = await build();
+  const label = doc.cuts.find((cut) => cut.kind === "label" && cut.at === "/run/title");
+  // A workflow output keyed by a person's email: keys are carried as they are, so the read-back is what refuses it.
+  const keyed = [...rowsOf(PLANTED), { seq: 9, kind: "text_block", text: "Sent.", by: { [PLANTED.email]: "sent" } }];
+  await assert.rejects(build({ rows: keyed }), ExportFailed, "no restore");
+  await assert.rejects(build({ rows: keyed, restore: [label.id] }), ExportFailed, "a restore of the title's label cut does not let the key through");
 });
 
 test("restore of a format, held or dump cut's id, or of an id the bundle has no cut of, is a 400 and restores nothing", async () => {

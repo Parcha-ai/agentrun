@@ -1,9 +1,7 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-// The export route's own golden bundle (serve's run-export test writes and checks it): what this page renders is what
-// GET /v2/runs/{id}/export answers, with a planted value of every kind cut. Synthetic, made from fixed seeds.
-import golden from "../../../../packages/serve/test/fixtures/run-export/golden.json";
+import { golden, HOME_ROOT } from "./golden.fixture";
 import { ShareView } from "./ShareView";
 import { publishCommand, placeOf, type ShareBundle } from "./bundle";
 
@@ -11,7 +9,7 @@ import { publishCommand, placeOf, type ShareBundle } from "./bundle";
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; });
 
-const bundle = golden as unknown as ShareBundle;
+const bundle: ShareBundle = golden;
 const RESTORABLE = bundle.cuts.filter((c) => c.restorable);
 
 function mount(props: Partial<Parameters<typeof ShareView>[0]> = {}) {
@@ -35,7 +33,7 @@ describe("ShareView over the golden bundle", () => {
     expect(text()).toContain("Golden agent");
     expect(text()).toContain("Completed");
     // The Report: the run's final answer, as the export cut it.
-    expect(text()).toContain("Done. Mail [redacted:email] about /home/<user>/work; key [redacted:sk-key].");
+    expect(text()).toContain(`Done. Mail [redacted:email] about ${HOME_ROOT}/<user>/work; key [redacted:sk-key].`);
     tab(host, /timeline/i);
     expect(text()).toContain("Connect with PGPASSWORD=[redacted:secret-assign] psql -h db");
     expect(text()).toContain("The host [redacted:private-ip] answered");
