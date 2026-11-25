@@ -75,18 +75,20 @@ test("a run's process is handed its pinned model's key alone, never the key of t
   assert.deepEqual(faux, ["MONID_API_KEY"], "a --faux start's process holds its tool's key alone");
 });
 
-test("a --faux start's process is handed no gateway key, on a gateway set where the runner starts or saved in the console; a run pinned to a provider's model on the same gateway is", { timeout: 60_000 }, async (t) => {
+test("no run on a --faux runner, nor a faux-pinned launch on any runner, is handed a gateway key, set where the runner starts or saved in the console; a run pinned to a provider's model off faux is", { timeout: 60_000 }, async (t) => {
   const revision = { model: "anthropic/claude-sonnet-5-5", tools: [] };
   const faux = { provider: "faux", modelId: "faux-1" };
   const anthropic = { provider: "anthropic", modelId: "claude-sonnet-5-5" };
-  const onEnv = { saved: { AGENT_MODEL_API_KEY: GATEWAY_SAVED }, env: { [FAUX_ENV]: "1", AGENT_MODEL_BASE_URL: "https://gateway.example.com/v1" } };
-  const onSaved = { saved: {}, gateway: { base_url: "https://gateway.example.com/v1", api_key: GATEWAY_SAVED, models: { default: "m-1" } }, env: { [FAUX_ENV]: "1" } };
-  assert.deepEqual(await handed(t, { revision, model: anthropic, ...onEnv }), ["AGENT_MODEL_API_KEY"], "a provider's model on the runner's gateway: its key");
-  assert.deepEqual(await handed(t, { revision, model: faux, ...onEnv }), [], "a --faux start's process holds the runner's gateway key, which the faux model never sends");
-  assert.deepEqual(await handed(t, { revision, model: anthropic, ...onSaved }), ["AGENT_MODEL_API_KEY"], "a provider's model on the saved gateway: its key");
-  assert.deepEqual(await handed(t, { revision, model: faux, ...onSaved }), [], "a --faux start's process holds the saved gateway's key, which the faux model never sends");
-  // A faux-pinned launch claimed by a runner on the same store that is not in faux mode: still no key.
-  assert.deepEqual(await handed(t, { revision, model: faux, ...onSaved, env: {} }), [], "a faux-pinned launch on a runner not in faux mode holds the saved gateway's key");
+  const onEnv = { saved: { AGENT_MODEL_API_KEY: GATEWAY_SAVED }, env: { AGENT_MODEL_BASE_URL: "https://gateway.example.com/v1" } };
+  const onSaved = { saved: {}, gateway: { base_url: "https://gateway.example.com/v1", api_key: GATEWAY_SAVED, models: { default: "m-1" } }, env: {} };
+  for (const [where, on] of [["the runner's gateway", onEnv], ["the saved gateway", onSaved]]) {
+    const inFaux = { ...on, env: { ...on.env, [FAUX_ENV]: "1" } };
+    assert.deepEqual(await handed(t, { revision, model: anthropic, ...on }), ["AGENT_MODEL_API_KEY"], `a provider's model on ${where}, off faux: its key`);
+    assert.deepEqual(await handed(t, { revision, model: anthropic, ...inFaux }), [], `a run on a --faux runner holds ${where}'s key, which the faux model never sends`);
+    assert.deepEqual(await handed(t, { revision, model: faux, ...inFaux }), [], `a --faux start's process holds ${where}'s key, which the faux model never sends`);
+    // A faux-pinned launch claimed by a runner on the same store that is not in faux mode: still no key.
+    assert.deepEqual(await handed(t, { revision, model: faux, ...on }), [], `a faux-pinned launch on a runner not in faux mode holds ${where}'s key`);
+  }
 });
 
 const until = async (done, what, ms = 40_000) => {
