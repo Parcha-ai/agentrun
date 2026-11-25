@@ -18,9 +18,11 @@
 //
 // A machine the run's park kept (computer-kept.ts) goes too when this end's provider lists it, whichever runner kept it:
 // the run is final, so it has no user. Its row is marked ending first (endingKept), so no claim takes it back while the
-// delete runs (a follow-up that queues the run again makes a new one). Once the delete took it, its row is marked ended
-// here (finishedKept): a row left ending refuses the run's next park until a janitor's pass, so a follow-up would keep
-// nothing. A row whose machine this list never showed (another runner's engine) stays ending for that runner's end. A
+// delete runs (a follow-up that queues the run again makes a new one). Once that machine is gone, its row is marked
+// ended here (finishedKept), whatever came of the other machines' deletes: its own delete answered ok, or its vendor
+// says it is gone already, or a later try's list no longer shows it. A row left ending refuses the run's next park until
+// a janitor's pass, so a follow-up would keep nothing, and no retry here would find the machine to end it by. A row
+// whose machine this list never showed (another runner's engine) stays ending for that runner's end. A
 // row a later claim wrote or is taking back (a follow-up that queued the run again while this end
 // waited on the store) is that claim's: the mark leaves it as it stands, and the delete leaves its machine.
 import { type ComputerProvider, epochOf, ok, releaseOlder } from "@parcha/agentrun-computer";
@@ -64,6 +66,36 @@ function sparing(provider: ComputerProvider, id: string, epoch: number): Compute
           return read.ok && read.value > epoch;
         }));
       };
+    },
+  });
+}
+
+/** `provider` that calls `gone` once the kept machine `id` is gone, whatever comes of the other deletes in the same
+ *  release: its own delete answered ok, or not_found or gone (its vendor ended it already), or a list no longer shows it
+ *  where an earlier one did (a delete that went through with its answer lost). `seen` carries what earlier lists showed
+ *  across tries, each of which makes its provider anew. */
+function finishing(provider: ComputerProvider, id: string, seen: { listed: boolean }, gone: () => Promise<void>): ComputerProvider {
+  return new Proxy(provider, {
+    get(target, key) {
+      if (key === "list") {
+        return async (...args: Parameters<ComputerProvider["list"]>) => {
+          const listed = await target.list(...args);
+          if (!listed.ok) return listed;
+          if (listed.value.some((info) => info.ref.id === id)) seen.listed = true;
+          else if (seen.listed) await gone();
+          return listed;
+        };
+      }
+      if (key === "release") {
+        return async (...args: Parameters<ComputerProvider["release"]>) => {
+          const released = await target.release(...args);
+          const [ref, how] = args;
+          if (ref.id === id && how === "delete" && (released.ok || released.error.code === "not_found" || released.error.code === "gone")) await gone();
+          return released;
+        };
+      }
+      const value: unknown = Reflect.get(target, key, target);
+      return typeof value === "function" ? value.bind(target) : value;
     },
   });
 }
@@ -147,6 +179,16 @@ export function runEndComputers(deps: RunEndComputersDeps): (claim: { readonly r
     }
     /** The kept machine this end leaves: a later claim's, or one whose row no try marked. */
     const spared = marked.kind === "marked" ? undefined : marked.id;
+    /** The kept row this end marked ending: ended as soon as its own machine is gone (finishing), so a follow-up's park
+     *  writes its own keep, though another machine's delete failed and this end asks again or gives up. */
+    const kept = marked.kind === "marked" ? marked.kept : undefined;
+    const seen = { listed: false };
+    let finished = false;
+    const gone = async () => {
+      if (finished || !kept) return;
+      finished = true;
+      await finishedKept(store.settings, runId, kept);
+    };
     /** The last try's failure, for the line said at the bound. */
     let why = `its provider did not answer within ${bound / 1000} s`;
     const tries = async () => {
@@ -154,15 +196,12 @@ export function runEndComputers(deps: RunEndComputersDeps): (claim: { readonly r
         try {
           const found = await providerOf(runId, epoch);
           if (!found) return;
-          const provider = spared === undefined ? found : sparing(found, spared, epoch);
+          const provider = spared !== undefined ? sparing(found, spared, epoch) : kept ? finishing(found, kept.id, seen, gone) : found;
           // Every claim's at or below this one's: a computer of a later epoch fences the call (a later claim holds the run).
           const released = await releaseOlder(provider, runId, epoch + 1, { signal });
           if (released.ok) {
             const names = released.value.released.map((ref) => ref.name);
             if (names.length > 0) log(`run ${runId} is over: let go of ${names.length === 1 ? "the computer" : "the computers"} an earlier claim left on ${provider.id}, ${names.join(", ")}`);
-            // The kept machine deleted here: its row ended, so a follow-up's park writes its own keep (finishedKept).
-            const kept = marked.kind === "marked" ? marked.kept : undefined;
-            if (kept && released.value.released.some((ref) => ref.id === kept.id)) await finishedKept(store.settings, runId, kept);
             return;
           }
           why = `on ${provider.id}, ${released.error.message}`;

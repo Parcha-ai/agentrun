@@ -329,10 +329,12 @@ test("a run's end whose delete takes the kept machine but not another marks the 
   const computers = { kinds: KINDS, providers: { docker: () => run.docker.provider() } };
   const kept = { provider: "docker", kind: "sandbox", id: "c2", name: "c2", epoch: 2, until: Date.now() + KEEP_MS };
   // How each machine's delete answers: "ok"; "fail", the vendor refuses it on every try; "gone", the vendor ended it
-  // already (not_found, and its list no longer shows it); "lost", deleted, but the answer never came back (an error).
+  // already (not_found, and its list no longer shows it); "stale", not_found while its list still shows it, so no later
+  // list proves it gone and the end asks until its bound; "lost", deleted, but the answer never came back (an error).
   const cases = [
     { answers: { c1: "fail", c2: "ok" }, left: ["c1@1"], failed: true },
     { answers: { c1: "ok", c2: "gone" }, left: [], failed: false },
+    { answers: { c1: "ok", c2: "stale" }, left: ["c2@2"], failed: true },
     { answers: { c1: "ok", c2: "lost" }, left: [], failed: false },
   ];
   /** The case's answers, by machine. */
@@ -349,7 +351,7 @@ test("a run's end whose delete takes the kept machine but not another marks the 
         const answer = answering[ref.id];
         if (answer === "fail") return { ok: false, error: { code: "unavailable", message: `the vendor refused to delete ${ref.id}` } };
         if (answer === "gone" || answer === "lost") run.docker.held.delete(ref.id);
-        if (answer === "gone") return { ok: false, error: { code: "not_found", message: `${ref.id} is not there` } };
+        if (answer === "gone" || answer === "stale") return { ok: false, error: { code: "not_found", message: `${ref.id} is not there` } };
         if (answer === "lost") return { ok: false, error: { code: "unreachable", message: `the delete of ${ref.id} was not answered` } };
         return provider.release(ref, how);
       },
