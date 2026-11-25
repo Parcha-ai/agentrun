@@ -9,7 +9,7 @@ import { test } from "node:test";
 import { publicCheck, publicFetch, readPage } from "@parcha/pi-browser";
 import * as web from "../dist/index.js";
 import { SEARCH_UNAVAILABLE, searchBusy } from "../dist/search.js";
-import { answers, firecrawlServer, refusal } from "./fixtures/fake-firecrawl.mjs";
+import { answers, dailyLimit, FIRECRAWL_DAILY_INJECTION, firecrawlServer, refusal } from "./fixtures/fake-firecrawl.mjs";
 import fakeExa, { resetFauxExa } from "./fixtures/faux-exa.mjs";
 import fakeParallel, { CANARY, resetFauxParallel } from "./fixtures/faux-parallel.mjs";
 import { network } from "./fixtures/fake-network.mjs";
@@ -101,6 +101,45 @@ test("keyless Firecrawl with Exa behind it: Firecrawl answers; its rate limit pa
   assert.equal(hello.body.params.clientInfo.name, "agentrun-web", "the MCP client names web, never a server");
 });
 
+/** Fails when a call's answer or receipt carries any of Firecrawl's daily-limit words addressed to the agent. */
+const unsaid = (answer, receipt) => {
+  const text = JSON.stringify({ answer, receipt });
+  for (const words of FIRECRAWL_DAILY_INJECTION) assert.ok(!text.includes(words), `"${words}" is never passed on`);
+};
+
+for (const where of ["search", "scrape", "rpc"]) {
+  test(`keyless Firecrawl's daily limit (${where === "rpc" ? "a JSON-RPC error" : `as firecrawl_${where} served it`}): a quota until 00:00 UTC, Exa answers, Firecrawl is unasked until then and asked again at it`, async (t) => {
+    const f = await fakes(t, (name, n) => (name === "firecrawl_search" && n === 1 ? dailyLimit(where) : undefined));
+    process.env.AGENTRUN_TEST_FAUX_EXA = "ok";
+    const w = web.createWeb({ ...f.config, order: { search: ["firecrawl-keyless", "exa-keyless"], fetch: [] } });
+    const midnight = Date.parse("2026-11-25T00:00:00Z") - START;
+    await run(f, w, [
+      { query: "widgets", at: 0, asks: ["firecrawl-keyless", "exa-keyless"], tries: [["firecrawl-keyless", "error"], ["exa-keyless", "ok"]], by: "exa-keyless", check: (answer, receipt) => (assert.deepEqual(receipt.tries[0].limit, { kind: "quota", retryAfter: "Wed, 25 Nov 2026 00:00:00 GMT" }), unsaid(answer, receipt)) },
+      { query: "gadgets", at: 16 * 60_000, asks: ["exa-keyless"], tries: [["firecrawl-keyless", "held"], ["exa-keyless", "ok"]], by: "exa-keyless" },
+      { query: "sprockets", at: midnight - 1, asks: ["exa-keyless"], tries: [["firecrawl-keyless", "held"], ["exa-keyless", "ok"]], by: "exa-keyless" },
+      { query: "widgets", at: midnight, asks: ["firecrawl-keyless"], tries: [["firecrawl-keyless", "ok"]], by: "firecrawl-keyless" },
+    ], `firecrawl daily (${where})`);
+  });
+}
+
+test("keyless Firecrawl alone, past its daily limit: the search answers in our words alone", async (t) => {
+  const f = await fakes(t, (name) => (name === "firecrawl_search" ? dailyLimit("search") : undefined));
+  const w = web.createWeb({ ...f.config, order: { search: ["firecrawl-keyless"], fetch: [] } });
+  await run(f, w, [{ query: "widgets", at: 0, asks: ["firecrawl-keyless"], tries: [["firecrawl-keyless", "error"]], by: null, check: unsaid }], "firecrawl daily alone");
+});
+
+test("a fetch past keyless Firecrawl's daily limit (as firecrawl_scrape served it) goes direct, in our words alone; Firecrawl is unasked until 00:00 UTC and asked again at it", async (t) => {
+  const f = await fakes(t, (name, n) => (name === "firecrawl_scrape" && n === 1 ? dailyLimit("scrape") : undefined));
+  const w = web.createWeb({ ...f.config, order: { search: [], fetch: ["firecrawl-keyless", "direct"] } });
+  const midnight = Date.parse("2026-11-25T00:00:00Z") - START;
+  await run(f, w, [
+    { url: PUBLIC, at: 0, asks: ["firecrawl-keyless", "direct"], tries: [["firecrawl-keyless", "error"], ["direct", "ok"]], by: "direct", check: unsaid },
+    { url: NOTES, at: 16 * 60_000, asks: ["direct"], tries: [["firecrawl-keyless", "held"], ["direct", "ok"]], by: "direct" },
+    { url: `${PUBLIC}?run=a`, at: midnight - 1, asks: ["direct"], tries: [["firecrawl-keyless", "held"], ["direct", "ok"]], by: "direct" },
+    { url: `${PUBLIC}?run=b`, at: midnight, asks: ["firecrawl-keyless"], tries: [["firecrawl-keyless", "ok"]], by: "firecrawl-keyless" },
+  ], "fetch firecrawl daily");
+});
+
 test("keyless Exa alone: its free limit answers the caller's words and holds it for the Retry-After it named; past it Exa is asked again", async (t) => {
   const f = await fakes(t);
   process.env.AGENTRUN_TEST_FAUX_EXA = "ok,429";
@@ -111,6 +150,19 @@ test("keyless Exa alone: its free limit answers the caller's words and holds it 
     { query: "sprockets", at: 10_000, asks: [], tries: [["exa-keyless", "held"]], by: null, check: (answer) => assert.equal(answer.error, searchBusy(20)) },
     { query: "widgets", at: 31_000, asks: ["exa-keyless"], tries: [["exa-keyless", "error"]], by: null },
   ], "exa-keyless");
+});
+
+test("keyless Exa past its daily count, a 429 naming a wait of 65,796 s (Exa's answer on 2026-11-24): off and unasked for that whole wait, the call saying search is unavailable, never to try again; past the wait Exa is asked again", async (t) => {
+  const f = await fakes(t);
+  process.env.AGENTRUN_TEST_FAUX_EXA = "429:65796,ok";
+  const w = web.createWeb({ ...f.config, order: { search: ["exa-keyless"], fetch: [] } });
+  const unavailable = (answer) => assert.deepEqual(answer, { error: SEARCH_UNAVAILABLE });
+  await run(f, w, [
+    { query: "widgets", at: 0, asks: ["exa-keyless"], tries: [["exa-keyless", "error"]], by: null, check: unavailable },
+    { query: "gadgets", at: 16 * 60_000, asks: [], tries: [["exa-keyless", "held"]], by: null, check: unavailable },
+    { query: "sprockets", at: 65_795_000, asks: [], tries: [["exa-keyless", "held"]], by: null, check: unavailable },
+    { query: "widgets", at: 65_796_000, asks: ["exa-keyless"], tries: [["exa-keyless", "ok"]], by: "exa-keyless" },
+  ], "exa-keyless daily");
 });
 
 test("Parallel on the run's key, each search sent through the cap at its price: a 429 holds it for its Retry-After, a 402 turns it off", async (t) => {
@@ -196,9 +248,12 @@ test("keyless Firecrawl with the direct fetch behind it: Firecrawl reads a publi
   await run(f, w, [
     { url: PUBLIC, asks: ["firecrawl-keyless"], tries: [["firecrawl-keyless", "ok"]], by: "firecrawl-keyless" },
     { url: PUBLIC, part: { offset: 10 }, asks: [], tries: [], by: "firecrawl-keyless", check: (_answer, receipt) => assert.equal(receipt.cache, "hit") },
-    { url: EVIL, asks: [], tries: [["direct", "error"]], by: null, check: (answer) => assert.match(answer.refused, /^refused: evil\.example is not a public host/) },
+    { url: EVIL, asks: [], tries: [["firecrawl-keyless", "error"], ["direct", "error"]], by: null, check: (answer, receipt) => {
+      assert.match(answer.refused, /^refused: evil\.example is not a public host/);
+      assert.equal(receipt.tries[0].failure?.code, "GUARD", "keyless Firecrawl's turn is the guard's refusal");
+    } },
     { url: NOTES, asks: ["firecrawl-keyless", "direct"], tries: [["firecrawl-keyless", "error"], ["direct", "ok"]], by: "direct" },
-    { url: `${PUBLIC}?run=a`, asks: ["direct"], tries: [["direct", "ok"]], by: "direct" },
+    { url: `${PUBLIC}?run=a`, asks: ["direct"], tries: [["firecrawl-keyless", "held"], ["direct", "ok"]], by: "direct" },
   ], "fetch firecrawl-keyless");
 });
 
@@ -254,7 +309,7 @@ test("Parallel in the order with no key and Firecrawl refused, nothing behind th
   const { answer, receipt } = await w.fetch(PUBLIC);
   const text = web.webFetchText(answer);
   assert.doesNotMatch(text, /fetched directly/, "nothing was fetched directly");
-  assert.match(text, /\nParallel was picked for web_fetch and gave no page \(not tried: this run holds no Parallel key\)\.$/);
+  assert.match(text, /\nParallel was picked for web_fetch and gave no page \(not tried: this run holds no Parallel key\); no provider after it read the page\.$/);
   assert.equal(answer.via, "none");
   assert.deepEqual(receipt.tries.map(({ provider, outcome }) => [provider, outcome]), [["firecrawl-keyless", "error"], ["parallel", "error"]]);
   assert.equal(receipt.tries[1]?.error, "not tried: this run holds no Parallel key");
@@ -313,7 +368,7 @@ test("a URL short as asked but longer than 4,096 characters as sent (its href) i
   const url = `${PUBLIC}${"\u00e9".repeat(1_500)}`;
   assert.ok(url.length < web.URL_MAX && new URL(url).href.length > web.URL_MAX, "short as asked, long as sent");
   const providers = web.createWeb({ ...f.config, keys: { parallel: CANARY }, order: { search: [], fetch: ["firecrawl-keyless", "parallel"] } });
-  await run(f, providers, [{ url, asks: [], tries: [["parallel", "error"]], by: null }], "providers");
+  await run(f, providers, [{ url, asks: [], tries: [["firecrawl-keyless", "error"], ["parallel", "error"]], by: null }], "providers");
   const direct = web.createWeb({ ...f.config, order: { search: [], fetch: ["direct"] } });
   await run(f, direct, [{ url, asks: [], tries: [["direct", "error"]], by: null, check: (answer) => assert.equal(answer.error, "url is longer than 4,096 characters") }], "direct");
 });
@@ -393,7 +448,8 @@ test("a fetch stopped while the guard checks its URL for Parallel: the receipt i
 
 test("the package's root entry is its named API: none of the internals it is built from", async () => {
   const names = Object.keys(await import("../dist/index.js"));
-  const internal = ["sleep", "callTool", "textBlocks", "MAX_BYTES", "PROTOCOL", "TIMEOUT_MS", "retryAfterMs", "waitOf", "searchBusy", "partOfRead", "markdownRead", "isRefused"];
-  assert.deepEqual(internal.filter((name) => names.includes(name)), []);
-  for (const name of ["createWeb", "webFetch", "webFetchText", "fetchPage", "askedUrl", "searchInTurn", "breakers", "linksOf", "parallelExtract", "parallelSearched", "exaSearch", "firecrawlSearch", "firecrawlScrape", "firecrawlFetch", "PaidRefused"]) assert.ok(names.includes(name), name);
+  // What the root is built from, and the words and codes its answers carry (SEARCH_UNAVAILABLE, HELD_CODE): none is API.
+  const internal = ["sleep", "callTool", "textBlocks", "MAX_BYTES", "PROTOCOL", "TIMEOUT_MS", "retryAfterMs", "waitOf", "searchBusy", "partOfRead", "markdownRead", "isRefused", "SEARCH_UNAVAILABLE", "HELD_CODE"];
+  assert.deepEqual(internal.filter((name) => names.includes(name)), [], "an internal on the root");
+  for (const name of ["createWeb", "webFetch", "webFetchText", "fetchPage", "askedUrl", "searchInTurn", "breakers", "linksOf", "parallelExtract", "parallelSearched", "exaSearch", "firecrawlSearch", "firecrawlScrape", "firecrawlFetch", "PaidRefused", "readerOf", "parallelReads", "searchBreaker", "holdingWords"]) assert.ok(names.includes(name), name);
 });

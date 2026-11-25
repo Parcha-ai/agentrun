@@ -84,6 +84,24 @@ test("the setting: unset or blank is no origin; each comma-separated entry is an
   }
 });
 
+test("the setting: a plain http entry is taken only for a loopback host; any other host's stops the start, naming the entry by place, never its text", () => {
+  const PRIVATE = "http://10.0.0.1:4001"; // key-gate: denylist a private literal the setting refuses as plain http
+  for (const plain of ["http://gw.example", PRIVATE, "http://gw.example:8080"]) {
+    assert.throws(() => apiOnlyMcpOriginsFrom(`https://ok.example,${plain}`), (error) => error instanceof TypeError && /AGENTRUN_API_ONLY_MCP_ORIGINS/.test(error.message) && /entry 2 is plain http to a host off this machine/.test(error.message) && !error.message.includes(plain), plain);
+  }
+  assert.deepEqual(apiOnlyMcpOriginsFrom("http://127.0.0.1:4001,http://[::1]:4001,http://localhost:4001"), ["http://127.0.0.1:4001", "http://[::1]:4001", "http://localhost:4001"]);
+  // All of 127.0.0.0/8 is loopback, as the docs say.
+  assert.deepEqual(apiOnlyMcpOriginsFrom("http://127.8.9.10:4001"), ["http://127.8.9.10:4001"]);
+});
+
+test("the setting: a plain http entry whose host only looks like loopback stops the start (the rule matches the host as URL writes it, anchored)", () => {
+  // A trailing dot, an IPv4-mapped IPv6 address (URL writes it [::ffff:7f00:1]), the unspecified address, and a public
+  // name whose labels begin 127.0.0.1.
+  for (const plain of ["http://localhost.:4001", "http://[::ffff:127.0.0.1]:4001", "http://0.0.0.0:4001", "http://127.0.0.1.nip.io:4001"]) {
+    assert.throws(() => apiOnlyMcpOriginsFrom(`https://ok.example,${plain}`), (error) => error instanceof TypeError && /entry 2 is plain http to a host off this machine/.test(error.message) && !error.message.includes(plain), plain);
+  }
+});
+
 test("ServeOptions.apiOnlyMcpOrigins is read as the setting is: an origin written in capitals and with a trailing slash is the same origin, and the save is 200", async (t) => {
   const gw = await gateway(t);
   const s = await setup(t, [`${gw.origin.replace("http:", "HTTP:")}/`]);

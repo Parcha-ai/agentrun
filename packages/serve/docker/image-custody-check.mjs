@@ -1,6 +1,7 @@
 // image-custody.sh's check, run inside the container (`docker exec -i ... node --input-type=module -`), as the server's
-// user: one agent on the faux model (image-custody-faux.mjs), then
-//   - a run that reports what its process holds and reaches, and the status the helper left it (its uid, its groups, its
+// user: one agent on the faux model (image-custody-faux.mjs), its revision on an OpenAI model and granted web_search, then
+//   - a run that reports what its process holds (Parallel's key alone, its web_search's: the faux model sends no key, so
+//     no model provider's) and reaches, and the status the helper left it (its uid, its groups, its
 //     capabilities, no_new_privs);
 //   - two live runs at once: one holding its turn (the beacon: a file in its folder, a program in a session of its own),
 //     the other reaching for it (its folder, its file, its process's environment, memory and descriptors, and a socket of
@@ -20,6 +21,9 @@ import { createHash } from "node:crypto";
 import { chmodSync, chownSync, closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
+
+/** Every model provider's key and the gateway's, as the image's runner names them (claim-secrets.ts MODEL_KEY_NAMES). */
+const { MODEL_KEY_NAMES: MODEL_KEYS } = await import("/opt/agentrun/packages/serve/dist/runner/claim-secrets.js");
 
 const failed = [];
 const fail = (why) => void failed.push(why);
@@ -51,8 +55,9 @@ for (let i = 0; ; i++) {
 }
 const capabilities = (await api("GET", "/capabilities")).body;
 if (capabilities?.run_isolation !== "uid") fail(`the capabilities say run_isolation ${JSON.stringify(capabilities?.run_isolation)}, not "uid"`);
-// On an OpenAI model (the faux model answers): OpenAI's key is the one key its run's process needs.
-const made = await api("POST", "/agents", { definition: { id: "custody", version: 1, name: "custody", instructions: "Answer.", skills: [], tools: [], model: "openai/gpt-6.1-sol" } });
+// On an OpenAI model, granted web_search: the faux model answers and sends no key, so Parallel's key, the one its
+// web_search runs on, is the one key its run's process needs; no model provider's key, not its revision's model's.
+const made = await api("POST", "/agents", { definition: { id: "custody", version: 1, name: "custody", instructions: "Answer.", skills: [], tools: ["web_search"], model: "openai/gpt-6.1-sol" } });
 if (made.status !== 201) stop(`the agent was not made (${made.status} ${JSON.stringify(made.body)})`);
 const start = async (content) => (await api("POST", "/agents/custody/runs", { input: { content } })).body;
 const finished = async (run) => {
@@ -98,8 +103,10 @@ const report = await finished(run);
 const held = Object.entries(report.handed).filter(([, has]) => has).map(([name]) => name);
 console.log(`REPORT handed=${held.join(",")} inEnv=${report.inEnv.join(",")}`);
 console.log(`REPORT dataOwner=${report.dataOwner} run=${JSON.stringify(report.run)} child=${JSON.stringify(report.child)}`);
-if (!held.includes("OPENAI_API_KEY")) fail("the run's process was not handed its model key");
-if (held.join() !== "OPENAI_API_KEY") fail(`the run's process was handed ${held.join(", ")}, not its model's key alone`);
+if (!held.includes("PARALLEL_API_KEY")) fail("the run's process was not handed the key of the tool it is given (Parallel's, for web_search)");
+const modelKeys = held.filter((name) => MODEL_KEYS.includes(name));
+if (modelKeys.length) fail(`the run's process was handed ${modelKeys.join(", ")}: a faux run's model sends no key`);
+if (held.join() !== "PARALLEL_API_KEY") fail(`the run's process was handed ${held.join(", ")}, not its tool's key alone`);
 if (report.inEnv.length) fail(`the run's process has ${report.inEnv.join(", ")} in its environment`);
 for (const [who, seen] of [["the run's process", report.run], ["a program the run starts", report.child]]) {
   if (seen.error) {
@@ -343,4 +350,4 @@ for (const pid of pids) {
 await api("POST", `/runs/${run.run_id}/cancel`);
 for (const why of failed) console.error(`image custody: FAIL ${why}`);
 if (failed.length) process.exit(1);
-console.log(`image custody: PASS the server's user is in ${ownGroups.length} groups (${ownGroups.join(" ")}), no slot's; no secret in ${checked} processes; PID 1 ${pid1Pipe ? "holds the launcher's pipe, read empty" : "holds no launcher pipe"}; the run's process was handed its model key alone, runs as uid ${report.run.uid} with its group alone, no capability and no_new_privs, and neither it nor a program it starts reaches the data directory or the server's memory; two live runs (uids ${beacon.uid} and ${reached.run.uid}) reach neither the other's folder, environment, memory nor descriptors, nor the socket of the server's group ${socketGid}; a slot's uid lists and reads nothing of ${entries.length} entries of the data directory; the ended run's processes (one in a session of its own) and its file in /tmp are gone, and its slot's next run reaches nothing it left; a run reads its upload, and its next message writes beside the server's user's folders deep in its work folder`);
+console.log(`image custody: PASS the server's user is in ${ownGroups.length} groups (${ownGroups.join(" ")}), no slot's; no secret in ${checked} processes; PID 1 ${pid1Pipe ? "holds the launcher's pipe, read empty" : "holds no launcher pipe"}; the run's process was handed its tool's key alone and no model key, runs as uid ${report.run.uid} with its group alone, no capability and no_new_privs, and neither it nor a program it starts reaches the data directory or the server's memory; two live runs (uids ${beacon.uid} and ${reached.run.uid}) reach neither the other's folder, environment, memory nor descriptors, nor the socket of the server's group ${socketGid}; a slot's uid lists and reads nothing of ${entries.length} entries of the data directory; the ended run's processes (one in a session of its own) and its file in /tmp are gone, and its slot's next run reaches nothing it left; a run reads its upload, and its next message writes beside the server's user's folders deep in its work folder`);

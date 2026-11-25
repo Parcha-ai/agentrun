@@ -211,8 +211,14 @@ export function handedKeys(env: NodeJS.ProcessEnv): Record<string, string> {
  *  (`DECISION_KEY_FD_ENV` set: main's run process, handedKeys), else in the claim's own environment, where the runner's
  *  claim put it (claim-secrets.ts). Read from the environment the call is given each time, so a claim's key is its own. */
 export function parallelKeyOf(env: NodeJS.ProcessEnv): string | undefined {
-  if (env[DECISION_KEY_FD_ENV] !== undefined) return handedKeys(env)[PARALLEL_KEY_ENV];
-  return isSet(env[PARALLEL_KEY_ENV]) ? env[PARALLEL_KEY_ENV] : undefined;
+  return handedKeyOf(env, PARALLEL_KEY_ENV);
+}
+
+/** The key in the variable `name`, as a run's process holds it: from the keys the server handed it where it handed
+ *  some, else from its environment; undefined where it holds none. */
+export function handedKeyOf(env: NodeJS.ProcessEnv, name: string): string | undefined {
+  if (env[DECISION_KEY_FD_ENV] !== undefined) return handedKeys(env)[name];
+  return isSet(env[name]) ? env[name] : undefined;
 }
 
 /** Under --faux only: the fetch the module `env[name]` names, in place of a provider's API (the tests' fake). */

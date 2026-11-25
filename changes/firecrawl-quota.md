@@ -1,0 +1,7 @@
+---
+packages: @parcha/agentrun-web
+kind: fix
+---
+A search provider whose rate limit names a wait past 15 minutes is now off for that whole wait, then asked again. Before, the breaker cut the wait to 15 minutes and asked again every 15 minutes, to be refused each time. Keyless Exa answers a spent daily count with a 429 naming the hours to its reset (65,796 s on 2026-11-24). The call that meets such a limit answers that search is unavailable, not to try again in a minute. A quota answer that names its reset (`Limit` `{ kind: "quota", retryAfter }`) is off until then; one that names none is still off for the run. `offUntil(limit, now)` is the rule.
+
+Keyless Firecrawl answers a spent daily limit with HTTP 200 and a tool result marked isError whose text starts "Firecrawl's daily limit without an account was reached." (firecrawl_scrape repeats it in structuredContent.message). There is no code, and no reset in the text or the headers. Search and fetch now read that answer as a quota until the next 00:00 UTC by the web tools' clock. The reset is assumed, because Firecrawl names none. Search turns Firecrawl off until then and asks the next provider; fetch goes direct until then. Before, it was a plain failure: the breaker never opened and every call asked Firecrawl again. The same words in a JSON-RPC error are read the same way, as a defence: that shape has not been seen from Firecrawl. The answer also tells the agent reading it to stop the task and pass on a sign-up link; none of it reaches a call's answer, error or receipt.

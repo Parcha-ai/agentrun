@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { queued, storeOn } from "./store-helpers.mjs";
 
-const { KEEP_MS, keptKeyOf, readKept, takeKept, writeKept } = await import("../dist/workspace/computer-kept.js");
+const { KEEP_MS, keptKeyOf, keptTaken, readKept, takeKept, writeKept } = await import("../dist/workspace/computer-kept.js");
 const { RUNNER_STALE_MS } = await import("../dist/store/index.js");
 
 const RUN = "run-1";
@@ -124,6 +124,9 @@ test("store: a park's keep keeps its runner and incarnation through writeKept an
   await writeKept(store.settings, "run-2", row);
   const read = await readKept(store.settings, "run-2");
   assert.deepEqual(read, row, "the row names the runner that holds the machine and its incarnation");
-  assert.equal(await takeKept(store.settings, "run-2", read), true, "the row as read is the row as written: the resume takes it");
+  const taking = await takeKept(store.settings, "run-2", read, 3);
+  assert.deepEqual(taking, { ...row, taking: 3 }, "the row as read is the row as written: the resume marks it taking");
+  assert.deepEqual(await readKept(store.settings, "run-2"), { ...row, taking: 3 }, "the row stays while the resume reaches the machine");
+  assert.equal(await keptTaken(store.settings, "run-2", taking), true, "the mark as written: the resume takes it off");
   assert.equal(await readKept(store.settings, "run-2"), undefined);
 });

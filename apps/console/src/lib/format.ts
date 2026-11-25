@@ -3,6 +3,7 @@ import { marked } from "marked";
 import type { MouseEvent } from "react";
 import { PLAN_NO_DOLLARS } from "./chatgpt";
 import { LOGIN_NO_DOLLARS } from "./claudeLogin";
+import { chipRedactions } from "./redaction";
 import type { Cost } from "./v2";
 
 /** The tags DOMPurify keeps: its own allowed-tag config, read once through its uponSanitizeElement hook (the tag list is
@@ -178,8 +179,9 @@ export function capDollars(usd: number): string {
 }
 
 /** The run files a run's Markdown may link to: their paths as GET /v2/runs/{id}/files lists them, and `from`, the folder
- *  of the file the Markdown is in ("" for the run's answer), which its relative links are read from. */
-export type LinkedFiles = { paths: readonly string[]; from?: string };
+ *  of the file the Markdown is in ("" for the run's answer), which its relative links are read from. `images: false`: a
+ *  share's Markdown, whose bundle carries no image: each image reads as its alt text, so no source is ever loaded. */
+export type LinkedFiles = { paths: readonly string[]; from?: string; images?: false };
 
 /** The run file a relative link names, resolved from `from` as a browser would (./, ../, %20; no query or fragment), or
  *  null when it names none (a link no URL parser takes included). A path from the root (/x) is the server's, never a run
@@ -193,6 +195,14 @@ function runFile(href: string, files: LinkedFiles): string | null {
   } catch { return null; }
 }
 
+/** With images off (a shared run's page): no element or attribute the sanitizer would keep that loads a URL. An <img>
+ *  stays, its source gone, to be drawn as its alt text; an SVG image, a video's poster, an image button, a picture's
+ *  sources, audio, a table's background and an inline style are dropped. */
+const NO_IMAGES = {
+  FORBID_TAGS: ["svg", "image", "video", "audio", "picture", "source", "track", "input"],
+  FORBID_ATTR: ["src", "srcset", "poster", "background", "style", "xlink:href"],
+};
+
 /** Markdown from a run, as safe HTML: parsed by marked, then sanitized (no scripts, no handlers, no foreign frames).
  *  A link with no scheme (a relative path, a path from the root, a fragment, //host) would be read against the console's
  *  own address and take its tab away (a fragment changes its route), so it is never a link here: one that names a run
@@ -200,9 +210,12 @@ function runFile(href: string, files: LinkedFiles): string | null {
  *  its text. A link to a page (http:, https:, ftp:) opens in a new tab, with no opener and no referrer; one that hands off
  *  to another app (mailto:, tel:) is as marked and the sanitizer leave it. */
 export function markdown(text: string, files?: LinkedFiles): string {
-  const body = DOMPurify.sanitize(marked.parse(text, { async: false }) as string, { RETURN_DOM: true }) as HTMLElement;
+  const body = DOMPurify.sanitize(marked.parse(text, { async: false }) as string, { RETURN_DOM: true, ...(files?.images === false ? NO_IMAGES : {}) }) as HTMLElement;
+  if (files?.images === false) for (const img of [...body.querySelectorAll("img")]) img.replaceWith(img.getAttribute("alt") ?? "");
   // A code block wraps inside its box (a long line breaks, never runs past the page's edge).
   for (const pre of [...body.querySelectorAll("pre")]) pre.classList.add("whitespace-pre-wrap", "break-words", "[overflow-wrap:anywhere]");
+  // A cut value's marker (the scrubber's `[redacted:<rule>]`) reads as a chip, its words kept.
+  chipRedactions(body);
   for (const a of [...body.querySelectorAll("a[href]")]) {
     const href = a.getAttribute("href")!.trim();
     if (/^(https?|ftps?):/i.test(href)) { a.setAttribute("target", "_blank"); a.setAttribute("rel", "noopener noreferrer"); continue; }

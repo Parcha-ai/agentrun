@@ -58,19 +58,10 @@ async function ran(api, data, store, id, harness, { fields = {}, ask = ASK, ends
   const started = await api("POST", `/agents/${id}/runs`, { input: { content: ask }, ...fields });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   const runId = started.body.run_id;
-  const followed = await follow(api, runId, ends, { deadlineMs: 90_000 });
-  let { rows, after } = followed;
-  // A run paused at its cap is not final: its page may say input_required before the refused node's result row is
-  // written. Read on from there until that row is in (a terminal run's last page holds every row already).
-  const view = new Map(rows.map((row) => [row.id, row]));
-  for (const end = Date.now() + 30_000; followed.last.status === "input_required" && !learnedResult(rows) && Date.now() < end; ) {
-    const { body: page } = await api("GET", `/runs/${runId}/timeline?${new URLSearchParams({ after: String(after), wait_ms: "2000" })}`);
-    if (page.reset) view.clear();
-    for (const id of page.drop) view.delete(id);
-    for (const row of page.rows) view.set(row.id, row);
-    after = page.next_after;
-    rows = [...view.values()].sort((a, b) => a.seq - b.seq);
-  }
+  // A run paused at its cap is not final: the cap's pause lands before the harness hears its refusal (adapter-loop.ts
+  // pauseAt), so its page may say input_required before the refused node's result row is written. follow reads on until
+  // that row is in (a terminal run's last page holds every row already).
+  const { rows } = await follow(api, runId, ends, { deadlineMs: 90_000, done: (rows, page) => page.status !== "input_required" || learnedResult(rows) !== undefined });
   return { runId, rows, view: (await api("GET", `/runs/${runId}`)).body };
 }
 const learnedResult = (rows) => rows.find((row) => row.kind === "tool_result" && row.tool_name === LEARNED_WORKFLOW_TOOL);
