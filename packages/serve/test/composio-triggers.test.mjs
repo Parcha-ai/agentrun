@@ -211,13 +211,26 @@ for (const [blank, said] of [[" ", "a space"], ["", "empty"]]) {
     assert.equal(events.status, 200, JSON.stringify(events.body));
     const listed = await s.api("GET", "/settings/mcp-servers/gh/composio/triggers");
     assert.equal(listed.status, 200, JSON.stringify(listed.body));
-    // Its delete waits for the create's turn: it checks who uses the server only once the create is saved or undone.
-    let answered = false;
-    const removed = s.api("DELETE", "/settings/mcp-servers/gh").then((res) => ((answered = true), res));
-    await new Promise((r) => setTimeout(r, 1000));
-    assert.equal(answered, false, "the delete waits for the create holding the project's turn");
+    // Its delete waits for the create's turn: it checks who uses the server only once the create is saved or undone. Each
+    // step that takes a project's turn from here (composio-triggers.ts serial, the server's own instance of the class) is
+    // seen as it takes its place, and says as it begins whether the create's upsert was let go: a delete that takes its
+    // place is seen at once, and one that skips the turn answers instead, each with no clock.
+    const { serial } = ComposioTriggers.prototype;
+    t.after(() => void (ComposioTriggers.prototype.serial = serial));
+    let released = false;
+    const began = [];
+    let placed;
+    const inTurn = new Promise((resolve) => (placed = resolve));
+    ComposioTriggers.prototype.serial = function (key, step) {
+      placed();
+      return serial.call(this, key, () => (began.push(released), step()));
+    };
+    const removed = s.api("DELETE", "/settings/mcp-servers/gh");
+    assert.equal(await Promise.race([inTurn.then(() => "in the project's turn"), removed.then(() => "answered")]), "in the project's turn", "the delete takes its place in the project's turn, behind the create holding it, never answered past it");
+    released = true;
     upsert.release();
     const [made, gone] = await Promise.all([create, removed]);
+    assert.ok(began.length > 0 && began.every(Boolean), `each step in the project's turn, the delete's among them, began only once the create's upsert was let go: ${JSON.stringify(began)}`);
     // The create finds the row's user blank on its re-check and undoes what it made; the delete then finds no trigger.
     assert.deepEqual([made.status, made.body.error?.fields?.map((f) => f.field)], [422, ["source.server"]], JSON.stringify(made.body));
     assert.ok(gone.status < 300, JSON.stringify(gone.body));
