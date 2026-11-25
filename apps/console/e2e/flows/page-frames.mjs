@@ -5,9 +5,14 @@
 // makes the check hold on a page whatever its content, so a page that only fits by chance fails too. The pages with no
 // top bar (Build an agent, Connect, a trigger's own and new pages) scroll as one and are not here. A phone on its side
 // (`short:`) scrolls the run page as a whole; narrow-layouts.mjs holds that.
+// A window too small for the sidebar (a phone, upright or on its side) has no logo row for the bar to meet, and a bar whose
+// actions wrap is tall there: the pages marked `whole` (the ones framed by pageClass) scroll as a whole in main, bar and
+// all. Each is grown the same way and scrolled to its end: main must be what scrolled, and the bar must have left the
+// screen with the page.
 import { check } from "../harness.mjs";
 
 const SIZE = { width: 1440, height: 520 };
+const PHONES = [{ width: 390, height: 844 }, { width: 844, height: 390 }];
 const BAR = "header, nav[aria-label=Settings], [class*='min-h-12']";
 
 /** Opens `hash` fresh, waits for its bar (the one with `bar` in it, or the Settings tab `tab` current), then measures. */
@@ -47,9 +52,44 @@ async function framed(page, base, { hash, bar, tab }) {
   check(m.scrolled > 0 && m.moved === 0, `${hash}: the bar moved when the page scrolled: ${JSON.stringify(m)}`);
 }
 
+/** Opens `hash` fresh in a window with no sidebar, grows its body and scrolls to the end: the page went as a whole. */
+async function whole(page, base, { hash, bar }, size) {
+  await page.goto(`${base}/${hash}`);
+  await page.reload();
+  await page.locator(`main :is(${BAR})`, { hasText: bar }).first().waitFor();
+  await page.waitForTimeout(300);
+  const m = await page.evaluate((selector) => {
+    const main = document.querySelector("main");
+    const top = main.querySelector(selector);
+    const body = main.querySelector("[data-page-body]");
+    if (!body) return { body: null };
+    const before = top.getBoundingClientRect();
+    const filler = document.createElement("div");
+    filler.style.height = "3000px";
+    body.appendChild(filler);
+    main.scrollTop = main.scrollHeight;
+    body.scrollTop = body.scrollHeight;
+    const after = top.getBoundingClientRect();
+    // `left`: how much of the bar is still on screen under main's top edge.
+    const seen = { body: getComputedStyle(body).overflowY, main: main.scrollTop, inBody: body.scrollTop, bar: Math.round(before.height), left: Math.round(after.bottom - main.getBoundingClientRect().top) };
+    filler.remove();
+    main.scrollTop = 0;
+    body.scrollTop = 0;
+    return seen;
+  }, BAR);
+  const at = `${hash} at ${size.width}x${size.height}`;
+  check(m.body, `${at}: the page marks no body`);
+  check(m.main > 0 && m.inBody === 0, `${at}: the page does not scroll as a whole, so its bar stays on a small screen: ${JSON.stringify(m)}`);
+  check(m.left <= 0, `${at}: ${m.left}px of the bar is still on screen after the page scrolled: ${JSON.stringify(m)}`);
+}
+
 async function each(page, base, routes) {
   await page.setViewportSize(SIZE);
   for (const route of routes) await framed(page, base, route);
+  for (const size of PHONES) {
+    await page.setViewportSize(size);
+    for (const route of routes) if (route.whole) await whole(page, base, route, size);
+  }
 }
 
 const agent = (api, id) => api("POST", "/agents", { definition: { id, name: `Sample ${id}`, description: "Sorts an invoice into its ledger account.", instructions: "Answer in one line.", tools: [] } });
@@ -70,9 +110,9 @@ const runs = {
       { hash: "#/runs", bar: "Runs" },
       { hash: "#/runs?archived=true", bar: "Archived runs" },
       { hash: `#/runs/${encodeURIComponent(a)}`, bar: "Sample sorter" },
-      { hash: "#/races/new", bar: "New race" },
-      { hash: "#/races/e2e-none", bar: "Race" },
-      { hash: `#/compare?runs=${encodeURIComponent(a)},${encodeURIComponent(b)}`, bar: "Compare runs" },
+      { hash: "#/races/new", bar: "New race", whole: true },
+      { hash: "#/races/e2e-none", bar: "Race", whole: true },
+      { hash: `#/compare?runs=${encodeURIComponent(a)},${encodeURIComponent(b)}`, bar: "Compare runs", whole: true },
     ]);
   },
 };
@@ -83,15 +123,15 @@ const agents = {
   async run({ page, base, api }) {
     check((await agent(api, "sorter")).status === 201, "the agent was not made");
     await each(page, base, [
-      { hash: "#/agents", bar: "Agents" },
-      { hash: "#/agents?archived=true", bar: "Archived agents" },
+      { hash: "#/agents", bar: "Agents", whole: true },
+      { hash: "#/agents?archived=true", bar: "Archived agents", whole: true },
       { hash: "#/agents/new?editor", bar: "New agent" },
       { hash: "#/agents/sorter", bar: "Sample sorter" },
       { hash: "#/agents/sorter/runs", bar: "Sample sorter" },
       { hash: "#/agents/sorter/versions", bar: "Sample sorter" },
       { hash: "#/agents/sorter/edit", bar: "Sample sorter" },
-      { hash: "#/observations/e2e-unknown", bar: "Connected agent" },
-      { hash: "#/dojo", bar: "Learning Dojo" },
+      { hash: "#/observations/e2e-unknown", bar: "Connected agent", whole: true },
+      { hash: "#/dojo", bar: "Learning Dojo", whole: true },
     ]);
   },
 };
@@ -112,10 +152,10 @@ const sections = {
       { hash: "#/playground?operation=create-agent", bar: "API playground" },
       { hash: "#/playground?operation=list-runs", bar: "API playground" },
       { hash: "#/playground?operation=apply-template", bar: "API playground" },
-      { hash: "#/suggestions", bar: "Suggested agents" },
-      { hash: "#/templates", bar: "Templates" },
-      { hash: `#/templates/${encodeURIComponent(template)}`, bar: "Templates" },
-      { hash: "#/triggers", bar: "Triggers" },
+      { hash: "#/suggestions", bar: "Suggested agents", whole: true },
+      { hash: "#/templates", bar: "Templates", whole: true },
+      { hash: `#/templates/${encodeURIComponent(template)}`, bar: "Templates", whole: true },
+      { hash: "#/triggers", bar: "Triggers", whole: true },
       { hash: "#/wrapped", bar: "Wrapped" },
     ]);
   },

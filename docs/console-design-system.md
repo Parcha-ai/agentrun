@@ -241,9 +241,12 @@ Never write `outline-none` without a `focus-visible:` replacement drawn with the
 
 - **The shell** is a 220px sidebar and a main column. The `roomy:` variant shows the sidebar at 768px wide and 501px tall; smaller or shorter windows use a top bar with a menu.
   Banners sit above the page, outside its scroller.
-- **A page's top bar stays in view.** A page with a top bar (`pageToolbarClass`) is `pageClass`, exactly as tall as
-  `main`: the bar first, then the body in `pageBodyClass` (marked `data-page-body`), the box that scrolls. `main` never
-  scrolls such a page, or the bar would go with it. A page made of panes (Mission Control, a run, an agent, the
+- **A page's top bar stays in view beside the sidebar.** A page with a top bar (`pageToolbarClass`) is `pageClass`:
+  where the sidebar shows (`roomy:`) it is exactly as tall as `main`, the bar first, then the body in `pageBodyClass`
+  (marked `data-page-body`), the box that scrolls. `main` never scrolls such a page there, or the bar would go with it.
+  In a window too small for the sidebar (a phone, upright or on its side) a `pageClass` page scrolls in `main` as a
+  whole, bar and all: there is no logo row for the bar to meet, and a bar whose actions wrap would hold much of the
+  screen (Triggers' is 197px at 390px wide). A page made of panes (Mission Control, a run, an agent, the
   Playground) scrolls each pane in its own box under the bar. A Settings page scrolls in its own `h-full overflow-auto`
   box under the Settings tabs. A page with no top bar (Build an agent, a trigger's page) scrolls in `main`. A run's page
   on a `short:` window scrolls as a whole, so its panels are not squeezed to nothing. `e2e/flows/page-frames.mjs`
