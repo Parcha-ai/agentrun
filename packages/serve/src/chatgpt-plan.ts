@@ -47,7 +47,9 @@ const REFRESH_CALL_MS = 15_000;
  *  while its holder may still spend the token. Its end is stamped and judged on the store's clock (SealedKeys.clock: the
  *  database's on Postgres), never a process's own, so a reader whose clock runs ahead of the holder's never takes a lease
  *  still live and sends a refresh token the holder may be spending (which OpenAI answers by revoking the sign-in). A
- *  holder that dies holds the others up for the lease's length at most. */
+ *  holder that dies holds the others up for the lease's length at most. A write-back that faults uses most of the spare:
+ *  its read back, a write again and a read once more, each up to STORE_WRITE_DEADLINE_MS (57 s in all at worst, more
+ *  only when a stall holds the event loop past those deadlines). */
 const REFRESH_LEASE_MS = REFRESH_CALL_MS + STORE_WRITE_DEADLINE_MS + 35_000;
 /** How often a reader waiting on a peer's renewal reads the row again. */
 const LEASE_WAIT_MS = 200;
