@@ -1919,8 +1919,9 @@ test("a login kept at the start while its folder is refused runs once the folder
 /** A server for test `t` with the held table, on a data folder whose login was turned on and signed in at a
  *  CLAUDE_CONFIG_DIR folder, with an agent `planned` on claude-agent and no key; the folder was opened to its group before
  *  the start, so the login is kept and refused. `start()`: a run of `planned`; `waits(n)`: resolves once the server has
- *  logged claude_login_wait `n` times; `whys`: each of those lines' `why`, in order; `fake`: the stand-in CLI. */
-async function mendedLater(t) {
+ *  logged claude_login_wait `n` times; `whys`: each of those lines' `why`, in order; `fake`: the stand-in CLI.
+ *  `options` are laid on the second server's. */
+async function mendedLater(t, options = {}) {
   const folder = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-config-dir-"));
   t.after(() => rmSync(folder, { recursive: true, force: true }));
   const first = await signInServer(t, "sign", {}, { CLAUDE_CONFIG_DIR: folder });
@@ -1940,7 +1941,7 @@ async function mendedLater(t) {
     whys.push(/ why=(\S+)/.exec(line)?.[1]);
     for (const wait of waiting.filter((one) => one.times <= whys.length)) wait.resolve();
   };
-  const server = await serve(t, { faux: undefined, harnesses: false, runner: false, data: first.data, harnessTable: HELD_TABLE, log });
+  const server = await serve(t, { faux: undefined, harnesses: false, runner: false, data: first.data, harnessTable: HELD_TABLE, log, ...options });
   const waits = (times) => new Promise((resolve) => (whys.length >= times ? resolve() : waiting.push({ times, resolve })));
   const start = () => server.api("POST", "/agents/planned/runs", { input: { content: "Say hi." } });
   const kept = (await server.api("GET", "/settings/claude-login")).body;
@@ -2033,6 +2034,47 @@ test("a refresh whose making of the offers again fails is redone by the next req
   assert.equal((await api("POST", `/runs/${run.body.run_id}/cancel`)).status < 300, true);
   const offer = await offerOf(api);
   assert.equal(offer.available, true, `claude-agent is offered once the failed making of the offers is redone: ${JSON.stringify(offer)}`);
+});
+
+// A template's plan and its apply pick a model choice's harness by the offers (choiceUnrunnable), as a run's check does.
+// Right after a chmod mends the login's folder, or refuses it again, they must look at the folders first, as a run, a
+// save and capabilities do, not pick by the offers made from the login as it was. The package's one choice is
+// Anthropic's model on claude-agent, which this server, with no key, runs only on the login.
+const PLAN_PACKAGE = `---
+name: on-plan
+version: 1.0.0
+description: Says hi on the plan.
+model:
+  tier: balanced
+  choices:
+    - id: plan
+      label: On the plan
+      model: anthropic/claude-haiku-5-5
+      harness: claude-agent
+---
+Say hi.
+`;
+const PLAN_WHY = "a template's plan asked right after the login's folder was mended picked by the offers made before it";
+const APPLY_WHY = "a template's apply asked right after the login's folder was refused again picked by the offers made before it";
+test("a template's plan or apply asked right after a chmod mends the login's folder, or refuses it again, picks by the login as its folder is now: a model choice on claude-agent with no key is planned and applied once mended, and refused once refused", { skip: process.platform === "win32" ? "no modes" : process.geteuid() === 0 ? "root may write anywhere" : false, timeout: 120_000 }, async (t) => {
+  const templates = join(await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-templates-")), "templates");
+  t.after(() => rmSync(dirname(templates), { recursive: true, force: true }));
+  mkdirSync(join(templates, "on-plan"), { recursive: true });
+  writeFileSync(join(templates, "on-plan", "agent.md"), PLAN_PACKAGE);
+  const { api, folder } = await mendedLater(t, { templates });
+  const choose = (more = {}) => api("POST", "/templates/on-plan/apply", { overrides: { choice: "plan" }, ...more });
+  const refused = await choose({ dry_run: true });
+  assert.equal(refused.status, 409, `refused while the folder is: ${JSON.stringify(refused.body)}`);
+  chmodSync(folder, 0o700);
+  const plan = await choose({ dry_run: true });
+  assert.equal(plan.status, 200, `${PLAN_WHY}: ${JSON.stringify(plan.body)}`);
+  chmodSync(folder, 0o775);
+  const again = await choose();
+  assert.equal(again.status, 409, `${APPLY_WHY}: ${JSON.stringify(again.body)}`);
+  assert.match(again.body.error.message, /claude-agent is not available here/);
+  chmodSync(folder, 0o700);
+  const applied = await choose();
+  assert.equal(applied.status, 201, `an apply asked right after the login's folder was mended again: ${JSON.stringify(applied.body)}`);
 });
 
 // A turn on makes env, needs and the offers again after its own turn, outside the queue. A run asked meanwhile finds the
