@@ -1179,6 +1179,30 @@ test("reads answered from a copy leave no abort listener on the signal they were
 	await connection.close();
 });
 
+test("first chunks of many files copy nothing, and the copies held across paths stay within twice the read limit, the oldest let go first", async () => {
+	const { provider, fake } = setup({}, { download: true });
+	const ref = made(await create(provider));
+	const m = only(fake);
+	// Four files of 12 MiB, each under the read limit: two fit in twice the limit, three do not.
+	const SIZE = 12 * 1024 * 1024;
+	const paths = [1, 2, 3, 4].map((n) => `/work/part-${n}.bin`);
+	for (const [i, path] of paths.entries()) m.files.set(path, Buffer.alloc(SIZE, i + 1));
+	const connection = made(await provider.connect(ref));
+	const chunk = async (path, n) => Buffer.from(made(await connection.client.call("files.read", { path, offset: n * CHUNK, length: CHUNK })).data, "base64");
+	for (const path of paths) await chunk(path, 0);
+	await new Promise((done) => setTimeout(done, 50));
+	assert.deepEqual(fake.stages, [], "a preview of one chunk copies nothing");
+	assert.deepEqual(fake.downloads, []);
+	for (const path of paths) await chunk(path, 1);
+	const before = fake.requests.length;
+	for (const [i, path] of paths.entries()) assert.equal(Buffer.compare(await chunk(path, 2), Buffer.alloc(CHUNK, i + 1)), 0, `${path}: its third chunk`);
+	const fromCopies = paths.filter((path) => daemonReads(fake, path, before).length === 0);
+	assert.ok(fromCopies.length * SIZE <= 2 * MAX_READ_BYTES, `copies held at once: ${fromCopies.join(", ")}`);
+	assert.deepEqual(fromCopies, paths.slice(-2), "the newest two are held, the oldest let go");
+	assert.deepEqual(await copiesLeft(m), [], "no copy left in the machine");
+	await connection.close();
+});
+
 test("connect to a machine the vendor reads as gone (past its deadline or released, still being deleted) answers gone, not refused; releasing it again stays ok", async () => {
 	const { provider, fake } = setup();
 	const ref = made(await create(provider));
