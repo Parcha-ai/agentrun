@@ -106,6 +106,31 @@ const digestOf = (doc: Record<string, unknown>): string => {
   return createHash("sha256").update(stable(rest)).digest("hex");
 };
 
+/** A workflow run's graph as the page draws it (RunGraphView): the fields of the route's graph it reads, each of its
+ *  type, so a stored share never breaks its own page. Other keys may stay: the scrubber reads the graph whole. */
+function graphShape(value: unknown): void {
+  if (!isObject(value)) return refuse("graph is neither null nor an object");
+  const objects = (items: unknown[], at: string) => items.forEach((item, index) => isObject(item) || refuse(`${at}/${index} is not an object`));
+  const run = isObject(value.run) ? value.run : refuse("graph.run is not an object");
+  string(run.status, "graph.run.status");
+  if (typeof run.paused !== "boolean") refuse("graph.run.paused is not true or false");
+  const flow = isObject(value.graph) ? value.graph : refuse("graph.graph is not an object");
+  for (const node of array(flow.nodes, "graph.graph.nodes")) {
+    const at = "graph.graph.nodes";
+    if (!isObject(node)) refuse(`${at} holds a node that is not an object`);
+    string(node.path, `${at}[].path`);
+    string(node.kind, `${at}[].kind`);
+  }
+  objects(array(flow.edges, "graph.graph.edges"), "graph.graph.edges");
+  if (!isObject(value.nodes)) refuse("graph.nodes is not an object");
+  for (const node of Object.values(value.nodes)) if (!isObject(node)) refuse("graph.nodes holds a run of a node that is not an object");
+  objects(array(value.decisions, "graph.decisions"), "graph.decisions");
+  objects(array(value.effects, "graph.effects"), "graph.effects");
+  const totals = isObject(value.totals) ? value.totals : refuse("graph.totals is not an object");
+  count(totals.decisions, "graph.totals.decisions");
+  count(totals.effects, "graph.totals.effects");
+}
+
 /** `text` read as a share bundle the host takes, or a 400 that says why (never quoting a value of it): canonical JSON (the
  *  bytes the export writes: what is hashed, scanned and stored is one text), `agentrun.share/1`, the export's closed keys
  *  at every level it fixes (the run's allowlist, agent, source, files, omitted, cuts, restored; rows and the graph are
@@ -132,7 +157,7 @@ export function checkShareBundle(text: string): { sha256: string } {
   const run = closed(top.run, "run", [], [...RUN_FIELDS]);
   if (run.imported_from !== undefined && run.imported_from !== null) string(closed(run.imported_from, "run.imported_from", ["source"]).source, "run.imported_from.source");
   array(top.rows, "rows");
-  if (top.graph !== null && !isObject(top.graph)) refuse("graph is neither null nor an object");
+  if (top.graph !== null) graphShape(top.graph);
   const files = array(top.files, "files");
   if (files.length > EXPORT_CAPS.files) refuse(`it carries more than ${EXPORT_CAPS.files} files`);
   let total = 0;
@@ -347,8 +372,14 @@ export class ShareStore {
       const names = await readdir(this.dir).catch((error: NodeJS.ErrnoException) => (error.code === "ENOENT" ? [] : Promise.reject(error)));
       for (const name of names) {
         if (!SHARE_ID.test(name)) continue;
-        const meta = await readFile(join(this.dir, name, "meta.json"), "utf8").then((text) => JSON.parse(text) as ShareMeta, () => undefined);
-        if (meta && meta.id === name) found.set(name, meta);
+        const folder = join(this.dir, name);
+        const meta = await readFile(join(folder, "meta.json"), "utf8").then((text) => JSON.parse(text) as ShareMeta, (error: NodeJS.ErrnoException) => (error.code === "ENOENT" ? null : undefined));
+        // No meta: a create that stopped between the bytes and the meta (both are renamed in whole), bytes nothing names.
+        if (meta === null) await rm(folder, { recursive: true, force: true });
+        if (!meta || meta.id !== name) continue;
+        found.set(name, meta);
+        // A delete that stopped after its tombstone: its bytes go now.
+        if (meta.deleted_at) await rm(join(folder, "bundle.json"), { force: true });
       }
       return found;
     })().catch((error: unknown) => {
@@ -413,10 +444,12 @@ export class ShareStore {
       const meta = await this.get(id);
       if (!meta) throw new ApiError("not_found", `There is no share ${id} on this host.`);
       if (meta.token_id !== tokenId) throw new ApiError("forbidden", `The share ${id} was made with another token; only that token deletes it.`);
-      if (meta.deleted_at) return;
-      const gone: ShareMeta = { ...meta, deleted_at: new Date().toISOString() };
-      await writeAtomic(join(this.dir, id, "meta.json"), `${JSON.stringify(gone)}\n`);
-      (await this.all()).set(id, gone);
+      if (!meta.deleted_at) {
+        const gone: ShareMeta = { ...meta, deleted_at: new Date().toISOString() };
+        await writeAtomic(join(this.dir, id, "meta.json"), `${JSON.stringify(gone)}\n`);
+        (await this.all()).set(id, gone);
+      }
+      // Again on a deleted share: a removal an earlier delete never finished (it failed, or the process stopped).
       await rm(join(this.dir, id, "bundle.json"), { force: true });
     });
   }
