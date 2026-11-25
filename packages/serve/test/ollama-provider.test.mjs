@@ -300,7 +300,7 @@ test("a run on the host default books the Ollama model it ran on: its usage line
   assert.deepEqual(lines.map((line) => [line.provider, line.model, line.requests, line.usd]), [["ollama", TOOLS, 1, 0]], "provider/model is the id the console labels: ollama/<tag>");
 });
 
-test("with no key and Ollama up, the default is the first Ollama model that calls tools, listed in the picker and its free models, on pi and on every harness of the wire the route translates them onto (Anthropic's Messages: a harness module's too); any key wins", { timeout: 120_000 }, async (t) => {
+test("with no key and Ollama up, the default is the first Ollama model that calls tools, listed in the picker and its free models, on pi and on every harness of a wire the route translates them onto (Anthropic's Messages, a harness module's too; OpenAI's Responses); any key wins", { timeout: 120_000 }, async (t) => {
   withEnv(t, {}, KEYS);
   const ollama = await fakeOllama(t);
   // A harness module on Anthropic's Messages beside the built-ins: offered as they are, by its wire alone.
@@ -319,7 +319,8 @@ test("with no key and Ollama up, the default is the first Ollama model that call
   }
   assert.equal(pi.free_models.find((model) => model.id === `ollama/${PLAIN}`).context_window, 40_960);
   // Every other harness by its wire, never by its id: on Anthropic's Messages, the same models, free models and default as
-  // pi; on any other, none of them.
+  // pi; on OpenAI's Responses (codex, opencode), the same models and free models, and the host's default; on any other,
+  // none of them.
   const onMessages = caps.harnesses.filter((h) => h.id !== "pi" && factsOf(modules, h.id)?.wire === "anthropic-messages");
   assert.ok(onMessages.length >= 2 && onMessages.some((h) => h.id === MESSAGES_MODULE), `the harnesses on Messages, the module's among them: ${onMessages.map((h) => h.id)}`);
   for (const harness of onMessages) {
@@ -331,7 +332,16 @@ test("with no key and Ollama up, the default is the first Ollama model that call
     assert.equal(harness.default_model, `ollama/${TOOLS}`, `${harness.id}'s default`);
     assert.equal(hostModel({ OLLAMA_HOST: ollama.host, ...modules }, "default", harness.id), `ollama/${TOOLS}`, `${harness.id}: the host's default`);
   }
-  for (const harness of caps.harnesses.filter((h) => h.id !== "pi" && !onMessages.includes(h))) {
+  const onResponses = caps.harnesses.filter((h) => h.id !== "pi" && factsOf(modules, h.id)?.wire === "openai-responses");
+  assert.deepEqual(onResponses.map((h) => h.id).sort(), ["codex", "opencode"], "the harnesses on Responses");
+  for (const harness of onResponses) {
+    for (const id of [`ollama/${PLAIN}`, `ollama/${TOOLS}`]) {
+      assert.ok(harness.models.includes(id), `${id} in ${harness.id}'s models: ${harness.models}`);
+      assert.ok(harness.free_models.some((model) => model.id === id), `${id} in ${harness.id}'s free models: ${JSON.stringify(harness.free_models)}`);
+    }
+    assert.equal(hostModel({ OLLAMA_HOST: ollama.host, ...modules }, "default", harness.id), `ollama/${TOOLS}`, `${harness.id}: the host's default`);
+  }
+  for (const harness of caps.harnesses.filter((h) => h.id !== "pi" && !onMessages.includes(h) && !onResponses.includes(h))) {
     assert.ok(!(harness.models ?? []).some((id) => id.startsWith("ollama/")), `${harness.id}, on ${factsOf(modules, harness.id)?.wire}, never runs an Ollama model`);
     assert.ok(!String(harness.default_model ?? "").startsWith("ollama/"), `${harness.id} has no local default`);
     assert.deepEqual(harness.free_models ?? [], [], `${harness.id} has no free models`);

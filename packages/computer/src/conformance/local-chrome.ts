@@ -3,6 +3,7 @@
 // AGENTRUN_COMPUTER_LIVE_LOCAL_CHROME=1. The provider reads no environment: this module reads its own
 // COMPUTER_LOCAL_CHROME_* names, and PATH to find a Chrome, and passes each to create() as its option.
 import { BROWSER_IMAGE } from "../descriptors/shared.js";
+import { CHROME_ENV_NAMES, childEnv } from "../child-env.js";
 import { create, type LocalBrowserOptions, type LocalBrowserProvider } from "../local-chrome.js";
 
 /** The environment this module reads, by name, each for the option its comment names, and the live switch. */
@@ -19,11 +20,12 @@ export const ENV = LOCAL_ENV;
 
 export type LocalSettings = Pick<LocalBrowserOptions, "executablePath" | "headed" | "env">;
 
-/** The provider's options this module reads from env, each only when its name is set; PATH goes in as the provider's env, to find a Chrome on it. */
+/** The provider's options this module reads from env, each only when its name is set; the names Chrome reads go in as the
+ *  provider's env (CHROME_ENV_NAMES: PATH, to find a Chrome on it, HOME, the display, locale and fonts), and no other. */
 export function settingsFromEnv(env: Record<string, string | undefined> = process.env): LocalSettings {
 	const executablePath = env[LOCAL_ENV.chrome] || undefined;
 	const headed = env[LOCAL_ENV.headed] === "1";
-	return { ...(executablePath === undefined ? {} : { executablePath }), ...(headed ? { headed } : {}), env: { PATH: env.PATH } };
+	return { ...(executablePath === undefined ? {} : { executablePath }), ...(headed ? { headed } : {}), env: childEnv(env, CHROME_ENV_NAMES) };
 }
 
 /** For the run's report: what this configuration means for the suite. */

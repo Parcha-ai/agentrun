@@ -86,7 +86,7 @@ export function refusedName(caller: string, name: string, tools: readonly HostTo
 const NO_NESTED = (caller: string) => `${caller} can't run here: this harness gives it no way to call the run's tools. Nothing was run.`;
 
 /** A nested answer as a tool's answer. */
-const answered = (result: NestedResult) => ({ text: result.text, ...(result.isError ? { isError: true } : {}), ...(result.images?.length ? { images: result.images } : {}), ...(result.structured !== undefined ? { structured: result.structured } : {}) });
+const answered = (result: NestedResult) => ({ text: result.text, ...(result.isError ? { isError: true } : {}), ...(result.images?.length ? { images: result.images } : {}), ...(result.structured !== undefined ? { structured: result.structured } : {}), ...(result.refused ? { refused: true as const } : {}) });
 
 export interface MetaToolsOptions {
   /** The run's tools as the session gives them, the three left out (each call reads them now). */
@@ -260,7 +260,7 @@ function scriptBody(script: string, toolNames: readonly string[], computer?: Scr
  * of the call (after a park or a crash) makes the same calls: the recorded ones are answered from their records, and the
  * first one that runs now ends the script with its outcome (Codex's rule), as does any refusal or interrupted call.
  */
-async function runScript(script: string, tools: readonly HostTool[], nested: NestedCalls, signal: AbortSignal, hostName?: (given: string) => string, computer?: ScriptComputer): Promise<{ text: string; isError?: boolean; images?: readonly ToolImage[]; structured?: JsonValue }> {
+async function runScript(script: string, tools: readonly HostTool[], nested: NestedCalls, signal: AbortSignal, hostName?: (given: string) => string, computer?: ScriptComputer): Promise<{ text: string; isError?: boolean; images?: readonly ToolImage[]; structured?: JsonValue; refused?: true }> {
   const nonce = randomBytes(8).toString("hex");
   const first = await nested.memo("start", { startedAt: Date.now(), seed: randomBytes(4).readUInt32BE(0), nonce, tools: tools.map((tool) => [tool.name, toCodemodeIdentifier(tool.name)]) } as unknown as JsonValue);
   const start = first as unknown as { startedAt: number; seed: number; nonce: string; tools: [string, string][] };
@@ -353,9 +353,10 @@ function scriptValue(result: NestedResult): unknown {
 
 /** The answer of a script that ended at `last`: a refusal's words, or (`ranNow`: the first call that ran on the script's
  *  rerun, after a person's answer or a crash) that call's outcome, with every call before it as recorded. */
-function endedWith(told: readonly { name: string; result: NestedResult }[], last: NestedResult, ranNow: boolean): { text: string; isError: boolean; images?: readonly ToolImage[] } {
+function endedWith(told: readonly { name: string; result: NestedResult }[], last: NestedResult, ranNow: boolean): { text: string; isError: boolean; images?: readonly ToolImage[]; refused?: true } {
   const lines = told.map(({ name, result }, i) => lineOf(i + 1, name, result));
-  if (last.refused) return { text: `${last.text}\nThe script stopped at this refused call, and nothing after it ran. Its calls, in order:\n${lines.join("\n")}`, isError: true };
+  // Marked refused: the script's own row reads Refused, as the call it stopped at does, never a red Error.
+  if (last.refused) return { text: `${last.text}\nThe script stopped at this refused call, and nothing after it ran. Its calls, in order:\n${lines.join("\n")}`, isError: true, refused: true };
   if (!ranNow) return { text: `The script stopped at a call cut off before it reported a result, and nothing after it ran. Its calls, in order:\n${lines.join("\n")}`, isError: true };
   const head = `The script was stopped (it waited for a person's answer, or the session stopped), and run again only as far as its next call, which ran once: ${last.isError ? "it failed" : "its outcome is below"}. The rest of the script did not run; run what is still needed again.`;
   return { text: `${head}\nIts calls, in order:\n${lines.join("\n")}`, isError: Boolean(last.isError), ...(last.images?.length ? { images: last.images } : {}) };

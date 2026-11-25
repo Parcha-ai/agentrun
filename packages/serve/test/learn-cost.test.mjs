@@ -11,9 +11,10 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { agentFolderOf } from "../dist/files.js";
 import { seedOf } from "../dist/learning.js";
-import { CHEAPER_AFTER_RUNS, costCsv, costSummary, runCostOf } from "../dist/learning-cost.js";
+import { CHEAPER_AFTER_RUNS, costCsv, costSummary } from "../dist/learning-cost.js";
+import { figuresOf, record, summarize } from "../dist/learn/ledger.js";
 import { runPathOf } from "../dist/runner/learning-end.js";
-import { costRunOf, servingReplayOf } from "../dist/store-reads/learning.js";
+import { servingReplayOf } from "../dist/store-reads/learning.js";
 import { git, resnap, savedOf } from "./learn-support.mjs";
 import { agent, answerFlow, follow, serve, storeRun } from "./support.mjs";
 
@@ -37,6 +38,14 @@ test("a run's path: a learned workflow alone, one the agent went on from (failed
   }
   assert.equal(runPathOf([asked, ...call("task", "t1"), ...call("learned_workflow", "sub-1", "success", { parent_tool_use_id: "t1" }), answer]), "agent", "a subagent's call is the subagent's");
 });
+
+/** A run's series figures as its ledger row gives them (learn/ledger.ts record, figuresOf): its row's cost and its one
+ *  kept round, if any. */
+const runCostOf = (costUsd, kept) => {
+  const { row } = record({ id: "r", agentId: "a", startedAt: 0, costUsd, costAtMostUsd: null, metrics: { path: "agent" }, rounds: kept ? [{ round: 1, proposal: kept }] : [] });
+  const figures = figuresOf(row, { compile: 0, shadow: 0, share: 0 });
+  return { cost_usd: figures.usd, learning_usd: figures.series_learning_usd, total_usd: figures.series_total_usd };
+};
 
 test("a run's cost: its job's own, what learning added (its compile turn), and all-in; unknown stays unknown", () => {
   const at = "2026-11-12T00:00:00Z";
@@ -111,13 +120,10 @@ test("with no run a learned workflow served the after side says so, never a figu
 });
 
 test("a run row whose stored cost is a bound reads as a bound: its cost_upper_bound is true, and the summary withholds the ratio with at_most 1", async () => {
-  // A store with no launch, no learning rounds and no audit shadow run: only the run row's cost fields are read.
-  const store = { runs: { launch: async () => undefined, get: async () => undefined }, learning: { proposal: async () => undefined } };
+  // No learning rounds and no audit shadow run: only the run row's cost fields are read, into its ledger row (record).
   // The store's row for a bounded run: costUsd null, costAtMostUsd the bound (RunRow).
-  const row = (id, extra = {}) => ({ id, startedAt: Date.UTC(2026, 10, 12), metrics: { path: "workflow", workflow: "classify" }, costUsd: 0.1, costAtMostUsd: null, ...extra });
-  const placed = { path: "workflow", workflow: "classify" };
-  const exact = await costRunOf(store, row("r1"), 1, placed);
-  const bound = await costRunOf(store, row("r2", { costUsd: null, costAtMostUsd: 0.5 }), 2, placed);
+  const row = (id, at, extra = {}) => record({ id, agentId: "a", startedAt: Date.UTC(2026, 10, 12) + at, metrics: { path: "workflow", workflow: "classify" }, costUsd: 0.1, costAtMostUsd: null, rounds: [], ...extra }).row;
+  const [exact, bound] = summarize({ rows: [row("r1", 0), row("r2", 1, { costUsd: null, costAtMostUsd: 0.5 })], spend: [], shadows: new Map(), revisions: [], compileAfter: 20 }).runs;
   assert.deepEqual([exact.cost_upper_bound, bound.cost_upper_bound, bound.cost_usd], [false, true, null], "the stored bound is read, and never shown as a cost");
   const after = Array.from({ length: CHEAPER_AFTER_RUNS }, (_, i) => i === 0 ? { ...bound, n: 3, run_id: "r3" } : { ...exact, n: i + 3, run_id: `r${i + 3}` });
   const head = series([["agent", 0.9], ["agent", 0.9]]);
@@ -138,6 +144,8 @@ test("the serving promotion's check: the champion of the workflow the newest ser
   const rec = (digest, decided, extra = {}) => ({ workflow: "classify", digest, at: "2026-11-12T00:00:00Z", decided, reason: "r", ...extra });
   const runs = series([["agent", 0.9], ["workflow", 0.1], ["handed_back", 0.5]]);
   assert.deepEqual(servingReplayOf([rec("d1", "promote", { check: check(38, 33) })], runs), { n: 40, workflow_pct: 86.8, agent_pct: 100, cleared: true, agreed: 33, alone: 38, agree_min: 0.8 });
+  assert.deepEqual(servingReplayOf([rec("d1", "promote", { check: check(20, 12) })], runs), { n: 40, workflow_pct: 60, agent_pct: 100, cleared: false, agreed: 12, alone: 20, agree_min: 0.8 }, "cleared only when its agreement reaches agree_min");
+  assert.deepEqual(servingReplayOf([rec("d1", "promote", { check: { ...check(38, 33), agent_agreed: 30 } })], runs), { n: 40, workflow_pct: 86.8, agent_pct: 78.9, cleared: true, agreed: 33, alone: 38, agree_min: 0.8 }, "the agent's share right on every field at once, on the same inputs and known answers (30 of 38): a record before it was counted said 100");
   assert.equal(servingReplayOf([rec("d1", "promote", { check: check(0, 0, 0) })], runs), null, "promoted on a dry run: no inputs checked");
   assert.equal(servingReplayOf([rec("d1", "promote")], runs), null, "no check kept");
   assert.equal(servingReplayOf([rec("d1", "promote", { check: check(38, 33) }), rec("d1", "hold", { check: check(10, 2) })], runs), null, "held: nothing serves");

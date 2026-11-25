@@ -47,6 +47,10 @@ describe("MissionControl", () => {
     const html = renderToStaticMarkup(createElement(MissionControl, { view }));
     expect(html).toContain(`<h1 class="${pageTitleClass}">`);
   });
+  it("offers Your year, except where the answer is sample data (demo mode has no /wrapped)", () => {
+    expect(renderToStaticMarkup(createElement(MissionControl, { view }))).toContain('href="#/wrapped"');
+    expect(renderToStaticMarkup(createElement(MissionControl, { view, yearLink: false }))).not.toContain("#/wrapped");
+  });
   it("links each recent run to its page, and each agent to its page's Runs tab", () => {
     const html = renderToStaticMarkup(createElement(MissionControl, { view }));
     expect(html).toContain('href="#/runs/run-1"');

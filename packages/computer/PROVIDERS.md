@@ -523,8 +523,10 @@ export class E2BProvider extends HostedProvider {
 ```
 
 The same file exports `create(options)` and `conformance`, as `e2b.ts` does. Load your SDK
-lazily through a constant like `E2B_PACKAGE` and pin it exactly as a root devDependency. `test/vendor-sdks.test.mjs`
-finds that constant in your file and checks the pin.
+lazily with `vendorSdk(label, "<package>")` (`src/vendor-sdk.ts`), never an `import()` of your own, and pin it exactly in
+this package's `optionalDependencies`: a plain `npm install` then brings it, and without it `create` says
+`E2B needs the e2b package: npm install e2b@2.63.0`. `test/vendor-sdks.test.mjs` finds the call in your file and checks
+the pin against the lockfile.
 
 The descriptor is data. AgentRun's Settings page shows it, and the registry loads your file through `load`.
 
@@ -701,13 +703,15 @@ the suite with your own key between two sweeps, from the repository root:
 npm ci --ignore-scripts && npm run build
 npm run build:daemon -w @parcha/agentrun-computer
 export AGENTRUN_COMPUTER_LIVE_<VENDOR>=1 COMPUTER_<VENDOR>_API_KEY=<your key>
-node packages/computer/dist/conformance/sweep.js --provider <vendor> --before /tmp/<vendor>-before.json
-npm run conformance -w @parcha/agentrun-computer -- --provider <vendor>
-node packages/computer/dist/conformance/sweep.js --provider <vendor> --after /tmp/<vendor>-before.json
+before="$(mktemp -d)/before.json"
+node packages/computer/dist/conformance/sweep.js --provider <vendor> --before "$before"
+npm run conformance -w @parcha/agentrun-computer -- --provider <vendor> --run "$(node -p 'require(process.argv[1]).run' "$before")"
+node packages/computer/dist/conformance/sweep.js --provider <vendor> --after "$before"
 ```
 
-The first sweep records what your account already holds. The second deletes anything the run left behind and prints
-what is still there. `--kind sandbox` or `--kind desktop` runs one kind's cases, and `-- --help` lists every flag.
+The first sweep records what your account already holds and mints the run's id, which `--run` gives the run. The second
+deletes anything that run left behind and prints what is still there. Each run takes a before file of its own, in a
+fresh `mktemp -d` folder: `--before` refuses a file that is already there. `--kind sandbox` or `--kind desktop` runs one kind's cases, and `-- --help` lists every flag.
 Add `--long` to the run you send: it runs the long cases, which wait minutes on your vendor's timers. `lifetime.idle`
 leaves a computer quiet for 6 minutes and must find it still running, its daemon answering.
 
@@ -872,9 +876,17 @@ The package README's [Conformance](README.md#conformance) section has the JSON s
 
 ### The live sweep
 
-`--before <file>` records every machine listed with `agentrun.computer=1`. `--after <file>` deletes each new machine
-that carries a conformance run's label (`agentrun.conformance`) and reads it back gone. It leaves alone everything
-recorded before, and any new machine without that label, which belongs to someone else on the account. It prints
+`--before <file>` records every machine listed with `agentrun.computer=1`, and mints a run id that it records in the file
+and prints (`{"recorded":n,"file":...,"run":"<id>"}`). It makes the file, and refuses, with exit 2 and nothing listed,
+a file that is already there: two runs given one path would otherwise leave the first run's `--after` reading the second
+run's id. Give each run its own, from `mktemp -d`. The conformance CLI's `--run <id>` gives a run that id, and every
+computer it makes carries it as `agentrun.conformance`. `--after <file>` deletes each new machine whose
+`agentrun.conformance` is the file's run, and reads it back gone. It leaves alone everything recorded before and any
+other new machine: one of someone else on the account, or of another conformance run going on beside yours. A before
+file that names no run is refused before anything is listed. Two conformance processes may share one `--run`, such as
+a sandbox run and a desktop run under one before file: each also labels its computers with an id of its own,
+`agentrun.conformance.runner`, names its create requests by it, so neither finds the other's computers, and its own
+end-of-run sweep goes by that label, so the first to end never deletes the other's live computers. `--after` goes by the run's id alone and takes what either left. It prints
 `{"swept":n,"gone":m,"stillThere":[ids],"leftAlone":k}` and exits 0 when every swept machine is gone, 1 when one is
 still there, and 2 on a usage error. It reaches your API through the conformance module's `createHost({ env })`, which
 reads the same settings as the run and needs no live switch. If one account holds more than one place to list, such as

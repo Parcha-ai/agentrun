@@ -7,15 +7,22 @@ import { fileURLToPath } from 'node:url';
 import { MUTANTS } from './decision-provider-mutants.mjs';
 
 const runner = fileURLToPath(new URL('./decision-provider-mutants.mjs', import.meta.url));
+/** The suite's 18 tests once for each mutant, every mutant in one process, its titles under the mutant's name. */
+let ran;
+function suiteRun() {
+  if (ran) return ran;
+  const env = { ...process.env, DECISION_MUTANT: Object.keys(MUTANTS).join(',') };
+  delete env.NODE_TEST_CONTEXT;
+  ran = spawnSync(process.execPath, ['--test', '--test-reporter=tap', runner], { env, encoding: 'utf8' });
+  return ran;
+}
 /** The titles of the suite's tests that failed on a mutant. */
 function failures(mutant) {
-  const env = { ...process.env, DECISION_MUTANT: mutant };
-  delete env.NODE_TEST_CONTEXT;
-  const run = spawnSync(process.execPath, ['--test', '--test-reporter=tap', runner], { env, encoding: 'utf8' });
-  const failed = [...run.stdout.matchAll(/^not ok \d+ - (.+)$/gm)].map(([, title]) => title.replace(`${mutant}: `, ''));
-  assert.equal(run.status === 0, failed.length === 0, `${mutant}: exit ${run.status}\n${run.stdout.slice(-2000)}`);
-  assert.match(run.stdout, /^# tests 18$/m, `${mutant}: the whole suite ran`);
-  return failed;
+  const run = suiteRun();
+  const prefix = `${mutant}: `;
+  const results = [...run.stdout.matchAll(/^(not )?ok \d+ - (.+)$/gm)].filter(([, , title]) => title.startsWith(prefix));
+  assert.equal(results.length, 18, `${mutant}: the whole suite ran\n${run.stdout.slice(-2000)}`);
+  return results.filter(([, not]) => not).map(([, , title]) => title.slice(prefix.length));
 }
 
 const EXPECTED = {
@@ -41,6 +48,9 @@ const EXPECTED = {
 test('every mutant has an expectation, and the provider that keeps every rule passes the suite', () => {
   assert.deepEqual(Object.keys(MUTANTS).sort(), Object.keys(EXPECTED).sort());
   assert.deepEqual(failures('none'), []);
+  const run = suiteRun();
+  assert.match(run.stdout, new RegExp(`^# tests ${18 * Object.keys(MUTANTS).length}$`, 'm'), 'every mutant\'s suite ran');
+  assert.equal(run.status === 0, !/^not ok /m.test(run.stdout), `exit ${run.status}: a failed test, and only one, fails the run`);
 });
 
 for (const [mutant, expected] of Object.entries(EXPECTED).filter(([name]) => name !== 'none')) {

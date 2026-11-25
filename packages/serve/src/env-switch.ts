@@ -23,9 +23,7 @@ export function switchFrom(name: keyof typeof MEANS, env: NodeJS.ProcessEnv = pr
   throw new TypeError(`${name} is 1 (${on}) or 0${off === undefined ? "" : ` (${off})`}, not ${JSON.stringify(env[name])}`);
 }
 
-/** The operator's list of MCP origins (comma-separated, each scheme://host[:port]) an API-only server's token may save a
- *  per_run MCP server at through the generic save. A plain setting, not a secret. Unset or blank, that save is refused
- *  as any route outside api-only.ts API_ONLY_ROUTES. AGENTRUN_MCP_ALLOW_LOOPBACK still decides whether a loopback origin is saved. */
+/** The MCP origins an API-only server's token may save a per_run MCP server at: the serve README's API-only section. */
 export const API_ONLY_MCP_ORIGINS_ENV = "AGENTRUN_API_ONLY_MCP_ORIGINS";
 
 /** The origins `value` (API_ONLY_MCP_ORIGINS_ENV) names, each once, in its order: none when unset or blank. An entry

@@ -43,6 +43,14 @@ import { stranger } from "./fixtures/stranger.mjs";
   process.on("exit", () => rmSync(config, { recursive: true, force: true }));
 }
 
+// HOME is an empty home of the test process's own, as the config home above, never the runner's: a server reads session
+// files under it (GET /v2/wrapped and setup's import, through homedir(), unless a test passes its own `sessionsHome`), and
+// so does a CLI a test starts with the test's environment ({ ...process.env }). A long history there would make a sweep of
+// every GET route read it all.
+const EMPTY_HOME = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-home-"));
+process.on("exit", () => rmSync(EMPTY_HOME, { recursive: true, force: true }));
+process.env.HOME = EMPTY_HOME;
+
 // No test asks an Ollama this machine may run (ollama-provider.ts lists its models, and with no key one is the default),
 // whatever env it passes: the process's own switch (OLLAMA_OFF_ENV) turns every Ollama off. A test of Ollama clears it
 // and names its own fake (fixtures/fake-ollama.mjs).

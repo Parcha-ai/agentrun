@@ -91,6 +91,9 @@ Prefer your own machine or infrastructure? Have your coding agent set it up belo
 [getting-started guide](docs/getting-started.md) explains the three options. Wherever it runs, AgentRun counts itself
 anonymously; `AGENTRUN_TELEMETRY=0` or `DO_NOT_TRACK=1` turns that off ([anonymous usage counts](docs/telemetry.md)).
 
+Ready-made agent templates are at [marketplace.agentrun.ai](https://marketplace.agentrun.ai). Pick one and run it on
+your own AgentRun server.
+
 <a id="start-in-three-steps"></a>
 <a id="run-locally-in-three-steps"></a>
 
@@ -657,6 +660,7 @@ The server counts itself anonymously (a random id, its version, its platform): n
 - [Deploying](deploy/README.md), [computers](packages/computer/README.md), [templates](packages/serve/templates/README.md)
 - [Give an agent tools](docs/connect-tools.md): Sentry, GitHub, Slack and other services as MCP servers, with no token in the box
 - [Connect Composio tools and triggers](docs/tutorials/composio.md)
+- [Send run traces to Sentry or any OpenTelemetry backend](docs/traces.md)
 - [The workflow language](packages/dsl/README.md), [authoring](docs/authoring.md), [the guide](docs/guide.md)
 - [Changelog](CHANGELOG.md) and [contributing](CONTRIBUTING.md)
 
