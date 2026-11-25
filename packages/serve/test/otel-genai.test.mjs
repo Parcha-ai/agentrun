@@ -756,6 +756,23 @@ test("no OTEL_* setting reaches a run: the run environment and a CLI's have none
   assert.deepEqual(exporterConfig({ OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "http://c/traces", OTEL_EXPORTER_OTLP_TIMEOUT: "500" }), { url: "http://c/traces", headers: {}, timeoutMillis: 500 });
 });
 
+test("an OTLP endpoint with a user, password, query or fragment is refused by name, its origin alone said; http stays, as OTLP allows", () => {
+  const FAKE = "not-a-secret";
+  const credentialed = "https://agent:" + FAKE + "@collector.example";
+  for (const variable of ["OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"]) {
+    for (const url of [credentialed, "https://collector.example/?key=not-a-secret", "https://collector.example/#not-a-secret"]) {
+      assert.throws(() => exporterConfig({ [variable]: url }), (error) => {
+        assert.match(error.message, new RegExp(`^${variable} `), url);
+        assert.match(error.message, /https:\/\/collector\.example/, url);
+        assert.doesNotMatch(error.message, /not-a-secret|key=|agent:/, url);
+        return true;
+      }, `${variable}=${url}`);
+    }
+  }
+  assert.equal(exporterConfig({ OTEL_EXPORTER_OTLP_ENDPOINT: "http://localhost:4318" }).url, "http://localhost:4318/v1/traces", "a local collector over http");
+  assert.equal(exporterConfig({ OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "http://collector.example:4318/v1/traces" }).url, "http://collector.example:4318/v1/traces");
+});
+
 test("pi: a native extension's tool and a session's native tool each have one execute_tool span, as a host tool has, none twice", { timeout: 90_000 }, async (t) => {
   const opened = await stores({ runners: 1 });
   await queue(opened.server, "run-1");
