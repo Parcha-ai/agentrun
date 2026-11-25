@@ -71,6 +71,19 @@ test("a call's $ is exact or unknown, never a guess: a paid request named under 
   assert.equal(workflowCallsOf([kept("c1", { ended: "complete" })])[0].usd, null, "no start: no window");
 });
 
+test("a call with a request a crash cut, booked at its hold, has an unknown $: the hold is the most it can cost, never what it cost, on its record and its ledger row", () => {
+  const cut = (turn, hold) => [
+    { kind: "runner.request", conversationId: SESSION, data: { turn, model: "m", host: "learned_workflow", side: true } },
+    { kind: "runner.turn", conversationId: SESSION, data: { turn, usd: null, cut: true, bookedUsd: hold, rule: "cut", atMost: true } },
+  ];
+  const entries = [start("c1"), ...node(2, 0.25), ...cut(3, 0.5), kept("c1", { ended: "complete" }), end("c1")];
+  const calls = workflowCallsOf(entries);
+  assert.equal(calls[0].usd, null, "its call's $ is unknown");
+  const { row } = record({ id: "r1", agentId: "agent-1", startedAt: 1, costUsd: 1, costAtMostUsd: 1, metrics: { path: "agent", workflow_calls: calls }, rounds: [] });
+  assert.equal(row.workflowCalls[0].usd, null, "its ledger row keeps it unknown");
+  assert.equal(workflowCallsOf([start("c1"), ...cut(3, 0.5), kept("c1", { ended: "complete" }), end("c1")])[0].usd, null, "the cut request alone");
+});
+
 test("on pi a call's window opens at the answer that asked for it and closes at its tool result; an answer that asked for two is no window of one", () => {
   const asked = (...ids) => ({ kind: "pi.assistant", conversationId: ROOT, model: [{ role: "assistant", content: ids.map((id) => ({ type: "toolCall", id, name: "learned_workflow", arguments: {} })) }] });
   const result = (id) => ({ kind: "pi.tool-result", conversationId: ROOT, model: [{ role: "toolResult", toolCallId: id }] });
