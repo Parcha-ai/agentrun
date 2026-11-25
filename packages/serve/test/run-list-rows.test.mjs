@@ -47,7 +47,7 @@ async function sameAsViews(api, items, why) {
   for (const item of items) {
     const { status, body: view } = await api("GET", `/runs/${item.run_id}`);
     assert.equal(status, 200, JSON.stringify(view));
-    const cost = Object.fromEntries(Object.entries(view.cost).filter(([key]) => !["learning_usd", "all_in_usd", "compile_usd", "followup_usd", "shadow_usd", "share_usd", "tools_usd"].includes(key)));
+    const cost = Object.fromEntries(Object.entries(view.cost).filter(([key]) => !["learning_usd", "all_in_usd", "compile_usd", "followup_usd", "shadow_usd", "check_usd", "share_usd", "tools_usd"].includes(key)));
     const expected = summaryOfView({ ...view, cost });
     assert.deepEqual(Object.keys(item).sort(), Object.keys(expected).sort(), `${why}: ${item.run_id} (${expected.status}) lists the same fields`);
     for (const key of Object.keys(expected)) assert.deepEqual(item[key], expected[key], `${why}: ${item.run_id} (${expected.status}) lists ${key} as its read says it`);

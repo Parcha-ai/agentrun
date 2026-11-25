@@ -1049,7 +1049,10 @@ async function startReplay(deps: PromotionDeps, workflow: LearnedWorkflow, diges
   if (!base) throw new Error(`the launch of ${workflow.name} at ${digest}'s replay could not be read`);
   const source = sourceSyncOf((await store.agents.revision(launch.revision))?.body);
   if (base.sourceProject || source && !deps.admitAuxiliary) throw new ReplayRefused("conflict", PROJECT_REPLAY_REFUSED);
-  const replay: RunLaunch = { ...base, input: from.input, title: `Replay of ${workflow.name}: ${from.title}`.slice(0, 200), replay: { of, workflow: workflow.name, digest } };
+  // A keyed replay names the run whose own key it spends on: its cost is that run's learning, never its revision's
+  // (learn/ledger.ts record).
+  const paidBy = launch.keyed && launch.handed_from ? { paidBy: launch.handed_from } : {};
+  const replay: RunLaunch = { ...base, input: from.input, title: `Replay of ${workflow.name}: ${from.title}`.slice(0, 200), replay: { of, workflow: workflow.name, digest, ...paidBy } };
   const sealed = await handedTo(deps, launch, id);
   // The reserving claim's run names it as its learning work before it exists (learning-work.ts), so no replay runs that
   // its run's learning_work does not list.

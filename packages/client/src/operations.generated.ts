@@ -551,6 +551,7 @@ export type Cost = {
   compile_usd?: number | null;
   followup_usd?: number | null;
   shadow_usd?: number | null;
+  check_usd?: number | null;
   share_usd?: number | null;
   degraded?: true;
   plan?: {
@@ -818,7 +819,7 @@ export type Run = {
     firing_key: string;
   } | null;
   audit_of?: string | null;
-  learning_work?: {
+  learning_work: {
     state: "none" | "running" | "ended";
     runs: Array<string>;
     ended_at: string | null;
@@ -2847,6 +2848,7 @@ export type GetLearningCostResponse = {
     compile_usd?: number | null;
     followup_usd?: number | null;
     shadow_usd?: number | null;
+    check_usd?: number | null;
     share_usd?: number | null;
     not_served?: "cost_stop" | "cut" | null;
   }>;

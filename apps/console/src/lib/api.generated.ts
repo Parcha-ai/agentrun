@@ -309,6 +309,7 @@ export interface components {
     compile_usd?: number | null;
     followup_usd?: number | null;
     shadow_usd?: number | null;
+    check_usd?: number | null;
     share_usd?: number | null;
     degraded?: true;
     plan?: {
@@ -1051,7 +1052,7 @@ export interface components {
       firing_key: string;
     } | null;
     audit_of?: string | null;
-    learning_work?: {
+    learning_work: {
       state: "none" | "running" | "ended";
       runs: string[];
       ended_at: string | null;
@@ -2936,6 +2937,7 @@ export interface operations {
         compile_usd?: number | null;
         followup_usd?: number | null;
         shadow_usd?: number | null;
+        check_usd?: number | null;
         share_usd?: number | null;
         not_served?: "cost_stop" | "cut" | null;
       }[];

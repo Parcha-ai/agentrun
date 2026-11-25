@@ -130,11 +130,14 @@ export function sourceProjectOf(value: unknown): SourceProjectLaunch | undefined
   return value as unknown as SourceProjectLaunch;
 }
 
-/** What a replay run replays: the graded run, and the learned workflow at the digest it decides. */
+/** What a replay run replays: the graded run, and the learned workflow at the digest it decides. `paidBy`: a replay
+ *  that spends on run `paidBy`'s own model key (a keyed check, runner/promotion.ts), whose learning its cost is
+ *  (learn/ledger.ts record), never its revision's. */
 export interface Replay {
   readonly of: string;
   readonly workflow: string;
   readonly digest: string;
+  readonly paidBy?: string;
 }
 
 /** The disk a launch record names, and whose it is. */
@@ -149,7 +152,7 @@ const readDisk = (value: unknown): LaunchDisk | undefined =>
 
 /** The replay a launch body names, as read back, or undefined. */
 const readReplay = (value: unknown): Replay | undefined =>
-  isObject(value) && typeof value.of === "string" && typeof value.workflow === "string" && typeof value.digest === "string" ? { of: value.of, workflow: value.workflow, digest: value.digest } : undefined;
+  isObject(value) && typeof value.of === "string" && typeof value.workflow === "string" && typeof value.digest === "string" ? { of: value.of, workflow: value.workflow, digest: value.digest, ...(typeof value.paid_by === "string" ? { paidBy: value.paid_by } : {}) } : undefined;
 
 /** The trigger a launch body names, as read back: `{ id, firing_key }` and its firing's `attrs` (each a string) when it
  *  kept them, or null (triggerOf of the old serve.json). */
@@ -211,7 +214,7 @@ export function launchBody(launch: RunLaunch): Json {
     ...(launch.sourceProject ? { source_project: launch.sourceProject } : {}),
     ...(launch.learning ? { learning: { seed: launch.learning.seed, section: launch.learning.section, ...(launch.learning.workflows?.length ? { workflows: [...launch.learning.workflows] } : {}), ...(launch.learning.noWorkflows ? { noWorkflows: true } : {}), ...(launch.learning.model ? { model: launch.learning.model } : {}), ...(launch.learning.seedFailed ? { seedFailed: launch.learning.seedFailed } : {}), ...(launch.learning.use ? { use: true } : {}), ...(launch.learning.seededAt !== undefined ? { seededAt: launch.learning.seededAt } : {}) } } : {}),
     ...(launch.workflowFirst === false ? { workflow_first: false } : {}),
-    ...(launch.replay ? { replay: { of: launch.replay.of, workflow: launch.replay.workflow, digest: launch.replay.digest } } : {}),
+    ...(launch.replay ? { replay: { of: launch.replay.of, workflow: launch.replay.workflow, digest: launch.replay.digest, ...(launch.replay.paidBy ? { paid_by: launch.replay.paidBy } : {}) } } : {}),
     ...(launch.audit ? { audit: { of: launch.audit.of, workflow: launch.audit.workflow, digest: launch.audit.digest } } : {}),
     ...(launch.trigger ? { trigger: launch.trigger } : {}),
     ...(launch.inputOrigin ? { input_origin: launch.inputOrigin } : {}),

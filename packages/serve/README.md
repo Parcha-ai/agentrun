@@ -1503,6 +1503,11 @@ with too little left they are dropped and spend nothing. GET `/v2/runs/{run_id}`
   child counts as ended.
 - Revoke the key once the run is terminal and `learning_work.state` is not `running`. No request of the run or its
   children answers 401 for it then.
+- A purge of the run (`DELETE /v2/runs/{run_id}`) while its check's replays still run cancels them and erases their
+  copies first, and answers only once they have ended: after a 204 nothing spends on the key. A live shadow audit
+  refuses the purge (409 `run_not_final`), as any run made from it does.
+- What those runs spend is the run's own learning: its `cost.learning_usd`, with the replays as `cost.check_usd` and
+  the shadow as `cost.shadow_usd`, never a workflow revision's spend.
 
 | Spend | With the run's key | Server holds no key, run brought none |
 | --- | --- | --- |
