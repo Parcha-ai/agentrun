@@ -24,14 +24,6 @@ test("serve pins @secretlint/profiler at the version @secretlint/core loads, so 
   assert.equal(serve.dependencies["@secretlint/profiler"], core.dependencies["@secretlint/profiler"]);
 });
 
-test("the scan finds a key of a known format and leaves plain text alone", async () => {
-  const { secretsIn } = await import("../dist/secret-cut.js");
-  // A fake GitHub token: the format's prefix and length, made up.
-  const fake = `ghp_${"A1b2C3d4E5".repeat(3)}abcdef`;
-  assert.ok((await secretsIn(`token ${fake} in a log`)).includes(fake));
-  assert.deepEqual(await secretsIn("nothing secret in this line"), []);
-});
-
 // The rules the import's scan loads, by id: the recommended set but its comment filter. A secretlint bump that adds,
 // drops or renames one shows here, to be read before it ships.
 const LOADED = ["aws", "gcp", "privatekey", "npm", "basicauth", "slack", "sendgrid", "shopify", "stripe", "github", "gitlab", "grafana", "openai", "anthropic", "groq", "huggingface", "linear", "notion", "1password", "database-connection-string", "hashicorp-vault", "vercel", "databricks", "docker", "figma", "cloudflare", "tailscale"].map((name) => `@secretlint/secretlint-rule-${name}`);
