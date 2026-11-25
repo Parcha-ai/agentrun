@@ -112,12 +112,13 @@ export function ClaudeLoginRow({ v2, writable, whyNot = "sign_in", onChange, ava
     }
   };
   // AgentRun's own login removed and the mode off (the answer's view): the row reads off, and Turn on then finds no login
-  // and offers the sign-in. Where the CLI didn't confirm its own sign-out, the server's words say what may remain.
+  // and offers the sign-in. Where the CLI didn't confirm its own sign-out, the server's words say what may remain. An
+  // answer that finds the mode on again (another tab turned it on first) keeps no words: nothing would clear them.
   const signOut = async () => {
     let said: string | null = null;
     const done = await act(async () => {
       const out = await v2.signOutClaudeLogin();
-      said = out.confirmed ? SIGNED_OUT_HERE : out.message || SIGNED_OUT_HERE;
+      said = out.login.state === "off" ? (out.confirmed ? SIGNED_OUT_HERE : out.message || SIGNED_OUT_HERE) : null;
       return out.login;
     }, true);
     if (!done) return;
