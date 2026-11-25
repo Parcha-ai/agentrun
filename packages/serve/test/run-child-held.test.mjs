@@ -534,7 +534,7 @@ test("every token of the login the runner hands a run's process (held claudeLogi
   }
 });
 
-test("where runs have users of their own, a run's login is read once, at its claim: a turn-on that lands after a claim read the login as off never has the runner hand that run's process the login's token, and a turn-off after a claim on the login leaves that run on it", async (t) => {
+test("where runs have users of their own, a turn-on that lands after a claim read the login as off never has the runner hand that run's process the login's token, and a turn-off between a claim on the login and its start hands that run no login: its start is refused in fixed words that name no folder, never left on the login or to a model key", async (t) => {
   const { heldRedactor, keepText } = await import("../dist/runner/redact.js");
   const { store } = await storeOn(t);
   const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "held-login-once-"));
@@ -554,8 +554,13 @@ test("where runs have users of their own, a run's login is read once, at its cla
   const claimedOn = await host.staysInRunner(deps, "claude-agent", launch, "run-own", PER_RUN_USERS);
   assert.equal(claimedOn.stays, false, "claimed as a process of its own, on the login's token");
   await store.settings.remove("claude_login");
-  const kept = await host.heldFor(deps, { ...reads, login: claimedOn.login }, heldRedactor(keepText), () => {}).held.claudeLogin();
-  assert.equal(typeof kept?.token, "function", "a run claimed on the login is handed its reader, as its claim read it");
+  await assert.rejects(host.heldFor(deps, { ...reads, login: claimedOn.login }, heldRedactor(keepText), () => {}).held.claudeLogin(), (error) => {
+    assert.equal(error.name, "ClaimRefused", `refused for good, the run failed in its words: ${error.stack}`);
+    assert.match(error.message, /turned off or moved to another folder since this run's claim/);
+    assert.match(error.message, /model_key/);
+    assert.ok(!error.message.includes(data), `the refusal names no folder: ${error.message}`);
+    return true;
+  }, "a run claimed on the login whose login was turned off before its start is handed no login: its start is refused, never left on the login its claim read");
 });
 
 test("the runner's reader of the login (held claudeLogin) says each renewal's outcome on the runner's own log, in the server's log line under event claude_login: a post with no answer, one Anthropic refuses and a renewal whose save fails, each by its words alone, no line holding a token or the login file's text", async (t) => {
