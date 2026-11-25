@@ -7,9 +7,17 @@ import { agentHash } from "@/components/AgentPage";
 import { agentsList, recorded } from "@/fixtures";
 import type { Agent } from "@/lib/agentForm";
 import { runLabel } from "@/lib/format";
+import { queryPlaygroundHref } from "@/lib/playgroundRoutes";
 import type { Run, TimelinePage } from "@/lib/v2";
 import { servedKey } from "@/test/keys";
 import { pick, wordsOf } from "@/test/picker";
+
+/** Lets the page's stubbed fetches and renders run until `ok`, by turns of the event loop, never by the clock: a slow
+ *  machine takes longer per turn, not more turns. Fails if `ok` never holds. */
+async function until(ok: () => boolean, turns = 200) {
+  for (let i = 0; i < turns && !ok(); i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+  expect(ok()).toBe(true);
+}
 
 // Mission Control is the first page: the bare address and the old start page's both open it, so no link dead-ends.
 describe("route", () => {
@@ -29,6 +37,9 @@ describe("route", () => {
     expect(route("#/races/bench-1")).toEqual({ section: "runs", race: "bench-1" });
     expect(route("#/races/fix%20the%20test")).toEqual({ section: "runs", race: "fix the test" });
   });
+  it("opens the form that starts a race under Runs, never a race labeled new", () => {
+    expect(route("#/races/new")).toEqual({ section: "runs", newRace: true });
+  });
   it("keeps the selected agent in a Playground link", () => {
     expect(route("#/playground?agent=agent%20two")).toEqual({ section: "playground", playgroundAgent: "agent two" });
     expect(route("#/playground")).toEqual({ section: "playground" });
@@ -39,6 +50,13 @@ describe("route", () => {
   });
   it("keeps the scope of a read-only query playground link", () => {
     expect(route("#/playground?operation=list-runs&agent=agent%20two&status=failed&archived=true")).toEqual({ section: "playground", operation: "list-runs", playgroundAgent: "agent two", status: "failed", archived: true });
+  });
+  it("keeps the runs list's source in a Query playground link, as in the runs address", () => {
+    expect(queryPlaygroundHref(undefined, { source: "claude-code", status: "failed" })).toBe("#/playground?operation=list-runs&status=failed&source=claude-code");
+    expect(queryPlaygroundHref("calc", { source: "claude-code" })).toBe("#/playground?operation=list-runs&agent=calc");
+    expect(route("#/playground?operation=list-runs&source=claude-code")).toEqual({ section: "playground", operation: "list-runs", source: "claude-code" });
+    expect(route("#/playground?operation=list-runs&agent=calc&source=codex")).toEqual({ section: "playground", operation: "list-runs", playgroundAgent: "calc" });
+    expect(route("#/playground?operation=list-runs&source=Bad%20Name")).toEqual({ section: "playground", operation: "list-runs" });
   });
   it("opens the triggers list, a new schedule, a new webhook, one trigger, and a schedule's editor at their own addresses", () => {
     expect(route("#/triggers")).toEqual({ section: "triggers" });
@@ -64,6 +82,15 @@ describe("route", () => {
     expect(route("#/runs?status=sleeping&archived=yes")).toEqual({ section: "runs" });
     expect(runsHash({ runsOf: "calc", status: "failed", archived: true })).toBe("#/runs?agent=calc&status=failed&archived=true");
     for (const f of [{}, { status: "failed" as const }, { archived: true }, { runsOf: "c a", status: "completed" as const, archived: true }]) expect(route(runsHash(f))).toEqual({ section: "runs", ...f });
+  });
+  it("keeps the runs list's source in the address: the runs imported from one source, or live; an agent's list has none, a bad name is dropped", () => {
+    expect(route("#/runs?source=claude-code")).toEqual({ section: "runs", source: "claude-code" });
+    expect(route("#/runs?source=live&status=failed")).toEqual({ section: "runs", status: "failed", source: "live" });
+    expect(route("#/runs?agent=calc&source=codex")).toEqual({ section: "runs", runsOf: "calc" });
+    expect(route("#/runs?source=Claude%20Code")).toEqual({ section: "runs" });
+    expect(runsHash({ status: "failed", source: "codex" })).toBe("#/runs?status=failed&source=codex");
+    expect(runsHash({ runsOf: "calc", source: "codex" })).toBe("#/runs?agent=calc");
+    expect(route(runsHash({ source: "pi", archived: true }))).toEqual({ section: "runs", archived: true, source: "pi" });
   });
   it("opens an agent's page at its address, and its editor under /edit; a new agent and the archived list are unchanged", () => {
     expect(route("#/agents/x")).toEqual({ section: "agents", agent: "x" });
@@ -137,6 +164,74 @@ describe("App, Mission Control when the stats can't be read", () => {
     while (!host.textContent?.includes("could not be read") && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 25)); });
     expect(host.textContent).toContain("Mission Control could not be read");
     expect(host.textContent).toContain("not_found");
+  });
+});
+
+describe("App, the race form when the capabilities can't be read", () => {
+  it("says so with Try again, not Loading for ever, and Try again reads them and shows the form", async () => {
+    let fail = true;
+    const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    vi.stubGlobal("fetch", async (url: string) => {
+      const path = new URL(url, "http://serve.test").pathname;
+      if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true, secrets_writable: true });
+      if (path === "/v2/capabilities") return fail
+        ? json(503, { error: { code: "unavailable", message: "The server is starting.", retryable: true } })
+        : json(200, { models: { source: "providers", ready: true }, harnesses: [{ id: "pi", available: true, default_model: "anthropic/claude-sonnet-5-5", models: ["anthropic/claude-sonnet-5-5"] }], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
+      if (path === "/v2/runs" || path === "/v2/agents") return json(200, { runs: [], agents: [], next_cursor: null });
+      return json(404, { error: { code: "not_found", message: path, retryable: false } });
+    });
+    location.hash = "#/races/new";
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(App)));
+    await until(() => !!host.textContent?.includes("could not be read"));
+    expect(host.textContent).toContain("The server's harnesses could not be read");
+    fail = false;
+    await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Try again")!.click(); });
+    await until(() => !!host.textContent?.includes("Start the race"));
+  });
+
+  it("gives the form the server's tool offers and places: a started lane carries the tools a new agent gets there", async () => {
+    const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    const made: { tools?: string[] }[] = [];
+    const started: string[] = [];
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      const path = new URL(url, "http://serve.test").pathname;
+      if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true, secrets_writable: true });
+      if (path === "/v2/capabilities") return json(200, {
+        models: { source: "providers", ready: true }, features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } },
+        harnesses: [{ id: "pi", available: true, default_model: "anthropic/claude-sonnet-5-5", models: ["anthropic/claude-sonnet-5-5"] }],
+        tools: [{ name: "read", available: true, harnesses: ["pi"] }, { name: "bash", available: true, sandbox_only: true, harnesses: ["pi"] }],
+        places: { modes: ["runner", "sandbox"], boxes: [{ id: "local", available: true }], default_place: { mode: "sandbox", box: "local" } },
+      });
+      if (path === "/v2/agents" && init?.method === "POST") {
+        const { definition } = JSON.parse(String(init.body)) as { definition: { id: string; tools?: string[] } };
+        made.push(definition);
+        return json(201, { agent_id: definition.id, revision: "rev-1", kind: "agentic", definition });
+      }
+      const runOf = /^\/v2\/agents\/([^/]+)\/runs$/.exec(path);
+      if (runOf && init?.method === "POST") {
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+        started.push(decodeURIComponent(runOf[1]));
+        return json(202, { run_id: `run-${started.length}`, agent_id: started.at(-1), status: "queued", state: "working", labels: body.labels });
+      }
+      if (path === "/v2/runs" || path === "/v2/agents") return json(200, { runs: [], agents: [], next_cursor: null });
+      return json(404, { error: { code: "not_found", message: path, retryable: false } });
+    });
+    location.hash = "#/races/new";
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(App)));
+    await until(() => !!host.querySelector("textarea"));
+    const area = host.querySelector<HTMLTextAreaElement>("textarea")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(area, "Fix the failing test");
+      area.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Start the race")!.click(); });
+    await until(() => started.length === 2);
+    // The offers give read; the box by default gives bash too (with no places read, a lane gets no shell).
+    expect(made.map((d) => d.tools)).toEqual([["read", "bash"], ["read", "bash"]]);
   });
 });
 

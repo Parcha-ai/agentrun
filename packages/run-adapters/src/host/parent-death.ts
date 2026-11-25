@@ -9,7 +9,10 @@
 //    moment the host's spawning thread exits: libuv spawns from the event loop's thread, the main one, so a worker
 //    thread's exit does not trigger it. The signal survives the exec, as the child is not set-user-ID.
 //  - elsewhere (macOS, or no setpriv): `node parent-watch.js <host pid> -- <child>`, a shim that runs the child and
-//    kills it when the shim is reparented, checked four times a second.
+//    kills it when the shim is reparented, checked four times a second. A host's kill of the shim alone (SIGKILL)
+//    leaves the child running, so a host that ends its child that way asks for `termGraceMs`: the shim kills a child
+//    that outlasts a TERM it passed on, that long later. A host that kills the whole group (a session machine) asks for
+//    none: its SIGKILL reaches the child itself.
 // The watch goes INSIDE the host's confinement (the machine applies its confine prefix to the watched command): the
 // kernel clears a parent-death signal when credentials change, so it is set after any switch of user the prefix makes.
 // The child's environment is the machine's: the watch adds nothing to it.
@@ -45,8 +48,28 @@ export function parentWatchHere(): ParentWatch {
   return (here = pdeathsig ? "pdeathsig" : "shim");
 }
 
-/** `child`, started so that it dies with this process (`how`, default what this machine supports). */
-export function parentWatched(child: Readonly<LaunchCommand>, how: ParentWatch = parentWatchHere()): LaunchCommand {
+/** What a caller asks of the watch. `termGraceMs` (a positive whole number of milliseconds): under the shim, the child is
+ *  killed (SIGKILL) when it outlasts a TERM the shim passed on by that long, for a host whose own later SIGKILL goes to
+ *  the shim alone. With none, the shim passes a TERM on and nothing after it. The parent-death signal ignores it: setpriv
+ *  execs the child in place, so the host's SIGKILL reaches the child itself. */
+export interface ParentWatchOptions {
+  termGraceMs?: number;
+}
+
+/** The longest grace the shim takes: a timer fires at once past it. */
+export const MAX_TERM_GRACE_MS = 2_147_483_647;
+
+/** `arg` (`--term-grace`'s value) as the shim reads it: a positive whole number of milliseconds a timer can wait, in
+ *  digits; undefined for anything else. parentWatched reads a caller's grace by the same rule. */
+export function termGraceOf(arg: string): number | undefined {
+  return /^[1-9]\d*$/.test(arg) && Number(arg) <= MAX_TERM_GRACE_MS ? Number(arg) : undefined;
+}
+
+/** `child`, started so that it dies with this process (`how`, default what this machine supports). A `termGraceMs` the
+ *  shim would refuse (termGraceOf) throws a RangeError here, whichever watch `how` is. */
+export function parentWatched(child: Readonly<LaunchCommand>, how: ParentWatch = parentWatchHere(), options: Readonly<ParentWatchOptions> = {}): LaunchCommand {
+  if (options.termGraceMs !== undefined && termGraceOf(String(options.termGraceMs)) === undefined) throw new RangeError(`termGraceMs must be a whole number of ms from 1 to ${MAX_TERM_GRACE_MS}, not ${options.termGraceMs}`);
   if (how === "pdeathsig") return { command: SETPRIV, args: ["--pdeathsig", "KILL", "--", child.command, ...child.args] };
-  return { command: process.execPath, args: [PARENT_WATCH_SHIM, String(process.pid), "--", child.command, ...child.args] };
+  const grace = options.termGraceMs === undefined ? [] : ["--term-grace", String(options.termGraceMs)];
+  return { command: process.execPath, args: [PARENT_WATCH_SHIM, String(process.pid), ...grace, "--", child.command, ...child.args] };
 }

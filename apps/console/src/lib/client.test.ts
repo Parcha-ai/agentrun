@@ -192,12 +192,14 @@ describe("agents", () => {
     await v2.listRuns(50, "c2", { archived: true });
     await v2.listAgentRuns("x", 50, null, { status: "input_required", archived: true });
     await v2.listRuns(50, null, { archived: false });
+    await v2.listRuns(50, null, { source: "claude-code", status: "failed" });
     expect(calls.map((c) => c.url)).toEqual([
       "/v2/runs?limit=10",
       "/v2/runs?limit=50&status=failed",
       "/v2/runs?limit=50&cursor=c2&archived=true",
       "/v2/agents/x/runs?limit=50&status=input_required&archived=true",
       "/v2/runs?limit=50",
+      "/v2/runs?limit=50&status=failed&source=claude-code",
     ]);
   });
 

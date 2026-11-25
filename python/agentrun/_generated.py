@@ -455,6 +455,7 @@ __all__ = [
     "GetMcpPrivateHostsResponse",
     "GetMcpServerResponse",
     "GetMcpServerResponseAuth",
+    "GetMcpServerResponseComposioAccount",
     "GetMcpServerResponseOauth",
     "GetMcpServerResponseToolsItem",
     "GetModelGatewayResponse",
@@ -676,6 +677,9 @@ __all__ = [
     "ListCliLearningResponseConnectionsItem",
     "ListComposioEventsResponse",
     "ListComposioEventsResponseEventsItem",
+    "ListComposioToolkitsBody",
+    "ListComposioToolkitsResponse",
+    "ListComposioToolkitsResponseToolkitsItem",
     "ListComposioToolsBody",
     "ListComposioToolsResponse",
     "ListComposioToolsResponseToolsItem",
@@ -749,6 +753,7 @@ __all__ = [
     "ListMcpServersResponse",
     "ListMcpServersResponseServersItem",
     "ListMcpServersResponseServersItemAuth",
+    "ListMcpServersResponseServersItemComposioAccount",
     "ListMcpServersResponseServersItemOauth",
     "ListMcpServersResponseServersItemToolsItem",
     "ListRemoteConnectorsResponse",
@@ -929,6 +934,7 @@ __all__ = [
     "RefreshMcpServerResponse",
     "RefreshMcpServerResponseServer",
     "RefreshMcpServerResponseServerAuth",
+    "RefreshMcpServerResponseServerComposioAccount",
     "RefreshMcpServerResponseServerOauth",
     "RefreshMcpServerResponseServerToolsItem",
     "Region",
@@ -1064,6 +1070,7 @@ __all__ = [
     "SaveComposioServerResponseComposio",
     "SaveComposioServerResponseServer",
     "SaveComposioServerResponseServerAuth",
+    "SaveComposioServerResponseServerComposioAccount",
     "SaveComposioServerResponseServerOauth",
     "SaveComposioServerResponseServerToolsItem",
     "SaveComputerKeysBody",
@@ -1084,6 +1091,7 @@ __all__ = [
     "SaveMcpServerResponse",
     "SaveMcpServerResponseAuth",
     "SaveMcpServerResponseComposio",
+    "SaveMcpServerResponseComposioAccount",
     "SaveMcpServerResponseOauth",
     "SaveMcpServerResponseToolsItem",
     "SaveModelGatewayBody",
@@ -3301,6 +3309,10 @@ class Cost(_CostRequired, total=False):
     learning_usd: float | None
     tools_usd: float | None
     all_in_usd: float | None
+    compile_usd: float | None
+    followup_usd: float | None
+    shadow_usd: float | None
+    share_usd: float | None
     degraded: Literal[True]
     plan: CostPlan
 
@@ -4385,7 +4397,7 @@ class GetLearningCostResponse(TypedDict):
     bill: GetLearningCostResponseBill
 
 
-class GetLearningCostResponseRunsItem(TypedDict):
+class _GetLearningCostResponseRunsItemRequired(TypedDict):
     n: int | None
     run_id: str
     started_at: str
@@ -4398,6 +4410,14 @@ class GetLearningCostResponseRunsItem(TypedDict):
     cost_upper_bound: bool
     learning_usd: float | None
     total_usd: float | None
+
+
+class GetLearningCostResponseRunsItem(_GetLearningCostResponseRunsItemRequired, total=False):
+    compile_usd: float | None
+    followup_usd: float | None
+    shadow_usd: float | None
+    share_usd: float | None
+    not_served: Literal["cost_stop", "cut"] | None
 
 
 class GetLearningCostResponseWorkflowsItem(TypedDict):
@@ -5027,9 +5047,13 @@ class GetClaudeLoginResponseAccount(TypedDict, total=False):
     plan: str
 
 
-class GetClaudeLoginResponseMachine(TypedDict):
+class _GetClaudeLoginResponseMachineRequired(TypedDict):
     folder: str
     source: Literal["CLAUDE_CONFIG_DIR", "default"]
+
+
+class GetClaudeLoginResponseMachine(_GetClaudeLoginResponseMachineRequired, total=False):
+    credentials: str
 
 
 class _GetClaudeLoginResponseSignInRequired(TypedDict):
@@ -5249,6 +5273,19 @@ class ListComposioEventsResponseEventsItem(_ListComposioEventsResponseEventsItem
     instructions: str
 
 
+class ListComposioToolkitsBody(TypedDict):
+    api_key: str
+
+
+class ListComposioToolkitsResponse(TypedDict):
+    toolkits: list[ListComposioToolkitsResponseToolkitsItem]
+
+
+class ListComposioToolkitsResponseToolkitsItem(TypedDict):
+    slug: str
+    name: str
+
+
 class ListComposioToolsBody(TypedDict):
     api_key: str
     toolkit: str
@@ -5335,6 +5372,8 @@ class ListComputersResponsePairedItem(TypedDict):
     online: bool
     held_by_run: str | None
     held_until: str | None
+    held_on: str | None
+    hold_note: str | None
     pairing: str
     created_at: str
     seen_at: str | None
@@ -6170,6 +6209,7 @@ class SaveComposioServerResponseServer(_SaveComposioServerResponseServerRequired
     prices: dict[str, float]
     not_metered: list[str]
     secret: SecretMeta
+    composio_account: SaveComposioServerResponseServerComposioAccount
 
 
 class _SaveComposioServerResponseServerAuthRequired(TypedDict):
@@ -6211,6 +6251,15 @@ class SaveComposioServerResponseServerToolsItem(_SaveComposioServerResponseServe
     fallback_allow_reads: Literal[True]
     default_permission: Literal["allow", "ask", "deny"]
     permissions: list[Literal["allow", "ask", "deny"]]
+
+
+class _SaveComposioServerResponseServerComposioAccountRequired(TypedDict):
+    state: Literal["connected", "pending", "expired", "none", "unknown"]
+    checked_at: str
+
+
+class SaveComposioServerResponseServerComposioAccount(_SaveComposioServerResponseServerComposioAccountRequired, total=False):
+    labels: list[str]
 
 
 class SaveComposioServerResponseComposio(TypedDict):
@@ -6409,9 +6458,13 @@ class StartClaudeLoginResponseAccount(TypedDict, total=False):
     plan: str
 
 
-class StartClaudeLoginResponseMachine(TypedDict):
+class _StartClaudeLoginResponseMachineRequired(TypedDict):
     folder: str
     source: Literal["CLAUDE_CONFIG_DIR", "default"]
+
+
+class StartClaudeLoginResponseMachine(_StartClaudeLoginResponseMachineRequired, total=False):
+    credentials: str
 
 
 class _StartClaudeLoginResponseSignInRequired(TypedDict):
@@ -6552,9 +6605,13 @@ class TurnOffClaudeLoginResponseAccount(TypedDict, total=False):
     plan: str
 
 
-class TurnOffClaudeLoginResponseMachine(TypedDict):
+class _TurnOffClaudeLoginResponseMachineRequired(TypedDict):
     folder: str
     source: Literal["CLAUDE_CONFIG_DIR", "default"]
+
+
+class TurnOffClaudeLoginResponseMachine(_TurnOffClaudeLoginResponseMachineRequired, total=False):
+    credentials: str
 
 
 class _TurnOffClaudeLoginResponseSignInRequired(TypedDict):
@@ -6600,9 +6657,13 @@ class TurnOnClaudeLoginResponseAccount(TypedDict, total=False):
     plan: str
 
 
-class TurnOnClaudeLoginResponseMachine(TypedDict):
+class _TurnOnClaudeLoginResponseMachineRequired(TypedDict):
     folder: str
     source: Literal["CLAUDE_CONFIG_DIR", "default"]
+
+
+class TurnOnClaudeLoginResponseMachine(_TurnOnClaudeLoginResponseMachineRequired, total=False):
+    credentials: str
 
 
 class _TurnOnClaudeLoginResponseSignInRequired(TypedDict):
@@ -6648,6 +6709,7 @@ class GetMcpServerResponse(_GetMcpServerResponseRequired, total=False):
     prices: dict[str, float]
     not_metered: list[str]
     secret: SecretMeta
+    composio_account: GetMcpServerResponseComposioAccount
 
 
 class _GetMcpServerResponseAuthRequired(TypedDict):
@@ -6691,6 +6753,15 @@ class GetMcpServerResponseToolsItem(_GetMcpServerResponseToolsItemRequired, tota
     permissions: list[Literal["allow", "ask", "deny"]]
 
 
+class _GetMcpServerResponseComposioAccountRequired(TypedDict):
+    state: Literal["connected", "pending", "expired", "none", "unknown"]
+    checked_at: str
+
+
+class GetMcpServerResponseComposioAccount(_GetMcpServerResponseComposioAccountRequired, total=False):
+    labels: list[str]
+
+
 class ListMcpServersResponse(TypedDict):
     servers: list[ListMcpServersResponseServersItem]
 
@@ -6715,6 +6786,7 @@ class ListMcpServersResponseServersItem(_ListMcpServersResponseServersItemRequir
     prices: dict[str, float]
     not_metered: list[str]
     secret: SecretMeta
+    composio_account: ListMcpServersResponseServersItemComposioAccount
 
 
 class _ListMcpServersResponseServersItemAuthRequired(TypedDict):
@@ -6756,6 +6828,15 @@ class ListMcpServersResponseServersItemToolsItem(_ListMcpServersResponseServersI
     fallback_allow_reads: Literal[True]
     default_permission: Literal["allow", "ask", "deny"]
     permissions: list[Literal["allow", "ask", "deny"]]
+
+
+class _ListMcpServersResponseServersItemComposioAccountRequired(TypedDict):
+    state: Literal["connected", "pending", "expired", "none", "unknown"]
+    checked_at: str
+
+
+class ListMcpServersResponseServersItemComposioAccount(_ListMcpServersResponseServersItemComposioAccountRequired, total=False):
+    labels: list[str]
 
 
 McpOAuthClientResponse: TypeAlias = "dict[str, Any]"
@@ -6849,6 +6930,7 @@ class RefreshMcpServerResponseServer(_RefreshMcpServerResponseServerRequired, to
     prices: dict[str, float]
     not_metered: list[str]
     secret: SecretMeta
+    composio_account: RefreshMcpServerResponseServerComposioAccount
 
 
 class _RefreshMcpServerResponseServerAuthRequired(TypedDict):
@@ -6892,6 +6974,15 @@ class RefreshMcpServerResponseServerToolsItem(_RefreshMcpServerResponseServerToo
     permissions: list[Literal["allow", "ask", "deny"]]
 
 
+class _RefreshMcpServerResponseServerComposioAccountRequired(TypedDict):
+    state: Literal["connected", "pending", "expired", "none", "unknown"]
+    checked_at: str
+
+
+class RefreshMcpServerResponseServerComposioAccount(_RefreshMcpServerResponseServerComposioAccountRequired, total=False):
+    labels: list[str]
+
+
 class _SaveMcpServerBodyRequired(TypedDict):
     url: str
 
@@ -6931,6 +7022,7 @@ class SaveMcpServerResponse(_SaveMcpServerResponseRequired, total=False):
     prices: dict[str, float]
     not_metered: list[str]
     secret: SecretMeta
+    composio_account: SaveMcpServerResponseComposioAccount
     composio: SaveMcpServerResponseComposio
 
 
@@ -6973,6 +7065,15 @@ class SaveMcpServerResponseToolsItem(_SaveMcpServerResponseToolsItemRequired, to
     fallback_allow_reads: Literal[True]
     default_permission: Literal["allow", "ask", "deny"]
     permissions: list[Literal["allow", "ask", "deny"]]
+
+
+class _SaveMcpServerResponseComposioAccountRequired(TypedDict):
+    state: Literal["connected", "pending", "expired", "none", "unknown"]
+    checked_at: str
+
+
+class SaveMcpServerResponseComposioAccount(_SaveMcpServerResponseComposioAccountRequired, total=False):
+    labels: list[str]
 
 
 class SaveMcpServerResponseComposio(TypedDict):
@@ -8266,6 +8367,7 @@ class FeaturesMcpClient(TypedDict):
     auth: list[Literal["none", "bearer", "headers", "oauth", "github_app", "per_run"]]
     at_rest: Literal["sealed"]
     harnesses: list[str]
+    composio_per_run: bool
 
 
 class FeaturesWebhooks(TypedDict):
@@ -11475,6 +11577,7 @@ class GetWrappedResponseHarnessesItem(TypedDict):
     sessions: int
     requests: int
     tokens: int
+    sources: list[str]
 
 
 class GetWrappedResponseModelsItem(TypedDict):
@@ -11589,6 +11692,7 @@ OPERATIONS: dict[str, Operation] = {
     "gitHubCallback": Operation(method="GET", path="/integrations/github/callback", path_params=(), multi_segment=(), query=("code", "state"), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
     "gitHubInstalled": Operation(method="GET", path="/integrations/github/installed", path_params=(), multi_segment=(), query=("installation_id", "setup_action", "state"), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
     "listComposioEvents": Operation(method="GET", path="/settings/mcp-servers/{name}/composio/events", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "listComposioToolkits": Operation(method="POST", path="/settings/mcp-servers/composio/toolkits", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=(), tagged=False),
     "listComposioTools": Operation(method="POST", path="/settings/mcp-servers/composio/tools", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=("toolkit",), tagged=False),
     "listComposioTriggers": Operation(method="GET", path="/settings/mcp-servers/{name}/composio/triggers", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listComputerChoices": Operation(method="GET", path="/computers/{provider}/choices", path_params=("provider",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -11646,7 +11750,7 @@ OPERATIONS: dict[str, Operation] = {
     "handBackRunComputer": Operation(method="POST", path="/runs/{run_id}/computer/hand-back", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "getRunLearning": Operation(method="GET", path="/runs/{run_id}/learning", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getRunLearningDiff": Operation(method="GET", path="/runs/{run_id}/learning/diff", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
-    "listAllRuns": Operation(method="GET", path="/runs", path_params=(), multi_segment=(), query=("limit", "cursor", "agent", "revision", "status", "archived", "label"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "listAllRuns": Operation(method="GET", path="/runs", path_params=(), multi_segment=(), query=("limit", "cursor", "agent", "revision", "status", "archived", "label", "source"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "sendMessage": Operation(method="POST", path="/runs/{run_id}/messages", path_params=("run_id",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "pauseRun": Operation(method="POST", path="/runs/{run_id}/pause", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "raiseRunCap": Operation(method="PATCH", path="/runs/{run_id}", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
@@ -12106,6 +12210,10 @@ class LocalResource(Group):
         """List a saved Composio server's toolkit's events, for a composio trigger (GET /settings/mcp-servers/{name}/composio/events)."""
         return self._call("listComposioEvents", (name,), None, None, timeout=timeout)
 
+    def list_composio_toolkits(self, body: ListComposioToolkitsBody, *, timeout: float | None = None) -> ListComposioToolkitsResponse:
+        """List the toolkits Composio offers, for the console's toolkit picker; stores nothing (POST /settings/mcp-servers/composio/toolkits). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code."""
+        return self._call("listComposioToolkits", (), body, None, timeout=timeout)
+
     def list_composio_tools(self, body: ListComposioToolsBody, *, timeout: float | None = None) -> ListComposioToolsResponse:
         """List the actions of a Composio toolkit, for the console's picker; stores nothing (POST /settings/mcp-servers/composio/tools). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code."""
         return self._call("listComposioTools", (), body, None, timeout=timeout)
@@ -12346,9 +12454,9 @@ class RunsResource(Group):
         """What the run proposed, file by file (GET /runs/{run_id}/learning/diff)."""
         return self._call("getRunLearningDiff", (run_id,), None, None, timeout=timeout)
 
-    def list(self, *, limit: int | None = None, cursor: str | None = None, agent: str | None = None, revision: str | None = None, status: Literal["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] | None = None, archived: bool | None = None, label: str | None = None, timeout: float | None = None) -> ListAllRunsResponse:
+    def list(self, *, limit: int | None = None, cursor: str | None = None, agent: str | None = None, revision: str | None = None, status: Literal["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] | None = None, archived: bool | None = None, label: str | None = None, source: str | None = None, timeout: float | None = None) -> ListAllRunsResponse:
         """Every agent's runs, newest first (GET /runs)."""
-        return self._call("listAllRuns", (), None, {"limit": limit, "cursor": cursor, "agent": agent, "revision": revision, "status": status, "archived": archived, "label": label}, timeout=timeout)
+        return self._call("listAllRuns", (), None, {"limit": limit, "cursor": cursor, "agent": agent, "revision": revision, "status": status, "archived": archived, "label": label, "source": source}, timeout=timeout)
 
     def message(self, run_id: str, body: SendMessageBody, *, idempotency_key: str | None = None, timeout: float | None = None) -> SendMessageResponse:
         """Send the run a message (POST /runs/{run_id}/messages)."""

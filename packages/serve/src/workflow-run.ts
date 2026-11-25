@@ -39,10 +39,11 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 export type WorkflowIssue = { path: string; code: string; message: string };
 
 /**
- * Every issue a save of `workflow` as a workflow revision listing `tools` would refuse, and the DSL's warnings: the DSL's
- * structural validation (code not run, no input), a call node `via: "tool"` whose tool is not in `tools`
- * (`TOOL_NOT_LISTED`; `tools` undefined lists every tool), and what the durable runner refuses before any step (only
- * once the DSL found nothing). It writes nothing.
+ * Every issue POST /workflows/validate lists for `workflow` as a workflow revision listing `tools`, and the DSL's
+ * warnings: the DSL's structural validation (code not run, no input), a call node `via: "tool"` whose tool is not in
+ * `tools` (`TOOL_NOT_LISTED`; `tools` undefined lists every tool), and what the durable runner refuses before any step
+ * (only once the DSL found nothing). A save asks with no `tools`: its run binds a call node's tool listed or not
+ * (tools.ts grantedTools). It writes nothing.
  */
 export async function workflowIssues(workflow: unknown, tools?: readonly string[]): Promise<{ issues: WorkflowIssue[]; warnings: string[] }> {
   if (!isRecord(workflow)) return { issues: [{ path: "", code: "NODE_FIELD_INVALID", message: "the workflow must be an object" }], warnings: [] };
