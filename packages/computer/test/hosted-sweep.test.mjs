@@ -143,7 +143,7 @@ test("usage errors, a before file of another provider or with no run, and a prov
 	assert.match(other.err, /before file of "modal", not of fakehost/);
 	// A before file with no run, or one that is not an id --before mints, names no run to sweep: nothing is listed.
 	for (const run of [undefined, "", "abc123", "ABC123ABC123", 7]) {
-		const bare = join(DIR, "no-run.json");
+		const bare = join(DIR, "before-without-id.json");
 		writeFileSync(bare, JSON.stringify({ provider: "fakehost", ids: [], ...(run === undefined ? {} : { run }) }));
 		fake.calls.length = 0;
 		const ran = await sweep(["--provider", "fakehost", "--after", bare], fake.host);
