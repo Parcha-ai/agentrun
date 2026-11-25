@@ -216,7 +216,75 @@ export function inputSchemaIssues(schema: unknown, at = "definition.input_schema
   const content = isObject(schema.properties) ? schema.properties.content : undefined;
   if (content !== undefined && !(isObject(content) && content.type === "string")) return [issue(`${at}.properties.content`, "bad_format", `${at}.properties.content is {type: "string"}: content is reserved for the run's message`)];
   const compiled = schemaCheck(schema);
-  return "why" in compiled ? [issue(at, "bad_format", `${at} ${compiled.why}`)] : [];
+  if ("why" in compiled) return [issue(at, "bad_format", `${at} ${compiled.why}`)];
+  // What a run's start checks, checked here: the schema in force, and its own fields' schema (X_OWN_FIELDS), whose
+  // propertyNames sees the schema's $defs and definitions alone. A reference that names anything else compiles to a
+  // schema that refuses every name, so every run that gives a field of its own would be refused.
+  const inForce = inputSchemaOf(schema);
+  const forced = schemaCheck(inForce);
+  if ("why" in forced) return [issue(at, "bad_format", `${at} ${forced.why}`)];
+  const own = ownFieldsSchema(inForce);
+  if (own === undefined) return [];
+  const names = `${at}.propertyNames`;
+  const said = `${names} is checked against the input's own fields beside the schema's $defs and definitions alone:`;
+  const lost = unresolvedRefs(own.propertyNames, own);
+  if (lost !== undefined) return [issue(names, "bad_format", `${said} its $ref ${JSON.stringify(lost)} names nothing there`, `Move what ${lost} names under ${at}.$defs and refer to it as #/$defs/<name>.`)];
+  const ownCompiled = schemaCheck(own);
+  return "why" in ownCompiled ? [issue(names, "bad_format", `${said} ${ownCompiled.why}`)] : [];
+}
+
+/** The schema inputIssues checks an input's own fields against, content left out (X_OWN_FIELDS): the schema in force's
+ *  maxProperties and propertyNames, beside what a reference in them may name: its definitions, its id and its dialect.
+ *  Undefined when it has neither. */
+function ownFieldsSchema(inForce: Json): Json | undefined {
+  const own = inForce[X_OWN_FIELDS];
+  if (!isObject(own)) return undefined;
+  const targets = Object.fromEntries(Object.entries(inForce).filter(([key]) => key === "definitions" || (key.startsWith("$") && key !== "$ref")));
+  return { ...targets, type: "object", ...own };
+}
+
+/** The first `$ref` in `node` that names nothing in `doc` (undefined when each one names something): a JSON Pointer
+ *  (`#/...`) that `doc` has no value at, an anchor (`#name`) no `$anchor` or `$dynamicAnchor` in it declares, or any
+ *  other reference when no `$id` in it could give that reference a target. The compiler takes such a reference as the
+ *  schema `false`. A part of `node` under an `$id` of its own is left to the compiler: its references resolve against
+ *  that id. */
+function unresolvedRefs(node: unknown, doc: Json): string | undefined {
+  const anchors = new Set<string>();
+  let ids = false;
+  const scan = (value: unknown): void => {
+    if (Array.isArray(value)) return value.forEach(scan);
+    if (!isObject(value)) return;
+    for (const key of ["$anchor", "$dynamicAnchor"]) if (typeof value[key] === "string") anchors.add(value[key] as string);
+    if (typeof value.$id === "string") ids = true;
+    Object.values(value).forEach(scan);
+  };
+  scan(doc);
+  const at = (pointer: string): boolean => {
+    let here: unknown = doc;
+    for (const raw of pointer.split("/").slice(1)) {
+      const part = decodeURIComponent(raw).replace(/~1/g, "/").replace(/~0/g, "~");
+      if (Array.isArray(here) && /^(0|[1-9]\d*)$/.test(part) && Number(part) < here.length) here = here[Number(part)];
+      else if (isObject(here) && Object.hasOwn(here, part)) here = here[part];
+      else return false;
+    }
+    return true;
+  };
+  const named = (ref: string): boolean => {
+    if (!ref.startsWith("#")) return ids;
+    const fragment = ref.slice(1);
+    return fragment === "" || (fragment.startsWith("/") ? at(fragment) : anchors.has(fragment));
+  };
+  const walk = (value: unknown): string | undefined => {
+    if (Array.isArray(value)) {
+      for (const item of value) { const lost = walk(item); if (lost !== undefined) return lost; }
+      return undefined;
+    }
+    if (!isObject(value) || typeof value.$id === "string") return undefined;
+    if (typeof value.$ref === "string" && !named(value.$ref)) return value.$ref;
+    for (const item of Object.values(value)) { const lost = walk(item); if (lost !== undefined) return lost; }
+    return undefined;
+  };
+  return walk(node);
 }
 
 /**
@@ -287,11 +355,10 @@ export function inputIssues(input: Json, schema: Json, at = "input"): InputIssue
   report(schema, input);
   // Its maxProperties and propertyNames meet the input's own fields, content left out (X_OWN_FIELDS), beside what a
   // reference in them may name: the schema's definitions, its id and its dialect.
-  const own = schema[X_OWN_FIELDS];
-  if (isObject(own) && isObject(input)) {
+  const own = ownFieldsSchema(schema);
+  if (own !== undefined && isObject(input)) {
     const { content: _content, ...ownFields } = input;
-    const targets = Object.fromEntries(Object.entries(schema).filter(([key]) => key === "definitions" || (key.startsWith("$") && key !== "$ref")));
-    report({ ...targets, type: "object", ...own }, ownFields);
+    report(own, ownFields);
   }
   // A schema in force that requires nothing (inputSchemaOf: its own fields all optional) takes content or one of them:
   // an input naming none says nothing, said at content, with the fields that would do instead.

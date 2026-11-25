@@ -4,7 +4,7 @@
 // fields as one fenced json block under the line "Input:", on pi, claude-agent and codex alike.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { inputIssues, inputSchemaOf, DEFAULT_INPUT_SCHEMA } from "../dist/validate.js";
+import { inputIssues, inputSchemaIssues, inputSchemaOf, DEFAULT_INPUT_SCHEMA } from "../dist/validate.js";
 import { inputMessage } from "../dist/run-manifest.js";
 import { agent, flowAgent, follow, serve } from "./support.mjs";
 import { schedule } from "./trigger-support.mjs";
@@ -47,6 +47,14 @@ test("an agentic definition keeps its input_schema: it reads back, an edit that 
   assert.deepEqual(await refused({ type: "object", properties: { content: { type: "number" } } }), [["definition.input_schema.properties.content", "bad_format"]], "content is reserved: a string");
   assert.deepEqual(await refused({ type: "object", properties: { country: { type: "string", pattern: "(" } } }), [["definition.input_schema", "bad_format"]], "it compiles");
   assert.deepEqual(await refused({ type: "object", description: "x".repeat(64 * 1024) }), [["definition.input_schema", "too_long"]]);
+  // propertyNames is checked against the input's own fields with the schema's definitions alone (X_OWN_FIELDS): a
+  // reference to anything else compiled in the schema as written, then failed every run's start with a 500.
+  const NAMED = { type: "object", properties: { name: { type: "string", pattern: "^[a-z]+$" } } };
+  assert.deepEqual(await refused({ ...NAMED, propertyNames: { $ref: "#/properties/name" } }), [["definition.input_schema.propertyNames", "bad_format"]], "propertyNames names its definitions");
+  const defined = await api("POST", "/agents", agent("named", { input_schema: { ...NAMED, $defs: { Name: { pattern: "^[a-z]+$" } }, propertyNames: { $ref: "#/$defs/Name" } } }));
+  assert.equal(defined.status, 201, JSON.stringify(defined.body));
+  const started = await api("POST", "/agents/named/runs", { input: { name: "acme", content: "Go." } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
   const onFlow = await api("POST", "/agents", flowAgent("flow", undefined, { input_schema: SUBJECT }));
   assert.deepEqual([onFlow.status, onFlow.body.error.fields.map((f) => [f.field, f.reason])], [422, [["definition.input_schema", "not_allowed"]]], "a workflow keeps its own schema");
 });
@@ -142,7 +150,12 @@ test("content is exempt from a schema's maxProperties and propertyNames: a trigg
   assert.deepEqual(said({ company: "Acme", cash: "x" }, patterned), [["input.cash", "bad_format"], ["input", "invalid"]]);
   assert.deepEqual(inputIssues({ company: "Acme", note: "x" }, capped, "target.input").map((i) => [i.field, i.message]), [["target.input", "target.input must not have more than 1 properties"]], "said at the input, in the schema's own number");
   assert.deepEqual(inputSchemaOf(COMPANY), { ...COMPANY, properties: { ...COMPANY.properties, content: { type: "string" } } }, "a schema with neither keeps its shape");
+  // The save's check is the run's: a reference propertyNames can't resolve among the definitions is refused before any run.
+  const outside = { ...COMPANY, propertyNames: { $ref: "#/properties/company" } };
+  assert.deepEqual(inputSchemaIssues(outside).map((i) => [i.field, i.reason]), [["definition.input_schema.propertyNames", "bad_format"]]);
+  assert.match(inputSchemaIssues(outside)[0].message, /^definition\.input_schema\.propertyNames is checked against the input's own fields beside the schema's \$defs and definitions alone: /);
   for (const [where, at] of [["$defs", "#/$defs/Name"], ["definitions", "#/definitions/Name"]]) {
+    assert.deepEqual(inputSchemaIssues({ ...COMPANY, [where]: { Name: { enum: ["company"] } }, propertyNames: { $ref: at } }), []);
     const referenced = inputSchemaOf({ ...COMPANY, [where]: { Name: { enum: ["company"] } }, propertyNames: { $ref: at } });
     assert.deepEqual(said({ company: "Acme" }, referenced), [], `propertyNames by ${at} still resolves`);
     assert.deepEqual(said({ company: "Acme", content: "" }, referenced), []);
