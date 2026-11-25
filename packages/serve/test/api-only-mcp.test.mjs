@@ -468,10 +468,14 @@ test("API-only: the token's Composio save over an auth config a server the owner
   assert.deepEqual((await store.settings.get(composioMadeKey("notes"))).auth_config, { id: config.id, made: false }, "the token's second server uses it, and made none");
 });
 
-// An ACTIVE connected account at Composio that no record here names: the toolkit's managed auth config already holds the
-// default user's account (the fake's `active`), whatever stands, or doesn't, beside it in the store.
+// An ACTIVE connected account at Composio that no record here names, under the toolkit's managed auth config and the
+// Composio user `user` (the fake lists it for that user alone), whatever stands, or doesn't, beside it in the store. The
+// token's save for the user_id agentrun is Composio's TOKENS_USER: an account under it is one the token's save would
+// stand on; one under the bare agentrun (the owner's) is another user's, never listed for the token's.
 const OWNERS_CONFIG = "ac_owners_managed";
-const OWNERS_ACCOUNT = { authConfigs: { gmail: [{ id: OWNERS_CONFIG, is_composio_managed: true, status: "ENABLED" }] }, active: ["gmail"] };
+const UNRECORDED = "ca_unrecorded_gmail";
+const TOKENS_USER = "agentrun.token.agentrun";
+const accountUnder = (user) => ({ authConfigs: { gmail: [{ id: OWNERS_CONFIG, is_composio_managed: true, status: "ENABLED" }] }, accounts: { gmail: [{ status: "ACTIVE", auth_config: OWNERS_CONFIG, id: UNRECORDED, user }] } });
 const ACCOUNT_SHAPES = [
   // The owner's Composio server saved by hand through the generic save: a row at a Composio MCP address, no record.
   ["the owner's server saved by hand at its Composio address (no record)", async (s) => {
@@ -491,7 +495,7 @@ const ACCOUNT_SHAPES = [
 for (const [shape, arrange] of ACCOUNT_SHAPES) {
   test(`API-only: the token's Composio save for a user with an ACTIVE account it did not connect is 403, nothing made at Composio: ${shape}`, async (t) => {
     withEnv(t, { [KEY_ENV]: KEY });
-    const s = await setup(t, { fake: OWNERS_ACCOUNT });
+    const s = await setup(t, { fake: accountUnder(TOKENS_USER) });
     await arrange(s);
     const from = s.composio.calls.length;
     const res = await s.token("PUT", "/settings/mcp-servers/notes/composio", { ...SAVE, user_id: "agentrun" });
@@ -502,6 +506,22 @@ for (const [shape, arrange] of ACCOUNT_SHAPES) {
     assert.equal(await s.server.store.mcp.server("notes"), undefined, "no server saved");
     assert.equal(await s.server.store.settings.get(composioMadeKey("notes")), undefined, "no record of one");
     assert.equal(JSON.stringify(res.body).includes(KEY), false, "the key is not echoed");
+  });
+
+  test(`API-only: the same ACTIVE account under the bare user agentrun stays that user's: the token's save for agentrun looks up ${TOKENS_USER} alone, finds none, and saves with a connect link that never stands on it: ${shape}`, async (t) => {
+    withEnv(t, { [KEY_ENV]: KEY });
+    const s = await setup(t, { fake: accountUnder("agentrun") });
+    await arrange(s);
+    const from = s.composio.calls.length;
+    const res = await s.token("PUT", "/settings/mcp-servers/notes/composio", { ...SAVE, user_id: "agentrun" });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(typeof res.body.connect_url, "string", "no ACTIVE account for the token's user: a connect link");
+    const lookups = s.composio.calls.slice(from).filter((call) => call.method === "GET" && call.path === "/api/v3/connected_accounts");
+    assert.deepEqual([...new Set(lookups.map((call) => call.query?.user_ids))], [TOKENS_USER], "the lookup names the token's user alone");
+    const record = await s.server.store.settings.get(composioMadeKey("notes"));
+    assert.equal(record.user, TOKENS_USER, "the record stands on the token's user");
+    assert.equal(record.accounts.some((account) => account.id === UNRECORDED), false, "the record never holds the bare user's account");
+    assert.deepEqual(s.composio.calls.slice(from).filter((call) => call.path.includes(UNRECORDED)), [], "nothing at Composio touches it");
   });
 }
 
@@ -539,7 +559,7 @@ test("API-only: the token's Composio save checks every ACTIVE account Composio l
   const mine = await s.server.store.settings.get(composioMadeKey("mail"));
   const [{ id: linked }] = mine.accounts;
   // The token's own account finished its link, and another ACTIVE account came up for the same user and config after it.
-  accounts.gmail = [{ status: "ACTIVE", auth_config: mine.auth_config.id, id: linked }, { status: "ACTIVE", auth_config: mine.auth_config.id, id: "ca_unrecorded_0001" }];
+  accounts.gmail = [{ status: "ACTIVE", auth_config: mine.auth_config.id, id: linked, user: TOKENS_USER }, { status: "ACTIVE", auth_config: mine.auth_config.id, id: "ca_unrecorded_0001", user: TOKENS_USER }];
   const from = s.composio.calls.length;
   const res = await s.token("PUT", "/settings/mcp-servers/notes/composio", { ...SAVE, user_id: "agentrun" });
   assert.equal(res.status, 403, JSON.stringify(res.body));
@@ -603,7 +623,7 @@ test("API-only: an account the token's own earlier save connected (its record ho
   assert.equal(mine.accounts.length, 1, JSON.stringify(mine));
   const [{ id: linked }] = mine.accounts;
   // The person finished the connect link: the account it started is ACTIVE under the auth config the first save made.
-  accounts.gmail = [{ status: "ACTIVE", auth_config: mine.auth_config.id, id: linked }];
+  accounts.gmail = [{ status: "ACTIVE", auth_config: mine.auth_config.id, id: linked, user: TOKENS_USER }];
   const second = await s.token("PUT", "/settings/mcp-servers/notes/composio", { ...SAVE, user_id: "agentrun" });
   assert.equal(second.status, 200, JSON.stringify(second.body));
   assert.equal(second.body.connect_url, undefined, "no connect link: the account is ACTIVE");
@@ -612,16 +632,39 @@ test("API-only: an account the token's own earlier save connected (its record ho
   assert.deepEqual(await s.server.store.settings.get(composioMadeKey("mail")), mine, "the first server's record is unchanged");
 });
 
-test("API-only: a server the token saved before the account rule, whose record holds the owner's ACTIVE account as found (made: false), never backs the token's next save for that user: 403, nothing made at Composio", async (t) => {
-  withEnv(t, { [KEY_ENV]: KEY });
-  const s = await setup(t, { fake: OWNERS_ACCOUNT });
+/** A server `mail` the token saved, as a save before the account rule wrote it: the token's row calling as `user`, its
+ *  source marked the token's, and the ACTIVE account UNRECORDED recorded as found (made: false), not connected here. */
+async function foundByOldSave(s, user) {
   const { storedSource } = await import("../dist/mcp-sources.js");
-  // What such a save wrote: the token's row, its source marked the token's, and the owner's account recorded as found.
-  await s.server.store.mcp.put({ name: "mail", url: `${s.composio.mcpOrigin}/v3/mcp/srv_tokens/mcp?user_id=agentrun`, auth: "headers", tools: [ADD_TOOL], sealed: null });
+  await s.server.store.mcp.put({ name: "mail", url: `${s.composio.mcpOrigin}/v3/mcp/srv_tokens/mcp?user_id=${user}`, auth: "headers", tools: [ADD_TOOL], sealed: null });
   const row = await s.server.store.mcp.server("mail");
   await s.server.store.settings.put(mcpSourceKey("mail"), storedSource({ source: "composio", toolkit: "gmail" }, row, false, true));
-  const old = storedMade({ user: "agentrun", auth_config: { id: OWNERS_CONFIG, made: false }, accounts: [{ id: "ca_fake_gmail", made: false }], key_env: KEY_ENV }, row);
+  const old = storedMade({ user, auth_config: { id: OWNERS_CONFIG, made: false }, accounts: [{ id: UNRECORDED, made: false }], key_env: KEY_ENV }, row);
   await s.server.store.settings.put(composioMadeKey("mail"), old);
+  return old;
+}
+
+test("API-only: a server the token saved before its user was namespaced, whose record holds the bare user's ACTIVE account as found (made: false): that account stays the bare user's, and the token's next save for agentrun looks up its own user alone, finds none and saves with a connect link that never stands on it", async (t) => {
+  withEnv(t, { [KEY_ENV]: KEY });
+  const s = await setup(t, { fake: accountUnder("agentrun") });
+  const old = await foundByOldSave(s, "agentrun");
+  const from = s.composio.calls.length;
+  const res = await s.token("PUT", "/settings/mcp-servers/notes/composio", { ...SAVE, user_id: "agentrun" });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(typeof res.body.connect_url, "string", "no ACTIVE account for the token's user: a connect link");
+  const lookups = s.composio.calls.slice(from).filter((call) => call.method === "GET" && call.path === "/api/v3/connected_accounts");
+  assert.deepEqual([...new Set(lookups.map((call) => call.query?.user_ids))], [TOKENS_USER], "the lookup names the token's user alone");
+  const record = await s.server.store.settings.get(composioMadeKey("notes"));
+  assert.equal(record.user, TOKENS_USER, "the record stands on the token's user");
+  assert.equal(record.accounts.some((account) => account.id === UNRECORDED), false, "the record never holds the bare user's account");
+  assert.deepEqual(s.composio.calls.slice(from).filter((call) => call.path.includes(UNRECORDED)), [], "nothing at Composio touches it");
+  assert.deepEqual(await s.server.store.settings.get(composioMadeKey("mail")), old, "the old record is unchanged");
+});
+
+test("API-only: a server the token saved whose record holds an ACTIVE account under the token's own namespaced user as found (made: false), not connected here, never backs the token's next save for that user: 403, nothing made at Composio", async (t) => {
+  withEnv(t, { [KEY_ENV]: KEY });
+  const s = await setup(t, { fake: accountUnder(TOKENS_USER) });
+  const old = await foundByOldSave(s, TOKENS_USER);
   const from = s.composio.calls.length;
   const res = await s.token("PUT", "/settings/mcp-servers/notes/composio", { ...SAVE, user_id: "agentrun" });
   assert.equal(res.status, 403, JSON.stringify(res.body));

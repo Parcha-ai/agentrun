@@ -8,8 +8,9 @@
 // no_auth only as `auth_config_details[].mode` "NO_AUTH" (only the toolkit list has a `no_auth` field). `authConfigs`: by toolkit slug, the auth configs
 // it already has (`{ id, is_composio_managed, status? }`), each read alone by GET /auth_configs/{id} with that toolkit
 // (`anyCase`: that read finds one by its id in any letter case, answering the id as it keeps it). `active`: toolkit slugs the user already has an ACTIVE connected account for, under the auth config the
-// call names. `accounts`: by toolkit slug, the user's accounts as `{ status, auth_config, id?, created_at? }` (an ACTIVE one under another
-// config, say); as the real one, `auth_config_ids` narrows the list to those under it, and the list is paged by `cursor` and
+// call names. `accounts`: by toolkit slug, the user's accounts as `{ status, auth_config, id?, created_at?, user? }` (an ACTIVE one under another
+// config, say; `user`: the Composio user it is under, listed only for that user, and one with none is listed for any
+// user); as the real one, `user_ids` narrows the list to that user's, `auth_config_ids` to those under it, and the list is paged by `cursor` and
 // `next_cursor`, at most `limit` a page (`accountsPage`: at most that many, whatever `limit` asks). `noTools`: its MCP endpoint serves no tool at all. `listStatus`: its MCP endpoint answers every request after the first handshake with that HTTP status (an outage, not an answer "no"). `fail`: `{ path, status, method? }`
 // makes the call whose path ends in `path` (or for which `path`, a function, holds) answer that status; a list of them
 // fails each. With `times`, only that many such calls fail (the rest are answered as usual); with `wait`, a promise, the
@@ -202,11 +203,12 @@ export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, au
       const kit = url.searchParams.get("toolkit_slugs");
       const under = url.searchParams.get("auth_config_ids");
       const listed = [...(accounts[kit] ?? []), active.includes(kit) ? { status: "ACTIVE", auth_config: under ?? "ac_unnamed" } : { status: "INITIATED", auth_config: under ?? "ac_unnamed" }];
-      const user = url.searchParams.get("user_ids") ?? "agentrun";
-      const all = listed.filter((a) => !under || a.auth_config === under);
+      // `user_ids` narrows the list to that user's accounts (one with no `user` is any user's); with none, every user's.
+      const user = url.searchParams.get("user_ids");
+      const all = listed.filter((a) => (!under || a.auth_config === under) && (user === null || a.user === undefined || a.user === user));
       const from = Number(url.searchParams.get("cursor") ?? 0);
       const size = Math.min(Number(url.searchParams.get("limit") ?? all.length) || all.length, accountsPage ?? all.length);
-      const items = all.slice(from, from + size).map((a) => ({ id: a.id ?? `ca_fake_${kit}${a.status === "ACTIVE" ? "" : `_${a.status.toLowerCase()}`}`, user_id: user, status: a.status, toolkit: { slug: kit }, auth_config: { id: a.auth_config }, created_at: a.created_at ?? ACCOUNT_MADE }));
+      const items = all.slice(from, from + size).map((a) => ({ id: a.id ?? `ca_fake_${kit}${a.status === "ACTIVE" ? "" : `_${a.status.toLowerCase()}`}`, user_id: a.user ?? user ?? "agentrun", status: a.status, toolkit: { slug: kit }, auth_config: { id: a.auth_config }, created_at: a.created_at ?? ACCOUNT_MADE }));
       return reply(200, { items, next_cursor: from + size < all.length ? String(from + size) : null });
     }
     if (req.method === "POST" && url.pathname === "/api/v3/connected_accounts/link") {
