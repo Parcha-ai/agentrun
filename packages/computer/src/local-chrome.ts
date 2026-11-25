@@ -18,7 +18,8 @@
 // alone. It is for local and development use.
 //
 // Files: one directory per browser under the root (default <tmpdir>/agentrun-local-browser-<uid>, 0700), named by the
-// browser's id: browser.json (its labels and deadline, which list and attach read), supervisor.pid, state.json (Chrome's
+// browser's id: claim.json (the pid and time of the create that made the directory), browser.json (its labels and
+// deadline, which list and attach read), supervisor.pid, state.json (Chrome's
 // pid and port, once it answers), the profile, the proxy's socket and two logs. A release removes all of it.
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -63,6 +64,8 @@ export const LOCAL_MAX_LIFETIME_MS = 24 * 60 * 60_000;
 const WINDOW = "--window-size=1280,800";
 /** A Unix socket's path holds 107 bytes; a root whose browsers' sockets would not fit is refused. */
 const SOCKET_PATH_MAX = 107;
+/** The record a create writes in the directory it claimed: its process's pid and the time, before browser.json. */
+const CLAIM_FILE = "claim.json";
 /** How long a release waits for the supervisor, then for Chrome, to end. */
 const END_MS = 10_000;
 
@@ -260,9 +263,21 @@ export class LocalBrowserProvider implements ComputerProvider {
 		const wait = READY_MS + 10_000;
 		const until = Date.now() + wait;
 		for (;;) {
-			if (!(await lstat(dir).then(() => true, () => false))) return fail("exists", endedWords(id));
+			const made = await lstat(dir).then((stat) => stat, () => undefined);
+			if (made === undefined) return fail("exists", endedWords(id));
 			const record = await this.#record(id);
-			if (record !== undefined) {
+			if (record === undefined) {
+				// No browser.json yet: the create that claimed the directory is still making it, or it crashed. Its claim says
+				// who and when (the directory's own time where it wrote none); one whose process is gone, or older than a
+				// create takes, never finishes.
+				const claim = await readJson<{ pid?: unknown; at?: unknown }>(join(dir, CLAIM_FILE));
+				const pid = claim?.pid;
+				const at = typeof claim?.at === "string" ? Date.parse(claim.at) : Number.NaN;
+				const since = Number.isNaN(at) ? made.mtimeMs : at;
+				if ((typeof pid === "number" && Number.isInteger(pid) && pid > 0 && !alive(pid)) || Date.now() - since > wait) {
+					return fail("exists", `${id}: an earlier create of this request did not finish: create with a new request id`);
+				}
+			} else {
 				const allow = (network: { allow?: string[] }) => JSON.stringify(network.allow ? [...network.allow].sort() : null);
 				const differ = labelsDiffer(spec.labels ?? {}, record.labels, "read back");
 				const asked = networkRecord(spec.network);
@@ -294,6 +309,8 @@ export class LocalBrowserProvider implements ComputerProvider {
 			if ((error as NodeJS.ErrnoException).code === "EEXIST") return this.#taken(spec, id, signal);
 			return fail("invalid", `the local browser's directory could not be made under ${this.root} (${(error as NodeJS.ErrnoException).code ?? (error as Error).message})`);
 		}
+		// The claim's record, so a create that finds the directory and no browser.json knows whether its maker still runs.
+		await writeFile(join(dir, CLAIM_FILE), JSON.stringify({ pid: process.pid, at: new Date().toISOString() }), { mode: 0o600, flag: "wx" }).catch(() => undefined);
 		// A request whose browser this provider answered before, and whose directory is gone: it ended on its own.
 		if (this.#made.has(id)) {
 			await rm(dir, { recursive: true, force: true }).catch(() => undefined);

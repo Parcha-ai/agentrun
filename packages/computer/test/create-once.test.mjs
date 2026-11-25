@@ -4,7 +4,8 @@
 // the same id from another provider instance (another process) finds the computer the first one made instead of making
 // a second. Orgo also runs the conformance suite's two cases, provider.create-retried and provider.create-after-release.
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test, { after } from "node:test";
@@ -361,6 +362,42 @@ for (const [id, ends] of Object.entries(ENDS)) {
 		assert.equal(vendor.made(fake), 1, "nothing more was made");
 	});
 }
+
+test("local-chrome: a directory an earlier create claimed and never finished is refused exists once its claim's process is gone or it is past a create's time, never waited on", async () => {
+	const vendor = VENDORS["local-chrome"];
+	const fake = vendor.vendor();
+	const provider = await vendor.make(fake);
+	mkdirSync(fake.root, { recursive: true, mode: 0o700 });
+	// A process that has ended: the pid of a create that crashed after its mkdir.
+	const gone = spawnSync(process.execPath, ["-e", ""]).pid;
+	const crashed = [
+		["its claim names a process that is gone", (dir) => writeFileSync(join(dir, "claim.json"), JSON.stringify({ pid: gone, at: new Date().toISOString() }))],
+		["it holds no claim, and is older than a create's time", (dir) => {
+			const old = new Date(Date.now() - 60 * 60_000);
+			utimesSync(dir, old, old);
+		}],
+		["its claim's process runs, and the claim is older than a create's time", (dir) => writeFileSync(join(dir, "claim.json"), JSON.stringify({ pid: process.pid, at: new Date(Date.now() - 60 * 60_000).toISOString() }))],
+	];
+	for (const [what, leave] of crashed) {
+		const requestId = requestOf("local-claim");
+		const dir = join(fake.root, computerNameFor(requestId));
+		mkdirSync(dir, { mode: 0o700 });
+		leave(dir);
+		const started = Date.now();
+		const again = await provider.create(vendor.spec(), { requestId });
+		assert.equal(again.ok, false, what);
+		assert.equal(again.error.code, "exists", `${what}: ${again.error.message}`);
+		assert.match(again.error.message, /an earlier create of this request did not finish: create with a new request id/, what);
+		assert.ok(Date.now() - started < 5_000, `${what}: refused at once, not after a create's wait`);
+	}
+	assert.equal(vendor.made(fake), 0, "no Chrome was started");
+	// A create's own claim: its process and the time, written in the directory it made.
+	const made = okOf(await provider.create(vendor.spec(), { requestId: requestOf("local-claim") }), "create");
+	const claim = JSON.parse(readFileSync(join(fake.root, made.id, "claim.json"), "utf8"));
+	assert.equal(claim.pid, process.pid, "the claim names the process that made the directory");
+	assert.ok(Math.abs(Date.now() - Date.parse(claim.at)) < 60_000, "and when");
+	okOf(await provider.release(made, "delete"), "release");
+});
 
 test("a create with no request id is refused invalid on each, before any vendor call", async () => {
 	for (const [id, vendor] of Object.entries(VENDORS)) {
