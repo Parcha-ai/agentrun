@@ -1,4 +1,4 @@
--- The store's schema on Postgres, version 31: each ledger row's learned workflow calls (learn/ledger.ts
+-- The store's schema on Postgres, version 30: each ledger row's learned workflow calls (learn/ledger.ts
 -- LedgerRow.workflowCalls), as store/schema.ts keeps them on SQLite (LEARNING_LEDGER, LEARNING_LEDGER_ADDED). Applied once,
 -- after the migration before it, inside the transaction migrate.ts opens. Never edit this file once applied: a change is
 -- a new file. Additive: a runner of an earlier build writes no calls, and its rows read none (`[]`), as a run that called
@@ -9,4 +9,4 @@
 -- of this file was lost applies it again unharmed. The outcome is `answered`, `handed_back`, `failed` or `refused`.
 ALTER TABLE learning_ledger ADD COLUMN IF NOT EXISTS workflow_calls TEXT COLLATE "C" NOT NULL DEFAULT '[]' CHECK (workflow_calls::json IS NOT NULL);
 
-UPDATE store_meta SET schema_version = 31 WHERE singleton = 1;
+UPDATE store_meta SET schema_version = 30 WHERE singleton = 1;
