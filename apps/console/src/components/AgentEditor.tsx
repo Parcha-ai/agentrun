@@ -230,7 +230,7 @@ export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError
   const lastAgenticHarness = useRef(f.harness ?? "pi");
   const starters = creating ? harnessOptions(caps.harnesses, { available: !!caps.decisionProvider }).filter((h) => isStarter(h.id)) : [];
   // What a new agent still needs before Create is on.
-  const createNeeds = [...(!f.name?.trim() ? ["Give the agent a name to create it."] : []), ...(!workflow && !starting && !f.instructions?.trim() ? ["Write its instructions to create it."] : []), ...(choosePlace ? ["Choose where it runs, in Computer: a box, or On the server."] : [])];
+  const createNeeds = [...(!f.name?.trim() ? ["Give the agent a name to create it."] : []), ...(!workflow && !starting && !f.instructions?.trim() ? ["Write its instructions to create it."] : []), ...(choosePlace ? [(caps.computers ? "Choose where it runs, in Computer: a sandbox, or None." : "Choose where it runs, in Computer: a box, or On the server.")] : [])];
   // The agent's approvals as the form has them: changed here, else the definition's, else ask (the server's default).
   const approvals: Approvals = f.approvals ?? d?.approvals ?? "ask";
   const choices = harnessOptions(caps.harnesses);
@@ -444,10 +444,10 @@ export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError
           {step === "computer" && !workflow && caps.computers && (
             <div className="space-y-8">
               {/* The computer picked, else the one saved, else the place the form starts on as a computer (the server's
-                  default for a new agent). A pick sets the place it is too, so a tool a box opens (bash) follows it. With no
+                  default for a new agent), or none picked where the server has no default (choosePlace). A pick sets the place it is too, so a tool a box opens (bash) follows it. With no
                 tools listed yet (the capabilities not read, or their read failed), a pick for the runner can't tell which
                 tools to drop: it changes nothing and says so. */}
-              <ComputerSetting kinds={caps.computers} value={f.computer ?? (d?.computer as AgentFields["computer"]) ?? computerOfPlace(f.place ?? { mode: "runner" })}
+              <ComputerSetting kinds={caps.computers} value={f.computer ?? (d?.computer as AgentFields["computer"]) ?? (choosePlace ? null : computerOfPlace(f.place ?? { mode: "runner" }))}
                 onChange={(computer) => {
                   const fields = computerFields(computer, f.tools ?? [], caps.tools);
                   setToolsUnread(!fields);

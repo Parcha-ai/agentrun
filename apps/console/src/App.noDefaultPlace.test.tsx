@@ -63,6 +63,7 @@ it("with no default place and the computers read, no kind is picked and Create w
   expect(form.radio("computer-kind", "none")).not.toBeNull();
   expect(form.host.querySelector('input[name="computer-kind"]:checked')).toBeNull();
   expect(form.create().disabled).toBe(true);
+  expect(form.host.textContent).toContain("Choose where it runs, in Computer: a sandbox, or None.");
   await form.click(form.radio("computer-kind", "none"));
   expect(form.radio("computer-kind", "none")!.checked).toBe(true);
   expect(form.create().disabled).toBe(false);
