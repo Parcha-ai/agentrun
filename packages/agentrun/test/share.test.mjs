@@ -562,6 +562,44 @@ test("share --to exports again with the restores, posts the bundle's bytes with 
   silent(result, planted, token);
 });
 
+test("share --to on a host whose public address is another: the link is the public one, the delete command the address that took the upload", async (t) => {
+  const run = `run_share_${nonce()}`;
+  const { body, sha256 } = bundleOf(run, `planted-share-value-${nonce()}`);
+  const fake = await fakeServer(t, run, sendBundle(body));
+  const token = shareToken();
+  const PUBLIC = "https://shares.example.test";
+  const host = await fakeHost(t, { token, post: (res, seen) => {
+    const id = shareId();
+    hostJson(res, 201, { id, url: `${PUBLIC}/r/${id}`, sha256: JSON.parse(seen.body.toString("utf8")).sha256 });
+  } });
+  const { home } = configHome({ share: { base_url: host.base, api_key: token } });
+  const env = { XDG_CONFIG_HOME: home };
+
+  const result = await share([run, "--to", host.base, "--expect", sha256], { data: fake.data, env });
+  assert.equal(result.code, 0, result.err);
+  const { id, url } = JSON.parse(result.out);
+  assert.equal(url, `${PUBLIC}/r/${id}`, "readers get the host's public link");
+  assert.ok(result.err.includes(`Shared: ${url}`), result.err);
+  const command = `agentrun share delete ${host.base}/r/${id}`;
+  assert.ok(result.err.includes(command), `the delete command names the address the login is for: ${result.err}`);
+  // And it works as printed, with the login that published.
+  const deleted = await agentrun(command.split(" ").slice(1), env);
+  assert.equal(deleted.code, 0, deleted.err);
+  assert.deepEqual(host.got.DELETE.map((seen) => seen.path), [`/r/v2/shares/${id}`]);
+});
+
+test("logout --share refuses a config file it cannot read as one, and leaves it as it was", async () => {
+  for (const [name, text, mode, exit] of [["unsafe", `${JSON.stringify({ share: { base_url: "http://127.0.0.1:1", api_key: shareToken() } })}\n`, 0o644, 4], ["malformed", "{not json", 0o600, 4], ["not an object", "[]\n", 0o600, 4]]) {
+    const { home, file } = configHome();
+    writeFileSync(file, text, { mode });
+    chmodSync(file, mode);
+    const out = await agentrun(["logout", "--share"], { XDG_CONFIG_HOME: home });
+    assert.equal(out.code, exit, `${name}: ${out.err}`);
+    assert.equal(out.out, "", `${name}: no "removed: false"`);
+    assert.equal(readFileSync(file, "utf8"), text, `${name}: the file is untouched`);
+  }
+});
+
 test("share --to --expect refuses a bundle whose sha256 changed since the page showed it, before any POST", async (t) => {
   const run = `run_share_${nonce()}`;
   const { body } = bundleOf(run, "synthetic");
