@@ -528,15 +528,24 @@ test("a share host fires nothing a reused data folder holds: its triggers never 
   assert.deepEqual(asked, [], "no schedule or feed runs on a share host");
 });
 
-test("a share host sends nothing a reused data folder left queued: no webhook or Slack delivery resumes, no run's change is followed", async (t) => {
+test("a share host sends nothing a reused data folder left queued, but still holds its saved secrets: no delivery resumes, no run's change is followed, and an upload carrying the webhook's key is refused", async (t) => {
   const hook = await receiver(t);
   // A server that sent webhooks, on the folder the host reuses: its webhook set, and a message it left queued.
   const before = await serve(t, { runner: false, webhookPrivateTargets: true });
-  assert.equal((await before.api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  const set = await before.api("PUT", "/settings/webhook", { url: hook.url });
+  assert.equal(set.status, 201);
+  // The signing key alone, as it is pasted: no key format names it, only the host's held values do.
+  const bare = set.body.secret.slice("whsec_".length);
   await before.store.channels.post({ id: "msg_left_queued", channel: "webhook-out", moment: "run.ended", body: '{"type":"run.ended"}', nextAt: 0 });
   await before.stop();
   const host = await shareHost(t, { data: before.data, webhookPrivateTargets: true });
   assert.equal((await send(host.port, { path: "/r/v2/health" })).status, 200);
+  const doc = JSON.parse(await bundleOf());
+  doc.run.result.final_answer = `the webhook signs with ${bare}`;
+  const refused = await upload(host, resigned(doc));
+  assert.equal(refused.status, 422, refused.text);
+  assert.equal(refused.json.error.details.reason, "scrub_found");
+  assert.ok(!refused.text.includes(bare), "the answer holds no value");
   await new Promise((resolve) => setTimeout(resolve, 500));
   await host.stop();
   assert.deepEqual(hook.got, [], "the share host sent no message");
