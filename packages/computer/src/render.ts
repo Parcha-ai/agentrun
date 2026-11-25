@@ -68,8 +68,11 @@ export interface RenderProviderOptions extends Omit<HostedOptions, "desktop" | "
 }
 
 const API_URL = "https://api.render.com";
-/** S: ownerId; the dashboard's workspace ids are tea-… and usr-… (unverified past those two). */
-const OWNER_ID = /^(tea|usr)-[a-z0-9]{10,40}$/;
+/**
+ * S: ownerId, a workspace id (tea-… for a team, usr-… for a person). Held to an id's characters alone, since it goes in
+ * every query: whether it names a workspace the key reaches is Render's answer to the first call.
+ */
+const OWNER_ID = /^[A-Za-z0-9_-]{1,64}$/;
 /** S: sandboxId, "sbx-1cd4gcph1rs3idesc73a2b2mg"; held to that form before it reaches a path. */
 const SANDBOX_ID = /^sbx-[a-z0-9]{10,40}$/;
 /** S: sandboxBuildId, sbb-…; a build's name may not start with sbb- (S, sandbox-groups/{id}/builds), so this reads as an id. */
@@ -262,31 +265,26 @@ class RenderHost implements MachineHost {
 	/**
 	 * A sandbox's labels: the ones this host knows, else its name's, else its labels file's, read once through runs/sync
 	 * and kept. `need`: a listing's labels; when the name's hold every one asked, no file is read. A sandbox not named as a
-	 * computer carries none; one not running, or with no file yet, its name's. `lenient`: a read that fails gives
-	 * undefined (a listing goes on, unsure), else it throws.
+	 * computer carries none; one not running, or with no file yet, its name's. A read that fails throws, so a listing
+	 * never answers as though the sandbox were not there.
 	 */
-	async #labelsOf(found: RenderSandbox, ctx: HostCall, { need, lenient = false }: { need?: Record<string, string>; lenient?: boolean } = {}): Promise<Record<string, string> | undefined> {
+	async #labelsOf(found: RenderSandbox, ctx: HostCall, need?: Record<string, string>): Promise<Record<string, string>> {
 		const name = found.name;
 		if (typeof name !== "string" || !COMPUTER_NAME.test(name)) return {};
 		const known = this.#labels.get(found.id);
 		if (known !== undefined) return known;
 		const own = { [COMPUTER_LABEL]: "1", [NAME_LABEL]: name };
 		if ((need !== undefined && Object.keys(need).every((key) => key in own)) || found.status !== "running") return own;
-		try {
-			const read = await this.#run(found.id, readFile(LABELS_FILE), ctx);
-			if (read.exit === MISSING) return own;
-			if (read.exit !== 0) throw new HostError("vendor", `reading the labels file of ${found.id} exited ${read.exit}: ${lastWords(read)}`);
-			const parsed = jsonOf(new TextEncoder().encode(read.stdout));
-			if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed) || !Object.values(parsed).every((value) => typeof value === "string")) {
-				throw new HostError("vendor", `the labels file of ${found.id} is not a JSON map of strings`);
-			}
-			const labels = { ...(parsed as Record<string, string>), ...own };
-			this.#labels.set(found.id, labels);
-			return labels;
-		} catch (error) {
-			if (lenient) return undefined;
-			throw error;
+		const read = await this.#run(found.id, readFile(LABELS_FILE), ctx);
+		if (read.exit === MISSING) return own;
+		if (read.exit !== 0) throw new HostError("vendor", `reading the labels file of ${found.id} exited ${read.exit}: ${lastWords(read)}`);
+		const parsed = jsonOf(new TextEncoder().encode(read.stdout));
+		if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed) || !Object.values(parsed).every((value) => typeof value === "string")) {
+			throw new HostError("vendor", `the labels file of ${found.id} is not a JSON map of strings`);
 		}
+		const labels = { ...(parsed as Record<string, string>), ...own };
+		this.#labels.set(found.id, labels);
+		return labels;
 	}
 
 	/**
@@ -364,15 +362,15 @@ class RenderHost implements MachineHost {
 		const found = (await this.#call("GET", this.#owned(`/v1/sandboxes/${sandboxId(id)}`), { retry: true }, ctx)) as RenderSandbox | null;
 		if (typeof found?.status !== "string") throw new HostError("vendor", `GET /v1/sandboxes/${id} answered no status`);
 		if (found.status === "terminated") return undefined;
-		return machineOf(found, (await this.#labelsOf(found, ctx)) ?? {});
+		return machineOf(found, await this.#labelsOf(found, ctx));
 	}
 
 	/**
 	 * GET /v1/sandboxes?ownerId (S, list-sandboxes: terminated ones left out unless asked), by name where the name is
 	 * asked ("exactly this name"), every page by its last item's cursor while a page is full. Only sandboxes named as
 	 * computers; a label asked that is not the name's is read from each running one's labels file (#labelsOf), and only
-	 * those that carry every label asked are answered. One whose file could not be read is answered with its name's
-	 * labels, for the adapter's get to settle.
+	 * those that carry every label asked are answered. A file that can't be read fails the listing in words: a listing
+	 * that left the sandbox out would read as no such computer.
 	 */
 	async list(labels: Record<string, string>, ctx: HostCall): Promise<Machine[]> {
 		const name = labels[NAME_LABEL];
@@ -394,9 +392,8 @@ class RenderHost implements MachineHost {
 		const ours = listed.filter((found) => found.status !== "terminated" && typeof found.name === "string" && COMPUTER_NAME.test(found.name));
 		const read = await Promise.all(
 			ours.map(async (found) => {
-				const carried = await this.#labelsOf(found, ctx, { need: labels, lenient: true });
-				if (carried !== undefined && !Object.entries(labels).every(([key, value]) => carried[key] === value)) return undefined;
-				return machineOf(found, carried ?? { [COMPUTER_LABEL]: "1", [NAME_LABEL]: found.name as string });
+				const carried = await this.#labelsOf(found, ctx, labels);
+				return Object.entries(labels).every(([key, value]) => carried[key] === value) ? machineOf(found, carried) : undefined;
 			}),
 		);
 		return read.flatMap((machine) => machine ?? []);
@@ -432,6 +429,27 @@ class RenderHost implements MachineHost {
 		if (ran.exit !== 0) throw new HostError("vendor", `starting agentrun-dial again in ${id} exited ${ran.exit}: ${lastWords(ran)}`);
 	}
 
+	/** The workspace's default sandbox group (S, list-sandbox-groups), read a page at a time by cursor until it is found. */
+	async #defaultGroup(ctx: HostCall): Promise<string> {
+		const seen = new Set<string>();
+		let cursor: string | undefined;
+		for (let page = 0; page < MAX_PAGES; page++) {
+			const rows = await this.#call("GET", `/v1/sandbox-groups?${new URLSearchParams({ ownerId: this.#owner, limit: String(PAGE), ...(cursor === undefined ? {} : { cursor }) })}`, { retry: true }, ctx);
+			if (!Array.isArray(rows)) throw new HostError("vendor", "GET /v1/sandbox-groups answered no list");
+			const listed = rows as Array<{ sandboxGroup?: { id?: unknown; isDefault?: unknown }; cursor?: unknown } | null>;
+			const group = listed.find((row) => row?.sandboxGroup?.isDefault === true)?.sandboxGroup?.id;
+			if (group !== undefined) {
+				if (typeof group !== "string" || !/^[a-z0-9-]{1,64}$/.test(group)) throw new HostError("vendor", `Render answered a default sandbox group whose id is ${show(group)}`);
+				return group;
+			}
+			const next = listed.at(-1)?.cursor;
+			if (listed.length < PAGE || typeof next !== "string" || next === "" || seen.has(next)) break;
+			seen.add(next);
+			cursor = next;
+		}
+		throw new HostError("vendor", `Render answered no default sandbox group for the workspace ${this.#owner}`);
+	}
+
 	/**
 	 * The box image as a build of the workspace's default sandbox group (the group a create that names none uses, S),
 	 * named agentrun-box-<recipe hash>, so a new recipe is a new build: a succeeded one of that name is kept (GET
@@ -443,9 +461,7 @@ class RenderHost implements MachineHost {
 		if (this.#built !== undefined) return this.#built;
 		const name = boxBuildName();
 		const ctx = { timeoutMs: 30_000, ...(signal ? { signal } : {}) };
-		const groups = await this.#call("GET", `/v1/sandbox-groups?${new URLSearchParams({ ownerId: this.#owner, limit: String(PAGE) })}`, { retry: true }, ctx);
-		const group = (Array.isArray(groups) ? (groups as Array<{ sandboxGroup?: { id?: unknown; isDefault?: unknown } } | null>) : []).find((row) => row?.sandboxGroup?.isDefault === true)?.sandboxGroup?.id;
-		if (typeof group !== "string" || !/^[a-z0-9-]{1,64}$/.test(group)) throw new HostError("vendor", `Render answered no default sandbox group for the workspace ${this.#owner}`);
+		const group = await this.#defaultGroup(ctx);
 		const builds = `/v1/sandbox-groups/${group}/builds`;
 		const found = await this.#call("GET", `${builds}?${new URLSearchParams({ name, status: "succeeded", limit: "1" })}`, { retry: true }, ctx);
 		if (Array.isArray(found) && found.length > 0) return (this.#built = name);
