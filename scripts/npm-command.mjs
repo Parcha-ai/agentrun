@@ -1,7 +1,8 @@
 // npm as a child process of a repository script, on every platform. Node on Windows won't spawn npm.cmd without a shell
 // (CVE-2024-27980), and plain `npm` doesn't resolve there at all (#3334), so a script never spawns npm by name: it runs
 // npm's own CLI script with this node, as serve's npmCommand (packages/serve/src/harness-install.ts) does. That is the
-// npm that ran the script (npm_execpath, under `npm run` or `npm exec`), else the one installed with this node. Only
+// npm that ran the script (npm_execpath, under `npm run` or `npm exec`), else the one installed with this node (under
+// `pnpm run`, the repository's own way to run its scripts, npm_execpath is pnpm's). Only
 // with neither is `npm` spawned by name, from PATH; on Windows that fails as it did before, never through a shell.
 import { execFile, spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -13,8 +14,11 @@ import { promisify } from 'node:util';
 export function npmCommand(args, { env = process.env, platform = process.platform, execPath = process.execPath, exists = existsSync } = {}) {
   // The platform's own paths, so a test of another platform gets that platform's.
   const { dirname, join } = platform === 'win32' ? win32 : posix;
+  // npm_execpath names whichever package manager ran the script: only npm's own CLI script is npm. Under `pnpm run` it is
+  // pnpm (a native binary, or pnpm.cjs or a Corepack shim run with node), so npm is the one installed with this node.
   const ran = env.npm_execpath;
-  if (ran && /\.c?js$/.test(ran) && exists(ran)) return { command: execPath, args: [ran, ...args] };
+  const ranName = ran ? posix.basename(ran.replaceAll('\\', '/')) : '';
+  if (ran && /^npm-cli\.c?js$/.test(ranName) && exists(ran)) return { command: execPath, args: [ran, ...args] };
   const node = dirname(execPath);
   // POSIX installs put npm in <prefix>/lib/node_modules, beside <prefix>/bin/node; Windows ones beside node.exe.
   for (const beside of [join(node, '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'), join(node, 'node_modules', 'npm', 'bin', 'npm-cli.js')]) {

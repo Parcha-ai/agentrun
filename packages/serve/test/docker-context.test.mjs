@@ -104,9 +104,12 @@ test("the build stage builds phoned after the daemon, with a digest-pinned JDK 1
   assert.match(build, /^COPY --from=android \/opt\/jdk-17 \/opt\/jdk-17$/m);
   assert.match(build, /^COPY --from=android \/opt\/android-sdk \/opt\/android-sdk$/m);
   const at = (text) => build.indexOf(text);
+  const daemon = at("pnpm --filter @parcha/agentrun-computer run build:daemon");
   const phoned = at("JAVA_HOME=/opt/jdk-17 ANDROID_HOME=/opt/android-sdk pnpm --filter @parcha/agentrun-computer run build:phoned");
-  assert.ok(phoned > at("npm run build:daemon"), "phoned builds after the daemon");
-  assert.ok(at("pnpm --filter @parcha/agentrun-computer run check:phoned") > phoned, "the build fails without phoned's dex jar, stamped with the package version");
+  const check = at("pnpm --filter @parcha/agentrun-computer run check:phoned");
+  assert.ok(daemon >= 0 && phoned >= 0 && check >= 0, `the stage builds the daemon, builds phoned and checks it (${daemon}, ${phoned}, ${check})`);
+  assert.ok(phoned > daemon, "phoned builds after the daemon");
+  assert.ok(check > phoned, "the build fails without phoned's dex jar, stamped with the package version");
   // CI's phoned job lays out the same SDK files from the same zips: one pair of pins.
   const action = await readFile(join(ROOT, ".github/actions/android-toolchain/action.yml"), "utf8");
   const pins = (text) => [...new Set(text.match(/\b[0-9a-f]{64}\b/g))].sort();

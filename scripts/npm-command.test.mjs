@@ -34,6 +34,12 @@ test("npm is this node running npm's own script: the one that ran this script, e
   // npm_execpath that is gone, or not a script, is not used.
   assert.equal(npmCommand(['-v'], { env: { npm_execpath: cli }, platform: 'linux', execPath: '/x/bin/node', exists: at() }).command, 'npm');
   assert.equal(npmCommand(['-v'], { env: { npm_execpath: '/x/npm.cmd' }, platform: 'win32', execPath: 'C:\\node\\node.exe', exists: () => true }).command, 'C:\\node\\node.exe');
+  // Under `pnpm run`, npm_execpath is pnpm's: its native binary, its pnpm.cjs or a Corepack shim, never npm's. npm is then
+  // the one beside node.
+  for (const pnpm of ['/opt/pnpm/pnpm', '/opt/pnpm/node_modules/pnpm/bin/pnpm.cjs', '/opt/corepack/dist/pnpm.js', 'C:\\pnpm\\pnpm.exe']) {
+    assert.deepEqual(npmCommand(['run', 'build', '-w', 'a'], { env: { npm_execpath: pnpm }, platform: 'linux', execPath: '/opt/node/bin/node', exists: at(cli, pnpm) }),
+      { command: '/opt/node/bin/node', args: [cli, 'run', 'build', '-w', 'a'] }, pnpm);
+  }
   // Run with node directly: the npm installed with this node, POSIX (<prefix>/lib) and Windows (beside node.exe).
   assert.deepEqual(npmCommand(['ls'], { env: {}, platform: 'linux', execPath: '/opt/node/bin/node', exists: at(cli) }), { command: '/opt/node/bin/node', args: [cli, 'ls'] });
   const win = 'C:\\node\\node_modules\\npm\\bin\\npm-cli.js';

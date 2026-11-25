@@ -90,6 +90,9 @@ export function importerRef(lock, dir, name) {
  * target. The scripts that judge a consumer's npm tree against the repository's (the package checks, the source
  * inventory) read the repository's through this, so both sides are one shape.
  *
+ * One version resolved with several sets of peers is one entry, as npm holds it: npmTree refuses a lock whose sets depend
+ * on different versions of anything other than those peers, which npm's layout could not hold.
+ *
  * A name's hoisted version is the one the root resolves, else the one most workspace packages and packages depend on
  * (the highest of a tie), as pnpm's hoisted linker places it. Every other version nests under each package that resolves
  * it. Where pnpm nests a copy one level higher than this does, a dependency still resolves the version the lock says.
@@ -134,6 +137,15 @@ export function npmTree(root, lock = readLock(root)) {
   };
   const sameVersion = (location, key) => location && !tree[location].link && packageKey(keyAt.get(location)) === packageKey(key);
 
+  // npm holds one copy of a version where pnpm may hold one per set of peers it resolved: this tree keeps the first, so
+  // what every other one depends on (peers aside, which npm resolves from where the copy is) must be the same versions.
+  const contexts = new Map();
+  for (const key of Object.keys(lock.snapshots)) {
+    const versions = JSON.stringify(Object.entries(entryFor(key).dependencies ?? {}).concat(Object.entries(entryFor(key).optionalDependencies ?? {})).sort());
+    const seen = contexts.get(packageKey(key));
+    if (seen && seen.versions !== versions) throw new Error(`${seen.key} and ${key} depend on different versions (${seen.versions} and ${versions}): npm's layout cannot hold both, so this tree would misstate one`);
+    if (!seen) contexts.set(packageKey(key), { key, versions });
+  }
   tree[''] = own(manifest('.'));
   for (const dir of dirs.filter((dir) => dir !== '.')) {
     const m = manifest(dir);

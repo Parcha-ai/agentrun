@@ -41,6 +41,36 @@ test('npmTree lays the lock out as npm would: hoisted, nested where a version di
   assert.equal(tree['packages/old'].name, 'old');
 });
 
+test('one version resolved with two sets of peers is one entry, as npm holds it; sets that depend on different versions are refused', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'agentrun-pnpm-peers-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  for (const [dir, name] of [['.', 'root'], ['packages/a', 'a'], ['packages/b', 'b']]) {
+    await mkdir(join(root, dir), { recursive: true });
+    await writeFile(join(root, dir, 'package.json'), JSON.stringify({ name, version: '0.0.0' }));
+  }
+  const write = (bUtil) => writeFile(join(root, 'pnpm-lock.yaml'), JSON.stringify({
+    lockfileVersion: '9.0',
+    importers: {
+      '.': {},
+      'packages/a': { dependencies: { lib: { specifier: '1.0.0', version: '1.0.0(host@1.0.0)' }, host: { specifier: '1.0.0', version: '1.0.0' } } },
+      'packages/b': { dependencies: { lib: { specifier: '1.0.0', version: '1.0.0(host@2.0.0)' }, host: { specifier: '2.0.0', version: '2.0.0' } } },
+    },
+    packages: { 'lib@1.0.0': { peerDependencies: { host: '*' } }, 'host@1.0.0': {}, 'host@2.0.0': {}, 'util@1.0.0': {}, 'util@2.0.0': {} },
+    snapshots: {
+      'lib@1.0.0(host@1.0.0)': { dependencies: { host: '1.0.0', util: '1.0.0' } },
+      'lib@1.0.0(host@2.0.0)': { dependencies: { host: '2.0.0', util: bUtil } },
+      'host@1.0.0': {}, 'host@2.0.0': {}, 'util@1.0.0': {}, 'util@2.0.0': {},
+    },
+  }));
+  await write('1.0.0');
+  const tree = npmTree(root);
+  assert.deepEqual(tree['node_modules/lib'], { version: '1.0.0', dependencies: { util: '1.0.0' }, peerDependencies: { host: '*' } });
+  assert.equal(tree['packages/b/node_modules/lib'], undefined, 'one copy: its peer host resolves from where it is');
+  assert.deepEqual([tree['node_modules/host'].version, tree['packages/a/node_modules/host'].version], ['2.0.0', '1.0.0'], 'each workspace resolves its own host');
+  await write('2.0.0');
+  assert.throws(() => npmTree(root), /lib@1\.0\.0\(host@1\.0\.0\) and lib@1\.0\.0\(host@2\.0\.0\) depend on different versions/);
+});
+
 test('a lockfile pnpm 9+ did not write is refused, not misread', async t => {
   const root = await mkdtemp(join(tmpdir(), 'agentrun-pnpm-lock-'));
   t.after(() => rm(root, { recursive: true, force: true }));
