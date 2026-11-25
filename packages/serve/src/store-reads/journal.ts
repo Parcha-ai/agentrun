@@ -456,7 +456,8 @@ const heldVerdicts = new PartCache(HELD_CACHE_BYTES);
 export function heldWholeFor(values: readonly string[]): (text: string) => boolean {
   const set = heldKey(values);
   return (text) => {
-    const key = `${set}:${createHash("sha256").update(text).digest("hex")}`;
+    // The text's UTF-16 units as they are: as UTF-8, a lone surrogate is written as U+FFFD, and the two would share one verdict.
+    const key = `${set}:${createHash("sha256").update(text, "utf16le").digest("hex")}`;
     const kept = heldVerdicts.get(key);
     if (kept !== undefined) return kept as boolean;
     const held = withheldWhole(text, values);
