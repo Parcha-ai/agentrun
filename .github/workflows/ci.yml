@@ -35,7 +35,7 @@ jobs:
     name: build (${{ matrix.node }})
     # On Blacksmith for a merge-queue candidate and for a pull request from a branch of this repository, as the test
     # shards that wait for it. A fork's pull request, and main, run on GitHub's runners: a fork's code is not the
-    # project's, and it gets neither the paid runners nor the caches they keep between runs. The other four jobs on
+    # project's, and it gets neither the paid runners nor the caches they keep between runs. The other five jobs on
     # this runner alias the value (`*own-runner`), so it is written once.
     runs-on: &own-runner ${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     timeout-minutes: 15
@@ -351,10 +351,11 @@ jobs:
 
   import-wasm:
     # @parcha/agentrun-import's scanner travels as a WebAssembly module in base64, src/scan-wasm.ts. Rebuilt here from
-    # wasm/scan.rs with the toolchain wasm/rust-toolchain.toml pins, rustc 1.95.0 and its wasm32-wasip1 target (rustup
-    # is on GitHub's runner); a byte of difference fails: the module shipped is the one its source builds.
+    # wasm/scan.rs with the toolchain wasm/rust-toolchain.toml pins, rustc 1.95.0 and its wasm32-wasip1 target; a byte
+    # of difference fails: the module shipped is the one its source builds. The build job's runner, as every job verify
+    # needs (rustup is on both).
     name: import-wasm
-    runs-on: ubuntu-latest
+    runs-on: *own-runner
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
