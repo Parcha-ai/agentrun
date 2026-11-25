@@ -9,13 +9,14 @@
 // sandbox, never a third mode.
 //
 // The box is a new agent's default machine for a shell: an agentic definition that names no place and no tools is saved,
-// at its create, with the local box (Docker's) as its place wherever this server has it, and with bash (newAgentPlace).
-// One that names its tools gets the box only when one of them needs a shell; else it keeps no place and runs on the
-// runner, with no container to wait for. A revision that names no place resolves the same way at each run
-// (defaultPlaceOf): with a shell tool, this server's default_place, so where docker is there now it runs in the Docker
-// box, and the runner where it is not. A workflow, a revision whose tools need no shell, and one with a tool the box
-// refuses run on the runner.
-import { BOX_IDS, BOXES_ENV, type BoxOffer, LOCAL_BOXES } from "./place-offers.js";
+// at its create, with Docker's box as its place wherever this server has it, and with bash (newAgentPlace). One that
+// names its tools gets the box only when one of them needs a shell; else it keeps no place and runs on the runner, with
+// no container to wait for. Where Docker's box is not here, a definition that would get it is refused (noBoxRefusal):
+// it names a box or the runner, and no other box that answers is picked for it. A revision that names no place resolves
+// the same way at each run (defaultPlaceOf): with a shell tool, this server's default_place, so where docker is there
+// now it runs in the Docker box, and where it is not its run is refused in the same words. A workflow, a revision whose
+// tools need no shell, and one with a tool the box refuses run on the runner.
+import { BOX_IDS, BOXES_ENV, type BoxOffer } from "./place-offers.js";
 import { type InputIssue, sentence } from "./errors.js";
 
 export const PLACE_MODES = ["runner", "sandbox"] as const;
@@ -31,21 +32,27 @@ export function boxAvailability(registry: readonly BoxOffer[]): BoxOffer[] {
   });
 }
 
-/** The box a new agent is given: the first local box (Docker's) this server has, else the first local box, unavailable,
- *  whose reason says why. Undefined where no provider is local. */
-const defaultBox = (registry: readonly BoxOffer[]): BoxOffer | undefined => {
-  const local = boxAvailability(registry).filter((box) => LOCAL_BOXES.includes(box.id));
-  return local.find((box) => box.available) ?? local[0];
-};
+/** The box a new agent is given, by its id: Docker's, never another box that answers in its place. */
+const DEFAULT_BOX = "docker";
+const defaultBox = (registry: readonly BoxOffer[]): BoxOffer => boxAvailability(registry).find((box) => box.id === DEFAULT_BOX)!;
 
-/** The place a new agentic definition that names none is saved with: the local box (Docker's) where this server has it;
- *  else none, so the agent runs on the runner as it did before, with `reason` saying why, in its probe's own words. A
- *  workflow is never given one. */
+/** What a new agent that would get Docker's box sets where this server does not have it: a box, listing the boxes this
+ *  server has (never picking one), or the runner. */
+export function placeToName(registry: readonly BoxOffer[]): string {
+  const ready = boxAvailability(registry).filter((box) => box.available).map((box) => box.id);
+  return `Set place to {mode: sandbox, box: <${ready.length ? `one of: ${ready.join(", ")}` : "none is set up"}>}, or to {mode: runner} to run without a shell.`;
+}
+
+/** Why such an agent is refused: it names a box (placeToName). */
+export const nameABox = (registry: readonly BoxOffer[]): string => `name a box: this server has no Docker box for a new agent. ${placeToName(registry)}`;
+
+/** The place a new agentic definition that names none is saved with: Docker's box where this server has it; else none,
+ *  with `reason`, the words such a definition is refused in (nameABox), and `why` Docker's box is not here, in its probe's
+ *  own words. A workflow is never given one. */
 export function newAgentPlace(registry: readonly BoxOffer[]): { place: Place } | { reason: string; why: string } {
   const box = defaultBox(registry);
-  if (box?.available) return { place: { mode: "sandbox", box: box.id } };
-  const why = box?.reason ?? "no provider runs computers on this machine";
-  return { reason: `new agents run on the runner, because the ${box?.id ?? "local"} box is unavailable here: ${why}`, why };
+  if (box.available) return { place: { mode: "sandbox", box: box.id } };
+  return { reason: nameABox(registry), why: box.reason ?? "no reason given" };
 }
 
 /** The place a revision that names none resolves to, at its create and at each run alike: this server's default place
@@ -53,12 +60,34 @@ export function newAgentPlace(registry: readonly BoxOffer[]): { place: Place } |
  *  background tools); the runner for a workflow, which is never given a box, for one whose tools need no shell (none, or
  *  only read and write: a container would only hold up its start), and for one that names a tool the box refuses (the
  *  browser, runner-only for now). */
-export function defaultPlaceOf(kind: "agentic" | "workflow", tools: readonly unknown[], registry: readonly BoxOffer[], flags: (tool: string) => { readonly sandboxOnly?: true; readonly runnerOnly?: true } | undefined): Place {
-  const named = tools.flatMap((tool) => (typeof tool === "string" ? [flags(tool)] : []));
-  if (kind === "workflow" || named.some((tool) => tool?.runnerOnly) || !named.some((tool) => tool?.sandboxOnly)) return { mode: "runner" };
+export function defaultPlaceOf(kind: "agentic" | "workflow", tools: readonly unknown[], registry: readonly BoxOffer[], flags: ToolFlags): Place {
+  if (kind === "workflow" || !wantsBox(tools, flags)) return { mode: "runner" };
   const fresh = newAgentPlace(registry);
   return "place" in fresh ? fresh.place : { mode: "runner" };
 }
+
+type ToolFlags = (tool: string) => { readonly sandboxOnly?: true; readonly runnerOnly?: true } | undefined;
+
+/** Whether an agentic revision naming `tools` and no place would be given the default box: one of them runs only in a
+ *  box, and none is a tool the box refuses. */
+const wantsBox = (tools: readonly unknown[], flags: ToolFlags): boolean => {
+  const named = tools.flatMap((tool) => (typeof tool === "string" ? [flags(tool)] : []));
+  return !named.some((tool) => tool?.runnerOnly) && named.some((tool) => tool?.sandboxOnly);
+};
+
+/** The refusal of an agentic definition that names no place (noPlaceIssue), at its create or at an edit that would
+ *  save it, where it would be given the default box (it names no tools, `tools` undefined, so it would get a shell, or a
+ *  tool that runs only in a box) and this server does not have Docker's box. A shell tool the runner's own shell runs
+ *  (`runnerShell`: bash on Mode 2's Archil exec) needs no box. Undefined for one that saves. */
+export function noBoxRefusal(tools: readonly unknown[] | undefined, registry: readonly BoxOffer[], flags: ToolFlags, runnerShell: ReadonlySet<string> = new Set()): InputIssue | undefined {
+  if (!wantsBox((tools ?? NEW_AGENT_TOOLS).filter((tool) => typeof tool !== "string" || !runnerShell.has(tool)), flags)) return undefined;
+  const fresh = newAgentPlace(registry);
+  return "reason" in fresh ? noPlaceIssue(registry) : undefined;
+}
+
+/** The refusal of a revision that names no place where Docker's box is not here, at definition.place: its words, and
+ *  what to set as its fix, so no example of a place is picked for it. */
+export const noPlaceIssue = (registry: readonly BoxOffer[]): InputIssue => ({ field: "definition.place", reason: "missing", message: nameABox(registry), fix: placeToName(registry) });
 
 /** The tools a new agent in the default box is given when its definition names none: a shell, and the background tools
  *  that start, read, feed, signal and list commands that outlive one call (background.ts SHELL_TOOLS, which a test holds
@@ -103,14 +132,15 @@ export function boxesLine(registry: readonly BoxOffer[], listed: ReadonlySet<str
     box.network === "allowlist" ? sentence(`${box.id} boxes reach only ${hosts}`) : sentence(`${box.id} boxes have no network${box.network_reason ? `: ${box.network_reason}` : ""}`));
   if (byDefault) {
     const box = defaultBox(registry);
-    if (!box?.available) return `Boxes: none, so new agents run on the runner. ${sentence(box?.reason ?? "no provider runs computers on this machine")}`;
+    if (!box.available) return `Boxes: none, so a new agent must name its place: a box, or the runner. ${sentence(box.reason ?? "no reason given")}`;
     return [`Boxes: ${box.id} (on by default; set ${BOXES_ENV} to change).`, ...reach].join(" ");
   }
   return ["Boxes:", ...(none ? ["none is ready, so sandbox agents do not run here."] : said), ...reach, ...why.map((box) => sentence(`${box.id}: ${box.reason ?? "not available"}`)), ...(rest ? [sentence(rest)] : [])].join(" ");
 }
 
 /** `places` in capabilities: the modes a revision may name, the place a new agent is saved with and a revision that
- *  names none runs in (`default_place`, with `default_reason` when it is the runner), each box, and the hosts a box whose
+ *  names none runs in (`default_place`, with `default_reason` when it is the runner: the words a new agent that would get
+ *  a box is refused in there), each box, and the hosts a box whose
  *  `network` is `allowlist` reaches (`allow`, box-settings.ts boxAllowOf; empty for `none`). */
 export const placesOf = (registry: readonly BoxOffer[], allow: readonly string[] | "none" = "none") => {
   const fresh = newAgentPlace(registry);

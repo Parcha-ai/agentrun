@@ -80,7 +80,7 @@ import type { DraftDecisions } from "./learn/workflow-draft.js";
 import { purgedRun, refusedIn } from "./purged-workflow.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
-import { boxAvailability, boxesLine, defaultPlaceOf, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
+import { boxAvailability, boxesLine, defaultPlaceOf, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, noBoxRefusal, type Place, placesOf, resolvePlace } from "./place.js";
 import { boxAllowOf, boxAllowSetIn } from "./box-settings.js";
 import { dockerLimitsOf } from "./workspace/computer-deps.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
@@ -3587,8 +3587,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
 
   /** A definition being saved: refused (422 by field) when it can never run here; else what this host still lacks, and
    *  its pins (mcpListingOf, monidPinOf), each carrying from `previous` what its grants did not change. A revision that
-   *  names no place is checked where it would run (fallbackPlace). */
-  async function saveable(revision: NewRevision, previous?: RevisionRow | null): Promise<{ warnings: InputIssue[]; stamp: SaveStamp }> {
+   *  names no place is checked where it would run (fallbackPlace). `toolsUnnamed`: a create whose definition names no tools
+   *  (the store has given it its empty list by now), which would get a shell in the default box. */
+  async function saveable(revision: NewRevision, previous?: RevisionRow | null, { toolsUnnamed = false }: { toolsUnnamed?: boolean } = {}): Promise<{ warnings: InputIssue[]; stamp: SaveStamp }> {
     // The store's NewRevision keeps the revision's fields under `body` (AgenticBody|WorkflowBody); build the flat shape the
     // host checks (runnable.ts RevisionShape) from it, as shapeOf does for a run's Revision.
     const body = revision.body as AgenticBody & Partial<WorkflowBody>;
@@ -3600,6 +3601,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       return { warnings: [], stamp: {} };
     }
     if (cliLearningOf(body) || sdkOf(body)) return { warnings: [], stamp: {} };
+    // An agentic revision that names no place and would be given Docker's box (no tools named, or a shell tool the
+    // runner's own shell does not run), where this server has none: refused, naming a box or the runner, never given
+    // another box (place.ts noBoxRefusal), with whatever else refuses it.
+    const runnerShell = revision.kind === "agentic" && (await shellOf({ kind: "none" })) === "local" ? shellTools("local") : undefined;
+    const noPlace = revision.kind === "agentic" && body.place === undefined && body.computer === undefined ? noBoxRefusal(toolsUnnamed ? undefined : body.tools ?? [], boxOffers, toolOf, runnerShell) : undefined;
     await loginNow();
     // A workflow's own issues, as POST /workflows/validate lists them (workflowIssues: the DSL's checks, the durable
     // runner's refusal), refuse its save before anything is written, each at its path under definition.workflow. Asked
@@ -3637,8 +3643,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       blockers.push(...added.filter((b) => b.unpriced || b.short));
       blockers.push(...added.filter((b) => !b.unpriced && !b.short).map((b) => ({ ...b, reason: "not_an_option", fix: "Pick another provider for this tool in definition.tool_settings, or clear the agent's default cap (max_cost_usd: 0).", host: false })));
     }
-    const never = blockers.filter((b) => !b.host);
-    if (never.length) throw invalid(never.map(issueOf));
+    // A shell tool with no place is refused there already (runnable.ts shellOnRunner); no tools named is refused here.
+    const never = blockers.filter((b) => !b.host).map(issueOf);
+    if (noPlace && !never.some((issue) => issue.field === noPlace.field)) never.unshift(noPlace);
+    if (never.length) throw invalid(never);
     const mcpPin = listing.pin();
     // A computer every tool of which is set to deny, here or in the agent's own settings: its runs never start it.
     const denied = await deniedComputer(shape, settings.get(), shellOf);
@@ -3677,8 +3685,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
 
   /** POST /agents' body made into its agent, as that route makes one, with what this host still lacks for it. A new agent
    *  that names no place is given this server's box (place.ts defaultPlaceOf), stamped on its revision, when it names no
-   *  tools (it gets bash) or a tool that needs a shell; one whose tools need none, or that names a tool the box refuses
-   *  (browser), keeps the runner. */
+   *  tools (it gets bash) or a tool that needs a shell, and refused where Docker's box is not here (saveable); one whose
+   *  tools need none, or that names a tool the box refuses (browser), keeps the runner. */
   async function createAgentOf(body: Json, template?: TemplatePackage): Promise<{ entry: AgentEntry; warnings: InputIssue[] }> {
     let warnings: InputIssue[] = [];
     const definition = checkDefinitionBody(body, { harnesses });
@@ -3686,7 +3694,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const place = fallbackPlace("agentic", definition.definition.tools === undefined ? NEW_AGENT_TOOLS : named);
     const tools = defaultToolsAt(place);
     const entry = await agents.create(definition, async (revision) => {
-      const saved = await saveable(revision);
+      const saved = await saveable(revision, null, { toolsUnnamed: definition.definition.tools === undefined });
       warnings = saved.warnings;
       return saved.stamp;
     }, place.mode === "sandbox" && tools ? { place, tools } : undefined, template);
