@@ -13,7 +13,8 @@ versions.
 
 **The bar for a clean fit.** Every rule ([the five rules](HARNESS.md#the-five-rules)) holds with what's on
 main, and the agent passes every stage of `agentrun harness-check` with nothing of AgentRun's run beside it but the
-recipe's own files.
+recipe's own files. A plan-billed agent's model requests never reach this host, so its check says two stages (its own
+tools off, what it sends to `hosts`) are **unverified** and passes on the rest; its row says so.
 
 **Fits if** means no workaround code is left, but a fact about the agent hasn't been checked on a real run. Those facts
 are marked **unverified** everywhere on this page. Most of them are lines
