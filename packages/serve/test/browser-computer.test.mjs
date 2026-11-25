@@ -220,7 +220,7 @@ test("a Browserbase connect URL moves onto the credential proxy, its signing que
   assert.equal(rewriteConnectUrl("wss://connect.browserbase.com/?sessionId=s&signingKey=k", "https://proxy.example/ws/"), "https://proxy.example/ws/?sessionId=s&signingKey=k");
   assert.equal(rewriteConnectUrl("ws://127.0.0.1:9/devtools/b1", "https://proxy.example"), "ws://127.0.0.1:9/devtools/b1");
   assert.equal(rewriteConnectUrl("wss://connect.browserbase.com/?x=1", undefined), "wss://connect.browserbase.com/?x=1");
-  assert.equal(rewriteConnectUrl("wss://connect.browserbase.com/?x=1", "wss://proxy.example/ws"), "wss://proxy.example/ws?x=1");
+  assert.equal(rewriteConnectUrl("wss://connect.browserbase.com/?x=1", "wss://proxy.example/ws"), "wss://proxy.example/ws/?x=1");
 });
 
 test("a connect base URL the signing key may not go to is refused, naming its setting and the origin alone, never quietly used", () => {
