@@ -332,7 +332,13 @@ export async function doctorOf({
   const others = boxes.filter((b) => b.id !== "docker" && b.available === true).map((b) => b.id);
   if (box?.available) add("docker", "Docker", "ok", "Docker boxes are ready: an agent with a computer runs its tools in one.");
   else if (box && others.length) add("docker", "Docker", "info", `No Docker box: ${box.reason ?? "unavailable"}. An agent that needs a computer runs in ${others.join(" or ")} instead.`, { details: { ready: others } });
-  else if (box) add("docker", "Docker", "warn", `No Docker box: ${box.reason ?? "unavailable"}. An agent that needs a computer (bash, files) fails to start, and a new agent must name its place: a box, or the runner.`, { fix: dockerFix(box.reason ?? ""), docs: DOCS.docker });
+  // Where a new agent with no place goes is the server's places.default_place: null where it has no default (no Docker,
+  // and a runner with no shell: Mode 1), with the words such a create is refused in (default_reason); else the runner.
+  else if (box) {
+    const reason = typeof caps?.places?.default_reason === "string" ? caps.places.default_reason.replace(/\.$/, "") : "";
+    const goes = caps?.places?.default_place === null ? `a new agent must name its place: a box, or the runner${reason ? ` (${reason})` : ""}` : "new agents run on the runner";
+    add("docker", "Docker", "warn", `No Docker box: ${box.reason ?? "unavailable"}. An agent that needs a computer (bash, files) fails to start, and ${goes}.`, { fix: dockerFix(box.reason ?? ""), docs: DOCS.docker });
+  }
   else {
     const info = exec("docker", ["info", "--format", "{{.ServerVersion}}"]);
     const said = `${info.stderr ?? ""}`.trim().split("\n")[0];
