@@ -10,8 +10,9 @@
 //          (titles agentrun-<tool>: <tool>; MCP and execute ask, edits do not; a refused native call still reports
 //          completed), or "goose-1.59" (as "goose", but titled as Goose 1.59.2 titles a call of an extension's tool:
 //          `agentrun: <tool, its underscores as spaces>`), or "antigravity" (an MCP call as agy 1.5.14 announces and asks
-//          about it: named `mcp_agentrun_<tool>`, titled `Run mcp_agentrun_<tool>`, its rawInput the call's arguments
-//          with agy's own `toolSummary` beside them, which the MCP call itself never carries; options Allow and Deny);
+//          about it: named `mcp_<server>_<tool>`, titled `Run mcp_<server>_<tool>`, <server> the name the client gave
+//          its MCP server, its rawInput the call's arguments with agy's own `toolSummary` beside them, which the MCP
+//          call itself never carries, unless the arguments have a toolSummary of their own; options Allow and Deny);
 //   titleSummary: with style "goose-1.59", the summary Goose 1.59.2 writes after such a title for a call whose
 //                 arguments it summarizes (a path): `agentrun: <tool> · <titleSummary>`;
 //   askMcp: ask permission before an MCP call (default: by style); askNative: the native kinds that ask;
@@ -104,7 +105,8 @@ const pgid = (() => {
   }
 })();
 said({ type: "start", env: Object.keys(process.env).sort(), home, cwd: process.cwd(), pgid, ...(config.cursorDirs ? { cursorDir, deniesWrite } : {}) });
-const titleOf = (tool) => (style === "cursor" ? `agentrun-${tool}: ${tool}` : style === "antigravity" ? `Run mcp_agentrun_${tool}` : style === "goose-1.59" ? `agentrun: ${tool.replace(/_/g, " ")}${config.titleSummary ? ` · ${config.titleSummary}` : ""}` : `agentrun__${tool}`);
+/** The title of a call of our `tool`, the client's MCP server given as `server` (agy names it in its title). */
+const titleOf = (tool, server = "agentrun") => (style === "cursor" ? `agentrun-${tool}: ${tool}` : style === "antigravity" ? `Run mcp_${server}_${tool}` : style === "goose-1.59" ? `agentrun: ${tool.replace(/_/g, " ")}${config.titleSummary ? ` · ${config.titleSummary}` : ""}` : `agentrun__${tool}`);
 const late = style === "cursor" && config.announce === "late";
 const models = config.models ? { currentModelId: config.models[0].modelId, availableModels: config.models } : undefined;
 /** The credential Cursor derives from its key, in its private HOME: here the key's sha256, never the key. */
@@ -228,7 +230,7 @@ async function openSession(id, params, history) {
   const servers = params.mcpServers ?? [];
   const server = servers.find((s) => s.name === "agentrun") ?? servers[0];
   const mcp = server ? await mcpClient(server) : undefined;
-  const session = { id, history, mcp, turn: undefined, system: params.systemPrompt ? text(params.systemPrompt.content ?? []).join("\n") : undefined };
+  const session = { id, history, mcp, server: server?.name ?? "agentrun", turn: undefined, system: params.systemPrompt ? text(params.systemPrompt.content ?? []).join("\n") : undefined };
   sessions.set(id, session);
   return session;
 }
@@ -265,8 +267,9 @@ async function takeTurn(client, session, prompt, signal) {
     if ("call" in s) {
       const id = `call_${step - 1}`;
       const args = s.args ?? {};
+      const reported = "toolSummary" in args ? args : { ...args, toolSummary: `Call ${s.call}` };
       const update = style === "antigravity"
-        ? { toolCallId: id, name: `mcp_agentrun_${s.call}`, title: titleOf(s.call), kind: "other", status: "pending", rawInput: { ...args, toolSummary: `Call ${s.call}` }, args: { ...args, toolSummary: `Call ${s.call}` } }
+        ? { toolCallId: id, name: `mcp_${session.server}_${s.call}`, title: titleOf(s.call, session.server), kind: "other", status: "pending", rawInput: reported, args: reported }
         : { toolCallId: id, title: titleOf(s.call), kind: "other", status: "pending", rawInput: args };
       const entry = { kind: "call", id, tool: s.call, args, status: "pending" };
       session.history.push(entry);
@@ -415,7 +418,7 @@ const app = agent({ name: "fake-acp" })
     const session = await openSession(id, params, []);
     save(session);
     writeAuth();
-    said({ type: "new", sessionId: id, mcp: params.mcpServers.map((s) => s.type ?? "stdio"), system: session.system });
+    said({ type: "new", sessionId: id, mcp: params.mcpServers.map((s) => s.type ?? "stdio"), names: params.mcpServers.map((s) => s.name), system: session.system });
     return { sessionId: id, ...(models ? { models } : {}) };
   })
   // Not in the SDK's stable methods: Cursor's own (unstable ACP) method, so its params are taken as they come.
@@ -436,7 +439,7 @@ const app = agent({ name: "fake-acp" })
       if (h.kind === "user") await client.notify("session/update", { sessionId: session.id, update: { sessionUpdate: "user_message_chunk", content: { type: "text", text: h.text } } });
       if (h.kind === "say" && h.text) await client.notify("session/update", { sessionId: session.id, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: h.text } } });
       if (h.kind === "call" || h.kind === "native") {
-        await client.notify("session/update", { sessionId: session.id, update: { sessionUpdate: "tool_call", toolCallId: h.id, title: h.kind === "call" ? titleOf(h.tool) : h.title, status: "pending", rawInput: h.args ?? {} } });
+        await client.notify("session/update", { sessionId: session.id, update: { sessionUpdate: "tool_call", toolCallId: h.id, title: h.kind === "call" ? titleOf(h.tool, session.server) : h.title, status: "pending", rawInput: h.args ?? {} } });
         await client.notify("session/update", { sessionId: session.id, update: { sessionUpdate: "tool_call_update", toolCallId: h.id, status: h.status === "pending" ? "failed" : h.status } });
       }
     }
