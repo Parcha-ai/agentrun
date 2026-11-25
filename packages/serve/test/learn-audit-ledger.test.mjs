@@ -873,3 +873,38 @@ test("(known answer) served runs graded wrong with the right answer given hold t
   const record = (await promotionsOf(w.server.settings, "agent-1")).at(-1);
   assert.deepEqual([record.decided, record.audit.disagreements.map((one) => [one.served, one.graded, one.expected])], ["hold", [["served-1", true, '{"answer":44}'], ["served-2", true, '{"answer":44}']]], JSON.stringify(record));
 });
+
+// The owner's verdict on a served answer stands: graded right, it agrees, however its expected answer words the rest.
+// The served answer is {"answer":42,"reason":"calculated"} (with the `sure` the workflow's schema asks for), the grade's
+// expected answer {"answer":42,"reason":"checked"}.
+const WORDED = { answer: 42, sure: true, reason: "calculated" };
+test("(known answer) a served answer graded right agrees, though its grade's expected answer words it otherwise: no hold", { timeout: 300_000 }, async (t) => {
+  const w = await world(t, { learning: { audit_every: 1, hold_window: 2, hold_disagree: 1 }, submit: () => WORDED });
+  const grade = gradeIn(w);
+  await w.start("served-1", "Question 71");
+  await grade("served-1", true, { answer: 42, reason: "checked" });
+  const rows = (await w.audits()).filter((one) => one.source === "grade");
+  assert.deepEqual(rows.map((one) => [one.run, one.agreed]), [["served-1", true]]);
+  const next = await w.start("served-2", "Question 72");
+  assert.equal(next.metrics?.path, "workflow", JSON.stringify(next.metrics));
+});
+
+// Graded wrong: on agree_on, only those fields judge the served answer, against the expected answer's values; on the
+// whole answer, it disagrees.
+test("(known answer) a served answer graded wrong: on agree_on, right on its fields agrees and wrong on one disagrees; on the whole answer it disagrees", { timeout: 300_000 }, async (t) => {
+  const on = await world(t, { learning: { audit_every: 1, hold_window: 4, hold_disagree: 4, agree_on: ["answer"] }, submit: () => WORDED });
+  const gradeOn = gradeIn(on);
+  await on.start("served-1", "Question 81");
+  await gradeOn("served-1", false, { answer: 42, reason: "checked" });
+  await on.start("served-2", "Question 82");
+  await gradeOn("served-2", false, { answer: 7 });
+  assert.deepEqual((await on.audits()).filter((one) => one.source === "grade").map((one) => [one.run, one.agreed]), [["served-1", true], ["served-2", false]]);
+  const whole = await world(t, { learning: { audit_every: 1, hold_window: 4, hold_disagree: 4 }, submit: () => WORDED });
+  const gradeWhole = gradeIn(whole);
+  await whole.start("served-1", "Question 91");
+  await gradeWhole("served-1", false, { answer: 42, reason: "checked" });
+  // Marked wrong though its expected answer is the served one: the owner said wrong, so it disagrees.
+  await whole.start("served-2", "Question 92");
+  await gradeWhole("served-2", false, { answer: 42 });
+  assert.deepEqual((await whole.audits()).filter((one) => one.source === "grade").map((one) => [one.run, one.agreed]), [["served-1", false], ["served-2", false]]);
+});
