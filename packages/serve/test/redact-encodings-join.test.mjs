@@ -98,3 +98,14 @@ test("a dict in a call's arguments with no Python escape is read through both le
   assert.equal(withheldWhole(code(String.raw`RE\tST`), ["HEADREST"]), true);
   assert.equal(withheldWhole(code(String.raw`RE\tSX`), ["HEADREST"]), false);
 });
+
+test("a dict in a call's arguments is read one level down through one level of escapes and through two: a backslash of its own, a quote next to \\\\'", () => {
+  // A backslash the dict's writer left as it is ("C:\new" in a note): one level of escapes reads it, two would read a
+  // newline. A quote in a Python string, written "\"" by JSON beside the "\\'" Python's escape gives.
+  const note = JSON.stringify({ note: String.raw`{'p': 'see C:\new', 'q': 'rest more'}` });
+  assert.equal(withheldWhole(note, [String.raw`C:\newrest`]), true);
+  assert.equal(withheldWhole(note, [String.raw`C:\newrust`]), false);
+  const code = JSON.stringify({ code: String.raw`d = {'a': 'see H"E\'AD', 'b': 'REST more'}` });
+  assert.equal(withheldWhole(code, [`H"E'ADREST`]), true);
+  assert.equal(withheldWhole(code, [`H"E'ADRUST`]), false);
+});
