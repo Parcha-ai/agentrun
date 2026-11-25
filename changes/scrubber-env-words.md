@@ -10,7 +10,7 @@ The scrubber reads a call's command for an environment dump by its tokens, not b
 - `ps` has an `e` option;
 - the line is longer than is read.
 
-An env token in an argument or a file's name is read the same way (`grep env notes.txt`, `ls src/env.ts`, a commit message naming `env`). That over-cut is kept on purpose: it fails closed.
+An env token in an argument or a file's name is read the same way (`grep env notes.txt`, `ls src/env.ts`, a commit message naming `env`). That over-cut is kept on purpose: it fails closed. A dotfile `.env` named in the command (`cat .env.example`, `source .env`) is a file, which `env-file` reads, not an env read; `process.env` and `Bun.env` are still read.
 
 In a transcript with no command given, a `$`, `%` or `❯` prompt line whose command prints the environment cuts everything after it up to the next such prompt or a cut marker. A multi-line value, or a `#` or `>` line inside the output, no longer ends the cut.
 
