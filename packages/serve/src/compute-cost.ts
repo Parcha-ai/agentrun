@@ -31,6 +31,16 @@ import type { Refusal } from "@parcha/agentrun-kernel";
 import { type PaidBooking, paidStep } from "./paid-calls.js";
 import { logLine } from "./print.js";
 
+/** Each computer step that is owed, by name: booked and held past the cap's rule (kernel/cap port.ts), for money its
+ *  provider is owed once the computer is made. The one place this file sets owed (owed-pin.test.mjs pins the list and
+ *  each name's one use). A computer not yet made is never held owed: the hold before its create is the cap's to refuse. */
+const OWED = {
+  /** The time it ran, booked each stretch and at its settle. */
+  bookedTime: { owed: true },
+  /** The first stretch of a computer already made. */
+  madeFirstStretch: { owed: true },
+} as const;
+
 /** The resources computer time is priced by. */
 export type ComputeResource = "vcpu" | "memory" | "gpu" | "disk";
 /** The unit each resource's time is counted in. */
@@ -201,7 +211,7 @@ export function computeMeter(options: ComputeMeterOptions): ComputeMeter {
       await Promise.all(one.priced.map(async (resource) => {
         const usd = resource.usdPerSecond * (ms / 1000);
         const tag = computeTag(resource);
-        const stepped = await paidStep(paid, undefined, { name: `${one.provider}'s computer time (${tag})`, holdUsd: usd, basis: `${ms / 1000} s of ${resource.perSecond} ${COMPUTE_UNITS[resource.resource]} at $${resource.rate}`, by: one.provider, tool: COMPUTE_TOOL, tag, owed: true, ref: `compute:${one.provider}:${one.providerId}:${tag}@${from}-${from + ms}` }, async () => undefined, () => usd).catch((error: unknown) => ({ refused: String((error as Error)?.message ?? error) }));
+        const stepped = await paidStep(paid, undefined, { name: `${one.provider}'s computer time (${tag})`, holdUsd: usd, basis: `${ms / 1000} s of ${resource.perSecond} ${COMPUTE_UNITS[resource.resource]} at $${resource.rate}`, by: one.provider, tool: COMPUTE_TOOL, tag, ...OWED.bookedTime, ref: `compute:${one.provider}:${one.providerId}:${tag}@${from}-${from + ms}` }, async () => undefined, () => usd).catch((error: unknown) => ({ refused: String((error as Error)?.message ?? error) }));
         if ("refused" in stepped) log(logLine("compute_spend_unbooked", { said: `${ms / 1000} s of ${one.provider} ${one.providerId}'s ${tag} time was not booked on the run's ledger (${stepped.refused.slice(0, 200)})` }));
       }));
     }
@@ -275,7 +285,7 @@ export function computeMeter(options: ComputeMeterOptions): ComputeMeter {
       // its create let go. The stretch's ticks wait for it, so a tick never drops a hold this has not set yet. Made
       // while the run's spec is built, the hold waits for the spec's cap: then nothing waits on it (a stop while the spec
       // fails would wait forever), and the hold, once the cap can judge, is let go at once if the computer was stopped.
-      const first = holdOf(provider, stretchUsd(priced), basisOf(provider, priced), { owed: true }).then((answer) => {
+      const first = holdOf(provider, stretchUsd(priced), basisOf(provider, priced), OWED.madeFirstStretch).then((answer) => {
         if ("hold" in answer) {
           if (one.stopped) void answer.hold.drop();
           else one.hold = answer.hold;
