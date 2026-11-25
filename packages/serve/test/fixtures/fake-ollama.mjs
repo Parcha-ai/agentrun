@@ -105,18 +105,24 @@ export function ollamaHandler({ models: given = SYNTH_MODELS, reply = () => ({ t
 
 /** A fake Ollama on 127.0.0.1, closed at the test's end: `url` (http://127.0.0.1:<port>), `host` (127.0.0.1:<port>, the
  *  form OLLAMA_HOST usually takes), `got`, `remove(tag)` and `slowTags(ms)` (ollamaHandler's). `port`: one to listen on (an Ollama started late, on the
- *  address closedPort gave), else any. */
-export async function fakeOllama(t, { port: asked = 0, ...options } = {}) {
+ *  address closedPort gave), else any. `down`: its switch, off: every connection is reset as it comes, so it answers
+ *  nothing, as an Ollama that is not running, on a port the test still holds (no other listener can take it, as one can
+ *  take closedPort's); `setDown(false)` turns it on. */
+export async function fakeOllama(t, { port: asked = 0, down = false, ...options } = {}) {
   const got = { tags: 0, show: [], chat: [] };
   const handle = ollamaHandler({ ...options, got });
   const server = createServer(handle);
+  let off = down;
+  server.on("connection", (socket) => {
+    if (off) socket.destroy();
+  });
   await new Promise((resolve) => server.listen(asked, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => {
     server.closeAllConnections();
     server.close(() => resolve());
   }));
   const { port } = server.address();
-  return { url: `http://127.0.0.1:${port}`, host: `127.0.0.1:${port}`, got, remove: handle.remove, slowTags: handle.slowTags };
+  return { url: `http://127.0.0.1:${port}`, host: `127.0.0.1:${port}`, got, remove: handle.remove, slowTags: handle.slowTags, setDown: (value) => void (off = value) };
 }
 
 /** A loopback port nothing listens on: one a server held, then closed. */

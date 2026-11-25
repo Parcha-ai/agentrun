@@ -9,6 +9,9 @@ import { DockerProvider } from "../dist/docker.js";
 import { EGRESS_IMAGE, sweep } from "../dist/index.js";
 import { allowed, CODE_DIR, container, egressNetwork, egressVolume, fakeDocker, idOf, LOCAL, PACKAGE_JSON, proxyReport, valuesOf } from "./fake-docker.mjs";
 
+/** Each proxy variable `docker run` sets empty, so the docker CLI fills none in from config.json's proxies. */
+const NO_PROXY_ENV = ["HTTP_PROXY=", "http_proxy=", "HTTPS_PROXY=", "https_proxy=", "FTP_PROXY=", "ftp_proxy=", "NO_PROXY=", "no_proxy=", "ALL_PROXY=", "all_proxy="];
+
 const ALLOW = ["pypi.org", "*.pythonhosted.org", "93.184.215.0/24"];
 const SPEC = { image: "debian:bookworm-slim", lifetimeMs: 600_000, network: { allow: ALLOW } };
 let requests = 0;
@@ -95,6 +98,7 @@ test("create() with an allowlist makes the egress bridge, the volume, starts the
 		"run", "--detach", "--name", volume,
 		"--label", `agentrun.computer.egress=${name}`, "--label", `agentrun.computer.deadline=${deadline}`, "--label", "team=a", "--label", attempt,
 		"--user", DEFAULT_USER, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--ipc", "private", "--cgroupns", "private",
+		...NO_PROXY_ENV.flatMap((pair) => ["--env", pair]),
 		"--pids-limit", "64", "--memory", "256m", "--memory-swap", "256m", "--cpu-period", "100000", "--cpu-quota", "50000", "--ulimit", "nofile=1024:1024",
 		"--log-driver", "json-file", "--log-opt", "max-size=1m", "--log-opt", "max-file=2",
 		"--network", "agentrun-egress",
@@ -106,7 +110,7 @@ test("create() with an allowlist makes the egress bridge, the volume, starts the
 	]);
 	assert.match(EGRESS_IMAGE, /^node:22\.\d+\.\d+-trixie-slim@sha256:[0-9a-f]{64}$/, "the proxy's image is pinned by digest");
 	assert.deepEqual(valuesOf(computer, "--network"), ["none"], "the computer itself has no network");
-	assert.deepEqual(valuesOf(computer, "--env"), ["HOME=/work"], "init's relay gives every program its proxy variables, not docker run");
+	assert.deepEqual(valuesOf(computer, "--env"), ["HOME=/work", ...NO_PROXY_ENV], "init's relay gives every program its proxy variables, not docker run, which sets each empty so config.json's proxies fill in none");
 	assert.deepEqual(valuesOf(computer, "--mount").at(-1), `type=volume,src=${volume},dst=/opt/agentrun/egress,readonly`);
 	assert.deepEqual(computer.slice(-6), ["debian:bookworm-slim", "init", "--deadline", deadline, "--egress", "/opt/agentrun/egress/egress.sock"]);
 	assert.deepEqual(names().sort(), [name, volume].sort());
@@ -127,7 +131,7 @@ test("create() with none makes no volume, no proxy, no proxy variables and no re
 	assert.deepEqual(calls().map((args) => args[0]), ["info", "run", "inspect", "exec"]);
 	const run = computerRunOf(calls());
 	assert.deepEqual(valuesOf(run, "--network"), ["none"]);
-	assert.deepEqual(valuesOf(run, "--env"), ["HOME=/work"]);
+	assert.deepEqual(valuesOf(run, "--env"), ["HOME=/work", ...NO_PROXY_ENV], "no proxy variables: each set empty, so config.json's proxies fill in none");
 	assert.equal(run.includes("--pull"), false);
 	assert.equal(run.includes("--egress"), false);
 	assert.equal(valuesOf(run, "--mount").some((mount) => mount.includes("egress")), false);

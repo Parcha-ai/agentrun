@@ -402,7 +402,9 @@ export type AdapterEvent =
   /** The model's message ended inside the turn, and another may follow in it (a CLI that resumes a cut answer itself):
    *  what it said so far is one message. */
   | { type: "text_end" }
-  | { type: "tool_start"; callId: string; name: string; args: unknown; parent?: string }
+  /** `refused`: the harness turned the call down itself (a tool the session does not have), so `name` is only the
+   *  model's words, never a tool of the session's. */
+  | { type: "tool_start"; callId: string; name: string; args: unknown; parent?: string; refused?: true }
   | { type: "tool_end"; callId: string; name: string; isError: boolean; result?: string; truncated?: true }
   /** `stopReason: "length"` only when the turn's final answer was cut at the model's output limit (unfinished), with that
    *  answer's output tokens when the adapter knows them: a host reads the answer as cut, never as the run's end. `capCut`:
@@ -511,6 +513,10 @@ export interface AdapterFacts {
   /** It defers a run's MCP tools behind a tool search of its own (Claude Code's ToolSearch), so the host offers no
    *  `tools_search` or `tools_call` beside it. Absent: the host's are offered when a run's catalog tools are deferred. */
   readonly ownToolSearch?: true;
+  /** Its model proxy forwards with the fetch its launch hands it (ModuleLaunch.fetch, a provider's `fetch`), so a model
+   *  only that fetch reaches (one the host's route translates onto its wire: an Ollama model on Messages or Responses) is
+   *  its to run. Absent: the host offers it no such model, names none as its default, and refuses one a run names. */
+  readonly forwardsRoute?: true;
   /** The model as the harness names it (Anthropic's id has no dot). */
   normalizeModel(model: { provider: string; modelId: string }): { provider: string; modelId: string };
   /** How it is installed and pinned: the line that installs it into a project, the package it pins, and the codes its

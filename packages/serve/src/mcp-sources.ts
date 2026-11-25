@@ -3,10 +3,12 @@
 // mcp:<toolkit>/<tool>). It is recorded when the server is saved, from what made it, and never read off its address or
 // its name: the Composio preset records composio and its toolkit; a server on the GitHub App's tokens (auth github_app)
 // is github/github; anything else is url, with the toolkit its owner gives it (a save's `toolkit`, Settings), else none.
-// The record is one row of store.settings per server (mcpSourceKey), a write of its own after the server's: it names the
-// server row it was written for (`of`, the row's created_at, which a save over the row keeps), and is read only for that
-// row. One left behind by a removal that raced a save, or by a removal cut short, is never read as what a server saved
-// again under the name is.
+// The record is one row of store.settings per server (mcpSourceKey). The token's first save of a name writes it in the
+// store transaction that writes the row (McpTokensMark made); any other save writes it after the row, a write of its own.
+// It names the server row it was written for (`of`, the row's created_at, which a save over the row keeps), and is read
+// only for that row. A removal drops it only while it is still the one the removal read (Settings.removeIf), so one a
+// server saved again under the name wrote meanwhile stays; one left behind by a removal cut short is never read as what a
+// server saved again under the name is.
 // The record also says who saved the row: `by: "token"` when the API token saved it (a request the secret-write gate read,
 // server.ts), for the gate's check that the token deletes only a server it saved (mcp-secret-writes.ts). A row the owner
 // saved has no mark, and stays the owner's: the token's save over it leaves it unmarked, and the owner's save over the
@@ -31,8 +33,7 @@ export function standInGiven(body: Record<string, unknown>, toolkit: string | nu
   return undefined;
 }
 
-/** The store.settings key a server's record lives under. */
-export const mcpSourceKey = (name: string): string => `mcp.source/${name}`;
+export { mcpSourceKey } from "./store/mcp-record-keys.js";
 
 const GITHUB: SourceRecord = { source: "github", toolkit: "github" };
 const NONE: SourceRecord = { source: "url", toolkit: null };

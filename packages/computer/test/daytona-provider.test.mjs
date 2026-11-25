@@ -960,6 +960,42 @@ test("connect dial: dialLog is one read of agentrun-dial's command's log, the to
 	assert.equal(setup().provider.host.dialLog, undefined, "a host on exec has no dialLog");
 });
 
+test("connect dial: dialExit reads agentrun-dial's command in its session, undefined while it runs; redial starts it once more in a session of its own, by dialLaunch's line, and dialLog and dialExit read that one", async () => {
+	const SESSION = `/toolbox/${REF.id}/process/session/agentrun-dial`;
+	const AGAIN = `/toolbox/${REF.id}/process/session/agentrun-dial-2`;
+	let exited;
+	const { host, rec, seen } = dialDaytona({
+		routes: {
+			[`GET ${SESSION}`]: () => ({ body: { sessionId: "agentrun-dial", commands: [{ id: "cmd-other", exitCode: 0 }, { id: "cmd-dial", command: "...", ...(exited === undefined ? {} : { exitCode: exited }) }] } }),
+			[`POST ${AGAIN}/exec`]: ({ body }) => {
+				seen.push(`exec again ${body.command}`);
+				return { body: { cmdId: "cmd-again" } };
+			},
+			[`GET ${AGAIN}`]: { body: { sessionId: "agentrun-dial-2", commands: [{ id: "cmd-again" }] } },
+			[`GET ${AGAIN}/command/cmd-again/logs`]: { text: "\x01\x01\x01second start\n" },
+		},
+	});
+	assert.equal(typeof host.dialExit, "function");
+	assert.equal(await host.dialExit(REF.id, { timeoutMs: 2_000 }), undefined, "no start by this host");
+	await assert.rejects(host.redial(REF.id, { timeoutMs: 2_000 }), /no agentrun-dial was started in the sandbox/);
+	await host.create(dialRequest(), { timeoutMs: 2_000 });
+	assert.equal(await host.dialExit(REF.id, { timeoutMs: 2_000 }), undefined, "it runs");
+	exited = 3;
+	assert.equal(await host.dialExit(REF.id, { timeoutMs: 2_000 }), 3, "its own command's exit, not another's");
+	await host.redial(REF.id, { timeoutMs: 2_000 });
+	assert.ok(seen.includes("session agentrun-dial-2"), seen.join(", "));
+	const line = seen.find((one) => one.startsWith("exec again "))?.slice("exec again ".length);
+	const firstLine = rec.requests.find((r) => r.method === "POST" && r.path === `${SESSION}/exec`)?.body.command;
+	assert.equal(line, firstLine, "the line create's start ran");
+	assert.ok(line.endsWith("exec /usr/local/bin/agentrun-dial"), line);
+	assert.ok(!line.includes(DIAL_TOKEN), "the token is on no command line");
+	assert.equal(await host.dialExit(REF.id, { timeoutMs: 2_000 }), undefined, "the second start runs");
+	assert.equal(await host.dialLog(REF.id, { timeoutMs: 2_000 }), "second start\n");
+	assert.ok(rec.requests.every((r) => r.method !== "DELETE"));
+	assert.equal(setup().provider.host.dialExit, undefined, "a host on exec has no dialExit");
+	assert.equal(setup().provider.host.redial, undefined, "nor redial");
+});
+
 test("connect dial: no Archil mount, no GPU and not Daytona's default snapshot, each refused in words; labels refused as on exec; no value but exec or dial", () => {
 	const { provider, rec } = setup({}, { connect: "dial", dial: dialOf(), archilEgress: EGRESS });
 	const caps = provider.capabilities();

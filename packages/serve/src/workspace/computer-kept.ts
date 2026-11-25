@@ -33,15 +33,23 @@
 // names the runner and its process (`runner`, `incarnation`: the presence incarnation, runner/presence.ts), and while
 // that runner is there under that incarnation and the keep lasts, the claim rule gives the run to that runner alone
 // (store KEPT_PREFIX: no other runner's poll picks it, nothing is claimed and given back). A stop or cancel is exempt:
-// any runner claims the run at once and ends it with no loop, never taking the row (runner.ts claimMore), and the
-// row's runner ends the machine at its time, or at its janitor's pass once the run is over. Once it is gone (its row stale
-// for PRESENCE_STALE_MS, a new incarnation, a refusal) any runner claims the run; a claim that then finds the machine gone
-// says so (computerLostWords), and its janitor never ends a row pinned to another runner still there (sweepKept): that
-// runner's own timer or janitor does. A machine any runner reaches by its id (an exec vendor's sandbox, a phone) is not
-// pinned, and moves.
+// any runner claims the run at once and ends it with no loop, never taking the row (runner.ts claimMore). The run is
+// final then, so its machine has no user: the run's end (run-end-computers.ts) or any janitor's provider sweep deletes it
+// wherever its provider lists it, and the row's runner ends the row at its time or its janitor's pass, reading the
+// machine gone where it is, as when it deletes it itself. Once it is gone (its row stale
+// for RUNNER_STALE_MS, a new incarnation) or refusing claims, any runner claims the run; a claim that then can't reach
+// the machine says why: its runner is gone (computerLostWords), or it is there and ends it (computerHeldWords). A
+// refusing runner is still there (store KEPT_PREFIX). The claim that could not reach the machine puts the row back
+// marked ending, whatever it then reads of that runner (restoreKept: the claim goes on on a new machine, so that one is
+// the run's no more and no claim takes it back), and no janitor but that runner's ends a row pinned to a runner still
+// there (sweepKept): that runner's own timer (endKept finishes a row so marked) or janitor does; once it is gone, any
+// janitor does. No park writes over a row pinned to another runner still there (keepKept): it keeps nothing then, and
+// its machine goes as at the run's end. So a machine a claim took and could not reach, or a park did not keep, is not
+// left with no row and no runner to end it, short of the claim's process dying between its take and its give-back. A
+// machine any runner reaches by its id (an exec vendor's sandbox, a phone)
+// is not pinned, and moves.
 import { type ComputerProvider, connectOf, type MountKind, type ProviderEntry } from "@parcha/agentrun-computer";
-import { PRESENCE_STALE_MS } from "../runner/presence.js";
-import { FINAL_STATES, KEPT_PREFIX as KEPT_ROWS, type Runners, type Settings, type Store } from "../store/index.js";
+import { type Claim, FINAL_STATES, KEPT_PREFIX, RUNNER_STALE_MS, type Runners, type Settings, type Store } from "../store/index.js";
 
 /** How long a park keeps the run's computer for its resume: 10 minutes. */
 export const KEEP_MS = 10 * 60_000;
@@ -52,7 +60,8 @@ export const KEEP_WORDS = `${KEEP_MS / 60_000} minutes`;
  *  ended at a refusal of the cap's (paused there), or its learned workflow's call's approval. */
 export type ParkCause = "approval" | "answer" | "cap" | "refusal" | "workflow";
 
-/** The live view's end at a park: why it parked, and the time its computer is kept until (ms). */
+/** The live view's end at a park: why it parked, and the time its computer is kept until (ms), on the parking process's
+ *  own clock (the viewer counts down from it there), not the row's store-clock `until`. */
 export type ParkedEnd = { readonly parked: ParkCause; readonly until: number };
 
 /** What the person is waited for, by the park's cause. */
@@ -76,16 +85,30 @@ export const computerLapsedWords = (kind: string): string => `The ${kind} wasn't
  *  a runner's name carries its host's. */
 export const computerLostWords = (kind: string): string => `The ${kind} wasn't kept: the runner that kept it is gone.`;
 
+/** Why the run's computer at its resume is a new one: the one kept at its park was pinned to the runner that kept it,
+ *  that runner was still there but could not take the run back (refusing claims, or its word late), and the claiming
+ *  runner could not reach the machine, so it went on on a new one and that runner ends the kept one (restoreKept). Never
+ *  names the runner. */
+export const computerHeldWords = (kind: string): string => `The ${kind} wasn't kept: another runner kept it and couldn't take the run, so that runner ends it.`;
+
 /** The live view's words once the kept computer's time passed, the run still parked. */
 export const lapsedWords = (kind: string): string => `${computerLapsedWords(kind)} A new one starts when the run goes on.`;
-/** The settings key prefix of the kept computers, one row per run (the store's, which its claim rule reads). */
-export const KEPT_PREFIX = KEPT_ROWS;
-/** The settings key of `runId`'s kept computer. */
+
+/** The live view's words, the run still parked, for a kept computer whose end began before its time: a claim that could
+ *  not reach it went on without it (restoreKept), or a later park kept nothing beside another runner's row (keepKept).
+ *  Its time did not pass, and nothing happens at it for this run, so no reason is given. */
+export const unkeptWords = (kind: string): string => `The ${kind} wasn't kept. A new one starts when the run goes on.`;
+/** The settings key of `runId`'s kept computer (the store's KEPT_PREFIX, which its claim rule reads). */
 export const keptKeyOf = (runId: string): string => `${KEPT_PREFIX}${runId}`;
 
 /** A computer kept at a park: its provider (by id), its kind, its ref, the claim epoch its labels carry (a later claim
- *  reads its mount back under that epoch), and the time it is kept until (ms). `ending`: its delete has begun and may
- *  not have finished; `ended`: it is gone. Either way no claim takes it. */
+ *  reads its mount back under that epoch), and the time it is kept until (ms). `until` is on the store's clock (the
+ *  deadlines': the database's on Postgres, Store.sealedKeys.clock), stamped from it at the park, and every reader judges
+ *  it on that clock: the claim rule's pin (in SQL), a claim's take-back, the janitor's pass, the run's computer view and
+ *  the run read's `computer.released` (computer-held-routes.ts releasedAtPark).
+ *  The parking runner's own timer counts KEEP_MS from the stamp on its own clock. `ending`: its delete has begun and may
+ *  not have finished, or a later claim went on without it and left it to its runner to end (restoreKept, keepKept);
+ *  `ended`: it is gone. Either way no claim takes it. */
 export type Kept = {
   readonly provider: string;
   readonly kind: "desktop" | "phone" | "sandbox";
@@ -136,42 +159,31 @@ export type KeptHolders = {
   readonly self?: KeptHolder;
 };
 
-/** The one rule both janitor sweeps leave a kept machine by (sweepKept, and the provider sweep through sparedKept): its
- *  row is pinned to a runner other than `self` that is still there under the row's incarnation (seen within
- *  PRESENCE_STALE_MS). Only that runner's engine or hub has the machine, so a delete from here either finds nothing (and
- *  marks the row ended, leaking it) or, where both runners list it (a dial vendor's account, a shared Docker engine),
- *  ends a machine its runner still keeps. The runners are read once per maker's call. A read that fails counts every
- *  pinned row as held elsewhere: ending another runner's machine blind would leak it or take it. */
+/** The one rule the janitor's kept pass leaves a kept row by (sweepKept), a park leaves another's row by (keepKept), and a
+ *  claim gives a row back by (computer-for-claim.ts reattach): its row is pinned to a runner other than `self` that is
+ *  still there under the row's incarnation (seen within RUNNER_STALE_MS, refusing claims or not: store KEPT_PREFIX
+ *  states the one meaning, and why the claim rule alone also asks that it claims). Only that runner's engine or hub has
+ *  the machine, so a delete from here either finds nothing (and marks the row ended, leaking it) or, where both runners
+ *  list it (a dial vendor's account, a shared Docker engine), ends a machine its runner still keeps. The provider sweep
+ *  asks nothing of this: it ends only a machine past its deadline or whose run is final, which has no user. The runners
+ *  are read once per maker's call. A read that fails counts every pinned row as held elsewhere: ending another runner's
+ *  machine blind would leak it or take it. */
 export function heldElsewhere(holders: KeptHolders): (kept: Pick<Kept, "runner" | "incarnation">) => Promise<boolean> {
   let there: Promise<Set<string> | "unknown"> | undefined;
   return async (kept) => {
     const { runners } = holders;
     if (kept.runner === undefined || keptBy(kept, holders.self) || !runners) return false;
-    there ??= runners.live(PRESENCE_STALE_MS).then((live) => new Set(live.map((one) => `${one.runner}\n${one.incarnation}`)), () => "unknown" as const);
+    there ??= runners.live(RUNNER_STALE_MS).then((live) => new Set(live.map((one) => `${one.runner}\n${one.incarnation}`)), () => "unknown" as const);
     const live = await there;
     return live === "unknown" || live.has(`${kept.runner}\n${kept.incarnation}`);
   };
-}
-
-/** The kept machines a provider sweep leaves this pass, by provider id and computer id: each row not yet ended whose
- *  machine is held elsewhere (heldElsewhere, the kept pass's own rule). Throws when the rows can't be read: the sweep
- *  then can't tell which machines are kept, and must not guess. */
-export async function sparedKept(deps: KeptHolders & { readonly settings: Pick<KeptSettings, "all"> }): Promise<(provider: string, id: string) => boolean> {
-  const rows = await deps.settings.all({ prefix: KEPT_PREFIX });
-  const elsewhere = heldElsewhere(deps);
-  const spared = new Set<string>();
-  for (const row of rows) {
-    const kept = keptOf(row.value);
-    if (kept && !kept.ended && (await elsewhere(kept))) spared.add(`${kept.provider}\n${kept.id}`);
-  }
-  return (provider, id) => spared.has(`${provider}\n${id}`);
 }
 
 /** How long one delete of a kept computer may take at the janitor's pass: past it the pass goes on, the row is left
  *  ending, and the next pass deletes it again (a Docker command has no timeout of its own). */
 export const KEPT_DELETE_MS = 60_000;
 /** The settings the kept rows live in. */
-export type KeptSettings = Pick<Settings, "get" | "put" | "replaceIf" | "removeIf" | "remove" | "all">;
+export type KeptSettings = Pick<Settings, "get" | "put" | "putIfAbsent" | "replaceIf" | "removeIf" | "remove" | "all">;
 
 /** A row's value as a Kept, or undefined for anything else. */
 export function keptOf(value: unknown): Kept | undefined {
@@ -203,12 +215,52 @@ export async function readKept(settings: Pick<KeptSettings, "get">, runId: strin
   return keptOf(await settings.get(keptKeyOf(runId)));
 }
 
-/** Writes `kept` as `runId`'s kept computer: the claim that parks. Its fields in one order, so a later compare-and-set
- *  reads the same text. */
+/** Writes `kept` as `runId`'s kept computer, whatever the row held. Its fields in one order, so a later compare-and-set
+ *  reads the same text. A park writes through keepKept. */
 export async function writeKept(settings: Pick<KeptSettings, "put">, runId: string, kept: Kept): Promise<Kept> {
   const row = rowOf(kept);
   await settings.put(keptKeyOf(runId), row);
   return row;
+}
+
+/** How many times a park reads the row again after a write that lost to another between its read and its write. */
+const KEEP_TRIES = 3;
+
+/**
+ * Writes `kept` as `runId`'s kept computer at the claim's park, by compare-and-set: from no row (putIfAbsent), or from the
+ * row as read (replaceIf). Its row as written, or undefined when the park keeps nothing.
+ *
+ * A row not yet ended that is pinned to another runner still there (`holders`, heldElsewhere: store KEPT_PREFIX's one
+ * meaning of there) is never written over. That runner's end at its time (endKept) compares the row with the one its park
+ * wrote, so a row written over would leave its machine running with nothing to end it. The park keeps nothing then. Its
+ * row is marked ending where it is not yet: this claim went on without that machine, so no claim may take it back as the
+ * run's, and that runner's end still finishes a row so marked. Any other row is replaced, as before: no runner, this
+ * claim's own runner, a runner gone, or one ended. A write that lost reads again, up to KEEP_TRIES times; past them the
+ * park keeps nothing. Throws where the store throws.
+ *
+ * Every write is under `claim`, the parking claim (Settings.putIfAbsent's and replaceIf's claim: the fence checked in the
+ * write's own transaction). A park runs before its claim's park commit, so a claim that lost the run by then (its lease
+ * ran out, and another claim may have parked and kept since) is refused (Fenced, thrown) and writes and marks nothing:
+ * the row the run's current claim wrote stays as it wrote it.
+ */
+export async function keepKept(settings: Pick<KeptSettings, "get" | "putIfAbsent" | "replaceIf">, runId: string, kept: Kept, holders: KeptHolders, claim?: Claim): Promise<Kept | undefined> {
+  const key = keptKeyOf(runId);
+  const row = rowOf(kept);
+  const elsewhere = heldElsewhere(holders);
+  for (let tries = 0; tries < KEEP_TRIES; tries += 1) {
+    const was = await settings.get(key);
+    if (was === undefined) {
+      if (JSON.stringify(await settings.putIfAbsent(key, row, undefined, claim)) === JSON.stringify(row)) return row;
+      continue;
+    }
+    const other = keptOf(was);
+    if (other && !other.ended && (await elsewhere(other))) {
+      if (!other.ending) await settings.replaceIf(key, was, rowOf(other, "ending"), claim);
+      return undefined;
+    }
+    if (await settings.replaceIf(key, was, row, claim)) return row;
+  }
+  return undefined;
 }
 
 /** Takes `kept` off its row for the claim that resumes in time: true when this call took it, false when its end (or
@@ -217,15 +269,27 @@ export async function takeKept(settings: Pick<KeptSettings, "removeIf">, runId: 
   return settings.removeIf(keptKeyOf(runId), kept);
 }
 
+/** Puts `kept` back on `runId`'s row after a claim took it (takeKept) and could not reach its machine, pinned to another
+ *  runner, marked ending, whether that runner is there or not: the claim goes on on a new machine, so no claim takes that
+ *  one back as the run's (nor does the claim rule pin the run to it). That runner's end at its time (endKept, which
+ *  finishes a row its park wrote that reads ending) or its janitor's next pass deletes it; once it is gone, any janitor's
+ *  pass does. Only while the key has no row: nothing written since is replaced. True when the row reads so after. */
+export async function restoreKept(settings: Pick<KeptSettings, "putIfAbsent">, runId: string, kept: Kept): Promise<boolean> {
+  const row = rowOf(kept, "ending");
+  return JSON.stringify(await settings.putIfAbsent(keptKeyOf(runId), row)) === JSON.stringify(row);
+}
+
 /** Ends a kept computer at its time: its row marked ending, only while it still reads `kept` (a claim that took it since
  *  has it), then `end` (its delete), then the row marked ended. A row already ending (a process that died mid-way, a
- *  delete that failed) is deleted again. A delete that fails leaves the row ending, for the janitor's next pass, and
- *  throws its words. True when this call ended it. */
-export async function endKept(settings: Pick<KeptSettings, "replaceIf">, runId: string, kept: Kept, end: () => Promise<void>): Promise<boolean> {
+ *  delete that failed, a claim that gave it back or a park that kept nothing else: restoreKept, keepKept) is deleted
+ *  again. A delete that fails leaves the row ending, for the janitor's next pass, and throws its words. True when this
+ *  call ended it. */
+export async function endKept(settings: Pick<KeptSettings, "get" | "replaceIf">, runId: string, kept: Kept, end: () => Promise<void>): Promise<boolean> {
+  const key = keptKeyOf(runId);
   const ending = rowOf(kept, "ending");
-  if (!kept.ending && !(await settings.replaceIf(keptKeyOf(runId), rowOf(kept), ending))) return false;
+  if (!kept.ending && !(await settings.replaceIf(key, rowOf(kept), ending)) && JSON.stringify(await settings.get(key)) !== JSON.stringify(ending)) return false;
   await end();
-  return settings.replaceIf(keptKeyOf(runId), ending, rowOf(kept, "ended"));
+  return settings.replaceIf(key, ending, rowOf(kept, "ended"));
 }
 
 /** What the janitor's pass over the kept computers did: the names it ended, the failures in words, and the earliest
@@ -239,13 +303,14 @@ export type KeptSweep = { readonly ended: readonly string[]; readonly failed: re
  * The rest are left, the earliest of their times answered as `next`.
  * `providerOf`: the provider a row names, made with this server's keys, or undefined when this server can't make it (its
  * keys gone): that row is left and said. A row pinned to a runner other than this one (`self`) that is still there under
- * the row's incarnation (`runners`, seen within PRESENCE_STALE_MS) is left whatever its time or its run: only that
+ * the row's incarnation (`runners`, seen within RUNNER_STALE_MS) is left whatever its time or its run: only that
  * runner's engine or hub has its machine, so a delete from here would find nothing, mark it ended and leak the machine.
  * That runner's own timer, or its janitor, ends it; once it is gone the row is ended here as any other. Never throws.
  */
 export async function sweepKept(deps: {
   readonly settings: KeptSettings;
   readonly runs: Pick<Store["runs"], "get">;
+  /** Now on the store's clock, the one each row's `until` is stamped on (Kept.until). */
   readonly now: number;
   readonly providerOf: (id: string) => Promise<ComputerProvider | undefined>;
   readonly deleteMs?: number;
@@ -272,8 +337,7 @@ export async function sweepKept(deps: {
   } catch (error) {
     return { ended, failed: [`the kept computers could not be read: ${words(error)}`] };
   }
-  // The runners there now, read once for the pass, only where a row is pinned to another runner (heldElsewhere: the
-  // provider sweep leaves the same machines by the same rule, computer-janitor.ts).
+  // The runners there now, read once for the pass, only where a row is pinned to another runner (heldElsewhere).
   const othersThere = heldElsewhere(deps);
   for (const row of rows) {
     const runId = row.key.slice(KEPT_PREFIX.length);

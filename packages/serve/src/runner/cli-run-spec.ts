@@ -45,13 +45,14 @@ import { DATA_ENV } from "../server-fs.js";
 import { filesToCopy, placeRunInputs } from "../uploads.js";
 import { recordingsFolder, runFolder, scratchFolder } from "../workspace/paths.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
+import type { Workspace } from "../workspace/workspace.js";
 import { withoutKindSkill } from "../workspace/kind-skills.js";
 import { layOwnSkills } from "../workspace/revision-skills.js";
 import { runTools, type ToolResults, withKindTools } from "../workspace/run-tools.js";
 import { archilWhereHeld, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { loadArchilSettings } from "../archil-settings.js";
 import { settingOfDefinition } from "../computer-setting.js";
-import { computerKeptWords, computerReadyWords, computerReplacedNote, computerStartingWords, imageWaitWords } from "../workspace/computer-deps.js";
+import { computerFilesNote, computerKeptWords, computerReadyWords, computerReplacedNote, computerStartingWords, imageWaitWords } from "../workspace/computer-deps.js";
 import { computerTurnedOff, hadComputer, recordComputerOff } from "./computer-journal.js";
 import { type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
 import { adapterRunGate, type AdapterSpecDeps, answersCut, buildToolHost, capModelOf as capModelOfRoute, claimLiveAt, graderRouteOf, heldModelOf, hostToolCtxOf, type LearnedTier, learnedTierRoutes, learnedTiers, learnedWorkflowHostTool, learnsWorkflows, mcpReachOf, modelAskOf, PI_WIRES, seedEvalFiles, webHostTools } from "./adapter-run-spec.js";
@@ -387,8 +388,15 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // credentials opened under the runner's seal key (deps.sealKey) into this claim's memory, one gateway for the claim.
   // Before the session opens: a refusal (a granted tool its pin does not hold, a pinned meta tool) ends the run in its words.
   // A credential the claim opens mid-run (a GitHub App token, a saved or per_run server's) joins the run's redactors.
+  // What its gateway files (a long answer, a server's results) goes in the run's own files. In Mode 1 that is the run's
+  // folder on this machine (ws.workspace below, the folder a box bind-mounts). In Mode 2 it is the run's Archil disk:
+  // through the run's computer once it mounts the folder (filedIn, set at runTools), since the mount holds the disk's
+  // write delegation and a write over the disk's file API is refused (409) while it does; over that file API (ws.workspace)
+  // when no computer mounts it. The gateway reads work() only when a call is answered (mcp-gateway.ts textOf, fileResults),
+  // and a call reaches it only through the session this spec returns, after `mode`, `ws` and `tools` are made.
+  let filedIn: Workspace | undefined;
   const hold = (values: string[]) => { for (const redact of [...(run.redact ? [heldRedactor(run.redact)] : []), cut]) redact.hold(values); };
-  const mcp = await mcpWhereHeld({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => runFolder(deps.data, runRow.agentId, claim.runId), launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, ...claimMetering(deps, web, launch) });
+  const mcp = await mcpWhereHeld({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => (mode === 2 ? filedIn ?? ws.workspace : ws.workspace), launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, ...claimMetering(deps, web, launch) });
   // The claim's MCP goes to the loop, which lets it go; a build that throws lets it go itself.
   holds.hold({ passed: mcp });
 
@@ -483,6 +491,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   const bashPolicy = bashPolicyOf(body.toolSettings);
   // A computer that replaced an earlier claim's holds its acts to what it showed, as the pi spec's does.
   const tools = await runTools(ws.workspace, computer.computer, { mode, context, aliases: [scratch], ...(computer.hold ? { hold: computer.hold } : {}), ...(bashPolicy === undefined ? {} : { bashPolicy }), ...(computer.replaced ? { replaced: true } : {}) });
+  filedIn = tools.workspace;
   let remoteProjectCapture = false;
   holds.hold({ tools: { end: () => remoteProjectCapture ? Promise.resolve() : tools.end() } });
   const root = runFolder(deps.data, runRow.agentId, claim.runId);
@@ -851,6 +860,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     ...(tools.computer ? { scriptComputer: tools.computer } : {}),
     // A computer that replaced an earlier claim's: the model is told once, on its next request (the loop's computer note).
     ...(computer.replaced ? { computerNote: computerReplacedNote(computer.replaced) } : {}),
+    // A desktop or a phone that holds none of the run's files: the model is told once in the run where they are.
+    ...(tools.apart ? { computerFilesNote: computerFilesNote(tools.apart) } : {}),
     workRoot: root,
     // Where the CLI works (its working directory, the run's folder to its file tools): what its absolute paths are read
     // against on the run's rows.
@@ -884,8 +895,10 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     ...(heldComputer ? { held: heldComputer } : {}),
     // The run's Archil mount credential is revoked at its end on every outcome, even with no computer (idempotent with
     // the computer's release). A run that minted none revokes nothing. At a park, a desktop or a phone is kept for the
-    // resume instead, its mount credential with it, as the pi spec's; one the gate turned off is not, nor said to be.
+    // resume instead, its mount credential with it, as the pi spec's, said once its row is written; one the gate turned
+    // off is not, nor said to be.
     keptWords: () => (computer.keeps === undefined || gate.computerOff() ? undefined : computerKeptWords(computer.keeps)),
+    ...(computer.keeps && computer.keepRow ? { keep: () => computer.keepRow!() } : {}),
     release: (how) => holds.release(how),
     ...(movedProject ? { projectCheckpoint: projectCheckpointForRun({ store: deps.store, agentId: runRow.agentId, claim, launch, tools, computer,
       workspace: { data: deps.data, sealKey: deps.sealKey, env: deps.env, control: { ...deps.mountControl, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) } },

@@ -446,8 +446,37 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
 
 /** The bytes of a request a token count answers per token (forMessagesClients' count_tokens). */
 const COUNT_BYTES_PER_TOKEN = 4;
-/** Whether a request asks Messages' token count (its path's last segment, any query after it). */
-const countsTokens = (url: unknown): boolean => /\/count_tokens(?:\?|$)/.test(String(url));
+/** The two requests a Messages client sends the route: its turns and its token count, each a POST. */
+const MESSAGES_PATH = "/v1/messages";
+const COUNT_PATH = "/v1/messages/count_tokens";
+
+/** The method and path of a request as a fetch is handed it (a URL's string, a URL, a Request). */
+function requestLine(url: Parameters<typeof fetch>[0], init: RequestInit): { method: string; path: string } {
+  const href = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+  let path = "";
+  try {
+    path = new URL(href).pathname;
+  } catch {
+    // Not a URL: no path, so a 404.
+  }
+  const method = init.method ?? (typeof url === "object" && !(url instanceof URL) ? url.method : "GET");
+  return { method: method.toUpperCase(), path };
+}
+
+/** The JSON schema a Messages `output_config.format` holds the answer to, Ollama's `format` (asked on the in-process
+ *  call, EdgeAsks, so the body is sent as it is); none when it asks none. Ollama holds the whole answer to it, which
+ *  leaves the model no way to call a tool, so beside tools it is refused, as is any shape but json_schema with a schema
+ *  object, in the words of the Responses edge's own refusal (responses-fetch.ts schemaOf): never dropped. */
+function outputSchema(config: unknown, tools: unknown): { schema?: Record<string, unknown>; refused?: string } {
+  const format = typeof config === "object" && config !== null ? (config as { format?: unknown }).format : undefined;
+  if (format === undefined || format === null) return {};
+  const plain = typeof format === "object" && !Array.isArray(format) ? (format as { type?: unknown; schema?: unknown }) : undefined;
+  if (plain?.type !== "json_schema") return { refused: `output_config.format ${JSON.stringify(plain ? (plain.type ?? "(no type)") : format)} is not taken on this model's route: "json_schema" only` };
+  const schema = plain.schema;
+  if (typeof schema !== "object" || schema === null || Array.isArray(schema)) return { refused: "output_config.format json_schema with no schema object is not taken on this model's route" };
+  if (Array.isArray(tools) && tools.length > 0) return { refused: "output_config.format json_schema beside tools is not taken on this model's route: Ollama holds the whole answer to the format, which leaves the model no way to call a tool, so drop the output schema, or use a model route that takes tools with a format" };
+  return { schema: schema as Record<string, unknown> };
+}
 
 /** Why a Messages `tool_choice` that forces a call is refused (its 400's words), else undefined: the model behind the
  *  route (Ollama's chat) takes no tool choice, so a call forced by "any" or by a tool's name cannot be kept. "auto",
@@ -464,26 +493,34 @@ function forcedChoice(choice: unknown): string | undefined {
 }
 
 /** `route` (a translated route's fetch, which streams every answer, as pi-ai asks) for any Messages client on the wire it
- *  translates onto, which asks two things pi-ai never does. Its token count (POST /v1/messages/count_tokens, free, asked
- *  beside its turns) is answered here and never run on the model, which has no count of its own: the body's bytes over
- *  four (COUNT_BYTES_PER_TOKEN), a bound for its context, not a price. A request with no `stream: true` (a side request)
- *  gets its answer whole, one JSON message as Messages writes it, joined from the stream (wholeOf). A tool_choice that
- *  forces a call is refused with a 400 before the model is asked (forcedChoice). */
+ *  translates onto, which asks things pi-ai never does. It takes POST /v1/messages and POST /v1/messages/count_tokens
+ *  alone; anything else is a 404, never run as a chat. Its token count (free, asked beside its turns) is answered here
+ *  and never run on the model, which has no count of its own: the body's bytes over four (COUNT_BYTES_PER_TOKEN), a
+ *  bound for its context, not a price. A request with no `stream: true` (a side request) gets its answer whole, one JSON
+ *  message as Messages writes it, joined from the stream (wholeOf). Its output schema (output_config.format) is the
+ *  model's format (outputSchema). What the model here cannot keep is refused with a 400 before it is asked: a tool_choice
+ *  that forces a call (forcedChoice), an output schema beside tools. */
 export function forMessagesClients(route: typeof fetch): typeof fetch {
   return (async (url: Parameters<typeof fetch>[0], init: Parameters<typeof fetch>[1] = {}) => {
+    const { method, path } = requestLine(url, init);
+    if (method !== "POST" || (path !== MESSAGES_PATH && path !== COUNT_PATH)) return messagesError(`${method} ${path || "(no path)"} is not on this model's route: POST ${MESSAGES_PATH} and ${COUNT_PATH} only`, 404, "not_found_error");
     const body = String(init.body ?? "");
-    if (countsTokens(url)) return Response.json({ input_tokens: Math.ceil(new TextEncoder().encode(body).length / COUNT_BYTES_PER_TOKEN) });
+    if (path === COUNT_PATH) return Response.json({ input_tokens: Math.ceil(new TextEncoder().encode(body).length / COUNT_BYTES_PER_TOKEN) });
     const read = (() => {
       try {
-        return JSON.parse(body || "{}") as { stream?: unknown; tool_choice?: unknown };
+        return JSON.parse(body || "{}") as { stream?: unknown; tool_choice?: unknown; output_config?: unknown; tools?: unknown };
       } catch {
         return undefined;
       }
     })();
-    const refused = forcedChoice(read?.tool_choice);
-    if (refused) return messagesError(refused, 400, "invalid_request_error");
+    const forced = forcedChoice(read?.tool_choice);
+    if (forced) return messagesError(forced, 400, "invalid_request_error");
+    const output = outputSchema(read?.output_config, read?.tools);
+    if (output.refused) return messagesError(output.refused, 400, "invalid_request_error");
     const streamed = read === undefined || read.stream === true;
-    const answer = await route(url, init);
+    // The schema rides the in-process call (messagesFetch reads edgeAsks on an Ollama model), never the body.
+    const asked: RequestInit & { edgeAsks?: EdgeAsks } = output.schema ? { ...init, edgeAsks: { format: output.schema } } : init;
+    const answer = await route(url, asked);
     return streamed || answer.status !== 200 ? answer : wholeOf(await answer.text());
   }) as typeof fetch;
 }
@@ -586,8 +623,9 @@ function levelOf(body: MessagesRequest): (typeof NAMED_LEVELS)[number] | undefin
 
 /** What the Responses edge asks an Ollama model past the Messages body (responses-fetch.ts EdgeAsks, on the in-process
  *  call's init, never the body) as pi-ai's options and ollama-provider.ts chatBody read them: the format and think as
- *  they are, temperature as pi-ai's own, top_p as its samplingParams. Read on an Ollama model alone; a Messages client's
- *  own request carries none, so the Messages wire is as it was. */
+ *  they are, temperature as pi-ai's own, top_p as its samplingParams. Read on an Ollama model alone. A Messages client's
+ *  output schema is asked the same way (forMessagesClients, the format alone); its own sampling and thinking fields are
+ *  not asked. */
 function ollamaAsks(asks: EdgeAsks): OllamaAsks & { temperature?: number; samplingParams?: { top_p: number } } {
   return {
     ...(asks.format ? { format: asks.format } : {}),

@@ -14,6 +14,7 @@ import { after, test } from "node:test";
 import { AttachHub, readBackOf } from "@parcha/agentrun-computer";
 import { FakeUiDriver, serveUiSocket } from "@parcha/agentrun-computer/fake-ui-driver";
 import { getSealedKey, putSealedKey } from "../dist/server-keys.js";
+import { Fenced } from "../dist/store/index.js";
 import { archilClaim, archilWorkspace, computerForClaim, localWorkspace, runKey } from "../dist/workspace/index.js";
 import { FakeArchilDisk, FakeDiskError } from "./fixtures/archil-fake.mjs";
 import { pairedOf } from "../dist/workspace/attached-computers.js";
@@ -40,22 +41,32 @@ function scratch() {
   return root;
 }
 
-/** The server's settings in memory, as the store keeps them: a compare-and-set on the JSON text, a prefix read. */
-function memorySettings() {
+/** The server's settings in memory, as the store keeps them: a compare-and-set on the JSON text, a prefix read. A write
+ *  under a claim (putIfAbsent's and replaceIf's `claim`) first asks `fence`, which throws for a claim that no longer
+ *  holds the run, as the store's does (Fenced), and nothing is written. */
+function memorySettings(fence = () => {}) {
   const rows = new Map();
   return {
     rows,
     get: async (key) => (rows.has(key) ? structuredClone(rows.get(key)) : undefined),
     put: async (key, value) => void rows.set(key, structuredClone(value)),
-    replaceIf: async (key, was, value) => rows.has(key) && JSON.stringify(rows.get(key)) === JSON.stringify(was) && (rows.set(key, structuredClone(value)), true),
+    putIfAbsent: async (key, value, _capacity, claim) => {
+      fence(claim);
+      return structuredClone(rows.has(key) ? rows.get(key) : (rows.set(key, structuredClone(value)), value));
+    },
+    replaceIf: async (key, was, value, claim) => {
+      fence(claim);
+      return rows.has(key) && JSON.stringify(rows.get(key)) === JSON.stringify(was) && (rows.set(key, structuredClone(value)), true);
+    },
     removeIf: async (key, was) => rows.has(key) && JSON.stringify(rows.get(key)) === JSON.stringify(was) && rows.delete(key),
     remove: async (key) => void rows.delete(key),
     all: async (filter) => [...rows].filter(([key]) => !filter?.prefix || key.startsWith(filter.prefix)).map(([key, value]) => ({ key, value: structuredClone(value) })),
   };
 }
 
-/** The store parts the claim reads, its settings shared by every claim and the janitor (one server's store). */
-function memoryStore() {
+/** The store parts the claim reads, its settings shared by every claim and the janitor (one server's store), and its
+ *  clock (`now`), the one a kept row's `until` is stamped and judged on. */
+function memoryStore(now = Date.now) {
   const keys = new Map();
   const runs = new Map([["run-1", { id: "run-1", agentId: "agent-1", state: "parked", epoch: 0, runner: null }]]);
   return {
@@ -73,8 +84,12 @@ function memoryStore() {
       end: (id) => runs.set(id, { ...runs.get(id), epoch: runs.get(id).epoch + 1, runner: null }),
     },
     agents: { revision: async () => undefined },
-    settings: memorySettings(),
-    sealedKeys: { get: async (name) => keys.get(name), put: async (name, sealed) => void keys.set(name, sealed), remove: async (name) => void keys.delete(name), all: async () => [...keys].map(([name]) => ({ name })) },
+    // A write under a claim is fenced on the run's epoch, as the store's is (its lease aside): a later claim, or an end,
+    // park or release commit, has moved it past the claim's.
+    settings: memorySettings((claim) => {
+      if (claim && runs.get(claim.runId)?.epoch !== claim.epoch) throw new Fenced(claim.runId, claim.epoch);
+    }),
+    sealedKeys: { get: async (name) => keys.get(name), put: async (name, sealed) => void keys.set(name, sealed), remove: async (name) => void keys.delete(name), all: async () => [...keys].map(([name]) => ({ name })), clock: async () => now() },
     computerLedger: { put: async () => {}, get: async () => undefined, list: async () => [], remove: async () => {} },
     computerIntervals: memoryIntervals(),
   };
@@ -150,7 +165,9 @@ const nicknames = (archil) => [...archil.users.values()].map((user) => user.nick
  *  account key and the agent's disk saved. */
 async function server({ setting = E2B_DESKTOP, mode = 1, groups = DESKTOP_GROUPS, machine, keys = { E2B_API_KEY: "fake-test-key" }, workspace, archil } = {}) {
   const root = scratch();
-  const store = memoryStore();
+  // One clock for the store and the claims: a kept row's `until` is stamped and judged on the store's.
+  const clock = { now: T0 };
+  const store = memoryStore(() => clock.now);
   const sealKey = randomBytes(32);
   for (const [name, value] of Object.entries(keys)) await putSealedKey(store, sealKey, name, value);
   if (archil) {
@@ -160,14 +177,14 @@ async function server({ setting = E2B_DESKTOP, mode = 1, groups = DESKTOP_GROUPS
   }
   const mountControl = archil ? { mountControl: { baseUrl: archil.baseUrl, fetch: archil.fetch } } : {};
   const account = vendor(root, groups, machine);
-  const clock = { now: T0 };
   const providers = Object.fromEntries(["docker", "e2b", "agent37", "phone-harness", "daytona"].map((id) => [id, () => account.provider]));
   const mounts = { revoked: 0, inherited: 0, steps: [] };
   const deps = { mode, kinds: KINDS, sealKey, providers, spec: SPEC, workspace: workspace ?? localWorkspace(root), revokeMount: async () => void (mounts.revoked += 1, mounts.steps.push("revoke")), inheritMount: () => void (mounts.inherited += 1, mounts.steps.push("inherit")), ...(archil ? { mountDisk: () => DISK } : {}), now: () => clock.now };
-  // `launch`: more of the claim's launch (its `holder`: the runner that claims and its incarnation).
-  const claim = (epoch, extra = {}, launch = {}) => {
+  // `launch`: more of the claim's launch (its `holder`: the runner that claims and its incarnation). `runners`: who is
+  // there, as the claim reads it (its give-back of a kept row, its park's keep); absent, none is read.
+  const claim = (epoch, extra = {}, launch = {}, runners = undefined) => {
     store.runs.take("run-1", epoch);
-    return computerForClaim({ runId: "run-1", epoch, computer: setting, ...launch }, store, { ...deps, check: { readBackOf, epoch }, ...extra });
+    return computerForClaim({ runId: "run-1", epoch, computer: setting, ...launch }, runners ? { ...store, runners } : store, { ...deps, check: { readBackOf, epoch }, ...extra });
   };
   // `self` and `runners`: the janitor of a runner (its name and incarnation), reading which runners are there.
   const janitor = ({ self, runners } = {}) => sweepKeptComputers({ store: runners ? { ...store, runners } : store, computers: { kinds: KINDS, providers, keyOf: (name) => getSealedKey(store, sealKey, name) }, env: {}, sealKey, ...mountControl, now: () => clock.now, ...(self ? { self } : {}) });
@@ -848,7 +865,7 @@ test("leak (b): another runner's janitor leaves a kept row pinned to a runner st
   assert.deepEqual(await failing.janitor({ self: RUNNER_B, runners: { live: async () => { throw new Error("store down"); } } }), { ended: [], failed: [] }, "the runners unread: the pinned row is left for a later pass, never ended blind");
 });
 
-test("runner-b's full janitor pass, after runner-b ended runner-a's parked run, leaves runner-a's kept machine from both sweeps on a provider both runners list; once runner-a is gone or a new incarnation, the machine goes as before", async () => {
+test("runner-b's full janitor pass, after runner-b ended runner-a's parked run, deletes runner-a's kept machine in its provider sweep on a provider both runners list (the run is over, so the machine has no user) and leaves the row to runner-a, whose own pass finds it gone and removes it", async () => {
   // runner-a parked the run with its machine kept; runner-b then ended the run (a person's stop, ends-only): the run is
   // final, the row still runner-a's, inside its keep.
   const parkedThenStopped = async () => {
@@ -863,14 +880,13 @@ test("runner-b's full janitor pass, after runner-b ended runner-a's parked run, 
   const row = await one.store.settings.get(key);
   assert.deepEqual([row?.runner, row?.incarnation], ["runner-a", "inc-a"], "the park pinned it to runner-a");
   const logged = await one.pass({ self: RUNNER_B, runners: { live: async () => [{ ...RUNNER_A, refused: null }] } });
-  // The kept pass leaves the row; the provider sweep lists the same machine, its run over, and would end it at once.
-  assert.deepEqual(deletes(one.account), [], `runner-b's full janitor pass leaves runner-a's kept machine: ${JSON.stringify(logged)}`);
-  assert.ok(one.account.computers.has("c1"), "still running for runner-a");
-  assert.deepEqual(await one.store.settings.get(key), row, "its row as runner-a's park left it");
-  // runner-a's own pass ends it: the run is over and the row is its own.
+  // The kept pass leaves the row to runner-a; the provider sweep lists the same machine, its run over, and ends it.
+  assert.deepEqual(deletes(one.account), ["c1"], `runner-b's provider sweep deletes the stopped run's machine: ${JSON.stringify(logged)}`);
+  assert.equal(one.account.computers.has("c1"), false, "nothing left billing for a run that is over");
+  assert.deepEqual(await one.store.settings.get(key), row, "its row as runner-a's park left it, for runner-a to end");
+  // runner-a's own pass: its delete reads not_found, as good as done, and the row goes, the run being over.
   await one.pass({ self: RUNNER_A, runners: { live: async () => [{ ...RUNNER_A, refused: null }] } });
-  assert.deepEqual(deletes(one.account), ["c1"], "runner-a's own pass ends it, once");
-  assert.equal(await one.store.settings.get(key), undefined, "and removes its row, the run being over");
+  assert.equal(await one.store.settings.get(key), undefined, "runner-a's own pass removes its row, the run being over");
 
   // runner-a gone (its word stale): runner-b's pass ends it as before, once.
   const gone = await parkedThenStopped();
@@ -882,14 +898,44 @@ test("runner-b's full janitor pass, after runner-b ended runner-a's parked run, 
   await again.pass({ self: RUNNER_B, runners: { live: async () => [{ runner: "runner-a", incarnation: "inc-a2", refused: null }] } });
   assert.deepEqual(deletes(again.account), ["c1"], "runner-a's new incarnation: runner-b's pass ends it");
 
-  // The kept rows unread: neither sweep can tell which machine is kept, so neither ends it this pass, and it is said.
+  // The kept rows unread: the kept pass says so, and the provider sweep, which needs no kept row, still ends the stopped
+  // run's machine (runner-a there or not), never skipping a provider for it.
   const unread = await parkedThenStopped();
   unread.store.settings.all = async () => {
     throw new Error("the store did not answer");
   };
-  const said = await unread.pass({ self: RUNNER_B, runners: { live: async () => [] } });
-  assert.deepEqual(deletes(unread.account), [], `the kept rows unread: nothing ended blind: ${JSON.stringify(said)}`);
-  assert.ok(said.some((line) => line.startsWith("the computer janitor could not sweep docker's computers: the computers kept at a park could not be read")), JSON.stringify(said));
+  const said = await unread.pass({ self: RUNNER_B, runners: { live: async () => [{ ...RUNNER_A, refused: null }] } });
+  assert.deepEqual(deletes(unread.account), ["c1"], `the kept rows unread: the provider sweep still ends the stopped run's machine: ${JSON.stringify(said)}`);
+  assert.ok(said.some((line) => line.startsWith("the computer janitor could not end a computer kept at a park: the kept computers could not be read")), JSON.stringify(said));
+  assert.ok(!said.some((line) => line.startsWith("the computer janitor could not sweep docker's computers")), JSON.stringify(said));
+});
+
+// One meaning of "still there" for a kept machine's runner (store.ts KEPT_PREFIX): its runners row seen within the
+// staleness under the row's incarnation, refusing claims or not. A refusal frees the run for any runner's claim; it never
+// frees the machine for another runner's janitor, since the refusing runner is still there to end it.
+test("a kept machine's runner that is still there but refusing claims still holds it: another runner's janitor, kept pass and full pass alike, leaves its row (and, while its run is not over, its machine), and its own pass ends it", async () => {
+  const refusing = { live: async () => [{ ...RUNNER_A, refused: "draining" }] };
+  const key = keptKeyOf("run-1");
+  const due = await server(SANDBOX);
+  await (await due.claim(3, {}, { holder: RUNNER_A })).park("approval");
+  const row = await due.store.settings.get(key);
+  due.clock.now = T0 + KEEP_MS + 60_000;
+  assert.deepEqual(await due.janitor({ self: RUNNER_B, runners: refusing }), { ended: [], failed: [] }, "runner-b's kept pass leaves the refusing runner-a's row past its time");
+  assert.deepEqual(await due.store.settings.get(key), row, "its row as runner-a's park left it");
+  assert.deepEqual(deletes(due.account), [], "nothing deleted from runner-b");
+  assert.deepEqual(await due.janitor({ self: RUNNER_A, runners: refusing }), { ended: ["c1"], failed: [] }, "runner-a's own kept pass ends it at its time, refusing or not");
+
+  const stopped = await server(SANDBOX);
+  await (await stopped.claim(3, {}, { holder: RUNNER_A })).park("approval");
+  stopped.store.runs.set("run-1", "stopped");
+  stopped.clock.now = T0 + 60_000;
+  const stoppedRow = await stopped.store.settings.get(key);
+  const logged = await stopped.pass({ self: RUNNER_B, runners: refusing });
+  // The run is over, so its machine has no user: the provider sweep ends it from any runner. The row stays runner-a's.
+  assert.deepEqual(deletes(stopped.account), ["c1"], `runner-b's provider sweep ends the stopped run's machine: ${JSON.stringify(logged)}`);
+  assert.deepEqual(await stopped.store.settings.get(key), stoppedRow, "runner-b's kept pass leaves the refusing runner-a's row");
+  await stopped.pass({ self: RUNNER_A, runners: refusing });
+  assert.equal(await stopped.store.settings.get(key), undefined, "runner-a's own pass removes its row, the run being over");
 });
 
 test("a Docker sandbox's park names the runner that claimed it and its incarnation; a resume by another runner that cannot reach it makes a new one, said lost with that runner and naming none", async () => {
@@ -906,6 +952,225 @@ test("a Docker sandbox's park names the runner that claimed it and its incarnati
   assert.equal(said.length, 1, "said once");
   assert.equal(computerReadyWords(said[0]), "The sandbox is ready: Linux (amd64), from Docker. The sandbox wasn't kept: the runner that kept it is gone. It's a new sandbox: the one before is gone, with what was on it.");
   await resumed.release();
+});
+
+test("a resume whose clock read fails before it takes a kept row pinned to another runner says neither that runner is gone nor that it ends it: who is there was never read, so a plain new one", async () => {
+  for (const runners of [{ live: async () => [{ ...RUNNER_A, refused: "draining" }] }, { live: async () => [] }]) {
+    const one = await server(SANDBOX);
+    await (await one.claim(3, {}, { holder: RUNNER_A })).park("approval");
+    one.account.computers.delete("c1");
+    one.clock.now = T0 + 60_000;
+    // The store's clock does not answer for the resume's claim: its take never runs.
+    const clock = one.store.sealedKeys.clock;
+    one.store.sealedKeys.clock = async () => {
+      throw new Error("the store's clock did not answer");
+    };
+    const said = [];
+    const resumed = await one.claim(5, { hadComputer: async () => true, onConnected: (words) => void said.push(words) }, { holder: RUNNER_B }, runners);
+    one.store.sealedKeys.clock = clock;
+    assert.deepEqual(resumed.replaced, { kind: "sandbox", folderKept: false }, `neither lost nor elsewhere: ${JSON.stringify(resumed.replaced)}`);
+    assert.equal(computerReadyWords(said[0]), "The sandbox is ready: Linux (amd64), from Docker. It's a new sandbox: the one before is gone, with what was on it.");
+    await resumed.release();
+  }
+});
+
+// A park after a claim went on without a kept machine pinned to another runner (keepKept): never over that runner's row
+// while it is there, which its end compares; the park's own machine then goes as at the run's end.
+test("a park never writes over a kept row pinned to another runner still there: it keeps nothing, its own machine goes as at the run's end, and that row is left ending for its runner's end; once that runner is gone, the park's row replaces it", async () => {
+  const key = keptKeyOf("run-1");
+  const refusing = { live: async () => [{ ...RUNNER_A, refused: "draining" }] };
+  /** run-1 parked by runner-a, then claimed by runner-b reading `runners`: runner-a's container is on its own engine, so
+   *  runner-b's finds none and makes c2. */
+  const reclaimed = async (runners) => {
+    const one = await server(SANDBOX);
+    await (await one.claim(3, {}, { holder: RUNNER_A })).park("approval");
+    const atPark = await readKept(one.store.settings, "run-1");
+    const written = await one.store.settings.get(key);
+    one.account.computers.delete("c1");
+    one.clock.now = T0 + 60_000;
+    const said = [];
+    const resumed = await one.claim(5, { hadComputer: async () => true, onConnected: (words) => void said.push(words) }, { holder: RUNNER_B }, runners);
+    assert.deepEqual(creates(one.account), ["c1", "c2"], "runner-b went on on a new sandbox");
+    assert.equal(said.length, 1, "said once");
+    return { one, atPark, written, resumed, said };
+  };
+
+  // runner-a there: runner-b gave its row back marked ending, said so, and its park leaves the row so.
+  const there = await reclaimed(refusing);
+  assert.deepEqual(there.resumed.replaced, { kind: "sandbox", folderKept: false, elsewhere: true });
+  assert.equal(computerReadyWords(there.said[0]), "The sandbox is ready: Linux (amd64), from Docker. The sandbox wasn't kept: another runner kept it and couldn't take the run, so that runner ends it. It's a new sandbox: the one before is gone, with what was on it.");
+  assert.equal(JSON.stringify(await there.one.store.settings.get(key)), JSON.stringify({ ...there.written, ending: true }), "runner-a's row given back, marked ending");
+  assert.equal(await there.resumed.park("approval"), false, "runner-b's park keeps nothing");
+  assert.equal(JSON.stringify(await there.one.store.settings.get(key)), JSON.stringify({ ...there.written, ending: true }), "runner-a's row stands");
+  assert.deepEqual(deletes(there.one.account), ["c2"], "runner-b's own sandbox went as at the run's end: nothing left with no row");
+  assert.equal(await endKept(there.one.store.settings, "run-1", there.atPark, async () => {}), true, "runner-a's end at its time still finds its row, and ends it");
+  assert.equal((await readKept(there.one.store.settings, "run-1")).ended, true);
+
+  // runner-a there, its row as its park wrote it (a claim that never took it back): the park marks it ending, so no claim
+  // takes that machine back as the run's, and runner-a's end still finishes it.
+  const untaken = await reclaimed(refusing);
+  await untaken.one.store.settings.put(key, untaken.written);
+  assert.equal(await untaken.resumed.park("approval"), false, "runner-b's park keeps nothing");
+  assert.equal(JSON.stringify(await untaken.one.store.settings.get(key)), JSON.stringify({ ...untaken.written, ending: true }), "runner-a's row, marked ending");
+  assert.deepEqual(deletes(untaken.one.account), ["c2"]);
+  assert.equal(await endKept(untaken.one.store.settings, "run-1", untaken.atPark, async () => {}), true, "runner-a's end finishes it");
+
+  // runner-a gone: its row (left as its park wrote it) is replaced by runner-b's park, as before.
+  const gone = await reclaimed({ live: async () => [] });
+  assert.deepEqual(gone.resumed.replaced, { kind: "sandbox", folderKept: false, lost: true }, "lost with its runner, said so");
+  assert.equal(JSON.stringify(await gone.one.store.settings.get(key)), JSON.stringify({ ...gone.written, ending: true }), "runner-a gone: its row back all the same, marked ending, for any janitor to end");
+  await gone.one.store.settings.put(key, gone.written);
+  assert.equal(await gone.resumed.park("approval"), true, "runner-b's park keeps its sandbox");
+  assert.deepEqual(await readKept(gone.one.store.settings, "run-1"), { provider: "docker", kind: "sandbox", id: "c2", name: "c2", epoch: 5, until: T0 + 60_000 + KEEP_MS, folder: "bind", ...RUNNER_B }, "runner-b's row replaced runner-a's");
+  assert.deepEqual(deletes(gone.one.account), [], "nothing deleted at the park");
+  await gone.resumed.release();
+});
+
+// A claim that took a kept row pinned to another runner and could not reach its machine puts the row back marked ending
+// whatever its read of who is there says: that read can say gone for a runner still running (its word late), whose own
+// end at its time must still find its row.
+test("a claim that can't reach a kept machine pinned to another runner puts its row back marked ending though its read says that runner is gone: a runner whose word was only late still ends its machine at its time", async () => {
+  const key = keptKeyOf("run-1");
+  const one = await server(SANDBOX);
+  await (await one.claim(3, {}, { holder: RUNNER_A })).park("approval");
+  const atPark = await readKept(one.store.settings, "run-1");
+  const written = await one.store.settings.get(key);
+  // runner-a's container is on its own engine: runner-b's lists none of it.
+  const onA = one.account.computers.get("c1");
+  one.account.computers.delete("c1");
+  one.clock.now = T0 + 60_000;
+  const said = [];
+  const resumed = await one.claim(5, { hadComputer: async () => true, onConnected: (words) => void said.push(words) }, { holder: RUNNER_B }, { live: async () => [] });
+  one.account.computers.set("c1", onA);
+  assert.deepEqual(resumed.replaced, { kind: "sandbox", folderKept: false, lost: true }, "said lost, as the read said");
+  assert.equal(JSON.stringify(await one.store.settings.get(key)), JSON.stringify({ ...written, ending: true }), "the row back, marked ending, though the read said its runner was gone");
+  // runner-a was there all along: its end at its time finds its row and ends its machine.
+  const ended = [];
+  assert.equal(await endKept(one.store.settings, "run-1", atPark, async () => void ended.push(atPark.id)), true, "runner-a's end finds its row");
+  assert.deepEqual(ended, ["c1"]);
+  assert.equal((await readKept(one.store.settings, "run-1")).ended, true);
+  await resumed.release();
+});
+
+/** The store's next clock read waits until `release()`: `reached` resolves once a read is waiting. Later reads answer
+ *  at once. */
+function holdNextClock(one) {
+  const clock = one.store.sealedKeys.clock;
+  let release;
+  const gate = new Promise((resolve) => (release = resolve));
+  let reachedIt;
+  const reached = new Promise((resolve) => (reachedIt = resolve));
+  let next = true;
+  one.store.sealedKeys.clock = async () => {
+    if (next) {
+      next = false;
+      reachedIt();
+      await gate;
+    }
+    return clock();
+  };
+  return { reached, release: () => release() };
+}
+
+// A park on a claim that lost the run: runner-a's park is held just before its keep writes (its clock read for the
+// keep's end), its lease lapses, and runner-b claims the run (the store's claim moves the epoch past runner-a's). Every
+// write of the keep is under runner-a's claim, so the store refuses it (Fenced): runner-a's keep writes and marks
+// nothing, and its timeline says no keep (keepRow false), as for any park that kept nothing.
+test("a park on a claim that lost the run keeps nothing and marks nothing: runner-b's row, written by its own claim's park meanwhile, stays runner-b's and its resume gets the same sandbox; with no row there, none is written for runner-a", async () => {
+  const key = keptKeyOf("run-1");
+  const there = { live: async () => [{ ...RUNNER_A, refused: null }, { ...RUNNER_B, refused: null }] };
+  /** runner-a's claim at epoch 3 (its sandbox c1, on runner-a's engine) parks, held before its keep; runner-b claims the
+   *  run at epoch 5 on its own engine, which lists none of runner-a's, and makes c2. */
+  const lostToB = async () => {
+    const one = await server(SANDBOX);
+    const a = await one.claim(3, {}, { holder: RUNNER_A }, there);
+    const held = holdNextClock(one);
+    const parking = a.park("approval");
+    await held.reached;
+    const onA = one.account.computers.get("c1");
+    one.account.computers.delete("c1");
+    one.clock.now = T0 + 60_000;
+    const b = await one.claim(5, {}, { holder: RUNNER_B }, there);
+    one.account.computers.set("c1", onA);
+    assert.deepEqual(creates(one.account), ["c1", "c2"], "runner-b made its own sandbox");
+    return { one, a, b, parking, held };
+  };
+
+  // runner-b parks and keeps c2 (its park's commit: the epoch up by one, no runner); then runner-a's park goes on.
+  const kept = await lostToB();
+  assert.equal(await kept.b.park("approval"), true, "runner-b's park keeps its sandbox");
+  kept.one.store.runs.end("run-1");
+  const bRow = await kept.one.store.settings.get(key);
+  assert.deepEqual(await readKept(kept.one.store.settings, "run-1"), { provider: "docker", kind: "sandbox", id: "c2", name: "c2", epoch: 5, until: T0 + 60_000 + KEEP_MS, folder: "bind", ...RUNNER_B }, "pinned to runner-b");
+  kept.held.release();
+  assert.equal(await kept.parking, false, "runner-a's park keeps nothing");
+  assert.equal(JSON.stringify(await kept.one.store.settings.get(key)), JSON.stringify(bRow), "runner-b's row untouched: pinned to runner-b, not ending");
+  assert.equal(await kept.a.keepRow(), false, "runner-a's timeline says no keep");
+  assert.deepEqual(deletes(kept.one.account), ["c1"], "runner-a's own sandbox went as at the run's end");
+  const said = [];
+  const resumed = await kept.one.claim(7, { hadComputer: async () => true, onConnected: (words) => void said.push(words) }, { holder: RUNNER_B }, there);
+  assert.deepEqual(creates(kept.one.account), ["c1", "c2"], "runner-b's resume: the same sandbox, no create");
+  assert.equal(resumed.replaced, undefined, "never called a new one");
+  assert.equal(said[0]?.kept, true, "said to be the same one");
+  await resumed.release();
+
+  // No row there: runner-b's claim let the run go keeping nothing (its release, then its commit), then runner-a's park
+  // goes on. Nothing is written for a run runner-a no longer holds.
+  const none = await lostToB();
+  await none.b.release();
+  none.one.store.runs.end("run-1");
+  none.held.release();
+  assert.equal(await none.parking, false, "runner-a's park keeps nothing");
+  assert.equal(await none.one.store.settings.get(key), undefined, "no row written for runner-a");
+  assert.equal(await none.a.keepRow(), false, "runner-a's timeline says no keep");
+  assert.deepEqual(deletes(none.one.account), ["c2", "c1"], "runner-b's sandbox at its release, runner-a's at its park");
+});
+
+// The keeper's end (endKept) holds the row as its park wrote it. Another claim that went on without the machine may have
+// marked it ending since (restoreKept, keepKept): the end still finishes it, reading it ending. A row taken since, or
+// written over, is another claim's: the end deletes nothing.
+test("a keeper's end at its time finishes its row marked ending by another claim since its park, and leaves a row taken or written over since", async () => {
+  const key = keptKeyOf("run-1");
+  const kept = { provider: "docker", kind: "sandbox", id: "c1", name: "c1", epoch: 3, until: T0 + KEEP_MS, folder: "bind", ...RUNNER_A };
+  const ends = (store, ended) => endKept(store.settings, "run-1", kept, async () => void ended.push(kept.id));
+
+  const marked = memoryStore();
+  const written = await writeKept(marked.settings, "run-1", kept);
+  await marked.settings.put(key, { ...written, ending: true });
+  const ended = [];
+  assert.equal(await ends(marked, ended), true, "the end finds its row marked ending, and finishes it");
+  assert.deepEqual(ended, ["c1"], "its machine deleted");
+  assert.equal(JSON.stringify(await marked.settings.get(key)), JSON.stringify({ ...written, ended: true }), "its row reads ended");
+
+  const taken = memoryStore();
+  const none = [];
+  assert.equal(await ends(taken, none), false, "a row taken since: the end deletes nothing");
+  const over = memoryStore();
+  await writeKept(over.settings, "run-1", { ...kept, id: "c2", name: "c2", epoch: 5 });
+  assert.equal(await ends(over, none), false, "a row another park wrote since: the end deletes nothing");
+  assert.deepEqual(none, []);
+  assert.equal((await readKept(over.settings, "run-1")).id, "c2", "that row stands");
+});
+
+// A keep row written ahead of the park's timeline line (keepRow), for a park that never followed (the line's commit
+// refused: a lost claim), goes at the claim's release with its machine, only while it reads as written.
+test("a keep row written for a park that never followed is taken off at the claim's release, with its machine; a row changed since is left", async () => {
+  const key = keptKeyOf("run-1");
+  const one = await server(SANDBOX);
+  const a = await one.claim(3, {}, { holder: RUNNER_A });
+  assert.equal(await a.keepRow(), true, "the keep row written");
+  assert.equal((await readKept(one.store.settings, "run-1"))?.id, "c1");
+  await a.release();
+  assert.equal(await one.store.settings.get(key), undefined, "its row taken off: no row names a machine that is gone");
+  assert.deepEqual(deletes(one.account), ["c1"], "its machine went with the release");
+
+  const two = await server(SANDBOX);
+  const b = await two.claim(3, {}, { holder: RUNNER_A });
+  assert.equal(await b.keepRow(), true);
+  const changed = { ...(await two.store.settings.get(key)), ending: true };
+  await two.store.settings.put(key, changed);
+  await b.release();
+  assert.equal(JSON.stringify(await two.store.settings.get(key)), JSON.stringify(changed), "a row changed since is left");
 });
 
 test("a kept Docker sandbox its provider refuses to attach again (its proxy made before the egress bridge) is replaced: the run goes on, and its timeline says why in the provider's words", async () => {

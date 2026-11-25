@@ -19,7 +19,8 @@
 // the runner that kept it can reach again (a Docker container, a machine that dials that runner: computer-kept.ts
 // pinnedOf) names that runner and its incarnation on its row (`ClaimLaunch.holder`), and the store's claim rule lets no
 // other runner claim the run while that runner is live and the keep lasts; one taken after it is gone and not reached
-// here is said to be lost with it (`lost`).
+// here is said to be lost with it (`lost`), and one taken while it is there but not claiming, and not reached here, is
+// given back for it to end and said so (`elsewhere`).
 //
 // A sandbox the claim made can be lost mid-run (its vendor deleted it, or no longer has it): the call that finds it lost
 // fails, saying so and that it was not run again (code gone, computer-lost.ts lostInCallWords), and is never sent to the
@@ -59,7 +60,7 @@ import { type AttachedComputers, pairedProvider, withPaired } from "./attached-c
 import { computerHold, type HeldComputer, heldHands } from "./computer-hold.js";
 import { endingDeletes, figuresOf, type IntervalWrites, intervalWrites, stderrLog } from "./computer-intervals.js";
 import { type ComputeLedger, type ComputeMeter, computeMeter, type ComputeMeterOptions } from "../compute-cost.js";
-import { bounded, deleteKept, endKept, KEEP_MS, KEPT_DELETE_MS, type Kept, keptBy, type KeptHolder, type ParkCause, type ParkedEnd, pinnedOf, readKept, takeKept, writeKept } from "./computer-kept.js";
+import { bounded, deleteKept, endKept, heldElsewhere, keepKept, KEEP_MS, KEPT_DELETE_MS, type Kept, keptBy, type KeptHolder, type ParkCause, type ParkedEnd, pinnedOf, readKept, restoreKept, takeKept } from "./computer-kept.js";
 import { type ProviderLedger, storeLedger } from "./computer-ledger.js";
 import { type ClaimBrowser, type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindCapabilities, type KindRegistry, type LaunchedComputer, type ProviderEntry, providerKeys, registryHere, resolveComputer, runShellOf, type ShellPlace } from "./resolve-computer.js";
 import { computerDenied } from "../tool-gate.js";
@@ -278,6 +279,12 @@ export interface ClaimComputer {
    *  false. A synced folder's delta lands first: one that does not keeps nothing, and the park throws as `release` does.
    *  Idempotent with `release`. */
   park?(cause: ParkCause): Promise<boolean>;
+  /** The park's keep written ahead of the park, before the run's timeline says it (adapter-loop.ts keepAtPark): the
+   *  folder's delta landed, then the row (computer-kept.ts keepKept), once; true when the park will keep the computer.
+   *  False: the park keeps nothing (nothing to keep, a delta that did not land, no clock read, another runner's row still
+   *  there, a write that failed), and nothing should say it is kept. The park uses this row; a `release` with no park
+   *  after it takes the row off. Absent: the park writes the row itself. */
+  keepRow?(): Promise<boolean>;
 }
 
 /** The kinds of computer a claim makes the run fresh. */
@@ -288,10 +295,11 @@ export type KeptKind = Kept["kind"];
 /** A computer the claim made fresh in place of an earlier claim's: its kind, and `folderKept`, the run's folder is on
  *  Archil (Mode 2) and mounted in it, so the folder is kept. `lapsed`: the earlier one was kept at a park, and its time
  *  (KEEP_MS) passed before this claim. `lost`: the earlier one was kept at a park pinned to another runner (or another
- *  process of this runner's name), that runner was gone by this claim, and this claim could not reach it. `refused`: the
- *  earlier one was kept at a park, and its provider refused to attach it again, in these words (a Docker computer made
- *  before its egress bridge). */
-export type Replaced = { readonly kind: MadeKind; readonly folderKept: boolean; readonly lapsed?: true; readonly lost?: true; readonly refused?: string };
+ *  process of this runner's name), that runner was gone by this claim, and this claim could not reach it. `elsewhere`:
+ *  the same, but that runner was still there (refusing claims, or its word late), so this claim gave the row back for
+ *  that runner to end the machine (restoreKept). `refused`: the earlier one was kept at a park, and its provider refused
+ *  to attach it again, in these words (a Docker computer made before its egress bridge). */
+export type Replaced = { readonly kind: MadeKind; readonly folderKept: boolean; readonly lapsed?: true; readonly lost?: true; readonly elsewhere?: true; readonly refused?: string };
 
 /** A computer that cannot be had, with the code the run fails with and the server's words. */
 const unavailable = (words: string): Error => Object.assign(new Error(words), { code: "computer_unavailable" });
@@ -890,8 +898,9 @@ export async function computerForClaim(
   // `settings` and `runs`: the agent's own computer's record and its holder's run row, for a persistent setting; and the
   // run's own row, whose epoch and runner fence every write of the run's folder to its disk.
   // `computerIntervals`: where each computer the claim makes is written, from its create to its proven delete
-  // (computer-intervals.ts); absent, none is.
-  store: Pick<Store, "agents" | "sealedKeys" | "computerLedger"> & { readonly settings?: Store["settings"]; readonly runs?: Pick<Store["runs"], "get">; readonly computerIntervals?: Store["computerIntervals"] },
+  // (computer-intervals.ts); absent, none is. `runners`: who is there now, read when this claim took a kept row pinned to
+  // another runner and could not reach its machine (reattach): the row goes back to a runner still there.
+  store: Pick<Store, "agents" | "sealedKeys" | "computerLedger"> & { readonly settings?: Store["settings"]; readonly runs?: Pick<Store["runs"], "get">; readonly computerIntervals?: Store["computerIntervals"]; readonly runners?: Pick<Store["runners"], "live"> },
   deps: ComputerForClaimDeps,
 ): Promise<ClaimComputer> {
   // The run's disk as this claim writes the folder on it: each write refused once a later claim has taken the run (Q1).
@@ -920,6 +929,9 @@ export async function computerForClaim(
   /** The kind of the computer this claim made the run fresh (ClaimComputer.made). */
   let ownKind: MadeKind | undefined;
   const now = deps.now ?? Date.now;
+  /** The store's clock (the deadlines': the database's on Postgres), the one a kept computer's `until` is stamped and
+   *  judged by everywhere (computer-kept.ts Kept.until), never this runner's own. */
+  const storeClock = (): Promise<number> => store.sealedKeys.clock();
   /** Each computer this claim makes through its provider, from its create to its proven delete. */
   const written = intervalWrites(store, deps.log, now);
   /** Its time on the run's ledger (compute-cost.ts), while this claim holds it; none with no ledger here. */
@@ -947,6 +959,8 @@ export async function computerForClaim(
   /** The kept computer was pinned to another runner, gone by this claim, and this claim could not reach it: the new one
    *  says so (Replaced.lost). */
   let lost = false;
+  /** The same, but that runner was still there, and this claim gave its row back for it to end (Replaced.elsewhere). */
+  let heldThere = false;
   /** The kept computer's provider refused to attach it again, in these words: the new one says why (Replaced.refused). */
   let refused: string | undefined;
   /** What a park of this claim keeps (ClaimComputer.park): a desktop, a phone or a sandbox it made through its provider, or took
@@ -1068,20 +1082,48 @@ export async function computerForClaim(
       if (!record || !store.settings) return undefined;
       if (persistent || paired.some((row) => row.id === entry.id) || (deps.launch && (deps.launches?.(entry.id) ?? true)) || record.provider !== entry.id || record.kind !== kind || record.folder !== folder) return undefined;
       // Kept pinned to another runner (or another process of this runner's name): the claim rule let this claim have the
-      // run only once that runner was gone. Taken off its row, it is tried here all the same (a runner on the same host,
-      // sharing its Docker engine, finds it); one this claim cannot reach is lost with that runner, said so.
+      // run only once that runner was gone, or no longer claiming. Taken off its row, it is tried here all the same (a
+      // runner on the same host, sharing its Docker engine, finds it); one this claim cannot reach is lost to this claim,
+      // said so.
       const elsewhere = record.runner !== undefined && !keptBy(record, launch.holder);
+      const settings = store.settings;
+      /** Whether this claim took the row off (takeKept) and has not given it back. */
+      let took = false;
+      // Taken and not reached here: the row goes back as that runner's park wrote it, marked ending (restoreKept),
+      // whoever is there: this claim goes on on a new machine, so no claim takes that one back as the run's. A runner
+      // still there (refusing claims or not, or one whose word was only late) ends it at its time (endKept finishes a row
+      // so marked) or at its janitor's pass; once it is gone, any janitor's pass does. A row left off would leave the
+      // machine running with nothing to end it, so the give-back reads nothing first. Then who is there is read for the
+      // new one's words alone (Replaced.elsewhere, lost): true when that runner is there (or the read failed), false when
+      // it is gone; undefined when who is there was never read (the row not taken, or not pinned elsewhere), and the
+      // words name neither.
+      const giveBack = async (): Promise<boolean | undefined> => {
+        if (!took || !elsewhere) return undefined;
+        took = false;
+        await restoreKept(settings, launch.runId, record).catch(() => false);
+        return heldElsewhere({ ...(store.runners ? { runners: store.runners } : {}), ...(launch.holder ? { self: launch.holder } : {}) })(record);
+      };
       try {
-        // Its time over, or its end took it first (ending or ended): a new one, said so.
-        if (record.ending || record.ended || now() >= record.until || !(await takeKept(store.settings, launch.runId, record))) {
+        // Its end begun before its time: a claim that could not reach it went on on a new machine and gave its row back so,
+        // or a park that kept nothing marked it so (restoreKept, keepKept). It is the run's no more, and it did not lapse:
+        // a new one, said as any replaced one is. Ending or ended once its time passed (a clock that can't be read counts
+        // so): it lapsed, said so.
+        if (record.ending || record.ended) {
+          lapsed = await storeClock().then((at) => at >= record.until, () => true);
+          return undefined;
+        }
+        // Its time over (on the store's clock, which stamped it), or its end took it first: a new one, said so.
+        if ((await storeClock()) >= record.until || !(took = await takeKept(settings, launch.runId, record))) {
           lapsed = true;
           return undefined;
         }
         const provider = await vendorProvider(entry, keys, configuration);
         const taken = await keptLaunch(provider, record, signal, () => writes.ended(entry.id, record.id));
         if (!taken || "refused" in taken) {
-          lost = elsewhere;
           refused = taken?.refused;
+          const there = await giveBack();
+          heldThere = there === true;
+          lost = there === false;
           return undefined;
         }
         // Metered again from here, with what its interval says it was made with: the time it was kept is no claim's.
@@ -1100,8 +1142,12 @@ export async function computerForClaim(
         deps.onConnected?.({ provider: entry.label, kind: record.kind, hello: { os, ...(osVersion ? { osVersion } : {}), arch }, kept: true });
         return { ...again, epoch: record.epoch };
       } catch {
-        // Taken off its row (or not), and not reached here: lost with its runner where it was pinned to another.
-        lost = elsewhere && !lapsed;
+        // Taken off its row, and not reached here: lost to this claim where it was pinned to another runner, its row given
+        // back while that runner is there, said so. Never taken (its clock read or its take threw): who is there was never
+        // read, so the new one says neither.
+        const there = await giveBack().catch(() => undefined);
+        heldThere = there === true;
+        lost = there === false && !lapsed;
         return undefined;
       }
     },
@@ -1164,7 +1210,7 @@ export async function computerForClaim(
         launched = held;
         if (!pairedRow) ownKind = kind as MadeKind;
         if (!pairedRow && (kind === "desktop" || kind === "phone" || kind === "sandbox")) keepable = { provider, entry: entry.id, kind, computer: held, pinned: pinnedHere(entry, configuration), epoch: launch.epoch, disk: undefined };
-        if (!pairedRow && (releasedOlder || journalSays || lost || refused !== undefined)) replaced = { kind: kind as MadeKind, folderKept: deps.mode === 2 && mount !== undefined, ...(lost ? { lost: true as const } : lapsed ? { lapsed: true as const } : {}), ...(refused !== undefined ? { refused } : {}) };
+        if (!pairedRow && (releasedOlder || journalSays || lost || heldThere || refused !== undefined)) replaced = { kind: kind as MadeKind, folderKept: deps.mode === 2 && mount !== undefined, ...(lost ? { lost: true as const } : heldThere ? { elsewhere: true as const } : lapsed ? { lapsed: true as const } : {}), ...(refused !== undefined ? { refused } : {}) };
       }
       made = { id: launched.id, machine: launched.machine, ...(launched.watch ? { watch: launched.watch, ...(kind === "desktop" || kind === "phone" ? { gone: goneOf(provider, launched.id, listedUnder, kind) } : {}) } : {}) };
       madeBy = entry;
@@ -1302,8 +1348,16 @@ export async function computerForClaim(
     held = { kind: computer.kind, hold: theHold };
   }
   let released: Promise<void> | undefined;
+  /** The park's row, once written (keepRow, or park() itself): its row as written and this process's clock when its end
+   *  was stamped; undefined when the park keeps nothing. */
+  let keeping: Promise<{ readonly row: Kept; readonly stamped: number } | undefined> | undefined;
   const release = (why: ViewEnd = "released"): Promise<void> =>
     (released ??= (async () => {
+      // A row written for a park that never followed (the run's timeline refused its keep line: a lost claim) is taken
+      // off, only while it reads as written: its machine goes here, and a row naming this live runner would keep a later
+      // claim's park from keeping anything (keepKept).
+      const reserved = await keeping?.catch(() => undefined);
+      if (reserved && store.settings) await takeKept(store.settings, launch.runId, reserved.row).catch(() => false);
       await Promise.all(recordings.map((one) => one.stop(typeof why === "object" ? "parked" : why)));
       await Promise.resolve(view?.close(why)).catch(() => undefined);
       endHold();
@@ -1319,6 +1373,30 @@ export async function computerForClaim(
   // release already let go is not).
   const keeps = computer && keepable && store.settings ? keepable : undefined;
   const settings = store.settings;
+  /** The park's row written, once: a synced folder's delta landed first (an Archil mount's modes and links recorded; one
+   *  that does not land keeps nothing), then the keep's end stamped on the store's clock (the one the claim rule's pin,
+   *  every claim's take-back and every janitor judge it by: a runner whose clock is off from the store's never moves it)
+   *  and the row written, never over a row pinned to another runner still there (keepKept: that runner's end compares
+   *  it). What is written in the folder after the delta landed is the disk's only if a claim takes it back (pullFolder).
+   *  Every write is under this claim (keepKept's claim, the store's fence): one that lost the run by now (its lease ran
+   *  out, another claim may have parked and kept since) writes and marks nothing. No clock read, no row, a row this park
+   *  may not write over, or a claim fenced: undefined, and the park keeps nothing. */
+  const keepRow = (): Promise<{ readonly row: Kept; readonly stamped: number } | undefined> =>
+    (keeping ??= (async () => {
+      if (!keeps || !settings || released) return undefined;
+      if (started.sync && !(await started.sync()).ok) return undefined;
+      try {
+        const at = await storeClock();
+        const stamped = now();
+        const ref = keeps.computer.ref;
+        const fence = (launch.claim ?? { runId: launch.runId, epoch: launch.epoch }) as Claim;
+        const disk = resolved.folder === "archil" ? keeps.disk ?? deps.mountDisk?.() : undefined;
+        const row = await keepKept(settings, launch.runId, { provider: keeps.entry, kind: keeps.kind, id: ref.id, name: ref.name, epoch: keeps.epoch, until: at + KEEP_MS, ...(resolved.folder ? { folder: resolved.folder } : {}), ...(disk ? { disk } : {}), ...(keeps.pinned && launch.holder ? { runner: launch.holder.runner, incarnation: launch.holder.incarnation } : {}) }, { ...(store.runners ? { runners: store.runners } : {}), ...(launch.holder ? { self: launch.holder } : {}) }, fence);
+        return row ? { row, stamped } : undefined;
+      } catch {
+        return undefined;
+      }
+    })());
   return {
     ...(runComputer ? { computer: runComputer } : {}),
     ...(hold ? { hold } : {}),
@@ -1346,40 +1424,36 @@ export async function computerForClaim(
       else if (runComputer && "check" in runComputer && runComputer.check) throw new Error("This mounted project has no verified synchronization capability.");
       cancellation?.throwIfAborted();
     },
+    async keepRow(): Promise<boolean> {
+      return (await keepRow()) !== undefined;
+    },
     async park(cause: ParkCause): Promise<boolean> {
-      if (!keeps || !settings || released) {
+      // The row keepRow wrote before the run's timeline said the keep, or written here now. None (nothing to keep, a
+      // delta that did not land, no clock read, a row this park may not write over): nothing to find it by, so it goes as
+      // at the run's end.
+      const kept = await keepRow();
+      if (!kept || !keeps || !settings || released) {
         await release();
         return false;
       }
       const ref = keeps.computer.ref;
-      // A synced folder's delta lands on the disk before the computer is kept (an Archil mount's modes and links are
-      // recorded); one that does not land lets it go as the run's end does, and the park throws the release's words.
-      // What is written in it after this is the disk's only if a claim takes it back (pullFolder).
-      if (started.sync && !(await started.sync()).ok) {
-        await release();
-        return false;
-      }
-      let row: Kept;
-      try {
-        const disk = resolved.folder === "archil" ? keeps.disk ?? deps.mountDisk?.() : undefined;
-        row = await writeKept(settings, launch.runId, { provider: keeps.entry, kind: keeps.kind, id: ref.id, name: ref.name, epoch: keeps.epoch, until: now() + KEEP_MS, ...(resolved.folder ? { folder: resolved.folder } : {}), ...(disk ? { disk } : {}), ...(keeps.pinned && launch.holder ? { runner: launch.holder.runner, incarnation: launch.holder.incarnation } : {}) });
-      } catch {
-        // No row, nothing to find it by: it goes as at the run's end.
-        await release();
-        return false;
-      }
+      const row: Kept = kept.row;
+      /** The keep's end on this process's clock: KEEP_MS from the stamp, its own timer and its live view count from it. */
+      const localUntil = kept.stamped + KEEP_MS;
       await writes.kept(keeps.entry, ref.id);
       // The live view ends (its frames and any take-over), saying what the run waits for and until when the computer is
       // kept, never that it ended; the hold with it; the machine and its mount stay.
       released = (async () => {
         // The recording pauses: the claim that resumes the run goes on in a new file.
         await Promise.all(recordings.map((one) => one.stop("parked")));
-        await Promise.resolve(view?.close({ parked: cause, until: row.until })).catch(() => undefined);
+        // The viewer counts down on this process's clock, so it is told the end on it.
+        await Promise.resolve(view?.close({ parked: cause, until: localUntil })).catch(() => undefined);
         endHold();
         await keeps.computer.close();
       })();
       await released;
-      // Its end at its time, by this process; the janitor's (computer-kept.ts sweepKept) whatever becomes of it. Either
+      // Its end at its time, by this process (KEEP_MS after the stamp, counted on its own clock, so the store's clock
+      // being off from it changes nothing); the janitor's (computer-kept.ts sweepKept) whatever becomes of it. Either
       // deletes it, a synced folder with no read-back. A delete or a mount revoke that fails leaves the row ending, said
       // here: the janitor's next pass ends it again, the credential's remove with it.
       const timer = setTimeout(() => {
@@ -1387,7 +1461,7 @@ export async function computerForClaim(
           if (await deleteKept(keeps.provider, ref)) await writes.ended(keeps.entry, ref.id);
           await revoke();
         }).catch((error: unknown) => (deps.log ?? stderrLog)(`the ${keeps.kind} kept for run ${launch.runId} was left for the janitor's next pass: ${error instanceof Error ? error.message : String(error)}`));
-      }, Math.max(0, row.until - now()));
+      }, Math.max(0, localUntil - now()));
       timer.unref?.();
       return true;
     },
