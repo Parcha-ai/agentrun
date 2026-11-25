@@ -6,19 +6,45 @@
 //   pi         already split as Usage is, cacheWrite1h included.
 //   openrouter Chat Completions' names: prompt_tokens holds prompt_tokens_details.cached_tokens and .cache_write_tokens,
 //              subtracted; completion_tokens holds completion_tokens_details.reasoning_tokens, kept beside it.
+//   opencode   {input, output, reasoning, cache: {read, write}, total?}: input already leaves the cache out. Since
+//              OpenCode 1.3.16 output leaves the reasoning out (anomalyco/opencode 280eb16e77, #21047: "ensure reasoning
+//              tokens arent double counted"; AI SDK 6 came in 1.3.4, and output was still the SDK's whole outputTokens
+//              until then), so output is output + reasoning (reasoning kept beside it, as OpenAI's). Before it, output
+//              held the reasoning already: a session's `version` older than 1.3.16 keeps output as it is. Where a step
+//              records its `total`, output is what the total leaves after the input and the cache, when that is at
+//              least the output, whatever the version. All nought is no usage: a request cut before its usage came.
+//   copilot    GitHub Copilot CLI's {inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, reasoningTokens}:
+//              inputTokens holds the cache read and write (github/copilot-sdk docs/features/usage-and-billing.md),
+//              subtracted; reasoningTokens is part of outputTokens, kept as `reasoning` beside it.
 // A trace exporter's figure is otelUsage's: the same counts, its input inclusive of the cache.
 import { isObject } from "./text.js";
 import type { Usage } from "./types.js";
 
-export type UsageFormat = "anthropic" | "openai" | "pi" | "openrouter";
+export type UsageFormat = "anthropic" | "openai" | "pi" | "openrouter" | "opencode" | "copilot";
+/** What a format's reading may need beyond the counts: the version of the program that wrote them (OpenCode's). */
+export type UsageOptions = { version?: string };
+
+/** The first OpenCode whose output leaves the reasoning out. */
+const OPENCODE_SPLIT = [1, 3, 16];
+/** Whether `version` ("1.2.3", a pre-release after it) is an OpenCode older than 1.3.16; unknown is not. */
+function beforeSplit(version: string | undefined): boolean {
+  const parts = /^v?(\d+)\.(\d+)\.(\d+)/.exec(version ?? "");
+  if (!parts) return false;
+  for (let i = 0; i < 3; i += 1) {
+    const [at, split] = [Number(parts[i + 1]), OPENCODE_SPLIT[i]!];
+    if (at !== split) return at < split;
+  }
+  return false;
+}
 
 /** Each format's names for input, cache read, cache write, output and the reasoning part of the output (a dotted name is
  *  a nested one), and whether its input holds its cache counts. */
-const NAMES: Record<UsageFormat, { input: string; cacheRead: string; cacheWrite: string; output: string; reasoning?: string; cachedIn: boolean }> = {
+const NAMES: Record<Exclude<UsageFormat, "opencode">, { input: string; cacheRead: string; cacheWrite: string; output: string; reasoning?: string; cachedIn: boolean }> = {
   anthropic: { input: "input_tokens", cacheRead: "cache_read_input_tokens", cacheWrite: "cache_creation_input_tokens", output: "output_tokens", cachedIn: false },
   openai: { input: "input_tokens", cacheRead: "cached_input_tokens", cacheWrite: "cache_write_input_tokens", output: "output_tokens", reasoning: "reasoning_output_tokens", cachedIn: true },
   pi: { input: "input", cacheRead: "cacheRead", cacheWrite: "cacheWrite", output: "output", cachedIn: false },
   openrouter: { input: "prompt_tokens", cacheRead: "prompt_tokens_details.cached_tokens", cacheWrite: "prompt_tokens_details.cache_write_tokens", output: "completion_tokens", reasoning: "completion_tokens_details.reasoning_tokens", cachedIn: true },
+  copilot: { input: "inputTokens", cacheRead: "cacheReadTokens", cacheWrite: "cacheWriteTokens", output: "outputTokens", reasoning: "reasoningTokens", cachedIn: true },
 };
 
 const count = (value: unknown): number | undefined => (Number.isSafeInteger(value) && (value as number) >= 0 ? (value as number) : undefined);
@@ -28,8 +54,9 @@ const at = (raw: Record<string, unknown>, name: string): unknown => name.split("
 /** A request's usage as `format` writes it, as Usage; undefined unless input and output are counts (an absent cache
  *  count is 0) and the input left is not negative. The 1h part of the cache write, or the reasoning part of the output,
  *  is kept only when it is a count of at most the whole. */
-export function normalizeUsage(format: UsageFormat, raw: unknown): Usage | undefined {
+export function normalizeUsage(format: UsageFormat, raw: unknown, options: UsageOptions = {}): Usage | undefined {
   if (!isObject(raw)) return undefined;
+  if (format === "opencode") return openCodeUsage(raw, beforeSplit(options.version));
   const names = NAMES[format];
   const usage = { input: count(at(raw, names.input)), output: count(at(raw, names.output)), cacheRead: count(at(raw, names.cacheRead) ?? 0), cacheWrite: count(at(raw, names.cacheWrite) ?? 0) };
   if (usage.input === undefined || usage.output === undefined || usage.cacheRead === undefined || usage.cacheWrite === undefined) return undefined;
@@ -41,6 +68,18 @@ export function normalizeUsage(format: UsageFormat, raw: unknown): Usage | undef
   const reasoning = names.reasoning === undefined ? undefined : count(at(raw, names.reasoning));
   if (reasoning !== undefined && reasoning <= out.output) out.reasoning = reasoning;
   return out;
+}
+
+function openCodeUsage(raw: Record<string, unknown>, holdsReasoning: boolean): Usage | undefined {
+  const cache = isObject(raw.cache) ? raw.cache : {};
+  const [input, output, reasoning, cacheRead, cacheWrite] = [raw.input, raw.output, raw.reasoning ?? 0, cache.read ?? 0, cache.write ?? 0].map(count);
+  if (input === undefined || output === undefined || reasoning === undefined || cacheRead === undefined || cacheWrite === undefined) return undefined;
+  const total = count(raw.total);
+  const left = total === undefined ? -1 : total - input - cacheRead - cacheWrite;
+  const usage: Usage = { input, output: left >= output ? left : holdsReasoning ? output : output + reasoning, cacheRead, cacheWrite };
+  if (usage.input + usage.output + usage.cacheRead + usage.cacheWrite === 0) return undefined;
+  if (raw.reasoning !== undefined && reasoning <= usage.output) usage.reasoning = reasoning;
+  return usage;
 }
 
 /** A request's tokens as an OpenTelemetry GenAI span carries them: `input` INCLUSIVE of the cache (the uncached input, the

@@ -10,8 +10,7 @@
 // it, so kill is the shared pid kill as root. Labels are the sandbox's metadata, which the listing filters by. The
 // lifetime is the janitor's, by the deadline label, and Groundbox's own timer (timeout_minutes) is set to the request's
 // backstop. Kind desktop is the box image's Xvfb and xfwm4, started through the daemon as on E2B and boxd. The rest of
-// the computer is the shared machine-host adapter's (./hosted/provider.ts). Every Groundbox fact used here is cited in
-// the README's Groundbox section.
+// the computer is the shared machine-host adapter's (./hosted/provider.ts).
 import { randomBytes } from "node:crypto";
 import { boxImageRef } from "./box-image.js";
 import { GROUNDBOX, GROUNDBOX_OWN_IMAGE } from "./descriptors/groundbox.js";
@@ -21,7 +20,7 @@ import { type FramedEvent, framedExec } from "./hosted/framed-exec.js";
 import { boundOf, orThrow, pause, seconds } from "./hosted/process.js";
 import { HostedProvider, type HostedOptions } from "./hosted/provider.js";
 import { allPages, httpsBase, jsonOf, type Rest, rest } from "./hosted/rest.js";
-import { PID_KILL } from "./hosted/scripts.js";
+import { PID_ECHO, PID_KILL, ROOT } from "./hosted/scripts.js";
 import { dateOf, isWhole } from "./hosted/values.js";
 import type { ComputerSpec, Refusal } from "./provider.js";
 import { type ComputerErrorCode, ok, type Result } from "./result.js";
@@ -138,8 +137,9 @@ const DIR_PREFIX = "/tmp/.agentrun-exec-";
 const START_SCRIPT = [
 	"d=$1; shift",
 	'mkdir -m 700 "$d" 2>/dev/null || { echo "agentrun: $d is already there, so it is not one this command made: the command did not start" >&2; exit 126; }',
-	'mkfifo -m 600 "$d/in" && exec 3<>"$d/in" || exit 126',
-	'echo "$$ $(s=$(cat /proc/$$/stat 2>/dev/null) && set -- ${s##*") "} && echo "${20}")" >"$d/pid.new" && mv -f "$d/pid.new" "$d/pid" || exit 126',
+	// `command exec`: a failed redirection of a bare exec ends a non-interactive sh with status 2, past the refusal.
+	'mkfifo -m 600 "$d/in" && command exec 3<>"$d/in" || { rm -rf "$d"; exit 126; }',
+	`${PID_ECHO} >"$d/pid.new" && mv -f "$d/pid.new" "$d/pid" || { rm -rf "$d"; exit 126; }`,
 	'echo "agentrun-ready:${d##*-}" >&2',
 	'"$@" <&3 3<&-; c=$?',
 	'rm -rf "$d"; exit $c',
@@ -186,7 +186,7 @@ const KILL_SCRIPT = [
 	OWN_DIR,
 	ownFile("pid"),
 	"read -r pid start 2>/dev/null <pid || exit 0",
-	'p=; [ "$(id -u)" = 0 ] || p="sudo -n"',
+	ROOT,
 	'$p sh -c "$2" sh "$pid" "$start"',
 	'cd / && rm -rf "$d"',
 ].join("\n");

@@ -710,7 +710,7 @@ fixtures of every evasion it catches.
 ```ts
 import { DockerProvider } from "@parcha/agentrun-computer/docker";
 
-const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" });
+const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64", env: process.env });
 const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
 if (!made.ok) throw new Error(made.error.message);
 const connected = await docker.connect(made.value);
@@ -917,7 +917,7 @@ Docker): `/workspace` is only the mount.
 import { WORKSPACE } from "@parcha/agentrun-computer";
 import { DockerProvider } from "@parcha/agentrun-computer/docker";
 
-const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" });
+const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64", env: process.env });
 // The run folder must exist, by its canonical path, and be writable by docker.user (below).
 const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none", mount: { kind: "bind", path: "/data/runs/r1/work" } }, { requestId: "r1#3" });
 // In the computer: files.read({ path: `${WORKSPACE}/notes.md` }), exec.run({ argv: ["make"], cwd: WORKSPACE, ... })
@@ -1036,13 +1036,13 @@ no other process to wait on: Docker's own tag is the shared state.
 ```ts
 import { DockerProvider } from "@parcha/agentrun-computer/docker";
 
-const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" }); // image: the default recipe
+const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64", env: process.env }); // image: the default recipe
 const image = await docker.image({ signal });   // built once; one inspect when Docker has it
 if (!image.ok) throw new Error(image.error.message);
 const made = await docker.create({ image: image.value, lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
 ```
 
-- `ensureImage(source, { docker?, signal?, timeoutMs?, onWait? })` (`src/docker/image.ts`) gives the tag. `source` is
+- `ensureImage(source, { docker?, env?, signal?, timeoutMs?, onWait? })` (`src/docker/image.ts`) gives the tag. `source` is
   `{ recipe }`, a Dockerfile with no build context, or `{ image }`, an image by name.
   - A recipe is built with `docker build --quiet --label agentrun.computer.recipe=<sha256> --tag
     agentrun-computer:<first 12 hex digits> -`, the recipe on stdin (`recipeTag(recipe)`, `recipeHash(recipe)`,
@@ -1054,6 +1054,22 @@ const made = await docker.create({ image: image.value, lifetimeMs: 600_000, netw
   image (`DEFAULT_DOCKER_IMAGE`): `python:3.12-slim` pinned by its index digest (`DOCKER_BASE`), with git, curl,
   nodejs, npm, ripgrep and socat from apt. `docker.image({ signal?, timeoutMs?, onWait? })` is `ensureImage` of it with the
   provider's docker CLI. A source that is neither throws at construction, in words.
+- **The docker CLI gets only what it reads.** The provider reads no environment: its `env` option is the host's (serve
+  passes its own values of the docker descriptor's `hostEnv`), and every docker call it makes (`dockerArch`,
+  `ensureImage` and the provider's own, each taking `env` too) is started with the names of it docker reads
+  (`DOCKER_ENV_NAMES`), and none of the rest. Library callers pass `env` (serve does): without it docker gets no
+  environment at all, so a bare `docker` is found only on the default path (`/usr/bin:/bin`), not in `/usr/local/bin` or
+  a snap, and no credential helper is found on PATH; the `docker` option, the CLI's absolute path, is the other way to
+  name it. The names: PATH, HOME, TMPDIR, the
+  locale, `DOCKER_HOST`, `DOCKER_CONTEXT`, `DOCKER_CONFIG` and Docker's TLS, API and buildx settings, ssh's agent socket,
+  `XDG_RUNTIME_DIR` and the proxy (either case), for a daemon or registry that is not local, and the places a pull's
+  credential helper (`docker-credential-<name>` on PATH) looks: the Secret Service's bus, GnuPG's home and agent, an AWS
+  profile, region and config file, gcloud's config. No key passes (`AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`,
+  `AZURE_CLIENT_SECRET`, `DOCKER_CUSTOM_HEADERS`, a content trust passphrase), nor a name shaped as one, a pointer to a
+  credential included (`AWS_SHARED_CREDENTIALS_FILE`, `AWS_WEB_IDENTITY_TOKEN_FILE`,
+  `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`, `GOOGLE_APPLICATION_CREDENTIALS`, `PASSWORD_STORE_DIR`). A helper that
+  signs in from keys in the server's environment (ECR's, with access keys in env) gets none: give it a profile, the
+  default credentials file or a role instead.
 - **The image is an option only; there is no env name for it.** Another image is named with the `image` option, to
   `new DockerProvider(...)` or to `create({ image: { image: "..." } })`. The library reads no environment (see
   [Settings](#settings)), and Docker's conformance module reads no image name either: a `COMPUTER_DOCKER_IMAGE` in its
@@ -1217,7 +1233,7 @@ as a caller's labels, with no code of its own: Docker writes them with `--label`
 import { releaseOlder, runLabels } from "@parcha/agentrun-computer";
 import { DockerProvider } from "@parcha/agentrun-computer/docker";
 
-const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" });
+const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64", env: process.env });
 // A claim at epoch 3 takes the run over: the computers of epochs 1 and 2 go first.
 const older = await releaseOlder(docker, "r1", 3);
 if (!older.ok) throw new Error(older.error.message); // fenced, or a computer that could not be released
@@ -1378,7 +1394,7 @@ unless they start with `modal_proto/`. Docs: modal.com, read 2026-11-05.
 provider in `options.app` (required: without it, it refuses in words naming the option, before any client). It reads no
 setting from the environment (see [Settings](#settings)) and passes the token to `ModalClient` explicitly, so a
 `MODAL_TOKEN_ID` or `MODAL_TOKEN_SECRET` on the host is never used. The key goes only to `options.serverUrl` (https
-alone), else the SDK's default `https://api.modal.com:443`: since the client cannot take a server, it refuses while `MODAL_SERVER_URL`
+alone), else the SDK's default `https://api.modal.com`: since the client cannot take a server, it refuses while `MODAL_SERVER_URL`
 is set, and sets it to its choice only while it constructs the client, one construction at a time and put back after
 each, so neither `MODAL_PROFILE` nor a profile in `MODAL_CONFIG_PATH` or `~/.modal.toml` can redirect the key. The
 daemon is uploaded from `options.daemonPath`, else `dist/computerd-linux-amd64`, so a run publishes nothing.
@@ -1395,12 +1411,15 @@ declares no stop), and the Full `provider.janitor` case is skipped (`lifetime:ja
 A live run is wrapped in the one sweep, with the same settings (it needs no live switch, since it makes nothing):
 
 ```sh
-node packages/computer/dist/conformance/sweep.js --provider modal --before /tmp/modal-before.json
-AGENTRUN_COMPUTER_LIVE_MODAL=1 npm run test:modal -w @parcha/agentrun-computer
-node packages/computer/dist/conformance/sweep.js --provider modal --after /tmp/modal-before.json
+before="$(mktemp -d)/before.json"   # each run its own: --before refuses a file that is already there
+node packages/computer/dist/conformance/sweep.js --provider modal --before "$before"
+AGENTRUN_COMPUTER_LIVE_MODAL=1 npm run conformance -w @parcha/agentrun-computer -- --provider modal --run "$(node -p 'require(process.argv[1]).run' "$before")"
+node packages/computer/dist/conformance/sweep.js --provider modal --after "$before"
 ```
 
-Its output is `{"swept":n,"gone":m,"stillThere":[ids],"leftAlone":k}`, as for every provider on the adapter. The before
+`--after` deletes only the computers of the run the before file minted, the one `--run` names ([PROVIDERS.md](PROVIDERS.md),
+"The live sweep"). `npm run test:modal` runs the suite under its own run id, so it is no run this sweep wraps: its
+runner and its after hook delete what it made. Its output is `{"swept":n,"gone":m,"stillThere":[ids],"leftAlone":k}`, as for every provider on the adapter. The before
 file records where it listed, the app and the server (`sweepScope`), and `--after` refuses, exit 2, before it lists
 anything, a file of another app or server, or one that names none: every computer there would read as new.
 
@@ -1688,11 +1707,14 @@ The live sweep is the shared one, `dist/conformance/sweep.js --provider daytona 
 `COMPUTER_DAYTONA_API_URL` through the conformance module's `createHost`, with no live switch:
 
 ```sh
-node packages/computer/dist/conformance/sweep.js --provider daytona --before /tmp/daytona-before.json   # before the run
-node packages/computer/dist/conformance/sweep.js --provider daytona --after /tmp/daytona-before.json    # after it
+before="$(mktemp -d)/before.json"   # each run its own: --before refuses a file that is already there
+node packages/computer/dist/conformance/sweep.js --provider daytona --before "$before"   # before the run
+npm run conformance -w @parcha/agentrun-computer -- --provider daytona --run "$(node -p 'require(process.argv[1]).run' "$before")"
+node packages/computer/dist/conformance/sweep.js --provider daytona --after "$before"    # after it
 ```
 
-It prints `{"swept":n,"gone":m,"stillThere":[ids],"leftAlone":k}` (`gone` was `notFound`). A conformance run of
+`--after` deletes only the computers of the run `--run` names, the id `--before` minted, so another run on the same
+account keeps its computers. It prints `{"swept":n,"gone":m,"stillThere":[ids],"leftAlone":k}` (`gone` was `notFound`). A conformance run of
 Daytona also sweeps its own label through the host at its end (the report's `cleanup.sweep`).
 
 ### Daytona on dial
@@ -2588,7 +2610,11 @@ deadline, so the janitor's `sweep` also ends a browser whose supervisor was kill
 
 Finding Chrome: the `executablePath` option, else `PI_BROWSER_CHROME` or `CHROME_PATH` in the `env` option, else the
 first `google-chrome`, `google-chrome-stable`, `chromium` or `chromium-browser` on that env's `PATH`, else the usual
-install places. The library reads no environment of its own: the host passes `env`. With none found, `check()`,
+install places. The library reads no environment of its own: the host passes `env`. Of it, the supervisor and the Chrome
+it starts, and `testConnection()`'s Chrome, hold the names Chrome reads (`CHROME_ENV_NAMES`: PATH, HOME, TMPDIR, the
+locale, the display and `XAUTHORITY`, the XDG directories, fontconfig's files, the session bus, `CHROME_DEVEL_SANDBOX`)
+and nothing else, so no key the host holds reaches Chrome; serve passes its own values of these (the descriptor's
+`hostEnv`). With none found, `check()`,
 `create()` and `testConnection()` say what to install and which setting names one. `testConnection()` starts the Chrome
 once, headless on a blank page with a proxy that reaches nothing, to prove it starts here with its sandbox on. It
 keeps nothing.
@@ -2867,9 +2893,12 @@ alone (see [Init, the socket and the bridge](#init-the-socket-and-the-bridge)): 
 ### Conformance on boxd
 
 ```sh
-AGENTRUN_COMPUTER_LIVE_BOXD=1 COMPUTER_BOXD_API_KEY=... npm run conformance -w @parcha/agentrun-computer -- --provider boxd
-AGENTRUN_COMPUTER_LIVE_BOXD=1 COMPUTER_BOXD_API_KEY=... npm run test:boxd -w @parcha/agentrun-computer
-node packages/computer/dist/conformance/sweep.js --provider boxd --before /tmp/boxd-before.json   # then --after
+export COMPUTER_BOXD_API_KEY=...
+before="$(mktemp -d)/before.json"   # each run its own: --before refuses a file that is already there
+node packages/computer/dist/conformance/sweep.js --provider boxd --before "$before"
+AGENTRUN_COMPUTER_LIVE_BOXD=1 npm run conformance -w @parcha/agentrun-computer -- --provider boxd --run "$(node -p 'require(process.argv[1]).run' "$before")"
+node packages/computer/dist/conformance/sweep.js --provider boxd --after "$before"
+AGENTRUN_COMPUTER_LIVE_BOXD=1 npm run test:boxd -w @parcha/agentrun-computer   # its own run id: it deletes what it made
 ```
 
 The conformance module, `dist/conformance/boxd.js`, checks `AGENTRUN_COMPUTER_LIVE_BOXD=1` before it reads anything
@@ -2936,9 +2965,12 @@ What smol cloud refuses or this host works around:
 ### Conformance on smol cloud
 
 ```sh
-AGENTRUN_COMPUTER_LIVE_SMOLCLOUD=1 COMPUTER_SMOLCLOUD_API_KEY=... \
-  npm run conformance -w @parcha/agentrun-computer -- --provider smolcloud --long --concurrency 4
-node packages/computer/dist/conformance/sweep.js --provider smolcloud --before /tmp/smolcloud-before.json   # then --after
+export COMPUTER_SMOLCLOUD_API_KEY=...
+before="$(mktemp -d)/before.json"   # each run its own: --before refuses a file that is already there
+node packages/computer/dist/conformance/sweep.js --provider smolcloud --before "$before"
+AGENTRUN_COMPUTER_LIVE_SMOLCLOUD=1 npm run conformance -w @parcha/agentrun-computer -- --provider smolcloud --long --concurrency 4 \
+  --run "$(node -p 'require(process.argv[1]).run' "$before")"
+node packages/computer/dist/conformance/sweep.js --provider smolcloud --after "$before"
 ```
 
 The conformance module, `dist/conformance/smolcloud.js`, checks `AGENTRUN_COMPUTER_LIVE_SMOLCLOUD=1` first, then reads
@@ -3037,12 +3069,19 @@ What Groundbox refuses or this host works around:
 ### Conformance on Groundbox
 
 ```sh
-AGENTRUN_COMPUTER_LIVE_GROUNDBOX=1 COMPUTER_GROUNDBOX_API_KEY=... \
-  npm run conformance -w @parcha/agentrun-computer -- --provider groundbox --long
-AGENTRUN_COMPUTER_LIVE_GROUNDBOX=1 COMPUTER_GROUNDBOX_API_KEY=... COMPUTER_GROUNDBOX_KIND=desktop \
-  npm run conformance -w @parcha/agentrun-computer -- --provider groundbox --kind desktop --long --fixture <computerd-fixture for linux/amd64>
-node packages/computer/dist/conformance/sweep.js --provider groundbox --before /tmp/groundbox-before.json   # then --after
+export COMPUTER_GROUNDBOX_API_KEY=...
+before="$(mktemp -d)/before.json"   # each run its own: --before refuses a file that is already there
+node packages/computer/dist/conformance/sweep.js --provider groundbox --before "$before"
+run="$(node -p 'require(process.argv[1]).run' "$before")"
+AGENTRUN_COMPUTER_LIVE_GROUNDBOX=1 \
+  npm run conformance -w @parcha/agentrun-computer -- --provider groundbox --long --run "$run"
+AGENTRUN_COMPUTER_LIVE_GROUNDBOX=1 COMPUTER_GROUNDBOX_KIND=desktop \
+  npm run conformance -w @parcha/agentrun-computer -- --provider groundbox --kind desktop --long --fixture <computerd-fixture for linux/amd64> --run "$run"
+node packages/computer/dist/conformance/sweep.js --provider groundbox --after "$before"
 ```
+
+Both runs share the before file's `--run`, at once or one after the other: each run's own end-of-run sweep deletes only
+its own computers ([PROVIDERS.md](PROVIDERS.md), "The live sweep").
 
 The conformance module, `dist/conformance/groundbox.js`, checks `AGENTRUN_COMPUTER_LIVE_GROUNDBOX=1` first, then reads
 `COMPUTER_GROUNDBOX_API_KEY` (`apiKey`, required), `COMPUTER_GROUNDBOX_API_URL` (`apiUrl`), `COMPUTER_GROUNDBOX_IMAGE`
@@ -3079,8 +3118,14 @@ A provider for another vendor passes the same suite as Docker's, with one comman
 
 ```sh
 npm run conformance -w @parcha/agentrun-computer -- --provider docker            # or modal, daytona: any registry id
-npm run conformance -w @parcha/agentrun-computer -- --provider ./my-provider.js [--image debian:bookworm-slim] [--only exec,files] [--fixture <path>] [--long] [--concurrency <n>] [--json]
+npm run conformance -w @parcha/agentrun-computer -- --provider ./my-provider.js [--image debian:bookworm-slim] [--only exec,files] [--fixture <path>] [--long] [--concurrency <n>] [--run <id>] [--json]
 ```
+
+`--run <id>` (`run` in `runConformance`'s options) is the run's id, which every computer it makes carries as
+`agentrun.conformance`: the one the live sweep's `--before` printed, so its `--after` deletes this run's computers and no
+other's ([PROVIDERS.md](PROVIDERS.md), "The live sweep"). Without it, the run mints a fresh one. Every computer also
+carries `agentrun.conformance.runner`, an id each run mints for itself, and the run's own end-of-run sweep and list go
+by both labels, so two processes given one `--run` never delete each other's computers.
 
 ```text
 computer conformance · docker · linux, daemon pid1 · computerd 0.1.0-beta.30 linux/amd64
@@ -3284,6 +3329,66 @@ computer's `HOME`, which the provider sets, is a directory its user can write, a
 
 From code: `runConformance(provider, { image, only?, signal?, drifted?, mountFor?, caseTimeoutMs?, cleanupTimeoutMs?,
 fixture?, fetch? })` returns the report, and `formatReport(report)` the text above.
+
+### Provider health: time to interactive (`--tti`, `--burst`)
+
+Whether a provider works today, and how fast, measured through this package's own provider layer. Time to interactive
+(TTI) is the time from a computer's `create` call to the answer of its first command: `create`, `connect` (computerd's
+hello) and one `exec.run`, read on the run's clock; the delete comes after and is not timed. `--tti <n>` makes `n`
+computers one at a time, each deleted before the next; `--burst <n>` makes `n` at once. Either runs alone, or both, the
+burst after. It runs as cases of the conformance runner (`src/conformance/tti.ts`), so a provider the CLI can make gets
+it with nothing more: the module's settings and keys by name, its image, the run's label, the deletes, the sweep and
+the list that shows nothing is left.
+
+```sh
+npm run conformance -w @parcha/agentrun-computer -- --provider daytona --tti 100 --burst 100 [--image <image>] [--json]
+```
+
+```text
+computer tti · daytona · linux, daemon pid1 · image default
+came up: yes
+serial n 100 · ok 100/100 (100%) · median 512 ms · p95 640 ms · p99 702 ms · score 94.28
+burst  n 100 at once · ok 98/100 (98%) · median 830 ms · p95 1410 ms · p99 1630 ms · score 87.27
+  ✗ 2x create failed (limit): ...
+cleanup ✓ 0 left · 200 deleted
+computers alive at once: 100 at most
+tti FAIL: 2 of 200 computers did not come up
+```
+
+(The numbers above show the shape, not a measurement.) `came up` is `yes` when any computer ran its first command, else
+`no` with the first reason one did not. It exits 0 when every computer came up and the run left nothing behind, else 1,
+and 2 on a usage error; `--tti` and `--burst` take `--image` and `--json` and refuse the suite's flags. `--json` prints
+`{ provider, providerVersion, kind, daemonMode, image, command, cameUp, why?, serial?, burst?, pass, cleanup, computers,
+daemons, notes?, providerNotes? }`, each shape `{ n, ok, successRate, ttiMs, stats: { median, p95, p99 }, score, errors:
+[{ words, count }] }`. From code: `measureTti(provider, { image, iterations, burst, clock?, signal? })`, `formatTti`,
+`ttiStats` and `ttiScore`.
+
+The yardstick is ComputeSDK's sandbox benchmark ([computesdk/benchmarks](https://github.com/computesdk/benchmarks), MIT;
+`benchmarks/sandbox/tti.bench.ts`, `scoring.ts`, `src/util/stats.ts`), and three things are theirs as they wrote them:
+TTI from create's call to the first command's success, with destroy left out; the statistics, 5% of the times trimmed
+from each end, the median of the rest, p95 and p99 by nearest rank; and the score, each of median, p95 and p99 as
+`100 * (1 - ms / 10000)` (0 at 10 s or more), weighted 0.6, 0.25 and 0.15, times the success rate. Their board's runs are
+100 computers through 100 slots, all launched at once: `--burst 100`. Where this differs:
+
+- The first command is `echo agentrun` through computerd's `exec.run` (no shell; `cmd.exe /d /c echo agentrun` on
+  Windows), not `node -v`: a run's image need not carry Node.
+- TTI is through this layer, so it holds what a provider does in `create` beyond the vendor's own call (on most remote
+  providers, putting computerd in the machine and starting it) and `connect`'s hello. It is the time an agent waits
+  here, not the vendor's SDK alone.
+- Each computer is made as the suite makes them: the run's label, a 30-minute lifetime, network `none` where the kind
+  requires it, and the module's image (`conformanceImage()`, such as Daytona's `default` snapshot or E2B's `desktop`
+  template) unless `--image` names one. ComputeSDK's sandboxes have an open network and each vendor's default image.
+- One computer has 150 s to come up in all (their bounds: 120 s for create, 30 s for the command), and the clock reads
+  whole milliseconds.
+- The serial shape is their `sequential` one, retired from their board on 2026-08-11; it is kept here because a provider
+  that fails only under a burst is a different finding from one that fails alone.
+- A burst's computers are deleted one after another once the burst ends, outside the time; theirs each destroy its own.
+
+What it cannot drive, and why: a browser (Browserbase, Kernel, local Chrome) runs no command, only CDP, so it is not
+measured (`came up: no: the provider declares no exec`). A dial host (Cloudflare, Fly, and E2B, Modal or Daytona with
+`COMPUTER_<ID>_CONNECT=dial`) makes machines that dial a server the internet reaches, so from this CLI every create is
+refused in words; its Core runs inside `packages/serve/scripts/dial-conformance.mjs`, which has no TTI mode. Archil is a
+mount here, not a computer provider, so there is no Archil sandbox to time.
 
 ## Persistent computers: an agent's own
 

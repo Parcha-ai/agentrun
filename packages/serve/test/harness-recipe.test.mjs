@@ -1361,7 +1361,8 @@ test("Settings → Harness keys stays offered while keys are kept: restarted wit
   assert.equal((await owner("PUT", "/settings/harness-keys/model-agent/MODEL_AGENT_API_KEY", { value: plantedValue("harness-key") })).status, 204);
   await first.stop();
   // The same data, started with no recipe: the key is kept, and the page that removes it is still offered.
-  const later = await serve(t, { data: first.data, accounts: true, runner: false });
+  const laterLogs = [];
+  const later = await serve(t, { data: first.data, accounts: true, runner: false, log: (line) => void laterLogs.push(line) });
   assert.deepEqual((await later.api("GET", "/capabilities")).body.features.harness_keys, { routes: true, at_rest: "sealed", harnesses: [], kept: ["model-agent"] });
   const { owner: laterOwner } = await asOwnerAndToken(later);
   // Which harnesses hold keys is the owner's to know: a caller with no session and no token reads none.
@@ -1369,6 +1370,14 @@ test("Settings → Harness keys stays offered while keys are kept: restarted wit
   const anonymous = await call(later.port, { path: "/v2/capabilities", headers: { accept: "application/json" } });
   assert.equal(anonymous.status, 200, anonymous.text);
   assert.deepEqual(anonymous.json.features.harness_keys.kept, [], "a caller with no session and no token reads no kept ids");
+  const capsRefused = () => laterLogs.filter((line) => / event=auth_failed /.test(line) && / route=\/v2\/capabilities /.test(line));
+  assert.deepEqual(capsRefused(), [], "a caller that sent no credential is no failed sign-in");
+  // A token the server refuses still reads the public answer, and is said in the log as any route's 401 is.
+  const wrong = await call(later.port, { path: "/v2/capabilities", headers: { accept: "application/json", authorization: "Bearer not-this-servers-token" } });
+  assert.equal(wrong.status, 200, wrong.text);
+  assert.deepEqual(wrong.json.features.harness_keys.kept, [], "a refused token reads no kept ids");
+  assert.equal(capsRefused().length, 1, `logged once: ${laterLogs.join("\n")}`);
+  assert.match(capsRefused()[0], / reason=wrong_token$/);
   assert.equal((await laterOwner("DELETE", "/settings/harness-keys/model-agent/MODEL_AGENT_API_KEY")).status, 204);
   assert.deepEqual((await later.api("GET", "/capabilities")).body.features.harness_keys.kept, [], "with nothing kept, nothing offers the page");
 });
