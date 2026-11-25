@@ -14,7 +14,8 @@ const id = (group, k) => `00000000-0000-4000-8000-${group}${String(k).padStart(1
 
 test("a line over the worker's line limit: the file is handed back and read by parseHome, the totals of one thread", { timeout: TIMEOUT }, async (t) => {
   const home = await tempHome(t);
-  // An 8 MB heap: a 1 MB line limit; 24 MB of text is three heaps.
+  // The default 64 MB heap: an 8 MB line limit, so a 24 MB line is three limits. A smaller heap leaves too little room
+  // for the worker's ordinary reads on a loaded machine: it ran out of memory and was replaced, a lost worker.
   const long = "x".repeat(24 * 2 ** 20);
   for (let k = 0; k < 2; k += 1) {
     const session = id("l", k);
@@ -38,7 +39,7 @@ test("a line over the worker's line limit: the file is handed back and read by p
   };
   process.on("worker", watch);
   t.after(() => process.off("worker", watch));
-  assert.deepEqual(await parseHome(home, { catalog: false, threads: 2, workerOldMb: 8 }), one);
+  assert.deepEqual(await parseHome(home, { catalog: false, threads: 2 }), one);
   assert.equal(back, 2, "both long-line files handed back");
   assert.equal(made, 2, "no worker lost");
 });

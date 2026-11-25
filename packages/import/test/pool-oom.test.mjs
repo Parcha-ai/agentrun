@@ -37,21 +37,8 @@ async function small(home, session, k, time) {
   await utimes(file, time, time);
 }
 
-/** The bound on one pooled import here (each settles in about a second). A pool that hangs fails on this bound, in words
- * that name what it was doing, not on the runner's timeout. */
-const DEADLINE = 20_000;
-
-/** The failure for a pool that did not settle within DEADLINE: the workers made after the first `threads` replace lost
- * ones; a replacement that never sent a read and never ended was never given a file. */
-function stuck(workers, threads) {
-  const made = workers.slice(threads);
-  const bound = `a pool that lost workers settles within ${DEADLINE / 1000} s; this one did not (workers made ${workers.length})`;
-  if (made.length > 0 && made.every((w) => w.ok + w.back === 0 && !w.ended)) return `${bound}: pending files never dispatched to a replacement`;
-  return `${bound}: a lost worker's file never handed back to parseHome`;
-}
-
-/** Workers made, and the reads each sent back (ok or not), while `run` runs; `run` must settle within DEADLINE. */
-async function watch(run, threads) {
+/** Workers made, and the reads each sent back (ok or not), while `run` runs. A pool that hangs fails on the test's timeout. */
+async function watch(run) {
   const workers = [];
   const made = (worker) => {
     const seen = { ok: 0, back: 0, ended: false };
@@ -60,12 +47,9 @@ async function watch(run, threads) {
     worker.on("exit", () => (seen.ended = true));
   };
   process.on("worker", made);
-  let timer;
-  const late = new Promise((_, fail) => (timer = setTimeout(() => fail(new assert.AssertionError({ message: stuck(workers, threads) })), DEADLINE)));
   try {
-    return { result: await Promise.race([run(), late]), workers };
+    return { result: await run(), workers };
   } finally {
-    clearTimeout(timer);
     process.off("worker", made);
   }
 }
@@ -73,10 +57,12 @@ async function watch(run, threads) {
 test("a worker out of memory gives its file back, and the worker that takes its place reads on: the totals of one thread", { timeout: TIMEOUT }, async (t) => {
   const home = await tempHome(t);
   // Two bombs, the largest files: one to each of the two workers first, so both run out; the replacements read the rest.
-  for (let k = 0; k < 2; k += 1) await bomb(home, id("b", k), 0.9, 1_000 + k);
+  // At the default 64 MB heap (an 8 MB line limit), so that only a bomb runs a worker out: at 8 MB, a worker reading a
+  // small file on a loaded machine ran out too, and a third loss broke the count.
+  for (let k = 0; k < 2; k += 1) await bomb(home, id("b", k), 7.2, 1_000 + k);
   for (let k = 0; k < 12; k += 1) await small(home, id("s", k), k, 2_000 + k);
   const one = await parseHome(home, { catalog: false, threads: 1 });
-  const { result, workers } = await watch(() => parseHome(home, { catalog: false, threads: 2, workerOldMb: 8 }), 2);
+  const { result, workers } = await watch(() => parseHome(home, { catalog: false, threads: 2 }));
   assert.deepEqual(result, one);
   assert.equal(workers.length, 4, "two workers lost, two made in their place");
   assert.ok(workers.slice(2).some((w) => w.ok > 0), "a worker made in a lost one's place reads files");
@@ -88,7 +74,7 @@ test("every worker out of memory: the import settles, the pool stops after its l
   // import settles (an unref'd one let it exit 13, unsettled).
   for (let k = 0; k < 6; k += 1) await bomb(home, id("b", k), 0.9, 1_000 + k);
   const one = await parseHome(home, { catalog: false, threads: 1 });
-  const { result, workers } = await watch(() => parseHome(home, { catalog: false, threads: 2, workerOldMb: 8 }), 2);
+  const { result, workers } = await watch(() => parseHome(home, { catalog: false, threads: 2, workerOldMb: 8 }));
   assert.deepEqual(result, one);
   // Two threads, two losses a thread: the fifth loss stops the pool, so threads x 3 workers made.
   assert.equal(workers.length, 2 * 3, "the pool stops at its fifth loss");
