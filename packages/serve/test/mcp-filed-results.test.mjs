@@ -123,10 +123,10 @@ test("a write that fails shows nothing of the answer and is an error, in the Wor
   assert.ok(!stringsOf(JSON.parse(PAGE)).some((value) => textOf(result).includes(value)), `no value of the answer: ${textOf(result)}`);
   assert.deepEqual(await readdir(elsewhere), [], "never through the link");
 
-  const closed = await setup(t, { filed: () => SETTING, work: () => Promise.reject(Object.assign(new Error("/srv/somewhere is gone"), { code: "UNAVAILABLE" })) });
+  const closed = await setup(t, { filed: () => SETTING, work: () => Promise.reject(Object.assign(new Error("/mnt/run-disk is gone"), { code: "UNAVAILABLE" })) });
   const unopened = await closed.call("page");
   assert.equal(unopened.isError, true);
-  assert.ok(!/Marisol|txn_|\/srv/.test(textOf(unopened)), textOf(unopened));
+  assert.ok(!/Marisol|txn_|\/mnt\/run-disk/.test(textOf(unopened)), textOf(unopened));
   assert.match(textOf(unopened), /could not be filed/);
 });
 
