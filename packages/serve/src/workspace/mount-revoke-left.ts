@@ -10,6 +10,7 @@
 // Only at the claim's end: while the claim goes on it may mint again under its own epoch, and the janitor's remove would
 // take that credential from under its computer. A later claim's credential has a later epoch, and the remove leaves it.
 import type { Settings } from "../store/index.js";
+import { bounded, KEPT_DELETE_MS } from "./computer-kept.js";
 
 /** The settings prefix of the left removes. */
 export const MOUNT_REVOKE_PREFIX = "archil_revoke:";
@@ -52,12 +53,15 @@ export async function leaveMountRevoke(settings: Pick<Settings, "get" | "putIfAb
 
 /**
  * The janitor's pass over the left removes: each asked of `revoke` (the kept pass's revokeMount, which asks nothing past
- * the row's time plus MOUNT_TTL_MS), and its row removed once that answers, only while it still reads as read (a later
- * claim's left since stays). One that throws is left for the next pass, said in `failed`. Never throws.
+ * the row's time plus MOUNT_TTL_MS), bounded by `deleteMs` (KEPT_DELETE_MS) as a kept computer's delete is, its Archil
+ * calls cut at the bound by the signal it is handed; and its row removed once that answers, only while it still reads as
+ * read (a later claim's left since stays). One that throws or passes its bound is left for the next pass, said in
+ * `failed`, and the pass goes on. Never throws.
  */
 export async function sweepMountRevokes(deps: {
   readonly settings: Pick<Settings, "all" | "removeIf">;
-  readonly revoke: (runId: string, left: LeftRevoke) => Promise<void>;
+  readonly revoke: (runId: string, left: LeftRevoke, signal: AbortSignal) => Promise<void>;
+  readonly deleteMs?: number;
 }): Promise<{ readonly failed: readonly string[] }> {
   const failed: string[] = [];
   let rows: Awaited<ReturnType<Settings["all"]>>;
@@ -68,12 +72,16 @@ export async function sweepMountRevokes(deps: {
   }
   for (const row of rows) {
     const runId = row.key.slice(MOUNT_REVOKE_PREFIX.length);
+    const cut = new AbortController();
     try {
       const left = leftRevokeOf(row.value);
-      if (left) await deps.revoke(runId, left);
+      if (left) await bounded(deps.deleteMs ?? KEPT_DELETE_MS, deps.revoke(runId, left, cut.signal));
       await deps.settings.removeIf(row.key, row.value);
     } catch (error) {
       failed.push(`the Archil mount credential of run ${runId}: ${(error as Error)?.message ?? String(error)}`);
+    } finally {
+      // Its Archil calls cut, where the bound passed first.
+      cut.abort(new Error("the janitor's bound on the remove passed"));
     }
   }
   return { failed };

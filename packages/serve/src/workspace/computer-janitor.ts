@@ -88,6 +88,9 @@ export interface JanitorDeps {
   readonly closeMs?: number;
   /** The longest one provider's sweep may take. Default JANITOR_PROVIDER_MS. */
   readonly providerMs?: number;
+  /** The longest the kept pass waits on one kept computer's delete, or one left credential remove, before it goes on and
+   *  cuts its calls. Default KEPT_DELETE_MS. */
+  readonly deleteMs?: number;
   /** The clock a computer's deadline label is read by. Default Date.now. A kept row's `until` is the store's clock's
    *  (store.sealedKeys), never this one's. */
   readonly now?: () => number;
@@ -259,7 +262,7 @@ export async function sweepServerComputers(deps: Pick<JanitorDeps, "store" | "co
  *  refusal for good) no longer keeps the row ending and said at every pass. The removes a claim that kept nothing left at
  *  its end (mount-revoke-left.ts) are asked the same way, each row removed once its remove answers. Undefined without the store's settings,
  *  where none is kept. Never throws. */
-export async function sweepKeptComputers(deps: Pick<JanitorDeps, "store" | "computers" | "env" | "sealKey" | "mountControl" | "now" | "self"> & { readonly log?: (line: string) => void }): Promise<KeptSweep | undefined> {
+export async function sweepKeptComputers(deps: Pick<JanitorDeps, "store" | "computers" | "env" | "sealKey" | "mountControl" | "now" | "self" | "deleteMs"> & { readonly log?: (line: string) => void }): Promise<KeptSweep | undefined> {
   const { store, computers } = deps;
   const writes = intervalWrites(store, deps.log, deps.now);
   const { settings } = store;
@@ -272,7 +275,7 @@ export async function sweepKeptComputers(deps: Pick<JanitorDeps, "store" | "comp
   } catch (error) {
     return { ended: [], failed: [`the store's clock could not be read, so no kept computer's time could be judged this pass: ${error instanceof Error ? error.message : String(error)}`] };
   }
-  const revokeMount = async (runId: string, kept: Pick<Kept, "epoch" | "until" | "disk">): Promise<void> => {
+  const revokeMount = async (runId: string, kept: Pick<Kept, "epoch" | "until" | "disk">, signal: AbortSignal): Promise<void> => {
     const { disk } = kept;
     if (disk === undefined) {
       deps.log?.(`the computer janitor removed no mount credential of run ${runId}: its kept computer held the run's folder on Archil, but its row names no disk, so the credential lapses at its ttl`);
@@ -282,7 +285,7 @@ export async function sweepKeptComputers(deps: Pick<JanitorDeps, "store" | "comp
     const archil = await loadArchilSettings({ settings }, deps.env);
     if (!archil) throw new Error("its mount credential was not removed: this server's Archil settings are gone");
     const { value } = await archilApiKey({ env: deps.env, keys: store.sealedKeys, sealKey: deps.sealKey });
-    await removeRunMountTokens({ region: archil.region, key: () => value, disk, ...deps.mountControl }, runId, kept.epoch);
+    await removeRunMountTokens({ region: archil.region, key: () => value, disk, ...deps.mountControl }, runId, kept.epoch, { signal });
   };
   const keysOf = providerKeys(computers.kinds, computers.keyOf ?? (async () => undefined));
   const providerOf = async (id: string): Promise<ComputerProvider | undefined> => {
@@ -291,9 +294,11 @@ export async function sweepKeptComputers(deps: Pick<JanitorDeps, "store" | "comp
     const options = providerOptions(id, await keysOf(id), computers.settings ?? {}, computers.keyTable ?? KEY_TABLE);
     return options.ok ? make(options.options, { ledger: storeLedger(store.computerLedger, id) }) : undefined;
   };
-  const kept = await sweepKept({ settings, runs: store.runs, now, providerOf, deleted: (provider, id) => writes.ended(provider, id), revokeMount, ...(store.runners ? { runners: store.runners } : {}), ...(deps.self ? { self: deps.self } : {}) });
-  // The removes a claim that kept nothing left at its end (mount-revoke-left.ts), by the same remove and its give-up.
-  const left = await sweepMountRevokes({ settings, revoke: revokeMount });
+  const bound = deps.deleteMs === undefined ? {} : { deleteMs: deps.deleteMs };
+  const kept = await sweepKept({ settings, runs: store.runs, now, providerOf, deleted: (provider, id) => writes.ended(provider, id), revokeMount, ...bound, ...(store.runners ? { runners: store.runners } : {}), ...(deps.self ? { self: deps.self } : {}) });
+  // The removes a claim that kept nothing left at its end (mount-revoke-left.ts), by the same remove, its give-up and its
+  // bound, so one Archil does not answer never holds the pass from its provider sweep and its next wake.
+  const left = await sweepMountRevokes({ settings, revoke: revokeMount, ...bound });
   return left.failed.length === 0 ? kept : { ...kept, failed: [...kept.failed, ...left.failed] };
 }
 
