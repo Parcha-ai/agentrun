@@ -81,7 +81,7 @@ export type SdkInbox = {
   /** The learning commit each of learning_workflows was read at, by name (its seed's, or its champion record's): where
    *  the receipt asks whether a purged run wrote it (receipt). */
   learning_commits?: Record<string, string>;
-  /** The learned workflow a learned_workflow start names, by its call's id, where its input is stored withheld (a held
+  /** The learned workflow a learned_workflow start names, by its call's id as stored, where its input is stored withheld (a held
    *  value split across its arguments, withheldParts): the parent check of a callback nested in it reads its name here
    *  (checkToolParents). Only a name of learning_workflows, never what the caller wrote otherwise. */
   workflow_calls?: Record<string, string>;
@@ -659,12 +659,13 @@ export class SdkRuns {
     });
     const batch = this.clean({ sequence: body.sequence as number, events: shown }, runId);
     // The workflow a learned_workflow start names, where its input is stored withheld: kept apart from it, for the
-    // parent check of a callback nested in it (SdkInbox.workflow_calls), when the run was given that workflow.
+    // parent check of a callback nested in it (SdkInbox.workflow_calls), when the run was given that workflow. Keyed
+    // by the start's id as stored (cut like the rest of the batch), the id that check reads: never the id as sent.
     const named: Record<string, string> = {};
     for (const [i, event] of events.entries()) {
       const stored = batch.events[i];
       if (event.type === "tool" && stored?.type === "tool" && event.name === "learned_workflow" && event.status === "started" && stored.input === REDACTED && isObject(event.input) && typeof event.input.name === "string")
-        named[event.id] = event.input.name;
+        named[stored.id] = event.input.name;
     }
     const checkRedacted = canonical(events) !== canonical(batch.events);
     const known = (await sdkInbox(this.store, runId)).batches.find((item) => item.sequence === batch.sequence);
