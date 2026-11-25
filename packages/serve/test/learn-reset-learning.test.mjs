@@ -749,13 +749,16 @@ test("the watermark's readers: a run before the reset, or one whose seed was rea
   // A start that read the seed before the reset, its row made after it.
   const late = await seedOf(w.dir, w.server, "agent-1");
   assert.equal(await w.reset(), 204);
+  // The reset is one store write: the clock may not have moved past its watermark yet. A run started, or a seed read, in
+  // the watermark's own millisecond counts as before it in every read, so the runs below start in a later one.
+  const { at } = await w.server.settings.get(resetAtKey("agent-1"));
+  while (Date.now() <= at) await new Promise((resolve) => setTimeout(resolve, 1));
   await ended("late-seed", ask("Late", late));
   const after = await seedOf(w.dir, w.server, "agent-1");
   await ended("post-0", { input: { content: "After?" }, title: "after", place: { mode: "runner" }, learning: startOf(after) });
   await ended("post-served-0", ask("Served after", after), SERVED);
 
   // The one store read the watermark adds: only runs started after it whose seed was read at or before it, by id.
-  const { at } = await w.server.settings.get(resetAtKey("agent-1"));
   assert.deepEqual(await w.server.runs.seededBefore("agent-1", at), ["late-seed"], "the runs started after it, seeded before it");
   assert.deepEqual((await lastOwnRuns(w.server, "agent-1", 10)).map((row) => row.id), ["post-0"], "compile_after's count and a check's inputs");
   assert.equal(await notAuditableOf(w.server, "agent-1", "answer", FLOW_DIGEST, { stop_window: 10 }), 1, "the audit's served runs");
