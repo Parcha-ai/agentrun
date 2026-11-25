@@ -7,9 +7,9 @@
 //    what a second request for the same call after a resume says the same: the open turn, the tool's title, kind and input,
 //    and how many such requests came before it in the drive. Never from the agent's tool call id, which a new agent
 //    session (no load) mints afresh.
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 
-/** The MCP server's name, as the agent is given it. */
+/** The MCP server's name, as the agent is given it (under agy's recipe, the start of it: mcpServerName). */
 export const MCP_SERVER = "agentrun";
 
 const isPlain = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -28,20 +28,29 @@ export const NATIVE_EFFECT_KINDS: ReadonlySet<string> = new Set(["execute", "edi
 /** The form an agent names a call of our MCP server's tools in, as its recipe declares it (quirks.callNames): Goose's
  *  (`agentrun__<tool>`, or as Goose 1.59.2 titles it, `agentrun: <tool>` with the tool's underscores as spaces, and
  *  ` · <summary>` after it for a call whose arguments it summarizes, a path), Cursor's (`agentrun-<tool>: <tool>`, and
- *  `agentrun: <tool>` in the update that names a call it announced as "MCP: tool"), or agy's (`mcp_agentrun_<tool>`,
- *  titled `Run mcp_agentrun_<tool>`). A recipe that declares none is read in Goose's and Cursor's, the forms read before
+ *  `agentrun: <tool>` in the update that names a call it announced as "MCP: tool"), or agy's (`mcp_<server>_<tool>`,
+ *  titled `Run mcp_<server>_<tool>`, <server> as mcpServerName gives it). A recipe that declares none is read in Goose's and Cursor's, the forms read before
  *  a recipe could say; agy's only ever under a recipe that declares it. */
 export type CallNames = "goose" | "cursor" | "agy";
 
-/** The host tool an ACP tool call names, read in `form` (CallNames), when it is one of `tools` and its kind is not one
- *  with effects of its own; in agy's form, only of kind `other` or none, and when the call has both a name and a title,
- *  only when both name that same tool. The title is the agent's text, so this alone is never evidence that a call is
- *  ours: a permission request also needs the tool_call that announced it (CallIds.announced). */
-export function ourTool(update: { title?: string | null; name?: string | null; kind?: string | null }, tools: ReadonlySet<string>, form?: CallNames): string | undefined {
+/** The name our MCP server is given to the agent under at one start, in `form`. agy joins server and tool with one _
+ *  (`mcp_<server>_<tool>`), so a server named `agentrun_look` with a tool `up` would spell our `look_up` under
+ *  `agentrun`: under agy's recipe the name is `agentrun` and 16 random hex digits, no _ or -, which no server set up
+ *  before the start can spell. Under any other form, `agentrun`. */
+export function mcpServerName(form?: CallNames): string {
+  return form === "agy" ? `${MCP_SERVER}${randomBytes(8).toString("hex")}` : MCP_SERVER;
+}
+
+/** The host tool an ACP tool call names, read in `form` (CallNames), our MCP server given to the agent as `server`
+ *  (mcpServerName), when it is one of `tools` and its kind is not one with effects of its own; in agy's form, only of
+ *  kind `other` or none, and when the call has both a name and a title, only when both name that same tool. The title
+ *  is the agent's text, so this alone is never evidence that a call is ours: a permission request also needs the
+ *  tool_call that announced it (CallIds.announced). */
+export function ourTool(update: { title?: string | null; name?: string | null; kind?: string | null }, tools: ReadonlySet<string>, form?: CallNames, server: string = MCP_SERVER): string | undefined {
   if (typeof update.kind === "string" && NATIVE_EFFECT_KINDS.has(update.kind)) return undefined;
   if (form === "agy") {
     if (update.kind !== undefined && update.kind !== null && update.kind !== "other") return undefined;
-    const said = [update.name, update.title].filter((whole): whole is string => typeof whole === "string").map((whole) => agyTool(whole, tools));
+    const said = [update.name, update.title].filter((whole): whole is string => typeof whole === "string").map((whole) => agyTool(whole, tools, server));
     return said.length > 0 && said.every((tool) => tool !== undefined && tool === said[0]) ? said[0] : undefined;
   }
   const candidates: string[] = [];
@@ -63,21 +72,27 @@ export function ourTool(update: { title?: string | null; name?: string | null; k
   return candidates.find((name) => tools.has(name));
 }
 
-/** agy's name or title for a call of our MCP server's tool `<tool>`. */
-const AGY_NAME = new RegExp(`^(?:Run )?mcp_${MCP_SERVER}_(.+)$`);
+/** The tool agy's name or title (`mcp_<server>_<tool>`, `Run mcp_<server>_<tool>`) names, of our MCP server `server`. */
+function agyNamed(whole: string, server: string): string | undefined {
+  const at = whole.startsWith("Run ") ? whole.slice(4) : whole;
+  const prefix = `mcp_${server}_`;
+  return at.startsWith(prefix) && at.length > prefix.length ? at.slice(prefix.length) : undefined;
+}
 
 /** The tool of `tools` agy's name or title `whole` names, the whole text: agy 1.5.14 writes no summary after either. */
-function agyTool(whole: string, tools: ReadonlySet<string>): string | undefined {
-  const agy = AGY_NAME.exec(whole);
-  return agy && tools.has(agy[1]!) ? agy[1] : undefined;
+function agyTool(whole: string, tools: ReadonlySet<string>, server: string): string | undefined {
+  const tool = agyNamed(whole, server);
+  return tool !== undefined && tools.has(tool) ? tool : undefined;
 }
 
 /** The input an agent's tool_call for our tool reports, as the MCP call carries it: agy reports its own `toolSummary` (a
  *  line of its model's about the call) beside the call's arguments, which the MCP call never carries, so under agy's
- *  recipe (`form` agy) a call it names in its own form is matched without it. Any other input is as reported. */
-export function announcedInput(update: { title?: string | null; name?: string | null }, input: unknown, form?: CallNames): unknown {
-  if (form !== "agy") return input;
-  const agys = [update.name, update.title].some((said) => typeof said === "string" && AGY_NAME.test(said));
+ *  recipe (`form` agy) a call it names in its own form, of our server `server`, is matched without it; unless our
+ *  tool's schema declares a toolSummary argument (`declared`, the arguments it names), which is then the call's own.
+ *  Any other input is as reported. */
+export function announcedInput(update: { title?: string | null; name?: string | null }, input: unknown, form?: CallNames, server: string = MCP_SERVER, declared?: ReadonlySet<string>): unknown {
+  if (form !== "agy" || declared?.has("toolSummary")) return input;
+  const agys = [update.name, update.title].some((said) => typeof said === "string" && agyNamed(said, server) !== undefined);
   if (!agys || !isPlain(input) || typeof input.toolSummary !== "string") return input;
   const { toolSummary: _summary, ...args } = input;
   return args;

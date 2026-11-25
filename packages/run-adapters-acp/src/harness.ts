@@ -22,7 +22,7 @@ import type { GateAnswer, GateCall } from "@parcha/agentrun-kernel";
 import type { DriveContext, HostTool, SessionState } from "@parcha/agentrun-kernel/kernel";
 import { askGate, journalRecords, NativeJournal, openTurn, placeSubmissions, recoveryNote, resumeUnstartedCalls, toolBridge, toolKey, transcriptOf, type DanglingCall, type ToolBridge, type TranscriptEntry } from "@parcha/agentrun-kernel/process";
 import type { ParentWatch } from "@parcha/agentrun-kernel/host";
-import { announcedInput, CallIds, MCP_SERVER, ourTool, permissionCallId } from "./calls.js";
+import { announcedInput, CallIds, mcpServerName, ourTool, permissionCallId } from "./calls.js";
 import { ACP_CODES } from "./facts.js";
 import { homePath, type AcpRecipe } from "./recipe.js";
 import { restoreState, STATE_STREAM, StateMirror, type StateRecord } from "./state.js";
@@ -135,6 +135,8 @@ interface Runtime {
   /** What the next prompt carries ahead of its own words (the instructions, the context note), once. */
   firstBlocks: string[];
   calls: CallIds;
+  /** The name our MCP server is given to the agent under at this start (mcpServerName). */
+  server: string;
   counted: Set<string>;
   /** The permission call ids this agent process's requests took: each request of the open turn takes one of its own. */
   claimed: Set<string>;
@@ -243,6 +245,12 @@ export function contextNote(state: SessionState): string | undefined {
   ].join("\n");
 }
 
+/** The arguments a tool's input schema names (its `properties`). */
+function argumentsOf(schema: unknown): ReadonlySet<string> {
+  const properties = typeof schema === "object" && schema !== null ? (schema as { properties?: unknown }).properties : undefined;
+  return new Set(typeof properties === "object" && properties !== null && !Array.isArray(properties) ? Object.keys(properties) : []);
+}
+
 /** The ACP harness. `control` is told of each drive call's stop hook while it runs. */
 export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveControl | undefined) => void) {
   const log = options.log ?? (() => {});
@@ -252,6 +260,8 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
   const names = new Set(listed.map((tool) => tool.name));
   /** The form the agent names a call of our tools in, by its recipe (ourTool). */
   const form = recipe.quirks?.callNames;
+  /** The arguments each tool's schema names (announcedInput keeps one it declares). */
+  const declared = new Map(listed.map((tool) => [tool.name, argumentsOf(tool.inputSchema)]));
   let runtime: Runtime | undefined;
 
   /** The recipe's refusal `text` (the agent's stderr, an error it answered) says, as `<code>: <words>`; undefined when it
@@ -339,8 +349,8 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
         if (typeof update.kind === "string") rt.kinds.set(update.toolCallId, update.kind);
         // Only a call whose kind has no effects of its own can be ours (ourTool): a shell titled as our tool never takes an
         // MCP call's id, and never passes the permission shortcut below.
-        const tool = ourTool(update as { title?: string | null; name?: string | null; kind?: string | null }, names, form);
-        if (tool) rt.calls.add(update.toolCallId, tool, announcedInput(update as { title?: string | null; name?: string | null }, update.rawInput, form));
+        const tool = ourTool(update as { title?: string | null; name?: string | null; kind?: string | null }, names, form, rt.server);
+        if (tool) rt.calls.add(update.toolCallId, tool, announcedInput(update as { title?: string | null; name?: string | null }, update.rawInput, form, rt.server, declared.get(tool)));
         return;
       }
       case "tool_call_update": {
@@ -352,8 +362,8 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
         if (!rt.calls.has(update.toolCallId)) {
           // Held to both kinds, the tool_call's and the update's: a shell renamed by a later update is never ours.
           const title = update.title ?? null;
-          const announcedAs = ourTool({ title, kind: rt.kinds.get(update.toolCallId) ?? null }, names, form);
-          const tool = announcedAs && ourTool({ title, kind: update.kind ?? null }, names, form) === announcedAs ? announcedAs : undefined;
+          const announcedAs = ourTool({ title, kind: rt.kinds.get(update.toolCallId) ?? null }, names, form, rt.server);
+          const tool = announcedAs && ourTool({ title, kind: update.kind ?? null }, names, form, rt.server) === announcedAs ? announcedAs : undefined;
           if (tool) {
             const raw = update.rawInput as { toolName?: unknown; args?: unknown } | null | undefined;
             const args = raw && raw.toolName === tool && typeof raw.args === "object" && raw.args !== null && !Array.isArray(raw.args) ? raw.args : raw;
@@ -440,7 +450,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     // agent's text, so it takes both: a request whose kind has no effects of its own and whose name is ours, for the
     // tool_call the agent announced as that same tool of ours under the request's own id. Anything else is the agent's
     // own call: the host's gate, journaled.
-    const mine = ourTool(request.toolCall as { title?: string | null; name?: string | null; kind?: string | null }, names, form);
+    const mine = ourTool(request.toolCall as { title?: string | null; name?: string | null; kind?: string | null }, names, form, rt.server);
     if (mine && rt.calls.announced(request.toolCall.toolCallId) === mine) return choose("allow_once");
     const call = request.toolCall;
     const kind = typeof call.kind === "string" && call.kind ? call.kind : "other";
@@ -588,7 +598,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     const stopped = new AbortController();
     const signal = AbortSignal.any([ctx.signal, stopped.signal]);
     const key = randomBytes(32).toString("base64url");
-    const rt = { ctx, loading: false, fresh: true, wiped: false, firstBlocks: [], calls: new CallIds(), counted: new Set(), claimed: new Set(), ownIds: new Set(), kinds: new Map(), sessionId: "", mirror: new StateMirror(home, (recipe.state ?? []).map((p) => homePath(p)!), own, records, log, (words) => (rt.current?.ctx ?? ctx).live({ type: "notice", text: words })) } as unknown as Runtime;
+    const rt = { ctx, loading: false, fresh: true, wiped: false, firstBlocks: [], calls: new CallIds(), server: mcpServerName(form), counted: new Set(), claimed: new Set(), ownIds: new Set(), kinds: new Map(), sessionId: "", mirror: new StateMirror(home, (recipe.state ?? []).map((p) => homePath(p)!), own, records, log, (words) => (rt.current?.ctx ?? ctx).live({ type: "notice", text: words })) } as unknown as Runtime;
     const mcp = await startMcpServer({ tools: listed.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema as Record<string, unknown> })), key, log, call: (name, args, callSignal) => onMcpCall(rt, name, args, callSignal) });
     let proxy: { env: Record<string, string>; close(): Promise<void> } | undefined;
     let agent: AgentProcess | undefined;
@@ -693,8 +703,8 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
 
       const server: AcpMcpServer =
         recipe.declares.mcp === "http"
-          ? { type: "http", name: MCP_SERVER, url: mcp.url, headers: [{ name: "Authorization", value: `Bearer ${key}` }] }
-          : { name: MCP_SERVER, command: process.execPath, args: [STDIO_BRIDGE], env: [{ name: "AGENTRUN_MCP_URL", value: mcp.url }, { name: "AGENTRUN_MCP_KEY", value: key }] };
+          ? { type: "http", name: rt.server, url: mcp.url, headers: [{ name: "Authorization", value: `Bearer ${key}` }] }
+          : { name: rt.server, command: process.execPath, args: [STDIO_BRIDGE], env: [{ name: "AGENTRUN_MCP_URL", value: mcp.url }, { name: "AGENTRUN_MCP_KEY", value: key }] };
       const instructions = options.instructions?.trim() ? options.instructions : undefined;
       const systemPrompt: SystemPrompt | undefined = instructions && caps.sessionCapabilities?.systemPrompt ? { mode: "append", content: [{ type: "text", text: instructions }] } : undefined;
       const last = journalRecords<{ sessionId?: unknown }>(ctx.state(), SESSION_STREAM).map((r) => r.data?.sessionId).filter((id): id is string => typeof id === "string").at(-1);

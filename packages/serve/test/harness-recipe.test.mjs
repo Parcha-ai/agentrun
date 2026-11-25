@@ -1003,7 +1003,7 @@ test("the Antigravity recipe loads under the five rules: agy CLI 1.5.14, each pl
   // SQLite files in .gemini/antigravity-cli/conversations, which a new process loads from there).
   assert.deepEqual(recipe.declares, { load: true, mcp: "stdio" });
   assert.deepEqual(recipe.state, [".gemini/antigravity-cli/conversations"]);
-  // agy names a call of our tool `mcp_agentrun_<tool>`: the adapter reads that form under this recipe alone.
+  // agy names a call of our tool `mcp_<server>_<tool>`: the adapter reads that form under this recipe alone.
   assert.deepEqual(recipe.quirks, { callNames: "agy" });
 });
 
