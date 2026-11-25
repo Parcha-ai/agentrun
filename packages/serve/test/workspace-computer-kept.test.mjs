@@ -60,9 +60,10 @@ function memoryStore() {
   const runs = new Map([["run-1", { id: "run-1", agentId: "agent-1", state: "parked", epoch: 0, runner: null }]]);
   return {
     // `take`: a runner's claim of the run, at `epoch` (the store's claim moves the epoch up and names the runner); `end`:
-    // its end, park or release commit (the epoch up by one, no runner). No run has a launch record: its Archil disk is its
-    // agent's.
+    // its end, park or release commit (the epoch up by one, no runner); `drop`: the run deleted from the store. No run has
+    // a launch record: its Archil disk is its agent's.
     runs: {
+      drop: (id) => void runs.delete(id),
       get: async (id) => runs.get(id),
       launch: async (id) => { throw new StoreLaunchMissing(id); },
       heldAt: async () => undefined,
@@ -162,7 +163,7 @@ async function server({ setting = E2B_DESKTOP, mode = 1, groups = DESKTOP_GROUPS
   const clock = { now: T0 };
   const providers = Object.fromEntries(["docker", "e2b", "agent37", "phone-harness", "daytona"].map((id) => [id, () => account.provider]));
   const mounts = { revoked: 0, inherited: 0, steps: [] };
-  const deps = { mode, kinds: KINDS, sealKey, providers, spec: SPEC, workspace: workspace ?? localWorkspace(root), revokeMount: async () => void (mounts.revoked += 1, mounts.steps.push("revoke")), inheritMount: () => void (mounts.inherited += 1, mounts.steps.push("inherit")), now: () => clock.now };
+  const deps = { mode, kinds: KINDS, sealKey, providers, spec: SPEC, workspace: workspace ?? localWorkspace(root), revokeMount: async () => void (mounts.revoked += 1, mounts.steps.push("revoke")), inheritMount: () => void (mounts.inherited += 1, mounts.steps.push("inherit")), ...(archil ? { mountDisk: () => DISK } : {}), now: () => clock.now };
   // `launch`: more of the claim's launch (its `holder`: the runner that claims and its incarnation).
   const claim = (epoch, extra = {}, launch = {}) => {
     store.runs.take("run-1", epoch);
@@ -436,6 +437,31 @@ test("Mode 2, a kept desktop's row left ending with this server's Archil setting
   assert.deepEqual([past.ended, past.failed], [["c1"], []]);
   assert.equal((await readKept(one.store.settings, "run-1"))?.ended, true, "marked ended");
   assert.deepEqual(archil.requests, []);
+});
+
+test("Mode 2, a run deleted from the store before the janitor's pass: its kept desktop is deleted and its mount credentials removed on the disk its park wrote into the row", async () => {
+  const archil = mountUsers();
+  const one = await server({ mode: 2, archil });
+  await (await one.claim(3)).park();
+  assert.equal((await readKept(one.store.settings, "run-1"))?.disk, DISK, "the park writes the disk the run's mount credential is on");
+  one.store.runs.drop("run-1");
+  const swept = await one.janitor();
+  assert.deepEqual([swept.ended, swept.failed], [["c1"], []]);
+  assert.deepEqual(deletes(one.account), ["c1"]);
+  assert.equal(await readKept(one.store.settings, "run-1"), undefined, "its row removed");
+  assert.deepEqual(nicknames(archil), ["agentrun:run-1:6", "agentrun:run-2:3"], "removed now, not left to the ttl though no run names a disk");
+});
+
+test("Mode 2, the agent's disk changed after the park: the janitor removes the run's mount credentials on the disk the park wrote, not the agent's new one", async () => {
+  const archil = mountUsers();
+  const one = await server({ mode: 2, archil });
+  await (await one.claim(3)).park();
+  await one.store.settings.put(agentDiskKey("agent-1"), { diskId: "dsk-0000000000000002" });
+  one.store.runs.set("run-1", "stopped");
+  const swept = await one.janitor();
+  assert.deepEqual([swept.ended, swept.failed], [["c1"], []]);
+  assert.deepEqual(nicknames(archil), ["agentrun:run-1:6", "agentrun:run-2:3"]);
+  assert.ok(archil.requests.every((request) => request.path.startsWith(`/api/disks/${DISK}`)), archil.requests.map((request) => request.path).join("\n"));
 });
 
 test("a kept desktop whose folder is not on Archil: the janitor ends it with no call to Archil", async () => {
