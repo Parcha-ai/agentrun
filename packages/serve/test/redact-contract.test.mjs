@@ -1042,6 +1042,11 @@ const adversarial = (size) => {
     // A held value found in every string of a JSON text, each find cut in place: the join view moves each cut to where
     // its string stands in the join, its cursor passing each cut once a pass.
     { text: f(`"${DENSE}",`), values: [DENSE] },
+    // Every view at once, each over the text at nearly its whole length: one closed JSON string holding each family (a
+    // percent byte, "+", a reference, an escaped quote, Python's "\x41" and an apostrophe one level down) turns on all
+    // sixteen, and the held value's strings after it decode to themselves in each. It heads each block of about 4 KiB, so
+    // each answer piece holds it too.
+    { text: f(`"%41+&#65;${B}"${B}${B}x41${B}${B}'",${`"${DENSE}",`.repeat(370)}`), values: [DENSE] },
     // The same in a string never closed, and in one escaped quote after another (JSON written in a string).
     { text: `{"k":"${fill(`${DENSE} `, size - 6)}`, values: [DENSE] },
     { text: f(`${BACKSLASH}"${DENSE}${BACKSLASH}",`), values: [DENSE] },
