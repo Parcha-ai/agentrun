@@ -409,10 +409,28 @@ test("the image carries a desktop, nothing started: Xvfb, xfwm4 and the apps, ea
   assert.doesNotMatch(desktop, /command -v sudo/, "the desktop's no-sudo check is the guard's, after it");
 });
 
-test("the default box recipe's hash is d289bcc6d0c2: a recipe change is a box bump, a new image and snapshot of that name", async () => {
+test("the desktop step installs and checks every app the linux-desktop suite opens: Mousepad, xfce4-terminal, Firefox ESR and Thunar, each program and its desktop file", () => {
+  const desktop = step("desktop");
+  const installed = desktop.match(/apt-get install -y -qq --no-install-recommends ([^>]*)>/)?.[1].trim().split(/\s+/) ?? [];
+  const programs = desktop.match(/for x in ([^;]*); do command -v "\$x"/)?.[1].split(" ") ?? [];
+  const apps = desktop.match(/for app in ([^;]*); do/)?.[1].split(" ") ?? [];
+  // Package, program and desktop file id (Debian's: Thunar's is thunar.desktop on bookworm and trixie alike).
+  for (const [name, program, app] of [
+    ["mousepad", "mousepad", "org.xfce.mousepad"],
+    ["xfce4-terminal", "xfce4-terminal", "xfce4-terminal"],
+    ["firefox-esr", "firefox-esr", "firefox-esr"],
+    ["thunar", "thunar", "thunar"],
+  ]) {
+    assert.ok(installed.includes(name), `the desktop step installs ${name}`);
+    assert.ok(programs.includes(program), `the build checks ${program} is there`);
+    assert.ok(apps.includes(app), `the build checks the desktop file ${app}.desktop`);
+  }
+});
+
+test("the default box recipe's hash is 244e45e13f7f: a recipe change is a box bump, a new image and snapshot of that name", async () => {
   // Another image (media/, documents/) is a recipe of its own; nothing it adds moves this one. A change here names a new
   // ghcr.io/parcha-ai/agentrun-box:<hash> (the release's box job publishes it), a new Daytona snapshot
   // agentrun-box-<hash> (box/build-daytona.py) for AGENTRUN_DAYTONA_SNAPSHOT, and relays/cloudflare/wrangler.json's image.
   const { recipeHash } = await import("../box/recipe.mjs");
-  assert.equal(recipeHash(), "d289bcc6d0c2");
+  assert.equal(recipeHash(), "244e45e13f7f");
 });

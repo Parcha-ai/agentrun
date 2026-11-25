@@ -301,6 +301,18 @@ test("claudeLoginServed: one rule for the routes and for capabilities: none whil
   assert.deepEqual([...CLAUDE_LOGIN_ROUTES].filter((name) => API_ONLY_ROUTES.has(name)), [], "API-only serves none of the login routes");
 });
 
+test("API-only serves no login path under another route's name: no pattern on its list matches a login route's method and path", async () => {
+  const { ROUTES } = await import("../dist/server.js");
+  const { servedApiOnly } = await import("../dist/api-only.js");
+  const paths = { getClaudeLogin: "/settings/claude-login", turnOnClaudeLogin: "/settings/claude-login", turnOffClaudeLogin: "/settings/claude-login", startClaudeLogin: "/settings/claude-login/login" };
+  assert.deepEqual(Object.keys(paths).sort(), [...CLAUDE_LOGIN_ROUTES].sort());
+  for (const [name, path] of Object.entries(paths)) {
+    const route = ROUTES.find((r) => r.name === name);
+    assert.ok(route?.pattern.test(path), `${name} answers ${path}`);
+    assert.equal(servedApiOnly(ROUTES, route.method, `/v2${path}`), false, `${route.method} /v2${path} is refused on API-only before routing`);
+  }
+});
+
 test("AGENTRUN_CLAUDE_CODE_LOGIN=off: every route is 404 by name, a saved turn-on is dropped at the start, and claude-agent runs on the model keys", { timeout: 180_000 }, async (t) => {
   withEnv(t, {}, MODEL_VARS);
   const first = await serve(t, { faux: undefined, runner: false });

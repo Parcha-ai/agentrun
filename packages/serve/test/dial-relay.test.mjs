@@ -45,9 +45,10 @@ const TOKEN = `ar_test_${"d".repeat(40)}`;
 const YEAR_MS = 365 * 24 * 3_600_000;
 /** A machine token as the server mints one: art_ and its random part. Never in a log line or an error. */
 const MINTED = /art_[A-Za-z0-9_-]{16,}/;
-/** The fix a runner with no relay names for a dial provider (workspace/attached-computers.ts ONE_PROCESS_FIX). */
-const FIX = "start the image with the server options alone, without server-and-runner (outside the image: agentrun-serve without --no-runner)";
-const DIAL_APART = `no run on this server can use Faux dial: its machines dial this server, and its runner runs in a process of its own, with no attach hub to take their socket: ${FIX}`;
+/** The fixes a runner with no relay names for a dial provider (workspace/attached-computers.ts RELAY_FIX, then
+ *  ONE_PROCESS_FIX): the relay this file shows, first. */
+const FIX = "give the runner AGENTRUN_PUBLIC_URL (this server's public address), or start the image with the server options alone, without server-and-runner (outside the image: agentrun-serve without --no-runner)";
+const DIAL_APART = `no run on this server can use Faux dial: its machines dial this server, and its runner runs in a process of its own and relays no machine's socket: ${FIX}`;
 /** The hello a minted desktop's machine says, as faux-dial's does. */
 const HELLO = { protocol: "0.2", version: "test", os: "linux", kind: "desktop", arch: "amd64", groups: ["screen", "input.pointer", "input.keys"], screen: { width: 1, height: 1, scale: 1 } };
 /** A mint as a dial provider's create makes one, for a computer of run `run` (its agentrun.run label) where given. */
