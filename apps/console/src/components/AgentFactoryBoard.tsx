@@ -1,4 +1,4 @@
-import { ArrowUpRight, Factory, LayoutGrid, List, RefreshCw } from "lucide-react";
+import { ArrowUpRight, ChevronDown, Factory, LayoutGrid, List, RefreshCw } from "lucide-react";
 import { useId, useState } from "react";
 import { Banner, Button, Chip, Field, pageTitleClass, pageToolbarClass, Picker, Segmented, Spinner, type ChipTone, type PickerOption, type SegmentedOption } from "@/components/ui";
 import { when } from "@/lib/format";
@@ -93,6 +93,10 @@ export function AgentFactoryBoard({ cards, review, loading, refreshing, error, u
   const shown = cards.filter(matches);
   const shownReview = review.filter(matches);
   const filtered = repository !== "all" || control !== "all";
+  // The states a person folded in the list, each by its table: held while the page is open, so a refresh, a filter
+  // that empties the list and a look at the cards all leave a folded state folded.
+  const [folded, setFolded] = useState<ReadonlySet<string>>(() => new Set());
+  const fold = (key: string) => setFolded((held) => { const next = new Set(held); if (!next.delete(key)) next.add(key); return next; });
   const clearFilters = () => { setRepository("all"); setControl("all"); };
 
   return (
@@ -151,7 +155,7 @@ export function AgentFactoryBoard({ cards, review, loading, refreshing, error, u
         {!cards.length && <Banner>{hasMore ? "No active sessions in the loaded results. Load more to check further results." : "No active sessions reported."}</Banner>}
         {filtered && !shown.length && !shownReview.length && <Banner>No loaded sessions match these filters.</Banner>}
 
-        {view === "list" ? (shown.length > 0 ? <SessionTable label="Active agent sessions" groups={byLane(shown)} /> : <p className="py-4 text-small text-muted-foreground">No matching sessions</p>)
+        {view === "list" ? (shown.length > 0 ? <SessionTable label="Active agent sessions" scope="active" groups={byLane(shown)} folded={folded} onFold={fold} /> : <p className="py-4 text-small text-muted-foreground">No matching sessions</p>)
         : <div className="grid grid-cols-1 items-start gap-4 md:grid-cols-2 lg:grid-cols-4" aria-label="Active agent sessions">
           {LANES.map((lane) => {
             const laneCards = shown.filter((card) => card.lane === lane.id);
@@ -174,7 +178,7 @@ export function AgentFactoryBoard({ cards, review, loading, refreshing, error, u
             <div><h2 className="text-lg font-semibold">Ended runs needing attention</h2><p className="mt-1 text-small text-muted-foreground">Excluded from active session totals.</p></div>
             <p className="font-mono text-small text-muted-foreground">{shownReview.length} of {review.length} loaded ended runs match</p>
           </div>
-          {view === "list" ? shownReview.length > 0 && <SessionTable label="Ended runs" groups={byState(shownReview)} />
+          {view === "list" ? shownReview.length > 0 && <SessionTable label="Ended runs" scope="ended" groups={byState(shownReview)} folded={folded} onFold={fold} />
           : <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
             {shownReview.map((card) => <SessionCard key={card.id} card={card} tone="warning" />)}
           </div>}
@@ -259,8 +263,9 @@ function byState(cards: FactoryCard[]): Group[] {
 
 /** The sessions as a list: one row each, under a heading for each state that names it, counts its rows and says what
  *  it means, as a lane's header does. Inside a state the rows keep their loaded order, so a child stays under the
- *  session that started it where both are in that state. */
-function SessionTable({ label, groups }: { label: string; groups: Group[] }) {
+ *  session that started it where both are in that state. A heading folds its rows away and back: its whole band is the
+ *  target, and its button says which way it stands to a keyboard and a screen reader. A folded state keeps its count. */
+function SessionTable({ label, scope, groups, folded, onFold }: { label: string; scope: string; groups: Group[]; folded: ReadonlySet<string>; onFold: (key: string) => void }) {
   return (
     <table aria-label={label} className="w-full table-fixed border-collapse border bg-card text-body">
       <thead className="hidden lg:table-header-group">
@@ -268,20 +273,27 @@ function SessionTable({ label, groups }: { label: string; groups: Group[] }) {
           {HEADINGS.map(([column, name]) => <th key={column} scope="col" className={cn("px-3 py-2.5 text-left font-normal", COLUMNS[column])}>{name}</th>)}
         </tr>
       </thead>
-      {groups.map((group) => <tbody key={group.id} data-factory-group={group.id}>
-        <tr className="border-b bg-muted/50">
-          <th scope="rowgroup" className="px-3 py-2 text-left font-normal">
-            <span className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-              <span data-factory-group-name className="caps text-small font-semibold">{group.label}</span>
-              <span data-factory-group-count className="font-mono text-small text-muted-foreground">{group.cards.length}</span>
-              {group.note && <span className="text-small text-muted-foreground">{group.note}</span>}
-            </span>
-          </th>
-          {/* The heading's band runs the row's whole width: an empty cell under each other column that shows. */}
-          {(["control", "repository", "activity", "cost"] as const).map((column) => <td key={column} aria-hidden className={COLUMNS[column]} />)}
-        </tr>
-        {group.cards.map((card) => <SessionRow key={card.id} card={card} group={group} />)}
-      </tbody>)}
+      {groups.map((group) => {
+        const key = `${scope}:${group.id}`, open = !folded.has(key);
+        // The button's press reaches the row, so the row's one handler serves a pointer anywhere on the band and the keyboard.
+        return <tbody key={group.id} data-factory-group={group.id}>
+          <tr className="cursor-pointer border-b bg-muted/50 hover:bg-accent" onClick={() => onFold(key)}>
+            <th scope="rowgroup" className="p-0 text-left font-normal">
+              <button type="button" aria-expanded={open} className="flex w-full items-center gap-2 px-3 py-2 text-left">
+                <ChevronDown className={cn("size-3.5 shrink-0 text-muted-foreground transition-transform", !open && "-rotate-90")} aria-hidden />
+                <span className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                  <span data-factory-group-name className="caps text-small font-semibold">{group.label}</span>
+                  <span data-factory-group-count className="font-mono text-small text-muted-foreground">{group.cards.length}</span>
+                  {group.note && <span className="text-small text-muted-foreground">{group.note}</span>}
+                </span>
+              </button>
+            </th>
+            {/* The heading's band runs the row's whole width: an empty cell under each other column that shows. */}
+            {(["control", "repository", "activity", "cost"] as const).map((column) => <td key={column} aria-hidden className={COLUMNS[column]} />)}
+          </tr>
+          {open && group.cards.map((card) => <SessionRow key={card.id} card={card} group={group} />)}
+        </tbody>;
+      })}
     </table>
   );
 }

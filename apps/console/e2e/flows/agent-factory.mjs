@@ -110,6 +110,14 @@ export default {
       const grouped = await page.locator(`table${ACTIVE} tbody[data-factory-group]`).evaluateAll((groups) => groups.map((group) => [group.getAttribute("data-factory-group"), group.querySelectorAll("tr[data-factory-row]").length]));
       check(JSON.stringify(grouped) === JSON.stringify([["working", 2], ["attention", 1]]), `the list must group its rows by state, in the lanes' order: ${JSON.stringify(grouped)}`);
       for (const runId of runIds) check(await rows.locator(`a[href="#/runs/${encodeURIComponent(runId)}"]`).count() === 1, `the list must link session ${runId} once`);
+      // A state's heading folds its rows away and back; its count stays.
+      const working = page.locator(`table${ACTIVE} tbody[data-factory-group="working"]`);
+      const fold = working.getByRole("button", { expanded: true });
+      await fold.click();
+      await working.getByRole("button", { expanded: false }).waitFor();
+      check(await rows.count() === 1 && await working.locator("[data-factory-group-count]").innerText() === "2", "a folded state must hide its rows and keep its count");
+      await working.getByRole("button", { expanded: false }).click();
+      await rows.nth(2).waitFor();
       for (const width of [1280, 390]) {
         await page.setViewportSize({ width, height: 1000 });
         const wide = await page.evaluate(() => {

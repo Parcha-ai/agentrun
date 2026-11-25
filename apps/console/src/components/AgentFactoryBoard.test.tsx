@@ -193,6 +193,38 @@ describe("Agent Factory board", () => {
     expect(host.querySelector("footer")?.textContent).toContain("One row is one session.");
   });
 
+  it("folds a state's rows away and back from its heading: a button that says whether it is open, with the count still shown", () => {
+    const { host, render } = mount({ view: "list" });
+    const group = (id: string, table = "Active agent sessions") => host.querySelector(`table[aria-label="${table}"] tbody[data-factory-group="${id}"]`)!;
+    const toggle = (id: string, table?: string) => group(id, table).querySelector<HTMLButtonElement>('tr:first-child > th[scope="rowgroup"] button')!;
+    const rows = (id: string, table?: string) => group(id, table).querySelectorAll("tr[data-factory-row]");
+    // Every state opens unfolded.
+    expect(["waiting", "working", "attention", "unknown"].map((id) => toggle(id).getAttribute("aria-expanded"))).toEqual(["true", "true", "true", "true"]);
+    expect(toggle("working").textContent).toContain("Working");
+    expect(toggle("working").querySelector("svg[aria-hidden]")).not.toBeNull();
+    act(() => toggle("working").click());
+    expect(toggle("working").getAttribute("aria-expanded")).toBe("false");
+    expect(rows("working")).toHaveLength(0);
+    // The heading still names the state and counts what it holds, and the other states stay open.
+    expect(group("working").querySelector("[data-factory-group-count]")?.textContent).toBe("1");
+    expect(rows("attention")).toHaveLength(1);
+    expect(host.querySelector('[aria-label="Loaded active session totals"]')?.textContent).toContain("4 active sessions loaded");
+    // A refresh and a look at the cards leave it folded.
+    render({ updatedAt: "2026-11-22T09:31:00.000Z" });
+    render({ view: "cards" });
+    render({ view: "list" });
+    expect(toggle("working").getAttribute("aria-expanded")).toBe("false");
+    expect(rows("working")).toHaveLength(0);
+    // The whole band is the target: a press beside the words unfolds it too.
+    act(() => (group("working").querySelector("tr:first-child > td") as HTMLElement).click());
+    expect(toggle("working").getAttribute("aria-expanded")).toBe("true");
+    expect(rows("working")).toHaveLength(1);
+    // Ended runs fold by their own states, apart from the active ones.
+    act(() => toggle("Needs review", "Ended runs").click());
+    expect(rows("Needs review", "Ended runs")).toHaveLength(0);
+    expect(host.querySelectorAll('table[aria-label="Active agent sessions"] tr[data-factory-row]')).toHaveLength(4);
+  });
+
   it("keeps a child under its parent only where both are in one state, and names the parent either way", () => {
     const parent = card("root", "working", { agentName: "Coordinator", ref: "run root" });
     const child = (id: string, lane: FactoryCard["lane"]) => card(`root:child:${id}`, lane, { runId: "root", ref: `child ${id}`, agentName: `Task ${id}`, stateLabel: "Reported active", parentLabel: "Coordinator · root" });
