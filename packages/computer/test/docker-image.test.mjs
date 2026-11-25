@@ -234,7 +234,10 @@ test("an onWait that aborts its own caller's signal settles that caller as abort
 	fake.mark("build-hold");
 	const alone = new AbortController();
 	// Each docker this process starts, recorded as it is started: a build started and killed at once may never get to
-	// write its line to the fake's log, so the log alone cannot say that none was.
+	// write its line to the fake's log, so the log alone cannot say that none was. The record runs until the flight is
+	// provably over: the next call of this recipe, with the build let go, starts a flight of its own and must start
+	// exactly one build, so a build recorded beyond that one, even one started after the stopped caller settled, is the
+	// stopped flight's.
 	const asked = [];
 	const spawn = ChildProcess.prototype.spawn;
 	ChildProcess.prototype.spawn = function (options) {
@@ -244,12 +247,13 @@ test("an onWait that aborts its own caller's signal settles that caller as abort
 	try {
 		const stopped = ensureImage({ recipe: other }, { docker: fake.docker, signal: alone.signal, onWait: () => alone.abort() });
 		assert.deepEqual(await within(stopped), { ok: false, error: { code: "aborted", message: `the wait for ${recipeTag(other)} was aborted, and the build, which no other caller waited on, was stopped` } });
+		fake.clear("build-hold");
+		assert.deepEqual(await ensureImage({ recipe: other }, { docker: fake.docker }), { ok: true, value: recipeTag(other) }, "the next call builds it");
 	} finally {
 		ChildProcess.prototype.spawn = spawn;
 	}
-	assert.deepEqual(asked, [[...INSPECT, recipeTag(other)]], "its inspect alone: no docker build was started for it");
-	fake.clear("build-hold");
-	assert.deepEqual(await ensureImage({ recipe: other }, { docker: fake.docker }), { ok: true, value: recipeTag(other) }, "the next call builds it");
+	const inspect = [...INSPECT, recipeTag(other)];
+	assert.deepEqual(asked, [inspect, inspect, BUILD(recipeTag(other), recipeHash(other))], "the stopped flight started its inspect alone; the next call, its inspect and its one build");
 });
 
 test("onWait is told once, before a caller waits on a build or pull, its own or one it joined; never when Docker has the image; a throw from it changes nothing", async () => {
