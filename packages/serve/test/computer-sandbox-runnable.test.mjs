@@ -483,3 +483,21 @@ test("a template that grants bash applies in Mode 2, its agent on the runner wit
   assert.equal(refused.status, 422, JSON.stringify(refused.body));
   assert.match(refused.body.error.message, /^name a box: this server has no Docker box for a new agent\. /);
 });
+
+// A template apply that names no tools compiles them where it runs (server.ts applyWith: a box's shell tools only where
+// Docker's box is here), so on Mode 1 with no Docker its agent gets no shell and keeps the runner, as before: it is no
+// create that would get a box. An apply's grants are the package's MCP tools alone (templates.ts applyBodyOf), so none
+// can bring a shell tool in.
+test("a template that names no tools applies in Mode 1 with no Docker as before: no place, no tools; an apply's grants never carry a shell tool", async (t) => {
+  const templates = join(await scratch(t), "templates");
+  await mkdir(join(templates, "plain-reader"), { recursive: true });
+  await writeFile(join(templates, "plain-reader", "agent.md"), "---\nname: plain-reader\nversion: 1.0.0\ndescription: Answers.\n---\nAnswer.\n");
+  const mode1 = await server(t, { archil: false, templates });
+  const applied = await mode1("POST", "/templates/plain-reader/apply", {});
+  assert.equal(applied.status, 201, JSON.stringify(applied.body));
+  const made = (await mode1("GET", `/agents/${applied.body.agent_id}`)).body.definition;
+  assert.deepEqual([made.place, made.computer, made.tools], [undefined, undefined, []], JSON.stringify(made));
+  const granted = await mode1("POST", "/templates/plain-reader/apply", { grants: ["bash"] });
+  assert.equal(granted.status, 422, JSON.stringify(granted.body));
+  assert.deepEqual(granted.body.error.fields.map((one) => [one.field, one.reason]), [["grants.0", "not_allowed"]]);
+});
