@@ -6,10 +6,12 @@
 // Every provider here is a fake fetch the Web is handed: nothing leaves this machine, and the keys are literals.
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { publicCheck, publicFetch, readPage } from "@parcha/pi-browser";
 import * as web from "../dist/index.js";
 import { SEARCH_UNAVAILABLE } from "../dist/search.js";
 import { decideWeb, pagesOf, PUBLIC, scoringProvider } from "./fixtures/decide-runs.mjs";
 import { fakeWeb } from "./fixtures/web-runs.mjs";
+import { network } from "./fixtures/fake-network.mjs";
 
 const KEY = "not-a-secret";
 const OBJECTIVE = "Find the year Widgets, Inc. was registered in Delaware, to date its founding for a company profile";
@@ -219,4 +221,23 @@ test("Parallel's session_id is cut at its 1,000-character cap: a 1,500-character
   await told.search({ objective: OBJECTIVE }, { n: 1 });
   await told.search({ objective: OBJECTIVE }, { n: 1, session: long });
   assert.deepEqual(fake.sent.map(({ body }) => body.session_id), ["s".repeat(1_000), "s".repeat(1_000)], "each session_id is the session's first 1,000 characters");
+});
+
+test("Parallel's extract carries the search's session_id and client_model: the Web's client, or the call's own session (FetchOptions.session), the session cut at 1,000; with no client, neither", async () => {
+  const long = "s".repeat(1_000) + "t".repeat(500);
+  const fake = keyed((path, body) => (path === "/v1/extract" ? json({ results: [{ url: body.urls[0], title: "P", full_content: "# P\n\nThe page." }] }) : json({ results: [{ url: "https://a.example/", title: "A", excerpts: ["An excerpt."] }] })));
+  const net = network();
+  const guard = { fetch: (url, options) => publicFetch(url, { lookup: net.lookup, fetchImpl: net.fetchImpl, ...options }), check: (url, options) => publicCheck(url, { lookup: net.lookup, ...options }), html: readPage };
+  const parts = { order: { search: ["parallel"], fetch: ["parallel"] }, keys: { parallel: KEY }, send: { parallel: fake.send }, guard };
+  const told = web.createWeb({ ...parts, client: { model: "claude-opus-4-7", session: long } });
+  const bare = web.createWeb(parts);
+  await told.search({ objective: OBJECTIVE }, { n: 1 });
+  const read = await told.fetch("http://public.example/?run=web");
+  await told.fetch("http://public.example/?run=call", { session: "task-3-seed-1" });
+  await bare.fetch("http://public.example/?run=bare");
+  assert.equal(read.answer.ok, true, "the read is Parallel's page");
+  const searched = fake.sent.find(({ path }) => path === "/v1/search").body;
+  const extracts = fake.sent.filter(({ path }) => path === "/v1/extract").map(({ body }) => [body.session_id, body.client_model]);
+  assert.deepEqual(extracts[0], [searched.session_id, searched.client_model], "the extract's session_id and client_model are the ones the Web's search sends");
+  assert.deepEqual(extracts, [["s".repeat(1_000), "claude-opus-4-7"], ["task-3-seed-1", "claude-opus-4-7"], [undefined, undefined]], "the Web's session cut at 1,000, the call's session over it with the Web's model kept, and nothing with no client");
 });
