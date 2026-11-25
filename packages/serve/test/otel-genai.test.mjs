@@ -319,6 +319,57 @@ test("the runner's side of a run's posts opens no second request under an id sti
   assert.equal(opened.length, 3, "once ended, the id opens a request again");
 });
 
+test("the runner keeps a call's id, its parent's and a route's name a run's process posts at 128 characters or fewer, and a long one still pairs a call's start with its end and its children", async () => {
+  // The channel takes a message of megabytes: an id the runner keeps per open call, or per claim, is cut to a fixed size,
+  // the same one for every post of it, and two long ids that differ only at their end are still two.
+  const huge = (tail) => `${"x".repeat(1024 * 1024)}${tail}`;
+  const [one, two] = [huge("a"), huge("b")];
+  const events = [];
+  const asked = [];
+  let known;
+  const trace = { known: (run) => { known = run; }, request: (_model, route) => { asked.push(route); return () => {}; }, event: (event) => events.push(event), end: async () => {} };
+  const posts = tracePosts({ open: () => trace, flush: async () => {} }, "run-ids", keepText);
+  posts.post("open", [Date.now()]);
+  posts.post("known", [{ runId: "run-ids", harness: "pi", model: "m", routes: new Map([[one, { model: "long" }], ["tier", { model: "t" }]]) }]);
+  posts.post("request", [0, "m", one]);
+  posts.post("request", [1, "m", "tier"]);
+  posts.post("event", [{ type: "tool_start", callId: one, name: "bash" }]);
+  posts.post("event", [{ type: "tool_start", callId: two, name: "bash", parent: one }]);
+  posts.post("event", [{ type: "tool_start", callId: "toolu_01", name: "bash", parent: one }]);
+  posts.post("event", [{ type: "tool_end", callId: two, isError: false }]);
+  posts.post("event", [{ type: "tool_end", callId: one, isError: false }]);
+  const ids = events.flatMap((event) => [event.callId, event.parent].filter((id) => id !== undefined));
+  assert.ok(ids.every((id) => id.length <= 128), `every call id and parent handed on is 128 characters or fewer (lengths ${ids.map((id) => id.length).join()})`);
+  const keys = [...known.routes.keys()];
+  assert.ok(keys.every((key) => key.length <= 128) && asked.every((route) => route.length <= 128), "every route name kept is 128 characters or fewer");
+  const [start, child, short, childEnd, end] = events;
+  assert.equal(end.callId, start.callId, "a long call's end pairs with its start");
+  assert.equal(child.parent, start.callId, "a long parent pairs with its call");
+  assert.equal(short.parent, start.callId, "every child of a long call names the same parent");
+  assert.equal(childEnd.callId, child.callId, "the child's end pairs with its start");
+  assert.notEqual(child.callId, start.callId, "two long ids that differ only at their end are two calls");
+  assert.equal(short.callId, "toolu_01", "a short id is handed on as given");
+  assert.ok(asked[0] !== "tier" && known.routes.get(asked[0])?.model === "long", "a long route name still finds its route");
+  assert.equal(asked[1], "tier", "a short route name is as given");
+  // A short id posted in the very shape a long one is kept as is never taken for that long one.
+  posts.post("event", [{ type: "tool_start", callId: start.callId, name: "bash" }]);
+  assert.notEqual(events.at(-1).callId, start.callId, "an id shaped like a kept long one is kept as another");
+
+  // Through the tracer itself: the long call and its child each end by their own end, the child under its parent.
+  const exporter = new InMemorySpanExporter();
+  const real = tracePosts(await genAiTracing(ON, { exporter }), "run-ids", keepText);
+  real.post("open", [Date.now()]);
+  real.post("known", [{ runId: "run-ids", harness: "pi", model: "m" }]);
+  real.post("event", [{ type: "tool_start", callId: one, name: "bash" }]);
+  real.post("event", [{ type: "tool_start", callId: two, name: "bash", parent: one }]);
+  real.post("event", [{ type: "tool_end", callId: two, isError: false }]);
+  real.post("event", [{ type: "tool_end", callId: one, isError: false }]);
+  const tools = exporter.getFinishedSpans().filter((span) => span.attributes["gen_ai.operation.name"] === "execute_tool");
+  assert.equal(tools.length, 2, "both calls ended by their own ends, before the claim's");
+  assert.equal(tools[0].parentSpanContext?.spanId, tools[1].spanContext().spanId, "the child's span is under its long parent's");
+  await real.end("run-error");
+});
+
 test("the model rule: a known model as asked; an unknown one by its route's model; with none, through the redactor and capped", () => {
   const known = (model) => model === "claude-sonnet-4.5";
   assert.equal(tracedModel("claude-sonnet-4.5", { known, routed: "other" }), "claude-sonnet-4.5");
