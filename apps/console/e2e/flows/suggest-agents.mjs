@@ -45,7 +45,7 @@ const scanAndCreate = {
     const bar = page.locator("header", { has: page.getByRole("heading", { name: "Suggested agents" }) });
     const before = await bar.boundingBox();
     const scrolled = await page.evaluate(() => {
-      const body = document.querySelector("[data-suggestions-body]");
+      const body = document.querySelector("[data-page-body]");
       const main = document.querySelector("main");
       if (!body || !main) return { body: 0, main: -1 };
       body.scrollTop = body.scrollHeight;
@@ -61,7 +61,7 @@ const scanAndCreate = {
     await page.setViewportSize({ width: 390, height: 844 });
     const wide = await page.evaluate(() => {
       const sideways = (sel) => { const el = document.querySelector(sel); return el ? el.scrollWidth - el.clientWidth : 0; };
-      return { doc: document.documentElement.scrollWidth - innerWidth, main: sideways("main"), body: sideways("[data-suggestions-body]") };
+      return { doc: document.documentElement.scrollWidth - innerWidth, main: sideways("main"), body: sideways("[data-page-body]") };
     });
     check(wide.doc <= 0 && wide.main <= 0 && wide.body <= 0, `at 390 px the page scrolls sideways: ${JSON.stringify(wide)}`);
     await shot(page, "2-suggestions-phone");

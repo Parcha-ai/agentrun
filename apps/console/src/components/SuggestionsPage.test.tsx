@@ -7,6 +7,7 @@ import { route } from "@/App";
 import { createClient } from "@/lib/client";
 import { agentFixture } from "@/fixtures";
 import { keepReturn, permissionLabel, RETURN_KEY, scanLine, takeReturn } from "@/lib/suggestions";
+import { expectPinnedBar } from "@/test/pageFrame";
 
 // Suggested agents over /v2/suggestions: not connected, the page explains itself and connects GitHub with the write
 // permission the pull requests need (opt-out); connected, it lists each scanned repository's suggestions with the lines
@@ -245,19 +246,12 @@ describe("Suggested agents", () => {
 });
 
 describe("Suggested agents' repositories", () => {
-  // A long list scrolls under the bar, which keeps its title and Refresh in view. jsdom lays nothing out, so this holds
-  // the structure the scrolling comes from: a page as tall as the shell's main, the bar outside the one scrolling box,
-  // every repository inside it.
+  // A long list scrolls under the bar, which keeps its title and Refresh in view.
   it("keeps the bar with Refresh outside the one box that scrolls the repositories", async () => {
     const { v2 } = server({ connected: true, suggestions: [structuredClone(SUGGESTION)], readiness: READY });
     const { host, button } = await page(v2);
-    const scroll = host.querySelector<HTMLElement>("[data-suggestions-body]")!;
-    const classes = (el: Element) => el.className.split(" ");
-    for (const c of ["min-h-0", "flex-1", "overflow-auto"]) expect(classes(scroll)).toContain(c);
-    for (const c of ["h-full", "min-h-0", "flex", "flex-col"]) expect(classes(scroll.parentElement!)).toContain(c);
-    const bar = host.querySelector("header")!;
-    expect(scroll.contains(bar)).toBe(false);
-    expect(bar.contains(button(/^Read the suggestions and repositories again$/)!)).toBe(true);
+    const scroll = expectPinnedBar(host);
+    expect(host.querySelector("header")!.contains(button(/^Read the suggestions and repositories again$/)!)).toBe(true);
     expect(scroll.querySelector("article[aria-label='Triage support tickets']")).toBeTruthy();
   });
 
