@@ -8,13 +8,14 @@ import { cn } from "@/lib/utils";
  *  the runner takes away a sandbox-only tool (bash) the form ticked, which the server refuses on the runner (a 422 at the
  *  tool), and says so under the picker. `saved`: the agent's place as saved; `warning`: what the save's answer said about
  *  it (a box this server lacks). */
-export function PlaceSetting({ value, saved, places, tools, picked, onChange, error, warning }: {
-  value: Place | undefined; saved: unknown; places: Places; tools: ToolOffer[]; picked: string[];
+export function PlaceSetting({ value, saved, places, tools, picked, creating = false, onChange, error, warning }: {
+  value: Place | undefined; saved: unknown; places: Places; tools: ToolOffer[]; picked: string[]; creating?: boolean;
   onChange: (patch: { place: Place; tools?: string[] }) => void; error?: string; warning?: string;
 }) {
   const place = value ?? placeOf(saved);
-  // No place runs where the server resolves it: the runner for a tool that runs only there, else default_place.
-  const mode = (place ?? defaultPlaceOf(false, picked, places)).mode;
+  // No place runs where the server resolves it: the runner for a tool that runs only there, else default_place. Where the
+  // server has no default place, a new agent starts on neither (the person chooses), and one with a shell tool has none.
+  const mode = (place ?? (creating && places.defaultPlace === null ? null : defaultPlaceOf(false, picked, places)))?.mode;
   // A box this server can run; an agent saved in one it lacks keeps it. With none at all, Sandbox can't be picked: the
   // agent needs a box set up, or the server chosen (a new one with a shell and no place is refused), and each box says
   // why it isn't set up.
@@ -44,6 +45,7 @@ export function PlaceSetting({ value, saved, places, tools, picked, onChange, er
         {option("runner", "On the server", "No box and no shell: its files stay in the run's folder on the server.", toRunner)}
         {option("sandbox", "In a sandbox", "Its file and shell tools run in a box; its keys stay on the server.", () => toSandbox(box), noBox)}
       </div>
+      {!mode && !noBox && <p className="mt-3 text-small text-muted-foreground" role="status">Choose where it runs: this server gives a new agent no place of its own.</p>}
       {noBox && (
         <div className="mt-3 border px-4 py-3 text-small text-muted-foreground" role="status">
           <p>No box is set up on this server: set one up for this agent, or choose On the server to run it without a shell.</p>

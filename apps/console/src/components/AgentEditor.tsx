@@ -205,8 +205,11 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   const workflow = agent?.kind === "workflow";
   // A new agent made from a starter (Decision, Workflow): a workflow revision, so no instructions, tools, thinking or model.
   const starting = creating && isStarter(f.harness);
+  // Where the server has no default place (default_place null), a new agentic one names its own: the server refuses a
+  // create that names none and would get a box, so the form picks neither and waits for the person's pick.
+  const choosePlace = creating && !workflow && !starting && caps.places?.defaultPlace === null && !f.place && !f.computer;
   // What a new agent still needs before Create is on.
-  const createNeeds = [...(!f.name?.trim() ? ["Give the agent a name to create it."] : []), ...(!workflow && !starting && !f.instructions?.trim() ? ["Write its instructions to create it."] : [])];
+  const createNeeds = [...(!f.name?.trim() ? ["Give the agent a name to create it."] : []), ...(!workflow && !starting && !f.instructions?.trim() ? ["Write its instructions to create it."] : []), ...(choosePlace ? ["Choose where it runs, in Computer: a box, or On the server."] : [])];
   // The agent's approvals as the form has them: changed here, else the definition's, else ask (the server's default).
   const approvals: Approvals = f.approvals ?? d?.approvals ?? "ask";
   const choices = harnessOptions(caps.harnesses, creating ? { available: !!caps.decisionProvider } : undefined);
@@ -411,7 +414,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
             <div className="space-y-8">
               {/* A pick is saved as the computer, the setting the server keeps place as a view of; the form's place still
                   decides which tools a box opens (bash). */}
-              <PlaceSetting value={f.place} saved={d?.place} places={caps.places} tools={caps.tools} picked={f.tools ?? []}
+              <PlaceSetting value={f.place} saved={d?.place} places={caps.places} creating={creating} tools={caps.tools} picked={f.tools ?? []}
                 onChange={(next) => { set({ ...next, ...(next.place ? { computer: computerOfPlace(next.place) } : {}) }); if (next.place) leavePlace(next.place); }} error={fieldError("computer") ?? fieldError("place")} warning={fieldWarning("computer") ?? fieldWarning("place")} />
             </div>
           )}
@@ -565,7 +568,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
         {step === "history" && <span className="flex-1" />}
         {at < steps.length - 1 && <Button size="sm" onClick={() => goTo(steps[at + 1].id)}>Next <ArrowRight aria-hidden /></Button>}
         {/* Off with nothing to save, saying which revision is saved (the served current one); on with an edit. */}
-        {!viewing && <Button ref={saveButton} size="sm" variant="solid" onClick={save} disabled={!onSave || saving || (!creating && !dirty) || !f.name?.trim() || (!workflow && !starting && !f.instructions?.trim())}>{creating ? (saving ? "Creating…" : "Create") : saving ? "Saving…" : dirty ? "Save revision" : current ? `Saved · rev ${current.version}` : "Saved"}</Button>}
+        {!viewing && <Button ref={saveButton} size="sm" variant="solid" onClick={save} disabled={!onSave || saving || (!creating && !dirty) || !f.name?.trim() || (!workflow && !starting && !f.instructions?.trim()) || choosePlace}>{creating ? (saving ? "Creating…" : "Create") : saving ? "Saving…" : dirty ? "Save revision" : current ? `Saved · rev ${current.version}` : "Saved"}</Button>}
         {/* Why Create is off, under it: what the form still needs. A name is the person's own (it is fixed at creation), so
             none is made up for them. */}
         {creating && !saving && !viewing && createNeeds.map((why) => <p key={why} className="w-full text-right font-mono text-small text-muted-foreground">{why}</p>)}

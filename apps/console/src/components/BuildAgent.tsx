@@ -148,7 +148,8 @@ function ToolsStep({ caps, v2, tools, place, onTools, onPlace }: { caps: BuildCa
   const mcp = !!caps.mcp && !!v2.listMcpServers;
   // Read when the step is open and MCP is on, including MCP turning on (capabilities answering late) while it is open.
   const [servers, loadMcp] = useMcpServers(v2, open && mcp);
-  const runs = place ?? defaultPlaceOf(false, tools, caps.places);
+  // A new agent on a server with no default place has none until one is picked (PlaceSetting `creating`).
+  const runs = place ?? (caps.places?.defaultPlace === null ? null : defaultPlaceOf(false, tools, caps.places));
   const summary = `${tools.length ? `${tools.length} picked: ${tools.join(", ")}` : "None picked: it starts with no tools"} · ${placeLabel(runs)}`;
   return <section aria-label="Tools" className="mt-3 border bg-card">
     <div className="flex flex-wrap items-center gap-3 px-4 py-3 md:px-5">
@@ -163,7 +164,7 @@ function ToolsStep({ caps, v2, tools, place, onTools, onPlace }: { caps: BuildCa
         <ToolPicker offers={caps.tools} tools={tools} harness="pi" place={place} places={caps.places} mcp={mcp} servers={servers} mcpHarnesses={caps.mcpHarnesses}
           gates={caps.gates} onRetry={loadMcp} onChange={onTools} />
       </div>
-      {caps.places && <PlaceSetting value={place} saved={undefined} places={caps.places} tools={caps.tools} picked={tools}
+      {caps.places && <PlaceSetting value={place} saved={undefined} places={caps.places} tools={caps.tools} picked={tools} creating
         onChange={(next) => { onPlace(next.place); if (next.tools) onTools(next.tools); }} />}
     </div>}
   </section>;

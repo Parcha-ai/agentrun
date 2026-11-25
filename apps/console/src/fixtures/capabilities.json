@@ -273,9 +273,7 @@
         "runner",
         "sandbox"
       ],
-      "default_place": {
-        "mode": "runner"
-      },
+      "default_place": null,
       "default_reason": "name a box: this server has no Docker box for a new agent. Set place to {mode: sandbox, box: <none is set up>}, or to {mode: runner} to run without a shell.",
       "boxes": [
         {

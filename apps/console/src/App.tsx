@@ -870,7 +870,7 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
   // place (newAgentPlace). So the bar goes only when that place is the runner, where a first agent on Claude Agent runs
   // on the login; on a box, or with the places not read yet, it stays, for every harness. A picked agent's run goes on
   // the login only for a model the login serves (loginServes): one naming an OpenRouter model still needs its key.
-  const noAgentOnRunner = editorCaps.places?.defaultPlace.mode === "runner";
+  const noAgentOnRunner = editorCaps.places?.defaultPlace?.mode === "runner";
   const onClaudeLogin = claudeSignedIn && caps?.models?.needs !== "model" && (!selectedAgent ? noAgentOnRunner : (runDefinition?.harness === LOGIN_HARNESS && loginServes(runDefinition.model) && runPlace?.mode === "runner"));
   const playgroundTarget = where.operation ? where.playgroundAgent : pick ?? where.playgroundAgent;
   // The playground's operation, first on its request row: the page's own row, or Start a run's beside its agent.

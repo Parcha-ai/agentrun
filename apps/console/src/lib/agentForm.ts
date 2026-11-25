@@ -188,10 +188,11 @@ export function toolsOnSwitch(harness: string, tools: readonly string[], held: r
 }
 
 /** Why `tool` cannot be ticked on an agent whose definition names `place`: a sandbox-only tool (bash) runs in a box, and
- *  this form shows no place, so a new agent's is the runner; a runner-only one (the browser) runs on the server, and the
- *  agent's place is a box. Undefined when it can be ticked. */
+ *  the agent's place is the runner, or it has none (null: the server has no default place, so a box is to be chosen); a
+ *  runner-only one (the browser) runs on the server, and the agent's place is a box. Undefined when it can be ticked. */
 export const sandboxReason = (tool: ToolOffer, place: unknown): string | undefined => {
-  const where = place as { mode?: unknown; box?: unknown } | undefined;
+  const where = place as { mode?: unknown; box?: unknown } | null | undefined;
+  if (tool.sandbox_only && where === null) return "Sandbox-only: it runs in a box, and this agent has no place yet: choose a box under Where it runs";
   if (tool.sandbox_only && where?.mode !== "sandbox") return "Sandbox-only: it runs in a box, and this agent's place is the runner";
   if (tool.runner_only && where?.mode === "sandbox") return `Server-only: it runs on the server, and this agent's place is ${typeof where.box === "string" && where.box ? `the ${where.box} box` : "a box"}`;
   return undefined;
@@ -208,16 +209,18 @@ const SANDBOX_ONLY: ReadonlySet<string> = new Set(["bash", "bash_background", "b
 /** Where a revision that names no place runs, as the server resolves it at each run: this mirrors the server's
  *  defaultPlaceOf (packages/serve/src/place.ts), which the server does not report per revision. The runner for a workflow,
  *  for one whose tools need no shell, and for one that names a tool that runs only there (the browser); else this
- *  server's default_place. The editor's picker and its tool checks both read it, so they agree with the server and with
- *  each other. */
-export const defaultPlaceOf = (workflow: boolean, tools: readonly string[], places: Places | null | undefined): Place =>
+ *  server's default_place, null where it has none (the server refuses such a revision's save and its run: it names a box
+ *  or the runner). The editor's picker and its tool checks both read it, so they agree with the server and with each
+ *  other. */
+export const defaultPlaceOf = (workflow: boolean, tools: readonly string[], places: Places | null | undefined): Place | null =>
   workflow || tools.some((tool) => RUNNER_ONLY.has(tool)) || !tools.some((tool) => SANDBOX_ONLY.has(tool)) || !places ? { mode: "runner" } : places.defaultPlace;
 
 /** Where an agent's current revision runs: its own place, else where the server resolves one that names none
- *  (defaultPlaceOf), with `byDefault` saying so. Undefined for a revision that names no place while the server's places are
- *  not read yet (and it names a shell tool and no runner-only one), whose place is not known. The agent page's fact and
- *  the Learning tab's host-bash line both read it. */
-export function runsWhere(agent: Pick<Agent, "kind" | "definition">, places: Places | null | undefined): { place: Place; byDefault: boolean } | undefined {
+ *  (defaultPlaceOf), with `byDefault` saying so; a null place where the server has no default for it (none to run in).
+ *  Undefined for a revision that names no place while the server's places are not read yet (and it names a shell tool and
+ *  no runner-only one), whose place is not known. The agent page's fact and the Learning tab's host-bash line both read
+ *  it. */
+export function runsWhere(agent: Pick<Agent, "kind" | "definition">, places: Places | null | undefined): { place: Place | null; byDefault: boolean } | undefined {
   const own = placeOf(agent.definition.place);
   if (own) return { place: own, byDefault: false };
   const workflow = agent.kind === "workflow";
