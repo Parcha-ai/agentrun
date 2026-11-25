@@ -119,8 +119,9 @@ export async function desktopOverDial(provider, dial, booted, spec) {
  *
  * starts: what each start of a machine's agentrun-dial does, in order (the boot's, then each redial's; past the last,
  * it dials): "dials", or { exit, log } (it exited with that code, having written log), or { log(ms), dialsAfterMs }
- * (it runs, its log what log(ms since its start) answers, and dials after dialsAfterMs, or never without it). Given,
- * the host has dialLog, dialExit and redial over them, and fake.redials records each redial's machine id.
+ * (it runs, its log what log(ms since its start) answers, and dials after dialsAfterMs, or never without it); logMs
+ * on a start makes each read of its log answer that long after it was asked, with the log as it was then. Given, the
+ * host has dialLog, dialExit and redial over them, and fake.redials records each redial's machine id.
  */
 export function fakeDialHost({ daemon, dials = true, starts, helloMs = 1_000, ...options } = {}) {
 	const tokens = new MemoryMachineTokens();
@@ -175,7 +176,9 @@ export function fakeDialHost({ daemon, dials = true, starts, helloMs = 1_000, ..
 			if (m === undefined) return undefined;
 			const start = startOf(m);
 			if (typeof start !== "object") return "";
-			return typeof start.log === "function" ? start.log(Date.now() - m.startedAt) : (start.log ?? "");
+			const log = typeof start.log === "function" ? start.log(Date.now() - m.startedAt) : (start.log ?? "");
+			if (start.logMs !== undefined) await new Promise((resolve) => setTimeout(resolve, start.logMs));
+			return log;
 		};
 		fake.host.redial = async (id) => {
 			const m = started(id);

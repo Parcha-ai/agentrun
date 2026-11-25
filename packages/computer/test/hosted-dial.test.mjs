@@ -489,6 +489,24 @@ test("a dial host's agentrun-dial that is alive and writing past createMs is wai
 	assert.match(ended.error.message, /within 0\.4 s/);
 });
 
+test("a slow read of the dial log holds no poll back: a machine that dials while it runs is opened at once, never timed out", { timeout: 30_000 }, async () => {
+	// The step's first read starts at 600 ms (a step before createMs) and answers at 1,200 ms; the machine dials at 700.
+	const slow = setup({ starts: [{ log: "agentrun-dial: try 1", logMs: 600, dialsAfterMs: 700 }] }, { timeouts: { ...TIMEOUTS, createMs: 800, pollMs: 5 } });
+	const began = Date.now();
+	const ref = made(await create(slow.provider));
+	assert.ok(Date.now() - began < 1_100, `opened as it dialed, not after the read: ${Date.now() - began} ms`);
+	assert.equal(slow.fake.live().length, 1, "the machine that dialed is kept");
+	made(await slow.provider.release(ref, "delete"));
+});
+
+test("a machine that dials while the dial log is read at the deadline is opened, not timed out and deleted", { timeout: 30_000 }, async () => {
+	// The reads run from 300 to 600 ms and from 600 to 900, past createMs (400); the machine dials at 450.
+	const late = setup({ starts: [{ log: "agentrun-dial: try 1", logMs: 300, dialsAfterMs: 450 }] }, { timeouts: { ...TIMEOUTS, createMs: 400, pollMs: 5 } });
+	const ref = made(await create(late.provider));
+	assert.equal(late.fake.live().length, 1, "the machine that dialed is kept");
+	made(await late.provider.release(ref, "delete"));
+});
+
 test("the dial failure's words begin with what agentrun-dial said: its curl line is in the first 200 characters, for an exit and for a timeout", async () => {
 	const exited = setup({ starts: [{ exit: 4, log: FETCH_FAILED }] }, { attachEgress: "192.0.2.40:18443" });
 	const early = await create(exited.provider);

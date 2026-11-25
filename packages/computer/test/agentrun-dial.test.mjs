@@ -24,9 +24,10 @@ const INIT_ARGS = `--deadline 2026-11-16T12:00:00Z --user ${USER} --own-network 
  * fixed: more of its fixed values, by name, replaced. drops: which of agentrun-dial's requests the server resets before
  * answering, as a relay whose connection fails does: "none", "all", or "first try" (each one in the 500 ms after its
  * first; agentrun-dial waits 1 s before its next try). answers: the HTTP statuses its first answered requests get,
- * before the daemon's 200. fetches: its answered requests; dropped: how many it reset.
+ * before the daemon's 200. trickle: the daemon's answer is 2 KiB every half second, never ending (above curl's speed
+ * limit, so only a time limit ends it). fetches: its answered requests; dropped: how many it reset.
  */
-async function box(t, { fixed: more = {}, drops = "none", answers = [] } = {}) {
+async function box(t, { fixed: more = {}, drops = "none", answers = [], trickle = false } = {}) {
 	const dir = mkdtempSync(join(tmpdir(), "computer-agentrun-dial-"));
 	t.after(() => rmSync(dir, { recursive: true, force: true }));
 	const calls = join(dir, "calls");
@@ -73,13 +74,21 @@ if (command === "init" && require("node:fs").existsSync(${JSON.stringify(join(di
 			return req.socket.destroy();
 		}
 		fetches.push({ url: req.url, authorization: req.headers.authorization });
+		if (trickle) {
+			res.writeHead(200);
+			const drip = setInterval(() => res.write(Buffer.alloc(2048)), 500);
+			return res.on("close", () => clearInterval(drip));
+		}
 		hosts.push(req.headers.host);
 		const status = answers[fetches.length - 1];
 		if (status !== undefined) return res.writeHead(status).end(`status ${status}`);
 		res.end(daemon);
 	});
 	await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-	t.after(() => server.close());
+	t.after(() => {
+		server.closeAllConnections();
+		server.close();
+	});
 	const env = {
 		AGENTRUN_ATTACH_URL: "ws://127.0.0.1:1/v2/computers/attach",
 		AGENTRUN_ATTACH_TOKEN: TOKEN,
@@ -238,14 +247,36 @@ test("a 4xx from the daemon route exits 7 at once, with one request: a refused t
 });
 
 test("a connection that drops every time ends the fetch within its budget: exit 3, naming curl's exit and the tries", async (t) => {
-	const { dropped, run } = await box(t, { drops: "all", fixed: { FETCH_S: ["45", "2"] } });
+	const { dropped, run } = await box(t, { drops: "all", fixed: { FETCH_S: ["45", "3"] } });
 	const began = Date.now();
 	const { status, stderr, calls } = await run();
 	assert.equal(status, 3, stderr);
-	assert.ok(Date.now() - began < 10_000, `bounded: ${Date.now() - began} ms`);
-	assert.equal(stderr.match(/trying again/g)?.length, 1, "tried at once and after 1 s; a 2 s wait would pass the 2 s budget");
-	assert.equal(dropped.count, 2, "two requests, one a try");
-	assert.match(stderr, /agentrun-dial: fetching the daemon from \S+ failed: curl exit 5[256], after 2 tries/);
+	// The budget is read in whole seconds: it ends within 3 s, and before 4 s have passed at most.
+	assert.ok(Date.now() - began < 6_000, `bounded: ${Date.now() - began} ms`);
+	const tries = Number(stderr.match(/agentrun-dial: fetching the daemon from \S+ failed: curl exit 5[256], after (\d+) tries/)?.[1]);
+	assert.ok(tries >= 2, stderr);
+	assert.equal(stderr.match(/trying again/g)?.length, tries - 1, "one line per retry");
+	assert.equal(dropped.count, tries, "one request a try");
+	assert.deepEqual(calls, []);
+});
+
+test("a transfer that trickles above curl's speed limit, or stalls, ends at the budget too: each try is held to the seconds left", { timeout: 15_000 }, async (t) => {
+	const { fixed, run } = await box(t, { trickle: true, fixed: { FETCH_S: ["45", "3"] } });
+	const began = Date.now();
+	const { status, stderr, calls } = await run();
+	assert.equal(status, 3, stderr);
+	assert.ok(Date.now() - began < 6_000, `bounded: ${Date.now() - began} ms`);
+	assert.match(stderr, /agentrun-dial: fetching the daemon from \S+ failed: curl exit 28, after 1 try$/m);
+	assert.deepEqual(calls, []);
+	assert.ok(!existsSync(`${fixed.DAEMON[1]}.part`), "and the part fetched is not left");
+});
+
+test("a try starts only with a second of the budget left (curl's --max-time 0 is no limit at all): none left, none made", { timeout: 15_000 }, async (t) => {
+	const { fetches, run } = await box(t, { trickle: true, fixed: { FETCH_S: ["45", "0"] } });
+	const { status, stderr, calls } = await run();
+	assert.equal(status, 3, stderr);
+	assert.match(stderr, /agentrun-dial: fetching the daemon from \S+ failed: no time was left, after 0 tries$/m);
+	assert.equal(fetches.length, 0);
 	assert.deepEqual(calls, []);
 });
 

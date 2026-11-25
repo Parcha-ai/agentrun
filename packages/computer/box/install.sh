@@ -78,7 +78,8 @@ dial() {
 # whose sha256 is not AGENTRUN_DAEMON_SHA256 is removed, and nothing runs. With AGENTRUN_ATTACH_EGRESS, the operator's
 # relay (<IPv4>:<port>), the fetch and attach's dial both connect to the relay and speak TLS and HTTP to the URL's host
 # through it, and attach is given it too. The fetch is tried again, after 1, 2, 4 then 8 s, on a connection that failed
-# (refused, reset, dropped in TLS, timed out) or an HTTP 5xx, for at most FETCH_S seconds, one line on stderr per retry;
+# (refused, reset, dropped in TLS, timed out) or an HTTP 5xx, within FETCH_S seconds in all (each try's transfer is
+# held to the seconds left, so a stalled or trickling one ends there too), one line on stderr per retry;
 # an HTTP 4xx is the server's refusal and is never tried again. Exits 2 for env missing or a malformed relay, 3 when the
 # fetch failed, 4 for a sha256 mismatch, 5 when init never listened (init is ended first, so agentrun-dial may be
 # started again), 6 when /workspace was not made init's user's, 7 when the server refused the fetch; else it is
@@ -122,23 +123,27 @@ chmod 0755 "${DAEMON%/*}"
 # init's socket is root's alone: whoever can connect to it drives the machine.
 chmod 0700 "$SOCKET_DIR"
 rm -f "$DAEMON.part"
-# One try of the fetch: the HTTP status on stdout, 000 when no answer came. The token goes to curl on its stdin, never on
-# a command line, which every user may read in /proc.
+# One try of the fetch, in at most $1 seconds: the HTTP status on stdout, 000 when no answer came. The token goes to curl
+# on its stdin, never on a command line, which every user may read in /proc.
 fetch() {
 	printf 'Authorization: Bearer %s\n' "$AGENTRUN_ATTACH_TOKEN" |
-		curl -sS --connect-timeout 10 --speed-limit 1024 --speed-time 30 $relay -H @- -o "$DAEMON.part" -w '%{http_code}' "$AGENTRUN_DAEMON_URL"
+		curl -sS --connect-timeout 10 --max-time "$1" --speed-limit 1024 --speed-time 30 $relay -H @- -o "$DAEMON.part" -w '%{http_code}' "$AGENTRUN_DAEMON_URL"
 }
 unfetched() {
 	echo "agentrun-dial: fetching the daemon from $AGENTRUN_DAEMON_URL${relay:+ through $AGENTRUN_ATTACH_EGRESS} failed: $1" >&2
 	rm -f "$DAEMON.part"
 	exit "$2"
 }
+tries() { if [ "$1" = 1 ]; then echo "1 try"; else echo "$1 tries"; fi; }
 began=$(date +%s)
 try=1
 pause=1
+why="no time was left"
 while :; do
+	left=$((FETCH_S - ($(date +%s) - began)))
+	[ "$left" -ge 1 ] || unfetched "$why, after $(tries $((try - 1)))" 3
 	code=0
-	answer=$(fetch) || code=$?
+	answer=$(fetch "$left") || code=$?
 	case "$code:$answer" in
 	0:2??) break ;;
 	0:4??) unfetched "the server answered HTTP $answer" 7 ;;
@@ -147,7 +152,7 @@ while :; do
 	5:* | 6:* | 7:* | 28:* | 35:* | 52:* | 55:* | 56:*) why="curl exit $code" ;;
 	*) unfetched "curl exit $code" 3 ;;
 	esac
-	[ $(($(date +%s) - began + pause)) -le "$FETCH_S" ] || unfetched "$why, after $try tries" 3
+	[ $(($(date +%s) - began + pause)) -lt "$FETCH_S" ] || unfetched "$why, after $(tries "$try")" 3
 	echo "agentrun-dial: the daemon fetch's try $try failed ($why); trying again in $pause s" >&2
 	sleep "$pause"
 	try=$((try + 1))

@@ -1269,7 +1269,8 @@ export class HostedProvider implements ComputerProvider {
 	 * exited before the socket came fails refused at once, its words first. An exit in DIAL_AGAIN starts it once more in
 	 * the same machine (redial), with a note, and the wait goes on, at least half of createMs from then. And one that runs
 	 * and writes is waited for past createMs: its log is read a step (DIAL_STEP_MS, at most a quarter of createMs) before
-	 * the deadline and at it, and a log that changed between them moves the deadline a step, up to twice createMs.
+	 * the deadline, beside the polls, and again at it, and a log that changed between them moves the deadline a step, up
+	 * to twice createMs. The hub is read once more after those reads, so a socket that came while they ran wins.
 	 */
 	async #whenDialed(ref: ComputerRef, notes: string[], signal?: AbortSignal): Promise<Opened> {
 		const { createMs, requestMs } = this.#timeouts;
@@ -1279,8 +1280,13 @@ export class HostedProvider implements ComputerProvider {
 		const step = Math.min(DIAL_STEP_MS, createMs / 4);
 		let until = began + createMs;
 		// The log's reads for the wait past createMs: a host that cannot say agentrun-dial still runs has none.
-		let logAt = dialExit === undefined || dialLog === undefined ? Number.POSITIVE_INFINITY : until - step;
-		let logged: string | undefined;
+		const readLog =
+			dialExit === undefined || dialLog === undefined
+				? undefined
+				: () => this.#call(`the dial log of ${ref.name}`, (ctx) => dialLog.call(this.host, ref.id, ctx), requestMs, signal).then((read) => (read.ok ? read.value : undefined));
+		let logAt = until - step;
+		// The step's first read, from logAt on: running beside the polls, it holds none of them back.
+		let logged: Promise<string | undefined> | undefined;
 		let refusing: Promise<{ refused: string | undefined }> | undefined;
 		let exiting: Promise<{ exited: number | undefined }> | undefined;
 		let exitAt = began;
@@ -1288,15 +1294,23 @@ export class HostedProvider implements ComputerProvider {
 		for (;;) {
 			const opened = await this.#open(ref, signal);
 			if (opened.ok) return opened;
-			if (Date.now() >= logAt && dialLog !== undefined) {
-				const read = await this.#call(`the dial log of ${ref.name}`, (ctx) => dialLog.call(this.host, ref.id, ctx), requestMs, signal);
-				const log = read.ok ? read.value : undefined;
-				if (Date.now() >= until && log !== undefined && logged !== undefined && log !== logged && until + step <= cap) until += step;
-				logged = log ?? logged;
-				logAt = until;
-			}
+			if (readLog !== undefined && logged === undefined && Date.now() >= logAt) logged = readLog();
 			const left = until - Date.now();
 			if (left <= 0) {
+				if (logged !== undefined) {
+					const before = await logged;
+					const now = await readLog?.();
+					logged = undefined;
+					if (before !== undefined && now !== undefined && now !== before && until + step <= cap) {
+						until += step;
+						// This read is the next step's first.
+						logged = Promise.resolve(now);
+						continue;
+					}
+				}
+				// A socket that came while the log was read wins.
+				const late = await this.#open(ref, signal);
+				if (late.ok) return late;
 				const said = await this.#dialSaid(ref, signal);
 				return this.#fail("timeout", `${said === undefined ? "" : `${said}; `}${this.#notDialed(ref)} within ${seconds(until - began)}: ${DIAL_NEEDS}`);
 			}
@@ -1325,7 +1339,7 @@ export class HostedProvider implements ComputerProvider {
 						notes.push(`agentrun-dial's first start in ${ref.name} exited ${read.exited}${said === undefined ? "" : ` (${said})`}, and it was started once more`);
 						until = Math.min(cap, Math.max(until, Date.now() + createMs / 2));
 						logged = undefined;
-						if (logAt !== Number.POSITIVE_INFINITY) logAt = until - step;
+						logAt = until - step;
 						continue;
 					}
 					const restart = again === undefined || again.ok ? "" : `, and starting it once more failed (${again.error.message})`;
