@@ -570,7 +570,7 @@ test("a CLI's learned_workflow call a crash cut after its model node booked, den
   const [called] = view.workflow_calls;
   assert.deepEqual({ workflow: called.workflow, caller: called.caller, outcome: called.outcome }, { workflow: "title-then-hold", caller: "agent", outcome: "failed" }, "the workflow's call, failed: never refused");
   assert.ok(called.usd === null || Math.abs(called.usd - booked) < 1e-9, `its $ is what its call booked, or unknown, never 0: ${called.usd} vs ${booked}`);
-  assert.deepEqual([view.path, view.workflow], ["handed_back", "title-then-hold"], "charged to the workflow, never the agent's path");
+  assert.deepEqual([view.path, view.workflow?.name], ["handed_back", "title-then-hold"], "charged to the workflow, never the agent's path");
 });
 
 test("an approved card covers its own call only: an action an earlier call's card named, asked in a later call of the same workflow whose card did not name it, parks on a card of its own", { timeout: 240_000 }, async (t) => {
