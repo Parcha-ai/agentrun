@@ -102,7 +102,7 @@ test("the sweep of leftovers removes only the proxies and volumes its caller own
 	assert.ok(asked.includes("run-theirs"), "the owner was asked of the other run's leftovers");
 });
 
-test("what may be deleted (1): the leftover sweep never touches a part with neither a run nor an owner label, nor a container or volume named like a proxy that lacks the egress label", async () => {
+test("what may be deleted (1): the leftover sweep never touches a part with neither a run nor an owner label, nor a container or volume named like a proxy that lacks the egress label, even one with the caller's run label", async () => {
 	const runOf = (run) => ({ "agentrun.run": run });
 	// Each one's computer gone, made long ago: a leftover by every rule but its labels.
 	const leftOf = (name, labels) => {
@@ -111,16 +111,17 @@ test("what may be deleted (1): the leftover sweep never touches a part with neit
 	};
 	const bare = leftOf("computer-0000000000a1", {}); // the egress label alone: no agentrun.run, no owner
 	const named = "computer-0000000000a2-egress"; // a proxy's name, with no label of ours at all
+	const namedMine = "computer-0000000000a4-egress"; // a proxy's name and the caller's run label, but never the egress label
 	const mine = leftOf("computer-0000000000a3", runOf("run-mine")); // the caller's own, so the sweep is seen to run
 	const { provider, names, volumeNames, calls } = fakeDocker({
-		containers: [...bare.containers, proxyReport({ id: idOf(named), name: named, labels: {}, cmd: [] }), ...mine.containers],
-		volumes: [...bare.volumes, { Name: named, Labels: {} }, ...mine.volumes],
+		containers: [...bare.containers, proxyReport({ id: idOf(named), name: named, labels: {}, cmd: [] }), proxyReport({ id: idOf(namedMine), name: namedMine, labels: runOf("run-mine"), cmd: [] }), ...mine.containers],
+		volumes: [...bare.volumes, { Name: named, Labels: {} }, { Name: namedMine, Labels: runOf("run-mine") }, ...mine.volumes],
 	});
 	const swept = await sweep(provider, { now: new Date(), mine: (labels) => labels["agentrun.run"] === "run-mine" });
 	assert.equal(swept.ok, true, JSON.stringify(swept));
 	assert.deepEqual(swept.value.leftovers.sort(), [proxyOf("computer-0000000000a3"), `${proxyOf("computer-0000000000a3")} (volume)`]);
-	assert.deepEqual(names().sort(), [proxyOf("computer-0000000000a1"), named]);
-	assert.deepEqual(volumeNames().sort(), [proxyOf("computer-0000000000a1"), named]);
+	assert.deepEqual(names().sort(), [proxyOf("computer-0000000000a1"), named, namedMine]);
+	assert.deepEqual(volumeNames().sort(), [proxyOf("computer-0000000000a1"), named, namedMine]);
 	const removed = calls().filter((args) => args[0] === "rm" || (args[0] === "volume" && args[1] === "rm")).flat();
-	assert.ok(!removed.some((arg) => arg === named || arg === idOf(named) || arg === proxyOf("computer-0000000000a1") || arg === idOf(proxyOf("computer-0000000000a1"))), `no rm named either: ${JSON.stringify(removed)}`);
+	assert.ok(!removed.some((arg) => arg === named || arg === idOf(named) || arg === namedMine || arg === idOf(namedMine) || arg === proxyOf("computer-0000000000a1") || arg === idOf(proxyOf("computer-0000000000a1"))), `no rm named either: ${JSON.stringify(removed)}`);
 });

@@ -326,18 +326,20 @@ const leftoverOf = (name, labels) => {
   const made = allowed({ name, allow: ["pypi.org"], labels });
   return { containers: made.containers.filter((one) => one.Name !== `/${name}`), volumes: made.volumes };
 };
-/** A container and a volume named as computer `name`'s proxy, with no label of ours. */
-const lookalikeOf = (name) => ({ containers: [proxyReport({ id: idOf(`${name}-egress`), name: `${name}-egress`, labels: {}, cmd: [] })], volumes: [{ Name: `${name}-egress`, Labels: {} }] });
+/** A container and a volume named as computer `name`'s proxy, without the egress label: `labels` alone. */
+const lookalikeOf = (name, labels = {}) => ({ containers: [proxyReport({ id: idOf(`${name}-egress`), name: `${name}-egress`, labels, cmd: [] })], volumes: [{ Name: `${name}-egress`, Labels: labels }] });
 const ANOTHER_SERVER = "ffffffffffff";
 const ownedBy = (server) => ({ "agentrun.owner": "agent:agent-1", "agentrun.owner-server": server });
 /** What may be deleted (1) and (2): of these, only `mine` is this server's. */
 const notMine = (run) => ({
   bare: leftoverOf("computer-0000000000a1", {}),
   lookalike: lookalikeOf("computer-0000000000a2"),
+  // This store's run label, on parts that never had the egress label: not a computer's, whatever their name says.
+  lookalikeOfMyRun: lookalikeOf("computer-0000000000a7", labels(run, 1)),
   otherRun: leftoverOf("computer-0000000000a3", { ...labels("run-of-another-server", 1), ...ownedBy(ANOTHER_SERVER) }),
   myRunOtherOwner: leftoverOf("computer-0000000000a4", { ...labels(run, 1), ...ownedBy(ANOTHER_SERVER) }),
 });
-const KEPT = ["computer-0000000000a1-egress", "computer-0000000000a2-egress", "computer-0000000000a3-egress", "computer-0000000000a4-egress"];
+const KEPT = ["computer-0000000000a1-egress", "computer-0000000000a2-egress", "computer-0000000000a3-egress", "computer-0000000000a4-egress", "computer-0000000000a7-egress"];
 /** Whether computer `name`'s proxy and volume are both gone from the fake host. */
 const goneFrom = (fake, name) => !fake.names().includes(`${name}-egress`) && !fake.volumeNames().includes(`${name}-egress`);
 const partsOfAll = (...sets) => ({ containers: sets.flatMap((one) => one.containers), volumes: sets.flatMap((one) => one.volumes) });
@@ -375,7 +377,8 @@ test("what may be deleted (1, 2): the janitor's interval sweeps never remove the
   fake.add(...Object.values(leftoverOf("computer-0000000000a6", labels("run-mine", 1))));
   await until(async () => goneFrom(fake, "computer-0000000000a6"), "the interval's sweep", 30_000);
   // And one more interval after it.
-  const sweeps = () => fake.calls().filter((args) => args[0] === "ps" && args.includes("label=agentrun.computer.egress")).length;
+  // Each sweep lists the volumes once, by its own filters; a release's list names its computer.
+  const sweeps = () => fake.calls().filter((args) => args[0] === "volume" && args[1] === "ls" && !args.some((arg) => arg.includes("egress=computer-"))).length;
   const seen = sweeps();
   await until(async () => sweeps() > seen, "one more interval", 30_000);
   assert.deepEqual(fake.names().sort(), KEPT);
