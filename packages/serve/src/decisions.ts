@@ -223,15 +223,15 @@ export function handedKeys(env: NodeJS.ProcessEnv): Record<string, string> {
   }
 }
 
-/** The Parallel key a call's environment holds: on the pipe where the server handed a per-run process its keys
- *  (`DECISION_KEY_FD_ENV` set: main's run process, handedKeys), else in the claim's own environment, where the runner's
- *  claim put it (claim-secrets.ts). Read from the environment the call is given each time, so a claim's key is its own. */
+/** The Parallel key a call's environment holds: in the claim's own environment, where the runner's claim put it
+ *  (claim-secrets.ts), or on the dead pipe path where `DECISION_KEY_FD_ENV` is set (handedKeys; only tests set it). Read
+ *  from the environment the call is given each time, so a claim's key is its own. */
 export function parallelKeyOf(env: NodeJS.ProcessEnv): string | undefined {
   return handedKeyOf(env, PARALLEL_KEY_ENV);
 }
 
-/** The key in the variable `name`, as a run's process holds it: from the keys the server handed it where it handed
- *  some, else from its environment; undefined where it holds none. */
+/** The key in the variable `name`, as a claim holds it: in `env`, the claim's own environment (claim-secrets.ts); on the
+ *  dead pipe path (`DECISION_KEY_FD_ENV` set, only by tests) from the keys handed on it; undefined where it holds none. */
 export function handedKeyOf(env: NodeJS.ProcessEnv, name: string): string | undefined {
   if (env[DECISION_KEY_FD_ENV] !== undefined) return handedKeys(env)[name];
   return isSet(env[name]) ? env[name] : undefined;

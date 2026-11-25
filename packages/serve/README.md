@@ -1914,9 +1914,9 @@ pi's hosted search), never to a harness's own search inside its CLI. Each Jev re
 Jev's published price and booked at the cost Jev reported, never above that hold. A `web_fetch` given an objective has
 Jev pick the chunks of the page most likely to hold it, in page order (`found`, each with its `relevance`), its requests
 held and booked the same way; a fetch with no objective asks Jev nothing and its page is whole. A server with only an
-OpenRouter key runs no ranking; `AGENTRUN_WEB_JEV_OFF=1` on the server turns it off for every run it launches, on
-whatever runner host claims it (the run's plane carries the switch); set on a runner host, it turns Jev off for the runs
-that host claims too, and never back on. `GET /capabilities`' `why` for `web_search` says which:
+OpenRouter key runs no ranking; `AGENTRUN_WEB_JEV_OFF=1` on the server turns Jev off for every run created while it is
+set, on whatever runner host claims it (the run's plane carries the switch, and keeps it at every later launch); a
+runner's own switch can add off for the runs that host claims, never turn it back on. `GET /capabilities`' `why` for `web_search` says which:
 `…; Jev (jev-1.14.0) ranks results …`, `…; Jev off: no TypeSafe key`, or `…; Jev off (AGENTRUN_WEB_JEV_OFF)`.
 
 | | `claude-agent` | `codex` | pi |

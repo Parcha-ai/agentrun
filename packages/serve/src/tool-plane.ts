@@ -387,8 +387,9 @@ const picked = (name: Pickable, settings: ToolSettingsMap, overrides: ToolSettin
 });
 
 /** What a run is told: each pickable capability its revision names, resolved; with web_search native on pi, the model
- *  its search asks (the one the resolution read); and `jev: "off"` where the server resolving it has Jev turned off for
- *  the web tools (AGENTRUN_WEB_JEV_OFF), on a plane with a web tool, so the switch reaches a runner on another host. */
+ *  its search asks (the one the resolution read); and `jev: "off"` where the server had Jev turned off for the web tools
+ *  (AGENTRUN_WEB_JEV_OFF) when it created the run, on a plane with a web tool, so the switch reaches a runner on another
+ *  host; a runner's re-check (recheckPlane) keeps it. */
 export type Plane = Partial<Record<Pickable, Resolution>> & { model?: string; jev?: "off" };
 /** The facts of a pinned revision its run's tools resolve from. */
 /** `approvals`: the revision's, kept only when "never" (the agent runs unattended: an ask is an allow, never over a deny). */
@@ -420,27 +421,28 @@ export function planeFor(env: NodeJS.ProcessEnv, tooling: Tooling, settings: Too
   return withJevSwitch(plane, env);
 }
 
-/** `plane` with the server's Jev switch as `env` holds it now: `jev: "off"` where it is on and the plane has a web tool,
- *  else no `jev` field. */
-function withJevSwitch(plane: Plane, env: NodeJS.ProcessEnv): Plane {
+/** `plane` with Jev's switch: `jev: "off"` where `keptOff` (the plane was made with it off) or where `env` has the switch
+ *  on (AGENTRUN_WEB_JEV_OFF) and the plane has a web tool; else no `jev` field. */
+function withJevSwitch(plane: Plane, env: NodeJS.ProcessEnv, keptOff = false): Plane {
   const { jev: _was, ...rest } = plane;
-  return webJevOff(env) && (rest.web_search !== undefined || rest.web_fetch !== undefined) ? { ...rest, jev: "off" } : rest;
+  return keptOff || (webJevOff(env) && (rest.web_search !== undefined || rest.web_fetch !== undefined)) ? { ...rest, jev: "off" } : rest;
 }
 
-/** A run's kept Plane at a later launch: as it was, but Parallel, or the browser's vendor, where the server no longer
+/** A run's kept Plane at a later launch: as it was (its Jev off kept, and added where `env` has the switch), but Parallel, or the browser's vendor, where the server no longer
  *  holds its key, which is unavailable, never another provider; and, given `now` (the Plane it would get today and each
  *  capability's permission today), a capability set to ask or deny, or kept denied, as it resolves today: a harness's
  *  own search cannot wait for a person, and a deny that was lifted is lifted. The browser keeps its vendor, whose
  *  sessions it has: only a deny it was kept with is lifted. */
 export function recheckPlane(plane: Plane, env: NodeJS.ProcessEnv, now?: { fresh: Plane; permission: (name: Pickable) => Permission }): Plane {
   const keyed = served(env).parallelKey;
-  const { jev: _kept, ...resolved } = plane;
-  // The Jev switch is the server's at this launch, never the kept plane's.
+  const { jev: kept, ...resolved } = plane;
+  // Jev off is read when the run is created (planeFor) and is never lifted here: `env`'s switch (a runner's own) can add
+  // "off", never remove it.
   return withJevSwitch(Object.fromEntries(Object.entries(resolved).map(([name, value]) => {
     const fresh = name === "model" ? undefined : now?.fresh[name as Pickable];
     if (fresh !== undefined && (value === DENIED || (name !== "browser" && now!.permission(name as Pickable) !== "allow"))) return [name, fresh];
     return [name, name === "browser" && isVendor(value) && !browserKeysOf(env)[value] ? noBrowserKey(value) : value === "parallel" && !keyed ? NO_PARALLEL_KEY : value];
-  })) as Plane, env);
+  })) as Plane, env, kept === "off");
 }
 
 /** The Plane kept for a run made before its plane was kept, resolved at a later launch (runs.ts): its browser stays
