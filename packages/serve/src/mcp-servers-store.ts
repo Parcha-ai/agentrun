@@ -872,7 +872,7 @@ export class McpServersOverStore {
 
   /** On an API-only server, the refusal of a run's binding (`binding`, handed at `field`) of the per-run Composio server
    *  `name` (`row`), or undefined when it stands: its user must be none the owner calls as here (composio-owners.ts ownersComposioUsers), and
-   *  a connected account it names one Composio lists under that user for the server's toolkit, read with the server's
+   *  a connected account it names an ACTIVE one Composio lists under that user for the server's toolkit, read with the server's
    *  key (composioListsAccount). Composio not answering, or the key not opening, throws, and an account past the read's
    *  bound is refused: a binding is never taken unchecked. Each refusal says which check refused it, and never quotes
    *  what was sent. */
@@ -890,7 +890,7 @@ export class McpServersOverStore {
       throw new ApiError("upstream_failed", `Composio didn't answer the check of this run's connected account for the MCP server ${name}, and a run's account is never taken unchecked: nothing was started. Try again.`);
     }
     if (listed === "unbounded") return { field: `${field}.connected_account_id`, reason: "not_allowed", message: `That connected_account_id can't be checked: Composio lists ${composioAccountBoundWords()} for this run's composio_user_id and the server's toolkit, so this start can't check them all, and a run's account is never taken unchecked. Nothing was started.` };
-    if (listed === "unlisted") return { field: `${field}.connected_account_id`, reason: "not_allowed", message: `That connected_account_id is not listed under this run's composio_user_id: Composio lists no such account of that user for the server's toolkit. Name one of that user's own accounts, or none. Nothing was started.` };
+    if (listed === "unlisted") return { field: `${field}.connected_account_id`, reason: "not_allowed", message: `That connected_account_id is not listed under this run's composio_user_id: Composio lists no such ACTIVE account of that user for the server's toolkit. Name one of that user's own accounts, or none. Nothing was started.` };
     return undefined;
   }
 
