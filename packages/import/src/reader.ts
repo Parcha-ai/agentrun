@@ -67,6 +67,9 @@ export type ReadOptions = {
    *  decoded. The read pool's workers set it to an eighth of their heap (pool.ts), so that no one line can end the
    *  process; parseHome then reads the file on its own thread, with no such bound. Default: none. */
   maxLine?: number;
+  /** What a reader looks up once for a whole import, shared across its files: one map per import, each reader keying
+   *  its own entries. Without one, each read looks up afresh. */
+  lookups?: Map<string, unknown>;
 };
 
 export type Reader<S extends string = string, C = unknown> = {
