@@ -3,7 +3,7 @@
 // field), the answers read from the text block, the cost at Anthropic's published price, and its errors typed.
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { DecisionProviderError } from '@parcha/agentrun-dsl';
+import { DecisionProviderError, judgeFromProvider, validateAnswers } from '@parcha/agentrun-dsl';
 import { registerDecisionProviderConformance } from '@parcha/agentrun-dsl/testing';
 import { ANTHROPIC_PUBLISHED_PRICING, ANTHROPIC_SYSTEM, anthropicProvider } from '../dist/index.js';
 
@@ -93,6 +93,20 @@ test('answers are read from the text block by type: a noul its probability, a ch
   assert.deepEqual(price, { inputUsdPerMillionTokens: 0.1, outputUsdPerMillionTokens: 0.5, longPromptTokens: 100_000, longInputUsdPerMillionTokens: 0.5, longOutputUsdPerMillionTokens: 2.5 });
   assert.equal(outcome.cost_usd, (1000 * 0.1 + 50 * 0.5) / 1e6);
   assert.equal(outcome.cost_basis, 'estimate');
+});
+
+test('a question named __proto__ round-trips through Anthropic and the seam, and is accepted', async () => {
+  const questions = JSON.parse('{"__proto__": {"type": "choice", "instructions": "Which?", "criteria": {"a": "first", "b": "second"}}}');
+  const seen = [];
+  const fetch = async (_url, init) => (seen.push(JSON.parse(init.body)), json(message('{"__proto__": {"a": 0.2, "b": 0.8}}')));
+  const outcome = await anthropicProvider({ ...settings, fetch }).decide({ label: 'x', kind: 'judge', state: {}, questions }, ctx());
+  assert.ok(Object.hasOwn(outcome.answers, '__proto__'), 'the provider keeps the answer as its own key __proto__, not as the record\'s prototype');
+  const result = await judgeFromProvider(anthropicProvider({ ...settings, fetch }))({ label: 'x', kind: 'judge', state: {}, questions });
+  const schema = seen[0].output_config.format.schema;
+  assert.ok(Object.hasOwn(schema.properties, '__proto__') && schema.required.includes('__proto__'), 'the question was asked under its own name');
+  assert.ok(Object.hasOwn(result.answers, '__proto__'), 'the answer is kept under the question\'s own name');
+  assert.equal(result.answers.__proto__.choice, 'b');
+  validateAnswers(questions, result.answers);
 });
 
 test('a prompt over 100,000 tokens is priced at the long rates; a model with no published price here costs null (unknown), unless the host prices it', async () => {
