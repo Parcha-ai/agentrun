@@ -432,7 +432,7 @@ new HostedProvider(host, { daemonPath, dial: { url: process.env.AGENTRUN_PUBLIC_
   see `daemon/internal/windowmanager`); hello's `windowManager` says how it went, and create waits on it. A machine
   minted a desktop may say `linux` (same os and arch) until its display answers; a `connect` while it says `linux`
   fails as drift, as on exec. Every dial provider takes one, from the box image, whose
-  `desktop` step (`box/install.sh`) installs Xvfb, xfwm4, xfce4-terminal, mousepad and firefox-esr. A desktop gets the
+  `desktop` step (`box/install.sh`) installs Xvfb, xfwm4, xfce4-terminal, mousepad, firefox-esr and thunar. A desktop gets the
   sandbox's size, 2 CPUs and 4 GiB by default, which holds Xvfb at 1280x800, xfwm4 and a browser:
   - **E2B**: its default on either connect, from the box template (the template's own size).
   - **Fly Machines**: `kind: "desktop"`; 2 shared CPUs and 4 GiB (`guest`), up to 8 shared CPUs and 2 GiB a CPU

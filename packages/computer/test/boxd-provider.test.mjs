@@ -432,7 +432,7 @@ test("prepareImage: a desktop's snapshot is built once from boxd's own image: th
 	assert.deepEqual({ ...params, name: "x" }, { name: "x", org: "acme", isolated: true, config: { autoSuspendTimeout: 0 }, deleteAfter: 7_200 }, "boxd's own image, no labels (a restore carries them over), boxd's delete timer");
 	const exec = rest.find(([call]) => call === "streamExec");
 	assert.equal(exec[1], "b-1");
-	assert.match(exec[2].command, /^sudo -n sh -c '[^']*apt-get install -y -qq --no-install-recommends mousepad[^']*org\.xfce\.mousepad\.desktop[^']*'$/);
+	assert.match(exec[2].command, /^sudo -n sh -c '[^']*apt-get install -y -qq --no-install-recommends mousepad [^']*'$/, "the recipe as root (its apps: the test above)");
 	assert.deepEqual(
 		rest.map(([call]) => call),
 		["waitUntilReady", "streamExec", "snapshots.create", "snapshots.get", "list", "delete", "get"],

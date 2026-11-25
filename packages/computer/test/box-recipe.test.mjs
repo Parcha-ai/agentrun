@@ -427,10 +427,10 @@ test("the desktop step installs and checks every app the linux-desktop suite ope
   }
 });
 
-test("the default box recipe's hash is d289bcc6d0c2: a recipe change is a box bump, a new image and snapshot of that name", async () => {
+test("the default box recipe's hash is 244e45e13f7f: a recipe change is a box bump, a new image and snapshot of that name", async () => {
   // Another image (media/, documents/) is a recipe of its own; nothing it adds moves this one. A change here names a new
   // ghcr.io/parcha-ai/agentrun-box:<hash> (the release's box job publishes it), a new Daytona snapshot
   // agentrun-box-<hash> (box/build-daytona.py) for AGENTRUN_DAYTONA_SNAPSHOT, and relays/cloudflare/wrangler.json's image.
   const { recipeHash } = await import("../box/recipe.mjs");
-  assert.equal(recipeHash(), "d289bcc6d0c2");
+  assert.equal(recipeHash(), "244e45e13f7f");
 });
