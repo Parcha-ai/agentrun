@@ -449,6 +449,8 @@ test("Mode 2 with no Docker is exempt from naming a box: a new agent with no pla
   assert.equal(background.status, 422, JSON.stringify(background.body));
   assert.deepEqual(background.body.error.fields.map((one) => [one.field, one.reason]), [["definition.tools[1]", "not_an_option"]]);
   assert.match(background.body.error.fields[0].message, /^bash_background runs only in a box, and this agent names no place, so it runs on the runner, whose shell here runs bash alone /);
+  // Word for word as before this change: in Mode 2 new agents do run on the runner, so its words still say so.
+  assert.match(background.body.error.fields[0].message, /\(bash_background needs a sandbox computer\), and new agents run on the runner, because the docker box is unavailable here: .+\. Do that, or keep this agent on the runner: name "place": \{"mode": "runner"\} and remove "bash_background" from definition\.tools\.$/);
 });
 
 test("Mode 1 with no Docker: an agent with no computer and bash is refused, 422, in the words it always had", async (t) => {
