@@ -475,11 +475,13 @@ export function forgetServedAnswers(store: Store, runId: string): string[] {
  *  redacted) or whether it is withheld whole (withheldWhole). A reader that follows a run (a console's live Timeline,
  *  its view polled) reads its rows once per change, each read renders every row from the journal again, and an entry's
  *  words never change: so each text is cut once per held value set, not once per read, and a run of n turns costs the
- *  redactor n turns of work, not n². Kept by digest: no text the run wrote is kept, only what a reader is shown of it.
+ *  redactor n turns of work, not n². Kept by digest: no text the run wrote is kept, only what a reader is shown of it,
+ *  and that as a copy of its own (cutCopy): the redactor's output is a V8 slice of the raw text, which would keep the
+ *  whole text (a tool output of megabytes, and any held value in it past the cut's window) alive with it.
  *
  *  Bounded in bytes, per store: each kept text costs CUT_ENTRY plus 2 bytes per UTF-16 unit of its slot and of what was
- *  made of it, and once a store's texts cost more than CUT_BYTES the oldest go first (the least recently written run and
- *  value set's, its oldest text first). A text that alone costs more than CUT_BYTES is not kept. At most CUT_SETS run
+ *  made of it, and once a store's texts cost more than CUT_BYTES the least recently used go first (the run and value set
+ *  read or written longest ago, its text read or written longest ago first). A text that alone costs more than CUT_BYTES is not kept. At most CUT_SETS run
  *  and value set pairs a store. So the worst case is CUT_BYTES (32 MiB) of kept cuts per open store, whatever a run
  *  wrote: a made text is at most redacted's head (SHOWN plus 6 times the longest held value, and 16), most rows far
  *  less, and a run of 60 web searches keeps about 280 KB. */
@@ -492,6 +494,9 @@ export const cutBudget = { bytes: CUT_BYTES };
 /** What one kept text costs beyond its characters: the Map entry and the boolean or string header, as counted. */
 const CUT_ENTRY = 64;
 const cutCost = (slot: string, made: string | boolean): number => CUT_ENTRY + 2 * (slot.length + (typeof made === "string" ? made.length : 0));
+/** A cut as kept: a string copied into one of its own, unit for unit (lone surrogates as written), so it holds no
+ *  reference to the text it was sliced from; a boolean as it is. */
+const cutCopy = <T extends string | boolean>(made: T): T => (typeof made === "string" ? (Buffer.from(made, "utf16le").toString("utf16le") as T) : made);
 
 /** Run `runId`'s value sets dropped from what the readers of store `origin` last cut (cutsKept). */
 function forgetCuts(origin: Store, runId: string): void {
@@ -519,21 +524,31 @@ export function rowCutsOnce(store: Store, runId: string, cut: RowCut, since: num
   const set = `${runId}\0${createHash("sha256").update(JSON.stringify([mode, values])).digest("hex")}`;
   const once = <T extends string | boolean>(how: string, text: string, cut: () => T): T => {
     const slot = `${how}\0${createHash("sha256").update(text, "utf16le").digest("base64")}`;
-    const kept = cutsKept.get(origin)?.sets.get(set)?.texts.get(slot);
-    if (kept !== undefined) return kept as T;
+    const held = cutsKept.get(origin);
+    const heldSet = held?.sets.get(set);
+    const kept = heldSet?.texts.get(slot);
+    if (kept !== undefined) {
+      // Read again: the most recently used, its set and itself.
+      held!.sets.delete(set);
+      held!.sets.set(set, heldSet!);
+      heldSet!.texts.delete(slot);
+      heldSet!.texts.set(slot, kept);
+      return kept as T;
+    }
     const made = cut();
     const cost = cutCost(slot, made);
     if (servedSince(store) !== since || cost > cutBudget.bytes) return made;
+    const keep = cutCopy(made);
     let cuts = cutsKept.get(origin);
     if (!cuts) cutsKept.set(origin, (cuts = { sets: new Map(), bytes: 0 }));
     const texts = cuts.sets.get(set) ?? { texts: new Map<string, string | boolean>(), bytes: 0 };
     cuts.sets.delete(set);
     cuts.sets.set(set, texts);
-    texts.texts.set(slot, made);
+    texts.texts.set(slot, keep);
     texts.bytes += cost;
     cuts.bytes += cost;
-    // The oldest go first: the least recently written set's oldest texts (this set is the newest), a set left empty
-    // with them, and a set past CUT_SETS whole.
+    // The least recently used go first: the set read or written longest ago, its oldest texts (this set is the newest),
+    // a set left empty with them, and a set past CUT_SETS whole.
     for (const [oldSet, old] of cuts.sets) {
       if (cuts.bytes <= cutBudget.bytes && cuts.sets.size <= CUT_SETS) break;
       if (cuts.sets.size > CUT_SETS) {
