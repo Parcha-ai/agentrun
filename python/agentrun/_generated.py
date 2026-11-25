@@ -3456,7 +3456,7 @@ class RunSummary(_RunSummaryRequired, total=False):
     path: Literal["agent", "handed_back", "workflow", "replay", "audit"] | None
     workflow: RunSummaryWorkflow | None
     workflow_calls: list[RunSummaryWorkflowCallsItem] | None
-    first_choice: Literal["served", "replay", "replay_missing", "none_laid", "off", "none_fit", "many_fit", "not_promoted", "champion_misfit", "many_champions", "cost_stop", "past_unread", "held"] | None
+    first_choice: Literal["served", "replay", "replay_missing", "none_laid", "off", "none_fit", "many_fit", "not_promoted", "champion_misfit", "many_champions", "cost_stop", "no_by_hand_cost", "past_unread", "held"] | None
 
 
 RunStatus: TypeAlias = "Literal[\"queued\", \"working\", \"paused\", \"input_required\", \"completed\", \"failed\", \"cancelled\"]"
@@ -4605,6 +4605,7 @@ class GetLearningCostResponseWorkflowsItem(TypedDict):
     workflow: str
     digest: str
     state: Literal["serving", "needs_revision"]
+    reason: Literal["over_line", "no_by_hand_cost"] | None
     served: GetLearningCostResponseWorkflowsItemServed | None
     by_hand: GetLearningCostResponseWorkflowsItemByHand | None
     unknown_cost_runs: int
@@ -5762,7 +5763,7 @@ class Run(_RunRequired, total=False):
     path: Literal["agent", "handed_back", "workflow", "replay", "audit"] | None
     workflow: RunWorkflow | None
     workflow_calls: list[RunWorkflowCallsItem] | None
-    first_choice: Literal["served", "replay", "replay_missing", "none_laid", "off", "none_fit", "many_fit", "not_promoted", "champion_misfit", "many_champions", "cost_stop", "past_unread", "held"] | None
+    first_choice: Literal["served", "replay", "replay_missing", "none_laid", "off", "none_fit", "many_fit", "not_promoted", "champion_misfit", "many_champions", "cost_stop", "no_by_hand_cost", "past_unread", "held"] | None
 
 
 class _RunResultRequired(TypedDict):

@@ -15,15 +15,17 @@ import { test } from "node:test";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, serve } from "./support.mjs";
 
+const { openStore } = await import("../dist/store/index.js");
+
 const { figuresOf, record, summarize } = await import("../dist/learn/ledger.js");
 const { pastRunsOf } = await import("../dist/store-reads/learning.js");
-const { PAST_RUNS } = await import("../dist/runner/workflow-first.js");
+const { costLineOf, PAST_RUNS, workflowCostsOf } = await import("../dist/runner/workflow-first.js");
 const { promotionsKey } = await import("../dist/learn/promote.js");
 
 const C = "c".repeat(16);
 const AT = "2026-11-24T00:00:00.000Z";
 /** A run's end as record() reads it: `r` of agent `a`, its row's cost, its metrics and the rounds its learning kept. */
-const endOf = ({ id = "r", startedAt = 0, costUsd = null, costAtMostUsd = null, metrics = { path: "agent" }, rounds = [] }) => ({ id, agentId: "a", startedAt, costUsd, costAtMostUsd, metrics, rounds });
+const endOf = ({ id = "r", startedAt = 0, costUsd = null, costAtMostUsd = null, metrics = { path: "agent" }, rounds = [], auditOf }) => ({ id, agentId: "a", startedAt, costUsd, costAtMostUsd, metrics, rounds, ...(auditOf === undefined ? {} : { auditOf }) });
 /** A kept round: its job's cost as it answered, its compile turn's (look_back_usd), and the draft it kept. */
 const round = (job, look, extra = {}) => ({ round: 1, proposal: { state: "dropped", reason: "empty", detail: "d", answered_at: AT, job_cost_usd: job, look_back_usd: look, ...extra } });
 const row = (over) => ({ runId: "r", agentId: "a", startedAt: 0, path: "agent", workflow: null, digest: null, notServed: null, jobUsd: null, lookBackUsd: 0, cost: "known", workflowCalls: [], ...over });
@@ -45,6 +47,7 @@ test("record: one ledger row a run, and a spend row for each compile turn, check
     ["a run its agent's call served: the call on its row", endOf({ costUsd: 0.1, metrics: { path: "workflow", workflow: "answer", workflow_calls: [call] } }), { row: row({ path: "workflow", workflow: "answer", jobUsd: 0.1, workflowCalls: [call] }), spend: [] }],
     ["a check's replay: its cost is its revision's", endOf({ costUsd: 0.3, metrics: { ...served, path: "replay" } }), { row: row({ path: "replay", workflow: "answer", digest: C, jobUsd: 0.3 }), spend: [spendRow({ kind: "check", workflow: "answer", digest: C, usd: 0.3 })] }],
     ["an audit's shadow: its cost is the run it audits'", endOf({ costUsd: 0.05, metrics: { path: "audit", audit: { of: "s", workflow: "answer", digest: C } } }), { row: row({ path: "audit", workflow: "answer", digest: C, jobUsd: 0.05 }), spend: [spendRow({ kind: "audit", ofRun: "s", workflow: "answer", digest: C, usd: 0.05 })] }],
+    ["an audit's shadow whose end named no audit (it failed first): its cost is the run its launch audits'", endOf({ id: "audit.s", costUsd: 0.05, metrics: {}, auditOf: "s" }), { row: row({ runId: "audit.s", path: "audit", jobUsd: 0.05 }), spend: [spendRow({ runId: "audit.s", kind: "audit", ofRun: "s", usd: 0.05 })] }],
     ["the money rule stopped its workflow", endOf({ costUsd: 0.4, metrics: { path: "agent", not_served: "cost_stop" } }), { row: row({ notServed: "cost_stop", jobUsd: 0.4 }), spend: [] }],
     ["a restart cut its workflow's call: handed back, cut, never the workflow's own hand-back", endOf({ costUsd: 0.2, metrics: { ...served, path: "handed_back", workflow_cut: true } }), { row: row({ path: "handed_back", workflow: "answer", digest: C, notServed: "cut", jobUsd: 0.2 }), spend: [] }],
     ["a hand-back of the workflow's own: no reason", endOf({ costUsd: 0.2, metrics: { ...served, path: "handed_back" } }), { row: row({ path: "handed_back", workflow: "answer", digest: C, jobUsd: 0.2 }), spend: [] }],
@@ -102,7 +105,6 @@ test("summarize: a compile's spend sits on its revision whether or not a record 
 });
 
 test("pastRunsOf: the by-hand side is the job's own cost of the agent's runs on its own path among the same runs as the served side: its newest PAST_RUNS on no named disk since its learning's reset", () => {
-  assert.equal(typeof PAST_RUNS, "number");
   const minute = (i) => Date.UTC(2026, 10, 24, 0, i);
   const served = { path: "workflow", workflow: "answer", workflow_digest: C };
   // [id, minute, end, disk]: a run before the reset, one whose job is $1 and its compile turn $0.30, one on a named disk,
@@ -136,16 +138,47 @@ test("pastRunsOf: the window is the newest PAST_RUNS runs on no named disk: an o
   assert.deepEqual(past.by_hand, { runs: PAST_RUNS, mean_usd: 1 }, "the oldest, out of the window, is left out of the by-hand side too");
 });
 
+test("pastRunsOf: a served run cut at its cap reads at its bound on the served side, so a workflow whose runs keep hitting their caps stops; the by-hand side stays exact", () => {
+  const served = { path: "workflow", workflow: "answer", workflow_digest: C };
+  // Two runs by hand at $1 and one cut at a $9 bound, then 10 served: 3 cut at a $5 bound, 7 at $0.10.
+  const ends = [
+    { id: "h1", costUsd: 1 }, { id: "h2", costUsd: 1 }, { id: "h3", costAtMostUsd: 9 },
+    ...Array.from({ length: 10 }, (_, i) => ({ id: `s${i}`, metrics: served, ...(i < 3 ? { costAtMostUsd: 5 } : { costUsd: 0.1 }) })),
+  ].map((end, at) => ({ ...end, startedAt: at }));
+  const out = summarize({ rows: ends.map((end) => record(endOf(end)).row), spend: [], shadows: new Map(), revisions: [], compileAfter: 2 });
+  const listed = ends.map((end) => ({ id: end.id, startedAt: end.startedAt, disk: null, costAtMostUsd: end.costAtMostUsd ?? null, metrics: end.metrics ?? { path: "agent" } })).reverse();
+  const past = pastRunsOf(out, listed, () => true);
+  assert.deepEqual([past.by_hand, past.by_hand_unknown], [{ runs: 2, mean_usd: 1 }, 1], "by hand exact: the bound left out and counted");
+  assert.deepEqual(costLineOf(past, "answer", C).served, { runs: 10, mean_usd: 1.57 }, "the 3 cut runs at their $5 bound");
+  assert.deepEqual(workflowCostsOf(past).map((one) => one.state), ["needs_revision"]);
+});
+
+test("pastRunsOf: a served run cut at its cap whose shadow is at work is unknown on the served side, left out of its mean and counted, as any run of unknown cost", () => {
+  const served = { path: "workflow", workflow: "answer", workflow_digest: C };
+  // One run by hand at $1, 10 served at $0.10, then the newest served run cut at a $5 bound with its audit's shadow at work.
+  const ends = [
+    { id: "h1", costUsd: 1 },
+    ...Array.from({ length: 11 }, (_, i) => ({ id: `s${String(i).padStart(2, "0")}`, metrics: served, ...(i === 10 ? { costAtMostUsd: 5 } : { costUsd: 0.1 }) })),
+  ].map((end, at) => ({ ...end, startedAt: at }));
+  const out = summarize({ rows: ends.map((end) => record(endOf(end)).row), spend: [], shadows: new Map([["s10", "open"]]), revisions: [], compileAfter: 2 });
+  const listed = ends.map((end) => ({ id: end.id, startedAt: end.startedAt, disk: null, costAtMostUsd: end.costAtMostUsd ?? null, metrics: end.metrics ?? { path: "agent" } })).reverse();
+  const line = costLineOf(pastRunsOf(out, listed, () => true), "answer", C);
+  assert.deepEqual([line.served, line.unknown_runs], [{ runs: 10, mean_usd: 0.1 }, 1], "the cut run with its shadow at work: unknown, left out and counted");
+});
+
 const LEARNS = { input: { content: "What is 1 plus 41?" }, title: "t", place: { mode: "runner" }, learning: { given: [], seed: "a".repeat(40), section: "", seedNotes: 0, workflows: ["answer"] } };
 
 test("GET /agents/{id}/learning/cost and GET /runs/{id} read one ledger: each run's job $ and learning parts agree, and every run's all-in and the unattributed are the booked total", async (t) => {
   // No runner: each run is ended in the store as a runner ends it, with the metrics and kept round its end writes.
-  const { api, store, baseUrl } = await serve(t, { learning: "on", runner: false });
+  const { api, data, baseUrl } = await serve(t, { learning: "on", runner: false });
+  // The test's own store handle on an injected clock, a second on it a run: the series orders by start.
+  const clock = { now: Date.now() };
+  const store = await openStore({ dataDir: data, role: "runner", now: () => clock.now });
+  t.after(() => store.close());
   assert.equal((await api("POST", "/agents", agent("source", { learning: { audit_every: 1 } }))).status, 201);
   const revisionId = (await store.agents.get("source")).currentRevision;
   const end = async (id, costUsd, metrics, { body = LEARNS, kept } = {}) => {
-    // A run a few milliseconds after the one before: the series orders by start.
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    clock.now += 1_000;
     await store.runs.create({ id, agentId: "source", revisionId }, { body });
     const claim = await store.claim(id, "runner-a", { leaseMs: 60_000 });
     await store.runs.update(claim, { state: "ended", costUsd, metrics }, kept ? { also: [{ table: "learning_proposals", row: { turn: {}, proposal: kept } }] } : undefined);

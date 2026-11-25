@@ -15,14 +15,15 @@
 // cost. Both are the cost page's own (store-reads/learning.ts, over learn/ledger.ts summarize): the served side reads a
 // run's all-in (its booked cost, the workflow and any handback's agent work together, and every learning round booked
 // for it), and the by-hand cost is the job's own cost of the agent's runs on its own path among the same runs (its newest
-// PAST_RUNS on no named disk since its learning's reset), so a compile turn is never by hand: it is its revision's spend. A run
+// PAST_RUNS on no named disk since its learning's reset; with none there, the newest COST_WINDOW before them), so a
+// compile turn is never by hand: it is its revision's spend. A run
 // whose cost is unknown is left out of its side's mean and counted, never read as 0. Over that line it stops, whoever
 // made its calls: it no longer runs first, the agent's own learned_workflow tool leaves it out (toolStopsOf), the run's
 // journal keeps why with the two numbers (WORKFLOW_FIRST, outcome needs_revision), and the agent's cost per run shows it
 // stopped. The stop asks for no compile. A new revision of it (a
 // new digest: one its hold asked, or its owner's) serves again from zero. Fewer than
-// COST_WINDOW served runs, or no by-hand cost at all (said in the log): it serves. Past runs it can't read: it fails
-// closed, the agent takes the run (said in the log). Every input is the run record's path
+// COST_WINDOW served runs: it serves. Past runs it can't read, or no by-hand cost at all: it fails closed, the agent
+// takes the run and its learned_workflow tool runs none of it (said in the log), never served unchecked. Every input is the run record's path
 // (metrics.path, one classifier: store-reads/learning.ts runPathOverStore). The rule catches a workflow that costs more
 // than doing the job by hand; it does not catch one that answers wrong with confidence. The spec builders
 // (adapter-run-spec.ts, cli-run-spec.ts) choose here, once per claim; the adapter loop serves it (adapter-loop.ts, before
@@ -91,15 +92,16 @@ export type PastRun = { readonly metrics: unknown; readonly allInUsd: number | n
 type Mean = { readonly runs: number; readonly mean_usd: number };
 /** What the money rule reads of the agent (store-reads/learning.ts pastRunsOf): of its newest PAST_RUNS runs on no named
  *  disk, those since its learning's reset (`runs`, any order), and the by-hand cost over those same runs (`by_hand`: the
- *  mean job's own $ of the ones on the `agent` path, learning left out) with the by-hand runs it left out for an unknown
- *  cost (`by_hand_unknown`). */
+ *  mean job's own $ of the ones on the `agent` path, learning left out; when they hold none of known cost, of the newest
+ *  COST_WINDOW before them, pastRunsRead) with the by-hand runs it left out for an unknown cost (`by_hand_unknown`). */
 export type PastRuns = { readonly runs: readonly PastRun[]; readonly by_hand: Mean | null; readonly by_hand_unknown: number };
 /** How many of the agent's newest runs on no named disk the money rule reads, both sides (store-reads/learning.ts
  *  pastRunsOf): a launch's read is bounded whatever the agent's history, and the cost page reads the same window. */
 export const PAST_RUNS = 500;
 
 const usd = (value: number) => Math.round(value * 1e6) / 1e6;
-const meanOf = (costs: readonly number[]): Mean | null => (costs.length ? { runs: costs.length, mean_usd: usd(costs.reduce((a, b) => a + b, 0) / costs.length) } : null);
+/** The mean of `costs`, rounded to 1e-6; null for none. */
+export const meanOf = (costs: readonly number[]): Mean | null => (costs.length ? { runs: costs.length, mean_usd: usd(costs.reduce((a, b) => a + b, 0) / costs.length) } : null);
 
 /** The calls a run's all-in is charged to, of those its record keeps (`metrics.workflow_calls`, learning-cost.ts
  *  workflowCallsIn) that ran (one refused before any node ran ran nothing): the platform's, when it served the run first
@@ -144,23 +146,31 @@ export function costLineOf(past: PastRuns, name: string, digest: string): { serv
 export const overLine = (line: ReturnType<typeof costLineOf>): boolean =>
   line.served.runs >= COST_WINDOW && line.by_hand !== null && line.served.mean_usd !== null && line.served.mean_usd >= line.by_hand.mean_usd;
 
+/** Why the money rule stops a workflow from running first, as workflowFirstOf decides at a claim: `over_line` (overLine),
+ *  or `no_by_hand_cost`, COST_WINDOW served runs and no run by hand of a priced cost to hold them to (none, or each one's
+ *  cost unknown or only a bound): the agent takes the run, never one served unchecked. Null: it serves. */
+export type CostStopReason = "over_line" | "no_by_hand_cost";
+export const stopReasonOf = (line: ReturnType<typeof costLineOf>): CostStopReason | null =>
+  overLine(line) ? "over_line" : line.served.runs >= COST_WINDOW && line.by_hand === null ? "no_by_hand_cost" : null;
+
 /** The money rule's decision over the agent's runs (`past`, store-reads/learning.ts pastRunsOverStore): whether it stops a
- *  workflow at a digest from running first (overLine), the one workflowFirstOf reads at a claim. Each workflow's state
- *  (learn/promote.ts servingStateOf) folds it in at its champion's digest. */
-export const costStopOf = (past: PastRuns): CostStop => (workflow, digest) => overLine(costLineOf(past, workflow, digest));
+ *  workflow at a digest from running first (stopReasonOf). Each workflow's state (learn/promote.ts servingStateOf) folds
+ *  it in at its champion's digest. */
+export const costStopOf = (past: PastRuns): CostStop => (workflow, digest) => stopReasonOf(costLineOf(past, workflow, digest)) !== null;
 
 /** Each learned workflow one of the agent's runs (`past`) is charged to (its record's `workflow_calls`, chargedCallsIn),
  *  at the digest its newest such call ran, with the money rule's two sides there, the runs they left out for an unknown
- *  all-in, and where it stands: `serving`, or `needs_revision` once over the line (overLine). What the agent's cost per
- *  run shows its owner. */
-export function workflowCostsOf(past: PastRuns): { workflow: string; digest: string; state: "serving" | "needs_revision"; served: Mean | null; by_hand: Mean | null; unknown_cost_runs: number }[] {
+ *  all-in, and where it stands: `serving`, or `needs_revision` with why once the money rule stops it (stopReasonOf, the
+ *  launch's decision). What the agent's cost per run shows its owner. */
+export function workflowCostsOf(past: PastRuns): { workflow: string; digest: string; state: "serving" | "needs_revision"; reason: CostStopReason | null; served: Mean | null; by_hand: Mean | null; unknown_cost_runs: number }[] {
   const newest = new Map<string, string>();
   for (const run of [...past.runs].sort((a, b) => b.startedAt - a.startedAt)) {
     for (const call of chargedCallsIn(run.metrics).reverse()) if (!newest.has(call.workflow)) newest.set(call.workflow, call.digest);
   }
   return [...newest].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([workflow, digest]) => {
     const line = costLineOf(past, workflow, digest);
-    return { workflow, digest, state: overLine(line) ? "needs_revision" : "serving", served: line.served.runs ? (line.served as Mean) : null, by_hand: line.by_hand, unknown_cost_runs: line.unknown_runs };
+    const reason = stopReasonOf(line);
+    return { workflow, digest, state: reason ? "needs_revision" : "serving", reason, served: line.served.runs ? (line.served as Mean) : null, by_hand: line.by_hand, unknown_cost_runs: line.unknown_runs };
   });
 }
 
@@ -172,9 +182,11 @@ export function workflowCostsOf(past: PastRuns): { workflow: string; digest: str
  *  workflow does; `not_promoted`, the one that does is not promoted, nor a champion of it; `champion_misfit`, its
  *  champion does not take the input; `many_champions`, more than one champion does; `cost_stop`, the money rule
  *  stopped it (costLineOf), or, nothing else served or stopped first, one the agent's own tool would run (toolStopsOf:
- *  runner/learned-first.ts); `past_unread`, the money rule could not read the agent's past runs, and fails closed: the
- *  agent takes the run; `held`, a check refused the claim's workflow and nothing serves this claim. */
-export const FIRST_REASONS = ["served", "replay", "replay_missing", "none_laid", "off", "none_fit", "many_fit", "not_promoted", "champion_misfit", "many_champions", "cost_stop", "past_unread", "held"] as const;
+ *  runner/learned-first.ts); `no_by_hand_cost`, the one that serves has COST_WINDOW served runs and no by-hand cost to
+ *  hold them to (stopReasonOf), and fails closed: the agent takes the run, no revision asked; `past_unread`, the money
+ *  rule could not read the agent's past runs, and fails closed: the agent takes the run; `held`, a check refused the
+ *  claim's workflow and nothing serves this claim. */
+export const FIRST_REASONS = ["served", "replay", "replay_missing", "none_laid", "off", "none_fit", "many_fit", "not_promoted", "champion_misfit", "many_champions", "cost_stop", "no_by_hand_cost", "past_unread", "held"] as const;
 export type FirstReason = (typeof FIRST_REASONS)[number];
 
 /** What firstChoice chose: the workflow the run serves first, or the one the money rule stopped (the run asks for its
@@ -386,9 +398,11 @@ export function firstChoice(facts: FirstFacts): FirstAsk | FirstChosen {
   }
   const line = costLineOf(facts.past, chosen.name, digest);
   if (line.served.runs < COST_WINDOW) return done("served", serve);
+  // Fails closed: COST_WINDOW served runs and no by-hand cost to hold them to leave the run to the agent, never served
+  // unchecked, and ask for no revision (there is no by-hand figure to say).
   if (line.by_hand === null) {
-    said.push(`workflow-first: no by-hand cost to hold ${chosen.name} to (no run of known cost on the agent's path before a learned workflow first served); it runs first`);
-    return done("served", serve);
+    said.push(`workflow-first: no by-hand cost to hold ${chosen.name} to (no run of known cost on the agent's path since the reset, among its newest ${PAST_RUNS} runs or the ${COST_WINDOW} by hand before them); the agent takes this run`);
+    return done("no_by_hand_cost");
   }
   if (!overLine(line)) return done("served", serve);
   const { stop, words } = stopOf(chosen.name, digest, line);

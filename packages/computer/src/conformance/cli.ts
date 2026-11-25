@@ -21,7 +21,7 @@ import { checkExecStream, DEFAULT_LONG_MS, formatExecStream, QUICK_LONG_MS } fro
 import { kindRunProblem } from "./kind.js";
 import type { CdpDialer } from "./cdp.js";
 import { formatReport } from "./report.js";
-import { runConformance } from "./runner.js";
+import { RUN_ID, runConformance } from "./runner.js";
 import { formatTti, measureTti } from "./tti.js";
 import type { Case, CaseResult, Clock, ConformanceOptions } from "./types.js";
 
@@ -55,8 +55,8 @@ export interface CliIo {
 	clock?: Clock;
 }
 
-const USAGE = `usage: npm run conformance -w @parcha/agentrun-computer -- --provider ${providerIds.join("|")}|<module.js> [--image <image>] [--only <group|case>,... | --kind <kind>] [--fixture <path>] [--gpu <type>[:<count>]] [--long] [--concurrency <n>] [--json]
-       npm run conformance -w @parcha/agentrun-computer -- --provider <id>|<module.js> [--image <image>] --tti <n> [--burst <n>] [--json]
+const USAGE = `usage: npm run conformance -w @parcha/agentrun-computer -- --provider ${providerIds.join("|")}|<module.js> [--image <image>] [--only <group|case>,... | --kind <kind>] [--fixture <path>] [--gpu <type>[:<count>]] [--long] [--concurrency <n>] [--run <id>] [--json]
+       npm run conformance -w @parcha/agentrun-computer -- --provider <id>|<module.js> [--image <image>] --tti <n> [--burst <n>] [--run <id>] [--json]
   --provider  a computer in the registry (${providerIds.join(", ")}), or a module path: a provider file that exports
               create(options), or a conformance module that exports createProvider() (and, for the drift case,
               createDriftedProvider(); for the mount cases, mountFor(kind), a fresh run folder for that mount kind)
@@ -75,12 +75,15 @@ const USAGE = `usage: npm run conformance -w @parcha/agentrun-computer -- --prov
   --concurrency
               the most computers alive at once, for a plan that keeps fewer (default no cap; the report says the
               run's peak). The run's computer makes way for a case's own; a case that needs more fails
+  --run       the run's id, the one the live sweep's --before printed: every computer of the run carries it, and
+              that sweep's --after deletes the run's computers and no other run's (default a fresh id). Two
+              processes may share one: each run's own end-of-run sweep deletes only its own computers
   --json      print the report as JSON
   --tti <n> [--burst <n>]
               time to interactive instead of the suite: n computers one at a time, then (--burst) n all at once,
               each timed from its create call to its first command's answer and deleted after; median, p95, p99,
-              success rate and ComputeSDK's score per shape. Either flag alone runs that shape alone; with --image
-              and --json only. Exits 0 when every computer came up and nothing was left, else 1
+              success rate and ComputeSDK's score per shape. Either flag alone runs that shape alone; with --image,
+              --run and --json only. Exits 0 when every computer came up and nothing was left, else 1
   --exec-stream --machine <id> [--quick]
               the exec pre-check, alone: the module's createHost() and host.exec, nothing else, on a machine you made
               by hand. Text of every kind both ways, 8 MiB by sha256, output and stdin while the process runs, stdin while
@@ -105,6 +108,8 @@ interface Args {
 	long?: true;
 	/** --concurrency: the most computers alive at once. */
 	concurrency?: number;
+	/** --run: the run's id, the one the live sweep's --before minted. */
+	run?: string;
 	/** --exec-stream's machine: the pre-check runs alone on it. */
 	execStream?: { machine: string; quick: boolean };
 	/** --tti: computers timed one at a time. */
@@ -155,7 +160,11 @@ function parse(argv: string[], cases: Case[]): Args {
 		else if (flag === "--concurrency") args.concurrency = computersOf(flag, value());
 		else if (flag === "--tti") args.tti = computersOf(flag, value());
 		else if (flag === "--burst") args.burst = computersOf(flag, value());
-		else if (flag === "--exec-stream") execStream = true;
+		else if (flag === "--run") {
+			const given = value();
+			if (!RUN_ID.test(given)) throw new Usage(`--run: ${JSON.stringify(given)} is not a run id the live sweep's --before mints (12 hex characters)`);
+			args.run = given;
+		} else if (flag === "--exec-stream") execStream = true;
 		else if (flag === "--machine") machine = value();
 		else if (flag === "--quick") quick = true;
 		else if (flag === "--json") args.json = true;
@@ -166,13 +175,14 @@ function parse(argv: string[], cases: Case[]): Args {
 	if (args.provider === undefined) throw new Usage("--provider is required");
 	if (execStream) {
 		if (machine === undefined) throw new Usage("--exec-stream needs --machine <id>, a machine you made by hand");
-		const others = (["image", "only", "kind", "fixture", "gpu", "long", "concurrency", "tti", "burst"] as const).filter((name) => args[name] !== undefined);
+		const others = (["image", "only", "kind", "fixture", "gpu", "long", "concurrency", "run", "tti", "burst"] as const).filter((name) => args[name] !== undefined);
 		if (others.length > 0) throw new Usage(`--exec-stream runs alone: drop ${others.map((name) => `--${name}`).join(", ")}`);
 		return { provider: args.provider, execStream: { machine, quick }, json: args.json, help: false };
 	}
 	if (machine !== undefined || quick) throw new Usage(`${machine !== undefined ? "--machine" : "--quick"} goes with --exec-stream`);
 	if (args.tti !== undefined || args.burst !== undefined) {
 		// The suite's flags shape its cases; a TTI run has its own, and --burst is its own count of computers at once.
+		// --run stays: a TTI run's computers carry the live sweep's id like the suite's, so its --after finds them.
 		const others = (["only", "kind", "fixture", "gpu", "long", "concurrency"] as const).filter((name) => args[name] !== undefined);
 		if (others.length > 0) throw new Usage(`--tti and --burst measure time to the first command alone: drop ${others.map((name) => `--${name}`).join(", ")}`);
 		return {
@@ -180,6 +190,7 @@ function parse(argv: string[], cases: Case[]): Args {
 			...(args.image === undefined ? {} : { image: args.image }),
 			...(args.tti === undefined ? {} : { tti: args.tti }),
 			...(args.burst === undefined ? {} : { burst: args.burst }),
+			...(args.run ? { run: args.run } : {}),
 			json: args.json,
 			help: false,
 		};
@@ -200,6 +211,7 @@ function parse(argv: string[], cases: Case[]): Args {
 		...(args.gpu ? { gpu: args.gpu } : {}),
 		...(args.long ? { long: args.long } : {}),
 		...(args.concurrency ? { concurrency: args.concurrency } : {}),
+		...(args.run ? { run: args.run } : {}),
 		json: args.json,
 		help: false,
 	};
@@ -411,6 +423,7 @@ export async function main(argv: string[], io: CliIo = {}): Promise<number> {
 			image: args.image ?? target.image ?? DEFAULT_IMAGE,
 			iterations: args.tti ?? 0,
 			burst: args.burst ?? 0,
+			...(args.run ? { run: args.run } : {}),
 			...(target.notes && target.notes.length > 0 ? { notes: target.notes } : {}),
 			...(signal ? { signal } : {}),
 			...(io.clock ? { clock: io.clock } : {}),
@@ -431,6 +444,7 @@ export async function main(argv: string[], io: CliIo = {}): Promise<number> {
 		...(args.gpu ? { gpu: args.gpu } : {}),
 		...(args.long ? { long: true } : {}),
 		...(args.concurrency ? { concurrency: args.concurrency } : {}),
+		...(args.run ? { run: args.run } : {}),
 		...(signal ? { signal } : {}),
 		...(target.drifted ? { drifted: target.drifted } : {}),
 		...(target.declared ? { declared: target.declared } : {}),

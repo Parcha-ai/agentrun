@@ -528,7 +528,7 @@ export type RunSummary = {
     outcome: "answered" | "handed_back" | "failed" | "refused";
     usd: number | null;
   }> | null;
-  first_choice?: "served" | "replay" | "replay_missing" | "none_laid" | "off" | "none_fit" | "many_fit" | "not_promoted" | "champion_misfit" | "many_champions" | "cost_stop" | "past_unread" | "held" | null;
+  first_choice?: "served" | "replay" | "replay_missing" | "none_laid" | "off" | "none_fit" | "many_fit" | "not_promoted" | "champion_misfit" | "many_champions" | "cost_stop" | "no_by_hand_cost" | "past_unread" | "held" | null;
 };
 
 export type RunStatus = "queued" | "working" | "paused" | "input_required" | "completed" | "failed" | "cancelled";
@@ -839,7 +839,7 @@ export type Run = {
     outcome: "answered" | "handed_back" | "failed" | "refused";
     usd: number | null;
   }> | null;
-  first_choice?: "served" | "replay" | "replay_missing" | "none_laid" | "off" | "none_fit" | "many_fit" | "not_promoted" | "champion_misfit" | "many_champions" | "cost_stop" | "past_unread" | "held" | null;
+  first_choice?: "served" | "replay" | "replay_missing" | "none_laid" | "off" | "none_fit" | "many_fit" | "not_promoted" | "champion_misfit" | "many_champions" | "cost_stop" | "no_by_hand_cost" | "past_unread" | "held" | null;
 };
 
 export type RunResult = {
@@ -2891,6 +2891,7 @@ export type GetLearningCostResponse = {
     workflow: string;
     digest: string;
     state: "serving" | "needs_revision";
+    reason: "over_line" | "no_by_hand_cost" | null;
     served: {
       runs: number;
       mean_usd: number;

@@ -40,9 +40,11 @@
 // such runner takes the dials the server relays to it (runners.host and .port, dial-relay.ts). Version 14 keeps when a run or
 // an agent was purged (runs.purged_at, agents.purged_at; DELETE /runs/{id} and /agents/{id}, agent-delete.ts): its row is
 // then a tombstone, its content gone and its cost kept. Version 15 keeps the disk a run's launch named as its own
-// (runs.disk; a run on one learns nothing, learn/learning-of.ts). The server upgrades these in place at its open
-// (listingUpgrade from 11, relayUpgrade from 12, purgeUpgrade from 13, then diskUpgrade from 14); a runner waits for it.
-export const SCHEMA_VERSION = 15;
+// (runs.disk; a run on one learns nothing, learn/learning-of.ts). Version 16 keeps no epoch on a learning ledger row
+// (learning_ledger; 15 kept one, which a runner of 15 writes at each end and this build's end does not). The server
+// upgrades these in place at its open (listingUpgrade from 11, relayUpgrade from 12, purgeUpgrade from 13, diskUpgrade
+// from 14, then ledgerUpgrade from 15); a runner waits for it.
+export const SCHEMA_VERSION = 16;
 
 /** One answer per approval of a run: a second approve or deny command naming the same approval is refused
  *  (StoreConstraint), so the first answer a person gives wins from the moment it is written, before the runner takes it
@@ -249,12 +251,11 @@ export const RUN_ATTEMPTS = `CREATE TABLE IF NOT EXISTS run_attempts (
 /** The learning ledger (learn/ledger.ts): one row a run, written by each patch that leaves the run ended (applyRunPatch,
  *  in that patch's transaction) and by a healed cost: who answered it (`path`, null when its end named none), the
  *  revision that ran it, why it was not served alone, the job's own $ and its rounds' look-back, and whether its cost is
- *  known (`cost`), and the end it was written for (`epoch`: the run's epoch after that end, which every end moves).
- *  Gone with the run's purge or delete (its cost stays on the run's tombstone). Figures only, no run text. In STORE_DDL,
- *  and made at a server open on a store an earlier build of this version made: a run that ended before it has no row,
- *  and one a runner of that build ended again has a row for an earlier end; its reader records it from its run row
- *  either way (store-reads/learning.ts). `workflow_calls`: its learned workflow calls (LedgerRow.workflowCalls) as JSON,
- *  `[]` for none; added where missing at a server open (LEARNING_LEDGER_ADDED). */
+ *  known (`cost`). Gone with the run's purge or delete (its cost stays on the run's tombstone). Figures only, no run
+ *  text. In STORE_DDL, and made at a server open on a store an earlier build of this version made, which drops the
+ *  `epoch` an earlier build kept on it (LEARNING_LEDGER_EPOCH). `workflow_calls`: its learned workflow calls
+ *  (LedgerRow.workflowCalls) as JSON, `[]` for none; added where missing at a server open (LEARNING_LEDGER_ADDED), before
+ *  the open's backfill records rows (run-patch.ts backfillLedger). */
 export const LEARNING_LEDGER = `CREATE TABLE IF NOT EXISTS learning_ledger (
     run_id TEXT PRIMARY KEY,
     agent_id TEXT NOT NULL,
@@ -266,7 +267,6 @@ export const LEARNING_LEDGER = `CREATE TABLE IF NOT EXISTS learning_ledger (
     job_usd REAL,
     look_back_usd REAL,
     cost TEXT NOT NULL CHECK (cost IN ('known', 'unknown', 'at_most')),
-    epoch INTEGER NOT NULL,
     workflow_calls TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(workflow_calls))
   ) STRICT`;
 /** The columns a learning_ledger an earlier build of this version made lacks, each added at a server open where missing:
@@ -275,6 +275,40 @@ export const LEARNING_LEDGER_ADDED: Readonly<Record<string, string>> = {
   workflow_calls: "ALTER TABLE learning_ledger ADD COLUMN workflow_calls TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(workflow_calls))",
 };
 export const LEARNING_LEDGER_AGENT = "CREATE INDEX IF NOT EXISTS learning_ledger_agent ON learning_ledger (agent_id)";
+/** The agent's rows by path, newest first: what the read before the money rule's window walks (run-patch.ts
+ *  BY_HAND_BEFORE), a few rows whatever the agent's history. In STORE_DDL, and made at every server open. */
+export const LEARNING_LEDGER_BY_HAND = "CREATE INDEX IF NOT EXISTS learning_ledger_by_hand ON learning_ledger (agent_id, path, started_at, run_id)";
+/** The `epoch` version 15 kept on each ledger row (the run's epoch at the end that wrote it), dropped at the server open
+ *  that brings the store to 16 (ledgerUpgrade; postgres 0030_learning_ledger_epoch.sql). */
+const LEARNING_LEDGER_EPOCH = "ALTER TABLE learning_ledger DROP COLUMN epoch";
+/** The rows the ledger's first release (the build with LEARNING_LEDGER_EPOCH) could leave wrong once no reader corrects
+ *  them: a row whose end named no path (a run by hand it left null, a shadow that failed first, with no audit spend), one
+ *  behind its run's epoch (an end of an earlier runner after it), an unknown cost its run has now, and an audit's shadow
+ *  on another path. Their rows and spend rows are deleted, before the epoch is, and the open's backfill records them
+ *  again from their runs (run-patch.ts backfillLedger). The same statements as postgres 0030_learning_ledger_epoch.sql. */
+const WRONG_LEDGER_ROWS = `SELECT l.run_id FROM learning_ledger l JOIN runs ON runs.id = l.run_id
+    WHERE l.path IS NULL OR l.epoch <> runs.epoch OR (l.cost = 'unknown' AND runs.cost_usd IS NOT NULL)
+      OR (substr(l.run_id, 1, 6) = 'audit.' AND l.path <> 'audit')`;
+export const LEARNING_LEDGER_REPAIR: readonly string[] = [
+  `DELETE FROM learning_spend WHERE run_id IN (${WRONG_LEDGER_ROWS})`,
+  `DELETE FROM learning_ledger WHERE run_id IN (${WRONG_LEDGER_ROWS})`,
+];
+/** Version 15 → 16 on SQLite (the server's open, sqlite/store.ts), given the ledger's columns now, after the open's DDL
+ *  write (the mark's column, STORE_META_LEDGER_BACKFILLED, among it): where the ledger still has its epoch (one 15 kept),
+ *  the rows that release could leave wrong deleted (LEARNING_LEDGER_REPAIR), the mark set back to 0 so the open's
+ *  backfill records them again, and the epoch dropped; then the version, in one durable write. A store from 14 or before
+ *  has a ledger made at this open, with no epoch: the version alone. */
+export function ledgerUpgrade(ledgerColumns: ReadonlySet<string>): readonly string[] {
+  return [
+    ...(ledgerColumns.has("epoch") ? [...LEARNING_LEDGER_REPAIR, "UPDATE store_meta SET ledger_backfilled = 0 WHERE singleton = 1", LEARNING_LEDGER_EPOCH] : []),
+    "UPDATE store_meta SET schema_version = 16 WHERE singleton = 1",
+  ];
+}
+/** Whether every final run not purged has its ledger row (1), which backfillLedger writes once it has recorded the last:
+ *  no later open reads the runs again. 0 on a store with runs no server recorded yet. In STORE_DDL, and added at a server
+ *  open to a store an earlier build of this version made. */
+const LEDGER_BACKFILLED = "ledger_backfilled INTEGER NOT NULL DEFAULT 0 CHECK (ledger_backfilled IN (0, 1))";
+export const STORE_META_LEDGER_BACKFILLED = `ALTER TABLE store_meta ADD COLUMN ${LEDGER_BACKFILLED}`;
 /** Each learning cost, by the revision it is for (learn/ledger.ts SpendRow): a compile turn (`round`, the round that asked
  *  it), a check's replay run or an audit's shadow run (round 0, `of_run` the run it audits), with its $ (null: unknown).
  *  Written with its run's ledger row, replaced whole each time; gone with its run's purge or delete, and with the purge
@@ -410,7 +444,8 @@ export const STORE_DDL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS store_meta (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     schema_version INTEGER NOT NULL,
-    flushes INTEGER NOT NULL DEFAULT 0
+    flushes INTEGER NOT NULL DEFAULT 0,
+    ${LEDGER_BACKFILLED}
   ) STRICT`,
 
   // Agents and their revisions. A revision made from a template keeps its package: {name, version (SemVer), source
@@ -770,6 +805,7 @@ export const STORE_DDL: readonly string[] = [
   RUN_ATTEMPTS,
   LEARNING_LEDGER,
   LEARNING_LEDGER_AGENT,
+  LEARNING_LEDGER_BY_HAND,
   LEARNING_SPEND,
   LEARNING_SPEND_AGENT,
   LEARNING_SPEND_OF_RUN,

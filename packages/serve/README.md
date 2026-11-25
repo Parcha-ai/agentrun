@@ -3381,8 +3381,9 @@ Create; no run ever holds a token that can write.
      then applies it here (an apply refused takes the package back, deletes the branch and makes nothing). The push is
      recorded on the suggestion first, so a create after a write that failed finds the agent made from that template at
      that commit and reuses it, never making a second one;
-   - opens the pull request, naming the agent's id and the variables the client reads (`AGENTRUN_URL`,
-     `AGENTRUN_API_KEY`, `AGENTRUN_AGENT_<KEY>`). A pull request GitHub refuses keeps the agent (`502 github_failed`,
+   - opens the pull request, naming the agent's id and the variables the client reads (`AGENTRUN_BASE_URL`, given
+     with `/v2` as the server prints it and taken with or without, as AgentRun's own clients take it;
+     `AGENTRUN_API_KEY`; `AGENTRUN_AGENT_<KEY>`). A pull request GitHub refuses keeps the agent (`502 github_failed`,
      `details.agent_id`), and the next create opens the pull request alone. A created suggestion answers `200` as it is.
 
 `--faux-github` (with `--faux`) serves the list, the checks and the create from its fake App: its installation holds

@@ -4,6 +4,7 @@
 // run on one ahead of them while its runner floor is at most what they know (migrate.ts runnerFloorOf).
 import { SchemaVersionUnknown, StoreAwaitsServer, type Store, type StoreOwned, type StoreRole } from "../store.js";
 import { backfillNativeCommandOwners } from '../native-command-owner.js';
+import { backfillLedger } from "../sqlite/run-patch.js";
 import { storeOver } from "../sqlite/store.js";
 import { PgConnection, SCHEMA_NAME } from "./connection.js";
 import { migrate, migrationsIn, placeOf, refuseBelowFloor, runnerFloorOf, versionOf } from "./migrate.js";
@@ -100,6 +101,8 @@ export async function openPostgresStore(options: PostgresStoreOptions): Promise<
       refuseBelowFloor(schema, state, known);
     }
     if(role==="server")await backfillNativeCommandOwners(connection);
+    // Every run an earlier build ended gets its ledger row once, here, as on SQLite (run-patch.ts backfillLedger).
+    if (role === "server") await backfillLedger(connection, now);
     if (role === "runner" && options.warn) {
       const gap = now() - (await connection.clock());
       if (Math.abs(gap) > CLOCK_WARN_MS) {
