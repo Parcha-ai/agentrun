@@ -1281,7 +1281,7 @@ test("a server whose user owns neither its HOME nor its own home refuses the log
   const view = await claudeLoginView(deps);
   assert.match(view.refused ?? "", why, JSON.stringify(view));
   assert.equal(view.can_start, false);
-  assert.equal(view.state, "off", "a login turned on here is none while no home is the server's user's");
+  assert.equal(view.state, "refused", "a login turned on here is kept but refused while no home is the server's user's");
   await assert.rejects(startLoginHere(deps), (error) => error.code === "forbidden" && error.message === view.refused);
   rig.rows.clear();
   await assert.rejects(turnOnClaudeLogin(deps, { only_me: true }), (error) => error.code === "forbidden" && error.message === view.refused);
@@ -1339,7 +1339,7 @@ async function refusedEverywhere(rig, deps, why, what) {
   const view = await claudeLoginView(deps);
   assert.match(view.refused ?? "", why, `${what}: the view says why: ${JSON.stringify(view)}`);
   assert.equal(view.can_start, false, `${what}: no sign-in offered`);
-  assert.equal(view.state, "off", `${what}: no login here`);
+  assert.equal(view.state, "refused", `${what}: kept, and no login here`);
   await assert.rejects(startLoginHere(deps), (error) => error.code === "forbidden" && error.message === view.refused, `${what}: the sign-in is refused`);
   assert.equal(await loginForRun(rig.settings, rig.data, deps.env, "claude-agent", RUNNER, deps.uid), undefined, `${what}: a run goes on a login it refuses`);
   rig.rows.clear();
@@ -1504,7 +1504,7 @@ test("a home its group or anyone may write in refuses the login, at either place
   rig.rows.set(CLAUDE_LOGIN_SETTING, settingFor("agentrun", rig.data));
   const view = await claudeLoginView(deps);
   assert.match(view.refused ?? "", why, `AgentRun's own login too: ${JSON.stringify(view)}`);
-  assert.equal(view.state, "off");
+  assert.equal(view.state, "refused");
   assert.deepEqual(asked, [], "the CLI was not asked, and no sign-in started");
 });
 
