@@ -107,6 +107,20 @@ describe("LocalModelCard", () => {
     expect(card.face()).toBe("ready");
     expect(readied).toEqual(["qwen3:8b"]);
   });
+  it("pulling: a progress read refused (403, 404) hides the card and reads no more", async () => {
+    for (const status of [403, 404]) {
+      const refused = () => json(status, { error: { code: status === 404 ? "not_found" : "forbidden", message: "no", retryable: false } });
+      const { v2, calls } = server([base(), pulling(2 * GIB), ...Array.from({ length: 40 }, refused)], pulling(0));
+      const card = await open(v2);
+      await act(async () => { card.button(/^Pull qwen3:8b$/)!.click(); });
+      await card.settle();
+      expect(card.host.innerHTML).toBe("");
+      const gets = calls.filter((call) => call.method === "GET").length;
+      await card.settle();
+      expect(calls.filter((call) => call.method === "GET").length).toBe(gets);
+      act(() => root?.unmount());
+    }
+  });
   it("pulling: the bar and Ollama's status with the bytes", async () => {
     const { v2 } = server([pulling(2 * GIB), done]);
     const host = document.body.appendChild(document.createElement("div"));

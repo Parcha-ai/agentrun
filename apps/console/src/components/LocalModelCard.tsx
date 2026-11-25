@@ -60,11 +60,12 @@ export function LocalModelCard({ v2, onReady, onDone, pollMs = PULL_POLL_MS }: {
   };
   useEffect(() => { void read(); }, [v2]); // eslint-disable-line react-hooks/exhaustive-deps
   const state = localModelState(view);
+  // A card gone (the route or the owner refused a read) reads nothing more.
   useEffect(() => {
-    if (state !== "pulling") return;
+    if (gone || state !== "pulling") return;
     const timer = setTimeout(() => void read(), pollMs);
     return () => clearTimeout(timer);
-  }, [view, reads]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [view, reads, gone]); // eslint-disable-line react-hooks/exhaustive-deps
   // Ready once per tag: the capabilities read again, so the picker and the default have it.
   useEffect(() => {
     const tag = view?.recommended.tag;
