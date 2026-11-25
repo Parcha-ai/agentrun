@@ -259,6 +259,10 @@ export interface AdapterRunSpec {
    *  Absent, or undefined at the park (the run's gate turned the computer off since the pass began): a park lets the
    *  computer go, and the timeline says nothing of keeping it. */
   readonly keptWords?: () => string | undefined;
+  /** The park's keep written before the loop says it (computer-for-claim.ts ClaimComputer.keepRow), only once
+   *  `keptWords` read at the park say it keeps: true when the park will keep the computer, so `keptWords` are said only
+   *  then. Absent: they are said as the park begins. */
+  readonly keep?: () => Promise<boolean>;
   /** The run waits on no one (an audit's shadow run, runner/audit.ts AUDIT_PARKED): where it would park (an approval, a
    *  raise of its cap, a person's answer) it ends failed at once in these words, saying what it would wait on, every call
    *  still waiting withdrawn in the end's commit (parkClaim). Absent: it parks. */
@@ -4157,11 +4161,16 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
 
   /** At a park for `cause`, before its seal: a pass whose spec keeps its computer (AdapterRunSpec.keptWords) has it kept
    *  for the resume at its release (closeSession), once the run's timeline says so, for the person deciding; its owner's
-   *  live view is closed saying the cause. A write that fails (the fence's refusal: a lost claim, whose run a later claim
-   *  may hold already) keeps nothing: the computer goes as at the run's end. */
+   *  live view is closed saying the cause. The keep's row is written first (AdapterRunSpec.keep), under the claim's
+   *  fence: a park that keeps nothing (another runner's row still there, a write that failed, a claim that lost the run
+   *  and so writes nothing) says nothing of a keep, and its computer goes as at
+   *  the run's end. A commit that fails (the fence's refusal: a lost claim, whose run a later claim may hold already)
+   *  keeps nothing either: the computer goes as at the run's end, and its row with it. */
   async function keepAtPark(on: Harness, cause: ParkCause): Promise<void> {
     const summary = specNow?.keptWords?.();
     if (!summary) return;
+    const keep = specNow?.keep;
+    if (keep && !(await keep().catch(() => false))) return;
     parkedNow = await on.commit((tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: HOST_PHASE, data: { summary, at: Date.now() } as unknown as JsonValue }), context).then(() => cause, () => undefined);
   }
 

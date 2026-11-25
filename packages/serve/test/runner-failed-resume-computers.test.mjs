@@ -24,7 +24,7 @@ const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-sp
 const { sendCommand } = await import("../dist/runner/commands.js");
 const { computerForClaim } = await import("../dist/workspace/index.js");
 const { runEndComputers } = await import("../dist/workspace/run-end-computers.js");
-const { KEEP_MS, keptKeyOf } = await import("../dist/workspace/computer-kept.js");
+const { deleteKept, endKept, KEEP_MS, keptKeyOf, readKept } = await import("../dist/workspace/computer-kept.js");
 
 const RUN = "run-1";
 const SEAL_KEY = Buffer.alloc(32, 7);
@@ -252,24 +252,26 @@ test("a release that never answers at the run's end (a hung Docker delete takes 
   assert.equal(run.logged.length, 1, `said once: ${JSON.stringify(run.logged)}`);
 });
 
-test("a run's end on another runner leaves a dial machine kept by a live runner to that runner: nothing listed under the kept row's id is deleted, everything else is released as before", { timeout: 60_000 }, async (t) => {
+test("a stopped run's end on another runner deletes a dial machine kept by a live runner with the rest: the run is over, so the machine has no user, and the keeper's own end then finds it gone", { timeout: 60_000 }, async (t) => {
   const run = await opened(t);
   // The vendor's list, as a dial vendor's: every runner's provider lists the same machines by the run's label. c1 is an
   // earlier lost claim's (epoch 1); c2 is the one runner-a's park kept (epoch 2), its row pinned to runner-a, still there.
   const machine = (id, epoch) => run.docker.held.set(id, { ref: { id, name: id }, labels: { "agentrun.run": RUN, "agentrun.epoch": String(epoch) } });
   machine("c1", 1);
   machine("c2", 2);
-  await run.server.settings.put(keptKeyOf(RUN), { provider: "docker", kind: "sandbox", id: "c2", name: "c2", epoch: 2, until: Date.now() + KEEP_MS, runner: "runner-a", incarnation: "inc-a" });
+  assert.equal(await run.server.runners.put({ runner: "runner-a", incarnation: "inc-a", refused: null }), true, "runner-a is there");
+  const kept = { provider: "docker", kind: "sandbox", id: "c2", name: "c2", epoch: 2, until: Date.now() + KEEP_MS, runner: "runner-a", incarnation: "inc-a" };
+  await run.server.settings.put(keptKeyOf(RUN), kept);
   const logged = [];
   const computers = { kinds: KINDS, providers: { docker: () => run.docker.provider() } };
-  const endOn = (runner, incarnation) => runEndComputers({ store: run.server, computers, log: (line) => logged.push(line), retryMs: 50, self: () => ({ runner, incarnation }) });
-  // Runner b's claim (epoch 3) ended the run (a person's stop): its run end lets go of c1 and never of runner-a's c2.
-  await endOn("runner-b", "inc-b")({ runId: RUN, epoch: 3 });
-  assert.deepEqual(run.docker.left(), ["c2@2"], "the machine kept by runner-a is left to runner-a");
-  assert.deepEqual(logged, [`run ${RUN} is over: let go of the computer an earlier claim left on docker, c1`]);
-  // On runner-a, the row its own: let go as before.
-  await endOn("runner-a", "inc-a")({ runId: RUN, epoch: 3 });
-  assert.deepEqual(run.docker.left(), [], "runner-a's own run end lets go of the machine it kept");
+  // Another runner's claim (epoch 3) ended the run (a person's stop, so the run is final): its end lets go of both.
+  await runEndComputers({ store: run.server, computers, log: (line) => logged.push(line), retryMs: 50 })({ runId: RUN, epoch: 3 });
+  assert.deepEqual(run.docker.left(), [], "the stopped run's machine kept by runner-a is deleted with the earlier claim's");
+  assert.deepEqual(logged, [`run ${RUN} is over: let go of the computers an earlier claim left on docker, c1, c2`]);
+  // runner-a's own end at the keep's time finds its machine gone: a delete that reads not_found is as good as done.
+  const ended = await endKept(run.server.settings, RUN, kept, async () => void (await deleteKept(run.docker.provider(), kept)));
+  assert.equal(ended, true, "runner-a's end marks its row ended");
+  assert.equal((await readKept(run.server.settings, RUN))?.ended, true);
 });
 
 test("a run whose only claim ends it lets its own sandbox go at its end, and the run's end asks the provider nothing more", { timeout: 120_000 }, async (t) => {

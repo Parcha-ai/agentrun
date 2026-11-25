@@ -1491,7 +1491,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // process of its own made is relayed to that runner's attach listener the same way (dial-relay.ts).
   const reach = liveReachOf(process.env, seal.key);
   // A runner in a process of its own that relays its dials (dial-relay.ts): one whose attach listener said it is there
-  // within PRESENCE_STALE_MS on the store's clock (liveRelays), at a host this server dials.
+  // within RUNNER_STALE_MS on the store's clock (liveRelays), at a host this server dials.
   const relayedNow = async (): Promise<boolean> => (await liveRelays(store.runners)).some((row) => dialHost(row.host, reach) !== undefined);
   const attachLog = (event: string, fields: Record<string, string>) => (log ? log(logLine(event, fields)) : void process.stderr.write(`agentrun-serve: ${logLine(event, fields)}\n`));
   const attach = createAttachRoutes({
@@ -5661,7 +5661,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           },
           computer: () => (viewed ? { kind: viewed } : computerOf(kept, env, family, own)),
           session: (kind) => sessionIn(kind, entries, run.terminal || (parked && kind !== "browser")),
-          lapsed: async (kind) => (parked ? lapsedOf(kind, await readKept(store.settings, run.id).catch(() => undefined), Date.now()) : undefined),
+          // The keep's `until` is on the store's clock (computer-kept.ts Kept.until), so its lapse is judged on it; a
+          // clock or a row that can't be read says nothing.
+          lapsed: async (kind) => {
+            if (!parked) return undefined;
+            const at = await store.sealedKeys.clock().catch(() => undefined);
+            return at === undefined ? undefined : lapsedOf(kind, await readKept(store.settings, run.id).catch(() => undefined), at);
+          },
           hold: () => hold,
           // A going run's browser let go while it waited for its person: the Screen tab says so, with when. One settings
           // row (browser-wait-ended.ts), never the run's journal: this is read on every Screen poll.
