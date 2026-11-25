@@ -3252,3 +3252,27 @@ test("LXXVII: a credential file named through shell quotes, a $...FILE variable 
     assert.deepEqual(out.cuts, [], `${command}: ${JSON.stringify(out.cuts)}`);
   }
 });
+
+test("LVI: an env command's output under one line of its caller's own (an approval outcome's head line) is still its dump; the line is kept", async () => {
+  const token = "Lumen4copper9Dusk2";
+  const head = "Bash ran once you allowed it. Its result:";
+  for (const command of ["env", "env | sort", "printenv"]) {
+    const out = await gone(`${head}\nA=1\nTOKEN=${token}`, [token], { command });
+    assert.deepEqual(out.cuts.map((cut) => [cut.rule, cut.kind, cut.restorable]), [["env-dump", "dump", false]], `${command}: ${JSON.stringify(out.cuts)}`);
+    assert.equal(out.text, `${head}\n[redacted:env-dump 2 lines]`, command);
+  }
+  // As before: with no command the lines are no dump (the label rule cuts the token alone); `ls` is no env command, so
+  // its NAME=value lines are no dump either.
+  const bare = await gone(`${head}\nA=1\nTOKEN=${token}`, [token]);
+  assert.deepEqual(bare.cuts.map((cut) => [cut.rule, cut.kind]), [["secret-assign", "label"]]);
+  assert.equal(bare.text, `${head}\nA=1\nTOKEN=[redacted:secret-assign]`);
+  const listed = await scrub(`${head}\nA=1\nB=2`, { mode: "cut", command: "ls" });
+  assert.deepEqual(listed.cuts, []);
+  assert.equal(listed.text, `${head}\nA=1\nB=2`);
+  const listedToken = await gone(`${head}\nA=1\nTOKEN=${token}`, [token], { command: "ls" });
+  assert.deepEqual(listedToken.cuts.map((cut) => [cut.rule, cut.kind]), [["secret-assign", "label"]]);
+  // A text whose first line is its only env line: that line is the dump, as before, and the prose below it is kept.
+  const first = await gone(`TOKEN=${token}\nthe rest is prose`, [token], { command: "env" });
+  assert.deepEqual(first.cuts.map((cut) => [cut.rule, cut.kind, cut.start, cut.end]), [["env-dump", "dump", 0, 24]]);
+  assert.equal(first.text, "[redacted:env-dump 1 lines]\nthe rest is prose");
+});

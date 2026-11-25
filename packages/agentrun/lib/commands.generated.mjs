@@ -3179,6 +3179,35 @@ export const COMMANDS = [
   {
     "command": [
       "runs",
+      "export"
+    ],
+    "operationId": "getRunExport",
+    "method": "GET",
+    "path": "/runs/{run_id}/export",
+    "pathParams": [
+      "run_id"
+    ],
+    "multiSegment": [],
+    "query": [
+      {
+        "name": "restore",
+        "type": "string",
+        "required": false,
+        "description": "Cut ids to restore, comma-separated (the parameter may repeat): each a label, personal or jev cut of this run's bundle."
+      }
+    ],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "An ended run as a share bundle, every string cut"
+  },
+  {
+    "command": [
+      "runs",
       "files"
     ],
     "operationId": "listRunFiles",
