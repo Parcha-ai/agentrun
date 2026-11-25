@@ -192,6 +192,9 @@ async function share(req: IncomingMessage, res: ServerResponse, raw: string, dir
   const rest = raw.slice(SHARE.length);
   if (rest.startsWith("assets/")) return file(req, res, raw, dir, rest);
   if (!SHARE_RUN.test(rest)) return refuse(req, res, new ApiError("not_found", `no page ${raw}: a share preview is /share/<run id>`));
+  // share.html's assets are relative (./assets/): under /share/<run>/ they resolve to /share/<run>/assets/, which is no
+  // file. So the slash goes, with the query kept, before anything else is asked.
+  if (rest.endsWith("/")) return redirect(res, `${raw.slice(0, -1)}${new URL(req.url ?? "/", "http://serve").search}`);
   // The CLI opens /share/<run>?launch=<code> when it knows the code: the same session as `/?launch=`, landing here.
   const given = launch(req, res, raw, server, "/share");
   if (given === "answered") return;
