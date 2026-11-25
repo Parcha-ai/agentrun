@@ -877,7 +877,8 @@ test("a give-back late past a later claim's park: that park never writes over th
   const held = holdNextAttach(one);
   const reaching = one.claim(5, { hadComputer: async () => true }, { holder: RUNNER_B }, refusing);
   await held.reached;
-  const later = await one.claim(7, {}, { holder: { runner: "runner-c", incarnation: "inc-c" } }, refusing);
+  // runner-c reads runner-a gone, so only the mark keeps its park off the row.
+  const later = await one.claim(7, {}, { holder: { runner: "runner-c", incarnation: "inc-c" } }, { live: async () => [] });
   assert.equal(await later.park("approval"), false, "runner-c's park keeps nothing over a row another claim is taking back");
   held.release();
   const resumed = await reaching;
