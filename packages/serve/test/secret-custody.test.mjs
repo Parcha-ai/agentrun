@@ -329,7 +329,11 @@ test("a computer provider's URL holds no credential: serve's maker refuses one w
       return makers[entry.id](options.options, {});
     };
     await made("https://relay.example.com");
-    for (const url of ["https://user:not-a-secret-pw@relay.example.com", "https://relay.example.com/?token=not-a-secret-q", "https://relay.example.com/#not-a-secret-f", "http://relay.example.com"]) {
+    // A user and password set on the URL at run time, as the repo's other credential URLs in tests are.
+    const login = new URL("https://relay.example.com");
+    login.username = "user";
+    login.password = "not-a-secret-pw";
+    for (const url of [login.href, "https://relay.example.com/?token=not-a-secret-q", "https://relay.example.com/#not-a-secret-f", "http://relay.example.com"]) {
       await assert.rejects(made(url), (error) => {
         assert.match(error.message, /takes no user or password|takes no query or fragment|must be https/, `${key.name}=${url}`);
         assert.ok(!/not-a-secret/.test(error.message), `${key.name}: the words echo no credential: ${error.message}`);
