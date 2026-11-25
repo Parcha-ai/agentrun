@@ -142,7 +142,7 @@ async function rootEntries(store, kind) {
 
 /** A store with one queued workflow run and a runner on the workflow loop. `decider` (shorthand) answers the "openrouter"
  *  provider; `deciders` gives the whole registry. `flow`/`providerOf`/`input` default to a judge-only flow on an idle model. */
-async function worldWith(t, { capUsd, doc = "Certificate of incorporation of Example Widgets, Inc.", input, flow = askFlow(), providerOf = idleModelProvider(), decider, deciders }) {
+async function worldWith(t, { capUsd, doc = "Certificate of incorporation of Example Widgets, Inc.", input, flow = askFlow(), providerOf = idleModelProvider(), decider, deciders, endJournal }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-wf-dec-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -156,7 +156,8 @@ async function worldWith(t, { capUsd, doc = "Certificate of incorporation of Exa
   const providers = deciders ?? { providers: { openrouter: decider }, default: "openrouter" };
   await server.agents.create({ id: "agent-1", name: "Flow" }, { id: "rev-1", kind: "workflow", body: { workflow: flow } });
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: input ?? { doc }, title: "t", place: { mode: "runner" }, ...(capUsd !== undefined ? { max_cost_usd: capUsd } : {}) } });
-  const specOf = workflowSpecOf({ store, providerOf, decisionProvidersOf: () => providers });
+  const makeSpec = workflowSpecOf({ store, providerOf, decisionProvidersOf: () => providers });
+  const specOf = endJournal ? (claim, run) => makeSpec(claim, { ...run, journal: () => endJournal(run.journal()) }) : makeSpec;
   runner = startRunner({ store, createLoop: createWorkflowLoop(specOf), name: "runner-a", ...TIMING });
   return { server, store };
 }
@@ -182,6 +183,36 @@ async function decisionRecords(store) {
   } finally {
     await harness.close(BACKGROUND_CONTEXT);
   }
+}
+
+for (const failure of ["once", "always", "stalled"]) {
+  test(`the workflow keeps its booked cost when the end's receipt read fails: ${failure}`, async (t) => {
+    const cost = 0.012;
+    const decider = fauxOpenrouter({ price: priceOf(), costUsd: cost });
+    let reads = 0;
+    const { server } = await worldWith(t, { decider, endJournal(journal) {
+      const find = journal.findDocument.bind(journal);
+      t.mock.method(journal, "findDocument", async (...args) => {
+        if (args[0].kind === "agentrun.decisions.count") {
+          reads++;
+          if (failure === "stalled") return new Promise(() => {});
+          if (failure === "always" || reads === 1) throw new Error("receipt unavailable");
+        }
+        return find(...args);
+      }, { times: 1 });
+      return journal;
+    } });
+    const row = await waitRow(server, (r) => r.state === "ended" && r.runner === null, 60_000);
+    assert.equal(row.state, "ended");
+    assert.equal(row.costUsd, cost);
+    if (failure === "once") {
+      assert.equal(reads, 2);
+      assert.equal(row.metrics.requests, 1);
+    } else {
+      assert.ok(reads > 0);
+      assert.equal(row.metrics, null);
+    }
+  });
 }
 
 test("a capped workflow's decision whose provider reports no cost: the cap counts it at main's hold (holdOf), and the run's saved cost is unknown, never that hold", async (t) => {

@@ -29,6 +29,7 @@ import { type Claim, type Command, type CommandOutcome, type Journal, type Loop,
 import type { HeldRedact } from "./redact.js";
 import type { RunOutcome, RunPatch } from "../store/store.js";
 import { END_PATCH_MS, END_PATCH_UNKNOWN, readAgain } from "./loop.js";
+import type { EndCost } from "./metrics.js";
 
 
 /** A cap refusal, as the kernel cap hands one to parkOf/checkRaise (the loop never imports the cap; its rule is handed in
@@ -75,8 +76,8 @@ export interface WorkflowRunSpec {
    *  never importing the cap. Absent: the run has no cap, so nothing parks and a raise is refused. */
   readonly cap?: WorkflowCapRule;
   /** The end's cost and metrics beside its state, read when the end is written (the pi loop's endPatch, bounded the same).
-   *  The outcome (completed or escalated) is the workflow's own, read from the journal, not this. */
-  readonly endPatch?: (end: EndData) => Promise<Pick<EndData, "costUsd" | "costUpperBound" | "metrics">>;
+   *  The spec gives the loop its booked cost before reading decision receipts, so a metrics failure preserves it. */
+  readonly endPatch?: (end: EndData, keepCost?: (cost: EndCost) => void) => Promise<Pick<EndData, "costUsd" | "costUpperBound" | "metrics">>;
   /** pi-durable's restart limit for the run's Harness. Absent: pi's own default. */
   readonly restartLimit?: number;
   /** Called once the run's Harness is open, before the workflow runs: the spec wires anything that needs the Harness here
@@ -276,27 +277,28 @@ function workflowLoop(specOf: (claim: Claim, run: WorkflowSpecRun) => WorkflowRu
     return { state: "parked" };
   }
 
-  /** The end's cost and metrics from the spec, bounded as the adapter loop's (END_PATCH_MS): late or failing, the end
-   *  says both are unknown (END_PATCH_UNKNOWN). */
+  /** Preserve the latest complete booking if the metrics read exhausts the end's retries or time limit. */
   const endPatchOf = async (spec: WorkflowRunSpec, data: EndData): Promise<Pick<EndData, "costUsd" | "costUpperBound" | "metrics">> => {
     if (!spec.endPatch) return {};
     const endPatch = spec.endPatch;
+    let fallback: Pick<EndData, "costUsd" | "costUpperBound" | "metrics"> = END_PATCH_UNKNOWN;
+    const keepCost = (cost: EndCost) => { fallback = { ...cost, metrics: null }; };
     let timer: NodeJS.Timeout | undefined;
     const late = new Promise<"late">((resolve) => (timer = setTimeout(() => resolve("late"), END_PATCH_MS)));
     try {
       // A read that fails is read again within the same bound (loop.ts readAgain), as the adapter loop's cost: the stored
       // cost is every reader's answer for the ended run, so a null there stays only when no read could be made.
-      const patch = await readAgain(() => endPatch(data), late, (error, tries, last) => {
+      const patch = await readAgain(() => endPatch(data, keepCost), late, (error, tries, last) => {
         // Cut of every secret the runner holds (LoopDeps.redact): an error's text may echo one.
         const text = (error as Error)?.message ?? String(error);
         const cut = deps.redact ? deps.redact(text) : text;
-        console.warn(last ? `[runner] ${runId}: its end's patch failed ${tries} times, last: ${cut}; the end is written with its cost and metrics unknown` : `[runner] ${runId}: its end's patch failed: ${cut}; read again`);
+        console.warn(last ? `[runner] ${runId}: its end's patch failed ${tries} times, last: ${cut}` : `[runner] ${runId}: its end's patch failed: ${cut}; read again`);
       });
       if (patch === "late") {
-        console.warn(`[runner] ${runId}: its end's patch gave no answer within ${END_PATCH_MS / 1000} s; the end is written with its cost and metrics unknown`);
-        return END_PATCH_UNKNOWN;
+        console.warn(`[runner] ${runId}: its end's patch gave no answer within ${END_PATCH_MS / 1000} s`);
+        return fallback;
       }
-      if (patch === "failed") return END_PATCH_UNKNOWN;
+      if (patch === "failed") return fallback;
       return patch ?? {};
     } finally {
       clearTimeout(timer);

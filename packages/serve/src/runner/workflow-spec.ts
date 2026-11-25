@@ -23,7 +23,7 @@ import { completer } from "../llm.js";
 // The decision providers' list prices, the catalog's read and the replay check (decision-cap.ts), with holdOf, which the
 // parity tests hold this cap's figures to.
 import { askedBefore, catalogPrice, JEV_INPUT_USD, PARALLEL_DECISION_USD } from "../decision-cap.js";
-import { decisionProvidersIn } from "../decisions.js";
+import { decisionProvidersIn, providersNamed } from "../decisions.js";
 import { imageLoader } from "../pdf-pages.js";
 import type { RunLaunch } from "../run-launch.js";
 import { llmTiers, nodeTiers, type Tier, workflowNodes } from "../model.js";
@@ -57,7 +57,7 @@ import type { WorkflowBody } from "../store/agent-body.js";
 import { decisionsInJournal } from "../store-reads/decisions.js";
 import { type EntryLike, runMetricsWithDecisions } from "../timeline/index.js";
 import { SUBMIT_TOOL } from "../workflow/host-tools.js";
-import { endCostOf, runCostOf } from "./metrics.js";
+import { type EndCost, endCostOf, runCostOf } from "./metrics.js";
 import { journalEntries } from "./journal-reader.js";
 import { warnHoldShort } from "../print.js";
 
@@ -231,7 +231,9 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string;
     // The model nodes' tools (main's app.ts:301-306): the ones the runner binds for a node, each through the run's ToolHost
     // and the run's gate; a node naming one it does not bind yet refuses the run here, before anything starts, in words
     // naming it.
-    const nodeNames = workflowTools(workflowNodes(claimed.workflow, inspectWorkflow(claimed.workflow))).nodes;
+    const nodes = workflowNodes(claimed.workflow, inspectWorkflow(claimed.workflow));
+    const nodeNames = workflowTools(nodes).nodes;
+    const hasDecisions = providersNamed(nodes).length > 0;
     const unbound = nodeNames.find((name) => !RUNNER_NODE_TOOLS.includes(name));
     if (unbound !== undefined) throw new Error(nodeToolUnboundText(unbound));
     // Every secret the server keeps sealed (store-secrets.ts) held by the runner's one redactor before the workflow runs.
@@ -376,7 +378,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string;
       agentId: claimed.agentId,
       revisionId: claimed.revisionId,
       ...(claimed.capUsd !== undefined ? { cap: capRuleOf(() => effectiveCapUsd ?? claimed.capUsd!) } : {}),
-      endPatch: async () => endPatchOf(booking, run?.journal),
+      endPatch: async (_, keepCost) => endPatchOf(booking, run?.journal, hasDecisions, keepCost),
       build: (loopHooks: WorkflowHostHooks) => {
         hooks.setPark(loopHooks);
         const hostDeps: WorkflowHostDeps = {
@@ -872,13 +874,15 @@ function runEffectOf(claimed: Claimed, complete: ReturnType<typeof completer>, e
  *  hold). Unknown once any one is, written as null, never left out (an end that says nothing leaves the $0 the run read
  *  before a response). The end also counts usage and tools from every conversation, plus the decision receipts.
  *  With no journal to read, cost is unknown. */
-async function endPatchOf(booking: Awaited<ReturnType<typeof modelPortFor>> | undefined, journalOf: (() => Journal) | undefined): Promise<Pick<EndData, "costUsd" | "costUpperBound" | "metrics">> {
+async function endPatchOf(booking: Awaited<ReturnType<typeof modelPortFor>> | undefined, journalOf: (() => Journal) | undefined, hasDecisions: boolean, keepCost?: (cost: EndCost) => void): Promise<Pick<EndData, "costUsd" | "costUpperBound" | "metrics">> {
   if (!booking) return {};
   if (!journalOf) return { costUsd: null };
   const journal = journalOf();
   const entries = await journalEntries(journal, BACKGROUND_CONTEXT) as unknown as EntryLike[];
-  const decisions = await decisionsInJournal(journal, BACKGROUND_CONTEXT);
-  return { ...endCostOf(runCostOf(entries)), metrics: runMetricsWithDecisions(entries, decisions) };
+  const cost = endCostOf(runCostOf(entries));
+  keepCost?.(cost);
+  const decisions = hasDecisions ? await decisionsInJournal(journal, BACKGROUND_CONTEXT) : [];
+  return { ...cost, metrics: runMetricsWithDecisions(entries, decisions) };
 }
 
 /** The run's one cap as a WorkflowCap: model nodes and call nodes pass through (their money is on the proxy), and a
