@@ -34,7 +34,9 @@
 // taken (its epoch moved past the end's own move, run-patch.ts) lets nothing go, and leaves the kept row as it reads:
 // every machine left is that claim's to let go, at its own end or its launch (releaseOlderClaims). Read before the mark
 // and again after it: a claim takes a row only after its claim, so one not yet there once the row reads ending, ended or
-// gone can no longer take a machine of this end's.
+// gone can no longer take a machine of this end's. A read that fails, or finds no run, can't tell whether a later claim
+// has the run, and a machine's old label can't either: the end lets nothing go then too (before the mark, it marks
+// nothing), said in the log. What is left goes at the run's next end or the computer janitor's sweep.
 // A machine kept on Archil has its park's mount credential removed before its row is marked ended
 // (computer-janitor.ts keptMountRevoke, as the janitor's kept pass removes it): an ended row is one no janitor pass
 // removes a credential for, so one marked ended first would leave it valid for its ttl with no machine. A remove that
@@ -182,12 +184,20 @@ export function runEndComputers(deps: RunEndComputersDeps): (claim: { readonly r
     // A throw from here on is the vendor's or the daemon's (Docker's architecture asked): asked again.
     return endingDeletes(await make(options.options, { ledger: storeLedger(store.computerLedger, entry.id) }), entry.id, writes);
   };
-  /** Whether a later claim took run `runId` since the claim at `epoch` ended it: that end moved the run's epoch once past
-   *  the claim's (run-patch.ts), and only a claim (or its release) moves it again. Said once in the log when so. A run
-   *  gone or a read that fails says no: the deletes below are fenced by the end's epoch all the same. */
+  /** Whether the end of the claim at `epoch` lets none of run `runId`'s computers go: a later claim took the run since
+   *  (that end moved the run's epoch once past the claim's, run-patch.ts, and only a claim or its release moves it
+   *  again), or the run can't be read to tell (the read failed, or found no run). A machine a later claim took back keeps
+   *  its maker's label, at or below `epoch`, so only this read keeps the deletes off it. Said once in the log when so. */
   const movedOn = async (runId: string, epoch: number): Promise<boolean> => {
-    const run = await store.runs.get(runId).catch(() => undefined);
-    if (!run || run.epoch <= epoch + 1) return false;
+    const read = await store.runs.get(runId).then(
+      (run) => (run ? { run } : { why: "no such run" }),
+      (error: unknown) => ({ why: error instanceof Error ? error.message : String(error) }),
+    );
+    if ("why" in read) {
+      log(`run ${runId}'s end at claim ${epoch} lets no computer go: the run could not be read (${read.why}) to tell whether a later claim holds one of them, so they are left for that claim, the run's next end or the computer janitor's sweep`);
+      return true;
+    }
+    if (read.run.epoch <= epoch + 1) return false;
     log(`run ${runId}'s end at claim ${epoch} lets no computer go: a later claim took the run again and may hold one of them, so they are that claim's to let go`);
     return true;
   };
