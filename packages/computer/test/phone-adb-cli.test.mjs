@@ -11,7 +11,8 @@ import test, { after } from "node:test";
 
 import { fakePhoneHarness, KEY, PHONED_JAR } from "./fake-phone-harness.mjs";
 
-const { adbCli, ADB_SERVER_PORT } = await import("../dist/phone-harness.js");
+const { adbCli, ADB_SERVER_PORT, create } = await import("../dist/phone-harness.js");
+const { ADB_ENV_NAMES } = await import("../dist/child-env.js");
 const conformance = await import("../dist/conformance/phone-harness.js");
 
 const dir = mkdtempSync(join(tmpdir(), "computer-adb-cli-"));
@@ -164,27 +165,49 @@ function envRecorder(name, code = 0) {
 	chmodSync(script, 0o755);
 	return { script, names: () => JSON.parse(readFileSync(log, "utf8")) };
 }
-/** The names a cleaned spawn keeps of an input: every adb variable, and those listed as gone, dropped. */
-const kept = (input, gone = []) => Object.keys(input).filter((name) => !/^(ADB_|ANDROID_ADB_|ANDROID_SERIAL$)/.test(name) && !gone.includes(name)).sort();
-/** The conformance module's own names, which its spawned adb never gets. */
-const MODULE_NAMES = ["COMPUTER_PHONE_HARNESS_API_KEY", "COMPUTER_PHONE_HARNESS_PLATFORM", "COMPUTER_PHONE_HARNESS_ADB", "COMPUTER_PHONE_HARNESS_LEDGER", "AGENTRUN_COMPUTER_LIVE_PHONE_HARNESS"];
+/** The names a spawned adb keeps of an input: those adb reads (ADB_ENV_NAMES), and nothing else. */
+const kept = (input) => Object.keys(input).filter((name) => ADB_ENV_NAMES.includes(name)).sort();
+/** Names no adb is given: a key-shaped one, and a setting adb never reads. */
+const UNLISTED = { FOO_API_KEY: `not-a-secret-${"canary"}`, AGENTRUN_UNRELATED: "dropped" };
 
-test("adbCli spawns adb from the environment it is given, with every ADB_*, ANDROID_ADB_* and ANDROID_SERIAL variable dropped", async () => {
+test("adbCli spawns adb with what adb reads of the environment it is given alone: no key, no other name, and no ADB_*, ANDROID_ADB_* or ANDROID_SERIAL variable", async () => {
 	const adb = envRecorder("adb-env");
-	const env = { ...POISON, AGENTRUN_UNRELATED: "kept", LANG: "C" };
+	const env = { ...POISON, ...UNLISTED, LANG: "C", ANDROID_HOME: "/opt/android-sdk" };
 	const ran = await adbCli(adb.script, { env }).run(["-t", "1", "shell", "echo ok"], { timeoutMs: 10_000 });
 	assert.equal(ran.ok, true, JSON.stringify(ran));
-	assert.deepEqual(adb.names(), kept(env), "exactly the input, every adb variable dropped");
-	assert.deepEqual(kept(env), ["AGENTRUN_UNRELATED", "LANG"]);
+	assert.deepEqual(adb.names(), kept(env), "exactly what adb reads of the input");
+	assert.deepEqual(kept(env), ["ANDROID_HOME", "LANG"]);
 });
 
-test("the conformance module's provider spawns adb from its environment with every adb variable and its own settings dropped: the API key never reaches adb", async () => {
+test("given no env, adbCli spawns adb with none of this process's environment", async () => {
+	const adb = envRecorder("adb-no-env");
+	const ran = await adbCli(adb.script).run(["-t", "1", "shell", "echo ok"], { timeoutMs: 10_000 });
+	assert.equal(ran.ok, true, JSON.stringify(ran));
+	assert.deepEqual(adb.names(), [], "no env: adb was started with this process's environment");
+});
+
+test("the provider, its adb given as a path, spawns that adb with what adb reads of the provider's env alone: never a key", async () => {
+	// The adb exits 1 at start-server, so connect stops there, before any socket: no adb server is asked.
+	const adb = envRecorder("adb-provider", 1);
+	const fake = fakePhoneHarness();
+	const env = { ...POISON, ...UNLISTED, LANG: "C", ANDROID_SDK_ROOT: "/opt/android-sdk" };
+	const provider = await create({ apiKey: KEY, adb: adb.script, env, fetch: fake.fetch, now: fake.clock.now, sleep: fake.clock.sleep });
+	const created = await provider.create({ image: "android", lifetimeMs: 60_000, network: "open" }, { requestId: "adb-provider" });
+	assert.equal(created.ok, true, JSON.stringify(created));
+	const connected = await provider.connect(created.value);
+	assert.match(connected.error?.message ?? "", /adb start-server failed/);
+	assert.deepEqual(adb.names(), ["ANDROID_SDK_ROOT", "LANG"], "the provider's adb gets exactly what adb reads of its env");
+	await provider.release(created.value, "delete");
+});
+
+test("the conformance module's provider spawns adb with what adb reads of its environment alone: the API key, every adb variable and the module's own settings never reach adb", async () => {
 	// The adb exits 1 at start-server, so connect stops there, before any socket: no adb server is asked.
 	const adb = envRecorder("adb-conformance", 1);
 	const fake = fakePhoneHarness();
 	const env = {
 		...POISON,
-		AGENTRUN_UNRELATED: "kept",
+		...UNLISTED,
+		LANG: "C",
 		COMPUTER_PHONE_HARNESS_API_KEY: KEY,
 		COMPUTER_PHONE_HARNESS_ADB: adb.script,
 		COMPUTER_PHONE_HARNESS_LEDGER: join(dir, "conformance-ledger.json"),
@@ -196,18 +219,18 @@ test("the conformance module's provider spawns adb from its environment with eve
 	const connected = await provider.connect(created.value);
 	assert.equal(connected.ok, false);
 	assert.match(connected.error.message, /adb start-server failed/);
-	assert.deepEqual(adb.names(), kept(env, MODULE_NAMES), "exactly the input, with no adb variable and none of the module's own (the key among them)");
-	assert.deepEqual(kept(env, MODULE_NAMES), ["AGENTRUN_UNRELATED"]);
+	assert.deepEqual(adb.names(), ["LANG"], "what adb reads of the input alone: no adb variable, none of the module's own (the key among them), no other name");
 	await provider.release(created.value, "delete");
 });
 
-test("the conformance module's adb option, given as a path, spawns that adb from the same cleaned environment", async () => {
+test("the conformance module's adb option, given as a path, spawns that adb with the same names alone", async () => {
 	// The module's environment holds every adb variable and its own settings, the key among them; adb comes as a path.
 	const adb = envRecorder("adb-option", 1);
 	const fake = fakePhoneHarness();
 	const env = {
 		...POISON,
-		AGENTRUN_UNRELATED: "kept",
+		...UNLISTED,
+		LANG: "C",
 		COMPUTER_PHONE_HARNESS_API_KEY: KEY,
 		COMPUTER_PHONE_HARNESS_LEDGER: join(dir, "option-ledger.json"),
 		AGENTRUN_COMPUTER_LIVE_PHONE_HARNESS: "1",
@@ -217,7 +240,7 @@ test("the conformance module's adb option, given as a path, spawns that adb from
 	assert.equal(created.ok, true, JSON.stringify(created));
 	const connected = await provider.connect(created.value);
 	assert.match(connected.error?.message ?? "", /adb start-server failed/);
-	assert.deepEqual(adb.names(), kept(env, MODULE_NAMES), "the path given as the adb option gets exactly the cleaned input: no adb variable, not the key");
+	assert.deepEqual(adb.names(), ["LANG"], "the path given as the adb option gets what adb reads of the input alone: no adb variable, not the key");
 	await provider.release(created.value, "delete");
 });
 

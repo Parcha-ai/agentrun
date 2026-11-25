@@ -1003,3 +1003,43 @@ test("the conformance module's run image on dial is the box image, the one that 
 	assert.equal(conformanceImage({ env: {} }), "debian:bookworm-slim");
 	assert.equal(conformanceImage({ env: { [MODAL_ENV.connect]: "exec" } }), "debian:bookworm-slim");
 });
+
+test("the conformance module hands onNote, dial and the kind to the drifted twin as to the run's provider: the same desktop, the same refusal on create, the same note on release", async () => {
+	const { MODAL_ENV, createProvider, createDriftedProvider } = await import("../dist/conformance/modal.js");
+	for (const make of [createProvider, createDriftedProvider]) {
+		const notes = [];
+		const provider = await make({
+			env: { ...MODAL_SETTINGS, ...DEV_TOKEN, [MODAL_ENV.connect]: "dial", [MODAL_ENV.kind]: "desktop" },
+			ModalClient: fakeClient().ModalClient,
+			...MODULE_TEST,
+			onNote: (note) => notes.push(note),
+			dial: {
+				tokens: {
+					revoke: async () => {
+						throw new Error("the token store is down");
+					},
+				},
+				hub: { revoke() {}, connection: () => undefined, online: () => false },
+			},
+		});
+		assert.equal(provider.capabilities().kind, "desktop", make.name);
+		const made = await create(provider);
+		assert.equal(made.ok, false, make.name);
+		assert.match(made.error.message, /has no public https address/, make.name);
+		const released = await provider.release({ id: "sb-0000000000000000000001", name: "computer-0123456789ab" }, "delete");
+		assert.equal(released.ok, true, `${make.name}: ${JSON.stringify(released)}`);
+		assert.equal(notes.length, 1, `${make.name}: ${JSON.stringify(notes)}`);
+		assert.match(notes[0].note, /could not be revoked \(the token store is down\)/, make.name);
+	}
+});
+
+test("the conformance module's daemon: an option's path, and the drifted twin uploads the one it built, not the option's", async () => {
+	const { createProvider, createDriftedProvider } = await import("../dist/conformance/modal.js");
+	const options = { env: { ...MODAL_SETTINGS, ...DEV_TOKEN }, daemonPath: "/nonexistent/untangle-option/computerd", buildDaemon: async () => "/nonexistent/untangle-drift/computerd" };
+	const made = await create(await createProvider({ ...options, ModalClient: fakeClient().ModalClient }));
+	assert.equal(made.ok, false);
+	assert.match(made.error.message, /no daemon binary at \/nonexistent\/untangle-option\/computerd/);
+	const drifted = await create(await createDriftedProvider({ ...options, ModalClient: fakeClient().ModalClient }));
+	assert.equal(drifted.ok, false);
+	assert.match(drifted.error.message, /no daemon binary at \/nonexistent\/untangle-drift\/computerd/);
+});
