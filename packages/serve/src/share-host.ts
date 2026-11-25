@@ -115,15 +115,14 @@ function graphShape(value: unknown): void {
   string(run.status, "graph.run.status");
   if (typeof run.paused !== "boolean") refuse("graph.run.paused is not true or false");
   const flow = isObject(value.graph) ? value.graph : refuse("graph.graph is not an object");
-  for (const node of array(flow.nodes, "graph.graph.nodes")) {
-    const at = "graph.graph.nodes";
-    if (!isObject(node)) refuse(`${at} holds a node that is not an object`);
-    string(node.path, `${at}[].path`);
-    string(node.kind, `${at}[].kind`);
+  for (const item of array(flow.nodes, "graph.graph.nodes")) {
+    const node = isObject(item) ? item : refuse("graph.graph.nodes holds a node that is not an object");
+    string(node.path, "graph.graph.nodes[].path");
+    string(node.kind, "graph.graph.nodes[].kind");
   }
   objects(array(flow.edges, "graph.graph.edges"), "graph.graph.edges");
-  if (!isObject(value.nodes)) refuse("graph.nodes is not an object");
-  for (const node of Object.values(value.nodes)) if (!isObject(node)) refuse("graph.nodes holds a run of a node that is not an object");
+  const runs = isObject(value.nodes) ? value.nodes : refuse("graph.nodes is not an object");
+  for (const node of Object.values(runs)) if (!isObject(node)) refuse("graph.nodes holds a run of a node that is not an object");
   objects(array(value.decisions, "graph.decisions"), "graph.decisions");
   objects(array(value.effects, "graph.effects"), "graph.effects");
   const totals = isObject(value.totals) ? value.totals : refuse("graph.totals is not an object");
