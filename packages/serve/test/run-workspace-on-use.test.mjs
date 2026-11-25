@@ -60,6 +60,7 @@ test("openedAtUse: nothing is opened before the first use, then once for every u
   const run = openedAtUse(held.open);
   assert.equal(held.seen.opens, 0);
   const uses = [run.workspace(), run.workspace()];
+  assert.equal(held.seen.opens, 1, "two uses, one open");
   held.resolveNext();
   const [a, b] = await Promise.all(uses);
   assert.equal(a, b);
