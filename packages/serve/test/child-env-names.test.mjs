@@ -6,7 +6,7 @@ import { test } from "node:test";
 import * as computer from "@parcha/agentrun-computer";
 import { keyShaped } from "../dist/secret-name.js";
 
-const LISTS = ["DOCKER_ENV_NAMES", "CHROME_ENV_NAMES"];
+const LISTS = ["DOCKER_ENV_NAMES", "CHROME_ENV_NAMES", "ADB_ENV_NAMES"];
 
 test("no name the computer package hands docker or Chrome of serve's environment is shaped like a key", () => {
   for (const list of LISTS) {
