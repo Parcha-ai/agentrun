@@ -382,20 +382,30 @@ test("one owner: refused in one line where more than one person can start runs, 
  *  `$HOME/.claude`), and the account it signed in to in its config dir's
  *  `.claude.json` (`CLAUDE_CONFIG_DIR`, else the home). `auth login` writes both and leaves `ended` beside itself; `auth
  *  status` says signed in where the credentials are, with the account's email where the account is. `mode`: `sign`
- *  (signs in at once), `wait` (waits for a browser that never answers, its pid in `pids()`), `refuse` (exits 1). Each
- *  call is noted with the variables it got; a CLI still waiting is ended after the test. */
+ *  (signs in at once), `wait` (waits for a browser that never answers, its pid in `pids()`), `refuse` (exits 1), or
+ *  `hold-stop` (waits as `wait` does, and once sent its stop, leaves `stopping` beside itself and exits only after
+ *  `release()`). `mode(m)` sets the mode for the calls after it. Each call is noted with the variables it got; a CLI
+ *  still waiting is ended after the test. */
 async function signInCli(t, mode) {
   const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-sign-in-cli-"));
-  const [cli, record, pidFile, ended] = ["claude", "calls.jsonl", "pids", "ended"].map((name) => join(dir, name));
+  const [cli, record, pidFile, ended, modeFile, stopping, released] = ["claude", "calls.jsonl", "pids", "ended", "mode", "stopping", "released"].map((name) => join(dir, name));
   writeFileSync(
     cli,
     `#!/bin/sh
+mode='${mode}'; if [ -f '${modeFile}' ]; then mode=$(cat '${modeFile}'); fi
 if [ "\${CLAUDE_SECURESTORAGE_CONFIG_DIR+set}" = set ]; then secure="\${CLAUDE_SECURESTORAGE_CONFIG_DIR:-$HOME/.claude}"; else secure="\${CLAUDE_CONFIG_DIR:-$HOME/.claude}"; fi
 account="\${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json"
 printf '{"argv":"%s","home":"%s","config":"%s","secure":"%s","configSet":"%s","secureSet":"%s"}\\n' "$*" "$HOME" "$CLAUDE_CONFIG_DIR" "$CLAUDE_SECURESTORAGE_CONFIG_DIR" "\${CLAUDE_CONFIG_DIR+set}" "\${CLAUDE_SECURESTORAGE_CONFIG_DIR+set}" >> '${record}'
 if [ "$1 $2" = "auth login" ]; then
-  if [ '${mode}' = wait ]; then echo $$ >> '${pidFile}'; exec sleep 300; fi
-  if [ '${mode}' = refuse ]; then exit 1; fi
+  if [ "$mode" = wait ]; then echo $$ >> '${pidFile}'; exec sleep 300; fi
+  if [ "$mode" = hold-stop ]; then
+    echo $$ >> '${pidFile}'
+    trap 'kill $waiting 2>/dev/null; : > "${stopping}"; while [ ! -f "${released}" ]; do sleep 0.05; done; exit 0' TERM
+    sleep 300 & waiting=$!; echo $waiting >> '${pidFile}'
+    wait $waiting
+    exit 0
+  fi
+  if [ "$mode" = refuse ]; then exit 1; fi
   mkdir -p "$secure"
   printf '{"claudeAiOauth":{"accessToken":"fake","scopes":["user:inference"]}}' > "$secure/.credentials.json"
   printf '{"oauthAccount":{"emailAddress":"person@example.com"}}' > "$account"
@@ -421,7 +431,8 @@ fi
     }
   });
   const calls = () => (existsSync(record) ? readFileSync(record, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []);
-  return { cli, calls, pids, ended };
+  t.after(() => writeFileSync(released, ""));
+  return { cli, calls, pids, ended, stopping, mode: (next) => writeFileSync(modeFile, next), release: () => writeFileSync(released, "") };
 }
 
 /** Whether process `pid` is still there. */
@@ -2022,6 +2033,60 @@ test("a refresh whose making of the offers again fails is redone by the next req
   assert.equal((await api("POST", `/runs/${run.body.run_id}/cancel`)).status < 300, true);
   const offer = await offerOf(api);
   assert.equal(offer.available, true, `claude-agent is offered once the failed making of the offers is redone: ${JSON.stringify(offer)}`);
+});
+
+// A turn on makes env, needs and the offers again after its own turn, outside the queue. A run asked meanwhile finds the
+// login as the turn on handed it over, unchanged, and must still wait for that making of the offers, not check the ones
+// made while the login was off. The log says the run waits for a turn's (why=turn).
+const TURN_WHY = "a run asked while a turn-on was making the offers again checked the offers made before it";
+test("a run asked while a turn-on is still making the offers again finds the login unchanged and waits for them: it is not refused for a key, and the log says it waits for a turn's", { skip: process.platform === "win32" ? "no modes" : process.geteuid() === 0 ? "root may write anywhere" : false, timeout: 120_000 }, async (t) => {
+  const { api, folder, start, waits, whys } = await mendedLater(t);
+  chmodSync(folder, 0o700);
+  assert.equal((await offerOf(api)).available, true, "claude-agent is offered on the mended login");
+  assert.equal((await api("DELETE", "/settings/claude-login")).status, 200);
+  assert.equal((await offerOf(api)).available, false, "claude-agent needs a key once the login is off");
+  const probe = held.hold((env) => claudeLoginOf(env) !== undefined);
+  t.after(() => probe.release());
+  const turningOn = api("PUT", "/settings/claude-login", { only_me: true, place: "machine" });
+  await probe.reached;
+  const running = start();
+  const first = await Promise.race([waits(1).then(() => "the run waited"), running.then(() => "the run answered")]);
+  probe.release();
+  const [on, run] = await Promise.all([turningOn, running]);
+  assert.equal(on.status, 200, JSON.stringify(on.body));
+  assert.equal(run.status, 202, `${TURN_WHY}: ${JSON.stringify(run.body)}`);
+  assert.equal((await api("POST", `/runs/${run.body.run_id}/cancel`)).status < 300, true);
+  assert.equal(first, "the run waited", "the run answered before the probe of the offers the turn-on started was let go");
+  assert.deepEqual(whys, ["turn"], "the run's wait was logged as one for a turn's making of the offers");
+});
+
+// A refresh looks at the login's folders inside its own turn on the sign-ins' queue. A turn-off whose turn is still going
+// (it ends the sign-in that waits, and here that sign-in's stand-in CLI holds its exit until the test lets it go) has not
+// removed the setting yet. A run asked then waits for its turn behind it (the log: why=queue), and looks only once the
+// turn-off has removed the setting, so it is refused for a key. A refresh that looked before its turn would find the
+// login still there, hand it back over after the turn-off, and run on it.
+const LOOK_WHY = "a run asked while a turn-off's turn was still going looked at the folders before that turn, and went on the login the turn-off removed";
+test("a run asked while a turn-off's turn is still going looks at the login's folders only once that turn is done: it is refused for a key, and the turn-off stands", { skip: process.platform === "win32" ? "no modes" : process.geteuid() === 0 ? "root may write anywhere" : false, timeout: 120_000 }, async (t) => {
+  const { api, folder, start, waits, whys, fake, store } = await mendedLater(t);
+  chmodSync(folder, 0o700);
+  assert.equal((await offerOf(api)).available, true, "claude-agent is offered on the mended login");
+  fake.mode("hold-stop");
+  const signIn = await api("POST", "/settings/claude-login/login");
+  assert.equal(signIn.status, 200, JSON.stringify(signIn.body));
+  assert.equal(signIn.body.sign_in?.state, "waiting", JSON.stringify(signIn.body));
+  const turningOff = api("DELETE", "/settings/claude-login");
+  await until(() => existsSync(fake.stopping), "the turn-off's stop reached the sign-in's CLI");
+  const running = start();
+  await waits(1);
+  fake.release();
+  const [off, run] = await Promise.all([turningOff, running]);
+  assert.equal(off.status, 200, JSON.stringify(off.body));
+  assert.equal(off.body.state, "off", JSON.stringify(off.body));
+  assert.equal(run.status, 409, `${LOOK_WHY}: ${JSON.stringify(run.body)}`);
+  assert.match(run.body.error.message, /claude-agent needs ANTHROPIC_API_KEY/);
+  assert.deepEqual(whys, ["queue"], "the run's refresh waited for its turn behind the turn-off");
+  assert.equal((await offerOf(api)).available, false, "claude-agent is not offered after the turn-off");
+  assert.equal(await store.settings.get(CLAUDE_LOGIN_SETTING), undefined, "the turn-off removed the setting");
 });
 
 // A folder its group may write in (a home or a folder on a volume whose group is set for a pod, 2775, or one made under
