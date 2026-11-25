@@ -161,7 +161,7 @@ test("a Python client takes its inputs as one dict: an input named as the client
 // value ending in /v2 when it starts (print.ts), and those clients take it with or without. A suggested agent's client
 // reads that name and takes every such value, so an app that has the variable for AgentRun's own client sets nothing
 // twice; and what tells a person the value (the pull request, the page of HTTP calls) gives the /v2 form the server prints.
-test("every client reads AGENTRUN_BASE_URL as AgentRun's own clients do: the address with or without /v2, and never another name", async (t) => {
+test("every client reads AGENTRUN_BASE_URL as AgentRun's own clients do: the address with or without /v2, never another name, and never one with a user, a password, a query or a fragment", async (t) => {
   const got = [];
   let polls = 0;
   const server = createServer((req, res) => {
@@ -228,6 +228,15 @@ test("every client reads AGENTRUN_BASE_URL as AgentRun's own clients do: the add
     // An address that is no http or https URL is refused by the variable's name, before anything is sent.
     for (const address of ["agentrun.example.com", "localhost:7340", "ftp://agentrun.example.com", "http://"]) {
       await assert.rejects(run(name, { AGENTRUN_BASE_URL: address }), (error) => /AGENTRUN_BASE_URL must be an http or https URL, like https:\/\/agentrun\.example\.com\/v2\./.test(error.stderr), `${name} at ${address}`);
+    }
+    // An address with a user, a password, a query or a fragment is refused as the SDK refuses it, before anything is sent,
+    // in words that name its origin alone: fetch's own error would print the whole URL, credentials and query included.
+    for (const address of [`${origin.replace("//", "//agent:not-a-secret@")}/v2`, `${origin}/v2?key=not-a-secret`, `${origin}/v2#not-a-secret`, `${origin}/v2?`]) {
+      await assert.rejects(run(name, { AGENTRUN_BASE_URL: address }), (error) => {
+        assert.ok(error.stderr.includes(`AGENTRUN_BASE_URL takes no user, password, query or fragment, like https://agentrun.example.com/v2: ${origin}`), `${name} at ${address}: ${error.stderr}`);
+        assert.ok(!/not-a-secret|key=/.test(error.stderr), `${name} at ${address} says the password or the query: ${error.stderr}`);
+        return true;
+      });
     }
     assert.deepEqual(got, []);
   }

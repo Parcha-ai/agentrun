@@ -193,8 +193,12 @@ test("a Kernel saving run whose session is refused in words that name its profil
 
 test("a vendor call that fails before an answer says only which vendor and the error's kind, never its URL, which holds the pointer: so DELETE's answer never carries it", async (t) => {
   const pointer = "agentrun-0123456789abcdef01234567";
-  for (const [vendor, env] of [["kernel", { KERNEL_API_KEY: "k", KERNEL_BASE_URL: "kernel.example" }], ["browserbase", { BROWSERBASE_API_KEY: "b", BROWSERBASE_BASE_URL: "browserbase.example" }]]) {
-    const vendors = vendorsOver(() => env, async () => fetch);
+  // A fetch that fails before any answer, in words that name the URL, as Node's fetch does.
+  const failing = async (url) => {
+    throw new TypeError(`fetch failed: ${url}`);
+  };
+  for (const [vendor, env] of [["kernel", { KERNEL_API_KEY: "k", KERNEL_BASE_URL: "https://kernel.example" }], ["browserbase", { BROWSERBASE_API_KEY: "b", BROWSERBASE_BASE_URL: "https://browserbase.example" }]]) {
+    const vendors = vendorsOver(() => env, async () => failing);
     await assert.rejects(vendors.remove(vendor, pointer), (error) => error.message === `${vendor} unreachable (TypeError)`);
   }
   // The forget over the store (the switch's signInsOverStore) with those vendors: its answer says the kind, never the URL.
@@ -202,9 +206,27 @@ test("a vendor call that fails before an answer says only which vendor and the e
   await agentWithRevision(store, "alpha", "alpha-rev");
   const key = randomBytes(32);
   await saveSignIn(store, key, { agentId: "alpha", provider: "kernel", pointer });
-  const answer = await signInsOverStore(store, key, vendorsOver(() => ({ KERNEL_API_KEY: "k", KERNEL_BASE_URL: "kernel.example" }), async () => fetch)).forget("alpha", "default");
+  const answer = await signInsOverStore(store, key, vendorsOver(() => ({ KERNEL_API_KEY: "k", KERNEL_BASE_URL: "https://kernel.example" }), async () => failing)).forget("alpha", "default");
   assert.deepEqual(answer.removed, [{ provider: "kernel", at_vendor: "not_deleted", message: "Not deleted at kernel: kernel unreachable (TypeError). This server no longer points to it." }]);
   assert.ok(!JSON.stringify(answer).includes(pointer));
+});
+
+test("a vendor's base URL its key may not go to is never sent the key: one with a user or password, a query, a fragment or plain http is refused by its variable's name, in words that hold neither the password nor the query", async () => {
+  for (const [vendor, variable, keyName] of [["kernel", "KERNEL_BASE_URL", "KERNEL_API_KEY"], ["browserbase", "BROWSERBASE_BASE_URL", "BROWSERBASE_API_KEY"]]) {
+    for (const url of ["https://agent:not-a-secret@vendor.example", "https://vendor.example/?key=not-a-secret", "https://vendor.example/#not-a-secret", "http://vendor.example"]) {
+      const asked = [];
+      const fake = async (to) => (asked.push(String(to)), Response.json({ id: "ctx-1", name: "x" }));
+      const vendors = vendorsOver(() => ({ [keyName]: "fake-test-key", BROWSERBASE_PROJECT_ID: "proj-1", [variable]: url }), async () => fake);
+      for (const [what, call] of [["create", () => vendors.create(vendor)], ["remove", () => vendors.remove(vendor, "ctx-1")]]) {
+        await assert.rejects(call(), (error) => {
+          assert.ok(error.message.startsWith(`${variable} `), `${vendor} ${what} at ${url} names the variable: ${error.message}`);
+          assert.ok(!/not-a-secret|key=|agent:/.test(error.message), `${vendor} ${what} at ${url} says the password or the query: ${error.message}`);
+          return true;
+        }, `${vendor} ${what} at ${url}`);
+      }
+      assert.deepEqual(asked, [], `${vendor} at ${url}: the key was sent`);
+    }
+  }
 });
 
 test("a follow-up of a run that saved, opened while another run holds the lease, saves nothing: the save flag its sessions carry is its current launch's", { skip: "follow-up: #2067", timeout: 180_000 }, async (t) => {

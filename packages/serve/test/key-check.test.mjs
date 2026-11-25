@@ -239,6 +239,23 @@ test("each provider's check is one documented call that costs nothing, on the ke
   }
 });
 
+test("a base URL a key may not go to is never sent the key: one with a user or password, a query, a fragment or plain http keeps the key not checked, in words that hold neither the password nor the query", async () => {
+  const { checkKey } = await import("../dist/key-check.js");
+  const key = fake();
+  for (const [id, variable] of [["browserbase", "BROWSERBASE_BASE_URL"], ["kernel", "KERNEL_BASE_URL"], ["typesafe", "TYPESAFE_BASE_URL"], ["anthropic", "ANTHROPIC_BASE_URL"]]) {
+    for (const url of ["https://agent:not-a-secret@gateway.example", "https://gateway.example/?key=not-a-secret", "https://gateway.example/#not-a-secret", "http://gateway.example"]) {
+      const fetcher = recorder(json(200, {}));
+      const { at, ...outcome } = await checkKey({ id, label: ROWS[id] }, key, { [variable]: url }, fetcher);
+      assert.equal(fetcher.sent.length, 0, `${id} at ${url}: the key was sent`);
+      assert.equal(outcome.state, "not_checked", `${id} at ${url}: ${JSON.stringify(outcome)}`);
+      assert.match(at, ISO);
+      assert.ok(outcome.reason.startsWith(`${ROWS[id]} was not checked: ${variable} `), `${id} at ${url} names the variable: ${outcome.reason}`);
+      assert.ok(!/not-a-secret|key=|agent:/.test(outcome.reason), `${id} at ${url} says the password or the query: ${outcome.reason}`);
+      holdsNone(JSON.stringify(outcome), key, `${id} at ${url}`);
+    }
+  }
+});
+
 test("a check reads the provider's answer: 2xx accepted, 401 refused in its first sentence, a 403, any other answer or none not checked, and no message ever holds the key", async () => {
   const { checkKey } = await import("../dist/key-check.js");
   const key = fake();
