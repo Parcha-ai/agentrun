@@ -2,7 +2,8 @@
 // A stand-in ACP agent for the adapter's tests and the conformance suite: a stdio agent on the official SDK whose "model"
 // is a script. No binary, no model, no network beyond loopback. Its one argument is a JSON config file:
 //   script: the model's steps, the conformance suite's ScriptStep ({call, args} | {say, cut} | {sayLastSteer} |
-//           {sayLastResult}) plus {native: kind, title, input}, a tool of the agent's own (a shell, an edit);
+//           {sayLastResult}) plus {native: kind, title, input}, a tool of the agent's own (a shell, an edit), and
+//           {sayTools}, the names its MCP server lists (tools/list), joined by commas;
 //   load: advertise session/load and keep sessions in $HOME/.fake-acp/sessions (default true);
 //   advertiseLoad / advertiseHttp: what initialize says, when it should differ from what the agent does;
 //   http: advertise MCP over HTTP (default true); the client then picks the transport;
@@ -377,6 +378,7 @@ async function takeTurn(client, session, prompt, signal) {
     let words;
     if ("say" in s) words = s.say;
     else if ("sayLastResult" in s) words = lastResult ?? "";
+    else if ("sayTools" in s) words = ((await session.mcp?.request("tools/list", {}))?.tools ?? []).map((tool) => tool.name).join(",");
     else if ("sayLastSteer" in s) words = (notes.includes("[Recovery]") ? lastQuote(blocks.find((b) => b.includes("[Recovery]"))) : undefined) ?? said_;
     else words = "";
     session.history.push({ kind: "say", text: words });

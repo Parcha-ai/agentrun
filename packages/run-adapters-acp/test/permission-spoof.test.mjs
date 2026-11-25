@@ -153,8 +153,9 @@ for (const [style, title, recipeOver] of [
 
 // agy names a call `mcp_<server>_<tool>`, one _ between them: a server named agentrun_look with a tool up would spell
 // our look_up under a server named agentrun. So under a recipe whose prefix joins by one character (agy's
-// `mcp_agentrun_`) our server goes by a name of its start's own, which no server set up before the start can spell.
-test("under agy's recipe the agent is given our MCP server under a name of its start's own, agentrun and 8 hex digits; under Goose's and Cursor's, agentrun", async (t) => {
+// `mcp_agentrun_`) our server goes by a name of its start's own, which no server set up before the start can spell:
+// `ar` and 6 hex digits, as long as `agentrun`, so a tool's name fits agy's cap as it did under `agentrun`.
+test("under agy's recipe the agent is given our MCP server under a name of its start's own, ar and 6 hex digits; under Goose's and Cursor's, agentrun", async (t) => {
   const given = [];
   for (const style of ['antigravity', 'antigravity', 'goose-1.59', 'cursor']) {
     const recipe = fakeRecipe(scratch(), { script: [{ say: 'hi' }], style });
@@ -163,32 +164,39 @@ test("under agy's recipe the agent is given our MCP server under a name of its s
     assert.equal((await session.turnEnd()).status, 'completed');
     given.push(fakeEvents(recipe).filter((e) => e.type === 'new').map((e) => e.names));
   }
-  assert.match(given[0][0]?.[0] ?? '', /^agentrun[0-9a-f]{8}$/);
-  assert.match(given[1][0]?.[0] ?? '', /^agentrun[0-9a-f]{8}$/);
+  assert.match(given[0][0]?.[0] ?? '', /^ar[0-9a-f]{6}$/);
+  assert.match(given[1][0]?.[0] ?? '', /^ar[0-9a-f]{6}$/);
   assert.notEqual(given[0][0][0], given[1][0][0], 'a fresh name at each start');
   assert.deepEqual(given[2], [['agentrun']]);
   assert.deepEqual(given[3], [['agentrun']]);
 });
 
-// agy caps a tool's name at 64 characters, and names ours mcp_agentrun<8 hex>_<tool> (21 + the tool's own): a tool of
-// ours longer than 43 could never be called, so under agy's recipe such a start is refused, naming the tool; Goose's
-// and Cursor's name ours without the per-start name, and start.
-test("under agy's recipe a tool of ours named longer than 43 characters refuses the start, naming it; 43 starts, and Goose and Cursor start with either", async (t) => {
-  const fits = 'a'.repeat(43);
-  const over = 'b'.repeat(44);
-  for (const [style, name, starts] of [['antigravity', fits, true], ['antigravity', over, false], ['goose-1.59', over, true], ['cursor', over, true]]) {
-    const recipe = fakeRecipe(scratch(), { script: [{ say: 'hi' }], style });
-    const { session } = await openSession(t, recipe, { tools: [tool(name, () => 'found')] });
-    await session.send('go');
-    const end = await session.turnEnd();
-    const label = `${style} ${name.length}`;
-    assert.equal(end.status, starts ? 'completed' : 'failed', `${label}: ${end.error ?? ''}`);
-    assert.equal(fakeEvents(recipe).some((e) => e.type === 'start'), starts, label);
-    if (!starts) {
-      assert.match(end.error, /at most 64 characters in all, so a tool's own name may be at most 43/, end.error);
-      assert.ok(end.error.includes(JSON.stringify(over)), end.error);
-      assert.match(end.error, /the agent was not started$/, end.error);
-    }
+// agy caps a tool's name at 64 characters and names ours mcp_<server>_<tool>: 13 + the tool's own, so a tool of ours
+// fits up to 51 characters, as under `agentrun`. A longer one (an `mcp__composio__<slug>`) could never be called: under
+// agy's recipe it is left out of the tools the agent is given, the run is told so in words, and the run goes on with
+// the rest. Goose's and Cursor's name ours without that prefix, and list every tool.
+test("under agy's recipe a tool of ours of 51 characters is listed and called; one of 52 is left out of its tools with a notice naming it, and the run goes on; Goose and Cursor list both", async (t) => {
+  const fits = 'a'.repeat(51);
+  const over = 'b'.repeat(52);
+  for (const style of ['antigravity', 'goose-1.59', 'cursor']) {
+    const recipe = fakeRecipe(scratch(), { script: [{ call: fits, args: { q: 'x' } }, { sayLastResult: true }, { sayTools: true }], style });
+    const { session, events } = await openSession(t, recipe, { tools: [tool(fits, () => 'found'), tool(over, () => 'found too')], gate: async () => 'allow' });
+    await session.send('look');
+    let end = await session.turnEnd();
+    assert.equal(end.status, 'completed', `${style}: ${end.error ?? ''}`);
+    assert.equal(texts(events), 'found', `${style}: the 51-character tool is called`);
+    const notices = events.filter((e) => e.type === 'notice').map((e) => e.text);
+    if (style === 'antigravity') {
+      assert.equal(notices.length, 1, notices.join(' | '));
+      assert.match(notices[0], /at most 64 characters in all, so a tool's own name may be at most 51/, notices[0]);
+      assert.ok(notices[0].includes(JSON.stringify(over)) && !notices[0].includes(JSON.stringify(fits)), notices[0]);
+      assert.match(notices[0], /left out of the tools it is given at this start/, notices[0]);
+    } else assert.deepEqual(notices, [], style);
+    events.length = 0;
+    await session.send('list');
+    end = await session.turnEnd();
+    assert.equal(end.status, 'completed', `${style}: ${end.error ?? ''}`);
+    assert.equal(texts(events), style === 'antigravity' ? fits : `${fits},${over}`, `${style}: the tools listed`);
   }
 });
 

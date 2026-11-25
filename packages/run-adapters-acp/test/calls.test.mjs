@@ -51,26 +51,27 @@ test("ourTool ties agy 1.5.14's name for our tool, `mcp_agentrun_<tool>`, and it
   assert.equal(ourTool({ name: 'mcp_agentrun_look_up', title: 'Run mcp_agentrun_look_up', kind: 'execute' }, TOOLS), undefined, 'a kind with effects of its own');
 });
 
-test("a recipe whose prefix joins our server to the tool with one _ or - (agy's) gives the server a name of each start's own, agentrun and 8 hex digits; any other recipe, agentrun", () => {
+test("a recipe whose prefix joins our server to the tool with one _ or - (agy's) gives the server a name of each start's own, ar and 6 hex digits, as long as agentrun; any other recipe, agentrun", () => {
   const { mcpServerName, joinsByOne } = calls;
   const a = mcpServerName(AGY);
   const b = mcpServerName(AGY);
-  assert.match(a, /^agentrun[0-9a-f]{8}$/, 'no _ or -, so mcp_<server>_<tool> splits at its first _ after mcp_');
+  assert.match(a, /^ar[0-9a-f]{6}$/, 'no _ or -, so mcp_<server>_<tool> splits at its first _ after mcp_');
+  assert.equal(a.length, 'agentrun'.length, "so a tool's name fits agy's cap as it did under agentrun");
   assert.notEqual(a, b, 'a fresh name at each start');
-  assert.match(mcpServerName({ tool: 'name', prefix: 'agentrun-' }), /^agentrun[0-9a-f]{8}$/, 'a - joins by one too');
+  assert.match(mcpServerName({ tool: 'name', prefix: 'agentrun-' }), /^ar[0-9a-f]{6}$/, 'a - joins by one too');
   for (const announces of [undefined, GOOSE, CURSOR, { tool: 'name', prefix: 'agentrun__' }, { tool: 'name', prefix: 'mcp_agentrun__' }]) {
     assert.equal(joinsByOne(announces), false, JSON.stringify(announces));
     assert.equal(mcpServerName(announces), 'agentrun', JSON.stringify(announces));
   }
 });
 
-test("agy caps a tool's name at 64 characters: under a start's own server name (mcp_agentrun<8 hex>_, 21 characters) a tool of ours fits up to 43; namesTooLong names those that do not, and only for a recipe whose prefix names our tool", () => {
+test("agy caps a tool's name at 64 characters: under a start's own server name (mcp_ar<6 hex>_, 13 characters, as mcp_agentrun_) a tool of ours fits up to 51; namesTooLong names those that do not, and only for a recipe whose prefix names our tool", () => {
   const { announcesAt, namesTooLong, TOOL_NAME_CAP } = calls;
   assert.equal(TOOL_NAME_CAP, 64);
-  const at = announcesAt(AGY, 'agentrun0123abcd');
-  assert.equal(at.prefix.length, 21);
-  const fits = 'a'.repeat(43);
-  const over = 'b'.repeat(44);
+  const at = announcesAt(AGY, 'ar0123ab');
+  assert.equal(at.prefix, 'mcp_ar0123ab_');
+  const fits = 'a'.repeat(51);
+  const over = 'b'.repeat(52);
   assert.deepEqual(namesTooLong(at, ['look_up', fits, over]), [over]);
   assert.deepEqual(namesTooLong(at, ['look_up', fits]), []);
   for (const announces of [undefined, GOOSE, CURSOR]) assert.deepEqual(namesTooLong(announces, [over, 'c'.repeat(80)]), [], JSON.stringify(announces));
