@@ -125,7 +125,8 @@ for (const [style, title, recipeOver] of [
   ['goose-1.59', 'agentrun: write · proof.txt', { allowFile: undefined }],
   ['goose', 'agentrun__write', { allowFile: undefined }],
   ['cursor', 'agentrun-write: write', { quirks: undefined }],
-  ['antigravity', 'Run mcp_agentrun_write', { quirks: undefined }],
+  // agy is given our server under its start's own name (agentrun and 16 hex digits), which its title carries.
+  ['antigravity', 'Run mcp_agentrun<start>_write', { quirks: undefined }],
 ]) {
   test(`a recipe without the title tie never answers allow_once on the title: ${JSON.stringify(title)} (${style}) asks the host's gate, journaled; a deny answers reject_once`, async (t) => {
     // Before: each was answered allow_once, the gate asked only at the MCP call. Now Goose asks nothing for our tools
@@ -140,7 +141,9 @@ for (const [style, title, recipeOver] of [
     });
     await session.send('go');
     assert.equal((await session.turnEnd()).status, 'completed');
-    assert.deepEqual(asked.map((c) => [c.tool, c.args.title]), [['acp_other', title]], 'the host gate was asked about the request');
+    assert.deepEqual(asked.map((c) => c.tool), ['acp_other'], 'the host gate was asked about the request');
+    const titled = new RegExp(`^${title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace('<start>', '[0-9a-f]{16}')}$`);
+    assert.match(String(asked[0].args.title), titled);
     assert.deepEqual(fakeEvents(recipe).filter((e) => e.type === 'permission').map((e) => e.kind), ['reject_once']);
     assert.equal(ran, 0, 'refused at the protocol, so the agent never made the call');
     const journaled = await streamRecords(store, 'acp.permission');
