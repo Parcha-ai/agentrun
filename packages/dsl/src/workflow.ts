@@ -1715,8 +1715,7 @@ export class WorkflowStateError extends Error {
 export type MapItemFailure = { item_index: number; label: string; code: string; message: string; needs_review?: true };
 
 /** Decision provider failures a collecting map ends one item on: the item's request failed, and the others go on. Not
- *  `configuration`, `auth` or `payment_required` (every item would fail the same way: a 402, out of credit, was `http`
- *  and collected item by item until it had its own code, and now fails the run as `auth` does), `aborted`, or
+ *  `configuration`, `auth` or `payment_required` (every item would fail the same way, so the run fails), `aborted`, or
  *  `outcome_unknown` (which is reviewed). */
 const ITEM_DECISION_FAILURES: ReadonlySet<string> = new Set(["rate_limited", "http", "invalid_response", "timeout", "invalid_request", "connection"]);
 /** Decision escalations a collecting map ends one item on, marked for review: the run goes on with the other items. */
