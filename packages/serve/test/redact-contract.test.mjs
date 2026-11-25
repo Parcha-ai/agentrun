@@ -1158,7 +1158,7 @@ test("adversarial texts: the characters the shape scanners visit are at most a f
 //   percent and "+", and two levels: 46 each, 184); the quoted join (a single-quoted dict's, each JSON string's text read again
 //   one level down for a dict written in it), read at level 0 and 1 (2) and written (4: its parts twice as long as the
 //   text at most), and three decoding views over it (JSON's escapes, Python's where the text holds one, and both at two
-//   levels where it holds an escaped backslash too: 92 each, 276); then each searched for 7 plain needles, the hex and
+//   levels where it holds an escaped backslash: 92 each, 276); then each searched for 7 plain needles, the hex and
 //   the fold, lowered and flattened, each find checked against the covered stretches (21 each, 42 over a join, 84 over
 //   the quoted one): about 1,251; planCut runs two (the text with its cuts, then the cut text, at most 10/8 as long):
 //   about 2,815;

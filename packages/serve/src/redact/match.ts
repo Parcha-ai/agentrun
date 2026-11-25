@@ -995,8 +995,9 @@ const viewSpec = (when: (has: Families) => boolean, decoders: readonly Decoder[]
  *    single-quoted dict), one level of JSON's escapes decoded. A view of its own, so the views before it read an
  *    apostrophe outside a "..." string as they did; and the same decoded through Python's escapes, where the text holds
  *    one ("\'" in a string with both quotes, "\x41"), beside it, so a backslash read as itself there still is; and
- *    through both levels of them, where the text also holds an escaped backslash (a dict written in a JSON string,
- *    "\\'" and "\\x41"). The quoted join reads a JSON string's text for a dict written in it too.
+ *    through both levels of them and of JSON's, where the text holds an escaped backslash, with or without one of
+ *    Python's (a dict written in a JSON string: "\\'", "\\x41", "\\t"). The quoted join reads a JSON string's text for a
+ *    dict written in it too.
  *  The decoders of a view decode in one pass: each reads at its own trigger character, so a view costs one read of the
  *  text whatever it decodes. Each view is lowered for hexes and flattened for folded identifiers in holds. */
 const VIEWS: readonly ViewSpec[] = [
@@ -1015,7 +1016,7 @@ const VIEWS: readonly ViewSpec[] = [
   viewSpec((has) => has.quote && has.deep, [JSON_ESCAPE_QUOTED], "strings"),
   viewSpec((has) => has.apostrophe, [JSON_ESCAPE_ONCE], "quoted"),
   viewSpec((has) => has.apostrophe && has.python, [PYTHON_ESCAPE], "quoted"),
-  viewSpec((has) => has.apostrophe && has.python && has.deep, [PYTHON_ESCAPE_TWICE], "quoted"),
+  viewSpec((has) => has.apostrophe && has.deep, [PYTHON_ESCAPE_TWICE], "quoted"),
 ];
 
 // ---- The join view: a JSON text's strings read joined, so a held value split across two of them reads whole.
