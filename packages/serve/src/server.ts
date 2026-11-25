@@ -2376,15 +2376,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // A live run's model requests sent and not answered (in-flight.ts), from its booking's records in its journal.
     inFlight: async (forStore, runId, context) => modelsInFlight(await runEntries(forStore, runId, context)),
   });
-  /** `text` as a message to run `runId` is written: cut of `handed` (what the message itself hands) and of what the run
-   *  holds now (its turn's end erases those, and a read after it could no longer cut them). A run whose seal doesn't
-   *  open here (its seal key changed or is missing, or what was sealed is damaged or lost) takes no message: 409
-   *  not_continuable, reason withheld (WITHHELD_MESSAGE), and nothing is written, since what it can't read it can't
-   *  cut, and a message written uncut would show those values once the run's end lets its reads go uncut-withheld.
-   *  Read inside the turn that writes the message (runWrite), never before it: a message written first in that turn
-   *  (one that hands a new key) is in the seal read here, so a message that says that key without handing it is cut of
-   *  it too. Both writers of a message read it: a person's (sendMessage) and a trigger's (trigger-targets.ts
-   *  message_run, which skips with those words). */
+  /** `text`, a person's words written into run `runId`, cut of `handed` and of what the run holds now, read inside runWrite:
+   *  a message (sendMessage, and a trigger's message_run) and an approval's note (answerApproval). A seal that doesn't
+   *  open here refuses the words (409 not_continuable, reason withheld, WITHHELD_MESSAGE) and nothing is written: unread
+   *  values can't be cut. */
   async function cutHeld(runId: string, text: string, handed: readonly string[] = []): Promise<string> {
     const held = launchValuesOf(sealKey, runId, (await store.runs.launch(runId)).sealed);
     if (held === "unreadable") throw new ApiError("not_continuable", WITHHELD_MESSAGE, { details: { reason: "withheld" } });
@@ -5540,7 +5535,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         if (body.decision !== "allow" && body.decision !== "deny") issues.push({ field: "decision", reason: body.decision === undefined ? "missing" : "not_an_option", message: "decision is allow or deny" });
         if (body.note !== undefined && (typeof body.note !== "string" || body.note.length > 2000)) issues.push({ field: "note", reason: "wrong_type", message: "note is a string of at most 2000 characters" });
         if (issues.length) throw invalid(issues);
-        await approve(store, run, decodeURIComponent(second!), body.decision as "allow" | "deny", typeof body.note === "string" && body.note.trim() ? body.note.trim() : undefined, body.confirm_destructive === true);
+        // A note is cut as a message is, in the turn that writes it (cutHeld): refused when the seal does not open here.
+        const note = typeof body.note === "string" && body.note.trim() ? body.note.trim() : undefined;
+        await runWrite(run.agentId, run.id, async () => approve(store, run, decodeURIComponent(second!), body.decision as "allow" | "deny", note === undefined ? undefined : await cutHeld(run.id, note), body.confirm_destructive === true));
         res.writeHead(204, { "cache-control": "no-store", "x-content-type-options": "nosniff" });
         return void res.end();
       }
