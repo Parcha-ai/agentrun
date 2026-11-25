@@ -340,10 +340,12 @@ function bounded<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
   return Promise.race([promise, late]).finally(() => clearTimeout(timer));
 }
 
-function ApplyTemplate({ v2, template: t, go, playground = false, draft, model }: Props & { template: TemplateView; model?: string }) {
+function ApplyTemplate({ v2, template: t, go, playground = false, draft, model: linked }: Props & { template: TemplateView; model?: string }) {
   const Heading = playground ? "h2" : "h1";
   const form = { fields: schemaFields(t.parameters) ?? [], contentRequired: false };
   const prepared = readTemplateDraft(draft, t);
+  // The agent's model as the link set it, or as a prepared request carries it (the playground opened from Use free).
+  const model = linked ?? prepared.body?.overrides?.model;
   // Shared compiled fields supply defaults; an explicit prepared false, zero or list stays the reviewed choice.
   const [values, setValues] = useState<ParameterText>(() => ({ ...Object.fromEntries(form.fields.filter(([, field]) => field.type === "boolean" && !field.array).map(([key]) => [key, "false"])), ...fieldStartText(form), ...Object.fromEntries(Object.entries(prepared.body?.parameters ?? {}).map(([key, value]) => [key, Array.isArray(value) ? value.map(String).join("\n") : String(value)])) }));
   const [ticked, setTicked] = useState<Set<string>>(() => new Set(prepared.body?.grants ?? []));
