@@ -15,6 +15,7 @@ import { seedOf } from "../dist/learning.js";
 import * as learning from "../dist/learning.js";
 import { LEARNED_WORKFLOW_TOOL, learnedWorkflowDescription, learnedWorkflowTool } from "../dist/learned-workflow.js";
 import { replayOf } from "../dist/tool-list.js";
+import { workflowDigest } from "../dist/runner/workflow-first.js";
 import { learningWorkspace } from "../dist/workspace/index.js";
 import { readSnapshot } from "../dist/learn/folder.js";
 import { entriesOf, git, resnap } from "./learn-support.mjs";
@@ -424,6 +425,25 @@ test("on pi, learned_workflow set to deny for the agent is refused by the gate i
   assert.match(JSON.stringify(result), /Permission denied: learned_workflow is set to deny for this agent/, JSON.stringify(result));
   assert.deepEqual((await entriesOf({ data }, runId, ["agentrun.request_started"])).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL), [], "no node ran");
 });
+
+/** Agent `id` on `harness` (pi's faux model, or the faux CLI harness behind a faux gateway), learned_workflow set to deny
+ *  for it, one run of ASK, ended: its id, rows and view. */
+async function refusedRun(t, id, harness) {
+  const { api, data, store } = await serve(t, { learning: "on", ...(harness === "pi" ? {} : { harnessTable: fauxTable(FAUX_HARNESS), ...(await routed(t, harness)) }) });
+  return ran(api, data, store, id, harness, flowFiles("answer", answerFlow()), [], { extra: { tool_settings: { [LEARNED_WORKFLOW_TOOL]: { permission: "deny" } } } });
+}
+
+// An agent's learned_workflow call its gate refuses (a deny set, as here; a person's deny of its ask alike) never reaches
+// the tool, which keeps every other call's record: its record is kept at the gate, as the platform's refused call's is, so
+// the run's workflow_calls name it, refused, its $ none, and the money rule counts it on no side.
+for (const harness of ["pi", "codex"]) {
+  test(`on ${harness}, a learned_workflow call the gate refuses keeps its record: refused, the agent's, at the workflow's digest`, { timeout: 120_000 }, async (t) => {
+    const { rows, view } = await refusedRun(t, `refused-${harness}`, harness);
+    assert.match(JSON.stringify(learnedResult(rows)), /learned_workflow is set to deny for this agent/, JSON.stringify(learnedResult(rows)));
+    const digest = workflowDigest({ workflow: JSON.stringify(answerFlow()) });
+    assert.deepEqual(view.workflow_calls, [{ workflow: "answer", digest, caller: "agent", outcome: "refused", usd: 0 }], JSON.stringify(view));
+  });
+}
 
 /** A learned workflow of one call node on `tool`, or that node inside a composed workflow node (`nested`). */
 const callFlow = (tool, nested = false) => {
