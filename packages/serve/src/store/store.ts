@@ -489,6 +489,10 @@ export interface Learning {
    *  only beside a run's end and a heal of its cost (run-patch.ts recordLedger); a purge or a delete of the run takes its
    *  row and its spend. */
   ledger(agentId: string, runIds?: readonly string[]): Promise<{ rows: (LedgerRow & { readonly epoch: number })[]; spend: SpendRow[] }>;
+  /** Agent `agentId`'s newest `limit` ledger rows on the `agent` path at a known cost, of runs before run `before` in
+   *  runs.list's order (started_at, then id), on no named disk, neither imported nor archived, newest first: the money
+   *  rule's by-hand side read past its window (store-reads/learning.ts pastRunsRead). One read. */
+  byHandBefore(agentId: string, before: { readonly id: string; readonly startedAt: number }, limit: number): Promise<{ readonly id: string; readonly startedAt: number; readonly jobUsd: number }[]>;
 }
 
 /** One run's learning end as GET /usage's learning meter counts it (Learning.spend). */

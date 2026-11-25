@@ -10,12 +10,12 @@ import { runLearningBody } from "../learning-routes.js";
 import { learningStartOf, learningStartOfStored, readLaunchBody, type RunLaunch, seedFailed } from "../run-launch.js";
 import { said, seedStopped } from "../learning-words.js";
 import { type Impact, type ImpactLearning, learningImpact } from "../learning-run.js";
-import { type Bill, type BillHold, type CostReplay, type CostRun, type CostSummary, JOB_PATHS, RUN_PATHS, type RunPath, SERVED_PATHS } from "../learning-cost.js";
+import { type Bill, type BillHold, COST_WINDOW, type CostReplay, type CostRun, type CostSummary, JOB_PATHS, RUN_PATHS, type RunPath, SERVED_PATHS } from "../learning-cost.js";
 import { type Answered, answeredOf, figuresOf, type LedgerRead, type LedgerRow, record, type RevisionAt, roundsLooked, roundsSpentIn, type RunEnd, type RunFigures, type Shadow, shadowCostOf, shadowSpend, type SpendRow, spendByRun, summarize, type Summarized } from "../learn/ledger.js";
 import { COMPILE_AFTER_DEFAULT } from "../learning-setting.js";
 import { modelsOwn, runPathOf, workflowNameOf } from "../runner/learning-end.js";
 import { feedbackStatus } from "../runner/feedback-round.js";
-import { costStopOf, NO_PAST_RUNS, PAST_RUNS, type PastRuns, servedAnswerOf, servedAnswerStands, servedOf, workflowCostsOf } from "../runner/workflow-first.js";
+import { costStopOf, meanOf, NO_PAST_RUNS, PAST_RUNS, type PastRuns, servedAnswerOf, servedAnswerStands, servedOf, workflowCostsOf } from "../runner/workflow-first.js";
 import { type Reflect, reflects } from "../reflect-range.js";
 import { correctionCount } from "../learn/corrections.js";
 import type { RunRow } from "../agent-rows.js";
@@ -234,7 +234,7 @@ export async function agentCostOverStore(store: Store, agentId: string, limit = 
   const { runs } = out;
   // Each learned workflow that ran first, where it stands against the money rule, over the figures this series shows: a
   // workflow over the line shows `needs_revision` with its two numbers, so the page and the launch's decision agree.
-  const workflows = workflowCostsOf(pastRunsOf(out, listed, await sinceReset(store, agentId)));
+  const workflows = workflowCostsOf(await pastRunsRead(store, agentId, out, listed));
   const summary: CostSummary = { ...out.summary, replay: servingReplayOf(promotions, runs, skip) };
   const bill: Bill = { ...out.bill, holds: holdsOf(promotions, runs) };
   return { runs: runs.slice(Math.max(0, runs.length - limit)), summary, total_runs: runs.length, unknown_cost_runs: runs.filter((run) => run.total_usd === null).length, unknown_path_runs: out.unknown_path_runs, workflows, bill };
@@ -489,6 +489,19 @@ export function pastRunsOf(out: Summarized, listed: readonly RunRecord[], since:
   return { runs, by_hand, by_hand_unknown: byHand.length - known.length };
 }
 
+/** pastRunsOf over the store: when the window is full and holds no run by hand of known cost (a workflow that serves well
+ *  serves every run, so none is left in it), the by-hand side is the job's own $ of the newest COST_WINDOW runs by hand
+ *  of known cost before it, since the reset (Learning.byHandBefore, one bounded read); null only when there are none. */
+async function pastRunsRead(store: Store, agentId: string, out: Summarized, listed: readonly RunRecord[]): Promise<PastRuns> {
+  const since = await sinceReset(store, agentId);
+  const past = pastRunsOf(out, listed, since);
+  const window = listed.filter((run) => run.disk === null).slice(0, PAST_RUNS);
+  const oldest = window.at(-1);
+  if (past.by_hand !== null || window.length < PAST_RUNS || !oldest || !since(oldest)) return past;
+  const before = (await store.learning.byHandBefore(agentId, oldest, COST_WINDOW)).filter(since);
+  return { ...past, by_hand: meanOf(before.map((row) => row.jobUsd)) };
+}
+
 /** What the money rule reads for agent `agentId` at a run's launch (pastRunsOf), bounded whatever the agent's history:
  *  its newest PAST_RUNS runs on no named disk (one runs.list page), the ledger of those runs alone (Learning.ledger with
  *  their ids), and each one's launch or rounds read only where its row needs them (no ledger row, a stale one, or no
@@ -497,7 +510,7 @@ export function pastRunsOf(out: Summarized, listed: readonly RunRecord[], since:
 export async function pastRunsOverStore(store: Store, agentId: string): Promise<PastRuns> {
   const listed = (await store.runs.list({ agentId, disk: null, limit: PAST_RUNS })).filter((run) => run.agentId === agentId);
   const read = await ledgerReadOf(store, agentId, listed, store, { runIds: listed.map((run) => run.id), named: false });
-  return pastRunsOf(summarize({ ...read, revisions: [] }), listed, await sinceReset(store, agentId));
+  return pastRunsRead(store, agentId, summarize({ ...read, revisions: [] }), listed);
 }
 
 /** The money rule's decision for agent `agentId` (runner/workflow-first.ts costStopOf) over the runs a run's launch reads

@@ -2093,6 +2093,17 @@ class SqliteStore implements Store {
           spend: spend.sort((a, b) => byText(a.runId, b.runId) || byText(a.kind, b.kind) || a.round - b.round),
         };
       },
+      byHandBefore: async (agentId, before, limit) => {
+        const rows = await db.all<{ run_id: string; started_at: number | string; job_usd: number }>(
+          `SELECT l.run_id, runs.started_at, l.job_usd FROM learning_ledger l JOIN runs ON runs.id = l.run_id
+             WHERE l.agent_id = ? AND l.path = 'agent' AND l.cost = 'known' AND l.job_usd IS NOT NULL AND runs.${NOT_A_LEARNING_RUN}
+               AND runs.disk IS NULL AND runs.imported_from IS NULL AND runs.archived_at IS NULL AND runs.purged_at IS NULL
+               AND (runs.started_at < ? OR (runs.started_at = ? AND runs.id < ?))
+             ORDER BY runs.started_at DESC, runs.id DESC LIMIT ?`,
+          agentId, before.startedAt, before.startedAt, before.id, limit,
+        );
+        return rows.map((row) => ({ id: row.run_id, startedAt: Number(row.started_at), jobUsd: Number(row.job_usd) }));
+      },
     };
 
     this.settings = {

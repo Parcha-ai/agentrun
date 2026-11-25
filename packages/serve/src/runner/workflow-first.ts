@@ -15,7 +15,8 @@
 // cost. Both are the cost page's own (store-reads/learning.ts, over learn/ledger.ts summarize): the served side reads a
 // run's all-in (its booked cost, the workflow and any handback's agent work together, and every learning round booked
 // for it), and the by-hand cost is the job's own cost of the agent's runs on its own path among the same runs (its newest
-// PAST_RUNS on no named disk since its learning's reset), so a compile turn is never by hand: it is its revision's spend. A run
+// PAST_RUNS on no named disk since its learning's reset; with none there, the newest COST_WINDOW before them), so a
+// compile turn is never by hand: it is its revision's spend. A run
 // whose cost is unknown is left out of its side's mean and counted, never read as 0. Over that line it stops running
 // first: the agent takes the run, the run's journal keeps why with the two numbers (WORKFLOW_FIRST, outcome
 // needs_revision), and the agent's cost per run shows it stopped. The stop asks for no compile. A new revision of it (a
@@ -87,8 +88,8 @@ export type PastRun = { readonly metrics: unknown; readonly allInUsd: number | n
 type Mean = { readonly runs: number; readonly mean_usd: number };
 /** What the money rule reads of the agent (store-reads/learning.ts pastRunsOf): of its newest PAST_RUNS runs on no named
  *  disk, those since its learning's reset (`runs`, any order), and the by-hand cost over those same runs (`by_hand`: the
- *  mean job's own $ of the ones on the `agent` path, learning left out) with the by-hand runs it left out for an unknown
- *  cost (`by_hand_unknown`). */
+ *  mean job's own $ of the ones on the `agent` path, learning left out; when they hold none of known cost, of the newest
+ *  COST_WINDOW before them, pastRunsRead) with the by-hand runs it left out for an unknown cost (`by_hand_unknown`). */
 export type PastRuns = { readonly runs: readonly PastRun[]; readonly by_hand: Mean | null; readonly by_hand_unknown: number };
 /** No runs read: nothing to stop. */
 export const NO_PAST_RUNS: PastRuns = { runs: [], by_hand: null, by_hand_unknown: 0 };
@@ -98,7 +99,8 @@ export const PAST_RUNS = 500;
 
 const SERVED: readonly unknown[] = ["workflow", "handed_back"];
 const usd = (value: number) => Math.round(value * 1e6) / 1e6;
-const meanOf = (costs: readonly number[]): Mean | null => (costs.length ? { runs: costs.length, mean_usd: usd(costs.reduce((a, b) => a + b, 0) / costs.length) } : null);
+/** The mean of `costs`, rounded to 1e-6; null for none. */
+export const meanOf = (costs: readonly number[]): Mean | null => (costs.length ? { runs: costs.length, mean_usd: usd(costs.reduce((a, b) => a + b, 0) / costs.length) } : null);
 const pathFields = (metrics: unknown) => (isObject(metrics as Json) ? (metrics as { path?: unknown; workflow?: unknown; workflow_digest?: unknown }) : {});
 
 /** The money rule's two sides for workflow `name` at `digest`, over the agent's runs (`past`): `served`, the mean all-in
