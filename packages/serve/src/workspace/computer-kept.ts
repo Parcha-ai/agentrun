@@ -38,15 +38,16 @@
 // machine gone where it is, as when it deletes it itself. Once it is gone (its row stale
 // for RUNNER_STALE_MS, a new incarnation) or refusing claims, any runner claims the run; a claim that then can't reach
 // the machine says why: its runner is gone (computerLostWords), or it is there and ends it (computerHeldWords). A
-// refusing runner is still there (store KEPT_PREFIX). The claim that could not reach the machine puts the row back
-// marked ending, whatever it then reads of that runner (restoreKept: the claim goes on on a new machine, so that one is
-// the run's no more and no claim takes it back), and no janitor but that runner's ends a row pinned to a runner still
-// there (sweepKept): that runner's own timer (endKept finishes a row so marked) or janitor does; once it is gone, any
-// janitor does. No park writes over a row pinned to another runner still there (keepKept): it keeps nothing then, and
-// its machine goes as at the run's end. So a machine a claim took and could not reach, or a park did not keep, is not
-// left with no row and no runner to end it, short of the claim's process dying between its take and its give-back. A
-// machine any runner reaches by its id (an exec vendor's sandbox, a phone)
-// is not pinned, and moves.
+// refusing runner is still there (store KEPT_PREFIX). A claim takes a row back by marking it taking (takeKept), never
+// by removing it: the mark comes off once the claim holds the machine (keptTaken), and turns ending when it goes on
+// without it (restoreKept: the claim goes on on a new machine, so that one is the run's no more and no claim takes it
+// back), whatever it then reads of that runner. No janitor but that runner's ends a row pinned to a runner still there
+// (sweepKept): that runner's own timer (endKept finishes a row so marked, or one still marked taking) or janitor does;
+// once it is gone, any janitor does. No park writes over a row pinned to another runner still there, or marked taking
+// (keepKept): it keeps nothing then, and its machine goes as at the run's end. So a machine a claim took and could not
+// reach, or a park did not keep, is never left with no row to end it: a give-back the store fails, or a claim's process
+// that died mid-way, leaves the row marked taking, and it is ended at its time as any row. A machine any runner reaches
+// by its id (an exec vendor's sandbox, a phone) is not pinned, and moves.
 import { type ComputerProvider, connectOf, type MountKind, type ProviderEntry } from "@parcha/agentrun-computer";
 import { type Claim, FINAL_STATES, KEPT_PREFIX, RUNNER_STALE_MS, type Runners, type Settings, type Store } from "../store/index.js";
 
@@ -122,6 +123,10 @@ export type Kept = {
    *  again (pinnedOf): both or neither. Absent: any runner takes it back. */
   readonly runner?: string;
   readonly incarnation?: string;
+  /** The epoch of the claim taking it back (takeKept): that claim is reaching it, or could not write what came of that.
+   *  No claim takes it, no park writes over it, and at its time it is ended as any row (endKept, sweepKept), so a
+   *  take-back that never wrote its end (its process died, the store failed it) leaves the machine a row to end it. */
+  readonly taking?: number;
   readonly ending?: true;
   readonly ended?: true;
 };
@@ -183,25 +188,32 @@ export type KeptSettings = Pick<Settings, "get" | "put" | "putIfAbsent" | "repla
 /** A row's value as a Kept, or undefined for anything else. */
 export function keptOf(value: unknown): Kept | undefined {
   if (!value || typeof value !== "object") return undefined;
-  const { provider, kind, id, name, epoch, until, folder, runner, incarnation, ending, ended } = value as Record<string, unknown>;
+  const { provider, kind, id, name, epoch, until, folder, runner, incarnation, taking, ending, ended } = value as Record<string, unknown>;
   if (typeof provider !== "string" || (kind !== "desktop" && kind !== "phone" && kind !== "sandbox") || typeof id !== "string" || typeof name !== "string") return undefined;
   if (typeof epoch !== "number" || !Number.isSafeInteger(epoch) || typeof until !== "number" || !Number.isFinite(until)) return undefined;
   if (folder !== undefined && folder !== "bind" && folder !== "archil" && folder !== "sync") return undefined;
   // Its runner and incarnation together, or neither.
   if ((runner === undefined) !== (incarnation === undefined)) return undefined;
   if (runner !== undefined && (typeof runner !== "string" || typeof incarnation !== "string")) return undefined;
+  if (taking !== undefined && (typeof taking !== "number" || !Number.isSafeInteger(taking))) return undefined;
   const held = { ...(folder === undefined ? {} : { folder: folder as MountKind }), ...(typeof runner === "string" && typeof incarnation === "string" ? { runner, incarnation } : {}) };
   if (ended === true) return { provider, kind, id, name, epoch, until, ...held, ended: true };
-  return { provider, kind, id, name, epoch, until, ...held, ...(ending === true ? { ending: true as const } : {}) };
+  if (ending === true) return { provider, kind, id, name, epoch, until, ...held, ending: true };
+  return { provider, kind, id, name, epoch, until, ...held, ...(typeof taking === "number" ? { taking } : {}) };
 }
 
-/** The row as written: its fields in one order, so a compare-and-set reads the same text. */
+/** The row as written: its fields in one order, so a compare-and-set reads the same text. Marked ending or ended, it
+ *  is no claim's take any more. */
 const rowOf = (kept: Kept, state?: "ending" | "ended"): Kept => ({
   provider: kept.provider, kind: kept.kind, id: kept.id, name: kept.name, epoch: kept.epoch, until: kept.until,
   ...(kept.folder === undefined ? {} : { folder: kept.folder }),
   ...(kept.runner === undefined || kept.incarnation === undefined ? {} : { runner: kept.runner, incarnation: kept.incarnation }),
+  ...(state === undefined && kept.taking !== undefined ? { taking: kept.taking } : {}),
   ...(state === "ending" ? { ending: true as const } : state === "ended" ? { ended: true as const } : {}),
 });
+
+/** Whether `row` is `kept`'s keep, whoever is taking it back (a row a park wrote, the same once marked taking). */
+const sameKeep = (row: Kept | undefined, kept: Kept): boolean => row !== undefined && JSON.stringify(rowOf({ ...row, taking: undefined } as Kept)) === JSON.stringify(rowOf({ ...kept, taking: undefined } as Kept));
 
 /** `runId`'s kept computer, as its row reads now; undefined when there is none. */
 export async function readKept(settings: Pick<KeptSettings, "get">, runId: string): Promise<Kept | undefined> {
@@ -224,12 +236,13 @@ const KEEP_TRIES = 3;
  * row as read (replaceIf). Its row as written, or undefined when the park keeps nothing.
  *
  * A row not yet ended that is pinned to another runner still there (`holders`, heldElsewhere: store KEPT_PREFIX's one
- * meaning of there) is never written over. That runner's end at its time (endKept) compares the row with the one its park
- * wrote, so a row written over would leave its machine running with nothing to end it. The park keeps nothing then. Its
- * row is marked ending where it is not yet: this claim went on without that machine, so no claim may take it back as the
- * run's, and that runner's end still finishes a row so marked. Any other row is replaced, as before: no runner, this
- * claim's own runner, a runner gone, or one ended. A write that lost reads again, up to KEEP_TRIES times; past them the
- * park keeps nothing. Throws where the store throws.
+ * meaning of there), or that a claim is taking back (Kept.taking: it may be reaching the machine, or could not write what
+ * came of that), is never written over. Its end at its time (endKept) compares the row with the one its park wrote, so a
+ * row written over would leave its machine running with nothing to end it. The park keeps nothing then. Its row is marked
+ * ending where it is not yet: this claim went on without that machine, so no claim may take it back as the run's (a claim
+ * still reaching it then never uses it), and its end still finishes a row so marked. Any other row is replaced, as
+ * before: no runner, this claim's own runner, a runner gone, or one ended. A write that lost reads again, up to
+ * KEEP_TRIES times; past them the park keeps nothing. Throws where the store throws.
  *
  * Every write is under `claim`, the parking claim (Settings.putIfAbsent's and replaceIf's claim: the fence checked in the
  * write's own transaction). A park runs before its claim's park commit, so a claim that lost the run by then (its lease
@@ -247,7 +260,7 @@ export async function keepKept(settings: Pick<KeptSettings, "get" | "putIfAbsent
       continue;
     }
     const other = keptOf(was);
-    if (other && !other.ended && (await elsewhere(other))) {
+    if (other && !other.ended && (other.taking !== undefined || (await elsewhere(other)))) {
       if (!other.ending) await settings.replaceIf(key, was, rowOf(other, "ending"), claim);
       return undefined;
     }
@@ -256,31 +269,80 @@ export async function keepKept(settings: Pick<KeptSettings, "get" | "putIfAbsent
   return undefined;
 }
 
-/** Takes `kept` off its row for the claim that resumes in time: true when this call took it, false when its end (or
- *  another claim) had it first. */
-export async function takeKept(settings: Pick<KeptSettings, "removeIf">, runId: string, kept: Kept): Promise<boolean> {
-  return settings.removeIf(keptKeyOf(runId), kept);
+/** Takes `row` off `runId`'s row, only while it still reads so: a keep written for a park that never followed. */
+export async function dropKept(settings: Pick<KeptSettings, "removeIf">, runId: string, row: Kept): Promise<boolean> {
+  return settings.removeIf(keptKeyOf(runId), row);
 }
 
-/** Puts `kept` back on `runId`'s row after a claim took it (takeKept) and could not reach its machine, pinned to another
- *  runner, marked ending, whether that runner is there or not: the claim goes on on a new machine, so no claim takes that
- *  one back as the run's (nor does the claim rule pin the run to it). That runner's end at its time (endKept, which
- *  finishes a row its park wrote that reads ending) or its janitor's next pass deletes it; once it is gone, any janitor's
- *  pass does. Only while the key has no row: nothing written since is replaced. True when the row reads so after. */
-export async function restoreKept(settings: Pick<KeptSettings, "putIfAbsent">, runId: string, kept: Kept): Promise<boolean> {
-  const row = rowOf(kept, "ending");
-  return JSON.stringify(await settings.putIfAbsent(keptKeyOf(runId), row)) === JSON.stringify(row);
+/** How many times a claim's take-back writes what came of it (keptTaken, restoreKept) when the store fails the write. */
+const GIVE_BACK_TRIES = 3;
+
+/** `work` again while it throws, up to GIVE_BACK_TRIES times in all; the last throw is thrown. */
+async function tried<T>(work: () => Promise<T>): Promise<T> {
+  for (let tries = 1; ; tries += 1) {
+    try {
+      return await work();
+    } catch (error) {
+      if (tries >= GIVE_BACK_TRIES) throw error;
+    }
+  }
 }
 
-/** Ends a kept computer at its time: its row marked ending, only while it still reads `kept` (a claim that took it since
- *  has it), then `end` (its delete), then the row marked ended. A row already ending (a process that died mid-way, a
- *  delete that failed, a claim that gave it back or a park that kept nothing else: restoreKept, keepKept) is deleted
- *  again. A delete that fails leaves the row ending, for the janitor's next pass, and throws its words. True when this
- *  call ended it. */
+/** Marks `kept` taking on its row for the claim at `epoch` that resumes in time (Kept.taking), under `claim` (the store's
+ *  fence: a claim that lost the run takes nothing): the row as marked when this call took it, undefined when its end (or
+ *  another claim) had it first. The row stays while the claim reaches the machine: it holds it once keptTaken takes the
+ *  mark off, and goes on without it through restoreKept. */
+export async function takeKept(settings: Pick<KeptSettings, "replaceIf">, runId: string, kept: Kept, epoch: number, claim?: Claim): Promise<Kept | undefined> {
+  const taking = rowOf({ ...kept, taking: epoch });
+  return (await settings.replaceIf(keptKeyOf(runId), rowOf(kept), taking, claim)) ? taking : undefined;
+}
+
+/** The claim that marked `taking` (takeKept) reached its machine: the row taken off, only while it still reads so. True
+ *  when the machine is the claim's; false when the row changed since (its end began at its time, a park or a stop marked
+ *  it ending), and the claim must not use it. A write the store fails is tried again; past GIVE_BACK_TRIES it throws. */
+export async function keptTaken(settings: Pick<KeptSettings, "removeIf">, runId: string, taking: Kept): Promise<boolean> {
+  return tried(() => settings.removeIf(keptKeyOf(runId), taking));
+}
+
+/** The claim that marked `taking` (takeKept) goes on without its machine (it could not reach it, or could not say it
+ *  holds it): the row turned ending, whoever kept it and whether that runner is there or not, so no claim takes that
+ *  machine back as the run's (nor does the claim rule pin the run to it). Its runner's end at its time (endKept, which
+ *  finishes a row its park wrote that reads ending) or its janitor's next pass deletes it; once it is gone, or where any
+ *  runner reaches it, any janitor's pass does. A row this claim took the mark off (it reached the machine, then failed
+ *  before it could use it) is put back so, only while the key has none. A write the store fails is tried again. True when
+ *  the row reads ending (or ended) after; false when it does not (the store failed every try, and the row is left marked
+ *  taking, which is ended at its time all the same). */
+export async function restoreKept(settings: Pick<KeptSettings, "get" | "putIfAbsent" | "replaceIf">, runId: string, taking: Kept): Promise<boolean> {
+  const key = keptKeyOf(runId);
+  const ending = rowOf(taking, "ending");
+  try {
+    return await tried(async () => {
+      if (await settings.replaceIf(key, taking, ending)) return true;
+      // No row: this claim took the mark off (keptTaken) and then could not go on with the machine. Put back so.
+      const was = await settings.get(key);
+      const now = keptOf(was === undefined ? await settings.putIfAbsent(key, ending) : was);
+      return sameKeep(now, taking) && (now!.ending === true || now!.ended === true);
+    });
+  } catch {
+    return false;
+  }
+}
+
+/** Ends a kept computer at its time: its row marked ending, only while it still reads `kept`, or `kept` marked taking by
+ *  a claim (one that is reaching it, or could not write what came of that: its time is over all the same, and the claim
+ *  never uses it once the mark is gone, keptTaken), then `end` (its delete), then the row marked ended. A claim that took
+ *  it since (the row gone) or a park that wrote another has it. A row already ending (a process that died mid-way, a
+ *  delete that failed, a claim that gave it back, a park that kept nothing else or a stop: restoreKept, keepKept,
+ *  endingKept) is deleted again. A delete that fails leaves the row ending, for the janitor's next pass, and throws its
+ *  words. True when this call ended it. */
 export async function endKept(settings: Pick<KeptSettings, "get" | "replaceIf">, runId: string, kept: Kept, end: () => Promise<void>): Promise<boolean> {
   const key = keptKeyOf(runId);
   const ending = rowOf(kept, "ending");
-  if (!kept.ending && !(await settings.replaceIf(key, rowOf(kept), ending)) && JSON.stringify(await settings.get(key)) !== JSON.stringify(ending)) return false;
+  if (!kept.ending && !(await settings.replaceIf(key, rowOf(kept), ending))) {
+    const was = await settings.get(key);
+    const now = keptOf(was);
+    if (JSON.stringify(was) !== JSON.stringify(ending) && !(now?.taking !== undefined && sameKeep(now, kept) && (await settings.replaceIf(key, was, ending)))) return false;
+  }
   await end();
   return settings.replaceIf(key, ending, rowOf(kept, "ended"));
 }

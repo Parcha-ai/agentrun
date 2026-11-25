@@ -299,8 +299,13 @@ test("Mode 2, a claim whose desktop is off loses its park's kept desktop to a la
   // Claim 6 (its tools allowed again) takes the kept desktop back between claim 5's read of the row and its end of it.
   const replaceIf = one.store.settings.replaceIf.bind(one.store.settings);
   let later;
+  let taking = false;
   one.store.settings.replaceIf = async (key, ...rest) => {
-    if (key === keptKeyOf("run-1") && !later) later = await one.claim(6, { hadComputer: async () => true, ...c });
+    // Once: claim 6's own take back is a write of the row too.
+    if (key === keptKeyOf("run-1") && !taking) {
+      taking = true;
+      later = await one.claim(6, { hadComputer: async () => true, ...c });
+    }
     return replaceIf(key, ...rest);
   };
   const off = await one.claim(5, { turnedOff: "desktop", hadComputer: async () => true, ...b });
