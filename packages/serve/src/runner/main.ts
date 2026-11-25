@@ -337,8 +337,10 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
     if (options.janitor && typeof parts !== "function") janitor = startJanitor({ store, computers: parts.computers, env: parts.env, sealKey: seal.key, log: warn, self: { runner: name, incarnation } });
     // Before it claims: the scratch folders of runs that ended after their runner died (scratch-sweep.ts), said as warnings.
     await sweepEndedScratch(store, options.dataDir, { log: warn });
-    // A run's end lets go of what its earlier claims' computers left, with the same computers (run-end-computers.ts).
-    const runEnded = projectRunEnded(store, typeof parts !== "function" ? runEndComputers({ store, computers: parts.computers, log: warn }) : undefined);
+    // A run's end lets go of what its earlier claims' computers left, with the same computers (run-end-computers.ts),
+    // and with the janitor's environment and seal key, so a machine kept on Archil it deletes has its mount credential
+    // removed.
+    const runEnded = projectRunEnded(store, typeof parts !== "function" ? runEndComputers({ store, computers: parts.computers, log: warn, env: parts.env, sealKey: seal.key }) : undefined);
     runner = startRunner({
       store,
       createLoop,
