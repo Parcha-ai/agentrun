@@ -1128,6 +1128,9 @@ test("Mode 2, a kept Archil desktop given back to its runner still there: the gi
   }
   assert.equal(JSON.stringify(await one.store.settings.get(key)), JSON.stringify({ ...written, ending: true }), "the row as given back");
   assert.deepEqual(archil.requests, [], "runner-b asked Archil nothing");
+  // Every credential stands here only because this claim's mint is stubbed. In production the giving claim's first mint
+  // removes the run's older epochs on its disk (archil-claim.ts removeOlderMountTokens), the kept machine's with them,
+  // before the keeper's pass: fail-closed. What this pins is the keeper's pass alone.
   assert.equal(nicknames(archil).length, 4, "every credential stands");
   assert.deepEqual(deletes(one.account), [], "runner-b deleted nothing");
 
