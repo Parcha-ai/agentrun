@@ -179,3 +179,50 @@ test("the verdict lives with the cached page: a page evicted past PAGES_HELD and
   const guards = asked.filter(isGuard).map(({ request }) => request.state.page.url);
   assert.deepEqual([guards.length, guards.at(-1)], [web.PAGES_HELD + 2, first], "and its guard asked again");
 });
+
+test("a fetch stopped while it waits on another fetch's guard check of the same page ends stopped at once; the check goes on, and the first fetch gets its verdict", async () => {
+  // The guard's answer waits for `release`; the step answers at once. Nothing here is timed: the second fetch is let
+  // run a bounded number of event-loop turns, and must have ended by then with the guard check still pending.
+  const guard = { calls: 0, pending: 0 };
+  let release;
+  const released = new Promise((resolve) => (release = resolve));
+  let asked;
+  const guardAsked = new Promise((resolve) => (asked = resolve));
+  const stop = new AbortController();
+  let steps = 0;
+  const provider = {
+    id: "fake",
+    needs: [],
+    async decide(request) {
+      const isGuardAsk = Object.hasOwn(request.questions, "wall");
+      if (isGuardAsk) {
+        guard.calls += 1;
+        guard.pending += 1;
+        asked();
+        await released;
+        guard.pending -= 1;
+      } else if (++steps === 2) setImmediate(() => stop.abort());
+      const answers = isGuardAsk ? CONTENT : Object.fromEntries(Object.keys(request.questions).map((id) => [id, 0.9]));
+      return { answers: Object.fromEntries(Object.entries(answers).map(([id, a]) => [id, typeof a === "number" ? { type: "noul", noul: a } : a])), evidence: [], model: "fake-1", usage: null, cost_usd: 0.0001, cost_basis: "estimate", provider_request_id: null };
+    },
+  };
+  const w = decideWeb({ decider: priced(provider), pageGuard: true, bounds: { decideMs: 600_000 } });
+  const first = w.fetch(PUBLIC, { task: TASK });
+  await guardAsked;
+  let ended;
+  const second = w.fetch(PUBLIC, { task: TASK, signal: stop.signal }).then((got) => (ended = got));
+  try {
+    for (let turn = 0; turn < 200 && !ended; turn++) await new Promise((resolve) => setImmediate(resolve));
+    assert.ok(ended, "the stopped fetch still waits on the first fetch's guard check");
+    assert.equal(stop.signal.aborted, true);
+    assert.deepEqual([guard.calls, guard.pending], [1, 1], "the shared check is still pending, asked once");
+    assert.deepEqual([ended.receipt.wall.verdict, ended.receipt.wall.error?.code, ended.receipt.injection], ["unjudged", "aborted", "unjudged"], "the stopped fetch's guard says it was stopped");
+  } finally {
+    release();
+  }
+  const { receipt } = await first;
+  await second;
+  assert.equal(receipt.wall.verdict, "content", "the first fetch gets the shared verdict");
+  const again = await w.fetch(PUBLIC, { task: TASK, offset: 600 });
+  assert.deepEqual([again.receipt.wall.verdict, guard.calls], ["content", 1], "the verdict is kept with the page: a caller's stop does not drop it");
+});

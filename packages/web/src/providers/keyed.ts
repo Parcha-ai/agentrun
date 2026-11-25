@@ -79,16 +79,24 @@ async function jsonOf(response: Response): Promise<unknown> {
 export async function keyedCall(client: Keyed | null, who: string, keyEnv: string, what: "search" | "fetch", path: string, body: unknown, signal?: AbortSignal): Promise<{ json: Record<string, unknown> } | KeyedFailed> {
   if (!client) return failed("refused", "NO_KEY", `web_${what} goes through ${who} here, and this run holds no ${who} key (${keyEnv})`);
   if (!client.live()) return failed("refused", "KEY_REFUSED", `${who} refused this run's key: it is not asked again in this run`);
+  // A request that failed, or an answer whose body broke after its headers came (the request's timeout, its stop, a
+  // reset socket): typed by why, never thrown, so the receipt keeps the turn and the order goes on. A stop is known by
+  // the caller's signal, never by the error's name: a run stops with a reason of its own, which the request fails with.
+  const unanswered = (error: unknown, read: boolean) => {
+    if (signal?.aborted) return failed("infra", "STOPPED", `${who}'s ${what} was stopped`);
+    const name = (error as Error)?.name;
+    return name === "TimeoutError" || name === "AbortError" ? failed("infra", "TIMEOUT", `${who}'s ${what} did not answer in time`) : failed("infra", "CONNECT", read ? `${who}'s ${what} answer broke off` : `${who}'s ${what} failed to connect`);
+  };
   let response: Response;
   try {
     response = await client.post(path, body, signal);
   } catch (error) {
     if (error instanceof PaidRefused) return failed("refused", "CAP_REFUSED", error.message);
-    const name = (error as Error)?.name;
-    return name === "TimeoutError" ? failed("infra", "TIMEOUT", `${who}'s ${what} did not answer in time`) : name === "AbortError" ? failed("infra", "STOPPED", `${who}'s ${what} was stopped`) : failed("infra", "CONNECT", `${who}'s ${what} failed to connect`);
+    return unanswered(error, false);
   }
   if (!response.ok) {
-    const said = (await jsonOf(response)) as { tag?: unknown; code?: unknown } | undefined;
+    // The status says what it is; a body that broke only loses the provider's code.
+    const said = (await jsonOf(response).catch(() => undefined)) as { tag?: unknown; code?: unknown } | undefined;
     const code = codeOf(said?.code) ?? codeOf(said?.tag);
     if (!client.live()) return failed("refused", code ?? "KEY_REFUSED", `${who} refused this run's key (${response.status}): it is not asked again in this run`);
     const limit = statusLimit(response);
@@ -97,7 +105,12 @@ export async function keyedCall(client: Keyed | null, who: string, keyEnv: strin
     // A 402 is the key's credit spent, for both tools.
     return response.status === 402 ? keyWide(failure) : failure;
   }
-  const json = await jsonOf(response);
+  let json: unknown;
+  try {
+    json = await jsonOf(response);
+  } catch (error) {
+    return unanswered(error, true);
+  }
   if (typeof json !== "object" || json === null || Array.isArray(json)) return failed("error", "UNREADABLE", `${who}'s ${what} answered nothing this server reads`);
   return { json: json as Record<string, unknown> };
 }
