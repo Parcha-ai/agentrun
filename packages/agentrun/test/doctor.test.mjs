@@ -458,7 +458,7 @@ test("Docker: no box, by mode, read from places.default_place: null (Mode 1) say
 
 test("Docker: no box with another box ready, where places.default_place is null (Mode 1), says a new agent names its place, that box or the runner, never that it runs in that box instead; a server that does not say keeps the words it had", async () => {
   const { home, data } = homeOf();
-  const boxes = [{ id: "docker", available: false, reason: "Docker does not answer here" }, { id: "e2b", available: true }, { id: "modal", available: false }];
+  const boxes = [{ id: "docker", available: false, reason: "Docker does not answer here" }, { id: "e2b", available: true }, { id: "daytona", available: false }];
   const mode1 = await doctor({ home, data, server: serverOf({ caps: { status: 200, body: { ...HEALTHY_CAPS, places: { default_place: null, default_reason: "name a box: …", boxes } } } }) });
   assert.equal(mode1.check("docker").status, "info");
   assert.equal(mode1.check("docker").summary, "No Docker box: Docker does not answer here. A new agent must name its place: a box (e2b), or the runner.");
