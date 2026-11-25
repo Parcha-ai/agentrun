@@ -1169,7 +1169,7 @@ test("adversarial texts: the characters the shape scanners visit are at most a f
 // as present or absent, so one closed JSON string holding each of them turns on all sixteen views, and the rest of the
 // text decodes to itself at nearly its whole length in each (the text of DENSE's strings, each block of about 4 KiB
 // headed by one such string). It is the most measured here: 963.0 per character at 128 KiB and 967.8 at 512 KiB,
-// through redactedAnswer; the next most is 439.6.
+// through redactedAnswer; every other text measures under 450 (a held RSA key's, made anew each run, moves by a few).
 // A held value of two lines adds its three parts as forms and plain needles (about 30 more). A held value of k long
 // lines adds k + 1 of each: its work grows with k, linear in the text all the same.
 // WORK stays 1,024, the bound from before the stacked and join views. The most measured, and each text's most, are in
