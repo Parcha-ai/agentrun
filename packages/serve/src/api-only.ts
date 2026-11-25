@@ -42,10 +42,8 @@ import { LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV } from "./trigger-launch-ho
  *    its key by api_key_env (COMPOSIO_API_KEY, on the launcher's list of secrets, read at each use through secrets.ts
  *    secret, sent to Composio's origin alone: composio-made.ts composioEnvKey), and its body names no address or headers.
  *    There is no list or read of the servers here (listMcpServerNames above is the listing). The generic save
- *    (saveMcpServer) is served only when the operator names MCP origins (API_ONLY_MCP_ORIGINS_ENV), and then saves a
- *    per_run server (which keeps no credential) at one of those origins alone (apiOnlyMcpSave); unset, it is refused as
- *    any other route, so the token saves no server at an address or with headers of its own. Previews, refreshes,
- *    sign-ins and Composio's triggers stay refused;
+ *    (saveMcpServer) is apiOnlyMcpSave: the serve README's API-only section states it. Previews, refreshes, sign-ins
+ *    and Composio's triggers stay refused;
  *  - the launch hook's host (the backend in front of this server) releases a firing it took and will start no run for
  *    (releaseTriggerFiring, triggers.ts release), so its trigger's room frees at once; with no launch hook the route is
  *    the route's own 422. */

@@ -27,6 +27,7 @@ import { pemOf, type Ssh2Module, SshExec, SshTunnelError, type SshTunnel } from 
 import { DOMAIN, dateOf, sizeRefusals } from "./hosted/values.js";
 import type { CallContext, ComputerSpec, Refusal } from "./provider.js";
 import { type ComputerErrorCode, failFor, ok, type Result } from "./result.js";
+import { vendorSdk } from "./vendor-sdk.js";
 
 /** One instance as Morph answers it (OpenAPI InstanceModel), as far as this provider reads it. */
 export interface MorphInstance {
@@ -72,8 +73,6 @@ export interface MorphOptions extends Omit<MorphProviderOptions, "ssh2"> {
 	ssh2?: Ssh2Module;
 }
 
-/** Not a literal, so no type checker or bundler resolves ssh2 from this package. */
-const SSH2_PACKAGE: string = "ssh2";
 /** The SDKs' base (api.ts:11 MORPH_BASE_URL) and SSH gateway (api.ts:12-13). */
 const DEFAULT_API_URL = "https://cloud.morph.so/api";
 const DEFAULT_SSH_HOST = "ssh.cloud.morph.so";
@@ -481,7 +480,7 @@ class MorphHost implements MachineHost {
 export async function create(options: MorphOptions): Promise<MorphProvider> {
 	const { ssh2: given, ...rest } = options ?? ({} as MorphOptions);
 	// ssh2 is CommonJS: its Client is a named export of the module, and of its default.
-	const loaded = given ?? ((await import(SSH2_PACKAGE)) as Partial<Ssh2Module> & { default?: Ssh2Module });
+	const loaded = given ?? (await vendorSdk<Partial<Ssh2Module> & { default?: Ssh2Module }>(MORPH.label, "ssh2"));
 	const ssh2 = typeof loaded.Client === "function" ? (loaded as Ssh2Module) : (loaded as { default?: Ssh2Module }).default;
 	return new MorphProvider({ ...rest, ssh2: ssh2 as Ssh2Module });
 }

@@ -1757,6 +1757,36 @@ export type ListLearningPromotionsResponse = {
       n?: number;
       agreed?: number;
       alone?: number;
+      agent_agreed?: number;
+      fields?: Record<string, {
+        n: number;
+        workflow_right: number;
+        agent_right: number;
+        known: "label" | "grade" | "agent";
+        pass: boolean;
+        reason: string;
+        by: {
+          label?: {
+            n: number;
+            workflow_right: number;
+            agent_right: number;
+            pass: boolean;
+          };
+          grade?: {
+            n: number;
+            workflow_right: number;
+            agent_right: number;
+            pass: boolean;
+          };
+          agent?: {
+            n: number;
+            workflow_right: number;
+            agent_right: number;
+            pass: boolean;
+          };
+        };
+        unjudged?: number;
+      }>;
       of?: Array<string>;
       cost_usd?: number | null;
       outcomes?: {
@@ -1779,6 +1809,12 @@ export type ListLearningPromotionsResponse = {
         escalated?: string;
         failed?: true;
         differs_on?: string;
+        fields?: Array<string>;
+        expected?: Array<{
+          field: string;
+          known: "label" | "grade" | "unknown";
+          value?: string;
+        }>;
       }>;
       stopped?: true;
       released?: number;
@@ -1802,6 +1838,31 @@ export type ListLearningPromotionsResponse = {
           escalated?: string;
           failed?: true;
           differs_on?: string;
+          fields?: Array<string>;
+          expected?: Array<{
+            field: string;
+            known: "label" | "grade" | "unknown";
+            value?: string;
+          }>;
+        }>;
+        agent_agreed?: number;
+        fields?: Record<string, {
+          label?: {
+            n: number;
+            workflow_right: number;
+            agent_right: number;
+          };
+          grade?: {
+            n: number;
+            workflow_right: number;
+            agent_right: number;
+          };
+          agent?: {
+            n: number;
+            workflow_right: number;
+            agent_right: number;
+          };
+          unjudged?: number;
         }>;
         fresh_reads?: number;
       };
@@ -1868,6 +1929,36 @@ export type ListLearningPromotionsResponse = {
         n?: number;
         agreed?: number;
         alone?: number;
+        agent_agreed?: number;
+        fields?: Record<string, {
+          n: number;
+          workflow_right: number;
+          agent_right: number;
+          known: "label" | "grade" | "agent";
+          pass: boolean;
+          reason: string;
+          by: {
+            label?: {
+              n: number;
+              workflow_right: number;
+              agent_right: number;
+              pass: boolean;
+            };
+            grade?: {
+              n: number;
+              workflow_right: number;
+              agent_right: number;
+              pass: boolean;
+            };
+            agent?: {
+              n: number;
+              workflow_right: number;
+              agent_right: number;
+              pass: boolean;
+            };
+          };
+          unjudged?: number;
+        }>;
         of?: Array<string>;
         cost_usd?: number | null;
         outcomes?: {
@@ -1890,6 +1981,12 @@ export type ListLearningPromotionsResponse = {
           escalated?: string;
           failed?: true;
           differs_on?: string;
+          fields?: Array<string>;
+          expected?: Array<{
+            field: string;
+            known: "label" | "grade" | "unknown";
+            value?: string;
+          }>;
         }>;
         stopped?: true;
         released?: number;
@@ -1913,6 +2010,31 @@ export type ListLearningPromotionsResponse = {
             escalated?: string;
             failed?: true;
             differs_on?: string;
+            fields?: Array<string>;
+            expected?: Array<{
+              field: string;
+              known: "label" | "grade" | "unknown";
+              value?: string;
+            }>;
+          }>;
+          agent_agreed?: number;
+          fields?: Record<string, {
+            label?: {
+              n: number;
+              workflow_right: number;
+              agent_right: number;
+            };
+            grade?: {
+              n: number;
+              workflow_right: number;
+              agent_right: number;
+            };
+            agent?: {
+              n: number;
+              workflow_right: number;
+              agent_right: number;
+            };
+            unjudged?: number;
           }>;
           fresh_reads?: number;
         };
@@ -4905,6 +5027,10 @@ export interface ListAllRunsParams {
   status?: "queued" | "working" | "paused" | "input_required" | "completed" | "failed" | "cancelled";
   archived?: boolean;
   label?: string;
+  source?: string;
+  from?: string;
+  to?: string;
+  model?: string;
 }
 export type ListAllRunsResponse = RunList;
 
@@ -7257,6 +7383,7 @@ export type GetWrappedResponse = {
     requests: number;
     tokens: number;
     cost_usd: number;
+    unpriced_requests: number;
   }>;
   sources: Array<{
     source: string;
@@ -7422,7 +7549,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   handBackRunComputer: {"method":"POST","path":"/runs/{run_id}/computer/hand-back","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getRunLearning: {"method":"GET","path":"/runs/{run_id}/learning","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getRunLearningDiff: {"method":"GET","path":"/runs/{run_id}/learning/diff","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
-  listAllRuns: {"method":"GET","path":"/runs","pathParams":[],"multiSegment":[],"query":["limit","cursor","agent","revision","status","archived","label"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  listAllRuns: {"method":"GET","path":"/runs","pathParams":[],"multiSegment":[],"query":["limit","cursor","agent","revision","status","archived","label","source","from","to","model"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   sendMessage: {"method":"POST","path":"/runs/{run_id}/messages","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   pauseRun: {"method":"POST","path":"/runs/{run_id}/pause","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   raiseRunCap: {"method":"PATCH","path":"/runs/{run_id}","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},

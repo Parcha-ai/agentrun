@@ -100,6 +100,36 @@ const LABEL_PARAMETER: Json = {
   "x-agentrun-serve": "runlabels/1",
 };
 
+/** runsource/1: GET /runs' filter on where a run came from. */
+const SOURCE_PARAMETER: Json = {
+  name: "source", in: "query", required: false,
+  description: "Only runs imported from this source, a source's name as the run's `imported_from.source` holds it (`claude-code`, `codex`, ...), or `live` for the runs made here, not imported. A name no run holds lists none. Once per request; a second `source`, or one that does not read as a name, is 400.",
+  schema: { type: "string" },
+  "x-agentrun-serve": "runsource/1",
+};
+
+/** runwindow/1: GET /runs' window on when a run started, [from, to). */
+const FROM_PARAMETER: Json = {
+  name: "from", in: "query", required: false,
+  description: "Only runs started at or after this instant: an RFC 3339 date-time with its zone (`2026-11-01T00:00:00Z`, or an offset such as `+01:00`, sent as `%2B01:00`), to the millisecond. With `to`, the window [from, to): a run started at `from` is in it. Once per request; a second `from`, one that is no instant with its zone, or one after `to`, is 400.",
+  schema: { type: "string", format: "date-time" },
+  "x-agentrun-serve": "runwindow/1",
+};
+const TO_PARAMETER: Json = {
+  name: "to", in: "query", required: false,
+  description: "Only runs started before this instant: an RFC 3339 date-time with its zone, to the millisecond. A run started at `to` is not in the window. Once per request; a second `to`, or one that is no instant with its zone, is 400.",
+  schema: { type: "string", format: "date-time" },
+  "x-agentrun-serve": "runwindow/1",
+};
+
+/** runmodel/1: GET /runs' filter on the model a run used. */
+const MODEL_PARAMETER: Json = {
+  name: "model", in: "query", required: false,
+  description: "Only runs that sent at least one request to this model, named as a run's metrics name it: `provider/model` (`anthropic/claude-sonnet-5`, `openai/gpt-5`, ...), matched exactly: no prefix, no case folding. A run counts from its first finished turn: its metrics are written each time a turn ends, covering every turn so far, so a run in its first turn is not listed yet, and a model it first uses in a later turn counts once that turn ends. A model no run used lists none. Once per request; a second `model`, or an empty one, is 400.",
+  schema: { type: "string" },
+  "x-agentrun-serve": "runmodel/1",
+};
+
 /** Why each capability this server turns off answers 501, by the route's capability. */
 export const UNSUPPORTED: Readonly<Record<string, string>> = {
   quotes: "This server has no billing, so it gives no quotes.",
@@ -164,7 +194,7 @@ const WRAPPED: Json = closed({
   weekdays: { type: "array", minItems: 7, maxItems: 7, items: COUNT, description: "Requests by local weekday, Sunday first." },
   active_ms: { ...COUNT, description: "Time at work: the gaps between a session's requests, each counted when under 15 minutes." },
   harnesses: { type: "array", items: closed({ harness: { type: "string" }, sessions: COUNT, requests: COUNT, tokens: COUNT, sources: { type: "array", items: { type: "string" }, description: "The sources read for this harness, in the order of `sources`: several can share one. Each is a `source` of `sources` and of `imported`." } }), description: "By the harness that runs what each source ran, most tokens first." },
-  models: { type: "array", items: closed({ model: { type: "string", description: "`provider/model`, or `unknown` for a request that names none." }, requests: COUNT, tokens: COUNT, cost_usd: { type: "number", minimum: 0 } }), description: "By the request's model, most tokens first." },
+  models: { type: "array", items: closed({ model: { type: "string", description: "`provider/model`, or `unknown` for a request that names none." }, requests: COUNT, tokens: COUNT, cost_usd: { type: "number", minimum: 0, description: "The list price of the model's requests that could be priced." }, unpriced_requests: { ...COUNT, description: "Of the model's requests, those `cost_usd` leaves out: all of them when no price was known for it." } }), description: "By the request's model, most tokens first." },
   sources: { type: "array", items: closed({ source: { type: "string" }, sessions: COUNT, requests: COUNT }), description: "By the tool the sessions were read from." },
   imported: { type: "array", items: closed({ source: { type: "string" }, runs: COUNT }), description: "The runs imported here in the year, by source (never `live`)." },
   unread_files: { ...COUNT, description: "Session files that could not be read (gone since listed, or not openable by this user), so the numbers are short by them. A count only: no path." },
@@ -1795,10 +1825,10 @@ const LEARNING_COST = closed({
     withheld: { oneOf: [closed({ unknown: { ...COUNT, description: "Runs whose cost is unknown." }, at_most: { ...COUNT, description: "Runs whose cost is known only as at most (`cost_upper_bound`)." } }), { type: "null" }], description: "After a takeover, the runs `before` and `after` would read whose cost is not known exactly: while any is, `times_cheaper` is null, so the ratio is never over a partial set. Null when every one is known, and before a takeover." },
     replay: { oneOf: [closed({
       n: { ...COUNT, description: "The inputs its check ran on." },
-      workflow_pct: { type: "number", minimum: 0, maximum: 100, description: "The share of them it answered alone with the agent's own recorded answer, in percent to a tenth." },
-      agent_pct: { type: "number", minimum: 0, maximum: 100, description: "The agent's accuracy on them, in percent: 100, its own answers being the label." },
-      cleared: { type: "boolean", description: "The check passed: a serving champion was promoted on it." },
-      agreed: { ...COUNT, description: "Of the inputs it answered alone (`alone`), how many said what the agent's own recorded answer said." },
+      workflow_pct: { type: "number", minimum: 0, maximum: 100, description: "`agreed` over `alone`: the share of the inputs it answered alone that were right on every field against each field's known answer (a label, a grade's expected answer, else the agent's own), in percent to a tenth." },
+      agent_pct: { type: "number", minimum: 0, maximum: 100, description: "The agent's share on the same inputs against the same known answers (the check's `agent_agreed` over `alone`; an answer graded wrong is the agent's miss), in percent to a tenth: 100 on a check kept before it was counted, which judged against the agent's own answers only." },
+      cleared: { type: "boolean", description: "`agreed` over `alone` reached `agree_min`, as the check's joint floor needs of every promotion it decides; a record kept before that floor can fall short." },
+      agreed: { ...COUNT, description: "Of the inputs it answered alone (`alone`), how many were right on every field against each field's known answer." },
       alone: { ...COUNT, description: "The inputs it answered alone (no hand-back, no failed step)." },
       agree_min: { type: "number", minimum: 0, maximum: 1, description: "The agreement bar it passed (the definition's `learning.agree_min`): `agreed` over `alone` at least this. Passing it says the workflow agreed with the agent that often, never that it is as accurate." },
     }), { type: "null" }], description: "The check the serving promotion was decided on: the current champion of the learned workflow the newest served run ran. Null when none serves." },
@@ -1842,8 +1872,8 @@ const LEARNING_COST = closed({
 const GRADE = closedWith(GRADE_FIELDS, { expected: { type: "object", description: "The fields a right answer's JSON holds, when the grade gave them." } });
 const REPLAY_SCORE = {
   n: { ...COUNT, description: "The inputs it was decided on (a replay stopped at a write is none)." },
-  agree: { ...COUNT, description: "How many of them the workflow answered alone with the agent's own recorded answer." },
-  agent_acc: { type: "number", minimum: 0, maximum: 1, description: "The agent's accuracy on them: 1, the agent's own recorded answers being the label." },
+  agree: { ...COUNT, description: "How many of them the workflow answered alone right on every field against each field's known answer (a label, a grade's expected answer, else the agent's own): the check's `agreed`." },
+  agent_acc: { type: "number", minimum: 0, maximum: 1, description: "The agent's accuracy on them against the same known answers: its misses are counted where the workflow's are, on the inputs it answered alone (the check's `alone` - `agent_agreed`; an answer graded wrong is the agent's miss), over `n`. 1 on a check kept before `agent_agreed` was counted." },
   wf_acc: { type: "number", minimum: 0, maximum: 1, description: "The workflow's accuracy on them: the share it answered alone as the agent did, plus the ones it handed back (a hand-back is the agent's answer), over `n`." },
   delta: { type: "number", description: "`wf_acc` - `agent_acc`." },
   handed_back: { ...COUNT, description: "How many of them it handed back; it answered `n` - `handed_back` alone." },
@@ -1857,19 +1887,47 @@ const REPLAY_OUTCOMES = closed({
   skipped_write: { ...COUNT, description: "Replay runs stopped at a write (an MCP tool its server does not mark read-only, or any tool not known to read) that the graded run's recording does not have with the same arguments: a replay never runs a write, so these are neither scored nor wrong; a replay whose every input was skipped holds the revision." },
 }, "How many of its replay runs ended each way: what each run did.");
 /** One input a check did not agree on (learn/promote.ts CheckDisagreement). */
-const CHECK_DISAGREEMENT = closedWith({ run: { type: "string" }, input: { type: "string", description: "The run's input, as text or JSON, cut at 1200 characters." }, agent: NULL_STRING }, { draft: { type: "string", description: "What it answered instead." }, escalated: { type: "string", description: "Why it handed the input back." }, failed: { const: true, description: "A step failed on it, or its run was still at work past the check's deadline, or never created by then." }, differs_on: { type: "string", description: "When `grader` compared it: the decision the two answers differ on, in the fast model's words, or why its verdict could not be had (\"the comparison could not be read\", \"the cap held the comparison\", or \"the comparison read an earlier answer\" when the agent's run answered again after it was compared). Cut at 1200 characters." } });
+const CHECK_DISAGREEMENT = closedWith({ run: { type: "string" }, input: { type: "string", description: "The run's input, as text or JSON, cut at 1200 characters." }, agent: NULL_STRING }, {
+  draft: { type: "string", description: "What it answered instead." },
+  escalated: { type: "string", description: "Why it handed the input back." },
+  failed: { const: true, description: "A step failed on it, or its run was still at work past the check's deadline, or never created by then." },
+  differs_on: { type: "string", description: "When `grader` compared it: the decision the two answers differ on, in the fast model's words, or why its verdict could not be had (\"the comparison could not be read\", \"the cap held the comparison\", or \"the comparison read an earlier answer\" when the agent's run answered again after it was compared). Cut at 1200 characters." },
+  fields: { type: "array", items: { type: "string" }, description: "The fields it answered wrong, against each one's known answer (`check.fields`): `agree_on`'s paths, else `answer`, the whole answer." },
+  expected: { type: "array", items: closedWith({ field: { type: "string", description: "One of `fields`." }, known: { enum: ["label", "grade", "unknown"], description: "Where its known answer came from; `unknown` where a grade marked the agent's answer wrong without giving the right one." } }, { value: { type: "string", description: "The known answer, as text or JSON: a label's, or the expected answer a grade gave (with no `agree_on`, the check judges against it written over the agent's answer when both are JSON objects), cut at 1200 characters; empty once the run it is of was deleted. Left out for `unknown`." } }), description: "Of `fields`, each one known from a label or a grade (never the agent's own answer, `agent`), or marked wrong with no right answer: what the recompile is asked to say there." },
+});
+/** A field's counts on the inputs a check judged it on (learn/field-check.ts FieldCount). */
+const FIELD_COUNT = {
+  n: { ...COUNT, description: "The inputs it was judged on." },
+  workflow_right: { ...COUNT, description: "How many of them the workflow had right against the known answer." },
+  agent_right: { ...COUNT, description: "How many of them the agent's own answer had right." },
+};
+const UNJUDGED = { type: "integer", minimum: 1, description: "The inputs that carried it with no known answer (the agent's answer graded wrong with none given, and the workflow said another): never right, and the field must be judged on at least `alone_min` of the inputs that carried it. Left out when none." };
+const KNOWN_SOURCES = ["label", "grade", "agent"] as const;
+/** A field's counts by where its known answer came from, as a connected agent's check keeps them between turns. */
+const FIELD_TALLY = { type: "object", additionalProperties: false, properties: { ...Object.fromEntries(KNOWN_SOURCES.map((known) => [known, closed(FIELD_COUNT, `Its inputs known from ${known === "agent" ? "the agent's own answer" : `a ${known}`}.`)])), unjudged: UNJUDGED } };
+/** One field's verdict (learn/field-check.ts FieldVerdict). */
+const FIELD_VERDICT = closedWith({
+  ...FIELD_COUNT,
+  agent_right: { ...COUNT, description: "How many of them the agent's own answer had right, on the inputs known from a label or a grade only." },
+  known: { enum: [...KNOWN_SOURCES], description: "The strongest source it was known from." },
+  pass: { type: "boolean", description: "Whether it passed: over all its known inputs pooled, at least `agree_min` right; on those with a known answer (from labels and grades together), at least `agree_min` right and at most 2 points under the agent, one miss always allowed in each; and judged on enough of its inputs (`unjudged`)." },
+  reason: { type: "string", description: "Why, in words, with the numbers." },
+  by: { type: "object", additionalProperties: false, properties: Object.fromEntries(KNOWN_SOURCES.map((known) => [known, closed({ ...FIELD_COUNT, pass: { type: "boolean", description: "Whether this source alone would pass: from a label or a grade, `agree_min` and the margin with one miss allowed in each; from the agent, `agree_min`. The field's `pass` pools them." } })])), description: "Its counts per source, each with whether it would pass alone." },
+}, { unjudged: UNJUDGED });
 /** A compiled draft's one check (learn/promote.ts CheckRecord): its bar while it replays, its numbers once decided. */
 const PROMOTION_CHECK = closedWith({
   compile_after: { type: "integer", minimum: 1, description: "The agent definition's `learning.compile_after` when the check began: how many of the agent's newest completed runs it read inputs from." },
-  agree_min: { type: "number", minimum: 0, maximum: 1, description: "The bar on agreement: of the inputs it answered alone, the least share that must say what the agent's recorded answer said." },
+  agree_min: { type: "number", minimum: 0, maximum: 1, description: "The bar on being right: of the inputs it answered alone, the least share right on every field at once (the joint floor, `agreed`), and of each field's inputs, the least share right against its known answer (a label, a grade's expected answer, else the agent's own recorded answer)." },
   alone_min: { type: "number", minimum: 0, maximum: 1, description: "The bar on answering alone: the least share of the inputs it ran on that it must answer with no escalate and no failed step." },
   attempt: { enum: [1, 2], description: "1: the compile's first check. 2: the check of its one recompile, after the first held it; held again, it stops (`stopped`)." },
 }, {
   agree_on: { type: "array", items: { type: "string" }, minItems: 1, description: "The definition's `learning.agree_on` it compared the draft's answer and the agent's on: dotted paths into the answer's JSON object, each resolving in both answers to equal values. Left out when it compared the whole answer." },
   grader: { type: "string", description: "With no `agree_on`: the agent's fast model that compared the two answers where they were not equal, asked whether they reach the same decision (one request per input, booked as the check's spend; a reply it could not read, a failed request or one the cap refused counts as differing). Left out when no fast model compared them: with `agree_on`, or with no fast model (the whole answer)." },
   n: { ...COUNT, description: "The inputs it ran on (a replay stopped at a write is none; one never created, or not ended, by the check's deadline counts, as failed). 0 with nothing to run on: never promoted, it stops (`stopped`) and `reason` says why." },
-  agreed: { ...COUNT, description: "How many of them it answered alone with the agent's recorded answer (compared on `agree_on` when set; else equal answers, or the same decision by `grader`'s verdict; with neither, the whole answer)." },
-  alone: { ...COUNT, description: "How many of them it answered alone. Promoted when `alone`/`n` >= `alone_min` and `agreed`/`alone` >= `agree_min`." },
+  agreed: { ...COUNT, description: "How many of them it answered alone right on every field at once, each against its known answer: a label, a grade's expected answer, else the agent's recorded answer (compared on `agree_on` when set; else equal answers, or the same decision by `grader`'s verdict). An input a field has no known answer on is not right." },
+  alone: { ...COUNT, description: "How many of them it answered alone. Promoted when `alone`/`n` >= `alone_min`, `agreed`/`alone` >= `agree_min`, and every field of `fields` passes." },
+  agent_agreed: { ...COUNT, description: "Of `alone`, how many the agent's own answers were right on every field against the same known answers (an answer graded wrong is its miss): the agent's side of `agreed`. Left out on a check kept before it was counted." },
+  fields: { type: "object", additionalProperties: FIELD_VERDICT, description: "Each field's verdict, by name: `agree_on`'s paths, else `answer`, the whole answer. Left out on a check kept before fields were judged one by one." },
   of: { type: "array", items: { type: "string" }, description: "The agent's runs whose inputs it ran on, newest first." },
   cost_usd: { type: ["number", "null"], minimum: 0, description: "What its replay runs cost together; null when one's cost is unknown." },
   outcomes: { ...REPLAY_OUTCOMES, description: "How each input it ran on came out, one per input: a replay run never created, or not ended, by the check's deadline is `failed`." },
@@ -1881,12 +1939,14 @@ const PROMOTION_CHECK = closedWith({
   fresh_reads: { type: "integer", minimum: 1, description: "A connected agent's check (`via` sdk): how many fresh read-only calls its shadow made where the native turn's recording had no result (the host's opt-in `shadowReadFallback`). Left out when every call was answered from the recording." },
   turns: { ...closedWith({
     n: { ...COUNT, description: "The native turns checked so far: each whose shadow answered or handed back, and each the backend never completed within an hour (`failed`)." },
-    agreed: { ...COUNT, description: "How many of them the shadow answered alone with the native answer." },
+    agreed: { ...COUNT, description: "How many of them the shadow answered alone right on every field, as `agreed` counts them." },
     alone: { ...COUNT, description: "How many of them the shadow answered alone." },
     of: { type: "array", items: { type: "string" }, description: "The agent's runs of those turns, newest first." },
     outcomes: { ...REPLAY_OUTCOMES, description: "How each turn came out, one per turn." },
   }, {
     disagreements: { type: "array", items: CHECK_DISAGREEMENT, description: "Each turn it did not agree on." },
+    agent_agreed: { ...COUNT, description: "Of `alone`, how many the native answers were right on every field, as `agent_agreed` counts them." },
+    fields: { type: "object", additionalProperties: FIELD_TALLY, description: "Each field's counts so far, by name and by where its known answer came from, added to by each turn; the check judges them once it decides." },
     fresh_reads: { type: "integer", minimum: 1, description: "The fresh read-only calls its shadows made, as `fresh_reads` counts them." },
   }), description: "A connected agent's check (`via` sdk) still collecting native turns. A check decides once, on `compile_after` inputs, so this one waits for that many turns, the agent answering each, then decides on all of them. Left out once decided, and on a server replay; a check stopped or set aside before it held them keeps the turns it had." },
 });
@@ -2293,6 +2353,10 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
         { name: "status", in: "query", required: false, description: "Only runs with this status.", schema: ref("schemas/RunStatus") },
         { name: "archived", in: "query", required: false, description: "true lists only archived runs; false, the default, the others.", schema: { type: "boolean" } },
         LABEL_PARAMETER,
+        SOURCE_PARAMETER,
+        FROM_PARAMETER,
+        TO_PARAMETER,
+        MODEL_PARAMETER,
       ],
       responses: { "200": json(ref("schemas/RunList"), "One page of runs, newest first."), ...errors(400, 401, 429, 500) },
     },
@@ -2387,7 +2451,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/wrapped": {
     get: {
       operationId: "getWrapped", tags: ["runs"], summary: "A year of the work under this machine's session files",
-      description: "Reads the Claude Code, Codex, pi and other session files under the home of the machine this server runs on, and answers numbers and names only (no prompt, title, path or project). Everything is bucketed by each request's time in the server's local zone, so a session that spans New Year splits; a session counts for the year of its first request. Answered only by one owner's server on their own machine, reached at a loopback name: one bound past loopback, with a public URL, the API-only profile, more than one API token or a Postgres store is 403. The home is read on a worker thread; a read not done within 15 seconds is 503 `unavailable` with `retry_after_ms` while it goes on. The current year's answer is kept for a minute, an earlier year's until the server stops. A year after the current one is 400.",
+      description: "Reads the Claude Code, Codex, pi and other session files under the home of the machine this server runs on, and answers numbers and names only (no prompt, title, path or project). Everything is bucketed by each request's time in the server's local zone, so a session that spans New Year splits; a session counts for the year of its first request. Answered only by one owner's server on their own machine, reached at a loopback name: one bound past loopback, with a public URL, the API-only profile, more than one API token, an API key made in the console for an app, or a Postgres store is 403. The home is read on a worker thread; a read not done within 15 seconds is 503 `unavailable` with `retry_after_ms` while it goes on. The current year's answer is kept for a minute, an earlier year's until the server stops. A read that fails is kept for a minute too: each ask in it is 500 `internal`, the reason in the server's log, and the next ask after it reads again. A year after the current one is 400.",
       parameters: [
         { name: "year", in: "query", required: false, description: "A four-digit year, in the server's local zone. Default the current year.", schema: { type: "integer", minimum: 1000, maximum: 9999 } },
       ],
@@ -3039,7 +3103,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     put: {
       operationId: "saveMcpServer", tags: ["local"], summary: "Preview a remote MCP server, then save it with the tools listed and its credential sealed",
-      description: `The credential is sealed under the server's seal key, bound to the server's name and its URL's origin, and kept in the data directory as ciphertext alone. On an API-only server (AGENTRUN_API_ONLY=1) it is 404 not_found unless its operator names MCP origins (AGENTRUN_API_ONLY_MCP_ORIGINS): then the token saves a per_run server (auth.type per_run, no credential kept) at one of those origins alone, under a name no Composio server has, and any other body is 404, before anything is sent to the address. 403 forbidden to the API token for a save that sends a credential's value, or over a saved server the token did not save or that holds a credential (one the owner saved stays the owner's, sealing a credential or not: its address, its credential and what the Composio preset made for it): the owner's signed-in session alone, and the refusal's \`details.console_url\` opens the console's form for it filled with the rest (no credential). 412 precondition_failed when a save that sends a new credential, or none, finds the server's credential changed while it listed its tools (another save, a sign-in or a removal landed), or the token's save finds the owner saved over its server meanwhile, or a save that keeps it finds the server at another address or holding another kind of credential by then (a Composio save over it moved it): nothing is written over it. A body with no credential keeps the sealed one while the type and the URL's origin stay the same; else it is 422. A body with no \`prices\` keeps the saved ones for the tools still listed at the same URL, so a save from any client never leaves a paid tool unmetered; \`prices: {}\` clears them. 422 too for a bad name, URL or auth, or a price that is not a finite number 0 or more or names a tool the server does not list. ${MCP_CONNECTS} Nothing is saved unless the listing succeeds. A save that moves a server the Composio preset made to another address makes it another service's server, and removes in the owner's Composio account what the preset made for it, as its delete does (the MCP server, then the connected account its connect link started and the auth config it made, unless another saved server uses them), with the key it was saved with, and answers \`composio\` saying so; 409 composio_in_use, naming them in \`details.triggers\`, while Composio triggers use it: delete them first. A save of a server the preset made lists its tools at once, then writes and cleans up one at a time with the preset's saves and the MCP servers' deletes, in its Composio project's turn.`,
+      description: `The credential is sealed under the server's seal key, bound to the server's name and its URL's origin, and kept in the data directory as ciphertext alone. On an API-only server (AGENTRUN_API_ONLY=1) the token saves only a per_run server at an origin AGENTRUN_API_ONLY_MCP_ORIGINS lists, and any other body is 404 not_found (the serve README's API-only section). 403 forbidden to the API token for a save that sends a credential's value, or over a saved server the token did not save or that holds a credential (one the owner saved stays the owner's, sealing a credential or not: its address, its credential and what the Composio preset made for it): the owner's signed-in session alone, and the refusal's \`details.console_url\` opens the console's form for it filled with the rest (no credential). 412 precondition_failed when a save that sends a new credential, or none, finds the server's credential changed while it listed its tools (another save, a sign-in or a removal landed), or the token's save finds the owner saved over its server meanwhile, or a save that keeps it finds the server at another address or holding another kind of credential by then (a Composio save over it moved it): nothing is written over it. A body with no credential keeps the sealed one while the type and the URL's origin stay the same; else it is 422. A body with no \`prices\` keeps the saved ones for the tools still listed at the same URL, so a save from any client never leaves a paid tool unmetered; \`prices: {}\` clears them. 422 too for a bad name, URL or auth, or a price that is not a finite number 0 or more or names a tool the server does not list. ${MCP_CONNECTS} Nothing is saved unless the listing succeeds. A save that moves a server the Composio preset made to another address makes it another service's server, and removes in the owner's Composio account what the preset made for it, as its delete does (the MCP server, then the connected account its connect link started and the auth config it made, unless another saved server uses them), with the key it was saved with, and answers \`composio\` saying so; 409 composio_in_use, naming them in \`details.triggers\`, while Composio triggers use it: delete them first. A save of a server the preset made lists its tools at once, then writes and cleans up one at a time with the preset's saves and the MCP servers' deletes, in its Composio project's turn.`,
       parameters: [MCP_NAME],
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["url"], properties: { url: MCP_URL, auth: MCP_AUTH, prices: MCP_PRICES, ...MCP_TOOLKIT_BODY } } } } },
       responses: { "200": json({ ...MCP_SERVER_VIEW, properties: { ...MCP_SERVER_VIEW.properties, composio: closed({ removed: { type: "boolean", description: "Nothing the save was to remove at Composio is left there." }, note: { type: "string", description: "What it removed at Composio, what it kept and why, and what is left, with the dashboard's address to remove that by hand." } }, "Present when the save moved a server the Composio preset made off Composio: what became of what the preset made there.") } }, "The server, as saved."), ...errors(400, 401, 403, 404, 409, 412, 415, 422, 429, 500), ...MCP_FAILED },
@@ -3339,7 +3403,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       operationId: "answerApproval", tags: ["runs"], summary: "Answer a tool call that waits for the owner's approval",
       description: "A tool set to ask parks its run at each call: status input_required, state waiting, and its view's and its summary's pending (kind approval) naming the call; a timeline row of kind tool_approval_requested follows the call's own rows (its call's, and its result's once it ran), then a row with what came of the answer. allow runs the call once, and the session goes on with its result: a read the runner lost mid-call may run again on its next claim, a call with a side effect never does; deny answers the call with the refusal, the note as its reason. The first answer wins: the same answer again is 204, another 409 not_continuable with details {reason: already_answered, decision}. A cancel of the run marks the call canceled, and a stop withdraws it. A person's message while it waits declines it, with the message as the reason: the run goes on in one turn with the refusal and their words, its row reads `Declined by your message`, their words show as their own message row between the approval row and the outcome, and a later answer is 409 with details.decision deny. Only the owner's password session answers, on the page's own origin with a JSON body: a bearer token is 403 forbidden, since a run's process, an agent's MCP client or a script may hold one.",
       parameters: [ref("parameters/RunId"), { name: "approval_id", in: "path", required: true, description: "The run's pending.id.", schema: { type: "string" } }],
-      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["decision"], properties: { decision: { enum: ["allow", "deny"] }, note: { type: "string", maxLength: 2000, description: "Why: with deny, the refusal's reason the model is told." }, confirm_destructive: { const: true, description: "The second confirm an allow of a destructive call needs (its pending's `destructive`): without it that allow is 422 on `confirm_destructive`, reason `missing`, and the call still waits. A deny needs none.", "x-agentrun-serve": "allowreads/1" } } } } } },
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["decision"], properties: { decision: { enum: ["allow", "deny"] }, note: { type: "string", maxLength: 2000, description: "Why: with deny, the refusal's reason the model is told. Cut of the keys the run holds before it is written; a run whose launch's sealed part doesn't open here refuses a note (409 not_continuable, details.reason withheld)." }, confirm_destructive: { const: true, description: "The second confirm an allow of a destructive call needs (its pending's `destructive`): without it that allow is 422 on `confirm_destructive`, reason `missing`, and the call still waits. A deny needs none.", "x-agentrun-serve": "allowreads/1" } } } } } },
       responses: { "204": { description: "Answered: the run goes on." }, ...errors(400, 401, 403, 404, 409, 415, 422, 429, 500) },
       "x-agentrun-serve": "approvals/1",
     },
