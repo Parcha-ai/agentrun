@@ -525,10 +525,11 @@ export class HostedProvider implements ComputerProvider {
 	 */
 	#dialed(): { attach: string; daemon: string; dial: HostedDial } | { problem: string } {
 		if (this.#dial === undefined) {
-			// No dial: a runner in a process of its own (serve's runner subcommand, the image's server-and-runner). The fix is
-			// the one a paired computer's refusal names (serve's workspace/attached-computers.ts ONE_PROCESS_FIX).
+			// No dial: a runner in a process of its own (serve's runner subcommand, the image's server-and-runner) that relays
+			// no socket. The fixes are the ones a paired computer's refusal names (serve's workspace/attached-computers.ts
+			// RELAY_FIX, then ONE_PROCESS_FIX).
 			return {
-				problem: `${this.#label} machines dial in to this server, and this runner runs in a process of its own, with no attach hub to take their socket: start the image with the server options alone, without server-and-runner (outside the image: agentrun-serve without --no-runner)`,
+				problem: `${this.#label} machines dial in to this server, and this runner runs in a process of its own and relays no machine's socket: give the runner AGENTRUN_PUBLIC_URL (this server's public address), or start the image with the server options alone, without server-and-runner (outside the image: agentrun-serve without --no-runner)`,
 			};
 		}
 		const url = this.#dial.url;

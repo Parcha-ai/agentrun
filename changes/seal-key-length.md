@@ -2,4 +2,4 @@
 packages: @parcha/agentrun-serve
 kind: fix
 ---
-A malformed `AGENTRUN_SEAL_KEY` is refused with the length it wants and the length it has, never its value.
+A missing or malformed `AGENTRUN_SEAL_KEY` is refused in one wording wherever the key is read: what it guards, and the length it wants and has, never its value. An import or a scrub handed none points at its `--data` directory.
