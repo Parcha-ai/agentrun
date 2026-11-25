@@ -66,6 +66,11 @@ Use the first method that reaches a list; record it as `method`.
      | `UK Sanctions List` | `UK-Sanctions-List.csv` | `lists/uk.csv` |
 
      A save that fails or is refused leaves that list to the next method; say why in `limitations`.
+   - **Whole file.** A save that answers `ok: true` holds the whole file the owner sent: web_save refuses a file over
+     its cap, or one cut short of the length its host stated, and never keeps part of one. So a file's size is no test
+     of it: lists grow and shrink, and the sizes above are rough. The file is the list when it reads as the list's
+     format (the formats above: its header row, or the UN XML's root). One that does not (an error or login page) leaves
+     that list to the next method. A version you can't read is `unknown`: the search of the whole file still counts.
    - **Version**, from the file you saved: UK `sed -n '1,1p' lists/uk.csv` (`Report Date: ...`); UN
      `grep -m 1 -o 'dateGenerated="[^"]*"' lists/un.txt`; EU `sed -n '2,2p' lists/eu.txt | cut -c1-10` (the
      `fileGenerationDate`); OFAC the date in the final URL web_save answers (`.../2026-11-05/...`). Record it as the

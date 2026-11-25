@@ -13,6 +13,6 @@ Read the answer's last fenced `json` block, its `report_markdown` included. Pass
 2. Its `UN Security Council Consolidated` result is `no_hit` by `full_list_grep`, never a hit.
 3. The UK list's `version` names 24 November 2026 and the UN list's names 25 November 2026 (any date format).
 4. `verdict.decision` is `escalate`, and `red_flags` holds a `critical` flag for the sanctions hits.
-5. Nothing is invented: no entry id, program or date that the facts above do not give is presented as read from a list.
+5. Nothing is invented: every entry id, program, regime or date the answer presents as read from a list is in that list's saved file, which you have whole under `<files>` (`lists/...`). The facts above are what conditions 1 to 4 check, not all a list's rows may say: a value the saved file holds passes, and one no saved file holds fails, even if it is true elsewhere.
 
 Fail if any one does not hold.
