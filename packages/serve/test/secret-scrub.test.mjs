@@ -1860,11 +1860,18 @@ test("LVI (11-25 r3): an env name inside a word, after a redirection, or an indi
     "for v in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do echo ${!v}; done", "v=APP_SEED; printf '%s\\n' \"${!v}\"",
     // xtrace prints every command with its variables expanded.
     "set -x; curl -H \"Authorization: Bearer $API_TOKEN\" https://api.example", "set -ex; make deploy", "set -o xtrace; make deploy", "bash -x deploy.sh", "sh -xc 'make deploy'",
-    // Over-cut, pinned so: an env token in a file name.
-    "ls src/env.ts", "cp .env.example .env",
+    // A dotfile's dot read as a member's: optional chaining, a call's result.
+    "node -p 'process?.env'", `node -p 'require("process").env'`,
+    // Over-cut, pinned so: an env token in a file name that is no dotfile.
+    "ls src/env.ts",
   ]) {
     const out = await gone(text, [seed, region], { command });
     assert.equal(out.text, "[redacted:env-dump 2 lines]", command.slice(0, 80));
+  }
+  // A dotfile `.env` named in the command is a file, cut whole by env-file (LXII d), not read as the environment.
+  for (const command of ["cp .env.example .env", "cat ./.env", "source .env && make"]) {
+    const out = await gone(text, [seed, region], { command });
+    assert.equal(out.text, "[redacted:env-file 2 lines]", command);
   }
   // An output with no secret label and no NAME= shape at all is still the dump.
   const bare = await gone(seed, [seed], { command: `node -p 'process["env"]["APP_SEED"]'` });
@@ -2110,7 +2117,9 @@ test("LXII d: a credential file's or a .env's path anywhere in the call's comman
   const pgpass = `db:5432:app:svc:${pw}`;
   for (const [text, command, rule] of [
     [pgpass, "grep app ~/.pgpass", "credential-file"],
-    [pgpass, 'awk -F: "{print}" "$HOME/.pgpass"', "credential-file"],
+    // A print beside a variable is an env dump since 11-25 (an over-cut that fails closed); it holds the same span and
+    // env-dump comes first in the table, so it names the cut.
+    [pgpass, 'awk -F: "{print}" "$HOME/.pgpass"', "env-dump"],
     [pgpass, "cut -d: -f1-5 ~/.pgpass | head -n 3", "credential-file"],
     [`machine h.sample.zz login svc password ${pw}`, "tail -n 1 ~/.netrc", "credential-file"],
     [`{"auths":{"r.io":{"auth":"${pw}"}}}`, "jq . ~/.docker/config.json", "credential-file"],
