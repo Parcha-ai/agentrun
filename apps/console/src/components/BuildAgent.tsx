@@ -45,9 +45,8 @@ export function BuildAgent({ origin, v2, caps }: { origin: string; v2: Pick<Clie
   const id = useId();
   const [tools, setTools] = useState<string[]>([]);
   const [place, setPlace] = useState<Place | undefined>(undefined);
-  const picks = { tools, place };
-  const prompt = buildAgentPrompt(origin, brief, undefined, picks);
-  const draft = briefAgentDraft(brief, picks);
+  const draft = briefAgentDraft(brief, { tools, place });
+  const prompt = buildAgentPrompt(origin, brief, tools.length || place ? draft : undefined);
   useEffect(() => {
     let live = true;
     setError(null);
