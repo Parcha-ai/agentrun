@@ -130,7 +130,7 @@ import { keepGrade } from "./runner/feedback-round.js";
 import { gradeRow, notAuditableOf } from "./runner/audit.js";
 import { namedDisksOf } from "./learn/learning-of.js";
 import { auditsOffWords, auditWriterOf, isShadowRun, readAudits, servingLinesOf, shadowRunId } from "./learn/audit.js";
-import { auditLoopOf, COMPILE_AFTER_MAX } from "./learning-setting.js";
+import { auditLoopOf, COMPILE_AFTER_MAX, holdsReservedKey, RESERVED_SEGMENT } from "./learning-setting.js";
 import { FINAL_STATES, type ListedFilter, RUN_CHANGES_PAGE, type RunChange, type RunChangeCursor } from "./store/store.js";
 import { championOf, forgetRunCopies, type Grade, GRADE_SOURCES, GRADES_KEPT, type GradeSource, gradeView, LABEL_MAX, type PromotionRecord, promotionsOf, promotionsShown, type Refused, servingOf, servingStateOf, shownDeep } from "./learn/promote.js";
 import { workflowNodesOf } from "./learn/workflow-nodes.js";
@@ -229,7 +229,7 @@ import { heldRoute, holdIssues, runComputerRead } from "./computer-held-routes.j
 import { COMPUTER_ROUTES, computerHoldOf, computerRoute, runComputerKind } from "./computer-routes.js";
 import { runOver } from "./computer-commands.js";
 import { mintViewerCredential, VIEWER_PARAM, viewerCookie, viewerCredentialFor, viewerCredentialKey, viewerCredentialOf } from "./viewer-credential.js";
-import { ATTACH_PATH, AttachHub, type HostedDial, PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
+import { ATTACH_PATH, AttachHub, containerSigns, type HostedDial, PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
 import { dockerDaemonOf } from "@parcha/agentrun-computer/docker";
 import { type AttachTiming, createAttachRoutes, liveRelays, pairedView } from "./computer-attach.js";
 import { pairedRefusal, withPaired } from "./workspace/attached-computers.js";
@@ -464,8 +464,8 @@ export type ServeOptions = {
   /** Under `faux`: the directory a Docker computer's computerd build is looked for in at the start (the computer
    *  package's dockerDaemonOf), in place of that package's own build; absent, a faux server doesn't check for one. */
   fauxDaemonDir?: string;
-  /** For tests: whether Docker's start probe takes this server to be in a container (place-offers.ts containerReason),
-   *  in place of its own marks; a faux server's is a host's. */
+  /** For tests: where Docker's start probe takes this server to be (place-offers.ts containerOf), in place of its own
+   *  marks. The test support's serve() pins a host, so the suite reads the same words in a container. */
   probeContainer?: ContainerFacts;
   /** For tests: the wait before each read again of the Docker host's addresses after the start's failed
    *  (docker-host-addresses.ts retryHostAddresses), in place of the backoff's timer. */
@@ -480,6 +480,9 @@ export type ServeOptions = {
   /** How often the runs' listings' builder looks again when it found nothing to build (run-listing.ts; default
    *  LISTER_IDLE_MS). `Infinity`: it builds only when Serve.listingSettled asks, so a test reads what a list builds alone. */
   listerIdleMs?: number;
+  /** How often a timeline page that waits (`wait_ms`) reads the store again while nothing changed (default 1000 ms,
+   *  run-reads-over-store.ts). A test's server reads sooner, so a change is served without the rest of a second's wait. */
+  timelinePollMs?: number;
   /** No runner beside this server in its process (the CLI's --no-runner, the image's server-and-runner): a paired
    *  computer's socket is held here while no run holds it, and relayed to the runner that holds a run of it
    *  (workspace/paired-route.ts); while no runner relays, a pairing code, the pair answer and each paired computer say no
@@ -1800,11 +1803,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // them, docker alone when it is not set; docker by its probe, daytona and modal by their providers' keys, read as a
   // run's claim reads them. Under --faux, `fauxDocker` stands in for Docker's answer, and nothing asks Docker.
   const fauxDocker = Boolean(options.faux) && options.fauxDocker === true;
-  // A faux server's probe is on a host, as its Docker paths are below, so a test reads the same words in a container;
-  // `probeContainer` sets it for a test of a real one.
+  // Where the probe takes this server to be is its own marks (place-offers.ts containerOf), faux or not, so a faux server
+  // in AgentRun's image (the deploy walk's) says the image's words; `probeContainer` pins it for a test.
   // The probe names Docker's architecture too, which says which computerd build a Docker computer binds (below).
   let dockerArch: string | undefined;
-  const found = await placeOffers(env, { keyOf: keyReader(store, seal.key, env), fauxDocker, dockerArch: (arch) => (dockerArch = arch), ...(options.probeContainer ? { container: options.probeContainer } : options.faux ? { container: { inside: false } } : {}) });
+  const found = await placeOffers(env, { keyOf: keyReader(store, seal.key, env), fauxDocker, dockerArch: (arch) => (dockerArch = arch), ...(options.probeContainer ? { container: options.probeContainer } : {}) });
   const docker = found.some((offer) => offer.id === "docker" && offer.available);
   // Under --faux, the mountinfo a test gives (fauxMountinfo, or FAUX_MOUNTINFO_ENV in the process's own environment, which
   // `env` leaves out: a server under test in a container names its own /proc/self/mountinfo there); with none, a faux
@@ -2381,6 +2384,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const servedTimelineDeps: ServedTimelineDeps = { serverSecrets, signIns, sealKey, keyEnv: () => withSavedGateway(own(withSecrets(process.env, "all", storedKeys)), savedGateway), statuses };
   const timelines = runTimelines({
     context: ctx,
+    ...(options.timelinePollMs !== undefined ? { pollMs: options.timelinePollMs } : {}),
     // The run's rows as served (run-timeline-served.ts), by its one cut (run-cut.ts, read for each page: a secret rotated
     // or saved since is cut at once), the set its view's words, title and error are cut of: each secret this server never
     // shows and each browser sign-in pointer the run was handed; its decision rows among them, its error rows in the
@@ -5596,6 +5600,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         if (extra.length) throw invalid(extra);
         if (typeof body.correct !== "boolean") throw invalid([{ field: "correct", reason: body.correct === undefined ? "missing" : "wrong_type", message: "correct is true or false: whether the run's answer was right" }]);
         if (body.expected !== undefined && !isObject(body.expected)) throw invalid([{ field: "expected", reason: "wrong_type", message: "expected is an object: the fields a right answer's JSON holds" }]);
+        if (holdsReservedKey(body.expected)) throw invalid([{ field: "expected", reason: "not_allowed", message: `expected holds no key named ${RESERVED_SEGMENT}, at any depth` }]);
         if (body.source !== undefined && !GRADE_SOURCES.includes(body.source as never)) throw invalid([{ field: "source", reason: "not_an_option", message: `source is one of ${GRADE_SOURCES.join(", ")}` }]);
         if (body.label !== undefined && (typeof body.label !== "string" || body.label.length > LABEL_MAX)) throw invalid([{ field: "label", reason: "wrong_type", message: `label is a string of at most ${LABEL_MAX} characters: the grade's words` }]);
         // A run that reads ended while it still learns from that end (its look-back: store-view.ts lookingBackEnd) is graded
@@ -5620,7 +5625,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           // A grade of a run its learned workflow answered alone is an audit row too (runner/audit.ts gradeRow): the hold rule
           // reads it with the shadows'. A row not written now is logged, never the grade refused.
           const said = (line: string) => log?.(logLine("audit", { run: row.id, said: line }));
-          await gradeRow({ store, agentId: row.agentId, revisionId: row.revisionId, context: ctx, folder: () => learningFolderOf(data, row.agentId), shown: () => learningShown(row.agentId), log: said }, row, grade.correct).catch((error) => said(`the grade wrote no audit row (${(error as Error)?.message ?? error})`));
+          await gradeRow({ store, agentId: row.agentId, revisionId: row.revisionId, context: ctx, folder: () => learningFolderOf(data, row.agentId), shown: () => learningShown(row.agentId), log: said }, row, grade.correct, grade.expected).catch((error) => said(`the grade wrote no audit row (${(error as Error)?.message ?? error})`));
           return graded;
         });
         // Its workflow's name cut as GET /runs/{id}/learning cuts it (learningShown); withheld whole when that cut can't be
@@ -6816,7 +6821,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   if (isLoopback(host)) names = loopbackNames(host, options.allowHosts, options.publicUrl);
   // An address of every interface is reached on this machine at its loopback one.
   const url = urlOf(server, host);
-  owner?.attach(options.publicUrl ?? url, options.publicUrl ? [] : elsewhereOf(host, (server.address() as AddressInfo).port));
+  owner?.attach(options.publicUrl ?? url, options.publicUrl ? [] : elsewhereOf(host, (server.address() as AddressInfo).port, { container: () => containerSigns() !== undefined }));
   webhooks.attach(options.publicUrl ?? url);
   slack.attach(options.publicUrl ?? url);
   // A local install is the one server an MCP server's URL may be on loopback for (anywhere else, loopback is this machine's

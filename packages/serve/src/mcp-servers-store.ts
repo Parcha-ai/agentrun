@@ -22,7 +22,7 @@ import { type ClientKind, dialAt, issuerOf, LOOPBACK, MAX_PENDING, MCP_SETTINGS_
 import { type Cleanup, cleanupOf, COMPOSIO_KEY_ENV, COMPOSIO_ORIGIN, composioAccountKey, composioEnvKey, composioKeyFromEnv, composioMadeKey, type ComposioMade, composioPerRun, droppedOf, madeToWrite, recordedMade, releasedOf, storedMade } from "./composio-made.js";
 import { asking, COMPOSIO_PER_RUN, COMPOSIO_USER, composioAccount, type ComposioAccount, type ComposioControl, composioListingAddress, composioServerId } from "./composio-preset.js";
 import { mcpSourceKey, type RecordedRow, recordedForAnother, savedByToken, sourceOf, type SourceRecord, sourceToWrite, standInGiven, storedSource, toolkitGiven } from "./mcp-sources.js";
-import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
+import { handedNoSealKey, SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
 import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN, githubMcpUrl } from "./github.js";
 import { serverGate, type ToolSettingsMap } from "./tool-plane.js";
 import { toolEffect } from "./tool-gate.js";
@@ -154,8 +154,12 @@ export class McpServersOverStore {
   constructor(private readonly store: McpServersStore, private readonly env: NodeJS.ProcessEnv, private readonly version: string, private readonly network: OAuthNetwork = systemNetwork) {
     // The server never starts without a seal key (seal-key.ts bootSealKey), so there is no keyless registry: every
     // credential is kept sealed under it.
-    const sealKey = sealKeyOf(env[SEAL_KEY_ENV]);
-    if (!sealKey) throw new Error(`MCP servers' credentials are kept under the server's seal key (${SEAL_KEY_ENV}), and none was handed over: the server does not start without one.`);
+    const handed = env[SEAL_KEY_ENV];
+    const sealKey = sealKeyOf(handed);
+    if (!sealKey) {
+      const handedWhy = handedNoSealKey(handed);
+      throw new Error(`MCP servers' credentials are kept under the server's seal key (${SEAL_KEY_ENV}), and ${handedWhy ? `${handedWhy}: the server does not start with it` : "none was handed over: the server does not start without one"}.`);
+    }
     this.sealKey = sealKey;
     this.signIns = new McpSignIns(network, pendingOverStore(store, sealKey), () => privateOAuthHosts(store));
   }

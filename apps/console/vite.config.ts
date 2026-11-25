@@ -1,17 +1,22 @@
 /// <reference types="vitest/config" />
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
 import { devProxy } from "./src/lib/devProxy";
 import { credentialGate } from "./credential-gate.mjs";
 import { thirdPartyNotices } from "./third-party-notices.mjs";
 
 // The console builds to static files with relative URLs, so AgentRun Server can serve them from any path.
-// `npm run dev` proxies /v2 and the public setup skill as src/lib/devProxy.ts says: to the AgentRun Server AGENTRUN_URL
-// names, else the one on this machine at serve's default port, with AGENTRUN_TOKEN on API requests alone.
+// `npm run dev` proxies /v2 and the public setup skill as src/lib/devProxy.ts says: to the AgentRun Server
+// AGENTRUN_BASE_URL names, else the one on this machine at serve's default port, with a key on API requests alone
+// (AGENTRUN_API_KEY, else AGENTRUN_TOKEN for a server on this machine).
 
-const proxy = devProxy(process.env);
-const v2 = proxy["/v2"];
+/** What the dev proxy had to say when it was set up (a token it did not send), said once the dev server is there to say it. */
+const devProxyNotes = (notes: readonly string[]): Plugin => ({
+  name: "agentrun-dev-proxy-notes",
+  apply: "serve",
+  configureServer(server) { for (const words of notes) server.config.logger.warn(words); },
+});
 // A cap on the test workers from VITEST_MAX_WORKERS, for a machine shared with other work. Vitest reads the variable too,
 // but with parseInt, which takes "4x" as 4 and drops "x" without a word. Unset or empty keeps vitest's own default of a
 // worker per core. Anything but a whole number is refused, as pi-browser's TEST_CONCURRENCY is: a cap that was asked for
@@ -35,29 +40,37 @@ const alias = {
 // keeps the unit configuration below and no projects.
 const projects = process.env.VITEST_STORYBOOK === "true" ? [(await import("./.storybook/vitest.project")).storybookProject(alias)] : undefined;
 
-export default defineConfig({
-  base: "./",
-  // THIRD-PARTY-NOTICES.txt beside index.html: the licenses of what the bundle holds (third-party-notices.mjs). Then the
-  // credential gate (credential-gate.mjs), last: the build fails when the bundle, the notices included, holds a credential.
-  plugins: [react(), thirdPartyNotices(), credentialGate()],
-  server: {
-    proxy: {
-      ...proxy,
-      "/v2": {
-        ...v2,
-        // Without a token the console signs in like the served page: the server takes a cookie write only from its own
-        // origin, so a request from this dev server's own origin is sent as the server's (as the serve dev kit's proxy does).
-        configure: (proxy) => proxy.on("proxyReq", (req, incoming) => {
-          const host = incoming.headers.host;
-          if (host && incoming.headers.origin === `http://${host}`) req.setHeader("origin", new URL(v2.target).origin);
-        }),
+export default defineConfig(({ command, mode }) => {
+  // The proxy and its variables are the dev server's alone (`npm run dev`, Storybook's, and the server the proxy's own
+  // test starts). A build and a test run read none of them, so a variable left in a shell stops neither; the dev server
+  // refuses one it cannot use (devProxy), by name.
+  const notes: string[] = [];
+  const proxy = command === "serve" && mode !== "test" ? devProxy(process.env, (words) => notes.push(words)) : undefined;
+  const v2 = proxy?.["/v2"];
+  return {
+    base: "./",
+    // THIRD-PARTY-NOTICES.txt beside index.html: the licenses of what the bundle holds (third-party-notices.mjs). Then the
+    // credential gate (credential-gate.mjs), last: the build fails when the bundle, the notices included, holds a credential.
+    plugins: [react(), thirdPartyNotices(), credentialGate(), devProxyNotes(notes)],
+    server: proxy && v2 ? {
+      proxy: {
+        ...proxy,
+        "/v2": {
+          ...v2,
+          // Without a key the console signs in like the served page: the server takes a cookie write only from its own
+          // origin, so a request from this dev server's own origin is sent as the server's (as the serve dev kit's proxy does).
+          configure: (proxy) => proxy.on("proxyReq", (req, incoming) => {
+            const host = incoming.headers.host;
+            if (host && incoming.headers.origin === `http://${host}`) req.setHeader("origin", new URL(v2.target).origin);
+          }),
+        },
       },
-    },
-  },
-  resolve: { alias },
-  // The server serves scripts, styles and fonts; its CSP also permits data images. Keep the small coding-agent and harness
-  // icons in the bundle so their marks work with existing servers, without widening their asset allowlist.
-  build: { outDir: "dist", assetsInlineLimit: (file) => ["coding-agents", "harnesses"].some(dir => file.replaceAll("\\", "/").includes(`/src/assets/${dir}/`)) },
-  // css: tokens.css is read as text (`?raw`) by the design-system test and stories; every other stylesheet stays a stub.
-  test: { environment: "jsdom", include: ["src/**/*.test.ts", "src/**/*.test.tsx"], css: { include: [/\.css\?raw$/] }, ...(workers ? { maxWorkers: workers } : {}), ...(projects ? { projects } : {}) },
+    } : {},
+    resolve: { alias },
+    // The server serves scripts, styles and fonts; its CSP also permits data images. Keep the small coding-agent and harness
+    // icons in the bundle so their marks work with existing servers, without widening their asset allowlist.
+    build: { outDir: "dist", assetsInlineLimit: (file) => ["coding-agents", "harnesses"].some(dir => file.replaceAll("\\", "/").includes(`/src/assets/${dir}/`)) },
+    // css: tokens.css is read as text (`?raw`) by the design-system test and stories; every other stylesheet stays a stub.
+    test: { environment: "jsdom", include: ["src/**/*.test.ts", "src/**/*.test.tsx"], css: { include: [/\.css\?raw$/] }, ...(workers ? { maxWorkers: workers } : {}), ...(projects ? { projects } : {}) },
+  };
 });

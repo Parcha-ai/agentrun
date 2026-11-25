@@ -14,7 +14,7 @@ import { refusesHttp } from "./https-refusal.mjs";
 const { GroundboxProvider, create } = await import("../dist/groundbox.js");
 const { GROUNDBOX, GROUNDBOX_OWN_IMAGE } = await import("../dist/descriptors/index.js");
 const { checkExecStream, formatExecStream } = await import("../dist/conformance/exec-stream.js");
-const { GROUNDBOX_ENV: ENV, settingsFromEnv, createProvider, createHost, conformanceImage, sweepScope } = await import("../dist/conformance/groundbox.js");
+const { GROUNDBOX_ENV: ENV, settingsFromEnv, createProvider, createDriftedProvider, createHost, conformanceImage, sweepScope } = await import("../dist/conformance/groundbox.js");
 
 const KEY = "gbx_fake_key_0123456789";
 const API = "https://api.example.test/v1";
@@ -1069,4 +1069,48 @@ test("a peer that takes every attach and then says nothing fails wait() in words
 	assert.ok(outcome instanceof Error, `wait() is ${outcome}`);
 	assert.match(outcome.message, /could not be read on again within 0\.5 s: the command stream said nothing for 0\.1 s after its attach/);
 	assert.equal(streams.opened.length, 2, "no try that would start past the bound");
+});
+
+test("the conformance module hands the caller's onNote to the provider: a release whose run folder was not let go cleanly is said through it", async () => {
+	// A running Archil computer: release lets go of its folder first, through an exec that cannot start here.
+	const labels = { ...LABELS, "agentrun.run": "r1", "agentrun.mount": JSON.stringify({ kind: "archil", disk: "dsk-00000000000baf76", region: "aws-us-east-1", agent: "a1" }) };
+	let deleted = false;
+	const { fetch } = recorder((method, path) => {
+		if (path !== `/v1/sandboxes/${ID}`) return undefined;
+		if (method === "DELETE") {
+			deleted = true;
+			return [200, sandbox({ status: "stopped", stop_reason: "deleted", metadata: labels })];
+		}
+		if (method === "GET") return deleted ? [404, refusal("not_found", `No sandbox ${ID}`)] : [200, sandbox({ metadata: labels })];
+		return undefined;
+	});
+	const notes = [];
+	const provider = await createProvider({
+		env: { [ENV.key]: KEY, [ENV.apiUrl]: API, [ENV.live]: "1" },
+		fetch,
+		webSocket: () => {
+			throw new Error("no command stream here");
+		},
+		timeouts: { pollMs: 1 },
+		onNote: (note) => notes.push(note),
+	});
+	const released = await provider.release({ id: ID, name: NAME }, "delete");
+	assert.equal(released.ok, true, JSON.stringify(released));
+	assert.equal(deleted, true);
+	assert.equal(notes.length, 1, JSON.stringify(notes));
+	assert.equal(notes[0].computer, NAME);
+	assert.match(notes[0].note, /was deleted, and the run's folder was not let go cleanly/);
+});
+
+test("the conformance module's daemon: an option's path over COMPUTER_GROUNDBOX_DAEMON, and the drifted twin uploads the one it built", async () => {
+	const { fetch } = recorder((method, path) => (method === "GET" && path.startsWith("/v1/sandboxes?") ? [200, { data: [], next_cursor: null }] : undefined));
+	const env = { [ENV.key]: KEY, [ENV.apiUrl]: API, [ENV.live]: "1", [ENV.daemon]: "/nonexistent/untangle-env/computerd" };
+	const spec = { image: "alpine:3.20", lifetimeMs: 600_000, network: "none" };
+	const options = { env, fetch, daemonPath: "/nonexistent/untangle-option/computerd", buildDaemon: async () => "/nonexistent/untangle-drift/computerd" };
+	const made = await (await createProvider(options)).create(spec, { requestId: "req-untangle-groundbox-1" });
+	assert.equal(made.ok, false);
+	assert.match(made.error.message, /no daemon binary at \/nonexistent\/untangle-option\/computerd/);
+	const drifted = await (await createDriftedProvider(options)).create(spec, { requestId: "req-untangle-groundbox-2" });
+	assert.equal(drifted.ok, false);
+	assert.match(drifted.error.message, /no daemon binary at \/nonexistent\/untangle-drift\/computerd/);
 });

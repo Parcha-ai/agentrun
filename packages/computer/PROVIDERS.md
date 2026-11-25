@@ -474,7 +474,10 @@ Modal's create gives the sandbox `agentrun-dial` as its command and the env as `
 create's env, so E2B's create starts it through envd, with the env as that one process's
 ([README](README.md#e2b-on-dial)). Daytona's create starts it in a toolbox session once the sandbox reads `started`,
 the URL on its line ([README](README.md#daytona-on-dial)). A host that starts it can give `dialLog(id)`, and a machine
-that never dials then fails with its last lines. Their conformance
+that never dials then fails with its last lines first. One that can also read its exit gives `dialExit(id)`: an
+`agentrun-dial` that exited fails create at once, and one that runs and keeps writing is waited for past `createMs`,
+up to twice it. With `redial(id)` too, an exit of 3 (its fetch failed) or 5 (its init never listened, and was ended)
+starts it once more in the same machine. Their conformance
 modules' `dialKit()` refuse, since a machine dials the server that minted its token: the Core run happens inside the
 public server's process.
 

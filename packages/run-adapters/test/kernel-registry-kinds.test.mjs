@@ -33,7 +33,7 @@ test("the computer's tools follow the host tools, as its groups offer them: comp
   assert.deepEqual(createRegistry({ maxExecS: 600, shell: "local", executors: injected }).list(), hostToolDefs({ maxExecS: 600, shell: "local" }));
 });
 
-test("each tool's definition: its kind's gate name and settings key, the generated schema; a look is replay-safe, an act or an op is not", () => {
+test("each tool's definition: its kind's gate name and settings key, the generated schema (the screenshot's with save_as); a look is replay-safe, an act or an op is not", () => {
   for (const kind of ["desktop", "phone"]) {
     const defs = computerToolDefs(kind, MAC);
     assert.deepEqual(defs.map((def) => [def.name, def.gateName, def.settingsKey, def.replaySafe]), [
@@ -43,7 +43,11 @@ test("each tool's definition: its kind's gate name and settings key, the generat
       [COMPUTER_OP_TOOL, `host:${kind}/${COMPUTER_OP_TOOL}`, kind, false],
       [HANDOFF, `host:${kind}/${HANDOFF}`, kind, false],
     ]);
-    for (const def of defs.slice(0, 3)) assert.equal(def.parameters, COMPUTER_TOOL_SCHEMAS[def.name]);
+    for (const def of defs.slice(0, 2)) assert.equal(def.parameters, COMPUTER_TOOL_SCHEMAS[def.name]);
+    // The screenshot's: the generated one, and save_as, the run's own (the run's hands answer it, never the computer).
+    const { save_as, ...surface } = defs[2].parameters.properties;
+    assert.deepEqual({ ...defs[2].parameters, properties: surface }, COMPUTER_TOOL_SCHEMAS.computer_screenshot);
+    assert.equal(save_as.type, "string");
     const ops = defs[3].parameters.properties.op.enum;
     assert.ok(ops.includes("shell.run") && ops.includes("files.write") && !ops.includes("act") && !ops.includes("observe"), `computer_op's op is a computer op no step tool runs: ${JSON.stringify(ops)}`);
   }

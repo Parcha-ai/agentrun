@@ -647,3 +647,16 @@ test("the conformance module's box snapshot comes from prepareImage once live, a
 	assert.match(built[0], /-drift$/);
 	assert.equal(drifted.id, "morph");
 });
+
+test("the conformance module's daemon: an option's path over COMPUTER_MORPH_DAEMON, and the drifted twin uploads the one it built", async () => {
+	const rest = fakeRest();
+	const spec = { image: rest.snapshot({}).id, lifetimeMs: 600_000, network: "none" };
+	const env = { [ENV.key]: KEY, [ENV.live]: "1", [ENV.apiUrl]: API_URL, [ENV.daemon]: "/nonexistent/untangle-env/computerd" };
+	const options = { env, ssh2: { Client: class {} }, fetch: rest.fetch, daemonPath: "/nonexistent/untangle-option/computerd", buildDaemon: async () => "/nonexistent/untangle-drift/computerd" };
+	const made = await (await conformanceModule.createProvider(options)).create(spec, { requestId: "req-untangle-morph-1" });
+	assert.equal(made.ok, false);
+	assert.match(made.error.message, /no daemon binary at \/nonexistent\/untangle-option\/computerd/);
+	const drifted = await (await conformanceModule.createDriftedProvider(options)).create(spec, { requestId: "req-untangle-morph-2" });
+	assert.equal(drifted.ok, false);
+	assert.match(drifted.error.message, /no daemon binary at \/nonexistent\/untangle-drift\/computerd/);
+});
