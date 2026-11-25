@@ -86,6 +86,18 @@ test("a removal already under way that never ends fails release(delete) once the
 	assert.deepEqual(names(), [A]);
 });
 
+test("at the provider's default bound (no settleMs given), a removal already under way that never ends fails release(delete) after 10 s, in words that name it", { timeout: 30_000 }, async () => {
+	// The one test that waits out the production bound, SETTLE_MS, on purpose: every other one sets a short settleMs.
+	const { provider, names } = fakeDocker({ containers: [container({ name: A })], removing: { [A]: null } });
+	const started = Date.now();
+	const released = await provider.release(ref(A), "delete");
+	assert.equal(released.ok, false);
+	assert.deepEqual([released.error.code, released.error.vendor], ["vendor", "docker"]);
+	assert.equal(released.error.message, `docker rm ${A} failed: docker answered that the removal of ${A} was already in progress, and it was still there 10 s later`);
+	assert.ok(Date.now() - started >= 9_500, "it waited out the default bound");
+	assert.deepEqual(names(), [A]);
+});
+
 test("the bounds a test may set (settleMs, settleQuietMs) are whole milliseconds above 0 that a timer can hold; anything else is refused when the provider is made", () => {
 	for (const bad of [0, -1, 1.5, 2 ** 31, Number.NaN, "300"]) {
 		for (const name of ["settleMs", "settleQuietMs"]) {
