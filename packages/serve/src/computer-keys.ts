@@ -12,6 +12,7 @@
 // words, and the words this module adds name keys only by their names.
 import { type ComputerProvider, PROVIDERS, type ProviderEntry, providerFor, SDK_MISSING } from "@parcha/agentrun-computer";
 import { keyShaped } from "./secret-name.js";
+import { hostEnvOf } from "./workspace/computer-providers.js";
 
 /** One key a provider takes: its name in its descriptor, the create() option it fills, and whether it is needed. */
 export interface ProviderKey {
@@ -125,7 +126,7 @@ export async function providerFromEnv(providerId: string, env: NodeJS.ProcessEnv
   const options = providerOptions(providerId, keys);
   if (!options.ok) return options;
   const names = PROVIDERS.find((one) => one.id === providerId)?.hostEnv;
-  const hostEnv = names ? { env: Object.fromEntries(names.flatMap((name) => (env[name] === undefined ? [] : [[name, String(env[name])]]))) } : {};
+  const hostEnv = names ? { env: hostEnvOf(env, names) } : {};
   try {
     return { ok: true, value: await providerFor(providerId as never, { ...options.options, ...hostEnv, ...(fetcher ? { fetch: fetcher } : {}) } as never) };
   } catch (error) {
