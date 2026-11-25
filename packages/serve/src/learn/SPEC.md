@@ -121,22 +121,28 @@ grade's keys: they are a person's data, and a run's purge leaves them nowhere in
 correct, on the whole answer, makes a draft that repeats it wrong there, and leaves any other answer unjudged (under
 agree_on it names no field, so it changes nothing); correct changes nothing (the agent's answer is known as with no
 grade, at the same bar: a thumbs-up never makes the check stricter). A draft whose answer is the one a grade marked
-wrong (sameAnswer: equal as JSON or trimmed text, in any dress) is never right on that input, whatever the grader says.
-Each replay's verdict keeps the grade it was asked against (`replay.compared.graded`, null for none), and the check
-judges that input on it: a grade given after the replay ended counts from the next check, never makes this one's pair
-stale. An unjudged input is never right: not on every field at once, and a field judged on fewer than `alone_min` of
+wrong (sameAnswer: equal as JSON or trimmed text, in any dress) is never right on that input, whatever the grader says. A
+grade that contradicts itself (marked wrong, yet its expected answer written over the agent's is the agent's answer)
+gives that input no known answer: unjudged. Each replay's record keeps the grade it was judged with
+(`replay.compared.graded`, null for none; with equal answers too, where no model is asked), and the check judges that
+input on it: a grade given after the replay ended counts from the next check, never makes this one's pair stale. A
+learning reset deletes the grades and keeps the replay runs: their records and journals keep the grade content they
+were judged with, as their grader prompts already did. An unjudged input is never right: not on every field at once, and a field judged on fewer than `alone_min` of
 the inputs that carried it fails. A field passes on all its known inputs pooled, wherever each one's known answer came
 from: at least `agree_min` of them right (an input known only from the agent counts at the agent's self-agreement on
-the field less the margin instead, where that was measured; none is yet), and, on the inputs known from labels and
-apart on those known from grades, within `margin` (0.02) of the agent's own accuracy there (a correction, where the
-agent was wrong, is no free pass). So one graded input missed among 19 the agent knows passes at 19 of 20, and
-`check.fields.<f>.by` keeps each source's counts, with whether it would pass alone. It serves when at least `alone_min` of the inputs were answered alone, at least
+the field less the margin instead, where that was measured; none is yet). Its inputs with a known answer (labels and
+grades together) keep their own bar too: at least `agree_min` of them right, and within `margin` (0.02) of the agent's
+own accuracy there, one miss always allowed in each (misses at most max(1, floor((1 - agree_min) n)); a correction,
+where the agent was wrong, is no free pass). So agent-known inputs never carry graded ones the draft got wrong: 80
+agent-known right and 20 graded wrong hold, while one graded input missed among 19 the agent knows serves, and 2 of 3
+labels right where the agent had 3 serves among 97 agent-known. `check.fields.<f>.by` keeps each source's counts, with
+whether it would pass alone. It serves when at least `alone_min` of the inputs were answered alone, at least
 `agree_min` of those were right on every field at once (the joint floor: misses spread over several fields add up), and
 every field passes; a hold names the failing fields (`check.fields`, each with its counts and reason), or its fields
 together when only the joint floor fell short, and each disagreement the fields it had wrong, with the known answer of
 each a label or grade gave (`expected`, its value cut and redacted, and its source), which the recompile is asked to
 say. An unjudged input is listed too, its field marked `unknown` with no value: the recompile is told the owner marked
-the agent's answer wrong without giving the right one. A purge blanks each value and keeps the field and source. The record counts
+the agent's answer wrong without giving the right one. A purge blanks each value and keeps the field and source. The recompile prompt is not reached: it quotes each disagreement's input, the agent's answer and the grade's expected value, and it is asked in the agent's next user run, whose journal keeps it; purging the graded run leaves that copy, as it leaves the traces of other runs a compile prompt quotes. Phase 4d moves the compile turn into a learning run of its own, made from the runs it quotes, so a purge of any of them deletes it. The record counts
 the agent's side too (`check.agent_agreed`: of the inputs answered alone, those the agent's own answers had right on
 every field against the same known answers), which the cost summary's `agent_pct` and a replay's `agent_acc` read. A
 connected agent's turns kept before the per-field tally count each field from the same turns as `alone`. No new

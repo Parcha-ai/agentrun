@@ -91,7 +91,7 @@ test("a field known from grades: at least agree_min of its inputs right, and at 
   }
   assert.equal(check(rows(43, 45), { ...BAR, margin: 0.04 }).fields.x.pass, true, "a wider margin");
   assert.equal(DEFAULT_MARGIN, 0.02);
-  assert.match(check(rows(44, 45), BAR).fields.x.reason, /^x: 44 of 50 right against the grades' expected answers \(88\.0%, the bar 80\.0%\), the agent 45 \(90\.0%; at most 2\.0% under it\)$/);
+  assert.match(check(rows(44, 45), BAR).fields.x.reason, /^x: 44 of 50 right against the grades' expected answers \(88\.0%, the bar 80\.0%\), the agent 45 \(90\.0%; at most 2\.0% under it\), one miss allowed in each$/);
 });
 
 test("corrections: every input graded with the agent wrong; a workflow that answers anything else is held, one that says the expected answers serves", () => {
@@ -113,9 +113,10 @@ test("a grade with no expected answer: graded right, the agent's answer is known
     answered("in-2", { x: { workflow: "c", agent: "c" } }),
   ], BAR);
   assert.deepEqual(refuted.fields.x.by, {
-    grade: { n: 1, workflow_right: 0, agent_right: 0, pass: false },
+    grade: { n: 1, workflow_right: 0, agent_right: 0, pass: true },
     agent: { n: 1, workflow_right: 1, agent_right: 1, pass: true },
-  }, "in-0 repeats an answer graded wrong; in-1 differs from it, which no known answer judges");
+  }, "in-0 repeats an answer graded wrong (its one miss, allowed there alone); in-1 differs from it, which no known answer judges");
+  assert.equal(refuted.fields.x.pass, false, "1 of 2 right in all: under agree_min");
   assert.equal(refuted.fields.x.unjudged, 1, "in-1 is counted as unjudged");
   assert.deepEqual(refuted.misses, [
     { field: "x", input_id: "in-0", workflow: "a", expected: undefined, known: "unknown" },
@@ -130,7 +131,8 @@ test("a grade's known answer on a whole answer: `agrees` (the fast model's verdi
     answered("in-1", { answer: { workflow: "w1", agent: "a1", grade: { k: 1 }, agrees: false, agent_correct: true } }),
   ];
   const verdict = check(rows, BAR);
-  assert.deepEqual(verdict.fields.answer.by, { grade: { n: 2, workflow_right: 1, agent_right: 1, pass: false } });
+  assert.deepEqual(verdict.fields.answer.by, { grade: { n: 2, workflow_right: 1, agent_right: 1, pass: true } }, "one miss, allowed on the graded inputs alone");
+  assert.equal(verdict.fields.answer.pass, false, "1 of 2 right: under agree_min");
   assert.deepEqual(verdict.misses, [{ field: "answer", input_id: "in-1", workflow: "w1", expected: { k: 1 }, known: "grade" }]);
 });
 
@@ -144,7 +146,7 @@ test("unjudged inputs are never right: 19 answers graded wrong with no correctio
   assert.deepEqual(verdict.joint, { agreed: 1, alone: 20, pass: false }, "an unjudged input is not right on every field");
   assert.deepEqual([verdict.fields.answer.n, verdict.fields.answer.unjudged, verdict.fields.answer.pass], [1, 19, false], "judged on 1 of the 20 inputs it answered: under alone_min");
   assert.deepEqual(verdict.failing, ["answer"]);
-  assert.match(verdict.fields.answer.reason, /^answer: 1 of 1 said what the agent said \(100\.0%, the bar 80\.0%\); judged on 1 of 20 \(5\.0%, the bar 70\.0%\): 19 had no known answer \(graded wrong, none given, and the workflow said another\)$/);
+  assert.match(verdict.fields.answer.reason, /^answer: 1 of 1 said what the agent said \(100\.0%, the bar 80\.0%\); judged on 1 of 20 \(5\.0%, the bar 70\.0%\): 19 had no known answer \(graded wrong with none given and the workflow said another, or a grade that contradicts itself\)$/);
   assert.deepEqual(tallyOf(rows).fields.answer, { agent: { n: 1, workflow_right: 1, agent_right: 1 }, unjudged: 19 }, "the tally keeps the unjudged count, so a check collected over time adds to it");
   const few = check([
     ...ids(2).map((id) => answered(id, { answer: { workflow: "", agent: "the agent's answer", agent_correct: false } })),
@@ -195,7 +197,7 @@ test("a missing value is never right: not the workflow's, and not against a miss
   ], BAR);
   assert.deepEqual(verdict.misses.map((miss) => miss.input_id), ["in-0", "in-1", "in-3"]);
   assert.deepEqual(verdict.fields.x.by, {
-    grade: { n: 2, workflow_right: 1, agent_right: 1, pass: false },
+    grade: { n: 2, workflow_right: 1, agent_right: 1, pass: true },
     agent: { n: 2, workflow_right: 0, agent_right: 1, pass: false },
   }, "in-1's agent gave no value: it is not counted as the agent's right answer there");
 });

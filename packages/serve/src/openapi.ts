@@ -1836,9 +1836,9 @@ const FIELD_VERDICT = closedWith({
   ...FIELD_COUNT,
   agent_right: { ...COUNT, description: "How many of them the agent's own answer had right, on the inputs known from a label or a grade only." },
   known: { enum: [...KNOWN_SOURCES], description: "The strongest source it was known from." },
-  pass: { type: "boolean", description: "Whether it passed: over all its known inputs pooled, at least `agree_min` right; on those known from a label, and apart on those known from a grade, at most 2 points under the agent; and judged on enough of its inputs (`unjudged`)." },
+  pass: { type: "boolean", description: "Whether it passed: over all its known inputs pooled, at least `agree_min` right; on those with a known answer (from labels and grades together), at least `agree_min` right and at most 2 points under the agent, one miss always allowed in each; and judged on enough of its inputs (`unjudged`)." },
   reason: { type: "string", description: "Why, in words, with the numbers." },
-  by: { type: "object", additionalProperties: false, properties: Object.fromEntries(KNOWN_SOURCES.map((known) => [known, closed({ ...FIELD_COUNT, pass: { type: "boolean", description: "Whether this source alone would pass (`agree_min` and the margin on its inputs); the field's `pass` pools them." } })])), description: "Its counts per source, each with whether it would pass alone." },
+  by: { type: "object", additionalProperties: false, properties: Object.fromEntries(KNOWN_SOURCES.map((known) => [known, closed({ ...FIELD_COUNT, pass: { type: "boolean", description: "Whether this source alone would pass: from a label or a grade, `agree_min` and the margin with one miss allowed in each; from the agent, `agree_min`. The field's `pass` pools them." } })])), description: "Its counts per source, each with whether it would pass alone." },
 }, { unjudged: UNJUDGED });
 /** A compiled draft's one check (learn/promote.ts CheckRecord): its bar while it replays, its numbers once decided. */
 const PROMOTION_CHECK = closedWith({

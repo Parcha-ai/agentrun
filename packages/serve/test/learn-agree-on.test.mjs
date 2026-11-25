@@ -80,7 +80,9 @@ const correctedText = (expected) => JSON.stringify({ ...AGENT, ...expected });
 const gradedRead = (read, expected, compared, against) => ({ ...read, rows: read.rows.map((row) => ({ ...row, correct: false, expected, ...(compared ? { compared: { grader: "fast-model", pair: answersPair(row.answer, against?.(row) ?? correctedText(expected)), ...compared } } : {}) })) });
 
 test("graded inputs with no agree_on: one field, the whole answer, judged against the agent's answer with the grade's expected keys written over it: equal, else the fast model's verdict on the draft and that answer", async () => {
-  const expected = { mcc: "7832", riskTier: "low" };
+  // A correction: the agent said riskTier low, the grade expects medium (one equal to the agent's answer contradicts
+  // itself, the next test's).
+  const expected = { mcc: "7832", riskTier: "medium" };
   const known = JSON.stringify(expected);
   // Right on mcc, another decision on riskTier: the whole answer differs from the expected one.
   const partly = { ...DRAFT, riskTier: "high" };
@@ -96,12 +98,8 @@ test("graded inputs with no agree_on: one field, the whole answer, judged agains
   assert.equal(same.record.decided, "promote", `the same decisions as the expected answer by the fast model's verdict: ${same.record.reason}`);
   assert.deepEqual(same.stored.check.fields.answer.by, { grade: { n: 5, workflow_right: 5, agent_right: 0, pass: true } });
 
-  // Graded wrong, yet the expected keys written over the agent's answer are the agent's answer: the grade contradicts
-  // itself, so a draft equal to that answer is neither known right nor known wrong (unjudged). A correction that changes
-  // the answer, and a draft that says it, is test 4's.
   const equal = await decide({}, gradedRead(readOf(() => draftSays({ ...AGENT, ...expected })), expected));
-  assert.equal(equal.record.decided, "hold", equal.record.reason);
-  assert.deepEqual([equal.stored.check.fields.answer.n, equal.stored.check.fields.answer.unjudged], [0, 5], equal.record.reason);
+  assert.equal(equal.record.decided, "promote", `equal to the corrected answer, no model asked: ${equal.record.reason}`);
 
   // The expected keys alone leave out the rest of the agent's answer: another answer, with no verdict saying otherwise.
   const bare = await decide({}, gradedRead(readOf(() => draftSays(expected)), expected));
@@ -343,8 +341,7 @@ test("an edit that leaves learning out carries the saved agree_on forward, a `__
 });
 
 test("a grade that contradicts itself (marked wrong, yet its expected answer written over the agent's is the agent's own) is neither known right nor known wrong: the input is unjudged, whatever the draft says", async () => {
-  const expected = { mcc: AGENT.mcc };
-  for (const draft of [agentSays(AGENT), draftSays({ ...AGENT, mcc: "5999" })]) {
+  for (const [expected, draft] of [[{ mcc: AGENT.mcc }, agentSays(AGENT)], [{ mcc: AGENT.mcc }, draftSays({ ...AGENT, mcc: "5999" })], [{ mcc: "7832", riskTier: "low" }, draftSays(AGENT)]]) {
     const decided = await decide({}, gradedRead(readOf(() => draft), expected));
     assert.equal(decided.record.decided, "hold", decided.record.reason);
     const { answer } = decided.stored.check.fields;

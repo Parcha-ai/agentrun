@@ -60,7 +60,7 @@ import { pinAnnotations, type Recorded, recordedCalls, type ReplayCalls, replayC
 import { listed } from "../learning-words.js";
 import { isObject, type Json } from "../validate.js";
 import { agentRun, lastOwnRuns, newCompileAttempt, sinceReset } from "../learn/compile.js";
-import { answerAt, answerValue, type CheckBar, type CheckDisagreement, type CheckKnown, type CheckRecord, type CheckTurns, checkShares, CHECK_TEXT_MAX, championOf, compareAnswers, type Compared, comparedGrade, comparedOf, gradesOf, knownAnswerText, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, type Refused, type ReplayLaunch, type ReplayOutcomes, type ReplayScore, replayingOf, type SkippedTool, skippedToolsOf, valueAtPath } from "../learn/promote.js";
+import { answerAt, answerValue, type CheckBar, type CheckDisagreement, type CheckKnown, type CheckRecord, type CheckTurns, checkShares, CHECK_TEXT_MAX, championOf, compareAnswers, type Compared, comparedGrade, comparedOf, gradesOf, knownAnswerText, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, type Refused, type ReplayLaunch, type ReplayOutcomes, type ReplayScore, replayingOf, sameAnswer, type SkippedTool, skippedToolsOf, valueAtPath } from "../learn/promote.js";
 import { check as checkFields, type CheckInput, type CheckTally, type FieldAnswers } from "../learn/field-check.js";
 import { refusedIn } from "../purged-workflow.js";
 import { sendCommand } from "./commands.js";
@@ -523,7 +523,10 @@ function checkInputOf(row: CheckRow, on: readonly string[] | undefined, compared
       return [path, { workflow: answerAt(row.answer, path), agent: answerAt(row.agent, path), ...(grade !== undefined ? { grade } : {}) }];
     })) };
   }
-  const graded = row.expected ? { grade: row.expected, ...(row.correct !== undefined ? { agent_correct: row.correct } : {}) } : row.correct === false ? { agent_correct: false } : {};
+  // A grade that marked the agent's answer wrong, yet whose expected answer written over it is that answer, contradicts
+  // itself: no known answer there, neither right nor wrong (unjudged).
+  const contradicts = row.correct === false && row.expected !== undefined && row.agent !== null && sameAnswer(knownAnswerText(row.agent, row.expected), row.agent);
+  const graded = contradicts ? { no_known: true as const } : row.expected ? { grade: row.expected, ...(row.correct !== undefined ? { agent_correct: row.correct } : {}) } : row.correct === false ? { agent_correct: false } : {};
   // The answers as sameAnswer reads them, so a draft that says the agent's answer in another dress repeats it.
   return { input_id: row.of, outcome, fields: { [WHOLE_ANSWER]: { workflow: answerValue(row.answer), agent: answerValue(row.agent), agrees: compared.same, ...graded } } };
 }

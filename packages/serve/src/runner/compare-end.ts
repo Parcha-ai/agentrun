@@ -8,7 +8,7 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { LearningFolder } from "../learn/folder.js";
-import { type Compared, type ComparedGrade, comparedGrade, type GraderReply, gradeAnswers, gradesOf, knownAnswerText, sameAnswer } from "../learn/promote.js";
+import { answersPair, type Compared, type ComparedGrade, comparedGrade, type GraderReply, gradeAnswers, gradesOf, knownAnswerText, sameAnswer } from "../learn/promote.js";
 import type { PortModels } from "../port-models.js";
 import type { RunLaunch } from "../run-launch.js";
 import type { Store } from "../store/store.js";
@@ -66,7 +66,8 @@ async function gradeOf(store: Store, of: string): Promise<ComparedGrade | null> 
 
 /** The end-of-run step of a replay run or an audit's shadow (its callers pass no other run): its comparison (above),
  *  asked only when the run completed, was not cut, has a grader (its route exists only for a revision that names no
- *  agree_on, graderRouteOf), and the two answers are not already the same. In a run's own process the step is its runner's (held.ts endOfRun): it reads other runs and the
+ *  agree_on, graderRouteOf), and the two answers are not already the same (then a replay keeps only the grade it was judged
+ *  with, `same` and no model asked). In a run's own process the step is its runner's (held.ts endOfRun): it reads other runs and the
  *  learning ledger, which no run's process may. A comparison that fails keeps no verdict: the pair then differs, compared
  *  whole (compareAnswers), in the log's words. */
 export function compareEndOfRun(launch: RunLaunch, deps: CompareEndDeps): EndOfRunTurn | undefined {
@@ -75,7 +76,9 @@ export function compareEndOfRun(launch: RunLaunch, deps: CompareEndDeps): EndOfR
     if (input.cut !== undefined || input.outcome !== "completed" || !input.grade || input.grader === undefined) return undefined;
     try {
       const pair = await pairOf(launch, deps, input.runId);
-      if (!pair || sameAnswer(pair.agent, pair.workflow)) return undefined;
+      if (!pair) return undefined;
+      // Equal answers ask no model; a replay's record still keeps the grade it was judged with (Compared.graded).
+      if (sameAnswer(pair.agent, pair.workflow)) return pair.graded === undefined ? undefined : { also: [], compared: { same: true, pair: answersPair(pair.agent, pair.workflow), graded: pair.graded } };
       const grade = input.grade;
       const verdict = await gradeAnswers(inputText(launch.input), pair.agent, pair.workflow, { model: input.grader, ask: (request) => grade(request) });
       const compared: Compared = pair.graded !== undefined ? { ...verdict, graded: pair.graded } : verdict;
