@@ -124,10 +124,16 @@ test("with the desktop allowed and write set to deny, a screenshot with save_as 
   assert.ok(!existsSync(join(runFolder(one.dir, "agent-1", RUN), "shots/desktop.png")), "nothing in the run's files");
 });
 
-test("an agent not given write: computer_screenshot offers no save_as, and a screenshot with save_as anyway is refused and nothing is written to the run's files", { timeout: 120_000 }, async (t) => {
+// The direct call and a codemode script's nested call are both refused by the session's check of the offered schema,
+// before the gate; the gate's own refusal, for a call that reaches it anyway, is screenshot-save-gate.test.mjs's.
+test("an agent not given write: computer_screenshot offers no save_as, and a screenshot with save_as anyway, direct or from a script, is refused and nothing is written to the run's files", { timeout: 120_000 }, async (t) => {
   const one = await desktopRun(t, {
-    script: [{ call: "computer_screenshot", args: { save_as: "shots/desktop.png" } }, { say: "done" }],
-    body: { tools: ["read"], toolSettings: { desktop: { permission: "allow" } } },
+    script: [
+      { call: "computer_screenshot", args: { save_as: "shots/desktop.png" } },
+      { call: "codemode", args: { script: "return await tools.computer_screenshot({ save_as: \"shots/desktop.png\" });" } },
+      { say: "done" },
+    ],
+    body: { tools: ["read"], toolSettings: { desktop: { permission: "allow" }, codemode: { permission: "allow" } } },
   });
   const row = await rests(one, ["ended"]);
   assert.equal(row.state, "ended", JSON.stringify(row));
@@ -135,10 +141,12 @@ test("an agent not given write: computer_screenshot offers no save_as, and a scr
   assert.ok(offered, `computer_screenshot is offered: ${JSON.stringify(one.requests[0].tools.map((tool) => tool.name))}`);
   assert.ok(!("save_as" in offered.input_schema.properties), `no save_as offered: ${JSON.stringify(offered.input_schema)}`);
   assert.doesNotMatch(offered.description, /save_as/, "nor named in its words");
-  assert.equal(one.requests.length, 2, "the refused screenshot, then the answer");
-  const answered = JSON.stringify(one.requests[1]);
-  assert.match(answered, /not given write/, "the model reads why");
-  assert.doesNotMatch(answered, /saved as shots/, "nothing says it was saved");
+  assert.equal(one.requests.length, 3, "the refused screenshot, the refused script, then the answer");
+  const direct = JSON.stringify(one.requests[1].messages.at(-1));
+  assert.match(direct, /save_as/, `the direct call is refused: ${direct}`);
+  const scripted = JSON.stringify(one.requests[2].messages.at(-1));
+  assert.match(scripted, /save_as/, `the script's call is refused: ${scripted}`);
+  assert.doesNotMatch(JSON.stringify(one.requests), /saved as shots/, "nothing says it was saved");
   assert.ok(!existsSync(join(runFolder(one.dir, "agent-1", RUN), "shots/desktop.png")), "nothing in the run's files");
 });
 
