@@ -53,11 +53,12 @@ test("check on live-shaped answers: same mcc and riskTier, other rationale, evid
   const on = await decide({ agree_on: ["mcc", "riskTier"] }, readOf(() => draftSays(DRAFT)));
   assert.equal(on.record.decided, "promote", on.record.reason);
   assert.deepEqual([on.stored.check.agreed, on.stored.check.alone, on.stored.check.agree_on], [5, 5, ["mcc", "riskTier"]], "the record says what it compared");
+  assert.equal(on.stored.check.joint, true, "the joint floor's verdict, kept as the check decided it");
   assert.deepEqual(Object.entries(on.stored.check.fields).map(([name, one]) => [name, one.workflow_right, one.n, one.pass]), [["mcc", 5, 5, true], ["riskTier", 5, 5, true]], "one verdict per field");
 
   const whole = await decide({}, readOf(() => draftSays(DRAFT)));
   assert.equal(whole.record.decided, "hold", "today's whole-answer rule stands with no agree_on");
-  assert.equal(whole.stored.check.agreed, 0);
+  assert.deepEqual([whole.stored.check.agreed, whole.stored.check.joint], [0, false]);
   assert.equal(whole.stored.check.agree_on, undefined);
   assert.deepEqual(Object.entries(whole.stored.check.fields).map(([name, one]) => [name, one.workflow_right, one.n, one.pass]), [["answer", 0, 5, false]]);
   assert.ok(whole.record.reason.includes(NEVER_WORD_FOR_WORD), `compared whole and never once the same: the owner is told to name the fields: ${whole.record.reason}`);
@@ -280,9 +281,8 @@ test("agree_on's shape: 1 to 16 distinct dotted paths, each up to 128 characters
   }
   assert.equal(learningSettingIssue({ agree_on: ["riskTier", "mcc"] }), undefined);
   assert.equal(learningSettingIssue({ agree_on: ["verdict.constructor", "prototype.decision"] }), undefined, "an answer's own keys named constructor or prototype are fields like any other");
-  for (const agree_on of [["prototype.decision"], ["__proto__.decision"]]) {
-    assert.deepEqual(learningSettingForBody({ learning: { agree_on } }), { agree_on }, `a saved definition keeps its setting on read: ${agree_on}`);
-  }
+  assert.deepEqual(learningSettingForBody({ learning: { agree_on: ["prototype.decision"] } }), { agree_on: ["prototype.decision"] });
+  assert.equal(learningSettingForBody({ learning: { agree_on: ["__proto__.decision"] } }), undefined, "refused on a read as on a write: no definition keeps it");
   assert.equal(learningSettingIssue({ agree_on: ["verdict.decision", "a.b.c.d.e.f.g.h"] }), undefined, "8 segments");
   assert.equal(learningSettingIssue({ agree_on: Array.from({ length: 16 }, (_, i) => `k${i}`.padEnd(128, "x")) }), undefined, "16 paths of 128 characters");
   assert.deepEqual(Object.entries(learningSettingOf({ agree_on: ["verdict.decision", "mcc"], audit_every: 5, compile_after: 4 })), [["compile_after", 4], ["agree_on", ["verdict.decision", "mcc"]], ["audit_every", 5]]);
@@ -346,6 +346,6 @@ test("a grade that contradicts itself (marked wrong, yet its expected answer wri
     assert.equal(decided.record.decided, "hold", decided.record.reason);
     const { answer } = decided.stored.check.fields;
     assert.deepEqual([answer.n, answer.workflow_right, answer.unjudged], [0, 0, 5], decided.record.reason);
-    assert.deepEqual(decided.stored.check.disagreements[0].expected, [{ field: "answer", known: "unknown" }]);
+    assert.deepEqual(decided.stored.check.disagreements[0].expected, [{ field: "answer", known: "contradicts" }], "its own word, never a grade with no right answer");
   }
 });

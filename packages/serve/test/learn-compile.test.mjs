@@ -293,6 +293,28 @@ test("held on give-backs after landed turns: the revise ask shows their disagree
   assert.match(prompt, /3 of your inputs were checked before it was held/);
   assert.doesNotMatch(prompt, /checked on no input|no disagreements to show/);
   assert.doesNotMatch(prompt, /nothing compiles again/);
+  const once = compile.compilePrompt(ASK({ mode: "revise", workflow: "answer", current: "{\"v\":2}", held: { ...held, check: { ...check, turns: { ...check.turns, n: 1 } } } }));
+  assert.match(once, /1 of your inputs was checked before it was held/);
+});
+
+// A give-back hold and a check's hold show their disagreements under the same intro: what each line of them says.
+test("a give-back hold and a check's hold introduce their disagreements in the same words", () => {
+  const one = { run: "r1", input: "release 7", agent: "ready", draft: "not ready", fields: ["answer"], expected: [{ field: "answer", known: "grade", value: "\"held\"" }] };
+  const intro = (check) => compile.compilePrompt(ASK({ mode: "revise", workflow: "answer", current: "{\"v\":2}", held: { workflow: "answer", digest: "0123456789abcdef", reason: "held", check } })).split("\n").find((line) => line.startsWith("The inputs it did not agree with you on"));
+  const gaveBack = intro({ n: 0, compile_after: 20, alone: 0, agreed: 0, alone_min: 0.8, agree_min: 0.9, of: [], released: 5, disagreements: [one], turns: { n: 1, agreed: 0, alone: 1, of: ["r1"], outcomes: { answered: 1, handed_back: 0, failed: 0, skipped_write: 0 }, disagreements: [one] } });
+  const checked = intro({ n: 5, compile_after: 5, alone: 5, agreed: 0, alone_min: 0.7, agree_min: 0.8, attempt: 1, of: ["r1"], joint: false, disagreements: [one], fields: {} });
+  assert.ok(gaveBack, "the give-back hold shows them");
+  assert.equal(gaveBack, checked);
+});
+
+// A grade that contradicts itself (marked the agent's answer wrong, yet its expected answer is the agent's) has its own
+// words in the revise ask: never "marked wrong without the right one", never a known answer made up for it.
+test("held on a grade that contradicts itself: the revise ask says so in its own words", () => {
+  const one = { run: "r1", input: "Question 1", agent: JSON.stringify({ answer: 42 }), draft: JSON.stringify({ answer: 7 }), fields: ["answer"], expected: [{ field: "answer", known: "contradicts" }] };
+  const check = { n: 5, compile_after: 5, alone: 5, agreed: 0, alone_min: 0.7, agree_min: 0.8, attempt: 1, of: ["r1"], joint: false, disagreements: [one], fields: {} };
+  const prompt = compile.compilePrompt(ASK({ mode: "revise", workflow: "answer", current: "{\"v\":2}", held: { workflow: "answer", digest: "0123456789abcdef", reason: "held", check } }));
+  assert.match(prompt, /On answer, the owner's grade contradicts itself: it marked your answer wrong, yet the right answer it gave is yours\. There is no known answer there\./);
+  assert.doesNotMatch(prompt, /without giving the right one|from a contradicts/);
 });
 
 // CompiledRecord.promoted is the promotion step's (learn/promote.ts): the kept draft's digest, read against the agent's

@@ -813,3 +813,63 @@ test('a moved project refuses an auxiliary audit before starting a shadow and pr
   assert.deepEqual(f.made, []); assert.match(logs.join('\n'), /project placement/i);
   assert.deepEqual((await f.store.agents.revision('rev-1')).body.learning, learning);
 });
+
+// One ground truth for the check and the audit: a grade's expected answer where the owner gave one, else the agent's
+// answer. The agent says 42 every time and its owner's grades say 43, so the check promotes the revision that says 43,
+// while each shadow (the agent with learning off) still says 42. A served run the owner graded is judged against its
+// grade, never against its shadow; an audit hold's recompile shows the known answer and asks for it.
+const { gradeRow } = await import("../dist/runner/audit.js");
+const { putGrade } = await import("../dist/learn/promote.js");
+const CORRECTED = { answer: 43, sure: true };
+/** Grades run `runId` as PUT /runs/{id}/grade keeps it: the grade, then its audit row (runner/audit.ts gradeRow). */
+const gradeIn = (w) => async (runId, correct, expected) => {
+  const row = await w.server.runs.get(runId);
+  const m = row.metrics ?? {};
+  await putGrade(w.server.settings, "agent-1", { run: runId, correct, ...(expected ? { expected } : {}), source: "eval", at: new Date().toISOString(), path: m.path ?? "agent", ...(typeof m.workflow === "string" ? { workflow: m.workflow, digest: m.workflow_digest } : {}) });
+  if (m.path !== "workflow") return;
+  const deps = { store: w.server, agentId: "agent-1", revisionId: row.revisionId, context: BACKGROUND_CONTEXT, folder: () => learningWorkspace({ mode: "local", data: w.dir, agentId: "agent-1" }), shown: async () => ({ text: (text) => text }), log: () => {} };
+  await gradeRow(deps, row, correct, expected);
+};
+
+test("(known answer) the owner's grades correct the agent and the check promotes the draft that follows them; served runs the owner graded right are no disagreement though their shadows say the agent's old answer: no hold", { timeout: 600_000 }, async (t) => {
+  const w = await world(t, { learning: { compile_after: 5, audit_every: 1, hold_window: 4, hold_disagree: 2 }, prior: 5, submit: (text) => (text.includes("exactly") ? CORRECTED : { answer: 42, sure: true }) });
+  const grade = gradeIn(w);
+  for (let i = 0; i < 5; i++) await grade(`prior-${i}`, false, { answer: 43 });
+  // The revision that follows the corrections lands; its check runs on the 5 graded inputs and promotes it.
+  await landRevision(w.dir, answerFlow(REVISED), "prior-4");
+  await w.start("check-1", "Question 50");
+  await w.replaysEnded(5);
+  const first = await w.start("served-1", "Question 51");
+  assert.deepEqual([first.metrics?.path, first.metrics?.workflow_digest], ["workflow", DIGEST_2], JSON.stringify(first.metrics));
+  const promoted = (await promotionsOf(w.server.settings, "agent-1")).findLast((one) => one.digest === DIGEST_2);
+  assert.equal(promoted.decided, "promote", promoted.reason);
+  assert.deepEqual([promoted.check.fields.answer.by.grade.n, promoted.check.fields.answer.workflow_right, promoted.check.agent_agreed], [5, 5, 0], "right against the grades, where the agent was wrong on each");
+  // The owner grades the served answers right: a thumbs-up, and a grade whose expected answer is the served one.
+  await grade("served-1", true);
+  await w.start("served-2", "Question 52");
+  await grade("served-2", true, { answer: 43 });
+  const third = await w.start("served-3", "Question 53");
+  const rows = (await w.audits()).filter((one) => one.digest === DIGEST_2);
+  assert.deepEqual(rows.filter((one) => one.source === "shadow" && one.agreed === false).map((one) => one.run).sort(), ["served-1", "served-2"], "the shadows still say the agent's old answer");
+  assert.deepEqual(rows.filter((one) => one.source === "grade").map((one) => [one.run, one.agreed]), [["served-1", true], ["served-2", true]]);
+  assert.equal((await promotionsOf(w.server.settings, "agent-1")).at(-1).decided, "promote", "not held: a graded run is judged against its grade");
+  assert.deepEqual([third.metrics?.path, third.metrics?.workflow_digest], ["workflow", DIGEST_2], JSON.stringify(third.metrics));
+});
+
+test("(known answer) served runs graded wrong with the right answer given hold the workflow, and its recompile shows that known answer and asks for it, never the agent's answer back", { timeout: 600_000 }, async (t) => {
+  const w = await world(t, { learning: { audit_every: 1, hold_window: 4, hold_disagree: 2 } });
+  const grade = gradeIn(w);
+  await w.start("served-1", "Question 61");
+  await grade("served-1", false, { answer: 44 });
+  await w.start("served-2", "Question 62");
+  await grade("served-2", false, { answer: 44 });
+  const held = await w.start("served-3", "Question 63");
+  assert.equal(held.metrics?.path, "agent", JSON.stringify(held.metrics));
+  assert.equal(w.asks.get("served-3").length, 1, "exactly one recompile");
+  const [ask] = w.asks.get("served-3");
+  assert.doesNotMatch(ask, /changed so it says what you said on these inputs/, "never asks for the agent's answer back");
+  assert.match(ask, /changed so it says the known answer on these inputs/);
+  assert.ok(fenceOf(ask).includes('The known answer (from a grade): {"answer":44}'), fenceOf(ask));
+  const record = (await promotionsOf(w.server.settings, "agent-1")).at(-1);
+  assert.deepEqual([record.decided, record.audit.disagreements.map((one) => [one.served, one.graded, one.expected])], ["hold", [["served-1", true, '{"answer":44}'], ["served-2", true, '{"answer":44}']]], JSON.stringify(record));
+});

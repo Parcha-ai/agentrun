@@ -413,7 +413,9 @@ test("gradeAnswers asks once more on a transport failure alone; a refusal, two f
   assert.deepEqual(await gradeAnswers("in", "a", "b", once.grader), { same: true, grader: "fast-1", pair });
   assert.equal(once.asked.length, 2);
   assert.equal(once.asked[0].system, GRADER_PROMPT);
-  assert.match(once.asked[0].user, /The job input:\n<<<\nin\n>>>\n\nThe agent's answer:\n<<<\na\n>>>\n\nThe workflow's answer:\n<<<\nb\n>>>/);
+  // The first answer is the known one: the agent's own, or a grade's correction of it (compare-end.ts).
+  assert.match(GRADER_PROMPT, /^You compare two answers to the same job input: the known answer and a learned workflow's answer\./);
+  assert.match(once.asked[0].user, /The job input:\n<<<\nin\n>>>\n\nThe known answer:\n<<<\na\n>>>\n\nThe workflow's answer:\n<<<\nb\n>>>/);
   const twice = graderOf([{ failed: "socket hang up" }, { failed: "socket hang up" }]);
   assert.deepEqual(await gradeAnswers("in", "a", "b", twice.grader), { same: false, grader: "fast-1", pair, differs_on: `${COMPARE_UNREAD}: its request failed twice` });
   const refused = graderOf([{ refused: "spend_cap_reached" }]);
