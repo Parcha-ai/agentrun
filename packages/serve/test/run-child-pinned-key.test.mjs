@@ -85,6 +85,8 @@ test("a --faux start's process is handed no gateway key, on a gateway set where 
   assert.deepEqual(await handed(t, { revision, model: faux, ...onEnv }), [], "a --faux start's process holds the runner's gateway key, which the faux model never sends");
   assert.deepEqual(await handed(t, { revision, model: anthropic, ...onSaved }), ["AGENT_MODEL_API_KEY"], "a provider's model on the saved gateway: its key");
   assert.deepEqual(await handed(t, { revision, model: faux, ...onSaved }), [], "a --faux start's process holds the saved gateway's key, which the faux model never sends");
+  // A faux-pinned launch claimed by a runner on the same store that is not in faux mode: still no key.
+  assert.deepEqual(await handed(t, { revision, model: faux, ...onSaved, env: {} }), [], "a faux-pinned launch on a runner not in faux mode holds the saved gateway's key");
 });
 
 const until = async (done, what, ms = 40_000) => {
