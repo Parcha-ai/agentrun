@@ -50,14 +50,14 @@ export async function capRun(t, options) {
   const spec = specOf ? specOf(sent) : piAdapterSpec({ script, tools: {}, hooks: quiet }, { fetch: scriptedOrigin(script, sent) });
   const loop = createAdapterLoop(async (claim, run) => ({
     ...(await spec(claim, run)),
-    // `endOfRun`: the run's end-of-run step (LoopDeps.endOfRun), asked of the run's agent.
-    ...(endOfRun ? { agentId: "agent-1" } : {}),
+    // `endOfRun`: the run's end-of-run step (AdapterRunSpec.endOfRun), asked of the run's agent.
+    ...(endOfRun ? { agentId: "agent-1", endOfRun } : {}),
     ...(parkCap ? { cap: parkCap } : {}),
     // The run's one cap, built by the loop from these options: each request it judged is recorded with its answer.
     runCap: { ...runCap, judged: (request, answer) => void asked.push({ request, answer }) },
   }), { restartLimit: MAX_RESTARTS });
   // `journalOf(journal)`: the claim's journal as the loop sees it (a test's commit hook), else the store's own.
-  const createLoop = (deps) => loop({ ...deps, ...(journalOf ? { journal: (claim) => journalOf(deps.journal(claim)) } : {}), ...(endOfRun ? { endOfRun } : {}) });
+  const createLoop = (deps) => loop({ ...deps, ...(journalOf ? { journal: (claim) => journalOf(deps.journal(claim)) } : {}) });
   runner = startRunner({ store, createLoop, name: "runner-a", ...STEADY });
   // `during(server)`: what a test does while the run runs (a person's stop once a request is out), awaited before the read.
   const acting = during ? during(server) : undefined;

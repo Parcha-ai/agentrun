@@ -42,7 +42,8 @@ const OBSERVE = `An app's window as its elements, one line each (@e12 button "Sa
 
 const ACT = `Run steps on an app, each on an element's ref or at a point in the window (refused as stale once the window changed under it). The answer says how each step ran and whether the window changed. The first refused step stops the rest. steps: UiStep[]\n\`\`\`ts\n${ACT_STEPS}\n\`\`\``;
 
-const SCREENSHOT = "The whole screen as an image, or a region of it. With save_as, also saved as a PNG in the run's files.";
+const SCREENSHOT_ALONE = "The whole screen as an image, or a region of it.";
+const SCREENSHOT = `${SCREENSHOT_ALONE} With save_as, also saved as a PNG in the run's files.`;
 
 /** save_as's words: the run's files are the run's folder, never the computer's own disk. */
 const SAVE_AS = "A path relative to the run's folder, ending .png (shots/home.png): the screenshot is saved there, in the run's files the user gets. A file saved on the computer itself is not one of them.";
@@ -53,6 +54,11 @@ const SCREENSHOT_PARAMETERS: object = (() => {
   const schema = COMPUTER_TOOL_SCHEMAS.computer_screenshot as { properties: Record<string, unknown> };
   return { ...schema, properties: { ...schema.properties, save_as: { type: "string", description: SAVE_AS } } };
 })();
+
+/** computer_screenshot's definition `def` for a run whose agent is not given write: the surface's words and parameters,
+ *  no save_as, which the run's gate refuses there. */
+export const unsavedScreenshot = <T extends { readonly description: string; readonly parameters: object }>(def: T): T =>
+  ({ ...def, description: SCREENSHOT_ALONE, parameters: COMPUTER_TOOL_SCHEMAS.computer_screenshot });
 
 /** `given` as a path in the run's folder a screenshot is saved to (relative, inside it, ending .png), normalized; any
  *  other is refused in words. */

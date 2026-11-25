@@ -273,14 +273,14 @@ async function rmEmptyParents(parents: readonly string[]): Promise<void> {
  *  seal key: a user of its own, which cannot open the login's folder) goes on its runner's reader of the login's access
  *  token alone (held.ts claudeLogin), each token it hands held by `hold` (the redactors) and this process's own; its CLI
  *  then never gets a refresh token. Such a process never reads the login's setting itself: whether its run is on the
- *  login is its claim's one read (run-child-host.ts staysInRunner), which its runner hands down, so a turn-on after the
- *  claim never moves it onto a login the claim did not check (a user of its own, a process runner on the same folder).
- *  Nor could it: the setting names the machine by the id in the server's data folder (claude-login.ts machineId), which
- *  the run's user can neither read nor make there. The runner's answer is the one decision (none: not on the login). A
+ *  login is its runner's to say. Its claim read the setting (run-child-host.ts staysInRunner), so a turn-on after the
+ *  claim never moves it onto a login the claim did not check (a user of its own, a process runner on the same folder);
+ *  a claim that read it on has the runner read it again at the start, which refuses the start in fixed words when that
+ *  read names none or another folder. Nor could the process read it: the setting names the machine by the id in the
+ *  server's data folder (claude-login.ts machineId), which the run's user can neither read nor make there. The runner's
+ *  answer is the one decision (none: not on the login). A
  *  claim on a login other than AgentRun's own folder never gets this far: the claim itself is refused (staysInRunner,
- *  in LOGIN_MACHINE_NEEDS_SERVER_USER's words). The runner's claudeLogin refuses such a login again, in
- *  LOGIN_NOT_HANDED's words, only when it is handed a claim read that check did not make. A run in the runner itself (a
- *  seal key) reads the setting here. */
+ *  in LOGIN_MACHINE_NEEDS_SERVER_USER's words). A run in the runner itself (a seal key) reads the setting here. */
 export async function runLoginOf(deps: Pick<CliSpecDeps, "store" | "data" | "env" | "sealKey">, keyed: boolean, name: string | undefined, place: { readonly mode: string }, hold: (values: string[]) => void): Promise<RunLogin | undefined> {
   if (keyed) return undefined;
   if (deps.sealKey) return loginForRun(deps.store.settings, deps.data, deps.env ?? {}, name, place);
@@ -336,7 +336,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   if (!revisionRow) throw new Error(`run ${claim.runId}: its revision ${runRow.revisionId} is gone from the store`);
   const body = (revisionRow.body ?? {}) as RevisionBody;
   const movedProject = await verifyPlacedProject(deps.store, runRow, revisionRow, launch, { data: deps.data, sealKey: deps.sealKey, env: deps.env, ...(run.signal ? { signal: run.signal } : {}), control: { ...deps.mountControl, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) } });
-  const revision = { kind: revisionRow.kind, body } as { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } };
+  const revision = { kind: revisionRow.kind, body } as { kind: string; body: { tools?: readonly string[]; toolSettings?: unknown; harness?: string; approvals?: Approvals } };
   const granted = body.tools ?? [];
 
   // The harness: the launch's, else the revision's. Its table entry (facts, model choice, adapter, skill check), read from
@@ -388,6 +388,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // credentials opened under the runner's seal key (deps.sealKey) into this claim's memory, one gateway for the claim.
   // Before the session opens: a refusal (a granted tool its pin does not hold, a pinned meta tool) ends the run in its words.
   // A credential the claim opens mid-run (a GitHub App token, a saved or per_run server's) joins the run's redactors.
+  // A held run its model kept from running at its create (hold.refused) opens none: nothing can call one.
+  const heldRefusal = launch.hold?.refused?.message;
   // What its gateway files (a long answer, a server's results) goes in the run's own files. In Mode 1 that is the run's
   // folder on this machine (ws.workspace below, the folder a box bind-mounts). In Mode 2 it is the run's Archil disk:
   // through the run's computer once it mounts the folder (filedIn, set at runTools), since the mount holds the disk's
@@ -396,7 +398,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // and a call reaches it only through the session this spec returns, after `mode`, `ws` and `tools` are made.
   let filedIn: Workspace | undefined;
   const hold = (values: string[]) => { for (const redact of [...(run.redact ? [heldRedactor(run.redact)] : []), cut]) redact.hold(values); };
-  const mcp = await mcpWhereHeld({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => (mode === 2 ? filedIn ?? ws.workspace : ws.workspace), launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, ...claimMetering(deps, web, launch) });
+  const mcp = heldRefusal !== undefined ? undefined : await mcpWhereHeld({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => (mode === 2 ? filedIn ?? ws.workspace : ws.workspace), launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, ...claimMetering(deps, web, launch) });
   // The claim's MCP goes to the loop, which lets it go; a build that throws lets it go itself.
   holds.hold({ passed: mcp });
 
@@ -541,24 +543,27 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // is chosen, so it never falls to its owner's sign-in (a row counted at its claim may be gone, or not open, by now).
   // A person's claim that laid none keeps its session on the sign-in (or on nothing) for good: a trigger's message the
   // claim takes later is refused in it (personOnly), keys saved since or not, as no new claim opens them.
+  // A held run its model kept from running (hold.refused, above) opens none: its agent never starts.
   const recipe = name === undefined ? undefined : planRecipeOf(deps.env ?? {}, name);
   const recipeKeys = recipe?.keys;
   let personOnly: string | undefined;
   if (recipe !== undefined && recipeKeys?.length) {
     for (const key of recipeKeys) delete env[key];
-    const opened = deps.sealKey ? await openHarnessKeys(deps.store, deps.sealKey, recipe) : ((await runnerSeam()?.harnessKeys(recipe.digest)) ?? {});
-    hold(Object.values(opened));
-    if (recipeKeys.every((key) => typeof opened[key] === "string" && opened[key] !== "")) layHarnessKeys(env, opened);
-    else if (!personStarted(launch)) throw new ClaimRefused(RECIPE_SIGN_IN_PERSON_ONLY);
-    else personOnly = RECIPE_TURN_PERSON_ONLY;
+    if (heldRefusal === undefined) {
+      const opened = deps.sealKey ? await openHarnessKeys(deps.store, deps.sealKey, recipe) : ((await runnerSeam()?.harnessKeys(recipe.digest)) ?? {});
+      hold(Object.values(opened));
+      if (recipeKeys.every((key) => typeof opened[key] === "string" && opened[key] !== "")) layHarnessKeys(env, opened);
+      else if (!personStarted(launch)) throw new ClaimRefused(RECIPE_SIGN_IN_PERSON_ONLY);
+      else personOnly = RECIPE_TURN_PERSON_ONLY;
+    }
   }
   // A held run its model kept from running at its create (hold.refused) chooses no model here, and no plan or login is
   // asked before it: its model's route chooses no model and reads no key, its adapter's provider being the stand-in that
-  // refuses every request in the create's words (adapters.ts providerOf), never a key or the Claude login. Its claim lays
-  // only the keys any claim of the run lays (its tools', a key handed with it: claimSecrets lays it no model key) and
-  // takes no learning step (below), so it holds the computer on a host with no key for its model, and a key saved since
-  // runs a new run, never this one.
-  const heldRefusal = launch.hold?.refused?.message;
+  // refuses every request in the create's words (adapters.ts providerOf), never a key or the Claude login; a plan-billed
+  // agent's adapter is built on no key and refuses its start in those words (harness-table.ts acpPlanEntryOf). Its claim
+  // lays only the keys any claim of the run lays (its tools', a key handed with it: claimSecrets lays it no model key, and
+  // no key saved for its harness, above) and takes no learning step (below), so it holds the computer on a host with no
+  // key for its model, and a key saved since runs a new run, never this one.
   const chosen = heldRefusal !== undefined ? heldChoice(body.model) : await modelsOf(entry, env, modelAskOf(launch.model, body.model));
   if (heldRefusal === undefined) {
     await planBeforeRun(env, chosen.model);
@@ -788,7 +793,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     system: [environmentLine(now, zone), checkout?.note, instructions, outputContract(body.outputSchema), guidance].filter((line): line is string => Boolean(line)),
     // The web tools and the learned workflow's call nodes run on the claim's keys: their answers pass the runner's one
     // redactor, as pi's do. Listed in the order the agent grants them, as main lists a CLI run's tools.
-    tools: inGrantOrder([...tools.hostTools(withKindTools(granted, tools), results), ...[...webTools, ...(askTool ? [askTool] : []), ...(learnedTool ? [learnedTool] : [])].map((tool) => answersCut(tool, held))], granted),
+    tools: inGrantOrder([...tools.hostTools(withKindTools(granted, tools), { results, writes: gate.writes() }),...[...webTools, ...(askTool ? [askTool] : []), ...(learnedTool ? [learnedTool] : [])].map((tool) => answersCut(tool, held))], granted),
     context: "fresh",
     ...(thinking ? { thinking } : {}),
   };
@@ -860,8 +865,9 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     ...(tools.computer ? { scriptComputer: tools.computer } : {}),
     // A computer that replaced an earlier claim's: the model is told once, on its next request (the loop's computer note).
     ...(computer.replaced ? { computerNote: computerReplacedNote(computer.replaced) } : {}),
-    // A desktop or a phone that holds none of the run's files: the model is told once in the run where they are.
-    ...(tools.apart ? { computerFilesNote: computerFilesNote(tools.apart) } : {}),
+    // A desktop or a phone that holds none of the run's files: the model is told once in the run where they are, or, where
+    // the gate would refuse a save (RunGate.writeBar), that a screenshot can't be saved to them.
+    ...(tools.apart ? { computerFilesNote: computerFilesNote({ ...tools.apart, writes: gate.writes() }) } : {}),
     workRoot: root,
     // Where the CLI works (its working directory, the run's folder to its file tools): what its absolute paths are read
     // against on the run's rows.
