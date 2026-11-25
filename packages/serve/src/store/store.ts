@@ -190,6 +190,11 @@ export interface ListedFilter {
   readonly labels?: RunLabels;
   /** Only runs imported from this source (imported_from.source), or with "live" the runs not imported. */
   readonly source?: string;
+  /** Only runs started at or after this time (ms), and before `startedBefore` (ms): the window [startedFrom, startedBefore). */
+  readonly startedFrom?: number;
+  readonly startedBefore?: number;
+  /** Only runs that sent at least one request to this model (`provider/model`), a key of their metrics' `models`, exactly. */
+  readonly model?: string;
   readonly archived: boolean;
   readonly status?: string;
   /** Only runs still going (no settled status on the row) whose listing is behind. */

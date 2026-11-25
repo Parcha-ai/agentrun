@@ -4906,6 +4906,9 @@ export interface ListAllRunsParams {
   archived?: boolean;
   label?: string;
   source?: string;
+  from?: string;
+  to?: string;
+  model?: string;
 }
 export type ListAllRunsResponse = RunList;
 
@@ -7424,7 +7427,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   handBackRunComputer: {"method":"POST","path":"/runs/{run_id}/computer/hand-back","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getRunLearning: {"method":"GET","path":"/runs/{run_id}/learning","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getRunLearningDiff: {"method":"GET","path":"/runs/{run_id}/learning/diff","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
-  listAllRuns: {"method":"GET","path":"/runs","pathParams":[],"multiSegment":[],"query":["limit","cursor","agent","revision","status","archived","label","source"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  listAllRuns: {"method":"GET","path":"/runs","pathParams":[],"multiSegment":[],"query":["limit","cursor","agent","revision","status","archived","label","source","from","to","model"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   sendMessage: {"method":"POST","path":"/runs/{run_id}/messages","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   pauseRun: {"method":"POST","path":"/runs/{run_id}/pause","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   raiseRunCap: {"method":"PATCH","path":"/runs/{run_id}","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
