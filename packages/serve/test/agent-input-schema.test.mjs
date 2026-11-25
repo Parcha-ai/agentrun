@@ -142,6 +142,12 @@ test("content is exempt from a schema's maxProperties and propertyNames: a trigg
   assert.deepEqual(said({ company: "Acme", cash: "x" }, patterned), [["input.cash", "bad_format"], ["input", "invalid"]]);
   assert.deepEqual(inputIssues({ company: "Acme", note: "x" }, capped, "target.input").map((i) => [i.field, i.message]), [["target.input", "target.input must not have more than 1 properties"]], "said at the input, in the schema's own number");
   assert.deepEqual(inputSchemaOf(COMPANY), { ...COMPANY, properties: { ...COMPANY.properties, content: { type: "string" } } }, "a schema with neither keeps its shape");
+  for (const [where, at] of [["$defs", "#/$defs/Name"], ["definitions", "#/definitions/Name"]]) {
+    const referenced = inputSchemaOf({ ...COMPANY, [where]: { Name: { enum: ["company"] } }, propertyNames: { $ref: at } });
+    assert.deepEqual(said({ company: "Acme" }, referenced), [], `propertyNames by ${at} still resolves`);
+    assert.deepEqual(said({ company: "Acme", content: "" }, referenced), []);
+    assert.deepEqual(said({ company: "Acme", note: "x" }, referenced).map(([field]) => field), ["input.note", "input"]);
+  }
 });
 
 test("a required text field left empty is said as missing, in a missing field's words; an optional one or a list's item keeps its length issue", () => {

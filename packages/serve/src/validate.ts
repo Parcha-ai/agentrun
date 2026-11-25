@@ -285,11 +285,13 @@ export function inputIssues(input: Json, schema: Json, at = "input"): InputIssue
     }
   };
   report(schema, input);
-  // Its maxProperties and propertyNames meet the input's own fields, content left out (X_OWN_FIELDS).
+  // Its maxProperties and propertyNames meet the input's own fields, content left out (X_OWN_FIELDS), beside what a
+  // reference in them may name: the schema's definitions, its id and its dialect.
   const own = schema[X_OWN_FIELDS];
   if (isObject(own) && isObject(input)) {
     const { content: _content, ...ownFields } = input;
-    report({ type: "object", ...own }, ownFields);
+    const targets = Object.fromEntries(Object.entries(schema).filter(([key]) => key === "definitions" || (key.startsWith("$") && key !== "$ref")));
+    report({ ...targets, type: "object", ...own }, ownFields);
   }
   // A schema in force that requires nothing (inputSchemaOf: its own fields all optional) takes content or one of them:
   // an input naming none says nothing, said at content, with the fields that would do instead.
