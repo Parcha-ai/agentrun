@@ -816,12 +816,14 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       // it is the run's disk: through the computer this claim made once it mounts the folder (mountedFolder, the computer
       // answer's), since the mount holds the disk's write delegation; over the disk's file API when no computer mounts it.
       // That Workspace is opened at the first answer that files something, not at the claim: a claim whose MCP files
-      // nothing opens none (an open lists the run's folder and sweeps its spill folder). Opened once, as the archil answer
-      // opens it, and let go at the claim's release; an open that failed is tried again at the next answer. Its release is
+      // nothing opens none (an open lists the run's folder, and makes it when it is missing). It only writes files over the
+      // disk's file API and runs no command, so it sweeps no exec spill folder, at its open or at its end (sweep: false): it
+      // opens mid-run, beside the archil answer's Workspace, whose commands may still be reading their spill files there.
+      // Opened once, and let go at the claim's release; an open that failed is tried again at the next answer. Its release is
       // registered here, before any open, so an open still running at the release is ended too, and a filing after it opens
       // nothing (openedAtUse). work() is read only when a call's answer files something (mcp-gateway.ts textOf, fileResults).
       const disk = await archilOf();
-      const overTheDisk = disk === undefined ? undefined : openedAtUse(() => openRunWorkspace({ mode: 2, agentId: run.agentId, runId: claim.runId, archil: disk, log }));
+      const overTheDisk = disk === undefined ? undefined : openedAtUse(() => openRunWorkspace({ mode: 2, agentId: run.agentId, runId: claim.runId, archil: disk, sweep: false, log }));
       if (overTheDisk) releases.push(() => overTheDisk.end());
       const made = await mcpForClaim({ claim, store, sealKey, grants: granted, harness: harness as never, work: () => (overTheDisk === undefined ? runFolder(deps.data, run.agentId, claim.runId) : mountedFolder ?? overTheDisk.workspace()), launchInput: launch.input, githubAppAccess: () => github(), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, ...claimMetering(deps, undefined, launch) });
       if (!made) return undefined;
