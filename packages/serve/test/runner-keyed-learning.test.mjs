@@ -11,7 +11,8 @@
 //     shadow's is;
 //   - a purge of the run while its replays run cancels them and erases their copies before it answers: no child left
 //     running, no copy in the store's bytes, nothing spent after it;
-//   - a cap that leaves too little drops the check (`no_budget`): no replay, nothing reserved, the run reads `ended`;
+//   - a cap that leaves too little drops the check (`no_budget`): no replay, nothing reserved, the run reads `ended`; and
+//     its shadow too, under a run's smallest cap: no shadow, the drop named `no_budget`, the run reads `ended`;
 //   - `deadline_at` is set while the run reads running (each child's start + LEARNING_CHILD_MS, the latest) and null once
 //     it ended; a child still at work at its deadline is cancelled by its runner (on the runner's injected clock), as a
 //     person's cancel is: it ends, nothing more reaches the gateway, and the run reads ended;
@@ -40,7 +41,7 @@ const { viewOverStore } = await import("../dist/store-view.js");
 const { openRunLaunch, sealRunLaunch } = await import("../dist/store/seal.js");
 const { runAllInOverStore } = await import("../dist/store-reads/learning.js");
 const { purgeRun } = await import("../dist/agent-delete.js");
-const { LEARNING_CHILD_MS } = await import("../dist/learning-work.js");
+const { LEARNING_CHILD_MS, RUN_CAP_MIN_USD, learningChildrenOf } = await import("../dist/learning-work.js");
 
 const SEAL_KEY = Buffer.alloc(32, 9);
 const MODEL = "claude-sonnet-5-5";
@@ -118,13 +119,14 @@ async function holdingFront(t, origin, held) {
  *  learning folder (`promoted`: as its check's record promotes it, so it serves first). The runner's env names the
  *  gateway and holds no key of its own; its route reads the key the claim's model env holds. `hold`: requests whose body
  *  it matches wait until `front.release()`. `learningClock`: the runner's clock for its learning children's deadlines. */
-async function world(t, { learning = true, prior = 0, promoted = false, hold, learningClock } = {}) {
+async function world(t, { learning = true, prior = 0, promoted = false, hold, learningClock, usage } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-keyed-learning-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
   const gw = await startFauxGateway({
     call: ({ body }) => (offers(body, "submit") && !hasResult(body) ? { name: "submit", input: { value: { answer: 42, sure: true } } } : undefined),
     text: ({ body }) => (offers(body, "submit") ? "submitted" : AGENT_SAYS),
+    ...(usage ? { usage } : {}),
   });
   const front = hold ? await holdingFront(t, gw.url, hold) : undefined;
   const origin = front?.url ?? gw.url;
@@ -341,6 +343,42 @@ test("a keyed run whose cap leaves too little for its check drops it (no_budget)
   assert.ok(w.logs.some((line) => /answer at \w+ is not checked: what this run's cap leaves is too little for 6 replay runs on its own key, or not known \(no_budget\)/.test(line)), w.logs.join("\n"));
   assert.deepEqual(await w.children("replay"), [], "no replay run made");
   assert.deepEqual((await promotionsOf(w.server.settings, "agent-1")).filter((one) => one.digest === DIGEST), [], "nothing reserved: a later claim checks it");
+  await assertNowhere(w);
+});
+
+test("a keyed run its promoted workflow served, whose cap leaves under a run's smallest cap, starts no shadow: it drops it (no_budget), nothing reaches the gateway for it, and the run reads ended", { timeout: 240_000 }, async (t) => {
+  // Each request $0.039 (8000 in at $3/M, 1000 out at $15/M): a served run's step needs $0.04 of room before it, so its
+  // end can leave under RUN_CAP_MIN_USD only when what it spends is near what it held.
+  const w = await world(t, { learning: { audit_every: 1 }, promoted: true, usage: { input: 8_000, output: 1_000 } });
+  // What a served run costs on this gateway: one served at a roomy cap, with its shadow.
+  await w.keyed("served-0", "What is six times seven", 5);
+  const roomy = await w.ended("served-0");
+  assert.equal(roomy.metrics?.path, "workflow", JSON.stringify(roomy.metrics));
+  await until(async () => {
+    const rows = await w.children("audit");
+    return rows.length === 1 && FINAL.includes((await w.server.runs.get(rows[0].id))?.state);
+  }, "the roomy run's shadow ended");
+  assert.ok(roomy.costUsd > 0, JSON.stringify(roomy.costUsd));
+  // The same run capped so that what its cap leaves at its end is under RUN_CAP_MIN_USD ($0.01).
+  const capUsd = Math.round((roomy.costUsd + RUN_CAP_MIN_USD / 2) * 1e6) / 1e6;
+  const before = w.gw.requests.length;
+  await w.keyed("tight-1", "What is six times seven", capUsd);
+  const served = await w.ended("tight-1");
+  assert.deepEqual([served.state, served.metrics?.path], ["ended", "workflow"], JSON.stringify([served.state, served.metrics]));
+  const work = await until(async () => {
+    const one = (await w.view("tight-1")).learning_work;
+    return one.state !== "running" && one;
+  }, "the run's learning work settles");
+  assert.equal(work.state, "ended", `a shadow dropped for want of budget ends the run's learning work: ${JSON.stringify(work)}`);
+  assert.deepEqual([work.runs, work.deadline_at], [[], null], JSON.stringify(work));
+  assert.ok(Date.parse(work.ended_at) > 0, JSON.stringify(work));
+  const [dropped, ...more] = await learningChildrenOf(w.server.settings, "tight-1");
+  assert.deepEqual([dropped?.run, dropped?.kind, dropped?.keyed, dropped?.dropped, more.length], [null, "shadow", true, "no_budget", 0], JSON.stringify([dropped, ...more]));
+  assert.deepEqual((await w.children("audit")).map((row) => row.id), ["audit.served-0"], "no shadow of the tight run was made");
+  assert.ok(w.logs.some((line) => /no shadow: its cap leaves \$[\d.]+, under a run's smallest cap \(no allowance\)/.test(line)), w.logs.join("\n"));
+  const asked = w.gw.requests.slice(before);
+  assert.equal(asked.length, Math.round(served.costUsd / 0.039), `each request the gateway saw is one the served run paid for, none a shadow's: ${served.costUsd}`);
+  assert.deepEqual([...new Set(asked.map(keyOf))], [RUN_KEY], "only the run's own requests, on its own key");
   await assertNowhere(w);
 });
 
