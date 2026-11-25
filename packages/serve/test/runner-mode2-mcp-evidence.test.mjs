@@ -7,7 +7,7 @@
 // file API, and a fal result is filed nowhere: that Workspace has no writeNew until Parcha-ai/agentrun#3777. An answer too
 // long for the model is filed whole at evidence/mcp in both. The answer the model reads is fal's, byte for byte.
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -60,13 +60,19 @@ async function callTwice(tool) {
   return [await call("c1"), await call("c2")];
 }
 
-/** What both answers say, and nothing in this machine's folder for the run. */
+/** The runner's own folder for a Mode 2 run, made as a run's own process's runner lays it for every run, Mode 2 too
+ *  (run-child-host.ts layRunFolders): a folder the gateway could file in, which is not the run's files. */
+function strayFolder(data, agentId, runId) {
+  mkdirSync(runFolder(data, agentId, runId), { recursive: true, mode: 0o700 });
+}
+
+/** Nothing in the runner's own folder for the run, and what both answers say. */
 function assertAnswered({ data, agentId, runId, first, second }) {
+  const local = runFolder(data, agentId, runId);
+  assert.deepEqual(readdirSync(local), [], `nothing is filed in the runner's own folder for the run (${local})`);
   assert.equal(first.isError, undefined, first.text);
   assert.equal(first.text, JSON.stringify(JOB), "the model reads fal's answer byte for byte");
   assert.match(second.text, /the whole answer is in the run's files at evidence\/mcp\/fal\//);
-  const local = runFolder(data, agentId, runId);
-  assert.equal(existsSync(join(local, "evidence")), false, `nothing is filed in this machine's folder for the run (${local})`);
 }
 
 /** Filed through the computer that mounts the run's folder (`scratch`, its /workspace): no write refused by the mount's
@@ -96,6 +102,7 @@ for (const [name, harness, build] of [["pi's spec", undefined, adapterRunSpecFro
     const { fake, register } = await fakeFal(t);
     const disk = new FakeArchilDisk();
     const run = await mode2Run(t, { harness, disk, mcp: MCP(fake, register) });
+    strayFolder(run.data, AGENT, RUN);
     const { spec } = await run.claimNext(build);
     assert.equal(run.mounts.length, 1, "the run's computer mounts its folder");
     const tool = spec.mcp.tools.find((one) => spec.mcp.catalogOf(one.name) === "mcp:fal/wait_for_jobs");
@@ -109,6 +116,7 @@ test("Mode 2, a run's own process (its runner's MCP, heldFor), its computer moun
   const { fake, register } = await fakeFal(t);
   const disk = new FakeArchilDisk();
   const run = await mode2Run(t, { disk, mcp: MCP(fake, register) });
+  strayFolder(run.data, AGENT, RUN);
   const revision = { kind: "agentic", body: { instructions: "Answer.", tools: ["read", "write", ...GRANTS], computer: { kind: "sandbox", provider: "e2b" } }, mcpPin: PIN(fake.url) };
   const reads = { claim: { runId: RUN, epoch: 1 }, run: { agentId: AGENT, revisionId: "rev-1", signInHanded: null }, launch: { input: { content: "Do the thing." } }, revision, claimed: {} };
   const side = host.heldFor(run.deps, reads, (text) => text, () => {});
@@ -138,6 +146,7 @@ test("Mode 2, a run's own process (its runner's MCP, heldFor), no computer: the 
   await store.runs.create({ id: "run-own", agentId: "agent-own", revisionId: "rev-own" });
   const disk = new FakeArchilDisk();
   const control = archilControlFetch();
+  strayFolder(data, "agent-own", "run-own");
   const deps = { store, sealKey: SEAL_KEY, env: {}, data, mcpLoopback: true, makeArchilDisk: () => disk, mountControl: { baseUrl: control.baseUrl, fetch: control.fetch } };
   const reads = { claim: { runId: "run-own", epoch: 1 }, run: { agentId: "agent-own", revisionId: "rev-own", signInHanded: null }, launch: { input: { content: "Hello." } }, revision, claimed: {} };
   const side = host.heldFor(deps, reads, (text) => text, () => {});
