@@ -495,7 +495,8 @@ function servedStore(served, learning, digest) {
   const made = [];
   const launches = new Map();
   const store = {
-    settings: { get: async () => undefined },
+    // The settings a shadow's start writes: the served run's learning work names it first (learning-work.ts).
+    settings: { get: async () => undefined, putIfAbsent: async (_key, value) => value, replaceIf: async () => true },
     agents: { revision: async () => ({ id: "rev-1", body: { instructions: "Answer.", tools: [], learning }, mcpPin: null }) },
     runs: {
       list: async ({ state, archived, limit } = {}) => rows.filter((row) => (state === undefined || row.state === state) && (archived === undefined || (row.archivedAt !== null) === archived)).slice(0, limit ?? rows.length),
