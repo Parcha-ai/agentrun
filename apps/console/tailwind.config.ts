@@ -8,7 +8,7 @@ const hsl = (name: string) => `hsl(var(--${name}) / <alpha-value>)`;
 
 export default {
   darkMode: ["class"],
-  content: ["./index.html", "./src/**/*.{ts,tsx}"],
+  content: ["./index.html", "./share.html", "./src/**/*.{ts,tsx}"],
   theme: {
     borderRadius: { none: "0", DEFAULT: "var(--radius)", composer: "var(--radius-composer)", action: "var(--radius-action)" },
     // The type scale. The six small steps carry no line height: text takes its parent's (1.5 from the page) or a
