@@ -1,10 +1,13 @@
 // A race: 2 to 4 runs of one task, each on its own harness and model, grouped by one `race:<label>` label and watched side
 // by side (#/races/<label>). The label is the race's only record: no table, no server change. A lane's own label
 // (`lane:<n>`) orders the lanes, never their start times, so the order says nothing about who started first.
+import { defaultTools, type ToolOffer } from "./agentForm";
 import type { Client } from "./client";
 import { tokensWords } from "./format";
+import { uuid } from "./idempotency";
+import { newAgentPlace, type Places } from "./place";
 import { steps } from "./timeline";
-import type { Run, TimelineRow } from "./v2";
+import type { Run, RunCreateInline, TimelineRow } from "./v2";
 
 /** The label key that names a race, and the one that numbers its lanes. */
 export const RACE_KEY = "race";
@@ -49,6 +52,45 @@ export async function readRace(v2: Pick<Client, "listRuns">, label: string): Pro
     if (!cursor) break;
   }
   return { lanes: lanesOf([...runs.values()]), more: Math.max(0, runs.size - MAX_LANES), atLeast: cursor !== null };
+}
+
+/** A race starts with at least this many lanes. */
+export const MIN_LANES = 2;
+/** Every lane's instructions: the task itself is the run's input, the same on every lane. */
+const LANE_INSTRUCTIONS = "Do the task you are given.";
+/** What one lane runs on. */
+export type LaneChoice = { harness: string; model: string };
+/** What a lane works with: its tools. */
+export type LaneKit = { tools: string[] };
+
+/** A lane's kit, a new agent's on this server: every tool its harness runs here (agentForm.ts defaultTools), with the
+ *  shell where the server's default place is a box. The inline route grants a definition no tools of its own, so the
+ *  lane names them, or it has nothing to do its task with. It names no place: the server puts the run where it puts a
+ *  new agent with these tools (its defaultPlaceOf, mirrored in agentForm.ts): the box only with a shell tool, so an
+ *  adapter harness's lane (no shell) runs on the runner, where Claude Code's login works and no box starts. */
+export function laneKit(harness: string, offers: ToolOffer[], places: Places | null | undefined): LaneKit {
+  return { tools: defaultTools(harness, offers, newAgentPlace(places)) };
+}
+
+/** The inline run (POST /v2/runs) lane `n` of race `label` starts: an agent of its own (external `race-<label>-<n>`),
+ *  one revision per harness and model (the external version), so a lane changed after a refusal is a new revision, never
+ *  a conflict with the one refused. Every lane gets the race's task (its input) and cap, the same short instructions (a
+ *  definition needs instructions or a workflow), its kit (laneKit), and the labels the race view reads. */
+export function laneStart(label: string, n: number, lane: LaneChoice, task: string, maxCostUsd: number, kit: LaneKit): RunCreateInline {
+  return {
+    external: { source: "console", kind: "race", id: `race-${label}-${n}`, version: `${lane.harness} ${lane.model}` },
+    definition: { name: `Race ${label}, lane ${n}`, instructions: LANE_INSTRUCTIONS, harness: lane.harness, model: lane.model, tools: kit.tools },
+    input: { content: task },
+    max_cost_usd: maxCostUsd,
+    labels: { [RACE_KEY]: label, [LANE_KEY]: String(n), harness: lane.harness, model: lane.model },
+  };
+}
+
+/** A new race's label: when it starts (UTC, to the minute) and 48 random bits (a v4 UUID's first 12 hex digits, all
+ *  before its version digit), so two races opened in the same minute never share one, and so never one race page. */
+export function newRaceLabel(now = new Date(), random: () => string = uuid): string {
+  const at = now.toISOString().slice(0, 16).replace(/[-:]/g, "").replace("T", "-");
+  return `${at}-${random().replace(/-/g, "").slice(0, 12)}`;
 }
 
 /** What a lane's header says: cost (the run's own once it ended, else the newest timeline page's), tokens, tool calls

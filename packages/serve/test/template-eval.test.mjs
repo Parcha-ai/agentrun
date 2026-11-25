@@ -918,6 +918,89 @@ test("a run a runner holds is waited for while its view still reads queued (its 
   assert.equal((await api("GET", `/runs/${runs[0].run_id}`)).body.status, "cancelled", "the run the eval started is cancelled at the stop");
 });
 
+test("a claim that lapses for one read, between reads that find the run held, doesn't end the wait: the queued bound needs no runner for its whole length", { timeout: 180_000 }, async (t) => {
+  // As the held case above, the run is claimed and holds in its turn, and the proxy serves each timeline page as queued
+  // once it is. The second run read the eval makes answers claim null, as a read in a claim's lapse on a stalled machine
+  // (not renewed in time, then claimed again) would; the reads before and after it find the run held. The eval is stopped
+  // once it reads the page after the third run read: it went on waiting past the lapse, never cancelling the run.
+  const holding = join(await scratch(t), "holding");
+  process.env.AGENTRUN_TEST_EVAL_HOLD = holding;
+  t.after(() => delete process.env.AGENTRUN_TEST_EVAL_HOLD);
+  const { api, baseUrl, token } = await serve(t, { faux: FAUX, templates: FIXTURES });
+  const inTurn = untilFile(holding, new Promise((resolve) => t.after(resolve)));
+  const stop = new AbortController();
+  const timeline = (req) => /\/runs\/[^/]+\/timeline/.test(req.url);
+  const claims = [];
+  const arrived = (req) => {
+    if (claims.length >= 3 && timeline(req)) stop.abort();
+    return false;
+  };
+  const lapsed = async (req, body) => {
+    if (req.method === "GET" && /^\/v2\/runs\/[^/?]+$/.test(req.url)) {
+      const run = JSON.parse(String(body));
+      if (claims.length === 1) {
+        claims.push(null);
+        return Buffer.from(JSON.stringify({ ...run, claim: null }));
+      }
+      claims.push(run.claim ?? null);
+      return body;
+    }
+    if (!timeline(req)) return body;
+    await inTurn;
+    const page = JSON.parse(String(body));
+    return page.final ? body : Buffer.from(JSON.stringify({ ...page, status: "queued", state: "working" }));
+  };
+  const proxy = await refusing(t, baseUrl, arrived, lapsed);
+  const stopped = evalTemplate({ dir: PKG, cases: ["held"], server: { baseUrl: proxy, token }, queueTimeoutMs: 1_000, signal: stop.signal });
+  // A wait that gave up on the run at the lapse ends the eval with a report, never this stop.
+  await assert.rejects(stopped, { name: "AbortError" });
+  assert.deepEqual(claims.slice(0, 3).map((claim) => claim !== null), [true, false, true], "held, then the lapse, then held again");
+  const runs = (await api("GET", "/runs?archived=true")).body.runs;
+  assert.equal(runs.length, 1);
+  assert.equal((await api("GET", `/runs/${runs[0].run_id}`)).body.status, "cancelled", "the run the eval started is cancelled at the stop");
+});
+
+test("a run once held whose claim then stays gone for the whole queued bound is cancelled as queued, and a read that finds it held again starts that bound over", { timeout: 180_000 }, async (t) => {
+  // As the held cases above, the run is claimed and holds in its turn, and the proxy serves each timeline page as queued
+  // once it is. The run reads the eval makes answer held, unclaimed, held, then unclaimed from there on, as a runner that
+  // let the run go would leave it. With a 1 s bound and a read every CLAIM_READ_EVERY_MS (5 s), two unclaimed reads in a
+  // row span the bound: the eval cancels at the fifth read. It would cancel at the fourth if the held third read did not
+  // start the bound over (the second's lapse still counted), and never if a run once held were waited for to its deadline.
+  const holding = join(await scratch(t), "holding");
+  process.env.AGENTRUN_TEST_EVAL_HOLD = holding;
+  t.after(() => delete process.env.AGENTRUN_TEST_EVAL_HOLD);
+  const { api, baseUrl, token } = await serve(t, { faux: FAUX, templates: FIXTURES });
+  const inTurn = untilFile(holding, new Promise((resolve) => t.after(resolve)));
+  const timeline = (req) => /\/runs\/[^/]+\/timeline/.test(req.url);
+  const claims = [];
+  let cancelledAt;
+  const arrived = (req) => {
+    if (req.method === "POST" && /\/runs\/[^/]+\/cancel$/.test(req.url)) cancelledAt ??= claims.length;
+    return false;
+  };
+  const gone = async (req, body) => {
+    if (req.method === "GET" && /^\/v2\/runs\/[^/?]+$/.test(req.url) && cancelledAt === undefined) {
+      const run = JSON.parse(String(body));
+      const held = claims.length === 0 || claims.length === 2;
+      claims.push(held && run.claim ? run.claim : null);
+      return held ? body : Buffer.from(JSON.stringify({ ...run, claim: null }));
+    }
+    if (!timeline(req)) return body;
+    await inTurn;
+    const page = JSON.parse(String(body));
+    return page.final ? body : Buffer.from(JSON.stringify({ ...page, status: "queued", state: "working" }));
+  };
+  const proxy = await refusing(t, baseUrl, arrived, gone);
+  const report = await evalTemplate({ dir: PKG, cases: ["held"], server: { baseUrl: proxy, token }, queueTimeoutMs: 1_000, runTimeoutMs: 90_000 });
+  const [one] = report.cases[0].runs;
+  assert.ok(one, JSON.stringify(report.cases[0]));
+  assert.deepEqual([one.status, one.pass], ["timed_out", false]);
+  assert.match(one.error, /^the run stayed queued for 1 s with no runner holding it, and it was cancelled$/);
+  assert.deepEqual(claims.slice(0, 5).map((claim) => claim !== null), [true, false, true, false, false], "held, gone, held again, then gone");
+  assert.equal(cancelledAt, 5, "cancelled at the fifth read: the held third read started the bound over");
+  assert.equal((await api("GET", `/runs/${one.run_id}`)).body.status, "cancelled");
+});
+
 test("a claim read that stalls doesn't hold the run's deadline: the read is given up on at the deadline, never its own longer bound, and the run cancelled then", { timeout: 120_000 }, async (t) => {
   // No runner: the run stays queued. Until the eval cancels it, the proxy never answers the run read the queued bound
   // asks, as a server that took the request and stalled would.

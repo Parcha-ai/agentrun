@@ -29,6 +29,9 @@ describe("route", () => {
     expect(route("#/races/bench-1")).toEqual({ section: "runs", race: "bench-1" });
     expect(route("#/races/fix%20the%20test")).toEqual({ section: "runs", race: "fix the test" });
   });
+  it("opens the form that starts a race under Runs, never a race labeled new", () => {
+    expect(route("#/races/new")).toEqual({ section: "runs", newRace: true });
+  });
   it("keeps the selected agent in a Playground link", () => {
     expect(route("#/playground?agent=agent%20two")).toEqual({ section: "playground", playgroundAgent: "agent two" });
     expect(route("#/playground")).toEqual({ section: "playground" });
@@ -137,6 +140,74 @@ describe("App, Mission Control when the stats can't be read", () => {
     while (!host.textContent?.includes("could not be read") && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 25)); });
     expect(host.textContent).toContain("Mission Control could not be read");
     expect(host.textContent).toContain("not_found");
+  });
+});
+
+describe("App, the race form when the capabilities can't be read", () => {
+  it("says so with Try again, not Loading for ever, and Try again reads them and shows the form", async () => {
+    let fail = true;
+    const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    vi.stubGlobal("fetch", async (url: string) => {
+      const path = new URL(url, "http://serve.test").pathname;
+      if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true, secrets_writable: true });
+      if (path === "/v2/capabilities") return fail
+        ? json(503, { error: { code: "unavailable", message: "The server is starting.", retryable: true } })
+        : json(200, { models: { source: "providers", ready: true }, harnesses: [{ id: "pi", available: true, default_model: "anthropic/claude-sonnet-5-5", models: ["anthropic/claude-sonnet-5-5"] }], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
+      if (path === "/v2/runs" || path === "/v2/agents") return json(200, { runs: [], agents: [], next_cursor: null });
+      return json(404, { error: { code: "not_found", message: path, retryable: false } });
+    });
+    location.hash = "#/races/new";
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(App)));
+    const until = async (text: string) => {
+      const end = Date.now() + 4000;
+      while (!host.textContent?.includes(text) && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 25)); });
+    };
+    await until("could not be read");
+    expect(host.textContent).toContain("The server's harnesses could not be read");
+    fail = false;
+    await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Try again")!.click(); });
+    await until("Start the race");
+    expect(host.textContent).toContain("Start the race");
+  });
+
+  it("gives the form the server's tool offers and places: a started lane carries the tools a new agent gets there", async () => {
+    const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    const started: Record<string, unknown>[] = [];
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      const path = new URL(url, "http://serve.test").pathname;
+      if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true, secrets_writable: true });
+      if (path === "/v2/capabilities") return json(200, {
+        models: { source: "providers", ready: true }, features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } },
+        harnesses: [{ id: "pi", available: true, default_model: "anthropic/claude-sonnet-5-5", models: ["anthropic/claude-sonnet-5-5"] }],
+        tools: [{ name: "read", available: true, harnesses: ["pi"] }, { name: "bash", available: true, sandbox_only: true, harnesses: ["pi"] }],
+        places: { modes: ["runner", "sandbox"], boxes: [{ id: "local", available: true }], default_place: { mode: "sandbox", box: "local" } },
+      });
+      if (path === "/v2/runs" && init?.method === "POST") {
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+        started.push(body);
+        return json(202, { run_id: `run-${started.length}`, agent_id: `agent-${started.length}`, status: "queued", state: "working", labels: body.labels });
+      }
+      if (path === "/v2/runs" || path === "/v2/agents") return json(200, { runs: [], agents: [], next_cursor: null });
+      return json(404, { error: { code: "not_found", message: path, retryable: false } });
+    });
+    location.hash = "#/races/new";
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(App)));
+    const end = Date.now() + 4000;
+    while (!host.querySelector("textarea") && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 25)); });
+    const area = host.querySelector<HTMLTextAreaElement>("textarea")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(area, "Fix the failing test");
+      area.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Start the race")!.click(); });
+    const sent = Date.now() + 4000;
+    while (started.length < 2 && Date.now() < sent) await act(async () => { await new Promise((r) => setTimeout(r, 25)); });
+    // The offers give read; the box by default gives bash too (with no places read, a lane gets no shell).
+    expect(started.map((b) => (b.definition as { tools?: string[] }).tools)).toEqual([["read", "bash"], ["read", "bash"]]);
   });
 });
 

@@ -243,6 +243,30 @@ whose stored cost was unknown that it read, those whose priced booking it wrote 
 heals on its next read). The rest stay unknown: a charge of no known cost, or a booking with no request to read. It
 names no run, and a store with no such run says nothing; quiet keeps it too.
 
+## Traces (OpenTelemetry)
+
+Set `OTEL_EXPORTER_OTLP_ENDPOINT` (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) and every run on a pi or CLI harness
+exports a GenAI trace over OTLP/HTTP to any backend that takes one, with the official OpenTelemetry SDK: an
+`invoke_agent {harness}` span per claim of the run, under it a `chat {model}` span per model request (provider, model,
+`server.address` (the host the request goes to, OpenRouter's for a model reached through it; none where not known),
+and tokens with the cache: `gen_ai.usage.input_tokens` includes the cache read and write, which are also given on their
+own) and an `execute_tool {tool}` span per tool call. A run is one trace, sampled whole or not at
+all (`OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG`). A request billed to a plan, and every turn of a plan harness,
+has `agentrun.billing=plan` and no token counts. No span holds content (a prompt, a message, a tool's arguments or
+result), whatever `OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT` says; content capture comes later. Reasoning tokens are
+not on chat spans yet: the usage a run's requests are booked with does not count them apart. Nor is
+`gen_ai.response.model`: the model asked for is `gen_ai.request.model`. The exporter takes the standard
+`OTEL_EXPORTER_OTLP_HEADERS` and `OTEL_EXPORTER_OTLP_TIMEOUT`, and the resource `OTEL_SERVICE_NAME` and
+`OTEL_RESOURCE_ATTRIBUTES` (put `deployment.environment.name` there); `service.name` is `agentrun` unless set. Runs never
+receive these settings: no `OTEL_*` variable reaches a run's harness, tools or computer, and a run's own process is
+handed them apart from its environment. Spans are sent in the background, so a run's end never waits on the collector;
+a server or runner that stops waits at most 3 s to send what is left, and a collector that is down costs one log line
+and the dropped spans. Unset, or with `OTEL_SDK_DISABLED=true`, no OpenTelemetry code loads and nothing is sent.
+
+To send traces to Sentry (two variables: its OTLP endpoint and its `x-sentry-auth` header) or to any other backend
+through an OpenTelemetry Collector, and for what Sentry's Agents view shows of a run, see
+[Send run traces to Sentry or any OpenTelemetry backend](../../docs/traces.md).
+
 ## Anonymous usage counts
 
 The server sends six anonymous events: `server_started`, a daily `heartbeat`, `first_run_completed`, and, for
@@ -305,7 +329,8 @@ two processes in the container: the server with `--no-runner`, and one runner on
 `GET /v2/health`. Each has its own store connection, so a busy runner never holds up the API. If either exits, the other
 stops and the container exits non-zero. Give the image other arguments and it runs that one command, as given:
 `runner --data /data --name runner-1` is a runner, and server options alone (no `server-and-runner`) are a server with
-its runner in its own process, which a [paired computer](#a-persons-own-computer) needs.
+its runner in its own process. A [paired computer](#a-persons-own-computer) works under either once the runner relays,
+below.
 
 A computer provider whose machines dial the server (Fly Machines and Cloudflare; the computer package's `connectOf`,
 which also says dial for E2B, Daytona or Modal made with `connect: "dial"`) works under a runner apart that knows the
@@ -320,6 +345,15 @@ its next claim. A runner apart with no public address refuses such a create, nam
 and the server says it sooner: in `GET /v2/computers`, each dial provider's row carries `runs_refused` with that fix,
 and its Test connection in Settings → Computers fails in the same words. With a runner that relays, `runs_refused` is
 null.
+
+A [paired computer](#a-persons-own-computer) takes the same relay. A run's claim on a runner that relays writes the
+computer's route (a settings row: the runner, its process, the run and the hold's end), refused while a live run on a
+live runner holds it, and taken from a runner that is gone or restarted, or a run that is over. Once a second the server
+closes a paired computer's socket that is not where its route says (close 1001), and the driver's redial lands there:
+relayed to the run's runner, or back on the server once the run releases it. The run's create waits for it about 80 s
+(the driver's longest redial, a relay's connect and a hello) and fails in words naming the runner when it does not
+come. `GET /v2/computers` lists the runner the hold is on (`held_on`), and the server's note when a relay was refused
+(`hold_note`), each shown on the computer's row in Settings → Computers.
 
 The token is in the log of the start that made it. A `docker stop` reaches both processes. The runner gives a busy run
 6 s (`--drain-timeout 6s`) to finish its turn, so a busy `docker stop` ends in about 7.5 s, inside Docker's default 10 s
@@ -447,7 +481,10 @@ It names no path, size or version. One route serves as both liveness and readine
 and a 200 says it can work, and the platforms here take one path.
 
 A run's runner renews its claim on the run every 10 s, for a claim of 30 s. A runner that stops, or cannot renew in
-time, writes nothing more to the run, and the store refuses any write under a claim the run has moved past. Once the
+time, writes nothing more to the run, and the store refuses any write under a claim the run has moved past. On SQLite
+the runner counts a claim's 30 s from when the store granted it, not from when it asked, so a claim or renew that
+waited for a busy disk keeps the time the store gave it; the runner still stops 5 s before the store's claim runs out.
+On Postgres it counts from when it asked. A renew the store never answers in time still loses the run. Once the
 claim lapses another runner claims the run and resumes it from its journal. A run's own computer doesn't survive a
 runner loss, a crash, a server stop or a park (the claim that resumes the run starts a new one, and says so on the
 timeline and, once, to the model as an "AgentRun server note"), and the agent's own computer, a persistent setting, does.
@@ -1068,13 +1105,16 @@ passes the binding's conformance cases (below) needs no change here.
   refused at its start, saying to open its driver. A run uses what the hello's groups and features allow.
 - **Remove it.** Remove on its row (`DELETE /v2/computers/{computer_id}`) ends its token and closes its connection; a
   run holding it loses it. Pairing it again gives it a new id.
-- **One process.** A computer's connection lands on one server process, and only a run in that process can use it:
-  run `agentrun-serve start` with its runner beside the server (the default). A runner started apart
-  (`agentrun-serve runner`, beside a server started with `--no-runner`) refuses a paired computer at the claim, saying
-  so. Such a server says it sooner: its pairing code, the pair answer and each paired computer carry `runs_refused`,
-  which the console shows with the code and on the computer's row. The image's default command starts its runner apart; give the image the server's options alone
-  (`--data /data --listen 0.0.0.0 --port 7340 --drain-timeout 6s`) to keep the runner in the server's process. A
-  second server on one store is already refused by the store's owner lock, on SQLite and Postgres alike.
+- **One process, or a relay.** A computer's connection lands on the server process it dials. A run of the runner
+  beside the server (`agentrun-serve start`, the default) uses it there. A runner started apart (`agentrun-serve
+  runner`, beside a server started with `--no-runner`; the image's default command) uses it through the server's relay
+  when it knows the server's public address, `AGENTRUN_PUBLIC_URL`: its run's claim routes the computer's next dial to
+  that runner, and its release routes it back (above). One that does not refuses a paired computer at the claim,
+  naming both fixes. Such a server says it sooner: while no runner relays, its pairing code, the pair answer and each
+  paired computer carry `runs_refused`, which the console shows with the code and on the computer's row. Give the
+  runner `AGENTRUN_PUBLIC_URL`, or give the image the server's options alone (`--data /data --listen 0.0.0.0 --port
+  7340 --drain-timeout 6s`) to keep the runner in the server's process. A second server on one store is already
+  refused by the store's owner lock, on SQLite and Postgres alike.
 - **Conformance.** `node dist/attach-conformance-cli.js [--port 7392] [--listen 127.0.0.1]` runs the binding's cases
   against whatever driver pairs with the code it prints: pair, a wrong or used code, ping, a quiet minute, a redial
   after each close it must redial after (4408, 1000, 1001, 4409) and after a drop, a binary frame (1003), a frame over
@@ -1596,13 +1636,20 @@ has the row **Use Claude Code's login on this machine**, over these routes:
   login directory in the data folder, which you sign in once; `machine` is this machine's own Claude Code login, which
   you opt into by name. Its folder is the one the CLI uses: `CLAUDE_CONFIG_DIR` when the server's environment sets it to
   an absolute path, else `~/.claude`. A Claude Code that keeps its login in another folder is found only when AgentRun
-  is started with `CLAUDE_CONFIG_DIR` set to that folder. A server where more than one person can start runs (more
-  than one API token, an [API key made for an app](#api-keys-for-your-apps), the API-only profile) refuses it with
-  `403` and one line saying why, and a turn-on saved before is dropped when such a server starts.
+  is started with `CLAUDE_CONFIG_DIR` set to that folder. Where the server's environment sets
+  `CLAUDE_SECURESTORAGE_CONFIG_DIR` (an absolute path, or empty), the CLI is asked, signed in and run with it, as the
+  person's own Claude Code with that variable keeps its tokens: in that folder, or, empty, in `~/.claude` and on macOS
+  the Keychain item with no suffix. A server where more than one person can start runs (more than one API token, an
+  [API key made for an app](#api-keys-for-your-apps), the API-only profile) refuses it with `403` and one line saying
+  why, and a turn-on saved before is dropped when such a server starts. The setting names the machine it was turned on
+  for by an id the server makes once in its data folder (`machine-id`, 0600) and reads back on every later start,
+  never by the hostname, which on a laptop changes with the network. Two data folders are two machines. A setting
+  saved before the id reads as `other_machine` until it is turned on again.
 - `GET /v2/settings/claude-login` says `state`: `off`, `signed_in` (with the `account` the CLI names: method, email,
   organization, plan), `signed_out`, `no_cli` (claude-agent's first run installs the pinned CLI), `unknown`, or
   `other_machine`. `folder` is the folder whose login the CLI is asked about, and `machine` is this machine's own
-  login folder (`machine.source`: `CLAUDE_CONFIG_DIR` or `default`). `command` is the line that signs the CLI in at
+  login folder (`machine.source`: `CLAUDE_CONFIG_DIR` or `default`; `machine.credentials`: the server's
+  `CLAUDE_SECURESTORAGE_CONFIG_DIR`, when it sets one). `command` is the line that signs the CLI in at
   the login's place, for a terminal on the server's machine. Where the console is on that machine (a server on loopback
   with no public address), `can_start` is true and `POST /v2/settings/claude-login/login` starts the pinned CLI's own
   `auth login`, which opens a browser there. It runs with the same variables as `command`, so it signs in at `folder`,
@@ -1610,31 +1657,52 @@ has the row **Use Claude Code's login on this machine**, over these routes:
   `machine` with the default `~/.claude`, the CLI is signed in as the person's own `claude` runs: no
   `CLAUDE_CONFIG_DIR` or `CLAUDE_SECURESTORAGE_CONFIG_DIR`, in their home, so it writes the account in `~/.claude.json`
   and the tokens where their Claude Code keeps them (in `~/.claude`; on macOS the Keychain item `Claude Code-credentials`).
-  `command` there starts with `env -u CLAUDE_CONFIG_DIR -u CLAUDE_SECURESTORAGE_CONFIG_DIR`, so a terminal that exports
-  either still signs in at that login. A run
+  `command` there is `env -u CLAUDE_CONFIG_DIR -u CLAUDE_SECURESTORAGE_CONFIG_DIR ... auth login`, so a terminal that
+  exports either still signs in at that login. env is a program, so the line runs alike when pasted into sh, bash,
+  zsh, fish or tcsh; a CLI path holding `=`, which env would read as a variable, goes to `sh -c` as its `$0`. env skips
+  a `claude` alias or function of the terminal's shell. A run
   there reaches the same tokens: on macOS with `CLAUDE_SECURESTORAGE_CONFIG_DIR` set and empty, the CLI's way to name
-  that item while the run has a config dir of its own; elsewhere with it set to `~/.claude`. On `machine`, either
-  folder, the status check never runs the CLI on the person's own account file, which the CLI rewrites on every start
-  whose config version is not its own: each check copies `.claude.json` (`~/.claude.json`, or the `CLAUDE_CONFIG_DIR`
-  folder's), opening the original only to read it, into a folder of its own, gives the CLI that folder as its config
-  dir and the tokens as a run reads them, and removes the folder however the check ends. The copy (0600, in a 0700
-  folder) leaves out the fields that hold secrets: `primaryApiKey` (the API key an older Claude Code signed in with),
-  `env` and every `mcpServers`, whose env and headers hold tokens; a file that doesn't parse as a JSON object is not
-  copied at all. A run's config dir has none of them either, so the status says what a run gets. The status check
-  runs in the person's home (the server's `HOME`) on every place, as the sign-in does, and so does a run on the login
-  on macOS: the CLI reads its tokens there from the login keychain, which is under that home. `sign_in`
+  that item while the run has a config dir of its own; elsewhere with it set to `~/.claude`. On every place, the status
+  check never runs the CLI on the login's own account file, which the CLI rewrites on every start whose config version
+  is not its own: each check copies `.claude.json` (`~/.claude.json` on `machine` with the default folder, else the
+  login folder's), opening the original only to read it, into a folder of its own, gives the CLI that folder as its
+  config dir and the tokens as a run reads them, and removes the folder however the check ends. The copy (0600, in a
+  0700 folder) leaves out the fields that hold secrets: `primaryApiKey` (the API key an older Claude Code signed in
+  with), `env` and every `mcpServers`, whose env and headers hold tokens. Only a regular file of at most 32 MiB is
+  copied: a file that doesn't parse as a JSON object, a bigger one, a FIFO or a device is not copied at all, and the
+  check never waits on one. A run's config dir has none of them either, so the status says what a run gets. A check
+  killed mid-way leaves its folder (`agentrun-claude-status-*` in the temporary folder); a server where the login is
+  allowed removes this user's ones as it starts, once the check has ended by the end it wrote in its folder (its limit,
+  however long, and 2 s) and 15 s more, or, for a folder with none, once older than twice the check's limit. At its
+  limit the check asks the CLI to go (SIGTERM), kills it 1 s later, and waits at most 1 s more for its output, so a CLI
+  that ignores the TERM, or a process it started that holds its output open, never holds the check. The status check
+  runs in the person's home (the server's `HOME` when it is an absolute path, else the OS's home, read once where the
+  server makes the login) on every place, as the sign-in does, and so does a run on the login
+  on macOS: the CLI reads its tokens there from the login keychain, which is under that home. So a run there writes the
+  CLI's cache and logs under the person's `~/Library/Caches/claude-cli-nodejs`, where they stay; removing that folder is
+  safe. `sign_in`
   says what became of that sign-in while the server runs: `waiting` for the browser since `started_at`, `signed_in`,
   `timed_out` (no answer from the browser within 10 minutes, so it was ended and a sign-in page still open can't
   finish), `failed` (the CLI ended without signing in, with its `exit_code`), or `not_started`. A second start ends a
-  sign-in that still waits, and so do turning the mode off and stopping the server, which waits for that CLI to exit.
+  sign-in that still waits, and so do turning the mode off, a `PUT` that moves the login to the other `place`, and
+  stopping the server, which waits for that CLI to exit. A `PUT` at the same `place` leaves it waiting.
+  The CLI dies with the server, as a session's CLI does, so a server that is killed outright (SIGKILL, the OOM killer)
+  leaves no sign-in waiting on the browser's port.
 - `DELETE /v2/settings/claude-login` turns it off. The login stays as the CLI keeps it.
 
 While it is on, a claude-agent run on an `anthropic/<model>` model goes on the login: its CLI gets no
 `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` or key, no model proxy runs, and the CLI's sandbox denies its commands
 reads of the login. A model named on a gateway or OpenRouter keeps its key, and so does a run started with its own
 `model_key`. With no key at all, claude-agent's default
-model is `anthropic/claude-sonnet-5-5`. A run whose login is signed out fails at its start and says so. It never
-switches to a key. The run books its tokens and no dollars (`cost.plan`, `on: "claude_code"`), and the plan's own limits
+model is `anthropic/claude-sonnet-5-5`. A run whose login is signed out fails at its start and says so. A status check
+the CLI outlasts (15 s) is asked once more; still no answer, the run goes on when the same login read signed in within
+the last 10 minutes on this machine (at a run's check or in Settings, in the server or in a runner process of its own on
+the same data folder, which keeps that time alone per login in `claude-login-answers/`, 0600), else it fails saying the
+check timed out. Being on disk, a signed-in answer outlives a restart of the server, and a turn-off and turn-on, for up to
+those 10 minutes; a signed-out answer removes it, and a new machine id (`machine-id` made again) leaves it standing for
+nothing.
+A check where the CLI answered nothing that reads as a status gets the same. Any other failure of the check, such as no CLI at
+its path, fails the run at once in the check's own words. It never switches to a key. The run books its tokens and no dollars (`cost.plan`, `on: "claude_code"`), and the plan's own limits
 apply. Only a run in a runner place, on the machine the mode was turned on for, goes on the login. A run placed in a
 sandbox, or on another machine, uses the keys. The login is the server's user's, so a run on it needs runs under that
 user: where each run is a user of its own (the image, `run_isolation: "uid"`), a claude-agent run that would go on the
@@ -1723,7 +1791,7 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `ask_person` | Ask the person who started the run; the turn ends until a message answers | nothing | no, no |
 | `web_fetch` | Read one web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked ([search and fetch](#search-and-fetch)), a part at a time: `{url, offset?, max_chars?}` in, a Page out, `{ok, url, status, title, text, chars, truncated?, original_chars?, beyond_read?, offset?, next_offset?, html_chars?, converted?, links, links_omitted?, via, parallel?, refused?, error?}` | nothing (`PARALLEL_API_KEY` for Parallel, one billed extract a page a run) | yes, yes |
 | `web_search` | Search the web, natively where the harness or the model's provider can, else through Parallel where the server holds its key, else keyless through Exa, or through the provider picked ([search and fetch](#search-and-fetch)): `{query, n?}` in, `{provider, query, results: [{url, title, snippet, published?}], text?}` or `{error}` out | nothing (`PARALLEL_API_KEY` for Parallel) | yes, yes |
-| `web_save` | Download one file from a public URL into the run's `work/` and keep it there, for a link that expires (a generated image, audio or video): `{url, path}` in, `path` relative to `work/` and a bare name under `media/`; `{ok: true, path, bytes, content_type, duration_s?, url}` or `{ok: false, url, refused \| error}` out, `duration_s` an mp3, wav, mp4 or m4a's length in seconds read from its bytes. Never overwrites | nothing | no, no |
+| `web_save` | Download one file from a public URL into the run's `work/` and keep it there, for a link that expires (a generated image, audio or video): `{url, path}` in, `path` relative to `work/` and a bare name under `media/`; `{ok: true, path, bytes, content_type, duration_s?, url}` or `{ok: false, url, refused \| error}` out, `duration_s` its length in seconds when it is audio or video whose bytes give it (below). Never overwrites | nothing | no, no |
 | `browser` | A hosted browser, Browserbase's or Kernel's, on pi-browser's durable adapter: `snapshot`, `run`, `screenshot`, `browser_read`, `browser_release`, `browser_relaunch`, `browser_downloads` and `browser_upload` (into and from the run's `work/`); Kernel keeps no downloads, so a run on Kernel has no `browser_downloads` | `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`, or `KERNEL_API_KEY` | yes, no |
 | `monid:<provider>/<endpoint>`, `monid:<provider>/*` | One monid endpoint, or every endpoint monid lists for a provider (at most 50), each pinned at the save and run as a tool of its own, paid per call from the monid wallet: `{body?, queryParams?, pathParams?}` in, the run's `output`, `price` and `cost` out ([monid](#monid)) | `MONID_API_KEY` | no, no |
 | `pdf_pages` | A workflow call only: `{path, maxPages?, dpi?}` in, `{name, pageCount, dpi, pages: [{page, image}], text}` out. Draws a document's first pages (3 by default, at 110 dpi) as PNGs under the run's `work/pages/<stem>/<dpi>/` (`<stem>`: the document's path below its directory made one name, with a short hash, so two documents of one file name never share pages), the dpi lowered so a page's long side is at most 1568 px, with its text (`pdftotext`, cut at 20,000 characters). A PNG or JPEG passes through as one page, scaled down to 1568 px. `path` is under `--documents` or the run's `work/`, never outside | `pdftoppm`, `pdftotext` | no, yes |
@@ -2390,7 +2458,8 @@ Composio is an MCP server like any other, so it needs no adapter of its own. Set
 preset: you give your Composio API key, a toolkit (`github`, `slack`...), the actions to grant (picked from the
 toolkit's list) and a server name, and the server has Composio make a managed MCP server for them, then saves it as an
 ordinary MCP server with the key sealed as an `x-api-key` header. `POST /v2/settings/mcp-servers/composio/tools`
-`{api_key, toolkit}` lists the actions; `PUT /v2/settings/mcp-servers/{name}/composio` `{api_key, toolkit, tools,
+`{api_key, toolkit}` lists the actions, and `POST /v2/settings/mcp-servers/composio/toolkits` `{api_key}` lists the
+toolkits Composio offers (`{toolkits: [{slug, name}]}`, by name) for the console's toolkit picker; `PUT /v2/settings/mcp-servers/{name}/composio` `{api_key, toolkit, tools,
 user_id?, auth_config_id?, price_usd?}` makes and saves the server. In place of `api_key`, `"api_key_env":
 "COMPOSIO_API_KEY"` reads the key from that variable, as the server and each runner were started with it, at each use and keeps no copy: the
 way an [API-only](#api-only) server's token saves one. That key is only ever sent to Composio's own origin, fixed in
@@ -2405,8 +2474,13 @@ server. `price_usd` (0 or more, as a `prices` value) is what each call costs you
 price, so a call is held under its run's cap and booked as the run's tool cost (its trace span's `usd`, the run's
 `cost.usd`), as any priced MCP tool's. A re-save that names no price keeps the server's prices for the actions it still
 lists. Composio's server can leave out an action it was allowed (it did for `HACKERNEWS_GET_FRONTPAGE`), so the answer's
-`not_served` names any chosen action the saved server doesn't list. Both routes are the owner's session alone, and a
-saved Composio server is gated, approved and shown on the Timeline as any MCP server's tools are, "not metered" until
+`not_served` names any chosen action the saved server doesn't list. These routes are the owner's session alone. A refresh of a saved Composio server also reads its account at Composio,
+and every read of the server then says it as `composio_account: {state, labels?, checked_at}`: `connected` with each
+account's label (its alias, else the name Composio shows, else its word id; never its id or a token), `pending` while
+its connect link is unfinished, `expired`, `none`, or `unknown` when Composio didn't answer. An account Composio answers as
+another user's is never the server's, and a server whose recorded user is empty or `per_run` is never asked about (`unknown`).
+The API token sees `composio_account` too, in a server's full read: its label may be the account's email.
+A saved Composio server is gated, approved and shown on the Timeline as any MCP server's tools are, "not metered" until
 you price them (`price_usd`, or the server's `prices`). Composio's own meta tools stay refused, and the helper actions
 that connect an account are left off the server's address. Deleting the server in Settings deletes what its save made in Composio too, with the saved key: the Composio MCP server, the connected account its connect link started (the link with it) and the auth config it made (Composio's "already gone" is fine). What another saved server uses is kept until the last of them goes, and what was there before the save (an auth config or account you had) is never deleted. The `DELETE` answers `200 {deleted: true, composio: {removed, note}}`: the note says what it removed, what it kept and why, and, when Composio refuses or does not answer, what is left to remove in Composio yourself (`removed: false`; the server is still forgotten here). The console shows it. A save that fails removes in Composio what it made there and never what it found, and its error names what is left when Composio refuses that too (a 422 on a field says it in `details.composio` as well). A save over a preset server removes, once it is saved, the Composio MCP server its earlier save made, and what that save made and the new one no longer stands on (the account of another `user_id`, the auth config of another toolkit), with the key it was made with, unless another saved server uses it, and answers `composio: {removed, note}` saying so. An ordinary `PUT` that moves a preset server to another address makes it another service's server: it removes what the preset made for it in Composio as its delete would, and answers `composio` too. While Composio triggers use the server, that move, and a preset save over it as another `user_id` or auth config, are refused as its delete is (`409 composio_in_use`, naming them). Preset saves and MCP server deletes run one at a time, so a delete never removes what a save in progress reuses; an ordinary save of a preset server lists its tools at once and takes its turn only to write the server and clean up.
 [Connect Composio tools and triggers](../../docs/tutorials/composio.md) walks through the preset and a Composio
@@ -2486,8 +2560,10 @@ its authorization server refused: sign in again), null for `auth.type` none. No 
 credential; a server's error text is cut of the values sent before it is shown. `POST .../{name}/refresh` lists the
 tools again with the saved URL and credential, keeps them, and answers `{added, removed, changed, server}`: `changed`
 names a tool whose title, description, schemas or annotations differ. `DELETE .../{name}` forgets the server and its
-credential. Capabilities' `features.mcp_client` says `transports: ["streamable-http"]`, the `auth` types and `at_rest:
-"sealed"`.
+credential. Capabilities' `features.mcp_client` says `transports: ["streamable-http"]`, the `auth` types, `at_rest:
+"sealed"`, and `composio_per_run: true`: a per-run Composio server takes each run's own Composio account, named in the
+run's `mcp_auth`. A backend in front of an API-only server reads it there, since that server does not serve the API
+document.
 
 ### A credential handed with each run
 
@@ -4820,13 +4896,27 @@ not metered and bills its own account outside the cap. fal is counted: a job sen
 toolkit `fal`, or at `mcp.fal.ai`) through `run_model`, `submit_job` or `submit_jobs` is priced before it is sent, at
 fal's unit price for its endpoint (the server's own `get_pricing`, read with the run's credential and kept five
 minutes) times the units the job's input states: its images, their megapixels, its text's characters, the seconds it
-names, or, for dubbing, lip-sync, voice isolation and speech-to-text, which fal bills by the length of the media they
-are given, that length, read from the file first. That price is held under the cap, a
+names (only on an endpoint whose input sets the length fal bills, such as Kling's or Veo's `duration`, and only in
+that field), or, for dubbing, lip-sync, voice isolation and speech-to-text, which fal bills by the length of the media they
+are given, that length, read from the file first. A length fal rounds up is rounded up the same way: a talking head's
+voice to whole seconds, ElevenLabs Music and dubbing to whole minutes. That price is held under the cap, a
 job the cap can't take is refused before it is submitted, and the job is booked as the run's tool cost, charged by the
 server, with the price and the count it came from. It is an estimate at fal's list price, not fal's invoice: fal
-reports no cost for a job, and a minimum charge, a discount or a rate that depends on a setting `get_pricing` does not
-list are not in it. A job whose units can't be known before it runs (one billed by compute time or tokens, one that
-names no size or length, media whose length can't be read, an endpoint with no listed price) is refused under a cap,
+reports no cost for a job, and a minimum charge or a discount `get_pricing` does not list is not in it. Where fal's rate
+depends on a setting and `get_pricing` states one rate (Ideogram v3's and Ideogram character's `rendering_speed`,
+Veo's audio and resolution, Kling v3's audio and voice control, sync-lipsync's pro model, Nano Banana Pro's and Nano
+Banana 2's resolution, web search and thinking, Fabric's resolution), a job is priced at `get_pricing`'s rate times the ratio fal's model page gives its
+settings, a setting it leaves out at its default, plus any charge the page adds per unit (a web search, per image).
+Where the page and `get_pricing` disagree, the higher is held. The endpoints of those families (Ideogram v3 and
+character, Nano Banana Pro and 2, each also served as a Gemini image preview, Veo 3 and 3.1, Kling v3, sync-lipsync v2,
+Fabric 1.0) are each decided: priced by their settings or at one rate. Some of their video endpoints have no reader for
+the length fal bills (the changelog lists them). These endpoints' rates are decided, but their holds aren't yet: under a cap, a job on one is refused until its length can be read. Ideogram v4, v4.5 and v4.6 and Nano Banana
+2.1 are such families with no rate decided, so all of them are refused under a cap. An image job whose `limit_generations` is anything but `true` or
+left out is refused under a cap too: `false` lets its prompt ask for more images than it names, each billed. A variant fal adds to one of them is refused under a cap until it is decided, in words that
+name it, never held at `get_pricing`'s one rate. Any other endpoint is priced at `get_pricing`'s one rate, whatever its
+settings. A job whose units can't be known before it runs (one billed by compute time or tokens,
+one that names no size or length, media whose length can't be read, an endpoint with no listed price, a setting value
+the model page names no rate for, a variant whose rate is not decided) is refused under a cap,
 in words that say why; with no cap it runs, booked as an unknown charge. A price saved for a fal tool takes the place
 of this. A request costs its input, plus the output it
 is sent with at the output price, plus any fee its tokens do not show (below). Its input is priced at its worst case:

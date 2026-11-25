@@ -26,6 +26,7 @@ import type { CostParts } from "@parcha/agentrun-kernel";
 export type SignInReader = ReturnType<typeof signInReads>;
 import { KINDS } from "./runner/journal-kinds.js";
 import { ENDED_WHILE_WAITING, STOPPED_WHILE_WAITING } from "./refusal-words.js";
+import { micro } from "./micro.js";
 
 /** How a run wound down for its spend cap (`max_cost_usd`), from its journal's root entries: the tool calls the cap's
  *  wrap-up refused (CAP_REFUSED, each call once however often it was refused: a replay is the same call), and whether it
@@ -451,7 +452,7 @@ export const actingOn = (run: Pick<RunView, "approvals" | "meta">) => [...(run.a
 export const shownArgs = (approval: Pick<Approval, "args_json">, redact: (text: string) => string): string => previewOf(redact(approval.args_json));
 
 /** A dollar figure to a millionth, as the timeline's cost.usd is. */
-export const micro = (usd: number): number => Math.round(usd * 1e6) / 1e6;
+export { micro } from "./micro.js";
 /** How many of the refused request's least a run paused at its cap is offered on top of what was taken (suggestedCap). */
 export const SUGGESTED_RAISE_FACTOR = 10;
 /** The raise a run paused at its cap is offered: what the cap counted as taken plus SUGGESTED_RAISE_FACTOR times the

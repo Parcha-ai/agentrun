@@ -667,11 +667,12 @@ if (!values["no-runner"] && askedAt === undefined) {
     // its shell is taken out first, as the server's own environment drops it (runner/main.ts besideRunEnv).
     const { besideRunEnv } = await import("./runner/main.js");
     // With the computer janitor: what a crashed runner of this server left is ended (never under --faux). With the
-    // server's AttachHub: a paired computer's socket is in this process, so only this runner takes one (--no-runner's
-    // separate runners refuse it in words). Its runs reach an MCP server on loopback only when this server is a local
-    // install (Serve.localInstall).
+    // server's AttachHub and the name and incarnation the server gave it (Serve.beside): a paired computer's socket is in
+    // this process, and this runner's run holds it under a route that names it, so a runner apart (its own process,
+    // relaying through this server) takes it for no other run meanwhile. Its runs reach an MCP server on loopback only
+    // when this server is a local install (Serve.localInstall).
     // Each run a process of its own, as a user of its own where the image's helper can switch (run-child-host.ts).
-    runnerProc = await runnerBeside(data, { loops, loopsTold, drainMs, env: besideRunEnv(process.env, fauxEnvOf(serveOptions)), janitor: true, ownProcesses: true, hub: serve.attachHub, dial: serve.dial, mcpLoopback: serve.localInstall, mcpOwn: serve.own, ollamaHost: serve.ollamaHost, onRunEnded: telemetry.runEnded });
+    runnerProc = await runnerBeside(data, { loops, loopsTold, drainMs, env: besideRunEnv(process.env, fauxEnvOf(serveOptions)), janitor: true, ownProcesses: true, hub: serve.attachHub, beside: serve.beside, dial: serve.dial, mcpLoopback: serve.localInstall, mcpOwn: serve.own, ollamaHost: serve.ollamaHost, onRunEnded: telemetry.runEnded });
   } catch (error) {
     // A run isolation the runner cannot give (run-child-host.ts runIsolationOf) is said, and the server serves on with no
     // runner, as the runner subcommand stays up claiming nothing (runner/main.ts): a platform that restarts a stopped

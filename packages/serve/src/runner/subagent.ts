@@ -15,6 +15,7 @@ import type { Context } from "@earendil-works/chord/context";
 import { configure, defineTool, type ModelRef, ROOT_CONVERSATION_ID, type ToolRegistration } from "@earendil-works/pi-durable";
 import { HOST_RESULT_MAX_CHARS } from "@parcha/agentrun-kernel";
 import { ASK_TOOL } from "../tools.js";
+import { slots } from "../slots.js";
 import { durableWait } from "../workflow/pi-versions.js";
 import { HOST_TOOL_OUTPUT } from "./adapters/pi.js";
 import { cutAtLimit } from "./loop-contract.js";
@@ -51,40 +52,6 @@ export type SubagentOptions = {
 
 type Args = { prompt: string; tools?: string[]; model?: SubagentTier; effort?: (typeof SUBAGENT_EFFORTS)[number] };
 
-/** One counter of free slots for the run's children (SUBAGENT_PARALLEL), handed out in call order. */
-function slots(count: number) {
-  let free = count;
-  const waiting: (() => void)[] = [];
-  return {
-    async take(signal?: AbortSignal): Promise<() => void> {
-      if (free > 0) free -= 1;
-      else {
-        await new Promise<void>((resolve, reject) => {
-          const go = () => {
-            signal?.removeEventListener("abort", stop);
-            resolve();
-          };
-          const stop = () => {
-            const at = waiting.indexOf(go);
-            if (at >= 0) waiting.splice(at, 1);
-            reject(signal?.reason ?? new Error("aborted"));
-          };
-          waiting.push(go);
-          signal?.addEventListener("abort", stop, { once: true });
-        });
-      }
-      let given = false;
-      return () => {
-        if (given) return;
-        given = true;
-        const next = waiting.shift();
-        if (next) next();
-        else free += 1;
-      };
-    },
-  };
-}
-
 /** The text of an assistant message: its text parts, joined. */
 const textOf = (message: { content?: unknown } | undefined): string =>
   Array.isArray(message?.content) ? message.content.map((part: { type?: string; text?: string }) => (part?.type === "text" ? (part.text ?? "") : "")).join("") : typeof message?.content === "string" ? message.content : "";
@@ -115,6 +82,7 @@ export function chosenTools(asked: readonly string[], options: Pick<SubagentOpti
 
 /** The subagent tool: one of the session's own tools (adapters/pi.ts `tools`), so it needs no extension of its own. */
 export function subagentTool(options: SubagentOptions): ToolRegistration {
+  // The run's children's slots (SUBAGENT_PARALLEL), handed out in call order.
   const free = slots(SUBAGENT_PARALLEL);
   return defineTool({
     name: SUBAGENT_TOOL,
