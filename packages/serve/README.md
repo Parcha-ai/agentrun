@@ -74,9 +74,9 @@ once they have loaded. A port already taken at the start is left to the start's 
 replaces, as it always has, and prints no `Starting` line.
 
 A Docker box's image is built on its first run, which shows that on its timeline. `npx @parcha/agentrun` prints the
-`Boxes:` line on stderr, after its own line on stdout. On a machine where Docker is not running, the `Boxes:` line says so instead (`Boxes: none, so new agents run on the
-runner. Docker isn't running on this machine (no docker command on PATH): install or start Docker, then restart
-AgentRun.`); see [Sandbox](#sandbox).
+`Boxes:` line on stderr, after its own line on stdout. On a machine where Docker is not running, the `Boxes:` line says so instead (`Boxes: none, so a new agent must name its
+place: a box, or the runner. Docker isn't running on this machine (no docker command on PATH): install or start Docker,
+then restart AgentRun.`); see [Sandbox](#sandbox).
 
 `Open` is [the console](#the-console), which takes [your password](#your-password). For a client, export the two lines before
 it, then make an agent, start a run, and read its timeline until a page says `final`:
@@ -624,17 +624,27 @@ command in the background ([background processes](#background-processes)). The p
 revision, so its answers show it. A definition that names its tools keeps exactly those, an empty list included, and
 gets the box only when one of them runs only there (`bash` or a background tool). One whose tools need no shell (`[]`,
 or `read`, `write`, `web_fetch` and the like) is saved with no place and runs on the runner, so its first run starts at
-once instead of waiting on a container. Where docker is unavailable, a new agent is saved with no place. So is one whose
-tools name one the box refuses (`browser`, runner-only for now). A workflow is never given a box.
+once instead of waiting on a container. One whose tools name one the box refuses (`browser`, runner-only for now) is
+saved with no place too. A workflow is never given a box.
+
+Where Docker's box is unavailable, a new agent that would get it (no tools named, or a shell tool) is refused `422
+input_invalid` at `definition.place`, and so is an edit that would save such a revision: `name a box: this server has no
+Docker box for a new agent. Set place to {mode: sandbox, box: <one of: daytona, e2b>}, or to {mode: runner} to run
+without a shell.` The words list the boxes this server has (`<none is set up>` when it has none) and its `fix` says the
+same, so no box is picked for it: the default box is Docker's, by its id, never another box that answers. In Mode 2 a
+shell tool the runner's own shell runs (`bash`, on Archil's serverless exec) needs no box, so an agent naming it alone
+still saves with no place. A definition that names its place, the runner included, a workflow, and one whose tools need
+no shell save as before.
 
 `capabilities.places.default_place` is the place a new agent with a shell gets here, and where a revision that names no
 place and has a shell tool runs. It is worked out again at each run, the same way as at create: an agentic revision with
 no place and a shell tool runs in the Docker box wherever this server has docker now, and on the runner where it does
 not. A workflow, a revision whose tools need no shell, and one whose tools name one the box refuses run on the runner. A save checks a revision with no place against where it would run, so `bash`
-with no place saves where docker is there and is `422` where it is not. When that is the runner,
-`default_reason` says why in docker's own words, such as `new agents run on the runner, because the docker box is
-unavailable here: Docker isn't running on this machine (no docker command on PATH): install or start Docker, then
-restart AgentRun`. The console's new-agent form says docker's reason too, under its place picker. The console's new-agent form starts on `default_place`, with bash ticked when that place is a sandbox.
+with no place saves where docker is there and is `422` where it is not. When that is the runner, `default_reason` is
+the words such a create is refused in (`name a box: …`), and docker's own reason is on its entry in `boxes`. A run of a
+revision saved earlier with no place and a shell tool, which would run on the runner without its shell now that Docker is
+gone, is `409 agent_not_runnable` in the same words. The console's new-agent form says each box's reason under its place
+picker, and that the agent needs a box set up or On the server chosen. The console's new-agent form starts on `default_place`, with bash ticked when that place is a sandbox.
 What a person picks or unticks there is what is sent.
 
 A run runs in its revision's place, else where `default_place` says at that run (a workflow, a revision whose tools need

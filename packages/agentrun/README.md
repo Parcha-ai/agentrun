@@ -140,8 +140,8 @@ overwrites that log; it is private to you, as the server's first lines name its 
 all of is named with the error that cut it short.
 
 Where Docker answers on this machine, a new agent runs in a Docker box of its own with a shell, and a line on stderr,
-after the address, says so: `Boxes: docker (on by default; set AGENTRUN_BOXES to change).` Where it does not, that line says why
-and that new agents run on the runner. A Docker box's image is built on its first run, which shows that on its
+after the address, says so: `Boxes: docker (on by default; set AGENTRUN_BOXES to change).` Where it does not, that line says why,
+and a new agent must name its place: a box, or the runner (`"place": {"mode": "runner"}`) to run without a shell. A Docker box's image is built on its first run, which shows that on its
 timeline. `AGENTRUN_BOXES=none` turns boxes off.
 
 pi runs every agent out of the box. The Claude Code and Codex harnesses need their own packages beside the server; when

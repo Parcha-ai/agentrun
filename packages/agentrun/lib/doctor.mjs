@@ -332,7 +332,7 @@ export async function doctorOf({
   const others = boxes.filter((b) => b.id !== "docker" && b.available === true).map((b) => b.id);
   if (box?.available) add("docker", "Docker", "ok", "Docker boxes are ready: an agent with a computer runs its tools in one.");
   else if (box && others.length) add("docker", "Docker", "info", `No Docker box: ${box.reason ?? "unavailable"}. An agent that needs a computer runs in ${others.join(" or ")} instead.`, { details: { ready: others } });
-  else if (box) add("docker", "Docker", "warn", `No Docker box: ${box.reason ?? "unavailable"}. An agent that needs a computer (bash, files) fails to start, and new agents run on the runner.`, { fix: dockerFix(box.reason ?? ""), docs: DOCS.docker });
+  else if (box) add("docker", "Docker", "warn", `No Docker box: ${box.reason ?? "unavailable"}. An agent that needs a computer (bash, files) fails to start, and a new agent must name its place: a box, or the runner.`, { fix: dockerFix(box.reason ?? ""), docs: DOCS.docker });
   else {
     const info = exec("docker", ["info", "--format", "{{.ServerVersion}}"]);
     const said = `${info.stderr ?? ""}`.trim().split("\n")[0];
