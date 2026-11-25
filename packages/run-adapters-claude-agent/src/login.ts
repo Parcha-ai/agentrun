@@ -33,9 +33,9 @@ export interface ClaudeAgentLogin {
   /** With `secure`: the variable was set and empty, which on macOS names the Keychain item with no suffix, so it goes to
    *  the CLI empty there too. */
   unsuffixed?: boolean;
-  /** The home of the person whose CLI keeps the login, read once by whoever makes the login (serve's loginAt: the
-   *  server's `HOME` when absolute, else `os.homedir()`, as the person's own CLI reads it), so the status check, the
-   *  sign-in and a run on macOS all run in that one home (personHome). With `home`, the same folder. */
+  /** The home of the person whose CLI keeps the login, read once by whoever makes the login (serve's homeOf: the
+   *  server's `HOME` when its user owns it, else that user's own home), so the status check, the sign-in and a run on
+   *  macOS all run in that one home (personHome). With `home`, the same folder. */
   userHome?: string;
 }
 
