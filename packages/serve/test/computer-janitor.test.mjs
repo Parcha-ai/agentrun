@@ -385,6 +385,66 @@ test("what may be deleted (1, 2): the janitor's interval sweeps never remove the
   assert.deepEqual(fake.volumeNames().sort(), KEPT);
 });
 
+/** A real store for a janitor's sweep: agent-1, and run-over, ended (so its orphan shows the sweep ran). */
+async function sweptStore(t) {
+  const server = await openSqliteStore({ dataDir: dataDir(t), role: "server" });
+  t.after(() => server.close());
+  await server.agents.create({ id: "agent-1", name: "Agent one" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer." } });
+  await server.runs.create({ id: "run-over", agentId: "agent-1", revisionId: "rev-1" });
+  assert.deepEqual(await server.runs.failUnclaimed("ended for the test"), ["run-over"]);
+  return server;
+}
+/** `target` with each method bound to it, and `over`'s in their place. */
+const over = (target, replaced) => new Proxy(target, { get: (into, key) => (Object.hasOwn(replaced, key) ? replaced[key] : typeof into[key] === "function" ? into[key].bind(into) : into[key]) });
+
+test("what may be deleted (3): a live claim's proxy is never a leftover while its computer is not made yet, however old the proxy", { skip: !existsSync(DAEMON) && "no computerd-linux-amd64: run npm run build:daemon -w @parcha/agentrun-computer (CI's build job does)" }, async (t) => {
+  const server = await sweptStore(t);
+  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
+  // Another runner holds run-1 and is making its computer: the proxy is made, the computer not yet (a slow create).
+  const [claim] = await server.runs.claimMany("runner-other", 1, { leaseMs: 600_000 });
+  assert.equal(claim.runId, "run-1");
+  const fake = fakeDocker(partsOfAll(leftoverOf("computer-0000000000b1", labels("run-1", claim.epoch)), leftoverOf("computer-0000000000b2", labels("run-over", 1))));
+  const said = [];
+  const janitor = startJanitor({ store: server, computers: computers([{ made: fake.provider }], { DOCKER_KEY: "k" }), env: {}, log: (line) => said.push(line), everyMs: 3_600_000 });
+  t.after(() => janitor.close());
+  await janitor.first;
+  assert.ok(goneFrom(fake, "computer-0000000000b2"), `the sweep ran and removed run-over's orphan; said: ${said.join(" | ")}`);
+  assert.deepEqual(fake.names(), ["computer-0000000000b1-egress"], "the live claim's proxy stays");
+  assert.deepEqual(fake.volumeNames(), ["computer-0000000000b1-egress"]);
+});
+
+test("what may be deleted (3): a live claim's running computer keeps its proxy when the claim is released (the run parks, its computer kept) just as the leftover sweep reads the run", { skip: !existsSync(DAEMON) && "no computerd-linux-amd64: run npm run build:daemon -w @parcha/agentrun-computer (CI's build job does)" }, async (t) => {
+  const server = await sweptStore(t);
+  await server.runs.create({ id: "run-2", agentId: "agent-1", revisionId: "rev-1" });
+  const [claim] = await server.runs.claimMany("runner-other", 1, { leaseMs: 600_000 });
+  assert.equal(claim.runId, "run-2");
+  const running = allowed({ name: "computer-0000000000c1", allow: ["pypi.org"], labels: labels("run-2", claim.epoch) });
+  const fake = fakeDocker(partsOfAll(running, leftoverOf("computer-0000000000c2", labels("run-over", 1))));
+  // The release lands inside the leftover sweep, at its first read of run-2 (whichever read the rule makes), before
+  // that read answers: the worst order for the sweep.
+  let sweeping = false;
+  let released = false;
+  const release = async () => {
+    if (!sweeping || released) return;
+    released = true;
+    await server.runs.release(claim, { state: "parked" });
+  };
+  const runs = over(server.runs, {
+    get: async (id, ...rest) => (id === "run-2" && (await release()), server.runs.get(id, ...rest)),
+    heldAt: async (id, ...rest) => (id === "run-2" && (await release()), server.runs.heldAt(id, ...rest)),
+  });
+  const docker = over(fake.provider, { sweepLeftovers: async (context) => ((sweeping = true), fake.provider.sweepLeftovers(context)) });
+  const said = [];
+  const janitor = startJanitor({ store: over(server, { runs }), computers: computers([{ made: docker }], { DOCKER_KEY: "k" }), env: {}, log: (line) => said.push(line), everyMs: 3_600_000 });
+  t.after(() => janitor.close());
+  await janitor.first;
+  assert.ok(goneFrom(fake, "computer-0000000000c2"), `the sweep ran and removed run-over's orphan; said: ${said.join(" | ")}`);
+  assert.ok(released, "the release raced the leftover sweep");
+  assert.equal(await server.runs.heldAt("run-2"), undefined, "no claim holds run-2 now");
+  assert.deepEqual(fake.names().sort(), ["computer-0000000000c1", "computer-0000000000c1-egress"], "the running computer and its proxy stay");
+  assert.deepEqual(fake.volumeNames(), ["computer-0000000000c1-egress"]);
+});
+
 test("a computer the sweep deleted ends its run's interval at the sweep's time; one whose delete failed stays open (computer-intervals.ts)", async () => {
   const docker = provider("docker", [
     { name: "mine-late", labels: labels("run-mine", 1), deadline: PAST },

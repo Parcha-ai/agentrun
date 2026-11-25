@@ -125,3 +125,37 @@ test("what may be deleted (1): the leftover sweep never touches a part with neit
 	const removed = calls().filter((args) => args[0] === "rm" || (args[0] === "volume" && args[1] === "rm")).flat();
 	assert.ok(!removed.some((arg) => arg === named || arg === idOf(named) || arg === namedMine || arg === idOf(namedMine) || arg === proxyOf("computer-0000000000a1") || arg === idOf(proxyOf("computer-0000000000a1"))), `no rm named either: ${JSON.stringify(removed)}`);
 });
+
+test("what may be deleted (3): the leftover sweep never removes the proxy of a computer that is there, though its deadline has passed", async () => {
+	// A computer still running past its deadline label (a clock that moved, or init not yet done): its proxy is its own,
+	// and the computer's release (the janitor's, which removes both in one call) is the only way it goes.
+	const PAST = "2026-01-01T00:00:00.000Z";
+	const { provider, names, volumeNames } = fakeDocker(allowed({ name: A, allow: ALLOW, deadline: PAST, labels: { "agentrun.run": "run-mine" } }));
+	const swept = await provider.sweepLeftovers({ now: new Date() });
+	assert.equal(swept.ok, true, JSON.stringify(swept));
+	assert.deepEqual(swept.value, []);
+	assert.deepEqual([names().sort(), volumeNames()], [[A, proxyOf(A)], [proxyOf(A)]]);
+});
+
+test("what may be deleted (3): a computer made while the leftover sweep runs keeps its proxy, though the sweep's first look found no computer and the proxy is older than a create could take", async () => {
+	const C = "computer-0000000000c0";
+	const made = allowed({ name: C, allow: ALLOW, labels: { "agentrun.run": "run-mine" } });
+	const computer = made.containers.find((one) => one.Name === `/${C}`);
+	// The proxy, made long ago (allowed's default), and no computer yet: a create under way that is slow.
+	const { provider, calls, names, add, proceed } = fakeDocker({ containers: made.containers.filter((one) => one !== computer), volumes: made.volumes, hold: ["inspect"] });
+	try {
+		const pending = provider.sweepLeftovers({ now: new Date(), mine: () => true });
+		// The sweep has read the computers (none) and listed the proxies, and inspects them: the create finishes now.
+		await until(() => calls().some((args) => args[0] === "inspect"));
+		assert.ok(calls().some((args) => args[0] === "inspect"), "the sweep inspected the proxies");
+		add([computer]);
+		proceed("inspect");
+		const swept = await pending;
+		assert.equal(swept.ok, true, JSON.stringify(swept));
+		assert.deepEqual(swept.value, [], "nothing of a computer that is there is a leftover");
+		assert.deepEqual(names().sort(), [C, proxyOf(C)]);
+		assert.ok(!calls().some((args) => args[0] === "rm"), "no rm at all");
+	} finally {
+		proceed("inspect");
+	}
+});
