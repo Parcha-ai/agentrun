@@ -623,6 +623,82 @@ test("an OTLP header value's URL with a percent-encoded password is held as writ
   );
 });
 
+test("an OTLP header value's quoted URL ends at its closing quote: its user alone is held and cut, though a later pair holds an @", () => {
+  const key = `relay-key-${"123"}`;
+  const env = { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=upstream='https://${key}@relay.invalid'&contact=ops@team.invalid` };
+  for (const [list, values] of [["runnerSecrets", runnerSecrets(env)], ["hostSecrets", hostSecrets(env)]]) assert.equal(values.includes(key), true, `the quoted URL's user alone is held (${list})`);
+  const line = `401 from relay: bad key ${key}; 2 spans passed, contact ops`;
+  const cut = "401 from relay: bad key [redacted]; 2 spans passed, contact ops";
+  assert.equal(otlpHeaderCut(env)(line), cut, "the [otel] cut takes the quoted URL's user alone and leaves passed, contact and ops");
+  assert.equal(secretRedactor(runnerSecrets(env))(line), cut, "the runner's redactor takes the quoted URL's user alone");
+});
+
+// Every shape a URL with a user and password takes in an OTLP header value: bare, in single quotes or in double quotes; as
+// the header's whole value, or as one name=value pair joined to a later pair holding an @ by &, ;, a comma (written %2C:
+// a bare comma splits the variable) or a space; with a path or none; with a password holding one of the characters a
+// naive read stops at, percent-encoded where RFC 3986 requires it and raw where a person would paste it.
+const URL_QUOTES = [["bare", ""], ["single-quoted", "'"], ["double-quoted", '"']];
+const URL_PLACES = [
+  ["as the header's value", (url) => url],
+  ...[["&", "&"], [";", ";"], ["a comma", "%2C"], ["a space", " "]].map(([what, joint]) => [`as a pair joined by ${what} to a later pair with an @`, (url) => `upstream=${url}${joint}contact=ops@team.invalid`]),
+];
+const URL_PATHS = [["no path", ""], ["a path", "/v1"]];
+// [what, the password as written in a URL in `quote`]; null: a user alone (a DSN's key).
+const URL_PASSWORDS = [
+  ["no password", () => null],
+  ["a raw ;", () => `pa;ss-${"dummy"}-7101`],
+  ["a raw &", () => `pa&ss-${"dummy"}-7102`],
+  ["a raw =", () => `pa=ss-${"dummy"}-7103`],
+  ["an encoded comma", () => `pa%2Css-${"dummy"}-7104`],
+  ["a quote, raw in double quotes and encoded elsewhere", (quote) => (quote === '"' ? `pa'ss-${"dummy"}-7105` : `pa%27ss-${"dummy"}-7105`)],
+  ["a raw @", () => `pa@ss-${"dummy"}-7106`],
+  ["an encoded @", () => `pa%40ss-${"dummy"}-7107`],
+  ["a raw %", () => `pa%ss-${"dummy"}-7108`],
+  ["an encoded %", () => `pa%25ss-${"dummy"}-7109`],
+  ["a raw :", () => `pa:ss-${"dummy"}-7110`],
+  ["an encoded /", () => `pa%2Fss-${"dummy"}-7111`],
+];
+
+test("an OTLP header value's URL, in every shape and with any hard character in its password, has its user and password held as written and decoded and cut alone, and no ordinary word is cut", () => {
+  const userinfo = (name, secret) => [name, secret].join(":");
+  const plainOf = (text) => {
+    try {
+      return decodeURIComponent(text);
+    } catch {
+      return text;
+    }
+  };
+  const user = `relayuser-${"dummy"}-5705`;
+  const missed = [];
+  for (const [quoting, quote] of URL_QUOTES) {
+    for (const [place, put] of URL_PLACES) {
+      for (const [pathing, path] of URL_PATHS) {
+        for (const [what, passwordIn] of URL_PASSWORDS) {
+          const password = passwordIn(quote);
+          const row = `${quoting} URL ${place}, ${pathing}, ${what}`;
+          const url = `${quote}https://${password === null ? user : userinfo(user, password)}@relay.invalid${path}${quote}`;
+          const env = { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Upstream=${put(url)}` };
+          const parts = [["the user", user], ...(password === null ? [] : [["the password as written", password], ["the password decoded", plainOf(password)]])];
+          for (const [list, values] of [["runnerSecrets", runnerSecrets(env)], ["hostSecrets", hostSecrets(env)]]) {
+            for (const [part, value] of parts) if (!values.includes(value)) missed.push(`${row}: ${part} (${list})`);
+          }
+          const line = password === null
+            ? `401 from relay: key ${user}; 2 spans passed, contact ops`
+            : `401 from relay: user ${user}, password ${password}, decoded ${plainOf(password)}; 2 spans passed, contact ops`;
+          const cut = password === null
+            ? "401 from relay: key [redacted]; 2 spans passed, contact ops"
+            : "401 from relay: user [redacted], password [redacted], decoded [redacted]; 2 spans passed, contact ops";
+          const otel = otlpHeaderCut(env)(line);
+          if (otel !== cut) missed.push(`${row}: the [otel] cut shows ${otel}`);
+          const runner = secretRedactor(runnerSecrets(env))(line);
+          if (runner !== cut) missed.push(`${row}: the runner's redactor shows ${runner}`);
+        }
+      }
+    }
+  }
+  assert.deepEqual(missed.slice(0, 24), [], `every URL shape's user and password are held and cut alone, and passed, contact and ops are left (${missed.length} missed)`);
+});
+
 test("a short OTLP header value is cut from the tracer's own error text, at any length; a standard header's value is left as it is", async (t) => {
   const short = `hc${"7"}x1`;
   const env = { ...ON, OTEL_EXPORTER_OTLP_HEADERS: `x-honeycomb-team=${short},Content-Type=application/json`, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `x-team=${short}` };
