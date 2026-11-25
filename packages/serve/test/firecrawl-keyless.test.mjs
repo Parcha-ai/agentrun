@@ -71,20 +71,21 @@ test("with no key, web_search and web_fetch resolve to keyless Firecrawl on ever
   assert.equal(explainCapability("web_search", { ...base, harness: "pi", pick: "firecrawl-keyless", parallelKey: true }).resolves, "firecrawl-keyless");
 });
 
-test("a search is one tools/call of firecrawl_search with {query, limit}, no key and no header of ours, and no session where Firecrawl names none; its results read into the hit shape every provider answers", async (t) => {
+test("a search is one tools/call of firecrawl_search with {query, limit, objective, scrapeOptions}, no key and no header of ours, and no session where Firecrawl names none; its results read into the hit shape every provider answers", async (t) => {
   const fc = await firecrawlServer(t);
   const { env, exaSearches } = await keyless(t, fc.url);
   const found = said(await searchRun(env)("widgets"));
   assert.deepEqual(found, {
     provider: "firecrawl-keyless",
-    query: "widgets",
+    objective: "widgets",
+    queries: ["widgets"],
     results: [
       { url: "https://first.example/widgets", title: "Widgets, explained", snippet: "All about widgets and their uses." },
       { url: "https://second.example/gadgets", title: "Gadgets", snippet: "A second result." },
     ],
   });
   assert.deepEqual(fc.got.map((one) => one.body.method), ["initialize", "notifications/initialized", "tools/call"]);
-  assert.deepEqual(fc.toolCalls()[0].body.params, { name: "firecrawl_search", arguments: { query: "widgets", limit: 10 } });
+  assert.deepEqual(fc.toolCalls()[0].body.params, { name: "firecrawl_search", arguments: { query: "widgets", limit: 10, objective: "widgets", scrapeOptions: { formats: ["markdown"], onlyMainContent: true } } });
   for (const { headers } of fc.got) {
     for (const name of ["authorization", "x-api-key", "cookie", "mcp-session-id"]) assert.equal(headers[name], undefined, name);
     assert.equal(headers["mcp-protocol-version"], "2025-06-18");
@@ -246,10 +247,11 @@ test("a fetch Firecrawl refuses and the direct fetch saves logs Firecrawl's reas
   assert.equal(lines.length, 1, "nothing logged for a page Firecrawl read");
 });
 
-test("a scrape reads up to the direct fetch's 5 MiB, past search's 1 MiB; one past that is refused in words, never parsed cut, and the fetch goes direct; search keeps 1 MiB", async (t) => {
+test("a scrape reads up to the direct fetch's 5 MiB; one past that is refused in words, never parsed cut, and the fetch goes direct; a search, its results scraped, reads up to 8 MiB", async (t) => {
   const big = (chars) => ({ content: [{ type: "text", text: JSON.stringify({ markdown: `# Big\n\n${"a".repeat(chars)}`, metadata: { title: "Big", sourceURL: PUBLIC, statusCode: 200 } }) }] });
   let chars = 2 * 1024 * 1024;
-  const fc = await firecrawlServer(t, (name) => (name === "firecrawl_scrape" ? big(chars) : { content: [{ type: "text", text: JSON.stringify({ success: true, data: { web: [{ url: "https://first.example/", title: "x".repeat(2 * 1024 * 1024), description: "" }] } }) }] }));
+  let searchChars = 2 * 1024 * 1024;
+  const fc = await firecrawlServer(t, (name) => (name === "firecrawl_scrape" ? big(chars) : { content: [{ type: "text", text: JSON.stringify({ success: true, data: { web: [{ url: "https://first.example/", title: "x".repeat(searchChars), description: "" }] } }) }] }));
   const two = await firecrawlScrape(PUBLIC, { endpoint: fc.url });
   assert.deepEqual([two.ok, two.title, two.beyond], [true, "Big", true], "a 2 MiB page is read whole by Firecrawl, its text then cut as any page's");
   chars = 6 * 1024 * 1024;
@@ -257,7 +259,9 @@ test("a scrape reads up to the direct fetch's 5 MiB, past search's 1 MiB; one pa
   const { env } = await keyless(t, fc.url);
   const page = await fetchFor(env, PUBLIC, network());
   assert.deepEqual([page.ok, page.via, page.title], [true, "direct", "Public page"]);
-  assert.deepEqual(await firecrawlSearch("widgets", 2, { endpoint: fc.url }), { error: "Firecrawl's search answered more than 1 MiB: not read" });
+  assert.deepEqual((await firecrawlSearch("widgets", 2, { endpoint: fc.url })).results?.map((hit) => hit.url), ["https://first.example/"], "a 2 MiB search is read");
+  searchChars = 9 * 1024 * 1024;
+  assert.deepEqual(await firecrawlSearch("widgets", 2, { endpoint: fc.url }), { error: "Firecrawl's search answered more than 8 MiB: not read" });
 });
 
 /** A public URL holding a user name and password, a user name alone, a password alone: synthetic, built in code. */
@@ -298,8 +302,9 @@ test("under --faux with no fake named, keyless Firecrawl is never asked: web_fet
   const net = network();
   assert.equal((await fetchFor(env, PUBLIC, net)).via, "direct");
   assert.match(said(await searchRun(env)("widgets")).error, /under --faux/);
-  // The tool's words name the third party where it may be asked.
-  assert.match(webFetchTool(env).description, /firecrawl-keyless when Firecrawl's keyless service read it \(it is sent the URL\)/);
+  // The tool's words say a URL may be sent to a reading service, and name none: every provider is asked through one text.
+  assert.match(webFetchTool(env).description, /else the name of the reading service the URL was sent to/);
+  assert.doesNotMatch(webFetchTool(env).description, /firecrawl/i);
 });
 
 test("the server hands a run the fake's URL as given, under --faux only, and its own environment's never reaches a run", () => {
