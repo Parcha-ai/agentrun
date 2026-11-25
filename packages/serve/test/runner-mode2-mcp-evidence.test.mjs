@@ -1,11 +1,13 @@
-// A Mode 2 run's MCP answers are filed in the run's files, which are on its Archil disk, never in a folder of this
-// machine. Both places a claim makes its MCP are tested: the CLI spec (cli-run-spec.ts) and a run's own process, whose
-// MCP is its runner's (run-child-host.ts heldFor). A fal answer whose job completed files no result on the disk: the
-// Archil Workspace has no create that never replaces (Workspace.writeNew), so nothing is filed there until it has
-// one (Parcha-ai/agentrun#3777), and the answer is fal's, byte for byte. An answer too long for the model, which the
-// gateway files whole at evidence/mcp, is written on the disk.
+// A Mode 2 run's MCP files its answers in the run's own files, on its Archil disk, never in a folder of this machine.
+// Every place a claim makes its MCP is tested: pi's spec (adapter-run-spec.ts), the CLI spec (cli-run-spec.ts), and a
+// run's own process, whose MCP is its runner's (run-child-host.ts heldFor). Where the run's computer mounts the folder,
+// its mount holds the disk's write delegation and a write over the disk's file API is refused (409): the gateway files
+// through the computer then, and a fal job's result is filed at evidence/fal/<request_id>.json (the attached Workspace
+// makes a file without the chance of replacing one). Where nothing mounts the folder, the gateway files over the disk's
+// file API, and a fal result is filed nowhere: that Workspace has no writeNew until Parcha-ai/agentrun#3777. An answer too
+// long for the model is filed whole at evidence/mcp in both. The answer the model reads is fal's, byte for byte.
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -14,6 +16,7 @@ import { AGENT, KEY as RUN_KEY, mode2Run, RUN } from "./fixtures/mode2-mounted-r
 import { storeOn } from "./store-helpers.mjs";
 
 const { sealMcpCredential } = await import("../dist/store/index.js");
+const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
 const { cliRunSpecFromLaunch } = await import("../dist/runner/cli-run-spec.js");
 const host = await import("../dist/runner/run-child-host.js");
 const { runFolder, runKey } = await import("../dist/workspace/paths.js");
@@ -57,30 +60,70 @@ async function callTwice(tool) {
   return [await call("c1"), await call("c2")];
 }
 
-/** What the claim filed: nothing in this machine's folder for the run, its puts on the disk under the run's key. */
-function assertFiledOnTheDisk({ data, agentId, runId, disk, key, first, second }) {
+/** What both answers say, and nothing in this machine's folder for the run. */
+function assertAnswered({ data, agentId, runId, first, second }) {
   assert.equal(first.isError, undefined, first.text);
   assert.equal(first.text, JSON.stringify(JOB), "the model reads fal's answer byte for byte");
   assert.match(second.text, /the whole answer is in the run's files at evidence\/mcp\/fal\//);
   const local = runFolder(data, agentId, runId);
   assert.equal(existsSync(join(local, "evidence")), false, `nothing is filed in this machine's folder for the run (${local})`);
+}
+
+/** Filed through the computer that mounts the run's folder (`scratch`, its /workspace): no write refused by the mount's
+ *  delegation, the whole long answer at evidence/mcp, fal's result at evidence/fal/<request_id>.json. */
+function assertFiledThroughTheComputer({ scratch, disk, ...answered }) {
+  assertAnswered(answered);
+  assert.deepEqual(disk.refusedByDelegation, [], "nothing is written over the disk's file API while the computer's mount holds it");
+  const mcp = readdirSync(join(scratch, "evidence", "mcp", "fal"));
+  assert.equal(mcp.length, 1, JSON.stringify(mcp));
+  assert.equal(readFileSync(join(scratch, "evidence", "mcp", "fal", mcp[0]), "utf8"), LONG, "the whole answer");
+  assert.deepEqual(JSON.parse(readFileSync(join(scratch, "evidence", "fal", `${ID}.json`), "utf8")), RESULT, "fal's completed result, filed");
+}
+
+/** Filed over the disk's file API (no computer mounts the folder): the long answer's put under the run's key, no fal
+ *  result (no writeNew there, Parcha-ai/agentrun#3777). */
+function assertFiledOverTheDisk({ disk, key, ...answered }) {
+  assertAnswered(answered);
   const puts = disk.calls.filter((call) => call.op === "putObject").map((call) => call.key);
   assert.ok(puts.some((at) => at.startsWith(`${key}/evidence/mcp/fal/`)), `the whole answer is on the run's disk: ${JSON.stringify(puts)}`);
   assert.deepEqual(puts.filter((at) => at.includes("/evidence/fal/")), [], "no fal result on the disk: its Workspace has no writeNew (Parcha-ai/agentrun#3777)");
 }
 
-test("Mode 2, the CLI spec: a fal answer's result is filed nowhere outside the run's files, and a whole answer filed at evidence/mcp is on the run's disk", { timeout: 120_000 }, async (t) => {
+const MCP = (fake, register) => ({ grants: GRANTS, pin: PIN(fake.url), before: register, deps: { mcpLoopback: true } });
+
+for (const [name, harness, build] of [["pi's spec", undefined, adapterRunSpecFromLaunch], ["the CLI spec (opencode)", "opencode", cliRunSpecFromLaunch]]) {
+  test(`Mode 2, ${name}, its computer mounting the run's folder: the MCP files through the computer, a fal result at evidence/fal, nothing in this machine's folder`, { timeout: 120_000 }, async (t) => {
+    const { fake, register } = await fakeFal(t);
+    const disk = new FakeArchilDisk();
+    const run = await mode2Run(t, { harness, disk, mcp: MCP(fake, register) });
+    const { spec } = await run.claimNext(build);
+    assert.equal(run.mounts.length, 1, "the run's computer mounts its folder");
+    const tool = spec.mcp.tools.find((one) => spec.mcp.catalogOf(one.name) === "mcp:fal/wait_for_jobs");
+    assert.ok(tool, "the run's wait_for_jobs");
+    const [first, second] = await callTwice(tool);
+    assertFiledThroughTheComputer({ data: run.data, agentId: AGENT, runId: RUN, scratch: run.scratch, disk, first, second });
+  });
+}
+
+test("Mode 2, a run's own process (its runner's MCP, heldFor), its computer mounting the run's folder: the same, through the computer", { timeout: 120_000 }, async (t) => {
   const { fake, register } = await fakeFal(t);
   const disk = new FakeArchilDisk();
-  const run = await mode2Run(t, { harness: "opencode", disk, mcp: { grants: GRANTS, pin: PIN(fake.url), before: register, deps: { mcpLoopback: true } } });
-  const { spec } = await run.claimNext(cliRunSpecFromLaunch);
-  const tool = spec.mcp.tools.find((one) => spec.mcp.catalogOf(one.name) === "mcp:fal/wait_for_jobs");
+  const run = await mode2Run(t, { disk, mcp: MCP(fake, register) });
+  const revision = { kind: "agentic", body: { instructions: "Answer.", tools: ["read", "write", ...GRANTS], computer: { kind: "sandbox", provider: "e2b" } }, mcpPin: PIN(fake.url) };
+  const reads = { claim: { runId: RUN, epoch: 1 }, run: { agentId: AGENT, revisionId: "rev-1", signInHanded: null }, launch: { input: { content: "Do the thing." } }, revision, claimed: {} };
+  const side = host.heldFor(run.deps, reads, (text) => text, () => {});
+  t.after(() => side.release());
+  const mcp = await side.held.mcp({ appendRoot: async () => {} });
+  const got = await side.held.computer({ hadComputer: async () => false });
+  assert.equal(got?.computer?.kind, "sandbox", "the runner made the run's computer");
+  assert.equal(run.mounts.length, 1, "it mounts the run's folder");
+  const tool = mcp?.tools.find((one) => one.catalog === "mcp:fal/wait_for_jobs");
   assert.ok(tool, "the run's wait_for_jobs");
   const [first, second] = await callTwice(tool);
-  assertFiledOnTheDisk({ data: run.data, agentId: AGENT, runId: RUN, disk, key: RUN_KEY, first, second });
+  assertFiledThroughTheComputer({ data: run.data, agentId: AGENT, runId: RUN, scratch: run.scratch, disk, first, second });
 });
 
-test("Mode 2, a run's own process (its runner's MCP, heldFor): the same, nothing in this machine's folder for the run", { timeout: 120_000 }, async (t) => {
+test("Mode 2, a run's own process (its runner's MCP, heldFor), no computer: the MCP files over the disk's file API, no fal result (#3777), nothing in this machine's folder", { timeout: 120_000 }, async (t) => {
   const { fake, register } = await fakeFal(t);
   const { store } = await storeOn(t);
   const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "mode2-mcp-evidence-"));
@@ -103,5 +146,5 @@ test("Mode 2, a run's own process (its runner's MCP, heldFor): the same, nothing
   const tool = mcp?.tools.find((one) => one.catalog === "mcp:fal/wait_for_jobs");
   assert.ok(tool, "the run's wait_for_jobs");
   const [first, second] = await callTwice(tool);
-  assertFiledOnTheDisk({ data, agentId: "agent-own", runId: "run-own", disk, key: runKey("agent-own", "run-own"), first, second });
+  assertFiledOverTheDisk({ data, agentId: "agent-own", runId: "run-own", disk, key: runKey("agent-own", "run-own"), first, second });
 });

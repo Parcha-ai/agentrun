@@ -156,6 +156,8 @@ export async function mode2Run(t, { harness, disk, learns = false, mcp }) {
     data: dir,
     /** The computer's folder: the fake computer's /workspace, a local folder that stands in for the mounted run's folder. */
     scratch,
+    /** The claim's deps, as either spec builder is given them (a run's own process's runner takes them too). */
+    deps,
     /** Claim the run (`leaseMs`: the claim's lease) and build its spec with `build`. */
     async claimNext(build, { leaseMs = 60_000 } = {}) {
       const [claim] = await store.runs.claimMany("runner-a", 1, { leaseMs });
