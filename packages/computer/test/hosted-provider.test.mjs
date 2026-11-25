@@ -1052,6 +1052,12 @@ const BIG = Buffer.alloc(3 * CHUNK + 7);
 for (let i = 0; i < BIG.length; i++) BIG[i] = i % 251;
 /** The offsets of the files.read calls the daemon in m was sent for path since request n. */
 const daemonReads = (fake, path, n) => fake.requests.slice(n).filter((r) => r.method === "files.read" && r.params.path === path).map((r) => r.params.offset);
+/** The copies read-stage left in m, once its removal (which never holds up the read) has had a moment to run. */
+async function copiesLeft(m) {
+	const left = () => [...m.files.keys()].filter((path) => path.startsWith("/run/agentrun-read/"));
+	for (let i = 0; i < 100 && left().length > 0; i++) await new Promise((done) => setTimeout(done, 5));
+	return left();
+}
 
 test("a read past one chunk on a host with download: the first chunk through the daemon, the rest from one copy made as the daemon's user, downloaded and removed; a file of one chunk is the daemon's alone", async () => {
 	const { provider, fake } = setup({}, { download: true });
@@ -1069,7 +1075,7 @@ test("a read past one chunk on a host with download: the first chunk through the
 	assert.deepEqual([staged.uid, staged.gid, staged.path], ["2510", "2510", "/work/big.bin"], "copied as the daemon's user, read from its /proc/self/status");
 	assert.match(staged.copy, /^\/run\/agentrun-read\/[0-9a-f]{32}$/);
 	assert.deepEqual(fake.downloads.map(({ path }) => path), [staged.copy], "the copy came through download");
-	assert.equal(m.files.has(staged.copy), false, "the copy is removed");
+	assert.deepEqual(await copiesLeft(m), [], "the copy is removed");
 	const small = made(await readFile(connection.client, "/work/small.txt"));
 	assert.equal(Buffer.from(small).toString(), "small\n");
 	assert.equal(fake.stages.length, 1, "a file of one chunk is never copied");
@@ -1098,7 +1104,7 @@ test("a read past one chunk stays the daemon's, chunk by chunk, where the host h
 		assert.deepEqual(daemonReads(fake, "/work/big.bin", before), [0, CHUNK, 2 * CHUNK, 3 * CHUNK], `${what}: every chunk through the bridge`);
 		assert.equal(fake.stages.length, stages, `${what}: copies`);
 		assert.equal(fake.downloads.length, downloads, `${what}: downloads`);
-		assert.deepEqual([...m.files.keys()].filter((path) => path.startsWith("/run/agentrun-read/")), [], `${what}: no copy left`);
+		assert.deepEqual(await copiesLeft(m), [], `${what}: no copy left`);
 		await connection.close();
 	}
 });

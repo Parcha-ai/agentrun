@@ -553,6 +553,8 @@ test("a read past one chunk on a Daytona computer comes through the toolbox's fi
 	assert.deepEqual(bridged.map((r) => r.params.offset), [0], "the bridge carried the first chunk alone");
 	assert.equal(downloads.length, 1, "one download");
 	assert.match(downloads[0], /^\/run\/agentrun-read\/[0-9a-f]{32}$/, "of the copy made as the daemon's user");
+	// Its removal never holds up the read: a moment for it to run.
+	for (let i = 0; i < 100 && m.files.has(downloads[0]); i++) await new Promise((done) => setTimeout(done, 5));
 	assert.equal(m.files.has(downloads[0]), false, "the copy is removed");
 	await connected.value.close();
 });

@@ -242,9 +242,10 @@ class DaytonaHost implements MachineHost {
 	 */
 	readonly descriptor: HostDescriptor = DAYTONA;
 	readonly facts: HostFacts;
-	/** connect exec alone: a dial host has neither (HostFacts.connect). */
+	/** connect exec alone: a dial host has none of them (HostFacts.connect). */
 	readonly exec?: MachineHost["exec"];
 	readonly upload?: MachineHost["upload"];
+	readonly download?: MachineHost["download"];
 	/** connect dial alone: agentrun-dial's session command's log, its exit, and its second start. */
 	readonly dialLog?: MachineHost["dialLog"];
 	readonly dialExit?: MachineHost["dialExit"];
@@ -299,6 +300,7 @@ class DaytonaHost implements MachineHost {
 		if (options.connect === "exec") {
 			this.exec = (id, argv, ctx) => this.#exec(id, argv, ctx);
 			this.upload = (id, path, bytes, ctx) => this.#upload(id, path, bytes, ctx);
+			this.download = (id, path, ctx) => this.#download(id, path, ctx);
 		} else {
 			this.dialLog = (id, ctx) => this.#dialLog(id, ctx);
 			this.dialExit = (id, ctx) => this.#dialExit(id, ctx);
@@ -553,6 +555,17 @@ class DaytonaHost implements MachineHost {
 		const missing = `POST ${new URL(`${toolbox}/files/upload-v2`).pathname}: 404 ${decoder.decode(current.bytes).replace(/\s+/g, " ").trim().slice(0, 300)}`;
 		const older = await send("files/upload");
 		if (!older.ok) throw new HostError(older.error.code, `${missing}, then ${older.error.message}`);
+	}
+
+	/**
+	 * The bytes of the file at `path` in the sandbox, whole: the toolbox's GET files/download (the open daemon's routes,
+	 * daytonaio/daytona@b5a5d9e7 apps/daemon/pkg/toolbox/server.go), as root. Far faster than exec's stdout, which is a
+	 * session command's log read over a WebSocket (about 0.3 MB/s, the sandbox bench, 11-25). Connect exec alone.
+	 */
+	async #download(id: string, path: string, ctx: HostCall): Promise<Uint8Array> {
+		const toolbox = await this.#toolbox(id, ctx.signal);
+		const got = orThrow(await this.#rest.call("GET", `${toolbox}/files/download?${new URLSearchParams({ path })}`, { retry: true, timeoutMs: ctx.timeoutMs }, ctx.signal));
+		return got.bytes;
 	}
 
 	/**

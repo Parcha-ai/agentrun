@@ -383,7 +383,10 @@ function codeOf(error: unknown): ComputerErrorCode {
 
 **Optional hooks.** `upload(id, path, bytes, ctx)` puts a file in the machine. E2B has one because it has a file API;
 without it, AgentRun streams its daemon through `exec`'s stdin as base64 text, so the image needs `head` and
-`base64` (coreutils and busybox both have them). `extend(id, endsAt, ctx)` moves a machine's end when
+`base64` (coreutils and busybox both have them). `download(id, path, ctx)` hands back a file's bytes, read as root;
+give it when your exec's output is slow (Daytona's is a log read at about 0.3 MB/s). A `files.read` past one chunk then
+takes its first chunk from the daemon and the rest from a copy AgentRun makes as the daemon's user (`setpriv`,
+util-linux) and downloads, so the read shows nothing that user can't read. `extend(id, endsAt, ctx)` moves a machine's end when
 an agent extends its deadline: your timer with `lifetime: "vendor"`, AgentRun's deadline label with `"janitor"`. Never
 move it past its `agentrun.computer.max-deadline` label, which AgentRun writes only on a host with `extend`. When no end your API takes lands there, throw
 `HostError("limit", <why>)` and move nothing. AgentRun reads the end back through `get`, from the deadline label: if

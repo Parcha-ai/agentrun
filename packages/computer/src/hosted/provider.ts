@@ -72,6 +72,7 @@ import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOpti
 import { countTested } from "../test-connection.js";
 import { waitUntil } from "../wait.js";
 import { bounded, CALL_SLACK_MS, hostCall, type Opened, openBridge, pause, rootOf, runToExit, seconds, uploadThroughExec, words } from "./process.js";
+import { downloadingClient } from "./download.js";
 import { isWhole, PACKED_NAME, packLabels, unpackLabels } from "./values.js";
 import { EGRESS_POLICY, EGRESS_PROXY_USER, EGRESS_RELAY, HOSTED_ALLOW, NETWORK_LABEL, networkFormOf, networkOfForm, networkRefusal, throughProxy } from "./network.js";
 import { ARCHIL_GATE, closedSocketsOf, type DaemonExpected, daemonDrift, type HostedCommands, hostedCommands, initFlags, installerOf } from "./scripts.js";
@@ -1244,7 +1245,12 @@ export class HostedProvider implements ComputerProvider {
 			return ok(deletedSaid(this.host, ref, this.#label, requestMs, { ...connection, hello: hello.value }));
 		}
 		const opened = await openBridge(this.host, ref.id, { argv: hostedCommands().stdio, name: ref.name, version: VERSION, requestMs, helloMs, ...(signal ? { signal } : {}) });
-		return opened.ok ? ok(deletedSaid(this.host, ref, this.#label, requestMs, opened.value)) : opened;
+		if (!opened.ok) return opened;
+		// A host with download takes a read past one chunk out through it, not the bridge (./download.ts).
+		const download = this.host.download?.bind(this.host);
+		const { execMs, uploadMs } = this.#timeouts;
+		const connection = download === undefined ? opened.value : { ...opened.value, client: downloadingClient(this.host, download, ref.id, opened.value.client, { execMs, downloadMs: uploadMs }) };
+		return ok(deletedSaid(this.host, ref, this.#label, requestMs, connection));
 	}
 
 	/** #open, tried again while the bridge finds no daemon listening, until hello or helloMs in all. */
