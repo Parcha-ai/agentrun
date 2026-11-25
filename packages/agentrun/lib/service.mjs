@@ -174,6 +174,18 @@ const keyMove = (url, { shared = false, ollamaHost } = {}) => {
 /** The usage counts' two switches in SERVICE_ENV, which install also copies from its own shell. */
 const TELEMETRY_NAMES = ["AGENTRUN_TELEMETRY", "DO_NOT_TRACK"];
 
+/** Whether the gateway address `value` carries a user name or password, read as a URL parser reads it (an
+ *  `https:/user@host` with one slash too), or as an address with no scheme: an `@` before its first `/`, `?` or `#`. */
+function hasUserinfo(value) {
+  if (/^\s*(?:[a-z][a-z0-9+.-]*:\/\/)?[^/?#\s]*@/i.test(value)) return true;
+  try {
+    const url = new URL(value.trim());
+    return url.username !== "" || url.password !== "";
+  } catch {
+    return false;
+  }
+}
+
 /** Writes the service file `file` whole or not at all, readable by its owner alone (0600): a temporary file beside it,
  *  made new with that mode, renamed over it. A crash mid-write leaves the service as it was, never half a file. */
 function writeService(file, text) {
@@ -511,7 +523,7 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
         if (/[\0-\x1f]/.test(pair)) throw fail(2, `${key}'s value has a line break or another control character.`);
         // A user or password in the gateway's address is a key in a service file: refused, and never echoed.
         // Read past leading space and with or without a scheme, as an address before its first /, ? or #.
-        if (key === "AGENT_MODEL_BASE_URL" && /^\s*(?:[a-z][a-z0-9+.-]*:\/\/)?[^/?#\s]*@/i.test(pair.slice(at + 1))) throw fail(2, "AGENT_MODEL_BASE_URL takes the gateway's address with no user name or password in it: a key goes in the console (Settings → Model keys), never in a service file.");
+        if (key === "AGENT_MODEL_BASE_URL" && hasUserinfo(pair.slice(at + 1))) throw fail(2, "AGENT_MODEL_BASE_URL takes the gateway's address with no user name or password in it: a key goes in the console (Settings → Model keys), never in a service file.");
         const takes = SERVICE_ENV[key];
         // The value is never echoed: it may be a key.
         if (takes && pair.slice(at + 1) !== "" && !takes.includes(pair.slice(at + 1))) throw fail(2, `${key} takes ${takes.join(" or ")} alone, or nothing to remove it: a model key goes in the console (Settings → Model keys), never in a service file.`);

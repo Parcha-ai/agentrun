@@ -513,6 +513,10 @@ test("service install --env refuses any other variable by name, and a pair with 
     ["AGENT_MODEL_BASE_URL= https://:sk-or-x@gateway.example.com/v1", /^AGENT_MODEL_BASE_URL takes the gateway's address with no user name or password in it/],
     ["AGENT_MODEL_BASE_URL=\thttps://sk-or-x@gateway.example.com/v1", /^AGENT_MODEL_BASE_URL's value has a line break or another control character\.$/],
     ["AGENT_MODEL_BASE_URL=sk-or-x@gateway.example.com:4000/v1", /^AGENT_MODEL_BASE_URL takes the gateway's address with no user name or password in it/],
+    // One slash, or none: a URL parser still reads a user there.
+    ["AGENT_MODEL_BASE_URL=https:/sk-or-x@gateway.example.com/v1", /^AGENT_MODEL_BASE_URL takes the gateway's address with no user name or password in it/],
+    ["AGENT_MODEL_BASE_URL=https:sk-or-x@gateway.example.com/v1", /^AGENT_MODEL_BASE_URL takes the gateway's address with no user name or password in it/],
+    ["AGENT_MODEL_BASE_URL=http:\\\\sk-or-x@gateway.example.com/v1", /^AGENT_MODEL_BASE_URL takes the gateway's address with no user name or password in it/],
   ]) {
     // The value is never echoed: it may be a key.
     await assert.rejects(service.install({ env: [pair] }), (error) => error.code === 2 && said.test(error.message) && !error.message.includes("sk-or-x"), pair);
