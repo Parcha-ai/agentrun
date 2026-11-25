@@ -9,7 +9,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, st
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { checkLifetime, computerNameFor as nameOf } from "../dist/index.js";
+import { checkLifetime, computerNameFor as nameOf, readFile } from "../dist/index.js";
 import { HostError } from "../dist/host.js";
 import { DAEMON, DESKTOP_GROUPS, deferred, FAKE_DESCRIPTOR, fakeHost, gpuDescriptor, LINUX_GROUPS, NETWORK_DESCRIPTOR, NotFound, VERSION } from "./fake-host.mjs";
 
@@ -1044,6 +1044,63 @@ test("connect checks hello against the provider: one that drifted is refused; a 
 	assert.match(ahead.error.message, /hello: the daemon speaks protocol 0\.3, expected exactly 0\.2/);
 	m.state = "stopped";
 	assert.equal((await provider.connect(ref)).error?.code, "refused");
+});
+
+/** A file of three chunks and some, each byte its offset mod 251, so a chunk out of place reads wrong. */
+const CHUNK = 512 * 1024;
+const BIG = Buffer.alloc(3 * CHUNK + 7);
+for (let i = 0; i < BIG.length; i++) BIG[i] = i % 251;
+/** The offsets of the files.read calls the daemon in m was sent for path since request n. */
+const daemonReads = (fake, path, n) => fake.requests.slice(n).filter((r) => r.method === "files.read" && r.params.path === path).map((r) => r.params.offset);
+
+test("a read past one chunk on a host with download: the first chunk through the daemon, the rest from one copy made as the daemon's user, downloaded and removed; a file of one chunk is the daemon's alone", async () => {
+	const { provider, fake } = setup({}, { download: true });
+	const ref = made(await create(provider));
+	const m = only(fake);
+	m.files.set("/work/big.bin", BIG);
+	m.files.set("/work/small.txt", Buffer.from("small\n"));
+	const connection = made(await provider.connect(ref));
+	const before = fake.requests.length;
+	const read = made(await readFile(connection.client, "/work/big.bin"));
+	assert.equal(Buffer.compare(Buffer.from(read), BIG), 0, "every byte, in order");
+	assert.deepEqual(daemonReads(fake, "/work/big.bin", before), [0], "one chunk through the bridge");
+	assert.equal(fake.stages.length, 1, "one copy");
+	const [staged] = fake.stages;
+	assert.deepEqual([staged.uid, staged.gid, staged.path], ["2510", "2510", "/work/big.bin"], "copied as the daemon's user, read from its /proc/self/status");
+	assert.match(staged.copy, /^\/run\/agentrun-read\/[0-9a-f]{32}$/);
+	assert.deepEqual(fake.downloads.map(({ path }) => path), [staged.copy], "the copy came through download");
+	assert.equal(m.files.has(staged.copy), false, "the copy is removed");
+	const small = made(await readFile(connection.client, "/work/small.txt"));
+	assert.equal(Buffer.from(small).toString(), "small\n");
+	assert.equal(fake.stages.length, 1, "a file of one chunk is never copied");
+	assert.equal(fake.downloads.length, 1);
+	// A second read of the file copies it again: nothing of the first is kept past its end.
+	const again = made(await readFile(connection.client, "/work/big.bin"));
+	assert.equal(Buffer.compare(Buffer.from(again), BIG), 0);
+	assert.equal(fake.stages.length, 2);
+	await connection.close();
+});
+
+test("a read past one chunk stays the daemon's, chunk by chunk, where the host has no download, the copy fails, or the copy is not the size the daemon read; no copy is left behind", async () => {
+	for (const [what, fakeOptions, stages, downloads] of [
+		["no download", {}, 0, 0],
+		["the copy fails", { download: true, stage: "fail" }, 1, 0],
+		["the copy is short", { download: true, stage: "short" }, 1, 1],
+	]) {
+		const { provider, fake } = setup({}, fakeOptions);
+		const ref = made(await create(provider));
+		const m = only(fake);
+		m.files.set("/work/big.bin", BIG);
+		const connection = made(await provider.connect(ref));
+		const before = fake.requests.length;
+		const read = made(await readFile(connection.client, "/work/big.bin"));
+		assert.equal(Buffer.compare(Buffer.from(read), BIG), 0, `${what}: every byte, in order`);
+		assert.deepEqual(daemonReads(fake, "/work/big.bin", before), [0, CHUNK, 2 * CHUNK, 3 * CHUNK], `${what}: every chunk through the bridge`);
+		assert.equal(fake.stages.length, stages, `${what}: copies`);
+		assert.equal(fake.downloads.length, downloads, `${what}: downloads`);
+		assert.deepEqual([...m.files.keys()].filter((path) => path.startsWith("/run/agentrun-read/")), [], `${what}: no copy left`);
+		await connection.close();
+	}
 });
 
 test("connect to a machine the vendor reads as gone (past its deadline or released, still being deleted) answers gone, not refused; releasing it again stays ok", async () => {

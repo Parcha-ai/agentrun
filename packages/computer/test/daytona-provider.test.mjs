@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { create, DaytonaProvider } from "../dist/daytona.js";
 import { dialLaunch } from "../dist/hosted/scripts.js";
-import { AttachHub, checkLifetime, DAYTONA, kindRefusals, MACHINE_TOKEN_SOURCE, MemoryMachineTokens, mountsOf } from "../dist/index.js";
+import { AttachHub, checkLifetime, DAYTONA, kindRefusals, MACHINE_TOKEN_SOURCE, MemoryMachineTokens, mountsOf, readFile } from "../dist/index.js";
 import { bootDial, desktopOverDial, dialServer } from "./fake-dial-host.mjs";
 import { fakeHost } from "./fake-host.mjs";
 import { refusesHttp } from "./https-refusal.mjs";
@@ -42,7 +42,7 @@ const EGRESS = "192.0.2.40:18100:42050";
 function fakeHostFor(provider) {
 	const fake = fakeHost({ descriptor: provider.host.descriptor, facts: { ...provider.host.facts }, box: { reached: [] } });
 	for (const call of ["create", "get", "list", "delete", "exec", "upload", "errorCode"]) provider.host[call] = fake.host[call].bind(fake.host);
-	return { host: provider.host, rootRuns: fake.rootRuns };
+	return { host: provider.host, rootRuns: fake.rootRuns, fake };
 }
 
 const stray = [];
@@ -493,6 +493,70 @@ test("a redirect is never followed, and a toolbox URL that is not https is refus
 	assert.deepEqual([...new Set(rec.requests.map((r) => r.host))], ["api.daytona.test"], "nothing went to the toolbox");
 });
 
+test("download: GET files/download on the sandbox's toolbox, the path a query, the bytes as they come with the key; a refusal throws in Daytona's words", async () => {
+	const bytes = Buffer.from([0, 1, 2, 255, 10, 13, 0]);
+	const requests = [];
+	const fetch = async (url, init = {}) => {
+		const at = new URL(url);
+		requests.push({ method: init.method, host: at.host, path: at.pathname, query: at.searchParams.get("path"), headers: init.headers ?? {} });
+		if (at.pathname === `/api/sandbox/${REF.id}`) return Response.json(sandbox());
+		if (at.pathname === `/toolbox/${REF.id}/files/download` && at.searchParams.get("path") === "/run/agentrun-read/a b") return new Response(bytes, { headers: { "content-type": "application/octet-stream" } });
+		if (at.pathname === `/toolbox/${REF.id}/files/download`) return Response.json({ statusCode: 404, message: "file not found" }, { status: 404 });
+		return Response.json({ statusCode: 401, message: "Invalid credentials" }, { status: 401 });
+	};
+	const provider = new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch, timeouts: TIMEOUTS });
+	assert.equal(typeof provider.host.download, "function", "a Daytona host on connect exec has download");
+	const got = await provider.host.download(REF.id, "/run/agentrun-read/a b", { timeoutMs: 1_000 });
+	assert.equal(Buffer.compare(Buffer.from(got), bytes), 0, "the bytes, binary as they are");
+	const download = requests.find((r) => r.path.endsWith("/files/download"));
+	assert.deepEqual([download.method, download.host, download.path, download.query], ["GET", "proxy.daytona.test", `/toolbox/${REF.id}/files/download`, "/run/agentrun-read/a b"]);
+	assert.equal(new Headers(download.headers).get("authorization"), `Bearer ${KEY}`);
+	await assert.rejects(provider.host.download(REF.id, "/run/agentrun-read/gone", { timeoutMs: 1_000 }), (error) => {
+		assert.equal(error.code, "not_found");
+		assert.match(error.message, /file not found/);
+		return true;
+	});
+});
+
+test("a read past one chunk on a Daytona computer comes through the toolbox's files/download, not the bridge: the bridge carries the first chunk alone (the host's other calls played by the adapter's fake host)", async () => {
+	const chunk = 512 * 1024;
+	const big = Buffer.alloc(2 * chunk + 3);
+	for (let i = 0; i < big.length; i++) big[i] = i % 251;
+	const downloads = [];
+	let fake;
+	const fetch = async (url, init = {}) => {
+		const at = new URL(url);
+		const sandboxAt = /^\/api\/sandbox\/([^/]+)$/.exec(at.pathname);
+		if (init.method === "GET" && sandboxAt) return Response.json(sandbox({ id: sandboxAt[1] }));
+		const fileAt = /^\/toolbox\/([^/]+)\/files\/download$/.exec(at.pathname);
+		if (init.method === "GET" && fileAt) {
+			const path = at.searchParams.get("path");
+			downloads.push(path);
+			const bytes = fake.machines.get(fileAt[1])?.files.get(path);
+			return bytes ? new Response(bytes) : Response.json({ statusCode: 404, message: "file not found" }, { status: 404 });
+		}
+		return assert.fail(`no other request to Daytona: ${init.method} ${at.pathname}`);
+	};
+	const provider = new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch, timeouts: { ...TIMEOUTS, listedStableMs: 0 } });
+	({ fake } = fakeHostFor(provider));
+	const made = await provider.create(SPEC, { requestId: "r-big-read" });
+	assert.equal(made.ok, true, made.ok ? "" : `${made.error.code}: ${made.error.message}`);
+	const m = fake.machines.get(made.value.id);
+	m.files.set("/work/big.bin", big);
+	const connected = await provider.connect({ id: made.value.id, name: made.value.name });
+	assert.equal(connected.ok, true, connected.ok ? "" : `${connected.error.code}: ${connected.error.message}`);
+	const before = fake.requests.length;
+	const read = await readFile(connected.value.client, "/work/big.bin");
+	assert.equal(read.ok, true, read.ok ? "" : `${read.error.code}: ${read.error.message}`);
+	assert.equal(Buffer.compare(Buffer.from(read.value), big), 0, "every byte, in order");
+	const bridged = fake.requests.slice(before).filter((r) => r.method === "files.read" && r.params.path === "/work/big.bin");
+	assert.deepEqual(bridged.map((r) => r.params.offset), [0], "the bridge carried the first chunk alone");
+	assert.equal(downloads.length, 1, "one download");
+	assert.match(downloads[0], /^\/run\/agentrun-read\/[0-9a-f]{32}$/, "of the copy made as the daemon's user");
+	assert.equal(m.files.has(downloads[0]), false, "the copy is removed");
+	await connected.value.close();
+});
+
 test("network(): refuses a form Daytona never makes, with refused and no request: a Daytona computer's network is fixed at create (the read is the adapter's probe from inside)", async () => {
 	const { rec, provider } = setup({ [`GET /api/sandbox/${REF.id}`]: { body: sandbox() } });
 	for (const policy of [{ allow: [] }, { allow: ["198.51.100.0/24"] }, "wifi"]) {
@@ -768,6 +832,7 @@ test("connect dial: create sends the boot env as the sandbox's env, AGENTRUN_ATT
 	assert.equal(provider.host.facts.connect, "dial");
 	assert.equal(provider.host.exec, undefined, "no exec");
 	assert.equal(provider.host.upload, undefined, "no upload");
+	assert.equal(provider.host.download, undefined, "no download");
 	const made = await provider.create({ ...SPEC, image: "agentrun-archil-0123456789ab" }, { requestId: "r-dial" });
 	assert.equal(made.error?.code, "invalid", "a create Daytona refused made nothing");
 	const body = posted(rec);

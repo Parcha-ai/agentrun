@@ -8,7 +8,7 @@ import { createHash } from "node:crypto";
 import { DEADLINE_LABEL } from "../dist/drift.js";
 import { HostError } from "../dist/host.js";
 import { EGRESS_POLICY as POLICY, EGRESS_RELAY as RELAY } from "../dist/hosted/network.js";
-import { PROTOCOL_VERSION } from "../dist/protocol.js";
+import { MAX_CHUNK_BYTES, PROTOCOL_VERSION } from "../dist/protocol.js";
 import { GOOD_PREFLIGHT, mountsOf, rootVerb } from "./fake-archil.mjs";
 import { scriptOfWords } from "./fake-shell.mjs";
 import { netDevText } from "./net-dev.mjs";
@@ -111,6 +111,9 @@ const START = Date.now();
  *    finds no dbus-run-session) or "manager dies" (it ends at once);
  *  - lingers: { reads, lists, state } after a delete, a lingering read in state (running unless given); fileApi: false
  *    for a host with no upload;
+ *  - download: true for a host with download (src/host.ts), which reads a machine's files as root; stage: how the
+ *    read-stage script copies a file as the daemon's user, "ok", "fail" (it reads none) or "short" (its copy one byte
+ *    short, as a file that changed since the daemon read it);
  *  - timer: "ok" (extend moves the end and the deadline label: the vendor's timer, or with lifetime janitor the label
  *    alone, rounded up to a whole second), "limit" (extend throws a HostError limit, nothing moves), or "none" (a host
  *    with no extend);
@@ -144,6 +147,8 @@ export function fakeHost({
 	display = "ok",
 	lingers,
 	fileApi = true,
+	download = false,
+	stage = "ok",
 	onStep = () => {},
 	archil = {},
 	timer = "ok",
@@ -161,7 +166,7 @@ export function fakeHost({
 } = {}) {
 	const machines = new Map();
 	const held = [];
-	const fake = { machines, calls: [], events: [], requests: [], rootRuns: [], syncs: [], uploads: [] };
+	const fake = { machines, calls: [], events: [], requests: [], rootRuns: [], syncs: [], uploads: [], stages: [], downloads: [] };
 	let waitingBridges = notListening;
 	const step = async (name, ctx, machine) => {
 		fake.calls.push([name, machine?.id]);
@@ -257,6 +262,14 @@ export function fakeHost({
 		if (method === "files.read" && params.path === "/proc/self/net/dev") {
 			const text = netDevText(m.box.interfaces);
 			return result({ data: Buffer.from(text).toString("base64"), size: text.length, eof: true });
+		}
+		if (method === "files.read" && m.files.has(params.path)) {
+			// A regular file, as computerd reads one: at most one chunk from the offset, eof once the read reaches its size.
+			const bytes = m.files.get(params.path);
+			const offset = params.offset ?? 0;
+			const length = params.length ?? MAX_CHUNK_BYTES;
+			const data = bytes.subarray(offset, offset + length);
+			return result({ data: data.toString("base64"), eof: data.length < length || offset + data.length >= bytes.length, size: bytes.length });
 		}
 		if (method === "files.stat") {
 			if (params.path === "/proc/self/cwd") return result({ path: params.path, type: "symlink", target: m.box.cwd });
@@ -499,6 +512,25 @@ export function fakeHost({
 			});
 			return proc;
 		}
+		if (kind === "read-stage") {
+			// read-stage: [uid, gid, path, copy]: the file as the daemon's user reads it, copied to a path of root's.
+			const [uid, gid, path, copy] = script.args;
+			queueMicrotask(() => {
+				fake.stages.push({ machine: m.id, uid, gid, path, copy });
+				const bytes = m.files.get(path);
+				if (stage === "fail" || bytes === undefined) return proc.exit(1, `cat: ${path}: Permission denied\n`);
+				m.files.set(copy, Buffer.from(stage === "short" ? bytes.subarray(0, -1) : bytes));
+				proc.exit(0);
+			});
+			return proc;
+		}
+		if (kind === "read-unstage") {
+			queueMicrotask(() => {
+				m.files.delete(script.args[0]);
+				proc.exit(0);
+			});
+			return proc;
+		}
 		if (kind === "log") {
 			queueMicrotask(() => {
 				proc.out.push(m.initLog ?? "");
@@ -681,6 +713,19 @@ export function fakeHost({
 						m.files.set(path, Buffer.from(bytes));
 						// What the root-only script had made root's alone when the daemon came in, if it ran.
 						fake.uploads.push({ machine: id, path, through: "upload", ...(m.rootOnly ? { rootOnly: [...m.rootOnly] } : {}) });
+					},
+				}
+			: {}),
+		...(download && facts.connect !== "dial"
+			? {
+					async download(id, path, ctx) {
+						const m = machines.get(id);
+						await step("download", ctx, m);
+						if (gone(m)) throw new NotFound(`machine ${id} not found`);
+						const bytes = m.files.get(path);
+						if (bytes === undefined) throw new HostError("not_found", `${path}: no such file`);
+						fake.downloads.push({ machine: id, path });
+						return new Uint8Array(bytes);
 					},
 				}
 			: {}),
