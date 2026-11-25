@@ -165,4 +165,17 @@ describe("AgentEditor, the Computer step", () => {
     await save();
     expect(saved()!.computer).toEqual({ kind: "none" });
   });
+
+  // Which tools run only in a box is the capabilities' word (sandbox_only); the computers list comes from its own read.
+  // Before the capabilities answer, or after their read failed, the editor has no tools listed: a pick that puts the
+  // agent on the runner can't tell which of its tools to drop, so it changes nothing and says so.
+  it("the capabilities not read: none picked for an agent in a box with bash is refused in words, and nothing puts it on the runner with bash", async () => {
+    const { host, click, save, saved } = mount({ agent: agent({ computer: { kind: "sandbox", provider: "docker" }, place: { mode: "sandbox", box: "docker" }, tools: ["read", "bash"] }), caps: { ...listed, tools: [] }, step: "computer" });
+    click(kindRadio(host, "none"));
+    await save();
+    const sent = saved() as { computer?: { kind: string }; tools?: string[] } | undefined;
+    expect({ computer: sent?.computer?.kind, bash: sent?.tools?.includes("bash") }, "the Computer step saved the agent on the runner with bash, before the capabilities said which tools run only in a box").not.toEqual({ computer: "none", bash: true });
+    expect(host.textContent).toContain("The server's tools haven't been read, so which of this agent's tools run only in a box is unknown: the computer was not changed. Try again, or reload the page if this stays.");
+    expect(kindRadio(host, "sandbox")!.checked, "the computer picked after the refused pick").toBe(true);
+  });
 });
