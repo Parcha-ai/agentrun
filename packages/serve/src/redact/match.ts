@@ -1022,7 +1022,8 @@ const VIEWS: readonly ViewSpec[] = [
 
 /** A stretch of a text the join view reads: a string's contents (a property name's, `name`), or a run of characters
  *  outside any string (a number, a word, a line after the JSON). */
-type Part = { from: number; to: number; name: boolean };
+/** A part of a JSON text (partsOf): `again` on one of a JSON string's text read again for a dict written in it. */
+type Part = { from: number; to: number; name: boolean; again?: true };
 
 /** JSON's punctuation between its values. */
 const STRUCTURE = only("{}[],:");
@@ -1102,13 +1103,15 @@ function partsOf(text: string, from: number, to: number, level: 0 | 1, out: Part
     at = after;
   }
   endBare(to);
+  const first = out.length;
   for (const [start, end] of written) partsOf(text, start, end, 1, out, "quoted");
+  for (let i = first; i < out.length; i++) out[i]!.again = true;
 }
 
 /** `text`'s join of `kind` (JoinKind): its parts (partsOf) read three times over, each time joined, each part followed by a space (gone
  *  from the view, and no escape reads past it): the values and the runs outside strings; the property names; then all
  *  of them. Each pass is closed by a NUL, which the view keeps and no held value holds, so no value reads across two
- *  passes. A held value split across two values with a name between them ({"title":"see <H>","snippet":"<R> more"}),
+ *  passes; so are the quoted join's parts read again in a JSON string's text (Part.again) from the rest of their pass. A held value split across two values with a name between them ({"title":"see <H>","snippet":"<R> more"}),
  *  across two names, across a name and its value, across a quote of JSON written in a string, or across a string and
  *  the line after the JSON reads whole in one of them. A view decodes and squeezes the join as any text (viewOf), each
  *  part's characters keeping their source: with `cuts` (merged spans of `text`), the spans of each part a cut covers
@@ -1124,14 +1127,18 @@ function joinOf(text: string, kind: JoinKind, cuts?: readonly Span[]): { text: s
   const passes: readonly ((part: Part) => boolean)[] = [(part) => !part.name, (part) => part.name, () => true];
   for (const pass of passes) {
     let cut = 0;
-    let last = 0;
+    let again = false;
     for (const part of parts) {
       if (!pass(part)) continue;
       scanned.chars++;
-      // The quoted join's parts read again inside its strings come after the rest (partsOf), from the text's start: the
-      // cursor starts over there, once a pass.
-      if (part.from < last) cut = 0;
-      last = part.from;
+      // The quoted join's parts read again inside its strings come after the rest (partsOf), from the text's start: a
+      // NUL closes off the rest from them, as one closes a pass, and the cursor starts over there, once a pass.
+      if (part.again && !again) {
+        again = true;
+        pieces.push("\u0000");
+        length++;
+        cut = 0;
+      }
       if (cuts) {
         while (cut < cuts.length && cuts[cut]![1] <= part.from) {
           cut++;
