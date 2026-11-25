@@ -8,6 +8,7 @@
 // skipped.
 import { boxImageRef } from "../box-image.js";
 import { MODAL } from "../descriptors/modal.js";
+import { httpsBase } from "../hosted/rest.js";
 import { create, MODAL_DEFAULT_SERVER_URL, type ModalClientConstructor, type ModalCreateOptions, type ModalProvider } from "../modal.js";
 import type { ProviderNote } from "../mount-archil.js";
 import { type ArchilMountOptions, archilMountFor } from "./archil.js";
@@ -80,7 +81,7 @@ const modal = hostedModule<ModalModuleOptions, ModalSettings, ModalProvider>({
 	runDefined: ["daemonPath"],
 	runFromEnv: (env) => kindFrom(env, MODAL_ENV.kind),
 	// A before file of another app, or of the same app name on another server, would make every computer there read as new.
-	scope: ({ app, serverUrl = MODAL_DEFAULT_SERVER_URL }) => `the app ${app} on ${serverUrl}`,
+	scope: ({ app, serverUrl = MODAL_DEFAULT_SERVER_URL }) => `the app ${app} on ${httpsBase(serverUrl, `the Modal server URL (${MODAL_ENV.serverUrl})`)}`,
 });
 
 export const { createProvider, createDriftedProvider, createHost, sweepScope } = modal;

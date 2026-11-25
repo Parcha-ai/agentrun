@@ -115,6 +115,7 @@ import { runCutValues } from "./run-cut.js";
 import { type HeldRefusal, readLaunchBody } from "./run-launch.js";
 import { modelKeyMisfit, modelKeyOf, modelKeyRequired, noServerKeyFor, runModelOrigin, serverKeyMissing } from "./run-model-key.js";
 import { listRunFiles as listRunFilesOverStore, readRunFile as readRunFileOverStore, runGraphView, type RunReadsDeps, runTimelines } from "./run-reads-over-store.js";
+import { type CutScrub, ExportFailed, restoreIdsOf, runExport } from "./run-export.js";
 import { triggerTargets, type TriggerTargetDeps } from "./trigger-targets.js";
 import { labelFilter, labelsIssues } from "./run-labels.js";
 import { listRuns as listRunsOverStore, readRun as readRunOverStore, runOfOrigin as runOfOriginOverStore } from "./store-reads/runs.js";
@@ -130,7 +131,7 @@ import { keepGrade } from "./runner/feedback-round.js";
 import { gradeRow, notAuditableOf } from "./runner/audit.js";
 import { namedDisksOf } from "./learn/learning-of.js";
 import { auditsOffWords, auditWriterOf, isShadowRun, readAudits, servingLinesOf, shadowRunId } from "./learn/audit.js";
-import { auditLoopOf, COMPILE_AFTER_MAX } from "./learning-setting.js";
+import { auditLoopOf, COMPILE_AFTER_MAX, holdsReservedKey, RESERVED_SEGMENT } from "./learning-setting.js";
 import { FINAL_STATES, type ListedFilter, RUN_CHANGES_PAGE, type RunChange, type RunChangeCursor } from "./store/store.js";
 import { championOf, forgetRunCopies, type Grade, GRADE_SOURCES, GRADES_KEPT, type GradeSource, gradeView, LABEL_MAX, type PromotionRecord, promotionsOf, promotionsShown, type Refused, servingOf, servingStateOf, shownDeep } from "./learn/promote.js";
 import { workflowNodesOf } from "./learn/workflow-nodes.js";
@@ -229,7 +230,7 @@ import { heldRoute, holdIssues, runComputerRead } from "./computer-held-routes.j
 import { COMPUTER_ROUTES, computerHoldOf, computerRoute, runComputerKind } from "./computer-routes.js";
 import { runOver } from "./computer-commands.js";
 import { mintViewerCredential, VIEWER_PARAM, viewerCookie, viewerCredentialFor, viewerCredentialKey, viewerCredentialOf } from "./viewer-credential.js";
-import { ATTACH_PATH, AttachHub, type HostedDial, PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
+import { ATTACH_PATH, AttachHub, containerSigns, type HostedDial, PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
 import { dockerDaemonOf } from "@parcha/agentrun-computer/docker";
 import { type AttachTiming, createAttachRoutes, liveRelays, pairedView } from "./computer-attach.js";
 import { pairedRefusal, withPaired } from "./workspace/attached-computers.js";
@@ -480,6 +481,9 @@ export type ServeOptions = {
   /** How often the runs' listings' builder looks again when it found nothing to build (run-listing.ts; default
    *  LISTER_IDLE_MS). `Infinity`: it builds only when Serve.listingSettled asks, so a test reads what a list builds alone. */
   listerIdleMs?: number;
+  /** How often a timeline page that waits (`wait_ms`) reads the store again while nothing changed (default 1000 ms,
+   *  run-reads-over-store.ts). A test's server reads sooner, so a change is served without the rest of a second's wait. */
+  timelinePollMs?: number;
   /** No runner beside this server in its process (the CLI's --no-runner, the image's server-and-runner): a paired
    *  computer's socket is held here while no run holds it, and relayed to the runner that holds a run of it
    *  (workspace/paired-route.ts); while no runner relays, a pairing code, the pair answer and each paired computer say no
@@ -532,6 +536,8 @@ export type ServeOptions = {
    *  command row is written, with the run's id and the message's text, so a test can hold a message at the run's door while
    *  the run's state changes under it (runs-over-store.ts message). */
   beforeSubmit?: (runId: string, content: string) => Promise<void> | void;
+  /** A test's seam: the scrubber GET /runs/{id}/export cuts with (run-export.ts), in place of secret-cut.ts scrub. */
+  shareScrub?: CutScrub;
   /** A test's seam: step 2 of DELETE /agents/{id} (agent-delete.ts) in place of the learning module's deleteLearning over
    *  the agent's learning folder (learn/delete.ts), the server's own. */
   deleteLearning?: DeleteLearning;
@@ -750,6 +756,8 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/runs\/([^/]+)\/trace$/, name: "getRunTrace" },
   // A run's usage lines (run-usage.ts): by meter, model, charger and provider, each with its quantity and its cost.
   { method: "GET", pattern: /^\/runs\/([^/]+)\/usage$/, name: "getRunUsage" },
+  // A run's share bundle (run-export.ts): an ended run as one agentrun.share/1 document, every string cut by the scrubber.
+  { method: "GET", pattern: /^\/runs\/([^/]+)\/export$/, name: "getRunExport" },
   { method: "POST", pattern: /^\/workflows\/validate$/, name: "validateWorkflow" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/pause$/, name: "pauseRun" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/resume$/, name: "resumeRun" },
@@ -2383,6 +2391,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const servedTimelineDeps: ServedTimelineDeps = { serverSecrets, signIns, sealKey, keyEnv: () => withSavedGateway(own(withSecrets(process.env, "all", storedKeys)), savedGateway), statuses };
   const timelines = runTimelines({
     context: ctx,
+    ...(options.timelinePollMs !== undefined ? { pollMs: options.timelinePollMs } : {}),
     // The run's rows as served (run-timeline-served.ts), by its one cut (run-cut.ts, read for each page: a secret rotated
     // or saved since is cut at once), the set its view's words, title and error are cut of: each secret this server never
     // shows and each browser sign-in pointer the run was handed; its decision rows among them, its error rows in the
@@ -5598,6 +5607,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         if (extra.length) throw invalid(extra);
         if (typeof body.correct !== "boolean") throw invalid([{ field: "correct", reason: body.correct === undefined ? "missing" : "wrong_type", message: "correct is true or false: whether the run's answer was right" }]);
         if (body.expected !== undefined && !isObject(body.expected)) throw invalid([{ field: "expected", reason: "wrong_type", message: "expected is an object: the fields a right answer's JSON holds" }]);
+        if (holdsReservedKey(body.expected)) throw invalid([{ field: "expected", reason: "not_allowed", message: `expected holds no key named ${RESERVED_SEGMENT}, at any depth` }]);
         if (body.source !== undefined && !GRADE_SOURCES.includes(body.source as never)) throw invalid([{ field: "source", reason: "not_an_option", message: `source is one of ${GRADE_SOURCES.join(", ")}` }]);
         if (body.label !== undefined && (typeof body.label !== "string" || body.label.length > LABEL_MAX)) throw invalid([{ field: "label", reason: "wrong_type", message: `label is a string of at most ${LABEL_MAX} characters: the grade's words` }]);
         // A run that reads ended while it still learns from that end (its look-back: store-view.ts lookingBackEnd) is graded
@@ -5622,7 +5632,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           // A grade of a run its learned workflow answered alone is an audit row too (runner/audit.ts gradeRow): the hold rule
           // reads it with the shadows'. A row not written now is logged, never the grade refused.
           const said = (line: string) => log?.(logLine("audit", { run: row.id, said: line }));
-          await gradeRow({ store, agentId: row.agentId, revisionId: row.revisionId, context: ctx, folder: () => learningFolderOf(data, row.agentId), shown: () => learningShown(row.agentId), log: said }, row, grade.correct).catch((error) => said(`the grade wrote no audit row (${(error as Error)?.message ?? error})`));
+          await gradeRow({ store, agentId: row.agentId, revisionId: row.revisionId, context: ctx, folder: () => learningFolderOf(data, row.agentId), shown: () => learningShown(row.agentId), log: said }, row, grade.correct, grade.expected).catch((error) => said(`the grade wrote no audit row (${(error as Error)?.message ?? error})`));
           return graded;
         });
         // Its workflow's name cut as GET /runs/{id}/learning cuts it (learningShown); withheld whole when that cut can't be
@@ -5848,6 +5858,41 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // or where its figure is not its booking's.
         // Names through the run's cut, and a withheld run refused (403), as its trace is.
         return send(res, 200, await servedRunUsage({ serverSecrets, signIns, sealKey }, store, id));
+      case "getRunExport": {
+        await needRun(id);
+        const restore = restoreIdsOf(url);
+        const viewDeps = viewDepsFor(ownOriginOf());
+        let bundle: { body: string };
+        try {
+          bundle = await runExport(id, {
+            view: () => viewOverStore(store, id, viewDeps),
+            withheld: () => withheldOverStore(store, id, viewDeps),
+            // The rows as GET /runs/{id}/timeline serves them, under the run's one cut; a workflow's graph as its route.
+            rows: () => servedTimelineRows(servedTimelineDeps, store, id, ctx, false),
+            // The same rows with their calls' arguments, read for each call's context alone (ruling LVI): never carried.
+            calls: () => servedTimelineRows(servedTimelineDeps, store, id, ctx, true),
+            graph: () => runGraphView(store, id, runReadsDeps),
+            files: async () => {
+              const listed = await listRunFilesOverStore(store, id, runReadsDeps);
+              const workspace = listed.files.length ? await runReadsDeps.runWorkspace(store, id) : null;
+              const files = workspace ? listed.files.map((file) => ({ path: file.path, size: file.size_bytes, ...(file.unreadable ? { unreadable: true } : {}), read: (limit: number) => workspace.read(file.path, { offset: 0, length: limit }) })) : [];
+              return { files, truncated: listed.truncated };
+            },
+            agentName: async (agentId) => (await getAgent(store, agentId))?.agent.name,
+            // Read last, after everything above was served under it: the cut only grows.
+            cut: () => runCutValues({ serverSecrets, signIns, sealKey }, store, id),
+          }, { restore, version: VERSION, ...(options.shareScrub ? { scrub: options.shareScrub } : {}) });
+        } catch (error) {
+          if (error instanceof ApiError) throw error;
+          // Fails closed: a scrub that failed, a read-back that found a value, or anything else that threw while the
+          // bundle was made. Not one byte of it: a 500 with an empty body. The log names why, never a word of the run.
+          log?.(logLine("export_failed", { run: id, why: error instanceof ExportFailed ? error.message : (error as Error)?.name ?? "error" }));
+          res.writeHead(500, { "cache-control": "no-store", "content-length": "0" });
+          return void res.end();
+        }
+        res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store", "x-content-type-options": "nosniff", "content-length": String(Buffer.byteLength(bundle.body)) });
+        return void res.end(bundle.body);
+      }
       case "getRunTrace":
         await needRun(id);
         // The run's spans over its served Timeline rows and its journal (run-trace.ts): cut by the run's one cut, as its
@@ -6818,7 +6863,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   if (isLoopback(host)) names = loopbackNames(host, options.allowHosts, options.publicUrl);
   // An address of every interface is reached on this machine at its loopback one.
   const url = urlOf(server, host);
-  owner?.attach(options.publicUrl ?? url, options.publicUrl ? [] : elsewhereOf(host, (server.address() as AddressInfo).port));
+  owner?.attach(options.publicUrl ?? url, options.publicUrl ? [] : elsewhereOf(host, (server.address() as AddressInfo).port, { container: () => containerSigns() !== undefined }));
   webhooks.attach(options.publicUrl ?? url);
   slack.attach(options.publicUrl ?? url);
   // A local install is the one server an MCP server's URL may be on loopback for (anywhere else, loopback is this machine's

@@ -79,6 +79,58 @@ test("the API URL is https alone, loopback included, so the key never crosses in
 	assert.ok(redirects.every((redirect) => redirect === "error"), JSON.stringify(redirects));
 });
 
+test("a create answered by a redirect keeps its request key and is looked up by it", async () => {
+	const heard = [];
+	// The service acts on each call, then answers some with a redirect (a 303 after a create is the usual POST answer).
+	// fetch, told never to follow one, rejects it as undici does: "fetch failed", caused by "unexpected redirect".
+	const redirecting = (fake, redirected) => async (url, init = {}) => {
+		const call = `${init.method ?? "GET"} ${new URL(url).pathname}`;
+		heard.push(call);
+		const answer = await fake.fetch(url, init);
+		if (!redirected(call)) return answer;
+		assert.equal(init.redirect, "error", "a redirect is never followed: it would carry the key");
+		throw new TypeError("fetch failed", { cause: new Error("unexpected redirect") });
+	};
+	const made = (fake, ledger, redirected) => create({ apiKey: KEY, fetch: redirecting(fake, redirected), adb: fake.adb, ledger, now: fake.clock.now, sleep: fake.clock.sleep, phoned: PHONED_JAR });
+	const fake = fakePhoneHarness();
+	const ledger = memoryLedger();
+	const provider = await made(fake, ledger, (call) => call === "POST /sessions");
+	const created = await provider.create(SPEC, req());
+	const key = fake.requests()[0].headers["idempotency-key"];
+	assert.deepEqual(heard.slice(0, 2), ["POST /sessions", `GET /sessions/requests/${key}`], "a redirect is no refusal: the service may have made the phone, so create asks for it by the request's key");
+	assert.equal(created.ok, true, JSON.stringify(created));
+	assert.deepEqual([...fake.sessions.keys()], [created.value.id], "the phone the service made is the one create answers");
+	assert.equal(heard.filter((call) => call === "POST /sessions").length, 1, "never posted again");
+	assert.deepEqual((await ledger.list()).map((entry) => [entry.id, entry.request]), [[created.value.id, undefined]]);
+	noKey(created);
+	// The lookup meets a redirect too: create fails in the client's words for both, and the ledger keeps the key, so
+	// list() finds the phone the service made.
+	heard.length = 0;
+	const lost = fakePhoneHarness();
+	const kept = memoryLedger();
+	const both = await made(lost, kept, (call) => call === "POST /sessions" || call.startsWith("GET /sessions/requests/"));
+	const failed = await both.create(SPEC, req());
+	const lostKey = lost.requests()[0].headers["idempotency-key"];
+	assert.deepEqual(heard, ["POST /sessions", `GET /sessions/requests/${lostKey}`]);
+	assert.equal(failed.ok, false, JSON.stringify(failed));
+	assert.deepEqual([failed.error.code, failed.error.vendor], ["vendor", "phone-harness"]);
+	assert.match(
+		failed.error.message,
+		/^POST \/sessions: the API answered with a redirect, which is never followed: it would carry the key; and the service has no session for the request: GET \/sessions\/requests\/[0-9a-f]+: the API answered with a redirect, which is never followed: it would carry the key; the ledger keeps the request's key/,
+	);
+	assert.deepEqual((await kept.list()).map((entry) => entry.request), [lostKey], "the request's key is kept");
+	noKey(failed);
+});
+
+test("an error answer keeps its status's code when its words break off, and one with no words says its status's name", async () => {
+	const listed = async (status, body) => (await create({ apiKey: KEY, fetch: async () => new Response(body, { status }), phoned: PHONED_JAR })).list({});
+	const broken = () => new ReadableStream({ start: (controller) => controller.error(new Error("socket hang up")) });
+	assert.deepEqual((await listed(401, broken())).error, { code: "denied", message: "GET /sessions: the phone harness refused the API key (401): Unauthorized" });
+	assert.deepEqual((await listed(403, broken())).error, { code: "denied", message: "GET /sessions: Forbidden (403)" });
+	assert.deepEqual((await listed(404, broken())).error, { code: "not_found", message: "GET /sessions: Not Found (404)" });
+	assert.deepEqual((await listed(502, "")).error, { code: "vendor", vendor: "phone-harness", message: "GET /sessions: Bad Gateway (502)" });
+});
+
 test("check() refuses in words what a cloud phone cannot be, with no call", async () => {
 	const { provider, fake } = await setup();
 	assert.deepEqual(provider.check(SPEC), []);
@@ -238,7 +290,7 @@ test("a retry that finds its request's phone still starting waits as a fresh cre
 	made.at(-1).fire();
 	const late = await pending;
 	assert.equal(late.error?.code, "timeout", JSON.stringify(late));
-	assert.match(late.error.message, /^the phone sess_held was not ready within 10 s: GET \/sessions\/sess_held: the phone harness did not answer within 6 s$/);
+	assert.match(late.error.message, /^the phone sess_held was not ready within 10 s: GET \/sessions\/sess_held did not answer within 6 s$/);
 	assert.equal(slow.fake.requests().some((r) => r.method === "DELETE" || r.method === "POST"), false, "nothing ended, nothing rented");
 	// Ready only once its deadline passed (the second read, 2 s on, of a phone with 1 s left): spent, never answered.
 	const expired = await held("phone-held-expired", "sess_expired", 1000, { readyAfter: 2 });
@@ -498,7 +550,7 @@ test("each API request has its own bound: a stalled readiness read is cut off by
 	const late = await pending;
 	assert.equal(late.ok, false, JSON.stringify(late));
 	assert.equal(late.error.code, "timeout");
-	assert.match(late.error.message, /^the phone sess_0001 was not ready within 10 s: GET \/sessions\/sess_0001: the phone harness did not answer within 6 s; it was ended$/);
+	assert.match(late.error.message, /^the phone sess_0001 was not ready within 10 s: GET \/sessions\/sess_0001 did not answer within 6 s; it was ended$/);
 	assert.equal(fake.sessions.size, 0, "the phone was ended");
 	assert.equal(made.at(-1).ms, 30_000, "the DELETE has a bound of its own");
 });
@@ -537,7 +589,7 @@ test("a POST that stalls is cut off by its bound and recovered by its Idempotenc
 	made.at(-1).fire();
 	const created = await pending;
 	assert.equal(created.ok, false, JSON.stringify(created));
-	assert.match(created.error.message, /^POST \/sessions: the phone harness did not answer within 30 s; and the service has no session for the request/);
+	assert.match(created.error.message, /^POST \/sessions did not answer within 30 s; and the service has no session for the request/);
 	const key = fake.requests()[0].headers["idempotency-key"];
 	assert.deepEqual(fake.requests().map((r) => `${r.method} ${r.path}`), ["POST /sessions", `GET /sessions/requests/${key}`]);
 	assert.ok(made.every((one) => one.ms === 30_000), "the POST and the recovery each have a bound");
