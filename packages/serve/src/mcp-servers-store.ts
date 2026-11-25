@@ -403,6 +403,10 @@ export class McpServersOverStore {
       const wasToken = was !== undefined && savedByToken(recorded, was.createdAt);
       const mark = byToken && (was === undefined || wasToken);
       const owns = !byToken && was !== undefined ? { record: mcpSourceKey(name) } : undefined;
+      // The token's first save of the name writes the row's record, marked, in the transaction that writes the row (`made`,
+      // McpTokensMark): an owner's read never finds the token's new row unmarked, so never takes its address for the owner's.
+      const recordOf = (row: { createdAt: number }) => (source ? storedSource(source, row, !made && source === standIn, mark) : storedSource({ source: "url", toolkit: null }, row, false, true));
+      const first = byToken && was === undefined;
       const saved = keeping
         // Re-applied only onto a row that still holds a credential of this auth type, at the address this save read: never
         // onto another one's, nor over a row another save moved meanwhile (a Composio save over it, whose cleanup removed the
@@ -412,10 +416,9 @@ export class McpServersOverStore {
         // A new credential, or none: written only while the row's credential is still `against`, and the token's over a
         // saved row only while that row still carries its mark (savedByToken), both in the store's one statement: the
         // check and the write are one step, so an owner's save that lands after the gate's read is never written over.
-        : changedMeanwhile(name, await saveMcpServerIfCredential(this.store, this.sealKey, { ...fields(was), ...(credential ? { credential } : {}) }, against, { githubMcpOrigin: this.appOrigin, ...(byToken ? { tokens: { record: mcpSourceKey(name) } } : {}), ...(owns ? { owns } : {}) }));
-      if (source) await this.store.settings.put(mcpSourceKey(name), storedSource(source, saved, !made && source === standIn, mark));
+        : changedMeanwhile(name, await saveMcpServerIfCredential(this.store, this.sealKey, { ...fields(was), ...(credential ? { credential } : {}) }, against, { githubMcpOrigin: this.appOrigin, ...(byToken ? { tokens: { record: mcpSourceKey(name), ...(first ? { made: recordOf } : {}) } } : {}), ...(owns ? { owns } : {}) }));
       // A row the token made with no source given: url with none, as an unrecorded row reads (sourceOf), marked.
-      else if (mark && !wasToken) await this.store.settings.put(mcpSourceKey(name), storedSource({ source: "url", toolkit: null }, saved, false, true));
+      if (!first && (source || (mark && !wasToken))) await this.store.settings.put(mcpSourceKey(name), recordOf(saved));
       // The Composio MCP server the row named before, when the preset made it (the row was a preset server) and the row names
       // it no longer: a preset save over it made a new one, or an ordinary save moved the row off Composio.
       const madeBefore = wasPreset && (made || moved) ? composioServerId(was!.url) : undefined;
