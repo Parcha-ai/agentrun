@@ -2,12 +2,13 @@
 // tool keeps one entry beside every call it ends (LEARNED_NODES: the workflow, its digest, who called it, how it ended),
 // whoever called it, a refusal before any node included. A run's metrics keep them as `workflow_calls`
 // (workflow-first.ts pathMetrics, with why its first choice did or did not serve, `first_choice`); the ledger row keeps
-// them (learn/ledger.ts record), and the money rule counts a run that called a workflow at a digest on that workflow's
-// served side, the agent's own call as well as the platform's (costLineOf, workflowCostsOf):
+// them (learn/ledger.ts record), and the money rule counts a run on the served side of the workflow it charges
+// (costLineOf, workflowCostsOf): the platform's when the platform served it first, else each one the agent called that ran:
 //   - a call's caller, digest and outcome come from its record; the platform's call ends as its WORKFLOW_FIRST entry
-//     says, and one a crash cut before its record is that entry's alone, its cost unknown;
+//     says, and one a crash cut before its record is that entry's alone, its cost unknown; a call refused before any
+//     node ran is `refused`, and counts on no side;
 //   - a call's $ is what its window booked (its start to its end) of host work, and the requests named under it: exact,
-//     or null when another call ran beside it; never a guessed $0;
+//     or null when another call ran beside it (on pi, a sibling subagent's too); never a guessed $0;
 //   - a replay or a shadow run keeps no calls: they serve no one.
 // The tool's own record is checked on a stand-in model registry: no network, no key.
 import assert from "node:assert/strict";
@@ -75,6 +76,63 @@ test("on pi a call's window opens at the answer that asked for it and closes at 
   assert.equal(workflowCallsOf(one)[0].usd, 0.25, "the node's request alone: not the answer that asked, nor the one after");
   const two = [...booked(1, 1), asked("c1", "r1"), ...node(2, 0.25), kept("c1", { ended: "complete" }), result("c1"), result("r1")];
   assert.equal(workflowCallsOf(two)[0].usd, null);
+});
+
+test("on pi a subagent's call is its own only while no other conversation works: a sibling subagent running beside it makes its $ unknown", () => {
+  const CHILD = 3;
+  const SIBLING = 4;
+  const asked = (conversationId, ...calls) => ({ kind: "pi.assistant", conversationId, model: [{ role: "assistant", content: calls.map(([id, name]) => ({ type: "toolCall", id, name, arguments: {} })) }] });
+  const result = (conversationId, id, details) => ({ kind: "pi.tool-result", conversationId, model: [{ role: "toolResult", toolCallId: id, ...(details ? { details } : {}) }] });
+  // The agent asks one subagent; its child calls the workflow alone: the subagent's call holds it, the window is its own.
+  const alone = [asked(ROOT, ["s1", "subagent"]), asked(CHILD, ["c1", "learned_workflow"]), ...node(2, 0.25), kept("c1", { ended: "complete" }), result(CHILD, "c1"), result(ROOT, "s1", { conversationId: CHILD })];
+  assert.equal(workflowCallsOf(alone)[0].usd, 0.25, "the subagent call that holds the child is no other call");
+  // Two subagents at once: the sibling's host work lands inside the child's call window, so the call's $ is unknown.
+  const siblings = [
+    asked(ROOT, ["s1", "subagent"], ["s2", "subagent"]),
+    asked(SIBLING, ["w1", "web_search"]),
+    asked(CHILD, ["c1", "learned_workflow"]), ...node(2, 0.25), ...booked(3, 0.4, { host: "web_search", side: true }), kept("c1", { ended: "complete" }), result(CHILD, "c1"),
+    result(SIBLING, "w1"), result(ROOT, "s1", { conversationId: CHILD }), result(ROOT, "s2", { conversationId: SIBLING }),
+  ];
+  assert.equal(workflowCallsOf(siblings)[0].usd, null, "a sibling's call still open at its start");
+  const busy = [
+    asked(ROOT, ["s1", "subagent"], ["s2", "subagent"]),
+    asked(CHILD, ["c1", "learned_workflow"]), ...node(2, 0.25), asked(SIBLING, ["w1", "web_search"]), ...booked(3, 0.4, { host: "web_search", side: true }), result(SIBLING, "w1"), kept("c1", { ended: "complete" }), result(CHILD, "c1"),
+    result(ROOT, "s1", { conversationId: CHILD }), result(ROOT, "s2", { conversationId: SIBLING }),
+  ];
+  assert.equal(workflowCallsOf(busy)[0].usd, null, "another conversation worked within its window");
+});
+
+test("a call refused before any node ran is `refused`: it ran nothing, and the money rule counts it on no side", () => {
+  assert.deepEqual(workflowCallsOf([start("c1"), kept("c1", { ended: "failed", refused: true }), end("c1")]).map((call) => call.outcome), ["refused"]);
+  assert.deepEqual(workflowCallsOf([start("c1"), kept("c1", { ended: "failed" }), end("c1")]).map((call) => call.outcome), ["failed"], "one that ran and failed is failed");
+  // The platform's call a check refused before any node ran is refused too, whatever its WORKFLOW_FIRST entry says.
+  const platform = [start(WORKFLOW_FIRST_CALL), kept(WORKFLOW_FIRST_CALL, { ended: "failed", refused: true }), end(WORKFLOW_FIRST_CALL), { kind: WORKFLOW_FIRST, conversationId: ROOT, data: { workflow: "a", digest: D, revision: "s", call: WORKFLOW_FIRST_CALL, outcome: "handed_back" } }];
+  assert.deepEqual(workflowCallsOf(platform).map((call) => [call.caller, call.outcome]), [["platform", "refused"]]);
+  // Ten cheap served runs, and ten newer runs whose agent's call was refused at a by-hand-sized all-in: the workflow's
+  // line is its ten served runs alone, under the by-hand cost, so it serves.
+  const served = (i) => ({ metrics: { path: "workflow", workflow: "a", workflow_digest: D, workflow_calls: [{ workflow: "a", digest: D, caller: "platform", outcome: "answered", usd: 0.1 }] }, allInUsd: 0.1, startedAt: i });
+  const refused = (i) => ({ metrics: { path: "handed_back", workflow_calls: [{ workflow: "a", digest: D, caller: "agent", outcome: "refused", usd: 0 }] }, allInUsd: 1.9, startedAt: 100 + i });
+  const past = { runs: [...Array.from({ length: 10 }, (_, i) => served(i)), ...Array.from({ length: 10 }, (_, i) => refused(i))], by_hand: { runs: 20, mean_usd: 1 }, by_hand_unknown: 0 };
+  assert.deepEqual(costLineOf(past, "a", D).served, { runs: 10, mean_usd: 0.1 });
+  assert.deepEqual(workflowCostsOf(past).map(({ workflow, state, served }) => ({ workflow, state, served })), [{ workflow: "a", state: "serving", served: { runs: 10, mean_usd: 0.1 } }]);
+  // Refused calls alone name no workflow on the cost page.
+  assert.deepEqual(workflowCostsOf({ ...past, runs: past.runs.filter((run) => run.startedAt >= 100) }), []);
+});
+
+test("whose run it is: one the platform served first counts for that workflow alone; one only the agent called counts for each workflow that ran", () => {
+  const call = (workflow, caller, outcome = "answered") => ({ workflow, digest: D, caller, outcome, usd: 0.05 });
+  const runs = (calls, allIn = 1.2) => Array.from({ length: 10 }, (_, i) => ({ metrics: { path: "handed_back", workflow_calls: calls }, allInUsd: allIn, startedAt: i }));
+  const by_hand = { runs: 10, mean_usd: 1 };
+  // The platform ran A first and handed back; the agent then called B: the run is A's.
+  const both = { runs: runs([call("a", "platform", "handed_back"), call("b", "agent")]), by_hand, by_hand_unknown: 0 };
+  assert.deepEqual(workflowCostsOf(both).map(({ workflow, state }) => [workflow, state]), [["a", "needs_revision"]]);
+  assert.deepEqual(costLineOf(both, "b", D).served, { runs: 0, mean_usd: null }, "B is charged nothing for A's run");
+  // The agent alone called A and B: each that ran is charged the run.
+  const agent = { runs: runs([call("a", "agent"), call("b", "agent")]), by_hand, by_hand_unknown: 0 };
+  assert.deepEqual(workflowCostsOf(agent).map(({ workflow, state }) => [workflow, state]), [["a", "needs_revision"], ["b", "needs_revision"]]);
+  // The platform's call refused before any node ran served nothing first: the run is the agent's calls'.
+  const refusedFirst = { runs: runs([call("a", "platform", "refused"), call("b", "agent")]), by_hand, by_hand_unknown: 0 };
+  assert.deepEqual(workflowCostsOf(refusedFirst).map(({ workflow }) => workflow), ["b"]);
 });
 
 test("the platform's call ends as its WORKFLOW_FIRST entry says; one a crash cut before its record is that entry's alone, its cost unknown", () => {
@@ -154,5 +212,6 @@ test("the learned_workflow tool keeps its call's record whoever called it, a ref
   assert.equal(platform.caller, "platform");
   const refused = await call("call-2", "not an object");
   assert.equal(refused.length, 1, "a call refused before any node still keeps its record");
-  assert.deepEqual({ caller: refused[0].caller, ended: refused[0].ended, nodes: refused[0].nodes }, { caller: "agent", ended: "failed", nodes: [] });
+  assert.deepEqual({ caller: refused[0].caller, ended: refused[0].ended, nodes: refused[0].nodes, refused: refused[0].refused }, { caller: "agent", ended: "failed", nodes: [], refused: true });
+  assert.equal(agent.refused, undefined, "a call that ran is no refusal");
 });

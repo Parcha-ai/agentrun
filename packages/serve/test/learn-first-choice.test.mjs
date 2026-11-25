@@ -3,11 +3,13 @@
 // starts nothing; when it needs a fact (the promotion's verdict on the laid digest, the champions, the agent's past runs)
 // it asks for it (FirstAsk), and its gatherer (workflowFirstOf) reads it and asks again. The money rule it holds a
 // workflow to counts every run that called the workflow at its digest (metrics.workflow_calls), the agent's own calls
-// as well as the platform's.
+// as well as the platform's. It fails closed: past runs it can't read leave the run to the agent. The same rule holds the
+// agent's own learned_workflow tool (toolStopsOf): a workflow over the line leaves it, whoever made the calls.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-const { COST_WINDOW, FIRST_REASONS, firstChoice, workflowDigest, workflowFirstOf } = await import("../dist/runner/workflow-first.js");
+const { COST_WINDOW, FIRST_REASONS, firstChoice, toolStopsOf, workflowDigest, workflowFirstOf } = await import("../dist/runner/workflow-first.js");
+const { costStopOverStore } = await import("../dist/store-reads/learning.js");
 
 const flow = (name, text = `{"name":"${name}"}`) => ({ name, description: `${name} does it`, workflow: text });
 const A = flow("a");
@@ -50,7 +52,7 @@ test("each reason firstChoice gives, from the facts it is told", () => {
     ["none fits, no champion does", facts({ fit: [], promotion: "champions", champions: [undefined, { workflow: B_CHAMPION }] }), "none_fit"],
     ["none fits, one champion does", facts({ fit: [A_CHAMPION.workflow], promotion: "champions", champions: [{ workflow: A_CHAMPION, promotion: 3 }, undefined] }), "served"],
     ["promoted, the money rule's runs not read yet", facts({ promotion: "none", money: true }), "ask:past"],
-    ["promoted, the runs could not be read", facts({ promotion: "none", money: true, past: { unread: "store down" } }), "served"],
+    ["promoted, the runs could not be read", facts({ promotion: "none", money: true, past: { unread: "store down" } }), "past_unread"],
     ["promoted, under COST_WINDOW calls", facts({ promotion: "none", money: true, past: past("a", dA, COST_WINDOW - 1, 9, 1) }), "served"],
     ["promoted, no by-hand cost", facts({ promotion: "none", money: true, past: past("a", dA, COST_WINDOW, 9, null) }), "served"],
     ["promoted, under the by-hand cost", facts({ promotion: "none", money: true, past: past("a", dA, COST_WINDOW, 0.5, 1) }), "served"],
@@ -92,8 +94,28 @@ test("workflowFirstOf asks each fact once, through the gate and the reader it is
   const b = flow("b", schema("other"));
   const choice = await workflowFirstOf("agentic", [a, b], LAUNCH, (line) => lines.push(line), async () => { asked.push(["past"]); throw new Error("store down"); }, gate);
   assert.deepEqual(asked, [["verdict", "a", workflowDigest(a)], ["past"]]);
-  assert.equal(choice.reason, "served");
-  assert.equal(choice.serve.promotion, 2);
+  assert.equal(choice.reason, "past_unread", "it fails closed");
+  assert.equal(choice.serve, undefined);
   assert.equal("said" in choice, false, "the log lines go to the log, not the choice");
-  assert.match(lines.join("\n"), /could not read the agent's past runs \(store down\); a serves this run unchecked/);
+  assert.match(lines.join("\n"), /could not read the agent's past runs \(store down\); a does not run first, the agent takes this run/);
+  const served = await workflowFirstOf("agentic", [a, b], LAUNCH, () => {}, async () => ({ runs: [], by_hand: null, by_hand_unknown: 0 }), gate);
+  assert.equal(served.serve.promotion, 2);
+});
+
+test("the money rule holds the agent's learned_workflow tool too: one over the line at the digest the tool runs leaves it and asks for its revision; runs it can't read leave the tool nothing", () => {
+  const dA = workflowDigest(A);
+  const over = toolStopsOf(past("a", dA, COST_WINDOW, 2, 1), [A, B]);
+  assert.deepEqual(over.flows, [B]);
+  assert.deepEqual(over.stops, [{ workflow: "a", digest: dA, served_usd: 2, by_hand_usd: 1, runs: COST_WINDOW }]);
+  assert.match(over.said.join("\n"), new RegExp(`a cost \\$2 a run over its last ${COST_WINDOW} served runs, at or over \\$1 by hand.*the learned_workflow tool leaves it out`));
+  assert.deepEqual(toolStopsOf(past("a", dA, COST_WINDOW, 0.5, 1), [A, B]), { flows: [A, B], stops: [], said: [] }, "under the line");
+  assert.deepEqual(toolStopsOf(past("a", "0".repeat(16), COST_WINDOW, 2, 1), [A, B]).flows, [A, B], "over the line at another digest");
+  const unread = toolStopsOf({ unread: "store down" }, [A, B]);
+  assert.deepEqual([unread.flows, unread.stops], [[], []]);
+  assert.match(unread.said.join("\n"), /could not read the agent's past runs \(store down\); the learned_workflow tool runs none of a, b/);
+});
+
+test("the money rule's decision over the store fails closed: past runs it can't read stop every workflow", async () => {
+  const stop = await costStopOverStore({ runs: { list: async () => { throw new Error("store down"); } } }, "agent-1");
+  assert.equal(stop("a", workflowDigest(A)), true);
 });

@@ -89,6 +89,11 @@ const textOf = (body) => [
 ].join("\n");
 /** A node request: it offers the node's submit tool. Anything else is the agent's. */
 const isNode = (request) => offers(request.body, "submit");
+/** The learned workflows a request's learned_workflow tool runs (its `name` parameter's enum); none when it is not offered. */
+const toolWorkflows = (body) => {
+  const tool = (body?.tools ?? []).find((one) => one?.name === "learned_workflow");
+  return tool ? ((tool.input_schema ?? tool.parameters)?.properties?.name?.enum ?? null) : [];
+};
 
 const until = async (done, what, ms = 40_000) => {
   const end = Date.now() + ms;
@@ -761,6 +766,7 @@ test("an input no learned workflow fits: the agent takes the run, path agent, wi
   assert.equal(row.state, "ended", JSON.stringify(row));
   assert.equal(entries.some((entry) => entry.kind === WORKFLOW_FIRST), false);
   assert.equal(isNode(gateway.requests[0]), false, "the first request is the agent's");
+  assert.deepEqual(toolWorkflows(gateway.requests[0].body), ["answer"], "its own tool still runs it");
   assert.equal(row.metrics?.path, "agent");
   assert.deepEqual(logs.filter((line) => line.startsWith("workflow-first:")), [], "none fitting is the common case: no line");
 });
@@ -875,11 +881,11 @@ const calledOnce = (workflow, digest, outcome = "handed_back", caller = "platfor
 
 /** Earlier runs of the agent, newest first, as the store lists them: `served` runs of FLOWS' workflow at `digest` (path
  *  handed_back, its call on their record), each at `servedUsd`, then `byHand` runs on the agent's path, each at `byHandUsd`. */
-const pastRuns = ({ served = COST_WINDOW, servedUsd = 0.5, byHand = 3, byHandUsd = 0.2, digest = DIGEST } = {}) => {
+const pastRuns = ({ served = COST_WINDOW, servedUsd = 0.5, byHand = 3, byHandUsd = 0.2, digest = DIGEST, caller = "platform" } = {}) => {
   const at = Date.UTC(2026, 10, 12);
   const row = (i, metrics, costUsd) => ({ id: `past-${i}`, agentId: "agent-1", revisionId: "rev-1", state: "ended", startedAt: at - i * 60_000, endedAt: at - i * 60_000 + 1_000, costUsd, costAtMostUsd: null, metrics, importedFrom: null, archivedAt: null, disk: null, epoch: 1, runner: null });
   return [
-    ...Array.from({ length: served }, (_, i) => row(i, { path: "handed_back", workflow: "answer", workflow_digest: digest, learned_revision: "s", ...calledOnce("answer", digest) }, servedUsd)),
+    ...Array.from({ length: served }, (_, i) => row(i, { path: "handed_back", workflow: "answer", workflow_digest: digest, learned_revision: "s", ...calledOnce("answer", digest, "handed_back", caller) }, servedUsd)),
     ...Array.from({ length: byHand }, (_, i) => row(served + i, { path: "agent", learned_revision: "s" }, byHandUsd)),
   ];
 };
@@ -892,8 +898,21 @@ test("money rule: a workflow whose last 10 served runs cost more than the agent 
   const revise = entries.findLast((entry) => entry.kind === WORKFLOW_FIRST)?.data;
   assert.deepEqual(revise, { workflow: "answer", digest: DIGEST, revision: revise?.revision, outcome: "needs_revision", served_usd: 0.5, by_hand_usd: 0.2, runs: COST_WINDOW }, "the run's journal keeps why, with the two numbers");
   assert.ok(logs.some((line) => /answer cost \$0\.5 a run over its last 10 served runs, at or over \$0\.2 by hand/.test(line)), JSON.stringify(logs));
+  assert.deepEqual(toolWorkflows(gateway.requests.find((request) => !isNode(request))?.body), [], "the stopped workflow is off the agent's own tool too");
   // The stop is a stop: it asks no compile (Fable review 11-16 §5 step 1).
   assert.deepEqual(compileAsked(gateway).map((request) => lastOf(request.body).slice(0, 120)), [], "the money rule's stop asks no compile");
+});
+
+test("money rule on the agent's own calls: a workflow that never runs first, called by the agent at a loss over its last 10 runs, leaves its learned_workflow tool and the run asks for its revision", async (t) => {
+  const { row, gateway, entries, logs } = await piRun(t, { input: { content: `${QUESTION}?` }, past: pastRuns({ servedUsd: 0.5, byHandUsd: 0.2, caller: "agent" }) });
+  assert.equal(row.state, "ended", JSON.stringify(row));
+  assert.equal(row.metrics?.path, "agent");
+  assert.equal(gateway.requests.filter(isNode).length, 0, "the workflow never ran");
+  assert.deepEqual(toolWorkflows(gateway.requests[0]?.body), [], "the agent's tool runs it no more");
+  const revise = entries.findLast((entry) => entry.kind === WORKFLOW_FIRST)?.data;
+  assert.deepEqual(revise, { workflow: "answer", digest: DIGEST, revision: revise?.revision, outcome: "needs_revision", served_usd: 0.5, by_hand_usd: 0.2, runs: COST_WINDOW }, "the run asks for its revision, with the two numbers");
+  assert.equal(row.metrics?.first_choice, "cost_stop");
+  assert.ok(logs.some((line) => /answer cost \$0\.5 a run over its last 10 served runs, at or over \$0\.2 by hand.*the learned_workflow tool leaves it out/.test(line)), JSON.stringify(logs));
 });
 
 // A workflow its replay held (runner/promotion.ts): the agent takes the run, and its end-of-run compile turn asks for the
@@ -1228,13 +1247,13 @@ test("workflowFirstOf: one fitting workflow serves; none, two, a workflow run, n
   assert.deepEqual(servedOf([{ kind: WORKFLOW_FIRST, data: { workflow: "answer", digest: "d", outcome: "handed_back" } }]), { outcome: "handed_back", workflow: "answer", digest: "d" });
 });
 
-test("workflowFirstOf: past runs it can't read stop nothing, and it says so: the run is served unchecked and the log names why", async () => {
+test("workflowFirstOf: past runs it can't read fail closed, and it says so: the agent takes the run and the log names why", async () => {
   const flow = { name: "answer", description: "", workflow: JSON.stringify({ ...answerFlow, name: "answer", schemas: { ...answerFlow.schemas, In: { type: "object", required: ["question"], properties: { question: { type: "string" } } } } }) };
   const launch = { input: { question: "q" }, learning: { seed: "abc" } };
   const logs = [];
-  const { serve } = await workflowFirstOf("agentic", [flow], launch, (line) => logs.push(line), () => Promise.reject(new Error("the store is gone")));
-  assert.equal(serve?.name, "answer", "it serves");
-  assert.ok(logs.some((line) => /money rule could not read/.test(line) && line.includes("the store is gone") && line.includes("unchecked")), JSON.stringify(logs));
+  const { serve, reason } = await workflowFirstOf("agentic", [flow], launch, (line) => logs.push(line), () => Promise.reject(new Error("the store is gone")));
+  assert.deepEqual([serve, reason], [undefined, "past_unread"], "it does not serve");
+  assert.ok(logs.some((line) => /money rule could not read/.test(line) && line.includes("the store is gone") && line.includes("does not run first, the agent takes this run")), JSON.stringify(logs));
 });
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
