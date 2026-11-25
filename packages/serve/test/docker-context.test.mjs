@@ -16,7 +16,7 @@ const buildx = spawnSync("docker", ["buildx", "version"], { stdio: "ignore" }).s
 test("the image's build context holds the workspace and the console's sources, and never a .env, an .npmrc, node_modules or dist", { skip: !buildx && "docker buildx is not installed", timeout: 120_000 }, async (t) => {
   const dir = await scratch(t);
   const context = join(dir, "context");
-  const kept = ["package.json", "package-lock.json", "tsconfig.base.json", "packages/serve/src/server.ts", "packages/serve/docker/Dockerfile", "packages/serve/scripts/dial-conformance.mjs", "scripts/build-workspaces.mjs", "apps/console/package.json", "apps/console/package-lock.json", "apps/console/index.html", "apps/console/src/main.tsx"];
+  const kept = ["package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "tsconfig.base.json", "packages/serve/src/server.ts", "packages/serve/docker/Dockerfile", "packages/serve/scripts/dial-conformance.mjs", "scripts/build-workspaces.mjs", "apps/console/package.json", "apps/console/pnpm-lock.yaml", "apps/console/pnpm-workspace.yaml", "apps/console/index.html", "apps/console/src/main.tsx"];
   const dropped = [
     ".env", ".env.local", ".env.production", ".npmrc",
     "packages/serve/.env", "packages/serve/.env.test", "packages/serve/.npmrc", "packages/serve/src/.env",
@@ -104,9 +104,9 @@ test("the build stage builds phoned after the daemon, with a digest-pinned JDK 1
   assert.match(build, /^COPY --from=android \/opt\/jdk-17 \/opt\/jdk-17$/m);
   assert.match(build, /^COPY --from=android \/opt\/android-sdk \/opt\/android-sdk$/m);
   const at = (text) => build.indexOf(text);
-  const phoned = at("JAVA_HOME=/opt/jdk-17 ANDROID_HOME=/opt/android-sdk npm run build:phoned -w @parcha/agentrun-computer");
+  const phoned = at("JAVA_HOME=/opt/jdk-17 ANDROID_HOME=/opt/android-sdk pnpm --filter @parcha/agentrun-computer run build:phoned");
   assert.ok(phoned > at("npm run build:daemon"), "phoned builds after the daemon");
-  assert.ok(at("npm run check:phoned -w @parcha/agentrun-computer") > phoned, "the build fails without phoned's dex jar, stamped with the package version");
+  assert.ok(at("pnpm --filter @parcha/agentrun-computer run check:phoned") > phoned, "the build fails without phoned's dex jar, stamped with the package version");
   // CI's phoned job lays out the same SDK files from the same zips: one pair of pins.
   const action = await readFile(join(ROOT, ".github/actions/android-toolchain/action.yml"), "utf8");
   const pins = (text) => [...new Set(text.match(/\b[0-9a-f]{64}\b/g))].sort();
@@ -117,8 +117,9 @@ test("the build stage builds the console before the server, so the server's dist
   const dockerfile = await readFile(join(ROOT, "packages/serve/docker/Dockerfile"), "utf8");
   const build = dockerfile.slice(0, dockerfile.lastIndexOf("\nFROM "));
   const at = (text) => build.indexOf(text);
-  const built = at("(cd apps/console && npm ci --ignore-scripts && npm run build)");
-  assert.ok(built > at("npm ci --ignore-scripts") && built < at(" && npm run build &&"), "the console builds after the workspace's install and before its build");
-  assert.ok(at("test -f packages/serve/dist/console/index.html") > at(" && npm run build &&"), "the build fails without the console in the server's dist");
+  const built = at("(cd apps/console && pnpm install --frozen-lockfile --ignore-scripts --store-dir /tmp/pnpm-store && pnpm run build)");
+  assert.ok(built > at("pnpm install --frozen-lockfile --ignore-scripts --store-dir /tmp/pnpm-store \\") && built < at(" && pnpm run build &&"), "the console builds after the workspace's install and before its build");
+  assert.ok(at("test -f packages/serve/dist/console/index.html") > at(" && pnpm run build &&"), "the build fails without the console in the server's dist");
+  assert.ok(at("rm -rf /tmp/pnpm-store") > built && at("rm -rf /tmp/pnpm-store") < at(" && pnpm run build &&"), "pnpm's store leaves the layer once both installs are done");
   assert.ok(at("rm -rf apps") > at("test -f packages/serve/dist/console/index.html"), "the console's sources and dependencies leave the image");
 });

@@ -1,28 +1,35 @@
 # Contributing
 
-Use Node 24.22.3 or newer (`.nvmrc` pins 24.22.3) and npm 11.21.0. From the repository root:
+Use Node 24.22.3 or newer (`.nvmrc` pins 24.22.3), pnpm 12.22.0 (package.json's `packageManager`) and npm 11.21.0, the
+consumer the package checks install into. From the repository root:
 
 ```sh
+corepack enable   # or: npm install --global pnpm@12.22.0 --ignore-scripts
 npm install --global npm@11.21.0 --ignore-scripts
-npm ci --ignore-scripts
-npm run check
-npm run build:daemon -w @parcha/agentrun-computer
-npm run verify:packages
+pnpm install --frozen-lockfile
+pnpm run check
+pnpm --filter @parcha/agentrun-computer run build:daemon
+pnpm run verify:packages
 ```
 
-`npm run verify:packages` needs the computer daemon built first: `npm run build:daemon -w @parcha/agentrun-computer`
+pnpm lays `node_modules` out as npm did (`nodeLinker: hoisted`), each file a hard link into its one store, so another
+checkout of the repository costs links rather than another copy of the tree. pnpm links a stored file only when its mode
+is the one the install wants, so install under the same umask as the checks (022): a store filled under 077 holds files
+only their owner can read, and every later install copies them instead.
+
+`pnpm run verify:packages` needs the computer daemon built first: `pnpm --filter @parcha/agentrun-computer run build:daemon`
 (after the build) writes `dist/computerd-linux-amd64` and `-arm64`, which `@parcha/agentrun-computer`'s archive must
 hold, and verification stops without them. With Go on PATH (the version `packages/computer/daemon/go.mod` names or
 newer) it builds them. Without Go it takes them from the same version of the package on npm, when that version was
 built from the daemon source in your checkout; once you change the daemon, you need Go.
 
-`npm run build` builds the console (`apps/console`, outside the workspaces, with its own lockfile) before the packages, so the server's build carries it. It installs the console's dependencies when npm's record of them differs from its lockfile, and skips the console's build when `apps/console/dist` was built from the same sources (a hash of them, written beside the build).
+`pnpm run build` builds the console (`apps/console`, outside the workspaces, with its own lockfile) before the packages, so the server's build carries it. It installs the console's dependencies when pnpm's record of them differs from its lockfile, and skips the console's build when `apps/console/dist` was built from the same sources (a hash of them, written beside the build).
 
-- `npm test` runs every workspace's tests, several workspaces at once, with at most one test file per core in all (`AGENTRUN_TEST_TOTAL=<n>` sets that total, `AGENTRUN_TEST_JOBS=<n>` how many workspaces, `1` one by one), and ends with each one's result and time.
-- `npm run test:changed` runs only the workspaces changed since `origin/main` (`npm run test:changed -- --base <ref>` for another base), and every workspace that depends on them.
-- `npm test -w @parcha/agentrun-dsl` runs one workspace's tests.
+- `pnpm test` runs every workspace's tests, several workspaces at once, with at most one test file per core in all (`AGENTRUN_TEST_TOTAL=<n>` sets that total, `AGENTRUN_TEST_JOBS=<n>` how many workspaces, `1` one by one), and ends with each one's result and time.
+- `pnpm run test:changed` runs only the workspaces changed since `origin/main` (`pnpm run test:changed --base <ref>` for another base), and every workspace that depends on them.
+- `pnpm --filter @parcha/agentrun-dsl test` runs one workspace's tests.
 
-Rounds run the affected tests, and so does CI on a pull request in its `any` shards; the `lean` shards, the merge queue and `main` run everything. `npm run test:affected` runs only the test files a change reaches since its merge base with `origin/untangle/cutover` (else `origin/main`; `-- --base <ref>` for another, or `-- <path>...` for given paths): a changed test file, every test that imports a changed source file directly or through other files (read from the imports, with `dist/` mapped back to `src/` and workspace names resolved through `exports`), every test of a package whose `package.json`, tsconfig or build script changed, and the tests that name a changed file where an import can't say (a fixture read by path). A change to the root manifests, `scripts/` or `.github/` adds only the tests that import it. A fast smoke file per package always runs. `node scripts/test-affected.mjs` prints the command per suite without running it, `--list` the files, `--json` why each was picked; `--concurrency <n>` caps each command on a shared machine. On a pull request CI runs the same selection (`scripts/ci-affected.mjs`), but every test when a shared root changed, and every test of a package whose changed file no test reaches (a Go source, a SQL migration). It is not the record: the merge queue runs every suite, so a test the selection misses fails there, not on `main`.
+Rounds run the affected tests, and so does CI on a pull request in its `any` shards; the `lean` shards, the merge queue and `main` run everything. `pnpm run test:affected` runs only the test files a change reaches since its merge base with `origin/untangle/cutover` (else `origin/main`; `--base <ref>` for another, or `<path>...` for given paths): a changed test file, every test that imports a changed source file directly or through other files (read from the imports, with `dist/` mapped back to `src/` and workspace names resolved through `exports`), every test of a package whose `package.json`, tsconfig or build script changed, and the tests that name a changed file where an import can't say (a fixture read by path). A change to the root manifests, `scripts/` or `.github/` adds only the tests that import it. A fast smoke file per package always runs. `node scripts/test-affected.mjs` prints the command per suite without running it, `--list` the files, `--json` why each was picked; `--concurrency <n>` caps each command on a shared machine. On a pull request CI runs the same selection (`scripts/ci-affected.mjs`), but every test when a shared root changed, and every test of a package whose changed file no test reaches (a Go source, a SQL migration). It is not the record: the merge queue runs every suite, so a test the selection misses fails there, not on `main`.
 
 Tests use scripted adapters and must not require model credentials. Package verification installs built tarballs into a separate application and needs network access to download dependencies. Live examples are opt-in.
 
@@ -32,7 +39,7 @@ A test that fails twice on CI with no cause in the change is flaky. Its owner ca
 
 Keep provider configuration and application policy outside the interpreter. Integrate through `runNode`, `runJudge`, or `runEffect`. For a behavior change, add a test that reproduces the failure and checks the result a caller depends on. Keep expected outcomes independent of the implementation. Mock external services at adapter boundaries.
 
-Record a change in `changes/<slug>.md`, one file per pull request (front matter naming its packages and kind, then the text of one changelog bullet; see [changes/README.md](changes/README.md)). Never edit an `Unreleased` section: `node scripts/changes.mjs --check` fails a change that does, and the release folds the files into the changelogs. Document breaking changes and failure behavior there. After changing workflow types, regenerate the editor schema with `node scripts/generate-schema.mjs`. For installation or packaging changes, also run `npm run export:source` and `npm run verify:source`. The source verifier builds the exported archive in an empty directory and exercises the offline examples.
+Record a change in `changes/<slug>.md`, one file per pull request (front matter naming its packages and kind, then the text of one changelog bullet; see [changes/README.md](changes/README.md)). Never edit an `Unreleased` section: `node scripts/changes.mjs --check` fails a change that does, and the release folds the files into the changelogs. Document breaking changes and failure behavior there. After changing workflow types, regenerate the editor schema with `node scripts/generate-schema.mjs`. For installation or packaging changes, also run `pnpm run export:source` and `pnpm run verify:source`. The source verifier builds the exported archive in an empty directory and exercises the offline examples.
 
 ## Changing workflow behavior
 
@@ -42,7 +49,7 @@ When changing validation, state paths, branch merges, loops, or desugaring:
 
 1. Add a TypeScript regression test with an independently chosen expected result.
 2. Check whether the change affects the model or its assumptions. Update the Lean definitions and proofs when it does, and add a shared conformance case where applicable.
-3. Install [elan](https://github.com/leanprover/elan), then run these checks after `npm run build`:
+3. Install [elan](https://github.com/leanprover/elan), then run these checks after `pnpm run build`:
 
 ```sh
 node --test packages/dsl/test/lean-conformance.test.mjs packages/dsl/test/lean-findings.test.mjs
@@ -75,7 +82,7 @@ A schema change is a new file in `packages/serve/src/store/postgres/migrations/`
 
 A migration that an earlier runner can't run beside carries `-- runners: breaking` on a line of its leading comment. That covers a migration that drops or renames anything, changes a column's type, makes a column NOT NULL, or adds a NOT NULL column with no default. Applying a breaking migration raises the store's runner floor to its version: every runner of an earlier build stops claiming, hands its runs back and exits 3, and its platform starts one of the new release. Split such a change across two releases: the additive half first, and the destructive cleanup, marked, one release later. `test/store-migration-lint.test.mjs` fails an unmarked migration with any of these statements. It reads statements, not meaning: a new UNIQUE, CHECK or foreign key that an earlier runner's writes would break is not found, and neither is a destructive statement inside a function or DO block's body, so mark those too. A runner notices a raised floor at its next read, up to 10 s after the migration, and drains on the new schema: the two-release split is what makes that safe. The SQLite store has no migration files: a SQLite runner opens only its own schema version.
 
-The [findings table](spec/lean/README.md#findings) distinguishes runtime fixes, validation gaps, and documented limits. Documentation-only changes do not require installing Lean. CI runs the Lean checks separately from `npm run check`.
+The [findings table](spec/lean/README.md#findings) distinguishes runtime fixes, validation gaps, and documented limits. Documentation-only changes do not require installing Lean. CI runs the Lean checks separately from `pnpm run check`.
 
 The website is maintained separately in a private repository. Send website feedback through this repository's [issues](https://github.com/Parcha-ai/agentrun/issues). Documentation illustrations in this repository have their own [asset instructions](docs/assets/README.md).
 

@@ -443,8 +443,8 @@ has Docker, and no computer otherwise. Remote computers bill through your own ac
   through a vendor link. Take the controls, then hand them back. The agent can also stop and ask you to take over, for
   a login or a captcha.
 - **Proof.** Each provider has a conformance suite for its kind. Run it against the vendor yourself, from a checkout
-  after `npm ci && npm run build`:
-  `npm run conformance -w @parcha/agentrun-computer -- --provider docker --kind sandbox`.
+  after `pnpm install --frozen-lockfile && pnpm run build`:
+  `pnpm --filter @parcha/agentrun-computer run conformance --provider docker --kind sandbox`.
 
 [`@parcha/agentrun-computer`](packages/computer/README.md) is the protocol underneath: one small daemon in every
 computer and one provider per vendor. To add your vendor, see [How to contribute a provider](packages/computer/PROVIDERS.md#how-to-contribute-a-provider).

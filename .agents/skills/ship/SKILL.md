@@ -86,7 +86,7 @@ and consent eligibility pass, using `references/approve.md`.
 3. Implement and run focused checks before the first push. At the merge target, run **all**
    of ship-pr's local checks, applicable package/live/kill-storm proofs, stranger checks,
    model checks and stack trial. CI does not replace required local proof. Preserve exact
-   command order, including building the computer daemon before `npm run check` when
+   command order, including building the computer daemon before `pnpm run check` when
    Docker-backed serve/client demos apply, and before package-consumer verification.
    Keep commands, result lines and evidence. A required proof marked skipped, blocked or untested
    blocks the gate. Missing credentials are a blocker, not a fabricated pass.

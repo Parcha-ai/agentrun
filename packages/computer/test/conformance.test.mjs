@@ -366,7 +366,7 @@ test("the CLI exits 2 on a usage error, and says what is wrong", async () => {
 		const code = await main(argv, { stdout: sink(), stderr: err, cwd: HERE, cases: [pass("exec.argv")] });
 		assert.equal(code, 2, `${argv.join(" ")}: ${err.text()}`);
 		assert.match(err.text(), words, argv.join(" "));
-		assert.match(err.text(), /usage: npm run conformance/);
+		assert.match(err.text(), /usage: pnpm --filter @parcha\/agentrun-computer run conformance/);
 	}
 });
 

@@ -1,4 +1,4 @@
-// Orgo for the conformance CLI: `npm run conformance -w @parcha/agentrun-computer -- --provider orgo [--image <template>]`.
+// Orgo for the conformance CLI: `pnpm --filter @parcha/agentrun-computer run conformance --provider orgo [--image <template>]`.
 // It makes real Orgo desktops, so it runs only with AGENTRUN_COMPUTER_LIVE_ORGO=1 and a key for an account you can bill, under
 // COMPUTER_ORGO_API_KEY (never ORGO_API_KEY), in the workspace COMPUTER_ORGO_WORKSPACE names, or the key's account's one
 // workspace when it names none. The live switch is checked first, before any other setting is read.

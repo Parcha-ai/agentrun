@@ -5,7 +5,7 @@
 # server takes --no-runner and each runner is the same image given `runner --data /data --name <name> [--loops N]`
 # (deploy/README.md, and deploy/compose.yaml for a server and two runners on one store). Everything they keep is under
 # /data: mount one volume there, the same one in each.
-# The base is pinned by digest (a multi-arch index); the dependencies by the workspace's package-lock.json, dev ones
+# The base is pinned by digest (a multi-arch index); the dependencies by the workspace's pnpm-lock.yaml, dev ones
 # included: the pi packages the server loads are the workspace's development dependencies, peers of its packages.
 # Node is 24.22.3, Node's November 2026 security release, installed from nodejs.org by install-node.sh, which verifies
 # the release's signed checksums: the official node:24.22.3 image was not yet published for amd64 and arm64 when this
@@ -44,12 +44,15 @@ COPY --from=node /opt/node/ /usr/local/
 RUN [ "$(node --version)" = v24.22.3 ]
 WORKDIR /src
 COPY . .
+# pnpm, the version package.json's packageManager pins, installs the workspace and the console as a checkout does
+# (nodeLinker: hoisted, so node_modules is laid out as npm's was). Its store is in /tmp/pnpm-store, removed after the
+# install: the tree's files are links to it, and the image keeps the tree alone.
 # The console (apps/console, its own lockfile) builds first, so the server's build copies it into its dist; then its
 # sources and dependencies go: the image keeps the built files alone.
-# The coding-agent CLIs the adapters develop against (dev dependencies, so npm ci installs them) are removed from the
+# The coding-agent CLIs the adapters develop against (dev dependencies, so pnpm installs them) are removed from the
 # image after the workspace build: the Claude Agent SDK with its platform packages (they hold the Claude CLI) and the
 # Codex CLI with its platform packages (they hold its binary), with their bin links. Each installs itself on first use
-# into the data's harnesses (src/harness-install.ts): docker/image-check.sh names them. Never `npm prune --omit=dev`:
+# into the data's harnesses (src/harness-install.ts): docker/image-check.sh names them. Never `pnpm prune --prod`:
 # the pi packages the server loads are dev dependencies too.
 # Go, for the computer daemon (computerd), built for both architectures after the workspace, into the computer package's
 # dist, where a computer finds it; and for agentrun-runas (packages/serve/runas), the helper that starts each run's
@@ -60,17 +63,20 @@ COPY --from=golang:1.24.13-trixie@sha256:5835f052b784aa39f2fe9070def3568605c8bc3
 # phone provider pushes to each phone: built after the daemon, the same way. Both stay in this stage.
 COPY --from=android /opt/jdk-17 /opt/jdk-17
 COPY --from=android /opt/android-sdk /opt/android-sdk
-RUN npm ci --ignore-scripts && (cd apps/console && npm ci --ignore-scripts && npm run build) \
- && npm run build && test -f packages/serve/dist/console/index.html && rm -rf apps \
- && PATH="/usr/local/go/bin:$PATH" GOTOOLCHAIN=local GOCACHE=/tmp/go-build GOPATH=/tmp/go npm run build:daemon -w @parcha/agentrun-computer \
+RUN npm install --global --ignore-scripts --no-audit --no-fund "pnpm@$(node -p "require('./package.json').packageManager.replace(/^pnpm@/, '')")" \
+ && pnpm install --frozen-lockfile --ignore-scripts --store-dir /tmp/pnpm-store \
+ && (cd apps/console && pnpm install --frozen-lockfile --ignore-scripts --store-dir /tmp/pnpm-store && pnpm run build) \
+ && rm -rf /tmp/pnpm-store \
+ && pnpm run build && test -f packages/serve/dist/console/index.html && rm -rf apps \
+ && PATH="/usr/local/go/bin:$PATH" GOTOOLCHAIN=local GOCACHE=/tmp/go-build GOPATH=/tmp/go pnpm --filter @parcha/agentrun-computer run build:daemon \
  && test -x packages/computer/dist/computerd-linux-amd64 && test -x packages/computer/dist/computerd-linux-arm64 \
  && (cd packages/computer/daemon && PATH="/usr/local/go/bin:$PATH" GOTOOLCHAIN=local GOCACHE=/tmp/go-build GOPATH=/tmp/go CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
       go build -trimpath -ldflags="-s -w" -o ../dist/computerd-fixture-linux-amd64 ./cmd/fixture) \
  && (cd packages/serve/runas && PATH="/usr/local/go/bin:$PATH" GOTOOLCHAIN=local GOCACHE=/tmp/go-build GOPATH=/tmp/go CGO_ENABLED=0 \
       go build -trimpath -ldflags=-s -o /opt/runas/agentrun-runas .) \
  && rm -rf /tmp/go-build /tmp/go \
- && JAVA_HOME=/opt/jdk-17 ANDROID_HOME=/opt/android-sdk npm run build:phoned -w @parcha/agentrun-computer \
- && npm run check:phoned -w @parcha/agentrun-computer \
+ && JAVA_HOME=/opt/jdk-17 ANDROID_HOME=/opt/android-sdk pnpm --filter @parcha/agentrun-computer run build:phoned \
+ && pnpm --filter @parcha/agentrun-computer run check:phoned \
  && rm -rf node_modules/@anthropic-ai/claude-agent-sdk node_modules/@anthropic-ai/claude-agent-sdk-* \
       node_modules/@anthropic-ai/claude-code node_modules/.bin/claude \
       node_modules/@openai/codex node_modules/@openai/codex-* node_modules/.bin/codex \

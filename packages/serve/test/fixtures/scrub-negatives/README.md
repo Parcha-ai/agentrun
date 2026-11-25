@@ -88,6 +88,6 @@ Decisions this corpus encodes:
    would rightly cut (no real-length key shapes, even fake ones). The source export scan
    (scripts/export-source.mjs) also rejects quoted literals after `password=`/`api_key=` and the like; write a
    variable reference unquoted.
-4. Run `npm run build -w packages/serve && node --test packages/serve/test/scrub-negatives.test.mjs`.
+4. Run `pnpm --filter ./packages/serve run build && node --test packages/serve/test/scrub-negatives.test.mjs`.
 
 A new category gets its own file and an entry with a minimum count in `CATEGORIES` in the test, so emptying it fails.

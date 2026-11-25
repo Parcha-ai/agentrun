@@ -69,7 +69,7 @@ const until = async (done, what, ms = 30_000) => {
 // package's fake docker with its fake computerd (docker-host-fake.mjs, computerd: true): the run's bash runs in the
 // computer's folders, /workspace the run's folder. The Go daemon file is only copied and bound, never run.
 const DAEMON = fileURLToPath(new URL("../../computer/dist/computerd-linux-amd64", import.meta.url));
-const NO_COMPUTERD_FILE = !existsSync(DAEMON) &&"no computerd-linux-amd64: run npm run build:daemon -w @parcha/agentrun-computer (CI's build job does)";
+const NO_COMPUTERD_FILE = !existsSync(DAEMON) &&"no computerd-linux-amd64: run pnpm --filter @parcha/agentrun-computer run build:daemon (CI's build job does)";
 test("demo through the API: with AGENTRUN_BOXES not set and Docker answering, docker is on by default; a new agent is saved in the Docker box with bash, and its run writes out.txt there", { timeout: 120_000, skip: NO_COMPUTERD_FILE }, async (t) => {
   const host = dockerHost({ computerd: true });
   withEnv(t, { PATH: `${host.dir}:${process.env.PATH}` }, ["AGENTRUN_BOXES", "AGENTRUN_DOCKER_IMAGE", "AGENTRUN_BOX_ALLOW", "DAYTONA_API_KEY"]);

@@ -7,26 +7,32 @@ import { chmod, lstat, mkdir, readFile, readdir, rename, rm, writeFile } from 'n
 import { dirname, join, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MACHINE_PATH } from './machine-path.mjs';
+import { npmExecFile } from './npm-command.mjs';
+import { npmTree } from './pnpm-lock.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const arguments_ = process.argv.slice(2);
-assert.ok(arguments_.length <= 1 && arguments_.every(argument => ['--inventory-only'].includes(argument)), 'Usage: node scripts/export-source.mjs [--inventory-only]');
+assert.ok(arguments_.length <= 1 && arguments_.every(argument => ['--inventory-only', '--licenses'].includes(argument)), 'Usage: node scripts/export-source.mjs [--inventory-only | --licenses]');
 const release = join(root, '.release');
 const destination = join(release, 'agentrun-dsl-source');
 const staging = join(release, `.source-staging-${process.pid}`);
 const archive = join(release, 'agentrun-dsl-source.tar.gz');
 const exec = promisify(execFile);
 const sha256 = value => createHash('sha256').update(value).digest('hex');
-const lockBytes = await readFile(join(root, 'package-lock.json'));
-const lock = JSON.parse(lockBytes);
-assert.equal(lock.lockfileVersion, 3, 'Source inventory requires package-lock v3');
+const lockBytes = await readFile(join(root, 'pnpm-lock.yaml'));
 
 // Resolve the lockfile graph using package-local dependencies before hoisted dependencies.
 // Include optional packages and peers even when the current OS does not install their binaries. A third-party package's
 // optional peer is not followed: the lock records one when the repository installs it for itself (a test runner a library
 // names), and it ships only where a runtime dependency requires it, which that dependency's own edge reaches. A workspace
 // package's optional peers (the host it runs in, an adapter's SDK) are followed.
-const entries = lock.packages;
+// The tree is pnpm-lock.yaml laid out as npm's node_modules (scripts/pnpm-lock.mjs).
+const entries = npmTree(root);
+// pnpm's lockfile keeps no license, so each runtime package's declared license is kept beside it: the `license` its
+// published manifest declares, by name@version, null where it declares none. `--licenses` reads the ones missing from the
+// registry and drops the ones the graph no longer reaches; without it a missing one stops the inventory.
+const licensesFile = join(root, 'scripts/dependency-licenses.json');
+const declared = JSON.parse(await readFile(licensesFile, 'utf8').catch(error => { if (error.code === 'ENOENT') return '{}'; throw error; }));
 // Licenses a package's manifest does not declare, read from its own published source, by name AND pinned version: a
 // bumped version is read as its manifest says again (UNKNOWN, flagged) until someone checks it and pins it here.
 // OpenCode's per-platform binaries (optional dependencies of `opencode-ai`, which declares MIT) publish no `license`;
@@ -62,9 +68,7 @@ for (const consumer of roots) {
     if (location.includes('node_modules/')) {
       const name = pkg.name ?? location.slice(location.lastIndexOf('node_modules/') + 'node_modules/'.length);
       const key = `${name}@${pkg.version}`;
-      const license = pkg.license ?? LICENSE_FROM_SOURCE.get(key)?.license ?? 'UNKNOWN';
-      const row = inventory.get(key) ?? { name, version: pkg.version, license, consumers: new Set(), locations: new Set(), optional: true };
-      assert.equal(row.license, license, `Conflicting license metadata for ${key}`);
+      const row = inventory.get(key) ?? { name, version: pkg.version, consumers: new Set(), locations: new Set(), optional: true };
       row.consumers.add(consumer); row.locations.add(location); row.optional &&= pkg.optional === true;
       inventory.set(key, row);
     }
@@ -83,6 +87,21 @@ for (const consumer of roots) {
   };
   visit(`packages/${consumer}`);
 }
+if (arguments_.includes('--licenses')) {
+  const reached = {};
+  for (const key of [...inventory.keys()].sort()) {
+    if (Object.hasOwn(declared, key)) { reached[key] = declared[key]; continue; }
+    const { stdout } = await npmExecFile(['view', key, 'license', '--json'], { cwd: root });
+    reached[key] = stdout.trim() ? JSON.parse(stdout) : null;
+    console.log(`${key}: ${reached[key] ?? 'no license declared'}`);
+  }
+  await writeFile(licensesFile, `${JSON.stringify(reached, null, 2)}\n`);
+  console.log(`${Object.keys(reached).length} runtime package licenses in scripts/dependency-licenses.json.`);
+  process.exit(0);
+}
+const unlisted = [...inventory.keys()].filter(key => !Object.hasOwn(declared, key));
+assert.ok(!unlisted.length, `No declared license recorded for ${unlisted.join(', ')}: run node scripts/export-source.mjs --licenses`);
+for (const [key, row] of inventory) row.license = declared[key] ?? LICENSE_FROM_SOURCE.get(key)?.license ?? 'UNKNOWN';
 const rows = [...inventory.values()].sort((a, b) => `${a.name}@${a.version}`.localeCompare(`${b.name}@${b.version}`)).map(row => ({ ...row, consumers: [...row.consumers].sort(), locations: [...row.locations].sort() }));
 const permissive = new Set(['MIT', 'Apache-2.0', 'BSD-2-Clause', 'BSD-3-Clause', 'ISC', '0BSD', 'BlueOak-1.0.0', 'CC0-1.0', 'Unlicense']);
 // Release files an app keeps in the repository rather than installing (`apps/<app>/vendor/<name>/vendored.json` lists
@@ -97,13 +116,13 @@ for (const app of (await readdir(join(root, 'apps'), { withFileTypes: true }).ca
   }
 }
 const flagged = [...rows, ...vendored.flatMap(row => row.licenses.map(license => ({ ...row, license })))].filter(row => !permissive.has(row.license)).map(row => ({ name: row.name, version: row.version, license: row.license, reason: row.license === 'UNKNOWN' ? 'Missing license metadata' : /GPL|AGPL|LGPL|SSPL|BUSL|BSL|UNLICENSED/i.test(row.license) ? 'Restrictive or reciprocal metadata needs release-owner review' : 'License expression needs release-owner review' }));
-const fromSource = rows.filter(row => !entries[row.locations[0]]?.license && LICENSE_FROM_SOURCE.has(`${row.name}@${row.version}`)).map(row => ({ ...row, source: LICENSE_FROM_SOURCE.get(`${row.name}@${row.version}`).source }));
+const fromSource = rows.filter(row => declared[`${row.name}@${row.version}`] == null && LICENSE_FROM_SOURCE.has(`${row.name}@${row.version}`)).map(row => ({ ...row, source: LICENSE_FROM_SOURCE.get(`${row.name}@${row.version}`).source }));
 const missingOptional = [...new Map(unresolved.map(item => [`${item.from}:${item.dependency}`, item])).values()];
 const licenses = [...new Set(rows.map(row => row.license))].sort();
 const cell = value => String(value).replace(/\|/g, '\\|').replace(/\n/g, ' ');
 const dependencyDoc = `# Runtime dependency inventory
 
-Generated by \`node scripts/export-source.mjs\` from \`package-lock.json\`. Regenerate after dependency changes.
+Generated by \`node scripts/export-source.mjs\` from \`pnpm-lock.yaml\`, licenses as each package's manifest declares them (\`scripts/dependency-licenses.json\`). Regenerate after dependency changes.
 
 The graph starts from the runtime dependencies of \`@parcha/agentrun-dsl\`, \`@parcha/agentrun-jev\`, \`@parcha/pi-browser\`, \`@parcha/agentrun-import\`, \`@parcha/agentrun-web\`, \`@parcha/agentrun-serve\`, \`@parcha/agentrun-decisions\`, \`@parcha/agentrun-computer\`, \`@parcha/agentrun-client\`, \`@parcha/agentrun-kernel\`, \`@parcha/agentrun-harness-claude\`, \`@parcha/agentrun-harness-codex\`, and \`@parcha/agentrun-harness-acp\`, follows their dependencies and peers, and includes optional platform packages recorded in the lockfile. Development-only tooling is excluded. Versions are the exact locked versions, not the ranges in package manifests. “Optional” identifies entries marked optional at every recorded installation location; package use still depends on platform and adapter configuration.
 
@@ -125,7 +144,7 @@ ${rows.map(row => `| ${cell(row.name)} | ${cell(row.version)} | ${cell(row.licen
 ${vendored.length ? `
 ## Vendored code
 
-Release files kept in the repository rather than installed, so not in \`package-lock.json\`. Each folder's \`vendored.json\` lists every file with the path it has in its package, its license, its size and its SHA-256.
+Release files kept in the repository rather than installed, so not in \`pnpm-lock.yaml\`. Each folder's \`vendored.json\` lists every file with the path it has in its package, its license, its size and its SHA-256.
 
 | Package | Version | Licenses | Where | Source | Bytes |
 | --- | --- | --- | --- | --- | --- |
@@ -137,7 +156,7 @@ if (arguments_.includes('--inventory-only')) {
   process.exit(0);
 }
 
-const allowedRootFiles = new Set(['README.md', 'AGENTS.md', 'CLAUDE.md', 'CHANGELOG.md', 'CONTRIBUTING.md', 'SECURITY.md', 'ASSETS.md', 'HARNESS.md', 'LICENSE', 'LICENSE.md', 'LICENSE.txt', 'NOTICE', 'NOTICE.md', 'NOTICE.txt', '.gitignore', '.nvmrc', 'package.json', 'package-lock.json', 'tsconfig.base.json']);
+const allowedRootFiles = new Set(['README.md', 'AGENTS.md', 'CLAUDE.md', 'CHANGELOG.md', 'CONTRIBUTING.md', 'SECURITY.md', 'ASSETS.md', 'HARNESS.md', 'LICENSE', 'LICENSE.md', 'LICENSE.txt', 'NOTICE', 'NOTICE.md', 'NOTICE.txt', '.gitignore', '.nvmrc', 'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'tsconfig.base.json']);
 const allowedDirectories = new Set(['apps', 'changes', 'connector', 'docs', 'examples', 'packages', 'python', 'scripts', 'spec', '.github']);
 const excludedComponents = new Set(['.pi', 'site', 'dist', 'node_modules', '.git', '.release', '.openai', '.sites-runtime', '.cascade', '.desloppify', '.impeccable', '.review', '.reviews', '.codex', '.agents', '.cache', '.venv', '.agentrun', 'coverage', 'candidates', 'scorecard.png', '.lake', '__pycache__', '.parcha']);
 const textExtensions = new Set(['.md', '.json', '.js', '.mjs', '.cjs', '.ts', '.mts', '.cts', '.tsx', '.html', '.jsonl', '.css', '.svg', '.txt', '.yml', '.yaml', '.toml', '.sh', '.lean', '.tla', '.cfg', '.sse', '.go', '.c', '.h', '.swift', '.plist', '.entitlements', '.java', '.xml', '.py', '.sql', '.applescript']);
@@ -220,7 +239,7 @@ async function collect(relative = '') {
 }
 const receipt = {
   status: 'running', publicationReady: false, generatedAt: new Date().toISOString(), node: process.version,
-  packageLockSha256: sha256(lockBytes), exclusions: [...excludedComponents, '*.review.*', '.env*', '*.local.*', 'archives', 'source maps', 'logs', 'key files'],
+  lockfileSha256: sha256(lockBytes), exclusions: [...excludedComponents, '*.review.*', '.env*', '*.local.*', 'archives', 'source maps', 'logs', 'key files'],
   limitations: ['Heuristic scanning cannot prove the absence of every secret or private fact.', 'Binary assets are hashed and allowlisted by extension, not semantically inspected.', 'Export success does not authorize publication; source provenance, license and owner approval remain required.'],
   runtimeDependencies: { count: rows.length, packages: rows, flags: flagged, unresolvedOptional: missingOptional },
 };

@@ -5,10 +5,10 @@ you add or restyle anything a person sees there.
 
 - **Tokens** are in `apps/console/src/tokens.css`: every colour, size, duration and layer has one value, there.
 - **Primitives** are in `apps/console/src/components/ui`: one component for each control and message.
-- **The catalogue** is the Storybook (`npm run storybook` in `apps/console`, port 6006), under "Design system".
+- **The catalogue** is the Storybook (`pnpm run storybook` in `apps/console`, port 6006), under "Design system".
   It shows every token and every primitive in the light and the dark theme, side by side.
 - **The checks** are `src/design-system.test.ts`, `src/design-system.sources.test.ts`, `src/lib/utils.test.ts` and
-  `src/components/ui/primitives.test.tsx`. `npm test` in `apps/console` runs them, and a line that breaks a rule
+  `src/components/ui/primitives.test.tsx`. `pnpm test` in `apps/console` runs them, and a line that breaks a rule
   fails with what to write instead.
 
 ## The look, in six rules
@@ -291,11 +291,11 @@ These hold for every change. The primitives already do them; keep them when you 
 | `src/lib/utils.test.ts` | `cn()` knows the console's scales, so `text-body text-primary-text` keeps both classes. |
 | `src/components/ui/primitives.test.tsx` | Each primitive's keyboard and screen-reader contract, and that every design-system story renders in both themes. |
 
-After a change to a token, also look: `npm run storybook`, then "Design system / Foundations / Contrast".
+After a change to a token, also look: `pnpm run storybook`, then "Design system / Foundations / Contrast".
 
 ## The catalogue over MCP, and stories as tests
 
-`npm run storybook` in `apps/console` also serves the catalogue to coding agents over MCP, at
+`pnpm run storybook` in `apps/console` also serves the catalogue to coding agents over MCP, at
 `http://127.0.0.1:6006/mcp` (Streamable HTTP; add it to an agent as an HTTP MCP server, on an AgentRun started with
 `AGENTRUN_MCP_ALLOW_LOOPBACK=1`, which a server needs before it takes an MCP server on loopback: set it only on a machine
 you alone use). Its tools list the components
@@ -304,6 +304,6 @@ stories that render a source file (`stories-find-by-component`) or that changed 
 preview URL (`stories-preview`), say how to write a story (`get-storybook-story-instructions`), and run story tests
 (`test-run`).
 
-`npm run test-storybook` runs every story as a test in headless Chromium: a story passes when it renders without an
-error. The first run on a machine needs the browser: `npx playwright install chromium`. `npm test` does not run them;
+`pnpm run test-storybook` runs every story as a test in headless Chromium: a story passes when it renders without an
+error. The first run on a machine needs the browser: `npx playwright install chromium`. `pnpm test` does not run them;
 CI's console job builds the Storybook but does not run its stories.

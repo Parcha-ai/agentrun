@@ -209,9 +209,9 @@ cancel a callback already dispatched. Fresh Off turns expose no executable workf
 From the repository root, build the client first, then this extension:
 
 ```sh
-npm run build -w @parcha/agentrun-client
-npm run build -w @parcha/agentrun-eve
-npm test -w @parcha/agentrun-eve
+pnpm --filter @parcha/agentrun-client run build
+pnpm --filter @parcha/agentrun-eve run build
+pnpm --filter @parcha/agentrun-eve test
 ```
 
 The build uses eve's extension compiler and checks the authored TypeScript. Tests import the

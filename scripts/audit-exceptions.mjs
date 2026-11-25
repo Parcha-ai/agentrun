@@ -1,7 +1,7 @@
 // Advisories the package gate accepts until a date, each scoped to one package under the parents it names.
 // None today: the two this list held (brace-expansion 5.0.9 and undici 8.10.2, each pinned under
 // @earendil-works/pi-coding-agent before 1.5.0) left the tree with pi 1.5.0, which pins neither. An entry names a parent the
-// lockfile holds (audit-exceptions.test.mjs checks it), so one whose copy is gone is taken out, not left to expire.
+// lockfile holds (audit-exceptions.test.mjs checks it in pnpm-lock.yaml), so one whose copy is gone is taken out, not left to expire.
 /** @type {{ package: string, under: string | string[], advisories: string[], expires: string }[]} */
 export const AUDIT_EXCEPTIONS = [];
 

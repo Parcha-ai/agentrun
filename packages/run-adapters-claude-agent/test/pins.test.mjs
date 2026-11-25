@@ -11,6 +11,7 @@ import { after, test } from 'node:test';
 import { CLAUDE_AGENT_CLI_VERSION, CLAUDE_AGENT_PACKAGE, CLAUDE_AGENT_SDK_INSTALL, CLAUDE_AGENT_SDK_VERSION, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, claudeAgentAdapter, claudeAgentExecutable, verifyClaudeAgent, verifyClaudeAgentCli, verifyClaudeAgentCliAsync } from '@parcha/agentrun-harness-claude';
 import { fakeSdk } from '@parcha/agentrun-harness-claude/testing';
 import { sandboxSpawn } from '../dist/spawn.js';
+import { importerOf, lockedVersions, parseKey, readLock } from '../../../scripts/pnpm-lock.mjs';
 
 const ROOT = mkdtempSync(join(tmpdir(), 'agentrun-claude-pins-'));
 after(() => rmSync(ROOT, { recursive: true, force: true }));
@@ -32,16 +33,16 @@ test('the pins are the production deployment\'s: SDK 0.3.286, whose CLI is 2.1.2
 test('the SDK pin is one version everywhere: the constant, the peer and dev pins, and the lock', () => {
   const sdk = '@anthropic-ai/claude-agent-sdk';
   const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
-  const lock = JSON.parse(readFileSync(new URL('../../../package-lock.json', import.meta.url), 'utf8'));
-  const workspace = lock.packages['packages/run-adapters-claude-agent'];
-  const installed = Object.entries(lock.packages).filter(([path]) => path.endsWith(`node_modules/${sdk}`));
+  const lock = readLock(fileURLToPath(new URL('../../../', import.meta.url)));
+  const workspace = importerOf(lock, 'packages/run-adapters-claude-agent');
+  const installed = lockedVersions(lock, sdk);
   assert.ok(installed.length > 0, `the lock resolves ${sdk}`);
   const found = {
     peer: manifest.peerDependencies[sdk],
     dev: manifest.devDependencies[sdk],
-    lockPeer: workspace.peerDependencies[sdk],
-    lockDev: workspace.devDependencies[sdk],
-    ...Object.fromEntries(installed.map(([path, entry]) => [path, entry.version])),
+    lockDev: workspace.devDependencies[sdk].specifier,
+    lockDevResolved: parseKey(`${sdk}@${workspace.devDependencies[sdk].version}`).version,
+    ...Object.fromEntries(installed.map((version) => [`${sdk}@${version}`, version])),
   };
   assert.deepEqual(found, Object.fromEntries(Object.keys(found).map((key) => [key, CLAUDE_AGENT_SDK_VERSION])));
 });

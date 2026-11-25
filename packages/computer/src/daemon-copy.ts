@@ -70,14 +70,14 @@ export function daemonCopy(source: string, directory: string, fs: CopyFs = NODE_
 		// O_NONBLOCK: a FIFO at the path fails the isFile check below instead of holding the open.
 		const fd = fs.openSync(source, constants.O_RDONLY | constants.O_NONBLOCK);
 		try {
-			if (!fs.fstatSync(fd).isFile()) return fail("not_found", `no daemon binary at ${source}: run npm run build:daemon -w @parcha/agentrun-computer`);
+			if (!fs.fstatSync(fd).isFile()) return fail("not_found", `no daemon binary at ${source}: run pnpm --filter @parcha/agentrun-computer run build:daemon`);
 			bytes = fs.readFileSync(fd);
 		} finally {
 			fs.closeSync(fd);
 		}
 	} catch (error) {
 		const code = codeOf(error);
-		if (code === "ENOENT" || code === "ENOTDIR") return fail("not_found", `no daemon binary at ${source}: run npm run build:daemon -w @parcha/agentrun-computer`);
+		if (code === "ENOENT" || code === "ENOTDIR") return fail("not_found", `no daemon binary at ${source}: run pnpm --filter @parcha/agentrun-computer run build:daemon`);
 		return fail(
 			"invalid",
 			`the daemon at ${source} cannot be read by this process (${code ?? wordsOf(error)}): the provider copies it for each computer, so this process's user must be able to read it`,

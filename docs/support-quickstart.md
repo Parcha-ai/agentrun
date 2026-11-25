@@ -5,8 +5,8 @@ Start with the [support example](examples.md#run-the-support-example). The same 
 ## 1. Check the scripted baseline
 
 ```sh
-npm run demo:support
-npm run test:support
+pnpm run demo:support
+pnpm run test:support
 ```
 
 The four fixtures cover reuse, investigation, and escalation. They use the real interpreter but fixed responses. They make no live model calls and do not measure decision quality.
@@ -43,7 +43,7 @@ The live runner constructs `createJevRunner()` itself. It does not accept a repl
 With credentials loaded and the adapters implemented:
 
 ```sh
-npm run demo:support -- payment --config ./support.config.mjs
+pnpm run demo:support payment --config ./support.config.mjs
 ```
 
 Or supply your own request:
@@ -55,7 +55,7 @@ Or supply your own request:
 Save that as `request.json`, then run:
 
 ```sh
-npm run demo:support -- --config ./support.config.mjs --input ./request.json
+pnpm run demo:support --config ./support.config.mjs --input ./request.json
 ```
 
 The report identifies `live Jev + configured host adapters`, the workflow digest, adapter calls, decision probabilities, and the final status. Request text, answer text, source references, and raw provider errors are omitted. Model and usage fields remain `null` when the service does not report them. Host adapters own their own logging.

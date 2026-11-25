@@ -363,7 +363,7 @@ test("the heartbeat check, on an injected clock and file times: younger than twi
 // machine with no Go has none). The fake docker never runs it: the provider only copies and binds it.
 const DAEMON = fileURLToPath(new URL(`../../computer/dist/computerd-linux-amd64`, import.meta.url));
 
-test("a box-placed run gets its Docker computer through the runner process (the composer's claim): made under its run's labels with its folder mounted, never refused; a runner-placed run beside it gets none", { skip: !existsSync(DAEMON) && "no computerd-linux-amd64: run npm run build:daemon -w @parcha/agentrun-computer (CI's build job does)" }, async (t) => {
+test("a box-placed run gets its Docker computer through the runner process (the composer's claim): made under its run's labels with its folder mounted, never refused; a runner-placed run beside it gets none", { skip: !existsSync(DAEMON) && "no computerd-linux-amd64: run pnpm --filter @parcha/agentrun-computer run build:daemon (CI's build job does)" }, async (t) => {
   // A fresh host first on the runner's PATH (docker-host-fake.mjs): it keeps its images (none yet; the provider builds the
   // recipe's there first) over the computer package's fake docker, which answers run, inspect, exec (the daemon's hello)
   // and rm. No Docker is reached. The daemon answers hello and no file call, so the box-placed run holds once its computer

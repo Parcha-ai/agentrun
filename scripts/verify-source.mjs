@@ -88,15 +88,16 @@ syncBuiltinESMExports();
   env.npm_config_userconfig = join(temporary, 'user.npmrc');
   env.npm_config_globalconfig = join(temporary, 'global.npmrc');
   env.npm_config_cache = join(temporary, 'npm-cache');
-  await run('npm', ['ci', '--ignore-scripts', '--no-audit', '--no-fund'], consumer, 0, false, LONG_MS);
+  // pnpm from PATH, the one the repository pins (package.json's packageManager), as a contributor's checkout installs.
+  await run('pnpm', ['install', '--frozen-lockfile', '--ignore-scripts'], consumer, 0, false, LONG_MS);
   // The console's own lockfile, outside the workspaces: installed here, with the network, as the root build would.
-  await run('npm', ['ci', '--ignore-scripts', '--no-audit', '--no-fund'], join(consumer, 'apps', 'console'), 0, false, LONG_MS);
-  await run('npm', ['run', 'build'], consumer, 0, true, LONG_MS);
-  const demo = await run('npm', ['run', 'demo'], consumer, 0, true);
+  await run('pnpm', ['install', '--frozen-lockfile', '--ignore-scripts'], join(consumer, 'apps', 'console'), 0, false, LONG_MS);
+  await run('pnpm', ['run', 'build'], consumer, 0, true, LONG_MS);
+  const demo = await run('pnpm', ['run', 'demo'], consumer, 0, true);
   assert.match(demo, /Report: Pilot the repository workflow first\./);
   assert.match(demo, /3 subquestions researched; 3 sources retained\./);
   assert.match(demo, /Calls: 3 tools, 3 system one decisions, 5 model steps\./);
-  const empty = await run('npm', ['run', 'demo', '--', '--no-evidence'], consumer, 2, true);
+  const empty = await run('pnpm', ['run', 'demo', '--no-evidence'], consumer, 2, true);
   assert.match(empty, /Stopped before writing findings or a report\./);
   assert.match(empty, /1 model step\./);
   assert.doesNotMatch(empty, /^Report:/m);

@@ -7,6 +7,8 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
+import { fileURLToPath } from "node:url";
+import { lockedEntry, lockedVersions, readLock } from "../../../scripts/pnpm-lock.mjs";
 import { findOpenCode, openCodePackages } from "../dist/harness-opencode/binary.js";
 import { openCodePins, verifyOpenCode, verifyOpenCodeBinary } from "../dist/harness-opencode/verify.js";
 import { OPENCODE_BINARY_SHA256, OPENCODE_INSTALL, OPENCODE_NPM_INTEGRITY, OPENCODE_VERSION, OpenCodeNotInstalled, OpenCodePinMismatch } from "../dist/harness-opencode/versions.js";
@@ -40,12 +42,10 @@ test("the platform packages a machine may run are the launcher's own, in the ord
 });
 
 test("the repository's lockfile installs exactly the pinned launcher and platform packages (version and npm sha512)", () => {
-  const lock = JSON.parse(readFileSync(new URL("../../../package-lock.json", import.meta.url), "utf8")).packages;
+  const lock = readLock(fileURLToPath(new URL("../../../", import.meta.url)));
   for (const [name, integrity] of Object.entries(OPENCODE_NPM_INTEGRITY)) {
-    const entry = lock[`node_modules/${name}`];
-    assert.ok(entry, `${name} is in the lockfile`);
-    assert.equal(entry.version, OPENCODE_VERSION, name);
-    assert.equal(entry.integrity, integrity, name);
+    assert.deepEqual(lockedVersions(lock, name), [OPENCODE_VERSION], `${name} is in the lockfile at the pin alone`);
+    assert.equal(lockedEntry(lock, name, OPENCODE_VERSION).resolution?.integrity, integrity, name);
   }
   const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   assert.equal(manifest.peerDependencies["opencode-ai"], OPENCODE_VERSION, "an exact peer of the server");

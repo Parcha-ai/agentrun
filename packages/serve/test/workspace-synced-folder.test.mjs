@@ -191,7 +191,7 @@ test("release: a final delta lands what a background program wrote since the las
 const ARCH = { x64: "amd64", arm64: "arm64" }[process.arch];
 const DAEMON = fileURLToPath(new URL(`../../computer/dist/computerd-linux-${ARCH}`, import.meta.url));
 const userns = spawnSync("unshare", ["-Ur", "unshare", "-n", "true"]).status === 0;
-const skip = !existsSync(DAEMON) ? `needs ${DAEMON}: npm run build:daemon -w @parcha/agentrun-computer` : !userns ? "needs a user namespace with its capabilities (unshare -Ur), which this host refuses" : false;
+const skip = !existsSync(DAEMON) ? `needs ${DAEMON}: pnpm --filter @parcha/agentrun-computer run build:daemon` : !userns ? "needs a user namespace with its capabilities (unshare -Ur), which this host refuses" : false;
 
 /** `client` (computerd's, on this host) as a computer whose /workspace is host folder `root`: every path in and every
  *  listed path out moved between the two, so the runner's code speaks /workspace as it does to a real computer. */

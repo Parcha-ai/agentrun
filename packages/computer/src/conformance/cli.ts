@@ -1,4 +1,4 @@
-// `npm run conformance -w @parcha/agentrun-computer -- --provider <id> | ./module.js [--image <image>] [--only <groups> | --kind <kind>] [--json]`
+// `pnpm --filter @parcha/agentrun-computer run conformance --provider <id> | ./module.js [--image <image>] [--only <groups> | --kind <kind>] [--json]`
 // An id is resolved through the provider registry (../providers.ts) and nothing else, so a new computer needs no edit here.
 // Exits 0 when Core passes, 1 when it fails, 2 on a usage error, and 3 when --only left Core cases out and every case
 // that ran passed: a partial run is never a Core pass, so no script reads its exit code as one. With --kind it exits on
@@ -55,8 +55,8 @@ export interface CliIo {
 	clock?: Clock;
 }
 
-const USAGE = `usage: npm run conformance -w @parcha/agentrun-computer -- --provider ${providerIds.join("|")}|<module.js> [--image <image>] [--only <group|case>,... | --kind <kind>] [--fixture <path>] [--gpu <type>[:<count>]] [--long] [--concurrency <n>] [--json]
-       npm run conformance -w @parcha/agentrun-computer -- --provider <id>|<module.js> [--image <image>] --tti <n> [--burst <n>] [--json]
+const USAGE = `usage: pnpm --filter @parcha/agentrun-computer run conformance --provider ${providerIds.join("|")}|<module.js> [--image <image>] [--only <group|case>,... | --kind <kind>] [--fixture <path>] [--gpu <type>[:<count>]] [--long] [--concurrency <n>] [--json]
+       pnpm --filter @parcha/agentrun-computer run conformance --provider <id>|<module.js> [--image <image>] --tti <n> [--burst <n>] [--json]
   --provider  a computer in the registry (${providerIds.join(", ")}), or a module path: a provider file that exports
               create(options), or a conformance module that exports createProvider() (and, for the drift case,
               createDriftedProvider(); for the mount cases, mountFor(kind), a fresh run folder for that mount kind)

@@ -344,7 +344,7 @@ test("Docker's create() without options.daemonPath picks this package's daemon f
 	chmodSync(cli, 0o755);
 	await assert.rejects(docker.create({ docker: cli }), (error) => {
 		assert.match(error.message, /no daemon for Docker's riscv64 at \S*computerd-linux-riscv64/);
-		assert.match(error.message, /npm run build:daemon/);
+		assert.match(error.message, /pnpm --filter @parcha\/agentrun-computer run build:daemon/);
 		return true;
 	});
 	await assert.rejects(docker.create({ docker: join(dir, "no-such-docker") }), /cannot ask Docker its architecture/);
@@ -358,7 +358,7 @@ test("dockerDaemonOf names the daemon create() binds for Docker's architecture a
 	assert.deepEqual(docker.dockerDaemonOf("amd64", built), { path: join(built, "computerd-linux-amd64") });
 	assert.deepEqual(docker.dockerDaemonOf("amd64", none), {
 		path: join(none, "computerd-linux-amd64"),
-		missing: `no daemon for Docker's amd64 at ${join(none, "computerd-linux-amd64")}: run npm run build:daemon -w @parcha/agentrun-computer`,
+		missing: `no daemon for Docker's amd64 at ${join(none, "computerd-linux-amd64")}: run pnpm --filter @parcha/agentrun-computer run build:daemon`,
 	});
 	// A directory by that name is no daemon.
 	mkdirSync(join(none, "computerd-linux-arm64"));
@@ -379,7 +379,7 @@ test("the conformance CLI's usage names every registry id, and an unknown id is 
 	assert.equal(await main(["--provider", "nope"], { stdout: sink(), stderr: err, cwd: HERE }), 2);
 	assert.match(err.text(), /unknown computer provider "nope"/);
 	assert.match(err.text(), KNOWN);
-	assert.match(err.text(), /usage: npm run conformance/);
+	assert.match(err.text(), /usage: pnpm --filter @parcha\/agentrun-computer run conformance/);
 });
 
 test("the conformance CLI names no vendor: no registry id is a literal in its source, so a new computer needs no CLI edit", () => {

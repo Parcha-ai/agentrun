@@ -162,7 +162,7 @@ test("the E2B build makes a template from the same Dockerfile, with the workspac
   // declares no dependency on it, and words that say how to get it when it is missing.
   assert.ok(e2b.includes('const E2B_PACKAGE = "e2b";') && e2b.includes("await import(E2B_PACKAGE)"), "the host's e2b SDK, imported by name");
   assert.doesNotMatch(e2b, /from "e2b"/, "no static import the package would have to declare");
-  assert.match(e2b, /npm ci/, "says how to install it when it is missing");
+  assert.match(e2b, /pnpm install at the repository root/, "says how to install it when it is missing");
   assert.match(e2b, /fromDockerfile\(/);
   assert.match(e2b, /Template\.build\(/);
   assert.ok(e2b.includes("console.log(`template=${name}`)"), "it prints the template's name, as the other builds print theirs");

@@ -1,4 +1,4 @@
-// smol cloud for the conformance CLI: `npm run conformance -w @parcha/agentrun-computer -- --provider smolcloud`. It
+// smol cloud for the conformance CLI: `pnpm --filter @parcha/agentrun-computer run conformance --provider smolcloud`. It
 // makes real machines, which bill until deleted, so it runs only with AGENTRUN_COMPUTER_LIVE_SMOLCLOUD=1 and your own
 // key, under COMPUTER_SMOLCLOUD_API_KEY. The provider reads no environment: this module reads its own COMPUTER_SMOLCLOUD_*
 // names (never SMOLCLOUD_API_KEY, which may hold another account's key) and passes each to create() as its option. The

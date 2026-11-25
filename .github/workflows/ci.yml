@@ -10,11 +10,14 @@ on:
 permissions:
   contents: read
 
-# Reaches every npm and npx in every job, nested ones too unless a script clears the env. A registry request that fails
-# before its response arrives (reset, refused, timed out, 5xx) is retried 5 times, 20 s then 2 min apart (~8 min), not
-# npm's 2 in ~70 s. npm never retries a download that drops midway: each `npm ci` (scripts/npm-ci-retry.mjs, also used
-# by scripts/build-console.mjs) retries once on a network error only.
+# Reaches every pnpm, npm and npx in every job, nested ones too unless a script clears the env. A registry request that
+# fails (reset, refused, timed out, 5xx) is retried 5 times, 20 s then 2 min apart (~8 min), not the default 2 in ~70 s:
+# pnpm installs the workspace and the console (pnpm/action-setup puts package.json's packageManager pnpm on PATH, and
+# setup-node's cache keeps its store); npm stays the consumer the package checks install into.
 env:
+  pnpm_config_fetch_retries: '5'
+  pnpm_config_fetch_retry_mintimeout: '20000'
+  pnpm_config_fetch_retry_maxtimeout: '120000'
   npm_config_fetch_retries: '5'
   npm_config_fetch_retry_mintimeout: '20000'
   npm_config_fetch_retry_maxtimeout: '120000'
@@ -28,10 +31,10 @@ concurrency:
 
 jobs:
   build:
-    # `npm run build` (the console first: the server's build copies it in) once per Node version the test jobs run, its
+    # `pnpm run build` (the console first: the server's build copies it in) once per Node version the test jobs run, its
     # output packed for every job that tests it (scripts/ci-build-output.mjs): each workspace's dist and the console's,
-    # about 10 MB. Those jobs still run their own `npm ci`: node_modules is 1.3 GB, and npm's cache restores it in about
-    # 10 s, faster than an artifact of that size moves. Each refuses an output built from another tree or on another Node.
+    # about 10 MB. Those jobs still run their own `pnpm install`: node_modules is 1.3 GB, and pnpm's cached store links it
+    # in seconds, faster than an artifact of that size moves. Each refuses an output built from another tree or on another Node.
     name: build (${{ matrix.node }})
     # On Blacksmith for a merge-queue candidate and for a pull request from a branch of this repository, as the test
     # shards that wait for it. A fork's pull request, and main, run on GitHub's runners: a fork's code is not the
@@ -44,23 +47,24 @@ jobs:
         node: ['24.22.3']
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-          cache: npm
+          cache: pnpm
           cache-dependency-path: |
-            package-lock.json
-            apps/console/package-lock.json
+            pnpm-lock.yaml
+            apps/console/pnpm-lock.yaml
       - run: npm install --global npm@11.21.0 --ignore-scripts
-      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
-      - run: npm run build
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm run build
       # @parcha/agentrun-computer publishes the daemon, dist/computerd-linux-amd64 and -arm64, which Go builds: in the
       # output the test jobs unpack, so the packages shard's verify-packages finds them, as the release's does.
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: packages/computer/daemon/go.mod
           cache: false
-      - run: npm run build:daemon -w @parcha/agentrun-computer
+      - run: pnpm --filter @parcha/agentrun-computer run build:daemon
       - name: Pack what the build wrote
         run: node scripts/ci-build-output.mjs pack "$RUNNER_TEMP/build"
       - uses: actions/upload-artifact@v4
@@ -102,10 +106,11 @@ jobs:
           # A pull request's any shards also fetch the merge commit's parents: the first is the base its changes are
           # read from.
           fetch-depth: ${{ matrix.shard == 'checks' && '0' || (github.event_name == 'pull_request' && startsWith(matrix.shard, 'any-')) && '2' || '1' }}
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-          cache: npm
+          cache: pnpm
       - name: Changelog fragments
         if: matrix.shard == 'checks'
         env:
@@ -133,7 +138,7 @@ jobs:
             sleep "$pause"
           done
           pdftoppm -v && gs --version && ffmpeg -version | head -1
-      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
+      - run: pnpm install --frozen-lockfile --ignore-scripts
       - uses: actions/download-artifact@v4
         with:
           name: build-${{ matrix.node }}
@@ -141,20 +146,20 @@ jobs:
       - name: The build job's output, for this tree and this Node
         run: node scripts/ci-build-output.mjs unpack "$RUNNER_TEMP/build"
       - if: matrix.shard == 'checks'
-        run: npm run typecheck
+        run: pnpm run typecheck
       - name: undici in this install is at or above its floor
         if: matrix.shard == 'checks'
         run: node scripts/check-undici.mjs
       - name: Imports follow the layer direction
         if: matrix.shard == 'checks'
-        run: npm run check:direction
+        run: pnpm run check:direction
       - if: matrix.shard == 'checks'
         run: node scripts/generate-schema.mjs --check
       - if: matrix.shard == 'checks'
         run: node scripts/generate-clients.mjs --check
       # The source export: checked here, and the archive the downloaded source's consumer installs.
       - if: matrix.shard == 'checks' || matrix.shard == 'source'
-        run: npm run export:source
+        run: pnpm run export:source
       - if: matrix.shard == 'checks'
         run: node scripts/check-generated.mjs
       # TypeScript 5.4.5, the consumers' TypeScript floor.
@@ -164,7 +169,7 @@ jobs:
       - if: matrix.shard == 'packages'
         run: node scripts/verify-packages.mjs --console
       - if: matrix.shard == 'source'
-        run: npm run verify:source
+        run: pnpm run verify:source
       - if: matrix.shard != 'checks' && matrix.shard != 'packages' && matrix.shard != 'source'
         run: |
           if [ -n "$LEAN_SWEEP_DIR" ]; then export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--import=$GITHUB_WORKSPACE/spec/lean/sweep/capture-register.mjs"; fi
@@ -223,7 +228,7 @@ jobs:
     steps: *test-steps
 
   serve-postgres:
-    # @parcha/agentrun-serve's store on Postgres (`npm run test:pg`), against a Postgres service container. verify needs
+    # @parcha/agentrun-serve's store on Postgres (`pnpm --filter ./packages/serve run test:pg`), against a Postgres service container. verify needs
     # it, so a red share fails the required check as a red test shard does. Four jobs, each with a database of its own and a
     # quarter of the suite's files (`--shard`, packages/serve/scripts/test-pg-files.mjs): the suite's longest file sets
     # how long a job's tests take, so a fifth job would not shorten them. The count here and in the step below must
@@ -279,15 +284,16 @@ jobs:
             sleep 0.5
           done
           psql -tAc "SELECT name || '=' || setting FROM pg_settings WHERE name IN ('fsync', 'full_page_writes', 'log_lock_waits', 'deadlock_timeout') ORDER BY name"
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
       - uses: actions/setup-node@v4
         with:
           node-version: '24.22.3'
-          cache: npm
+          cache: pnpm
       - run: npm install --global npm@11.21.0 --ignore-scripts
-      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
-      - run: npm run build
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm run build
       - name: The store's suite on Postgres
-        run: AGENTRUN_TEST_PG_URL="postgres://${PGUSER}:${PGPASSWORD}@127.0.0.1:5432/${PGDATABASE}" npm run test:pg -w packages/serve -- --shard=${{ matrix.shard }}/4
+        run: AGENTRUN_TEST_PG_URL="postgres://${PGUSER}:${PGPASSWORD}@127.0.0.1:5432/${PGDATABASE}" pnpm --filter ./packages/serve run test:pg --shard=${{ matrix.shard }}/4
 
   console:
     # apps/console, the server's console: a private app with its own lockfile (React, Vite, Storybook), outside the
@@ -300,16 +306,17 @@ jobs:
         working-directory: apps/console
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
       - uses: actions/setup-node@v4
         with:
           node-version: '24.22.3'
-          cache: npm
-          cache-dependency-path: apps/console/package-lock.json
-      - run: node ../../scripts/npm-ci-retry.mjs --ignore-scripts
-      - run: npm run typecheck
-      - run: npm test
-      - run: npm run build
-      - run: npm run build-storybook
+          cache: pnpm
+          cache-dependency-path: apps/console/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm run typecheck
+      - run: pnpm test
+      - run: pnpm run build
+      - run: pnpm run build-storybook
 
   python-client:
     # parcha-agentrun (python/), the Python client: its generated module is the server's document's, pyright passes it,
@@ -325,15 +332,16 @@ jobs:
         python: ['3.10', '3.13']
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
       - uses: actions/setup-node@v4
         with:
           node-version: '24.22.3'
-          cache: npm
+          cache: pnpm
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: ${{ matrix.python }}
       - run: npm install --global npm@11.21.0 --ignore-scripts
-      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
+      - run: pnpm install --frozen-lockfile --ignore-scripts
       - uses: actions/download-artifact@v4
         with:
           name: build-24.22.3
@@ -341,7 +349,7 @@ jobs:
       - name: The build job's output, for this tree and this Node
         run: node scripts/ci-build-output.mjs unpack "$RUNNER_TEMP/build"
       - run: node scripts/generate-clients.mjs --check
-      - run: npx pyright -p python
+      - run: pnpm exec pyright -p python
       - name: The client's tests
         env:
           AGENTRUN_PYTHON_REQUIRE_SERVER: '1'
@@ -377,23 +385,24 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
       - uses: actions/setup-node@v4
         with:
           node-version: '24.22.3'
-          cache: npm
+          cache: pnpm
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: packages/computer/daemon/go.mod
           cache: false
       - run: npm install --global npm@11.21.0 --ignore-scripts
-      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
+      - run: pnpm install --frozen-lockfile --ignore-scripts
       - name: The daemon's vet and tests
         working-directory: packages/computer/daemon
         run: go vet ./... && go test ./...
-      - run: npm run build -w @parcha/agentrun-computer
-      - run: npm run build:daemon -w @parcha/agentrun-computer
+      - run: pnpm --filter @parcha/agentrun-computer run build
+      - run: pnpm --filter @parcha/agentrun-computer run build:daemon
       - run: docker pull debian:bookworm-slim
-      - run: npm run test:docker -w @parcha/agentrun-computer
+      - run: pnpm --filter @parcha/agentrun-computer run test:docker
         env:
           AGENTRUN_COMPUTER_LIVE_DOCKER: '1'
 
@@ -499,10 +508,11 @@ jobs:
       CHROME_FOR_TESTING: '155.0.8059.39'
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
       - uses: actions/setup-node@v4
         with:
           node-version: '24.22.3'
-          cache: npm
+          cache: pnpm
       - uses: actions/cache@v4
         with:
           path: ~/chrome-for-testing
@@ -518,32 +528,33 @@ jobs:
         # exits with SIGABRT at startup. This is the runner's documented switch; the sandbox stays on for the tests.
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: npm install --global npm@11.21.0 --ignore-scripts
-      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
+      - run: pnpm install --frozen-lockfile --ignore-scripts
       - uses: actions/download-artifact@v4
         with:
           name: build-24.22.3
           path: ${{ runner.temp }}/build
       - name: The build job's output, for this tree and this Node
         run: node scripts/ci-build-output.mjs unpack "$RUNNER_TEMP/build"
-      - run: npm run test:chrome -w @parcha/pi-browser
+      - run: pnpm --filter @parcha/pi-browser run test:chrome
 
   phoned:
     # phoned, the phone's driver (packages/computer/daemon-android), on a toolchain this job sets up itself (Temurin 17
     # and the pinned Android SDK zips, .github/actions/android-toolchain), so nothing gated depends on it: its build,
     # dist/phoned.jar, checked (a dex jar stamped with the package version), then its JVM tests, the phone harness and
-    # the conformance suite's phone kind against its real core over a scripted phone (npm run test:phoned). Not part
+    # the conformance suite's phone kind against its real core over a scripted phone (pnpm --filter @parcha/agentrun-computer run test:phoned). Not part
     # of the verify gate.
     needs: [build]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
       - uses: actions/setup-node@v4
         with:
           node-version: '24.22.3'
-          cache: npm
+          cache: pnpm
       - run: npm install --global npm@11.21.0 --ignore-scripts
-      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
+      - run: pnpm install --frozen-lockfile --ignore-scripts
       - uses: actions/download-artifact@v4
         with:
           name: build-24.22.3
@@ -551,9 +562,9 @@ jobs:
       - name: The build job's output, for this tree and this Node
         run: node scripts/ci-build-output.mjs unpack "$RUNNER_TEMP/build"
       - uses: ./.github/actions/android-toolchain
-      - run: npm run build:phoned -w @parcha/agentrun-computer
-      - run: npm run check:phoned -w @parcha/agentrun-computer
-      - run: npm run test:phoned -w @parcha/agentrun-computer
+      - run: pnpm --filter @parcha/agentrun-computer run build:phoned
+      - run: pnpm --filter @parcha/agentrun-computer run check:phoned
+      - run: pnpm --filter @parcha/agentrun-computer run test:phoned
 
   console-e2e:
     # The console's flows in a real browser against the built server (apps/console/e2e): the page loads with the server's own
@@ -566,10 +577,11 @@ jobs:
       CHROME_FOR_TESTING: '155.0.8059.39'
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
       - uses: actions/setup-node@v4
         with:
           node-version: '24.22.3'
-          cache: npm
+          cache: pnpm
       - uses: actions/cache@v4
         with:
           path: ~/chrome-for-testing
@@ -583,14 +595,14 @@ jobs:
       - name: Let an unprivileged Chrome start its sandbox
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: npm install --global npm@11.21.0 --ignore-scripts
-      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
+      - run: pnpm install --frozen-lockfile --ignore-scripts
       - uses: actions/download-artifact@v4
         with:
           name: build-24.22.3
           path: ${{ runner.temp }}/build
       - name: The build job's output, for this tree and this Node
         run: node scripts/ci-build-output.mjs unpack "$RUNNER_TEMP/build"
-      - run: npm run test:e2e
+      - run: pnpm run test:e2e
 
   stranger:
     # A package installed from its packed tarball into an empty directory, with an empty environment and home, runs the one command
@@ -605,12 +617,13 @@ jobs:
         spec: [agentrun-dsl, agentrun-jev, pi-browser, agentrun-kernel, agentrun-harness-claude, agentrun-harness-codex, agentrun-harness-acp, agentrun-serve]
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
       - uses: actions/setup-node@v4
         with:
           node-version: '24.22.3'
-          cache: npm
+          cache: pnpm
       - run: npm install --global npm@11.21.0 --ignore-scripts
-      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
+      - run: pnpm install --frozen-lockfile --ignore-scripts
       - uses: actions/download-artifact@v4
         with:
           name: build-24.22.3
@@ -631,13 +644,14 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
       - uses: actions/setup-node@v4
         with:
           node-version: '24.22.3'
-          cache: npm
+          cache: pnpm
       - run: npm install --global npm@11.21.0 --ignore-scripts
-      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
-      - run: npm run build
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm run build
       - name: The server hands a workflow run its decision key
         working-directory: packages/serve
         run: node --test --test-timeout=240000 test/decision-key.test.mjs
@@ -693,7 +707,7 @@ jobs:
   lean:
     # The Lean model of the workflow language (spec/lean): proofs, axiom audit, the model's
     # side of the conformance corpus, and the validator sweep. The TypeScript side of the
-    # conformance corpus runs in `npm test` above. The sweep's workflows come from the lean
+    # conformance corpus runs in `pnpm test` above. The sweep's workflows come from the lean
     # pool's test shards (test-lean), so it waits for them and for no other shard; it runs when
     # one failed too, and the sweep fails if a shard's captures are missing. verify does not need it.
     needs: [test-lean]
@@ -727,14 +741,15 @@ jobs:
         run: lake build
       - name: Run the conformance corpus against the model
         run: lake exe conformance
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
       - uses: actions/setup-node@v4
         with:
           node-version: '24.22.3'
-          cache: npm
+          cache: pnpm
       - run: npm install --global npm@11.21.0 --ignore-scripts
       - name: Build the DSL, whose validator gives TypeScript's verdicts
         working-directory: .
-        run: node scripts/npm-ci-retry.mjs --ignore-scripts && npm run build -w @parcha/agentrun-dsl
+        run: pnpm install --frozen-lockfile --ignore-scripts && pnpm --filter @parcha/agentrun-dsl run build
       - uses: actions/download-artifact@v4
         with:
           pattern: lean-sweep-*

@@ -266,7 +266,7 @@ the dev split; then the held-out split once, for the numbers a report states.
 
 ## Tests
 
-`npm test` runs `test/*.test.mjs` against `dist` at $0: the schema and every suite; the runner on the fake world
+`pnpm test` runs `test/*.test.mjs` against `dist` at $0: the schema and every suite; the runner on the fake world
 (passes and fails, the record, checks before release, infra re-runs, refusals, grants, the three budgets, images,
 stale steps, null and oracle, parallel, both surfaces, exec deny); the grader with fake judges and a fake fetch; the
 statistics, the report (arms in their order, the per-platform tables), labels, verify and the command line; the serve

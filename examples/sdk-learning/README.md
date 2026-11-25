@@ -7,7 +7,7 @@ Use the client and server from this reviewed development checkout. These wrapper
 From the repository root, after installing and building the checkout:
 
 ```sh
-npm run build -w @parcha/agentrun-client
+pnpm --filter @parcha/agentrun-client run build
 npm install --prefix examples/sdk-learning --ignore-scripts --package-lock=false
 ```
 
@@ -49,8 +49,8 @@ The workflow variants add an explicit MCP bridge to each native SDK. This exampl
 Build the DSL and client before installing the standalone example dependencies:
 
 ```sh
-npm run build -w @parcha/agentrun-dsl
-npm run build -w @parcha/agentrun-client
+pnpm --filter @parcha/agentrun-dsl run build
+pnpm --filter @parcha/agentrun-client run build
 npm install --prefix examples/sdk-learning --ignore-scripts --package-lock=false
 npm run claude:workflows --prefix examples/sdk-learning -- --live
 # Or test the other native SDK:

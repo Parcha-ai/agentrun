@@ -283,14 +283,24 @@ async function familyRegistry(work) {
   await add(`${FAMILY}pi-coding-agent`, '1.1.0', { 'index.js': "import { MCP_TYPESCRIPT_PREAMBLE } from '@earendil-works/pi-codemode/declarations';\nexport const preamble = MCP_TYPESCRIPT_PREAMBLE;\n" }, { [`${FAMILY}pi-codemode`]: '^1.1.0' });
   return { registry: `${base}/`, close: () => new Promise(done => server.close(done)) };
 }
-const familyLock = { [`node_modules/${FAMILY}pi-coding-agent`]: { version: '1.1.0', dependencies: { [`${FAMILY}pi-codemode`]: '^1.1.0' } }, [`node_modules/${FAMILY}pi-codemode`]: { version: '1.1.0' } };
+// The repository's pnpm lockfile (JSON is YAML): the root develops on the coding agent, which resolved pi-codemode at `codemode`.
+const familyLock = (codemode = '1.1.0') => JSON.stringify({
+  lockfileVersion: '9.0',
+  importers: { '.': { devDependencies: { [`${FAMILY}pi-coding-agent`]: { specifier: '1.1.0', version: '1.1.0' } } } },
+  packages: { [`${FAMILY}pi-coding-agent@1.1.0`]: { resolution: { integrity: 'sha512-agent' } }, [`${FAMILY}pi-codemode@${codemode}`]: { resolution: { integrity: 'sha512-codemode' } } },
+  snapshots: { [`${FAMILY}pi-coding-agent@1.1.0`]: { dependencies: { [`${FAMILY}pi-codemode`]: codemode } }, [`${FAMILY}pi-codemode@${codemode}`]: {} },
+});
+const writeRootLock = async (root, codemode) => {
+  await writeFile(join(root, 'package.json'), JSON.stringify({ name: 'root', private: true }));
+  await writeFile(join(root, 'pnpm-lock.yaml'), familyLock(codemode));
+};
 async function inRegistryFixture(fn, extraEnv = {}) {
   const work = await mkdtemp(join(tmpdir(), 'agentrun-family-registry-'));
   const registry = await familyRegistry(work);
   try {
     const root = join(work, 'root'); const consumer = join(work, 'consumer');
     await mkdir(root); await mkdir(consumer);
-    await writeFile(join(root, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages: familyLock }));
+    await writeRootLock(root);
     const env = { ...process.env, npm_config_cache: join(work, 'cache'), npm_config_userconfig: join(work, 'npmrc'), npm_config_update_notifier: 'false' };
     Object.assign(env, extraEnv);
     await fn({ root, consumer, registry: registry.registry, run: (command, args, options) => exec(command, args, { ...options, env }), load: () => exec(process.execPath, ['-e', "import('@earendil-works/pi-coding-agent').then(m => console.log(m.preamble))"], { cwd: consumer, env }) });
@@ -339,12 +349,12 @@ test('the registry consumer pins a family edge to the version the repository loc
   assert.equal((await load()).stdout.trim(), 'preamble');
 }));
 test('the registry consumer fails when the pins cannot be met', () => inRegistryFixture(async ({ root, consumer, registry, run }) => {
-  await writeFile(join(root, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages: { ...familyLock, [`node_modules/${FAMILY}pi-codemode`]: { version: '1.0.9' } } }));
+  await writeRootLock(root, '1.0.9');
   await rejectsWithNpmError(installRegistryConsumer(consumer, { requested: [`${FAMILY}pi-coding-agent@1.1.0`], root, registry, run }), consumer, /ETARGET|No matching version/);
 }));
 // `npm run -s` hands its children npm_config_loglevel=silent, which empties npm's stderr: the refusal must still say why.
 test('the registry consumer\'s refusal names npm\'s reason when the caller silenced npm', () => inRegistryFixture(async ({ root, consumer, registry, run }) => {
-  await writeFile(join(root, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages: { ...familyLock, [`node_modules/${FAMILY}pi-codemode`]: { version: '1.0.9' } } }));
+  await writeRootLock(root, '1.0.9');
   await rejectsWithNpmError(installRegistryConsumer(consumer, { requested: [`${FAMILY}pi-coding-agent@1.1.0`], root, registry, run }), consumer, /ETARGET|No matching version/);
 }, { npm_config_loglevel: 'silent' }));
 test('the installed tree is checked against the lockfile: an install that succeeds on a version the lockfile does not hold fails', () => inRegistryFixture(async ({ root, consumer, registry, run }) => {

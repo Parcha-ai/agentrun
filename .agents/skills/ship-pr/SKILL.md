@@ -27,7 +27,7 @@ slot for paid runs, a model gateway) live outside the repository: in the file `S
 |---|---|
 | Protection | ruleset `main`: pull request, 1 approval, stale approvals dismissed on push, threads resolved, linear history; merge queue, HEADGREEN, up to 5 entries, squash |
 | Required checks | `verify` and `lean`; `gh api repos/{owner}/{repo}/rulesets` is the authority. Every other job (stranger, floors, `pi-1-2`, `real-chrome`, `lean`) is a merge condition by this skill, not by the ruleset: a red one is fixed or named with its cause in the batch line |
-| Toolchain | Node 24.22.3 or later (`.nvmrc`); npm 11. Regenerate `package-lock.json` only with npm 11 (`--package-lock-only`), never by hand |
+| Toolchain | Node 24.22.3 or later (`.nvmrc`); pnpm 12.22.0 (`packageManager`) installs, npm 11 is the package checks' consumer. Change `pnpm-lock.yaml` only through pnpm, never by hand |
 | Changelog | a fragment in `changes/` per pull request with a user-visible change; no pull request edits an `Unreleased` section (`changes/README.md`) |
 | Identity | the machine identity authors, pushes, replies, resolves and arms auto-merge; only the maintainer approves |
 
@@ -46,24 +46,24 @@ A draft is its author's: gate it only when it is marked ready.
 
 If the pull request conflicts with `origin/main`, or main changed a file it touches, rebase it
 (an approved pull request is never pushed: its approval would be dismissed and it goes back to the
-maintainer). Regenerate generated files with their generators (`npm run export:source`, the lock with
-npm 11), never by hand. Push with `--force-with-lease=<branch>:<old-head>`.
+maintainer). Regenerate generated files with their generators (`pnpm run export:source`, the lock with
+pnpm), never by hand. Push with `--force-with-lease=<branch>:<old-head>`.
 
 ## Step 3: local checks on the head
 
 ```bash
 umask 022                       # this check shell: fixture directories must not be group-writable
-npm ci --ignore-scripts && npm run build
-npm run build:daemon -w @parcha/agentrun-computer  # before check when Docker-backed serve/client demos apply
-npm run check
+pnpm install --frozen-lockfile && pnpm run build
+pnpm --filter @parcha/agentrun-computer run build:daemon  # before check when Docker-backed serve/client demos apply
+pnpm run check
 node scripts/changes.mjs --check --base origin/main
-npm run export:source && node scripts/check-generated.mjs
-npm run verify:source
-npm run verify:packages          # when a package's files, manifest or the lock change
+pnpm run export:source && node scripts/check-generated.mjs
+pnpm run verify:source
+pnpm run verify:packages         # when a package's files, manifest or the lock change
 ```
 
 Docker-backed serve/client demos need the computer daemon in a fresh checkout. Build it after
-the initial package build and before `npm run check`; the check's rebuild does not remove it.
+the initial package build and before `pnpm run check`; the check's rebuild does not remove it.
 Package-consumer verification still needs the daemon built as `CONTRIBUTING.md` requires.
 Run these checks in a shell with umask 022: Docker custody checks correctly reject fixture
 directories made group-writable by umask 002. Do not relax the daemon's permission checks.
@@ -92,21 +92,21 @@ required, the command, the pass rule and the cost. Its lead owns that section.
 ### `@parcha/pi-browser`
 
 - **When:**
-  - **Real Chrome:** any change to `packages/pi-browser/src/**`, `package.json`, `scripts/**`, `test/**` or `examples/**`, or to `package-lock.json` when it moves a pi-browser dependency.
+  - **Real Chrome:** any change to `packages/pi-browser/src/**`, `package.json`, `scripts/**`, `test/**` or `examples/**`, or to `pnpm-lock.yaml` when it moves a pi-browser dependency.
   - **Package contents:** a change to the manifest (`exports`, `files`, `bin`, `peerDependencies`) or to anything the tarball ships.
   - A diff of only the README or `changes/` runs the stranger spec and nothing else here.
 - **Real Chrome,** from the repository root at the head, with `CHROME_PATH` naming Chrome for Testing at the version CI pins (`CHROME_FOR_TESTING` in the workflow):
 
   ```bash
-  npm ci --ignore-scripts && npm run build
-  npm run test:chrome -w @parcha/pi-browser
-  npm test -w @parcha/pi-browser
+  pnpm install --frozen-lockfile && pnpm run build
+  pnpm --filter @parcha/pi-browser run test:chrome
+  pnpm --filter @parcha/pi-browser test
   ```
 
   **Pass:** each command exits 0. The suites fail a file that leaves a process or a directory behind, so a teardown leak is a failure, not a warning.
 
   A fix for a flaky test also runs that file 16 times, four at a time, on the Node CI uses, plus a forced version of the race it fixes. The body gives the counts. A flake fixed only by hoping is not fixed.
-- **Package contents:** `npm run verify:tarball -w @parcha/pi-browser`. **Pass:** exit 0. Then `node scripts/stranger.mjs pi-browser`, whose spec runs the README's no-key command and must print the README's block byte for byte.
+- **Package contents:** `pnpm --filter @parcha/pi-browser run verify:tarball`. **Pass:** exit 0. Then `node scripts/stranger.mjs pi-browser`, whose spec runs the README's no-key command and must print the README's block byte for byte.
 - **Needs:**
   - Chrome for Testing at CI's pinned version. On Ubuntu 24.04, an unprivileged Chrome needs `kernel.apparmor_restrict_unprivileged_userns=0`, the runner's documented switch; the sandbox stays on.
   - Node 24.22.3 or later.

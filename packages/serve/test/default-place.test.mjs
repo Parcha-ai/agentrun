@@ -43,7 +43,7 @@ async function fakeDocker(t, marks = {}) {
 // The Docker computer's daemon file, which the computer package's build:daemon makes with Go (CI's build job does; a machine
 // with no Go has none). The fake docker never runs it: the provider asks Docker's architecture, then copies and binds the file.
 const DAEMON = fileURLToPath(new URL("../../computer/dist/computerd-linux-amd64", import.meta.url));
-const NO_DAEMON = !existsSync(DAEMON) && "no computerd-linux-amd64: run npm run build:daemon -w @parcha/agentrun-computer (CI's build job does)";
+const NO_DAEMON = !existsSync(DAEMON) && "no computerd-linux-amd64: run pnpm --filter @parcha/agentrun-computer run build:daemon (CI's build job does)";
 
 /** A Docker host first on PATH and docker listed in AGENTRUN_BOXES, where a run in the box gets a computer whose fake
  *  computerd (computer/test/fake-computerd.mjs) runs its exec, file and process calls in the computer's folders, /workspace

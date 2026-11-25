@@ -5,11 +5,13 @@ import { createHash } from 'node:crypto';
 import { chmodSync, closeSync, existsSync, mkdtempSync, openSync, readFileSync, readSync, rmSync, truncateSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { after, test } from 'node:test';
 import { codexTarget, findCodex } from '../dist/binary.js';
 import { localMachine } from '../dist/host/machine.js';
 import { CODEX_ROUTES, gatewayHandler } from '../dist/host/process.js';
 import { codexPins, verifyCodex, verifyCodexBinary, verifyCodexBinaryAsync } from '../dist/verify.js';
+import { lockedEntry, readLock } from '../../../scripts/pnpm-lock.mjs';
 import { CODEX_BINARY_SHA256, CODEX_NPM_INTEGRITY, CODEX_VERSION, CodexNotInstalled, CodexPinMismatch } from '../dist/versions.js';
 
 const ROOT = mkdtempSync(join(tmpdir(), 'agentrun-codex-pins-'));
@@ -34,12 +36,13 @@ test('the pin is Codex 0.164.0, with a binary sha256 for every target the lookup
 });
 
 test("the repository's lockfile installs exactly the pinned launcher and platform packages (version and npm sha512)", () => {
-  const lock = JSON.parse(readFileSync(new URL('../../../package-lock.json', import.meta.url), 'utf8')).packages;
+  const lock = readLock(fileURLToPath(new URL('../../../', import.meta.url)));
   for (const [name, integrity] of Object.entries(CODEX_NPM_INTEGRITY)) {
-    const entry = lock[`node_modules/${name}`];
+    // A platform package is an alias of @openai/codex at a platform version (npm:@openai/codex@<version>-<platform>).
+    const version = name === '@openai/codex' ? CODEX_VERSION : `${CODEX_VERSION}-${name.slice('@openai/codex-'.length)}`;
+    const entry = lockedEntry(lock, '@openai/codex', version);
     assert.ok(entry, `${name} is in the lockfile`);
-    assert.equal(entry.version, name === '@openai/codex' ? CODEX_VERSION : `${CODEX_VERSION}-${name.slice('@openai/codex-'.length)}`, name);
-    assert.equal(entry.integrity, integrity, name);
+    assert.equal(entry.resolution?.integrity, integrity, name);
   }
 });
 

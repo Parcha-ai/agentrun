@@ -1,0 +1,8 @@
+# The console is its own pnpm project, outside the repository's workspace, with its own lockfile: this file makes this
+# directory its root, so pnpm here never installs the workspace above it.
+nodeLinker: hoisted
+
+# No dependency runs an install script (npm ci --ignore-scripts before); a new one with a script fails the install until
+# it is named here.
+allowBuilds:
+  esbuild: false

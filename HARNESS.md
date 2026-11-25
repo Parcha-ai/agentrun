@@ -23,13 +23,13 @@ Each step ends on a command that tells you whether it is done. Run them from the
 
 1. Watch a module pass before you write one. This runs the conformance suite on the example's harness, against a
    fake ACP agent, with no binary, no model and no key:
-   `npm run test:harness-module-example`
+   `pnpm run test:harness-module-example`
    It is done when it ends as [What passing looks like](#what-passing-looks-like) shows.
 2. Copy the example from the tag of the release your server runs,
    `https://github.com/Parcha-ai/agentrun/tree/v<version>/examples/harness-module`, to a folder of your own, and give
    it your package name. Its `@parcha` pins are that release's. Change [what you write](#what-you-write): the id, the
    facts, the recipe, the proxy and `missing`.
-3. Run `npm test` in your copy until it passes the same way ([prove it](#prove-it)).
+3. Run `pnpm test` in your copy until it passes the same way ([prove it](#prove-it)).
 4. Install it beside a server and start the server with it ([load it](#load-it)). `GET /v2/capabilities` lists your
    harness in `harnesses` after the built-in ones.
 5. Run one agent on it on a real model, then [send it](#send-it).
@@ -181,7 +181,7 @@ and its cost line shows the requests your proxy booked.
 
 A module is yours to publish: an owner installs it by package name. To have it listed here, open a pull request that
 adds a row to [docs/examples.md](docs/examples.md) with:
-- the conformance output above, from your module's `npm test`;
+- the conformance output above, from your module's `pnpm test`;
 - the id and cost line of one live run, and the model it ran on;
 - what your facts rule out, in a sentence.
 

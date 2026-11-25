@@ -1,4 +1,4 @@
-// Agent37 for the conformance CLI: `npm run conformance -w @parcha/agentrun-computer -- --provider agent37`.
+// Agent37 for the conformance CLI: `pnpm --filter @parcha/agentrun-computer run conformance --provider agent37`.
 // It makes real instances, which bill per minute until deleted, so it runs only with AGENTRUN_COMPUTER_LIVE_AGENT37=1
 // and a key for an account you can bill, under COMPUTER_AGENT37_API_KEY, beside COMPUTER_AGENT37_SSH_KEY, the private half (its
 // contents) of an SSH key registered on the same workspace. The provider reads no environment: this module reads its

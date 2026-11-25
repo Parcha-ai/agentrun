@@ -19,7 +19,7 @@ Each package's README is its API reference. A package with no dependency on the 
 | --- | --- |
 | `packages/dsl` | `@parcha/agentrun-dsl`: types, validator, interpreter (`src/workflow.ts`), CLI (`agentrun-dsl`). Node reference: `skills/author/references/language.md`, generated from `src/author.ts` (edit the source); judgment design: `jev-decisions.md` beside it. `schema/workflow.schema.json` is generated too |
 | `packages/jev` | `runJudge` adapter for Jev, and `jevProvider` (Jev as a `DecisionProvider`) |
-| `packages/pi-browser` | packages/pi-browser is the source; other repos copy FROM it. Real-Chrome suites run only in the `real-chrome` CI job (`npm run test:chrome -w @parcha/pi-browser`) |
+| `packages/pi-browser` | packages/pi-browser is the source; other repos copy FROM it. Real-Chrome suites run only in the `real-chrome` CI job (`pnpm --filter @parcha/pi-browser run test:chrome`) |
 | `packages/import` | `@parcha/agentrun-import`: readers for the coding-agent sessions under a home (Claude Code, Codex, pi) into serve's Session shape. A source is a `Reader` in `src/readers/` (`discover(home, env)` to locators `{ file, id? }`, `read(locator, cursor?)` to sessions and an opaque cursor), one line in the registry `src/readers/index.ts`. `normalizeUsage` is the one token reading (input excludes cache). `dist/cli.js <home> --known-answer` prints per-session totals, numbers only. Depends on no workspace package; `serve` depends on it at runtime |
 | `packages/web` | `@parcha/agentrun-web`: serve's `web_search` and `web_fetch` machinery (providers, breakers, the per-run page cache, the direct fetch, Parallel's prices). Imports no workspace package, pi package or vendor SDK: the provider order, keys, public-host guard (`Guard`, serve passes pi-browser's `publicFetch`, `publicCheck` and `readPage`), cap (`Pay`) and refusal words come in through `WebConfig` or a function's options. pi-browser is a dev dependency, for its tests only; `serve` depends on it at runtime |
 | `packages/serve` | v2 API at `/v2`, on loopback port 7340 by default, over one store; a runner (`src/runner/`, beside the server by default) claims and runs each run; `--faux` needs no key and its tests use it |
@@ -27,8 +27,8 @@ Each package's README is its API reference. A package with no dependency on the 
 | `packages/run-adapters`, `run-adapters-claude-agent`, `run-adapters-codex` | Host-neutral (`scripts/check-package-imports.mjs`). Code taken from vercel-labs/durable-harness is AgentRun's own since the port froze (2026-11-07): edit it in place. `vendor/durable-harness/UPSTREAM.json` records where each copy came from, each copy keeps its three-line header, and NOTICE keeps the attribution (`scripts/vendor-durable-harness.mjs` checks both). The Claude adapter pins an exact SDK/CLI pair, the Codex adapter Codex 0.164.0 (its key-holding proxy forwards only `POST /v1/responses`); their real-binary `test/tool-off.test.mjs` skips locally without the binary, and CI sets `AGENTRUN_CLAUDE_AGENT_REQUIRE_BINARY=1` and `AGENTRUN_CODEX_REQUIRE_BINARY=1` so it fails instead |
 | `packages/eve` | Held. Additive extension for existing eve agents; pins eve 1.0.0 and supplies checked learning while retaining original execution. Its package metadata preserves DSL assets. `scripts/verify-eve-package.mjs` checks installed archives in a separate production-build consumer |
 | `spec/lean`, `spec/receipts` | Lean model plus conformance corpus; TLA+ model `Receipts.tla` (see Models of recovery) |
-| `examples/` | Offline (`npm run test:examples`, `*-live.test.mjs` included); runs with real keys are opt-in. Index: `docs/examples.md` |
-| `apps/console` | The server's console (React, Vite, Tailwind), outside the workspaces with its own lockfile; `packages/serve` serves its build. Before any change someone sees, read [docs/console-design-system.md](docs/console-design-system.md): colours, sizes, layers and durations are tokens in `src/tokens.css`, and controls and messages are the primitives in `src/components/ui`. `npm test` in `apps/console` holds both. `npm run storybook` serves the catalogue to agents over MCP at `http://127.0.0.1:6006/mcp` |
+| `examples/` | Offline (`pnpm run test:examples`, `*-live.test.mjs` included); runs with real keys are opt-in. Index: `docs/examples.md` |
+| `apps/console` | The server's console (React, Vite, Tailwind), outside the workspaces with its own lockfile; `packages/serve` serves its build. Before any change someone sees, read [docs/console-design-system.md](docs/console-design-system.md): colours, sizes, layers and durations are tokens in `src/tokens.css`, and controls and messages are the primitives in `src/components/ui`. `pnpm test` in `apps/console` holds both. `pnpm run storybook` serves the catalogue to agents over MCP at `http://127.0.0.1:6006/mcp` |
 | `changes/`, `docs/`, `scripts/` | Changelog fragments; guides (`guide.md`, `authoring.md`, `host-integration.md`, `releasing.md`); generation and verification scripts |
 
 The workspace packages share one version unless explicitly given their own version line. `"private": true` holds `eve`: built, tested,
@@ -37,31 +37,37 @@ verified and versioned like the rest, never published; removing the flag lifts a
 ## Setup and checks
 
 Use Node 24.22.3 or newer (the packages' `engines`, Node's November 2026 security release; `.nvmrc` pins 24.22.3)
-and npm 11 (CI pins 11.21.0). `scripts/check-node.mjs` refuses anything older, patch included, which covers Node 23 and
+pnpm 12.22.0 installs the repository (package.json's `packageManager`; `corepack enable` or
+`npm install --global pnpm@12.22.0` puts it on PATH), and npm 11 (CI pins 11.21.0) is the consumer the package checks
+install into. `scripts/check-node.mjs` refuses anything older, patch included, which covers Node 23 and
 24.0-24.1, which have no `import.meta.main`. A script in `scripts/`
 decides it is the command with `isMain(import.meta)` (`scripts/is-main.mjs`), which refuses the command on such a Node
 instead of exiting 0 having done nothing.
-Regenerate `package-lock.json` only with npm 11 (`npm install --package-lock-only`), never by hand,
-then `npm run export:source` and commit `docs/dependencies.md`: CI's `check-generated.mjs` fails on
-a stale one and `npm run check` does not catch it.
+Change dependencies with pnpm (`pnpm add`, or a manifest edit then `pnpm install`), never by editing `pnpm-lock.yaml`;
+`node_modules` is hoisted as npm's was (`nodeLinker: hoisted` in `pnpm-workspace.yaml`), and a workspace package names
+another at its exact version, never `workspace:`, so the manifests publish as written. Then `pnpm run export:source`
+(`node scripts/export-source.mjs --licenses` first when it names a package with no recorded license) and commit
+`docs/dependencies.md` and `scripts/dependency-licenses.json`: CI's `check-generated.mjs` fails on a stale one and
+`pnpm run check` does not catch it. A dependency with an install script fails the install until `allowBuilds` in
+`pnpm-workspace.yaml` names it.
 
 ```sh
-npm ci --ignore-scripts
-npm run build
-npm test
-npm run check   # build, generated-file checks, typecheck, all tests, examples
-npm run build:daemon -w @parcha/agentrun-computer   # the computer daemon: Go builds it, else npm's same version when the daemon source matches; verify:packages needs it
-npm run verify:packages   # packs each package into a clean consumer (install needs network; CI packages shard)
+pnpm install --frozen-lockfile
+pnpm run build
+pnpm test
+pnpm run check   # build, generated-file checks, typecheck, all tests, examples
+pnpm --filter @parcha/agentrun-computer run build:daemon   # the computer daemon: Go builds it, else npm's same version when the daemon source matches; verify:packages needs it
+pnpm run verify:packages   # packs each package into a clean consumer (install needs network; CI packages shard)
 ```
 
 - Package suites import `dist/`, so rebuild before running one file with `node --test`.
 - Tests use scripted adapters and need no credentials or network. Live examples are opt-in.
-- After changing workflow types: `npm run build`, then `node scripts/generate-schema.mjs`,
+- After changing workflow types: `pnpm run build`, then `node scripts/generate-schema.mjs`,
   `node scripts/generate-author-contract.mjs` (reads `packages/dsl/dist/`) and
-  `node scripts/generate-author-references.mjs`; `npm run check` fails on any stale output.
+  `node scripts/generate-author-references.mjs`; `pnpm run check` fails on any stale output.
 - Fragments are validated by `node scripts/changes.mjs --check --base origin/main` (CI step 1),
   which also fails any edit of an `Unreleased` section.
-- Packaging changes: `npm run export:source` and `npm run verify:source`.
+- Packaging changes: `pnpm run export:source` and `pnpm run verify:source`.
 
 ## The host boundary
 
@@ -101,7 +107,7 @@ agree on them. When validation, state paths, branch merges, loops or desugaring 
 3. Run the Lean checks in [CONTRIBUTING.md](CONTRIBUTING.md#changing-workflow-behavior) (`lake
    build`, `lake exe conformance`, the validator sweep).
 
-CI runs Lean separately from `npm run check`. Documentation-only changes don't need Lean.
+CI runs Lean separately from `pnpm run check`. Documentation-only changes don't need Lean.
 
 ## Models of recovery
 
@@ -147,7 +153,7 @@ counterexample, never deleted.
   explicitly authorized delegated maintainer approval. Stack workers prepare only; the
   coordinator owns approval and queue submission.
 - This repository is public. Keep machine paths, internal hostnames, credentials and customer data
-  out of code, tests, commits and issues. `npm run export:source` rejects many of these.
+  out of code, tests, commits and issues. `pnpm run export:source` rejects many of these.
 - Never publish from a local machine. Releases go through the reviewed workflow in
   [docs/releasing.md](docs/releasing.md).
 - Report vulnerabilities as described in [SECURITY.md](SECURITY.md), never in a public issue.

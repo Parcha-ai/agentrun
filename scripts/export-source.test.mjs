@@ -1,16 +1,42 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rm, writeFile, access } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
 const exec = promisify(execFile);
 const exporter = await readFile(new URL('./export-source.mjs', import.meta.url));
 const machinePathRule = await readFile(new URL('./machine-path.mjs', import.meta.url));
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
+const pnpmLockReader = await readFile(new URL('./pnpm-lock.mjs', import.meta.url));
+const npmCommand = await readFile(new URL('./npm-command.mjs', import.meta.url));
+const WORKSPACES = ['dsl', 'jev', 'pi-browser', 'import', 'web', 'serve', 'decisions', 'computer', 'client', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'run-adapters-acp', 'agentrun'];
+
+// The fixture's dependencies, written as pnpm writes them (JSON is YAML): `importers` maps a directory to its manifest's
+// dependency fields, `{ field: { name: version } }`, each resolved as written; `packages` maps `name@version` to its own
+// `dependencies` (resolved as written), peers, `optional` and `license`, which goes to scripts/dependency-licenses.json.
+// Every workspace package has a manifest and an importer.
+async function writeDependencies(write, { importers = {}, packages = {} } = {}) {
+  const resolved = deps => deps && Object.fromEntries(Object.entries(deps).map(([name, version]) => [name, { specifier: version, version }]));
+  const lock = { lockfileVersion: '9.0', importers: {}, packages: {}, snapshots: {} };
+  for (const dir of ['.', ...WORKSPACES.map(name => `packages/${name}`)]) {
+    const { peerDependencies, peerDependenciesMeta, ...fields } = importers[dir] ?? {};
+    lock.importers[dir] = Object.fromEntries(Object.entries(fields).map(([field, deps]) => [field, resolved(deps)]));
+    if (dir !== '.') await write(`${dir}/package.json`, JSON.stringify({ name: `@fixture/${dir.slice('packages/'.length)}`, version: '0.0.0', ...fields, peerDependencies, peerDependenciesMeta }));
+  }
+  const licenses = {};
+  for (const [key, { dependencies, peerDependencies, peerDependenciesMeta, optional, license }] of Object.entries(packages)) {
+    lock.packages[key] = { resolution: { integrity: `sha512-${key}` }, peerDependencies, peerDependenciesMeta };
+    lock.snapshots[key] = { dependencies, optional };
+    if (license !== undefined) licenses[key] = license;
+  }
+  await write('pnpm-lock.yaml', JSON.stringify(lock));
+  await write('scripts/dependency-licenses.json', JSON.stringify(licenses));
+}
 
 test('connector source and notices ship without local worker state or Python build output', async t => {
   const f = await fixture(t);
@@ -46,15 +72,17 @@ async function fixture(t) {
   };
   await write('scripts/export-source.mjs', exporter);
   await write('scripts/machine-path.mjs', machinePathRule);
+  await write('scripts/pnpm-lock.mjs', pnpmLockReader);
+  await write('scripts/npm-command.mjs', npmCommand);
+  // The reader's yaml, as the repository's node_modules holds it.
+  await symlink(fileURLToPath(new URL('../node_modules', import.meta.url)), join(root, 'node_modules'));
   await write('package.json', JSON.stringify({ name: 'fixture', private: true }));
-  await write('package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: {
-    '': {}, 'packages/dsl': {}, 'packages/jev': {}, 'packages/pi-browser': {}, 'packages/import': {}, 'packages/web': {}, 'packages/serve': {}, 'packages/decisions': {}, 'packages/computer': {}, 'packages/client': {}, 'packages/run-adapters': {}, 'packages/run-adapters-claude-agent': {}, 'packages/run-adapters-codex': {}, 'packages/run-adapters-acp': {}, 'packages/agentrun': {},
-  } }));
+  await writeDependencies(write);
   await write('docs/guide.md', '# Public fixture\n');
   await write('packages/dsl/schema/workflow.schema.json', '{}\n');
   const run = (...args) => exec(process.execPath, [join(root, 'scripts/export-source.mjs'), ...args], { cwd: root });
   const listing = async () => (await exec('tar', ['-tzf', join(root, '.release/agentrun-dsl-source.tar.gz')])).stdout;
-  return { root, write, run, listing };
+  return { root, write, run, listing, dependencies: spec => writeDependencies(write, spec) };
 }
 
 test('source archives exclude website files, build output, and private review state', async t => {
@@ -153,7 +181,7 @@ test('the removed website output flag is rejected before writing artifacts', asy
   const f = await fixture(t);
   await assert.rejects(f.run('--site-download'), error => {
     assert.equal(error.code, 1);
-    assert.match(error.stderr, /Usage: node scripts\/export-source\.mjs \[--inventory-only\]/);
+    assert.match(error.stderr, /Usage: node scripts\/export-source\.mjs \[--inventory-only \| --licenses\]/);
     return true;
   });
   await assert.rejects(access(join(f.root, '.release')));
@@ -360,15 +388,12 @@ test('inventory generation works without build output and does not produce an ar
 
 test('the dependency inventory follows the runtime graph only: a lock that changes a dev-only entry gives the same bytes, a runtime dependency changes them', async t => {
   const f = await fixture(t);
-  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi-browser', 'import', 'web', 'serve', 'decisions', 'computer', 'client', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'run-adapters-acp', 'agentrun'].map(name => [`packages/${name}`, {}]));
-  const lock = ({ dev, runtime } = {}) => JSON.stringify({ lockfileVersion: 3, packages: {
-    '': dev ? { devDependencies: { 'dev-tool': dev } } : {},
-    ...workspaces,
-    ...(runtime ? { 'packages/dsl': { dependencies: { 'runtime-lib': runtime } }, 'node_modules/runtime-lib': { version: runtime, license: 'MIT' } } : {}),
-    ...(dev ? { 'node_modules/dev-tool': { version: dev, license: 'MIT', dev: true } } : {}),
-  } });
-  const inventory = async lockText => {
-    await f.write('package-lock.json', lockText);
+  const lock = ({ dev, runtime } = {}) => ({
+    importers: { '.': dev ? { devDependencies: { 'dev-tool': dev } } : {}, ...(runtime ? { 'packages/dsl': { dependencies: { 'runtime-lib': runtime } } } : {}) },
+    packages: { ...(runtime ? { [`runtime-lib@${runtime}`]: { license: 'MIT' } } : {}), ...(dev ? { [`dev-tool@${dev}`]: {} } : {}) },
+  });
+  const inventory = async spec => {
+    await f.dependencies(spec);
     await f.run('--inventory-only');
     return readFile(join(f.root, 'docs/dependencies.md'));
   };
@@ -380,15 +405,17 @@ test('the dependency inventory follows the runtime graph only: a lock that chang
   assert.match(withRuntime.toString('utf8'), /runtime-lib/);
 });
 
+// pnpm's lockfile keeps no license: a runtime package whose declared license is not recorded stops the inventory, so a
+// dependency change cannot list a package as UNKNOWN unnoticed.
+test('a runtime package with no recorded license stops the inventory and names the command that records it', async t => {
+  const f = await fixture(t);
+  await f.dependencies({ importers: { 'packages/dsl': { dependencies: { 'new-lib': '1.0.0' } } }, packages: { 'new-lib@1.0.0': {} } });
+  await assert.rejects(f.run('--inventory-only'), error => /No declared license recorded for new-lib@1\.0\.0: run node scripts\/export-source\.mjs --licenses/.test(error.stderr));
+});
+
 test('the ACP harness package is an inventory root: its runtime dependency ships in the source archive and is listed for it', async t => {
   const f = await fixture(t);
-  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi-browser', 'import', 'web', 'serve', 'decisions', 'computer', 'client', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'run-adapters-acp', 'agentrun'].map(name => [`packages/${name}`, {}]));
-  await f.write('package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: {
-    '': {},
-    ...workspaces,
-    'packages/run-adapters-acp': { dependencies: { 'acp-sdk': '2.7.0' } },
-    'node_modules/acp-sdk': { version: '2.7.0', license: 'Apache-2.0' },
-  } }));
+  await f.dependencies({ importers: { 'packages/run-adapters-acp': { dependencies: { 'acp-sdk': '2.7.0' } } }, packages: { 'acp-sdk@2.7.0': { license: 'Apache-2.0' } } });
   await f.run('--inventory-only');
   const inventory = await readFile(join(f.root, 'docs/dependencies.md'), 'utf8');
   assert.match(inventory, /\| acp-sdk \| 2\.7\.0 \| Apache-2\.0 \| run-adapters-acp \| no \| 1 \|/);
@@ -399,15 +426,8 @@ test('the ACP harness package is an inventory root: its runtime dependency ships
 // version is read as its manifest says again (UNKNOWN until it is checked), never carried over.
 test('the inventory reads the pinned OpenCode binaries as MIT, flags nothing for them, and reads a bumped one as its manifest says', async t => {
   const f = await fixture(t);
-  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi-browser', 'import', 'web', 'serve', 'decisions', 'computer', 'client', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'run-adapters-acp', 'agentrun'].map(name => [`packages/${name}`, {}]));
-  const lock = version => JSON.stringify({ lockfileVersion: 3, packages: {
-    '': {},
-    ...workspaces,
-    'packages/serve': { optionalDependencies: { 'opencode-linux-x64': version } },
-    'node_modules/opencode-linux-x64': { version, optional: true },
-  } });
   const inventory = async version => {
-    await f.write('package-lock.json', lock(version));
+    await f.dependencies({ importers: { 'packages/serve': { optionalDependencies: { 'opencode-linux-x64': version } } }, packages: { [`opencode-linux-x64@${version}`]: { optional: true, license: null } } });
     await f.run('--inventory-only');
     return readFile(join(f.root, 'docs/dependencies.md'), 'utf8');
   };
@@ -424,22 +444,25 @@ test('the inventory reads the pinned OpenCode binaries as MIT, flags nothing for
 // An auth library names a test runner as an optional peer; the lock records the runner because the repository develops with it,
 // and the runner pulls a bundler whose CSS engine is MPL-2.0. No consumer of the library installs any of them. A workspace
 // package names the host it runs in as an optional peer, which the inventory keeps.
-const optionalPeerLock = ({ requiredBy } = {}) => JSON.stringify({ lockfileVersion: 3, packages: {
-  '': { devDependencies: { 'test-runner': '1.0.0', 'host-agent': '1.0.0' } },
-  ...Object.fromEntries(['dsl', 'jev', 'pi-browser', 'import', 'web', 'serve', 'decisions', 'computer', 'client', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'run-adapters-acp', 'agentrun'].map(name => [`packages/${name}`, {}])),
-  'packages/serve': { dependencies: { 'auth-lib': '1.0.0' } },
-  'packages/pi-browser': { peerDependencies: { 'host-agent': '*', 'absent-host': '*' }, peerDependenciesMeta: { 'host-agent': { optional: true }, 'absent-host': { optional: true } } },
-  'node_modules/host-agent': { version: '1.0.0', license: 'MIT', dev: true },
-  ...(requiredBy ? { [`packages/${requiredBy}`]: { dependencies: { 'test-runner': '1.0.0' } } } : {}),
-  'node_modules/auth-lib': { version: '1.0.0', license: 'MIT', peerDependencies: { 'test-runner': '*', 'absent-peer': '*' }, peerDependenciesMeta: { 'test-runner': { optional: true }, 'absent-peer': { optional: true } } },
-  'node_modules/test-runner': { version: '1.0.0', license: 'MIT', dev: true, dependencies: { bundler: '1.0.0' } },
-  'node_modules/bundler': { version: '1.0.0', license: 'MIT', dev: true, dependencies: { 'css-engine': '1.0.0' } },
-  'node_modules/css-engine': { version: '1.0.0', license: 'MPL-2.0', dev: true },
-} });
+const optionalPeerLock = ({ requiredBy } = {}) => ({
+  importers: {
+    '.': { devDependencies: { 'test-runner': '1.0.0', 'host-agent': '1.0.0' } },
+    'packages/serve': { dependencies: { 'auth-lib': '1.0.0' } },
+    'packages/pi-browser': { peerDependencies: { 'host-agent': '*', 'absent-host': '*' }, peerDependenciesMeta: { 'host-agent': { optional: true }, 'absent-host': { optional: true } } },
+    ...(requiredBy ? { [`packages/${requiredBy}`]: { dependencies: { 'test-runner': '1.0.0' } } } : {}),
+  },
+  packages: {
+    'host-agent@1.0.0': { license: 'MIT' },
+    'auth-lib@1.0.0': { license: 'MIT', peerDependencies: { 'test-runner': '*', 'absent-peer': '*' }, peerDependenciesMeta: { 'test-runner': { optional: true }, 'absent-peer': { optional: true } } },
+    'test-runner@1.0.0': { license: 'MIT', dependencies: { bundler: '1.0.0' } },
+    'bundler@1.0.0': { license: 'MIT', dependencies: { 'css-engine': '1.0.0' } },
+    'css-engine@1.0.0': { license: 'MPL-2.0' },
+  },
+});
 
 test('the dependency inventory leaves out an optional peer nothing requires at runtime, and everything under it', async t => {
   const f = await fixture(t);
-  await f.write('package-lock.json', optionalPeerLock());
+  await f.dependencies(optionalPeerLock());
   await f.run('--inventory-only');
   const inventory = await readFile(join(f.root, 'docs/dependencies.md'), 'utf8');
   assert.match(inventory, /\| auth-lib \| 1\.0\.0 \| MIT \| serve \| no \| 1 \|/);
@@ -452,7 +475,7 @@ test('the dependency inventory leaves out an optional peer nothing requires at r
 
 test('the dependency inventory keeps an optional peer that a runtime dependency requires, for the package that requires it', async t => {
   const f = await fixture(t);
-  await f.write('package-lock.json', optionalPeerLock({ requiredBy: 'jev' }));
+  await f.dependencies(optionalPeerLock({ requiredBy: 'jev' }));
   await f.run('--inventory-only');
   const inventory = await readFile(join(f.root, 'docs/dependencies.md'), 'utf8');
   for (const name of ['test-runner', 'bundler', 'css-engine']) assert.match(inventory, new RegExp(`\\| ${name} \\| 1\\.0\\.0 \\| [^|]+ \\| jev \\| no \\| 1 \\|`), `${name} ships with jev`);

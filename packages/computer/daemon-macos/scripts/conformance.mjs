@@ -3,8 +3,8 @@
 // the ui fixture app (UIFixture.app, installed in /Applications), and the input cases with the same app as the desktop
 // fixture (started with --input-log):
 //
-//   npm run conformance -w @parcha/agentrun-computer -- --provider "$PWD/packages/computer/daemon-macos/scripts/conformance.mjs" --only ui
-//   npm run conformance -w @parcha/agentrun-computer -- --provider "$PWD/packages/computer/daemon-macos/scripts/conformance.mjs" --only input --fixture /Applications/UIFixture.app
+//   pnpm --filter @parcha/agentrun-computer run conformance --provider "$PWD/packages/computer/daemon-macos/scripts/conformance.mjs" --only ui
+//   pnpm --filter @parcha/agentrun-computer run conformance --provider "$PWD/packages/computer/daemon-macos/scripts/conformance.mjs" --only input --fixture /Applications/UIFixture.app
 //
 // COMPUTERD is the computerd command (default /Applications/Computerd.app/Contents/Helpers/computerd), and
 // COMPUTERD_HOME the app's folder, as the app was started with. It needs packages/computer built (npm run build).

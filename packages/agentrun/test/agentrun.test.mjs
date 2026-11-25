@@ -1044,7 +1044,7 @@ esac`,
 });
 test("the source-server skill's start step reports failure promptly and preserves its error in a private log", { timeout: 30_000 }, (t) => {
     const log = "serve.log";
-    const commands = { npm: "exit 0", node: "echo 'launch failed; credential: private-fixture-value' >&2\nexit 1" };
+    const commands = { pnpm: "exit 0", node: "echo 'launch failed; credential: private-fixture-value' >&2\nexit 1" };
     const f = setupFixture(t, commands);
     const run = f.run(setupRecipe());
     assert.notEqual(run.signal, "SIGTERM", `the step ended on its own: ${run.stdout}${run.stderr}`);
@@ -1055,8 +1055,8 @@ test("the source-server skill's start step reports failure promptly and preserve
     assert.equal(statSync(join(f.dir, log)).mode & 0o777, 0o600, "the launch log is private");
 });
 test("the source-server setup recipe stops on failed installation or build before launching a server", (t) => {
-  for (const phase of ["ci", "run"]) {
-    const f = setupFixture(t, { npm: `test "$1" != "${phase}"`, node: "touch launched\nexit 1" });
+  for (const phase of ["install", "run"]) {
+    const f = setupFixture(t, { pnpm: `test "$1" != "${phase}"`, node: "touch launched\nexit 1" });
     assert.equal(f.run(setupRecipe()).status, 1);
     assert.equal(existsSync(join(f.dir, "launched")), false, `${phase} failure never launches stale output`);
   }
@@ -1064,7 +1064,7 @@ test("the source-server setup recipe stops on failed installation or build befor
 test("the source-server setup recipe bounds startup and health waits while the child remains alive", { timeout: 30_000 }, (t) => {
   for (const announce of [false, true]) {
     const f = setupFixture(t, {
-      npm: "exit 0",
+      pnpm: "exit 0",
       node: `echo $$ > child.pid\n${announce ? "echo AGENTRUN_BASE_URL=http://127.0.0.1:1/v2\n" : ""}exec /bin/sleep 30`,
       sleep: "exit 0",
       curl: "echo attempt >> health-attempts\nexit 1",

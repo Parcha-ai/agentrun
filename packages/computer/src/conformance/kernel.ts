@@ -1,4 +1,4 @@
-// Kernel for the conformance CLI: `npm run conformance -w @parcha/agentrun-computer -- --provider kernel`. It makes a
+// Kernel for the conformance CLI: `pnpm --filter @parcha/agentrun-computer run conformance --provider kernel`. It makes a
 // real, billed Kernel browser, so it runs only with AGENTRUN_COMPUTER_LIVE_KERNEL=1 and a key for an account you can bill, under
 // COMPUTER_KERNEL_API_KEY. The provider reads no environment: this module reads its own COMPUTER_KERNEL_* names (never
 // KERNEL_API_KEY, which may hold another organization's key) and passes each to create() as its option. The live switch

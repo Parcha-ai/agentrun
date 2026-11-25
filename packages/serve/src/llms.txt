@@ -6,7 +6,7 @@ Auth: the API's routes take `Authorization: Bearer <token>`, all but `GET /v2/he
 
 ## Start
 
-- In a checkout of the repository: `npm ci --ignore-scripts && npm run build`, then `node packages/serve/dist/cli.js --data DIR` (installed, `agentrun-serve --data DIR`). `--faux MODULE` answers every model request from a module, with no key and no network; `--port N` (default 7340).
+- In a checkout of the repository: `pnpm install --frozen-lockfile && pnpm run build`, then `node packages/serve/dist/cli.js --data DIR` (installed, `agentrun-serve --data DIR`). `--faux MODULE` answers every model request from a module, with no key and no network; `--port N` (default 7340).
 - It prints `AGENTRUN_BASE_URL=...` at every start, and `AGENTRUN_API_KEY=...` with the token at the start that made it (later starts say where it is kept).
 - `GET /v2/health` says when it is ready.
 

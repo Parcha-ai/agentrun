@@ -847,7 +847,7 @@ export class HostedProvider implements ComputerProvider {
 		try {
 			daemon = readFileSync(this.#daemonPath);
 		} catch {
-			return this.#fail("not_found", `no daemon binary at ${this.#daemonPath}: run npm run build:daemon -w @parcha/agentrun-computer`);
+			return this.#fail("not_found", `no daemon binary at ${this.#daemonPath}: run pnpm --filter @parcha/agentrun-computer run build:daemon`);
 		}
 		const sha256 = createHash("sha256").update(daemon).digest("hex");
 		if (signal?.aborted) return this.#fail("aborted", `create was aborted before ${this.#label} was called`);

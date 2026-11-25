@@ -237,7 +237,7 @@ test("the runner process sweeps at its start when asked, with the computers its 
 // runner's Docker provider is made only where it is there. The fake docker never runs it.
 const DAEMON = fileURLToPath(new URL("../../computer/dist/computerd-linux-amd64", import.meta.url));
 
-test("the runner's own composition sweeps Docker past a labelled container made with no --mount: this server's late computer ends, the other is kept", { skip: !existsSync(DAEMON) && "no computerd-linux-amd64: run npm run build:daemon -w @parcha/agentrun-computer (CI's build job does)" }, async (t) => {
+test("the runner's own composition sweeps Docker past a labelled container made with no --mount: this server's late computer ends, the other is kept", { skip: !existsSync(DAEMON) && "no computerd-linux-amd64: run pnpm --filter @parcha/agentrun-computer run build:daemon (CI's build job does)" }, async (t) => {
   const dir = dataDir(t);
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   t.after(() => server.close());

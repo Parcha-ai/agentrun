@@ -1,4 +1,4 @@
-// Browserbase for the conformance CLI: `npm run conformance -w @parcha/agentrun-computer -- --provider browserbase`.
+// Browserbase for the conformance CLI: `pnpm --filter @parcha/agentrun-computer run conformance --provider browserbase`.
 // It makes a real, billed Browserbase session, so it runs only with AGENTRUN_COMPUTER_LIVE_BROWSERBASE=1 and a key for
 // an account you can bill, under COMPUTER_BROWSERBASE_API_KEY (and COMPUTER_BROWSERBASE_PROJECT_ID for a direct key). The provider
 // reads no environment: this module reads its own COMPUTER_BROWSERBASE_* names (never BROWSERBASE_API_KEY, which may

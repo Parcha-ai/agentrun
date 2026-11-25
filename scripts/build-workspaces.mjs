@@ -88,7 +88,7 @@ const READS = {
   '@parcha/agentrun-serve': { also: ['apps/console/dist'] },
 };
 /** The files outside a package that every build reads: the shared compiler settings and the lockfile that fixes what it compiles against. */
-const SHARED = ['tsconfig.base.json', 'package-lock.json'];
+const SHARED = ['tsconfig.base.json', 'pnpm-lock.yaml'];
 
 /** A hash of what a package's build reads: the path, size and modification time of every file under it but `dist` and
  *  `node_modules` (so a file added, deleted or edited changes it, even when every file left is older than the dist), and of the

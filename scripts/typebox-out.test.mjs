@@ -9,6 +9,7 @@ import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { lockedVersions, parseKey, readLock, snapshotDependencies } from './pnpm-lock.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const tracked = execFileSync('git', ['-c', 'gc.auto=0', 'ls-files', '*.ts', '*.mts', '*.mjs', '*.tsx', '*.js'], { cwd: root, encoding: 'utf8' }).split('\n').filter((file) => file && !file.startsWith('.release/') && !file.includes('/node_modules/'));
@@ -31,10 +32,14 @@ test('no tracked file imports Type, Static or TSchema from pi-ai, pi-agent-core,
 });
 
 test('each package whose source uses TypeBox declares typebox itself, at the one typebox the workspace locks', () => {
-  const lock = JSON.parse(readFileSync(join(root, 'package-lock.json'), 'utf8'));
+  const lock = readLock(root);
   // pi-ai 1.5 no longer depends on typebox (nor re-exports it): the workspace's one typebox is what a package declares.
-  assert.equal(lock.packages['node_modules/@earendil-works/pi-ai'].dependencies?.typebox, undefined, 'pi-ai 1.5 takes no typebox');
-  const wanted = lock.packages['node_modules/typebox'].version;
+  const piAi = Object.keys(lock.snapshots).filter((key) => parseKey(key).name === '@earendil-works/pi-ai');
+  assert.ok(piAi.length > 0, 'the lock holds pi-ai');
+  for (const key of piAi) assert.equal(snapshotDependencies(lock, key).typebox, undefined, 'pi-ai 1.5 takes no typebox');
+  const versions = lockedVersions(lock, 'typebox');
+  assert.equal(versions.length, 1, `one typebox, not ${versions.join(', ')}`);
+  const [wanted] = versions;
   assert.match(wanted, /^\d+\.\d+\.\d+$/, 'one typebox, at an exact version');
   const wrong = [];
   for (const name of readdirSync(join(root, 'packages'))) {

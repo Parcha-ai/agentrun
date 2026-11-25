@@ -226,10 +226,10 @@ The question guard applies before an adapter request. Static judge/verifier ques
 ## Check your changes
 
 ```sh
-npm run check
-npm run build:daemon -w @parcha/agentrun-computer
-npm run verify:packages
-npm run export:source
+pnpm run check
+pnpm --filter @parcha/agentrun-computer run build:daemon
+pnpm run verify:packages
+pnpm run export:source
 ```
 
 Build the computer daemon before package verification: `build:daemon` writes the daemon binaries

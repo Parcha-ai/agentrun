@@ -3,7 +3,7 @@
 // commit: on a pull request ci.yml sets HEAD^1, the merge commit's first parent, so the changes are what the pull request
 // adds to the base it was merged with. The merge queue and main run every test, so a test this misses fails there.
 // - Every test runs when the diff cannot be read, or when a changed path is a shared root (SHARED_ROOTS in
-//   test-affected.mjs: the root manifests, the lockfile, tsconfig.base.json, .nvmrc, .npmrc, scripts/, .github/) and not
+//   test-affected.mjs: the root manifests, the lockfile and pnpm-workspace.yaml, tsconfig.base.json, .nvmrc, .npmrc, scripts/, .github/) and not
 //   itself a test file: every suite may read one, and no import says which.
 // - Otherwise the tests test-affected picks (a changed test, its importers, a package's config, a file a test names, the
 //   smoke set), and every test of a package with a changed file that picks none, unless it is Markdown or was deleted: a

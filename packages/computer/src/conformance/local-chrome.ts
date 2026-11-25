@@ -1,4 +1,4 @@
-// Local Chrome for the conformance CLI: `npm run conformance -w @parcha/agentrun-computer -- --provider local-chrome`.
+// Local Chrome for the conformance CLI: `pnpm --filter @parcha/agentrun-computer run conformance --provider local-chrome`.
 // It starts a real Chrome on this machine (nothing billed, no key), so it runs only with
 // AGENTRUN_COMPUTER_LIVE_LOCAL_CHROME=1. The provider reads no environment: this module reads its own
 // COMPUTER_LOCAL_CHROME_* names, and PATH to find a Chrome, and passes each to create() as its option.

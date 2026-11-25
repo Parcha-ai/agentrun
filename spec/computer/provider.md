@@ -245,7 +245,7 @@ The exec pre-check checks each of these with `exec` alone, on a machine made by 
 is written:
 
 ```sh
-npm run conformance -w @parcha/agentrun-computer -- --provider <id | ./module.js> --exec-stream --machine <id>
+pnpm --filter @parcha/agentrun-computer run conformance --provider <id | ./module.js> --exec-stream --machine <id>
 ```
 
 It builds the host with the module's `createHost(options)`, which it calls with `{}`, so `env` defaults to `process.env`
@@ -314,7 +314,7 @@ in words.
 4. Run the suite by path, then by id once it is in the registry:
 
    ```sh
-   npm run conformance -w @parcha/agentrun-computer -- --provider ./dist/my-vendor.js --kind sandbox
+   pnpm --filter @parcha/agentrun-computer run conformance --provider ./dist/my-vendor.js --kind sandbox
    ```
 
    For the no-key case, the suite builds the provider again from its conformance module with a planted value in each

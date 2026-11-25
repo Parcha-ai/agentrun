@@ -187,7 +187,7 @@ export function dockerArch({ docker = "docker", timeoutMs = 30_000, env }: Pick<
  */
 export function dockerDaemonOf(arch: string, dir: string = fileURLToPath(new URL(".", import.meta.url))): { path: string; missing?: string } {
 	const path = join(dir, `computerd-linux-${arch}`);
-	return fileMode(path) === undefined ? { path, missing: `no daemon for Docker's ${arch} at ${path}: run npm run build:daemon -w @parcha/agentrun-computer` } : { path };
+	return fileMode(path) === undefined ? { path, missing: `no daemon for Docker's ${arch} at ${path}: run pnpm --filter @parcha/agentrun-computer run build:daemon` } : { path };
 }
 
 /**

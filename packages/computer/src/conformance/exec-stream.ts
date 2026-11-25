@@ -4,7 +4,7 @@
 // comment in ../host.ts). This runs exec alone, on a machine the vendor made by hand, and says in plain words what it
 // did wrong:
 //
-//   npm run conformance -w @parcha/agentrun-computer -- --provider <id | ./module.js> --exec-stream --machine <id> [--quick]
+//   pnpm --filter @parcha/agentrun-computer run conformance --provider <id | ./module.js> --exec-stream --machine <id> [--quick]
 //
 // It calls nothing but host.exec, so a host whose other members are still stubs can run it. Each check starts its own
 // process and kills it when it is done with it, pass or fail. No check ends stdin: the adapter never needs a vendor's

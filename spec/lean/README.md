@@ -17,7 +17,7 @@ lake exe conformance    # runs every case in conformance/ against the model
 The TypeScript side of the same corpus runs with the package tests:
 
 ```sh
-npm run build
+pnpm run build
 node --test packages/dsl/test/lean-conformance.test.mjs
 ```
 
@@ -141,7 +141,7 @@ Disposition: **fixed** has a regression test, **runtime** needs values produced 
 For theorems that assume Lean validation succeeds, applying the result to a TypeScript-accepted workflow also requires agreement between the validators. `Validate.lean` describes the intended correspondence; the sweep checks the acceptance direction on collected examples:
 
 ```sh
-npm run build
+pnpm run build
 node spec/lean/sweep/collect.mjs spec/lean/.lake/validator-corpus.json
 cd spec/lean && lake exe validator-sweep .lake/validator-corpus.json
 ```
@@ -151,7 +151,7 @@ cd spec/lean && lake exe validator-sweep .lake/validator-corpus.json
 ## Add a conformance case
 
 1. Write `conformance/<name>.json` with `workflow`, `input`, and a `script` of adapter answers keyed by execution path (`gen`, `judge`, `effect`, `after`). A sift's `judge` entry is `{"items": [{"answers": {...}, "keep": true}, ...]}`, one entry per item with the keep verdict the model's oracle returns, so one script serves however many requests the interpreter splits the sift into. An optional `limits.maxQuestionsPerRequest` sets the host limit for the case (default 256).
-2. Record the TypeScript result with `npm run build`, then `node spec/lean/conformance/record.mjs spec/lean/conformance/<name>.json`. The recorder also fills each code node's return value. Review the diff: a recorded change is a behavior change.
+2. Record the TypeScript result with `pnpm run build`, then `node spec/lean/conformance/record.mjs spec/lean/conformance/<name>.json`. The recorder also fills each code node's return value. Review the diff: a recorded change is a behavior change.
 3. Run `lake exe conformance`. The model must agree before the case lands.
 
 ## Add a theorem

@@ -1781,7 +1781,6 @@
   "scripts/is-main.test.mjs": 0.2,
   "scripts/lease-file-gone.test.mjs": 0.1,
   "scripts/machine-path.test.mjs": 0,
-  "scripts/npm-ci-retry.test.mjs": 0.8,
   "scripts/npm-command.test.mjs": 0.1,
   "scripts/npm-executable-mode.test.mjs": 1,
   "scripts/package-imports.test.mjs": 0,
