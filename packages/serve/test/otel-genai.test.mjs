@@ -96,9 +96,18 @@ const TRACE = { provider: "openrouter", serverAddress: "openrouter.ai", model: "
 /** One run of the stand-in, traced into memory: its spans, the run's row, and the trace's log lines. `redact`: the
  *  runner's redactor; `extra`: more events of its turn (standIn). */
 async function tracedRun(t, { requests = TWO_REQUESTS, extra, redact, facts, exporter = new InMemorySpanExporter(), env = ON, trace = TRACE, runCap = { capUsd: () => undefined, modelOf: () => undefined } } = {}) {
+  const lines = [];
+  // The claim's trace, told when it ends: its end() is the last thing the claim does (adapter-loop.ts traced).
+  let traceEnded = false;
+  const tracing = genAiTracing(env, { exporter, log: (line) => lines.push(line) }).then((tracer) => tracer && {
+    flush: () => tracer.flush(),
+    open: (options) => {
+      const run = tracer.open(options);
+      return { known: (facts) => run.known(facts), request: (model, route) => run.request(model, route), event: (event) => run.event(event), end: (why) => run.end(why).finally(() => { traceEnded = true; }) };
+    },
+  });
   const opened = await stores({ runners: 1 });
   await queue(opened.server, "run-1");
-  const lines = [];
   const write = { name: "write", description: "Write a line.", inputSchema: { type: "object" }, replay: "never", call: async (args) => ({ text: `wrote ${args.line}` }) };
   const createLoop = createAdapterLoop(
     () => ({
@@ -112,7 +121,7 @@ async function tracedRun(t, { requests = TWO_REQUESTS, extra, redact, facts, exp
       gate: () => "allow",
       trace,
     }),
-    { tracing: genAiTracing(env, { exporter, log: (line) => lines.push(line) }) },
+    { tracing },
   );
   const runner = startRunner({ store: opened.runners[0], createLoop, name: "runner-a", ...TIMING, ...(redact ? { redact } : {}) });
   t.after(() => runner.close());
@@ -120,6 +129,9 @@ async function tracedRun(t, { requests = TWO_REQUESTS, extra, redact, facts, exp
     const now = await opened.server.runs.get("run-1");
     return (now.state === "ended" || now.state === "failed") && now.runner === null && now;
   }, "the run ended and released", 20_000);
+  // The run's end commits before its trace ends: the loop's last patch lands the run ended and released, and only then
+  // does the claim's trace end, its open spans and its invoke_agent span with it. Read the spans once it has.
+  if (await tracing) await until(() => traceEnded, "the claim's trace ended", 5_000);
   return { spans: exporter.getFinishedSpans?.() ?? [], row, lines };
 }
 

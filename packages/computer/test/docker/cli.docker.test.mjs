@@ -17,7 +17,7 @@ const CLI = fileURLToPath(new URL("../../dist/conformance/cli.js", import.meta.u
  * moves it with no edit here.
  */
 function optionalForDocker() {
-	const provider = new DockerProvider({ daemonPath: "/nonexistent/computerd" });
+	const provider = new DockerProvider({ env: process.env, daemonPath: "/nonexistent/computerd" });
 	const caps = provider.capabilities();
 	const declared = (need) => {
 		if (need === "extend" || need === "stream") return typeof provider[need] === "function";

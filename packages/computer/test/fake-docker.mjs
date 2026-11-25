@@ -1,6 +1,7 @@
 // A fake docker program under a temp dir, for DockerProvider's unit tests: it records each call's argv, keeps its
 // containers in a JSON file, and answers run, inspect, ps, stop, rm, info, image inspect, pull and exec (with the daemon's hello) as the
 // docker CLI does. An inspect --format renders each {{json .Path}} in it. No Docker and no daemon binary are needed.
+// Each call's environment is recorded too (envs()): its names, and the values of PATH, HOME, DOCKER_HOST and DOCKER_CONFIG.
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { networkInterfaces, tmpdir } from "node:os";
@@ -208,7 +209,7 @@ export function egressVolume({ computer, deadline = new Date(Date.now() + 600_00
  * `Late: true` is made by another create between this create's inspect and its own: inspect does not find it, and
  * create finds it there. `networkNames()` reads the networks there besides Docker's own.
  */
-export function fakeDocker({ running = true, gone = false, containers = [], patch = {}, hello = {}, arch = "x86_64", info = {}, vanish = [], noDaemon = false, user, hold = [], desktop, display = "up", binds = {}, daemonMode = 0o755, daemonCache, volumes = [], egress = "ready", proxyPatch = {}, proxyLocal, egressOptions, endpoint = "unix:///var/run/docker.sock", images, pull = "ok", volume, volumeRoots = {}, lateRun = null, sticky = [], removing = {}, runFails = false, computerd = false, networks = [] } = {}) {
+export function fakeDocker({ running = true, gone = false, containers = [], patch = {}, hello = {}, arch = "x86_64", info = {}, vanish = [], noDaemon = false, user, hold = [], desktop, display = "up", binds = {}, daemonMode = 0o755, daemonCache, volumes = [], egress = "ready", proxyPatch = {}, proxyLocal, egressOptions, endpoint = "unix:///var/run/docker.sock", images, pull = "ok", volume, volumeRoots = {}, lateRun = null, sticky = [], removing = {}, runFails = false, computerd = false, networks = [], env } = {}) {
 	const dir = mkdtempSync(join(tmpdir(), "computer-fake-docker-"));
 	dirs.push(dir);
 	const log = join(dir, "calls.jsonl");
@@ -250,6 +251,8 @@ const report = ${report.toString()};
 const proxyReport = ${proxyReport.toString()};
 const args = process.argv.slice(2);
 appendFileSync(config.log, JSON.stringify(args) + "\\n");
+// The environment each call was started with: every name, and the values of those docker reads alone (envs()).
+appendFileSync(config.dir + "/envs.jsonl", JSON.stringify({ args, names: Object.keys(process.env).sort(), seen: Object.fromEntries(["PATH", "HOME", "DOCKER_HOST", "DOCKER_CONFIG"].map((n) => [n, process.env[n] ?? null])) }) + "\\n");
 // A container whose removal (config.removing) has run its time is gone.
 const load = () => JSON.parse(readFileSync(config.state, "utf8")).filter((c) => !(typeof c.RemovalEnds === "number" && c.RemovalEnds <= Date.now()));
 const save = (all) => replace(config.state, JSON.stringify(all));
@@ -596,6 +599,8 @@ switch (args[0]) {
 		{ mode: 0o755 },
 	);
 	const calls = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []);
+	/** Each call's environment, as the program recorded it: { args, names, seen } (seen: PATH, HOME, DOCKER_HOST, DOCKER_CONFIG). */
+	const envs = () => (existsSync(join(dir, "envs.jsonl")) ? readFileSync(join(dir, "envs.jsonl"), "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []);
 	const names = () => JSON.parse(readFileSync(state, "utf8")).filter((c) => !(typeof c.RemovalEnds === "number" && c.RemovalEnds <= Date.now())).map((c) => c.Name.slice(1));
 	const proceed = (step) => writeFileSync(join(dir, `proceed-${step}`), "");
 	const started = () => (existsSync(join(dir, "started.jsonl")) ? readFileSync(join(dir, "started.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line)) : []);
@@ -612,12 +617,12 @@ switch (args[0]) {
 	// container; egressOptions.hostRoot replaces it.
 	const hostRoot = join(dir, "host-root");
 	mkdirSync(hostRoot);
-	const options = { daemonPath, daemonCache: cache, docker: program, ...(user === undefined ? {} : { user }), ...(desktop === undefined ? {} : { desktop }), egress: { hostRoot, ...egressOptions }, ...(volume === undefined ? {} : { volume }) };
+	const options = { daemonPath, daemonCache: cache, docker: program, ...(user === undefined ? {} : { user }), ...(desktop === undefined ? {} : { desktop }), egress: { hostRoot, ...egressOptions }, ...(volume === undefined ? {} : { volume }), ...(env === undefined ? {} : { env }) };
 	// `options` makes a fresh provider over the same Docker: another process's.
 	/** lateRun's marks: whether the daemon's late create has begun, and the container it made (its name), if it did. */
 	const late = () => ({ started: existsSync(join(dir, "late-started")), committed: existsSync(join(dir, "late-committed")) ? readFileSync(join(dir, "late-committed"), "utf8").replace(/^\//, "") : undefined });
 	const runHeld = () => existsSync(join(dir, "run-held"));
-	return { provider: new DockerProvider(options), options, calls, names, volumeNames, networkNames, alter, daemonPath, bound, cache, program, proceed, started, late, runHeld };
+	return { provider: new DockerProvider(options), options, calls, envs, names, volumeNames, networkNames, alter, daemonPath, bound, cache, program, proceed, started, late, runHeld };
 }
 
 /** The docker calls that delete computer `name` with nothing else of its own: rm it, then look for its egress proxy and
