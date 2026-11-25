@@ -30,6 +30,7 @@ import { fileURLToPath } from "node:url";
 import { browserClient, browserHello, browserSpecRefusals, carries, labelsProblem } from "./browser.js";
 import { alive, answeringPath, CHROME_FLAGS, checkChrome, findChrome, killTree, NO_CHROME, AS_ROOT, runsWith, singletonDir } from "./chrome.js";
 import { LOCAL } from "./descriptors/local-chrome.js";
+import { chromeEnv } from "./child-env.js";
 import { BROWSER_IMAGE } from "./descriptors/shared.js";
 import { parseAllow } from "./docker/egress-proxy.js";
 import type { KindCapabilities } from "./kinds.js";
@@ -99,8 +100,11 @@ export interface LocalBrowserOptions {
 	/** The Chrome or Chromium to run; default the one findChrome finds in `env`, then in the usual places. */
 	executablePath?: string;
 	/**
-	 * Where CHROME_PATH, PI_BROWSER_CHROME and PATH are read when no executablePath is given: the host's environment, which
-	 * it passes (serve passes its own). The library reads none.
+	 * The host's environment, which it passes (serve passes its own values of the descriptor's hostEnv): where
+	 * CHROME_PATH, PI_BROWSER_CHROME and PATH are read when no executablePath is given, and what the supervisor and the
+	 * Chrome it starts, and the sandbox check's Chrome, hold of it: the names Chrome reads (CHROME_ENV_NAMES: PATH, HOME,
+	 * the display, locale, fonts and temp directory) and nothing else, so no key the host holds reaches Chrome. The
+	 * library reads none: without env, Chrome starts with none.
 	 */
 	env?: Readonly<Record<string, string | undefined>>;
 	/** Shows the window, for a person watching on this machine; default headless. */
@@ -253,7 +257,8 @@ export class LocalBrowserProvider implements ComputerProvider {
 		}
 		let child: ReturnType<typeof spawn>;
 		try {
-			child = spawn(process.execPath, [SUPERVISOR, dir], { detached: true, stdio: ["ignore", "pipe", "ignore"] });
+			// Its environment is Chrome's (chromeEnv), which the Chrome it starts inherits: no key the host holds.
+			child = spawn(process.execPath, [SUPERVISOR, dir], { detached: true, env: chromeEnv(this.#env), stdio: ["ignore", "pipe", "ignore"] });
 		} catch (error) {
 			await rm(dir, { recursive: true, force: true }).catch(() => undefined);
 			return fail("invalid", `the local browser's supervisor could not be started (${(error as Error).message})`);
@@ -312,7 +317,7 @@ export class LocalBrowserProvider implements ComputerProvider {
 		const refused = this.#machineRefusals();
 		if (refused.length > 0) return fail(refused[0]?.field === "host" ? "refused" : "not_found", (refused[0] as Refusal).message);
 		// A Chrome found or named is started once with its sandbox on: what a create would do, with nothing kept.
-		const checked = await checkChrome(this.executable() as string, this.#uid === undefined ? {} : { uid: this.#uid });
+		const checked = await checkChrome(this.executable() as string, { env: this.#env, ...(this.#uid === undefined ? {} : { uid: this.#uid }) });
 		if (!checked.ok) return checked;
 		return ok({ detail: `${checked.value} starts here with its sandbox on: no key is needed` });
 	}

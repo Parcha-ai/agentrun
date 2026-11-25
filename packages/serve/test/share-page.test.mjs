@@ -8,6 +8,7 @@ import { randomBytes } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
+import { SHARE_PAGE_CSP } from "../dist/page.js";
 import { builtConsole, call, cookieOf, serve } from "./support.mjs";
 
 const CSP = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https://www.google.com https://t0.gstatic.com https://t1.gstatic.com https://t2.gstatic.com https://t3.gstatic.com; base-uri 'none'; form-action https://github.com; frame-ancestors 'none'";
@@ -43,15 +44,17 @@ test("without a session /share/<run> is refused: a 401 page under the CSP that s
   }
 });
 
-test("with the printed link's session /share/<run> is share.html under the console's CSP, and the session reads that run's export", async (t) => {
+test("with the printed link's session /share/<run> is share.html under the share host's CSP (no outside image host), and the session reads that run's export", async (t) => {
   const server = await serve(t, { console: await consoleWithShare(t), runner: false });
   const cookie = cookieOf(await call(server.port, { path: `/?launch=${server.launchCode}` }));
   assert.ok(cookie, "the printed link sets a session");
   const run = nonce();
   const page = await call(server.port, { path: `/share/${run}`, headers: { cookie } });
   assert.deepEqual([page.status, page.text], [200, SHARE_INDEX]);
-  assert.equal(page.headers["content-security-policy"], CSP);
-  assert.equal(page.headers["content-security-policy"], (await call(server.port, { path: "/", headers: { cookie } })).headers["content-security-policy"], "the console's own CSP");
+  // The page is what a share host would serve, under its CSP: images from this origin and data: alone (no favicon host
+  // that a URL in a run's answer could make fetch a third party's icon).
+  assert.equal(page.headers["content-security-policy"], SHARE_PAGE_CSP);
+  assert.match(page.headers["content-security-policy"], /img-src 'self' data:;/);
   assert.equal(page.headers["x-content-type-options"], "nosniff");
   assert.equal(page.headers["referrer-policy"], "no-referrer");
   assert.equal(page.headers["cache-control"], "no-store");
@@ -129,7 +132,7 @@ test("with accounts /share/<run> needs the owner's signed-in session; the consol
   assert.equal(made.status, 201, made.text);
   const cookie = cookieOf(made);
   const page = await call(server.port, { path: `/share/${run}`, headers: { cookie } });
-  assert.deepEqual([page.status, page.text, page.headers["content-security-policy"]], [200, SHARE_INDEX, CSP]);
+  assert.deepEqual([page.status, page.text, page.headers["content-security-policy"]], [200, SHARE_INDEX, SHARE_PAGE_CSP]);
 });
 
 test("an API-only server serves no share page", async (t) => {

@@ -6,7 +6,9 @@ import { createHash } from "node:crypto";
 import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { HARNESS_OF, READERS, SOURCE_NAMES, SOURCES } from "../dist/index.js";
+import { join } from "node:path";
 import { anthropicUsage, claudeAnswer, claudeFile, claudeUser, codexAnswer, codexContext, codexFile, codexMeta, codexTokens, codexUser, openaiUsage, piAnswer, piFile, piMeta, piUser, SESSION, tempHome, writeJsonl } from "./fixtures.mjs";
+import { buildLegacy, buildV2 } from "./fixtures/opencode/fixture.mjs";
 
 const CLI = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
 const sha = (text) => createHash("sha256").update(text).digest("hex");
@@ -45,6 +47,15 @@ test("--known-answer prints one line per session, sorted by key, with the agreed
   for (const leak of [PROMPT, "Fixture answer", "/work/fixture", dir, SESSION, "thread-1", "pi-session-1"]) assert.ok(!result.stdout.includes(leak), `prints ${leak}`);
 });
 
+test("a source named twice in --sources is read once: each session prints one line", async (t) => {
+  const dir = await home(t);
+  const once = run(dir, "--sources", "codex", "--known-answer");
+  const twice = run(dir, "--sources", "codex,codex", "--known-answer");
+  assert.equal(twice.status, 0, twice.stderr);
+  assert.equal(twice.stdout.trim().split("\n").length, 1);
+  assert.equal(twice.stdout, once.stdout);
+});
+
 test("--sources picks the sources; an unknown one, or no --known-answer, is a usage error", async (t) => {
   const dir = await home(t);
   const only = run(dir, "--sources", "pi,codex", "--known-answer");
@@ -76,7 +87,7 @@ test("--help and -h print the usage to stdout and exit 0; a bad argument is stil
     for (const args of [[flag], ["/nowhere", flag, "--known-answer"]]) {
       const result = run(...args);
       assert.equal(result.status, 0, result.stderr);
-      assert.match(result.stdout, /^usage: agentrun-import <home> \[--sources claude-code,codex,pi\] \[--threads N\] \[--read-ahead BYTES\[k\|m\|g\]\] --known-answer\n/);
+      assert.match(result.stdout, /^usage: agentrun-import <home> \[--sources claude-code,codex,pi,opencode,copilot\] \[--threads N\] \[--read-ahead BYTES\[k\|m\|g\]\] --known-answer\n/);
       assert.equal(result.stderr, "");
     }
   }
@@ -98,7 +109,7 @@ test("without pi-ai the CLI fails at startup, loudly: it never prints lines that
 });
 
 test("the sources are a registry: each reader names its source, its harness and its name, and reads its own files", () => {
-  assert.deepEqual(SOURCES, ["claude-code", "codex", "pi"]);
+  assert.deepEqual(SOURCES, ["claude-code", "codex", "pi", "opencode", "copilot"]);
   for (const source of SOURCES) {
     const reader = READERS[source];
     assert.equal(reader.source, source);
@@ -107,6 +118,29 @@ test("the sources are a registry: each reader names its source, its harness and 
     assert.equal(typeof reader.discover, "function");
     assert.equal(typeof reader.read, "function");
   }
+});
+
+test("an OpenCode home: a database session's key is the sha256 of relpath#id, a storage session's of its file", async (t) => {
+  const dir = await tempHome(t);
+  const data = join(dir, ".local", "share", "opencode");
+  await buildV2(join(data, "opencode.db"));
+  await buildLegacy(join(data, "storage"));
+  const result = run(dir, "--sources", "opencode", "--known-answer");
+  assert.equal(result.status, 0, result.stderr);
+  const lines = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
+  const db = (id) => sha(`.local/share/opencode/opencode.db#${id}`);
+  const tokens = (input, output, cacheRead = 0, cacheWrite = 0) => ({ input, output, cacheRead, cacheWrite, cacheWrite1h: 0 });
+  // Worked out by hand in fixtures/opencode/fixture.mjs. ses_B is ses_A's subagent: one line, both.
+  const expected = [
+    { key: db("ses_C"), source: "opencode", tokens: tokens(255, 144, 2070, 20), cost: 0.875, turns: 2, calls: 3 },
+    { key: db("ses_D"), source: "opencode", tokens: tokens(7, 3), cost: 0, turns: 1, calls: 1 },
+    { key: db("ses_F"), source: "opencode", tokens: tokens(1, 1), cost: 0.03125, turns: 0, calls: 1 },
+    { key: db("ses_K"), source: "opencode", tokens: tokens(18, 5), cost: 0.9375, turns: 1, calls: 4 },
+    // The storage's OpenCode (0.15.0) wrote output with its reasoning in it: prt_A2d's 20, not 20 + 5.
+    { key: sha(".local/share/opencode/storage/session/prj_fixture/ses_A.json"), source: "opencode", tokens: tokens(240, 375, 1100, 200), cost: 0.9375, turns: 2, calls: 4 },
+  ].sort((a, b) => (a.key < b.key ? -1 : 1));
+  assert.deepEqual(lines, expected);
+  for (const leak of ["ses_", "Port the reader", "/fixture/", dir]) assert.ok(!result.stdout.includes(leak), `prints ${leak}`);
 });
 
 test("pi-ai, which the bin imports statically, is a dependency of the package: npx runs the bin with no install of its own", async () => {

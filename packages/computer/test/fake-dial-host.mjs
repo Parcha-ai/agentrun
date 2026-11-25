@@ -116,8 +116,14 @@ export async function desktopOverDial(provider, dial, booted, spec) {
  * is another runs nothing and never dials); dials: false for machines that never dial (a server they cannot reach); the
  * rest are fakeHost's options. provider(options) makes a provider over it given this server; kit() is its DialKit, for
  * provider.dial-token.
+ *
+ * starts: what each start of a machine's agentrun-dial does, in order (the boot's, then each redial's; past the last,
+ * it dials): "dials", or { exit, log } (it exited with that code, having written log), or { log(ms), dialsAfterMs }
+ * (it runs, its log what log(ms since its start) answers, and dials after dialsAfterMs, or never without it); logMs
+ * on a start makes each read of its log answer that long after it was asked, with the log as it was then. Given, the
+ * host has dialLog, dialExit and redial over them, and fake.redials records each redial's machine id.
  */
-export function fakeDialHost({ daemon, dials = true, helloMs = 1_000, ...options } = {}) {
+export function fakeDialHost({ daemon, dials = true, starts, helloMs = 1_000, ...options } = {}) {
 	const tokens = new MemoryMachineTokens();
 	const hub = new AttachHub({ helloMs });
 	const served = createHash("sha256").update(daemon).digest("hex");
@@ -127,20 +133,61 @@ export function fakeDialHost({ daemon, dials = true, helloMs = 1_000, ...options
 		if (minted === undefined) return socket.close(ATTACH_CLOSE.unauthorized, "no machine has this token");
 		void hub.accept(mintedComputer(minted.machine, minted.mint), socket);
 	};
+	const dialOf = (m) => {
+		// The machine is of the host's arch, and its daemon's hello says so.
+		m.box.hello = { ...m.box.hello, arch: fake.host.facts.arch };
+		const [server, machine] = socketPair();
+		serveDaemon(machine, (request) => fake.answer(m, request));
+		fake.dialed.push({ machine: m.id, url: m.boot.AGENTRUN_ATTACH_URL });
+		attach(m.boot.AGENTRUN_ATTACH_TOKEN, server);
+	};
+	/** The start of agentrun-dial m is on (m.starts), as starts gives it. */
+	const startOf = (m) => starts[m.starts] ?? "dials";
+	const begin = (m) => {
+		m.startedAt = Date.now();
+		const start = startOf(m);
+		if (start === "dials") dialOf(m);
+		else if (start.dialsAfterMs !== undefined) setTimeout(() => m.deleted || dialOf(m), start.dialsAfterMs);
+	};
 	const fake = fakeHost({
 		...options,
 		facts: { connect: "dial", ...options.facts },
 		onBoot(m) {
 			if (!dials || m.boot.AGENTRUN_DAEMON_SHA256 !== served) return;
-			// The machine is of the host's arch, and its daemon's hello says so.
-			m.box.hello = { ...m.box.hello, arch: fake.host.facts.arch };
-			const [server, machine] = socketPair();
-			serveDaemon(machine, (request) => fake.answer(m, request));
-			fake.dialed.push({ machine: m.id, url: m.boot.AGENTRUN_ATTACH_URL });
-			attach(m.boot.AGENTRUN_ATTACH_TOKEN, server);
+			if (starts === undefined) return dialOf(m);
+			m.starts = 0;
+			begin(m);
 		},
 	});
 	fake.dialed = [];
+	fake.redials = [];
+	if (starts !== undefined) {
+		const started = (id) => {
+			const m = fake.machines.get(id);
+			return m?.starts === undefined ? undefined : m;
+		};
+		fake.host.dialExit = async (id) => {
+			const m = started(id);
+			const start = m && startOf(m);
+			return typeof start === "object" ? start.exit : undefined;
+		};
+		fake.host.dialLog = async (id) => {
+			const m = started(id);
+			if (m === undefined) return undefined;
+			const start = startOf(m);
+			if (typeof start !== "object") return "";
+			const log = typeof start.log === "function" ? start.log(Date.now() - m.startedAt) : (start.log ?? "");
+			if (start.logMs !== undefined) await new Promise((resolve) => setTimeout(resolve, start.logMs));
+			return log;
+		};
+		fake.host.redial = async (id) => {
+			const m = started(id);
+			if (m === undefined) throw new Error(`no agentrun-dial was started in ${id}`);
+			fake.redials.push(id);
+			m.starts += 1;
+			begin(m);
+		};
+	}
 	let made;
 	return {
 		fake,

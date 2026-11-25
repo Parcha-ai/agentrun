@@ -19,6 +19,7 @@ import { HELD_COMMANDS } from "../computer-held.js";
 import { HAND_BACK } from "./hand-back.js";
 import { KINDS, withdrawnAnswers } from "./journal-kinds.js";
 import { journalEntries } from "./journal-reader.js";
+import { type BoundTimer, REAL_TIMER } from "./loop.js";
 import { type Claim, ClaimRefused, type Command, type Journal, type Loop, type LoopEnd, type LoopFactory, stopEnd, type StopReason } from "./loop-contract.js";
 import { FrameTooLarge } from "./run-channel.js";
 import { isFenced, type RunnerStore } from "./store-port.js";
@@ -183,7 +184,7 @@ export interface RunnerOptions {
   claimGate?: (fresh: boolean) => Promise<string | undefined>;
   /** For tests: the claim deadline's clock (the deadline a claim not renewed in time is lost at, and the time its claimed
    *  until is reckoned from). Default: the real one. Nothing else in the runner reads it. */
-  clock?: { now(): number; setTimeout(fn: () => void, ms: number): unknown; clearTimeout(handle: unknown): void };
+  clock?: BoundTimer & { now(): number };
 }
 
 /** A runner's memory budget and its runs' weights, in MiB (RunnerOptions.memory). `weigh` answers each id it is given; an
@@ -305,7 +306,7 @@ export function startRunner(options: RunnerOptions): Runner {
     redact: given = processSecretRedactor(),
     now = Date.now,
     onBeat = () => {},
-    clock = { now: () => Date.now(), setTimeout: (fn: () => void, ms: number) => setTimeout(fn, ms), clearTimeout: (handle: unknown) => clearTimeout(handle as NodeJS.Timeout) },
+    clock = { now: () => Date.now(), ...REAL_TIMER },
   } = options;
   // The one instance every run's loop gets (LoopDeps.redact), able to hold what each claim opens from the store
   // (redact.ts holdClaimed): a stored key is cut wherever a key of the runner's environment is.
@@ -807,8 +808,7 @@ export function startRunner(options: RunnerOptions): Runner {
     if (!store.settings) return false;
     try {
       const kept = await readKept(store.settings, claim.runId);
-      const ours = (options.presence ?? presence)?.incarnation;
-      return kept?.runner !== undefined && !keptBy(kept, ours ? { runner: name, incarnation: ours } : undefined);
+      return kept?.runner !== undefined && !keptBy(kept, incarnation ? { runner: name, incarnation } : undefined);
     } catch {
       return true;
     }
@@ -964,9 +964,8 @@ export function startRunner(options: RunnerOptions): Runner {
     let heldNow: Held | undefined;
     // This runner's process as its word in the store names it (presence.ts), for the claim's computer: a park that keeps one
     // only this runner can reach again pins it to this runner and this incarnation (computer-kept.ts pinnedOf).
-    const ours = (options.presence ?? presence)?.incarnation;
     const loop = loopsOf({
-      ...(ours ? { incarnation: ours } : {}),
+      ...(incarnation ? { incarnation } : {}),
       journal: (forClaim) => fenced(store.journal(forClaim), fence, forClaim.runId, () => ending()),
       flush: () => store.flush(),
       signal: abort.signal,
@@ -1109,8 +1108,9 @@ export function startRunner(options: RunnerOptions): Runner {
       // - a parked run stopped or cancelled whose computer its park kept pinned to another runner, or whose kept row can't
       //   be read (keptElsewhere): the store gives a stop to any runner at once, never waiting on the pin, and this
       //   runner can't reach that machine.
-      //   A loop would take the kept row (takeKept) and try to attach it, orphaning it on that runner's host; ending here
-      //   leaves the row that runner's, whose own timer at its time, or its janitor once the run is final, ends it.
+      //   A loop would take the kept row (takeKept) and try to attach it, orphaning it on that runner's host. Ending here,
+      //   the run's end marks the row ending (run-end-computers.ts endingKept) before it deletes what its provider lists,
+      //   so no follow-up claim takes that machine back; that runner's own timer at its time, or its janitor, ends the row.
       // One read of those claims' rows, made only when the batch has a queued or a released run.
       const reread = claims.filter((claim) => claim.from === "queued" || claim.from === "running" || claim.from === "parked");
       const rows = reread.length ? await store.commandsOf(reread.map((claim) => ({ runId: claim.runId, after: 0 }))) : new Map<string, Command[]>();
@@ -1239,6 +1239,8 @@ export function startRunner(options: RunnerOptions): Runner {
   // Its word in the store that a runner that claims is here (presence.ts), for as long as it runs: a server reads a
   // refusal left by an earlier runner as over once this is there. One its caller keeps is its caller's to close.
   const presence = options.presence ? undefined : store.runners ? keepPresence(store.runners, name, null, { warn: (line) => emit({ type: "error", step: "presence", message: line }), slots: loops, ...(options.incarnation ? { incarnation: options.incarnation } : {}) }) : undefined;
+  // Its incarnation, read once here before the first poll: each claim's computer and the stop's kept-row check use it.
+  const incarnation = (options.presence ?? presence)?.incarnation;
   poll();
   commandTimer = setTimeout(deliverAll, commandPollMs);
   // A run queued in this process is claimed now (claimNow). A command written for a run this runner holds is handed on
@@ -1300,7 +1302,6 @@ export function startRunner(options: RunnerOptions): Runner {
     for (const held of runs.values()) clock.clearTimeout(held.deadline);
   };
 
-  const incarnation = (options.presence ?? presence)?.incarnation;
   return {
     name,
     ...(incarnation ? { incarnation } : {}),

@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve
+kind: fix
+---
+`web_save` now saves a text file a host serves with no type (`application/octet-stream`, `binary/octet-stream`, `application/binary` or no Content-Type) to a `.txt` or a `.csv`, and a file a host declares XML (`application/xml`, `text/xml`) to a `.txt` alone, when the whole file is UTF-8 with no NUL byte. It answers `text/plain` or `text/csv`. Before, both were refused, so an agent could not save a list published that way, such as a sanctions list's CSV or XML download. Bytes that are not UTF-8 text, or hold a NUL anywhere, are still refused and nothing is written. Declared XML is refused at `.xml`, `.csv` or `.html`, so nothing parses it as XML or XHTML. Untyped text is still refused at any other extension. A declared page, SVG, XHTML or script is refused at `.txt` or `.csv`. The 200 MiB size cap is unchanged. The run's files route serves these files as it serves every saved text file: `text/plain` or `text/csv` with `X-Content-Type-Options: nosniff`, inline, and as an attachment with `?download=1`.

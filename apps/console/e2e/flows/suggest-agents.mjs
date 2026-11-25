@@ -66,6 +66,8 @@ const scanAndCreate = {
     const pull = dialog.getByRole("link", { name: /Open pull request #1/ });
     check((await pull.getAttribute("href")) === "https://github.com/faux-org/demo/pull/1", "the pull request's link is the fake GitHub's");
     await dialog.getByText("AGENTRUN_AGENT_TICKET_TRIAGE").waitFor();
+    check(await dialog.getByText("AGENTRUN_BASE_URL", { exact: true }).count() === 1, "the created dialog does not name the address as AgentRun's clients read it");
+    check(await dialog.getByText(`${origin}/v2`, { exact: true }).count() === 1, "the created dialog does not give this server's API address");
     await shot(page, "5-created");
     await page.keyboard.press("Escape");
     // The list shows it created: its card, its pull request open, its first call still to come.

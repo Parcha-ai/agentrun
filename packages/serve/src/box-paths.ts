@@ -9,8 +9,8 @@
 // computer-deps.ts dockerVolumeOf, the Docker provider's `volume`). Any other layout, or an older engine, is a reason,
 // said once at the start, and docker is unavailable: a guess would make every computer fail at its create.
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { containerSigns } from "@parcha/agentrun-computer";
 import { FAUX_ENV } from "./model.js";
 import { withoutSecrets } from "./secrets.js";
 
@@ -147,13 +147,14 @@ const dockerCall = (env: NodeJS.ProcessEnv): DockerCall => (args) =>
 
 /**
  * Where the Docker this server runs boxes on has `data` (see the head of this file), resolved once at its start. A
- * server with no container id in its mountinfo and none of a container's marks (`inContainer`: /.dockerenv, Podman's
- * /run/.containerenv) is on a host: `here`, and nothing is asked. `mountinfo`, `inContainer` and `docker` are the tests'.
+ * server with no container id in its mountinfo that computer's containerSigns sees in no container either (`inContainer`:
+ * a runtime's mark, or a container's cgroup, as a Kubernetes pod's) is on a host: `here`, and nothing is asked. One it sees
+ * is in a container this way can't map onto Docker's paths: IN_COMPOSE. `mountinfo`, `inContainer` and `docker` are the tests'.
  */
 export async function dockerPathsOf(env: NodeJS.ProcessEnv, data: string, options: { mountinfo?: string; inContainer?: boolean; docker?: DockerCall } = {}): Promise<DockerPaths> {
   const mountinfo = options.mountinfo ?? (await readFile("/proc/self/mountinfo", "utf8").catch(() => ""));
   const id = ownContainerOf(mountinfo);
-  if (!id) return (options.inContainer ?? (existsSync("/.dockerenv") || existsSync("/run/.containerenv"))) ? { reason: IN_COMPOSE } : { here: true };
+  if (!id) return (options.inContainer ?? containerSigns() !== undefined) ? { reason: IN_COMPOSE } : { here: true };
   const docker = options.docker ?? dockerCall(env);
   // A container this Docker does not have is another Docker's: its socket is not the one that runs this server.
   const inspected = await docker(["inspect", "--type", "container", "--format", "{{json .Mounts}}", id]);

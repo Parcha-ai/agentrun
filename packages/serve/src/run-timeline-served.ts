@@ -71,7 +71,9 @@ export async function servedTimelineRows(deps: ServedTimelineDeps, store: Store,
       // And every call still waiting once a stop is asked and not yet taken, as the run's view reads it (stopAsked).
       const final = run?.state === "stopped" || run?.state === "failed" ? run.state
         : stopAsked(view, run, await snapshot.commands(runId, 0)) ? "stopped" as const : undefined;
-      const options = { redact, holds: (text: string) => withheldWhole(text, values), settled: ended, ended: view ? view.state !== "running" : false, ...(calls ? { calls: { result: CALL_RESULT_CHARS, redact: (text: string) => redactedCall(text, values, CALL_RESULT_CHARS, scrubUrls), held: (value: number | bigint) => heldNumber(value, values) } } : {}) };
+      // A call's arguments, or a web call's output, split across two strings are withheld whole in every read, with calls
+      // or without (TimelineOptions.holds).
+      const options = { redact, holds: (text: string) => withheldWhole(text, values), settled: ended, ended: view ? view.state !== "running" : false, ...(calls ? { calls: { result: CALL_RESULT_CHARS, redact: (text: string) => redactedCall(text, values, CALL_RESULT_CHARS, scrubUrls), input: (text: string, shown: number) => redactedCall(text, values, shown), held: (value: number | bigint) => heldNumber(value, values) } } : {}) };
       const timeline = await wholeAnswers(snapshot, runId, context, await runTimeline(snapshot, runId, context, options), options, wholeAnswerFor(values), since);
       // A run whose booked spend passed its cap says so, by how much, after its usage row (run-view.ts withOverCap, as main's
       // served Timeline did): at the cap as it stands (a raise taken counts, capNowOf).
