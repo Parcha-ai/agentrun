@@ -89,7 +89,9 @@ describe("PlaceSetting, a server with no box it can run", () => {
     act(() => sandbox.click());
     expect(changes).toEqual([]);
     expect((host.querySelector('input[name="place"][value="runner"]') as HTMLInputElement).checked).toBe(true);
-    expect(host.textContent).toContain("No box is set up on this server");
+    // The agent needs a box set up, or the server chosen: it is never said to run on the server by default.
+    expect(host.textContent).toContain("No box is set up on this server: set one up for this agent, or choose On the server to run it without a shell.");
+    expect(host.textContent).not.toContain("so this agent runs on the server");
     expect(host.textContent).toContain("fixture: docker isn't set up");
   });
 });
