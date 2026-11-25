@@ -402,21 +402,25 @@ test("a kept desktop whose folder is not on Archil: the janitor ends it with no 
   assert.deepEqual(archil.requests, []);
 });
 
-test("Mode 2, the parking runner's own timer deletes the kept desktop and Archil refuses its mount credential's remove: the row is left ending and said, and the janitor's next pass removes the credential", async (t) => {
-  let refuse = true;
-  const archil = archilControlFetch({ answer: ({ method }) => (refuse && method === "DELETE" ? { status: 500, body: { error: "Archil is down" } } : undefined) });
-  const one = await server({ mode: 2, archil });
-  // The parking claim's own Archil step, as archil-claim.ts makes it, over the fake: its mount credential minted at epoch 3.
-  const mount = await archilClaim({
+/** A claim's own Archil step, as archil-claim.ts makes it, for `one`'s run-1 at `epoch`, over the fake `archil`. */
+const archilStepOf = (one, archil, epoch) =>
+  archilClaim({
     settings: { region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" },
     keys: one.store.sealedKeys,
     sealKey: one.sealKey,
     signal: new AbortController().signal,
-    mount: { runId: "run-1", epoch: 3, ttlMs: 86_400_000 },
+    mount: { runId: "run-1", epoch, ttlMs: 86_400_000 },
     control: { baseUrl: archil.baseUrl, fetch: archil.fetch },
     run: { agentId: "agent-1", store: one.store },
     makeDisk: (options) => ({ id: options.disk }),
   });
+
+test("Mode 2, the parking runner's own timer deletes the kept desktop and Archil refuses its mount credential's remove: the row is left ending and said, and the janitor's next pass removes the credential", async (t) => {
+  let refuse = true;
+  const archil = archilControlFetch({ answer: ({ method }) => (refuse && method === "DELETE" ? { status: 500, body: { error: "Archil is down" } } : undefined) });
+  const one = await server({ mode: 2, archil });
+  // The parking claim's own Archil step: its mount credential minted at epoch 3.
+  const mount = await archilStepOf(one, archil, 3);
   await mount.token();
   assert.deepEqual(nicknames(archil), ["agentrun:run-1:3"]);
   // The timer's revoke, settled: what the timer does after it is the store's in memory, done within a few turns.
@@ -446,25 +450,13 @@ test("Mode 2, a resume that took the parked desktop and its mount credential par
   let refuse = false;
   const archil = archilControlFetch({ answer: ({ method }) => (refuse && method === "DELETE" ? { status: 500, body: { error: "Archil is down" } } : undefined) });
   const one = await server({ mode: 2, archil });
-  // Each claim's own Archil step, as archil-claim.ts makes it, over the fake.
-  const mountOf = (epoch) =>
-    archilClaim({
-      settings: { region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" },
-      keys: one.store.sealedKeys,
-      sealKey: one.sealKey,
-      signal: new AbortController().signal,
-      mount: { runId: "run-1", epoch, ttlMs: 86_400_000 },
-      control: { baseUrl: archil.baseUrl, fetch: archil.fetch },
-      run: { agentId: "agent-1", store: one.store },
-      makeDisk: (options) => ({ id: options.disk }),
-    });
   // Epoch 3 mints its credential and parks, the desktop kept.
-  const parked = await mountOf(3);
+  const parked = await archilStepOf(one, archil, 3);
   await parked.token();
   await (await one.claim(3, { revokeMount: () => parked.revoke(), inheritMount: () => parked.inherit() })).park("approval");
   // Epoch 5 takes the desktop back and, with it, epoch 3's credential: it mints none of its own.
   one.clock.now = T0 + 1;
-  const taken = await mountOf(5);
+  const taken = await archilStepOf(one, archil, 5);
   let revoked;
   const logged = [];
   const resumed = await one.claim(5, { hadComputer: async () => true, revokeMount: () => (revoked = taken.revoke()), inheritMount: () => taken.inherit(), log: (line) => void logged.push(line) });
@@ -491,6 +483,29 @@ test("Mode 2, a resume that took the parked desktop and its mount credential par
   assert.deepEqual([swept.ended, swept.failed], [["c1"], []]);
   assert.equal((await readKept(one.store.settings, "run-1"))?.ended, true);
   assert.equal(logged.filter((line) => line.includes("Archil is down")).length, 1, `the timer's failure said: ${JSON.stringify(logged)}`);
+});
+
+test("Mode 2, a resume of a run whose desktop is off, Archil refusing the remove of the credential it took on: the kept desktop deleted, the claim goes on, the row left ending, and the janitor's next pass removes the credential", async () => {
+  let refuse = false;
+  const archil = archilControlFetch({ answer: ({ method }) => (refuse && method === "DELETE" ? { status: 500, body: { error: "Archil is down" } } : undefined) });
+  const one = await server({ mode: 2, archil });
+  const parked = await archilStepOf(one, archil, 3);
+  await parked.token();
+  await (await one.claim(3, { revokeMount: () => parked.revoke(), inheritMount: () => parked.inherit() })).park("approval");
+  refuse = true;
+  const taken = await archilStepOf(one, archil, 5);
+  const resumed = await one.claim(5, { turnedOff: "desktop", hadComputer: async () => true, revokeMount: () => taken.revoke(), inheritMount: () => taken.inherit() });
+  assert.deepEqual([resumed.computer, resumed.off], [undefined, true], "the claim goes on with none");
+  assert.deepEqual(deletes(one.account), ["c1"], "the kept desktop deleted all the same");
+  assert.deepEqual(nicknames(archil), ["agentrun:run-1:3"], "still at Archil");
+  const row = await readKept(one.store.settings, "run-1");
+  assert.deepEqual([row?.ending, row?.ended], [true, undefined], "left ending: the janitor's to finish");
+  refuse = false;
+  one.clock.now = T0 + KEEP_MS;
+  const swept = await one.janitor();
+  assert.deepEqual(nicknames(archil), [], "the taken-on credential removed by the janitor's pass, not left for its 24-hour ttl");
+  assert.deepEqual([swept.ended, swept.failed], [["c1"], []]);
+  assert.equal((await readKept(one.store.settings, "run-1"))?.ended, true);
 });
 
 test("a desktop resumed after 10 minutes is a new one: the kept one let go, said once with why", async () => {
