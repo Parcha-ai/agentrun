@@ -31,6 +31,7 @@
   - An output schema (`output_config.format` of type `json_schema`) on a Messages request with no tools now reaches Ollama as its `format`. Before, it was dropped and the answer came back unconstrained. Beside tools it is refused with a 400 `invalid_request_error` that says to drop the output schema or use a model route that takes tools with a format, because Ollama holds the whole answer to the format and leaves the model no way to call a tool.
   - The Messages translation answers `POST /v1/messages` and `POST /v1/messages/count_tokens` alone. Any other method or path is a 404 `not_found_error` in Anthropic's error shape, and nothing reaches Ollama.
   - `agentrun harness-check` on a model the route translates (`--model ollama/<tag>`) now reaches it. Its recorder wraps the route's own fetch, so the recipe's agent gets the same route a server's run gets and the check still sees every request. Before, every request went to the route's placeholder origin and `mcp_tool` failed.
+- A turn whose agent dies saying a refusal the recipe names now fails as that refusal, even when the agent's stdout closed before its stderr was read. The failure waits up to five seconds for the agent's process to close before it reads the stderr tail. Before, a turn could fail as `ACP_AGENT_EXITED` with "ACP connection closed" while the refusal was still in the pipe. <!-- changes/acp-last-words.md -->
 
 ## 0.1.0-beta.57 (2026-11-24)
 
