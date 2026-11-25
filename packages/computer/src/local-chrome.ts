@@ -21,13 +21,13 @@
 // browser's id: browser.json (its labels and deadline, which list and attach read), supervisor.pid, state.json (Chrome's
 // pid and port, once it answers), the profile, the proxy's socket and two logs. A release removes all of it.
 import { spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { lstat, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { browserClient, browserHello, browserSpecRefusals, carries, labelsProblem } from "./browser.js";
+import { CreateRequests, endedWords, labelsDiffer, otherSpecWords } from "./create-requests.js";
 import { alive, answeringPath, CHROME_FLAGS, checkChrome, findChrome, killTree, NO_CHROME, AS_ROOT, runsWith, singletonDir } from "./chrome.js";
 import { LOCAL } from "./descriptors/local-chrome.js";
 import { chromeEnv } from "./child-env.js";
@@ -115,7 +115,8 @@ export interface LocalBrowserOptions {
 	uid?: number;
 }
 
-const ID = /^lb-[0-9a-f]{16}$/;
+/** A browser's id, its directory's name: its request's name (computerNameFor), or lb-<16 hex> for one made before ids were. */
+const ID = /^(?:computer-[0-9a-f]{12}|lb-[0-9a-f]{16})$/;
 const idProblem = (id: unknown) => (typeof id === "string" && ID.test(id) ? undefined : `${typeof id === "string" ? JSON.stringify(id) : String(id)} is not a local browser's id`);
 const refOf = (id: string): ComputerRef => ({ id, name: id });
 const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "labels", "browser"]);
@@ -136,6 +137,8 @@ export class LocalBrowserProvider implements ComputerProvider {
 	readonly #env: Readonly<Record<string, string | undefined>>;
 	readonly #headed: boolean;
 	readonly #uid: number | undefined;
+	/** Idempotent create's in-process half: one browser per request id (provider.md). */
+	readonly #requests = new CreateRequests();
 	readonly root: string;
 
 	constructor({ executablePath, env = {}, headed = false, root, uid = process.getuid?.() }: LocalBrowserOptions = {}) {
@@ -221,17 +224,67 @@ export class LocalBrowserProvider implements ComputerProvider {
 		}
 	}
 
-	/** Starts Chrome under a supervisor of its own, waits until its DevTools socket answers, and hands back its ref. */
+	/**
+	 * Starts Chrome under a supervisor of its own, waits until its DevTools socket answers, and hands back its ref: once
+	 * per request (provider.md, Idempotent create). The request's name (computerNameFor) is the browser's id and its
+	 * directory's name, which mkdir claims for one create alone. A request whose directory is already under the root
+	 * answers that browser, from this process or another (#taken); one whose browser was released here is refused
+	 * exists; a create of a request in flight here waits for the first (CreateRequests).
+	 */
 	async create(spec: ComputerSpec, context: CreateContext): Promise<Result<CreatedComputer>> {
-		const signal = context?.signal;
 		const refusals = this.check(spec);
-		if (refusals.length > 0) return fail(refusals.some((r) => r.field === "image" && r.message.endsWith(NO_CHROME)) ? "not_found" : "refused", refusals.map(({ field, message }) => `${field}: ${message}`).join("; "));
+		return this.#requests.create(spec, context, {
+			refuse: (code, message) => fail(code === "refused" && refusals.some((r) => r.field === "image" && r.message.endsWith(NO_CHROME)) ? "not_found" : code, message),
+			...(refusals.length > 0 ? { refused: refusals.map(({ field, message }) => `${field}: ${message}`).join("; ") } : {}),
+			make: (id) => this.#createNamed(spec, id, context.signal),
+		});
+	}
+
+	/**
+	 * The browser of a request whose directory another create claimed: answered once its Chrome answers on its DevTools
+	 * socket, when it is this spec's (its labels and network, as browser.json holds them), and refused exists when it is
+	 * another's, when its deadline has passed, or when its supervisor has ended with no Chrome left. Waited for within the
+	 * time a create of its own takes.
+	 */
+	async #taken(spec: ComputerSpec, id: string, signal?: AbortSignal): Promise<Result<CreatedComputer>> {
+		const dir = this.#dir(id);
+		const wait = READY_MS + 10_000;
+		const until = Date.now() + wait;
+		for (;;) {
+			if (!(await lstat(dir).then(() => true, () => false))) return fail("exists", endedWords(id));
+			const record = await this.#record(id);
+			if (record !== undefined) {
+				const allow = (network: { allow?: string[] }) => JSON.stringify(network.allow ? [...network.allow].sort() : null);
+				const differ = labelsDiffer(spec.labels ?? {}, record.labels, "read back");
+				const asked = networkRecord(spec.network);
+				if (allow(asked) !== allow(record)) differ.push(`network: asked ${JSON.stringify(spec.network)}, read back ${JSON.stringify(networkRead(record))}`);
+				if (differ.length > 0) return fail("exists", otherSpecWords(id, "was made", differ));
+				if (Date.parse(record.deadline) <= Date.now()) return fail("exists", endedWords(id));
+				const state = await this.#live(id);
+				if (state !== undefined && (await answeringPath(state.port)) === state.path) return ok(refOf(id));
+				const supervisor = Number((await readFile(join(dir, SUPERVISOR_FILE), "utf8").catch(() => "")).trim());
+				if (state === undefined && Number.isInteger(supervisor) && supervisor > 0 && !runsWith(supervisor, dir)) return fail("exists", `${id} was made for this request and no longer runs: create with a new request id`);
+			}
+			if (Date.now() + 100 >= until) return fail("timeout", `${id}, made for this request, did not answer within ${wait / 1000} s`);
+			await sleep(100);
+			if (signal?.aborted) return fail("aborted", `create was aborted while ${id}, made for this request, came up`);
+		}
+	}
+
+	/** Everything create does under the request's name: the browser its directory already holds, or a new one. */
+	async #createNamed(spec: ComputerSpec, id: string, signal?: AbortSignal): Promise<Result<CreatedComputer>> {
 		if (signal?.aborted) return fail("aborted", "create was aborted before Chrome was started");
 		const rooted = await this.#ensureRoot();
 		if (!rooted.ok) return rooted;
-		const id = `lb-${randomBytes(8).toString("hex")}`;
 		const dir = join(this.root, id);
 		if (Buffer.byteLength(join(dir, EGRESS_SOCKET_FILE)) > SOCKET_PATH_MAX) return fail("invalid", `the local browser's root ${this.root} is too long for a Unix socket under it: set the root option to a shorter directory`);
+		// The directory is the request's claim: made by one create alone, and one already there is the request's browser.
+		try {
+			await mkdir(dir, { mode: 0o700 });
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "EEXIST") return this.#taken(spec, id, signal);
+			return fail("invalid", `the local browser's directory could not be made under ${this.root} (${(error as NodeJS.ErrnoException).code ?? (error as Error).message})`);
+		}
 		const now = Date.now();
 		const record: BrowserRecord = {
 			provider: LOCAL.id,
@@ -442,6 +495,8 @@ export class LocalBrowserProvider implements ComputerProvider {
 		const id = ref?.id;
 		const problem = idProblem(id);
 		if (problem) return fail("invalid", problem);
+		// The request's browser is ended here: a later create of it is refused exists, never made again.
+		this.#requests.end(id);
 		const dir = this.#dir(id);
 		if (!(await lstat(dir).then(() => true, () => false))) return ok(undefined);
 		const supervisor = Number((await readFile(join(dir, SUPERVISOR_FILE), "utf8").catch(() => "")).trim());

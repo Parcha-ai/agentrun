@@ -2425,6 +2425,13 @@ the protocol's methods in process over Orgo's REST API, as the phone harness and
 `"windows"` (`ORGO_WINDOWS_IMAGE`, Orgo's Windows Server 2019) or `"macos"` (`ORGO_MACOS_IMAGE`): the one the provider was
 built for.
 
+The Linux desktop makes one computer per request id. Its Orgo name begins with the request's name,
+`computer-<12 hex of sha256(requestId)>`, then the run's hash, the epoch and the deadline (`src/orgo-names.ts`). Before
+it makes a computer it lists the workspace's computers and takes the oldest whose name begins with the request's: one
+that runs with the same labels, image and sizes (its labels file) is answered, one of another spec or no longer
+running is refused `exists`, and one still being made is waited for. The parked desktops name each computer at random,
+so a create retried there makes a second computer.
+
 - **What each offers.** The protocol groups, by Orgo's calls:
   - `screen`: Orgo's screenshot (`response_format=base64&format=png`). A region is cropped in process. The live view
     polls it about once a second, scaled by Orgo past `maxWidth`.
@@ -2575,11 +2582,15 @@ call and the HTTP status alone, never the vendor's words. The calls are the prov
 its own `fetch`). A thrown error rides the failure as a hidden cause (`causeOf(result)`), not enumerable, so it is in no
 JSON.
 
-Each create writes one more label beside the spec's, `agentrun.create` (`CREATE_LABEL`), with a value of its own. A
-create whose outcome is unknown (its reply lost, cut short, answered 5xx or with no browser, or the caller's signal
+Each create writes one more label beside the spec's, `agentrun.create` (`CREATE_LABEL`), whose value is the request's
+name, `computer-<12 hex of sha256(requestId)>`. Before it makes a browser, create lists the running and starting
+browsers with that label: one with the spec's labels is answered, so a retried create, in this process or another,
+makes no second browser, and one with other labels is refused `exists`. The browser's own options (viewport, stealth,
+profile) are not read back from the vendor, so a create from another process compares the labels alone. A browser
+released here leaves its request refused `exists`. A create whose outcome is unknown (its reply lost, cut short, answered 5xx or with no browser, or the caller's signal
 aborted it) never sends a second create: it finds the browsers carrying that label as list does, in every state not
-ended, under a signal of its own bounded at `RECOVER_MS`, releases each, and its failure says so. A 4xx refusal made
-nothing, so nothing is looked for. The label is the provider's own: `check()` refuses it in a spec, and no list or attach shows it.
+ended, under a signal of its own bounded at `RECOVER_MS`, releases each, and its failure says so; that request is then
+refused `exists`. A 4xx refusal made nothing, so nothing is looked for. The label is the provider's own: `check()` refuses it in a spec, and no list or attach shows it.
 
 The conformance CLI runs the browser case set for a provider of kind browser: the health cases, then `browser.*`
 (check past the cap, attach by id and by labels, list, CDP `Browser.getVersion` and `Runtime.evaluate` on a `data:`
@@ -2613,6 +2624,12 @@ once `/json/version` answers on that port. `connect()` hands over the DevTools U
 removes its profile and every other file of it. `list()` and attach by labels find the provider's own browsers by
 `browser.json` in each browser's directory under the root (default `<tmpdir>/agentrun-local-browser-<uid>`, made 0700,
 refused when another user can write it). That file holds the labels and the deadline.
+
+A browser's id, and its directory's name, is its request's name, `computer-<12 hex of sha256(requestId)>`, and create
+makes that directory with `mkdir`, which one create alone wins. A create that finds the directory there already, in this
+process or another on the same root, answers that browser once its Chrome answers, when its labels and network are the
+ones asked; one of another spec, past its deadline or whose supervisor has ended is refused `exists`. A browser released
+here leaves its request refused `exists`.
 
 Lifetime: each browser runs under a supervisor of its own (`local-supervisor.ts`), a small detached Node process. It
 ends Chrome and removes its files at the deadline, on release, or when Chrome exits, whatever became of the process

@@ -2,12 +2,12 @@
 // none). The provider answers hello and ping itself, from the vendor's API; connect hands over the vendor's signed CDP
 // URL, which a driver dials. That URL and the live view's are secrets: they live in memory (a UrlStore), and never reach
 // a ref, a list, an error's words or a report.
-import { randomBytes } from "node:crypto";
 import type { CallOptions } from "./client.js";
 import { type ComputerClient, type DaemonMethod, type DaemonMethods, type Group, type HelloResult, PROTOCOL_VERSION } from "./protocol.js";
 import type { BrowserFeatures, BrowserSpec, CallContext, ComputerCapabilities, ComputerProvider, ComputerRef, ComputerSpec, Refusal } from "./provider.js";
 import { checkGpu, checkLifetime } from "./provider.js";
 import { type ComputerError, type ComputerErrorCode, errorOf, fail, ok, type Result } from "./result.js";
+import { labelsDiffer } from "./create-requests.js";
 import { BROWSER_IMAGE } from "./descriptors/shared.js";
 
 /** A key's or a value's longest, in characters: what both vendors keep of a metadata entry. */
@@ -90,9 +90,10 @@ export const labelsOf = (held: unknown): Record<string, string> =>
 	typeof held === "object" && held !== null ? Object.fromEntries(Object.entries(held).filter((entry): entry is [string, string] => typeof entry[1] === "string")) : {};
 
 /**
- * The label every create writes beside the spec's, a value of its own: a create whose reply is lost, or whose caller
- * cancels it, finds the browser it made by this label alone and releases it. The provider's own: check() refuses it in a
- * spec, and no list or attach shows it.
+ * The label every create writes beside the spec's, the name of its request (computerNameFor): a create retried, here or
+ * in another process, finds the browser the first made by this label (heldBrowser), and a create whose reply is lost,
+ * or whose caller cancels it, finds the browser it made by this label alone and releases it. The provider's own: check()
+ * refuses it in a spec, and no list or attach shows it.
  */
 export const CREATE_LABEL = "agentrun.create";
 
@@ -102,8 +103,16 @@ export const withoutCreateLabel = (labels: Record<string, string>): Record<strin
 	return rest;
 };
 
-/** A create label's value: 16 hex digits, fresh per create. */
-export const createLabelValue = () => randomBytes(8).toString("hex");
+/**
+ * The browser a vendor holds for a create's request (provider.md, Idempotent create), among those its create label finds
+ * (found, each with its labels as list shows them): undefined when there is none, so create makes it, else the first by
+ * id, with how its labels differ from the ones asked (labelsDiffer; empty when it is this spec's). A browser's own options
+ * are not read back from the vendor, so a create from another process compares the labels alone.
+ */
+export function heldBrowser(asked: Record<string, string>, found: ReadonlyArray<{ id: string; labels: Record<string, string> }>): { id: string; differ: string[] } | undefined {
+	const first = [...found].sort((a, b) => a.id.localeCompare(b.id))[0];
+	return first === undefined ? undefined : { id: first.id, differ: labelsDiffer(asked, first.labels, "read back") };
+}
 
 /**
  * Whether a create that threw may still have made a browser: anything but the vendor's own 4xx answer (a refusal, which

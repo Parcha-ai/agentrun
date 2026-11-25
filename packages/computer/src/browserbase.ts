@@ -36,9 +36,9 @@ import {
 	carries,
 	causeOf,
 	checkBrowser,
-	createLabelValue,
 	createUncertain,
 	DEFAULT_CONFIRM,
+	heldBrowser,
 	defaultSleep,
 	idProblem,
 	labelsOf,
@@ -57,6 +57,7 @@ import {
 	vendorFailure,
 	withoutCreateLabel,
 } from "./browser.js";
+import { CreateRequests, otherSpecWords } from "./create-requests.js";
 import { httpsBase } from "./hosted/rest.js";
 import type { KindCapabilities } from "./kinds.js";
 import {
@@ -335,6 +336,10 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 	readonly #urls: UrlStore;
 	readonly #confirm: ReleaseConfirm;
 	readonly #sleep: (ms: number) => Promise<void>;
+	/** Idempotent create's in-process half: one session per request id (provider.md). */
+	readonly #requests = new CreateRequests();
+	/** The request's name of each session this provider made or found for a create, by id: its release ends the request. */
+	readonly #requestOf = new Map<string, string>();
 
 	constructor({ apiKey, projectId, apiUrl, env = {}, fetch: fetcher, confirm = DEFAULT_CONFIRM, sleep = defaultSleep }: BrowserbaseProviderOptions) {
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("set options.apiKey to a Browserbase API key: the provider reads no environment");
@@ -389,17 +394,35 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 	}
 
 	/**
-	 * Makes a session at most once: with keepAlive, so a dropped CDP client never ends it, the lifetime as its timeout in
-	 * whole seconds, and the labels as its userMetadata. spec.browser is the session's own options, each refused by check()
+	 * Makes a session once per request (provider.md, Idempotent create): with keepAlive, so a dropped CDP client never
+	 * ends it, the lifetime as its timeout in whole seconds, and the labels as its userMetadata, with the request's name
+	 * (computerNameFor) as its create label. A request whose session Browserbase still runs or starts answers that one,
+	 * found by its create label; one whose session was released here is refused exists; a create of a request in flight
+	 * here waits for the first (CreateRequests). spec.browser is the session's own options, each refused by check()
 	 * unless declared.
 	 */
 	async create(spec: ComputerSpec, context: CreateContext): Promise<Result<CreatedComputer>> {
-		const signal = context?.signal;
 		const refusals = this.check(spec);
-		if (refusals.length > 0) return fail("refused", refusals.map(({ field, message }) => `${field}: ${message}`).join("; "));
+		return this.#requests.create(spec, context, {
+			refuse: fail,
+			...(refusals.length > 0 ? { refused: refusals.map(({ field, message }) => `${field}: ${message}`).join("; ") } : {}),
+			make: (request) => this.#createNamed(spec, request, context.signal),
+		});
+	}
+
+	/** Everything create does under the request's name: the session Browserbase holds under it, or a new one. */
+	async #createNamed(spec: ComputerSpec, request: string, signal?: AbortSignal): Promise<Result<CreatedComputer>> {
 		if (signal?.aborted) return fail("aborted", "create was aborted before Browserbase was called");
+		const held = await this.#sessions({ [CREATE_LABEL]: request }, signal);
+		if (!held.ok) return held;
+		const found = heldBrowser(spec.labels ?? {}, held.value.map((s) => ({ id: s.id, labels: fromMetadata(s.userMetadata) })));
+		if (found !== undefined) {
+			if (found.differ.length > 0) return fail("exists", otherSpecWords(`${request} (session ${found.id})`, "was made", found.differ));
+			this.#requestOf.set(found.id, request);
+			return ok(refOf({ id: found.id }));
+		}
 		const browser = spec.browser;
-		const written = { [CREATE_LABEL]: createLabelValue(), ...spec.labels };
+		const written = { [CREATE_LABEL]: request, ...spec.labels };
 		// Browserbase solves CAPTCHAs unless told not to: a browser's options say so either way, the solver only with stealth.
 		const browserSettings = {
 			...(browser?.viewport ? { viewport: { width: browser.viewport.width, height: browser.viewport.height } } : {}),
@@ -420,12 +443,17 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 		} catch (error) {
 			const failed = vendorFailure("browserbase", NAME, "POST /v1/sessions", error);
 			if (failed.ok || !createUncertain(error)) return failed;
-			// The session may have been made though its answer never came: found by its create label, never made again.
+			// The session may have been made though its answer never came: found by its create label and released, and
+			// the request is ended, so it is never made again.
+			this.#requests.end(request);
 			return causedFail(failed.error.code, `${failed.error.message}; ${await this.#recover(written)}`, causeOf(failed), "browserbase");
 		}
 		if (idProblem(made?.id, NAME) !== undefined) {
+			this.#requests.end(request);
 			return vendorFail("browserbase",`Browserbase POST /v1/sessions answered with no session id, so there is no session to connect to; ${await this.#recover(written)}`);
 		}
+		this.#requests.made(request);
+		this.#requestOf.set(made.id, request);
 		const unusable = cdpUrlProblem(made.connectUrl, NAME, CDP_DOMAIN);
 		if (unusable !== undefined) {
 			// The session is made and billed (keepAlive, up to its timeout): released here, not left to a later sweep.
@@ -667,6 +695,9 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 		const id = ref?.id;
 		const problem = idProblem(id, NAME);
 		if (problem) return fail("invalid", problem);
+		// The request's session is ended here: a later create of it is refused exists, never made again.
+		const request = this.#requestOf.get(id);
+		if (request !== undefined) this.#requests.end(request);
 		const released = await releaseConfirmed({
 			request: async () => {
 				try {
@@ -680,7 +711,10 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 			sleep: this.#sleep,
 			stillRunning: `Browserbase session ${id} still running after a release request`,
 		});
-		if (released.ok) this.#urls.delete(id);
+		if (released.ok) {
+			this.#urls.delete(id);
+			this.#requestOf.delete(id);
+		}
 		return released;
 	}
 

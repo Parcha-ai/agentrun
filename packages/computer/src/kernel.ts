@@ -32,9 +32,9 @@ import {
 	carries,
 	causeOf,
 	checkBrowser,
-	createLabelValue,
 	createUncertain,
 	DEFAULT_CONFIRM,
+	heldBrowser,
 	defaultSleep,
 	idProblem,
 	labelsOf,
@@ -53,6 +53,7 @@ import {
 	vendorFailure,
 	withoutCreateLabel,
 } from "./browser.js";
+import { CreateRequests, otherSpecWords } from "./create-requests.js";
 import { httpsBase } from "./hosted/rest.js";
 import type { KindCapabilities } from "./kinds.js";
 import {
@@ -149,6 +150,10 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 	readonly #live: UrlStore;
 	readonly #confirm: ReleaseConfirm;
 	readonly #sleep: (ms: number) => Promise<void>;
+	/** Idempotent create's in-process half: one browser per request id (provider.md). */
+	readonly #requests = new CreateRequests();
+	/** The request's name of each browser this provider made or found for a create, by id: its release ends the request. */
+	readonly #requestOf = new Map<string, string>();
 
 	constructor({ apiKey, apiUrl, env = {}, fetch: fetcher, confirm = DEFAULT_CONFIRM, sleep = defaultSleep }: KernelProviderOptions) {
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("set options.apiKey to a Kernel API key: the provider reads no environment");
@@ -186,21 +191,38 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 	}
 
 	/**
-	 * Makes a browser at most once, with the lifetime as its idle timeout in whole seconds and the labels as its tags.
-	 * spec.browser is the session's own options, each refused by check() unless declared; a profile is made first if
-	 * Kernel does not know it.
+	 * Makes a browser once per request (provider.md, Idempotent create), with the lifetime as its idle timeout in whole
+	 * seconds and the labels as its tags, with the request's name (computerNameFor) as its create label. A request whose
+	 * browser Kernel still holds undeleted answers that one, found by its create label; one whose browser was deleted here
+	 * is refused exists; a create of a request in flight here waits for the first (CreateRequests). spec.browser is the
+	 * session's own options, each refused by check() unless declared; a profile is made first if Kernel does not know it.
 	 */
 	async create(spec: ComputerSpec, context: CreateContext): Promise<Result<CreatedComputer>> {
-		const signal = context?.signal;
 		const refusals = this.check(spec);
-		if (refusals.length > 0) return fail("refused", refusals.map(({ field, message }) => `${field}: ${message}`).join("; "));
+		return this.#requests.create(spec, context, {
+			refuse: fail,
+			...(refusals.length > 0 ? { refused: refusals.map(({ field, message }) => `${field}: ${message}`).join("; ") } : {}),
+			make: (request) => this.#createNamed(spec, request, context.signal),
+		});
+	}
+
+	/** Everything create does under the request's name: the browser Kernel holds under it, or a new one. */
+	async #createNamed(spec: ComputerSpec, request: string, signal?: AbortSignal): Promise<Result<CreatedComputer>> {
 		if (signal?.aborted) return fail("aborted", "create was aborted before Kernel was called");
+		const held = await this.#browsers({ [CREATE_LABEL]: request }, signal);
+		if (!held.ok) return held;
+		const found = heldBrowser(spec.labels ?? {}, held.value.map(({ id, tags }) => ({ id, labels: tags })));
+		if (found !== undefined) {
+			if (found.differ.length > 0) return fail("exists", otherSpecWords(`${request} (browser ${found.id})`, "was made", found.differ));
+			this.#requestOf.set(found.id, request);
+			return ok(refOf(found.id));
+		}
 		const options = spec.browser;
 		if (options?.profile !== undefined) {
 			const ensured = await this.#ensureProfile(options.profile.pointer, signal);
 			if (!ensured.ok) return causedFail(ensured.error.code, `the profile could not be made ready: ${ensured.error.message}; no browser was made`, causeOf(ensured), "kernel");
 		}
-		const written = { [CREATE_LABEL]: createLabelValue(), ...spec.labels };
+		const written = { [CREATE_LABEL]: request, ...spec.labels };
 		const body = {
 			...(options !== undefined ? { stealth: false } : {}),
 			...(options?.viewport ? { viewport: { width: options.viewport.width, height: options.viewport.height } } : {}),
@@ -215,7 +237,9 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 		} catch (error) {
 			const failed = vendorFailure("kernel", NAME, "POST /browsers", error);
 			if (failed.ok || !createUncertain(error)) return failed;
-			// The browser may have been made though its answer never came: found by its create label, never made again.
+			// The browser may have been made though its answer never came: found by its create label and deleted, and the
+			// request is ended, so it is never made again.
+			this.#requests.end(request);
 			return causedFail(failed.error.code, `${failed.error.message}; ${await this.#recover(written)}`, causeOf(failed), "kernel");
 		}
 		const browser = (made.json ?? {}) as KernelBrowser;
@@ -224,8 +248,12 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 		if (made.status === 404) return vendorFailure("kernel", NAME, "POST /browsers", new BrowserVendorError(NAME, "POST /browsers", made.status, "no_session"));
 		if (idProblem(id, NAME) !== undefined) {
 			const failed = vendorFailure("kernel", NAME, "POST /browsers", new BrowserVendorError(NAME, "POST /browsers", made.status, "no_session"));
-			return failed.ok ? failed : fail(failed.error.code, `${failed.error.message}; ${await this.#recover(written)}`);
+			if (failed.ok) return failed;
+			this.#requests.end(request);
+			return fail(failed.error.code, `${failed.error.message}; ${await this.#recover(written)}`);
 		}
+		this.#requests.made(request);
+		this.#requestOf.set(id, request);
 		const unusable = cdpUrlProblem(url, NAME, CDP_DOMAIN);
 		if (unusable !== undefined) {
 			// The browser is made and billed until its idle timeout: deleted here, not left to a later sweep.
@@ -452,6 +480,9 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 		const id = ref?.id;
 		const problem = idProblem(id, NAME);
 		if (problem) return fail("invalid", problem);
+		// The request's browser is ended here: a later create of it is refused exists, never made again.
+		const request = this.#requestOf.get(id);
+		if (request !== undefined) this.#requests.end(request);
 		const released = await releaseConfirmed({
 			request: async () => {
 				try {
@@ -469,6 +500,7 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 		if (released.ok) {
 			this.#urls.delete(id);
 			this.#live.delete(id);
+			this.#requestOf.delete(id);
 		}
 		return released;
 	}

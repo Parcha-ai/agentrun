@@ -9,6 +9,10 @@ import { PROTOCOL_VERSION } from "../dist/protocol.js";
 import { providerFor, providerIds, providerModule } from "../dist/providers.js";
 import { BROWSERBASE_KEY, BROWSERBASE_URL, ECHO, fakeBrowserbase, fakeKernel, KERNEL_KEY, KERNEL_URL } from "./fake-browser.mjs";
 
+/** A create's context with a request id of its own: each create here is a new request. */
+let requests = 0;
+const newRequest = (context = {}) => ({ requestId: `browser-provider-${++requests}`, ...context });
+
 const HOUR = 3_600_000;
 const SECRET = /SECRET/;
 const noSleep = async () => {};
@@ -157,13 +161,13 @@ for (const [id, vendor] of Object.entries(VENDORS)) {
 	test(`${id}: create writes the labels into the vendor session's metadata; attach by id and by labels, and list, find it`, async () => {
 		const fake = vendor.fake();
 		const provider = await vendor.make(fake);
-		const created = value(await provider.create(spec()), "create");
+		const created = value(await provider.create(spec(), newRequest()), "create");
 		assert.deepEqual(Object.keys(created).sort(), ["id", "name"]);
 		const { agentrun_create: byMetadata, "agentrun.create": byTags, ...held } = vendor.held(fake, created.id);
 		assert.deepEqual(held, vendor.heldLabels, "the labels, as the vendor holds them");
-		assert.match(byMetadata ?? byTags, /^[0-9a-f]{16}$/, "beside them, the create label: a value of this create's own");
+		assert.match(byMetadata ?? byTags, /^computer-[0-9a-f]{12}$/, "beside them, the create label: the request's name (computerNameFor)");
 		assert.equal(vendor.lifetime(fake, created.id) !== undefined, true, "the lifetime rides the create");
-		value(await provider.create(spec({ labels: { "agentrun.run": "run-2" } })), "another run's");
+		value(await provider.create(spec({ labels: { "agentrun.run": "run-2" } }), newRequest()), "another run's");
 		const byId = value(await provider.attach({ id: created.id }), "attach by id");
 		assert.deepEqual({ id: byId.id, name: byId.name }, created);
 		assert.equal(byId.spec.kind, "browser");
@@ -188,7 +192,7 @@ for (const [id, vendor] of Object.entries(VENDORS)) {
 	test(`${id}: connect hands over the vendor's signed CDP URL, and a client that answers hello and ping from the vendor`, async () => {
 		const fake = vendor.fake();
 		const provider = await vendor.make(fake);
-		const ref = value(await provider.create(spec()), "create");
+		const ref = value(await provider.create(spec(), newRequest()), "create");
 		const connection = value(await provider.connect(ref), "connect");
 		assert.match(connection.cdp.url, /^wss:\/\/.*SECRET/, "the vendor's own signed URL");
 		assert.equal(fake.dialed.length, 0, "connect dials nothing: the URL is the driver's to dial");
@@ -210,7 +214,7 @@ for (const [id, vendor] of Object.entries(VENDORS)) {
 	test(`${id}: connect reads the browser before it hands over a held CDP URL: one released elsewhere is gone, in words with no URL`, async () => {
 		const fake = vendor.fake();
 		const holder = await vendor.make(fake);
-		const ref = value(await holder.create(spec()), "create");
+		const ref = value(await holder.create(spec(), newRequest()), "create");
 		// Another instance of the provider (its own URL cache) ends the browser; the holder still has its URL.
 		value(await (await vendor.make(fake)).release(ref, "delete"), "release through another instance");
 		const connected = await holder.connect(ref);
@@ -234,7 +238,7 @@ for (const [id, vendor] of Object.entries(VENDORS)) {
 			return fake.fetch(input, init);
 		};
 		const provider = await vendor.make(fake, { fetch });
-		const ref = value(await provider.create(spec()), "create");
+		const ref = value(await provider.create(spec(), newRequest()), "create");
 		const held = value(await provider.connect(ref), "connect").cdp.url;
 		assert.match(held, SECRET, "the fake's URL carries its signing secret");
 		failReads = true;
@@ -260,10 +264,10 @@ for (const [id, vendor] of Object.entries(VENDORS)) {
 		const knobs = {};
 		const fake = vendor.fake(knobs);
 		const provider = await vendor.make(fake);
-		const sibling = value(await provider.create(spec()), "a browser of the same run");
+		const sibling = value(await provider.create(spec(), newRequest()), "a browser of the same run");
 		const before = vendor.asked(fake).length;
 		knobs.loseCreate = () => undefined;
-		const lost = await provider.create(spec());
+		const lost = await provider.create(spec(), newRequest());
 		assert.equal(lost.ok, false);
 		assert.match(lost.error.message, /released/, lost.error.message);
 		assert.ok(vendor.running(fake, sibling.id), "the run's other browser, which carries the same run labels, still runs");
@@ -290,7 +294,7 @@ for (const [id, vendor] of Object.entries(VENDORS)) {
 		for (const url of unusable(vendor.domain)) {
 			const fake = vendor.answering(url);
 			const provider = await vendor.make(fake);
-			const made = await provider.create(spec());
+			const made = await provider.create(spec(), newRequest());
 			assert.equal(made.ok, false, `${JSON.stringify(url)}: create fails`);
 			assert.equal(vendor.creates(fake).length, 1, "one create");
 			assert.ok(vendor.allReleased(fake), `${JSON.stringify(url)}: the paid session it made is released, not left to its timeout`);
@@ -304,7 +308,7 @@ for (const [id, vendor] of Object.entries(VENDORS)) {
 			const controller = new AbortController();
 			const fake = vendor.fake({ loseCreate: () => (cancel ? controller.abort() : undefined) });
 			const provider = await vendor.make(fake);
-			const made = await provider.create(spec(), { signal: controller.signal });
+			const made = await provider.create(spec(), newRequest({ signal: controller.signal }));
 			const what = cancel ? "a cancelled create" : "a create whose reply was lost";
 			assert.equal(made.ok, false, what);
 			if (cancel) assert.equal(made.error.code, "aborted", made.error.message);
@@ -318,16 +322,17 @@ for (const [id, vendor] of Object.entries(VENDORS)) {
 		}
 		// A create the vendor refused (a 4xx) made nothing: nothing is looked for.
 		const refused = vendor.fake({ failCreate: 422 });
-		const failed = await (await vendor.make(refused)).create(spec());
+		const failed = await (await vendor.make(refused)).create(spec(), newRequest());
 		assert.equal(failed.ok, false);
-		assert.equal(refused.calls.filter((c) => c.method === "GET").length, 0, "no search after a refusal");
+		const posted = refused.calls.findIndex((c) => c.method === "POST");
+		assert.equal(refused.calls.slice(posted + 1).filter((c) => c.method === "GET").length, 0, "no search after a refusal");
 	});
 
 	test(`${id}: the create label is the provider's own: check() refuses it in a spec, and list and attach never show it`, async () => {
 		const fake = vendor.fake();
 		const provider = await vendor.make(fake);
 		assert.ok(provider.check(spec({ labels: { "agentrun.create": "mine" } })).some((r) => r.field === "labels" && /agentrun\.create/.test(r.message)));
-		const ref = value(await provider.create(spec()), "create");
+		const ref = value(await provider.create(spec(), newRequest()), "create");
 		const [info] = value(await provider.list({ "agentrun.run": "run-1" }), "list");
 		assert.deepEqual(info.labels, { "agentrun.run": "run-1", job: "j-42" });
 		assert.equal(info.ref.id, ref.id);
@@ -336,7 +341,7 @@ for (const [id, vendor] of Object.entries(VENDORS)) {
 	test(`${id}: connect hands over a CDP URL only when it is wss: on the vendor's own domain; one the vendor reads back otherwise is refused in words with no URL`, async () => {
 		for (const url of unusable(vendor.domain).filter((u) => u !== undefined && u !== "")) {
 			const fake = vendor.fake();
-			const ref = value(await (await vendor.make(fake)).create(spec()), "create");
+			const ref = value(await (await vendor.make(fake)).create(spec(), newRequest()), "create");
 			vendor.holds(fake, ref.id, url);
 			// A provider with nothing held reads the URL from the vendor.
 			const connected = await (await vendor.make(fake)).connect(ref);
@@ -349,7 +354,7 @@ for (const [id, vendor] of Object.entries(VENDORS)) {
 	test(`${id}: release is idempotent, and attach, connect and ping after it fail in words that carry no URL`, async () => {
 		const fake = vendor.fake();
 		const provider = await vendor.make(fake);
-		const ref = value(await provider.create(spec()), "create");
+		const ref = value(await provider.create(spec(), newRequest()), "create");
 		const { client } = value(await provider.connect(ref), "connect");
 		value(await provider.release(ref, "delete"), "release");
 		value(await provider.release(ref, "delete"), "a second release");
@@ -384,7 +389,7 @@ for (const [id, vendor] of Object.entries(VENDORS)) {
 		assert.equal(provider.check(spec({ network: "none" }))[0].field, "network");
 		assert.equal(provider.check(spec({ image: "debian:bookworm-slim" }))[0].field, "image");
 		assert.equal(provider.check(spec({ cpus: 2 }))[0].field, "cpus");
-		const refused = await provider.create(spec({ lifetimeMs: maxLifetimeMs + 1 }));
+		const refused = await provider.create(spec({ lifetimeMs: maxLifetimeMs + 1 }), newRequest());
 		assert.equal(refused.ok, false);
 		assert.equal(refused.error.code, "refused");
 		assert.ok(refused.error.message.includes(past[0].message), "create's refusal carries check()'s words");
@@ -394,7 +399,7 @@ for (const [id, vendor] of Object.entries(VENDORS)) {
 	test(`${id}: testConnection is one account-level read that makes nothing; a refused key is unauthorized, its words hold no key`, async () => {
 		const fake = vendor.fake();
 		const provider = await vendor.make(fake);
-		value(await provider.create(spec()), "a running session to count");
+		value(await provider.create(spec(), newRequest()), "a running session to count");
 		const before = fake.calls.length;
 		const tested = value(await provider.testConnection(), "testConnection");
 		assert.match(tested.detail, /answered: 1 (running session|active browser)/);
@@ -413,13 +418,13 @@ for (const [id, vendor] of Object.entries(VENDORS)) {
 
 	test(`${id}: a vendor failure is a result naming the call and the status, never the vendor's words`, async () => {
 		const provider = await vendor.make(vendor.fake({ failCreate: 502 }));
-		const failed = await provider.create(spec());
+		const failed = await provider.create(spec(), newRequest());
 		assert.equal(failed.ok, false);
 		assert.deepEqual([failed.error.code, failed.error.vendor], ["vendor", id]);
 		assert.match(failed.error.message, /POST .* answered 502/);
 		assert.doesNotMatch(failed.error.message, new RegExp(ECHO));
 		const wrongKey = await vendor.make(vendor.fake(), { apiKey: "test-key" });
-		const denied = await wrongKey.create(spec());
+		const denied = await wrongKey.create(spec(), newRequest());
 		assert.equal(denied.error.code, "denied");
 		assert.doesNotMatch(denied.error.message, /test-key/);
 	});
@@ -433,7 +438,7 @@ test("kernel: a lost create whose browser is still starting, which status=active
 		fake.browsers.get(bid).starting = true;
 	};
 	const provider = await VENDORS.kernel.make(fake);
-	const lost = await provider.create(spec());
+	const lost = await provider.create(spec(), newRequest());
 	assert.equal(lost.ok, false);
 	const [made] = [...fake.browsers.values()];
 	assert.equal(made.deletedAt !== undefined, true, `the starting browser is released, not left billing: ${lost.error.message}`);
@@ -445,9 +450,9 @@ test("kernel: a lost create whose browser is still starting, which status=active
 test("kernel: list and attach by labels show a browser still starting, as Browserbase lists a PENDING session; a deleted one never", async () => {
 	const fake = fakeKernel();
 	const provider = await VENDORS.kernel.make(fake);
-	const starting = value(await provider.create(spec()), "create");
+	const starting = value(await provider.create(spec(), newRequest()), "create");
 	fake.browsers.get(starting.id).starting = true;
-	const gone = value(await provider.create(spec({ labels: { "agentrun.run": "run-1", job: "j-43" } })), "create");
+	const gone = value(await provider.create(spec({ labels: { "agentrun.run": "run-1", job: "j-43" } }), newRequest()), "create");
 	value(await provider.release(gone, "delete"), "release");
 	assert.deepEqual(value(await provider.list({ "agentrun.run": "run-1" }), "list").map((info) => info.ref.id), [starting.id]);
 	assert.equal(value(await provider.attach({ labels: { job: "j-42" } }), "attach by labels").id, starting.id);
@@ -459,21 +464,22 @@ test("browserbase: a label's dots ride as underscores in userMetadata, which Bro
 	const fake = fakeBrowserbase();
 	const provider = await VENDORS.browserbase.make(fake);
 	const labels = { "agentrun.conformance": "abc123", "agentrun.conformance.case": "labels", job: "j-42" };
-	const created = value(await provider.create(spec({ labels })), "create with dotted label keys");
+	const created = value(await provider.create(spec({ labels }), newRequest()), "create with dotted label keys");
 	const { agentrun_create: _, ...held } = fake.sessions.get(created.id).userMetadata;
 	assert.deepEqual(held, { agentrun_conformance: "abc123", agentrun_conformance_case: "labels", job: "j-42" });
 	const listed = value(await provider.list({ "agentrun.conformance": "abc123" }), "list by a dotted label");
 	assert.deepEqual(listed.map((info) => info.ref), [created]);
 	assert.deepEqual(listed[0].labels, labels, "the labels read back as they were given");
-	const asked = fake.only("GET", "/v1/sessions").map((call) => call.query.q);
-	assert.ok(asked.every((q) => q === "user_metadata['agentrun_conformance']:'abc123'"), `the query names the metadata key: ${asked.join(", ")}`);
+	// Past create's own lookup of its request by the create label, every list asks by the metadata key.
+	const asked = fake.only("GET", "/v1/sessions").map((call) => call.query.q).filter((q) => !q.startsWith("user_metadata['agentrun_create']"));
+	assert.ok(asked.length > 0 && asked.every((q) => q === "user_metadata['agentrun_conformance']:'abc123'"), `the query names the metadata key: ${asked.join(", ")}`);
 	assert.deepEqual({ ...value(await provider.attach({ labels: { "agentrun.conformance.case": "labels" } }), "attach by a dotted label") }.id, created.id);
 });
 
 test("browserbase: behind a gateway that fronts the sessions' sockets (BROWSERBASE_CONNECT_BASE_URL), connect hands over the session's URL on the gateway, its path and signing query kept; with none, Browserbase's own", async () => {
 	const fake = fakeBrowserbase();
 	const behind = await VENDORS.browserbase.make(fake, { env: { BROWSERBASE_CONNECT_BASE_URL: "https://proxy.example/ws/" } });
-	const ref = value(await behind.create(spec()), "create");
+	const ref = value(await behind.create(spec(), newRequest()), "create");
 	assert.equal(value(await behind.connect(ref), "connect").cdp.url, `https://proxy.example/ws/${ref.id}?signingKey=SECRET-${ref.id}`);
 	const direct = await VENDORS.browserbase.make(fake);
 	assert.equal(value(await direct.connect(ref), "connect").cdp.url, `wss://connect.browserbase.com/${ref.id}?signingKey=SECRET-${ref.id}`);
@@ -485,7 +491,7 @@ test("browserbase: behind a gateway that fronts the sessions' sockets (BROWSERBA
 test("browserbase: a sessions' gateway (BROWSERBASE_CONNECT_BASE_URL) is wss or https, as the session's signed URL rides it: another, loopback included, is refused in words, and one that is no URL is refused without echoing it", async () => {
 	const fake = fakeBrowserbase();
 	const wss = await VENDORS.browserbase.make(fake, { env: { BROWSERBASE_CONNECT_BASE_URL: "wss://proxy.example/ws" } });
-	const ref = value(await wss.create(spec()), "create");
+	const ref = value(await wss.create(spec(), newRequest()), "create");
 	assert.equal(value(await wss.connect(ref), "connect").cdp.url, `wss://proxy.example/ws/${ref.id}?signingKey=SECRET-${ref.id}`);
 	for (const [base, scheme] of [["ws://proxy.example/ws", "ws:"], ["http://proxy.example/ws", "http:"], ["http://127.0.0.1:9/ws", "http:"]]) {
 		await assert.rejects(VENDORS.browserbase.make(fake, { env: { BROWSERBASE_CONNECT_BASE_URL: base } }), { message: `BROWSERBASE_CONNECT_BASE_URL must be wss or https, so a session's signed URL never crosses in the clear: ${scheme}` }, base);

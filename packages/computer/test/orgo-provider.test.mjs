@@ -13,6 +13,10 @@ import { kindOf, serves, sweep } from "../dist/index.js";
 import { API, fakeOrgoApi, fakeOrgoChannel, KEY, LABELS_PATH, VNC, WORKSPACE } from "./fake-orgo.mjs";
 import { refusesHttp } from "./https-refusal.mjs";
 
+/** A create's context with a request id of its own: each create here is a new request. */
+let requests = 0;
+const newRequest = (context = {}) => ({ requestId: `orgo-provider-${++requests}`, ...context });
+
 const orgo = await import("../dist/orgo.js");
 const { create, OrgoProvider } = orgo;
 const { ORGO } = await import("../dist/descriptors/orgo.js");
@@ -153,7 +157,7 @@ test("Orgo names: computer-<12 hex>, then the run's hash and the epoch when the 
 
 test("Orgo create: the computer in the workspace, computerd uploaded and installed, Orgo's X socket checked, the labels file, init on :99 as 2510:2510, then the bridge, hello, the daemon and the probe", async () => {
 	const { provider, api, channel } = setup();
-	const created = await provider.create(SPEC);
+	const created = await provider.create(SPEC, newRequest());
 	assert.equal(created.ok, true, JSON.stringify(created));
 	const record = only(api);
 	assert.deepEqual(created.value.id, record.id);
@@ -190,14 +194,14 @@ test("Orgo create: the computer in the workspace, computerd uploaded and install
 	assert.equal(file.deadline, init.deadline);
 	assert.equal(record.name.slice(record.name.lastIndexOf("-d") + 2), Math.ceil(Date.parse(init.deadline) / 1000).toString(36), "the name's deadline is init's, in whole seconds rounded up");
 	assert.equal(file.maxDeadline, init.max);
-	assert.deepEqual(api.routes(), ["POST /computers"], "Orgo's REST is the create alone; the rest is the channel");
+	assert.deepEqual(api.routes(), [`GET /workspaces/${WORKSPACE}`, "POST /computers"], "Orgo's REST is the lookup of the request's computer and the create; the rest is the channel");
 	for (const request of api.requests) keyless({ ...request, headers: { ...request.headers, authorization: undefined } }, `${request.method} ${request.path}`);
 	secretless(created, "create's result");
 });
 
 test("Orgo create: a computer Orgo answers creating is waited for until it runs; the start goes through a named session when asked", async () => {
 	const { provider, api, channel } = setup({ start: "session" }, { api: { create: "creating", creatingReads: 2 } });
-	const created = await provider.create(SPEC);
+	const created = await provider.create(SPEC, newRequest());
 	assert.equal(created.ok, true, JSON.stringify(created));
 	assert.ok(api.routes().filter((route) => route.startsWith("GET /computers/")).length >= 2);
 	assert.equal(channel.calls.find((call) => call.op === "start").how, "session");
@@ -218,7 +222,7 @@ test("Orgo create: each refusal deletes the computer and says why, never with th
 		[{ box: { interfaces: ["lo", "eth0"] } }, /daemon network: declared its own \(lo alone\), read back lo, eth0/],
 	]) {
 		const { provider, api } = setup({}, { channel: channelOptions });
-		const created = await provider.create(SPEC);
+		const created = await provider.create(SPEC, newRequest());
 		assert.equal(created.ok, false, JSON.stringify(channelOptions));
 		assert.match(created.error.message, words);
 		secretless(created, "the refusal");
@@ -227,7 +231,7 @@ test("Orgo create: each refusal deletes the computer and says why, never with th
 		assert.ok(api.routes().includes(`DELETE /computers/${record.id}`));
 	}
 	const refused = setup({}, { api: { create: "unauthorized" } });
-	const unauthorized = await refused.provider.create(SPEC);
+	const unauthorized = await refused.provider.create(SPEC, newRequest());
 	assert.equal(unauthorized.ok, false);
 	assert.equal(unauthorized.error.code, "denied");
 	keyless(unauthorized, "an unauthorized create");
@@ -235,10 +239,10 @@ test("Orgo create: each refusal deletes the computer and says why, never with th
 
 test("Orgo create: init not yet listening is tried again within helloMs; one that never listens is refused and deleted", async () => {
 	const patient = setup({ timeouts: { ...TIMEOUTS, helloMs: 5_000 } }, { channel: { notListening: 2 } });
-	assert.equal((await patient.provider.create(SPEC)).ok, true);
+	assert.equal((await patient.provider.create(SPEC, newRequest())).ok, true);
 	assert.equal(patient.channel.calls.filter((call) => call.op === "stdio").length, 3, "two bridges found no daemon, the third did");
 	const never = setup({}, { channel: { startFails: "the terminal closed with 4503" } });
-	const refused = await never.provider.create(SPEC);
+	const refused = await never.provider.create(SPEC, newRequest());
 	assert.equal(refused.ok, false);
 	assert.match(refused.error.message, /4503/);
 	assert.equal(only(never.api).deleted, true);
@@ -250,7 +254,7 @@ test("Orgo create: a daemon that does not answer is refused with what the comput
 		[{ initDies: true }, /init not running; socket absent; log computerd: init: terminated by signal 15/],
 	]) {
 		const { provider, api, channel } = setup({}, { channel: channelOptions });
-		const created = await provider.create(SPEC);
+		const created = await provider.create(SPEC, newRequest());
 		assert.equal(created.ok, false);
 		assert.match(created.error.message, /the daemon did not answer/);
 		assert.match(created.error.message, words);
@@ -500,7 +504,7 @@ test("Orgo lockdown: the script fails when a socket's chown fails, though a late
 
 test("Orgo create: a lockdown that leaves a socket open refuses the create in words, and the computer is deleted", async () => {
 	const fakes = setup({}, { channel: { lockdown: { exitCode: 1, output: "failed /run/dbus/system_bus_socket\nlocked /tmp/dbus-3fd5ustF2v\n" } } });
-	const made = await fakes.provider.create(SPEC);
+	const made = await fakes.provider.create(SPEC, newRequest());
 	assert.equal(made.ok, false, JSON.stringify(made));
 	assert.equal(made.error.code, "refused");
 	assert.match(made.error.message, /making Orgo's desktop sockets root's alone .* failed \(exit 1\)/);

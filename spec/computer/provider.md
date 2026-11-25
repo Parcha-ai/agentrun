@@ -64,13 +64,17 @@ A computer's spec (`ComputerSpec`):
 retry of one request (a timeout, a crash between the vendor's answer and ours) makes no second computer. There is no
 fallback that makes one up: serve passes the run's claim (`<run>#<epoch>`), and conformance one per create.
 
-- The computer's vendor-side name is `computer-<the first 12 hex of sha256(requestId)>` (`computerNameFor`), with no
-  extra label, so a provider finds the request's computer by listing that name.
+- The computer's vendor-side name is `computer-<the first 12 hex of sha256(requestId)>` (`computerNameFor`), so a
+  provider finds the request's computer by listing that name. A vendor name that also carries what `list` reads puts
+  it after that name and a dash (Orgo: the run's hash, the epoch and the deadline), and the provider finds the
+  computer by that start. A vendor whose machines have no name of the caller's (Browserbase, Kernel) holds the name
+  as the create label, `agentrun.create`, and the provider finds the request's browser by that label.
 - The same id while that computer is still starting is the same create: it waits as a fresh create does, within the
   same bounds, and answers it once it is up; one that reaches its deadline first is refused `exists`.
 - The same id while it is up answers it once it is the computer the spec asks for, as far as the vendor reads it back
-  (Docker: every field its drift check reads, the network and the mount among them; a phone: its labels and image); one
-  that differs is refused `exists`. A retry never gets a wider network, another folder or another user than it asked.
+  (Docker: every field its drift check reads, the network and the mount among them; a phone: its labels and image;
+  Orgo: its labels, image and sizes from its labels file; Browserbase and Kernel: its labels; the local browser: its
+  labels and network); one that differs is refused `exists`. A retry never gets a wider network, another folder or another user than it asked.
   A size (`cpus`, `memoryMb`) is compared only where the vendor reads one back; on a vendor that reads none back
   (Modal), a retry asking another size after a restart answers the request's computer as it was made.
   The GPUs are compared likewise: the hosted adapter records them at create in the label `agentrun.computer.gpu`
@@ -87,7 +91,10 @@ Every provider that makes computers keeps it through one mechanism, `CreateReque
 the creates in flight and the requests ended. What the vendor holds under the name is the provider's to read: the
 hosted adapter lists the name and reads each machine it finds by `get`, Docker's `docker run --name` finds the name
 taken and reads that container, and the phone harness reads its ledger by name and sends a key derived from the id as
-the `Idempotency-Key`.
+the `Idempotency-Key`. Orgo lists the workspace's computers before it makes one and takes the oldest whose name begins
+with the request's; Browserbase and Kernel list the running and starting browsers by the create label before they make
+one; the local browser makes the request's directory under its root with `mkdir`, which one create alone wins, and
+reads the browser in a directory already there.
 
 `provider.create-retried` creates twice with one id and expects one computer; `provider.create-after-release` releases
 it and expects the same id refused `exists`. Both are Full.
