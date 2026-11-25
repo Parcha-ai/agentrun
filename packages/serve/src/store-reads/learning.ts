@@ -270,14 +270,14 @@ const zipWith = <K, V>(keys: readonly K[], values: readonly V[]): [K, V][] => ke
  *  them): the ledger rows of its ended runs that do a job or check one (neither imported nor archived, no workflow
  *  revision's run, no shadow), a run that does not learn on the `agent` path, each with the workflow name its launch
  *  offered; every spend row; each run's audit shadow (open or ended); and the runs on no named disk (learn/learning-of.ts:
- *  one on a named disk learns nothing and serves nothing). A run that ended with no row (it ended before the ledger) is
- *  recorded here from its row and its rounds (learn/ledger.ts record), as its end would have. `runIds`: the runs whose
+ *  one on a named disk learns nothing and serves nothing). Each ended run has its row: its end wrote it, or the server's
+ *  open (run-patch.ts backfillLedger) for one an earlier build ended; none is recorded here. `runIds`: the runs whose
  *  ledger is read (Learning.ledger), the agent's every run when absent. `named` false: no workflow name is read for the
  *  series' rows (a launch's learning start is read only for a row whose end named no path). */
 async function ledgerReadOf(store: Store, agentId: string, listed: readonly RunRecord[], records: RunRecords, { runIds, named = true }: { readonly runIds?: readonly string[]; readonly named?: boolean } = {}): Promise<Omit<LedgerRead, "revisions">> {
   const byId = new Map(listed.map((run) => [run.id, run]));
-  const { recorded, spend } = await ledgerRowsOf(store, agentId, listed, records, runIds);
-  const ended = listed.filter((run) => FINAL_STATES.includes(run.state) && !run.importedFrom && run.archivedAt === null && !isShadowRun(run.id));
+  const { recorded, spend } = await ledgerRowsOf(store, agentId, runIds);
+  const ended = listed.filter((run) => FINAL_STATES.includes(run.state) && recorded.has(run.id) && !run.importedFrom && run.archivedAt === null && !isShadowRun(run.id));
   const revisionIds = [...new Set(ended.map((run) => run.revisionId))];
   const kinds = new Map(zipWith(revisionIds, await inBatches(revisionIds, async (id) => (await store.agents.revision(id))?.kind)));
   const jobs = ended.filter((run) => kinds.get(run.revisionId) !== "workflow");
@@ -306,20 +306,10 @@ const shadowOf = (byId: ReadonlyMap<string, RunRecord>, runId: string): Shadow |
   return shadow ? (FINAL_STATES.includes(shadow.state) ? "ended" : "open") : undefined;
 };
 
-/** The ledger rows (by run) and spend rows of `runIds` (Learning.ledger; the agent's every run when absent), with each
- *  final run of `listed` that has no row recorded here as its end would have. */
-async function ledgerRowsOf(store: Store, agentId: string, listed: readonly RunRecord[], records: RunRecords, runIds?: readonly string[]): Promise<{ recorded: Map<string, LedgerRow>; spend: SpendRow[] }> {
+/** The ledger rows (by run) and spend rows of `runIds` (Learning.ledger; the agent's every run when absent). */
+async function ledgerRowsOf(store: Store, agentId: string, runIds?: readonly string[]): Promise<{ recorded: Map<string, LedgerRow>; spend: readonly SpendRow[] }> {
   const ledger = await store.learning.ledger(agentId, runIds);
-  const recorded = new Map<string, LedgerRow>(ledger.rows.map((row) => [row.runId, row]));
-  const spend: SpendRow[] = [...ledger.spend];
-  // The rest are read a few at a time (READS_AT_ONCE), each run's reads in one batch: a claim reads up to PAST_RUNS runs.
-  const unrecorded = listed.filter((run) => !run.importedFrom && FINAL_STATES.includes(run.state) && !recorded.has(run.id));
-  const made = await inBatches(unrecorded, async (run) => record(await runEndOf(records, run)));
-  unrecorded.forEach((run, at) => {
-    recorded.set(run.id, made[at]!.row);
-    spend.push(...made[at]!.spend);
-  });
-  return { recorded, spend };
+  return { recorded: new Map(ledger.rows.map((row) => [row.runId, row])), spend: ledger.spend };
 }
 
 /** What record() reads of an ended run: its row, every round its learning kept and, for a shadow, the run it audits. */
@@ -413,7 +403,9 @@ async function pricedAt(store: Store, run: RunRecord, usd: number, figures: RunF
 async function runFiguresOf(store: Store, run: RunRecord): Promise<RunFigures> {
   const shadow = isShadowRun(run.id) ? undefined : await store.runs.get(shadowRunId(run.id));
   const listed = shadow ? [run, shadow] : [run];
-  const { recorded, spend } = await ledgerRowsOf(store, run.agentId, listed, store, listed.map((one) => one.id));
+  const { recorded, spend } = await ledgerRowsOf(store, run.agentId, listed.map((one) => one.id));
+  // Every ended run has its row (its end's, or backfillLedger's at the server's open); one read without it reads as its
+  // end records it, never as nothing.
   const row = recorded.get(run.id) ?? record(await runEndOf(store, run)).row;
   const { compile, audit } = spendByRun(spend);
   const shadows = new Map<string, Shadow>();

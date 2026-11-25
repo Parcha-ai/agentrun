@@ -39,6 +39,7 @@ test("importRun writes the run, its launch and its transcript in one transaction
   assert.deepEqual((await store.runs.launch("imp-1")).body, launchBody({ input: { content: "do it" }, title: "do it", place: { mode: "runner" } }));
   assert.deepEqual((await runEntries(store, "imp-1", context)).map((e) => e.kind), ["pi.user", "pi.assistant"], "its transcript");
   assert.deepEqual((await readRun(store, "imp-1", context)).importedFrom, { source: "codex", session: "s-1" }, "the view names where it came from");
+  assert.deepEqual((await store.learning.ledger("agent-1", ["imp-1"])).rows.map((one) => [one.runId, one.jobUsd, one.cost]), [["imp-1", 0.3, "known"]], "its ledger row, in the import's commit");
 });
 
 test("a crash mid-import leaves nothing: a failing transcript rolls back the run and its launch too", async (t) => {
