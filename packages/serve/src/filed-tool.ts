@@ -1,15 +1,18 @@
 // The per-tool file option: an MCP tool whose answers the agent's own tool setting files (`mcp:<server>/<tool>: {file:
-// {folder, show}}`, written by a package's `mcp[].file` at apply, or by the owner). The gateway writes each answer that
-// is not an error, scrubbed and whole, at <folder>/<tool>-<time>-<id>.json in the run's files, and the model reads only
-// a summary: how many bytes, where it is filed, the values of the paths `show` names, and the answer's shape (keys and
-// types to depth 2, array lengths), never another value (mcp-gateway.ts forward). So a template whose tool answers hold
-// what the model must not read (a customer's descriptions, say) hands its code the whole answer and its model the
-// values it needs to go on (the next page's cursor). A show path that names a free-text field shows that text: the
-// option holds only as far as its paths do.
+// {folder, show}}`, written by a package's `mcp[].file` at apply, or by the owner). The gateway writes each answer, an
+// error answer too, scrubbed and whole, at <folder>/<tool>-<time>-<id>.json in the run's files, and the tool's result is
+// only a summary: how many bytes, where it is filed (for the skill's code), the values of the paths `show` names, and
+// the answer's shape (keys that read as short names and types to depth 2, array lengths), never another value
+// (mcp-gateway.ts forward). The answer goes through neither the clip nor evidence/mcp/. So a template whose tool answers
+// hold what the model must not read (a customer's descriptions, say) hands its code the whole answer and its model the
+// values it needs to go on (the next page's cursor). What it does not do: keep the model's own file tools (read, grep,
+// ls, bash on a computer) off the folder. A template that must keep the model off the answer grants none of them, or runs
+// its skill's code where the model can't read the output. A show path that names a free-text field shows that text:
+// the option holds only as far as its paths do. A stored setting that no longer reads refuses every call of its tool.
 import type { InputIssue } from "./errors.js";
 
 /** A tool's file setting: the folder of the run's files its answers are filed in, and the paths of each answer the
- *  model reads. */
+ *  tool's result shows. */
 export type FileSetting = { folder: string; show: string[] };
 
 /** The most show paths, and the most segments of one. */
@@ -29,7 +32,7 @@ const isPlain = (value: unknown): value is Record<string, unknown> => typeof val
 /** The issues of `given` as a file setting, its fields under `at`: none when it is one. */
 export function fileIssues(given: unknown, at: string): InputIssue[] {
   if (!isPlain(given) || Object.keys(given).some((key) => key !== "folder" && key !== "show") || given.folder === undefined || given.show === undefined) {
-    return [{ field: at, reason: "wrong_type", message: `${at} is {folder, show}: the folder of the run's files each answer of the tool is filed in, whole, and the paths of it the model reads (at most ${MAX_SHOW_PATHS}); the model reads no other value of it` }];
+    return [{ field: at, reason: "wrong_type", message: `${at} is {folder, show}: the folder of the run's files each answer of the tool is filed in, whole, and the paths of it the tool's result shows (at most ${MAX_SHOW_PATHS}); the result shows no other value of it` }];
   }
   const issues: InputIssue[] = [];
   const folder = given.folder;
@@ -49,14 +52,20 @@ export function fileIssues(given: unknown, at: string): InputIssue[] {
   return issues;
 }
 
-/** The file setting of `server`'s `tool` in an agent's tool settings as its revision keeps them (body.toolSettings), when
- *  it has one that reads; else undefined (the tool answers the model as it always has). */
-export function filedBy(toolSettings: unknown): (server: string, tool: string) => FileSetting | undefined {
+/** A stored file setting that does not read (a rule tightened since it was written, a runner older than the server that
+ *  wrote it): every call of its tool is refused, never answered unfiled (mcp-gateway.ts unsendable). */
+export const UNREADABLE = "unreadable";
+
+/** The file setting of `server`'s `tool` in an agent's tool settings as its revision keeps them (body.toolSettings):
+ *  undefined when it has none (the tool answers the model as it always has), UNREADABLE when it has one that does not
+ *  read. */
+export function filedBy(toolSettings: unknown): (server: string, tool: string) => FileSetting | typeof UNREADABLE | undefined {
   return (server, tool) => {
     const key = `mcp:${server}/${tool}`;
     const setting = isPlain(toolSettings) && Object.hasOwn(toolSettings, key) ? toolSettings[key] : undefined;
     const file = isPlain(setting) ? setting.file : undefined;
-    if (file === undefined || fileIssues(file, "file").length) return undefined;
+    if (file === undefined) return undefined;
+    if (fileIssues(file, "file").length) return UNREADABLE;
     const { folder, show } = file as FileSetting;
     return { folder, show: [...show] };
   };
@@ -81,9 +90,12 @@ export function shownAt(value: unknown, path: string): string | number | boolean
 /** The most keys of one object the shape names, and the longest shape. */
 const SHAPE_KEYS = 40;
 const SHAPE_CHARS = 2_000;
+/** A key the shape names: a short name. Any other key (an email, a person's name, an id) can be data, so it is counted,
+ *  never named. */
+const SHAPE_KEY = /^[A-Za-z_][A-Za-z0-9_]{0,31}$/;
 
-/** `value`'s shape: types, each array's length and what it holds, an object's keys while `depth` is under 2; never a
- *  value. */
+/** `value`'s shape: types, each array's length and what it holds, an object's keys that are short names while `depth`
+ *  is under 2 (the rest counted); never a value. */
 export function shapeOf(value: unknown, depth = 0): string {
   if (value === null) return "null";
   if (Array.isArray(value)) {
@@ -94,14 +106,16 @@ export function shapeOf(value: unknown, depth = 0): string {
   if (isPlain(value)) {
     if (depth >= 2) return "object";
     const keys = Object.keys(value);
-    const named = keys.slice(0, SHAPE_KEYS).map((key) => `${JSON.stringify(key)}: ${shapeOf(value[key], depth + 1)}`);
-    return `{${named.join(", ")}${keys.length > SHAPE_KEYS ? `, … ${keys.length - SHAPE_KEYS} more keys` : ""}}`;
+    const named = keys.filter((key) => SHAPE_KEY.test(key)).slice(0, SHAPE_KEYS).map((key) => `${JSON.stringify(key)}: ${shapeOf(value[key], depth + 1)}`);
+    const rest = keys.length - named.length;
+    const counted = rest ? `… ${rest} ${named.length ? "more " : ""}key${rest === 1 ? "" : "s"}` : "";
+    return `{${[...named, ...(counted ? [counted] : [])].join(", ")}}`;
   }
   return typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? typeof value : "unknown";
 }
 
-/** The model's text of an answer filed at `path` (in the run's files): its bytes, where it is, the values `show` names,
- *  and its shape. */
+/** The tool's result for an answer filed at `path` (in the run's files): its bytes, where it is, the values `show`
+ *  names, and its shape. */
 export function filedSummary(tool: string, text: string, path: string, show: readonly string[]): string {
   let value: unknown;
   let json = true;
@@ -113,7 +127,7 @@ export function filedSummary(tool: string, text: string, path: string, show: rea
   const shown = `{${show.map((one) => `${JSON.stringify(one)}: ${JSON.stringify(json ? shownAt(value, one) : null)}`).join(", ")}}`;
   const shape = json ? shapeOf(value) : "text, not JSON";
   return [
-    `${tool} answered ${Buffer.byteLength(text, "utf8").toLocaleString("en-US")} bytes, filed whole at ${path}. Its values are not shown here (the agent's setting files this tool's answers); only these are:`,
+    `${tool} answered ${Buffer.byteLength(text, "utf8").toLocaleString("en-US")} bytes, filed whole at ${path} for the skill's code; its values are not shown here (the agent's setting files this tool's answers); only these are:`,
     shown,
     `Shape: ${shape.length > SHAPE_CHARS ? `${shape.slice(0, SHAPE_CHARS)}…` : shape}`,
   ].join("\n");

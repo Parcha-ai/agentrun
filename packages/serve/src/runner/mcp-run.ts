@@ -90,7 +90,7 @@ export interface McpForClaimOptions {
   /** Each credential value the claim opens, refreshes or mints, for the run's redactors (mcp-claim.ts `hold`). */
   readonly hold?: (values: string[]) => void;
   /** The run's revision's own tool settings (body.toolSettings), where a tool's file setting is read (filed-tool.ts
-   *  filedBy): each answer of such a tool is filed whole in the run's files and the model reads its summary. A run's
+   *  filedBy): each answer of such a tool is filed whole in the run's files and the tool's result is its summary. A run's
    *  own process passes none: its runner reads them from the revision it reads itself (run-child-host.ts). */
   readonly toolSettings?: unknown;
 }

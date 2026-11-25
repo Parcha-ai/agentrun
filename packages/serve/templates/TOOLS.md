@@ -129,8 +129,8 @@ the same way: Gmail's `user_id` also picks the sender, so pin it to `[null, "me"
 ## File
 
 Some answers hold text the model shouldn't read: a payments list carries each customer's description, and a page of
-it can carry an instruction someone typed there. `file` sends a tool's answers to the run's files instead of to the
-model. Your skill's code reads the files; the model reads a summary.
+it can carry an instruction someone typed there. `file` sends a tool's answers to the run's files instead of back as the
+tool's result. Your skill's code reads the files; the tool's result is a summary.
 
 `file: {<tool>: {folder: <folder>, show: [<path>, ...]}}`, beside `pin`, for tools of the same entry:
 
@@ -139,27 +139,38 @@ model. Your skill's code reads the files; the model reads a summary.
 - `show`: at most 8 paths into the answer's JSON, each 1 to 6 segments joined by `.`: a key, an index, or `-1` for
   the last item (`data.data.-1.id`).
 
-Each answer that is not an error is written whole, as the server sent it (credentials scrubbed), at
-`<folder>/<tool>-<time>-<id>.json` before the model gets its turn back. The names sort by time. The model then reads
-three lines: the size and path, the value at each `show` path, and the answer's shape (its keys and types to depth 2,
-each array's length, never a value):
+Each answer is written whole, as the server sent it (credentials scrubbed), at `<folder>/<tool>-<time>-<id>.json`
+before the model gets its turn back. The names sort by time. The answer goes through neither the clip nor
+`evidence/mcp/`. The tool's result is three lines: the size and path, the value at each `show` path, and the answer's
+shape (its keys and types to depth 2, each array's length, never a value). The shape names a key only when it reads as
+a short name (a letter or `_` first, at most 32 letters, digits or `_`) and counts the rest, so keys that are data, such
+as emails, aren't shown:
 
 ```text
-STRIPE_LIST_BALANCE_TRANSACTIONS answered 61,204 bytes, filed whole at stripe/STRIPE_LIST_BALANCE_TRANSACTIONS-2026-11-30T07-02-11-512Z-1a2b3c4d.json. Its values are not shown here (the agent's setting files this tool's answers); only these are:
+STRIPE_LIST_BALANCE_TRANSACTIONS answered 61,204 bytes, filed whole at stripe/STRIPE_LIST_BALANCE_TRANSACTIONS-2026-11-30T07-02-11-512Z-1a2b3c4d.json for the skill's code; its values are not shown here (the agent's setting files this tool's answers); only these are:
 {"successful": true, "error": null, "data.has_more": true, "data.data.-1.id": "txn_1Q...", "data.data.-1.created": 1763337600}
 Shape: {"data": {"object": string, "data": [100 objects], "has_more": boolean, "url": string}, "successful": boolean, "error": null}
 ```
 
 A `show` path that reaches no scalar shows `null`, and a string is cut at 200 characters. Show only what the model
 needs to go on: the next page's cursor, a done flag, a status. A path that names a free-text field (a description, a
-name, a message body) shows that text to the model and defeats the option. An answer that is an error is shown to the
-model as usual, so it can react. If the file can't be written, the model gets an error and none of the answer, never
-the answer as a fallback. An answer that is not JSON is filed the same way, every path showing `null`.
+name, a message body) shows that text to the model and defeats the option. An answer that is an error is filed the
+same way, and the tool's result is its summary marked as an error, so the model can react through a shown field such as
+`error.code`. If the file can't be written, the model gets an error and none of the answer, never the answer as a
+fallback. An answer that is not JSON is filed the same way, every path showing `null`.
+
+The setting keeps the answer out of the tool's result, not out of the model's reach. The model's own file tools
+(`read`, `grep`, `ls`, and `bash` on a computer) can still open the folder, and the summary names the file. If the model
+must not read the answer, don't grant those tools, or run your skill's code where the model can't read its output.
+
+The setting is per tool. File every tool that returns the same data: a retrieve tool beside a filed list tool returns
+the same objects, unfiled.
 
 Apply writes the setting into the agent's own tool settings (`definition.tool_settings["mcp:<server>/<tool>"].file`),
 ticked or not, as it writes a pin. It's the owner's setting: they can change it or remove it. With it removed, the
 tool's answers go to the model whole again, as they do for any tool without it, so a skill that reads the filed pages
-should say what it does when there are none.
+should say what it does when there are none. A stored setting that no longer reads refuses every call of its tool, with
+an error naming the setting and nothing sent, until the owner sets it again or removes it.
 
 ## Ask
 

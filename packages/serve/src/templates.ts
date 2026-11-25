@@ -107,8 +107,9 @@ const WHOLE = /^\$\{parameters\.([^}]*)\}$/;
  *  (a write asks unless the owner allowed it there, a read follows the server's Allow reads, approvals never lifts an ask). `pin`, by tool: the arguments each of its calls must carry (a value, or
  *  `${parameters.<name>}`), which apply writes as the tool's pin in the agent's tool settings, so a send goes only to the
  *  destination the owner set. `file`, by tool: where each of its answers is filed whole in the run's files and the paths of it
- *  the model reads (filed-tool.ts), which apply writes as the tool's file setting in the agent's tool settings, so the
- *  model never reads the rest of the answer. Absent when the package files none. */
+ *  the tool's result shows (filed-tool.ts), which apply writes as the tool's file setting in the agent's tool settings, so
+ *  the tool's result is a summary, never the answer (the model's own file tools can still open the folder). Absent when
+ *  the package files none. */
 export type McpNeed = { source: McpSource; toolkit: string; tools: string[]; required: boolean; reason?: string; allow: string[]; pin: Record<string, Record<string, PinValue>>; file?: Record<string, FileSetting> };
 /** One of a package's model choices (manifest `model.choices`): a model and the harness it runs on, which an owner picks
  *  by `id` at install (apply's overrides.choice) in place of the package's tier and preference. `label` names it on the
@@ -413,7 +414,7 @@ function pinOf(pin: unknown, server: string, tools: readonly string[], at: strin
  *  setting is (filed-tool.ts fileIssues). Each problem is told through `bad`; a tool whose setting reads is kept. */
 function fileOf(file: unknown, tools: readonly string[], at: string, bad: (message: string) => void): Record<string, FileSetting> {
   const out: Record<string, FileSetting> = {};
-  if (!isObject(file)) return bad(`${at} is {<tool>: {folder, show}}, by the entry's tools: each answer of the tool is filed whole in that folder of the run's files, and the model reads only the values at the show paths and the answer's shape`), out;
+  if (!isObject(file)) return bad(`${at} is {<tool>: {folder, show}}, by the entry's tools: each answer of the tool is filed whole in that folder of the run's files, and the tool's result shows only the values at the show paths and the answer's shape`), out;
   for (const [tool, setting] of Object.entries(file)) {
     if (!tools.includes(tool)) {
       bad(`${at}.${tool}: ${tool} is not one of this entry's tools (${tools.join(", ")}): a file setting files the answers of a tool the package lists`);
@@ -1350,7 +1351,7 @@ export function compiled(p: Package, parameters: Json, chosen: { harness?: strin
     } else settings[name] = { ...settings[name], pin: sortedPin(pin) as Record<string, PinValue> };
   }
   // A tool's file setting, written as the package states it, ticked or not (it holds once the tool is granted later), as
-  // a pin is: the model never reads the tool's answers whole.
+  // a pin is: the tool's result is a summary of each answer, never the answer.
   for (const { server, file } of chosen.mcp) for (const [tool, setting] of Object.entries(file ?? {})) settings[mcpToolName(server, tool)] = { ...settings[mcpToolName(server, tool)], file: { folder: setting.folder, show: [...setting.show] } };
   const definition = {
     name: p.displayName ? filled(p.displayName, parameters) : p.name, description: p.description, instructions: filled(p.instructions, parameters),

@@ -165,7 +165,7 @@ export function agentPackage(input: ExportInput): AgentPackage {
       for (const field of clear) blocked.push({ kind: "pin", name: `${server}: ${field}`, reason: IN_THE_CLEAR });
       if (!clear.length) pin[tool] = held;
     }
-    // A file setting travels as it is: a folder of the run's files and the paths the model reads, never a value.
+    // A file setting travels as it is: a folder of the run's files and the paths the tool's result shows, never a value.
     const file: Json = {};
     for (const tool of granted) {
       const held = settings[mcpToolName(server, tool)]?.file;
