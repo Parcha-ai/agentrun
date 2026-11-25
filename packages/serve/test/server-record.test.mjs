@@ -45,7 +45,8 @@ test("a clean stop removes the server's own record", { timeout: 120_000 }, async
 
 test("a SIGTERM the moment the record appears is a clean stop: exit 0, the record gone", { timeout: 180_000 }, async (t) => {
   // The record is written once the server listens; a stop sent as soon as it is there must find the stop handler in place.
-  for (let i = 0; i < 8; i++) {
+  // Eight servers, each its own process and data, started at once: each try is a race of its own.
+  await Promise.all(Array.from({ length: 8 }, async (_, i) => {
     const dir = mkdtempSync(join(tmpdir(), "server-record-"));
     const data = join(dir, "data");
     const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.includes(name))), ...NO_BOXES, HOME: dir, AGENTRUN_ACCOUNTS: "0" };
@@ -68,7 +69,7 @@ test("a SIGTERM the moment the record appears is a clean stop: exit 0, the recor
     });
     assert.deepEqual(await exited, { code: 0, signal: null }, `try ${i + 1}`);
     assert.equal(existsSync(record), false, `try ${i + 1}: the record is gone`);
-  }
+  }));
 });
 
 test("a stop leaves a record that names another server, as one started next writes it", { timeout: 120_000 }, async (t) => {

@@ -231,3 +231,28 @@ test("a provider that names where it lists (sweepScope: an app and a server): --
 	assert.equal(same.code, 0, same.err);
 	assert.deepEqual(JSON.parse(same.out), { swept: 1, gone: 1, stillThere: [], leftAlone: 0 });
 });
+
+test("a scope names a server by its normalized URL: a scheme's case, a default port, a trailing slash or the setting left unset name the same place", async () => {
+	const KEY = "fake-test-key";
+	const modal = await import("../dist/conformance/modal.js");
+	const groundbox = await import("../dist/conformance/groundbox.js");
+	const smolcloud = await import("../dist/conformance/smolcloud.js");
+	const cloudflare = await import("../dist/conformance/cloudflare.js");
+	const { workspaceOf } = await import("../dist/agent37.js");
+	const { accountOf } = await import("../dist/morph.js");
+	const spellings = (url) => [url, url.replace(/^https:/, "HTTPS:"), url.replace(/^(https:\/\/[^/]+)/, "$1:443"), `${url}/`];
+	const at = (name) => (url) => (url === undefined ? {} : { [name]: url });
+	for (const [what, url, scopeOf, unset] of [
+		["Modal", "https://api.modal.com", (env) => modal.sweepScope({ env: { COMPUTER_MODAL_TOKEN_ID: KEY, COMPUTER_MODAL_TOKEN_SECRET: KEY, COMPUTER_MODAL_APP: "computers", ...at("COMPUTER_MODAL_SERVER_URL")(env) } }), true],
+		["Groundbox", "https://api.groundbox.dev/v1", (env) => groundbox.sweepScope({ env: { COMPUTER_GROUNDBOX_API_KEY: KEY, ...at("COMPUTER_GROUNDBOX_API_URL")(env) } }), true],
+		["smol cloud", "https://api.smolmachines.com", (env) => smolcloud.sweepScope({ env: { COMPUTER_SMOLCLOUD_API_KEY: KEY, ...at("COMPUTER_SMOLCLOUD_API_URL")(env) } }), true],
+		["the Cloudflare relay", "https://relay.example.workers.dev", (env) => cloudflare.sweepScope({ env: { COMPUTER_CLOUDFLARE_RELAY_TOKEN: KEY, ...at("COMPUTER_CLOUDFLARE_RELAY_URL")(env) } }), false],
+		["Agent37", "https://api.agent37.com", (url) => (url === undefined ? workspaceOf(KEY) : workspaceOf(KEY, url)), true],
+		["Morph", "https://cloud.morph.so/api", (url) => (url === undefined ? accountOf(KEY) : accountOf(KEY, url)), true],
+	]) {
+		const scope = scopeOf(url);
+		assert.ok(scope.includes(url), `${what}: ${scope}`);
+		for (const spelling of spellings(url)) assert.equal(scopeOf(spelling), scope, `${what}: ${spelling}`);
+		if (unset) assert.equal(scopeOf(undefined), scope, `${what}: the default`);
+	}
+});

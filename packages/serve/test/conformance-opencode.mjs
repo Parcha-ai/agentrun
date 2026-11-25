@@ -94,14 +94,15 @@ function tracked(adapter) {
  *  stand-in, its model through the session's proxy to the script, the run's visible record kept by the loop. One
  *  sessions folder per loop: a resume on another runner opens the session from the run's journal. */
 export function openCodeSpec(setup, options = {}) {
-  strictOptions("openCodeSpec's setup", setup, ["script", "tools", "hooks", "agentId"]);
+  strictOptions("openCodeSpec's setup", setup, ["script", "tools", "hooks", "agentId", "endOfRun"]);
   strictOptions("openCodeSpec", options, ["fetch", "requests", "price"]);
-  const { script, tools, hooks, agentId } = setup;
+  const { script, tools, hooks, agentId, endOfRun } = setup;
   const sessionsDir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-opencode-conformance-"));
   dirs.push(sessionsDir);
   const harness = resolveHarness("opencode");
   return async (_claim, run) => ({
     ...(agentId ? { agentId } : {}),
+    ...(endOfRun ? { endOfRun } : {}),
     adapter: tracked(await harness.adapter(
       { run, model: MODEL, provider: { origin: "https://provider.invalid", credential: () => `not-a-secret-${"x"}` }, price: options.price ?? (() => 0), sessionsDir, fetch: options.fetch ?? scriptedResponses(script, options.requests) },
       { standIn: { command: process.execPath, args: [STAND_IN] } },

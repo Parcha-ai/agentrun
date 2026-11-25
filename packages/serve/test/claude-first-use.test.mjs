@@ -427,15 +427,19 @@ test("an install killed part way leaves nothing that reads as installed, and the
   const anthropic = await anthropicEndpoint(t);
   await firstUseEnv(t, registry, anthropic.fake);
   // The agent's create starts the install; the MCP library's tarball is held, so npm has the SDK and waits.
-  const { api, data } = await firstUseServe(t, registry);
+  const lines = [];
+  const { api, data } = await firstUseServe(t, registry, undefined, { log: (line) => lines.push(line) });
   await until("npm writes the SDK somewhere under the data", () => sdkAnywhere(data), 120_000);
   const pids = await until("npm runs on the data", async () => ((await npmOn(data)).length ? npmOn(data) : undefined), 30_000).catch(async (error) => assert.fail(`${error.message}: ${(await Promise.all((await descendants()).map(async (pid) => (await readFile(`/proc/${pid}/cmdline`, "utf8").catch(() => "")).split("\0").join(" ").slice(0, 200)))).join(" | ")}`));
   for (const pid of pids) process.kill(pid, "SIGKILL");
   await until("npm is gone", async () => (await npmOn(data)).length === 0, 30_000);
   letGo();
   assert.equal(installedIn(data), undefined, "a killed install leaves no SDK that reads as installed");
-  // The cut install's directory goes as that install ends; a run started after it installs anew.
-  await until("the cut install is cleared away", async () => (await sdkAnywhere(data)) === undefined, 30_000);
+  // The cut install has ended once the server says it failed, its directory cleared before that; a run started after it
+  // installs anew. The directory going is not that end: a run claimed between the two waits on the install being cut,
+  // and fails in its words as any run that waited on it does.
+  await until("the server says the cut install failed", () => lines.some((line) => line.includes("harness_install_failed")), 30_000);
+  assert.equal(await sdkAnywhere(data), undefined, "the cut install's directory is cleared away as it ends");
   const run = await api("POST", "/agents/claude/runs", { input: { content: "Say hello." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   const { rows, last } = await follow(api, run.body.run_id, ["completed", "failed"], { deadlineMs: 240_000 });

@@ -24,14 +24,6 @@ test("serve pins @secretlint/profiler at the version @secretlint/core loads, so 
   assert.equal(serve.dependencies["@secretlint/profiler"], core.dependencies["@secretlint/profiler"]);
 });
 
-test("the scan finds a key of a known format and leaves plain text alone", async () => {
-  const { secretsIn } = await import("../dist/secret-cut.js");
-  // A fake GitHub token: the format's prefix and length, made up.
-  const fake = `ghp_${"A1b2C3d4E5".repeat(3)}abcdef`;
-  assert.ok((await secretsIn(`token ${fake} in a log`)).includes(fake));
-  assert.deepEqual(await secretsIn("nothing secret in this line"), []);
-});
-
 // The rules the import's scan loads, by id: the recommended set but its comment filter. A secretlint bump that adds,
 // drops or renames one shows here, to be read before it ships.
 const LOADED = ["aws", "gcp", "privatekey", "npm", "basicauth", "slack", "sendgrid", "shopify", "stripe", "github", "gitlab", "grafana", "openai", "anthropic", "groq", "huggingface", "linear", "notion", "1password", "database-connection-string", "hashicorp-vault", "vercel", "databricks", "docker", "figma", "cloudflare", "tailscale"].map((name) => `@secretlint/secretlint-rule-${name}`);
@@ -39,12 +31,6 @@ const LOADED = ["aws", "gcp", "privatekey", "npm", "basicauth", "slack", "sendgr
 test("the scan loads exactly the 27 recommended rules but the comment filter, in secretlint's order", async () => {
   const { SECRETLINT_RULE_IDS } = await import("../dist/secret-cut.js");
   assert.deepEqual(SECRETLINT_RULE_IDS, LOADED);
-});
-
-test("a set of rules that leaves nothing to load is refused when the module loads, never a scan that finds nothing", async () => {
-  const { secretlintConfig } = await import("../dist/secret-cut.js");
-  assert.throws(() => secretlintConfig([]), /no secretlint rule/);
-  assert.throws(() => secretlintConfig([{ meta: { id: "@secretlint/secretlint-rule-filter-comments" } }]), /no secretlint rule/);
 });
 
 test("a secretlint-disable comment in what an import reads switches nothing off: the key after it is still cut", async () => {

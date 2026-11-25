@@ -167,7 +167,7 @@ export interface components {
     places: {
       modes: ("runner" | "sandbox")[];
       boxes: {
-        id: "docker" | "modal" | "daytona";
+        id: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "boxd" | "groundbox";
         available: boolean;
         state: "ready" | "unavailable";
         reason?: string;
@@ -179,7 +179,7 @@ export interface components {
         mode: "runner";
       } | {
         mode: "sandbox";
-        box: "docker" | "modal" | "daytona";
+        box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "boxd" | "groundbox";
       };
       default_reason?: string;
       allow: string[];
@@ -237,6 +237,13 @@ export interface components {
         codex: string;
         opencode: string;
       };
+      held?: {
+        provider: string;
+        tool: "search" | "fetch" | "key";
+        kind: "quota" | "rate";
+        until: string;
+        words: string;
+      }[];
       permission: "allow" | "ask" | "deny";
       default_permission: "allow" | "ask" | "deny";
       permissions: ("allow" | "ask" | "deny")[];
@@ -385,7 +392,7 @@ export interface components {
       mode: "runner";
     } | {
       mode: "sandbox";
-      box: "docker" | "modal" | "daytona";
+      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "boxd" | "groundbox";
     };
     computer?: {
       kind: "none" | "sandbox" | "desktop" | "phone" | "browser";
@@ -544,7 +551,7 @@ export interface components {
       detail: string;
     }[];
   };
-  ErrorCode: "bad_request" | "invalid_file_path" | "unauthenticated" | "insufficient_credits" | "spend_cap_reached" | "forbidden" | "system_file_forbidden" | "not_found" | "method_not_allowed" | "agent_exists" | "agent_not_runnable" | "home_busy" | "idempotency_mismatch" | "idempotency_in_progress" | "not_continuable" | "quote_invalid" | "precondition_failed" | "payload_too_large" | "unsupported_media_type" | "range_not_satisfiable" | "input_invalid" | "home_check_failed" | "rate_limited" | "internal" | "unsupported_here" | "unavailable" | "name_taken" | "agent_archived" | "request_timeout" | "key_set_by_server" | "budget_reached" | "webhook_off" | "slack_off" | "precondition_required" | "auth_required" | "not_mcp" | "upstream_failed" | "wrong_origin" | "sign_in_held" | "handoff_answered" | "computer_not_live" | "scope_taken" | "github_not_connected" | "github_already_connected" | "github_no_public_url" | "github_wrong_origin" | "github_failed" | "github_not_installed" | "github_permission_missing" | "github_file_exists" | "suggestion_decided" | "composio_no_public_url" | "composio_subscription_elsewhere" | "composio_not_connected" | "composio_account_ambiguous" | "composio_in_use" | "external_body_conflict" | "replay_conflict" | "runs_in_flight" | "learning_busy" | "agent_not_archived" | "run_not_final" | "run_learning" | "not_exportable" | "purged" | "model_key_required" | "runner_refused" | "api_keys_full";
+  ErrorCode: "bad_request" | "invalid_file_path" | "unauthenticated" | "insufficient_credits" | "spend_cap_reached" | "forbidden" | "system_file_forbidden" | "not_found" | "method_not_allowed" | "agent_exists" | "agent_not_runnable" | "home_busy" | "idempotency_mismatch" | "idempotency_in_progress" | "not_continuable" | "quote_invalid" | "precondition_failed" | "payload_too_large" | "unsupported_media_type" | "range_not_satisfiable" | "input_invalid" | "home_check_failed" | "rate_limited" | "internal" | "unsupported_here" | "unavailable" | "name_taken" | "agent_archived" | "request_timeout" | "key_set_by_server" | "budget_reached" | "webhook_off" | "slack_off" | "precondition_required" | "auth_required" | "not_mcp" | "upstream_failed" | "wrong_origin" | "sign_in_held" | "handoff_answered" | "computer_not_live" | "scope_taken" | "github_not_connected" | "github_already_connected" | "github_no_public_url" | "github_wrong_origin" | "github_failed" | "github_not_installed" | "github_permission_missing" | "github_file_exists" | "suggestion_decided" | "composio_no_public_url" | "composio_subscription_elsewhere" | "composio_not_connected" | "composio_account_ambiguous" | "composio_in_use" | "external_body_conflict" | "replay_conflict" | "runs_in_flight" | "learning_busy" | "agent_not_archived" | "run_not_final" | "run_learning" | "not_exportable" | "export_too_large" | "purged" | "model_key_required" | "runner_refused" | "api_keys_full";
   ExternalRef: {
     source: string;
     kind: string;
@@ -969,7 +976,7 @@ export interface components {
       mode: "runner";
     } | {
       mode: "sandbox";
-      box: "docker" | "modal" | "daytona";
+      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "boxd" | "groundbox";
     };
     computer?: {
       kind: "sandbox" | "desktop" | "phone" | "browser";
@@ -1057,6 +1064,14 @@ export interface components {
       digest: string | null;
       repick: "found" | "missed" | null;
     } | null;
+    workflow_calls?: {
+      workflow: string;
+      digest: string;
+      caller: "platform" | "agent";
+      outcome: "answered" | "handed_back" | "failed" | "refused";
+      usd: number | null;
+    }[] | null;
+    first_choice?: "served" | "replay" | "replay_missing" | "none_laid" | "off" | "none_fit" | "many_fit" | "not_promoted" | "champion_misfit" | "many_champions" | "cost_stop" | "no_by_hand_cost" | "past_unread" | "held" | null;
   };
   RunCreate: {
     input: Record<string, unknown>;
@@ -1308,6 +1323,14 @@ export interface components {
       digest: string | null;
       repick: "found" | "missed" | null;
     } | null;
+    workflow_calls?: {
+      workflow: string;
+      digest: string;
+      caller: "platform" | "agent";
+      outcome: "answered" | "handed_back" | "failed" | "refused";
+      usd: number | null;
+    }[] | null;
+    first_choice?: "served" | "replay" | "replay_missing" | "none_laid" | "off" | "none_fit" | "many_fit" | "not_promoted" | "champion_misfit" | "many_champions" | "cost_stop" | "no_by_hand_cost" | "past_unread" | "held" | null;
   };
   SecretMeta: {
     name: string;
@@ -2787,7 +2810,7 @@ export interface operations {
   getClaudeLogin: {
     body: never;
     answer: {
-      state: "off" | "other_machine" | "signed_in" | "signed_out" | "no_cli" | "unknown";
+      state: "off" | "other_machine" | "refused" | "signed_in" | "signed_out" | "no_cli" | "unknown";
       place: "agentrun" | "machine";
       command: string;
       can_start: boolean;
@@ -2941,6 +2964,7 @@ export interface operations {
         workflow: string;
         digest: string;
         state: "serving" | "needs_revision";
+        reason: "over_line" | "no_by_hand_cost" | null;
         served: {
           runs: number;
           mean_usd: number;
@@ -3287,6 +3311,57 @@ export interface operations {
       hold: "agent" | "pending" | "person";
     };
   };
+  getRunExport: {
+    body: never;
+    answer: {
+      format: "agentrun.share/1";
+      sha256: string;
+      source: {
+        agentrun: string;
+        scrubber: {
+          version: number;
+          rules: string;
+        };
+      };
+      agent: {
+        name: string;
+        kind: "agentic" | "workflow";
+      };
+      run: Record<string, unknown>;
+      rows: Record<string, unknown>[];
+      graph: Record<string, unknown> | null;
+      files: {
+        path: string;
+        bytes: number;
+        sha256: string;
+        encoding: "utf8";
+        content: string;
+      }[];
+      omitted: {
+        what: "file" | "files" | "recordings";
+        path?: string;
+        why: "binary" | "too_large" | "over_total" | "over_count" | "unreadable" | "list_truncated" | "uncounted" | "never";
+      }[];
+      cuts: {
+        id: string;
+        at: string;
+        start: number;
+        end: number;
+        rule: string;
+        kind: "format" | "held" | "dump" | "label" | "personal" | "jev";
+        restorable: boolean;
+        shape: string;
+      }[];
+      restored: {
+        id: string;
+        at: string;
+        start: number;
+        end: number;
+        rule: string;
+        kind: "label" | "personal" | "jev";
+      }[];
+    };
+  };
   getRunGraph: {
     body: never;
     answer: {
@@ -3299,9 +3374,14 @@ export interface operations {
         paused: boolean;
         startedAt: string;
         endedAt: string | null;
+        withheld?: true;
       };
       workflow: Record<string, unknown>;
-      graph: Record<string, unknown>;
+      graph: {
+        nodes: Record<string, unknown>[];
+        edges: Record<string, unknown>[];
+        withheld?: true;
+      };
       nodes: Record<string, {
         status: "pending" | "working" | "done" | "failed" | "stopped" | "escalated" | "not_run" | "needs_review";
         startedAt?: string;
@@ -4827,31 +4907,24 @@ export interface operations {
           agreed?: number;
           alone?: number;
           agent_agreed?: number;
+          joint?: boolean;
           fields?: Record<string, {
             n: number;
             workflow_right: number;
             agent_right: number;
-            known: "label" | "grade" | "agent";
+            known: "grade" | "agent";
             pass: boolean;
             reason: string;
             by: {
-              label?: {
-                n: number;
-                workflow_right: number;
-                agent_right: number;
-                pass: boolean;
-              };
               grade?: {
                 n: number;
                 workflow_right: number;
                 agent_right: number;
-                pass: boolean;
               };
               agent?: {
                 n: number;
                 workflow_right: number;
                 agent_right: number;
-                pass: boolean;
               };
             };
             unjudged?: number;
@@ -4881,7 +4954,7 @@ export interface operations {
             fields?: string[];
             expected?: {
               field: string;
-              known: "label" | "grade" | "unknown";
+              known: "grade" | "unknown" | "contradicts";
               value?: string;
             }[];
           }[];
@@ -4892,6 +4965,20 @@ export interface operations {
             n: number;
             agreed: number;
             alone: number;
+            agent_agreed: number;
+            fields: Record<string, {
+              grade?: {
+                n: number;
+                workflow_right: number;
+                agent_right: number;
+              };
+              agent?: {
+                n: number;
+                workflow_right: number;
+                agent_right: number;
+              };
+              unjudged?: number;
+            }>;
             of: string[];
             outcomes: {
               answered: number;
@@ -4910,29 +4997,10 @@ export interface operations {
               fields?: string[];
               expected?: {
                 field: string;
-                known: "label" | "grade" | "unknown";
+                known: "grade" | "unknown" | "contradicts";
                 value?: string;
               }[];
             }[];
-            agent_agreed?: number;
-            fields?: Record<string, {
-              label?: {
-                n: number;
-                workflow_right: number;
-                agent_right: number;
-              };
-              grade?: {
-                n: number;
-                workflow_right: number;
-                agent_right: number;
-              };
-              agent?: {
-                n: number;
-                workflow_right: number;
-                agent_right: number;
-              };
-              unjudged?: number;
-            }>;
             fresh_reads?: number;
           };
         };
@@ -4952,6 +5020,7 @@ export interface operations {
             agent: string | null;
             draft: string | null;
             graded?: true;
+            expected?: string;
           }[];
           stopped?: true;
         };
@@ -4999,31 +5068,24 @@ export interface operations {
             agreed?: number;
             alone?: number;
             agent_agreed?: number;
+            joint?: boolean;
             fields?: Record<string, {
               n: number;
               workflow_right: number;
               agent_right: number;
-              known: "label" | "grade" | "agent";
+              known: "grade" | "agent";
               pass: boolean;
               reason: string;
               by: {
-                label?: {
-                  n: number;
-                  workflow_right: number;
-                  agent_right: number;
-                  pass: boolean;
-                };
                 grade?: {
                   n: number;
                   workflow_right: number;
                   agent_right: number;
-                  pass: boolean;
                 };
                 agent?: {
                   n: number;
                   workflow_right: number;
                   agent_right: number;
-                  pass: boolean;
                 };
               };
               unjudged?: number;
@@ -5053,7 +5115,7 @@ export interface operations {
               fields?: string[];
               expected?: {
                 field: string;
-                known: "label" | "grade" | "unknown";
+                known: "grade" | "unknown" | "contradicts";
                 value?: string;
               }[];
             }[];
@@ -5064,6 +5126,20 @@ export interface operations {
               n: number;
               agreed: number;
               alone: number;
+              agent_agreed: number;
+              fields: Record<string, {
+                grade?: {
+                  n: number;
+                  workflow_right: number;
+                  agent_right: number;
+                };
+                agent?: {
+                  n: number;
+                  workflow_right: number;
+                  agent_right: number;
+                };
+                unjudged?: number;
+              }>;
               of: string[];
               outcomes: {
                 answered: number;
@@ -5082,29 +5158,10 @@ export interface operations {
                 fields?: string[];
                 expected?: {
                   field: string;
-                  known: "label" | "grade" | "unknown";
+                  known: "grade" | "unknown" | "contradicts";
                   value?: string;
                 }[];
               }[];
-              agent_agreed?: number;
-              fields?: Record<string, {
-                label?: {
-                  n: number;
-                  workflow_right: number;
-                  agent_right: number;
-                };
-                grade?: {
-                  n: number;
-                  workflow_right: number;
-                  agent_right: number;
-                };
-                agent?: {
-                  n: number;
-                  workflow_right: number;
-                  agent_right: number;
-                };
-                unjudged?: number;
-              }>;
               fresh_reads?: number;
             };
           } | null;
@@ -7042,7 +7099,7 @@ export interface operations {
   startClaudeLogin: {
     body: never;
     answer: {
-      state: "off" | "other_machine" | "signed_in" | "signed_out" | "no_cli" | "unknown";
+      state: "off" | "other_machine" | "refused" | "signed_in" | "signed_out" | "no_cli" | "unknown";
       place: "agentrun" | "machine";
       command: string;
       can_start: boolean;
@@ -7299,7 +7356,7 @@ export interface operations {
   turnOffClaudeLogin: {
     body: never;
     answer: {
-      state: "off" | "other_machine" | "signed_in" | "signed_out" | "no_cli" | "unknown";
+      state: "off" | "other_machine" | "refused" | "signed_in" | "signed_out" | "no_cli" | "unknown";
       place: "agentrun" | "machine";
       command: string;
       can_start: boolean;
@@ -7333,7 +7390,7 @@ export interface operations {
       only_me: true;
     };
     answer: {
-      state: "off" | "other_machine" | "signed_in" | "signed_out" | "no_cli" | "unknown";
+      state: "off" | "other_machine" | "refused" | "signed_in" | "signed_out" | "no_cli" | "unknown";
       place: "agentrun" | "machine";
       command: string;
       can_start: boolean;
