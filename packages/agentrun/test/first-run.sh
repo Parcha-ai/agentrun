@@ -3,9 +3,9 @@
 # POSIX sh. Each function returns 1 with the reason in fr_why. Needs $repo, and node as $1 where a function takes it
 # (install-walk's machines have none on PATH).
 
-# The prompt's lines, its CLI as $1 (a command line run with sh -c) and its Local model on localhost:$2: fr_create and
-# fr_start (the release-notes agent and its run), fr_service (the Local model on the service) and fr_vars (the same,
-# one VARIABLE=value each, as the prompt puts them in front of a background start's sh).
+# The prompt's lines, its CLI as $1 (a command line run with sh -c) and its Local model, an Ollama on 127.0.0.1:$2:
+# fr_create and fr_start (the release-notes agent and its run), fr_service (the service told where Ollama listens) and
+# fr_vars (the same, one VARIABLE=value each, as the prompt puts them in front of a background start's sh).
 first_run_lines() {
   fr_skill=$repo/docs/SKILL.md
   # The prompt's lines start with a literal ~/, looked for as written: nothing here expands it.
@@ -14,7 +14,7 @@ first_run_lines() {
   # shellcheck disable=SC2088
   fr_start=$(grep -m 1 -F -- '~/.agentrun/bin/agentrun runs start release-notes --wait ' "$fr_skill")
   # shellcheck disable=SC2088
-  fr_service=$(grep -m 1 -F -- '~/.agentrun/bin/agentrun service install --env AGENT_MODEL_BASE_URL=http://localhost:11434/v1 ' "$fr_skill")
+  fr_service=$(grep -m 1 -F -- '~/.agentrun/bin/agentrun service install --env OLLAMA_HOST=<host:port>' "$fr_skill")
   # The background start's variables, as the prompt writes them (its line wraps).
   # shellcheck disable=SC2016 # backticks of the prompt's Markdown, matched as written
   fr_vars=$(tr '\n' ' ' <"$fr_skill" | grep -o -m 1 'curl -fsSL https://agentrun.ai/install | [A-Z_]*=[^`]* sh`' |
@@ -26,15 +26,15 @@ first_run_lines() {
   for fr_pair in $fr_vars; do
     printf '%s' "$fr_pair" | grep -qE '^[A-Z_]+=[^=]*$' || { fr_why="the background start's line has $fr_pair, not a VARIABLE=value" && return 1; }
   done
-  fr_at="s|~/.agentrun/bin/agentrun|$1|g; s|<tag>|walk-model|g; s|localhost:11434|localhost:$2|g"
+  fr_at="s|~/.agentrun/bin/agentrun|$1|g; s|<host:port>|127.0.0.1:$2|g"
   fr_create=$(printf '%s' "$fr_create" | sed "$fr_at")
   fr_start=$(printf '%s' "$fr_start" | sed "$fr_at")
   fr_service=$(printf '%s' "$fr_service" | sed "$fr_at")
   fr_vars=$(printf '%s' "$fr_vars" | sed "$fr_at")
 }
 
-# The stand-in for Ollama (walk-model.mjs: no key, no network) with node $1 on port $3, its log and output in folder $2:
-# fr_model (its pid) and fr_model_log.
+# The fake Ollama (walk-model.mjs: no key, no network, no download) with node $1 on port $3, its log and output in
+# folder $2: fr_model (its pid) and fr_model_log.
 first_run_model() {
   fr_model_log=$2/model.log
   "$1" "$repo/packages/agentrun/test/walk-model.mjs" "$fr_model_log" "$3" >"$2/model.out" 2>&1 &
@@ -43,7 +43,7 @@ first_run_model() {
   fr_tries=0
   until grep -q 'walk model on' "$2/model.out"; do
     fr_tries=$((fr_tries + 1))
-    [ "$fr_tries" -le 50 ] || { fr_why="the stand-in model did not start: $(cat "$2/model.out")" && return 1; }
+    [ "$fr_tries" -le 50 ] || { fr_why="the fake Ollama did not start: $(cat "$2/model.out")" && return 1; }
     sleep 0.1
   done
 }
@@ -64,7 +64,8 @@ first_run_agent() {
 }
 
 # Its first run with the prompt's line, and the receipt the prompt hands over (node $1 reads it): completed, the answer
-# from the local model, cost.usd and console_url; and the model's log shows the run reached it. The receipt: fr_receipt.
+# from the local model, cost.usd and console_url; and the model's log shows the run reached Ollama's own chat, which
+# only a model AgentRun listed from it is sent to. The receipt: fr_receipt.
 first_run_run() {
   fr_receipt=$(sh -c "$fr_start" 2>&1) || { fr_why="runs start: $(printf '%s' "$fr_receipt" | tail -n 1)" && return 1; }
   # shellcheck disable=SC2016 # JavaScript, its template strings its own
@@ -76,5 +77,5 @@ first_run_run() {
     else if (!/^https?:\/\//.test(run.console_url ?? "")) console.log(`no console_url on the receipt: ${run.console_url}`);
   ' "$fr_receipt" 2>&1) || fr_why="the receipt is not JSON: $fr_why"
   [ -z "$fr_why" ] || return 1
-  grep -qE '^POST .*/(responses|chat/completions)$' "$fr_model_log" || { fr_why="the run never reached the local model: $(cat "$fr_model_log")" && return 1; }
+  grep -qE '^POST /api/chat$' "$fr_model_log" || { fr_why="the run never reached the local model: $(cat "$fr_model_log")" && return 1; }
 }

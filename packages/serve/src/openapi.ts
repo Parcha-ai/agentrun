@@ -74,6 +74,7 @@ import { LABEL_KEY, MAX_LABEL_VALUE, MAX_LABELS } from "./run-labels.js";
 import { COST_BASES } from "./runner/metrics.js";
 import { FIRST_REASONS, PAST_RUNS } from "./runner/workflow-first.js";
 import { BASH_POLICIES } from "./bash-read-only.js";
+import { MAX_SHOW_PATHS, MAX_SHOW_SEGMENTS, SHOWN_CHARS } from "./filed-tool.js";
 // The modules that own the computer and Archil key writes: loading the document loads their secret-write predicates
 // (secret-writes.ts registerSecretWrite), so every operation the document marks has its predicate wherever it is read.
 import "./computers.js";
@@ -851,10 +852,20 @@ const EMAIL_SCOPE = {
   description: "An agent's own setting on email_read, email_search and email_file only, never the server's. thread (the default): on a run an email trigger started, the tool sees (and email_file files) the thread of the message that started it alone (that message, and every message whose References or In-Reply-To links it, in any mailbox), and a message outside it is answered \"outside this run's thread\" and never fetched; mailbox: the whole account. A run no email started sees the whole account either way.",
   "x-agentrun-serve": "email/1",
 };
-/** An agent's own tool settings (definition.tool_settings): the map, with bash's policy and the email read tools' scope. */
+/** filed-results/1: an MCP tool's file setting (filed-tool.ts), in an agent's own tool settings and a package's mcp need. */
+const FILE_SETTING = {
+  type: "object", additionalProperties: false, required: ["folder", "show"],
+  properties: {
+    folder: { type: "string", pattern: "^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}(/[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}){0,2}$", description: "The folder of the run's files each answer is filed in: 1 to 3 segments, none starting with a dot." },
+    show: { type: "array", maxItems: MAX_SHOW_PATHS, uniqueItems: true, items: { type: "string", pattern: "^(?:[A-Za-z_$][A-Za-z0-9_$-]{0,63}|0|[1-9][0-9]{0,8}|-1)(?:\\.(?:[A-Za-z_$][A-Za-z0-9_$-]{0,63}|0|[1-9][0-9]{0,8}|-1)){0,5}$" }, description: `The paths of each answer the tool's result shows, at most ${MAX_SHOW_PATHS}, each 1 to ${MAX_SHOW_SEGMENTS} segments joined by .: a key, an index, or -1 (the last item). A path that reaches no scalar shows null; a string is cut at ${SHOWN_CHARS} characters. A path that names a free-text field shows that text, and defeats the setting.` },
+  },
+  description: `An agent's own setting on an MCP tool's own key (mcp:<server>/<tool>) only, never a server's wildcard and never the server's settings: each answer of the tool, an error answer too, is written whole (its credentials scrubbed) at <folder>/<tool>-<time>-<id>.json in the run's files before the model is answered, for the skill's code. The answer is not returned as the tool's result, and goes through neither the clip nor evidence/mcp/: the result is a summary of the answer's bytes, the file's path, the value at each show path, and the answer's shape (keys that read as short names and types to depth 2, each array's length, never a value), and it is an error when the answer is. The model's own file tools (read, grep, ls, and bash on a computer) can still open the folder, so a template that must keep the model off the answer grants none of them, or runs its skill's code where the model can't read the output. A write that fails answers an error with none of the answer. A stored setting that no longer reads refuses every call of the tool, sending nothing. Removing the setting gives the tool's answers to the model again. A template's apply writes it from the package's mcp[].file.`,
+  "x-agentrun-serve": "filed-results/1",
+};
+/** An agent's own tool settings (definition.tool_settings): the map, with bash's policy, the email read tools' scope and an MCP tool's file setting. */
 const AGENT_TOOL_SETTINGS = {
   ...TOOL_SETTINGS,
-  additionalProperties: { type: "object", additionalProperties: false, properties: { permission: PERMISSION, pin: PIN, pin_broken: PIN_BROKEN } },
+  additionalProperties: { type: "object", additionalProperties: false, properties: { permission: PERMISSION, pin: PIN, pin_broken: PIN_BROKEN, file: FILE_SETTING } },
   properties: {
     ...TOOL_SETTINGS.properties,
     bash: { ...TOOL_SETTINGS.properties.bash, properties: { ...TOOL_SETTINGS.properties.bash!.properties, policy: BASH_POLICY } },
@@ -1626,7 +1637,7 @@ const TEMPLATE = closed({
       toolkit: { type: "string", description: "The toolkit its tools are: the package names them `mcp:<toolkit>/<tool>`, and apply maps it to a saved MCP server whose `source` and `toolkit` match, rewriting the name to `mcp:<server>/<tool>` in the agent it makes." },
       required: { type: "boolean" },
       reason: { type: ["string", "null"], description: "Why the agent needs these tools, one line, for the apply screen." },
-      tools: { type: "array", items: closedWith({ name: { type: "string" }, tool: { type: "string", description: "Its name in the package, `mcp:<toolkit>/<tool>`: what apply's `grants` name." }, asks: { enum: ["allow", "ask"], description: "Every listed tool is one the package uses and asks the owner to grant (a consent screen shows each): only the owner's `grants` at apply grant it, with no permission written; one left out is not granted. `asks` says only how its calls run once granted: `allow`, a tool the package's manifest lists under `allow`, expected to run without asking (a read); `ask`, each call waits for the owner's OK (a write) unless the owner allowed it in tool settings or chose approvals `never`." } }, { pin: { type: "object", additionalProperties: { anyOf: [{ type: ["string", "number", "boolean", "null"] }, { type: "array", items: { type: ["string", "number", "boolean", "null"] } }, PIN_KEYS] }, description: "The arguments (each a value, a list one of which, or {keys: [...]}, the keys an object argument may hold) each call of the tool must carry, `${parameters.<name>}` unfilled: apply writes them, filled, as the tool's pin in the agent's tool_settings, so the tool gate refuses a call with any other (a send goes only to the destination the owner sets), and a call carrying an argument the tool's listing does not declare (an alias of a pinned one). A pin whose parameter apply is not given sets the tool to deny instead, with a `pins.<tool>` warning.", "x-agentrun-serve": "pins/1" } }) },
+      tools: { type: "array", items: closedWith({ name: { type: "string" }, tool: { type: "string", description: "Its name in the package, `mcp:<toolkit>/<tool>`: what apply's `grants` name." }, asks: { enum: ["allow", "ask"], description: "Every listed tool is one the package uses and asks the owner to grant (a consent screen shows each): only the owner's `grants` at apply grant it, with no permission written; one left out is not granted. `asks` says only how its calls run once granted: `allow`, a tool the package's manifest lists under `allow`, expected to run without asking (a read); `ask`, each call waits for the owner's OK (a write) unless the owner allowed it in tool settings or chose approvals `never`." } }, { pin: { type: "object", additionalProperties: { anyOf: [{ type: ["string", "number", "boolean", "null"] }, { type: "array", items: { type: ["string", "number", "boolean", "null"] } }, PIN_KEYS] }, description: "The arguments (each a value, a list one of which, or {keys: [...]}, the keys an object argument may hold) each call of the tool must carry, `${parameters.<name>}` unfilled: apply writes them, filled, as the tool's pin in the agent's tool_settings, so the tool gate refuses a call with any other (a send goes only to the destination the owner sets), and a call carrying an argument the tool's listing does not declare (an alias of a pinned one). A pin whose parameter apply is not given sets the tool to deny instead, with a `pins.<tool>` warning.", "x-agentrun-serve": "pins/1" }, file: { ...FILE_SETTING, description: "Where each answer of the tool is filed whole in the run's files, and the paths of it the tool's result shows (the package's mcp[].file): apply writes it as the tool's file setting in the agent's tool_settings, ticked or not, so the tool's result is a summary of each answer, never the answer. Absent when the package files none." } }) },
     }),
     description: "The MCP servers it uses, by source and toolkit, and the tools of each it may be granted: apply maps each to a saved server whose `source` and `toolkit` match (`servers` picks when several do) and grants there only those the apply's `grants` name, with no permission written (each call follows this server's tool settings: under approvals ask a write asks unless the owner allowed it there, and a read runs unasked only where the server's Allow reads is on); a tool left out of `grants` is not the agent's at all, whatever its approvals, and the owner can grant it later in the agent's tools. One no saved server matches is skipped with an `mcp.<toolkit>` warning saying how to set it up, or, `required`, refuses the apply (409, nothing made).",
   },
@@ -2479,6 +2490,24 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "export/1",
     },
   },
+  "/agents/{agent_id}/revisions/{revision}/skills": {
+    get: {
+      operationId: "getRevisionSkills", tags: ["agents"], summary: "Read all skill files saved with one agent revision",
+      description: "Returns the exact revision's complete skill file map, including SKILL.md and supporting text files, without changing the agent. Use these files when preparing a replacement skills map for PUT /agents/{agent_id}/definition, with the ETag of the revision being edited. An unknown revision or a revision belonging to another agent is 404; there is no fallback to the current revision. Only files stored in the revision are returned: detected skills on a connected native agent's source machine are not read. Revisions with no stored skill files return an empty map.",
+      parameters: [ref("parameters/AgentId"), { name: "revision", in: "path", required: true, description: "The immutable revision ID from the agent or its revisions list.", schema: { type: "string" } }],
+      responses: {
+        "200": json({
+          type: "object", additionalProperties: false, required: ["revision", "skills"],
+          properties: {
+            revision: { type: "string" },
+            skills: { type: "object", additionalProperties: { type: "string" }, description: "Paths relative to .agents/skills/ mapped to their complete text." },
+          },
+        }, "The requested revision's saved skill files."),
+        ...errors(401, 404, 429, 500),
+      },
+      "x-agentrun-serve": "skills/1",
+    },
+  },
   "/agents/{agent_id}/current": {
     post: {
       operationId: "setCurrent", tags: ["agents"], summary: "Make one of the agent's revisions current again",
@@ -3050,7 +3079,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     put: {
       operationId: "turnOnClaudeLogin", tags: ["local"], summary: "Turn on Claude Code's login on this machine for claude-agent's runs",
-      description: "Runs claude-agent on the login at `place` (default `agentrun`), on this machine's runner only. 403 forbidden in one line where more than one person can start runs (more than one API token, the API-only profile); 422 input_invalid without `only_me` true. A model a revision names on a gateway or OpenRouter still runs on its key. 404 not_found, naming the operation, when AGENTRUN_CLAUDE_CODE_LOGIN is `off`. A secret write: the owner's signed-in session alone (ownerSession).",
+      description: "Runs claude-agent on the login at `place` (default `agentrun`), on this machine's runner only. 403 forbidden in one line where more than one person can start runs (more than one API token, the API-only profile); 422 input_invalid without `only_me` true. 403 forbidden, too, at `agentrun` when AgentRun's own login folder (`<data>/claude-login`) is a link, in words naming it and where it leads: the login a sign-out removes is always a folder of AgentRun's own. A model a revision names on a gateway or OpenRouter still runs on its key. 404 not_found, naming the operation, when AGENTRUN_CLAUDE_CODE_LOGIN is `off`. A secret write: the owner's signed-in session alone (ownerSession).",
       "x-agentrun-secret": true,
       security: [{ ownerSession: [] }],
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["only_me"], properties: { place: { enum: ["agentrun", "machine"], description: "Where the login is (see the answer's `place`)." }, only_me: { const: true, description: "The owner's word that they alone run agents on this server, since its runs would use their Claude plan." } } } } } },
@@ -3073,6 +3102,19 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-secret": true,
       security: [{ ownerSession: [] }],
       responses: { "200": json(CLAUDE_LOGIN, "The sign-in started."), ...errors(401, 403, 404, 409, 429, 500) },
+      "x-agentrun-serve": "claudelogin/1",
+    },
+  },
+  "/settings/claude-login/sign-out": {
+    post: {
+      operationId: "signOutClaudeLogin", tags: ["local"], summary: "Sign out of Claude Code's login on this machine: AgentRun's own login removed, the mode off",
+      description: "For a person to sign in fresh, or as another account: a turn-off leaves the login as the CLI keeps it, so the next turn-on reads it again. Ends a sign-in that waits, turns the mode off, runs the pinned CLI's own `claude auth logout` on AgentRun's own login folder (`<data>/claude-login`), which removes its credentials file and, on macOS, its Keychain item for that folder, then removes the folder (credentials, account, profiles, refresh locks), the login's signed-in note and the runner's token reader, whatever the CLI said. The next turn-on finds no login (`signed_out`) and the sign-in starts as before. Runs already going on the login are left as a turn-off leaves them: each keeps the token its CLI holds, and fails saying the login is signed out at its next read of it. `confirmed` false: signed out here and the mode off, and `message` says what may remain: the CLI didn't confirm its own sign-out, or its step failed, named (on macOS its Keychain item may remain); a removal failed, each named with its path (the others still happen); or the folder had become a link, which alone is removed, with no CLI run through it and nothing it leads to touched. 403 forbidden, with nothing touched, when the login is this machine's own (`place` `machine`: the person's `~/.claude` or CLAUDE_CONFIG_DIR): AgentRun never signs it out, and the words say to run `claude auth logout` in a terminal there. 404 not_found, naming the operation, when AGENTRUN_CLAUDE_CODE_LOGIN is `off`. A secret write: the owner's signed-in session alone (ownerSession).",
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      responses: {
+        "200": json({ type: "object", additionalProperties: false, required: ["confirmed", "login"], properties: { confirmed: { type: "boolean", description: "Whether all of the login is gone: the CLI confirmed its own sign-out and every removal landed. The CLI's sign-out runs where the folder is already gone too, so a retry after an unconfirmed sign-out is true only where the CLI confirms." }, message: { type: "string", description: "With `confirmed` false: what may remain, in words (the CLI's step unconfirmed or failed, a removal that failed, a link left in place of the folder)." }, login: CLAUDE_LOGIN } }, "Signed out here."),
+        ...errors(401, 403, 404, 429, 500),
+      },
       "x-agentrun-serve": "claudelogin/1",
     },
   },
@@ -3422,7 +3464,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/settings/tools": {
     get: {
       operationId: "getToolSettings", tags: ["capabilities"], summary: "The server's tool settings",
-      description: "Each capability that has a choice, and its provider, and each tool's permission that is set (an MCP server's wildcard mcp:<server>/* among them): web_search auto (Parallel where the server holds its key, which bills it, else Firecrawl's keyless search with Exa's behind it, on every harness), native (the harness's own search, claude-agent's or codex's, or on pi the model provider's hosted one: that alone), firecrawl-keyless (Firecrawl's, Exa's behind it), exa-keyless (that alone) or parallel; web_fetch auto (the guarded direct fetch where the server holds a Parallel key, else Firecrawl's keyless fetch, which is sent each URL read, never a private or local one, with the guarded direct fetch behind it), firecrawl-keyless (that, whatever the key), kernel (the guarded direct fetch alone) or parallel; browser auto (Browserbase where the server holds its keys, else Kernel where it holds Kernel's), browserbase, kernel (each that alone) or chrome (a Chrome on the server's host, not set up on any server yet: unavailable). An agent's definition.tool_settings is over these, except a permission set to deny here: a server deny is absolute and refuses the tool on this server whatever the agent sets. capabilities.tools say what each resolves to on each harness, and GET /agents/{agent_id} for that agent. An MCP tool's own key may carry its pin, the arguments its calls must carry.",
+      description: "Each capability that has a choice, and its provider, and each tool's permission that is set (an MCP server's wildcard mcp:<server>/* among them): web_search auto (Parallel where the server holds its key, which bills it, else Firecrawl's keyless search with Exa's behind it, on every harness), native (the harness's own search, claude-agent's or codex's, or on pi the model provider's hosted one: that alone), firecrawl-keyless (Firecrawl's, Exa's behind it), exa-keyless (that alone) or parallel; web_fetch auto (Parallel's extract where the server holds a Parallel key, which bills it, with the guarded direct fetch behind it, else Firecrawl's keyless fetch, which is sent each URL read, never a private or local one, with the guarded direct fetch behind it), firecrawl-keyless (that, whatever the key), kernel (the guarded direct fetch alone) or parallel; browser auto (Browserbase where the server holds its keys, else Kernel where it holds Kernel's), browserbase, kernel (each that alone) or chrome (a Chrome on the server's host, not set up on any server yet: unavailable). An agent's definition.tool_settings is over these, except a permission set to deny here: a server deny is absolute and refuses the tool on this server whatever the agent sets. capabilities.tools say what each resolves to on each harness, and GET /agents/{agent_id} for that agent. An MCP tool's own key may carry its pin, the arguments its calls must carry.",
       responses: { "200": json(TOOL_SETTINGS_ANSWER, "Each capability's provider."), ...errors(401, 429, 500) },
       "x-agentrun-serve": "providers/1",
     },

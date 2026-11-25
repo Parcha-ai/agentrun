@@ -2555,7 +2555,7 @@ kind browser that declares them.
 
 | | Browserbase | Kernel | Local Chrome |
 | --- | --- | --- | --- |
-| `capabilities().browser` | wall-clock, `stealth`, `profiles` (settle 5 s), `downloads` (`downloads/`) | inactivity, `headless`, `profiles` (settle 0) | wall-clock |
+| `capabilities().browser` | wall-clock, `stealth`, `profiles` (settle 10 s, its descriptor's `profiles`), `downloads` (`downloads/`) | inactivity, `headless`, `profiles` (settle 0) | wall-clock |
 | `viewport` | `browserSettings.viewport` | `viewport` | the window's size |
 | `stealth` | `browserSettings.verified` and `solveCaptchas` (the solver is off otherwise: Browserbase's default is on) | not declared (Kernel's stealth brings a proxy nothing prices yet) | not declared |
 | `profile` | a context: `browserSettings.context { id, persist }` | a profile by name: `profile { name, save_changes }`, made first if Kernel does not know it | not declared |

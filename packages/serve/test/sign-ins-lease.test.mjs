@@ -9,11 +9,14 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
-import { BROWSERBASE_SETTLE_MS, pointerHash, saveSignIn, signInsOverStore } from "../dist/sign-ins-store.js";
+import { PROVIDERS } from "@parcha/agentrun-computer";
+import { pointerHash, saveSignIn, signInsOverStore } from "../dist/sign-ins-store.js";
 import { agentWithRevision, storeOn } from "./store-helpers.mjs";
 
 const KEY = randomBytes(32);
-const settleFor = (provider) => (provider === "browserbase" ? BROWSERBASE_SETTLE_MS : 0);
+/** A provider's settle window, as the server passes it to the store: its descriptor's. */
+const settleFor = (provider) => PROVIDERS.find((entry) => entry.id === provider)?.profiles?.settleMs ?? 0;
+const BROWSERBASE_SETTLE_MS = settleFor("browserbase");
 const vendors = { remove: async () => undefined };
 
 /** A store on a moved clock, agent `alpha` with its Browserbase and Kernel sign-ins saved. */

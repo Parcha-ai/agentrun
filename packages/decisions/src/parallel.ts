@@ -164,7 +164,8 @@ export function parallelProvider(options: ParallelOptions = {}): DecisionProvide
       for (let attempt = 1; ; attempt++) {
         let response: Response;
         try {
-          response = await fetcher(url, { method: "POST", headers: { "content-type": "application/json", "x-api-key": key }, body, signal });
+          // It carries the key: a redirect is an error, never followed to an address the key was not meant for.
+          response = await fetcher(url, { method: "POST", headers: { "content-type": "application/json", "x-api-key": key }, body, signal, redirect: "error" });
         } catch (error) {
           // A deadline that ends a request in flight may have ended it after Parallel answered: only the host's cancel is not a lost outcome.
           if (signal.aborted) throw ctx.signal.aborted ? stopped(attempt) : lost(attempt, "passed its deadline");

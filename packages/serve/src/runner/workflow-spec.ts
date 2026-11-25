@@ -1021,7 +1021,7 @@ const openrouterModel = (id: string, price: { input: number; output: number } | 
 const finiteUsd = (usd: unknown): number | null => (typeof usd === "number" && Number.isFinite(usd) && usd >= 0 ? usd : null);
 
 /** A provider failure that says the request was never billed (main's `unbilled`): booked at $0. */
-const UNBILLED = new Set(["configuration", "auth", "invalid_request", "rate_limited", "connection"]);
+const UNBILLED = new Set(["configuration", "auth", "payment_required", "invalid_request", "rate_limited", "connection"]);
 const unbilled = (error: unknown): boolean => error instanceof DecisionProviderError && (error.unsent === true || UNBILLED.has(error.code));
 
 /** The tiers the workflow's model nodes run on (model.ts): the llm tiers over its nodes, read as toolsOf reads them (its

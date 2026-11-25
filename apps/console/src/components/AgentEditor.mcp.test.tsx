@@ -47,7 +47,7 @@ describe("the Tools step's MCP servers", () => {
     act(() => root!.render(createElement(AgentEditPage, { v2: createClient({ fetch }), caps: CAPS, agentId: "calc", go: () => {} })));
     const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
     await settle();
-    await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent?.includes("Tools & skills"))!.click(); });
+    await act(async () => { [...host.querySelectorAll<HTMLButtonElement>('nav[aria-label="Agent settings sections"] ul button')].find((b) => b.textContent?.trim().startsWith("Tools"))!.click(); });
     await settle();
     const group = host.querySelector('[aria-label="MCP server fake"]')!;
     expect(group.textContent).toContain("Add two numbers.");
@@ -98,7 +98,7 @@ describe("the Tools step's MCP servers", () => {
     act(() => root!.render(createElement(AgentEditPage, { v2: createClient({ fetch }), caps: CAPS, agentId: "calc", go: () => {} })));
     const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
     await settle();
-    await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent?.includes("Tools & skills"))!.click(); });
+    await act(async () => { [...host.querySelectorAll<HTMLButtonElement>('nav[aria-label="Agent settings sections"] ul button')].find((b) => b.textContent?.trim().startsWith("Tools"))!.click(); });
     await settle();
     expect(host.textContent).toContain("The MCP servers could not be read.");
     expect((host.querySelector('input[value="mcp:fake/add"]') as HTMLInputElement).checked).toBe(true);
@@ -125,7 +125,7 @@ describe("the Tools step's MCP servers", () => {
     act(() => root!.render(createElement(AgentEditPage, { v2: createClient({ fetch }), caps: CAPS, agentId: "calc", go: () => {} })));
     const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
     await settle();
-    await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent?.includes("Tools & skills"))!.click(); });
+    await act(async () => { [...host.querySelectorAll<HTMLButtonElement>('nav[aria-label="Agent settings sections"] ul button')].find((b) => b.textContent?.trim().startsWith("Tools"))!.click(); });
     // A second read while the first is still out (the page given its client again reads them again).
     act(() => root!.render(createElement(AgentEditPage, { v2: createClient({ fetch }), caps: CAPS, agentId: "calc", go: () => {} })));
     await settle();
@@ -134,7 +134,7 @@ describe("the Tools step's MCP servers", () => {
     await settle();
     await act(async () => { answers[0](json(503, { error: { code: "unavailable", message: "busy", retryable: true } })); });
     await settle();
-    await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent?.includes("Tools & skills"))!.click(); });
+    await act(async () => { [...host.querySelectorAll<HTMLButtonElement>('nav[aria-label="Agent settings sections"] ul button')].find((b) => b.textContent?.trim().startsWith("Tools"))!.click(); });
     await settle();
     expect(host.querySelector('[aria-label="MCP server fake"]')).not.toBeNull();
     expect(host.textContent).not.toContain("could not be read");
@@ -225,7 +225,7 @@ describe("the Tools step's filter box", () => {
     act(() => root!.render(createElement(AgentEditPage, { v2: createClient({ fetch }), caps: CAPS, agentId: "calc", go: () => {} })));
     const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
     await settle();
-    await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent?.includes("Tools & skills"))!.click(); });
+    await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent?.trim().startsWith("Tools"))!.click(); });
     await settle();
     const filter = host.querySelector('input[aria-label="Filter tools"]') as HTMLInputElement;
     const type = (q: string) => act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(filter, q); filter.dispatchEvent(new Event("input", { bubbles: true })); });
