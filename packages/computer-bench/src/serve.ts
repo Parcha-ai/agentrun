@@ -276,12 +276,23 @@ export function serveBackend(options: ServeBackendOptions): Backend {
 	 *  steps (the computer calls on the Timeline's tool rows, under the step budget), its tool calls (its turns), and its
 	 *  answer (the Timeline's final answer). A tool call that made no computer call is a turn, not a step. */
 	async function drive(runId: string, request: Parameters<Episode["agent"]>[0]): Promise<AgentResult> {
+		let after: number | undefined;
+		// The rows on the Timeline before the start are the hold's, never the agent's: passed over, so the agent's first row
+		// after the start is its start (t0).
+		for (let page = 0; page < 100; page += 1) {
+			const got = await api("GET", `/runs/${runId}/timeline${after === undefined ? "" : `?after=${after}`}`);
+			if (got.status !== 200) break;
+			const next = got.value?.next_after;
+			if (typeof next === "number") after = next;
+			if (!got.value?.has_more) break;
+		}
 		const go = await api("POST", `/runs/${runId}/start`, {});
 		const startGap = gapOf(ROUTE.start, go.status, go.value);
 		if (startGap) throw new MissingRoute(options.baseUrl, [startGap]);
 		if (go.status >= 300) return { outcome: "infra", message: `start answered ${go.status}: ${errorOf(go.value).message ?? ""}` };
-		const t0 = Date.now();
-		let after: number | undefined;
+		// The agent's start on serve's clock: its first Timeline row after the start (its turn's input). Each step's t_ms is
+		// from it, so both ends are serve's timestamps; this process's clock, which may be off serve's, takes no part.
+		let t0: number | undefined;
 		const uses = new Map<string, { at: number; name: string; input: string | null }>();
 		const done = new Set<string>();
 		let computerCalls = 0;
@@ -298,6 +309,8 @@ export function serveBackend(options: ServeBackendOptions): Backend {
 				}
 				if (got.status !== 200) return;
 				for (const row of (got.value?.rows ?? []) as TimelineRow[]) {
+					const stamp = Date.parse(row.timestamp);
+					if (t0 === undefined && Number.isFinite(stamp)) t0 = stamp;
 					// The run's own conversation: a subagent's rows are not the agent's computer calls.
 					if (row.parent_tool_use_id) continue;
 					if (row.kind === "final_answer" && row.text !== null) answer = row.text;
@@ -308,6 +321,8 @@ export function serveBackend(options: ServeBackendOptions): Backend {
 					const use = uses.get(row.tool_use_id);
 					const at = Date.parse(row.timestamp);
 					const start = use?.at ?? at;
+					// Set by this row at the latest.
+					const zero = t0 ?? at;
 					const tool = row.tool_name ?? use?.name ?? "";
 					const preview = use?.input ?? row.tool_input_preview ?? null;
 					const calls = row.computer_calls ?? [];
@@ -317,7 +332,7 @@ export function serveBackend(options: ServeBackendOptions): Backend {
 							phase: "tool",
 							method: tool,
 							params: { preview },
-							t_ms: Math.max(0, start - t0),
+							t_ms: Math.max(0, start - zero),
 							ms: Math.max(0, at - start),
 							ok: row.tool_status === "success",
 							...(row.tool_status === "failed" ? { error: { code: row.refused ? "tool_refused" : "tool_failed", message: row.tool_result_preview ?? "" } } : {}),
@@ -330,12 +345,12 @@ export function serveBackend(options: ServeBackendOptions): Backend {
 					let next = start;
 					calls.forEach((call, i) => {
 						const sent = sentAt(call.at) ?? next;
-						request.onStep(stepOfCall(call, sent, t0, turn, tool, i === 0 ? preview : undefined));
+						request.onStep(stepOfCall(call, sent, zero, turn, tool, i === 0 ? preview : undefined));
 						next = sent + Math.max(0, call.ms);
 						if (call.method !== "hello" && call.method !== "ping") computerCalls += 1;
 					});
 					// Calls past serve's bound are steps too, though their method and answer were not kept.
-					for (let i = 0; i < dropped; i += 1) request.onStep({ phase: "agent", method: "unrecorded", params: { tool }, t_ms: Math.max(0, next - t0), ms: 0, ok: true, note: "a computer call past serve's record bound: its method and answer were not kept", turn, tool });
+					for (let i = 0; i < dropped; i += 1) request.onStep({ phase: "agent", method: "unrecorded", params: { tool }, t_ms: Math.max(0, next - zero), ms: 0, ok: true, note: "a computer call past serve's record bound: its method and answer were not kept", turn, tool });
 					computerCalls += dropped;
 				}
 				const next = got.value?.next_after;
