@@ -249,6 +249,9 @@ function placesOf(doc: unknown): { text: string; places: Place[] } {
   return { text: parts.join(""), places };
 }
 
+/** A file's content's pointer in a bundle: its index is group 1. */
+const FILE_CONTENT_AT = /^\/files\/(\d{1,6})\/content$/;
+
 /** For each index 0..value.length of `value`, its offset in JSON.stringify(value) less the opening quote. */
 function encodedOffsets(value: string): number[] {
   const offsets = [0];
@@ -279,10 +282,10 @@ function encodedOffsets(value: string): number[] {
  *  never used: the host stores what was sent or nothing. */
 export async function screenShare(text: string, held: readonly string[], cutPass: CutScrub = (body, opts) => scrub(body, opts), strings = SHARE_STRINGS): Promise<{ unchecked: Record<string, number> }> {
   const failed = () => new ApiError("input_invalid", "The share host's scrub of this bundle failed, so it is refused (the scrub fails closed). Nothing was stored.", { details: { reason: "scrub_failed" } });
-  const pass = async (body: string) => {
+  const pass = async (body: string, path?: string) => {
     let result: Awaited<ReturnType<CutScrub>>;
     try {
-      result = await cutPass(body, { mode: "cut", held });
+      result = await cutPass(body, { mode: "cut", held, ...(path !== undefined ? { path } : {}) });
     } catch {
       throw failed();
     }
@@ -295,15 +298,25 @@ export async function screenShare(text: string, held: readonly string[], cutPass
   if (distinct > strings) throw new ApiError("payload_too_large", `This bundle holds ${distinct} distinct strings, over the ${strings} a share host scrubs one by one, so it is refused before any is read. Nothing was stored.`, { details: { reason: "share_strings", limit: strings, strings: distinct } });
   const whole = await pass(text);
 
-  // Every string value alone (a value seen twice is read once: the scrub of a text is the same each time).
+  // Every string value alone (a value seen twice is read once: the scrub of a text is the same each time). A file's
+  // content is read knowing its path, as the export cut it (a .pgpass's or a .env's plain contents are a dump), and a
+  // text is read once per path it stands under.
+  const files = Array.isArray(doc.files) ? doc.files : [];
+  const pathOf = (at: string): string | undefined => {
+    const index = FILE_CONTENT_AT.exec(at)?.[1];
+    const file: unknown = index === undefined ? undefined : files[Number(index)];
+    return isObject(file) && typeof file.path === "string" ? file.path : undefined;
+  };
   const byValue = new Map<string, Awaited<ReturnType<typeof pass>>>();
   const hits = new Map<string, StringHit>();
   const hitsAt = new Map<string, StringHit[]>();
   const key = (at: unknown, rule: unknown, start: unknown, end: unknown) => JSON.stringify([at, rule, start, end]);
   for (const place of places) {
     if (!place.value) continue;
-    let cuts = byValue.get(place.value);
-    if (!cuts) byValue.set(place.value, (cuts = await pass(place.value)));
+    const path = pathOf(place.at);
+    const read = path === undefined ? place.value : JSON.stringify([path, place.value]);
+    let cuts = byValue.get(read);
+    if (!cuts) byValue.set(read, (cuts = await pass(place.value, path)));
     for (const cut of cuts) {
       const hit: StringHit = { at: place.at, rule: cut.rule, restorable: restorable(cut.kind), start: cut.start, end: cut.end };
       hits.set(key(hit.at, hit.rule, hit.start, hit.end), hit);
