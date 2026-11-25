@@ -78,7 +78,8 @@ function filterOptions(cards: FactoryCard[], repository: string, control: string
 
 /** The factory's read-only session board. Counts cover the supplied active cards; terminal runs needing review have
  *  their own section. A failed read preserves the prior snapshot, marked stale, and a partial list never claims a
- *  complete fleet. The same sessions read as cards in a lane for each state, or as one row each in their loaded order.
+ *  complete fleet. The same sessions read as cards in a lane for each state, or as one row each under a heading for
+ *  each state.
  *  The page owns reads, pagination, lifecycle classification and the view its browser keeps. */
 export function AgentFactoryBoard({ cards, review, loading, refreshing, error, updatedAt, hasMore, onLoadMore, onRefresh, view, onView }: AgentFactoryBoardProps) {
   const id = useId();
@@ -150,7 +151,7 @@ export function AgentFactoryBoard({ cards, review, loading, refreshing, error, u
         {!cards.length && <Banner>{hasMore ? "No active sessions in the loaded results. Load more to check further results." : "No active sessions reported."}</Banner>}
         {filtered && !shown.length && !shownReview.length && <Banner>No loaded sessions match these filters.</Banner>}
 
-        {view === "list" ? (shown.length > 0 ? <SessionTable label="Active agent sessions" cards={shown} /> : <p className="py-4 text-small text-muted-foreground">No matching sessions</p>)
+        {view === "list" ? (shown.length > 0 ? <SessionTable label="Active agent sessions" groups={byLane(shown)} /> : <p className="py-4 text-small text-muted-foreground">No matching sessions</p>)
         : <div className="grid grid-cols-1 items-start gap-4 md:grid-cols-2 lg:grid-cols-4" aria-label="Active agent sessions">
           {LANES.map((lane) => {
             const laneCards = shown.filter((card) => card.lane === lane.id);
@@ -173,7 +174,7 @@ export function AgentFactoryBoard({ cards, review, loading, refreshing, error, u
             <div><h2 className="text-lg font-semibold">Ended runs needing attention</h2><p className="mt-1 text-small text-muted-foreground">Excluded from active session totals.</p></div>
             <p className="font-mono text-small text-muted-foreground">{shownReview.length} of {review.length} loaded ended runs match</p>
           </div>
-          {view === "list" ? shownReview.length > 0 && <SessionTable label="Ended runs" cards={shownReview} ended />
+          {view === "list" ? shownReview.length > 0 && <SessionTable label="Ended runs" groups={byState(shownReview)} />
           : <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
             {shownReview.map((card) => <SessionCard key={card.id} card={card} tone="warning" />)}
           </div>}
@@ -237,50 +238,70 @@ const CELL = "px-3 py-2.5 align-top";
  *  under its session. The widths are fixed and the session takes the rest, so a long unbroken name wraps in its cell
  *  and never widens the table past its pane. */
 const COLUMNS = {
-  state: "w-28", session: "",
+  session: "",
   control: "hidden w-28 lg:table-cell", repository: "hidden w-44 lg:table-cell",
   activity: "hidden w-36 xl:table-cell", cost: "hidden w-44 xl:table-cell",
 } as const;
-const HEADINGS: [keyof typeof COLUMNS, string][] = [["state", "State"], ["session", "Session"], ["control", "Control"], ["repository", "Repository"], ["activity", "Last activity"], ["cost", "Cost"]];
+const HEADINGS: [keyof typeof COLUMNS, string][] = [["session", "Session"], ["control", "Control"], ["repository", "Repository"], ["activity", "Last activity"], ["cost", "Cost"]];
 
-/** The sessions as a list: one row each, in the order they were loaded, so a child stays under the session that
- *  started it. A lane the cards say by their column is a word in the row; an ended run's state is its source's own. */
-function SessionTable({ label, cards, ended = false }: { label: string; cards: FactoryCard[]; ended?: boolean }) {
+/** The rows of one state, under its heading. */
+type Group = { id: string; label: string; note?: string; cards: FactoryCard[] };
+/** The active sessions by state, in the lanes' order. A state with no session has no group: the totals count it. */
+const byLane = (cards: FactoryCard[]): Group[] => LANES
+  .map((lane) => ({ id: lane.id, label: lane.label, note: lane.note, cards: cards.filter((card) => card.lane === lane.id) }))
+  .filter((group) => group.cards.length > 0);
+/** Ended runs by the state their source gave them, in the order each state is first seen. */
+function byState(cards: FactoryCard[]): Group[] {
+  const groups = new Map<string, FactoryCard[]>();
+  for (const card of cards) groups.set(card.stateLabel, [...(groups.get(card.stateLabel) ?? []), card]);
+  return [...groups].map(([label, held]) => ({ id: label, label, cards: held }));
+}
+
+/** The sessions as a list: one row each, under a heading for each state that names it, counts its rows and says what
+ *  it means, as a lane's header does. Inside a state the rows keep their loaded order, so a child stays under the
+ *  session that started it where both are in that state. */
+function SessionTable({ label, groups }: { label: string; groups: Group[] }) {
   return (
-    <div className="border bg-card">
-      <table aria-label={label} className="w-full table-fixed border-collapse text-body">
-        <thead className="hidden lg:table-header-group">
-          <tr className="caps text-label text-muted-foreground">
-            {HEADINGS.map(([column, name]) => <th key={column} scope="col" className={cn("border-b px-3 py-2.5 text-left font-normal", COLUMNS[column])}>{name}</th>)}
-          </tr>
-        </thead>
-        <tbody>
-          {cards.map((card) => <SessionRow key={card.id} card={card} ended={ended} />)}
-        </tbody>
-      </table>
-    </div>
+    <table aria-label={label} className="w-full table-fixed border-collapse border bg-card text-body">
+      <thead className="hidden lg:table-header-group">
+        <tr className="caps border-b text-label text-muted-foreground">
+          {HEADINGS.map(([column, name]) => <th key={column} scope="col" className={cn("px-3 py-2.5 text-left font-normal", COLUMNS[column])}>{name}</th>)}
+        </tr>
+      </thead>
+      {groups.map((group) => <tbody key={group.id} data-factory-group={group.id}>
+        <tr className="border-b bg-muted/50">
+          <th scope="rowgroup" className="px-3 py-2 text-left font-normal">
+            <span className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+              <span data-factory-group-name className="caps text-small font-semibold">{group.label}</span>
+              <span data-factory-group-count className="font-mono text-small text-muted-foreground">{group.cards.length}</span>
+              {group.note && <span className="text-small text-muted-foreground">{group.note}</span>}
+            </span>
+          </th>
+          {/* The heading's band runs the row's whole width: an empty cell under each other column that shows. */}
+          {(["control", "repository", "activity", "cost"] as const).map((column) => <td key={column} aria-hidden className={COLUMNS[column]} />)}
+        </tr>
+        {group.cards.map((card) => <SessionRow key={card.id} card={card} group={group} />)}
+      </tbody>)}
+    </table>
   );
 }
 
-function SessionRow({ card, ended }: { card: FactoryCard; ended: boolean }) {
-  const lane = LANES.find((each) => each.id === card.lane)!;
-  const child = card.parentLabel !== undefined;
+function SessionRow({ card, group }: { card: FactoryCard; group: Group }) {
+  // A child whose parent is a row of this same state sits under it, set in; one whose parent is elsewhere is a row like
+  // any other. Either way it names its parent.
+  const nested = card.parentLabel !== undefined && group.cards.some((each) => each.id === card.runId && each.parentLabel === undefined);
+  // The group says the state: the source's own word for it follows only when it says more ("Queued", "Input required").
+  const said = card.stateLabel.toLowerCase() !== group.label.toLowerCase();
   const activity = validTime(card.activityAt) ? <time dateTime={card.activityAt}>{when(card.activityAt)}</time> : null;
   const repository = card.githubLinks.length > 0 ? <GithubLinks links={card.githubLinks} /> : card.repo;
   return (
-    <tr className="border-b last:border-b-0" {...(child ? { "data-factory-child": "" } : {})}>
-      <td className={cn(CELL, COLUMNS.state)}>
-        {ended ? <Chip tone="warning" label title={card.stateLabel}>{card.stateLabel}</Chip> : <>
-          <Chip tone={lane.tone} title={lane.note}>{lane.label}</Chip>
-          {card.stateLabel.toLowerCase() !== lane.label.toLowerCase() && <span className="mt-1 block break-words text-small text-muted-foreground">{card.stateLabel}</span>}
-        </>}
-      </td>
-      <td className={cn(CELL, COLUMNS.session, child && "pl-8")}>
+    <tr className="border-b" data-factory-row={card.id} {...(nested ? { "data-factory-child": "" } : {})}>
+      <td className={cn(CELL, COLUMNS.session, nested && "pl-8")}>
         <a href={`#/runs/${encodeURIComponent(card.runId)}`} className="block break-words text-left hover:text-primary-text">
           <span className="line-clamp-1 font-semibold underline underline-offset-2" title={card.agentName}>{card.agentName}</span>
           <span className="line-clamp-2 lg:line-clamp-1" title={card.title}>{card.title}</span>
         </a>
-        <p className="mt-1 break-words font-mono text-small text-muted-foreground">{card.sourceLabel} · <span title={card.id}>{card.ref}</span></p>
+        <p data-factory-meta className="mt-1 break-words font-mono text-small text-muted-foreground">{card.sourceLabel} · <span title={card.id}>{card.ref}</span>{said && <> · {card.stateLabel}</>}</p>
         {card.reason && <p className="mt-1 break-words">{card.reason}</p>}
         {card.parentLabel && <p className="mt-1 break-words text-small text-muted-foreground">Parent: {card.parentLabel}</p>}
         {/* Narrower than its columns, a row says them here. */}

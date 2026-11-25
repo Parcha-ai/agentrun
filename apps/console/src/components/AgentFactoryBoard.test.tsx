@@ -149,47 +149,72 @@ describe("Agent Factory board", () => {
     expect(props.onView).toHaveBeenCalledWith("list");
   });
 
-  it("lists one row a session: its lane in words, the run's link, control, repository, last activity and cost, a child under its parent", () => {
+  it("lists the sessions under a heading for each state, with no State column: the run's link, control, repository, last activity and cost", () => {
     const { host } = mount({ view: "list" });
     expect([...host.querySelectorAll<HTMLInputElement>('[aria-label="View"] input')].map((radio) => radio.checked)).toEqual([true, false]);
     expect(host.querySelectorAll("[data-factory-lane]")).toHaveLength(0);
     expect(host.querySelectorAll("article")).toHaveLength(0);
     const table = host.querySelector('table[aria-label="Active agent sessions"]')!;
-    expect([...table.querySelectorAll("thead th")].map((th) => th.textContent)).toEqual(["State", "Session", "Control", "Repository", "Last activity", "Cost"]);
-    const rows = [...table.querySelectorAll("tbody tr")];
-    // The loaded order, so a child stays under the session that started it.
-    expect(rows.map((row) => row.querySelector('a[href^="#/runs/"]')?.getAttribute("href"))).toEqual(["#/runs/run%2Fworker", "#/runs/waiting", "#/runs/approval", "#/runs/native"]);
-    const [worker, waiting, approval, native] = rows as [Element, Element, Element, Element];
+    expect([...table.querySelectorAll("thead th")].map((th) => th.textContent)).toEqual(["Session", "Control", "Repository", "Last activity", "Cost"]);
+    // One group a state that has a session, in the lanes' order; its heading names the state, counts its rows and says what the state means.
+    const groups = [...table.querySelectorAll("tbody[data-factory-group]")];
+    expect(groups.map((group) => group.getAttribute("data-factory-group"))).toEqual(["waiting", "working", "attention", "unknown"]);
+    const heading = (group: Element) => group.querySelector('tr:first-child > th[scope="rowgroup"]')!;
+    expect(groups.map((group) => heading(group).querySelector("[data-factory-group-name]")?.textContent)).toEqual(["Waiting", "Working", "Needs you", "Unknown"]);
+    expect(groups.map((group) => heading(group).querySelector("[data-factory-group-count]")?.textContent)).toEqual(["1", "1", "1", "1"]);
+    expect(heading(groups[2]!).textContent).toContain("A decision or approval is needed.");
+    const rows = [...table.querySelectorAll("tr[data-factory-row]")];
+    expect(rows.map((row) => [row.closest("tbody")!.getAttribute("data-factory-group"), row.querySelector('a[href^="#/runs/"]')?.getAttribute("href")]))
+      .toEqual([["waiting", "#/runs/waiting"], ["working", "#/runs/run%2Fworker"], ["attention", "#/runs/approval"], ["unknown", "#/runs/native"]]);
+    const [waiting, worker, approval, native] = rows as [Element, Element, Element, Element];
     const cells = (row: Element) => [...row.querySelectorAll("td")].map((cell) => cell.textContent ?? "");
-    expect(cells(worker)[0]).toBe("Working");
-    expect(cells(worker)[1]).toContain("Builder");
-    expect(cells(worker)[1]).toContain("Reviewing verification code");
-    expect(cells(worker)[2]).toBe("Managed");
+    const meta = (row: Element) => row.querySelector("[data-factory-meta]")?.textContent;
+    expect(cells(worker)).toHaveLength(5);
+    expect(cells(worker)[0]).toContain("Builder");
+    expect(cells(worker)[0]).toContain("Reviewing verification code");
+    expect(cells(worker)[1]).toBe("Managed");
     expect(worker.querySelector('a[href="https://github.com/example/console/pull/8"]')?.getAttribute("rel")).toBe("noopener noreferrer");
-    expect(cells(worker)[4]).not.toBe("Not reported");
-    expect(cells(worker)[5]).toBe("$1.20 recorded");
-    // A lane the cards say by their column is said in words here; what the source called the state follows when it differs.
-    expect(cells(approval)[0]).toBe("Needs youApproval requested");
-    expect(cells(approval)[1]).toContain("Tool permission required");
-    expect(cells(waiting)[0]).toBe("Waiting");
-    expect(cells(waiting)[1]).toContain("Parent: Coordinator · root-run");
-    expect(waiting.hasAttribute("data-factory-child")).toBe(true);
-    expect(worker.hasAttribute("data-factory-child")).toBe(false);
-    expect(cells(native)[0]).toBe("Unknown");
-    expect(cells(native).slice(2)).toEqual(["Observed", "Not reported", "Not reported", "Cost not reported"]);
-    // An ended run is a row too, under its own heading, in the state its source gave it.
+    expect(cells(worker)[3]).not.toBe("Not reported");
+    expect(cells(worker)[4]).toBe("$1.20 recorded");
+    // The group says the state. What the source called it follows the session's label only when it says more.
+    expect(meta(worker)).toBe("Codex · run/worker");
+    expect(meta(approval)).toBe("Codex · approval · Approval requested");
+    expect(cells(approval)[0]).toContain("Tool permission required");
+    expect(cells(waiting)[0]).toContain("Parent: Coordinator · root-run");
+    expect(cells(native).slice(1)).toEqual(["Observed", "Not reported", "Not reported", "Cost not reported"]);
+    // An ended run is a row too, grouped by the state its source gave it.
     const ended = host.querySelector('[aria-label="Ended runs needing attention"]')!;
-    const endedRows = [...ended.querySelectorAll("tbody tr")];
+    const endedGroups = [...ended.querySelectorAll("tbody[data-factory-group]")];
+    expect(endedGroups.map((group) => [heading(group).querySelector("[data-factory-group-name]")?.textContent, heading(group).querySelector("[data-factory-group-count]")?.textContent])).toEqual([["Needs review", "1"]]);
+    const endedRows = [...ended.querySelectorAll("tr[data-factory-row]")];
     expect(endedRows).toHaveLength(1);
-    expect(cells(endedRows[0]!)[0]).toBe("Needs review");
+    expect(meta(endedRows[0]!)).toBe("Codex · ended");
     expect(endedRows[0]!.textContent).toContain("Run ended with an uncertain outcome");
     expect(host.querySelector("footer")?.textContent).toContain("One row is one session.");
+  });
+
+  it("keeps a child under its parent only where both are in one state, and names the parent either way", () => {
+    const parent = card("root", "working", { agentName: "Coordinator", ref: "run root" });
+    const child = (id: string, lane: FactoryCard["lane"]) => card(`root:child:${id}`, lane, { runId: "root", ref: `child ${id}`, agentName: `Task ${id}`, stateLabel: "Reported active", parentLabel: "Coordinator · root" });
+    const { host } = mount({ view: "list", review: [], cards: [parent, child("1", "working"), child("2", "unknown"), card("other", "working")] });
+    const row = (id: string) => [...host.querySelectorAll("tr[data-factory-row]")].find((each) => each.getAttribute("data-factory-row") === id)!;
+    // Under its parent in Working: set in from the parent's edge.
+    expect([...host.querySelectorAll('tbody[data-factory-group="working"] tr[data-factory-row]')].map((each) => each.getAttribute("data-factory-row"))).toEqual(["root", "root:child:1", "other"]);
+    expect(row("root:child:1").hasAttribute("data-factory-child")).toBe(true);
+    // Alone in Unknown, away from its parent: a row like any other, which still says whose child it is.
+    expect(row("root:child:2").closest("tbody")!.getAttribute("data-factory-group")).toBe("unknown");
+    expect(row("root:child:2").hasAttribute("data-factory-child")).toBe(false);
+    for (const id of ["root:child:1", "root:child:2"]) expect(row(id).textContent).toContain("Parent: Coordinator · root");
+    expect(row("root").hasAttribute("data-factory-child")).toBe(false);
+    expect(row("root:child:1").querySelector("[data-factory-meta]")?.textContent).toBe("Codex · child 1 · Reported active");
   });
 
   it("filters the list as it filters the cards, and says so when no row is left", async () => {
     const { host } = mount({ view: "list" });
     await pick(picker(host, "Repository")!, "unreported");
-    expect(host.querySelectorAll('table[aria-label="Active agent sessions"] tbody tr')).toHaveLength(1);
+    expect(host.querySelectorAll('table[aria-label="Active agent sessions"] tr[data-factory-row]')).toHaveLength(1);
+    // A state the filter empties has no heading left.
+    expect([...host.querySelectorAll('table[aria-label="Active agent sessions"] tbody[data-factory-group]')].map((group) => group.getAttribute("data-factory-group"))).toEqual(["unknown"]);
     expect(host.querySelector('[aria-label="Matching sessions"]')?.textContent).toBe("1 of 4 loaded active sessions match");
     expect(host.querySelector('[aria-label="Loaded active session totals"]')?.textContent).toContain("4 active sessions loaded");
     await pick(picker(host, "Control")!, "control:Managed");

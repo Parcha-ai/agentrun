@@ -98,14 +98,17 @@ export default {
       await page.getByRole("button", { name: "Agent Factory", exact: true }).click();
       await board.locator("article").nth(2).waitFor();
 
-      // The same sessions as a list: one row each, linked to its run, with no sideways scroll on a desktop or a phone.
+      // The same sessions as a list grouped by state: one row each, linked to its run, with no sideways scroll on a
+      // desktop or a phone.
       // The pick is this browser's, so a reload opens the list again; Cards brings back the lanes measured below.
       const views = page.getByRole("radiogroup", { name: "View" });
-      const rows = page.locator(`table${ACTIVE} tbody tr`);
+      const rows = page.locator(`table${ACTIVE} tr[data-factory-row]`);
       await views.locator('label[title="List"]').click();
       await rows.nth(2).waitFor();
       check(await rows.count() === 3, "the list must hold one row for each session");
       check(await page.locator("[data-factory-lane]").count() === 0, "the list must replace the lanes");
+      const grouped = await page.locator(`table${ACTIVE} tbody[data-factory-group]`).evaluateAll((groups) => groups.map((group) => [group.getAttribute("data-factory-group"), group.querySelectorAll("tr[data-factory-row]").length]));
+      check(JSON.stringify(grouped) === JSON.stringify([["working", 2], ["attention", 1]]), `the list must group its rows by state, in the lanes' order: ${JSON.stringify(grouped)}`);
       for (const runId of runIds) check(await rows.locator(`a[href="#/runs/${encodeURIComponent(runId)}"]`).count() === 1, `the list must link session ${runId} once`);
       for (const width of [1280, 390]) {
         await page.setViewportSize({ width, height: 1000 });
