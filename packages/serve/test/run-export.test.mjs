@@ -232,6 +232,37 @@ test("files: the caps hold for the bytes carried, a file's cut text, which a cut
   assert.deepEqual(total.omitted.filter((one) => one.what === "file"), [{ what: "file", path: "b/plain.txt", why: "over_total" }]);
 });
 
+test("files: which files are carried, and at which index, is decided with no restore, so a cut id names the same file whatever is restored", async () => {
+  // a/ips.txt fits as read, not as cut, and would fit again with one address restored; b/one.txt's address is the one
+  // the owner picks, at /files/0 in the bundle they saw.
+  const ips = "a 10.1.2.3 b 10.1.2.4\n"; // key-gate: denylist synthetic private addresses the export cuts as personal
+  const one = "host 10.9.8.7\n"; // key-gate: denylist a synthetic private address the export cuts as personal
+  const files = () => [textFile("a/ips.txt", ips), textFile("b/one.txt", one)];
+  const caps = { fileBytes: 40 };
+  const { doc: seen } = await build({ caps, files: files() });
+  assert.deepEqual(seen.files.map((file) => file.path), ["b/one.txt"]);
+  const pick = cutsAt(seen, "/files/0/content").find((cut) => cut.rule === "private-ip");
+  assert.ok(pick, JSON.stringify(seen.cuts));
+  const { doc, body } = await build({ caps, files: files(), restore: [pick.id] });
+  assert.deepEqual(doc.files.map((file) => file.path), ["b/one.txt"], "the restore moves no file in");
+  assert.equal(doc.files[0].content, one, "the address restored is the one picked");
+  assert.deepEqual(doc.omitted.filter((x) => x.what === "file"), [{ what: "file", path: "a/ips.txt", why: "too_large" }]);
+  assert.ok(!body.includes("10.1.2.3"), "the omitted file's address is nowhere"); // key-gate: denylist the synthetic address above
+});
+
+test("files: a restore that puts a carried file over a cap is refused 400, never a file moved in or out", async () => {
+  const mail = `reach someone.with.a.rather.long.name.${hex("mail", 8)}@sample-mail.zz\n`;
+  const { doc: seen } = await build({ files: [textFile("c/mail.txt", mail)] });
+  const cut = seen.files[0];
+  assert.ok(cut.bytes < Buffer.byteLength(mail), "the marker is shorter than the address");
+  const pick = cutsAt(seen, "/files/0/content").find((c) => c.rule === "email");
+  assert.ok(pick, JSON.stringify(seen.cuts));
+  const caps = { fileBytes: cut.bytes };
+  const { doc: capped } = await build({ caps, files: [textFile("c/mail.txt", mail)] });
+  assert.deepEqual(capped.files.map((file) => file.path), ["c/mail.txt"], "it fits, cut");
+  await assert.rejects(build({ caps, files: [textFile("c/mail.txt", mail)], restore: [pick.id] }), (error) => error instanceof ApiError && error.status === 400 && /over the share caps/.test(error.message) && !error.message.includes("c/mail.txt"));
+});
+
 test("a document over its cap is refused 413 export_too_large, never truncated", async () => {
   await assert.rejects(build({ caps: { documentBytes: 2048 } }), (error) => error instanceof ApiError && error.status === 413 && error.code === "export_too_large");
   assert.ok(EXPORT_CAPS.documentBytes === 8 * 1024 * 1024 && EXPORT_CAPS.fileBytes === 256 * 1024 && EXPORT_CAPS.filesBytes === 4 * 1024 * 1024 && EXPORT_CAPS.files === 200);
