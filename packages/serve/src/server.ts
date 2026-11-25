@@ -4890,8 +4890,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const state = await store.schemaState?.().catch(() => undefined);
       const storeSchema = state ? { store_schema: { version: state.version, runner_floor: state.runnerFloor, known: state.known } } : {};
       // features.harness_keys.kept names which harness ids still have keys stored: the owner's session or a holder of
-      // the server's token reads it; a caller with neither (this route answers before any bearer check) reads none.
+      // the server's token reads it; a caller with neither (this route answers before any bearer check) reads none. A
+      // bearer this server does not take still gets the answer, and the auth_failed line any other route writes for it.
       const keptShown = byOwnerSession(req) || bearer(req.headers.authorization, req);
+      if (!keptShown && req.headers.authorization !== undefined) authFailed(`/v2${path}`, "wrong_token");
       const keptCap = { ...answer.features.harness_keys, kept: keptShown ? answer.features.harness_keys.kept : [] };
       // features.api_keys.routes: false on an API-only server, which serves none of the keys' routes and reads no key.
       return send(res, 200, { ...answer, ...storeSchema, runner_refused: runnerRefused, features: { ...answer.features, harness_keys: keptCap, computers: await computerCapabilities(computersOf()), triggers: { ...answer.features.triggers, public_url: Boolean(options.publicUrl) }, claude_login: !loginOff && !options.apiOnly, api_keys: { ...answer.features.api_keys, routes: !options.apiOnly } } });

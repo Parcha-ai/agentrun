@@ -4512,7 +4512,7 @@ class ListHarnessKeysResponseHarnessesItem(TypedDict):
 
 class ListHarnessKeysResponseHarnessesItemReenterItem(TypedDict):
     name: str
-    why: Literal["recipe_changed", "seal_key_changed", "file_unreadable"]
+    why: Literal["recipe_changed", "not_bound", "seal_key_changed", "file_unreadable"]
 
 
 class ListHomeFilesResponse(TypedDict):
