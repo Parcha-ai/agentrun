@@ -1572,6 +1572,24 @@ test("a link the server's user made to a folder of its own, above this machine's
   }
 });
 
+// A `..` after a link names the folder above where the link leads, as the system and a shell walk it, not the folder
+// above the link's own name: `<link to deep/own>/../x` is `deep/x`. The login is where the CLI, given the path, would
+// write.
+test("a login folder's path is walked as the system walks it: a `..` after a link goes up from where the link leads, not from the link's name", { skip: process.platform === "win32" ? "no uid" : process.geteuid() === 0 ? "root owns /" : false }, async (t) => {
+  const mine = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-dotdot-"));
+  t.after(() => rmSync(mine, { recursive: true, force: true }));
+  const real = realpathSync(mine);
+  mkdirSync(join(real, "deep", "own", "claude"), { recursive: true, mode: 0o700 });
+  symlinkSync(join(real, "deep", "own"), join(real, "current"));
+  const data = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-data-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  const saved = { get: async () => settingFor("machine", data) };
+  for (const [value, at] of [[`${real}/current/../x`, join(real, "deep", "x")], [`${real}/current/claude/..`, join(real, "deep", "own")], [`${real}/current/../own/claude/`, join(real, "deep", "own", "claude")]]) {
+    const login = await loginForRun(saved, data, { HOME: UP, CLAUDE_CONFIG_DIR: value }, "claude-agent", RUNNER);
+    assert.equal(login?.dir, at, `CLAUDE_CONFIG_DIR=${value}: ${JSON.stringify(login)}`);
+  }
+});
+
 /** For the rest of test `t`: just before this process's `nth` lstat of `link` (the login's walk looks at each link with
  *  lstat, one walk one look), `link` is made again leading to `to`, as another user who may write in the link's folder
  *  could swap it between one look and the next. Gives the undo, also run after `t`. */
