@@ -33,7 +33,7 @@ CREATE INDEX IF NOT EXISTS learning_saves_run ON learning_saves (by_run);
 
 CREATE TABLE IF NOT EXISTS learning_items (
   agent_id TEXT COLLATE "C" NOT NULL,
-  kind TEXT COLLATE "C" NOT NULL CHECK (kind IN ('note', 'workflow')),
+  kind TEXT COLLATE "C" NOT NULL CHECK (kind IN ('note', 'workflow', 'label')),
   name TEXT COLLATE "C" NOT NULL,
   version BIGINT NOT NULL CHECK (version >= 1),
   body TEXT COLLATE "C",
@@ -51,7 +51,7 @@ CREATE INDEX IF NOT EXISTS learning_items_run ON learning_items (by_run);
 
 CREATE TABLE IF NOT EXISTS learning_records (
   agent_id TEXT COLLATE "C" NOT NULL,
-  kind TEXT COLLATE "C" NOT NULL CHECK (kind IN ('promotion', 'grade', 'audit')),
+  kind TEXT COLLATE "C" NOT NULL CHECK (kind IN ('promotion', 'grade', 'audit', 'lifecycle', 'note')),
   seq BIGINT NOT NULL,
   run_id TEXT COLLATE "C",
   workflow TEXT COLLATE "C",

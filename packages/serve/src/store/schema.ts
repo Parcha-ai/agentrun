@@ -265,7 +265,7 @@ export const LEARNING_ROWS: readonly string[] = [
   "CREATE INDEX IF NOT EXISTS learning_saves_run ON learning_saves (by_run)",
   `CREATE TABLE IF NOT EXISTS learning_items (
     agent_id TEXT NOT NULL,
-    kind TEXT NOT NULL CHECK (kind IN ('note', 'workflow')),
+    kind TEXT NOT NULL CHECK (kind IN ('note', 'workflow', 'label')),
     name TEXT NOT NULL,
     version INTEGER NOT NULL,
     body TEXT,
@@ -282,7 +282,7 @@ export const LEARNING_ROWS: readonly string[] = [
   "CREATE INDEX IF NOT EXISTS learning_items_run ON learning_items (by_run)",
   `CREATE TABLE IF NOT EXISTS learning_records (
     agent_id TEXT NOT NULL,
-    kind TEXT NOT NULL CHECK (kind IN ('promotion', 'grade', 'audit')),
+    kind TEXT NOT NULL CHECK (kind IN ('promotion', 'grade', 'audit', 'lifecycle', 'note')),
     seq INTEGER NOT NULL,
     run_id TEXT,
     workflow TEXT,
