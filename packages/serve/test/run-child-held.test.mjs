@@ -35,6 +35,7 @@ const { routedSubagentTiers } = await import("../dist/runner/subagent.js");
 const { MODEL_KEY_NAMES, subagentTierKeys } = await import("../dist/runner/claim-secrets.js");
 const { heldRedactor } = await import("../dist/runner/redact.js");
 const { putSealedKey } = await import("../dist/server-keys.js");
+const { FAUX_ENV } = await import("../dist/model.js");
 const { loginForRun, settingFor } = await import("../dist/claude-login.js");
 
 const KEY = randomBytes(32);
@@ -120,6 +121,44 @@ const judgeFlow = (name, provider) => ({
   },
   input: { schemaId: "In" }, output: { schemaId: "Coi", path: "coi" },
   root: { node: "chain", steps: [{ node: "judge", label: "coi", state: { doc: "{question}" }, out: "Coi", as: "coi", provider }] },
+});
+
+/** A learned workflow of one model node on the strong tier. */
+const strongFlow = {
+  v: 2, name: "on-strong",
+  schemas: { In: { type: "object", required: ["question"], properties: { question: { type: "string" } } }, Answer: { type: "object", required: ["answer"], properties: { answer: { type: "string" } } } },
+  input: { schemaId: "In" }, output: { schemaId: "Answer", path: "answer" },
+  root: { node: "chain", steps: [{ node: "extract", label: "answer", instructions: "Answer the question.", out: "Answer", as: "answer", tier: "strong" }] },
+};
+
+test("on a --faux runner, the runner answers a run's process no tier's model key, for a subagent tier or a learned workflow's; off faux, each its tier's key", async (t) => {
+  const { store } = await storeOn(t);
+  // OpenAI's and Anthropic's keys saved; the subagent's fast tier is the revision's OpenAI model, the learned workflow's
+  // strong tier the host's Anthropic one.
+  await putSealedKey(store, KEY, "OPENAI_API_KEY", OPENAI_DUMMY);
+  await putSealedKey(store, KEY, "ANTHROPIC_API_KEY", ANTHROPIC_DUMMY);
+  const host = { AGENT_MODEL_STRONG: "anthropic/claude-sonnet-5-5" };
+  const subagent = { kind: "agentic", body: { tools: ["subagent"], modelTiers: { fast: "openai/gpt-6.1-sol" } } };
+  const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "run-child-held-faux-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  const sha = await landWorkflows(data, "agent-own", [{ name: "on-strong", description: "Answers a question", workflow: strongFlow }]);
+  await promoteChecked(store.settings, "agent-own", [{ name: "on-strong", workflow: strongFlow }]);
+  const learning = { input: { content: "Hello." }, learning: startAt(sha) };
+  for (const [where, faux] of [["off faux", {}], ["on a --faux runner", { [FAUX_ENV]: "1" }]]) {
+    // The subagent's run on a host that names no tier: its fast tier alone routes a model.
+    const tiers = await heldOf(store, { env: faux, revision: subagent }).subagentTierKeys();
+    const learner = heldOf(store, { env: { ...host, ...faux }, data, launch: learning });
+    assert.deepEqual((await learner.learnedFirst({ laid: true })).workflows.map(({ name }) => name), ["on-strong"], `${where}: the runner chose the claim's workflow`);
+    const learned = (await learner.tierModelKeys(["strong"])).keys;
+    if (where === "off faux") {
+      assert.deepEqual(tiers, { OPENAI_API_KEY: OPENAI_DUMMY }, "off faux, a run granted subagent: its fast tier's model's key alone");
+      assert.deepEqual(learned, { ANTHROPIC_API_KEY: ANTHROPIC_DUMMY }, "off faux, a learned workflow's strong tier: its model's key alone");
+    } else {
+      assert.deepEqual(Object.keys(tiers).filter((name) => MODEL_KEY_NAMES.includes(name)), [], "a run on a --faux runner granted subagent is answered a model key, which the faux model never sends");
+      assert.deepEqual(Object.keys(learned).filter((name) => MODEL_KEY_NAMES.includes(name)), [], "a run on a --faux runner is answered a learned workflow tier's model key, which the faux model never sends");
+      assert.deepEqual([tiers, learned], [{}, {}], "a run on a --faux runner: no key at all for its tiers");
+    }
+  }
 });
 
 test("a run's process gets no decision or tier key its claim's learned workflows do not name: none before the runner chose them, and of those only the named", async (t) => {
