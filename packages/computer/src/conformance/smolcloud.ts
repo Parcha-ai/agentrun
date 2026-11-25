@@ -8,6 +8,7 @@
 import { createHash } from "node:crypto";
 import { boxImageRef } from "../box-image.js";
 import type { MachineHost } from "../host.js";
+import { httpsBase } from "../hosted/rest.js";
 import { create, type SmolcloudProvider, type SmolcloudProviderOptions } from "../smolcloud.js";
 import { buildDriftDaemon, DRIFT_VERSION } from "./drift-daemon.js";
 
@@ -87,5 +88,5 @@ export async function createHost(options: Pick<SmolcloudModuleOptions, "env" | "
 export function sweepScope({ env = process.env }: Pick<SmolcloudModuleOptions, "env"> = {}): string {
 	const { apiKey, apiUrl } = settingsFromEnv(env);
 	const key = createHash("sha256").update(apiKey, "utf8").digest("hex").slice(0, 12);
-	return `the smol cloud account of the key sha256:${key} at ${apiUrl ?? "https://api.smolmachines.com"}`;
+	return `the smol cloud account of the key sha256:${key} at ${httpsBase(apiUrl ?? "https://api.smolmachines.com", `the smol cloud API URL (${SMOLCLOUD_ENV.apiUrl})`)}`;
 }

@@ -13,6 +13,7 @@ import { createHash } from "node:crypto";
 import { boxImageRef } from "../box-image.js";
 import { create, DEFAULT_API_URL, type GroundboxProvider, type GroundboxProviderOptions } from "../groundbox.js";
 import type { MachineHost } from "../host.js";
+import { httpsBase } from "../hosted/rest.js";
 import { buildDriftDaemon, DRIFT_VERSION } from "./drift-daemon.js";
 import { kindFrom } from "./kind.js";
 
@@ -103,5 +104,5 @@ export async function createHost(options: Pick<GroundboxModuleOptions, "env" | "
 export function sweepScope({ env = process.env }: Pick<GroundboxModuleOptions, "env"> = {}): string {
 	const { apiKey, apiUrl } = settingsFromEnv(env);
 	const key = createHash("sha256").update(apiKey, "utf8").digest("hex").slice(0, 12);
-	return `the Groundbox team of the key sha256:${key} at ${apiUrl ?? DEFAULT_API_URL}`;
+	return `the Groundbox team of the key sha256:${key} at ${httpsBase(apiUrl ?? DEFAULT_API_URL, `the Groundbox API URL (${GROUNDBOX_ENV.apiUrl})`)}`;
 }

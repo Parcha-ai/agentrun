@@ -524,5 +524,5 @@ export class MorphProvider extends HostedProvider {
 
 /** The account a key reaches, in words, for the sweep's scope: the key's sha256 prefix, never the key. */
 export function accountOf(apiKey: string, apiUrl: string = DEFAULT_API_URL): string {
-	return `the Morph account of the key sha256:${createHash("sha256").update(apiKey, "utf8").digest("hex").slice(0, 12)} at ${apiUrl.replace(/\/+$/, "")}`;
+	return `the Morph account of the key sha256:${createHash("sha256").update(apiKey, "utf8").digest("hex").slice(0, 12)} at ${httpsBase(apiUrl, "the Morph API URL")}`;
 }

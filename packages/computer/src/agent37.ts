@@ -554,5 +554,5 @@ export class Agent37Provider extends HostedProvider {
 
 /** The workspace a key reaches, in words, for the sweep's scope: the key's sha256 prefix, never the key. */
 export function workspaceOf(apiKey: string, apiUrl: string = DEFAULT_API_URL): string {
-	return `the Agent37 workspace of the key sha256:${createHash("sha256").update(apiKey, "utf8").digest("hex").slice(0, 12)} at ${apiUrl.replace(/\/+$/, "")}`;
+	return `the Agent37 workspace of the key sha256:${createHash("sha256").update(apiKey, "utf8").digest("hex").slice(0, 12)} at ${httpsBase(apiUrl, "the Agent37 API URL")}`;
 }

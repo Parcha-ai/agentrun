@@ -18,6 +18,7 @@
 // are skipped.
 import { boxImageRef } from "../box-image.js";
 import type { MachineHost } from "../host.js";
+import { httpsBase } from "../hosted/rest.js";
 import { create, MODAL_DEFAULT_SERVER_URL, type ModalClientConstructor, type ModalCreateOptions, type ModalProvider } from "../modal.js";
 import type { MountKind } from "../mount.js";
 import type { ProviderNote } from "../mount-archil.js";
@@ -144,7 +145,7 @@ export async function createHost({ env = process.env, ModalClient }: Pick<ModalM
  */
 export function sweepScope({ env = process.env }: Pick<ModalModuleOptions, "env"> = {}): string {
 	const { app, serverUrl = MODAL_DEFAULT_SERVER_URL } = settingsFromEnv(env);
-	return `the app ${app} on ${serverUrl}`;
+	return `the app ${app} on ${httpsBase(serverUrl, `the Modal server URL (${MODAL_ENV.serverUrl})`)}`;
 }
 
 /** The same provider uploading a daemon that reports version <version>-drift, for the drift.version case. */
