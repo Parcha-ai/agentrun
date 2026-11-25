@@ -34,7 +34,7 @@ export const FLUSH_MS = 3_000;
  *  never ends them can't grow its runner's memory without bound. */
 export const OPEN_MAX = 512;
 
-/** The OTLP exporter's settings from `env`, as the spec reads them: the traces endpoint, else the endpoint's
+/** The OTLP exporter's settings from `env`, as the spec reads them: the traces endpoint as given, else the endpoint's
  *  /v1/traces; the headers (the traces' over the general ones); the timeout. The headers go to the endpoint, so it takes
  *  the rule of a URL a key goes to (keyBase) over http or https, since OTLP allows both and a collector is often a plain
  *  http one beside the server: one with a user, a password, a query or a fragment throws in those words, and tracing is
@@ -42,10 +42,11 @@ export const OPEN_MAX = 512;
 export function exporterConfig(env: NodeJS.ProcessEnv): { url: string; headers: Record<string, string>; timeoutMillis?: number } {
   const traces = env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT?.trim();
   const endpoint = (env.OTEL_EXPORTER_OTLP_ENDPOINT ?? "").trim();
-  // The URL is built from the rule's normalized return, never the raw string: a bare ? or # passes the rule, and would
-  // put /v1/traces in a query.
+  // A traces endpoint, once checked, is used as given, as the spec says: a collector may tell /ingest/ from /ingest. The
+  // general endpoint's /v1/traces is added to the rule's normalized return, never the raw string: a bare ? or # passes
+  // the rule, and would put the path in a query.
   const checked = keyBase(traces || endpoint, traces ? "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT" : "OTEL_EXPORTER_OTLP_ENDPOINT", ["http:", "https:"]);
-  const url = traces ? checked : `${checked}/v1/traces`;
+  const url = traces || `${checked}/v1/traces`;
   const timeout = Number(env.OTEL_EXPORTER_OTLP_TRACES_TIMEOUT ?? env.OTEL_EXPORTER_OTLP_TIMEOUT);
   return { url, headers: { ...keyValues(env.OTEL_EXPORTER_OTLP_HEADERS), ...keyValues(env.OTEL_EXPORTER_OTLP_TRACES_HEADERS) }, ...(Number.isFinite(timeout) && timeout > 0 ? { timeoutMillis: timeout } : {}) };
 }
