@@ -764,8 +764,11 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     // as the runner writes it (runner.ts fenced), from what it stages and from its rows, as the run's own tool keys are.
     // This answer is the one decision whether the run goes on the login: none, it does not. Its claim read the setting
     // (staysInRunner); a claim that read it off is never put on it, whatever the setting says now. A claim that read it on
-    // has it read again here, at the start, as the claim read it (the same settings, data folder, environment, harness and
-    // place), and the login is handed only when both reads name the same folder: a turn-off, or a move to another folder,
+    // has it read again here, at the start, with the claim's settings, data folder, harness and place. Its environment is
+    // the claim's (the process's, when the runner was given none) with a saved gateway laid over it (withSavedGatewayDeps),
+    // not always the very one the claim read with; that
+    // difference can only refuse the start, never hand another folder, since the login is handed only when both reads name
+    // the same folder: a turn-off, or a move to another folder,
     // between the claim and the start refuses the start in LOGIN_CHANGED_SINCE_CLAIM's fixed words (no folder in them),
     // never a start on a login the setting no longer names nor a fall to a model key the run was not claimed on. Nothing
     // else of the claim is read again. A run with a model key of its own, and a login other than AgentRun's own folder,
