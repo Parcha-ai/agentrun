@@ -213,6 +213,25 @@ test("files: a run whose cut is its census's carries no file and names none, rea
   assert.deepEqual(left.omitted.filter((one) => one.what === "file"), [{ what: "file", path: "out/gone.txt", why: "unreadable" }]);
 });
 
+test("files: the caps hold for the bytes carried, a file's cut text, which a cut can make longer than the file was", async () => {
+  // Short values whose markers are longer: the cut text outgrows the file.
+  const ips = "at 10.1.2.3\n".repeat(5); // key-gate: denylist a synthetic private address the export cuts as personal
+  const plain = "x".repeat(40);
+  const files = () => [textFile("a/ips.txt", ips), textFile("b/plain.txt", plain)];
+  const { doc: open } = await build({ files: files() });
+  const cutIps = open.files.find((file) => file.path === "a/ips.txt");
+  assert.ok(Buffer.byteLength(ips) <= 64 && cutIps.bytes > 64, `the cut text outgrows the file: ${Buffer.byteLength(ips)} -> ${cutIps.bytes}`);
+  // Under a 64-byte file cap the file fits as read, but not as carried: it is left out as too large.
+  const { doc } = await build({ caps: { fileBytes: 64 }, files: files() });
+  assert.deepEqual(doc.files.map((file) => file.path), ["b/plain.txt"]);
+  assert.deepEqual(doc.omitted.filter((one) => one.what === "file"), [{ what: "file", path: "a/ips.txt", why: "too_large" }]);
+  for (const file of doc.files) assert.ok(file.bytes <= 64);
+  // And the total: the files fit as read, but the cut ones do not, so the later one is left out.
+  const { doc: total } = await build({ caps: { filesBytes: cutIps.bytes + 10 }, files: files() });
+  assert.deepEqual(total.files.map((file) => file.path), ["a/ips.txt"]);
+  assert.deepEqual(total.omitted.filter((one) => one.what === "file"), [{ what: "file", path: "b/plain.txt", why: "over_total" }]);
+});
+
 test("a document over its cap is refused 413 export_too_large, never truncated", async () => {
   await assert.rejects(build({ caps: { documentBytes: 2048 } }), (error) => error instanceof ApiError && error.status === 413 && error.code === "export_too_large");
   assert.ok(EXPORT_CAPS.documentBytes === 8 * 1024 * 1024 && EXPORT_CAPS.fileBytes === 256 * 1024 && EXPORT_CAPS.filesBytes === 4 * 1024 * 1024 && EXPORT_CAPS.files === 200);
@@ -368,6 +387,17 @@ test("LVI: a call's output is cut with its call's context, so a credential file'
     // The call's own row (its arguments) is cut as it was, with no context: its command is no output.
     assert.equal(doc.rows[0].tool_input_preview, JSON.stringify(input), name);
   }
+});
+
+test("LVI: a failed call's summary, the first line of its output, is cut with the call's context as its preview is", async () => {
+  // A shell call that printed the file, then failed (a timeout): its result row's summary is its output's first line.
+  const output = `${CTX_PGPASS}\nCommand timed out after 5s`;
+  const { rows, calls } = callRows("Bash", { command: "cat ~/.pgpass; sleep 5" }, output);
+  const failed = (row) => (row.kind === "tool_result" ? { ...row, tool_status: "failed", summary: `Bash failed: ${CTX_PGPASS}` } : row);
+  const { doc, body } = await exported(readsOf({ rows: rows.map(failed), calls: calls.map(failed) }));
+  oneDump(doc, "/rows/1/tool_result_preview", "credential-file");
+  oneDump(doc, "/rows/1/summary", "credential-file");
+  assertNoPlanted(body, { pw: CTX_PW });
 });
 
 test("LVI: a read of an unrelated file, or a command that is no read or dump, is cut as it was: its prose kept as is", async () => {
