@@ -104,8 +104,9 @@ export interface DecisionOutcome {
 
 /** `outcome_unknown`: the request was sent and its outcome is not known (a 408, a 5xx, a connection lost after
  *  sending). It may have been answered and billed, so it is not sent again; the run escalates the decision as
- *  interrupted. */
-export type DecisionProviderErrorCode = "configuration" | "auth" | "rate_limited" | "timeout" | "aborted" | "invalid_request" | "invalid_response" | "http" | "connection" | "outcome_unknown";
+ *  interrupted. `payment_required`: the provider refused the key's account (a 402: out of credit), before any work, so
+ *  nothing was billed. */
+export type DecisionProviderErrorCode = "configuration" | "auth" | "payment_required" | "rate_limited" | "timeout" | "aborted" | "invalid_request" | "invalid_response" | "http" | "connection" | "outcome_unknown";
 
 /** A provider's failure. Its message names what failed, never a key, a header, a request or response body. */
 export class DecisionProviderError extends Error {
