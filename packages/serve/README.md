@@ -1645,12 +1645,23 @@ has the row **Use Claude Code's login on this machine**, over these routes:
   for by an id the server makes once in its data folder (`machine-id`, 0600) and reads back on every later start,
   never by the hostname, which on a laptop changes with the network. Two data folders are two machines. A setting
   saved before the id reads as `other_machine` until it is turned on again.
+  The login's folders must be the server's user's own: at either place its home, and on `machine` each folder the
+  server's environment gives it (`CLAUDE_CONFIG_DIR`, `CLAUDE_SECURESTORAGE_CONFIG_DIR`, and `ANTHROPIC_CONFIG_DIR`
+  or else `XDG_CONFIG_HOME`'s `anthropic`). Each is a folder that user owns, or one still to make in a folder it owns,
+  reached through no other user's link or folder, and writable by its owner alone; a folder on the way may be open to
+  all where the sticky bit is set, as on `/tmp`. Else the turn-on and the sign-in answer `403` in words, no run goes
+  on the login, and a setting saved before is kept but not used, the start logging why. A folder its group may write
+  in is refused in words that name it, its mode and the `chmod g-w,o-w` that closes it. A umask of 002, which some
+  distributions (Ubuntu's user-private groups among them) give each user, makes new folders so. A folder of the login
+  still to make is made by AgentRun at the turn-on and before the CLI's sign-in, 0700 whatever the umask, so the login
+  the CLI signs in there is not refused after.
 - `GET /v2/settings/claude-login` says `state`: `off`, `signed_in` (with the `account` the CLI names: method, email,
   organization, plan), `signed_out`, `no_cli` (claude-agent's first run installs the pinned CLI), `unknown`, or
   `other_machine`. `folder` is the folder whose login the CLI is asked about, and `machine` is this machine's own
   login folder (`machine.source`: `CLAUDE_CONFIG_DIR` or `default`; `machine.credentials`: the server's
   `CLAUDE_SECURESTORAGE_CONFIG_DIR`, when it sets one). `command` is the line that signs the CLI in at
-  the login's place, for a terminal on the server's machine. Where the console is on that machine (a server on loopback
+  the login's place, for a terminal on the server's machine; it is empty where the login's folders are refused, and
+  `folder` is then the folder as the environment names it. Where the console is on that machine (a server on loopback
   with no public address), `can_start` is true and `POST /v2/settings/claude-login/login` starts the pinned CLI's own
   `auth login`, which opens a browser there. It runs with the same variables as `command`, so it signs in at `folder`,
   and the status is read there too, since `auth login` writes the account it signed in to its config dir. On

@@ -1485,7 +1485,7 @@ test("a folder still to make, in a folder others may write in, refuses this mach
   const asked = [];
   const asRoot = (env) => rig.deps({ uid: 0, env: { ...rig.env, ...env }, claude: async () => askedClaude(asked) });
   const value = join(STICKY, `agentrun-claude-login-never-made-${randomBytes(6).toString("hex")}`);
-  await refusedEverywhere(rig, asRoot({ HOME: "/", CLAUDE_CONFIG_DIR: value }), notOwnFolder("uid 0", "CLAUDE_CONFIG_DIR", value), `root, its own HOME, CLAUDE_CONFIG_DIR=${value}`);
+  await refusedEverywhere(rig, asRoot({ HOME: "/", CLAUDE_CONFIG_DIR: value }), openFolder("uid 0", "CLAUDE_CONFIG_DIR", value, STICKY, lstatSync(STICKY).mode), `root, its own HOME, CLAUDE_CONFIG_DIR=${value}`);
   assert.deepEqual(asked, [], "the CLI was not asked, and no sign-in started");
   assert.equal(existsSync(value), false);
 });

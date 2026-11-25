@@ -184,31 +184,48 @@ function followLinks(uid: number, dir: string): { real: string; missing: string[
   }
 }
 
-/** Whether no user but `uid` and root can change what `real` (a real path, followLinks') leads to: each folder above it,
- *  from the root down, is a folder (no link) of that user's or root's that neither its group nor anyone else may write
- *  in, unless the sticky bit keeps each entry there its maker's. */
-function wayHeld(uid: number, real: string): boolean {
+/** Why a folder is not the login's (ownedFolder): `owned`, it is not the user's own (another user's, through another
+ *  user's link or folder, or no way to look); `open`, `at` (a folder on its way, the folder itself, or the one it is to
+ *  be made in) has `mode`, which its group or anyone may write in, so a chmod of `at` mends it. Only the mode bits are
+ *  read: an ACL that grants another user writes and leaves them alone (macOS's `chmod +a`) is not seen, and a FUSE
+ *  mount another user may let others into (`allow_other`) says what owner and mode it likes. */
+type NotHeld = { not: "owned" } | { not: "open"; at: string; mode: number };
+
+/** Undefined where no user but `uid` and root can change what `real` (a real path, followLinks') leads to: each folder
+ *  above it, from the root down, is a folder (no link) of that user's or root's that neither its group nor anyone else
+ *  may write in, unless the sticky bit keeps each entry there its maker's. Else why not: a folder not theirs first, as
+ *  a chmod mends no such folder, else the nearest open one. */
+function wayHeld(uid: number, real: string): NotHeld | undefined {
   try {
+    let open: NotHeld | undefined;
     for (let at = dirname(real), last = real; at !== last; last = at, at = dirname(at)) {
       const folder = lstatSync(at);
-      if (!folder.isDirectory() || (folder.uid !== uid && folder.uid !== 0) || ((folder.mode & GROUP_OR_OTHER_WRITE) !== 0 && (folder.mode & STICKY) === 0)) return false;
+      if (!folder.isDirectory() || (folder.uid !== uid && folder.uid !== 0)) return { not: "owned" };
+      if ((folder.mode & GROUP_OR_OTHER_WRITE) !== 0 && (folder.mode & STICKY) === 0) open ??= { not: "open", at, mode: folder.mode };
     }
-    return true;
+    return open;
   } catch {
-    return false;
+    return { not: "owned" };
   }
 }
 
-/** Whether `real` is a folder (no link) of user `uid`'s that neither its group nor anyone else may write in, sticky or
- *  not: they could put files of theirs in it, or, where the CLI makes a folder in it, make that folder first. */
-function heldFolder(uid: number, real: string): boolean {
+/** Undefined where `real` is a folder (no link) of user `uid`'s that neither its group nor anyone else may write in,
+ *  sticky or not: they could put files of theirs in it, or, where the CLI makes a folder in it, make that folder first.
+ *  Else why not. */
+function heldFolder(uid: number, real: string): NotHeld | undefined {
   try {
     const folder = lstatSync(real);
-    return folder.isDirectory() && folder.uid === uid && (folder.mode & GROUP_OR_OTHER_WRITE) === 0;
+    if (!folder.isDirectory() || folder.uid !== uid) return { not: "owned" };
+    return (folder.mode & GROUP_OR_OTHER_WRITE) === 0 ? undefined : { not: "open", at: real, mode: folder.mode };
   } catch {
-    return false;
+    return { not: "owned" };
   }
 }
+
+/** The end of the words a folder open to others' writes (NotHeld's `open`) is refused in: which folder, its mode, and
+ *  the chmod that closes it. */
+const openWords = (open: { at: string; mode: number }): string =>
+  `is open to writes by others than its owner: ${open.at} has mode ${(open.mode & 0o7777).toString(8).padStart(4, "0")}, which its group or anyone may write in. Make it writable by its owner alone (chmod g-w,o-w ${open.at}): a umask of 002 makes new folders so.`;
 
 /** The folder `dir` names, as the CLI is to get it, where it is one user `uid` owns; else undefined. `dir` is resolved
  *  first (path.resolve: a trailing slash, `.` and `..` go), so no slash hides a link. Then every link on its way is
@@ -218,12 +235,16 @@ function heldFolder(uid: number, real: string): boolean {
  *  left on it, plus the names still to make), which is what the login hands the CLI, so a link changed after this has
  *  looked redirects nothing, and no other user can change a folder on the way. This is the one ownership rule for the
  *  login's folders, the home's (homeOf) and those the env gives it (loginAt). `missing`: some of the folder is still to
- *  make. */
-function ownedFolder(uid: number, dir: string, make: boolean): { real: string; missing: boolean } | undefined {
-  if (!isAbsolute(dir)) return undefined;
+ *  make. Else why not (NotHeld). */
+function ownedFolder(uid: number, dir: string, make: boolean): { real: string; missing: boolean; not?: undefined } | NotHeld {
+  if (!isAbsolute(dir)) return { not: "owned" };
   const walked = followLinks(uid, resolve(dir));
-  if (walked === undefined || (walked.missing.length > 0 && !make)) return undefined;
-  if (!wayHeld(uid, walked.real) || !heldFolder(uid, walked.real)) return undefined;
+  if (walked === undefined || (walked.missing.length > 0 && !make)) return { not: "owned" };
+  // A folder that is not the user's first, as a chmod mends no such folder; else the open one.
+  const way = wayHeld(uid, walked.real);
+  const folder = heldFolder(uid, walked.real);
+  const notHeld = way?.not === "owned" ? way : folder?.not === "owned" ? folder : (way ?? folder);
+  if (notHeld) return notHeld;
   return walked.missing.length > 0 ? { real: join(walked.real, ...walked.missing), missing: true } : { real: walked.real, missing: false };
 }
 
@@ -251,7 +272,7 @@ export function homeOf(env: Readonly<Record<string, string | undefined>>, uid: n
   const given = absolute(env, "HOME");
   if (uid === undefined) return { home: given ?? homedir() };
   const fromEnv = given === undefined ? undefined : ownedFolder(uid, given, false);
-  if (fromEnv) return { home: fromEnv.real };
+  if (fromEnv && fromEnv.not === undefined) return { home: fromEnv.real };
   let own: string | undefined;
   try {
     own = userInfo().homedir || undefined;
@@ -259,7 +280,10 @@ export function homeOf(env: Readonly<Record<string, string | undefined>>, uid: n
     // No entry for this user on this system.
   }
   const fromOwn = own === undefined ? undefined : ownedFolder(uid, own, false);
-  if (fromOwn) return { home: fromOwn.real, ...(given ? { apart: true as const } : {}) };
+  if (fromOwn && fromOwn.not === undefined) return { home: fromOwn.real, ...(given ? { apart: true as const } : {}) };
+  // A home that is the user's but open to others' writes says so, and how to close it: the env's HOME first.
+  const open = fromEnv?.not === "open" ? { which: "its HOME", home: given, ...fromEnv } : fromOwn?.not === "open" ? { which: "that user's own home", home: own, ...fromOwn } : undefined;
+  if (open) return { refused: `Claude Code's login on this machine needs a home only this server's user may write in: it runs as ${userWords(uid)}, and ${open.which} (${open.home}) ${openWords(open)}` };
   return {
     refused: `Claude Code's login on this machine needs a home this server's user owns: it runs as ${userWords(uid)}, and neither its HOME (${env.HOME || "unset"}) nor that user's own home (${own ?? "none on this system"}) is a folder it owns. Start the server as the person whose Claude plan it is.`,
   };
@@ -326,7 +350,9 @@ export function loginAt(place: LoginPlace, data: string, env: Readonly<Record<st
       continue;
     }
     const owned = ownedFolder(uid, folder, true);
-    if (owned === undefined) return { refused: `Claude Code's login on this machine needs its folders to be this server's user's own: it runs as ${userWords(uid)}, and ${folder}, the folder ${name} gives it, is not a folder it owns, nor one it would make in a folder it owns. Start the server as the person whose Claude plan it is.` };
+    const refused = `Claude Code's login on this machine needs its folders to be this server's user's own: it runs as ${userWords(uid)}, and ${folder}, the folder ${name} gives it,`;
+    if (owned.not === "open") return { refused: `${refused} ${openWords(owned)}` };
+    if (owned.not === "owned") return { refused: `${refused} is not a folder it owns, nor one it would make in a folder it owns. Start the server as the person whose Claude plan it is.` };
     real.set(name, owned.real);
     if (owned.missing) toMake.push(owned.real);
   }
@@ -533,6 +559,25 @@ export const oneOwnerDeps = (facts: { apiOnly: boolean; tokens: number; keysDorm
   turn: (work) => keys.inTurn(work),
 });
 
+/** The login `at` (loginAt's, at `place`, not refused) with its folders still to make made by AgentRun, 0700 whatever
+ *  the umask, in the folders its check found the server's user's own (no other user can make them first there), and
+ *  then checked again: the CLI is handed that check's login, or the route refuses in its words. Made so, a folder the
+ *  CLI would make under a umask of 002 (0775, open to its group) is not refused once the CLI has signed in there, and the
+ *  CLI, finding it made, leaves its mode. A folder that can't be made is left to the check again, and to the CLI. */
+function madeLogin(at: Extract<LoginAt, { refused?: undefined }>, place: LoginPlace, deps: ClaudeLoginDeps): ClaudeAgentLogin {
+  if (at.toMake.length === 0) return at.login;
+  for (const folder of at.toMake) {
+    try {
+      mkdirSync(folder, { recursive: true, mode: 0o700 });
+    } catch {
+      // Left to the check again.
+    }
+  }
+  const again = loginAt(place, deps.data, deps.env, deps.uid);
+  if (again.refused !== undefined) throw new ClaudeLoginRefused("forbidden", again.refused);
+  return again.login;
+}
+
 /** A route's refusal in words, answered as its `code` (server.ts makes it an ApiError). */
 export class ClaudeLoginRefused extends Error {
   constructor(
@@ -602,9 +647,11 @@ export async function turnOnClaudeLogin(deps: ClaudeLoginDeps, body: unknown): P
       if (refused) throw new ClaudeLoginRefused("forbidden", refused);
       const at = loginAt(asked.place, deps.data, deps.env, deps.uid);
       if (at.refused !== undefined) throw new ClaudeLoginRefused("forbidden", at.refused);
+      // Its folders still to make are made here (madeLogin), so a sign-in from the line shown finds them made 0700.
+      const login = madeLogin(at, asked.place, deps);
       const setting = settingFor(asked.place, deps.data);
       await deps.settings.put(CLAUDE_LOGIN_SETTING, setting);
-      deps.saved(claudeLoginOff(deps.env) ? undefined : at.login);
+      deps.saved(claudeLoginOff(deps.env) ? undefined : login);
     });
   });
   await deps.changed();
@@ -636,13 +683,14 @@ export async function startLoginHere(deps: ClaudeLoginDeps): Promise<ClaudeLogin
     // The refusal and the login the CLI is started on are one look at the folders (loginAt).
     const at = loginAt(setting.place, deps.data, deps.env, deps.uid);
     if (at.refused !== undefined) throw new ClaudeLoginRefused("forbidden", at.refused);
-    const { login } = at;
     if (!thisMachine(setting, deps.data)) throw new ClaudeLoginRefused("agent_not_runnable", "It was turned on for another machine: sign in there.");
     if (!deps.sameMachine) throw new ClaudeLoginRefused("forbidden", "The CLI's sign-in opens a browser on the server's machine: run the command shown in a terminal there.");
     const cli = loginCli(await deps.pinned(), deps.env);
     if (!cli) throw new ClaudeLoginRefused("agent_not_runnable", "No Claude Code CLI here yet: claude-agent's first run installs it, or run the command shown.");
     // The person's home (the login's `userHome`) and desktop, so the CLI can open their browser.
     const claude = await deps.claude();
+    // Its folders still to make are made first, and checked again (madeLogin): the CLI signs in on that check's login.
+    const login = madeLogin(at, setting.place, deps);
     await signIn.start((timeoutMs) => claude.startClaudeLogin(cli, login, { ...pathOf(deps.env), display: deps.env, timeoutMs }));
   });
   return claudeLoginView(deps);
