@@ -203,7 +203,7 @@ export async function cacheHome(home: string, { sources = CACHE_SOURCES, readers
     // rollout).
     // Each file alone two ways, the cache before it written for 5 minutes or for an hour (`long`): which holds is known
     // once the session's files before it are joined, and holds until the file writes the cache itself.
-    const reports = new Map<string, { alone: CacheReport; long: CacheReport; head?: Pick<SessionOf, "turns" | "chain" | "model">; skipped: number }>();
+    const reports = new Map<string, FileReport>();
     const { tops, children, unread } = await readSource(home, source, readers, env, undefined, lookups, UNPRICED, true, undefined, async (read): Promise<SessionRead> => {
       reports.set(locatorKey(read.locator), { alone: await analyzed(read.session, priced, false), long: await analyzed(read.session, priced, true), ...headOf(read.session) });
       const { turns: _turns, chain: _chain, firstPrompt: _prompt, titleText: _title, sourceTitle: _source, cwd: _cwd, ...session } = read.session;
@@ -218,28 +218,19 @@ export async function cacheHome(home: string, { sources = CACHE_SOURCES, readers
         read += usage.cacheRead;
         prompt += promptOf(usage);
       }
-      const breaks: SessionCache["breaks"] = [];
-      // The session's files in the import's order, one conversation: each file's first turn compared with the last
-      // turn before it in the files before, its turns counted on from theirs.
-      let counted = 0;
-      let carry: CacheCarry | undefined;
-      for (const part of parts) {
-        const report = reports.get(locatorKey(part.locator));
-        if (!report) continue;
-        if (carry && report.head) {
-          const { breaks: [edge] } = await analyzeCache(report.head, { ...priced, before: carry });
-          if (edge) breaks.push({ ...edge, turn: edge.turn + report.skipped + counted });
-        }
-        // The file as the cache before it was written: a 1h write in an earlier file holds until this one writes.
-        const mine = carry?.long ? report.long : report.alone;
-        for (const found of mine.breaks) breaks.push({ ...found, turn: found.turn + counted });
-        // A file with no turn compared passes the carry on, with any compaction of its own.
-        carry = mine.last ?? (carry && { ...carry, compacted: carry.compacted === true || mine.compacted });
-        counted += requestsOf(part.read);
+      const breaks: SessionCache["breaks"] = await joined(parts, reports, priced);
+      // Each subagent a conversation of its own, numbered from 1 in the import's order: a thread that goes on in another
+      // rollout is one, its files joined as the session's are.
+      const conversations = new Map<string, Part[]>();
+      for (const part of subagents) {
+        const key = conversationOf(part);
+        (conversations.get(key) ?? conversations.set(key, []).get(key)!).push(part);
       }
-      subagents.forEach((part, n) => {
-        for (const found of reports.get(locatorKey(part.locator))?.alone.breaks ?? []) breaks.push({ ...found, subagent: n + 1 });
-      });
+      let n = 0;
+      for (const files of conversations.values()) {
+        n += 1;
+        for (const found of await joined(files, reports, priced)) breaks.push({ ...found, subagent: n });
+      }
       const first = parts[0]!;
       out.push({ ...keyOf(home, first.locator), source, id: first.read.session.id, hitRate: prompt > 0 ? round(read / prompt, 4) : null, breaks });
     }
@@ -248,6 +239,41 @@ export async function cacheHome(home: string, { sources = CACHE_SOURCES, readers
   failures?.push(...failed);
   return out.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
 }
+
+/** A file of a session as groupsOf hands it on: its locator and its read, slimmed. */
+type Part = ReturnType<typeof groupsOf>[number]["parts"][number];
+
+/** A file of a session analyzed alone (as the cache before it was written for 5 minutes, or for an hour), with its first
+ *  turn compared and the turns before that one. */
+type FileReport = { alone: CacheReport; long: CacheReport; head?: Pick<SessionOf, "turns" | "chain" | "model">; skipped: number };
+
+/** The breaks of one conversation's files, in the import's order: each file's first turn compared with the last turn
+ *  before it in the files before, its turns counted on from theirs, and a 1h cache write held until a file writes again. */
+async function joined(files: readonly Part[], reports: ReadonlyMap<string, FileReport>, priced: CacheOptions): Promise<CacheBreak[]> {
+  const breaks: CacheBreak[] = [];
+  let counted = 0;
+  let carry: CacheCarry | undefined;
+  for (const part of files) {
+    const report = reports.get(locatorKey(part.locator));
+    if (!report) continue;
+    if (carry && report.head) {
+      const { breaks: [edge] } = await analyzeCache(report.head, { ...priced, before: carry });
+      if (edge) breaks.push({ ...edge, turn: edge.turn + report.skipped + counted });
+    }
+    // The file as the cache before it was written: a 1h write in an earlier file holds until this one writes.
+    const mine = carry?.long ? report.long : report.alone;
+    for (const found of mine.breaks) breaks.push({ ...found, turn: found.turn + counted });
+    // A file with no turn compared passes the carry on, with any compaction of its own.
+    carry = mine.last ?? (carry && { ...carry, compacted: carry.compacted === true || mine.compacted });
+    counted += requestsOf(part.read);
+  }
+  return breaks;
+}
+
+/** Which conversation a subagent's file holds: a thread naming its parent (a Codex subagent, which groupsOf finds by that
+ *  name) is its thread, in however many rollouts; any other (a Claude Code subagent's file, which names its parent's
+ *  session) is its own. */
+const conversationOf = (part: Part): string => (part.read.session.child && part.read.session.parent ? `thread\0${part.read.session.id}` : `file\0${locatorKey(part.locator)}`);
 
 /** The breaks of `sessions` by cause, each cause there with 0 where none: how many, and their extra cost (USD, of the
  *  priced ones); `unpriced`, the breaks whose extra cost is unknown. */
