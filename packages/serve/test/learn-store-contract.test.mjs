@@ -754,3 +754,71 @@ test("a promotion record never keeps a purged run's input or answer: blanked in 
   assert.match(await everything(store), /LIVE input/, "another run's copy stays");
   assert.deepEqual((await store.learning.records(AGENT, "promotion")).map((one) => one.data.decided), ["hold", "hold"], "each decision stays");
 });
+
+/** Agent-1's runs: each made with launch `body` (a replay's names what it replays), claimed and ended at `costUsd` with
+ *  `metrics`, so its end writes its ledger row and spend (learn/ledger.ts). */
+async function endedWith(store, runs) {
+  const { agentWithRevision } = await import("./store-helpers.mjs");
+  if (!(await store.agents.get(AGENT))) await agentWithRevision(store);
+  const learns = { input: { content: "Q" }, title: "t", place: { mode: "runner" }, learning: { given: [], seed: "a".repeat(40), section: "", seedNotes: 0 } };
+  for (const [id, costUsd, metrics] of runs) {
+    const body = metrics.path === "replay" ? { ...learns, replay: { of: "run_by_hand", workflow: metrics.workflow, digest: metrics.workflow_digest } } : learns;
+    await store.runs.create({ id, agentId: AGENT, revisionId: "rev-1" }, { body });
+    const claim = await store.claim(id, "runner-a", { leaseMs: 60_000 });
+    await store.runs.update(claim, { state: "ended", costUsd, metrics });
+  }
+}
+/** A check's promotion of workflow `name` at `digest`, at K = `k` (its check's compile_after). */
+const promoted = (name, digest, k) => ({ workflow: name, digest, at: "2026-11-25T00:00:00.000Z", decided: "promote", reason: "checked: promoted", check: { compile_after: k, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: k, agreed: k, alone: k, of: [] } });
+
+// A revision's check and compile spend is spread over its first K served runs, K its check's compile_after
+// (store-reads/learning.ts revisionsOf). A purge of the run that wrote the revision deletes its promotions, but the runs
+// that replayed it and the runs it served are other runs and stay: the purge keeps the revision's K in the agent's reset
+// ledger, so what each surviving run carries reads as before.
+test("a purge of the run that wrote a revision keeps its K for the runs that still carry its spend: each served run's share, learning and all-in read as before", async (t) => {
+  const { store } = await storeOn(t);
+  const { recordPromotion, resetLedgerKey } = await import("../dist/learn/promote.js");
+  const { agentCostOverStore, runAllInOverStore } = await import("../dist/store-reads/learning.js");
+  await endedWith(store, [["run_w", 0.1, { path: "agent" }]]);
+  await merge(learningOf(store, AGENT), { runId: "run_w", files: flow("x", "WWORD") });
+  const digest = (await store.learning.versions(AGENT, "workflow", "x"))[0].digest;
+  assert.equal((await recordPromotion(store.learning, AGENT, promoted("x", digest, 3), () => true)).won, true);
+  const on = { workflow: "x", workflow_digest: digest };
+  await endedWith(store, [
+    ["run_rp1", 0.3, { path: "replay", ...on, replay: { of: "run_by_hand", outcome: "answered" } }],
+    ["run_rp2", 0.3, { path: "replay", ...on, replay: { of: "run_by_hand", outcome: "answered" } }],
+    ["run_s1", 0.1, { path: "workflow", ...on }],
+    ["run_s2", 0.1, { path: "workflow", ...on }],
+    ["run_s3", 0.1, { path: "workflow", ...on }],
+  ]);
+  const costs = async () => {
+    const { runs, bill } = await agentCostOverStore(store, AGENT);
+    const served = ["run_s1", "run_s2", "run_s3"];
+    return {
+      series: Object.fromEntries(runs.filter((run) => served.includes(run.run_id)).map((run) => [run.run_id, [run.share_usd, run.learning_usd, run.total_usd]])),
+      allIn: Object.fromEntries(await Promise.all(served.map(async (id) => [id, (({ share_usd, learning_usd, all_in_usd }) => [share_usd, learning_usd, all_in_usd])(await runAllInOverStore(store, id))]))),
+      revisions: bill.revisions.map((one) => [one.workflow, one.digest, one.k]),
+    };
+  };
+  const before = await costs();
+  assert.deepEqual(before.allIn.run_s1, [0.2, 0.2, 0.3], `the $0.60 check over K = 3: ${JSON.stringify(before)}`);
+  await store.runs.purge("run_w", { meters: null, spend: { usd: 0.1, basis: "list" }, learning: null });
+  assert.deepEqual(await store.learning.records(AGENT, "promotion"), [], "the revision's promotion went with its run");
+  assert.doesNotMatch(await everything(store), /WWORD/);
+  assert.deepEqual(await costs(), before, "each surviving run's share, learning and all-in read as before: K stays 3");
+  assert.deepEqual((await store.settings.get(resetLedgerKey(AGENT)))?.items, [{ workflow: "x", digest, k: 3 }], "the revision's workflow, digest and K alone");
+});
+
+// The ledger keeps a gone workflow's name only for the runs that carry its spend: a purge's gone workflow is its run's
+// words, so with no other run billed against the revision, the ledger gains nothing.
+test("a purge of the run that wrote a revision no other run is billed against keeps nothing of it: the reset ledger gains no entry", async (t) => {
+  const { store } = await storeOn(t);
+  const { recordPromotion, resetLedgerKey } = await import("../dist/learn/promote.js");
+  await endedWith(store, [["run_w", 0.1, { path: "agent" }], ["run_other", 0.1, { path: "agent" }]]);
+  await merge(learningOf(store, AGENT), { runId: "run_w", files: flow("lonely", "LWORD") });
+  const digest = (await store.learning.versions(AGENT, "workflow", "lonely"))[0].digest;
+  assert.equal((await recordPromotion(store.learning, AGENT, promoted("lonely", digest, 3), () => true)).won, true);
+  await store.runs.purge("run_w", { meters: null, spend: { usd: 0.1, basis: "list" }, learning: null });
+  assert.deepEqual(await store.learning.records(AGENT, "promotion"), [], "the revision's promotion went with its run");
+  assert.equal(await store.settings.get(resetLedgerKey(AGENT)), undefined, "no ledger entry names the purged run's workflow");
+});

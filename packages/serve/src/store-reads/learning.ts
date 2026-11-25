@@ -353,7 +353,8 @@ const revisionOfRow = (row: Pick<RunRecord, "metrics">): { workflow: string; dig
  *  they were first recorded), with the served runs its spend is spread over (K, its check's compile_after) and `state`
  *  from its newest record: `checking` while its check replays, `serving` for the champion (championOf: a purged run's
  *  records are gone with it, so its revision is never said to serve), else `stopped`. A revision an
- *  earlier reset of the agent's learning deleted (`reset`, learn/promote.ts keepResetLedger) comes first, stopped, at the
+ *  earlier reset of the agent's learning deleted (`reset`, learn/promote.ts keepResetLedger), or a run's purge deleted
+ *  while other runs still carry its spend (store/sqlite/learning-rows.ts dropRunLearning), comes first, stopped, at the
  *  K it was kept with, unless the records name it again. What each one spent is the ledger's (learn/ledger.ts summarize),
  *  whatever the records say. */
 export function revisionsOf(records: readonly PromotionRecord[], reset: readonly ResetRevision[] = []): RevisionAt[] {

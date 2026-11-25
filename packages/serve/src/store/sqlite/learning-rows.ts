@@ -9,6 +9,8 @@ import { type Learning, type LearningAt, type LearningChangeKind, type LearningD
 import { learnedStatus, restoredLearned, retiredLearned, workflowRunOf, WORKFLOWS_DIR } from "../../learn/workflow-draft.js";
 import { forgetRunIn, runsNamedIn } from "../../learn/forget-run.js";
 import type { PromotionRecord } from "../../learn/promote.js";
+import { resetLedgerKey, type ResetRevision, resetRevisionKey, withKept } from "../../learn/reset-ledger.js";
+import { nativeCommandOwner } from "../native-command-owner.js";
 import type { SqliteExecutor, SqliteValue, StoreConnection, Tx } from "./connection.js";
 
 type SaveKind = "init" | "run" | "person" | "purged";
@@ -203,9 +205,68 @@ async function forgetRunRecords(tx: Tx, agentId: string, runId: string): Promise
   }
 }
 
+/** Revision `name` at `digest` of agent `agentId` as the agent's reset ledger keeps it before a purge of run `runId`
+ *  deletes its promotions (dropRunLearning), read inside the caller's transaction: its K, its newest promotion's
+ *  check.compile_after (null when it names none), as keepResetLedger keeps a reset's; undefined when it has no promotion,
+ *  or when no run but `runId` is billed against it (billedElsewhere). A gone workflow's name is the purged run's words
+ *  (dropRunLearning scrubs it from other saves' reasons): the ledger keeps it only where another run's own ledger row,
+ *  spend row or metrics name it already, so it names nothing the purge would take. */
+async function keptRevision(tx: Tx, agentId: string, runId: string, name: string, digest: string, unledgered: () => Promise<ReadonlySet<string>>): Promise<ResetRevision | undefined> {
+  const records = await tx.all<{ data: string }>("SELECT data FROM learning_records WHERE agent_id = ? AND kind = 'promotion' AND workflow = ? AND digest = ? ORDER BY seq", agentId, name, digest);
+  if (!records.length) return undefined;
+  if (!(await billedElsewhere(tx, agentId, runId, name, digest, unledgered))) return undefined;
+  const k = (JSON.parse(records.at(-1)!.data) as Partial<PromotionRecord> | null)?.check?.compile_after;
+  return { workflow: name, digest, k: typeof k === "number" ? k : null };
+}
+
+/** Whether a run of agent `agentId` other than `runId` is billed against revision `name` at `digest` (learn/ledger.ts
+ *  summarize spreads a revision's compile and check over its served runs), read inside the caller's transaction: its
+ *  ledger row names it (a run it served), a compile or check spend row of it names it (a run whose spend is the
+ *  revision's), or, for an unpurged run with no ledger row (`unledgered`: one that ended before the ledger, whose reader
+ *  records it from its metrics), its metrics name it. */
+async function billedElsewhere(tx: Tx, agentId: string, runId: string, name: string, digest: string, unledgered: () => Promise<ReadonlySet<string>>): Promise<boolean> {
+  if (await tx.get("SELECT 1 AS one FROM learning_ledger WHERE agent_id = ? AND run_id <> ? AND workflow = ? AND digest = ?", agentId, runId, name, digest)) return true;
+  if (await tx.get("SELECT 1 AS one FROM learning_spend WHERE agent_id = ? AND run_id <> ? AND kind IN ('compile', 'check') AND workflow = ? AND digest = ?", agentId, runId, name, digest)) return true;
+  return (await unledgered()).has(resetRevisionKey({ workflow: name, digest }));
+}
+
+/** The revisions the metrics of agent `agentId`'s unpurged runs other than `runId` with no ledger row name (by
+ *  resetRevisionKey), read inside the caller's transaction. */
+async function unledgeredRevisions(tx: Tx, agentId: string, runId: string): Promise<Set<string>> {
+  const rows = await tx.all<{ metrics: string | null }>(`SELECT r.metrics FROM runs r WHERE r.agent_id = ? AND r.id <> ? AND r.purged_at IS NULL AND r.metrics IS NOT NULL
+    AND NOT EXISTS (SELECT 1 FROM learning_ledger l WHERE l.run_id = r.id)`, agentId, runId);
+  const out = new Set<string>();
+  for (const row of rows) {
+    const metrics = typeof row.metrics === "string" ? (JSON.parse(row.metrics) as unknown) : row.metrics;
+    const { workflow, workflow_digest: digest } = (metrics && typeof metrics === "object" ? metrics : {}) as { workflow?: unknown; workflow_digest?: unknown };
+    if (typeof workflow === "string" && typeof digest === "string") out.add(resetRevisionKey({ workflow, digest }));
+  }
+  return out;
+}
+
+/** The revisions `kept` added to agent `agentId`'s reset ledger inside the caller's transaction (a run's purge), by the
+ *  rule keepResetLedger adds a reset's by (withKept), compare and set on the row as read, so a ledger write that lands
+ *  between the read and the write (keepResetLedger's own compare and set) is read again, never lost. */
+async function keepInResetLedger(tx: Tx, agentId: string, kept: ReadonlyMap<string, ResetRevision>, at: number): Promise<void> {
+  const key = resetLedgerKey(agentId);
+  for (let tries = 0; tries < 20; tries++) {
+    const row = await tx.get<{ value: string }>("SELECT value FROM settings WHERE key = ?", key);
+    const was = row === undefined ? undefined : (JSON.parse(row.value) as { items?: unknown } | null);
+    const items = Array.isArray(was?.items) ? (was.items as ResetRevision[]) : [];
+    const encoded = JSON.stringify({ v: 1, items: withKept(items, kept) });
+    const done = row === undefined
+      ? await tx.runCounted("INSERT INTO settings (key, value, connector_id, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (key) DO NOTHING", key, encoded, nativeCommandOwner(key, encoded), at)
+      : await tx.runCounted("UPDATE settings SET value = ?, connector_id = ?, updated_at = ? WHERE key = ? AND value = ?", encoded, nativeCommandOwner(key, encoded), at, key, row.value);
+    if (done === 1) return;
+  }
+  throw new Error(`${key} kept changing under this purge; try again`);
+}
+
 /** Run `runId`'s learning rows gone from its agent `agentId`'s, inside the caller's transaction (its purge, its
  *  delete), every statement scoped to that agent: each workflow it wrote a file of rewritten without its files
- *  (rewriteWorkflow), with the promotions and audits of each digest no version holds then; its notes; its records (its
+ *  (rewriteWorkflow), with the promotions and audits of each digest no version holds then (each such revision another
+ *  run is still billed against kept first in the agent's reset ledger, its workflow, digest and K alone: keptRevision,
+ *  so the runs that carry its spend read the same share after); its notes; its records (its
  *  grades and audits, a failed draft's hold); every other promotion's copies of it (forgetRunIn); and its saves' words (each save's version, id and merge key stay), a person's save left with no item (an
  *  approve of its draft, a removal of its line) with them: that save's words name what the run wrote. Every other save
  *  names none of the paths only it wrote, nor a workflow gone with it. When any row changed, the purge is a save of its
@@ -226,9 +287,18 @@ export async function dropRunLearning(tx: Tx, agentId: string, runId: string, at
     || (await count("SELECT COUNT(*) AS n FROM learning_saves WHERE agent_id = ? AND by_run = ?")) > 0;
   const gone: string[] = [];
   const taken = new Set<string>();
+  // The revisions whose promotions go here that another run is still billed against, each with its K, for the agent's
+  // reset ledger: the cost read splits their spend at it (store-reads/learning.ts revisionsOf), as after a reset.
+  const kept = new Map<string, ResetRevision>();
+  let unledgered: Promise<Set<string>> | undefined;
+  const unledgeredOnce = () => (unledgered ??= unledgeredRevisions(tx, agentId, runId));
   for (const name of names) {
     const rewritten = await rewriteWorkflow(tx, agentId, runId, name);
-    for (const digest of rewritten.lost) await tx.run("DELETE FROM learning_records WHERE agent_id = ? AND kind IN ('promotion', 'audit') AND workflow = ? AND digest = ?", agentId, name, digest);
+    for (const digest of rewritten.lost) {
+      const revision = await keptRevision(tx, agentId, runId, name, digest, unledgeredOnce);
+      if (revision) kept.set(resetRevisionKey(revision), revision);
+      await tx.run("DELETE FROM learning_records WHERE agent_id = ? AND kind IN ('promotion', 'audit') AND workflow = ? AND digest = ?", agentId, name, digest);
+    }
     if (rewritten.changed) await moveCommits(tx, agentId, name);
     if (rewritten.gone) gone.push(name);
     for (const path of rewritten.taken) taken.add(path);
@@ -260,6 +330,7 @@ export async function dropRunLearning(tx: Tx, agentId: string, runId: string, at
     }
   }
   await tx.run("UPDATE learning_saves SET kind = 'purged', by_run = NULL, change = '{}' WHERE agent_id = ? AND by_run = ?", agentId, runId);
+  if (kept.size) await keepInResetLedger(tx, agentId, kept, at);
   if (!changed) return;
   const head = Number((await tx.get<{ v: number | string | null }>("SELECT MAX(version) AS v FROM learning_saves WHERE agent_id = ?", agentId))?.v ?? 0);
   await tx.run("INSERT INTO learning_saves (agent_id, version, id, at, kind, by_run, merge_key, change) VALUES (?, ?, ?, ?, 'purged', NULL, NULL, '{}')", agentId, head + 1, versionId(), at);

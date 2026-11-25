@@ -407,7 +407,11 @@ later run's own change of a file stays. A person's retire, and a person's restor
 stays on the version that comes back, so the owner's newest decision stands; a person's approve does not (it approved
 the run's text, and the text that comes back is one the owner never approved: it comes back held, and its owner
 approves it again). The promotion and audit records of each digest no version holds after go, and so do the run's own
-records (its grades, a failed draft's hold); every other promotion's copies of the run (a check's or an audit's
+records (its grades, a failed draft's hold). Before such a revision's promotions go, its workflow, digest and K (its
+newest promotion's check `compile_after`) are kept in the agent's reset ledger, as a reset keeps them, when another run
+is still billed against it (its ledger row, a compile or check spend row of it, or the metrics of a run with no ledger
+row name it), so the runs that carry its spend read the same share after; when none is, nothing of it is kept, since a
+gone workflow's name is the purged run's words. Every other promotion's copies of the run (a check's or an audit's
 disagreement naming it) are blanked, its decision, numbers and run ids kept. Its saves stay as facts with no words (their merge keys still taken), and so does a
 person's save left with no item. No other save, a run's or a person's, names a path only it wrote (no version holds it
 after) in its files, its file or its reason, nor a workflow gone with it in its reason.
@@ -436,8 +440,10 @@ plus one, in the purge's transaction and under the agent's learning lock, as eve
 - a reader that reads a text and its writer apart (an SDK start's workflows and the runs its receipt names) reads both
   again when a purge save landed between them (a normal save rewrites nothing it read), so it never delivers the purged
   run's text as no run's;
-- an SDK run's inbox keeps the workflows its start delivered: a run's DELETE empties every inbox whose writers name it,
-  after its purge commits, and a start checks its writers after its inbox is written, so none keeps the purged text.
+- an SDK run's inbox keeps the workflows its start delivered, and its writers are every run that wrote one of their
+  files (a README.md's description as well as a workflow.json's text): a run's DELETE empties every inbox whose writers
+  name it, after its purge commits, and a start checks its writers after its inbox is written, so none keeps the purged
+  text.
 
 A purge that finds nothing of the run's (a run that learned nothing, a second purge) changes no row and adds no save.
 An agent's reset, its delete and its purge take the agent's learning lock and then its records lock, the order a run's
@@ -454,7 +460,8 @@ It cancels the runs that exist only for
 learning (replays, audit shadows) and waits for them; a run of the agent's own still going refuses it (409
 `learning_busy`), since its learning lives in it, and nothing is deleted. Before the records go, each revision they
 name is kept in the agent's reset ledger (`learning.reset-ledger.<agent>`: workflow, digest and K alone), so a kept
-served run's cost still carries its revision's compile and check; an agent's delete removes the ledger. Each run's
+served run's cost still carries its revision's compile and check; a run's purge keeps the revisions it deletes there too
+while other runs carry their spend; an agent's delete removes the ledger. Each run's
 diff goes with its save. The next save starts a new history.
 
 A run on a disk its launch named learns nothing (`learning-of.ts`): its start reads no seed (`other_disk`), the runner

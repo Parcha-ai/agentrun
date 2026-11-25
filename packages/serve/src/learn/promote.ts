@@ -17,6 +17,7 @@ import { isObject } from "../validate.js";
 import type { Skipped } from "./replay-calls.js";
 import { type CheckTally, type FieldVerdict, sameValue } from "./field-check.js";
 import { blankCheck, forgetRunIn } from "./forget-run.js";
+import { type ResetRevision, resetLedgerKey, resetRevisionKey, withKept } from "./reset-ledger.js";
 import type { ReplayOutcome } from "../runner/workflow-first.js";
 
 /** How many grades an agent keeps (newest kept). */
@@ -289,27 +290,22 @@ const gradeWrite = (grade: Grade): LearningRecordWrite => ({ runId: grade.run, w
  *  record it is alone (a failed draft's hold: its run's purge takes it, and a write after that purge writes nothing). */
 const promotionWrite = (record: PromotionRecord, runId: string | null = null): LearningRecordWrite => ({ runId, workflow: record.workflow, digest: record.digest, data: record });
 
-/** A learned workflow revision an agent's learning reset deleted (DELETE /agents/{id}/learning, learning-reset.ts): its
- *  workflow, its digest and its K (its check's compile_after; null when its records named none), nothing else of its
- *  records. What the runs it served carry of its compile and check (learn/ledger.ts summarize, store-reads/learning.ts revisionsOf) is read
- *  from it after the reset, so a kept run's cost reads as before. The runs keep the same names and digests. */
-export interface ResetRevision { readonly workflow: string; readonly digest: string; readonly k: number | null }
-export const resetLedgerKey = (agentId: string): string => `learning.reset-ledger.${agentId}`;
+export { type ResetRevision, resetLedgerKey } from "./reset-ledger.js";
 
-/** The revisions the agent's resets deleted, first reset first. */
+/** The revisions the agent's resets deleted, first reset first, and the ones a run's purge deleted while other runs
+ *  still carry their spend (store/sqlite/learning-rows.ts dropRunLearning keeps them, in the purge's transaction). */
 export const resetLedgerOf = async (settings: Pick<Settings, "get">, agentId: string): Promise<ResetRevision[]> => itemsOf<ResetRevision>(await settings.get(resetLedgerKey(agentId)));
 
 /** Each revision `records` name (one per workflow and digest, its newest record's K) added to the agent's reset ledger,
- *  before a reset deletes the records. A revision it holds already keeps its place and takes the records' K: while they
- *  stood, the ledger read their K (store-reads/learning.ts revisionsOf), so the runs' shares read the same after this reset too. */
+ *  before a reset deletes the records. A revision it holds already keeps its place and takes the records' K (withKept):
+ *  while they stood, the ledger read their K (store-reads/learning.ts revisionsOf), so the runs' shares read the same
+ *  after this reset too. A run's purge keeps the revisions it deletes by the same rule (learning-rows.ts
+ *  dropRunLearning). */
 export async function keepResetLedger(settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, agentId: string, records: readonly PromotionRecord[]): Promise<void> {
   const newest = new Map<string, ResetRevision>();
-  for (const record of records) newest.set(`${record.workflow}\0${record.digest}`, { workflow: record.workflow, digest: record.digest, k: record.check?.compile_after ?? null });
+  for (const record of records) newest.set(resetRevisionKey(record), { workflow: record.workflow, digest: record.digest, k: record.check?.compile_after ?? null });
   if (!newest.size) return;
-  await updateKept<ResetRevision>(settings, resetLedgerKey(agentId), (items) => {
-    const held = new Set(items.map((one) => `${one.workflow}\0${one.digest}`));
-    return [...items.map((one) => newest.get(`${one.workflow}\0${one.digest}`) ?? one), ...[...newest].filter(([key]) => !held.has(key)).map(([, one]) => one)];
-  });
+  await updateKept<ResetRevision>(settings, resetLedgerKey(agentId), (items) => withKept(items, newest));
 }
 
 /** The agent's reset watermark: when its newest reset began (epoch ms). Learning reads only the runs after it
