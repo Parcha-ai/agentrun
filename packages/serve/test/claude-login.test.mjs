@@ -15,7 +15,7 @@ import { delimiter, dirname, join, relative } from "node:path";
 import { after, test } from "node:test";
 import * as claude from "@parcha/agentrun-harness-claude";
 import { API_ONLY_ROUTES } from "../dist/api-only.js";
-import { CLAUDE_LOGIN_ENV, CLAUDE_LOGIN_ROUTES, CLAUDE_LOGIN_SETTING, claudeLoginOf, claudeLoginServed, claudeLoginSwitchedOff, claudeLoginView, dropRefusedLogin, envAtPlace, LOGIN_ANSWERS_DIR, LOGIN_REFUSES_API_KEYS, LOGIN_SIGNED_OUT, LOGIN_UNKNOWN, loginAt as checkedLoginAt, loginBeforeRun, loginForRun, loginOnRunnerOnly, loginServes, settingFor, startLoginHere, turnOffClaudeLogin, turnOnBody, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
+import { CLAUDE_LOGIN_ENV, CLAUDE_LOGIN_ROUTES, CLAUDE_LOGIN_SETTING, claudeLoginOf, claudeLoginServed, claudeLoginSwitchedOff, claudeLoginView, dropRefusedLogin, envAtPlace, homeOf, LOGIN_ANSWERS_DIR, LOGIN_REFUSES_API_KEYS, LOGIN_SIGNED_OUT, LOGIN_UNKNOWN, loginAt as checkedLoginAt, loginBeforeRun, loginForRun, loginOnRunnerOnly, loginServes, settingFor, startLoginHere, turnOffClaudeLogin, turnOnBody, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
 import { ClaudeSignIns } from "../dist/claude-sign-in.js";
 import { MODEL_KEYS, hostModel } from "../dist/model.js";
 import { providerFor } from "../dist/provider.js";
@@ -35,6 +35,39 @@ const SIGNED_IN = { loggedIn: true, authMethod: "claude.ai", apiProvider: "first
  *  count as the person's (claude-login.ts homeOf). Nothing is written in it. */
 const UP = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "claude-login-person-"));
 after(() => rmSync(UP, { recursive: true, force: true }));
+
+// The system's account files (/etc/passwd, /etc/group) and its name service switch (/etc/nsswitch.conf) as the server
+// reads them, to tell whether a folder's group is its user's private one (claude-login.ts privateGroup). Through this
+// whole file they read as empty, so no group is anyone's private one and a folder its group may write in is refused
+// whatever this machine's groups and switch are; accountsAs gives one test its own, where null is a file that is not
+// there. node:fs's readFileSync is a live binding in the server this process runs (syncBuiltinESMExports moves it to the
+// stub), and every other file reads as it is.
+const ACCOUNTS_NONE = Object.freeze({ "/etc/passwd": "", "/etc/group": "", "/etc/nsswitch.conf": "" });
+let accounts = ACCOUNTS_NONE;
+{
+  const fs = createRequire(import.meta.url)("node:fs");
+  const real = fs.readFileSync;
+  fs.readFileSync = function accountsRead(path, options, ...rest) {
+    if (typeof path !== "string" || !Object.hasOwn(accounts, path)) return real.call(this, path, options, ...rest);
+    if (accounts[path] === null) throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: "ENOENT", errno: -2, syscall: "open", path });
+    const encoding = typeof options === "string" ? options : options?.encoding;
+    return encoding ? accounts[path] : Buffer.from(accounts[path]);
+  };
+  syncBuiltinESMExports();
+  after(() => {
+    fs.readFileSync = real;
+    syncBuiltinESMExports();
+  });
+}
+/** The account files and the switch read as `files` (by path; any not given, empty; null, not there) for the rest of
+ *  test `t`. */
+function accountsAs(t, files) {
+  accounts = { ...ACCOUNTS_NONE, ...files };
+  t.after(() => {
+    accounts = ACCOUNTS_NONE;
+  });
+}
+
 /** The login at a place as loginAt's check gives it: undefined where its folders are refused. */
 const loginAt = (...args) => checkedLoginAt(...args).login;
 
@@ -383,20 +416,30 @@ test("one owner: refused in one line where more than one person can start runs, 
  *  `$HOME/.claude`), and the account it signed in to in its config dir's
  *  `.claude.json` (`CLAUDE_CONFIG_DIR`, else the home). `auth login` writes both and leaves `ended` beside itself; `auth
  *  status` says signed in where the credentials are, with the account's email where the account is. `mode`: `sign`
- *  (signs in at once), `wait` (waits for a browser that never answers, its pid in `pids()`), `refuse` (exits 1). Each
- *  call is noted with the variables it got; a CLI still waiting is ended after the test. */
+ *  (signs in at once), `wait` (waits for a browser that never answers, its pid in `pids()`), `refuse` (exits 1), or
+ *  `hold-stop` (waits as `wait` does, and once sent its stop, leaves `stopping` beside itself and exits only after
+ *  `release()`). `mode(m)` sets the mode for the calls after it. Each call is noted with the variables it got; a CLI
+ *  still waiting is ended after the test. */
 async function signInCli(t, mode) {
   const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-sign-in-cli-"));
-  const [cli, record, pidFile, ended] = ["claude", "calls.jsonl", "pids", "ended"].map((name) => join(dir, name));
+  const [cli, record, pidFile, ended, modeFile, stopping, released] = ["claude", "calls.jsonl", "pids", "ended", "mode", "stopping", "released"].map((name) => join(dir, name));
   writeFileSync(
     cli,
     `#!/bin/sh
+mode='${mode}'; if [ -f '${modeFile}' ]; then mode=$(cat '${modeFile}'); fi
 if [ "\${CLAUDE_SECURESTORAGE_CONFIG_DIR+set}" = set ]; then secure="\${CLAUDE_SECURESTORAGE_CONFIG_DIR:-$HOME/.claude}"; else secure="\${CLAUDE_CONFIG_DIR:-$HOME/.claude}"; fi
 account="\${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json"
 printf '{"argv":"%s","home":"%s","config":"%s","secure":"%s","configSet":"%s","secureSet":"%s"}\\n' "$*" "$HOME" "$CLAUDE_CONFIG_DIR" "$CLAUDE_SECURESTORAGE_CONFIG_DIR" "\${CLAUDE_CONFIG_DIR+set}" "\${CLAUDE_SECURESTORAGE_CONFIG_DIR+set}" >> '${record}'
 if [ "$1 $2" = "auth login" ]; then
-  if [ '${mode}' = wait ]; then echo $$ >> '${pidFile}'; exec sleep 300; fi
-  if [ '${mode}' = refuse ]; then exit 1; fi
+  if [ "$mode" = wait ]; then echo $$ >> '${pidFile}'; exec sleep 300; fi
+  if [ "$mode" = hold-stop ]; then
+    echo $$ >> '${pidFile}'
+    trap 'kill $waiting 2>/dev/null; : > "${stopping}"; while [ ! -f "${released}" ]; do sleep 0.05; done; exit 0' TERM
+    sleep 300 & waiting=$!; echo $waiting >> '${pidFile}'
+    wait $waiting
+    exit 0
+  fi
+  if [ "$mode" = refuse ]; then exit 1; fi
   mkdir -p "$secure"
   printf '{"claudeAiOauth":{"accessToken":"fake","scopes":["user:inference"]}}' > "$secure/.credentials.json"
   printf '{"oauthAccount":{"emailAddress":"person@example.com"}}' > "$account"
@@ -422,7 +465,8 @@ fi
     }
   });
   const calls = () => (existsSync(record) ? readFileSync(record, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []);
-  return { cli, calls, pids, ended };
+  t.after(() => writeFileSync(released, ""));
+  return { cli, calls, pids, ended, stopping, mode: (next) => writeFileSync(modeFile, next), release: () => writeFileSync(released, "") };
 }
 
 /** Whether process `pid` is still there. */
@@ -1204,9 +1248,10 @@ test("a hold of the held table released before any check took it holds and answe
 
 // A turn starts or ends the sign-in through its own `turn`. A start or stop of the sign-ins' own beside it would be a
 // turn of its own, so one called inside a turn would wait for that turn to end, for ever, and the server's stop (which
-// waits for the sign-ins' close) with it. The sign-ins offer none: their queue (serial), the view and the server's close.
+// waits for the sign-ins' close) with it. The sign-ins offer none: their queue (serial), whether it is busy, the view and
+// the server's close.
 test("the sign-ins start and end a sign-in only in a turn on their queue: they offer no start or stop of their own, which a turn calling it would wait on for ever", () => {
-  assert.deepEqual(Object.getOwnPropertyNames(ClaudeSignIns.prototype).sort(), ["close", "constructor", "serial", "view"], "the sign-ins offer a start or stop beside a turn's, which one called inside a turn waits on for ever");
+  assert.deepEqual(Object.getOwnPropertyNames(ClaudeSignIns.prototype).sort(), ["busy", "close", "constructor", "serial", "view"], "the sign-ins offer a start or stop beside a turn's, which one called inside a turn waits on for ever");
   // A class field is the instance's own, not the prototype's: the one the sign-ins have is their limit.
   assert.deepEqual(Object.keys(new ClaudeSignIns()), ["limitMs"], "the sign-ins offer a start or stop beside a turn's, which one called inside a turn waits on for ever");
 });
@@ -1703,8 +1748,8 @@ test("the login's folders are walked once for each decision: a link swapped betw
 // the login folder itself lets them put their files in it, and as the folder the CLI makes the login's in, make that
 // first. All are refused. The sticky bit (as /tmp has it) keeps a folder on the way, but not the login folder itself
 // nor the one it is made in. The words say which folder is open, its mode, and the chmod that closes it, not that the
-// folder is not the user's (it is): a umask of 002 (a group of the user's own, as some distributions give each user)
-// makes folders 0775, and a volume whose group is set for a pod gives 2775.
+// folder is not the user's (it is): a umask of 002 makes folders 0775, and a volume whose group is set for a pod gives
+// 2775. The group here is no user's private one (the account files read as empty: accountsAs); one that is, is below.
 test("a folder its group or anyone may write in, on the way to this machine's login folder with no sticky bit, or as that folder itself or the one it is to be made in, refuses the login in the view, the sign-in, the turn-on and a run, in words that name the open folder, its mode and the chmod that closes it; with the sticky bit, one on the way keeps it", { skip: process.platform === "win32" ? "no uid" : process.geteuid() === 0 ? "root may write anywhere" : false, timeout: 60_000 }, async (t) => {
   const who = `uid ${process.geteuid()} (${userInfo().username})`;
   const mine = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-open-"));
@@ -1729,6 +1774,119 @@ test("a folder its group or anyone may write in, on the way to this machine's lo
   assert.ok(await loginForRun(saved, data, { HOME: UP, CLAUDE_CONFIG_DIR: join(open, "claude") }, "claude-agent", RUNNER), "with the sticky bit, a folder on the way keeps the login");
   assert.equal(await loginForRun(saved, data, { HOME: UP, CLAUDE_CONFIG_DIR: open }, "claude-agent", RUNNER), undefined, "with the sticky bit, the login folder itself still refuses it");
   assert.equal(await loginForRun(saved, data, { HOME: UP, CLAUDE_CONFIG_DIR: join(open, "still", "to-make") }, "claude-agent", RUNNER), undefined, "with the sticky bit, the folder the login is to be made in still refuses it");
+});
+
+// The umask ruling. Where each user has a group of their own (their primary group, named for them, that no other user is
+// in, as useradd makes one under USERGROUPS_ENAB), a umask of 002 makes folders 0775, and still no one else may write in
+// them. A folder whose group is that one, and which its group (not anyone) may write in, is the user's alone: on the way
+// to the login's folder, as that folder itself, as the one it is to be made in, and as the home. A group another user is
+// in (the group file lists them, or it is their primary group), or one that is not the user's primary group, still
+// refuses it, in the same words; so does a folder anyone may write in. The account files and the name service switch are
+// stand-ins (accountsAs); the switch takes users and groups from the files alone (NSS_FILES) unless a test says else.
+const PRIVATE_WHY = "a folder its group may write in, whose group is the user's private one, refused the login";
+const NSS_FILES = "passwd: files\ngroup: files\n";
+const PRIVATE_SKIP = { skip: process.platform === "win32" ? "no uid" : process.geteuid() === 0 ? "root may write anywhere" : false, timeout: 60_000 };
+/** For test `t`, a folder `open` of the test user's, with a login folder `claude` in it, and stand-in account files in
+ *  which `open`'s group is the user's private one (`passwd()`, `groups()`; `more` users, `members` of that group).
+ *  `kept(what)` asserts the login is kept with `open` on the way to its folder, as that folder, as the one it is made in
+ *  and as the home; `refused(what, mode)` that each refuses it in the open-folder words, `open` at `mode`. */
+async function privateGroupRig(t) {
+  const uid = process.geteuid();
+  const name = userInfo().username;
+  const who = `uid ${uid} (${name})`;
+  const mine = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-private-"));
+  t.after(() => rmSync(mine, { recursive: true, force: true }));
+  const open = join(mine, "open");
+  mkdirSync(join(open, "claude"), { recursive: true, mode: 0o700 });
+  const gid = statSync(open).gid;
+  const other = { uid: uid + 1, gid: gid + 1 };
+  const user = (login, id, group) => `${login}:x:${id}:${group}:${login}:/home/${login}:/bin/sh`;
+  const passwd = (...more) => `root:x:0:0:root:/root:/bin/sh\n${user(name, uid, gid)}\n${[user("other", other.uid, other.gid), ...more].join("\n")}\n`;
+  const groups = (members = "") => `root:x:0:\n${name}:x:${gid}:${members}\nother:x:${other.gid}:\n`;
+  const values = [join(open, "claude"), open, join(open, "still", "to-make")];
+  const data = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-data-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  const saved = { get: async () => settingFor("machine", data) };
+  const kept = async (what) => {
+    for (const value of values) {
+      const rig = await loginRig(t);
+      const asked = [];
+      rig.rows.set(CLAUDE_LOGIN_SETTING, settingFor("machine", rig.data));
+      const view = await claudeLoginView(rig.deps({ env: { ...rig.env, CLAUDE_CONFIG_DIR: value }, claude: async () => askedClaude(asked) }));
+      assert.ok(view.refused === undefined && view.state !== "refused", `${PRIVATE_WHY}: ${what}, CLAUDE_CONFIG_DIR=${value}: the view: ${JSON.stringify(view)}`);
+      assert.ok(await loginForRun(saved, data, { HOME: UP, CLAUDE_CONFIG_DIR: value }, "claude-agent", RUNNER), `${PRIVATE_WHY}: ${what}, CLAUDE_CONFIG_DIR=${value}: a run goes on no login`);
+    }
+    assert.equal(homeOf({ HOME: open }).home, realpathSync(open), `${PRIVATE_WHY}: ${what}, as the home`);
+  };
+  const refused = async (what, mode) => {
+    for (const value of values) {
+      const rig = await loginRig(t);
+      const asked = [];
+      const deps = rig.deps({ env: { ...rig.env, CLAUDE_CONFIG_DIR: value }, claude: async () => askedClaude(asked) });
+      await refusedEverywhere(rig, deps, openFolder(who, "CLAUDE_CONFIG_DIR", value, realpathSync(open), mode), `${what}, CLAUDE_CONFIG_DIR=${value}`);
+      assert.deepEqual(asked, [], `${what}: the CLI was not asked`);
+    }
+    assert.notEqual(homeOf({ HOME: open }).home, realpathSync(open), `${what}: not the home`);
+  };
+  return { name, uid, gid, other, user, passwd, groups, open, kept, refused };
+}
+
+test("a folder its group may write in, where that group is the user's private one (its primary group, which no other user is in), keeps this machine's login on the way to its folder, as that folder, as the one it is made in and as the home; a group another user is in, listed or as their primary group, or not the user's primary, still refuses it in the same words, as does a folder anyone may write in", PRIVATE_SKIP, async (t) => {
+  const { name, uid, gid, other, user, passwd, groups, open, kept, refused } = await privateGroupRig(t);
+  accountsAs(t, { "/etc/passwd": passwd(), "/etc/group": groups(), "/etc/nsswitch.conf": NSS_FILES });
+  for (const mode of [0o775, 0o770, 0o2775, 0o2770]) {
+    chmodSync(open, mode);
+    await kept(`the group of its own, no member listed, ${mode.toString(8)}`);
+  }
+  accountsAs(t, { "/etc/passwd": passwd(), "/etc/group": groups(name), "/etc/nsswitch.conf": NSS_FILES });
+  chmodSync(open, 0o775);
+  await kept("the group of its own, which lists the user alone");
+  for (const mode of [0o777, 0o757]) {
+    chmodSync(open, mode);
+    await refused(`a folder anyone may write in, its group the user's own, ${mode.toString(8)}`, mode);
+  }
+  chmodSync(open, 0o775);
+  accountsAs(t, { "/etc/passwd": passwd(), "/etc/group": groups(`${name},other`), "/etc/nsswitch.conf": NSS_FILES });
+  await refused("a group the group file lists another user in", 0o775);
+  accountsAs(t, { "/etc/passwd": passwd(user("another", other.uid + 1, gid)), "/etc/group": groups(), "/etc/nsswitch.conf": NSS_FILES });
+  await refused("a group that is another user's primary group", 0o775);
+  accountsAs(t, { "/etc/passwd": passwd().replace(user(name, uid, gid), user(name, uid, other.gid)), "/etc/group": groups(), "/etc/nsswitch.conf": NSS_FILES });
+  await refused("a group that is not the user's primary group", 0o775);
+  accountsAs(t, { "/etc/passwd": `${passwd()}+::::::\n`, "/etc/group": groups(), "/etc/nsswitch.conf": NSS_FILES });
+  await refused("account files that defer to a directory service (a + line)", 0o775);
+});
+
+// The account files show only the users and groups they hold. Where the name service switch also asks another source
+// for users or groups (sssd, LDAP, NIS, winbind, systemd's user records), or the system's own default where it says
+// nothing, a group the files show as the user's private one may have members they do not show, so a folder its group may
+// write in is refused, in the same words. `files` and `compat` (with no `+` or `-` line, blanks before it or not) are the
+// files alone, whatever bracketed actions, comments or other databases the switch has. Each row has the account files
+// of the case above that keeps the login (the group of its own, no member listed) and the folder at 0775.
+const NSS_ROWS = [
+  ["a switch that asks sssd for groups too (group: files sss)", "passwd: files\ngroup: files sss\n", "refused"],
+  ["a switch that asks LDAP for groups too (group: files ldap)", "passwd: files\ngroup: files ldap\n", "refused"],
+  ["a switch that asks sssd for users too (passwd: files sss)", "passwd: files sss\ngroup: files\n", "refused"],
+  ["a switch that asks systemd's user records too (files systemd, as recent Ubuntu, Debian and Fedora have it)", "passwd: files systemd\ngroup: files systemd\n", "refused"],
+  ["a switch that asks NIS for each user's other groups (initgroups: nis)", "passwd: files\ngroup: files\ninitgroups: nis\n", "refused"],
+  ["a switch that asks winbind after a bracketed action (group: files [NOTFOUND=return] winbind)", "passwd: files\ngroup: files [NOTFOUND=return] winbind\n", "refused"],
+  ["no switch file", null, "refused"],
+  ["a switch with no group line", "passwd: files\n", "refused"],
+  ["a switch with no passwd line", "group: files\n", "refused"],
+  ["a switch whose group line names no source", "passwd: files\ngroup: [NOTFOUND=return]\n", "refused"],
+  ["a switch in compat, the files holding a + line after blanks", "passwd: compat\ngroup: compat\n", "refused", (passwd) => `${passwd}  +@staff::::::\n`],
+  ["a switch in compat, no + or - line", "passwd: compat\ngroup: compat\n", "kept"],
+  ["a switch of the files alone, with comments, bracketed actions and other databases", "# local accounts\npasswd:  files [NOTFOUND=return] # sss was here\ngroup:\tfiles [NOTFOUND=return UNAVAIL=continue]\ninitgroups: files\nhosts: files dns\nnetgroup: nis\n", "kept"],
+];
+test("a folder its group may write in, whose group the account files show as the user's private one, still refuses this machine's login, in the same words, where the name service switch may take users or groups from elsewhere or says nothing; files and compat alone keep it", { ...PRIVATE_SKIP, timeout: 120_000 }, async (t) => {
+  const { passwd, groups, open, kept, refused } = await privateGroupRig(t);
+  chmodSync(open, 0o775);
+  for (const [what, nsswitch, verdict, users = (text) => text] of NSS_ROWS) {
+    await t.test(what, async (row) => {
+      accountsAs(row, { "/etc/passwd": users(passwd()), "/etc/group": groups(), "/etc/nsswitch.conf": nsswitch });
+      if (verdict === "kept") await kept(what);
+      else await refused(what, 0o775);
+    });
+  }
 });
 
 /** Whether the test's user owns its own home as the system has it, held as the login's home must be. */
@@ -1900,15 +2058,17 @@ test("a login kept at the start while its folder is refused runs once the folder
 // the login, then makes env, what a revision needs and the offers again from it, and the offers are a probe of the
 // harnesses that can take seconds. A request asked meanwhile must wait for that: one that saw the new login and checked
 // the offers made before it would refuse a run for a key it does not need. The probe is held at claude-agent's check by
-// the held table (fixtures/held-offers.cjs), with no timers; the server logs claude_login_wait when a turn on the
-// sign-ins' queue is asked while a refresh makes the offers again, so a test knows a request waits before it lets the
-// probe go.
+// the held table (fixtures/held-offers.cjs), with no timers; the server logs claude_login_wait when a refresh waits for
+// a making of the offers it did not start itself (why=refresh, or why=turn for a turn on's or off's), or asks for its
+// turn on the sign-ins' queue while another turn holds it (why=queue), so a test knows a request waits before it lets
+// the probe go.
 
 /** A server for test `t` with the held table, on a data folder whose login was turned on and signed in at a
  *  CLAUDE_CONFIG_DIR folder, with an agent `planned` on claude-agent and no key; the folder was opened to its group before
  *  the start, so the login is kept and refused. `start()`: a run of `planned`; `waits(n)`: resolves once the server has
- *  logged claude_login_wait `n` times. */
-async function mendedLater(t) {
+ *  logged claude_login_wait `n` times; `whys`: each of those lines' `why`, in order; `fake`: the stand-in CLI.
+ *  `options` are laid on the second server's, and `vars` on its environment. */
+async function mendedLater(t, options = {}, vars = {}) {
   const folder = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-config-dir-"));
   t.after(() => rmSync(folder, { recursive: true, force: true }));
   const first = await signInServer(t, "sign", {}, { CLAUDE_CONFIG_DIR: folder });
@@ -1921,27 +2081,28 @@ async function mendedLater(t) {
 
   chmodSync(folder, 0o775);
   t.after(() => held.answer(undefined));
-  let count = 0;
+  withEnv(t, vars);
+  const whys = [];
   const waiting = [];
   const log = (line) => {
     if (!line.includes(" event=claude_login_wait ")) return;
-    count += 1;
-    for (const wait of waiting.filter((one) => one.times <= count)) wait.resolve();
+    whys.push(/ why=(\S+)/.exec(line)?.[1]);
+    for (const wait of waiting.filter((one) => one.times <= whys.length)) wait.resolve();
   };
-  const server = await serve(t, { faux: undefined, harnesses: false, runner: false, data: first.data, harnessTable: HELD_TABLE, log });
-  const waits = (times) => new Promise((resolve) => (count >= times ? resolve() : waiting.push({ times, resolve })));
+  const server = await serve(t, { faux: undefined, harnesses: false, runner: false, data: first.data, harnessTable: HELD_TABLE, log, ...options });
+  const waits = (times) => new Promise((resolve) => (whys.length >= times ? resolve() : waiting.push({ times, resolve })));
   const start = () => server.api("POST", "/agents/planned/runs", { input: { content: "Say hi." } });
   const kept = (await server.api("GET", "/settings/claude-login")).body;
   assert.equal(kept.state, "refused", JSON.stringify(kept));
   const refused = await start();
   assert.equal(refused.status, 409, `refused at the start: ${JSON.stringify(refused.body)}`);
   assert.match(refused.body.error.message, /claude-agent needs ANTHROPIC_API_KEY/);
-  return { ...server, folder, start, waits };
+  return { ...server, folder, start, waits, whys, fake: first.fake };
 }
 
 const REFRESH_WHY = "a run asked while a refresh that found the folder mended was making the offers again checked the offers made before it";
 test("a run asked while a refresh that found the login's folder mended is still making the offers again waits for them: it is not refused for a key, and the capabilities that refresh answers offer claude-agent", { skip: process.platform === "win32" ? "no modes" : process.geteuid() === 0 ? "root may write anywhere" : false, timeout: 120_000 }, async (t) => {
-  const { api, folder, start, waits } = await mendedLater(t);
+  const { api, folder, start, waits, whys } = await mendedLater(t);
   chmodSync(folder, 0o700);
   const probe = held.hold((env) => claudeLoginOf(env) !== undefined);
   t.after(() => probe.release());
@@ -1957,38 +2118,267 @@ test("a run asked while a refresh that found the login's folder mended is still 
   const offer = claudeAgentIn(capabilities.body.harnesses);
   assert.equal(offer.available, true, `the capabilities whose refresh found the folder mended answered with the offers made before it: ${JSON.stringify(offer)}`);
   assert.equal(first, "the run waited", "the run, or the capabilities, answered before the probe of the offers made from the mended login was let go");
+  assert.deepEqual(whys, ["refresh"], "the run's wait was logged as one for a refresh's making of the offers");
   chmodSync(folder, 0o700);
 });
 
-// A turn-off asked while that refresh makes the offers again waits for it, and lands after it: a run asked after the
-// turn-off is refused for a key, as the login is off. A refresh that looked at the folders before the turn-off and handed
-// over after it would put back the login the turn-off removed. The log says when the turn-off, then the run's refresh,
-// waits on the sign-ins' queue (claude_login_wait), so both are queued, in that order, before the probe is let go.
-const OFF_WHY = "a run asked after a turn-off that waited for a refresh went on the login the turn-off removed";
-test("a turn-off asked while a refresh that found the login's folder mended is still making the offers again lands after it and wins: a run asked after it is refused for a key, claude-agent is not offered and the view reads off", { skip: process.platform === "win32" ? "no modes" : process.geteuid() === 0 ? "root may write anywhere" : false, timeout: 120_000 }, async (t) => {
+// The refresh swaps the login inside its turn on the sign-ins' queue, and makes the offers again after it: a sign-in or a
+// turn-off asked meanwhile takes its turn at once and never waits on that probe, as a turn on's or off's own making of
+// the offers never holds the queue either. A turn-off asked then still wins: its own making of the offers overtakes the
+// refresh's, and a run asked after it, while the refresh's probe is still held, is refused for a key at once. Under a
+// refresh that held the queue through its probe, each would wait on the sign-ins' queue, and the log says so
+// (claude_login_wait) before either could answer.
+const AT_ONCE_WHY = "waited for the probe of the offers a refresh that found the folder mended started";
+const OFF_WHY = "a run asked after a turn-off that landed during a refresh's making of the offers went on the login the turn-off removed";
+test("a sign-in or a turn-off asked while a refresh that found the login's folder mended is still making the offers again answers without waiting for that probe, and the turn-off wins: a run asked after it is refused for a key, claude-agent is not offered and the view reads off", { skip: process.platform === "win32" ? "no modes" : process.geteuid() === 0 ? "root may write anywhere" : false, timeout: 120_000 }, async (t) => {
   const { api, folder, start, waits, store } = await mendedLater(t);
   chmodSync(folder, 0o700);
   const probe = held.hold((env) => claudeLoginOf(env) !== undefined);
   t.after(() => probe.release());
   const asking = api("GET", "/capabilities");
   await probe.reached;
-  const turningOff = api("DELETE", "/settings/claude-login");
-  const offQueued = await Promise.race([waits(1).then(() => true), turningOff.then(() => false)]);
-  const running = start();
-  const runQueued = await Promise.race([waits(2).then(() => true), running.then(() => false)]);
-  probe.release();
-  const [off, run] = await Promise.all([turningOff, running, asking]);
+  // Each answers while the refresh's probe is held, or the log says it waits (then the probe is let go, so the test ends
+  // on these words, not on its timeout).
+  const atOnce = async (what, asked) => {
+    const first = await Promise.race([waits(1).then(() => "waited"), asked.then(() => "answered")]);
+    if (first === "waited") probe.release();
+    assert.equal(first, "answered", `${what} asked while a refresh made the offers again ${AT_ONCE_WHY}`);
+    return asked;
+  };
+  const signIn = await atOnce("a sign-in", api("POST", "/settings/claude-login/login"));
+  assert.equal(signIn.status, 200, JSON.stringify(signIn.body));
+  const off = await atOnce("a turn-off", api("DELETE", "/settings/claude-login"));
   assert.equal(off.status, 200, JSON.stringify(off.body));
   assert.equal(off.body.state, "off", JSON.stringify(off.body));
+  const run = await start();
   assert.equal(run.status, 409, `${OFF_WHY}: ${JSON.stringify(run.body)}`);
   assert.match(run.body.error.message, /claude-agent needs ANTHROPIC_API_KEY/);
-  assert.deepEqual([offQueued, runQueued], [true, true], "the turn-off, then the run's refresh, waited behind the refresh in flight");
+  probe.release();
+  assert.equal((await asking).status, 200);
   const offer = await offerOf(api);
   assert.equal(offer.available, false, `claude-agent is offered after the turn-off: ${JSON.stringify(offer)}`);
   assert.equal((await api("GET", "/settings/claude-login")).body.state, "off");
   assert.equal(await store.settings.get(CLAUDE_LOGIN_SETTING), undefined, "the turn-off removed the setting");
   const again = await start();
   assert.equal(again.status, 409, `a run after both is refused for a key: ${JSON.stringify(again.body)}`);
+});
+
+// A refresh whose making of the offers fails after it swapped the login (its probe throws) answers that failure to the
+// request that asked it, and leaves the login marked as not yet made again: the next request's refresh finds it so and
+// makes the offers again, rather than finding the login unchanged and checking the offers made before it for good.
+const FAILED_WHY = "a run asked after a refresh whose making of the offers failed checked the offers made before it";
+test("a refresh whose making of the offers again fails is redone by the next request's: a run asked after it is not refused for a key, and claude-agent is offered", { skip: process.platform === "win32" ? "no modes" : process.geteuid() === 0 ? "root may write anywhere" : false, timeout: 120_000 }, async (t) => {
+  const { api, folder, start } = await mendedLater(t);
+  chmodSync(folder, 0o700);
+  const probe = held.hold((env) => claudeLoginOf(env) !== undefined, new Error("the probe of the offers failed"));
+  t.after(() => probe.release());
+  const asking = api("GET", "/capabilities");
+  await probe.reached;
+  probe.release();
+  const failed = await asking;
+  assert.notEqual(failed.status, 200, `the capabilities whose refresh's making of the offers failed answered it: ${JSON.stringify(failed.body)}`);
+  const run = await start();
+  assert.equal(run.status, 202, `${FAILED_WHY}: ${JSON.stringify(run.body)}`);
+  assert.equal((await api("POST", `/runs/${run.body.run_id}/cancel`)).status < 300, true);
+  const offer = await offerOf(api);
+  assert.equal(offer.available, true, `claude-agent is offered once the failed making of the offers is redone: ${JSON.stringify(offer)}`);
+});
+
+// A refresh that finds the login unchanged waits for the latest hand-over's making of the offers, another refresh's
+// here. When that one fails, its failure is answered to its own request, and the waiting refresh must not take its end
+// for offers made from the login held: it hands the login over again, as the next request after a failed one does. The
+// first refresh's probe is held and throws once let go; the run's refresh is let go only after the log says it waits.
+const WAITED_FAILED_WHY = "a run whose refresh waited for another refresh's making of the offers, which failed, checked the offers made before it";
+test("a run asked while another refresh's making of the offers is still out, which then fails, makes them again itself: it is not refused for a key, and the log says it waited for a refresh's", { skip: process.platform === "win32" ? "no modes" : process.geteuid() === 0 ? "root may write anywhere" : false, timeout: 120_000 }, async (t) => {
+  const { api, folder, start, waits, whys } = await mendedLater(t);
+  chmodSync(folder, 0o700);
+  const probe = held.hold((env) => claudeLoginOf(env) !== undefined, new Error("the probe of the offers failed"));
+  t.after(() => probe.release());
+  const asking = api("GET", "/capabilities");
+  await probe.reached;
+  const running = start();
+  const first = await Promise.race([waits(1).then(() => "the run waited"), running.then(() => "the run answered")]);
+  probe.release();
+  const [failed, run] = await Promise.all([asking, running]);
+  assert.notEqual(failed.status, 200, `the capabilities whose refresh's making of the offers failed answered it: ${JSON.stringify(failed.body)}`);
+  assert.equal(run.status, 202, `${WAITED_FAILED_WHY}: ${JSON.stringify(run.body)}`);
+  assert.equal((await api("POST", `/runs/${run.body.run_id}/cancel`)).status < 300, true);
+  assert.equal(first, "the run waited", "the run answered before the probe of the offers the first refresh started was let go");
+  assert.deepEqual(whys, ["refresh"], "the run's wait was logged as one for a refresh's making of the offers");
+  assert.equal((await offerOf(api)).available, true, "claude-agent is offered once the run's refresh made the offers again");
+});
+
+/** Which login `env` carries, by its folder: `real` is the machine login's folder (its real path), else AgentRun's own. */
+const loginIn = (real) => ({
+  machine: (env) => claudeLoginOf(env)?.dir === real,
+  agentrun: (env) => claudeLoginOf(env) !== undefined && claudeLoginOf(env)?.dir !== real,
+});
+
+// A refresh's own making of the offers can end with no offers landed: a turn on asked meanwhile, at another place, starts
+// a probe of its own before the refresh's lands, and the refresh's is dropped. The request that asked the refresh must
+// then wait for that later hand-over's making of the offers too, not go on by the offers made before both. Here a
+// template's apply asks the refresh that finds the machine login's folder mended, and a turn on of AgentRun's own login
+// comes while its probe is held; each probe is held by the login its env names, and the refresh's is let go first. The
+// apply's harness is claude-agent only by offers made from a login. Once it waits again the log says so (why=turn), and
+// the test lets the turn on's probe go.
+const OVERTAKEN_WHY = "a template's apply whose refresh's making of the offers was overtaken by a turn-on's picked its harness by the offers made before both";
+test("a template's apply whose refresh's making of the offers is overtaken by a turn-on's waits for the turn-on's, and picks claude-agent by the offers made from the login held now", { skip: process.platform === "win32" ? "no modes" : process.geteuid() === 0 ? "root may write anywhere" : false, timeout: 120_000 }, async (t) => {
+  const templates = join(await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-templates-")), "templates");
+  t.after(() => rmSync(dirname(templates), { recursive: true, force: true }));
+  mkdirSync(join(templates, "on-plan"), { recursive: true });
+  writeFileSync(join(templates, "on-plan", "agent.md"), PICK_PACKAGE);
+  const { api, folder, waits, whys } = await mendedLater(t, { templates }, { OPENAI_API_KEY: "fake-test-key" });
+  chmodSync(folder, 0o700);
+  const at = loginIn(realpathSync(folder));
+  const refreshing = held.hold(at.machine);
+  t.after(() => refreshing.release());
+  const applying = api("POST", "/templates/on-plan/apply", {});
+  await refreshing.reached;
+  const turning = held.hold(at.agentrun);
+  t.after(() => turning.release());
+  const turningOn = api("PUT", "/settings/claude-login", { only_me: true, place: "agentrun" });
+  await turning.reached;
+  refreshing.release();
+  const first = await Promise.race([waits(1).then(() => "the apply waited"), applying.then(() => "the apply answered")]);
+  turning.release();
+  const [applied, on] = await Promise.all([applying, turningOn]);
+  assert.equal(on.status, 200, JSON.stringify(on.body));
+  assert.equal(applied.status, 201, `${OVERTAKEN_WHY}: ${JSON.stringify(applied.body)}`);
+  assert.equal((await api("GET", `/agents/${applied.body.agent_id}`)).body.definition?.harness, "claude-agent", OVERTAKEN_WHY);
+  assert.equal(first, "the apply waited", "the apply answered before the probe of the offers the turn-on started was let go");
+  assert.deepEqual(whys, ["turn"], "the apply's second wait was logged as one for a turn's making of the offers");
+});
+
+// Each time a refresh has waited, a later hand-over may have started meanwhile, and it waits again. A request does that
+// for at most LOGIN_ROUNDS looks at the folders (server.ts), then gives up in words, rather than wait for as long as
+// turns keep coming. Here a turn on, alternately at the machine's folder and at AgentRun's own, comes each time the run's
+// refresh says it waits, with its probe held, and then the probe before it is let go and dropped. Past the bound the
+// test stops turning, so a request with no bound ends on the next hand-over and is not refused.
+const LOGIN_ROUNDS = 3;
+const ROUNDS_WHY = "a run whose refresh found a later hand-over each time it had waited was not refused once it had looked at the folders LOGIN_ROUNDS times";
+test("a run whose refresh finds a later hand-over each time it has waited for one is refused in words after LOGIN_ROUNDS looks, not held for as long as turns keep coming", { skip: process.platform === "win32" ? "no modes" : process.geteuid() === 0 ? "root may write anywhere" : false, timeout: 120_000 }, async (t) => {
+  const { api, folder, start, waits, whys } = await mendedLater(t);
+  chmodSync(folder, 0o700);
+  assert.equal((await offerOf(api)).available, true, "claude-agent is offered on the mended login");
+  const at = loginIn(realpathSync(folder));
+  const turns = [];
+  const turnOn = async (place) => {
+    const hold = held.hold(at[place]);
+    t.after(() => hold.release());
+    turns.push(api("PUT", "/settings/claude-login", { only_me: true, place }));
+    await hold.reached;
+    return hold;
+  };
+  let hold = await turnOn("agentrun");
+  const running = start();
+  let waited = 0;
+  for (let i = 1; i <= LOGIN_ROUNDS + 2; i++) {
+    const first = await Promise.race([waits(i).then(() => "waited"), running.then(() => "answered")]);
+    if (first === "answered") break;
+    waited = i;
+    const next = await turnOn(i % 2 === 1 ? "machine" : "agentrun");
+    hold.release();
+    hold = next;
+  }
+  hold.release();
+  const run = await running;
+  for (const turn of await Promise.all(turns)) assert.equal(turn.status, 200, JSON.stringify(turn.body));
+  assert.equal(run.status, 503, `${ROUNDS_WHY}: ${JSON.stringify(run.body)}`);
+  assert.match(run.body.error.message, /Claude Code's login on this machine was handed over again, or the offers made from it failed, each time this request waited for them, 3 times: ask again/);
+  assert.equal(waited, LOGIN_ROUNDS, `the run waited once per look: ${JSON.stringify(whys)}`);
+  assert.deepEqual(whys, ["turn", "turn", "turn"], "each wait was logged as one for a turn's making of the offers");
+});
+
+// A template's plan and its apply pick the package's harness by the offers (the first of its list offered here, as a
+// model choice's is checked against them), as a run's check reads them. Right after a chmod mends the login's folder,
+// or refuses it again, they must look at the folders first, as a run, a save and capabilities do, not pick by the
+// offers made from the login as it was. The package lists claude-agent, then pi, on a server whose one model key is
+// OpenAI's: pi is offered on it, and claude-agent, which needs Anthropic's or OpenRouter's, only on the login. So the
+// pick is claude-agent while the login's folder is its user's own and pi while it is refused. The plan reads through
+// the same function (prepareApply) and names no harness, so the apply's agent is what shows the pick.
+const PICK_PACKAGE = `---
+name: on-plan
+version: 1.0.0
+description: Says hi.
+harness: [claude-agent, pi]
+model:
+  tier: balanced
+---
+Say hi.
+`;
+const MENDED_WHY = "a template's apply asked right after the login's folder was mended picked its harness by the offers made before it";
+const REFUSED_WHY = "a template's apply asked right after the login's folder was refused again picked its harness by the offers made before it";
+test("a template's plan or apply asked right after a chmod mends the login's folder, or refuses it again, picks its harness by the login as its folder is now: claude-agent once mended, and not once refused again", { skip: process.platform === "win32" ? "no modes" : process.geteuid() === 0 ? "root may write anywhere" : false, timeout: 120_000 }, async (t) => {
+  const templates = join(await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-templates-")), "templates");
+  t.after(() => rmSync(dirname(templates), { recursive: true, force: true }));
+  mkdirSync(join(templates, "on-plan"), { recursive: true });
+  writeFileSync(join(templates, "on-plan", "agent.md"), PICK_PACKAGE);
+  const { api, folder } = await mendedLater(t, { templates }, { OPENAI_API_KEY: "fake-test-key" });
+  const harnessOfApply = async (why) => {
+    const applied = await api("POST", "/templates/on-plan/apply", {});
+    assert.equal(applied.status, 201, `${why}: ${JSON.stringify(applied.body)}`);
+    return (await api("GET", `/agents/${applied.body.agent_id}`)).body.definition?.harness;
+  };
+  assert.equal(await harnessOfApply("refused at the start"), "pi", "with the login refused, claude-agent is not offered, and the pick is pi");
+  chmodSync(folder, 0o700);
+  assert.equal(await harnessOfApply(MENDED_WHY), "claude-agent", MENDED_WHY);
+  chmodSync(folder, 0o775);
+  assert.equal(await harnessOfApply(REFUSED_WHY), "pi", REFUSED_WHY);
+  chmodSync(folder, 0o700);
+});
+
+// A turn on makes env, needs and the offers again after its own turn, outside the queue. A run asked meanwhile finds the
+// login as the turn on handed it over, unchanged, and must still wait for that making of the offers, not check the ones
+// made while the login was off. The log says the run waits for a turn's (why=turn).
+const TURN_WHY = "a run asked while a turn-on was making the offers again checked the offers made before it";
+test("a run asked while a turn-on is still making the offers again finds the login unchanged and waits for them: it is not refused for a key, and the log says it waits for a turn's", { skip: process.platform === "win32" ? "no modes" : process.geteuid() === 0 ? "root may write anywhere" : false, timeout: 120_000 }, async (t) => {
+  const { api, folder, start, waits, whys } = await mendedLater(t);
+  chmodSync(folder, 0o700);
+  assert.equal((await offerOf(api)).available, true, "claude-agent is offered on the mended login");
+  assert.equal((await api("DELETE", "/settings/claude-login")).status, 200);
+  assert.equal((await offerOf(api)).available, false, "claude-agent needs a key once the login is off");
+  const probe = held.hold((env) => claudeLoginOf(env) !== undefined);
+  t.after(() => probe.release());
+  const turningOn = api("PUT", "/settings/claude-login", { only_me: true, place: "machine" });
+  await probe.reached;
+  const running = start();
+  const first = await Promise.race([waits(1).then(() => "the run waited"), running.then(() => "the run answered")]);
+  probe.release();
+  const [on, run] = await Promise.all([turningOn, running]);
+  assert.equal(on.status, 200, JSON.stringify(on.body));
+  assert.equal(run.status, 202, `${TURN_WHY}: ${JSON.stringify(run.body)}`);
+  assert.equal((await api("POST", `/runs/${run.body.run_id}/cancel`)).status < 300, true);
+  assert.equal(first, "the run waited", "the run answered before the probe of the offers the turn-on started was let go");
+  assert.deepEqual(whys, ["turn"], "the run's wait was logged as one for a turn's making of the offers");
+});
+
+// A refresh looks at the login's folders inside its own turn on the sign-ins' queue. A turn-off whose turn is still going
+// (it ends the sign-in that waits, and here that sign-in's stand-in CLI holds its exit until the test lets it go) has not
+// removed the setting yet. A run asked then waits for its turn behind it (the log: why=queue), and looks only once the
+// turn-off has removed the setting, so it is refused for a key. A refresh that looked before its turn would find the
+// login still there, hand it back over after the turn-off, and run on it.
+const LOOK_WHY = "a run asked while a turn-off's turn was still going looked at the folders before that turn, and went on the login the turn-off removed";
+test("a run asked while a turn-off's turn is still going looks at the login's folders only once that turn is done: it is refused for a key, and the turn-off stands", { skip: process.platform === "win32" ? "no modes" : process.geteuid() === 0 ? "root may write anywhere" : false, timeout: 120_000 }, async (t) => {
+  const { api, folder, start, waits, whys, fake, store } = await mendedLater(t);
+  chmodSync(folder, 0o700);
+  assert.equal((await offerOf(api)).available, true, "claude-agent is offered on the mended login");
+  fake.mode("hold-stop");
+  const signIn = await api("POST", "/settings/claude-login/login");
+  assert.equal(signIn.status, 200, JSON.stringify(signIn.body));
+  assert.equal(signIn.body.sign_in?.state, "waiting", JSON.stringify(signIn.body));
+  const turningOff = api("DELETE", "/settings/claude-login");
+  await until(() => existsSync(fake.stopping), "the turn-off's stop reached the sign-in's CLI");
+  const running = start();
+  await waits(1);
+  fake.release();
+  const [off, run] = await Promise.all([turningOff, running]);
+  assert.equal(off.status, 200, JSON.stringify(off.body));
+  assert.equal(off.body.state, "off", JSON.stringify(off.body));
+  assert.equal(run.status, 409, `${LOOK_WHY}: ${JSON.stringify(run.body)}`);
+  assert.match(run.body.error.message, /claude-agent needs ANTHROPIC_API_KEY/);
+  assert.deepEqual(whys, ["queue"], "the run's refresh waited for its turn behind the turn-off");
+  assert.equal((await offerOf(api)).available, false, "claude-agent is not offered after the turn-off");
+  assert.equal(await store.settings.get(CLAUDE_LOGIN_SETTING), undefined, "the turn-off removed the setting");
 });
 
 // A folder its group may write in (a home or a folder on a volume whose group is set for a pod, 2775, or one made under
