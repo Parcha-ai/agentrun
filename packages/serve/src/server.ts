@@ -43,6 +43,7 @@ import { capacityOverStore, capacityWindowOf } from "./capacity.js";
 import { carriedFields } from "./answer-json.js";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import { Worker } from "node:worker_threads";
 import { once } from "node:events";
 import { existsSync } from "node:fs";
@@ -1799,6 +1800,22 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     },
     changed: keysChanged,
   });
+  /** The login runs here go on, as its folders are now (loginOf, one look at them), handed over as a turn on or off
+   *  hands it (`saved`, then env read again) where it differs from the one held. The held one is the start's or the last
+   *  turn's, and a folder mended with a chmod since (or refused since) changes it with no turn: a run's check, a save's
+   *  and capabilities ask this first, so they agree with the Settings view, which looks at the folders itself (loginAt).
+   *  Read in a turn on the sign-ins' queue, the one way the setting changes, so a turn off that lands meanwhile is never
+   *  undone. */
+  const loginNow = async (): Promise<void> => {
+    if (loginOff !== undefined) return;
+    const changed = await claudeSignIns.serial(async () => {
+      const login = loginOf(await claudeLoginSetting(store.settings), data, base);
+      if (isDeepStrictEqual(login, claudeLogin)) return false;
+      claudeLogin = login;
+      return true;
+    });
+    if (changed) await keysChanged();
+  };
   // The boxes a place may name, read once from the computers runs execute on (place-offers.ts): AGENTRUN_BOXES lists
   // them, docker alone when it is not set; docker by its probe, daytona and modal by their providers' keys, read as a
   // run's claim reads them. Under --faux, `fauxDocker` stands in for Docker's answer, and nothing asks Docker.
@@ -3341,6 +3358,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       if (capped) throw new ApiError("agent_not_runnable", NATIVE_CAP_UNSUPPORTED);
       if(native.remote)await new RemoteConnectors(store).assertReady(native);else await launchNative(native); return;
     }
+    // Claude Code's login as its folders are now, before the checks read env and the offers made with it.
+    await loginNow();
     const shape = { ...shapeOf(revision), place, ...(revision.body.place ? {} : { unnamed: true as const }) };
     // An agentic revision's MCP tools are checked as its save pinned them (its pin, never the server's listing now), for
     // a server still saved here; a granted tool its pin does not hold is said first, with how to pin it.
@@ -3499,6 +3518,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       return { warnings: [], stamp: {} };
     }
     if (cliLearningOf(body) || sdkOf(body)) return { warnings: [], stamp: {} };
+    await loginNow();
     // A workflow's own issues, as POST /workflows/validate lists them (workflowIssues: the DSL's checks, the durable
     // runner's refusal), refuse its save before anything is written, each at its path under definition.workflow. Asked
     // with no tools list: its run binds every tool its call nodes name whether `tools` lists it or not (tools.ts
@@ -4896,6 +4916,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const runnerShell = shellTools(await shellOf({ kind: "none" }));
       await planNow();
       await ollamaNow();
+      await loginNow();
       const answer = forCaller(runnerShell.size ? compose(runnerShell) : caps, byOwnerSession(req));
       // features.triggers.public_url: whether Composio (or any sender) has a public address to reach, never the address.
       // runner_refused: why no runner here can take a run, in their words, while every runner there refused to claim
