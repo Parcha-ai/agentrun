@@ -1,7 +1,7 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { golden } from "./golden.fixture";
+import { golden } from "./fixtures/golden";
 import { SharePage } from "./SharePage";
 import { exportSource, runIdOf, type ShareBundle, type ShareLoad, type ShareSource } from "./bundle";
 
