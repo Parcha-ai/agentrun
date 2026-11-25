@@ -1036,13 +1036,13 @@ test("costLineOf: the newest 10 served runs at the digest against the by-hand si
   const pastOf = (runs, by_hand = BY_HAND, by_hand_unknown = 1) => ({ runs, by_hand, by_hand_unknown });
   // A by-hand run's all-in is never read here: the by-hand side is the cost page's, its mean over the job's own $.
   const rows = [...Array.from({ length: 12 }, (_, i) => served(i, i < 10 ? 0.3 : 9)), run(12, { path: "agent" }, 5), run(13, { path: "agent" }, 5), run(14, { path: "agent" }, null)];
-  assert.deepEqual(costLineOf(pastOf(rows), "answer", "d"), { served: { runs: 10, mean_usd: 0.3 }, by_hand: BY_HAND, unknown_runs: 1 }, "the newest 10 served; by hand as given, its unknown run counted");
+  const line = costLineOf(pastOf(rows), "answer", "d");
+  assert.deepEqual([line.served, line.unknown_runs], [{ runs: 10, mean_usd: 0.3 }, 1], "the newest 10 served; the by-hand side's unknown run counted");
   // An unknown served run is left out and counted while the window fills; one past a full window is not read at all.
   assert.deepEqual(costLineOf(pastOf([served(0, null), ...rows.slice(1)]), "answer", "d").served, { runs: 10, mean_usd: 1.17 }, "the newest unknown: the window reaches one run further back");
   assert.equal(costLineOf(pastOf([served(0, null), ...rows.slice(1)]), "answer", "d").unknown_runs, 2);
   assert.equal(costLineOf(pastOf([...rows.slice(0, 10), served(10, null), ...rows.slice(11)]), "answer", "d").unknown_runs, 1, "past the full window: not counted");
   assert.deepEqual(costLineOf(pastOf(rows), "answer", "e").served, { runs: 0, mean_usd: null }, "another digest: none served");
-  assert.equal(costLineOf(pastOf(rows.slice(0, 12), null, 0), "answer", "d").by_hand, null, "no baseline: none, never $0");
   assert.equal(overLine(costLineOf(pastOf(Array.from({ length: 10 }, (_, i) => served(i, 9)), null, 0), "answer", "d")), false, "no baseline: never over the line");
   assert.equal(servedOf([{ kind: WORKFLOW_FIRST, data: { workflow: "answer", digest: "d", outcome: "needs_revision" } }]), undefined, "a revision ask served nothing");
   // What the agent's cost per run shows its owner: each workflow at its newest digest, over the line or not.

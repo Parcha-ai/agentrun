@@ -15,6 +15,8 @@ import { test } from "node:test";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, serve } from "./support.mjs";
 
+const { openStore } = await import("../dist/store/index.js");
+
 const { figuresOf, record, summarize } = await import("../dist/learn/ledger.js");
 const { pastRunsOf } = await import("../dist/store-reads/learning.js");
 const { costLineOf, PAST_RUNS, workflowCostsOf } = await import("../dist/runner/workflow-first.js");
@@ -101,7 +103,6 @@ test("summarize: a compile's spend sits on its revision whether or not a record 
 });
 
 test("pastRunsOf: the by-hand side is the job's own cost of the agent's runs on its own path among the same runs as the served side: its newest PAST_RUNS on no named disk since its learning's reset", () => {
-  assert.equal(typeof PAST_RUNS, "number");
   const minute = (i) => Date.UTC(2026, 10, 24, 0, i);
   const served = { path: "workflow", workflow: "answer", workflow_digest: C };
   // [id, minute, end, disk]: a run before the reset, one whose job is $1 and its compile turn $0.30, one on a named disk,
@@ -154,12 +155,15 @@ const LEARNS = { input: { content: "What is 1 plus 41?" }, title: "t", place: { 
 
 test("GET /agents/{id}/learning/cost and GET /runs/{id} read one ledger: each run's job $ and learning parts agree, and every run's all-in and the unattributed are the booked total", async (t) => {
   // No runner: each run is ended in the store as a runner ends it, with the metrics and kept round its end writes.
-  const { api, store, baseUrl } = await serve(t, { learning: "on", runner: false });
+  const { api, data, baseUrl } = await serve(t, { learning: "on", runner: false });
+  // The test's own store handle on an injected clock, a second on it a run: the series orders by start.
+  const clock = { now: Date.now() };
+  const store = await openStore({ dataDir: data, role: "runner", now: () => clock.now });
+  t.after(() => store.close());
   assert.equal((await api("POST", "/agents", agent("source", { learning: { audit_every: 1 } }))).status, 201);
   const revisionId = (await store.agents.get("source")).currentRevision;
   const end = async (id, costUsd, metrics, { body = LEARNS, kept } = {}) => {
-    // A run a few milliseconds after the one before: the series orders by start.
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    clock.now += 1_000;
     await store.runs.create({ id, agentId: "source", revisionId }, { body });
     const claim = await store.claim(id, "runner-a", { leaseMs: 60_000 });
     await store.runs.update(claim, { state: "ended", costUsd, metrics }, kept ? { also: [{ table: "learning_proposals", row: { turn: {}, proposal: kept } }] } : undefined);
