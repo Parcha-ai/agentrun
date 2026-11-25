@@ -1366,11 +1366,11 @@ const literally = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
  *  words name it) neither owns nor would make in a folder it owns. */
 const notOwnFolder = (who, name, folder) => new RegExp(`^Claude Code's login on this machine needs its folders to be this server's user's own: it runs as ${literally(who)}, and ${literally(folder)}, the folder ${name} gives it, is not a folder it owns, nor one it would make in a folder it owns\\. Start the server as the person whose Claude plan it is\\.$`);
 /** The end of the words a folder open to others' writes is refused in: `at`, the folder open so, has `mode`, and the
- *  chmod that closes it. */
-const openTail = (at, mode) => `is open to writes by others than its owner: ${literally(at)} has mode ${(mode & 0o7777).toString(8).padStart(4, "0")}, which its group or anyone may write in\\. Make it writable by its owner alone \\(chmod g-w,o-w ${literally(at)}\\): a umask of 002 makes new folders so\\.$`;
+ *  chmod that closes it; then `more` (a pattern), where the words say more of its group. */
+const openTail = (at, mode, more = "") => `is open to writes by others than its owner: ${literally(at)} has mode ${(mode & 0o7777).toString(8).padStart(4, "0")}, which its group or anyone may write in\\. Make it writable by its owner alone \\(chmod g-w,o-w ${literally(at)}\\): a umask of 002 makes new folders so\\.${more}$`;
 /** The words this machine's login is refused in where `name` gives it `folder`, and `at` on its way (or the folder
- *  itself, or the one it is to be made in) is open to writes by its group or anyone, with `mode`. */
-const openFolder = (who, name, folder, at, mode) => new RegExp(`^Claude Code's login on this machine needs its folders to be this server's user's own: it runs as ${literally(who)}, and ${literally(folder)}, the folder ${name} gives it, ${openTail(at, mode)}`);
+ *  itself, or the one it is to be made in) is open to writes by its group or anyone, with `mode`; `more` as openTail. */
+const openFolder = (who, name, folder, at, mode, more = "") => new RegExp(`^Claude Code's login on this machine needs its folders to be this server's user's own: it runs as ${literally(who)}, and ${literally(folder)}, the folder ${name} gives it, ${openTail(at, mode, more)}`);
 /** The same for the home: `which` is "its HOME" or "that user's own home", `home` the folder named so. */
 const openHome = (who, which, home, at, mode) => new RegExp(`^Claude Code's login on this machine needs a home only this server's user may write in: it runs as ${literally(who)}, and ${which} \\(${literally(home)}\\) ${openTail(at, mode)}`);
 /** Each variable that gives this machine's login a folder: the folder it gives for `value`, and where the login has it. */
@@ -1788,7 +1788,8 @@ const PRIVATE_SKIP = { skip: process.platform === "win32" ? "no uid" : process.g
 /** For test `t`, a folder `open` of the test user's, with a login folder `claude` in it, and stand-in account files in
  *  which `open`'s group is the user's private one (`passwd()`, `groups()`; `more` users, `members` of that group).
  *  `kept(what)` asserts the login is kept with `open` on the way to its folder, as that folder, as the one it is made in
- *  and as the home; `refused(what, mode)` that each refuses it in the open-folder words, `open` at `mode`. */
+ *  and as the home; `refused(what, mode, more)` that each refuses it in the open-folder words, `open` at `mode`, ending
+ *  in `more` (a pattern; none by default). */
 async function privateGroupRig(t) {
   const uid = process.geteuid();
   const name = userInfo().username;
@@ -1817,12 +1818,12 @@ async function privateGroupRig(t) {
     }
     assert.equal(homeOf({ HOME: open }).home, realpathSync(open), `${PRIVATE_WHY}: ${what}, as the home`);
   };
-  const refused = async (what, mode) => {
+  const refused = async (what, mode, more = "") => {
     for (const value of values) {
       const rig = await loginRig(t);
       const asked = [];
       const deps = rig.deps({ env: { ...rig.env, CLAUDE_CONFIG_DIR: value }, claude: async () => askedClaude(asked) });
-      await refusedEverywhere(rig, deps, openFolder(who, "CLAUDE_CONFIG_DIR", value, realpathSync(open), mode), `${what}, CLAUDE_CONFIG_DIR=${value}`);
+      await refusedEverywhere(rig, deps, openFolder(who, "CLAUDE_CONFIG_DIR", value, realpathSync(open), mode, more), `${what}, CLAUDE_CONFIG_DIR=${value}`);
       assert.deepEqual(asked, [], `${what}: the CLI was not asked`);
     }
     assert.notEqual(homeOf({ HOME: open }).home, realpathSync(open), `${what}: not the home`);
@@ -1884,6 +1885,40 @@ test("a folder its group may write in, whose group the account files show as the
       accountsAs(row, { "/etc/passwd": users(passwd()), "/etc/group": groups(), "/etc/nsswitch.conf": nsswitch });
       if (verdict === "kept") await kept(what);
       else await refused(what, 0o775);
+    });
+  }
+});
+
+// What the account files themselves say of the group and the user, read as the system reads them (it skips blanks
+// before an entry and before a number). A group with a password lets anyone who knows it join (newgrp), so it is no
+// one's private group: refused in words that name it and say why. `x` (the password is in the shadow file), `!`, `*` or
+// none are no password. A group's members are named, so a second account with the user's name (blanks before it or
+// not) would be in it too; a second account with the user's uid (an alias, as toor is root's) is that user under
+// another name, whose groups the files may not show; an id with a blank before it is still read as that id. All are
+// refused in the open-folder words. Each row starts from the case that keeps the login, the folder at 0775.
+const passwordWords = (group, gid) => literally(` Its group ${group} (gid ${gid}) would be the server's user's private group, but /etc/group gives it a password, which lets anyone who knows it join the group (newgrp); removing the password (gpasswd -r ${group}) mends that too.`);
+const ACCOUNT_ROWS = [
+  ["a group whose password field is x (in the shadow file)", ({ groups }) => ({ group: groups() }), "kept"],
+  ["a group whose password field is !", ({ name, gid, groups }) => ({ group: groups().replace(`${name}:x:${gid}:`, `${name}:!:${gid}:`) }), "kept"],
+  ["a group whose password field is *", ({ name, gid, groups }) => ({ group: groups().replace(`${name}:x:${gid}:`, `${name}:*:${gid}:`) }), "kept"],
+  ["a group whose password field is empty", ({ name, gid, groups }) => ({ group: groups().replace(`${name}:x:${gid}:`, `${name}::${gid}:`) }), "kept"],
+  ["a group with a password", ({ name, gid, groups }) => ({ group: groups().replace(`${name}:x:${gid}:`, `${name}:$6$salt$hashOfAGroupPassword:${gid}:`) }), "refused", ({ name, gid }) => passwordWords(name, gid)],
+  ["a second account with the user's name, another uid and group", ({ name, other, user, passwd }) => ({ passwd: passwd(user(name, other.uid + 1, other.gid)) }), "refused"],
+  ["a second account with the user's name, after blanks", ({ name, other, user, passwd }) => ({ passwd: passwd(`  ${user(name, other.uid + 1, other.gid)}`) }), "refused"],
+  ["another name with the user's uid (an alias)", ({ uid, other, user, passwd }) => ({ passwd: passwd(user("alias", uid, other.gid)) }), "refused"],
+  ["an alias of the user's uid, a blank before the uid", ({ uid, other, user, passwd }) => ({ passwd: passwd(user("alias", ` ${uid}`, other.gid)) }), "refused"],
+  ["another user whose primary group is the user's, a blank before the gid", ({ gid, other, user, passwd }) => ({ passwd: passwd(user("another", other.uid + 1, ` ${gid}`)) }), "refused"],
+  ["a second entry for the group, a blank before its gid, listing another user", ({ gid, groups }) => ({ group: `${groups()}more:x: ${gid}:other\n` }), "refused"],
+];
+test("a folder its group may write in, whose group the account files would show as the user's private one, still refuses this machine's login where that group has a password (in words naming it), or the files hold a second account with the user's name or uid, or an id after blanks; a group password field of x, !, * or none keeps it", { ...PRIVATE_SKIP, timeout: 120_000 }, async (t) => {
+  const rig = await privateGroupRig(t);
+  chmodSync(rig.open, 0o775);
+  for (const [what, files, verdict, more = () => ""] of ACCOUNT_ROWS) {
+    await t.test(what, async (row) => {
+      const { passwd = rig.passwd(), group = rig.groups() } = files(rig);
+      accountsAs(row, { "/etc/passwd": passwd, "/etc/group": group, "/etc/nsswitch.conf": NSS_FILES });
+      if (verdict === "kept") await rig.kept(what);
+      else await rig.refused(what, 0o775, more(rig));
     });
   }
 });
