@@ -4,6 +4,7 @@ import { ListSkeleton } from "@/components/Skeleton";
 import { Button } from "@/components/ui";
 import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
 import { wrappedCards } from "@/components/WrappedCards";
+import { harnessLabel } from "@/lib/agentForm";
 import { type Client, ClientError } from "@/lib/client";
 import { compact, dollars } from "@/lib/format";
 import { type Problem, problem } from "@/lib/problem";
@@ -168,7 +169,7 @@ export function WrappedPage({ v2, year, go, cards = wrappedCards }: { v2: Client
                 <div className="mt-3 grid gap-6 md:grid-cols-2">
                   <ul className="grid content-start gap-3" aria-label="Harnesses">
                     {data.harnesses.map((h) => (
-                      <Share key={h.harness} name={h.harness} figure={`${compact(h.tokens)} · ${h.sessions} sessions`} part={h.tokens} of={harnessTokens}>
+                      <Share key={h.harness} name={harnessLabel(h.harness)} figure={`${compact(h.tokens)} · ${h.sessions} sessions`} part={h.tokens} of={harnessTokens}>
                         <p className="col-span-2 flex flex-wrap gap-x-3 font-mono text-small text-muted-foreground">
                           {h.sources.map((source) => {
                             const runs = data.imported.find((i) => i.source === source)?.runs ?? 0;

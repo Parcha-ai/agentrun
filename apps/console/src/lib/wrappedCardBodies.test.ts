@@ -132,9 +132,9 @@ describe("split", () => {
     expect(body("split")).toEqual({
       eyebrow: EYEBROW,
       title: "Where your tokens went",
-      figure: { value: "95%", unit: "claude-agent" },
+      figure: { value: "95%", unit: "Claude" },
       charts: [
-        { label: "Harnesses", kind: "rows", bars: [{ label: "claude-agent", value: 6_000_000, text: "95%" }, { label: "pi", value: 300_000, text: "5%" }] },
+        { label: "Harnesses", kind: "rows", bars: [{ label: "Claude", value: 6_000_000, text: "95%" }, { label: "Pi", value: 300_000, text: "5%" }] },
         { label: "Models", kind: "rows", bars: [{ label: "claude-sonnet", value: 6_000_000, text: "95%" }, { label: "gpt", value: 300_000, text: "5%" }] },
       ],
     });
@@ -169,13 +169,13 @@ describe("split", () => {
 
   it("orders by tokens whatever order the year lists them in", () => {
     const b = body("split", { ...YEAR, harnesses: [...YEAR.harnesses].reverse(), models: [...YEAR.models].reverse() })!;
-    expect(b.charts!.map((c) => c.bars.map((bar) => bar.label))).toEqual([["claude-agent", "pi"], ["claude-sonnet", "gpt"]]);
+    expect(b.charts!.map((c) => c.bars.map((bar) => bar.label))).toEqual([["Claude", "Pi"], ["claude-sonnet", "gpt"]]);
   });
 
   it("says a share under one percent as <1% and one just short of all as >99%, never 0% or 100%", () => {
     const year: Wrapped = { ...YEAR, harnesses: [{ ...YEAR.harnesses[0]!, tokens: 999_000 }, { ...YEAR.harnesses[1]!, tokens: 1_000 }] };
     expect(body("split", year)!.charts![0]!.bars.map((bar) => bar.text)).toEqual([">99%", "<1%"]);
-    expect(body("split", year)!.figure).toEqual({ value: ">99%", unit: "claude-agent" });
+    expect(body("split", year)!.figure).toEqual({ value: ">99%", unit: "Claude" });
   });
 
   it("keeps a model's provider in its name when another provider's model has the same name", () => {
@@ -221,7 +221,7 @@ describe("summary", () => {
         { label: "At list price", value: "$42.50" },
         { label: "No known price", value: "3 requests" },
         { label: "Days at work", value: "2" },
-        { label: "Top harness", value: "95% claude-agent" },
+        { label: "Top harness", value: "95% Claude" },
         { label: "Top model", value: "95% claude-sonnet" },
         { label: "Busiest hour", value: "2 pm" },
       ],

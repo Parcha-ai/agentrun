@@ -2,6 +2,7 @@
 // A card is drawn when every wait of its is met (SATISFIED_WAITS) and the year has sessions; a card with no body here
 // is never drawn, whatever it waits on. No number is one the year does not give: a price not known is said as unknown,
 // never $0, and requests with no known price are counted beside the price.
+import { harnessLabel } from "@/lib/agentForm";
 import { type CardBar, type CardBody, type CardChart, chartCapacity } from "@/lib/cardImage";
 import { compact, dollars } from "@/lib/format";
 import type { Wrapped } from "@/lib/v2";
@@ -63,9 +64,9 @@ function modelName(model: string, all: readonly string[]): string {
 
 type Share = { name: string; tokens: number };
 
-/** Shares by tokens, most first (a stable sort: ties keep the year's order). */
+/** Shares by tokens, most first (a stable sort: ties keep the year's order). A harness by the name the console gives it. */
 const byTokens = (shares: readonly Share[]): Share[] => [...shares].sort((a, b) => b.tokens - a.tokens);
-const harnessShares = (data: Pick<Wrapped, "harnesses">): Share[] => byTokens(data.harnesses.map((h) => ({ name: h.harness, tokens: h.tokens })));
+const harnessShares = (data: Pick<Wrapped, "harnesses">): Share[] => byTokens(data.harnesses.map((h) => ({ name: harnessLabel(h.harness), tokens: h.tokens })));
 const modelShares = (data: Pick<Wrapped, "models">): Share[] => {
   const names = data.models.map((m) => m.model);
   return byTokens(data.models.map((m) => ({ name: modelName(m.model, names), tokens: m.tokens })));

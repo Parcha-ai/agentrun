@@ -42,7 +42,9 @@ describe("WrappedPage", () => {
     expect(text).toContain("12 sessions · 40 prompts · 300 model requests · $42.50 + 3 requests with no known price");
     expect(text).toContain("Busiest day: 2025-03-02");
     for (const name of ["Your year in tokens", "Harnesses and models", "When you work", "Imported"]) expect(text).toContain(name);
-    expect(text).toContain("claude-agent");
+    // A harness by the name the console gives it, not its id.
+    expect(text).toContain("Claude");
+    expect(text).not.toContain("claude-agent");
     expect(text).toContain("anthropic/claude-sonnet");
     expect(text).toContain("2.0 h at work");
     expect(document.querySelectorAll('[aria-label="Requests by hour of the day"] > li')).toHaveLength(24);
@@ -104,12 +106,12 @@ describe("WrappedPage", () => {
     await mount(async () => YEAR);
     const row = (harness: string) => [...document.querySelectorAll('[aria-label="Harnesses"] > li')].find((li) => li.textContent?.includes(harness))!;
     const hrefs = (harness: string) => [...row(harness).querySelectorAll("a")].map((a) => a.getAttribute("href"));
-    expect(hrefs("claude-agent")).toEqual(["#/runs?source=claude-code"]);
-    expect(row("claude-agent").textContent).toContain("claude-code: 7 runs");
-    expect(hrefs("pi")).toEqual(["#/runs?source=gemini"]);
-    expect(row("pi").textContent).toContain("gemini: 4 runs");
-    expect(row("pi").textContent).toContain("pi: not imported yet");
-    expect(row("pi").textContent).toContain("agentrun-serve import");
+    expect(hrefs("Claude")).toEqual(["#/runs?source=claude-code"]);
+    expect(row("Claude").textContent).toContain("claude-code: 7 runs");
+    expect(hrefs("Pi")).toEqual(["#/runs?source=gemini"]);
+    expect(row("Pi").textContent).toContain("gemini: 4 runs");
+    expect(row("Pi").textContent).toContain("pi: not imported yet");
+    expect(row("Pi").textContent).toContain("agentrun-serve import");
   });
 
   it("keeps the totals, models, days and hours as plain numbers: no link to a filter that does not exist", async () => {
