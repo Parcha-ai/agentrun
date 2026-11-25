@@ -229,7 +229,7 @@ import { heldRoute, holdIssues, runComputerRead } from "./computer-held-routes.j
 import { COMPUTER_ROUTES, computerHoldOf, computerRoute, runComputerKind } from "./computer-routes.js";
 import { runOver } from "./computer-commands.js";
 import { mintViewerCredential, VIEWER_PARAM, viewerCookie, viewerCredentialFor, viewerCredentialKey, viewerCredentialOf } from "./viewer-credential.js";
-import { ATTACH_PATH, AttachHub, type HostedDial, PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
+import { ATTACH_PATH, AttachHub, containerSigns, type HostedDial, PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
 import { dockerDaemonOf } from "@parcha/agentrun-computer/docker";
 import { type AttachTiming, createAttachRoutes, liveRelays, pairedView } from "./computer-attach.js";
 import { pairedRefusal, withPaired } from "./workspace/attached-computers.js";
@@ -6817,7 +6817,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   if (isLoopback(host)) names = loopbackNames(host, options.allowHosts, options.publicUrl);
   // An address of every interface is reached on this machine at its loopback one.
   const url = urlOf(server, host);
-  owner?.attach(options.publicUrl ?? url, options.publicUrl ? [] : elsewhereOf(host, (server.address() as AddressInfo).port));
+  owner?.attach(options.publicUrl ?? url, options.publicUrl ? [] : elsewhereOf(host, (server.address() as AddressInfo).port, { container: () => containerSigns() !== undefined }));
   webhooks.attach(options.publicUrl ?? url);
   slack.attach(options.publicUrl ?? url);
   // A local install is the one server an MCP server's URL may be on loopback for (anywhere else, loopback is this machine's

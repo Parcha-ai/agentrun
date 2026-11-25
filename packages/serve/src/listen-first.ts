@@ -4,7 +4,6 @@
 // server is warming. GET /v2/health says so (503, status "warming", the store "opening"), the API answers 503
 // `unavailable` with a Retry-After, and a browser gets a page that reloads itself. Only node's own modules load here.
 import { randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
 import { statfs } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -52,17 +51,17 @@ const everyAddress = (host: string) => host === "0.0.0.0" || host === "::";
 
 // A container network's bridge (Docker's, a VM's) is this machine's alone: no other machine reaches it there.
 const BRIDGES = /^(docker|br-|veth|virbr|cni|flannel|vmnet|bridge\d)/;
-const inContainer = () => existsSync("/.dockerenv") || existsSync("/run/.containerenv");
 
 /** Where a server listening on every address (`host` 0.0.0.0 or ::) at `port` is reached from another machine: this
  *  machine's own IPv4 addresses, loopback, link-local and container bridges left out, at most three. None for a server on one address, and
  *  none in a container, whose addresses are its own network's, not the ones its host publishes the port on. None on a
- *  machine that cannot list its addresses: the links are a convenience, never a reason not to start. `interfaces` and
- *  `container` are the tests'. */
+ *  machine that cannot list its addresses: the links are a convenience, never a reason not to start. `container` says
+ *  whether this server runs in one (server.ts asks computer's containerSigns; this file loads before the rest of the
+ *  server, so it imports node's own modules alone). `interfaces` is the tests'. */
 export function elsewhereOf(
   host: string,
   port: number,
-  { interfaces = networkInterfaces, container = inContainer }: { interfaces?: () => ReturnType<typeof networkInterfaces>; container?: () => boolean } = {},
+  { interfaces = networkInterfaces, container }: { interfaces?: () => ReturnType<typeof networkInterfaces>; container: () => boolean },
 ): string[] {
   if (!everyAddress(host) || container()) return [];
   let found: ReturnType<typeof networkInterfaces>;
