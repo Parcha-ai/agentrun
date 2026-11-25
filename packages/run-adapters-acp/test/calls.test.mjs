@@ -128,9 +128,11 @@ test('an announcement whose title names no tool of ours is matched by the argume
   const waiting = ids.take('write', { path: 'b' }, signal, 2_000);
   ids.add('call_3', undefined, { path: 'b' });
   assert.equal(await waiting, 'call_3');
-  // Other arguments never take it, nor does an announcement with none.
+  // Other arguments never take it. An announcement with no input and no tool (only on a recipe without announces) is
+  // the last resort: nothing names or ties it, and it is taken rather than leave the call an id of the adapter's.
   ids.add('call_4', undefined, { path: 'c' });
   ids.add('call_5', undefined, undefined);
+  assert.equal(await ids.take('write', { path: 'd' }, signal, 50), 'call_5');
   assert.equal(await ids.take('write', { path: 'd' }, signal, 50), undefined);
   assert.equal(ids.has('call_4'), true, 'still announced, still waiting for its own call');
 });
@@ -248,4 +250,45 @@ test('on a recipe with no announces field, a call with no arguments is matched b
   const started = Date.now();
   assert.equal(await ids.take('look_up', {}, new AbortController().signal, 300), 'c1');
   assert.ok(Date.now() - started < 50, `matched at once, not after the wait (${Date.now() - started} ms)`);
+});
+
+/** `promise`'s value if it is settled before the event loop turns, else 'waited'. */
+const atOnce = (promise) => Promise.race([promise, new Promise((resolve) => setImmediate(() => resolve('waited')))]);
+
+test('on a recipe with no announces field, a call announced with no input at all is taken at once by an MCP call nothing else matches', async () => {
+  // Before: add() kept nothing for it, so its MCP call waited out the 10 s, ran under an id of the adapter's (counted a
+  // second time against a plan's limit, memoized under a key a resume never asks again).
+  const ids = new CallIds();
+  const stop = new AbortController();
+  calls.announceCall(ids, { toolCallId: 'bare', title: 'Lookup', kind: 'other' }, undefined, TOOLS);
+  calls.announceCall(ids, { toolCallId: 'args', title: 'Write', kind: 'other', rawInput: { path: 'a.txt' } }, undefined, TOOLS);
+  assert.equal(await atOnce(ids.take('write', { path: 'a.txt' }, stop.signal, 60_000)), 'args', 'arguments that match come first');
+  assert.equal(await atOnce(ids.take('look_up', { q: 'acme' }, stop.signal, 60_000)), 'bare');
+  stop.abort();
+});
+
+test('a call announced with no input, named by nothing, never wakes a waiting MCP call: that call takes its own announcement, and the bare one only once its wait is over', async () => {
+  const ids = new CallIds();
+  const signal = new AbortController().signal;
+  const waiting = ids.take('look_up', { q: 'acme' }, signal, 60_000);
+  calls.announceCall(ids, { toolCallId: 'native', title: 'Thinking', kind: 'think' }, undefined, TOOLS);
+  calls.announceCall(ids, { toolCallId: 'own', title: 'Lookup', kind: 'other', rawInput: { q: 'acme' } }, undefined, TOOLS);
+  assert.equal(await waiting, 'own');
+  // Nothing else came: the bare one is taken when the wait is over.
+  assert.equal(await ids.take('look_up', { q: 'other' }, signal, 1), 'native');
+});
+
+test('a bare announcement whose call ended is dropped: a later MCP call never takes the id of an agent call that is over', async () => {
+  const ids = new CallIds();
+  calls.announceCall(ids, { toolCallId: 'done', title: 'Thinking', kind: 'think' }, undefined, TOOLS);
+  ids.settle('done');
+  assert.equal(ids.has('done'), false);
+  assert.equal(await ids.take('look_up', { q: 'acme' }, new AbortController().signal, 1), undefined);
+});
+
+test('on a recipe whose announces field names its calls, one it names nothing for with input that is no object stays the agent\'s own', async () => {
+  const ids = new CallIds();
+  calls.announceCall(ids, { toolCallId: 'odd', title: 'x', kind: 'other', rawInput: 'text' }, GOOSE, TOOLS);
+  assert.equal(ids.has('odd'), false);
+  assert.equal(await ids.take('look_up', { q: 'acme' }, new AbortController().signal, 1), undefined);
 });
