@@ -271,20 +271,45 @@ export async function keepKept(settings: Pick<KeptSettings, "get" | "putIfAbsent
   return undefined;
 }
 
-/** Marks `runId`'s kept row ending at the run's end (run-end-computers.ts): the run is final, so its kept machine has no
- *  user, whichever runner kept it or claim is taking it back. No claim takes it back after (a follow-up that queues the
- *  run again makes a new one), so the run's end deleting it and its keeper's end agree; the keeper's end at its time, or
- *  any janitor's pass, finishes the row. A write that lost reads again, up to KEEP_TRIES times. True when the row reads
- *  ending or ended after, or there is none. */
-export async function endingKept(settings: Pick<KeptSettings, "get" | "replaceIf">, runId: string): Promise<boolean> {
+/** What came of marking a kept row ending before its machine's delete (endingKept): `marked`, the row reads ending or
+ *  ended now (or holds no keep the delete could take from a claim), so the delete may go on; `left`, the row is a later
+ *  claim's keep, or a claim is taking it back, so its machine `id` is that claim's and is not deleted; `unmarked`, no
+ *  try marked it (`why`), so its machine `id`, where the row was read, is not deleted either: it is left for the row's
+ *  own time (its keeper's end, or a janitor's pass). */
+export type KeptEnding =
+  | { readonly kind: "marked" }
+  | { readonly kind: "left"; readonly id?: string }
+  | { readonly kind: "unmarked"; readonly id?: string; readonly why: string };
+
+/** The compare-and-set every ending mark goes by: the row read, judged ("go": the delete may go on as it reads;
+ *  "leave": its machine is not this delete's; "mark": marked ending, only while it still reads so), read again after a
+ *  write that lost, up to KEEP_TRIES times. */
+async function markEnding(settings: Pick<KeptSettings, "get" | "replaceIf">, runId: string, judge: (kept: Kept | undefined) => "go" | "leave" | "mark"): Promise<KeptEnding> {
   const key = keptKeyOf(runId);
+  let id: string | undefined;
   for (let tries = 0; tries < KEEP_TRIES; tries += 1) {
     const was = await settings.get(key);
     const kept = keptOf(was);
-    if (!kept || kept.ending || kept.ended) return true;
-    if (await settings.replaceIf(key, was, rowOf(kept, "ending"))) return true;
+    id = kept?.id ?? id;
+    const verdict = judge(kept);
+    if (verdict === "go") return { kind: "marked" };
+    if (verdict === "leave") return { kind: "left", ...(kept ? { id: kept.id } : {}) };
+    if (await settings.replaceIf(key, was, rowOf(kept!, "ending"))) return { kind: "marked" };
   }
-  return false;
+  return { kind: "unmarked", ...(id === undefined ? {} : { id }), why: "the row kept changing" };
+}
+
+/** Marks `runId`'s kept row ending at the run's end (run-end-computers.ts), for the claim at `epoch` that ended the run:
+ *  the run is final, so a machine kept at or before that claim has no user, whichever runner kept it or older claim is
+ *  taking it back. No claim takes it back after, so the run's end deleting it and its keeper's end agree; the keeper's
+ *  end at its time, or any janitor's pass, finishes the row. A row of a later claim (its machine made at a later epoch,
+ *  or a later claim taking it back: a follow-up that queued the run again while this end waited on the store) is left
+ *  as that claim wrote it, and so is its machine (`left`). */
+export async function endingKept(settings: Pick<KeptSettings, "get" | "replaceIf">, runId: string, epoch: number): Promise<KeptEnding> {
+  return markEnding(settings, runId, (kept) => {
+    if (!kept || kept.ending || kept.ended) return "go";
+    return kept.epoch > epoch || (kept.taking ?? 0) > epoch ? "leave" : "mark";
+  });
 }
 
 /** Takes `row` off `runId`'s row, only while it still reads so: a keep written for a park that never followed. */

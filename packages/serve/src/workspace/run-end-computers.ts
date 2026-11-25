@@ -19,14 +19,15 @@
 // A machine the run's park kept (computer-kept.ts) goes too when this end's provider lists it, whichever runner kept it:
 // the run is final, so it has no user. Its row is marked ending first (endingKept), so no claim takes it back while the
 // delete runs (a follow-up that queues the run again makes a new one), and its runner's own end then reads it gone and
-// marks its row ended.
-import { releaseOlder } from "@parcha/agentrun-computer";
+// marks its row ended. A row a later claim wrote or is taking back (a follow-up that queued the run again while this end
+// waited on the store) is that claim's: the mark leaves it as it stands, and the delete leaves its machine.
+import { type ComputerProvider, epochOf, ok, releaseOlder } from "@parcha/agentrun-computer";
 import { KEY_TABLE, providerOptions } from "../computer-keys.js";
 import { readLaunchBody } from "../run-launch.js";
 import type { Store } from "../store/index.js";
 import { settingOf } from "./computer-for-claim.js";
 import type { ComputerDeps } from "./computer-deps.js";
-import { endingKept } from "./computer-kept.js";
+import { endingKept, type KeptEnding } from "./computer-kept.js";
 import { storeLedger } from "./computer-ledger.js";
 import { type ComputerSetting, providerKeys } from "./resolve-computer.js";
 import { endingDeletes, intervalWrites } from "./computer-intervals.js";
@@ -42,6 +43,28 @@ class NoProviderHere extends Error {}
 
 /** A releaseOlder answer no later try changes: fenced by a later claim's computer (refused), asked wrongly, or cut. */
 const FINAL_CODES: ReadonlySet<string> = new Set(["refused", "invalid", "aborted"]);
+
+/** `provider` with the kept machine `id` out of its lists, where releaseOlder would delete it (labelled at or below the
+ *  ending claim's `epoch`, or with no epoch it can read); labelled above, it stays listed and fences the call as before. */
+function sparing(provider: ComputerProvider, id: string, epoch: number): ComputerProvider {
+  return new Proxy(provider, {
+    get(target, key) {
+      if (key !== "list") {
+        const value: unknown = Reflect.get(target, key, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      }
+      return async (...args: Parameters<ComputerProvider["list"]>) => {
+        const listed = await target.list(...args);
+        if (!listed.ok) return listed;
+        return ok(listed.value.filter((info) => {
+          if (info.ref.id !== id) return true;
+          const read = epochOf(info.labels);
+          return read.ok && read.value > epoch;
+        }));
+      };
+    },
+  });
+}
 
 /** Waits `ms`, or less when `signal` aborts first: whether the wait ran its course. */
 const pause = (ms: number, signal: AbortSignal): Promise<boolean> =>
@@ -110,16 +133,20 @@ export function runEndComputers(deps: RunEndComputersDeps): (claim: { readonly r
       said = true;
       log(`run ${runId} is over, but its computers could not be let go: ${why}`);
     };
-    // Its kept row, where its park kept one, marked ending before any delete: no claim takes that machine back now.
-    const marked = await endingKept(store.settings, runId).catch((error: unknown) => (error instanceof Error ? error.message : String(error)));
-    if (marked !== true) log(`run ${runId} is over, but its kept computer's row could not be marked ending: ${marked === false ? "the row kept changing" : marked}`);
+    // Its kept row, where its park kept one, marked ending before any delete: no claim takes that machine back now. A
+    // later claim's keep is left as it stands, its machine with it (endingKept).
+    const marked = await endingKept(store.settings, runId, epoch).catch((error: unknown): KeptEnding => ({ kind: "unmarked", why: error instanceof Error ? error.message : String(error) }));
+    if (marked.kind === "unmarked") log(`run ${runId} is over, but its kept computer's row could not be marked ending: ${marked.why}`);
+    /** The kept machine this end leaves, a later claim's. */
+    const spared = marked.kind === "left" ? marked.id : undefined;
     /** The last try's failure, for the line said at the bound. */
     let why = `its provider did not answer within ${bound / 1000} s`;
     const tries = async () => {
       for (;;) {
         try {
-          const provider = await providerOf(runId, epoch);
-          if (!provider) return;
+          const found = await providerOf(runId, epoch);
+          if (!found) return;
+          const provider = spared === undefined ? found : sparing(found, spared, epoch);
           // Every claim's at or below this one's: a computer of a later epoch fences the call (a later claim holds the run).
           const released = await releaseOlder(provider, runId, epoch + 1, { signal });
           if (released.ok) {
