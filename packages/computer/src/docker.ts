@@ -1479,17 +1479,18 @@ export class DockerProvider implements ComputerProvider {
 	 * or "No such container". "Removal of container ... is already in progress" means another removal of it is under way,
 	 * so it is going away: it is looked for, SETTLE_EVERY_MS apart, until it is gone (ok), the caller's `signal` aborts
 	 * (aborted), or `bound` runs out with it still there (a failure that names it). Every other answer is the failure it is.
+	 * `bound` is a SETTLE_MS bound, which the failure's words name: never a time measured here, which a late wake-up
+	 * would overstate.
 	 */
 	async #gone(ran: Ran, key: string, what: string, bound: AbortSignal, signal?: AbortSignal): Promise<Result<void>> {
 		if (ran.exitCode === 0 || noSuchContainer(ran.stderr)) return ok(undefined);
 		if (!removalUnderWay(ran.stderr)) return vendorFail("docker", `${what} failed: ${ran.stderr.trim()}`);
-		const from = Date.now();
 		const either = signal ? AbortSignal.any([signal, bound]) : bound;
 		for (;;) {
 			const look = await this.#inspect([key], either, "{{json .Id}}");
 			if (look.ok && look.value.length === 0) return ok(undefined);
 			if (signal?.aborted) return fail("aborted", `${what} was aborted while docker was still removing ${key}`);
-			if (bound.aborted) return vendorFail("docker", `${what} failed: docker answered that the removal of ${key} was already in progress, and it was still there ${Math.round((Date.now() - from) / 1000)} s later`);
+			if (bound.aborted) return vendorFail("docker", `${what} failed: docker answered that the removal of ${key} was already in progress, and it was still there when the ${SETTLE_MS / 1000} s bound ran out`);
 			if (!look.ok) return look;
 			await sleep(SETTLE_EVERY_MS, undefined, { signal: either }).catch(() => undefined);
 		}
