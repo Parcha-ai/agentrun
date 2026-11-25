@@ -76,7 +76,8 @@ replaces, as it always has, and prints no `Starting` line.
 A Docker box's image is built on its first run, which shows that on its timeline. `npx @parcha/agentrun` prints the
 `Boxes:` line on stderr, after its own line on stdout. On a machine where Docker is not running, the `Boxes:` line says so instead (`Boxes: none, so a new agent must name its
 place: a box, or the runner. Docker isn't running on this machine (no docker command on PATH): install or start Docker,
-then restart AgentRun.`); see [Sandbox](#sandbox).
+then restart AgentRun.`; in Mode 2, where the runner's shell is Archil's serverless exec, `Boxes: none, so new agents run on
+the runner.` and Docker's reason); see [Sandbox](#sandbox).
 
 `Open` is [the console](#the-console), which takes [your password](#your-password). For a client, export the two lines before
 it, then make an agent, start a run, and read its timeline until a page says `final`:
@@ -627,24 +628,35 @@ or `read`, `write`, `web_fetch` and the like) is saved with no place and runs on
 once instead of waiting on a container. One whose tools name one the box refuses (`browser`, runner-only for now) is
 saved with no place too. A workflow is never given a box.
 
-Where Docker's box is unavailable, a new agent that would get it (no tools named, or a shell tool) is refused `422
-input_invalid` at `definition.place`, and so is an edit that would save such a revision: `name a box: this server has no
-Docker box for a new agent. Set place to {mode: sandbox, box: <one of: daytona, e2b>}, or to {mode: runner} to run
-without a shell.` The words list the boxes this server has (`<none is set up>` when it has none) and its `fix` says the
-same, so no box is picked for it: the default box is Docker's, by its id, never another box that answers. In Mode 2 a
-shell tool the runner's own shell runs (`bash`, on Archil's serverless exec) needs no box, so an agent naming it alone
-still saves with no place. A definition that names its place, the runner included, a workflow, and one whose tools need
-no shell save as before.
+Where a new agent with no place goes, by mode:
 
-`capabilities.places.default_place` is the place a new agent with a shell gets here, and where a revision that names no
-place and has a shell tool runs. It is worked out again at each run, the same way as at create: an agentic revision with
-no place and a shell tool runs in the Docker box wherever this server has docker now, and on the runner where it does
-not. A workflow, a revision whose tools need no shell, and one whose tools name one the box refuses run on the runner. A save checks a revision with no place against where it would run, so `bash`
-with no place saves where docker is there and is `422` where it is not. When that is the runner, `default_reason` is
-the words such a create is refused in (`name a box: …`), and docker's own reason is on its entry in `boxes`. A run of a
-revision saved earlier with no place and a shell tool, which would run on the runner without its shell now that Docker is
-gone, is `409 agent_not_runnable` in the same words. The console's new-agent form says each box's reason under its place
-picker, and that the agent needs a box set up or On the server chosen. The console's new-agent form starts on `default_place`, with bash ticked when that place is a sandbox.
+- **Docker's box available:** it gets the box (`default_place` is `{"mode": "sandbox", "box": "docker"}`, no
+  `default_reason`), as above.
+- **No Docker, and the runner has no shell (Mode 1): refused, `name a box`.** A new agent that would get the box (no
+  tools named, or a shell tool) is `422 input_invalid` with `{field: "definition.place", reason: "missing"}`, and so is an
+  edit that would save such a revision: `name a box: this server has no Docker box for a new agent. Set place to {mode:
+  sandbox, box: <one of: daytona, e2b>}, or to {mode: runner} to run without a shell.` The words list the boxes this
+  server has (`<none is set up>` when it has none) and its `fix` says the same, so no box is picked for it: the default
+  box is Docker's, by its id, never another box that answers. `default_place` is `null`, and `default_reason` carries
+  those words.
+- **No Docker, in Mode 2:** not refused. The runner's shell is Archil's serverless exec, so a new agent with no place
+  saves for the runner as before, and `default_place` is `{"mode": "runner"}`, no `default_reason`. A background tool
+  still runs in a box alone, so naming one with no place is refused at the tool.
+
+A definition that names its place, the runner included, a workflow, one whose tools need no shell, and a template apply
+(which compiles its tools where it runs, a box's shell tools only where Docker's box is here) save as before in every
+mode.
+
+`capabilities.places.default_place` is always sent: the place a new agent with a shell gets here, and where a revision
+that names no place and has a shell tool runs; `null` means no default, so a new agent names its place. It is worked out
+again at each run, the same way as at create: an agentic revision with no place and a shell tool runs in the Docker box
+wherever this server has docker now, on the runner in Mode 2, and in Mode 1 with no Docker its run is `409
+agent_not_runnable` in the `name a box` words. A workflow, a revision whose tools need no shell, and one whose tools name
+one the box refuses run on the runner. `default_reason` is there exactly when `default_place` is `null`; a client tells
+the cases apart by `default_place === null`, never by reading `default_reason`. Docker's own reason is on its entry in
+`boxes`. The console's new-agent form starts on `default_place`, with bash ticked when that place is a sandbox; with
+`null`, it starts on neither the server nor a box, Create waits until one is chosen, and its picker says each box's
+reason, and, with no box set up, that the agent needs one set up or On the server chosen.
 What a person picks or unticks there is what is sent.
 
 A run runs in its revision's place, else where `default_place` says at that run (a workflow, a revision whose tools need
@@ -664,8 +676,8 @@ the server is in Mode 1.
 `unavailable`) and, when it is unavailable, the `reason`.
 A definition naming a box this server does not have saves with a warning on `definition.place`, and a run of it is
 `409 agent_not_runnable` with `details.box`. `GET /v2/openapi.json` marks `definition.place`, the run's `place` and
-`capabilities.places` `x-agentrun-serve: "place/1"`, `default_reason` `"place/3"`, and `default_place` `"place/4"`
-(it replaced `places.default`).
+`capabilities.places` `x-agentrun-serve: "place/1"`, and `default_place` and `default_reason` `"place/5"` (`default_place`
+replaced `places.default`, and took `null` at place/5).
 
 ### A run in a Docker box
 
