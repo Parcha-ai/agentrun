@@ -185,9 +185,8 @@ for (const harness of ["claude-agent", "codex"]) {
     const { rows } = await follow(api, run_id, ["completed", "failed", "cancelled"], { deadlineMs: 60_000 });
     const run = await view(api, run_id);
     assert.deepEqual([run.status, run.error, run.cost.cap_usd, run.result?.final_answer], ["completed", null, 1, "Read it."], JSON.stringify(run));
-    // The person's message first. (The server's follow-up row on a CLI's run comes with #2430's per-request record; the
-    // wrap-up after it with the cap's note on the runner, #2080.)
-    assert.equal(said(rows)[0], "go", JSON.stringify(said(rows)));
+    // The person's message, the server's follow-up (its row from the CLI's own record), then the wrap-up told in its request.
+    assert.deepEqual(said(rows), ["go", CONTINUE("$1"), WRAP_UP_FIRST("$1")], JSON.stringify(said(rows)));
   });
 }
 
@@ -215,8 +214,7 @@ test("the suggested raise is a whole dollar, always above the cap, and a float j
 });
 
 for (const harness of ["claude-agent", "codex"]) {
-  // SKIP (#2430): a message to a raised run that went on and completed answers 409 until a completed run reopens on a message.
-  test.skip(`${harness}: a run raised past its pause and gone on, then sent a message, ends that turn completed: the refusal is the paused turn's only`, { timeout: 120_000 }, async (t) => {
+  test(`${harness}: a run raised past its pause and gone on, then sent a message, ends that turn completed: the refusal is the paused turn's only`, { timeout: 120_000 }, async (t) => {
     const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: OUTPUT_PRICED });
     assert.equal((await api("POST", "/agents", agent(`after-${harness}`, { harness, instructions: "Make three requests." }))).status, 201);
     const { run_id } = (await api("POST", `/agents/after-${harness}/runs`, { input: { content: "go" }, max_cost_usd: 0.05 })).body;
@@ -255,8 +253,8 @@ test("a raise is the same cap within a float's tail: a cap a hair above the run'
 });
 
 for (const harness of ["pi", "claude-agent"]) {
-  // A CLI's run records its follow-up through #2430's per-request record (CliRecord.followUp): skipped there until it lands.
-  (harness === "pi" ? test : test.skip)(`${harness}: a raise's follow-up shows as the server's, "AgentRun: The cap was raised to $1; continue the task.", never as the person's "You: …"`, { timeout: 120_000 }, async (t) => {
+  // A CLI's run records its follow-up in its own record (CliRecord.followUp), with the server's origin.
+  test(`${harness}: a raise's follow-up shows as the server's, "AgentRun: The cap was raised to $1; continue the task.", never as the person's "You: …"`, { timeout: 120_000 }, async (t) => {
     const { api } = await serve(t, { faux: OUTPUT_PRICED, ...(harness === "pi" ? {} : { harnessTable: fauxTable(FAUX_HARNESS) }) });
     assert.equal((await api("POST", "/agents", agent(`said-${harness}`, { ...(harness === "pi" ? {} : { harness }), instructions: "Make three requests." }))).status, 201);
     const { run_id } = (await api("POST", `/agents/said-${harness}/runs`, { input: { content: "go" }, max_cost_usd: 0.05 })).body;

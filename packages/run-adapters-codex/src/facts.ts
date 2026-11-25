@@ -22,6 +22,8 @@ export const facts: AdapterFacts = Object.freeze<AdapterFacts>({
   // Codex's own live search, booked per call.
   webSearch: "live",
   ownModel: false,
+  // Its proxy forwards with the fetch it is handed: a model the route translates onto its wire runs on it.
+  forwardsRoute: true,
   // Its own code mode runs the model's scripts, each nested call one of the host's tools through its bridge.
   ownCodemode: true,
   // Its dynamic tools are given at thread/start alone: thread/resume and thread/settings/update take none (the pinned

@@ -34,6 +34,7 @@ import {
 	samePolicy,
 	tmpfsOf,
 } from "./docker/inspect.js";
+import { dockerEnv, type HostEnv } from "./child-env.js";
 import { DOCKER_RECIPE, type EnsureImageOptions, ensureImage, type ImageSource, imageSourceProblem } from "./docker/image.js";
 import {
 	ALLOW_PORTS,
@@ -56,6 +57,7 @@ import {
 	egressVolumeArgs,
 	hostAddresses,
 	MAX_ALLOW,
+	NO_CONFIG_PROXY,
 	policyWords,
 	RELAY_FLAG,
 } from "./docker/egress.js";
@@ -150,6 +152,10 @@ export interface DockerProviderOptions {
 	 * an older engine is refused by check and create. Without it, every path is bound as it is (src/docker/volume.ts).
 	 */
 	volume?: { name: string; root: string };
+	/** The host's environment variables, of which every docker CLI call holds the names docker reads (DOCKER_ENV_NAMES:
+	 *  where the daemon is, its config and credential helpers, PATH and HOME) and nothing else, so no key the host holds
+	 *  reaches docker or what it starts. The provider reads no environment: without env, docker starts with none. */
+	env?: HostEnv;
 }
 
 
@@ -161,11 +167,12 @@ export interface DockerCreateOptions extends Partial<DockerProviderOptions> {
 
 /**
  * Docker's architecture as `docker version` reports it (amd64, arm64), within timeoutMs, or an error in words. The docker
- * CLI runs with this process's environment, as every call of the provider does, so it asks the Docker the provider uses.
+ * CLI runs with the names of `env` docker reads (dockerEnv), as every call of the provider does, so it asks the Docker the
+ * provider uses.
  */
-export function dockerArch({ docker = "docker", timeoutMs = 30_000 }: Pick<DockerCreateOptions, "docker" | "timeoutMs"> = {}): Promise<string> {
+export function dockerArch({ docker = "docker", timeoutMs = 30_000, env }: Pick<DockerCreateOptions, "docker" | "timeoutMs" | "env"> = {}): Promise<string> {
 	return new Promise((resolve, reject) => {
-		execFile(docker, ["version", "--format", "{{.Server.Arch}}"], { encoding: "utf8", timeout: timeoutMs, killSignal: "SIGKILL" }, (error, stdout, stderr) => {
+		execFile(docker, ["version", "--format", "{{.Server.Arch}}"], { env: dockerEnv(env), encoding: "utf8", timeout: timeoutMs, killSignal: "SIGKILL" }, (error, stdout, stderr) => {
 			if (!error) return resolve(stdout.trim());
 			const killed = error.killed === true && error.signal === "SIGKILL";
 			const why = killed ? `${docker} version did not answer within ${timeoutMs / 1000} s, so it was killed` : (stderr.trim() || error.message).split("\n")[0];
@@ -193,7 +200,7 @@ export async function create(options: DockerCreateOptions = {}): Promise<DockerP
 	const { timeoutMs, ...given } = options;
 	let daemonPath = given.daemonPath || undefined;
 	if (daemonPath === undefined) {
-		const daemon = dockerDaemonOf(await dockerArch({ ...(given.docker ? { docker: given.docker } : {}), ...(timeoutMs === undefined ? {} : { timeoutMs }) }));
+		const daemon = dockerDaemonOf(await dockerArch({ ...(given.docker ? { docker: given.docker } : {}), ...(given.env ? { env: given.env } : {}), ...(timeoutMs === undefined ? {} : { timeoutMs }) }));
 		if (daemon.missing !== undefined) throw new Error(daemon.missing);
 		daemonPath = daemon.path;
 	}
@@ -304,6 +311,8 @@ export class DockerProvider implements ComputerProvider {
 	/** The volume option: the daemon's staged directory and a run folder are its subpaths (src/docker/volume.ts). */
 	readonly #volume: DockerVolume | undefined;
 	readonly #docker: string;
+	/** Every docker CLI call's whole environment (dockerEnv of the env option). */
+	readonly #env: Record<string, string>;
 	readonly #user: string;
 	readonly #desktop: Required<DockerDesktopOptions> | undefined;
 	readonly #image: ImageSource;
@@ -334,7 +343,7 @@ export class DockerProvider implements ComputerProvider {
 	/** The host as docker info first read it: a host's enforcement does not change under a running provider. */
 	#host: DockerHost | undefined;
 
-	constructor({ daemonPath, daemonCache, docker = "docker", user, desktop, egress, image = { recipe: DOCKER_RECIPE }, volume }: DockerProviderOptions) {
+	constructor({ daemonPath, daemonCache, docker = "docker", user, desktop, egress, image = { recipe: DOCKER_RECIPE }, volume, env }: DockerProviderOptions) {
 		this.#daemonPath = resolve(daemonPath);
 		this.#daemonCache = resolve(daemonCache ?? defaultDaemonCache());
 		this.#volume = volume === undefined ? undefined : volumeOf(volume);
@@ -343,6 +352,7 @@ export class DockerProvider implements ComputerProvider {
 			throw new Error(`${outsideWords(this.#volume, this.#daemonCache, "the provider's daemonCache")}: pass a daemonCache below it`);
 		}
 		this.#docker = docker;
+		this.#env = dockerEnv(env);
 		const unusable = imageSourceProblem(image);
 		if (unusable !== undefined) throw new Error(`the provider's image: ${unusable}`);
 		this.#image = image;
@@ -386,7 +396,7 @@ export class DockerProvider implements ComputerProvider {
 	 * Docker has none; one inspect when it has. Concurrent calls in one process share one build (ensureImage).
 	 */
 	image(options: CallContext & Pick<EnsureImageOptions, "timeoutMs" | "onWait"> = {}): Promise<Result<string>> {
-		return ensureImage(this.#image, { ...options, docker: this.#docker });
+		return ensureImage(this.#image, { ...options, docker: this.#docker, env: this.#env });
 	}
 
 	/** The provider contract's prepareImage (its descriptor declares it): image(), its recipe built or its image pulled. */
@@ -648,6 +658,7 @@ export class DockerProvider implements ComputerProvider {
 		const memoryMb = spec.memoryMb ?? DEFAULT_MEMORY_MB;
 		args.push("--user", user, "--env", `HOME=${WORK}`);
 		if (this.#desktop) args.push("--env", `DISPLAY=${this.#desktop.display}`);
+		args.push(...NO_CONFIG_PROXY);
 		for (const [path, options] of Object.entries(tmpfsOf(user, memoryMb))) args.push("--tmpfs", `${path}:${options}`);
 		args.push("--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", String(spec.pids ?? DEFAULT_PIDS));
 		// Not the daemon's defaults, which a host may set to shareable IPC or, on cgroup v1, the host's cgroup namespace.
@@ -1092,7 +1103,7 @@ export class DockerProvider implements ComputerProvider {
 
 	/** One connection to the computer's daemon, after hello, unchecked. */
 	async #open(ref: ComputerRef, signal?: AbortSignal): Promise<Result<ComputerConnection>> {
-		const child = spawn(this.#docker, ["exec", "-i", ref.name, DAEMON_IN_COMPUTER, "stdio"], { stdio: ["pipe", "pipe", "pipe"] });
+		const child = spawn(this.#docker, ["exec", "-i", ref.name, DAEMON_IN_COMPUTER, "stdio"], { env: this.#env, stdio: ["pipe", "pipe", "pipe"] });
 		let stderr = "";
 		child.stderr.on("data", (chunk: Buffer) => {
 			stderr = (stderr + chunk.toString("utf8")).slice(-4096);
@@ -1452,7 +1463,7 @@ export class DockerProvider implements ComputerProvider {
 
 	#run(args: string[], signal?: AbortSignal): Promise<Result<Ran>> {
 		return new Promise((done) => {
-			execFile(this.#docker, args, { signal, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }, (error, stdout, stderr) => {
+			execFile(this.#docker, args, { env: this.#env, signal, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }, (error, stdout, stderr) => {
 				if (error === null) return done(ok({ exitCode: 0, stdout, stderr }));
 				if (error.name === "AbortError") return done(fail("aborted", `docker ${args[0]} was aborted`));
 				if (typeof error.code === "number") return done(ok({ exitCode: error.code, stdout, stderr }));
