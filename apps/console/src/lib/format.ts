@@ -179,8 +179,9 @@ export function capDollars(usd: number): string {
 }
 
 /** The run files a run's Markdown may link to: their paths as GET /v2/runs/{id}/files lists them, and `from`, the folder
- *  of the file the Markdown is in ("" for the run's answer), which its relative links are read from. */
-export type LinkedFiles = { paths: readonly string[]; from?: string };
+ *  of the file the Markdown is in ("" for the run's answer), which its relative links are read from. `images: false`: a
+ *  share's Markdown, whose bundle carries no image: each image reads as its alt text, so no source is ever loaded. */
+export type LinkedFiles = { paths: readonly string[]; from?: string; images?: false };
 
 /** The run file a relative link names, resolved from `from` as a browser would (./, ../, %20; no query or fragment), or
  *  null when it names none (a link no URL parser takes included). A path from the root (/x) is the server's, never a run
@@ -202,6 +203,7 @@ function runFile(href: string, files: LinkedFiles): string | null {
  *  to another app (mailto:, tel:) is as marked and the sanitizer leave it. */
 export function markdown(text: string, files?: LinkedFiles): string {
   const body = DOMPurify.sanitize(marked.parse(text, { async: false }) as string, { RETURN_DOM: true }) as HTMLElement;
+  if (files?.images === false) for (const img of [...body.querySelectorAll("img")]) img.replaceWith(img.getAttribute("alt") ?? "");
   // A code block wraps inside its box (a long line breaks, never runs past the page's edge).
   for (const pre of [...body.querySelectorAll("pre")]) pre.classList.add("whitespace-pre-wrap", "break-words", "[overflow-wrap:anywhere]");
   // A cut value's marker (the scrubber's `[redacted:<rule>]`) reads as a chip, its words kept.
