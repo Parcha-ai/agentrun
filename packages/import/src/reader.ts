@@ -63,6 +63,10 @@ export type ReadOptions = {
    *  `seen` like any other, as no later read takes it again. Default true: it is left out of `seen` until a read from
    *  the cursor takes it whole. */
   keepsCursor?: boolean;
+  /** The longest line, in bytes, the read takes: a longer one ends it with a LineTooLong error, before the line is
+   *  decoded. The read pool's workers set it to an eighth of their heap (pool.ts), so that no one line can end the
+   *  process; parseHome then reads the file on its own thread, with no such bound. Default: none. */
+  maxLine?: number;
 };
 
 export type Reader<S extends string = string, C = unknown> = {

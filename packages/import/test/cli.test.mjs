@@ -57,12 +57,28 @@ test("--sources picks the sources; an unknown one, or no --known-answer, is a us
   assert.equal(run("--known-answer").status, 2);
 });
 
+test("--threads and --read-ahead change how the home is read, not the answer; a bad value is a usage error", async (t) => {
+  const dir = await home(t);
+  const plain = run(dir, "--known-answer");
+  assert.equal(plain.status, 0, plain.stderr);
+  for (const args of [["--threads", "1"], ["--threads", "2", "--read-ahead", "0"], ["--threads", "3", "--read-ahead", "64k"], ["--read-ahead", "1G"]]) {
+    const result = run(dir, ...args, "--known-answer");
+    assert.equal(result.status, 0, `${args.join(" ")}: ${result.stderr}`);
+    assert.equal(result.stdout, plain.stdout, args.join(" "));
+  }
+  for (const args of [["--threads", "0"], ["--threads", "2.5"], ["--threads", "two"], ["--read-ahead", "-1"], ["--read-ahead", "1t"], ["--threads", "1k"], ["--threads", "65"]]) {
+    const result = run(dir, ...args, "--known-answer");
+    assert.equal(result.status, 2, args.join(" "));
+    assert.match(result.stderr, /usage: agentrun-import/, args.join(" "));
+  }
+});
+
 test("--help and -h print the usage to stdout and exit 0; a bad argument is still exit 2", () => {
   for (const flag of ["--help", "-h"]) {
     for (const args of [[flag], ["/nowhere", flag, "--known-answer"]]) {
       const result = run(...args);
       assert.equal(result.status, 0, result.stderr);
-      assert.match(result.stdout, /^usage: agentrun-import <home> \[--sources claude-code,codex,pi,opencode\] --known-answer\n/);
+      assert.match(result.stdout, /^usage: agentrun-import <home> \[--sources claude-code,codex,pi,opencode\] \[--threads N\] \[--read-ahead BYTES\[k\|m\|g\]\] --known-answer\n/);
       assert.equal(result.stderr, "");
     }
   }

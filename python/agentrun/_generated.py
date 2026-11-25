@@ -728,20 +728,42 @@ __all__ = [
     "ListLearningPromotionsResponsePromotionsItemAuditDisagreementsItem",
     "ListLearningPromotionsResponsePromotionsItemCheck",
     "ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItem",
+    "ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItemExpectedItem",
+    "ListLearningPromotionsResponsePromotionsItemCheckFieldsValue",
+    "ListLearningPromotionsResponsePromotionsItemCheckFieldsValueBy",
+    "ListLearningPromotionsResponsePromotionsItemCheckFieldsValueByAgent",
+    "ListLearningPromotionsResponsePromotionsItemCheckFieldsValueByGrade",
+    "ListLearningPromotionsResponsePromotionsItemCheckFieldsValueByLabel",
     "ListLearningPromotionsResponsePromotionsItemCheckOutcomes",
     "ListLearningPromotionsResponsePromotionsItemCheckSkippedToolsItem",
     "ListLearningPromotionsResponsePromotionsItemCheckTurns",
     "ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItem",
+    "ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItemExpectedItem",
+    "ListLearningPromotionsResponsePromotionsItemCheckTurnsFieldsValue",
+    "ListLearningPromotionsResponsePromotionsItemCheckTurnsFieldsValueAgent",
+    "ListLearningPromotionsResponsePromotionsItemCheckTurnsFieldsValueGrade",
+    "ListLearningPromotionsResponsePromotionsItemCheckTurnsFieldsValueLabel",
     "ListLearningPromotionsResponsePromotionsItemCheckTurnsOutcomes",
     "ListLearningPromotionsResponseServingItem",
     "ListLearningPromotionsResponseServingItemAudit",
     "ListLearningPromotionsResponseServingItemChampion",
     "ListLearningPromotionsResponseServingItemChampionCheck",
     "ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItem",
+    "ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItemExpectedItem",
+    "ListLearningPromotionsResponseServingItemChampionCheckFieldsValue",
+    "ListLearningPromotionsResponseServingItemChampionCheckFieldsValueBy",
+    "ListLearningPromotionsResponseServingItemChampionCheckFieldsValueByAgent",
+    "ListLearningPromotionsResponseServingItemChampionCheckFieldsValueByGrade",
+    "ListLearningPromotionsResponseServingItemChampionCheckFieldsValueByLabel",
     "ListLearningPromotionsResponseServingItemChampionCheckOutcomes",
     "ListLearningPromotionsResponseServingItemChampionCheckSkippedToolsItem",
     "ListLearningPromotionsResponseServingItemChampionCheckTurns",
     "ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsItem",
+    "ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsItemExpectedItem",
+    "ListLearningPromotionsResponseServingItemChampionCheckTurnsFieldsValue",
+    "ListLearningPromotionsResponseServingItemChampionCheckTurnsFieldsValueAgent",
+    "ListLearningPromotionsResponseServingItemChampionCheckTurnsFieldsValueGrade",
+    "ListLearningPromotionsResponseServingItemChampionCheckTurnsFieldsValueLabel",
     "ListLearningPromotionsResponseServingItemChampionCheckTurnsOutcomes",
     "ListLearningPromotionsResponseServingItemChampionNodesItem",
     "ListLearningPromotionsResponseServingItemChampionNodesItemChecksItem",
@@ -2748,6 +2770,8 @@ class ListLearningPromotionsResponsePromotionsItemCheck(_ListLearningPromotionsR
     n: int
     agreed: int
     alone: int
+    agent_agreed: int
+    fields: dict[str, ListLearningPromotionsResponsePromotionsItemCheckFieldsValue]
     of: list[str]
     cost_usd: float | None
     outcomes: ListLearningPromotionsResponsePromotionsItemCheckOutcomes
@@ -2758,6 +2782,29 @@ class ListLearningPromotionsResponsePromotionsItemCheck(_ListLearningPromotionsR
     released: int
     fresh_reads: int
     turns: ListLearningPromotionsResponsePromotionsItemCheckTurns
+
+
+_ListLearningPromotionsResponsePromotionsItemCheckFieldsValueRequired = TypedDict("_ListLearningPromotionsResponsePromotionsItemCheckFieldsValueRequired", {"n": "int", "workflow_right": "int", "agent_right": "int", "known": "Literal[\"label\", \"grade\", \"agent\"]", "pass": "bool", "reason": "str", "by": "ListLearningPromotionsResponsePromotionsItemCheckFieldsValueBy"})
+_ListLearningPromotionsResponsePromotionsItemCheckFieldsValueOptional = TypedDict("_ListLearningPromotionsResponsePromotionsItemCheckFieldsValueOptional", {"unjudged": "int"}, total=False)
+
+
+class ListLearningPromotionsResponsePromotionsItemCheckFieldsValue(_ListLearningPromotionsResponsePromotionsItemCheckFieldsValueRequired, _ListLearningPromotionsResponsePromotionsItemCheckFieldsValueOptional):
+    pass
+
+
+class ListLearningPromotionsResponsePromotionsItemCheckFieldsValueBy(TypedDict, total=False):
+    label: ListLearningPromotionsResponsePromotionsItemCheckFieldsValueByLabel
+    grade: ListLearningPromotionsResponsePromotionsItemCheckFieldsValueByGrade
+    agent: ListLearningPromotionsResponsePromotionsItemCheckFieldsValueByAgent
+
+
+ListLearningPromotionsResponsePromotionsItemCheckFieldsValueByLabel = TypedDict("ListLearningPromotionsResponsePromotionsItemCheckFieldsValueByLabel", {"n": "int", "workflow_right": "int", "agent_right": "int", "pass": "bool"})
+
+
+ListLearningPromotionsResponsePromotionsItemCheckFieldsValueByGrade = TypedDict("ListLearningPromotionsResponsePromotionsItemCheckFieldsValueByGrade", {"n": "int", "workflow_right": "int", "agent_right": "int", "pass": "bool"})
+
+
+ListLearningPromotionsResponsePromotionsItemCheckFieldsValueByAgent = TypedDict("ListLearningPromotionsResponsePromotionsItemCheckFieldsValueByAgent", {"n": "int", "workflow_right": "int", "agent_right": "int", "pass": "bool"})
 
 
 class ListLearningPromotionsResponsePromotionsItemCheckOutcomes(TypedDict):
@@ -2784,6 +2831,17 @@ class ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItem(_ListLe
     escalated: str
     failed: Literal[True]
     differs_on: str
+    fields: list[str]
+    expected: list[ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItemExpectedItem]
+
+
+class _ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItemExpectedItemRequired(TypedDict):
+    field: str
+    known: Literal["label", "grade", "unknown"]
+
+
+class ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItemExpectedItem(_ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItemExpectedItemRequired, total=False):
+    value: str
 
 
 class _ListLearningPromotionsResponsePromotionsItemCheckTurnsRequired(TypedDict):
@@ -2796,6 +2854,8 @@ class _ListLearningPromotionsResponsePromotionsItemCheckTurnsRequired(TypedDict)
 
 class ListLearningPromotionsResponsePromotionsItemCheckTurns(_ListLearningPromotionsResponsePromotionsItemCheckTurnsRequired, total=False):
     disagreements: list[ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItem]
+    agent_agreed: int
+    fields: dict[str, ListLearningPromotionsResponsePromotionsItemCheckTurnsFieldsValue]
     fresh_reads: int
 
 
@@ -2817,6 +2877,42 @@ class ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItem(_L
     escalated: str
     failed: Literal[True]
     differs_on: str
+    fields: list[str]
+    expected: list[ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItemExpectedItem]
+
+
+class _ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItemExpectedItemRequired(TypedDict):
+    field: str
+    known: Literal["label", "grade", "unknown"]
+
+
+class ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItemExpectedItem(_ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItemExpectedItemRequired, total=False):
+    value: str
+
+
+class ListLearningPromotionsResponsePromotionsItemCheckTurnsFieldsValue(TypedDict, total=False):
+    label: ListLearningPromotionsResponsePromotionsItemCheckTurnsFieldsValueLabel
+    grade: ListLearningPromotionsResponsePromotionsItemCheckTurnsFieldsValueGrade
+    agent: ListLearningPromotionsResponsePromotionsItemCheckTurnsFieldsValueAgent
+    unjudged: int
+
+
+class ListLearningPromotionsResponsePromotionsItemCheckTurnsFieldsValueLabel(TypedDict):
+    n: int
+    workflow_right: int
+    agent_right: int
+
+
+class ListLearningPromotionsResponsePromotionsItemCheckTurnsFieldsValueGrade(TypedDict):
+    n: int
+    workflow_right: int
+    agent_right: int
+
+
+class ListLearningPromotionsResponsePromotionsItemCheckTurnsFieldsValueAgent(TypedDict):
+    n: int
+    workflow_right: int
+    agent_right: int
 
 
 class _ListLearningPromotionsResponsePromotionsItemAuditRequired(TypedDict):
@@ -2901,6 +2997,8 @@ class ListLearningPromotionsResponseServingItemChampionCheck(_ListLearningPromot
     n: int
     agreed: int
     alone: int
+    agent_agreed: int
+    fields: dict[str, ListLearningPromotionsResponseServingItemChampionCheckFieldsValue]
     of: list[str]
     cost_usd: float | None
     outcomes: ListLearningPromotionsResponseServingItemChampionCheckOutcomes
@@ -2911,6 +3009,29 @@ class ListLearningPromotionsResponseServingItemChampionCheck(_ListLearningPromot
     released: int
     fresh_reads: int
     turns: ListLearningPromotionsResponseServingItemChampionCheckTurns
+
+
+_ListLearningPromotionsResponseServingItemChampionCheckFieldsValueRequired = TypedDict("_ListLearningPromotionsResponseServingItemChampionCheckFieldsValueRequired", {"n": "int", "workflow_right": "int", "agent_right": "int", "known": "Literal[\"label\", \"grade\", \"agent\"]", "pass": "bool", "reason": "str", "by": "ListLearningPromotionsResponseServingItemChampionCheckFieldsValueBy"})
+_ListLearningPromotionsResponseServingItemChampionCheckFieldsValueOptional = TypedDict("_ListLearningPromotionsResponseServingItemChampionCheckFieldsValueOptional", {"unjudged": "int"}, total=False)
+
+
+class ListLearningPromotionsResponseServingItemChampionCheckFieldsValue(_ListLearningPromotionsResponseServingItemChampionCheckFieldsValueRequired, _ListLearningPromotionsResponseServingItemChampionCheckFieldsValueOptional):
+    pass
+
+
+class ListLearningPromotionsResponseServingItemChampionCheckFieldsValueBy(TypedDict, total=False):
+    label: ListLearningPromotionsResponseServingItemChampionCheckFieldsValueByLabel
+    grade: ListLearningPromotionsResponseServingItemChampionCheckFieldsValueByGrade
+    agent: ListLearningPromotionsResponseServingItemChampionCheckFieldsValueByAgent
+
+
+ListLearningPromotionsResponseServingItemChampionCheckFieldsValueByLabel = TypedDict("ListLearningPromotionsResponseServingItemChampionCheckFieldsValueByLabel", {"n": "int", "workflow_right": "int", "agent_right": "int", "pass": "bool"})
+
+
+ListLearningPromotionsResponseServingItemChampionCheckFieldsValueByGrade = TypedDict("ListLearningPromotionsResponseServingItemChampionCheckFieldsValueByGrade", {"n": "int", "workflow_right": "int", "agent_right": "int", "pass": "bool"})
+
+
+ListLearningPromotionsResponseServingItemChampionCheckFieldsValueByAgent = TypedDict("ListLearningPromotionsResponseServingItemChampionCheckFieldsValueByAgent", {"n": "int", "workflow_right": "int", "agent_right": "int", "pass": "bool"})
 
 
 class ListLearningPromotionsResponseServingItemChampionCheckOutcomes(TypedDict):
@@ -2937,6 +3058,17 @@ class ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItem(_L
     escalated: str
     failed: Literal[True]
     differs_on: str
+    fields: list[str]
+    expected: list[ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItemExpectedItem]
+
+
+class _ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItemExpectedItemRequired(TypedDict):
+    field: str
+    known: Literal["label", "grade", "unknown"]
+
+
+class ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItemExpectedItem(_ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItemExpectedItemRequired, total=False):
+    value: str
 
 
 class _ListLearningPromotionsResponseServingItemChampionCheckTurnsRequired(TypedDict):
@@ -2949,6 +3081,8 @@ class _ListLearningPromotionsResponseServingItemChampionCheckTurnsRequired(Typed
 
 class ListLearningPromotionsResponseServingItemChampionCheckTurns(_ListLearningPromotionsResponseServingItemChampionCheckTurnsRequired, total=False):
     disagreements: list[ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsItem]
+    agent_agreed: int
+    fields: dict[str, ListLearningPromotionsResponseServingItemChampionCheckTurnsFieldsValue]
     fresh_reads: int
 
 
@@ -2970,6 +3104,42 @@ class ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsIt
     escalated: str
     failed: Literal[True]
     differs_on: str
+    fields: list[str]
+    expected: list[ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsItemExpectedItem]
+
+
+class _ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsItemExpectedItemRequired(TypedDict):
+    field: str
+    known: Literal["label", "grade", "unknown"]
+
+
+class ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsItemExpectedItem(_ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsItemExpectedItemRequired, total=False):
+    value: str
+
+
+class ListLearningPromotionsResponseServingItemChampionCheckTurnsFieldsValue(TypedDict, total=False):
+    label: ListLearningPromotionsResponseServingItemChampionCheckTurnsFieldsValueLabel
+    grade: ListLearningPromotionsResponseServingItemChampionCheckTurnsFieldsValueGrade
+    agent: ListLearningPromotionsResponseServingItemChampionCheckTurnsFieldsValueAgent
+    unjudged: int
+
+
+class ListLearningPromotionsResponseServingItemChampionCheckTurnsFieldsValueLabel(TypedDict):
+    n: int
+    workflow_right: int
+    agent_right: int
+
+
+class ListLearningPromotionsResponseServingItemChampionCheckTurnsFieldsValueGrade(TypedDict):
+    n: int
+    workflow_right: int
+    agent_right: int
+
+
+class ListLearningPromotionsResponseServingItemChampionCheckTurnsFieldsValueAgent(TypedDict):
+    n: int
+    workflow_right: int
+    agent_right: int
 
 
 MoveSourceAgentBody: TypeAlias = "dict[str, Any]"
@@ -3308,6 +3478,10 @@ class Cost(_CostRequired, total=False):
     learning_usd: float | None
     tools_usd: float | None
     all_in_usd: float | None
+    compile_usd: float | None
+    followup_usd: float | None
+    shadow_usd: float | None
+    share_usd: float | None
     degraded: Literal[True]
     plan: CostPlan
 
@@ -4392,7 +4566,7 @@ class GetLearningCostResponse(TypedDict):
     bill: GetLearningCostResponseBill
 
 
-class GetLearningCostResponseRunsItem(TypedDict):
+class _GetLearningCostResponseRunsItemRequired(TypedDict):
     n: int | None
     run_id: str
     started_at: str
@@ -4405,6 +4579,14 @@ class GetLearningCostResponseRunsItem(TypedDict):
     cost_upper_bound: bool
     learning_usd: float | None
     total_usd: float | None
+
+
+class GetLearningCostResponseRunsItem(_GetLearningCostResponseRunsItemRequired, total=False):
+    compile_usd: float | None
+    followup_usd: float | None
+    shadow_usd: float | None
+    share_usd: float | None
+    not_served: Literal["cost_stop", "cut"] | None
 
 
 class GetLearningCostResponseWorkflowsItem(TypedDict):
@@ -5359,6 +5541,8 @@ class ListComputersResponsePairedItem(TypedDict):
     online: bool
     held_by_run: str | None
     held_until: str | None
+    held_on: str | None
+    hold_note: str | None
     pairing: str
     created_at: str
     seen_at: str | None
@@ -11549,6 +11733,7 @@ class GetWrappedResponseHarnessesItem(TypedDict):
     sessions: int
     requests: int
     tokens: int
+    sources: list[str]
 
 
 class GetWrappedResponseModelsItem(TypedDict):
@@ -11556,6 +11741,7 @@ class GetWrappedResponseModelsItem(TypedDict):
     requests: int
     tokens: int
     cost_usd: float
+    unpriced_requests: int
 
 
 class GetWrappedResponseSourcesItem(TypedDict):
@@ -11721,7 +11907,7 @@ OPERATIONS: dict[str, Operation] = {
     "handBackRunComputer": Operation(method="POST", path="/runs/{run_id}/computer/hand-back", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "getRunLearning": Operation(method="GET", path="/runs/{run_id}/learning", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getRunLearningDiff": Operation(method="GET", path="/runs/{run_id}/learning/diff", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
-    "listAllRuns": Operation(method="GET", path="/runs", path_params=(), multi_segment=(), query=("limit", "cursor", "agent", "revision", "status", "archived", "label"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "listAllRuns": Operation(method="GET", path="/runs", path_params=(), multi_segment=(), query=("limit", "cursor", "agent", "revision", "status", "archived", "label", "source", "from", "to", "model"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "sendMessage": Operation(method="POST", path="/runs/{run_id}/messages", path_params=("run_id",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "pauseRun": Operation(method="POST", path="/runs/{run_id}/pause", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "raiseRunCap": Operation(method="PATCH", path="/runs/{run_id}", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
@@ -12425,9 +12611,9 @@ class RunsResource(Group):
         """What the run proposed, file by file (GET /runs/{run_id}/learning/diff)."""
         return self._call("getRunLearningDiff", (run_id,), None, None, timeout=timeout)
 
-    def list(self, *, limit: int | None = None, cursor: str | None = None, agent: str | None = None, revision: str | None = None, status: Literal["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] | None = None, archived: bool | None = None, label: str | None = None, timeout: float | None = None) -> ListAllRunsResponse:
+    def list(self, *, limit: int | None = None, cursor: str | None = None, agent: str | None = None, revision: str | None = None, status: Literal["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] | None = None, archived: bool | None = None, label: str | None = None, source: str | None = None, from_: str | None = None, to: str | None = None, model: str | None = None, timeout: float | None = None) -> ListAllRunsResponse:
         """Every agent's runs, newest first (GET /runs)."""
-        return self._call("listAllRuns", (), None, {"limit": limit, "cursor": cursor, "agent": agent, "revision": revision, "status": status, "archived": archived, "label": label}, timeout=timeout)
+        return self._call("listAllRuns", (), None, {"limit": limit, "cursor": cursor, "agent": agent, "revision": revision, "status": status, "archived": archived, "label": label, "source": source, "from": from_, "to": to, "model": model}, timeout=timeout)
 
     def message(self, run_id: str, body: SendMessageBody, *, idempotency_key: str | None = None, timeout: float | None = None) -> SendMessageResponse:
         """Send the run a message (POST /runs/{run_id}/messages)."""

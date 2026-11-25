@@ -1,15 +1,18 @@
 // A person's own Claude Code login on this machine, which a claude-agent session may run on in place of a model key.
 // Written for AgentRun.
 //
-// The pinned CLI keeps the login where it always does, in its own files, and calls Anthropic with it itself. AgentRun
-// never reads, copies, stores or relays its tokens: a session only tells the CLI where its login is (two directories, by
-// environment), and the host asks the CLI whether it is signed in (`claude auth status`), reading nothing but that answer.
-// That check runs the CLI on a private copy of the login's account file (`.claude.json`), which the CLI rewrites on
+// The pinned CLI keeps the login where it always does, in its own files, and calls Anthropic with it itself. A session
+// either tells the CLI where its login is (two directories, by environment), and the host asks the CLI whether it is
+// signed in (`claude auth status`), reading nothing but that answer; or, where the host keeps the login out of the CLI's
+// reach (a run under a user of its own), it is handed the login's access token alone (ClaudeLoginToken), by
+// environment, asked of the host again at each start and when Anthropic refuses it. The CLI never gets a refresh token
+// then, and never renews the login itself: the host does, if anyone (told which token was refused: `refused`).
+// The status check runs the CLI on a private copy of the login's account file (`.claude.json`), which the CLI rewrites on
 // start, so the file (the person's own, or AgentRun's) is only ever opened to read. The copy leaves out the fields that
 // hold secrets (an API key, exported variables, MCP servers' tokens) and lasts the check.
 // The check runs in the person's own home, as does a run on macOS, where the CLI's tokens are in the login keychain.
 import { spawn } from "node:child_process";
-import { accessSync, constants, mkdtempSync, rmSync } from "node:fs";
+import { accessSync, closeSync, constants, mkdtempSync, openSync, readSync, rmSync, statSync } from "node:fs";
 import { type FileHandle, lstat, mkdir, open, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
@@ -33,11 +36,28 @@ export interface ClaudeAgentLogin {
   /** With `secure`: the variable was set and empty, which on macOS names the Keychain item with no suffix, so it goes to
    *  the CLI empty there too. */
   unsuffixed?: boolean;
-  /** The home of the person whose CLI keeps the login, read once by whoever makes the login (serve's loginAt: the
-   *  server's `HOME` when absolute, else `os.homedir()`, as the person's own CLI reads it), so the status check, the
-   *  sign-in and a run on macOS all run in that one home (personHome). With `home`, the same folder. */
+  /** The home of the person whose CLI keeps the login, read once by whoever makes the login (serve's homeOf: the
+   *  server's `HOME` when its user owns it, else that user's own home), so the status check, the sign-in and a run on
+   *  macOS all run in that one home (personHome). With `home`, the same folder. */
   userHome?: string;
 }
+
+/** A login handed to the CLI as its access token alone, by a host that holds the login itself. `token()` is asked at
+ *  each start of the CLI and when Anthropic refuses the token the CLI holds: it answers the login's access token as
+ *  the host reads it now, or throws in words that say what to do. The CLI gets it as CLAUDE_CODE_OAUTH_TOKEN, with no
+ *  refresh token and no login directory. */
+export interface ClaudeLoginToken {
+  token(): Promise<string>;
+  /** Told, before `token()` is asked again, that Anthropic refused `sent` (the CLI's 401): a host that renews the login
+   *  renews it at that ask unless it already holds another token. */
+  refused?(sent: string): Promise<void>;
+}
+
+/** Whether `login` is handed as a token (ClaudeLoginToken), not as its directories. */
+export const loginByToken = (login: ClaudeAgentLogin | ClaudeLoginToken): login is ClaudeLoginToken => typeof (login as { token?: unknown }).token === "function";
+
+/** The words a turn ends in when Anthropic refused the login's access token mid-turn and the host had no newer one. */
+export const LOGIN_TOKEN_REFUSED = "Anthropic refused this machine's Claude login during the run, and no newer token was there: run the claude CLI once on this login to renew it, then start the run again.";
 
 /** `login.secure` as the CLI's variable on `platform` (undefined when it is not set apart): empty on macOS where the
  *  person's own was set and empty. */
@@ -335,9 +355,10 @@ export const personHome = (login: ClaudeAgentLogin): string => login.userHome ??
  *  Asks once. Throws when the CLI gives no answer that reads as one: ClaudeLoginTimedOut when it was still running at
  *  the limit (`timeoutMs`, LOGIN_STATUS_MS by default) and was ended there, else ClaudeLoginNoStatus. A CLI that never
  *  started throws the spawn's own error. At the limit the CLI is asked to go (SIGTERM) and killed STATUS_KILL_MS later;
- *  once it has exited or was killed, the check waits at most STATUS_DRAIN_MS more for its output, which a process it
- *  started may hold open. So a check settles within its limit and 2 s, whatever the CLI does. A `timeoutMs` that is no
- *  whole number of ms from 1 to 2^31 - 1 throws a RangeError before anything starts. */
+ *  once it has exited or was killed, the check waits STATUS_DRAIN_MS more at most for its output, which a process it
+ *  started may hold open, and then one more pass of the event loop's reads. So a check settles within its limit, 2 s and
+ *  that pass, whatever the CLI does. A `timeoutMs` that is no whole number of ms from 1 to 2^31 - 1 throws a RangeError
+ *  before anything starts. */
 export async function claudeLoginStatus(cli: string, login: ClaudeAgentLogin, options: { timeoutMs?: number; path?: string; platform?: NodeJS.Platform } = {}): Promise<ClaudeLoginStatus> {
   const limitMs = options.timeoutMs ?? LOGIN_STATUS_MS;
   // The limit is the check's timer and, with 2 s more, the end it writes for the sweep, which reads only a whole number
@@ -373,9 +394,11 @@ export async function claudeLoginStatus(cli: string, login: ClaudeAgentLogin, op
         child.stdout.destroy();
         resolve({ stdout: out, timedOut });
       });
-      // Once the CLI has exited or was killed, its pipe gets a short while to close, and is then left.
+      // Once the CLI has exited or was killed, its pipe gets a short while to close, and is then left. The timer gives up
+      // only after one more pass of the loop's reads (setImmediate runs after them): a loop held up past the drain, as on
+      // a busy server, runs its timers before its reads, and what the pipe already held would be dropped unread.
       const drainSoon = () => {
-        drain ??= setTimeout(done, STATUS_DRAIN_MS);
+        drain ??= setTimeout(() => setImmediate(done), STATUS_DRAIN_MS);
       };
       // The limit is kept here, not by spawn's `timeout`, so the check knows it ended the CLI, and kills a CLI that
       // outlasts the TERM.
@@ -425,21 +448,83 @@ export interface ClaudeSignIn {
   stop(): void;
 }
 
-/** Throws, in the spawn's words, when `cli` is no program this host can start: the parent watch starts a program of its
- *  own first (setpriv, or node with its shim), which would tell a missing CLI only as its own exit code. A bare name is
- *  looked up on `path` (not on Windows, whose names take an extension; the watch's exit says it there). */
-function startable(cli: string, path: string): void {
-  if (/[\\/]/.test(cli)) return accessSync(cli, constants.X_OK);
-  if (process.platform === "win32") return;
-  for (const dir of path.split(delimiter)) {
-    if (!dir) continue;
-    try {
-      return accessSync(join(dir, cli), constants.X_OK);
-    } catch {
-      // Not here.
-    }
+/** Whether `file` is a regular file this process may execute. A Buffer is a path's own bytes, as the kernel takes them. */
+function executable(file: string | Buffer): boolean {
+  try {
+    accessSync(file, constants.X_OK);
+    return statSync(file).isFile();
+  } catch {
+    return false;
   }
-  throw Object.assign(new Error(`spawn ${cli} ENOENT`), { code: "ENOENT" });
+}
+
+/** The first program named `name` on `path`, or undefined. */
+function onPath(name: string, path: string): string | undefined {
+  for (const dir of path.split(delimiter)) if (dir && executable(join(dir, name))) return join(dir, name);
+  return undefined;
+}
+
+/** Whether a program named by the bytes `name` is on a folder of `path` (the sign-in's PATH, which env searches). */
+const onPathBytes = (name: Buffer, path: string): boolean => path.split(delimiter).some((dir) => dir !== "" && executable(Buffer.concat([Buffer.from(join(dir, "/")), name])));
+
+/** The first line of `file` (at most 256 bytes) as its bytes, or undefined when it can't be read. */
+function firstLine(file: string): Buffer | undefined {
+  let fd: number | undefined;
+  try {
+    fd = openSync(file, "r");
+    const head = Buffer.alloc(256);
+    const read = head.subarray(0, readSync(fd, head, 0, head.length, 0));
+    const end = read.indexOf(0x0a);
+    return end < 0 ? read : read.subarray(0, end);
+  } catch {
+    return undefined;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+/** The words of a `#!` line after the `#!` (the interpreter, then its argument), as bytes: the kernel reads the line as
+ *  bytes and splits it at blanks, so a path under a folder whose name is not ASCII is that name's bytes, never a decode
+ *  of them. Blanks are ASCII ones only: in UTF-8 the byte 0xA0 is part of a character (`à` is C3 A0), not a space. */
+function shebangWords(line: Buffer | undefined): Buffer[] {
+  if (!line || line[0] !== 0x23 || line[1] !== 0x21) return [];
+  const words: Buffer[] = [];
+  let start = -1;
+  for (let i = 2; i <= line.length; i++) {
+    const blank = i === line.length || [0x20, 0x09, 0x0d, 0x0b, 0x0c, 0x00].includes(line[i]!);
+    if (blank && start >= 0) {
+      words.push(line.subarray(start, i));
+      start = -1;
+    } else if (!blank && start < 0) start = i;
+  }
+  return words;
+}
+
+const notStartable = (cli: string, why = ""): Error => Object.assign(new Error(`spawn ${cli} ENOENT${why}`), { code: "ENOENT" });
+
+/** Throws, in the spawn's words, when `cli` is no program this host can start: the parent watch starts a program of its
+ *  own first (setpriv, or node with its shim), which would tell a failed start only as its own exit code (127), and the
+ *  sign-in's output is read by no one. So a script whose first line names an interpreter that is not there (`#!/path`,
+ *  or `#!/usr/bin/env <program>` with the program on no folder of `path`) throws too, naming it. A bare name is looked up
+ *  on `path`. Not on Windows, whose names take an extension and which reads no `#!` line: the watch's exit says it there. */
+function startable(cli: string, path: string): void {
+  if (process.platform === "win32") {
+    if (/[\\/]/.test(cli)) accessSync(cli, constants.X_OK);
+    return;
+  }
+  let file = cli;
+  if (/[\\/]/.test(cli)) accessSync(cli, constants.X_OK);
+  else file = onPath(cli, path) ?? "";
+  if (!file) throw notStartable(cli);
+  // The interpreter and its argument are checked by their bytes (Buffer paths); the tests on their ASCII characters read
+  // them as Latin-1, which maps each byte to one character, so those tests see exactly the bytes. The words decode them.
+  const [interpreter, program] = shebangWords(firstLine(file));
+  if (!interpreter) return;
+  if (!executable(interpreter)) throw notStartable(cli, `: the interpreter its first line names, ${interpreter.toString()}, is not there`);
+  // env runs the program it is given, looked up on the sign-in's PATH; an option or a variable is left to env.
+  if (/(^|\/)env$/.test(interpreter.toString("latin1")) && program && !/^-|=/.test(program.toString("latin1")) && !(program.includes(0x2f) ? executable(program) : onPathBytes(program, path))) {
+    throw notStartable(cli, `: the interpreter its first line names, ${program.toString()}, is on no folder of its PATH`);
+  }
 }
 
 /** Start the CLI's own sign-in at `login` (`auth login`), with the line's own variables (signInEnv) in the person's home
