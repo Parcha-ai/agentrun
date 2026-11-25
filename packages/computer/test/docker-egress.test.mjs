@@ -285,7 +285,7 @@ test("the proxy's code must be built and readable by the computer's user, its di
 	try {
 		const packageJson = join(dir, "package.json");
 		const code = { dir, packageJson };
-		assert.match(egressCodeProblem(code, mine), /is not built .*egress-main\.js.*npm run build/);
+		assert.match(egressCodeProblem(code, mine), /is not built .*egress-main\.js.*pnpm --filter @parcha\/agentrun-computer run build/);
 		for (const file of ["egress-main.js", "egress-proxy.js", "egress-table.js", "package.json"]) {
 			writeFileSync(join(dir, file), "");
 			chmodSync(join(dir, file), 0o644);

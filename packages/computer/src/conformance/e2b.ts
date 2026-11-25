@@ -1,4 +1,4 @@
-// E2B for the conformance CLI: `npm run conformance -w @parcha/agentrun-computer -- --provider e2b [--image <template>]`.
+// E2B for the conformance CLI: `pnpm --filter @parcha/agentrun-computer run conformance --provider e2b [--image <template>]`.
 // It makes real sandboxes, so it runs only with AGENTRUN_COMPUTER_LIVE_E2B=1 and a key for an account you can bill, under
 // COMPUTER_E2B_API_KEY. The provider reads no environment: this module reads its own COMPUTER_E2B_* names (never
 // E2B_API_KEY, which may hold another team's key) and passes each to create() as its option; the provider gives the SDK

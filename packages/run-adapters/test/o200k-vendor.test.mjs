@@ -6,6 +6,8 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
+import { lockedVersions, readLock } from '../../../scripts/pnpm-lock.mjs';
 import { O200K_SHA256, O200K_VOCABULARY, o200kModel, o200kTokens } from '@parcha/agentrun-kernel/host';
 
 const root = new URL('../../../', import.meta.url);
@@ -20,8 +22,7 @@ test("no package depends on a tokenizer package: the kernel ships the one vocabu
       assert.equal(manifest[field]?.['gpt-tokenizer'], undefined, `${name} ${field}`);
     }
   }
-  const lock = JSON.parse(readFileSync(new URL('package-lock.json', root), 'utf8'));
-  assert.deepEqual(Object.keys(lock.packages).filter((path) => path.endsWith('node_modules/gpt-tokenizer')), [], 'nor is one installed');
+  assert.deepEqual(lockedVersions(readLock(fileURLToPath(root)), 'gpt-tokenizer'), [], 'nor is one installed');
 });
 
 test("the vocabulary is OpenAI's o200k_base file, unchanged (tiktoken's pinned sha256), packed with its license, under 4 MB", () => {

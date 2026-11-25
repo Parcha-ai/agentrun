@@ -8,6 +8,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { lockedPackages, readLock } from './pnpm-lock.mjs';
 
 const repo = dirname(dirname(fileURLToPath(import.meta.url)));
 /** The pi family's version: every @earendil-works package, pinned and peered at exactly this. */
@@ -40,13 +41,10 @@ for (const { manifest } of workspaces) {
 }
 
 test(`the lock holds one pi family (${PI}) and one typebox (${TYPEBOX})`, () => {
-  const lock = JSON.parse(readFileSync(join(repo, 'package-lock.json'), 'utf8')).packages;
-  const off = Object.entries(lock).filter(([path, entry]) => {
-    const name = path.slice(path.lastIndexOf('node_modules/') + 'node_modules/'.length);
-    if (!path.includes('node_modules/')) return false;
-    if (name.startsWith(FAMILY)) return entry.version !== PI;
-    return name === 'typebox' && entry.version !== TYPEBOX;
-  }).map(([path, entry]) => `${path}@${entry.version}`);
+  const off = lockedPackages(readLock(repo)).filter(({ name, version }) => {
+    if (name.startsWith(FAMILY)) return version !== PI;
+    return name === 'typebox' && version !== TYPEBOX;
+  }).map(({ key }) => key);
   assert.deepEqual(off, []);
 });
 

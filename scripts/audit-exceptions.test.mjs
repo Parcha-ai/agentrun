@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
+import { parseKey, readLock, snapshotDependencies } from './pnpm-lock.mjs';
 import { AUDIT_EXCEPTIONS, auditBlockers } from './audit-exceptions.mjs';
 
 const advisory = (id, severity) => ({ source: 1, title: id, url: `https://github.com/advisories/${id}`, severity, range: '>=4.0.0 <5.0.12' });
@@ -14,12 +16,16 @@ const BRACE = { package: 'brace-expansion', under: 'node_modules/@earendil-works
 const UNDICI = { package: 'undici', under: 'node_modules/@earendil-works/pi-coding-agent/', advisories: ['GHSA-xjj6-f33q-929c', 'GHSA-4qv8-2p9j-2685', 'GHSA-f72v-6w45-q472', 'GHSA-4w7w-5xrc-9h26', 'GHSA-2m5v-pch6-74hx', 'GHSA-qrxm-fqhp-jwvm', 'GHSA-9fm3-97px-rjf6', 'GHSA-55wc-3pg8-jfw6'], expires: '2026-11-13' };
 const FIXTURES = [BRACE, UNDICI];
 
-test('every real exception names a parent the lockfile holds, with the package under it: one whose copy left the tree is taken out', async () => {
-  const { readFile } = await import('node:fs/promises');
-  const lock = JSON.parse(await readFile(new URL('../package-lock.json', import.meta.url), 'utf8')).packages;
+test('every real exception names a parent the lockfile holds, with the package under it: one whose copy left the tree is taken out', () => {
+  // `under` is the path npm gives the parent in a consumer's install (the audit is a consumer's): in this repository's
+  // lockfile, a snapshot of that parent that depends on the package.
+  const lock = readLock(fileURLToPath(new URL('..', import.meta.url)));
   for (const exception of AUDIT_EXCEPTIONS) {
-    const held = [exception.under].flat().some(parent => Object.keys(lock).some(path => path.startsWith(parent) && path.endsWith(`node_modules/${exception.package}`)));
-    assert.ok(held, `${exception.package} under ${exception.under}: no such copy in package-lock.json`);
+    const held = [exception.under].flat().some(parent => {
+      const name = parent.replace(/\/$/, '').split('node_modules/').at(-1);
+      return Object.keys(lock.snapshots).some(key => parseKey(key).name === name && Object.hasOwn(snapshotDependencies(lock, key), exception.package));
+    });
+    assert.ok(held, `${exception.package} under ${exception.under}: no such copy in pnpm-lock.yaml`);
   }
 });
 

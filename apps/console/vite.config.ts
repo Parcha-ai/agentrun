@@ -7,7 +7,7 @@ import { credentialGate } from "./credential-gate.mjs";
 import { thirdPartyNotices } from "./third-party-notices.mjs";
 
 // The console builds to static files with relative URLs, so AgentRun Server can serve them from any path.
-// `npm run dev` proxies /v2 and the public setup skill as src/lib/devProxy.ts says: to the AgentRun Server AGENTRUN_URL
+// `pnpm run dev` proxies /v2 and the public setup skill as src/lib/devProxy.ts says: to the AgentRun Server AGENTRUN_URL
 // names, else the one on this machine at serve's default port, with AGENTRUN_TOKEN on API requests alone.
 
 const proxy = devProxy(process.env);
@@ -41,6 +41,10 @@ export default defineConfig({
   // credential gate (credential-gate.mjs), last: the build fails when the bundle, the notices included, holds a credential.
   plugins: [react(), thirdPartyNotices(), credentialGate()],
   server: {
+    // The repository's root, as Vite found it when the root's package.json was the nearest workspace: this directory's
+    // pnpm-workspace.yaml (its own install) would stop the search here, and the tests that read the server's sources
+    // (?raw, from packages/serve) would be refused.
+    fs: { allow: [fileURLToPath(new URL("../..", import.meta.url))] },
     proxy: {
       ...proxy,
       "/v2": {

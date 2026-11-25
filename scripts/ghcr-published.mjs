@@ -2,7 +2,7 @@
 // release's box job (release.yml, before E2B pulls the box image) and the Render walk (deploy/render/walk.mjs) ask here.
 //   node scripts/ghcr-published.mjs ghcr.io/<repo>:<tag>    exit 0 when an anonymous pull finds it, else 1; says what
 //                                                            GHCR answered on stderr
-// Builtins and fetch only, so it runs before a job's npm ci.
+// Builtins and fetch only, so it runs before a job's pnpm install.
 import { isMain } from './is-main.mjs';
 
 // A multi-platform image, or one with provenance, is an index; a single-platform one a manifest. Either is the image.

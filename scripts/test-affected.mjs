@@ -58,7 +58,7 @@ export const SMOKE = {
 };
 
 /** Paths outside the packages that every suite may read: a change to one picks its importers and the smoke set only. */
-export const SHARED_ROOTS = [/^package(-lock)?\.json$/, /^tsconfig\.base\.json$/, /^\.nvmrc$/, /^\.npmrc$/, /^scripts\//, /^\.github\//];
+export const SHARED_ROOTS = [/^package\.json$/, /^pnpm-(?:lock|workspace)\.yaml$/, /^tsconfig\.base\.json$/, /^\.nvmrc$/, /^\.npmrc$/, /^scripts\//, /^\.github\//];
 
 /** The defaults for --base, the first that names a commit. */
 export const DEFAULT_BASES = ['origin/untangle/cutover', 'origin/main'];
@@ -66,7 +66,7 @@ export const DEFAULT_BASES = ['origin/untangle/cutover', 'origin/main'];
 // The console: outside the workspaces, its own lockfile; its test files are vite.config.ts's `test.include`.
 const CONSOLE = { dir: 'apps/console', tests: ['src/**/*.test.ts', 'src/**/*.test.tsx'], run: 'vitest run' };
 const CODE = /\.(?:[cm]?[jt]s|[jt]sx)$/;
-const CONFIG = /^(?:package\.json|package-lock\.json|tsconfig(?:\.[\w-]+)?\.json|vite(?:st)?\.config\.[cm]?[jt]s)$/;
+const CONFIG = /^(?:package\.json|pnpm-(?:lock|workspace)\.yaml|tsconfig(?:\.[\w-]+)?\.json|vite(?:st)?\.config\.[cm]?[jt]s)$/;
 const toPosix = (path) => path.split(sep).join('/');
 
 class Usage extends Error {}

@@ -47,7 +47,7 @@ test("phoned's jar, classes.dex first and deflated and stamped with this package
 
 test("each other jar fails with one sentence that names what is wrong", () => {
 	const cases = [
-		["missing.jar", null, /missing\.jar is missing: run npm run build:phoned/],
+		["missing.jar", null, /missing\.jar is missing: run pnpm --filter @parcha\/agentrun-computer run build:phoned/],
 		["text.jar", Buffer.from("not a zip at all, only some words long enough"), /is not a jar whose first entry is classes\.dex, deflated/],
 		["other-first.jar", jar("META-INF/MANIFEST.MF", dex(VERSION)), /is not a jar whose first entry is classes\.dex, deflated/],
 		["stored.jar", jar("classes.dex", dex(VERSION), 0), /is not a jar whose first entry is classes\.dex, deflated/],

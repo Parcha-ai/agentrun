@@ -184,7 +184,7 @@ function readRegular(path: string, what: string, missing: string): Result<Buffer
 
 /** The daemon's tree's entries: computerd, 0755, read from `source`, and the egress volume's mount point. */
 function daemonEntries(source: string): Result<Entry[]> {
-	const bytes = readRegular(source, "the daemon", "run npm run build:daemon -w @parcha/agentrun-computer");
+	const bytes = readRegular(source, "the daemon", "run pnpm --filter @parcha/agentrun-computer run build:daemon");
 	if (!bytes.ok) return bytes;
 	return ok([
 		{ path: "computerd", bytes: bytes.value, mode: 0o755 },
@@ -196,7 +196,7 @@ function daemonEntries(source: string): Result<Entry[]> {
 function egressEntries(code: EgressCode): Result<Entry[]> {
 	const entries: Entry[] = [];
 	for (const [path, source] of [...CODE_FILES.map((file) => [`docker/${file}`, join(code.dir, file)]), ["package.json", code.packageJson]] as Array<[string, string]>) {
-		const bytes = readRegular(source, "the egress proxy's code", "build it: npm run build -w @parcha/agentrun-computer");
+		const bytes = readRegular(source, "the egress proxy's code", "build it: pnpm --filter @parcha/agentrun-computer run build");
 		if (!bytes.ok) return bytes;
 		entries.push({ path, bytes: bytes.value, mode: 0o644 });
 	}

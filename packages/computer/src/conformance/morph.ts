@@ -1,4 +1,4 @@
-// Morph for the conformance CLI: `npm run conformance -w @parcha/agentrun-computer -- --provider morph`. It makes real
+// Morph for the conformance CLI: `pnpm --filter @parcha/agentrun-computer run conformance --provider morph`. It makes real
 // instances, which bill until deleted, so it runs only with AGENTRUN_COMPUTER_LIVE_MORPH=1 and a key for an account you
 // can bill, under COMPUTER_MORPH_API_KEY. The provider reads no environment: this module reads its own COMPUTER_MORPH_*
 // names (never MORPH_API_KEY, which may hold another team's key) and passes each to create() as its option. The live

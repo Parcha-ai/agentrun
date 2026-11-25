@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.1.0-beta.58",
   "type": "module",
+  "packageManager": "pnpm@12.22.0",
   "workspaces": [
     "packages/*"
   ],
@@ -14,8 +15,8 @@
     "test": "node scripts/test-workspaces.mjs",
     "test:changed": "node scripts/test-workspaces.mjs --changed",
     "test:affected": "node scripts/test-affected.mjs --run",
-    "typecheck": "npm run typecheck --workspaces --if-present && tsc -p examples/tsconfig.json && tsc -p examples/harness-module/tsconfig.json",
-    "check": "npm run build && node scripts/generate-schema.mjs --check && node scripts/generate-author-contract.mjs --check && node scripts/generate-author-references.mjs --check && node scripts/generate-clients.mjs --check && node scripts/generate-computer-spec.mjs --check && node scripts/generate-computer-surface.mjs --check && npm run typecheck && npm test && npm run test:release && npm run test:examples",
+    "typecheck": "pnpm -r --if-present run typecheck && tsc -p examples/tsconfig.json && tsc -p examples/harness-module/tsconfig.json",
+    "check": "pnpm run build && node scripts/generate-schema.mjs --check && node scripts/generate-author-contract.mjs --check && node scripts/generate-author-references.mjs --check && node scripts/generate-clients.mjs --check && node scripts/generate-computer-spec.mjs --check && node scripts/generate-computer-surface.mjs --check && pnpm run typecheck && pnpm test && pnpm run test:release && pnpm run test:examples",
     "demo": "node scripts/check-node.mjs && node examples/run-typed-research.ts",
     "demo:triage": "node packages/dsl/dist/cli.js demo",
     "verify:packages": "node scripts/verify-packages.mjs",
@@ -58,8 +59,5 @@
     "url": "https://github.com/Parcha-ai/agentrun/issues"
   },
   "homepage": "https://agentrun.ai",
-  "license": "Apache-2.0",
-  "overrides": {
-    "zod": "$zod"
-  }
+  "license": "Apache-2.0"
 }

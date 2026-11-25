@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { resolveDependency } from './pi-family-pins.mjs';
 import { isMain } from './is-main.mjs';
+import { npmTree } from './pnpm-lock.mjs';
 import { npmExecFile } from './npm-command.mjs';
 
 const exec = promisify(execFile);
@@ -118,7 +119,7 @@ export async function stranger(name, { registry = false, tarballs: given } = {})
     const [project, home, cache, packs] = ['project', 'home', 'cache', 'packs'].map(part => join(work, part));
     for (const directory of [project, home, cache, packs]) await mkdir(directory);
     const env = strangerEnv(process.env.PATH, home, cache);
-    const lock = JSON.parse(await readFile(join(root, 'package-lock.json'), 'utf8')).packages;
+    const lock = npmTree(root);
     const developed = developedVersions(lock);
     const peers = (spec.peers ?? []).map(peer => (registry || !(peer in developed) ? peer : `${peer}@${developed[peer]}`));
     let sources;

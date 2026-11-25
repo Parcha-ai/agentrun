@@ -187,8 +187,8 @@ explicit `--bridge` path to its compiled `remote-worker-bridge.js` for checkout-
 For a checkout-based installation, use Python 3.12+ and Node 24.22.3+ in that reviewed checkout:
 
 ```sh
-npm ci --ignore-scripts
-npm run build
+pnpm install --frozen-lockfile --ignore-scripts
+pnpm run build
 uv tool install ./connector
 ```
 
@@ -297,7 +297,7 @@ If no checkout is available, obtain the intended reviewed source ref before inst
 for the source connector and Node bridge:
 
 ```sh
-npm ci --ignore-scripts && npm run build || exit 1
+pnpm install --frozen-lockfile --ignore-scripts && pnpm run build || exit 1
 umask 077
 node packages/serve/dist/cli.js --data "$PWD/.agentrun" > serve.log 2>&1 &
 agentrun_server_pid=$!

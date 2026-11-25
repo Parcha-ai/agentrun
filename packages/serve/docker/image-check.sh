@@ -2,7 +2,7 @@
 # The image carries no coding-agent CLI: the Claude Agent SDK and its platform packages (which hold the Claude CLI), and
 # the Codex CLI and its platform packages (which hold its binary), with their bin links. Each installs itself on first
 # use into the data's harnesses, at its pin and by the lock serve ships (src/harness-install.ts). Their adapters develop
-# against them as dev dependencies, and npm ci installs those, so the Dockerfile removes them and runs this check on the
+# against them as dev dependencies, and pnpm installs those, so the Dockerfile removes them and runs this check on the
 # final image's tree.
 # It also carries serve's scripts/dial-conformance.mjs, which a host such as Render runs from the image for a dial
 # provider's conformance run (node /opt/agentrun/packages/serve/scripts/dial-conformance.mjs --provider fly).

@@ -449,7 +449,7 @@ test("a server whose Docker daemon is another machine's, by DOCKER_HOST, DOCKER_
 // refuses a run naming one. The architecture is the one Docker's start probe read; the test names the directory the build
 // would be in (fauxDaemonDir), and the fake Docker names its architecture (docker-arch). With the build there, nothing
 // changes.
-const NO_DAEMON = (dir, arch = "amd64") => `no daemon for Docker's ${arch} at ${join(dir, `computerd-linux-${arch}`)}: run npm run build:daemon -w @parcha/agentrun-computer, then restart AgentRun`;
+const NO_DAEMON = (dir, arch = "amd64") => `no daemon for Docker's ${arch} at ${join(dir, `computerd-linux-${arch}`)}: run pnpm --filter @parcha/agentrun-computer run build:daemon, then restart AgentRun`;
 test("a server with no computerd build for its Docker's architecture: Docker isn't offered, its boxes line, banner, capabilities and a run's start say how to build it, and Docker is asked once; with the build there nothing changes", { timeout: 240_000 }, async (t) => {
   const builds = await scratch(t);
   const fake = await containerDocker(t, { mounts: [], marks: { "docker-arch": "amd64\n" } });
@@ -464,7 +464,7 @@ test("a server with no computerd build for its Docker's architecture: Docker isn
   const offer = await docker(api);
   assert.deepEqual([offer.available, offer.state, offer.reason], [false, "unavailable", NO_DAEMON(builds)], JSON.stringify(offer));
   assert.equal(boxes.length, 1, JSON.stringify(boxes));
-  assert.ok(boxes[0].includes("unavailable=docker,") && boxes[0].includes("npm run build:daemon -w @parcha/agentrun-computer"), boxes[0]);
+  assert.ok(boxes[0].includes("unavailable=docker,") && boxes[0].includes("pnpm --filter @parcha/agentrun-computer run build:daemon"), boxes[0]);
   assert.ok(boxesLine.includes(NO_DAEMON(builds)), boxesLine);
   // Docker is asked once at the start: the probe names its version and its architecture.
   assert.equal(versions().length, 1, JSON.stringify(versions()));

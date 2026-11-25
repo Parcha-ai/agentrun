@@ -15,10 +15,10 @@ Conformance comes first: each step ends on a command that tells you whether it's
    on one machine until it prints `exec PASS`. Make that machine the way your vendor makes them: by hand in its console;
    through the relay you ship, once it is deployed to your own account; or, on a cloud, in the cluster, group or project
    you made first. `--machine` takes whatever your `exec` takes, the id `create` answers and `get` reads (a name is fine):
-   `npm run conformance -w @parcha/agentrun-computer -- --provider ./packages/computer/dist/<vendor>.js --exec-stream --machine <machine id>`
+   `pnpm --filter @parcha/agentrun-computer run conformance --provider ./packages/computer/dist/<vendor>.js --exec-stream --machine <machine id>`
 3. Copy `e2b.ts` into [the four files](#what-you-write) and fill in [the eleven members](#the-eleven-members).
 4. Run the [whole suite between two sweeps](#prove-it) until its last line reads `core PASS`:
-   `npm run conformance -w @parcha/agentrun-computer -- --provider <vendor>`
+   `pnpm --filter @parcha/agentrun-computer run conformance --provider <vendor>`
 5. [Open the pull request](#send-it) with the report and the sweep's last line.
 
 To see a pass before you write anything, point the pre-check at a stub. It takes seconds and needs no key. Make a module
@@ -152,9 +152,9 @@ with `conformance`, as `e2b.ts` does. E2B's `createHost` in `src/conformance/e2b
 (in your console, through your relay, or in your cloud project), then run, from the repository root:
 
 ```sh
-npm ci --ignore-scripts && npm run build
+pnpm install --frozen-lockfile && pnpm run build
 export COMPUTER_<VENDOR>_API_KEY=<your key>
-npm run conformance -w @parcha/agentrun-computer -- --provider ./packages/computer/dist/<vendor>.js --exec-stream --machine <machine id>
+pnpm --filter @parcha/agentrun-computer run conformance --provider ./packages/computer/dist/<vendor>.js --exec-stream --machine <machine id>
 ```
 
 It calls `exec` and nothing else, and checks the five rules: text of every kind of code point with `\r`, `\r\n` and a
@@ -700,11 +700,11 @@ needs Go on your PATH, because it compiles a second copy of the daemon that repo
 the suite with your own key between two sweeps, from the repository root:
 
 ```sh
-npm ci --ignore-scripts && npm run build
-npm run build:daemon -w @parcha/agentrun-computer
+pnpm install --frozen-lockfile && pnpm run build
+pnpm --filter @parcha/agentrun-computer run build:daemon
 export AGENTRUN_COMPUTER_LIVE_<VENDOR>=1 COMPUTER_<VENDOR>_API_KEY=<your key>
 node packages/computer/dist/conformance/sweep.js --provider <vendor> --before /tmp/<vendor>-before.json
-npm run conformance -w @parcha/agentrun-computer -- --provider <vendor>
+pnpm --filter @parcha/agentrun-computer run conformance --provider <vendor>
 node packages/computer/dist/conformance/sweep.js --provider <vendor> --after /tmp/<vendor>-before.json
 ```
 

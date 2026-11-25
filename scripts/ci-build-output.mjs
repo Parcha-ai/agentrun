@@ -1,8 +1,8 @@
 // What `npm run build` wrote, built once per Node version in CI's build job and unpacked by the jobs that test it.
 //   node scripts/ci-build-output.mjs pack <dir>     after the build: <dir>/build.tar and <dir>/build.json
-//   node scripts/ci-build-output.mjs unpack <dir>   after `npm ci` in a test job: checks build.json, then extracts build.tar
+//   node scripts/ci-build-output.mjs unpack <dir>   after `pnpm install` in a test job: checks build.json, then extracts build.tar
 // The output is every file git ignores that is not under a node_modules: each workspace's dist and the console's, and
-// anything else a build starts to write, without a list to keep. node_modules is not in it: each job's `npm ci` restores
+// anything else a build starts to write, without a list to keep. node_modules is not in it: each job's `pnpm install` restores
 // 1.3 GB from npm's cache in about 10 s, faster than an artifact of that size moves.
 // `unpack` refuses an output built from another tree or on another Node, or whose tar is not the one packed, and fails
 // when the extraction changed a file git tracks or left one git neither tracks nor ignores: a build that wrote into the

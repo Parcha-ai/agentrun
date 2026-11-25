@@ -152,7 +152,7 @@ test('generate-clients --check passes on the committed Python module and fails o
   assert.ok(/def oauth_client\b/.test(text), 'its public client document stays');
 });
 
-test('pyright passes a consumer of the documented calls, and fails a wrong body field, a wrong type, a missing field and an unknown method on their lines', { timeout: 240_000, skip: !existsSync(PYRIGHT) && 'pyright is not installed (npm ci)' }, () => {
+test('pyright passes a consumer of the documented calls, and fails a wrong body field, a wrong type, a missing field and an unknown method on their lines', { timeout: 240_000, skip: !existsSync(PYRIGHT) && 'pyright is not installed (pnpm install)' }, () => {
   const pyright = (file) => spawnSync(process.execPath, [PYRIGHT, '--project', join(ROOT, 'python'), join(TYPECHECK, file)], { cwd: ROOT, encoding: 'utf8', timeout: 180_000 });
   const ok = pyright('ok.py');
   assert.equal(ok.status, 0, ok.stdout + ok.stderr);

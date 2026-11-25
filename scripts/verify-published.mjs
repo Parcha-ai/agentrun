@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { ownVersionPackages, releasePackageNames, releasePackages } from './release-preflight.mjs';
 import { buildOverrides, findDrift } from './pi-family-pins.mjs';
 import { isMain } from './is-main.mjs';
+import { npmTree } from './pnpm-lock.mjs';
 
 const exec = promisify(execFile);
 
@@ -82,7 +83,7 @@ export async function waitForRegistryVersions(registry, packages, { fetchImpl = 
 // (pi-coding-agent at 1.1.0 beside a pi-codemode at 1.2.0 that dropped an export it imports). Every such edge is pinned to the version the
 // repository's lockfile holds, with the same overrides the package check's consumer gets, and the installed tree is checked against them.
 export async function installRegistryConsumer(consumer, { requested, root, registry = 'https://registry.npmjs.org/', run = exec }) {
-  const rootLock = JSON.parse(await readFile(join(root, 'package-lock.json'), 'utf8')).packages ?? {};
+  const rootLock = npmTree(root);
   const npmMajor = Number((await run('npm', ['--version'])).stdout.trim().split('.')[0]);
   const { overrides, held } = buildOverrides(rootLock, npmMajor);
   await writeFile(join(consumer, 'package.json'), JSON.stringify({ name: 'agentrun-registry-consumer', private: true, type: 'module', overrides }));
@@ -151,8 +152,8 @@ export async function verifyPublished(root, selected, { allowAbsent = false, can
       try {
         // The Pi packages are peers of @parcha/agentrun-serve (pi-ai, pi-durable, chord) and of pi-browser: a host supplies
         // them, so the consumer does, at the versions the repository's lockfile holds.
-        const rootLock = JSON.parse(await readFile(join(root, 'package-lock.json'), 'utf8'));
-        const peers = ['@earendil-works/pi-coding-agent', '@earendil-works/pi-agent-core', '@earendil-works/pi-tui', '@earendil-works/pi-ai', '@earendil-works/pi-durable', '@earendil-works/chord', 'typebox'].map(name => { const version = rootLock.packages?.[`node_modules/${name}`]?.version; assert.ok(version, `the lockfile holds no ${name}`); return `${name}@${version}`; });
+        const rootLock = npmTree(root);
+        const peers = ['@earendil-works/pi-coding-agent', '@earendil-works/pi-agent-core', '@earendil-works/pi-tui', '@earendil-works/pi-ai', '@earendil-works/pi-durable', '@earendil-works/chord', 'typebox'].map(name => { const version = rootLock[`node_modules/${name}`]?.version; assert.ok(version, `the lockfile holds no ${name}`); return `${name}@${version}`; });
         const lock = await installRegistryConsumer(consumer, { requested: [...plan.packages.map(pkg => `${pkg.name}@${pkg.version}`), ...peers], root, registry: plan.registry });
         for (const pkg of plan.packages) assert.equal(lock.packages[`node_modules/${pkg.name}`].integrity, pkg.integrity, 'Installed archive integrity mismatch');
         await writeFile(join(consumer, 'deny-network.mjs'), `import net from 'node:net'; import http from 'node:http'; import https from 'node:https'; import {syncBuiltinESMExports} from 'node:module';

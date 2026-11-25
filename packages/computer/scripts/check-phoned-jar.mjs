@@ -19,7 +19,7 @@ function fail(words) {
 	process.exit(1);
 }
 
-if (!existsSync(jar)) fail(`${named} is missing: run npm run build:phoned -w @parcha/agentrun-computer (a JDK 17 and the Android SDK) after the build.`);
+if (!existsSync(jar)) fail(`${named} is missing: run pnpm --filter @parcha/agentrun-computer run build:phoned (a JDK 17 and the Android SDK) after the build.`);
 const bytes = readFileSync(jar);
 // The first local file header: its signature, its method (8, deflated), its name, then its data.
 const isZip = bytes.length > 30 && bytes.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04]));

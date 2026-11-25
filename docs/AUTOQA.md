@@ -20,12 +20,12 @@ When this runs from a pipeline or a periodic QA job, the scope is fixed here and
 
 ## How to run
 
-Node 24.22.3 or later (`.nvmrc` pins 24.22.3); anything older is refused. npm 11
-is the documented toolchain.
+Node 24.22.3 or later (`.nvmrc` pins 24.22.3); anything older is refused. pnpm 12.22.0
+(package.json's `packageManager`) installs the checkout.
 
 ```sh
-npm ci --ignore-scripts
-npm run build   # the console first (apps/console, skipped when its dist is current), then every package
+pnpm install --frozen-lockfile
+pnpm run build   # the console first (apps/console, skipped when its dist is current), then every package
 ```
 
 Start it with the launcher, which hands secrets to the server over a pipe:
@@ -348,17 +348,17 @@ a `docker` that exits 1 first on `PATH`, even where Docker is installed, so noth
 ```sh
 mkdir -p "$TMPDIR/qa-bin" && printf '#!/bin/sh\nexit 1\n' > "$TMPDIR/qa-bin/docker" && chmod +x "$TMPDIR/qa-bin/docker"
 export PATH="$TMPDIR/qa-bin:$PATH"
-npm ci --ignore-scripts
-npm run build
+pnpm install --frozen-lockfile
+pnpm run build
 (cd packages/serve && node --test test/workspace-local.test.mjs test/workspace-run-tools.test.mjs \
   test/workspace-resolve-computer.test.mjs test/workspace-computer-for-claim.test.mjs test/computers.test.mjs \
   test/computers-route.test.mjs test/faux-computers.test.mjs test/computer-setting.test.mjs test/place.test.mjs \
   test/files.test.mjs test/run-manifest.test.mjs)
-npm test -w @parcha/agentrun-computer
+pnpm --filter @parcha/agentrun-computer test
 ```
 
 The Docker variant runs only where Docker exists, as CI's `computer-docker` job does: `AGENTRUN_COMPUTER_LIVE_DOCKER=1
-npm run test:docker -w @parcha/agentrun-computer` (without the variable, every Docker test skips). The other providers' suites need that vendor's key; never set one, or a real `docker` on
+pnpm --filter @parcha/agentrun-computer run test:docker` (without the variable, every Docker test skips). The other providers' suites need that vendor's key; never set one, or a real `docker` on
 `PATH`, for a server under test.
 
 **Checks when it changed.**
@@ -441,7 +441,7 @@ node --input-type=module -e '
    ```
 
    Open the console at `/` on the address the banner prints. The imported project is one agent with its three runs.
-2. The console's own suite, on recorded fixtures: `(cd apps/console && npm ci && npm test)`.
+2. The console's own suite, on recorded fixtures: `(cd apps/console && pnpm install --frozen-lockfile && pnpm test)`.
 3. Import alone: `HOME="$QA_HOME" node packages/serve/dist/cli.js import --dry-run --all --data "$QA_DATA"` prints what
    it would import (1 project, 3 sessions) and writes nothing.
 

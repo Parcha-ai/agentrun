@@ -61,7 +61,7 @@ test("a person's own box is on its own network: a run's start under AGENTRUN_BOX
 const ARCH = { x64: "amd64", arm64: "arm64" }[process.arch];
 const DAEMON = fileURLToPath(new URL(`../../computer/dist/computerd-linux-${ARCH}`, import.meta.url));
 const userns = spawnSync("unshare", ["-Ur", "true"]).status === 0;
-const skip = !existsSync(DAEMON) ? `needs ${DAEMON}: npm run build:daemon -w @parcha/agentrun-computer` : !userns ? "needs a user namespace (unshare -Ur), which this host refuses" : false;
+const skip = !existsSync(DAEMON) ? `needs ${DAEMON}: pnpm --filter @parcha/agentrun-computer run build:daemon` : !userns ? "needs a user namespace (unshare -Ur), which this host refuses" : false;
 
 /** Two ends of one attach socket, delivering in order, closing both ends at once. */
 function socketPair() {

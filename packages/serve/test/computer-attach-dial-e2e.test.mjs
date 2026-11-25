@@ -53,7 +53,7 @@ async function fakeInit(t) {
   return { socket, calls };
 }
 
-test("the real computerd attach dials with its minted token: the machine is in the hub, init's hello is what it was minted as, a call round-trips, and a revoke closes it with 4401 and it stops; no log line on either side holds the token", { skip: !ATTACHES && (existsSync(DAEMON) ? "this computerd has no attach: rebuild it with npm run build:daemon -w @parcha/agentrun-computer" : "no computerd-linux-amd64: run npm run build:daemon -w @parcha/agentrun-computer (CI's build job does)") }, async (t) => {
+test("the real computerd attach dials with its minted token: the machine is in the hub, init's hello is what it was minted as, a call round-trips, and a revoke closes it with 4401 and it stops; no log line on either side holds the token", { skip: !ATTACHES && (existsSync(DAEMON) ? "this computerd has no attach: rebuild it with pnpm --filter @parcha/agentrun-computer run build:daemon" : "no computerd-linux-amd64: run pnpm --filter @parcha/agentrun-computer run build:daemon (CI's build job does)") }, async (t) => {
   const lines = [];
   const server = await serve(t, { runner: false, log: (line) => lines.push(line) });
   const init = await fakeInit(t);

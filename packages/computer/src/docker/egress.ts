@@ -119,7 +119,7 @@ export function egressCode(): EgressCode {
 export function egressCodeProblem({ dir, packageJson }: EgressCode, user: string): string | undefined {
 	const files = [...CODE_FILES.map((file) => `${dir}/${file}`), packageJson];
 	const missing = files.filter((path) => !existsSync(path) || !statSync(path).isFile());
-	if (missing.length > 0) return `the egress proxy's code is not built (${missing.join(", ")}): run npm run build -w @parcha/agentrun-computer`;
+	if (missing.length > 0) return `the egress proxy's code is not built (${missing.join(", ")}): run pnpm --filter @parcha/agentrun-computer run build`;
 	if (/[,"\r\n]/.test(dir + packageJson)) return `the egress proxy's code is at a path a Docker mount cannot hold (a comma, a double quote or a line break): ${dir}`;
 	const [uid, gid] = user.split(":").map(Number);
 	const bits = (path: string) => {

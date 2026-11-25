@@ -25,7 +25,7 @@ const DAEMON = fileURLToPath(new URL("../../computer/dist/computerd-linux-amd64"
 const VERSION = JSON.parse(readFileSync(new URL("../../computer/package.json", import.meta.url), "utf8")).version;
 const MINTED = new RegExp(MACHINE_TOKEN_SOURCE);
 /** Why the runs that serve the daemon skip, or false: the fixture's machines run the served build's `computerd version`. */
-const BUILT = !existsSync(DAEMON) ? "no computerd-linux-amd64: run npm run build:daemon -w @parcha/agentrun-computer (CI's build job does)" : process.arch !== "x64" && "the fixture's machines run the amd64 computerd, and this machine is not x86-64";
+const BUILT = !existsSync(DAEMON) ? "no computerd-linux-amd64: run pnpm --filter @parcha/agentrun-computer run build:daemon (CI's build job does)" : process.arch !== "x64" && "the fixture's machines run the amd64 computerd, and this machine is not x86-64";
 /** What the fake's daemon answers: Core's provider and drift groups whole, and health but for the declaration and the
  *  planted key, which a module given by path has none of. The exec, files and process groups need a real daemon. */
 const ONLY = "provider,drift,health.hello,health.ping,health.unknown-method,health.kind-consistent,health.kind-served";

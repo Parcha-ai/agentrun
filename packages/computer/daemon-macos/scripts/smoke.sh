@@ -69,7 +69,7 @@ conformance=0
 if [[ -f "$here/../../dist/conformance/cli.js" ]]; then
 	node "$here/ui-conformance.mjs" "$app/Contents/Helpers/computerd" "$home" || conformance=$?
 else
-	echo "packages/computer is not built (npm run build -w @parcha/agentrun-computer): the conformance cases cannot run"
+	echo "packages/computer is not built (pnpm --filter @parcha/agentrun-computer run build): the conformance cases cannot run"
 	conformance=1
 fi
 # The cases leave the ui fixture's window open mid-screen, in front of every demo's window: it goes before the demos.

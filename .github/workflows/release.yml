@@ -88,8 +88,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24.22.3'
-      - name: Install OIDC-capable npm
-        run: npm install --global npm@11.21.0 --ignore-scripts
+      # pnpm at package.json's packageManager, installed from the registry by npm, never by a third-party action: this
+      # job holds the npm OIDC token.
+      - name: Install OIDC-capable npm and the repository's pnpm
+        run: npm install --global npm@11.21.0 "pnpm@$(node -p "require('./package.json').packageManager.replace(/^pnpm@/, '')")" --ignore-scripts
       - name: The tagged commit passed CI on main
         # The merge queue ran every suite on this tree and ci.yml ran again on the commit when it reached main. The release
         # trusts that run's verify gate instead of running the suites a third time; scripts/release-ci-gate.mjs stops the release
@@ -111,23 +113,23 @@ jobs:
           path: CHANGELOG.md
           if-no-files-found: error
           overwrite: true
-      - run: npm ci --ignore-scripts
-      - run: npm run build
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm run build
       # @parcha/agentrun-computer publishes the daemon, dist/computerd-linux-amd64 and -arm64, which Go builds;
       # verify:packages stops the release without them. Pinned by commit: this job holds the npm OIDC token.
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: packages/computer/daemon/go.mod
           cache: false
-      - run: npm run build:daemon -w @parcha/agentrun-computer
+      - run: pnpm --filter @parcha/agentrun-computer run build:daemon
       - run: node scripts/generate-author-contract.mjs --check
       - run: node scripts/check-typescript-floor.mjs
       - run: node scripts/generate-schema.mjs --check
-      - run: npm run export:source
+      - run: pnpm run export:source
       - run: node scripts/check-generated.mjs
       # --console: a server archive without the console and its notices stops the release.
-      - run: npm run verify:packages -- --console
-      - run: npm run verify:source
+      - run: pnpm run verify:packages --console
+      - run: pnpm run verify:source
       - run: node scripts/release-preflight.mjs --tag "$RELEASE_TAG"
       - name: Publish exact verified archives in dependency order
         shell: bash
@@ -376,6 +378,9 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '24.22.3'
+      # pnpm at package.json's packageManager, from the registry, never a third-party action: this job publishes the image.
+      - name: Install the repository's pnpm
+        run: npm install --global "pnpm@$(node -p "require('./package.json').packageManager.replace(/^pnpm@/, '')")" --ignore-scripts
       - name: The recipe's hash
         id: recipe
         run: |
@@ -436,7 +441,7 @@ jobs:
           BOX_IMAGE: ${{ env.IMAGE }}:${{ steps.recipe.outputs.hash }}
         run: |
           node scripts/ghcr-published.mjs "$BOX_IMAGE" || { echo "::error::$BOX_IMAGE can't be pulled with no credentials (GHCR's answer is the line above): the package is private. An org admin makes ${BOX_IMAGE%:*} public once, in the package's settings, then re-runs this job" >&2; exit 1; }
-      - run: npm ci --ignore-scripts
+      - run: pnpm install --frozen-lockfile --ignore-scripts
       - name: Build the template from the image and make it public
         env:
           BOX_IMAGE: ${{ env.IMAGE }}:${{ steps.recipe.outputs.hash }}

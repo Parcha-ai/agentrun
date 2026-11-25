@@ -11,7 +11,7 @@ of its own, `goose-module`, run from a Goose binary its owner names. [HARNESS.md
 
 ## Test it
 
-From the repository root, after `npm ci --ignore-scripts` and `npm run build`:
+From the repository root, after `pnpm install --frozen-lockfile` and `pnpm run build`:
 
 ```sh
 npm run test:harness-module-example

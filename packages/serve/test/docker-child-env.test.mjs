@@ -14,7 +14,7 @@ const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const DOCKER = { mode: "sandbox", box: "docker" };
 const KEY = "FOO_API_KEY";
 const DAEMON = fileURLToPath(new URL("../../computer/dist/computerd-linux-amd64", import.meta.url));
-const NO_COMPUTERD_FILE = !existsSync(DAEMON) && "no computerd-linux-amd64: run npm run build:daemon -w @parcha/agentrun-computer (CI's build job does)";
+const NO_COMPUTERD_FILE = !existsSync(DAEMON) && "no computerd-linux-amd64: run pnpm --filter @parcha/agentrun-computer run build:daemon (CI's build job does)";
 
 test("a server with a key in its environment runs an agent in the Docker box: no docker call for the run holds the key, and each has PATH, HOME and DOCKER_HOST", { timeout: 120_000, skip: NO_COMPUTERD_FILE }, async (t) => {
   const host = dockerHost({ computerd: true });

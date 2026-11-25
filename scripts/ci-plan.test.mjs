@@ -194,7 +194,7 @@ test("the Postgres job's shares hold every test file that opens the store once, 
   const listed = job.strategy.matrix.shard;
   const n = listed.length;
   assert.deepEqual(listed, Array.from({ length: n }, (_, index) => index + 1), 'the job runs the shares 1 to n');
-  assert.ok(job.steps.some((step) => (step.run ?? '').endsWith(` npm run test:pg -w packages/serve -- --shard=\${{ matrix.shard }}/${n}`)), `the suite's step runs the matrix's share of ${n}`);
+  assert.ok(job.steps.some((step) => (step.run ?? '').endsWith(` pnpm --filter ./packages/serve run test:pg --shard=\${{ matrix.shard }}/${n}`)), `the suite's step runs the matrix's share of ${n}`);
   assert.equal(job.name, `serve store on Postgres (\${{ matrix.shard }}/${n})`);
   for (const k of listed) assert.ok(shareOf(files, { k, n }).length, `share ${k} of ${n} has a file`);
 });

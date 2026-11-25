@@ -16,7 +16,7 @@ are adapted from scrcpy; `NOTICE-scrcpy.md` lists each file.
 
 ## Build
 
-Plain Java 17, no Gradle. `npm run build:phoned` compiles against the pinned platform's own `java.base` and
+Plain Java 17, no Gradle. `pnpm run build:phoned` compiles against the pinned platform's own `java.base` and
 `android.jar`, so a `java.*` call a phone lacks fails at build time, then runs d8 with `--min-api 30`: phoned runs on
 Android 11 and later, and a call newer than that needs a `Build.VERSION.SDK_INT` check. The pin is `ANDROID` in
 `scripts/android-sdk.mjs`, shared with the ui fixture's build: `platforms;android-35` and `build-tools;35.0.0`. It
@@ -28,19 +28,19 @@ needs:
   files of it, `android.jar`, `core-for-system-modules.jar` and `d8.jar`, which the server image's build stage and
   CI's `phoned` job (`.github/actions/android-toolchain`) take from Google's zips pinned by sha256.
 
-When one is missing the build stops with one sentence naming it and where it looked. `npm run check:phoned` then
+When one is missing the build stops with one sentence naming it and where it looked. `pnpm run check:phoned` then
 checks the jar where it was built: a dex jar stamped with this package's version, or one sentence and exit 1.
 
 The jar is reproducible for a given pin: the same sources, version and build tools give the same bytes. Another
 build-tools version's d8 writes other bytes, so moving the pin changes the jar's sha256 (a frozen live run pins it).
 Its version is this package's, so the provider refuses a phone whose phoned reports another (`drift.version`).
 
-`npm run build:ui-fixture` builds the conformance suite's ui fixture (`src/conformance/ui-fixture.ts`) as an Android
+`pnpm run build:ui-fixture` builds the conformance suite's ui fixture (`src/conformance/ui-fixture.ts`) as an Android
 app from `../fixture-android/` with the same pin: one Activity of plain views in a 320 by 320 point window, no
 resources, linked by aapt2 and signed by apksigner with a debug key made for that build, at `dist/ui-fixture.apk`. A
 conformance run on the phone harness installs it on each phone (the provider's `apks` option) so the Full ui cases run.
 
-`npm run test:phoned` runs the JVM tests (`src/test`), with the host JDK alone, and then the TypeScript client against
+`pnpm run test:phoned` runs the JVM tests (`src/test`), with the host JDK alone, and then the TypeScript client against
 phoned's real core over a scripted phone (`src/fake`, `test/phoned/`).
 
 ## Layout

@@ -103,7 +103,7 @@ Tell us in [an issue](https://github.com/Parcha-ai/agentrun/issues).
 - [`provider.md`](provider.md): the provider contract and the descriptor.
 - [`wire.md`](wire.md): the methods, `hello`, errors and limits. [`stdio.md`](stdio.md) is how they travel to
   `computerd`. [`kinds.md`](kinds.md) covers kinds, groups and the Core and Full levels.
-- The conformance kit: `npm run conformance -w @parcha/agentrun-computer -- --provider <id | ./module.js>`, in
+- The conformance kit: `pnpm --filter @parcha/agentrun-computer run conformance --provider <id | ./module.js>`, in
   [`packages/computer`](../../packages/computer/README.md#conformance).
 
 ## Files

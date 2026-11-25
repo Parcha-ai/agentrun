@@ -72,7 +72,7 @@ test('a whole suite runs for a pick of its own, never for its smoke file alone',
 
 test('a shared root runs every test, naming it; a test file under scripts/ runs only itself', (t) => {
   const root = fixture(t);
-  for (const path of ['scripts/tool.mjs', '.github/workflows/ci.yml', 'package.json', 'package-lock.json', 'scripts/ci-shards.json']) {
+  for (const path of ['scripts/tool.mjs', '.github/workflows/ci.yml', 'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'scripts/ci-shards.json']) {
     assert.equal(run(root, ['packages/a/src/one.ts', path]).full, `${path} is a shared root, which any suite may read`, path);
   }
   const only = run(root, ['scripts/tool.test.mjs']);

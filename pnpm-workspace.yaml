@@ -1,0 +1,34 @@
+# The workspace pnpm installs: the same packages as package.json's `workspaces` (scripts/build-workspaces.mjs and npm's
+# script runner read that one; scripts/pnpm-workspace.test.mjs holds the two equal).
+packages:
+  - packages/*
+
+# A flat node_modules, laid out as npm's was: every package resolves what it resolved under npm, and each file is a hard
+# link into pnpm's one store, so a second checkout costs links, not copies.
+nodeLinker: hoisted
+
+# A workspace package names another at its exact version, never `workspace:`, so the manifests publish unchanged; this
+# links that dependency to the workspace's own copy instead of the registry's.
+linkWorkspacePackages: true
+
+# Every zod in the tree is the root's (npm's `overrides` before).
+overrides:
+  zod: $zod
+
+# No dependency runs an install script (npm ci --ignore-scripts before). A new dependency with one fails the install
+# until it is named here: false keeps it off.
+allowBuilds:
+  '@google/genai': false
+  cbor-extract: false
+  cpu-features: false
+  esbuild: false
+  opencode-ai: false
+  protobufjs: false
+  ssh2: false
+
+# Nor does pnpm install the agent skills a package ships.
+permissions:
+  '@parcha/agentrun-dsl':
+    skills: false
+  '@parcha/agentrun-serve':
+    skills: false

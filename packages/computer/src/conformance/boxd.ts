@@ -1,4 +1,4 @@
-// boxd for the conformance CLI: `npm run conformance -w @parcha/agentrun-computer -- --provider boxd [--image <snapshot>]`.
+// boxd for the conformance CLI: `pnpm --filter @parcha/agentrun-computer run conformance --provider boxd [--image <snapshot>]`.
 // It makes real machines, so it runs only with AGENTRUN_COMPUTER_LIVE_BOXD=1 and your own key, under
 // COMPUTER_BOXD_API_KEY. The provider reads no environment: this module reads its own COMPUTER_BOXD_* names (never
 // BOXD_API_KEY, which may hold another account's key) and passes each to create() as its option. The live switch is

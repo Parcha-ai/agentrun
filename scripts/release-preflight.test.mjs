@@ -556,10 +556,10 @@ test('the release workflow folds what its tag carries before it installs, builds
   const at = text => { const index = workflow.indexOf(text); assert.ok(index > 0, `release.yml runs ${text}`); return index; };
   const foldStep = at('run: node scripts/changes.mjs --fold "${RELEASE_TAG#v}"');
   assert.ok(at('run: node scripts/release-ci-gate.mjs') < foldStep, 'after the tagged commit is known to have passed CI');
-  assert.ok(foldStep < at('- run: npm ci --ignore-scripts'), 'before the install');
-  assert.ok(foldStep < at('- run: npm run build\n'), 'before the build');
-  assert.ok(foldStep < at('- run: npm run verify:packages -- --console'), 'before the archives are packed and verified');
-  assert.ok(at('- run: npm run verify:packages -- --console') < at('- run: node scripts/release-preflight.mjs --tag "$RELEASE_TAG"'), 'the preflight reads the folded tree');
+  assert.ok(foldStep < at('- run: pnpm install --frozen-lockfile --ignore-scripts'), 'before the install');
+  assert.ok(foldStep < at('- run: pnpm run build\n'), 'before the build');
+  assert.ok(foldStep < at('- run: pnpm run verify:packages --console'), 'before the archives are packed and verified');
+  assert.ok(at('- run: pnpm run verify:packages --console') < at('- run: node scripts/release-preflight.mjs --tag "$RELEASE_TAG"'), 'the preflight reads the folded tree');
 });
 
 test("a release is refused while a published package's own changelog still has entries under Unreleased; a held package's may keep them", () => fixture(async root => {

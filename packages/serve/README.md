@@ -45,7 +45,7 @@ subagents report `unsupported`. Observing a session never enrolls its project or
 Node 24.22.3 or later. In a checkout of this repository:
 
 ```sh
-npm ci --ignore-scripts && npm run build
+pnpm install --frozen-lockfile && pnpm run build
 cat > faux.mjs <<'JS'
 export default (context, faux) => faux.message("The answer is 42.");
 JS
@@ -4223,7 +4223,7 @@ says to open the link. Either cookie takes the place of `Authorization: Bearer` 
 and its body is `application/json`, or, on a `PUT` or `POST` to a route that takes bytes (`PUT /v2/files/{id}`,
 `POST /v2/files`), of any content type. A request that sends an `Authorization` header is checked on that header alone.
 
-The repository's `npm ci && npm run build` builds the console (`apps/console`) first, and the server's build copies it
+The repository's `pnpm install --frozen-lockfile && pnpm run build` builds the console (`apps/console`) first, and the server's build copies it
 into `dist/console`; the image always carries it. A server built without it answers `/` with a 404 that says so. `/console/`
 (the console's address before) and `/setup` and `/sign-in` (the old page's, which the printed setup link still names)
 send the browser to `/`, which keeps a link's `#code`.
@@ -5424,8 +5424,8 @@ carries no cost at all, as from a provider that does not price the model. The te
 ## Test
 
 ```sh
-npm run build
-npm test -w @parcha/agentrun-serve
+pnpm run build
+pnpm --filter @parcha/agentrun-serve test
 ```
 
 The tests start a real runner on the faux model, both kinds of run: no key, no network.

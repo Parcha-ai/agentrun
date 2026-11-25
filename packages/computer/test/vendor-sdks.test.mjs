@@ -1,5 +1,5 @@
 // The vendor SDKs a provider loads at run time (e2b, modal, @boxd-sh/sdk, ssh2, Archil's disk) are this package's
-// optionalDependencies, each pinned exactly at the version the workspace's lockfile holds, so a plain `npm install` of
+// optionalDependencies, each pinned exactly at the version the workspace's lockfile (pnpm-lock.yaml) holds, so a plain `npm install` of
 // the package (or of serve, which depends on it) brings them, and `npm install --omit=optional` leaves them out. A
 // provider loads its SDK only through vendorSdk (src/vendor-sdk.ts), which names it as a literal argument, never an import
 // literal: so no type checker resolves the SDK's types, and with the SDK absent the error names the install step. The
@@ -12,6 +12,7 @@ import { dirname, join, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import ts from "typescript";
+import { importerRef, lockedVersions, parseKey, readLock } from "../../../scripts/pnpm-lock.mjs";
 
 const here = (path) => fileURLToPath(new URL(path, import.meta.url));
 const json = (path) => JSON.parse(readFileSync(here(path), "utf8"));
@@ -95,13 +96,14 @@ test("each SDK a provider loads is one of the packed package's optionalDependenc
 	// The manifest npm packs (verify-packages.mjs reads each package's package.json the same way): npm pack ships it as it is.
 	const computer = json("../package.json");
 	const root = json("../../../package.json");
-	const lock = json("../../../package-lock.json");
+	const lock = readLock(fileURLToPath(new URL("../../../", import.meta.url)));
+	const versionOf = (dir, name) => { const ref = importerRef(lock, dir, name); return ref && parseKey(`${name}@${ref}`).version; };
 	const names = [...new Set(all(scan()).map(({ name }) => name))].sort();
 	for (const name of names) {
 		const pin = computer.optionalDependencies?.[name];
 		assert.match(pin ?? "", /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/, `packages/computer/package.json pins ${name} exactly in optionalDependencies (no range), not ${pin}: a plain npm install then brings it`);
-		assert.equal(lock.packages?.[`node_modules/${name}`]?.version, pin, `package-lock.json installs ${name} ${pin}`);
-		assert.equal(lock.packages?.["packages/computer"]?.optionalDependencies?.[name], pin, `package-lock.json records ${name} ${pin} as packages/computer's optional dependency: run npm install --package-lock-only`);
+		assert.deepEqual(lockedVersions(lock, name), [pin], `pnpm-lock.yaml installs ${name} ${pin}, and no other version`);
+		assert.equal(lock.importers["packages/computer"]?.optionalDependencies?.[name] && versionOf("packages/computer", name), pin, `pnpm-lock.yaml records ${name} ${pin} as packages/computer's optional dependency: run pnpm install --lockfile-only`);
 		if (root.devDependencies?.[name] !== undefined) assert.equal(root.devDependencies[name], pin, `the root devDependency on ${name} is the same pin`);
 		for (const field of ["dependencies", "peerDependencies", "devDependencies"]) {
 			assert.equal(computer[field]?.[name], undefined, `packages/computer names ${name} only in optionalDependencies, not ${field}`);

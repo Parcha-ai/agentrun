@@ -140,7 +140,7 @@ test("an API-only server takes a run's hosted machine on the attach socket and t
   assert.equal(server.attachHub.online("cmp-apionly"), false);
 });
 
-test("the daemon route serves this server's computerd build for the machine's arch, the bytes a hosted provider uploads; ten fetches a minute per machine, then 429; another arch is 422; the token is in no log line", { skip: !existsSync(DAEMON) && "no computerd-linux-amd64: run npm run build:daemon -w @parcha/agentrun-computer (CI's build job does)" }, async (t) => {
+test("the daemon route serves this server's computerd build for the machine's arch, the bytes a hosted provider uploads; ten fetches a minute per machine, then 429; another arch is 422; the token is in no log line", { skip: !existsSync(DAEMON) && "no computerd-linux-amd64: run pnpm --filter @parcha/agentrun-computer run build:daemon (CI's build job does)" }, async (t) => {
   const lines = [];
   const server = await serve(t, { runner: false, publicUrl: "https://agentrun.example.com/", log: (line) => lines.push(line) });
   assert.equal(server.dial.url, "https://agentrun.example.com", "the public URL (AGENTRUN_PUBLIC_URL) is the address its machines dial");

@@ -1,4 +1,4 @@
-// Modal for the conformance CLI: `npm run conformance -w @parcha/agentrun-computer -- --provider modal`. It builds a real
+// Modal for the conformance CLI: `pnpm --filter @parcha/agentrun-computer run conformance --provider modal`. It builds a real
 // Modal client, so it runs only with AGENTRUN_COMPUTER_LIVE_MODAL=1 and a key for an account you can bill, under
 // COMPUTER_MODAL_TOKEN_ID and COMPUTER_MODAL_TOKEN_SECRET. The provider reads no environment: this module reads its own
 // COMPUTER_MODAL_* names (never MODAL_TOKEN_ID or MODAL_TOKEN_SECRET, which may hold a production token) and passes each

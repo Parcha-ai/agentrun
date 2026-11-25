@@ -408,7 +408,7 @@ export class OrgoProvider implements ComputerProvider {
 		try {
 			daemon = readFileSync(this.#daemonPath);
 		} catch {
-			return fail("not_found", `no daemon binary at ${this.#daemonPath}: run npm run build:daemon -w @parcha/agentrun-computer`);
+			return fail("not_found", `no daemon binary at ${this.#daemonPath}: run pnpm --filter @parcha/agentrun-computer run build:daemon`);
 		}
 		if (signal?.aborted) return fail("aborted", "create was aborted before Orgo was called");
 		const workspace = await this.#workspace.read(signal);
@@ -1007,7 +1007,7 @@ export class OrgoProvider implements ComputerProvider {
 		try {
 			daemon = readFileSync(this.#daemonPath);
 		} catch {
-			return fail("not_found", `${ref.name}'s daemon needs replacing, since ${why}, and there is no daemon binary at ${this.#daemonPath}: run npm run build:daemon -w @parcha/agentrun-computer`);
+			return fail("not_found", `${ref.name}'s daemon needs replacing, since ${why}, and there is no daemon binary at ${this.#daemonPath}: run pnpm --filter @parcha/agentrun-computer run build:daemon`);
 		}
 		const renewed = await renewEntry(this.#ledger, ref, lease, "its daemon being replaced by an attach");
 		if (!renewed.ok) return fail(renewed.error.code, `${ref.name}'s daemon needs replacing, since ${why}, and is left as it is: ${renewed.error.message}`);

@@ -59,7 +59,7 @@ The key is `OPENROUTER_API_KEY`, read by name when a request is made, or `apiKey
 
 ## Tests
 
-`npm test -w @parcha/agentrun-decisions` runs on a fake fetch. It registers the DSL's provider conformance suite, replays 28 responses recorded from Parallel's decision tool and the live Parallel and OpenRouter responses of 2026-10-30 (five OpenRouter models) through the seam, and checks the request as sent, the limits and the errors. `test/parallel.live.test.mjs` makes three decisions on the paid REST path (about $0.003) and runs only with `PARALLEL_API_KEY` set; without it, it is skipped and says so.
+`pnpm --filter @parcha/agentrun-decisions test` runs on a fake fetch. It registers the DSL's provider conformance suite, replays 28 responses recorded from Parallel's decision tool and the live Parallel and OpenRouter responses of 2026-10-30 (five OpenRouter models) through the seam, and checks the request as sent, the limits and the errors. `test/parallel.live.test.mjs` makes three decisions on the paid REST path (about $0.003) and runs only with `PARALLEL_API_KEY` set; without it, it is skipped and says so.
 
 ## License
 

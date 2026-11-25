@@ -11,10 +11,10 @@ TypeScript consumers require TypeScript 5.4 or newer.
 From the source checkout, with Node 24.22.3 or newer:
 
 ```sh
-npm ci --ignore-scripts
-npm run build
-npm run demo
-npm run test:typed-example
+pnpm install --frozen-lockfile
+pnpm run build
+pnpm run demo
+pnpm run test:typed-example
 ```
 
 Should our small team move its documentation from a wiki into the code repository? A planning step splits it into questions about reviews, editing, and search. Each question runs the same research component. A final agent assembles the findings.
@@ -32,9 +32,9 @@ Write the report
 
 The demo runs the real interpreter with fictional passages and scripted adapters. It makes no network or model calls and does not measure research quality. The workflow is in [typed-research.ts](../examples/typed-research.ts); scripted responses live separately in [typed-research-fixtures.ts](../examples/typed-research-fixtures.ts).
 
-Run `npm run demo -- --no-evidence` to make every source fail the evidence check. The same workflow stops before writing findings or a report, with exit code `2`.
+Run `pnpm run demo --no-evidence` to make every source fail the evidence check. The same workflow stops before writing findings or a report, with exit code `2`.
 
-For a first edit, change `keep: { path: 'answersQuestion', gte: 0.8 }` to `gte: 0.99` in `typed-research.ts`, then rerun `npm run demo`. The scripted evidence probability is `0.95`, so it now stops. No rebuild is needed for this TypeScript example. Restore `0.8` before running the unchanged acceptance tests. This changes a real execution rule; changing a prompt alone will not change the scripted model responses.
+For a first edit, change `keep: { path: 'answersQuestion', gte: 0.8 }` to `gte: 0.99` in `typed-research.ts`, then rerun `pnpm run demo`. The scripted evidence probability is `0.95`, so it now stops. No rebuild is needed for this TypeScript example. Restore `0.8` before running the unchanged acceptance tests. This changes a real execution rule; changing a prompt alone will not change the scripted model responses.
 
 The [configured research walkthrough](live-research.md) wires the same workflow to Jev and your own agents, and includes independently labeled evidence cases.
 
@@ -42,7 +42,7 @@ The [configured research walkthrough](live-research.md) wires the same workflow 
 
 Copy the [standalone TypeScript app](../examples/starter/README.md) to build your own workflow. It includes a package file, compiler configuration, offline Jev client, and four tests. It keeps a documentation policy and its emergency exception while dropping a promotional claim. No agent is needed.
 
-Follow its npm installation steps, then run `npm test` and `npm start`. `npm start -- --no-evidence` demonstrates the stop condition with exit code `2`. The app uses public imports and runs outside the checkout.
+Follow its npm installation steps, then run `pnpm test` and `npm start`. `npm start -- --no-evidence` demonstrates the stop condition with exit code `2`. The app uses public imports and runs outside the checkout.
 
 The [Jev adapter's offline example](../packages/jev/README.md#offline-tests) shows the request and response without credentials.
 

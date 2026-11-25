@@ -32,7 +32,7 @@ if (!process.env.E2B_API_KEY) {
 /** The host's own SDK, as the E2B provider takes it: by a name that is not a literal, never this package's dependency. */
 const E2B_PACKAGE = "e2b";
 const { Template, ApiClient, ConnectionConfig } = await import(E2B_PACKAGE).catch(() => {
-	console.error(`build-e2b: the ${E2B_PACKAGE} package is not installed: run npm ci at the repository root (it is a root devDependency there), or install ${E2B_PACKAGE} beside this script`);
+	console.error(`build-e2b: the ${E2B_PACKAGE} package is not installed: run pnpm install at the repository root (it is a root devDependency there), or install ${E2B_PACKAGE} beside this script`);
 	process.exit(2);
 });
 console.error(`build-e2b: template ${name}${values.image ? ` from ${values.image}` : ""}`);

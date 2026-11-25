@@ -76,7 +76,7 @@ It prints the page's accessibility tree, the same text that `snapshot` gives a m
 
 ## Demos
 
-Two runnable demos live in `examples/` in the repository. They are not in the npm package. Build once with `npm ci && npm run build`, then run one from the repository root. Each needs Chrome or Chromium (`CHROME_PATH` names it) except where it says otherwise.
+Two runnable demos live in `examples/` in the repository. They are not in the npm package. Build once with `pnpm install --frozen-lockfile && pnpm run build`, then run one from the repository root. Each needs Chrome or Chromium (`CHROME_PATH` names it) except where it says otherwise.
 
 | Demo | Run | What it shows |
 |---|---|---|
@@ -397,9 +397,9 @@ Two things to know before you give a model a browser:
 ## Development
 
 ```sh
-npm run build -w @parcha/pi-browser
-npm test -w @parcha/pi-browser               # everything but the real-Chrome suites
-CHROME_PATH=/path/to/chrome npm run test:chrome -w @parcha/pi-browser
+pnpm --filter @parcha/pi-browser run build
+pnpm --filter @parcha/pi-browser test               # everything but the real-Chrome suites
+CHROME_PATH=/path/to/chrome pnpm --filter @parcha/pi-browser run test:chrome
 ```
 
 The real-Chrome suites (`stagehand_real_chrome`, `cdp_local_chrome`, `effects-chrome`, `screenshot_clip_real_chrome`,

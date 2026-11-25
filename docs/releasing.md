@@ -26,20 +26,21 @@ The packages a release may publish are named, in publication order, in `releaseP
 
 ## Verify the source and packages
 
-Use Node 24.22.3, npm 11.21.0 and GNU tar for release verification. From a clean checkout:
+Use Node 24.22.3, pnpm 12.22.0 (package.json's `packageManager`), npm 11.21.0 and GNU tar for release verification.
+pnpm installs and builds the checkout; npm packs, verifies and publishes the archives. From a clean checkout:
 
 ```sh
-npm install --global npm@11.21.0 --ignore-scripts
-npm ci --ignore-scripts
-npm run check
-npm run build:daemon -w @parcha/agentrun-computer
-npm run export:source
+npm install --global npm@11.21.0 pnpm@12.22.0 --ignore-scripts
+pnpm install --frozen-lockfile
+pnpm run check
+pnpm --filter @parcha/agentrun-computer run build:daemon
+pnpm run export:source
 node scripts/check-generated.mjs
-npm run verify:packages -- --console
-npm run verify:source
+pnpm run verify:packages --console
+pnpm run verify:source
 ```
 
-`npm run check` builds first, and the root build builds the console before the workspaces (`scripts/build-console.mjs`), so the server's build copies it into the archive `@parcha/agentrun-serve` publishes, with `THIRD-PARTY-NOTICES.txt`: the console's Vite build writes that file from the bundle's own module list (each bundled package, its version, its license and its license text), and the server's `NOTICE` points to it. `--console` stops verification when the server's archive lacks either. `npm run build:daemon -w @parcha/agentrun-computer` needs Go (the version `packages/computer/daemon/go.mod` names, or newer) and writes the daemon binaries `@parcha/agentrun-computer` publishes, `dist/computerd-linux-amd64` and `-arm64`; verification stops when its archive lacks either, or holds one built for another version. The release workflow runs the same steps.
+`pnpm run check` builds first, and the root build builds the console before the workspaces (`scripts/build-console.mjs`), so the server's build copies it into the archive `@parcha/agentrun-serve` publishes, with `THIRD-PARTY-NOTICES.txt`: the console's Vite build writes that file from the bundle's own module list (each bundled package, its version, its license and its license text), and the server's `NOTICE` points to it. `--console` stops verification when the server's archive lacks either. `pnpm --filter @parcha/agentrun-computer run build:daemon` needs Go (the version `packages/computer/daemon/go.mod` names, or newer) and writes the daemon binaries `@parcha/agentrun-computer` publishes, `dist/computerd-linux-amd64` and `-arm64`; verification stops when its archive lacks either, or holds one built for another version. The release workflow runs the same steps.
 
 The console's Vite build also fails when what it would ship looks like it holds a credential (`apps/console/credential-gate.mjs`). It reads every emitted script and text file, `THIRD-PARTY-NOTICES.txt` and `index.html` included, and stops on a private key, a GitHub, OpenAI, Anthropic, Slack or AWS key, a JWT, or a URL with a password in it. It also stops when the bundle took in a test, fixture, sample, mock or story from `apps/console/src`. The error names the file but never the text it matched, and hides a file name that itself looks like a credential. Storybook's build is not shipped and skips this check.
 

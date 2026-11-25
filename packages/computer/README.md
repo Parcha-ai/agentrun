@@ -1412,7 +1412,7 @@ A live run is wrapped in the one sweep, with the same settings (it needs no live
 
 ```sh
 node packages/computer/dist/conformance/sweep.js --provider modal --before /tmp/modal-before.json
-AGENTRUN_COMPUTER_LIVE_MODAL=1 npm run test:modal -w @parcha/agentrun-computer
+AGENTRUN_COMPUTER_LIVE_MODAL=1 pnpm --filter @parcha/agentrun-computer run test:modal
 node packages/computer/dist/conformance/sweep.js --provider modal --after /tmp/modal-before.json
 ```
 
@@ -1694,7 +1694,7 @@ expects its refusal. Full `provider.janitor`, which needs a stopped computer kep
 image from it when `--image` names none, and prints the note above the verdict (`notes` in `--json`).
 
 ```sh
-npm run conformance -w @parcha/agentrun-computer -- --provider daytona [--image <snapshot>]
+pnpm --filter @parcha/agentrun-computer run conformance --provider daytona [--image <snapshot>]
 ```
 
 ### The sweep around a live run
@@ -2107,7 +2107,7 @@ words, whatever its value, and every sandbox is made with public traffic off.
 ### Conformance on E2B
 
 ```sh
-AGENTRUN_COMPUTER_LIVE_E2B=1 COMPUTER_E2B_API_KEY=... npm run conformance -w @parcha/agentrun-computer -- --provider e2b
+AGENTRUN_COMPUTER_LIVE_E2B=1 COMPUTER_E2B_API_KEY=... pnpm --filter @parcha/agentrun-computer run conformance --provider e2b
 ```
 
 The conformance module, `dist/conformance/e2b.js`, checks `AGENTRUN_COMPUTER_LIVE_E2B=1` before it reads anything
@@ -2265,7 +2265,7 @@ read back.
 
 ```sh
 AGENTRUN_COMPUTER_LIVE_AGENT37=1 COMPUTER_AGENT37_API_KEY=... COMPUTER_AGENT37_SSH_KEY="$(cat key)" \
-  npm run conformance -w @parcha/agentrun-computer -- --provider agent37
+  pnpm --filter @parcha/agentrun-computer run conformance --provider agent37
 ```
 
 The conformance module, `dist/conformance/agent37.js`, checks `AGENTRUN_COMPUTER_LIVE_AGENT37=1` first, then reads
@@ -2380,7 +2380,7 @@ guest's RNG state and machine id.
 
 ```sh
 AGENTRUN_COMPUTER_LIVE_MORPH=1 COMPUTER_MORPH_API_KEY=... \
-  npm run conformance -w @parcha/agentrun-computer -- --provider morph
+  pnpm --filter @parcha/agentrun-computer run conformance --provider morph
 ```
 
 The conformance module, `dist/conformance/morph.js`, checks `AGENTRUN_COMPUTER_LIVE_MORPH=1` first, then reads
@@ -2570,9 +2570,9 @@ session.
 
 ```sh
 AGENTRUN_COMPUTER_LIVE_BROWSERBASE=1 COMPUTER_BROWSERBASE_API_KEY=... COMPUTER_BROWSERBASE_PROJECT_ID=... \
-  npm run conformance -w @parcha/agentrun-computer -- --provider browserbase
+  pnpm --filter @parcha/agentrun-computer run conformance --provider browserbase
 AGENTRUN_COMPUTER_LIVE_KERNEL=1 COMPUTER_KERNEL_API_KEY=... \
-  npm run conformance -w @parcha/agentrun-computer -- --provider kernel
+  pnpm --filter @parcha/agentrun-computer run conformance --provider kernel
 ```
 
 ## A local browser: this machine's Chrome, no keys
@@ -2653,7 +2653,7 @@ The conformance module starts a real Chrome, so it waits for its switch:
 
 ```sh
 AGENTRUN_COMPUTER_LIVE_LOCAL_CHROME=1 [COMPUTER_LOCAL_CHROME_PATH=/usr/bin/chromium] \
-  npm run conformance -w @parcha/agentrun-computer -- --provider local-chrome --kind browser
+  pnpm --filter @parcha/agentrun-computer run conformance --provider local-chrome --kind browser
 ```
 
 ## Phone harness (the phone kind)
@@ -2675,7 +2675,7 @@ the API's control URL) is a later change: `platform: "ios"` is refused in words.
   rented, and `connect()`.
 - **phoned, the phone's driver.** `connect()` asks the phone harness for the session's adb link, connects to it,
   unlocks the phone with the session's code (never in a result or an error) and probes it. Then it starts phoned
-  (`daemon-android/`, one dex jar built by `npm run build:phoned` into `dist/phoned.jar`) and speaks the protocol to it:
+  (`daemon-android/`, one dex jar built by `pnpm run build:phoned` into `dist/phoned.jar`) and speaks the protocol to it:
   - The jar goes to `/data/local/tmp/phoned-<sha256 prefix>.jar` only when the phone lacks it: pushed beside that name,
     moved there and its sha256 checked, so a jar of that name is always whole.
   - phoned runs as the shell user through `app_process`, scrcpy's way in, on adb's `exec:` service, whose socket
@@ -2887,8 +2887,8 @@ alone (see [Init, the socket and the bridge](#init-the-socket-and-the-bridge)): 
 ### Conformance on boxd
 
 ```sh
-AGENTRUN_COMPUTER_LIVE_BOXD=1 COMPUTER_BOXD_API_KEY=... npm run conformance -w @parcha/agentrun-computer -- --provider boxd
-AGENTRUN_COMPUTER_LIVE_BOXD=1 COMPUTER_BOXD_API_KEY=... npm run test:boxd -w @parcha/agentrun-computer
+AGENTRUN_COMPUTER_LIVE_BOXD=1 COMPUTER_BOXD_API_KEY=... pnpm --filter @parcha/agentrun-computer run conformance --provider boxd
+AGENTRUN_COMPUTER_LIVE_BOXD=1 COMPUTER_BOXD_API_KEY=... pnpm --filter @parcha/agentrun-computer run test:boxd
 node packages/computer/dist/conformance/sweep.js --provider boxd --before /tmp/boxd-before.json   # then --after
 ```
 
@@ -2957,7 +2957,7 @@ What smol cloud refuses or this host works around:
 
 ```sh
 AGENTRUN_COMPUTER_LIVE_SMOLCLOUD=1 COMPUTER_SMOLCLOUD_API_KEY=... \
-  npm run conformance -w @parcha/agentrun-computer -- --provider smolcloud --long --concurrency 4
+  pnpm --filter @parcha/agentrun-computer run conformance --provider smolcloud --long --concurrency 4
 node packages/computer/dist/conformance/sweep.js --provider smolcloud --before /tmp/smolcloud-before.json   # then --after
 ```
 
@@ -3058,9 +3058,9 @@ What Groundbox refuses or this host works around:
 
 ```sh
 AGENTRUN_COMPUTER_LIVE_GROUNDBOX=1 COMPUTER_GROUNDBOX_API_KEY=... \
-  npm run conformance -w @parcha/agentrun-computer -- --provider groundbox --long
+  pnpm --filter @parcha/agentrun-computer run conformance --provider groundbox --long
 AGENTRUN_COMPUTER_LIVE_GROUNDBOX=1 COMPUTER_GROUNDBOX_API_KEY=... COMPUTER_GROUNDBOX_KIND=desktop \
-  npm run conformance -w @parcha/agentrun-computer -- --provider groundbox --kind desktop --long --fixture <computerd-fixture for linux/amd64>
+  pnpm --filter @parcha/agentrun-computer run conformance --provider groundbox --kind desktop --long --fixture <computerd-fixture for linux/amd64>
 node packages/computer/dist/conformance/sweep.js --provider groundbox --before /tmp/groundbox-before.json   # then --after
 ```
 
@@ -3068,7 +3068,7 @@ The conformance module, `dist/conformance/groundbox.js`, checks `AGENTRUN_COMPUT
 `COMPUTER_GROUNDBOX_API_KEY` (`apiKey`, required), `COMPUTER_GROUNDBOX_API_URL` (`apiUrl`), `COMPUTER_GROUNDBOX_IMAGE`
 (the run's image, default the box image), `COMPUTER_GROUNDBOX_DAEMON` (`daemonPath`), `COMPUTER_GROUNDBOX_USER`
 (`daemonUser`) and `COMPUTER_GROUNDBOX_KIND` (`kind`: `linux` by default, or `desktop`), never `GROUNDBOX_API_KEY`. Every computer of a run lives at most 30 minutes. The live sweep is the
-shared one; its scope is the key's team. `test/groundbox/conformance.groundbox.test.mjs` (`npm run test:groundbox`) runs
+shared one; its scope is the key's team. `test/groundbox/conformance.groundbox.test.mjs` (`pnpm run test:groundbox`) runs
 the suite one test per case (building the fixture with Go), and skips unless the switch and the key are both set.
 
 ### Live runs
@@ -3098,8 +3098,8 @@ A provider for another vendor passes the same suite as Docker's, with one comman
 `ComputerClient` and the suite's assertion helpers, so the same cases run against a provider with daemon `none`.
 
 ```sh
-npm run conformance -w @parcha/agentrun-computer -- --provider docker            # or modal, daytona: any registry id
-npm run conformance -w @parcha/agentrun-computer -- --provider ./my-provider.js [--image debian:bookworm-slim] [--only exec,files] [--fixture <path>] [--long] [--concurrency <n>] [--json]
+pnpm --filter @parcha/agentrun-computer run conformance --provider docker            # or modal, daytona: any registry id
+pnpm --filter @parcha/agentrun-computer run conformance --provider ./my-provider.js [--image debian:bookworm-slim] [--only exec,files] [--fixture <path>] [--long] [--concurrency <n>] [--json]
 ```
 
 ```text
@@ -3316,7 +3316,7 @@ it with nothing more: the module's settings and keys by name, its image, the run
 the list that shows nothing is left.
 
 ```sh
-npm run conformance -w @parcha/agentrun-computer -- --provider daytona --tti 100 --burst 100 [--image <image>] [--json]
+pnpm --filter @parcha/agentrun-computer run conformance --provider daytona --tti 100 --burst 100 [--image <image>] [--json]
 ```
 
 ```text
@@ -3463,15 +3463,15 @@ provider file to its registry line and its line to this shape, checks that the C
 `scripts/check-env.mjs` on `src/`. Run the suite on the new computer, by path before its line exists and by id after:
 
 ```sh
-npm run conformance -w @parcha/agentrun-computer -- --provider ./packages/computer/dist/fly.js
-npm run conformance -w @parcha/agentrun-computer -- --provider fly
+pnpm --filter @parcha/agentrun-computer run conformance --provider ./packages/computer/dist/fly.js
+pnpm --filter @parcha/agentrun-computer run conformance --provider fly
 ```
 
 ## Build
 
 ```sh
-npm run build -w @parcha/agentrun-computer          # the TypeScript, into dist/
-npm run build:daemon -w @parcha/agentrun-computer   # dist/computerd-linux-amd64 and -arm64, and dist/computerd.json
+pnpm --filter @parcha/agentrun-computer run build          # the TypeScript, into dist/
+pnpm --filter @parcha/agentrun-computer run build:daemon   # dist/computerd-linux-amd64 and -arm64, and dist/computerd.json
 ```
 
 `build:daemon` builds the daemon with Go 1.24 or newer when Go is on PATH, and records the daemon source it came from in
@@ -3483,17 +3483,17 @@ its daemon changes.
 ## Tests
 
 ```sh
-npm test -w @parcha/agentrun-computer               # unit tests: no Go, no Docker
+pnpm --filter @parcha/agentrun-computer test               # unit tests: no Go, no Docker
 cd packages/computer/daemon && go vet ./... && go test ./...
-AGENTRUN_COMPUTER_LIVE_DOCKER=1 npm run test:docker -w @parcha/agentrun-computer
-AGENTRUN_COMPUTER_LIVE_DAYTONA=1 COMPUTER_DAYTONA_API_KEY=... [COMPUTER_DAYTONA_SNAPSHOT=<snapshot>] npm run test:daytona -w @parcha/agentrun-computer
-AGENTRUN_COMPUTER_LIVE_MODAL=1 npm run test:modal -w @parcha/agentrun-computer   # also needs COMPUTER_MODAL_TOKEN_ID/SECRET, for an account you can bill
-AGENTRUN_COMPUTER_LIVE_E2B=1 npm run test:e2b -w @parcha/agentrun-computer       # also needs COMPUTER_E2B_API_KEY, for an account you can bill, and the e2b package
-AGENTRUN_COMPUTER_LIVE_BOXD=1 npm run test:boxd -w @parcha/agentrun-computer     # also needs COMPUTER_BOXD_API_KEY, for an account you can bill, and the @boxd-sh/sdk package
-AGENTRUN_COMPUTER_LIVE_GROUNDBOX=1 npm run test:groundbox -w @parcha/agentrun-computer   # also needs COMPUTER_GROUNDBOX_API_KEY, for a team you can bill
+AGENTRUN_COMPUTER_LIVE_DOCKER=1 pnpm --filter @parcha/agentrun-computer run test:docker
+AGENTRUN_COMPUTER_LIVE_DAYTONA=1 COMPUTER_DAYTONA_API_KEY=... [COMPUTER_DAYTONA_SNAPSHOT=<snapshot>] pnpm --filter @parcha/agentrun-computer run test:daytona
+AGENTRUN_COMPUTER_LIVE_MODAL=1 pnpm --filter @parcha/agentrun-computer run test:modal   # also needs COMPUTER_MODAL_TOKEN_ID/SECRET, for an account you can bill
+AGENTRUN_COMPUTER_LIVE_E2B=1 pnpm --filter @parcha/agentrun-computer run test:e2b # also needs COMPUTER_E2B_API_KEY, for an account you can bill, and the e2b package
+AGENTRUN_COMPUTER_LIVE_BOXD=1 pnpm --filter @parcha/agentrun-computer run test:boxd     # also needs COMPUTER_BOXD_API_KEY, for an account you can bill, and the @boxd-sh/sdk package
+AGENTRUN_COMPUTER_LIVE_GROUNDBOX=1 pnpm --filter @parcha/agentrun-computer run test:groundbox   # also needs COMPUTER_GROUNDBOX_API_KEY, for a team you can bill
 ```
 
-`npm test` also runs `test/local-chrome-live.test.mjs` on a real Chrome where one is on PATH (or `CHROME_PATH` names
+`pnpm test` also runs `test/local-chrome-live.test.mjs` on a real Chrome where one is on PATH (or `CHROME_PATH` names
 one) and starts here with its sandbox on: it creates a local browser, drives it over CDP, checks that a service on this
 machine's loopback is out of its reach, and releases it. Elsewhere it skips with the reason.
 

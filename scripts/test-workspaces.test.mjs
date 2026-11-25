@@ -241,10 +241,10 @@ test('test:changed runs every workspace for a root file their tests may read, an
   assert.match(none.stdout, /nothing to test/);
   assert.equal(logOf(root)[0], '');
 
-  writeFileSync(join(root, 'package-lock.json'), '{}\n');
-  git('add', 'package-lock.json');
+  writeFileSync(join(root, 'pnpm-lock.yaml'), '{}\n');
+  git('add', 'pnpm-lock.yaml');
   const all = picks(root, base);
-  assert.match(all, /^ {2}every workspace: package-lock\.json is outside the workspaces and their tests may read it$/m);
+  assert.match(all, /^ {2}every workspace: pnpm-lock\.yaml is outside the workspaces and their tests may read it$/m);
   assert.match(all, /4 workspaces, 2 at once/);
 
   const lost = run(root, atOnce(2), '--changed', '--base', 'no-such-ref');

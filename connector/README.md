@@ -6,7 +6,7 @@ This development CLI is not the currently published npm release. Install it from
 
 ```sh
 uv tool install ./connector
-npm run build
+pnpm run build
 ```
 
 The installed `agentrun-serve remote-bridge` command supplies native discovery, launch and learning through the existing AgentRun runtime. When working from a checkout instead of an installed runtime, pass `--bridge /absolute/path/to/packages/serve/dist/native/remote-worker-bridge.js` to discovery, connection or worker commands. This is a local executable path chosen by the source-machine operator; it is never supplied by the remote server.

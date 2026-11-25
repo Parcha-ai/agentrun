@@ -9,7 +9,7 @@ Should our team move its docs from a wiki into the code repository? Search reads
 Configure `TYPESAFE_API_KEY` through your usual secret configuration. Organizations using a gateway also set their approved `TYPESAFE_BASE_URL`, including any gateway path prefix; the SDK appends `/v1/systemone`. See [Jev configuration](../packages/jev/README.md#configuration).
 
 ```sh
-npm run eval:research -- --live --out evidence-live.json
+pnpm run eval:research --live --out evidence-live.json
 ```
 
 This tests the evidence selector without running search, planning or writing agents. It prints six PASS/FAIL results and saves the full JSON. Use a new output filename each time; existing reports are never overwritten.
@@ -30,7 +30,7 @@ The evaluator uses the actual `screen-evidence` step, including its rubric and t
 Create a JSON array of cases from your own task. Each case has `id`, `question`, `text`, `keep` as a boolean, and `reason`. Choose the expected labels before running the evaluation, then pass the file with `--cases`:
 
 ```sh
-npm run eval:research -- --live --cases my-cases.json --out evidence-live.json
+pnpm run eval:research --live --cases my-cases.json --out evidence-live.json
 ```
 
 Labels and reasons stay out of model inputs. The report hashes the normalized case data so results can be traced to the evaluated dataset. Custom datasets require `--live`; scripted answers cover only the original six cases.
@@ -42,7 +42,7 @@ Keep useful partial answers and contrary evidence. A passage need not settle the
 Agent steps run on your own agents. Supply a trusted module that default-exports `{ runJudge, runNode }`:
 
 ```sh
-npm run demo:research -- --live --config ./approved-adapters.mjs --out research-live.json
+pnpm run demo:research --live --config ./approved-adapters.mjs --out research-live.json
 ```
 
 The planner proposes subquestions, the workflow researches them in parallel, and a final agent writes the report. A question the corpus cannot answer may cause escalation. The agent steps receive the selected evidence; grant them no filesystem or shell tools for this example.

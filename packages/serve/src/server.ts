@@ -4930,7 +4930,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         throw error;
       });
       const bytes = await readFile(file).catch(() => {
-        throw new ApiError("unavailable", `this server has no computerd build at ${file}: run npm run build:daemon -w @parcha/agentrun-computer where it runs`);
+        throw new ApiError("unavailable", `this server has no computerd build at ${file}: run pnpm --filter @parcha/agentrun-computer run build:daemon where it runs`);
       });
       res.writeHead(200, { "content-type": "application/octet-stream", "content-length": String(bytes.length), "cache-control": "no-store", "x-content-type-options": "nosniff" });
       return void res.end(req.method === "HEAD" ? undefined : bytes);

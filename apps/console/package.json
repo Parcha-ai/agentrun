@@ -2,6 +2,7 @@
   "name": "agentrun-console",
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@12.22.0",
   "description": "The AgentRun Server console: agents, runs and the playground over agentrun.v2/0, built to static files.",
   "scripts": {
     "dev": "vite --host 127.0.0.1",

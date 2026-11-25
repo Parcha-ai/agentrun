@@ -13,6 +13,7 @@ import { MACHINE_PATH } from './machine-path.mjs';
 import { buildOverrides, findDrift } from './pi-family-pins.mjs';
 import { checkPiFamily, developedVersions, laggingWorkspaces, listCopies } from './consumer-pi.mjs';
 import { importsOf } from './package-imports.mjs';
+import { npmTree } from './pnpm-lock.mjs';
 import { RECORD as DAEMON_RECORD, sourceDigest as daemonSourceDigest } from '../packages/computer/scripts/daemon-source.mjs';
 import { runtimeSmokeChecks } from './release-preflight.mjs';
 import { verifyEvePackage } from './verify-eve-package.mjs';
@@ -184,7 +185,7 @@ const allowedEndpoints = {
 const usedEndpoints = new Set();
 
 // Files a package's archive must hold. The computer package's providers start the daemon from its own dist: Docker binds
-// dist/computerd-linux-<arch> into each computer, Daytona and Modal upload it. `npm run build:daemon -w @parcha/agentrun-computer`
+// dist/computerd-linux-<arch> into each computer, Daytona and Modal upload it. `pnpm --filter @parcha/agentrun-computer run build:daemon`
 // (Go, after `npm run build`) writes both, and the check below requires each, executable by everyone (every computer drops
 // every capability, so its root runs the mounted binary only if everyone may), an ELF for its architecture, stamped with the
 // package's version, the one its hello reports, beside dist/computerd.json, the record of the daemon source they were built
@@ -238,7 +239,7 @@ try {
     const extracted = join(temporary, `inspect-${directory}`);
     await mkdir(extracted);
     await run('tar', ['-xzf', tarball, '-C', extracted]);
-    for (const name of requiredFiles[directory] ?? []) assert.ok(names.includes(name), `${manifest.name} must hold ${name.slice('package/'.length)}${name.includes('/computerd') ? ': run npm run build:daemon -w @parcha/agentrun-computer after the build' : ''}`);
+    for (const name of requiredFiles[directory] ?? []) assert.ok(names.includes(name), `${manifest.name} must hold ${name.slice('package/'.length)}${name.includes('/computerd') ? ': run pnpm --filter @parcha/agentrun-computer run build:daemon after the build' : ''}`);
     if (directory === 'computer') {
       for (const [arch, machine] of Object.entries(daemonMachines)) {
         const name = `package/dist/computerd-linux-${arch}`;
@@ -297,7 +298,7 @@ try {
   // range float to the newest release, and an upstream package then runs beside siblings it was not released with (a
   // coding agent at one version, its codemode at the next). Each such edge is pinned to the version this repository's
   // lockfile resolves for that parent. Our own packages' peer ranges are not touched: they select what they select.
-  const rootLock = JSON.parse(await readFile(join(root, 'package-lock.json'), 'utf8')).packages ?? {};
+  const rootLock = npmTree(root);
   const npmMajor = Number((await run('npm', ['--version'])).stdout.trim().split('.')[0]);
   // The drift check below fails the run if a future npm resolves either override shape differently.
   const pinned = buildOverrides(rootLock, npmMajor);

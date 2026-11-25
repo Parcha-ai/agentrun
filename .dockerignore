@@ -2,7 +2,8 @@
 # workspace's manifests, its packages, the console the server serves and the build scripts.
 *
 !package.json
-!package-lock.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
 !tsconfig.base.json
 !packages/
 !apps/console/

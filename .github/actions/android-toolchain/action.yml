@@ -1,6 +1,6 @@
 name: Android toolchain
 description: >
-  What phoned's build (npm run build:phoned -w @parcha/agentrun-computer) reads, with nothing taken from the runner
+  What phoned's build (pnpm --filter @parcha/agentrun-computer run build:phoned) reads, with nothing taken from the runner
   image: Eclipse Temurin 17 (actions/setup-java), and the Android SDK files at the pin of
   packages/computer/scripts/android-sdk.mjs, as the server image's android stage takes them
   (packages/serve/docker/Dockerfile): platform-35 r02's android.jar and core-for-system-modules.jar, and

@@ -57,18 +57,20 @@ jobs:
           COMPUTERD_UI_FIXTURE=1 scripts/bundle.sh build
           cp -R build/UIFixture.app /Applications/
       # The ui conformance cases run from packages/computer's build, against the app the smoke step starts.
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        if: ${{ !cancelled() }}
       - uses: actions/setup-node@v4
         if: ${{ !cancelled() }}
         with:
           node-version: '24.22.3'
-          cache: npm
+          cache: pnpm
       - name: Build packages/computer
         if: ${{ !cancelled() }}
         working-directory: .
         run: |
           npm install --global npm@11.21.0 --ignore-scripts
-          node scripts/npm-ci-retry.mjs --ignore-scripts
-          npm run build -w @parcha/agentrun-computer
+          pnpm install --frozen-lockfile --ignore-scripts
+          pnpm --filter @parcha/agentrun-computer run build
           node scripts/build-workspaces.mjs --only @parcha/agentrun-serve
       - name: Seed the runner's grants
         if: ${{ !cancelled() }}

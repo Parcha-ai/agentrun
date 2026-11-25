@@ -1,4 +1,4 @@
-// Groundbox for the conformance CLI: `npm run conformance -w @parcha/agentrun-computer -- --provider groundbox`. It makes
+// Groundbox for the conformance CLI: `pnpm --filter @parcha/agentrun-computer run conformance --provider groundbox`. It makes
 // real sandboxes, which bill until deleted, so it runs only with AGENTRUN_COMPUTER_LIVE_GROUNDBOX=1 and your own key,
 // under COMPUTER_GROUNDBOX_API_KEY. The provider reads no environment: this module reads its own COMPUTER_GROUNDBOX_*
 // names (never GROUNDBOX_API_KEY, which may hold another team's key) and passes each to create() as its option. The live
