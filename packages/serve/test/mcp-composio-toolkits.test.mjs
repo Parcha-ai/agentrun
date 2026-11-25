@@ -240,7 +240,7 @@ test("a server saved before per-run mode for a Composio user literally named per
   assert.ok(listed.length > 0 && listed.every((call) => call.query.user_ids === "per_run"), `its accounts were asked for as the user per_run: ${JSON.stringify(listed.map((call) => call.query))}`);
 });
 
-test("an account Composio answers with no user_id still connects the server, but shows no label: only one named as the server's user's does", async (t) => {
+test("an account Composio answers with no user_id doesn't connect the server, nor give a label: only one named as the server's user's does", async (t) => {
   // Composio's docs mark the listing's user_id deprecated, to be dropped: without it, nothing says whose account it is.
   const accounts = {};
   const s = await setup(t, { accounts });
@@ -249,12 +249,20 @@ test("an account Composio answers with no user_id still connects the server, but
   accounts.gmail = [{ id: "ca_connected02", user: null, status: "ACTIVE", auth_config: config, shown: { alias: "person@example.com" } }];
   const res = await s.api("POST", "/settings/mcp-servers/gmail/refresh");
   assert.equal(res.status, 200, JSON.stringify(res.body));
-  assert.deepEqual({ state: res.body.server.composio_account?.state, labels: res.body.server.composio_account?.labels }, { state: "connected", labels: undefined });
+  assert.deepEqual({ state: res.body.server.composio_account?.state, labels: res.body.server.composio_account?.labels }, { state: "none", labels: undefined });
   assert.ok(!storeBytes(s.server.data).includes("person@example.com"), "nor is its label kept");
-  // Named as the server's user's, its label shows.
+  // Named as the server's user's, it connects the server and its label shows.
   accounts.gmail = [{ id: "ca_connected02", status: "ACTIVE", auth_config: config, shown: { alias: "person@example.com" } }];
   const named = await s.api("POST", "/settings/mcp-servers/gmail/refresh");
-  assert.deepEqual(named.body.server.composio_account?.labels, ["person@example.com"]);
+  assert.deepEqual({ state: named.body.server.composio_account?.state, labels: named.body.server.composio_account?.labels }, { state: "connected", labels: ["person@example.com"] });
+});
+
+test("a save never takes an ACTIVE account Composio answers with no user_id as the server's user's: it makes the connect link", async (t) => {
+  const s = await setup(t, { authConfigs: { gmail: [{ id: "ac_managed", is_composio_managed: true }] }, accounts: { gmail: [{ id: "ca_nouser02", user: null, status: "ACTIVE", auth_config: "ac_managed" }] } });
+  const saved = await s.api("PUT", "/settings/mcp-servers/gmail/composio", { api_key: s.composio.apiKey, toolkit: "gmail", tools: ["add"] });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  assert.equal(saved.body.connect_url, "https://connect.composio.test/link/ac_managed", "an account of no named user is not the server's user's: the save answers the link to connect one");
+  assert.equal(JSON.stringify(saved.body).includes("ca_nouser02"), false);
 });
 
 test("a save never takes an account Composio answers as another user's as the server's: it makes the connect link", async (t) => {

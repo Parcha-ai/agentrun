@@ -191,6 +191,31 @@ for (const [where, records, user] of OWNERS_RECORDS) {
   });
 }
 
+test("API-only: a run bound to a bare user id and an account Composio lists with no user_id is 422 not_allowed under connected_account_id: nothing says the account is that user's", async (t) => {
+  withEnv(t, { [KEY_ENV]: KEY });
+  const s = await setup(t, { fake: { accounts: { gmail: [...ACCOUNTS.gmail, { status: "ACTIVE", auth_config: MANAGED, id: "ca_nouser_gmail", user: null }] } } });
+  assert.equal((await s.token("PUT", "/settings/mcp-servers/mail/composio", SAVE)).status, 200);
+  const before = await runCount(s);
+  const binding = { composio_user_id: BARE, connected_account_id: "ca_nouser_gmail" };
+  const run = await runAs(s.token, binding);
+  assert.equal(run.status, 422, JSON.stringify(run.body));
+  assert.deepEqual(run.body.error?.fields?.map((issue) => [issue.field, issue.reason]), [["mcp_auth.mail.connected_account_id", "not_allowed"]], JSON.stringify(run.body.error));
+  assert.match(run.body.error.fields[0].message, WHICH.connected_account_id, run.body.error.fields[0].message);
+  assert.equal(await runCount(s), before, "no run made");
+  nothingAsBound(s, binding);
+});
+
+test("API-only: the token's save doesn't count an ACTIVE account Composio lists with no user_id under the auth config: 200 with a connect link, and its record never holds that account", async (t) => {
+  withEnv(t, { [KEY_ENV]: KEY });
+  const s = await setup(t, { fake: { accounts: { gmail: [{ status: "ACTIVE", auth_config: MANAGED, id: "ca_nouser_gmail", user: null }] } } });
+  const saved = await s.token("PUT", "/settings/mcp-servers/mail/composio", { ...SAVE, user_id: "ops" });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  assert.equal(typeof saved.body.connect_url, "string", "no ACTIVE account named as the token's user's: a connect link");
+  assert.equal(JSON.stringify(saved.body).includes("ca_nouser_gmail"), false);
+  const record = await s.server.store.settings.get(composioMadeKey("mail"));
+  assert.equal(JSON.stringify(record).includes("ca_nouser_gmail"), false, "the record holds no account of no named user");
+});
+
 test("API-only: the same user on a server the token saved is not the owner's: a run bound to it starts (202)", async (t) => {
   withEnv(t, { [KEY_ENV]: KEY });
   const s = await setup(t);
