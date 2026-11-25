@@ -328,6 +328,8 @@ test("a pull that fails, or passes its bound, says why and the next step, with n
 		message: "the pull of nosuch/box:1 did not finish within 1 s, so it was stopped: run docker pull nosuch/box:1 on this machine, or call again",
 	});
 	assert.ok(Date.now() - started < 10_000);
+	// The stopped pull was recorded as it started, and its docker ends: waited on as such, before its line is counted.
+	await until(() => fake.pulls().length === 5 && !alive(fake.pulls()[4].pid), "the stopped pull's docker to end", 10_000);
 	assert.equal(fake.pulls().length, 5, "a pull past its bound is not tried again within the call");
 });
 
