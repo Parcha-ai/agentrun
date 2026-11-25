@@ -112,16 +112,20 @@ async function sweepable(store: JanitorDeps["store"], info: ComputerInfo, byHash
 
 type LeftoverContext = Parameters<NonNullable<ComputerProvider["sweepLeftovers"]>>[0];
 
-/** Whether a leftover with these labels is this server's: an agent's (an owner label) when its owner names `serverId`;
- *  otherwise when its run (by its label, or its hash's) is in this store, whatever the run's state or claim. A leftover
- *  is never a live computer's (the provider's sweepLeftovers looks at the computers first), so no claim keeps it. */
+/** Whether a leftover with these labels is this server's to remove: an agent's (an owner label) when its owner names
+ *  `serverId`; otherwise when its run (by its label, or its hash's) is in this store and no claim holds it now
+ *  (runs.heldAt, by the store's clock). A held run's runner may be making the computer this part belongs to: create
+ *  makes the proxy before the computer. The provider reads the computer after this answer (Docker's sweepLeftovers),
+ *  and that read is final: a computer is made only under a held claim, its name is its claim's (runId#epoch), so once
+ *  none holds the run, no create at that claim is left, and a later claim's computer has another name. */
 async function leftoverMine(store: JanitorDeps["store"], labels: Record<string, string>, byHash: RunsByHash, serverId: string | undefined): Promise<boolean> {
   const label = ownerOf(labels);
   if (!label.ok || label.value !== undefined) return label.ok && serverId !== undefined && label.value?.server === serverId;
   const named = labels[RUN_LABEL];
   const hash = labels[RUN_HASH_LABEL];
   const runId = typeof named === "string" && named !== "" ? named : typeof hash === "string" && hash !== "" ? (await byHash()).get(hash) : undefined;
-  return runId !== undefined && (await store.runs.get(runId)) !== undefined;
+  if (runId === undefined || (await store.runs.get(runId)) === undefined) return false;
+  return (await store.runs.heldAt(runId)) === undefined;
 }
 
 /** `provider` as the sweep sees it: its list cut to this server's computers that no claim holds, and its leftovers pass

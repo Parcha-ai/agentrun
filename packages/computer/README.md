@@ -896,9 +896,11 @@ key.
   so the janitor's sweep and `releaseOlder` remove them too. A release cut off once that call is made leaves no proxy
   running without its computer. Parts left with no computer (one removed by hand, or a provider that died between its
   proxy and its computer) the sweep removes too (`sweepLeftovers`): a proxy or volume with the egress label, and the
-  sweep's labels, whose deadline label has passed, or whose computer is gone and that is older than a create could
-  take (its ready wait and two minutes), removed by what the label found. A sweep given `mine` removes only the ones
-  whose labels it answers true for, so callers sharing a Docker host each remove their own (serve: a run of its store).
+  sweep's labels, past its deadline label or older than a create could take (its ready wait and two minutes), and
+  whose computer is not there, read by name right before that part's removal (a read that fails keeps it). A sweep
+  given `mine` removes only the ones whose labels it answers true for, asked before the computer is read, so callers
+  sharing a Docker host each remove their own (serve: a run of its store that no claim holds). A part with an owner
+  label is never removed: Docker makes no agent's computer. Each is removed by what the label found, never by a name.
   The volume carries the computer's deadline and the spec's labels for this. Until then the proxy stops forwarding at
   its deadline.
 - **Read-back.** `network`, `list` and `attach` read open or the allowlist from Docker: network mode none, the egress volume

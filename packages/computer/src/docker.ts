@@ -83,6 +83,7 @@ import {
 	runLifetimeMs,
 } from "./provider.js";
 import { type ComputerError, type ComputerErrorCode, failFor, ok, type Result, vendorFail } from "./result.js";
+import { OWNER_LABEL, OWNER_SERVER_LABEL } from "./labels.js";
 import { CreateRequests, endedWords, otherSpecWords } from "./create-requests.js";
 import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "./screen-watch.js";
 import { countTested } from "./test-connection.js";
@@ -1190,35 +1191,47 @@ export class DockerProvider implements ComputerProvider {
 
 	/**
 	 * The janitor's second pass (sweep calls it after the computers): every egress proxy container and egress volume
-	 * labelled EGRESS_LABEL, and with all of `labels`, whose deadline label has passed (or is missing or unreadable, fail
-	 * closed), or whose computer is gone and that is older than a create could take (#leftoverGraceMs: one under way has
-	 * made its proxy before its computer, and pulled both images before either, so no pull happens in between). Each is
-	 * removed by what its label found, a proxy before its volume, never by a name alone. Returns the names removed, a
-	 * volume's as "<name> (volume)". With `mine`, only one whose labels it answers true for is removed (serve's: a run of
-	 * its own store), so a Docker host shared by several servers has each remove its own leftovers alone.
+	 * labelled EGRESS_LABEL, and with all of `labels`, whose computer is not there, read by its name right before that
+	 * part's removal, and that is past its deadline label (or the label is missing or unreadable, fail closed) or older
+	 * than a create could take (#leftoverGraceMs). Per part, in this order: its labels and age; then `mine`, when given
+	 * (serve's: a run of its own store that no claim holds); then its computer, by name (there, or a read that fails,
+	 * keeps the part); then its removal by what its label found, a proxy before its volume, never by a name alone.
+	 * `mine` comes before the computer so a create under the caller's claim that finishes between the two reads is seen:
+	 * once the caller says no claim holds the run, nothing at that claim makes the computer, and a later claim's computer
+	 * has another name. A part with an owner label is never removed: Docker makes no agent's computer (no persistence),
+	 * so that label is a caller's, never a run's leftover. Returns the names removed, a volume's as "<name> (volume)".
 	 */
 	async sweepLeftovers({ labels = {}, now = new Date(), signal, mine }: { labels?: Record<string, string>; now?: Date; signal?: AbortSignal; mine?: (labels: Record<string, string>) => boolean | Promise<boolean> } = {}): Promise<Result<string[]>> {
 		const problem = filterProblem(labels);
 		if (problem) return fail("invalid", problem);
 		const filters = [`label=${EGRESS_LABEL}`, ...Object.entries(labels).map(([key, value]) => `label=${key}=${value}`)].flatMap((filter) => ["--filter", filter]);
 		const lines = (stdout: string) => stdout.split("\n").map((line) => line.trim()).filter(Boolean);
-		const alive = await this.#run(["ps", "-a", "--no-trunc", "--filter", `label=${COMPUTER_LABEL}=1`, "--format", "{{.Names}}"], signal);
-		if (!alive.ok) return alive;
-		if (alive.value.exitCode !== 0) return vendorFail("docker",`docker ps failed: ${alive.value.stderr.trim()}`);
-		const computers = new Set(lines(alive.value.stdout).filter((name) => NAME.test(name)));
 		const at = now.getTime();
 		const grace = this.#leftoverGraceMs();
-		const leftover = (labelsOf: Record<string, string> | null | undefined, created: unknown) => {
+		// The computer a part was made for, when its labels and age allow it to be a leftover at all.
+		const candidate = (labelsOf: Record<string, string> | null | undefined, created: unknown): string | undefined => {
 			const owner = labelsOf?.[EGRESS_LABEL];
+			if (typeof owner !== "string" || !NAME.test(owner)) return undefined;
+			if (labelsOf?.[OWNER_LABEL] !== undefined || labelsOf?.[OWNER_SERVER_LABEL] !== undefined) return undefined;
 			const deadline = Date.parse(labelsOf?.[DEADLINE_LABEL] ?? "");
-			if (typeof owner !== "string" || !NAME.test(owner)) return false;
-			if (Number.isNaN(deadline) || deadline <= at) return true;
-			if (computers.has(owner)) return false;
+			if (Number.isNaN(deadline) || deadline <= at) return owner;
 			const made = typeof created === "string" ? Date.parse(created) : Number.NaN;
-			return Number.isNaN(made) || at - made > grace;
+			return Number.isNaN(made) || at - made > grace ? owner : undefined;
 		};
 		// The caller's, when it says whose are its own: by the labels the leftover carries.
 		const owned = async (labelsOf: Record<string, string> | null | undefined) => mine === undefined || (await mine({ ...(labelsOf ?? {}) })) === true;
+		// Whether computer `name` is gone, read now: a container of that name, or a read that fails, says it is not.
+		const gone = async (name: string): Promise<Result<boolean>> => {
+			const found = await this.#inspect([name], signal);
+			if (!found.ok) return signal?.aborted ? found : ok(false);
+			return ok(found.value.length === 0);
+		};
+		// A part to remove: a candidate, the caller's, and its computer gone, read in that order.
+		const removable = async (labelsOf: Record<string, string> | null | undefined, created: unknown): Promise<Result<boolean>> => {
+			const computer = candidate(labelsOf, created);
+			if (computer === undefined || !(await owned(labelsOf))) return ok(false);
+			return gone(computer);
+		};
 		const removed: string[] = [];
 		const ps = await this.#run(["ps", "-a", "--no-trunc", ...filters, "--format", "{{.ID}}"], signal);
 		if (!ps.ok) return ps;
@@ -1228,8 +1241,10 @@ export class DockerProvider implements ComputerProvider {
 			const found = await this.#inspect(ids.slice(from, from + INSPECT_BATCH), signal);
 			if (!found.ok) return found;
 			for (const proxy of found.value) {
-				if (!leftover(proxy.Config?.Labels, (proxy as { Created?: unknown }).Created) || typeof proxy.Id !== "string") continue;
-				if (!(await owned(proxy.Config?.Labels))) continue;
+				if (typeof proxy.Id !== "string") continue;
+				const take = await removable(proxy.Config?.Labels, (proxy as { Created?: unknown }).Created);
+				if (!take.ok) return take;
+				if (!take.value) continue;
 				const ran = await this.#run(["rm", "--force", proxy.Id], signal);
 				if (!ran.ok) return ran;
 				const gone = await this.#gone(ran.value, proxy.Id, `docker rm of the egress proxy ${nameOf(proxy)}`, AbortSignal.timeout(SETTLE_MS), signal);
@@ -1251,8 +1266,10 @@ export class DockerProvider implements ComputerProvider {
 				} catch {
 					return vendorFail("docker",`docker volume inspect wrote a line that is not JSON: ${line.slice(0, 200)}`);
 				}
-				if (typeof volume.Name !== "string" || !leftover(volume.Labels, volume.CreatedAt)) continue;
-				if (!(await owned(volume.Labels))) continue;
+				if (typeof volume.Name !== "string") continue;
+				const take = await removable(volume.Labels, volume.CreatedAt);
+				if (!take.ok) return take;
+				if (!take.value) continue;
 				const ran = await this.#run(["volume", "rm", "--force", volume.Name], signal);
 				if (!ran.ok) return ran;
 				if (ran.value.exitCode !== 0) return vendorFail("docker",`docker volume rm ${volume.Name} failed: ${ran.value.stderr.trim()}`);

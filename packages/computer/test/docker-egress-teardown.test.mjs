@@ -159,3 +159,29 @@ test("what may be deleted (3): a computer made while the leftover sweep runs kee
 		proceed("inspect");
 	}
 });
+
+test("what may be deleted (3): a leftover whose computer cannot be read is kept: a failed read is never a gone computer", async () => {
+	const made = allowed({ name: A, allow: ALLOW, labels: { "agentrun.run": "run-mine" } });
+	const { provider, names, volumeNames, calls } = fakeDocker({ containers: made.containers.filter((one) => one.Name !== `/${A}`), volumes: made.volumes, inspectFails: [A] });
+	const swept = await provider.sweepLeftovers({ now: new Date(), mine: () => true });
+	assert.equal(swept.ok, true, JSON.stringify(swept));
+	assert.deepEqual(swept.value, []);
+	assert.deepEqual([names(), volumeNames()], [[proxyOf(A)], [proxyOf(A)]]);
+	assert.ok(calls().some((args) => args[0] === "inspect" && args.at(-1) === A), "the computer was read");
+	assert.ok(!calls().some((args) => args[0] === "rm" || (args[0] === "volume" && args[1] === "rm")), "no removal");
+});
+
+test("what may be deleted (2): a Docker leftover with an owner label is never removed, even when its caller calls it its own: Docker makes no agent's computer", async () => {
+	const owners = [{ "agentrun.owner": "agent:agent-1", "agentrun.owner-server": "0123456789ab" }, { "agentrun.owner": "agent:agent-1" }, { "agentrun.owner-server": "0123456789ab" }];
+	const parts = owners.map((owner, at) => {
+		const name = `computer-00000000000${at + 1}`;
+		const made = allowed({ name, allow: ALLOW, labels: { "agentrun.run": "run-mine", ...owner } });
+		return { containers: made.containers.filter((one) => one.Name !== `/${name}`), volumes: made.volumes };
+	});
+	const { provider, names, volumeNames } = fakeDocker({ containers: parts.flatMap((one) => one.containers), volumes: parts.flatMap((one) => one.volumes) });
+	const swept = await provider.sweepLeftovers({ now: new Date(), mine: () => true });
+	assert.equal(swept.ok, true, JSON.stringify(swept));
+	assert.deepEqual(swept.value, []);
+	assert.equal(names().length, 3);
+	assert.equal(volumeNames().length, 3);
+});

@@ -534,10 +534,11 @@ export interface ComputerProvider {
 	watch?(ref: ComputerRef, handlers: ScreenWatchHandlers, options?: WatchOptions): Promise<Result<ScreenWatch>>;
 	/**
 	 * Removes what this provider's computers left behind outside the computers themselves (Docker: an egress proxy and its
-	 * volume whose computer is gone or whose deadline has passed), with all of these labels, and returns what it removed,
-	 * by name. Optional; the janitor's sweep calls it after the computers, which release their own parts. With `mine`,
-	 * only a leftover whose labels (the computer's spec labels it carries) `mine` answers true for is removed: a host
-	 * shared by several callers has each remove its own alone.
+	 * volume whose computer is not there), with all of these labels, and returns what it removed, by name. Optional; the
+	 * janitor's sweep calls it after the computers, which release their own parts. With `mine`, only a leftover whose
+	 * labels (the computer's spec labels it carries) `mine` answers true for is removed: a host shared by several callers
+	 * has each remove its own alone. `mine` is asked before the provider reads the leftover's computer, so a caller whose
+	 * answer says no create of its own is under way makes that read the last word.
 	 */
 	sweepLeftovers?(context: { labels: Record<string, string>; now: Date; signal?: AbortSignal; mine?: (labels: Record<string, string>) => boolean | Promise<boolean> }): Promise<Result<string[]>>;
 	/**

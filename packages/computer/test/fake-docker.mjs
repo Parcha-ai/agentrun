@@ -173,7 +173,7 @@ export function egressVolume({ computer, deadline = new Date(Date.now() + 600_00
 /**
  * Options: `running` is what a new container's inspect reports; `gone` makes stop and rm answer "No such container";
  * `containers` are there from the start; `patch` is merged over each new container (to make drift); `hello` over the
- * daemon's hello; `arch` is the architecture docker info reports, and `info` is merged over the rest of what it reports
+ * daemon's hello; `inspectFails` names whose inspect the daemon answers with an error (not "No such container"); `arch` is the architecture docker info reports, and `info` is merged over the rest of what it reports
  * (every limit enforced, seccomp builtin, no AppArmor); `vanish` names are listed by ps but gone by inspect; `noDaemon`
  * makes exec fail as when the daemon is missing; `user` is the provider's user option; `hold` names steps ("inspect",
  * "info", "hello", "logs", "ps") that wait, once called, until `proceed(step)`; "run" is a docker run that never answers, cut
@@ -208,7 +208,7 @@ export function egressVolume({ computer, deadline = new Date(Date.now() + 600_00
  * `Late: true` is made by another create between this create's inspect and its own: inspect does not find it, and
  * create finds it there. `networkNames()` reads the networks there besides Docker's own.
  */
-export function fakeDocker({ running = true, gone = false, containers = [], patch = {}, hello = {}, arch = "x86_64", info = {}, vanish = [], noDaemon = false, user, hold = [], desktop, display = "up", binds = {}, daemonMode = 0o755, daemonCache, volumes = [], egress = "ready", proxyPatch = {}, proxyLocal, egressOptions, endpoint = "unix:///var/run/docker.sock", images, pull = "ok", volume, volumeRoots = {}, lateRun = null, sticky = [], removing = {}, runFails = false, computerd = false, networks = [] } = {}) {
+export function fakeDocker({ running = true, gone = false, containers = [], patch = {}, hello = {}, arch = "x86_64", info = {}, vanish = [], noDaemon = false, user, hold = [], desktop, display = "up", binds = {}, daemonMode = 0o755, daemonCache, volumes = [], egress = "ready", proxyPatch = {}, proxyLocal, egressOptions, endpoint = "unix:///var/run/docker.sock", images, pull = "ok", volume, volumeRoots = {}, lateRun = null, sticky = [], removing = {}, runFails = false, computerd = false, networks = [], inspectFails = [] } = {}) {
 	const dir = mkdtempSync(join(tmpdir(), "computer-fake-docker-"));
 	dirs.push(dir);
 	const log = join(dir, "calls.jsonl");
@@ -232,7 +232,7 @@ export function fakeDocker({ running = true, gone = false, containers = [], patc
 	const computerdModule = computerd ? fileURLToPath(new URL("./fake-computerd.mjs", import.meta.url)) : null;
 	const config = JSON.stringify({ computerd: computerdModule, dir, log, state, volumeState, imageState, networkState, volumeRoots, lateRun, sticky, removing, runFails, pull, running, gone, patch, binds, egress, proxyPatch, proxyLocal: proxyLocal ?? null, endpoint, hello: { ...HELLO, ...hello },
 		info: { Architecture: arch, SecurityOptions: ["name=seccomp,profile=builtin", "name=cgroupns"], MemoryLimit: true, SwapLimit: true, PidsLimit: true, CPUCfsQuota: true, CPUCfsPeriod: true, ServerVersion: "29.0.0", ...info },
-		vanish, noDaemon, hold, display, desktopHello: { ...HELLO, ...hello, kind: "desktop", groups: [...HELLO.groups, "screen", "input.pointer", "input.keys", "apps"] } });
+		vanish, inspectFails, noDaemon, hold, display, desktopHello: { ...HELLO, ...hello, kind: "desktop", groups: [...HELLO.groups, "screen", "input.pointer", "input.keys", "apps"] } });
 	writeFileSync(
 		program,
 		`#!${process.execPath}
@@ -437,6 +437,10 @@ switch (args[0]) {
 		const all = load();
 		let missing;
 		for (const key of args.slice(5)) {
+			if (config.inspectFails.includes(key)) {
+				process.stderr.write("Error response from daemon: the daemon is busy and did not answer for " + key + "\\n");
+				process.exit(1);
+			}
 			const found = config.vanish.includes(key) ? undefined : find(all, key);
 			if (found) process.stdout.write(rendered(args[4], found) + "\\n");
 			else missing = key;

@@ -261,46 +261,57 @@ test("the runner's own composition sweeps Docker past a labelled container made 
   assert.deepEqual(fake.names(), ["computer-0000000000dd"]);
 });
 
-test("the runner's start removes the egress proxies and volumes this server's runs left with no computer: never another server's, never a live computer's", { skip: !existsSync(DAEMON) && "no computerd-linux-amd64: run npm run build:daemon -w @parcha/agentrun-computer (CI's build job does)" }, async (t) => {
+test("the runner's start removes the egress proxies and volumes this server's runs left with no computer: never another server's, never a live computer's, never a held run's", { skip: !existsSync(DAEMON) && "no computerd-linux-amd64: run npm run build:daemon -w @parcha/agentrun-computer (CI's build job does)" }, async (t) => {
   const dir = dataDir(t);
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   t.after(() => server.close());
   await server.agents.create({ id: "agent-1", name: "Agent one" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer." } });
+  // run-done: this store's, ended, so no claim holds it.
+  await server.runs.create({ id: "run-done", agentId: "agent-1", revisionId: "rev-1" });
+  assert.deepEqual(await server.runs.failUnclaimed("ended for the test"), ["run-done"]);
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
   // Another runner holds run-1 at its claim's epoch, working on its computer D; E is an earlier claim's.
   const [claim] = await server.runs.claimMany("runner-other", 1, { leaseMs: 600_000 });
   const PAST_ISO = new Date(Date.now() - 60_000).toISOString();
   // Each proxy and volume as create made them, with the computer's spec labels (its run and epoch). B: this server's
-  // run, its computer gone (a teardown that ended before its proxy). C: the same, of a run of another server on this
-  // Docker host. D: this server's live computer, with its proxy. E: this server's computer past its deadline, which the
-  // sweep ends as before (its line says the start's sweep ran).
+  // ended run, its computer gone (a teardown that ended before its proxy). C: the same, of a run of another server on
+  // this Docker host. D: this server's live computer, with its proxy. E: this server's computer past its deadline, which
+  // the sweep ends as before (its line says the start's sweep ran). H: run-1's, its computer gone: a claim holds run-1,
+  // so it stays until no claim does (what may be deleted, 3).
   const partsOf = (name, run) => {
     const made = allowed({ name, allow: ["pypi.org"], labels: labels(run, 1) });
     return { containers: made.containers.filter((one) => one.Name !== `/${name}`), volumes: made.volumes };
   };
-  const B = partsOf("computer-0000000000bb", "run-1");
+  const B = partsOf("computer-0000000000bb", "run-done");
+  const H = partsOf("computer-0000000000b9", "run-1");
   const C = partsOf("computer-0000000000cc", "run-of-another-server");
   const D = allowed({ name: "computer-0000000000dd", allow: ["pypi.org"], labels: labels("run-1", claim.epoch) });
   const fake = fakeDocker({
-    containers: [...B.containers, ...C.containers, ...D.containers, container({ name: "computer-0000000000ee", labels: labels("run-1", 0), deadline: PAST_ISO })],
-    volumes: [...B.volumes, ...C.volumes, ...D.volumes],
+    containers: [...B.containers, ...C.containers, ...D.containers, ...H.containers, container({ name: "computer-0000000000ee", labels: labels("run-1", 0), deadline: PAST_ISO })],
+    volumes: [...B.volumes, ...C.volumes, ...D.volumes, ...H.volumes],
   });
   withEnv(t, { PATH: `${dirname(fake.program)}${delimiter}${process.env.PATH}`, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["AGENTRUN_SERVE_FAUX"]);
   const said = [];
   const runner = await startRunnerProcess({ dataDir: dir, name: "runner-docker", janitor: true, warn: (line) => said.push(line) });
   t.after(() => runner.close());
   await until(async () => said.some((line) => line.includes("past their deadline: computer-0000000000ee")), "the start's sweep of docker", 30_000).catch((error) => assert.fail(`${error.message}; said: ${said.join(" | ")}`));
-  assert.deepEqual(fake.names().sort(), ["computer-0000000000cc-egress", "computer-0000000000dd", "computer-0000000000dd-egress"]);
-  assert.deepEqual(fake.volumeNames().sort(), ["computer-0000000000cc-egress", "computer-0000000000dd-egress"]);
+  await until(async () => goneFrom(fake, "computer-0000000000bb"), "the start's sweep of docker's leftovers", 30_000);
+  assert.deepEqual(fake.names().sort(), ["computer-0000000000b9-egress", "computer-0000000000cc-egress", "computer-0000000000dd", "computer-0000000000dd-egress"]);
+  assert.deepEqual(fake.volumeNames().sort(), ["computer-0000000000b9-egress", "computer-0000000000cc-egress", "computer-0000000000dd-egress"]);
 });
 
-test("the leftover sweep is asked for this server's alone: a run of this store (by its label or its hash), or an agent's whose owner names this server; never another server's, nor an owner it can't read", async () => {
+test("the leftover sweep is asked for this server's alone: a run of this store that no claim holds (by its label or its hash), or an agent's whose owner names this server; never a held run's, another server's, an owner it can't read, nor this store's run under another server's owner", async () => {
   const orgo = provider("orgo", []);
   const asked = [];
   orgo.made.sweepLeftovers = async ({ mine }) => {
     const parts = {
       "run-label": labels("run-mine", 1),
-      "run-hash": { "agentrun.run.hash": runHash("run-live") },
+      "run-hash": { "agentrun.run.hash": runHash("run-parked") },
+      // A claim holds run-live: its runner may be making the computer this part is of.
+      "held-run": labels("run-live", 3),
+      "held-hash": { "agentrun.run.hash": runHash("run-live") },
+      // An owner naming another server wins over a run label of this store.
+      "mine-run-other-owner": { ...labels("run-mine", 1), "agentrun.owner": "agent:agent-1", "agentrun.owner-server": "ba9876543210" },
       "other-run": labels("run-of-another-server", 1),
       "other-hash": { "agentrun.run.hash": runHash("run-of-another-server") },
       "agent-here": { "agentrun.owner": "agent:agent-1", "agentrun.owner-server": "0123456789ab" },
