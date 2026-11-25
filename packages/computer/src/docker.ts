@@ -268,9 +268,9 @@ const REQUEST_WAIT_MS = 120_000;
 const REQUEST_POLL_MS = 500;
 /** After a docker run cut off before its own exit: how long, at most, the leftovers are removed and looked for again,
  *  how often, and for how long in a row the looks must find none of them before they count as gone (#settle). */
-const SETTLE_MS = 10_000;
+export const SETTLE_MS = 10_000;
 const SETTLE_EVERY_MS = 500;
-const SETTLE_QUIET_MS = 3_000;
+export const SETTLE_QUIET_MS = 3_000;
 /** The label naming which create made a computer's container: after its own docker run failed or was cut off, a create
  *  removes the container it made, never one another create of the same request made under the name. */
 const ATTEMPT_LABEL = "agentrun.computer.attempt";
@@ -292,7 +292,7 @@ export interface SettleBounds {
  * but the quiet window was not complete, every name it checked (`checked`), which could not be confirmed gone. Exported
  * for its test.
  */
-export function settleWords(checked: readonly string[], there: readonly string[], bounds: SettleBounds = { settleMs: SETTLE_MS, quietMs: SETTLE_QUIET_MS }): string {
+export function settleWords(checked: readonly string[], there: readonly string[], bounds: SettleBounds = settleBoundsOf({})): string {
 	if (there.length > 0) return `${there.join(" and ")} ${there.length === 1 ? "was" : "were"} still there ${bounds.settleMs / 1000} s after docker run was cut off`;
 	const named = checked.length > 0 ? checked.join(" and ") : "what docker run may have made";
 	return `${named} could not be confirmed gone within ${bounds.settleMs / 1000} s after docker run was cut off: the last look found none, but not for ${bounds.quietMs / 1000} s in a row`;
@@ -365,7 +365,7 @@ export class DockerProvider implements ComputerProvider {
 	/** The host as docker info first read it: a host's enforcement does not change under a running provider. */
 	#host: DockerHost | undefined;
 
-	constructor({ daemonPath, daemonCache, docker = "docker", user, desktop, egress, image = { recipe: DOCKER_RECIPE }, volume, env, settleMs = SETTLE_MS, settleQuietMs = SETTLE_QUIET_MS }: DockerProviderOptions) {
+	constructor({ daemonPath, daemonCache, docker = "docker", user, desktop, egress, image = { recipe: DOCKER_RECIPE }, volume, env, settleMs, settleQuietMs }: DockerProviderOptions) {
 		this.#daemonPath = resolve(daemonPath);
 		this.#daemonCache = resolve(daemonCache ?? defaultDaemonCache());
 		this.#volume = volume === undefined ? undefined : volumeOf(volume);
@@ -380,10 +380,7 @@ export class DockerProvider implements ComputerProvider {
 		this.#image = image;
 		this.#desktop = desktop === undefined ? undefined : desktopOf(desktop);
 		this.#egress = egressOptionsOf(egress ?? {});
-		for (const [name, ms] of [["settleMs", settleMs], ["settleQuietMs", settleQuietMs]] as const) {
-			if (!Number.isSafeInteger(ms) || ms <= 0 || ms > MAX_TIMER_MS) throw new Error(`the provider's ${name} must be a whole number of milliseconds above 0 and at most ${MAX_TIMER_MS}, not ${ms}`);
-		}
-		this.#settleBounds = { settleMs, quietMs: settleQuietMs };
+		this.#settleBounds = settleBoundsOf({ settleMs, settleQuietMs });
 		const given = user === undefined ? defaultUser() : userOf(user);
 		if (given === undefined) throw new Error(`the provider's user ${JSON.stringify(user)} must be ${USER_FORM}`);
 		if (given.startsWith("0:")) throw new Error(`the provider's user ${user} is root; a computer runs as root only when its spec asks for user "0"`);
@@ -1585,6 +1582,18 @@ function infoOf(report: DockerInspect, proxy: DockerInspect | null | undefined, 
 
 /** The longest delay Node's timers, and so AbortSignal.timeout, hold: 2^31 - 1 ms. */
 const MAX_TIMER_MS = 2_147_483_647;
+
+/**
+ * The settleMs and settleQuietMs options as #settle's bounds, with their defaults (SETTLE_MS, SETTLE_QUIET_MS), or a throw
+ * in words: each is a whole number of milliseconds above 0 that a timer can hold. The one place the defaults are applied:
+ * the constructor and settleWords both read it. Exported for its test, which reads the defaults instead of waiting them out.
+ */
+export function settleBoundsOf({ settleMs = SETTLE_MS, settleQuietMs = SETTLE_QUIET_MS }: Pick<DockerProviderOptions, "settleMs" | "settleQuietMs">): SettleBounds {
+	for (const [name, ms] of [["settleMs", settleMs], ["settleQuietMs", settleQuietMs]] as const) {
+		if (!Number.isSafeInteger(ms) || ms <= 0 || ms > MAX_TIMER_MS) throw new Error(`the provider's ${name} must be a whole number of milliseconds above 0 and at most ${MAX_TIMER_MS}, not ${ms}`);
+	}
+	return { settleMs, quietMs: settleQuietMs };
+}
 
 /** The egress options with their defaults, or a throw in words. */
 function egressOptionsOf({ image = EGRESS_IMAGE, hint, readyMs = EGRESS_READY_MS, hostAddresses: given, hostRoot = "/" }: DockerEgressOptions): {
