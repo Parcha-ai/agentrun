@@ -1,7 +1,7 @@
 // GET /v2/wrapped: a year of the work under this machine's home (Claude Code, Codex, pi and every other source the import
 // package reads), as numbers. The import package's wrappedHome does the reading; this is its answer in the API's words,
 // with the runs imported here beside it. Numbers and names only: no prompt, title, path or project is in it.
-import type { Wrapped } from "@parcha/agentrun-import";
+import { HARNESS_OF, type Wrapped } from "@parcha/agentrun-import";
 
 const total = ({ input, output, cacheRead, cacheWrite }: Wrapped["tokens"]) => input + output + cacheRead + cacheWrite;
 
@@ -20,7 +20,9 @@ export function wrappedView(wrapped: Wrapped, imported: readonly { source: strin
     hours: wrapped.hours,
     weekdays: wrapped.weekdays,
     active_ms: wrapped.activeMs,
-    harnesses: wrapped.harnesses,
+    // The sources behind each harness (several can share one), so the console links a harness's numbers to their runs
+    // without a copy of the table, in the order of `sources`: a source of a reader outside it is its own harness, as wrappedHome counts it.
+    harnesses: wrapped.harnesses.map((h) => ({ ...h, sources: wrapped.sources.map((s) => s.source).filter((source) => ((HARNESS_OF as Record<string, string | undefined>)[source] ?? source) === h.harness) })),
     models: wrapped.models.map(({ model, requests, tokens, cost }) => ({ model, requests, tokens: total(tokens), cost_usd: cost })),
     sources: wrapped.sources,
     imported: imported.map(({ source, runs }) => ({ source, runs })),

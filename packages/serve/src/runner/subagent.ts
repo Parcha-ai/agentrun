@@ -14,8 +14,9 @@
 import type { Context } from "@earendil-works/chord/context";
 import { configure, defineTool, type ModelRef, ROOT_CONVERSATION_ID, type ToolRegistration } from "@earendil-works/pi-durable";
 import { HOST_RESULT_MAX_CHARS } from "@parcha/agentrun-kernel";
+import { tierModelOf } from "../model.js";
 import { ASK_TOOL } from "../tools.js";
-import { saveSlots } from "../web-save.js";
+import { slots } from "../slots.js";
 import { durableWait } from "../workflow/pi-versions.js";
 import { HOST_TOOL_OUTPUT } from "./adapters/pi.js";
 import { cutAtLimit } from "./loop-contract.js";
@@ -26,6 +27,17 @@ export const SUBAGENT_TOOL = "subagent";
  *  none runs its child on the agent's own model. */
 export const SUBAGENT_TIERS = ["fast", "strong"] as const;
 export type SubagentTier = (typeof SUBAGENT_TIERS)[number];
+/** The subagent tiers a run routes a model on, with the model its revision names for each: a tier its revision's
+ *  modelTiers names (a string), else one `env`'s tier variable names (AGENT_MODEL_FAST, AGENT_MODEL_STRONG: tierModelOf),
+ *  and no other. The one answer for the runner that hands a run's process its tiers' saved model keys (run-child-host.ts
+ *  heldFor), for the run that routes the tiers (adapter-run-spec.ts) and for a replay's grader on the fast tier, so a
+ *  tier is never routed with no key handed for it, nor a key handed for a tier no route reads. */
+export function routedSubagentTiers(body: { readonly modelTiers?: unknown }, env: NodeJS.ProcessEnv): { readonly tiers: SubagentTier[]; readonly refs: Partial<Record<SubagentTier, string>> } {
+  const named = (body.modelTiers ?? {}) as Record<string, unknown>;
+  const refs: Partial<Record<SubagentTier, string>> = {};
+  for (const tier of SUBAGENT_TIERS) if (typeof named[tier] === "string") refs[tier] = named[tier];
+  return { tiers: SUBAGENT_TIERS.filter((tier) => refs[tier] !== undefined || tierModelOf(env, tier) !== undefined), refs };
+}
 /** How many of a run's children work at once; a call past it waits for a slot. */
 export const SUBAGENT_PARALLEL = 4;
 /** Tools no child is given: a subagent of its own (depth 1), and the person, whom only the run's own conversation asks. */
@@ -83,7 +95,7 @@ export function chosenTools(asked: readonly string[], options: Pick<SubagentOpti
 /** The subagent tool: one of the session's own tools (adapters/pi.ts `tools`), so it needs no extension of its own. */
 export function subagentTool(options: SubagentOptions): ToolRegistration {
   // The run's children's slots (SUBAGENT_PARALLEL), handed out in call order.
-  const free = saveSlots(SUBAGENT_PARALLEL);
+  const free = slots(SUBAGENT_PARALLEL);
   return defineTool({
     name: SUBAGENT_TOOL,
     description: `Run a subagent: a fresh conversation that starts with nothing but your prompt, on your own model (or the model tier you name: ${SUBAGENT_TIERS.join(" or ")}), with only the tools you list (a subset of your own), and get its final answer back as text. Write the prompt self-contained: the subagent sees none of your conversation. Several calls in one turn run at once, at most ${SUBAGENT_PARALLEL} at a time; more wait their turn. A subagent cannot start subagents of its own.`,
@@ -123,7 +135,7 @@ export function subagentTool(options: SubagentOptions): ToolRegistration {
       const tools = [...parent.tools, ...parent.deferred.filter((one) => !parent.tools.some((listed) => listed.name === one.name))].filter((registration) => names.has(registration.name));
       const missing = [...names].filter((name) => !tools.some((registration) => registration.name === name));
       if (missing.length) return fail(`subagent: ${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} not bound in this run, so no subagent may have ${missing.length === 1 ? "it" : "them"}. Nothing ran.`);
-      const release = await free.take(context.abortSignal ?? new AbortController().signal);
+      const release = await free.take(context.abortSignal);
       try {
         const child = await api.commit(async (tx) => {
           // The ownership index remembers the child: a rerun of this call reuses it.

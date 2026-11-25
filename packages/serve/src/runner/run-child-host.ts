@@ -45,12 +45,13 @@ import { openRunMcpAuth, sealRunMcpAuth } from "../store/seal.js";
 import { runZone } from "../environment.js";
 import { shadowRunId } from "../learn/audit.js";
 import { LEARNING_SCRIPT, learningWorkspace } from "../learn/folder.js";
+import { agreeOnOf } from "../learning-setting.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
 import { archilClaim, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { agentDirName, recordingsFolder, runFolder, scratchFolder } from "../workspace/paths.js";
 import type { Workspace } from "../workspace/workspace.js";
 import { keptKeyOf } from "../workspace/computer-kept.js";
-import { claimModelKey, claimSecrets, claimSpendOff, hostDecisionKeys, learnedDecisionKeys, openRunModelKey, routeModelKeys, savedModelKeys, serverKeyless, tierModelKeys, withoutModelKeys } from "./claim-secrets.js";
+import { claimModelKey, claimSecrets, claimSpendOff, hostDecisionKeys, learnedDecisionKeys, openRunModelKey, savedModelKeys, serverKeyless, tierModelKeys, withoutModelKeys } from "./claim-secrets.js";
 import { type GithubAppAccessAt, githubAppAccess } from "./github-app.js";
 import { githubPullOf, githubTargetOf } from "../github.js";
 import { isObject } from "../validate.js";
@@ -65,7 +66,7 @@ import type { Compared } from "../learn/promote.js";
 import { learnedFirst, type LearnedFirst } from "./learned-first.js";
 import { workflowsAt } from "./learning-seed.js";
 import { claimMetering, heldMcpOf, mcpForClaim } from "./mcp-run.js";
-import { graderModelOf, learnedTiers, learnsWorkflows, mcpReachOf, type AdapterSpecDeps } from "./adapter-run-spec.js";
+import { learnedTiers, learnsWorkflows, mcpReachOf, type AdapterSpecDeps } from "./adapter-run-spec.js";
 import { createDispatchLoop } from "./dispatch.js";
 import { refuseRecipeTriggerRun, resolveRunnerLoop, withSavedGatewayDeps } from "./harness-loops.js";
 import { isWorkflowRevision } from "./workflow-loop.js";
@@ -79,7 +80,7 @@ import { exposeSaveSlots } from "./save-slots.js";
 import { type RunBigWrites, runBigWrites } from "./big-writes.js";
 import { type SaveSlots, SERVER_SLOTS } from "../web-save.js";
 import { launchOnItsDisk, readLaunchBody, type RunLaunch } from "../run-launch.js";
-import { SUBAGENT_TOOL } from "./subagent.js";
+import { routedSubagentTiers, SUBAGENT_TOOL } from "./subagent.js";
 import type { AlsoRow, JournalReads, Store } from "../store/store.js";
 import type { Tier } from "../model.js";
 import { sourceSyncOf } from "../source-sync/types.js";
@@ -739,7 +740,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     mcp: (ask) => projectCall(async () => {
       const reach = await mcpReachOf(deps);
       const harness = { commit: (change: (tx: unknown) => Promise<unknown>) => change({ appendEntry: async (_conversation: number, entry: unknown) => void (await ask.appendRoot(dataOnly(entry))) }) };
-      const made = await mcpForClaim({ claim, store, sealKey, grants: granted, harness: harness as never, work: () => runFolder(deps.data, run.agentId, claim.runId), launchInput: launch.input, githubAppAccess: () => github(), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, ...claimMetering(deps, run.agentId, launch) });
+      const made = await mcpForClaim({ claim, store, sealKey, grants: granted, harness: harness as never, work: () => runFolder(deps.data, run.agentId, claim.runId), launchInput: launch.input, githubAppAccess: () => github(), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, ...claimMetering(deps, undefined, launch) });
       if (!made) return undefined;
       releases.push(() => made.release());
       const exposed = heldMcpOf(made, cut);
@@ -767,21 +768,23 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       };
       return { api: access.api, target: bound, mint, ...(access.revoke ? { revoke: access.revoke } : {}), ...(access.same ? { same: access.same } : {}) };
     },
-    savedModelKeys: async () => {
-      // Only a run whose routes have no revision to scope their keys by: a subagent's tiers, a learning run's grade, an SDK
-      // run's grade. And never for a run that holds a key of its own (its launch's, read now): the server's keys are not
-      // its to spend, whatever its process asks; nor for a held run its model kept from running, which routes no model.
-      const reads = !modelRefused && (granted.includes(SUBAGENT_TOOL) || launch.harness === "learning" || launch.sdk !== undefined);
-      // A replay's or an audit's grade (adapter-run-spec.ts graderRouteOf): its fast model may be another provider's than
-      // its agent's, its key saved alone, which the claim's own keys never hold. Least privilege: the agent's tools run in
-      // this process tree, so only that one provider's saved keys (a gateway route's: the gateway's key alone) cross the
-      // pipe, filtered here, never the rest; none when the revision has no fast model, and none for a held run its model
-      // kept from running, which grades nothing.
-      const grades = !modelRefused && (launch.replay !== undefined || launch.audit !== undefined);
+    subagentTierKeys: async () => {
+      // A subagent's tiers alone: an agentic run granted the subagent tool routes each tier its revision's modelTiers or
+      // the host's tier variable names, and no other (adapter-run-spec.ts), so its process is handed those tiers' models'
+      // keys (tierModelKeys, the revision's model of a tier over the host's): never a provider's no tier of it reaches, nor
+      // a key for a tier it routes no model on. A replay's or an audit's grade (adapter-run-spec.ts graderRouteOf) routes
+      // the fast tier of that same answer, whose model may be another provider's than its agent's: its process is handed
+      // that tier's model's key alone (through a gateway, the gateway's), none when the revision names agree_on (no
+      // grader). A learning run's grade and an SDK run's compile turn stay in the runner (runsInRunner): their process
+      // never asks, and gets none. And never for a run that holds a key of its own (its launch's, read now): the server's
+      // keys are not its to spend, whatever its process asks; nor for a held run its model kept from running, which routes
+      // no model and grades nothing.
+      const subagent = !modelRefused && revision.kind === "agentic" && granted.includes(SUBAGENT_TOOL);
+      const grades = !modelRefused && (launch.replay !== undefined || launch.audit !== undefined) && !agreeOnOf((revision.body as { readonly learning?: unknown }).learning)?.length;
+      if (!subagent && !grades) return {};
+      const { tiers, refs } = routedSubagentTiers(revision.body, keys.env ?? {});
       const keyed = await runKeyed();
-      if (!reads && !grades) return {};
-      const saved = stringsOf(keyed ? {} : await savedModelKeys(keys));
-      return reads ? saved : stringsOf(routeModelKeys(saved, keys.env ?? {}, graderModelOf(revision.body as Parameters<typeof graderModelOf>[0], keys.env ?? {})));
+      return stringsOf(keyed ? {} : await tierModelKeys(keys, subagent ? tiers : tiers.filter((tier) => tier === "fast"), refs));
     },
     tierModelKeys: async (tiers) => {
       // The tiers the claim's learned workflows name (learnedTiers), as this runner chose them (learnedFirst below): a
@@ -1223,10 +1226,10 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
         // host's default's now, where its revision names no model and a key saved since moved that default.
         const claimed = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: claimEnv, redact: loopDeps.redact }, revisionRow as never, launch, claim.runId);
         // A --faux start alone is pinned to the faux model (model.ts chooseModel), which stands in for its revision's and
-        // sends no key: its process is handed its revision's model's key with them, as a run of that model is handed it. A
-        // held run its model kept from running at its create (hold.refused) is laid no model key here either: its model runs
-        // nowhere.
-        const ofRevision: NodeJS.ProcessEnv = launch.model?.provider === FAUX_PROVIDER ? await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: claimEnv, redact: loopDeps.redact }, revisionRow as never, { ...(launch.plane ? { plane: launch.plane } : {}), ...(launch.hold ? { hold: launch.hold } : {}) }) : {};
+        // sends no key: its process is handed its revision's model's key with them, as a run of that model is handed it.
+        // Only on a runner in faux mode too: a faux launch claimed where FAUX_ENV is unset gets no second claim. A held run its
+        // model kept from running at its create (hold.refused) is laid no model key here either: its model runs nowhere.
+        const ofRevision: NodeJS.ProcessEnv = launch.model?.provider === FAUX_PROVIDER && claimEnv[FAUX_ENV] ? await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: claimEnv, redact: loopDeps.redact }, revisionRow as never, { ...(launch.plane ? { plane: launch.plane } : {}), ...(launch.hold ? { hold: launch.hold } : {}) }) : {};
         // A run that holds a model key of its own (model_key, its launch's) spends that key alone: its process is handed
         // none of the server's model keys, as its spec drops them from its tools' (claim-secrets.ts withoutModelKeys).
         // Copies: the runner's own reads (heldFor's `claimed`: what the run's learning must never keep) stay whole.

@@ -64,7 +64,8 @@ export function remoteSaveSlots(channel: Pick<Channel, "call">): SaveSlots {
       waiting++;
       let release: unknown;
       try {
-        release = await channel.call(TARGET, "take", [signal]);
+        // The channel takes a slot under a signal: with none given, one that never aborts (Slots.take waits until free).
+        release = await channel.call(TARGET, "take", [signal ?? new AbortController().signal]);
       } finally {
         waiting--;
       }

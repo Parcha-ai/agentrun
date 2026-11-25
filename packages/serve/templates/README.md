@@ -139,9 +139,9 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
   (rewritten at the session's model proxy, so a claude-agent case on a person's Claude login keeps the real date: run it
   on the provider route), and each `llm` grader is told it, so a rubric can say "the run's date". A tool that reads the
   machine's clock (a shell's `date`, a browser's page) and another harness CLI's own date (Codex adds its own to each
-  turn) still read the real one. A fixture case whose prompt or
-  pages carry dates sets `now:`, else it drifts a day each day it is run. Only the eval's own server honours it: a case with `now` refuses
-  `--server`. Without it, the real clock.
+  turn) still read the real one. A fixture case whose prompt or pages carry dates sets `now:`, else it drifts a day each
+  day it is run. Only the eval's own server honours it: a case with `now` refuses `--server`. Without it, the real
+  clock.
 - `email: fixtures/mailbox.json`, a fixture file in the case: each run gets a fake mail account of its own, seeded from
   it and saved as the server's email account (plaintext, on this machine's loopback), closed after the run, so no run
   reads real mail or shares another's mailbox. The fixture:

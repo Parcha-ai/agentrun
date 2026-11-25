@@ -106,6 +106,9 @@ export interface RunnerOptions {
    *  answers on the same row, under the same incarnation): used as is, never closed here. Default: one of its own,
    *  removed at its close. */
   presence?: Presence;
+  /** The incarnation its own presence says (no `presence` given): the runner beside a server runs under the one the
+   *  server gave it (Serve.beside), which its paired computers' routes name. Default: a new one. */
+  incarnation?: string;
   /** Most runs held at once. */
   loops?: number;
   /** How long a claim lasts unless renewed. */
@@ -1233,7 +1236,7 @@ export function startRunner(options: RunnerOptions): Runner {
 
   // Its word in the store that a runner that claims is here (presence.ts), for as long as it runs: a server reads a
   // refusal left by an earlier runner as over once this is there. One its caller keeps is its caller's to close.
-  const presence = options.presence ? undefined : store.runners ? keepPresence(store.runners, name, null, { warn: (line) => emit({ type: "error", step: "presence", message: line }), slots: loops }) : undefined;
+  const presence = options.presence ? undefined : store.runners ? keepPresence(store.runners, name, null, { warn: (line) => emit({ type: "error", step: "presence", message: line }), slots: loops, ...(options.incarnation ? { incarnation: options.incarnation } : {}) }) : undefined;
   // Its incarnation, read once here before the first poll: each claim's computer and the stop's kept-row check use it.
   const incarnation = (options.presence ?? presence)?.incarnation;
   poll();
