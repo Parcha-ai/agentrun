@@ -805,7 +805,7 @@ const SEMI_ROWS = [
     { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=api_key=${SEMI_COMMA}&region=us-east-1` },
     [SEMI_COMMA, decodeURIComponent(SEMI_COMMA), SEMI_PREFIX],
     ["us-east-1"],
-    [`401 from relay: api_key=${decodeURIComponent(SEMI_COMMA)} refused`, "401 from relay: api_key=[redacted] refused"],
+    [`401 from relay: key ${decodeURIComponent(SEMI_COMMA)} refused`, "401 from relay: key [redacted] refused"],
   ],
   [
     "a header value's credential pair whose value starts with a ;",
