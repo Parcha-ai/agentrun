@@ -24,7 +24,7 @@ const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-sp
 const { sendCommand } = await import("../dist/runner/commands.js");
 const { computerForClaim } = await import("../dist/workspace/index.js");
 const { runEndComputers } = await import("../dist/workspace/run-end-computers.js");
-const { deleteKept, endKept, KEEP_MS, keptKeyOf, readKept } = await import("../dist/workspace/computer-kept.js");
+const { deleteKept, endKept, KEEP_MS, keepKept, keptKeyOf, readKept } =await import("../dist/workspace/computer-kept.js");
 
 const RUN = "run-1";
 const SEAL_KEY = Buffer.alloc(32, 7);
@@ -295,6 +295,30 @@ test("a stopped run's end marks its kept row ending before it deletes the machin
     assert.deepEqual(atDelete, { ...kept, ending: true }, "marked before the delete");
     assert.deepEqual(run.docker.left(), [], "and the machine is deleted");
   }
+});
+
+test("a stopped run that a follow-up queues again within the keep's time keeps the follow-up's new machine at its park: the stop's end marks the kept row ended once its delete took that machine, so the park writes its own keep instead of deleting its machine; a kept machine the end's list never showed stays ending for its keeper", { timeout: 60_000 }, async (t) => {
+  const run = await opened(t);
+  const computers = { kinds: KINDS, providers: { docker: () => run.docker.provider() } };
+  const kept = { provider: "docker", kind: "sandbox", id: "c2", name: "c2", epoch: 2, until: Date.now() + KEEP_MS };
+  run.docker.held.set("c2", { ref: { id: "c2", name: "c2" }, labels: { "agentrun.run": RUN, "agentrun.epoch": "2" } });
+  await run.server.settings.put(keptKeyOf(RUN), kept);
+  // A person's stop: the claim at epoch 3 ends the run, and its end deletes the kept machine.
+  await runEndComputers({ store: run.server, computers, log: () => {}, retryMs: 50 })({ runId: RUN, epoch: 3 });
+  assert.deepEqual(run.docker.left(), [], "the stop's end deleted the kept machine");
+  const afterStop = await readKept(run.server.settings, RUN);
+  // The follow-up's claim (epoch 4) made c3 and parks it within the old keep's time: the park's write.
+  const next = { provider: "docker", kind: "sandbox", id: "c3", name: "c3", epoch: 4, until: Date.now() + KEEP_MS };
+  assert.deepEqual(await keepKept(run.server.settings, RUN, next, {}), next, `the follow-up's park keeps its new machine over the stop's row ${JSON.stringify(afterStop)}`);
+  assert.deepEqual(await readKept(run.server.settings, RUN), next);
+  assert.deepEqual(afterStop, { ...kept, ended: true }, "the stop's end marked its row ended");
+
+  // A machine kept on runner-a's own engine, which this end's list does not show: never deleted here, so its row stays
+  // ending for runner-a's end at its time, which deletes it.
+  const pinned = { ...kept, id: "c8", name: "c8", runner: "runner-a", incarnation: "inc-a" };
+  await run.server.settings.put(keptKeyOf(RUN), pinned);
+  await runEndComputers({ store: run.server, computers, log: () => {}, retryMs: 50 })({ runId: RUN, epoch: 5 });
+  assert.deepEqual(await readKept(run.server.settings, RUN), { ...pinned, ending: true }, "a machine this end did not delete keeps its row ending");
 });
 
 test("a run's end whose mark comes late leaves a later claim's keep as that claim wrote it: a follow-up that reopened the run and parked a new machine, or is taking the old one back, keeps its machine", { timeout: 60_000 }, async (t) => {
