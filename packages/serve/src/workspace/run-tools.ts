@@ -257,18 +257,18 @@ const SAYS_PATH: ReadonlySet<string> = new Set(["write", "edit"]);
  * diagnostics; in a failure, a write's or an edit's answer a path in the run's folder is named relative to it. A
  * failure the registry throws is the answer's text. `results` keeps each answer by its call id. computer_op, and under
  * the agent's surface "code" a desktop's or a phone's step tools, are deferred: bound for a script's nested calls
- * (codemode's `computer` and `tools.<name>`), never listed to the model (scriptsOnly). With no write among `names`,
- * computer_screenshot offers no save_as: the agent was not given write, and the run's gate refuses a save_as.
+ * (codemode's `computer` and `tools.<name>`), never listed to the model (scriptsOnly). Unless `writes` (the run's gate
+ * lets it write a file: RunGate.writeBar, read by the spec), computer_screenshot offers no save_as, which the gate would
+ * refuse.
  */
-export function bindTools(run: RunHands, registry: RunRegistry, names: readonly string[], options: { readonly results?: ToolResults } = {}): HostTool[] {
+export function bindTools(run: RunHands, registry: RunRegistry, names: readonly string[], options: { readonly results?: ToolResults; readonly writes?: boolean } = {}): HostTool[] {
   const defs = new Map(registry.list().map((def) => [def.name, def] as const));
   const works = [...new Set(run.names.flatMap((name) => [name, realOf(name)]))];
   const brought: ReadonlySet<string> = new Set(COMPUTER_TOOLS);
-  const writes = names.includes("write");
   return names.flatMap((name): HostTool[] => {
     const listed = defs.get(name);
     if (!listed) return [];
-    const def = name === "computer_screenshot" && !writes ? unsavedScreenshot(listed) : listed;
+    const def = name === "computer_screenshot" && options.writes !== true ? unsavedScreenshot(listed) : listed;
     return [{
       name: def.name,
       description: def.description,
@@ -320,8 +320,9 @@ export type RunTools = {
    *  saves into the run's files): what the model is told once (computer-deps.ts computerFilesNote). None for any other. */
   readonly apart?: { readonly kind: "desktop" | "phone"; readonly screenshot: boolean };
   /** The registry's tools `names` names, as the kernel's HostTool an adapter's session takes, each call through the
-   *  run's gate decided before its intent, each answer kept in `results` (bindTools). */
-  hostTools(names: readonly string[], results?: ToolResults): HostTool[];
+   *  run's gate decided before its intent, each answer kept in `results`; `writes`, the gate lets the run write a file, so
+   *  computer_screenshot offers save_as (bindTools). */
+  hostTools(names: readonly string[], options?: { readonly results?: ToolResults; readonly writes?: boolean }): HostTool[];
   /** The run's end, before the computer is let go: its background processes ended (TERM, then KILL 3 s later; none with
    *  no computer), then bash's full outputs and TMPDIR swept. */
   end(): Promise<void>;
@@ -351,7 +352,7 @@ export async function runTools(workspace: Workspace, computer: RunComputer | und
     kindTools,
     ...(run.computer ? { computer: run.computer } : {}),
     ...(run.apart ? { apart: { kind: run.apart, screenshot: kindTools.includes("computer_screenshot") } } : {}),
-    hostTools: (names, results) => bindTools(run, registry, names, results ? { results } : {}),
+    hostTools: (names, options) => bindTools(run, registry, names, options),
     async settleProject() {
       const before = await run.hands.processes?.list() ?? [];
       await endBackground(run.hands);

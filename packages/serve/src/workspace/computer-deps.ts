@@ -309,8 +309,9 @@ export const computerReplacedNote = ({ kind, folderKept }: Replaced): string => 
 /** What the run's model is told, once in its run, when its desktop or phone holds none of the run's files (no folder of
  *  the run's is mounted in it: RunTools.apart), labelled as the server's (SERVER_NOTE_LABEL): what it saves on the
  *  computer never reaches the user and goes with the computer, so it keeps what the user should get in the run's files;
- *  `screenshot`, the run has computer_screenshot, whose save_as saves the screen there. `writes`: the agent is given
- *  write and it is not set to deny; without it the run is told a screenshot can't be saved to its files, and no save_as
+ *  `screenshot`, the run has computer_screenshot, whose save_as saves the screen there. `writes`: the run's gate lets it
+ *  write a file (RunGate.writeBar: write given, not denied, and not an ask no one can approve); without it the run is
+ *  told a screenshot can't be saved to its files, and no save_as
  *  or file tool is promised (bash may still be offered, so nothing more is claimed). */
 export const computerFilesNote = ({ kind, screenshot, writes }: { readonly kind: "desktop" | "phone"; readonly screenshot: boolean; readonly writes: boolean }): string => {
   const keep = writes

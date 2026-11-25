@@ -439,7 +439,7 @@ export type RunPermissions = {
   readonly refresh: () => Promise<void>;
 };
 
-export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick<Claim, "runId">, revision: { kind: string; body: { tools?: readonly string[]; toolSettings?: unknown; harness?: string; approvals?: Approvals } }, root: RunFiles, shell: ShellPlace | undefined, options: { readonly effectOf?: (name: string) => ToolEffect | undefined; readonly argumentsOf?: ArgumentsOf; readonly facts: AdapterFacts | undefined; readonly turnedOff?: boolean; readonly onComputerOff?: (kind: string) => Promise<void> }): Promise<NonNullable<AdapterRunSpec["gate"]> & { readonly permissions: RunPermissions; readonly learn: (flows: readonly LearnedWorkflow[]) => void; readonly askedOn: (host: ToolHost) => void; readonly computerOff: () => boolean }> {
+export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick<Claim, "runId">, revision: { kind: string; body: { tools?: readonly string[]; toolSettings?: unknown; harness?: string; approvals?: Approvals } }, root: RunFiles, shell: ShellPlace | undefined, options: { readonly effectOf?: (name: string) => ToolEffect | undefined; readonly argumentsOf?: ArgumentsOf; readonly facts: AdapterFacts | undefined; readonly turnedOff?: boolean; readonly onComputerOff?: (kind: string) => Promise<void> }): Promise<NonNullable<AdapterRunSpec["gate"]> & { readonly permissions: RunPermissions; readonly learn: (flows: readonly LearnedWorkflow[]) => void; readonly askedOn: (host: ToolHost) => void; readonly computerOff: () => boolean; /** Whether the run can write a file now, as its gate decides a save_as (RunGate.writeBar): what its files note and computer_screenshot's save_as are offered by. */ readonly writes: () => boolean }> {
   let current = await storeSettings(store);
   const approvers = await readApprovers(store.settings);
   // A Workspace's paths are in the run's folder: its folder named as a computer names it, for the gate's path checks.
@@ -537,7 +537,7 @@ export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick
     current = await storeSettings(store);
     return current.unreadable ? "deny" : gate.policy(tool);
   };
-  return Object.assign(decide, { askedAs: (tool: string, args?: unknown) => gate.askedAs(tool, args), permissions, permission, learn: (flows: readonly LearnedWorkflow[]) => void (learned = flows), askedOn: (made: ToolHost) => void (host = made), computerOff: () => gate.computerOff !== undefined });
+  return Object.assign(decide, { askedAs: (tool: string, args?: unknown) => gate.askedAs(tool, args), permissions, permission, learn: (flows: readonly LearnedWorkflow[]) => void (learned = flows), askedOn: (made: ToolHost) => void (host = made), computerOff: () => gate.computerOff !== undefined, writes: () => gate.writeBar() === undefined });
 }
 
 /** The server's tool settings from the store now; a read that throws is unread (no value of it said). A workflow's call
@@ -919,7 +919,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // The run's tools. The hands (read/write/edit/bash and the background tools) are the kernel registry's over the run's
   // Workspace and computer (runTools.hostTools); the gate is the adapter loop's own (spec.gate), so they run as asked.
   const results: ToolResults = new Map();
-  const handTools = tools.hostTools(withKindTools(granted, tools), results);
+  const handTools = tools.hostTools(withKindTools(granted, tools), { results, writes: gate.writes() });
   // The non-hand tools run on the claim's keys (host.env), so a vendor's error may echo one: each answer, and a throw's
   // words, pass the run's one redactor before the harness, the model or the record has them.
   const tiers = new Map<string, LearnedTier>([...[...tierRoutes].filter(([tier]) => !isSubagentRoute(tier) && tier !== GRADER).map(([tier, { model }]): [string, LearnedTier] => [tier, { model }]), ...[...tierUnreachable].map(([tier, why]): [string, LearnedTier] => [tier, { why }])]);
@@ -1064,9 +1064,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     ...(tools.computer ? { scriptComputer: tools.computer } : {}),
     // A computer that replaced an earlier claim's: the model is told once, on its next request (the loop's computer note).
     ...(computer.replaced ? { computerNote: computerReplacedNote(computer.replaced) } : {}),
-    // A desktop or a phone that holds none of the run's files: the model is told once in the run where they are, or, not
-    // given write or with it set to deny, that a screenshot can't be saved to them.
-    ...(tools.apart ? { computerFilesNote: computerFilesNote({ ...tools.apart, writes: granted.includes("write") && gate.permissions.policy("write") !== "deny" }) } : {}),
+    // A desktop or a phone that holds none of the run's files: the model is told once in the run where they are, or, where
+    // the gate would refuse a save (RunGate.writeBar), that a screenshot can't be saved to them.
+    ...(tools.apart ? { computerFilesNote: computerFilesNote({ ...tools.apart, writes: gate.writes() }) } : {}),
     workRoot: root,
     // The end's cost: its booking's, by the one rule every reader of an ended run's cost takes (metrics.ts runCostOf):
     // every model request its session's proxy booked (pi's own answers and its side calls: a learned workflow's nodes,
