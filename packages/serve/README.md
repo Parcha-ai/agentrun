@@ -1795,10 +1795,10 @@ has the row **Use Claude Code's login on this machine**, over these routes:
   removes that folder, the login's signed-in note in `claude-login-answers/` and the runner's token reader, whatever the
   CLI said. Each removal stands alone: one that fails is named in the answer and the rest still happen. It answers
   `{ "confirmed": true, "login": <the view, off> }`; `confirmed` false adds a `message` saying what may remain: the
-  CLI didn't confirm its own sign-out (on macOS its Keychain item may remain), or a file it could not remove, by path.
-  The next turn-on reads `signed_out` and the sign-in starts as before. `<data>/claude-login` is a folder AgentRun keeps
-  itself: a turn-on where it is a link is refused, and a sign-out that finds a link there removes the link alone, runs no
-  CLI through it, and names what it led to. Runs already going are left as a turn-off leaves them, and fail saying the
+  CLI didn't confirm its own sign-out, or its step failed, named (on macOS its Keychain item may remain), or a file it
+  could not remove, by path. The next turn-on reads `signed_out` and the sign-in starts as before. `<data>/claude-login`
+  is a folder AgentRun keeps itself: a turn-on where it is a link is refused, and a sign-out that finds a link there
+  removes the link alone (and the login's signed-in note), runs no CLI through it, and names what it led to. Runs already going are left as a turn-off leaves them, and fail saying the
   login is signed out at their next read of it. Where each run is a user of its own, a run claimed on the login and
   started while the mode is off is refused at its start, as after a turn-off; the claim checks the login's folder, not
   its account, so a run claimed before Sign out and started after a new sign-in may run on the new account. What Sign
