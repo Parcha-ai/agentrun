@@ -18,7 +18,8 @@ export function renderReceipt(facts: ReceiptFacts): ReactElement {
     ["Model", modelLabel(model, null).text],
     ["Free", facts.cost.free_words],
     ["Requests", `${plural(facts.requests, "request")} · ${compact(facts.tokens.input)} in · ${compact(facts.tokens.output)} out`],
-    ...facts.tools.map((t): [string, string] => [t.name, `${plural(t.calls, "call")}${t.via ? ` · via ${t.via}` : ""}`]),
+    ...facts.tools.map((t): [string, string] => [t.name, `${facts.tools_uncounted ? "at least " : ""}${plural(t.calls, "call")}${t.via ? ` · via ${t.via}` : ""}`]),
+    ...(facts.tools_uncounted ? [["Calls", `counted from the trace's first rows; ${plural(facts.tools_uncounted, "more row")} not read`] as [string, string]] : []),
     ["Time", wall(facts.wall_s)],
   ];
   return (

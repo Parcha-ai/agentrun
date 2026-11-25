@@ -56,7 +56,7 @@ describe("templateOffer", () => {
 
 // One click: the template's agent is made once, and each click starts a run of it.
 describe("tryTemplate", () => {
-  const fake = (existing: { agent_id: string; definition: { name: string }; archived_at: string | null }[] = []) => {
+  const fake = (existing: { agent_id: string; definition: { name: string; harness?: string; model?: string }; archived_at: string | null }[] = []) => {
     const calls: string[] = [];
     const v2 = {
       listAgents: async () => ({ agents: existing, next_cursor: null }),
@@ -83,12 +83,25 @@ describe("tryTemplate", () => {
     expect(made[1]).not.toHaveProperty("model");
   });
   it("runs the agent again when it already exists, never a second one; an archived one is made anew", async () => {
-    const { v2, calls } = fake([{ agent_id: "hello-1", definition: { name: "Hello, AgentRun" }, archived_at: null }]);
+    const { v2, calls } = fake([{ agent_id: "hello-1", definition: { name: "Hello, AgentRun", harness: "pi" }, archived_at: null }]);
     await tryTemplate(v2 as never, TEMPLATES[0]!, "pi");
     expect(calls).toEqual(["run hello-1: Write hello.md listi"]);
-    const archived = fake([{ agent_id: "hello-0", definition: { name: "Hello, AgentRun" }, archived_at: "2026-11-01T00:00:00Z" }]);
+    const archived = fake([{ agent_id: "hello-0", definition: { name: "Hello, AgentRun", harness: "pi" }, archived_at: "2026-11-01T00:00:00Z" }]);
     await tryTemplate(archived.v2 as never, TEMPLATES[0]!, "pi");
     expect(archived.calls[0]).toBe("create Hello, AgentRun on pi with write");
+  });
+  it("runs an agent of the template's name again only on the harness and model picked: a pull's tag never runs an earlier attempt's model", async () => {
+    const earlier = { agent_id: "paid-1", definition: { name: "Hello, AgentRun", harness: "pi", model: "openrouter/paid-model" }, archived_at: null };
+    const onTag = fake([earlier]);
+    await tryTemplate(onTag.v2 as never, TEMPLATES[0]!, { harness: "pi", model: "ollama/qwen3:8b" });
+    expect(onTag.calls[0]).toBe("create Hello, AgentRun on pi with write");
+    expect(onTag.calls[1]).toBe("run made-1: Write hello.md listi");
+    const otherHarness = fake([{ ...earlier, definition: { name: "Hello, AgentRun", harness: "claude-agent" } }]);
+    await tryTemplate(otherHarness.v2 as never, TEMPLATES[0]!, "pi");
+    expect(otherHarness.calls[0]).toBe("create Hello, AgentRun on pi with write");
+    const same = fake([earlier]);
+    await tryTemplate(same.v2 as never, TEMPLATES[0]!, { harness: "pi", model: "openrouter/paid-model" });
+    expect(same.calls).toEqual(["run paid-1: Write hello.md listi"]);
   });
   // A start whose answer was lost may have started the run: Try it again sends the same key, so the server answers with
   // that run rather than start a second one. Once a start lands, the next click is a new run.
@@ -96,7 +109,7 @@ describe("tryTemplate", () => {
     const keys: string[] = [];
     let lose = true;
     const v2 = {
-      listAgents: async () => ({ agents: [{ agent_id: "hello-1", definition: { name: "Hello, AgentRun" }, archived_at: null }], next_cursor: null }),
+      listAgents: async () => ({ agents: [{ agent_id: "hello-1", definition: { name: "Hello, AgentRun", harness: "pi" }, archived_at: null }], next_cursor: null }),
       createAgent: async () => ({ agent_id: "never" }),
       startRun: async (_id: string, _body: unknown, key: string) => { keys.push(key); if (lose) { lose = false; throw new TypeError("Failed to fetch"); } return { run: { run_id: "run-1" }, status: 202 }; },
     };

@@ -23,6 +23,9 @@ export type ReceiptFacts = {
   requests: number;
   tokens: { input: number; output: number };
   tools: { name: string; calls: number; via?: string }[];
+  /** The trace rows past its cap (RunTrace `dropped`), present only when there are some: `tools` counts the calls in
+   *  the trace's first rows only, so each count is a floor and the receipt says so. */
+  tools_uncounted?: number;
 };
 
 /** Whether a run has a receipt: it completed, its cost is known to be $0, and the server says that is because every
@@ -55,9 +58,9 @@ function freeWords(reason: FreeReason, freeRequests: number | undefined): string
 }
 
 /** The receipt's facts from the run, its usage (the model, its requests and tokens, every attempt's line summed) and its
- *  trace (the tool calls). Null for a run with no receipt (showsReceipt), and for one whose usage names no model: a
+ *  trace (the tool calls; a trace cut at its cap carries how many rows it left out, `tools_uncounted`). Null for a run with no receipt (showsReceipt), and for one whose usage names no model: a
  *  receipt never guesses one. */
-export function receiptFacts(run: Run, agentName: string, usage: Pick<RunUsage, "lines"> | undefined, trace: Pick<RunTrace, "spans"> | undefined, freeRequests?: number): ReceiptFacts | null {
+export function receiptFacts(run: Run, agentName: string, usage: Pick<RunUsage, "lines"> | undefined, trace: Pick<RunTrace, "spans"> & Partial<Pick<RunTrace, "dropped">> | undefined, freeRequests?: number): ReceiptFacts | null {
   if (!showsReceipt(run) || !run.ended_at) return null;
   const top = runModel(usage);
   if (!top) return null;
@@ -85,5 +88,6 @@ export function receiptFacts(run: Run, agentName: string, usage: Pick<RunUsage, 
     cost: { usd: 0, basis: "known", free: true, free_reason: reason, free_words: freeWords(reason, freeRequests) },
     model: { id: slash > 0 ? top.slice(slash + 1) : top, provider: slash > 0 ? top.slice(0, slash) : "", local: isLocalModel(top) },
     requests, tokens: { input, output }, tools,
+    ...(trace?.dropped ? { tools_uncounted: trace.dropped } : {}),
   };
 }

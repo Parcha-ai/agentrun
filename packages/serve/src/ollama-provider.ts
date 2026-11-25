@@ -78,6 +78,9 @@ function splitHostPort(hostport: string): [string, string | undefined] {
 /** Each address's last listing, by base URL, and the listing under way for it. */
 const kept = new Map<string, { at: number; models: readonly OllamaListed[] }>();
 const asking = new Map<string, Promise<readonly OllamaListed[]>>();
+/** Bumped by ollamaForget, per address: a listing asked before a forget answers its caller but is never kept, since it
+ *  may be from before the pull that made the forget. */
+const forgets = new Map<string, number>();
 /** The clock a listing is kept by: Date.now, or a test's (ollamaClock). */
 let now: () => number = Date.now;
 
@@ -182,6 +185,7 @@ export async function listOllama(env: NodeJS.ProcessEnv, { fetch: send = globalT
   const base = baseOf(env);
   if (base === undefined) return [];
   const ask = askerOf(base, send, AbortSignal.timeout(timeoutMs));
+  const asked = forgets.get(base) ?? 0;
   let models: readonly OllamaListed[] = [];
   try {
     const tags = (await ask("/api/tags")) as { models?: ({ name?: unknown; model?: unknown } & Remote)[] } | null;
@@ -190,7 +194,7 @@ export async function listOllama(env: NodeJS.ProcessEnv, { fetch: send = globalT
   } catch {
     models = [];
   }
-  kept.set(base, { at: now(), models });
+  if ((forgets.get(base) ?? 0) === asked) kept.set(base, { at: now(), models });
   return models;
 }
 
@@ -221,7 +225,8 @@ export async function ollamaModels(env: NodeJS.ProcessEnv): Promise<readonly Oll
   if (known && now() - known.at < OLLAMA_TTL_MS) return known.models;
   let listing = asking.get(base);
   if (!listing) {
-    listing = listOllama(env).finally(() => asking.delete(base));
+    const mine: Promise<readonly OllamaListed[]> = listOllama(env).finally(() => { if (asking.get(base) === mine) asking.delete(base); });
+    listing = mine;
     asking.set(base, listing);
   }
   return known ? known.models : listing;
@@ -244,10 +249,12 @@ export function ollamaKept(env: NodeJS.ProcessEnv): readonly OllamaListed[] {
 }
 
 /** Forgets the listing kept for the Ollama `env` names, and the one under way for it, so the next ollamaModels asks it
- *  again at once: after a pull here (local-model.ts), the model is in the picker with no wait for OLLAMA_TTL_MS. */
+ *  again at once: after a pull here (local-model.ts), the model is in the picker with no wait for OLLAMA_TTL_MS. A
+ *  listing under way when it is forgotten still answers its caller, but is never kept: it may be from before the pull. */
 export function ollamaForget(env: NodeJS.ProcessEnv): void {
   const base = baseOf(env);
   if (base === undefined) return;
+  forgets.set(base, (forgets.get(base) ?? 0) + 1);
   kept.delete(base);
   asking.delete(base);
 }

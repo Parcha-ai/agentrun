@@ -53,6 +53,10 @@ describe("receiptFacts", () => {
     });
   });
 
+  it("a trace cut at its cap: the rows it left out ride along, so the tool counts read as a floor", () => {
+    expect(receiptFacts(run(), "A", usage, { ...trace, dropped: 12 })?.tools_uncounted).toBe(12);
+    expect(receiptFacts(run(), "A", usage, trace)).not.toHaveProperty("tools_uncounted");
+  });
   it("a free catalog model: not local, its words with the run's request limit", () => {
     const facts = receiptFacts(run(), "A", { lines: [line({ provider: "openrouter", model: "example/free-model:free", requests: 3 })] }, undefined, 60);
     expect(facts).toMatchObject({ model: { id: "example/free-model:free", provider: "openrouter", local: false }, requests: 3, tools: [],

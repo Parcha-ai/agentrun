@@ -44,6 +44,9 @@ export function LocalModelCard({ v2, onReady, onDone, pollMs = PULL_POLL_MS }: {
   const [gone, setGone] = useState(false);
   const [starting, setStarting] = useState(false);
   const readied = useRef<string | null>(null);
+  // Each read that ends, answered or not: a pull's next progress read waits on it, so a failed read (a dropped
+  // connection) is followed by another, never the last while the pull goes on.
+  const [reads, setReads] = useState(0);
   const read = async () => {
     try {
       setView(await v2.localModel());
@@ -51,6 +54,8 @@ export function LocalModelCard({ v2, onReady, onDone, pollMs = PULL_POLL_MS }: {
     } catch (e) {
       if (e instanceof ClientError && (e.status === 404 || e.status === 403 || e.status === 401)) setGone(true);
       else setProblem(e instanceof Error ? e.message : String(e));
+    } finally {
+      setReads((n) => n + 1);
     }
   };
   useEffect(() => { void read(); }, [v2]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -59,7 +64,7 @@ export function LocalModelCard({ v2, onReady, onDone, pollMs = PULL_POLL_MS }: {
     if (state !== "pulling") return;
     const timer = setTimeout(() => void read(), pollMs);
     return () => clearTimeout(timer);
-  }, [view]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [view, reads]); // eslint-disable-line react-hooks/exhaustive-deps
   // Ready once per tag: the capabilities read again, so the picker and the default have it.
   useEffect(() => {
     const tag = view?.recommended.tag;

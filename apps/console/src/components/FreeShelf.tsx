@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
 import type { Client } from "@/lib/client";
-import { freeApplyHash, freeHarness, freeModels, runsFree, freeModelFor, webTools } from "@/lib/freeShelf";
+import { applyHarness, freeApplyHash, freeHarness, freeModels, runsFree, freeModelFor, webTools } from "@/lib/freeShelf";
 import { type HarnessInfo, modelLabel } from "@/lib/models";
 import { type Problem, problem } from "@/lib/problem";
 import { titleOf } from "@/lib/templatePackages";
@@ -112,7 +112,7 @@ function FreeAgents({ v2, harnesses, routePrefix, go, localModel }: Pick<Props, 
         : (
           <ul className="grid gap-3 p-4 md:grid-cols-2">
             {free.map((t) => {
-              const model = pulled?.model && (!t.harness?.length || t.harness.includes(pulled.harness)) ? pulled.model : freeModelFor(t, harnesses);
+              const model = pulled?.model && applyHarness(t, harnesses) === pulled.harness ? pulled.model : freeModelFor(t, harnesses);
               return (
                 <li key={t.id}>
                   <article aria-label={titleOf(t)} className="flex h-full flex-col border bg-background px-4 py-3">

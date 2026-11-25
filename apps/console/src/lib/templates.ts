@@ -69,15 +69,18 @@ export function templateOffer(t: Template, harness: string, offers: readonly Too
 }
 
 /** One click: the template's agent is made the first time (an archived one doesn't count), on `on`'s harness and model, each click starts a run of
- *  it with the template's input, and the answer is the run's id. `keys` holds the start's Idempotency-Key until a start
- *  lands, so a click after a lost answer is the same start (the server answers with that run), never a second one. */
+ *  it with the template's input, and the answer is the run's id. An agent of the template's name is run again only on
+ *  the same harness and model as `on` (none: the server's default), so a click after a pull never runs an agent an
+ *  earlier attempt made on another, maybe paid, model; one that differs is left as it is and a new one is made.
+ *  `keys` holds the start's Idempotency-Key, per agent, until a start lands, so a click after a lost answer is the same
+ *  start (the server answers with that run), never a second one. */
 export async function tryTemplate(v2: Pick<Client, "listAgents" | "createAgent" | "startRun">, t: Template, on: string | TemplatePick, keys = keeper()): Promise<string> {
   const { harness, model } = typeof on === "string" ? { harness: on, model: undefined } : on;
   const agents = await allPages((cursor) => v2.listAgents({ cursor }), (p) => p.agents);
-  const existing = agents.find((a) => a.definition.name === t.name && !a.archived_at);
+  const existing = agents.find((a) => a.definition.name === t.name && !a.archived_at && a.definition.harness === harness && (a.definition.model ?? undefined) === model);
   const agentId = existing?.agent_id ?? (await v2.createAgent({ definition: { version: 1, name: t.name, description: t.description, instructions: t.instructions, harness, ...(model ? { model } : {}), tools: t.tools, skills: [] } })).agent_id;
   const body = { input: { content: t.input } };
-  const { run } = await v2.startRun(agentId, body, keys.keyFor(t.name, body));
+  const { run } = await v2.startRun(agentId, body, keys.keyFor(`${t.name}:${agentId}`, body));
   keys.done();
   return run.run_id;
 }

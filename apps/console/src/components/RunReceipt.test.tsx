@@ -89,5 +89,14 @@ describe("renderReceipt", () => {
     const text = host.textContent ?? "";
     for (const words of ["Docs answerer", "run-free", "openrouter/example/free-model:free", "free model, up to 60 requests a run", "1 request", "1,200 in", "80 out",
       "web_fetch", "2 calls · via firecrawl-keyless", "1 call · via direct", "web_search", "42 s", "$0.00"]) expect(text).toContain(words);
+    expect(text).not.toContain("at least");
+  });
+  it("a trace cut at its cap: each tool's count reads as a floor, and the rows left out are said", () => {
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(renderReceipt({ ...facts, tools_uncounted: 40 })));
+    const text = host.textContent ?? "";
+    expect(text).toContain("at least 2 calls · via firecrawl-keyless");
+    expect(text).toContain("40 more rows not read");
   });
 });

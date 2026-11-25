@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { freeDefault, freeHarness, freeModels, runsFree, freeModelFor, webTools } from "./freeShelf";
+import { applyHarness, freeDefault, freeHarness, freeModels, runsFree, freeModelFor, webTools } from "./freeShelf";
 import type { HarnessInfo } from "./models";
 import type { TemplateView } from "./v2";
 
@@ -92,9 +92,17 @@ describe("runsFree", () => {
     expect(runsFree(template({ model: { tier: "balanced", prefer: "anthropic/claude-x" } }), harnesses)).toBe(false);
     expect(runsFree(template({ tags: ["research"] }), harnesses)).toBe(false);
   });
-  it("freeModelFor: the free default of the first of its harnesses that has one", () => {
+  it("freeModelFor: the free default of the harness apply makes the agent on, the first of its harnesses available here", () => {
     expect(freeModelFor(template({ harness: ["codex", "pi"] }), harnesses)).toBe(LOCAL.id);
     expect(freeModelFor(template({ harness: null }), harnesses)).toBe(LOCAL.id);
     expect(freeModelFor(template({ harness: ["codex"] }), harnesses)).toBeNull();
+  });
+  it("never another harness's free model: apply would make the agent on a harness that can't run it", () => {
+    const claude: HarnessInfo = { id: "claude-agent", available: true, default_model: "anthropic/claude-x", models: ["anthropic/claude-x"], free_models: [] };
+    const both = [claude, pi([LOCAL])];
+    expect(applyHarness(template({ harness: ["claude-agent", "pi"] }), both)).toBe("claude-agent");
+    expect(freeModelFor(template({ harness: ["claude-agent", "pi"] }), both)).toBeNull();
+    expect(freeModelFor(template({ harness: ["claude-agent", "pi"] }), [{ ...claude, available: false }, pi([LOCAL])])).toBe(LOCAL.id);
+    expect(applyHarness(template({ harness: null }), both)).toBe("pi");
   });
 });

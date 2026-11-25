@@ -58,14 +58,18 @@ export function runsFree(t: TemplateView, harnesses: readonly HarnessInfo[] | un
   return [t.model?.prefer, ...(t.model?.choices ?? []).map((c) => c.model)].some((id) => !!id && free.has(id));
 }
 
-/** The free model "Use free" applies a template on: the free default of the first of its harnesses that has one (with
- *  none named, the shelf's harness). Null where none does. */
+/** The harness apply makes a template's agent on, as the server picks it (server.ts, apply): the first of its harnesses
+ *  available here, else its first; with none named, the server's default harness (pi). */
+export function applyHarness(t: TemplateView, harnesses: readonly HarnessInfo[] | undefined): string {
+  if (!t.harness?.length) return "pi";
+  return t.harness.find((id) => harnesses?.some((h) => h.id === id && h.available)) ?? t.harness[0]!;
+}
+
+/** The free model "Use free" applies a template on: the free default of the harness apply will make its agent on
+ *  (applyHarness), so the agent runs what it is given. Null where that harness has none: another harness's free model
+ *  would make an agent that can't run it. */
 export function freeModelFor(t: TemplateView, harnesses: readonly HarnessInfo[] | undefined): string | null {
-  for (const h of t.harness?.length ? t.harness : [freeHarness(harnesses) ?? "pi"]) {
-    const model = freeDefault(harnesses, h);
-    if (model) return model;
-  }
-  return null;
+  return freeDefault(harnesses, applyHarness(t, harnesses));
 }
 
 /** A template's Apply screen with the agent's model set (apply's `overrides.model`). */

@@ -97,6 +97,16 @@ describe("LocalModelCard", () => {
     expect(card.button(/^Pull/)).toBeUndefined();
   });
 
+  it("pulling: a progress read that fails is followed by another, so the card still reaches ready", async () => {
+    const dropped = json(502, { error: { code: "bad_gateway", message: "upstream dropped", retryable: true } });
+    const { v2 } = server([base(), pulling(2 * GIB), dropped, done], pulling(0));
+    const readied: string[] = [];
+    const card = await open(v2, { onReady: (tag) => { readied.push(tag); } });
+    await act(async () => { card.button(/^Pull qwen3:8b$/)!.click(); });
+    await card.settle();
+    expect(card.face()).toBe("ready");
+    expect(readied).toEqual(["qwen3:8b"]);
+  });
   it("pulling: the bar and Ollama's status with the bytes", async () => {
     const { v2 } = server([pulling(2 * GIB), done]);
     const host = document.body.appendChild(document.createElement("div"));
