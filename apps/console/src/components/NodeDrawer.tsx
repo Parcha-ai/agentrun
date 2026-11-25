@@ -32,7 +32,9 @@ const span = (a?: string | null, b?: string | null) => (a && b ? Date.parse(b) -
 
 /** The drawer beside the run's graph: what one node, or one map item, did. A decision's verdict card (a bar per answer,
  *  the rule and the action it took), its sources, the images and the state the model saw; a tool call's input and output. */
-export function NodeDrawer({ data, selected, onSelect, onClose, fileUrl }: { data: RunGraph; selected: NonNullable<Selection>; onSelect: (s: Selection) => void; onClose: () => void; fileUrl: FileUrl }) {
+/** `shared`: a shared run's view (the share page), which loads no image: a decision's pages and a document's are named, never drawn,
+ *  and a provider's URL is never fetched. */
+export function NodeDrawer({ data, selected, onSelect, onClose, fileUrl, shared = false }: { data: RunGraph; selected: NonNullable<Selection>; onSelect: (s: Selection) => void; onClose: () => void; fileUrl: FileUrl; shared?: boolean }) {
   const node = data.graph.nodes.find((n) => n.path === selected.path);
   const [zoom, setZoom] = useState<string | null>(null);
   if (!node) return null;
@@ -70,13 +72,13 @@ export function NodeDrawer({ data, selected, onSelect, onClose, fileUrl }: { dat
         {item && <button type="button" className="caps mt-3 text-label text-muted-foreground hover:text-foreground" onClick={() => onSelect({ path: mapPath!, item: null })}>All {data.nodes[mapPath!]?.items?.length} items of {data.graph.nodes.find((n) => n.path === mapPath)?.label}</button>}
       </header>
       <div className="min-h-0 flex-1 space-y-5 overflow-auto px-5 py-5">
-        {item ? <ItemDetail data={data} mapPath={mapPath!} index={item.index} status={item.status} fileUrl={fileUrl} zoom={setZoom} />
+        {item ? <ItemDetail data={data} mapPath={mapPath!} index={item.index} status={item.status} fileUrl={fileUrl} zoom={setZoom} shared={shared} />
           : node.kind === "map" ? <ItemTable data={data} mapPath={node.path} onSelect={onSelect} />
           : inMap && (decisionsHere.length || effectsHere.length) ? <PerItem data={data} path={node.path} mapPath={mapPath!} onSelect={onSelect} />
           : <>
               {node.kind === "parallel" && <Jury data={data} path={node.path} onSelect={onSelect} />}
-              {decisionsHere.map((d, k) => <VerdictCard key={d.id ?? k} d={d} fileUrl={fileUrl} zoom={setZoom} />)}
-              {effectsHere.map((e, k) => <ToolCard key={k} e={e} fileUrl={fileUrl} zoom={setZoom} />)}
+              {decisionsHere.map((d, k) => <VerdictCard key={d.id ?? k} d={d} fileUrl={fileUrl} zoom={setZoom} shared={shared} />)}
+              {effectsHere.map((e, k) => <ToolCard key={k} e={e} fileUrl={fileUrl} zoom={setZoom} shared={shared} />)}
               {!decisionsHere.length && !effectsHere.length && node.kind !== "parallel" && <NoRecord kind={node.kind} status={run?.status} meta={meta} />}
             </>}
         <Definition workflow={data.workflow} path={node.path} kind={node.kind} />
@@ -202,7 +204,7 @@ function Jury({ data, path, onSelect }: { data: RunGraph; path: string; onSelect
 }
 
 /** One map item: each node of the map's body in order, with what it did for this item. */
-function ItemDetail({ data, mapPath, index, status, fileUrl, zoom }: { data: RunGraph; mapPath: string; index: number; status: string; fileUrl: FileUrl; zoom: (src: string) => void }) {
+function ItemDetail({ data, mapPath, index, status, fileUrl, zoom, shared = false }: { data: RunGraph; mapPath: string; index: number; status: string; fileUrl: FileUrl; zoom: (src: string) => void; shared?: boolean }) {
   // Every body node with a record for this item: a leaf, or a container that decides (a judged route).
   const body = data.graph.nodes.filter((n) => n.path.startsWith(`${mapPath}/body`));
   const records = body.map((n) => ({ n, ds: data.decisions.filter((d) => d.node === n.path && d.item === index), es: data.effects.filter((e) => e.node === n.path && e.item === index) }))
@@ -213,8 +215,8 @@ function ItemDetail({ data, mapPath, index, status, fileUrl, zoom }: { data: Run
       {records.map(({ n, ds, es }) => (ds.length || es.length) ? (
         <div key={n.path} className="space-y-3">
           <p className="caps text-label text-muted-foreground">{n.label}</p>
-          {es.map((e, k) => <ToolCard key={k} e={e} fileUrl={fileUrl} zoom={zoom} compact />)}
-          {ds.map((d, k) => <VerdictCard key={d.id ?? k} d={d} fileUrl={fileUrl} zoom={zoom} />)}
+          {es.map((e, k) => <ToolCard key={k} e={e} fileUrl={fileUrl} zoom={zoom} compact shared={shared} />)}
+          {ds.map((d, k) => <VerdictCard key={d.id ?? k} d={d} fileUrl={fileUrl} zoom={zoom} shared={shared} />)}
         </div>
       ) : null)}
       {status === "working" && !records.some((r) => r.ds.length) && <p className="border border-dashed px-4 py-3 text-body text-muted-foreground">In flight: the verdict shows here when it comes back.</p>}
@@ -300,7 +302,7 @@ function actionText(d: Decision): string {
 }
 
 /** A decision's receipt as a card: who answered, at what cost and speed, each answer, the rule and what it decided. */
-export function VerdictCard({ d, fileUrl, zoom }: { d: Decision; fileUrl: FileUrl; zoom: (src: string) => void }) {
+export function VerdictCard({ d, fileUrl, zoom, shared = false }: { d: Decision; fileUrl: FileUrl; zoom: (src: string) => void; shared?: boolean }) {
   const ids = Array.from(new Set([...Object.keys(d.questions ?? {}), ...Object.keys(d.answers ?? {})]));
   const tone = d.status === "answered" ? "success" : d.status === "cancelled" ? "warning" : "error";
   return (
@@ -318,12 +320,13 @@ export function VerdictCard({ d, fileUrl, zoom }: { d: Decision; fileUrl: FileUr
       {d.error && <p className={cn("border-b px-4 py-2.5 font-mono text-small", d.status === "cancelled" ? "text-warning-text" : "text-destructive-text")}>{d.error}</p>}
       {!!d.images?.length && (
         <div className="space-y-3 border-b px-4 py-3">
-          {/* The run's own file (ref), else the provider's URL only when it is http or https: an image source is server data. */}
-          {d.images.map((img) => ({ img, src: (img.ref && fileUrl(img.ref)) || httpHref(img.url) })).filter(({ src }) => src).map(({ img, src }) => (
+          {/* The run's own file (ref), else the provider's URL only when it is http or https: an image source is server data.
+              Shared, no source at all: the caption alone says what the model saw. */}
+          {d.images.map((img) => ({ img, src: shared ? undefined : (img.ref && fileUrl(img.ref)) || httpHref(img.url) })).filter(({ src }) => shared || src).map(({ img, src }) => (
             <figure key={img.token} className="flex gap-3">
-              <button type="button" className="block shrink-0 border bg-white hover:border-foreground" onClick={() => zoom(src!)} aria-label={`Open ${img.ref}`}>
+              {src && <button type="button" className="block shrink-0 border bg-white hover:border-foreground" onClick={() => zoom(src)} aria-label={`Open ${img.ref}`}>
                 <img src={src} alt={`The page the model saw as ${img.token}`} className="block h-[155px] w-[120px] object-cover object-top" loading="lazy" />
-              </button>
+              </button>}
               <figcaption className="min-w-0 flex-1 space-y-1.5 font-mono text-label">
                 <p className="caps text-micro text-muted-foreground">What the model saw</p>
                 <p><span className="text-muted-foreground">token </span>{img.token}</p>
@@ -387,7 +390,7 @@ const toolName = (tool: string) => { const m = mcpCallTool(tool); return m ? `${
 const McpMark = () => <Chip tone="muted" title="An MCP server's tool"><span data-mcp>MCP</span></Chip>;
 
 /** A tool call: its input, and its output (a rendered page shows as its image). */
-export function ToolCard({ e, fileUrl, zoom, compact = false }: { e: Effect; fileUrl: FileUrl; zoom: (src: string) => void; compact?: boolean }) {
+export function ToolCard({ e, fileUrl, zoom, compact = false, shared = false }: { e: Effect; fileUrl: FileUrl; zoom: (src: string) => void; compact?: boolean; shared?: boolean }) {
   const raw = e.output;
   // An answer of false, 0 or "" is an answer: only an absent one is not.
   const answered = raw !== null && raw !== undefined;
@@ -410,7 +413,9 @@ export function ToolCard({ e, fileUrl, zoom, compact = false }: { e: Effect; fil
         {failure && <p className="font-mono text-small text-destructive-text">{failure}</p>}
         {!!out?.pages?.length && (
           <div className="flex flex-wrap gap-3">
-            {out.pages.map((p) => (
+            {out.pages.map((p) => shared ? (
+              <span key={p.page} className="border px-2 py-1 font-mono text-label text-muted-foreground">Page {p.page}</span>
+            ) : (
               <button key={p.page} type="button" className="block border bg-white hover:border-foreground" onClick={() => zoom(fileUrl(p.image))} aria-label={`Open page ${p.page}`}>
                 <img src={fileUrl(p.image)} alt={`Page ${p.page}`} className="block h-[124px] w-[96px] object-cover object-top" loading="lazy" />
               </button>

@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve
+kind: fix
+---
+A save now refuses an `input_schema` whose `propertyNames` refers to something outside the schema's `$defs` and `definitions`, such as `{ "$ref": "#/properties/name" }`. The refusal is a 422 at `definition.input_schema.propertyNames`, naming the reference. `propertyNames` and `maxProperties` are checked against the input's own fields in a schema of their own, which keeps only the definitions, `$id` and `$schema`. A reference to anything else compiled there as `false`. So the save passed, and then every run that gave a field of its own was refused with "input.name schema is false". The save now checks what a run's start checks: the schema in force compiles, and each `$ref` that `propertyNames` reaches names a value, an anchor or an `$id` in that schema. A reference that names a definition is followed into it, so a definition that refers on to `#/properties/name` is refused too. A definition that no reference names, such as one nested inside the named definition, never applies and is not checked. Only schemas are read: a `$ref` key inside an annotation's value, such as `examples`, is data and saves.

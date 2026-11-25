@@ -14,9 +14,10 @@
 #     computer user's, 0700, before init (by the provider's install, or by agentrun-dial on a machine that dials);
 #   - a desktop, with nothing started: Xvfb and xfwm4 (with dbus-run-session, which xfconf's packages bring) and
 #     xsetroot (x11-xserver-utils, the desktop's background), which the provider starts through computerd as the tool
-#     user on :0 (src/desktop.ts), and the apps E2B Desktop has that are cheap to carry: Xfce's terminal and text editor,
-#     Firefox ESR, and xdotool. computerd's apps group lists and opens them by their desktop files. No VNC server comes
-#     with it. One image serves a sandbox and a desktop (an Agent37 desktop starts from it too).
+#     user on :0 (src/desktop.ts), and the apps E2B Desktop has that are cheap to carry: Xfce's terminal, text editor
+#     and file manager (Thunar), Firefox ESR, and xdotool. computerd's apps group lists and opens them by their desktop
+#     files. No VNC server comes with it. One image serves a sandbox and a desktop (an Agent37 desktop starts from it
+#     too).
 #
 # No sudo and no sudoers file: the image's user is root, so the provider's own exec (Daytona's toolbox, Modal's exec,
 # E2B's commands as root) runs the helper as root, and the tool user has no way to root. The build fails if the base

@@ -3,9 +3,10 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditor, type EditorCaps, type Revision } from "./AgentEditor";
 import { PerHarness } from "./ToolSettings";
-import { type Agent, DECISION, toolOffers, toolsOnSwitch, WORKFLOW } from "@/lib/agentForm";
+import { type Agent, toolOffers, toolsOnSwitch } from "@/lib/agentForm";
 import { SERVED_AGENT } from "@/test/agent";
 import { placesOf } from "@/lib/place";
+import { optionsOf, pick as pickOption, picker } from "@/test/picker";
 
 // The agent editor's tools follow the harness: what it shows ticked, and what Save sends, is what the chosen harness runs
 // on this server (capabilities' tools[].harnesses; features.mcp_client.harnesses for MCP grants), said before any save.
@@ -31,10 +32,10 @@ function mount(a: Agent | null, start: "settings" | "tools" | "context" = "setti
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
   act(() => root!.render(createElement(AgentEditor, { agent: a, revisions: a ? revisions : [], caps, step: start, onSave: async (f: Record<string, unknown>) => { sent.push(f); return null; } } as never)));
-  const pick = (id: string) => act(() => { host.querySelector<HTMLInputElement>(`input[name="harness"][value="${id}"]`)!.click(); });
+  const pick = (id: string) => pickOption(picker(host, "Runtime")!, id);
   const saveButton = () => [...host.querySelectorAll("button")].find((b) => /^(Create|Creating…|Save revision|Saving…|Saved)/.test(b.textContent?.trim() ?? ""))!;
   const save = async () => { await act(async () => { saveButton().click(); }); };
-  const step = (label: string) => act(() => { [...host.querySelectorAll<HTMLButtonElement>("ol button")].find((b) => b.textContent?.includes(label))!.click(); });
+  const step = (label: string) => act(() => { [...host.querySelectorAll<HTMLButtonElement>('ol button, nav[aria-label="Agent settings sections"] ul button')].find((b) => b.textContent?.includes(label))!.click(); });
   const notice = () => host.querySelector('[role="status"][aria-label="Tools this harness doesn\'t run"]');
   const type = (sel: string, value: string) => act(() => {
     const el = host.querySelector(sel) as HTMLTextAreaElement | HTMLInputElement;
@@ -47,7 +48,7 @@ function mount(a: Agent | null, start: "settings" | "tools" | "context" = "setti
 describe("AgentEditor: a harness switch keeps no tool the new harness can't run", () => {
   it("unticks a tool the new harness doesn't run at once, says why before any save, and Save sends only what it runs", async () => {
     const t = mount(agent());
-    t.pick("claude-agent");
+    await t.pick("claude-agent");
     // The reason is on the Settings step, where the switch was made, before Save.
     expect(t.notice()!.textContent).toContain("Claude doesn't run this tool here, so it's unticked.");
     expect(t.notice()!.textContent).toContain("ask_person: Runs on Pi here, not on Claude");
@@ -66,14 +67,14 @@ describe("AgentEditor: a harness switch keeps no tool the new harness can't run"
 
   it("takes MCP grants off a harness that runs no MCP tools here, and a switch back ticks everything again", async () => {
     const t = mount(agent());
-    t.pick("codex");
+    await t.pick("codex");
     const said = t.notice()!.textContent ?? "";
     expect(said).toContain("Codex doesn't run these tools here, so they're unticked. Switching back ticks them again.");
     expect(said).toContain("ask_person: Runs on Pi here, not on Codex");
     expect(said).toContain(`${MCP}: Codex doesn't run MCP tools here: Pi and Claude do`);
     // Through another harness and back: what pi runs is ticked again, and nothing is left to save.
-    t.pick("claude-agent");
-    t.pick("pi");
+    await t.pick("claude-agent");
+    await t.pick("pi");
     expect(t.notice()).toBeNull();
     expect(t.saveButton().textContent).toBe("Saved · rev 2");
     expect(t.saveButton().disabled).toBe(true);
@@ -85,10 +86,10 @@ describe("AgentEditor: a harness switch keeps no tool the new harness can't run"
     const t = mount(null, "tools");
     // A new agent starts with pi's tools; unticking read by hand marks the tools as the person's own.
     await act(async () => { t.host.querySelector<HTMLInputElement>('input[type="checkbox"][value="read"]')!.click(); });
-    t.step("Settings");
-    t.pick("claude-agent");
+    t.step("Model & runtime");
+    await t.pick("claude-agent");
     expect(t.notice()!.textContent).toContain("ask_person: Runs on Pi here, not on Claude");
-    t.pick("pi");
+    await t.pick("pi");
     t.step("Tools");
     expect(t.host.querySelector<HTMLInputElement>('input[type="checkbox"][value="read"]')!.checked).toBe(false);
     expect(t.host.querySelector<HTMLInputElement>('input[type="checkbox"][value="ask_person"]')!.checked).toBe(true);
@@ -96,20 +97,6 @@ describe("AgentEditor: a harness switch keeps no tool the new harness can't run"
 
   it("keeps a tool capabilities don't list, for the server to judge", () => {
     expect(toolsOnSwitch("claude-agent", ["read", "a_future_tool", "ask_person"], [], caps.tools)).toEqual({ tools: ["read", "a_future_tool"], held: ["ask_person"] });
-  });
-});
-
-describe("AgentEditor: a starter's card on a new agent", () => {
-  it("names the starter under its label as before (decision, workflow), never its value that no harness id can be", () => {
-    const host = document.body.appendChild(document.createElement("div"));
-    root = createRoot(host);
-    act(() => root!.render(createElement(AgentEditor, { agent: null, revisions: [], caps: { ...caps, decisionProvider: "openrouter" }, step: "settings", onSave: async () => null } as never)));
-    for (const [value, shown] of [[DECISION, "decision"], [WORKFLOW, "workflow"]]) {
-      const input = host.querySelector<HTMLInputElement>(`input[name="harness"][value="${value}"]`);
-      expect(input, value).not.toBeNull();
-      const sub = input!.parentElement!.querySelector("span.min-w-0 > span:last-child");
-      expect(sub?.textContent).toBe(shown);
-    }
   });
 });
 
@@ -137,7 +124,7 @@ describe("AgentEditor: Save follows the form", () => {
 
   it("is off again after a save, the form as saved", async () => {
     const t = mount(agent());
-    t.pick("claude-agent");
+    await t.pick("claude-agent");
     await t.save();
     expect(t.saveButton().disabled).toBe(true);
     expect(t.notice()).toBeNull();
@@ -156,9 +143,9 @@ describe("AgentEditor: the save warnings name the step, not a raw field", () => 
   it("links each line to the step its field is on, the field on hover", () => {
     const t = mount(agent({ definition: { ...agent().definition, harness: "claude-agent", tools: ["read", "ask_person"] }, warnings: [{ field: "definition.tools[1]", reason: "not_set_up_here", message: "ask_person runs on pi here; on claude-agent it is not bound yet." }] }));
     const banner = t.host.querySelector('[aria-label="Save warnings"]')!;
-    const link = [...banner.querySelectorAll("button")].find((b) => b.textContent === "Tools & skills")!;
+    const link = [...banner.querySelectorAll("button")].find((b) => b.textContent === "Tools")!;
     expect(link.getAttribute("title")).toBe("definition.tools[1]");
-    expect([...banner.querySelectorAll("li")].map((li) => li.textContent)).toEqual(["Tools & skills ask_person runs on pi here; on claude-agent it is not bound yet."]);
+    expect([...banner.querySelectorAll("li")].map((li) => li.textContent)).toEqual(["Tools ask_person runs on pi here; on claude-agent it is not bound yet."]);
     act(() => { link.click(); });
     expect(t.host.querySelector('input[type="checkbox"][value="ask_person"]')).not.toBeNull();
   });
@@ -188,7 +175,7 @@ describe("AgentEditor: what a switch holds, and what counts as a change", () => 
     root = createRoot(host);
     act(() => root!.render(createElement(AgentEditor, { agent: a, revisions, caps: c, step: "settings", onSave } as never)));
     const click = (sel: string) => act(() => { host.querySelector<HTMLElement>(sel)!.click(); });
-    const step = (label: string) => act(() => { [...host.querySelectorAll<HTMLButtonElement>("ol button")].find((b) => b.textContent?.includes(label))!.click(); });
+    const step = (label: string) => act(() => { [...host.querySelectorAll<HTMLButtonElement>('ol button, nav[aria-label="Agent settings sections"] ul button')].find((b) => b.textContent?.includes(label))!.click(); });
     const saveButton = () => [...host.querySelectorAll("button")].find((b) => /^(Save revision|Saving…|Saved)/.test(b.textContent?.trim() ?? ""))!;
     const type = (sel: string, value: string) => act(() => {
       const el = host.querySelector(sel) as HTMLTextAreaElement | HTMLInputElement;
@@ -198,13 +185,13 @@ describe("AgentEditor: what a switch holds, and what counts as a change", () => 
     return { host, click, step, saveButton, type };
   }
 
-  it("bash held by a switch to Claude is not ticked again on Pi once the place moved to the runner", () => {
+  it("bash held by a switch to Claude is not ticked again on Pi once the place moved to the runner", async () => {
     const t = mountWith(agent({ definition: { version: 1, name: "boxed", instructions: "Do it.", harness: "pi", skills: [], tools: ["read", "bash"], place: { mode: "sandbox", box: "docker" } } }), boxed);
-    t.click('input[name="harness"][value="claude-agent"]');
+    await pickOption(picker(t.host, "Runtime")!, "claude-agent");
     t.step("Computer");
     t.click('input[name="place"][value="runner"]');
-    t.step("Settings");
-    t.click('input[name="harness"][value="pi"]');
+    t.step("Model & runtime");
+    await pickOption(picker(t.host, "Runtime")!, "pi");
     t.step("Tools");
     expect(t.host.querySelector<HTMLInputElement>('input[value="bash"]')?.checked ?? false).toBe(false);
   });
@@ -212,13 +199,13 @@ describe("AgentEditor: what a switch holds, and what counts as a change", () => 
   it("a switch made while a save is under way keeps what it holds: back on Pi, ask_person is ticked again", async () => {
     let answer: (v: null) => void = () => {};
     const t = mountWith(agent(), caps, () => new Promise<null>((r) => { answer = r; }));
-    t.step("Context");
+    t.step("General");
     t.type("#agent-instructions", "Do it now.");
     await act(async () => { t.saveButton().click(); });
-    t.step("Settings");
-    t.click('input[name="harness"][value="claude-agent"]');
+    t.step("Model & runtime");
+    await pickOption(picker(t.host, "Runtime")!, "claude-agent");
     await act(async () => { answer(null); });
-    t.click('input[name="harness"][value="pi"]');
+    await pickOption(picker(t.host, "Runtime")!, "pi");
     t.step("Tools");
     expect(t.host.querySelector<HTMLInputElement>('input[value="ask_person"]')!.checked).toBe(true);
   });
