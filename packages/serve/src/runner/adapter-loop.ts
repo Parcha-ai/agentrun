@@ -1448,10 +1448,14 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // the session's tools are fixed for the claim, so a turn it reached could not call them. Left untaken, it runs as
     // the run's next turn, on a claim that lists them: the run's end opens it again with the message (as for a message
     // that comes while the run ends), and a park's resume takes it. Every message after it waits the same way, so none
-    // runs before it. Said once on the timeline, since the API answered the message as steered.
+    // runs before it. Said once on the timeline, since the API answered the message as steered. A reopen's own message
+    // (the claim's turn, not yet sent; never a wait's answer) came before the claim opened, so whatever it handed, the
+    // claim opened with: a credential handed since is a later message's, and this one is still the claim's turn. Held, a
+    // reopen of a session still new would wait for a first input that never comes.
     const claimMcp = mcp;
     const leftOut = claimMcp?.leftOut;
-    if (claimMcp && leftOut?.length) {
+    const reopenTurn = reopen !== undefined && !reopen.sent && reopen !== waitTurn;
+    if (claimMcp && leftOut?.length && !reopenTurn) {
       const still = new Set(await claimMcp.fresh());
       const handed = leftOut.filter((server) => !still.has(server));
       if (handed.length) {
