@@ -16,7 +16,7 @@ import { buildToolHost, webHostTools } from "../dist/runner/adapter-run-spec.js"
 import { webFixtureOf } from "../dist/web-fake.js";
 import { PNG } from "./fixtures/faux-web-files.mjs";
 import { SAMPLES } from "./fixtures/media-samples.mjs";
-import { scratch } from "./support.mjs";
+import { follow, runDir, scratch, serve, startRun } from "./support.mjs";
 
 const FAUX_WEB_FILES = new URL("./fixtures/faux-web-files.mjs", import.meta.url).pathname;
 const MiB = 1024 * 1024;
@@ -858,4 +858,100 @@ test("the run's channel ending lets its waiting big writes leave the gate at onc
   await until(() => gate.busy === 0, "and gives it back when it returns");
   assert.deepEqual(started, ["media/a.bin"], "no waiter was ever written");
   assert.equal(existsSync(join(work, "media", "b.bin")) || existsSync(join(work, "media", "c.bin")), false);
+});
+
+// A list a government publishes as a download: the UK's CSV comes as application/octet-stream, the UN's consolidated
+// list as application/xml. Saved as text, they are read with grep, never whole.
+const UK_ROWS = "﻿Report Date: 24-Nov-2026\nLast Updated,Unique ID,Name 6,Name 1\n01/02/2026,RUS0001,SOCIÉTÉ EXEMPLE,\n";
+const UN_XML = '<?xml version="1.0" encoding="UTF-8"?>\n<CONSOLIDATED_LIST dateGenerated="2026-11-24T00:00:00"><INDIVIDUALS/></CONSOLIDATED_LIST>\n';
+const text = (value) => Buffer.from(value, "utf8");
+
+test("a file a host serves with no type (octet-stream, binary, none) saves to a .txt or a .csv when its bytes are UTF-8 text with no NUL, answering text/plain or text/csv", async (t) => {
+  const { work, ws } = await folders(t);
+  for (const [type, path, answered] of [["application/octet-stream", "lists/uk.csv", "text/csv"], ["binary/octet-stream", "lists/uk.txt", "text/plain"], [null, "lists/none.csv", "text/csv"]]) {
+    const saved = await webSave({ url: "https://lists.example/uk", path }, ws, serving("https://lists.example/uk", text(UK_ROWS), type));
+    assert.deepEqual([saved.ok, saved.content_type, saved.bytes], [true, answered, text(UK_ROWS).length], `${type} -> ${path}: ${JSON.stringify(saved)}`);
+    assert.equal(readFileSync(join(work, path), "utf8"), UK_ROWS, path);
+  }
+});
+
+test("a file a host declares XML saves to a .txt alone, as text/plain, so nothing parses it as XML; at .xml, .csv or .html it is refused", async (t) => {
+  const { work, ws } = await folders(t);
+  for (const type of ["application/xml", "text/xml; charset=utf-8"]) {
+    const path = `lists/un-${type.length}.txt`;
+    const saved = await webSave({ url: "https://lists.example/un", path }, ws, serving("https://lists.example/un", text(UN_XML), type));
+    assert.deepEqual([saved.ok, saved.content_type], [true, "text/plain"], `${type}: ${JSON.stringify(saved)}`);
+    assert.equal(readFileSync(join(work, path), "utf8"), UN_XML);
+  }
+  for (const path of ["lists/un.xml", "lists/un.csv", "lists/un.html"]) {
+    const saved = await webSave({ url: "https://lists.example/un", path }, ws, serving("https://lists.example/un", text(UN_XML), "application/xml"));
+    assert.equal(saved.ok, false, `${path}: ${JSON.stringify(saved)}`);
+    assert.match(saved.refused ?? "", /application\/xml/, path);
+    assert.equal(existsSync(join(work, path)), false, path);
+  }
+});
+
+test("untyped text is refused at any path but a .txt or a .csv (.html, .htm, .md, .json, none), and a declared page, SVG, XHTML or script is refused at a .txt or a .csv", async (t) => {
+  const { work, ws } = await folders(t);
+  for (const path of ["pages/p.html", "pages/p.htm", "notes/n.md", "data/d.json", "data/plain"]) {
+    const saved = await webSave({ url: "https://lists.example/u", path }, ws, serving("https://lists.example/u", text("<!doctype html><script>alert(1)</script>"), "application/octet-stream"));
+    assert.equal(saved.ok, false, `${path}: ${JSON.stringify(saved)}`);
+    assert.equal(existsSync(join(work, path)), false, path);
+  }
+  for (const type of ["text/html; charset=utf-8", "image/svg+xml", "application/xhtml+xml", "text/javascript", "application/javascript"]) {
+    for (const path of [`active/${type.length}.txt`, `active/${type.length}.csv`]) {
+      const saved = await webSave({ url: "https://lists.example/a", path }, ws, serving("https://lists.example/a", text("<svg onload=alert(1)/>"), type));
+      assert.equal(saved.ok, false, `${type} -> ${path}: ${JSON.stringify(saved)}`);
+      assert.equal(existsSync(join(work, path)), false, path);
+    }
+  }
+});
+
+test("untyped or XML bytes that are not text (a NUL anywhere, even past the first 64 KiB, or bytes that are not UTF-8) are refused at a .txt or a .csv, and nothing is written", async (t) => {
+  const { work, ws } = await folders(t);
+  const late = Buffer.concat([text("a,b\n".repeat(20_000)), Buffer.from([0]), text("c,d\n")]);
+  const cases = [
+    ["application/octet-stream", "lists/nul.csv", Buffer.concat([text("a,b\n"), Buffer.from([0]), text("c,d\n")])],
+    ["application/octet-stream", "lists/late-nul.txt", late],
+    [null, "lists/latin1.csv", Buffer.from("SOCI\xc9T\xc9,1\n", "latin1")],
+    ["application/xml", "lists/nul.txt", Buffer.concat([text("<a>"), Buffer.from([0]), text("</a>")])],
+  ];
+  assert.ok(late.indexOf(0) > 64 * 1024, "the NUL is past the first 64 KiB");
+  for (const [type, path, body] of cases) {
+    const saved = await webSave({ url: "https://lists.example/b", path }, ws, serving("https://lists.example/b", body, type));
+    assert.equal(saved.ok, false, `${type} -> ${path}: ${JSON.stringify(saved)}`);
+    assert.match(saved.refused ?? "", /UTF-8 text with no NUL/, path);
+    assert.equal(existsSync(join(work, path)), false, path);
+  }
+});
+
+test("a list saved as text is served back as text/csv or text/plain with X-Content-Type-Options: nosniff, inline as every saved text file is, an attachment with ?download=1", async (t) => {
+  const { api, data, baseUrl, token } = await serve(t);
+  const { run_id } = await startRun(api, "plain", "Hello.");
+  await follow(api, run_id, ["completed"]);
+  const ws = localWorkspace(join(runDir(data, run_id), "work"));
+  const uk = await webSave({ url: "https://lists.example/uk", path: "lists/uk.csv" }, ws, serving("https://lists.example/uk", text(UK_ROWS), "application/octet-stream"));
+  const un = await webSave({ url: "https://lists.example/un", path: "lists/un.txt" }, ws, serving("https://lists.example/un", text(UN_XML), "application/xml"));
+  assert.deepEqual([uk.ok, un.ok], [true, true], JSON.stringify([uk, un]));
+  for (const [path, type, body] of [["lists/uk.csv", "text/csv; charset=utf-8", UK_ROWS], ["lists/un.txt", "text/plain; charset=utf-8", UN_XML]]) {
+    const res = await fetch(`${baseUrl}/runs/${run_id}/files/${path}`, { headers: { authorization: `Bearer ${token}` } });
+    assert.equal(res.status, 200, path);
+    assert.equal(res.headers.get("content-type"), type, path);
+    assert.equal(res.headers.get("x-content-type-options"), "nosniff", path);
+    assert.equal(res.headers.get("content-disposition"), null, `${path}: inline`);
+    // The bytes as saved, a BOM included: Response.text() would decode it away.
+    assert.deepEqual(Buffer.from(await res.arrayBuffer()), text(body), path);
+    const download = await fetch(`${baseUrl}/runs/${run_id}/files/${path}?download=1`, { headers: { authorization: `Bearer ${token}` } });
+    assert.equal(download.headers.get("content-disposition"), `attachment; filename="${path.split("/").at(-1)}"`, path);
+    assert.equal(download.headers.get("x-content-type-options"), "nosniff", path);
+    await download.arrayBuffer();
+  }
+});
+
+test("web_save's description tells the model where untyped and XML text saves: .txt or .csv, XML at .txt alone, UTF-8 with no NUL", async (t) => {
+  const { ws } = await folders(t);
+  const description = webSaveTool(() => ws, () => ({})).description;
+  assert.match(description, /no type \(application\/octet-stream or none\)[^.]*\.txt or a \.csv/, description);
+  assert.match(description, /declares XML[^.]*\.txt alone/, description);
+  assert.match(description, /UTF-8 text with no NUL/, description);
 });

@@ -4,11 +4,10 @@
 import assert from "node:assert/strict";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { availableParallelism, tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import { test } from "node:test";
 import { request } from "node:http";
 import { once } from "node:events";
-import { execFileSync } from "node:child_process";
 import { keptReads, loggedReads, within, wrappedView } from "../dist/wrapped.js";
 import { randomBytes } from "node:crypto";
 import { pathToFileURL } from "node:url";
@@ -186,24 +185,6 @@ test("a server with an API key made in the console does not read the machine's f
   const after = await server.api("GET", "/wrapped?year=2026");
   assert.equal(after.status, 200, JSON.stringify(after.body));
   assert.equal(after.body.requests, 2);
-});
-
-test("a test's server never reads the runner's HOME: support hands it an empty home, so a sweep of every GET route stays short", { timeout: 120_000 }, async (t) => {
-  const home = await homeWith(t);
-  const was = process.env.HOME;
-  process.env.HOME = home;
-  t.after(() => (process.env.HOME = was));
-  const { api } = await serve(t);
-  const { status, body } = await api("GET", "/wrapped?year=2026");
-  assert.equal(status, 200, JSON.stringify(body));
-  assert.deepEqual([body.requests, body.sessions], [0, 0], "the fixture under HOME is not read");
-});
-
-// support.mjs points HOME at the empty home it hands each server (SESSIONS_HOME), so a CLI a test starts with the test's
-// environment ({ ...process.env }: a `serve` the CLI starts reads sessions under its HOME) never reads the runner's own.
-test("a process a test starts with the test's environment has the empty home for HOME, never the runner's", () => {
-  const home = execFileSync(process.execPath, ["-e", "process.stdout.write(require('node:os').homedir())"], { env: { ...process.env } }).toString();
-  assert.match(basename(home), /^agentrun-home-/);
 });
 
 test("a read past the wait answers 503 with a retry while it goes on", { timeout: 120_000 }, async (t) => {

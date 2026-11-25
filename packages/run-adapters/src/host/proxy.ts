@@ -1740,6 +1740,10 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       }
       res.end();
       answered = { ok: upstream.ok };
+      // An upstream that ends its answer on this proxy's abort without throwing (a route's own fetch: pi-ai's stream ends
+      // in its "aborted" error event, and the route closes it) is a stop all the same: its client left, and this proxy's
+      // abort, not the provider, ended it. Never one read on past its client (keepReading: the signal was never aborted).
+      stoppedByClient = clientLeft && upstream.ok && controller.signal.aborted;
     } catch (error) {
       // Its client had left before this (a stop): read now, as the proxy's own end below closes the response too.
       // Before any header too: the request left, and the provider may have begun it, as a stop part way. Only this proxy's
@@ -1821,8 +1825,9 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
         // the model's first token, then a rate limit or an overload as an error event): refused, never run, so it cost
         // nothing. Never once the model's content streamed with no usage said, nor once the stream shows it began its
         // output with none of it streamed (outputBeganIn: hidden reasoning, a block a translation held): that was run,
-        // and is booked at an unknown cost as any answer cut short. Missing content is no proof of a refusal.
-        if (failed !== undefined && reported === undefined && !(policy.contentBytesOf && sentOf.bytes("content") > 0) && !outputBeganIn(kept)) {
+        // and is booked at an unknown cost as any answer cut short. Missing content is no proof of a refusal, and the error
+        // a stop's abort ends a stream in (stoppedByClient) is ours, never the provider's refusal: the stop counts it.
+        if (!stoppedByClient && failed !== undefined && reported === undefined && !(policy.contentBytesOf && sentOf.bytes("content") > 0) && !outputBeganIn(kept)) {
           refusedIn = wordsOf(failed.words);
           say(`model proxy (${policy.id}): the provider refused the request inside its answer (${failed.rateLimit ? "a rate limit" : "an error"}); booked at nothing`);
         }

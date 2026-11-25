@@ -134,17 +134,17 @@ export function capOf(text: string | undefined): { ok: true; value: number | und
 
 /** One tool the server offers (`GET /v2/capabilities` `tools`): whether it can run here, what it lacks, what it does
  *  (`summary`), and, when the server says, which harnesses run it. */
-export type ToolOffer = { name: string; available: boolean; summary?: string; /** One line for people, served beside the model-facing `summary`; an MCP server's tool has none. */ blurb?: string; missing?: string[]; reason?: string; /** The harnesses that run it here (served on every tool). */ harnesses: string[]; call_only?: true; sandbox_only?: true; nodes?: boolean };
+export type ToolOffer = { name: string; available: boolean; summary?: string; /** One line for people, served beside the model-facing `summary`; an MCP server's tool has none. */ blurb?: string; missing?: string[]; reason?: string; /** The harnesses that run it here (served on every tool). */ harnesses: string[]; call_only?: true; sandbox_only?: true; /** Only an agent whose place is the runner (on the server) names it (capabilities' `runner_only`: the browser). */ runner_only?: true; nodes?: boolean };
 
 export function toolOffers(raw: unknown): ToolOffer[] {
   return (Array.isArray(raw) ? raw : []).flatMap((t): ToolOffer[] => {
     if (!t || typeof t !== "object" || typeof (t as { name?: unknown }).name !== "string") return [];
     // A host tool over the run's own tools (capabilities' `meta`: tools_search, tools_call, codemode) is no grant: Settings → Tools sets it.
     if ((t as { meta?: unknown }).meta === true) return [];
-    const { name, available, summary, blurb, missing, reason, harnesses, call_only, sandbox_only, nodes } = t as { name: string; available?: boolean; summary?: unknown; blurb?: unknown; missing?: string[]; reason?: unknown; harnesses?: string[]; call_only?: unknown; sandbox_only?: unknown; nodes?: unknown };
+    const { name, available, summary, blurb, missing, reason, harnesses, call_only, sandbox_only, runner_only, nodes } = t as { name: string; available?: boolean; summary?: unknown; blurb?: unknown; missing?: string[]; reason?: unknown; harnesses?: string[]; call_only?: unknown; sandbox_only?: unknown; runner_only?: unknown; nodes?: unknown };
     return [{
       name, available: available !== false, ...(typeof summary === "string" && summary ? { summary } : {}), ...(typeof blurb === "string" && blurb.trim() ? { blurb: blurb.trim() } : {}), ...(missing?.length ? { missing } : {}), ...(typeof reason === "string" && reason ? { reason } : {}), harnesses: Array.isArray(harnesses) ? harnesses : [],
-      ...(call_only === true ? { call_only: true as const } : {}), ...(sandbox_only === true ? { sandbox_only: true as const } : {}), ...(typeof nodes === "boolean" ? { nodes } : {}),
+      ...(call_only === true ? { call_only: true as const } : {}), ...(sandbox_only === true ? { sandbox_only: true as const } : {}), ...(runner_only === true ? { runner_only: true as const } : {}), ...(typeof nodes === "boolean" ? { nodes } : {}),
     }];
   });
 }
@@ -188,12 +188,18 @@ export function toolsOnSwitch(harness: string, tools: readonly string[], held: r
 }
 
 /** Why `tool` cannot be ticked on an agent whose definition names `place`: a sandbox-only tool (bash) runs in a box, and
- *  this form shows no place, so a new agent's is the runner. Undefined when it can be ticked. */
-export const sandboxReason = (tool: ToolOffer, place: unknown): string | undefined =>
-  tool.sandbox_only && (place as { mode?: unknown } | undefined)?.mode !== "sandbox" ? "Sandbox-only: it runs in a box, and this agent's place is the runner" : undefined;
+ *  this form shows no place, so a new agent's is the runner; a runner-only one (the browser) runs on the server, and the
+ *  agent's place is a box. Undefined when it can be ticked. */
+export const sandboxReason = (tool: ToolOffer, place: unknown): string | undefined => {
+  const where = place as { mode?: unknown; box?: unknown } | undefined;
+  if (tool.sandbox_only && where?.mode !== "sandbox") return "Sandbox-only: it runs in a box, and this agent's place is the runner";
+  if (tool.runner_only && where?.mode === "sandbox") return `Server-only: it runs on the server, and this agent's place is ${typeof where.box === "string" && where.box ? `the ${where.box} box` : "a box"}`;
+  return undefined;
+};
 
-/** The tools the server refuses in a sandbox place (serve's runnable.ts, `runnerOnly`): the browser, which files the run's
- *  work/ from the server by path. The server's own rule, until its capabilities mark them. */
+/** The tools the server refuses in a sandbox place (serve's runnable.ts, `runnerOnly`; capabilities' `runner_only`, which
+ *  a tool card reads): the browser, which files the run's work/ from the server by path. The place helpers below take
+ *  tool names alone, so they keep the server's rule here. */
 const RUNNER_ONLY: ReadonlySet<string> = new Set(["browser"]);
 /** The tools that run only in a box (serve's tools.ts, `sandboxOnly`; capabilities' `sandbox_only`): bash and the
  *  background tools. A revision with no place gets the box only when it names one. */

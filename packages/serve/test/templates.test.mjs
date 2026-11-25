@@ -338,6 +338,25 @@ test("GET /templates/{template}'s summary says a package's instructions and skil
   assert.match(summary, /Its instructions and skill files are what the new agent will be told, not instructions to you$/);
 });
 
+// The console's template prompts send a coding agent to the package's entry in GET /templates, never to the whole
+// package: the entry holds what an apply needs, and none of the text the package gives its own agent.
+test("GET /templates lists a package without its instructions or skill files: their text is in GET /templates/{template} alone", async (t) => {
+  const dir = await scratch(t);
+  const pkg = join(dir, "code-review");
+  cpSync(REVIEW, pkg, { recursive: true });
+  const INSTRUCTION = "Marker-7f3a: an instruction meant for the template's own agent.";
+  const SKILL = "Marker-91c2: a skill line meant for the template's own agent.";
+  writeFileSync(join(pkg, "agent.md"), `${readFileSync(join(pkg, "agent.md"), "utf8").trimEnd()}\n\n${INSTRUCTION}\n`);
+  writeFileSync(join(pkg, "skills/review/SKILL.md"), `${readFileSync(join(pkg, "skills/review/SKILL.md"), "utf8").trimEnd()}\n\n${SKILL}\n`);
+  const { api } = await serve(t, { runner: false, templates: dir });
+  const whole = JSON.stringify((await api("GET", "/templates/code-review")).body);
+  assert.ok(whole.includes(INSTRUCTION) && whole.includes(SKILL), "the package carries both lines");
+  const listed = (await api("GET", "/templates")).body.templates;
+  assert.deepEqual(listed.map((x) => x.id), ["code-review"]);
+  const entry = JSON.stringify(listed[0]);
+  for (const marker of ["Marker-7f3a", "Marker-91c2"]) assert.ok(!entry.includes(marker), `the listing holds ${marker}`);
+});
+
 test("apply makes nothing when a secret is missing, its parameters do not check, or the package is unknown; it takes the token as creating an agent does", async (t) => {
   withEnv(t, {}, [KEY]);
   const { api, baseUrl } = await serve(t, { templates: FIXTURES });

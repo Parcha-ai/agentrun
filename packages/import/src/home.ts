@@ -1,6 +1,8 @@
 // Every session under a home, as totals: what each used, its subagents' requests with it, and what it cost. A session is
 // one per source and id, however many files write it (a Codex thread resumed in a new file, a Claude Code session copied
-// into a resumed one's); a subagent's is no session of its own but its parent's.
+// into a resumed one's); a subagent's is no session of its own but its parent's. A request another source's session also
+// holds (an OpenCode claude-agent request, which Claude Code writes too: its `mirrors`) is that session's, when the same
+// call reads it, and counts once there.
 import { createHash } from "node:crypto";
 import type { Stats } from "node:fs";
 import { stat } from "node:fs/promises";
@@ -14,7 +16,8 @@ import { DROPS_CURSOR, type InternalReadOptions } from "./internal.js";
 import { defaultThreads, MIN_OLD_MB, OLD_MB, type PoolRead, ReadPool, readAheadBytes } from "./pool.js";
 import { addDisjoint, addNew, addRecord, anyIn, dropOwner, locatorNumber, markOf, ownAll, ownerOf, type RecordIndex, recordIndex, undoTo } from "./record-index.js";
 import { packed, packInto } from "./record-key.js";
-import type { Usage } from "./types.js";
+import { mirroredIn, sessionKey } from "./mirror.js";
+import type { Mirror, Usage } from "./types.js";
 import { addTokens, noTokens, type Tokens } from "./usage.js";
 
 export type SessionTotals = {
@@ -128,7 +131,13 @@ const keyOf = (home: string, { file, id }: Locator): { key: string; file: string
 type Meta = Pick<SessionRead["session"], "id" | "child" | "parent" | "users" | "copies" | "costUsd" | "model">;
 /** A part as read, its requests as the reader counted them (Counts: each one's model, tokens and time), trimmed to them.
  *  A part is held so until its requests are priced (Counted), and to the totals with a requests sink. */
-type AsRead = { session: Meta; counts: Counts };
+type AsRead = {
+  session: Meta;
+  counts: Counts;
+  /** Only where a request names another source's session that holds it too (OpenCode's claude-agent turns): each
+   *  request's Mirror, and the cost it wrote (NaN for none), so the totals can leave the mirrored ones out (mirror.ts). */
+  mirrors?: { of: (Mirror | undefined)[]; cost: Float64Array };
+};
 
 /** A part once its requests are priced, as they are read when the prices are in hand: their tokens summed (exact: whole
  *  counts, the source's sums at most 2^53 - 1), and each request's cost, unrounded, to be summed in the totals' order.
@@ -241,6 +250,41 @@ function counted(session: Meta, c: Counts, pricer: Pricer, sums: Float64Array): 
 
 type Part = { locator: Locator; read: Compact };
 
+/** A session's cost with its subagents': Claude Code's written cost holds its subagents' already (its cost-state), so it
+ *  stays as it is; every other source writes a subagent's cost on the subagent's own session, so each is added. Unknown
+ *  when the session's is, or when one it adds is: never a subagent counted at 0. parseHome's totals and serve's import. */
+export function withSubagentCosts(source: string, cost: number | undefined, subagents: readonly (number | undefined)[]): number | undefined {
+  if (source === "claude-code" || cost === undefined) return cost;
+  return subagents.reduce<number | undefined>((sum, usd) => (sum === undefined || usd === undefined ? undefined : sum + usd), cost);
+}
+
+/** A part with its own requests alone (none another session of the call holds) and the cost it wrote of them: its own
+ *  when it holds none of another's, else its own requests' when each that used tokens is priced (mirror.ts ownRequests,
+ *  over its counts). Counted when `unpriced` is false and the prices are in hand (a part whose requests mirror another's
+ *  is kept as read, AsRead, until the call knows which sessions it read). */
+function ownPart(read: Compact, mirrored: (request: { mirrors?: Mirror }) => boolean, pricer: Pricer, unpriced: boolean): Compact {
+  if ("n" in read || !read.mirrors) return read;
+  const { counts: c, mirrors: marks } = read;
+  const at = Array.from({ length: c.n }, (_, i) => i).filter((i) => !mirrored({ mirrors: marks.of[i] }));
+  let own: AsRead = read;
+  if (at.length !== c.n) {
+    const priced = at.every((i) => !Number.isNaN(marks.cost[i]!) || !(c.has[i]! & HAS_USAGE));
+    const costUsd = priced ? at.reduce((n, i) => n + (Number.isNaN(marks.cost[i]!) ? 0 : marks.cost[i]!), 0) : undefined;
+    const { costUsd: _, ...session } = read.session;
+    own = {
+      session: { ...session, ...(costUsd !== undefined ? { costUsd } : {}) },
+      counts: {
+        n: at.length,
+        models: c.models,
+        model: Int32Array.from(at, (i) => c.model[i]!),
+        values: Float64Array.from(at.flatMap((i) => Array.from(c.values.subarray(i * STRIDE, (i + 1) * STRIDE)))),
+        has: Uint8Array.from(at, (i) => c.has[i]!),
+      },
+    };
+  }
+  return unpriced || !pricer.ready ? own : counted(own.session, own.counts, pricer, new Float64Array(USAGE_FIELDS));
+}
+
 /** Every session of `sources` under `home`, as totals, sorted by key. */
 export async function parseHome(home: string, { sources = SOURCES, readers = READERS, state, catalog, calculateCost, env, failures, requests, threads: asked, readAhead = readAheadBytes(), workerOldMb = OLD_MB }: ParseOptions = {}): Promise<SessionTotals[]> {
   if (asked !== undefined && (!Number.isSafeInteger(asked) || asked < 1 || asked > MOST_THREADS)) throw new RangeError(`threads: a whole number from 1 to ${MOST_THREADS}, not ${asked}`);
@@ -288,6 +332,9 @@ export async function parseHome(home: string, { sources = SOURCES, readers = REA
       listing.reads = listing.ids.map((id) => () => pool.take(id));
     }
   }
+  // Every session this call read, by source and id, and the sources held to be totalled after the rest.
+  const readKeys = new Set<string>();
+  const mirroring: { source: string; read: { tops: Part[]; children: (Part & { of: Locator })[] } }[] = [];
   for (const source of sources) {
     let read;
     try {
@@ -301,8 +348,32 @@ export async function parseHome(home: string, { sources = SOURCES, readers = REA
       read = await readSource(home, source, readers, env, state, pricer, true);
     }
     const { tops, children, unread } = read;
-    out.push(...(await totalsOf(home, source, tops, children, pricer, priceWith, calculateCost, requests)));
+    for (const part of [...tops, ...children]) readKeys.add(sessionKey(source, part.read.session.id));
+    // A source whose requests mirror another's (OpenCode's claude-agent ones) is totalled once every source is read: a
+    // mirrored request counts in the session it mirrors when this call reads that one too.
+    if ([...tops, ...children].some(({ read }) => "mirrors" in read && read.mirrors)) mirroring.push({ source, read });
+    else out.push(...(await totalsOf(home, source, tops, children, pricer, priceWith, calculateCost, requests)));
     failed.push(...unread.map(({ locator, error }) => ({ key: keyOf(home, locator).key, file: locator.file, source, error })));
+  }
+  // A request that mirrors a session this call read is counted in it, not again: each part keeps its own requests alone.
+  const mirrored = mirroredIn(readKeys);
+  for (const held of mirroring) {
+    const { source } = held;
+    let { read } = held;
+    const own = (all: boolean) => {
+      for (const part of [...read.tops, ...read.children]) part.read = ownPart(part.read, mirrored, pricer, all);
+    };
+    try {
+      // Priced as the source's other parts are: Counted when one is (the prices came in while it was read), else AsRead.
+      own(whole || ![...read.tops, ...read.children].some((part) => "n" in part.read));
+    } catch (error) {
+      if (!(error instanceof Inexact)) throw error;
+      // As a source read above: again, each request's tokens kept to the totals.
+      if (state) (state.sources ??= {})[source] = undefined;
+      read = await readSource(home, source, readers, env, state, pricer, true);
+      own(true);
+    }
+    out.push(...(await totalsOf(home, source, read.tops, read.children, pricer, priceWith, calculateCost, requests)));
   }
   if (failed.length && !failures) throw new ReadFailures(failed);
   failures?.push(...failed);
@@ -441,9 +512,11 @@ async function readSource(home: string, source: string, readers: Readers, env: E
     const pack = async (read: SessionRead, top: boolean): Promise<Compact> => {
       const session = metaOf(read.session);
       const requests = countsOf(read);
+      // A part whose requests mirror another's stays as read: its own are known once every source is read (ownPart).
+      if (read.requests.some((request) => request.mirrors !== undefined)) return { session, counts: trimmed(requests), mirrors: { of: read.requests.map((request) => request.mirrors), cost: Float64Array.from(read.requests, (request) => request.costUsd ?? Number.NaN) } };
       if (!whole && !pricer.ready && fresh && top && pricedAtTotals(session, requests.n)) {
         await pricer.load();
-        for (const part of [...tops, ...children]) if ("counts" in part.read) part.read = counted(part.read.session, part.read.counts, pricer, sums);
+        for (const part of [...tops, ...children]) if ("counts" in part.read && !part.read.mirrors) part.read = counted(part.read.session, part.read.counts, pricer, sums);
       }
       return !whole && pricer.ready ? counted(session, requests, pricer, sums) : { session, counts: trimmed(requests) };
     };
@@ -527,10 +600,12 @@ async function totalsOf(home: string, source: string, tops: Part[], children: (P
         reasoning += usage.reasoning ?? 0;
       }
     }
-    // The source's own cost, when each of its files wrote one: Claude Code writes the session's running total (a moved
-    // session's copy goes on from the original's), so the highest; another source prices each request, so their sum.
-    const written = parts.flatMap(({ read }) => (read.session.costUsd !== undefined ? [read.session.costUsd] : []));
-    let cost: number | undefined = written.length === parts.length ? (source === "claude-code" ? Math.max(...written) : written.reduce((n, usd) => n + usd, 0)) : undefined;
+    // The source's own cost, when each of its files wrote one: Claude Code writes the session's running total, its
+    // subagents' with it (a moved session's copy goes on from the original's), so the highest; another source prices each
+    // request, so the sum of its files' and its subagents' (OpenCode's subagent is a session of its own).
+    const written = parts.map(({ read }) => read.session.costUsd);
+    const files = written.some((usd) => usd === undefined) ? undefined : source === "claude-code" ? Math.max(...(written as number[])) : (written as number[]).reduce((n, usd) => n + usd, 0);
+    let cost = withSubagentCosts(source, files, subagents.map(({ read }) => read.session.costUsd));
     if (cost === undefined && priced.length) {
       // Each request's cost as priced when read, summed in the order priceRequests sums them.
       if (pricer.catalog && pricer.calculate && !priced.some(({ unpriceable }) => unpriceable)) {
