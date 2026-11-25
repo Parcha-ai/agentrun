@@ -90,3 +90,11 @@ test("a JSON string's text read again for a dict written in it is closed off fro
     assert.equal(withheldWhole(text, [text.startsWith('{"don') ? "efghabcd" : "abcdefgh"]), false, text);
   }
 });
+
+test("a dict in a call's arguments with no Python escape is read through both levels of JSON's: \\\\t between a held value's halves", () => {
+  // The source of a dict with a tab written "\t", in a JSON string: "\\t" on the wire, a tab two levels down. withheldWhole
+  // reads the text as JSON only, never each argument string by itself.
+  const code = (rest) => JSON.stringify({ code: String.raw`d = {'a': 'see HEAD', 'b': '${rest} more'}` });
+  assert.equal(withheldWhole(code(String.raw`RE\tST`), ["HEADREST"]), true);
+  assert.equal(withheldWhole(code(String.raw`RE\tSX`), ["HEADREST"]), false);
+});
