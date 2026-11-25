@@ -569,11 +569,11 @@ const CHATGPT_SIGN_IN = {
 const CLAUDE_LOGIN = {
   type: "object", additionalProperties: false, required: ["state", "place", "command", "can_start", "folder", "machine"],
   properties: {
-    state: { enum: ["off", "other_machine", "signed_in", "signed_out", "no_cli", "unknown"], description: "`off`: not turned on. `other_machine`: turned on for another machine than this server's. Else what the CLI says: `signed_in`, `signed_out`, `no_cli` (no Claude Code CLI here yet: claude-agent's first run installs the pinned one), `unknown` (it gave no answer)." },
+    state: { enum: ["off", "other_machine", "refused", "signed_in", "signed_out", "no_cli", "unknown"], description: "`off`: not turned on. `other_machine`: turned on for another machine than this server's. `refused`: turned on for this machine and kept, but its folders (or the server's home) are ones this server's user may not use, as `refused` says: nothing runs on it and the CLI is not asked; it is used again once they are mended, and DELETE /settings/claude-login removes it as it does any other. Else what the CLI says: `signed_in`, `signed_out`, `no_cli` (no Claude Code CLI here yet: claude-agent's first run installs the pinned one), `unknown` (it gave no answer)." },
     place: { enum: ["agentrun", "machine"], description: "Where the login is: `agentrun`, AgentRun's own directory in its data (the default); `machine`, this machine's own Claude Code login (`machine.folder`), which the owner opts into." },
     command: { type: "string", description: "The line that signs the CLI in at `place`, for a terminal on this machine." },
     can_start: { type: "boolean", description: "Whether POST /settings/claude-login/login can start the CLI's sign-in here: the server is bound to loopback with no public address, so the browser it opens is on this machine." },
-    refused: { type: "string", description: "Why the mode can't be turned on here, in one line: more than one person can start runs on this server." },
+    refused: { type: "string", description: "Why the mode can't be turned on here, or, with state `refused`, why the login kept is not used, in one line: more than one person can start runs on this server, or the login's folders or the server's home are ones its user may not use." },
     account: {
       type: "object", additionalProperties: false,
       properties: { method: { type: "string" }, email: { type: "string" }, organization: { type: "string" }, plan: { type: "string" } },
