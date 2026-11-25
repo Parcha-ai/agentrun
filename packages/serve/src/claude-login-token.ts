@@ -38,7 +38,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { dirname, join } from "node:path";
 import type { ClaudeAgentLogin, ClaudeLoginToken } from "@parcha/agentrun-harness-claude";
 import { loginRefresh } from "@parcha/agentrun-harness-claude/facts";
-import { LOGIN_SIGNED_OUT, loginAt } from "./claude-login.js";
+import { agentRunLoginDir, LOGIN_SIGNED_OUT } from "./claude-login.js";
 import { PRESENCE_STALE_MS } from "./runner/presence.js";
 import { holdSecret } from "./secrets.js";
 import type { Runners } from "./store/index.js";
@@ -698,9 +698,9 @@ async function replaceFile(file: string, text: string): Promise<void> {
   }
 }
 
-/** Whether `login` is AgentRun's own login folder in `data` (claude-login.ts loginAt "agentrun"), the one login a run
+/** Whether `login` is AgentRun's own login folder in `data` (claude-login.ts agentRunLoginDir), the one login a run
  *  under a user of its own is handed a token of; this machine's own Claude Code login is not. */
-export const agentRunLogin = (login: ClaudeAgentLogin, data: string): boolean => login.dir === loginAt("agentrun", data).dir;
+export const agentRunLogin = (login: ClaudeAgentLogin, data: string): boolean => login.dir === agentRunLoginDir(data);
 
 /** One reader per login folder in this process, so every claim on it holds the same watchers' tokens and the same
  *  refused token; each renews with the pinned CLI's own request (renewLogin). */

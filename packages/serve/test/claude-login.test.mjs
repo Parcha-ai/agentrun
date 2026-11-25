@@ -14,7 +14,7 @@ import { homedir, hostname, tmpdir, userInfo } from "node:os";
 import { delimiter, dirname, join, relative } from "node:path";
 import { after, test } from "node:test";
 import * as claude from "@parcha/agentrun-harness-claude";
-import { CLAUDE_LOGIN_ENV, CLAUDE_LOGIN_SETTING, claudeLoginOf, claudeLoginSwitchedOff, claudeLoginView, envAtPlace, LOGIN_ANSWERS_DIR, LOGIN_SIGNED_OUT, LOGIN_UNKNOWN, loginAt, loginBeforeRun, loginForRun, loginOnRunnerOnly, loginServes, settingFor, startLoginHere, turnOffClaudeLogin, turnOnBody, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
+import { CLAUDE_LOGIN_ENV, CLAUDE_LOGIN_SETTING, claudeLoginOf, claudeLoginSwitchedOff, claudeLoginView, envAtPlace, LOGIN_ANSWERS_DIR, LOGIN_SIGNED_OUT, LOGIN_UNKNOWN, loginAt as checkedLoginAt, loginBeforeRun, loginForRun, loginOnRunnerOnly, loginServes, settingFor, startLoginHere, turnOffClaudeLogin, turnOnBody, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
 import { ClaudeSignIns } from "../dist/claude-sign-in.js";
 import { MODEL_KEYS, hostModel } from "../dist/model.js";
 import { providerFor } from "../dist/provider.js";
@@ -32,6 +32,8 @@ const SIGNED_IN = { loggedIn: true, authMethod: "claude.ai", apiProvider: "first
  *  count as the person's (claude-login.ts homeOf). Nothing is written in it. */
 const UP = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "claude-login-person-"));
 after(() => rmSync(UP, { recursive: true, force: true }));
+/** The login at a place as loginAt's check gives it: undefined where its folders are refused. */
+const loginAt = (...args) => checkedLoginAt(...args).login;
 
 /** A fake Claude Code CLI for test `t`: `status` sets what its `auth status` answers; `calls()` are its calls, each its
  *  arguments and the variables it got that matter here. */
