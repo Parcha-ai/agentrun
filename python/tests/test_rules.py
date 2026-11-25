@@ -155,6 +155,7 @@ class Rules(unittest.TestCase):
             self.assertNotIn(api_key, printed(error))
         with mock.patch.dict(os.environ, {"AGENTRUN_BASE_URL": server.base}):
             os.environ.pop("AGENTRUN_API_KEY", None)
+            os.environ.pop("AGENTRUN_TOKEN", None)
             missing = self.thrown(AgentRun)
             assert isinstance(missing, AgentRunAuthError)
             self.assertEqual(missing.reason, "no_token")
@@ -180,6 +181,67 @@ class Rules(unittest.TestCase):
         self.assertEqual(server.requests, [], "nothing was sent")
         from_env.agents.list()
         self.assertEqual(server.requests[0].headers["authorization"], f"Bearer {KEY}")
+
+    def test_the_base_url_is_the_servers_address_with_or_without_v2_as_the_cli_takes_it_and_agentrun_token_stands_in_for_agentrun_api_key_which_wins(self) -> None:
+        server = Listener(self)
+        prefix = server.base[: -len("/v2")]
+        for base_url in (prefix, f"{prefix}/", f"{prefix}//", server.base, f"{server.base}/"):
+            self.assertEqual(AgentRun(base_url=base_url, api_key=KEY).base_url, server.base, base_url)
+        self.assertEqual(AgentRun(base_url=server.origin, api_key=KEY).base_url, f"{server.origin}/v2")
+        self.assertEqual(AgentRun(base_url=f"{server.base}/extra", api_key=KEY).base_url, f"{server.base}/extra", "a path with a v2 segment is kept")
+        AgentRun(base_url=prefix, api_key=KEY).agents.list()
+        self.assertEqual(server.requests[-1].url, "/v2/agents")
+        with mock.patch.dict(os.environ, {"AGENTRUN_BASE_URL": prefix, "AGENTRUN_TOKEN": KEY}):
+            os.environ.pop("AGENTRUN_API_KEY", None)
+            from_token = AgentRun()
+            self.assertEqual(from_token.base_url, server.base, "the environment's address without /v2")
+            from_token.agents.list()
+            self.assertEqual(server.requests[-1].headers["authorization"], f"Bearer {KEY}", "AGENTRUN_TOKEN when AGENTRUN_API_KEY is not set")
+            os.environ["AGENTRUN_API_KEY"] = f"{KEY}-api"
+            AgentRun().agents.list()
+            self.assertEqual(server.requests[-1].headers["authorization"], f"Bearer {KEY}-api", "AGENTRUN_API_KEY wins")
+            AgentRun(api_key=f"{KEY}-given").agents.list()
+            self.assertEqual(server.requests[-1].headers["authorization"], f"Bearer {KEY}-given", "api_key wins over both")
+            os.environ.pop("AGENTRUN_API_KEY")
+            os.environ["AGENTRUN_TOKEN"] = ""
+            missing = self.thrown(AgentRun)
+            assert isinstance(missing, AgentRunAuthError)
+            self.assertEqual(missing.reason, "no_token", "an empty AGENTRUN_TOKEN is no key")
+
+    def test_agentrun_token_goes_only_to_a_loopback_host(self) -> None:
+        server = Listener(self)
+        with mock.patch.dict(os.environ, {"AGENTRUN_TOKEN": KEY}):
+            os.environ.pop("AGENTRUN_API_KEY", None)
+            os.environ.pop("AGENTRUN_BASE_URL", None)
+            # On this machine (the CLI's hosts): the token is its key, and it reaches the server.
+            AgentRun(base_url=server.base).agents.list()
+            self.assertEqual(server.requests[-1].headers["authorization"], f"Bearer {KEY}")
+            for base_url in ("http://localhost:7340", "http://[::1]:7340/v2", "HTTP://LocalHost:7340"):
+                AgentRun(base_url=base_url)  # no_token were the token not taken
+            # Anywhere else: refused before any request, naming AGENTRUN_API_KEY, never the token.
+            seen = len(server.requests)
+            for base_url in ("https://agentrun.example", "http://localhost.evil.example:7340", "http://127.0.0.1.nip.io:7340", "http://127.0.0.2:7340", "http://192.0.2.5:7340"):
+                error = self.thrown(AgentRun, base_url=base_url)
+                assert isinstance(error, AgentRunAuthError), f"{base_url}: {error!r}"
+                self.assertEqual(error.reason, "no_token", base_url)
+                self.assertIn("AGENTRUN_API_KEY", str(error), base_url)
+                self.assertNotIn(KEY, str(error), f"{base_url}: the token is in no message")
+            # A loopback name behind a user part or a fragment: the base URL itself is refused, before any key is read. An
+            # encoded @ is a host name of its own, not on this machine: no key.
+            for base_url in ("http://localhost@evil.example/", "http://" + "localhost:8080" + "@evil.example/", "http://evil.example/#@localhost"):
+                error = self.thrown(AgentRun, base_url=base_url)
+                assert isinstance(error, AgentRunUsage), f"{base_url}: {error!r}"
+                self.assertNotIn(KEY, str(error), f"{base_url}: the token is in no message")
+            error = self.thrown(AgentRun, base_url="http://127.0.0.1%40evil.example/")
+            assert isinstance(error, AgentRunAuthError), repr(error)
+            self.assertEqual(error.reason, "no_token")
+            self.assertIn("AGENTRUN_API_KEY", str(error))
+            self.assertNotIn(KEY, str(error))
+            self.assertEqual(len(server.requests), seen, "nothing was sent")
+            # There, AGENTRUN_API_KEY or api_key is the key.
+            os.environ["AGENTRUN_API_KEY"] = f"{KEY}-api"
+            AgentRun(base_url="https://agentrun.example")
+            AgentRun(base_url="https://agentrun.example", api_key=f"{KEY}-given")
 
     def test_a_path_argument_is_encoded_whole_a_file_path_keeps_its_slashes_and_one_that_would_read_as_another_route_is_refused_before_any_request(self) -> None:
         def answer(request: Request, reply: Reply) -> Any:

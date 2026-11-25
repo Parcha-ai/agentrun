@@ -12,12 +12,12 @@ export default {
   signedIn: true,
   async run({ page, base, api }) {
     await page.goto(`${base}/#/templates`);
-    // The list: the kyb card by its title, the package's display name with "…" for its unfilled parameter. No card shows a
-    // raw ${parameters.x}: the server fills those only at apply.
+    // The list: the kyb card by its title, the package's display name up to its first parameter, as the marketplace's
+    // card reads. No card shows a raw ${parameters.x}: the server fills those only at apply.
     const card = page.locator('article[aria-label^="KYB due diligence"]');
     await card.waitFor();
     check(!(await page.locator("main").innerText()).includes("${"), "the Templates page shows a raw ${…} placeholder");
-    check(await card.locator("h2").innerText() === "KYB due diligence (… risk appetite)", `the kyb card reads ${JSON.stringify(await card.locator("h2").innerText())}`);
+    check(await card.locator("h3").innerText() === "KYB due diligence", `the kyb card reads ${JSON.stringify(await card.locator("h3").innerText())}`);
     await card.getByRole("button", { name: "Choose coding agent for Run", exact: true }).click();
     await page.getByRole("menuitem", { name: "API playground", exact: true }).click();
     await page.waitForURL((url) => url.hash === `#/playground?operation=apply-template&template=${TEMPLATE}`);

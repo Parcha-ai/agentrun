@@ -3,14 +3,12 @@
 // (serverRoute). Only a single-owner server on its owner's own machine (--harness-sign-in) runs one on its owner's own
 // sign-in, handing the agent the folder's path and nothing else. AgentRun never reads, refreshes or sends the agent's
 // token (HARNESS.md#sign-in): nothing here opens a file at all.
-import { existsSync } from "node:fs";
 import type { AcpRecipe } from "@parcha/agentrun-harness-acp";
 import { ACP_PACKAGE, acpPackage } from "./acp-package.js";
-import { ARCHIVE_CODES, archivePlatform, digestOf } from "./harness-archive.js";
+import { archivePlatform } from "./harness-archive.js";
 import { type EgressProxy, egressProxy, egressVars } from "./harness-egress.js";
-import { installDirOf } from "./harness-install.js";
 import { HARNESS_KEYS_PAGE, harnessKeysSavedHere, keysLaid } from "./harness-keys.js";
-import { checkedOf, loadRecipe, pinnedDigest, pinnedTree, type Recipe, type RecipeArchive, recipeBinaryOf, recipeCheckLine, recipeInstallLine, recipeSignInLine, releaseFor, signedIn, signInHomeOf } from "./harness-recipe.js";
+import { checkedOf, installHolds, loadRecipe, type Recipe, type RecipeArchive, recipeBinaryOf, recipeCheckLine, recipeInstall, recipeSignInLine, releaseFor, signedIn, signInHomeOf } from "./harness-recipe.js";
 import { acpEntryOf, type AcpEntryHost, type HarnessEntry } from "./harness-table.js";
 import { HarnessUnavailable } from "./provider.js";
 
@@ -75,13 +73,15 @@ export function acpRecipeFor(recipe: Recipe, binary: string, release: RecipeArch
     state: [...recipe.state],
     declares: { ...recipe.declares },
     billing: recipe.model.billing === "proxy" ? { kind: "proxy" } : { kind: "plan", maxTurns: recipe.model.maxTurns, maxToolCalls: recipe.model.maxToolCalls },
-    ...(recipe.quirks.mcpCall ? { quirks: { mcpCall: recipe.quirks.mcpCall } } : {}),
+    ...(recipe.allowFile ? { allowFile: { path: recipe.allowFile.path, form: recipe.allowFile.form as NonNullable<AcpRecipe["allowFile"]>["form"] } } : {}),
+    ...(recipe.announces ? { announces: recipe.announces } : {}),
+    ...(recipe.quirks.mcpCall || recipe.quirks.permissionTie ? { quirks: { ...(recipe.quirks.mcpCall ? { mcpCall: recipe.quirks.mcpCall } : {}), ...(recipe.quirks.permissionTie ? { permissionTie: recipe.quirks.permissionTie } : {}) } } : {}),
   };
 }
 
 /** What recipeEntryOf builds `recipe`'s entry from: its installed `binary` and `release`, the route of each start (it
  *  may throw a HarnessUnavailable), the check before each start, and what harness-check adds (its log, its variables,
- *  the fetch its model proxy records with). `missing` and `hidden` are a server's (recipeServerEntry). */
+ *  the recorder its model proxy forwards through). `missing` and `hidden` are a server's (recipeServerEntry). */
 export interface RecipeEntryOptions extends AcpEntryHost {
   readonly recipe: Recipe;
   readonly binary: string;
@@ -91,7 +91,10 @@ export interface RecipeEntryOptions extends AcpEntryHost {
   beforeStart(command: string): Promise<void>;
   /** The variables beside the recipe's env at each start: the egress proxy's (harness-egress.ts egressVars). */
   vars(): Readonly<Record<string, string>>;
-  readonly fetch?: typeof fetch;
+  /** harness-check's recorder, over the next hop the proxy forwards with: the route's own fetch for a model it translates
+   *  (ModuleLaunch.fetch), undefined for the network. Whatever it returns is what the proxy forwards with, so a check
+   *  runs the hop a server's run takes. */
+  readonly record?: (next: typeof fetch | undefined) => typeof fetch;
   missing?(env: NodeJS.ProcessEnv): Promise<string | undefined>;
   hidden?(env: NodeJS.ProcessEnv): string | undefined;
 }
@@ -112,7 +115,10 @@ export function recipeEntryOf(options: RecipeEntryOptions): HarnessEntry {
         recipe: (launch) => acpRecipeFor(recipe, binary, release, options.route(launch.env), { vars: options.vars(), model: launch.model }),
         proxy: (launch) => {
           const hostEnv = recipe.model.billing === "proxy" ? (recipe.model.hostEnv ?? "ANTHROPIC_HOST") : "ANTHROPIC_HOST";
-          const messagesProxy = acp.gooseProxy({ model: launch.model, provider: launch.provider, price: launch.price, log: launch.log, ...(options.fetch ? { fetch: options.fetch } : {}) });
+          // The route's own fetch for a model it translates (ModuleLaunch.fetch), else the network; under harness-check, its
+          // recorder over that hop.
+          const forward = options.record ? options.record(launch.fetch) : launch.fetch;
+          const messagesProxy = acp.gooseProxy({ model: launch.model, provider: launch.provider, price: launch.price, log: launch.log, ...(forward ? { fetch: forward } : {}) });
           return async (session) => {
             // The proxy's own address, under the recipe's variable, beside the key that opens it alone (never a provider's).
             const started = await messagesProxy(session);
@@ -133,20 +139,19 @@ export function recipeEntryOf(options: RecipeEntryOptions): HarnessEntry {
   return options.hidden && entry.hidden === undefined ? Object.freeze({ ...entry, hidden: options.hidden }) : entry;
 }
 
-/** The entry of the recipe at `file` on a server whose data directory is `data` (harness-table.ts HARNESS_RECIPES_ENV),
- *  loaded under its five rules when the table is (a refused one refuses the start, in words). It runs only on the
- *  install its owner made and checked: hidden, and each run refused, with the command that fixes it, until the binary
- *  and every file beside it are the pinned ones and a harness-check passed for this very recipe, binary and tree
- *  (HARNESS_NOT_CHECKED). Each start of its agent checks the binary and the tree against their pins again. It runs on
+/** The entry of the recipe `loaded` (loadRecipe: read once, so the entry and the digest its keys are bound to are of the
+ *  same bytes) on a server whose data directory is `data` (harness-table.ts HARNESS_RECIPES_ENV), loaded under its five
+ *  rules when the table is (a refused one refuses the start, in words). It runs only on the
+ *  install its owner made and checked: hidden, and each run refused, with the command that fixes it, until a harness-check
+ *  passed for this very recipe and this install's tree, the binary among it (HARNESS_NOT_CHECKED). Each start of its
+ *  agent digests the tree again and holds it to its pin (harness-recipe.ts installHolds). It runs on
  *  the route serverRoute gives, its owner's sign-in only where `signIn` (--harness-sign-in). */
-export function recipeServerEntry(file: string, data: string, { signIn = false }: { signIn?: boolean } = {}): HarnessEntry {
-  const loaded = loadRecipe(file);
+export function recipeServerEntry(loaded: ReturnType<typeof loadRecipe>, data: string, { signIn = false }: { signIn?: boolean } = {}): HarnessEntry {
   const { recipe } = loaded;
   const platform = archivePlatform();
   const release = releaseFor(recipe, platform);
   if (!platform || !release) throw new Error(`harness recipe ${loaded.file}: ${recipe.label} ${recipe.release.version} has no release for ${platform ?? `${process.platform}-${process.arch}`}`);
   const binary = recipeBinaryOf(data, recipe, release);
-  const installed = installDirOf(data, recipe.id);
   // What the server's listing, offers and checks read (`why`, and the adapter built as a probe): the keys route when its
   // server holds every one saved on this data directory (harnessKeysSavedHere), whose claims lay them. An agent's start
   // reads only what its claim laid (`start`): never what the server lists, which a removal can have outrun, nor the
@@ -154,13 +159,12 @@ export function recipeServerEntry(file: string, data: string, { signIn = false }
   const route = (env: NodeJS.ProcessEnv) => serverRoute(recipe, loaded.file, data, env, { signIn, saved: harnessKeysSavedHere(data, recipe.id) });
   const start = (env: NodeJS.ProcessEnv) => serverRoute(recipe, loaded.file, data, env, { signIn });
   /** Why it cannot run on `env`, in words that end with the command that fixes it; undefined when it can. Nothing is
-   *  digested here (each start is, beforeStart): the pins and the check's note are compared. */
+   *  digested here (each start is, beforeStart): the tree pin and the check's note are compared. */
   const why = (env: NodeJS.ProcessEnv): string | undefined => {
-    const pin = pinnedDigest(data, recipe, release, platform);
-    const tree = pinnedTree(data, recipe, release, platform);
-    if (!existsSync(binary) || !pin || !tree) return `HARNESS_NOT_INSTALLED: ${recipe.label} ${recipe.release.version} is not installed in ${installed}. Install it with: ${recipeInstallLine(loaded.file, data, env)}`;
+    const install = recipeInstall(data, recipe, loaded.file, env, platform);
+    if ("code" in install) return `${install.code}: ${install.message}`;
     const checked = checkedOf(data, recipe.id);
-    if (!checked || checked.recipe !== loaded.sha256 || checked.binary !== pin.sha256 || checked.tree !== tree.sha256 || checked.platform !== platform) {
+    if (!checked || checked.recipe !== loaded.sha256 || checked.tree !== install.tree.sha256 || checked.platform !== platform) {
       return `${HARNESS_NOT_CHECKED}: ${recipe.label} runs on this server once harness-check passes for this recipe and this install${checked ? " (the recipe or its install changed since the last check that passed)" : ""}. Check it with: ${recipeCheckLine(loaded.file, data, env)}`;
     }
     const on = route(env);
@@ -188,12 +192,9 @@ export function recipeServerEntry(file: string, data: string, { signIn = false }
     },
     // The binary and every file beside it, digested again before each start: one swapped since the check never runs.
     beforeStart: async (command) => {
-      const pin = pinnedDigest(data, recipe, release, platform);
-      const tree = pinnedTree(data, recipe, release, platform);
-      const now = await digestOf(command).catch(() => undefined);
-      if (!pin || now !== pin.sha256) throw new Error(`${ARCHIVE_CODES.binary}: ${command} has sha256 ${now ?? "(unreadable)"}, not its pin's. Install it again with: ${recipeInstallLine(loaded.file, data)}`);
-      const files = await acpPackage()!.treeDigest(installed).catch(() => undefined);
-      if (!tree || files !== tree.sha256) throw new Error(`${ARCHIVE_CODES.binary}: the files beside ${command} have the tree sha256 ${files ?? "(unreadable)"}, not their pin's. Install it again with: ${recipeInstallLine(loaded.file, data)}`);
+      const install = recipeInstall(data, recipe, loaded.file, process.env, platform);
+      const off = "code" in install ? install : await installHolds(install);
+      if (off) throw new Error(`${off.code}: ${command} does not start: ${off.message}`);
     },
     missing: async (env) => {
       const lacks = why(env);

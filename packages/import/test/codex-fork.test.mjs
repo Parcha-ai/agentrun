@@ -149,7 +149,8 @@ test("forks whose parent is in no sessions directory walk the sessions tree once
     const readdir = t.mock.method(fs, "readdir");
     syncBuiltinESMExports();
     try {
-      const lines = await parseHome(home, { sources: ["codex"] });
+      // One thread: the mock sees this thread's listings, not a read pool's workers'.
+      const lines = await parseHome(home, { sources: ["codex"], threads: 1 });
       assert.deepEqual(lines.map((line) => line.calls), Array(forks).fill(4), "nothing to match: each fork counts its usage");
       return readdir.mock.calls.filter((call) => call.arguments[0] === sessions).length;
     } finally {
@@ -158,6 +159,7 @@ test("forks whose parent is in no sessions directory walk the sessions tree once
     }
   };
   const one = await walks(1);
+  assert.ok(one > 0, "the walk is seen");
   assert.equal(await walks(2), one, "a second fork of the same missing parent lists the sessions directory no more");
 });
 

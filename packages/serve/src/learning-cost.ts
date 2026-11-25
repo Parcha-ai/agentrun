@@ -1,8 +1,8 @@
 // An agent's cost per run, run after run (GET /agents/{id}/learning/cost): what each run of its cost, what learning added
 // for it, and the path it took, so a person sees the cost fall once a learned workflow does the job, and by how much.
-// Aggregates only: no run's input, answer or tool text. The store's reader (store-reads/learning.ts agentCostOverStore)
-// gives each run's figures and its path (its run record's metrics.path, store-reads/learning.ts runPathOverStore); this module sums its learning and says what the
-// series shows (costSummary), the rule the console, the CLI and the CSV all read. It imports only the errors, so the API
+// Aggregates only: no run's input, answer or tool text. Each run's figures come from the ledger (learn/ledger.ts: one row
+// a run written at its end, one spend row a learning cost, read by summarize); this module says what the series shows
+// (costSummary, billOf), the rule the console, the CLI and the CSV all read. It imports only the errors, so the API
 // document reads its words.
 
 import { ApiError } from "./errors.js";
@@ -19,10 +19,6 @@ import { ApiError } from "./errors.js";
 export const RUN_PATHS = ["agent", "handed_back", "workflow", "replay", "audit"] as const;
 export type RunPath = (typeof RUN_PATHS)[number];
 
-/** What a run that looked back kept of its costs as it answered (runner/reflect-hook.ts: store-reads/learning.ts
- *  answeredOf): when the job answered, what it had cost by then and what looking back cost after it. */
-export type CostLooked = { answered_at?: string; job_cost_usd?: number | null; look_back_usd?: number | null };
-
 /** A mean, rounded to the millionth: a quotient, never a booked figure. */
 const usd = (value: number) => Math.round(value * 1e6) / 1e6;
 
@@ -30,25 +26,6 @@ const usd = (value: number) => Math.round(value * 1e6) / 1e6;
  *  own cost is kept at): a decision costs millionths of a dollar, so a figure rounded to the millionth would lose it, and
  *  the run's cost here would read other than its usage row (A8). `+ 0` makes a noise-sized negative a plain 0, never -0. */
 export const noiseOff = (value: number) => Math.round(value * 1e12) / 1e12 + 0;
-
-/** A run's own cost and what learning added for it, from its row's cost (`rowUsd`: the job, its look-back and any turn a
- *  person asked of it after) and what it kept as it answered (`looked`, none for a run that did not look back):
- *  - `cost_usd`: the job's own $: its row's cost less its look-back, never under what it had cost when it answered (a
- *    later turn's spend is the job's too); its row's cost for a run that did not look back;
- *  - `learning_usd`: what learning cost for it: its look-back (its compile turn) and what was spent beside it
- *    (`besideUsd`: its audit's shadow run), 0 for a run that does not learn; null when unknown (a turn stopped mid-ask
- *    spent what no one knows, or a shadow still running);
- *  - `total_usd`: their sum, the run's all-in $; null when either is. */
-export function runCostOf(rowUsd: number | null, looked: CostLooked | null, besideUsd: number | null = 0): { cost_usd: number | null; learning_usd: number | null; total_usd: number | null } {
-  const answered = looked?.answered_at !== undefined;
-  const asAnswered = answered ? (looked!.job_cost_usd ?? null) : rowUsd;
-  const back = answered ? (looked!.look_back_usd ?? null) : 0;
-  // What the row holds past the answer and its look-back is a later turn's spend, unknown once the row's cost is; with the
-  // look-back's cost unknown the two can't be told apart, and the job is what it had cost when it answered.
-  const job = !answered || asAnswered === null || back === null ? asAnswered : rowUsd === null ? null : Math.max(asAnswered, rowUsd - back);
-  const spent = back === null || besideUsd === null ? null : back + besideUsd;
-  return { cost_usd: job === null ? null : noiseOff(job), learning_usd: spent === null ? null : noiseOff(spent), total_usd: job === null || spent === null ? null : noiseOff(job + spent) };
-}
 
 /** One run of the series, in the order the agent's runs started: `n` its number among the runs that do a job (JOB_PATHS,
  *  1 the first: the bill's numbering), null for a replay, which checks a revision and does no job. */
@@ -73,7 +50,32 @@ export type CostRun = {
   cost_upper_bound: boolean;
   learning_usd: number | null;
   total_usd: number | null;
+  /** `learning_usd`'s parts, each null when unknown: its own compile turns (`compile_usd`, which GET /runs/{id} charges
+   *  to the revision they drafted instead), its follow-up rounds' turns (`followup_usd`) and its audit's shadow run
+   *  (`shadow_usd`). `share_usd`: its share of its revision's compile and check (amortize), which GET /runs/{id}'s
+   *  `learning_usd` carries in place of `compile_usd`. */
+  compile_usd: number | null;
+  followup_usd: number | null;
+  shadow_usd: number | null;
+  share_usd: number | null;
+  /** Why a learned workflow did not serve it alone (NOT_SERVED), null when nothing says. */
+  not_served: NotServed | null;
 };
+
+/** Why a run's learned workflow did not serve it alone: `cost_stop`, the money rule stopped it from running first
+ *  (runner/workflow-first.ts costLineOf: its WORKFLOW_FIRST entry's `needs_revision`, metrics.not_served); `cut`, a
+ *  restart cut its call and the run was handed back (metrics.workflow_cut, servedOf `cut`), never the workflow's own
+ *  hand-back: costSummary counts it in `hand_backs.cut`, not `back`. */
+export const NOT_SERVED = ["cost_stop", "cut"] as const;
+export type NotServed = (typeof NOT_SERVED)[number];
+
+/** The by-hand side, the one baseline both the cost page's `before` and the money rule read (costSummary,
+ *  runner/workflow-first.ts costLineOf): of `runs` (oldest first), the `agent` runs before the first run a learned
+ *  workflow served (SERVED_PATHS), every one when none has been served. */
+export function byHandSide<T extends { readonly path: unknown }>(runs: readonly T[]): T[] {
+  const first = runs.findIndex((run) => SERVED_PATHS.includes(run.path as RunPath));
+  return (first < 0 ? runs : runs.slice(0, first)).filter((run) => run.path === "agent");
+}
 
 /** The fewest runs after the takeover a "times cheaper" figure needs: fewer say too little. */
 export const CHEAPER_AFTER_RUNS = 20;
@@ -86,8 +88,8 @@ export const COST_RUNS_DEFAULT = 1000;
 export const COST_RUNS_MAX = 10_000;
 
 /** The serving promotion's check (store-reads/learning.ts servingReplayOf): on `n` inputs, the workflow's agreement and the
- *  agent's own in percent to a tenth, whether it `cleared` the bar (learn/promote.ts checkPasses), and the agreement check
- *  itself: `agreed` of the `alone` inputs it answered alone said what the agent said, against the bar `agree_min` (0-1).
+ *  agent's own in percent to a tenth, whether it `cleared` the bar `agree_min` (learn/field-check.ts check's joint floor), and the agreement check
+ *  itself: `agreed` of the `alone` inputs it answered alone were right on every field, against the bar `agree_min` (0-1).
  *  Passing that bar is all it says: never that the workflow is as accurate as the agent. */
 export type CostReplay = { n: number; workflow_pct: number; agent_pct: number; cleared: boolean; agreed: number; alone: number; agree_min: number };
 
@@ -124,24 +126,26 @@ export type AfterState = (typeof AFTER_STATES)[number];
  *  leaves learning out and the after side keeps it in, so the figure never flatters learning. `withheld`: after a
  *  takeover, how many runs either side reads have an unknown cost and how many one known only as at most
  *  (`cost_upper_bound`); while any does there is no ratio, null when none does. `hand_backs`: of the served runs from
- *  the takeover on, how many handed back; null before a takeover. `replay`: the serving promotion's, as given. Every one
- *  is over every run, never only the latest a read lists. */
+ *  the takeover on (`ran`), how many the workflow handed back itself (`back`: an escalate, a failed step, an answer cut
+ *  by size or schema) and how many a restart cut (`cut`: the run ids `cut` names, its call ended `interrupted`,
+ *  metrics.workflow_cut); null before a takeover. A cut run stays `handed_back` at agent cost: only the count moves.
+ *  `replay`: the serving promotion's, as given. Every one is over every run, never only the latest a read lists. */
 export type CostSummary = {
   takeover: { n: number; run_id: string } | null;
   before: { runs: number; mean_usd: number } | null;
   after: { runs: number; mean_usd: number } | null;
   after_state: AfterState;
   times_cheaper: number | null;
-  hand_backs: { ran: number; back: number } | null;
+  hand_backs: { ran: number; back: number; cut: number } | null;
   withheld: { unknown: number; at_most: number } | null;
   replay: CostReplay | null;
 };
 
-export function costSummary(runs: readonly CostRun[], replay: CostReplay | null = null): CostSummary {
+export function costSummary(runs: readonly CostRun[], replay: CostReplay | null = null, cut: ReadonlySet<string> = new Set()): CostSummary {
   const first = runs.findIndex((run) => SERVED_PATHS.includes(run.path));
   // Each side's figures: the job's own $ before, all-in after; `bound`, known only as at most.
   type Figure = { value: number | null; bound: boolean };
-  const beforeSide: Figure[] = (first < 0 ? runs : runs.slice(0, first)).filter((run) => run.path === "agent").map((run) => ({ value: run.cost_usd, bound: run.cost_upper_bound }));
+  const beforeSide: Figure[] = byHandSide(runs).map((run) => ({ value: run.cost_usd, bound: run.cost_upper_bound }));
   // Served runs alone: a replay (a check of a new revision, at workflow cost) and a run by hand are never the after side.
   const served = first < 0 ? [] : runs.slice(first).filter((run) => SERVED_PATHS.includes(run.path));
   const afterSide: Figure[] = served.map((run) => ({ value: run.total_usd, bound: run.cost_upper_bound }));
@@ -157,7 +161,9 @@ export function costSummary(runs: readonly CostRun[], replay: CostReplay | null 
   const atMost = read.filter(({ bound }) => bound).length;
   const withheld = first >= 0 && unknown + atMost > 0 ? { unknown, at_most: atMost } : null;
   const times = !withheld && before && after && after.runs >= CHEAPER_AFTER_RUNS && after.mean_usd > 0 ? Math.round((before.mean_usd / after.mean_usd) * 10) / 10 : null;
-  const handBacks = first < 0 ? null : { ran: served.length, back: served.filter((run) => run.path === "handed_back").length };
+  const handedBack = served.filter((run) => run.path === "handed_back");
+  const cutBack = handedBack.filter((run) => cut.has(run.run_id)).length;
+  const handBacks = first < 0 ? null : { ran: served.length, back: handedBack.length - cutBack, cut: cutBack };
   const afterState: AfterState = after ? "priced" : first < 0 ? "no_served_runs" : "cost_unknown";
   return { takeover: first < 0 ? null : { n: runs[first]!.n!, run_id: runs[first]!.run_id }, before, after, after_state: afterState, times_cheaper: times, hand_backs: handBacks, withheld, replay };
 }

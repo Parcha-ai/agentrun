@@ -15,6 +15,9 @@
 // at all (its key is not in this runner's environment or the store) is not. Either is said in the runner's log, and the
 // run's end stands. The janitor (computer-janitor.ts) ends a computer of a run that is over on its next sweep too, for a
 // server that stopped before this ran, or a vendor that stayed down past the bound.
+//
+// A machine the run's park kept (computer-kept.ts) goes too when this end's provider lists it, whichever runner kept it:
+// the run is final, so it has no user, and its runner's own end then reads it gone and marks its row ended.
 import { releaseOlder } from "@parcha/agentrun-computer";
 import { KEY_TABLE, providerOptions } from "../computer-keys.js";
 import { readLaunchBody } from "../run-launch.js";

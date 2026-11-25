@@ -32,7 +32,12 @@ from agentrun import AgentRun
 client = AgentRun(base_url="https://agentrun.example.com/v2", api_key=os.environ["AGENTRUN_API_KEY"])
 ```
 
-`base_url` defaults to `AGENTRUN_BASE_URL` and `api_key` to `AGENTRUN_API_KEY`. The base URL must be http or https with
+`base_url` defaults to `AGENTRUN_BASE_URL` and `api_key` to `AGENTRUN_API_KEY`, else `AGENTRUN_TOKEN`. `AGENTRUN_TOKEN` is
+the name the local server gives its token, so the client sends it only to a server on this machine (`localhost`,
+`127.0.0.1` or `[::1]`, as the CLI); any other address takes `AGENTRUN_API_KEY` or `api_key`, and with neither is
+refused. The base URL is
+the server's address with or without `/v2`: as the CLI takes it, `/v2` is added when its path holds no `v2` segment, a
+path prefix kept. It must be http or https with
 no query, fragment, user, password, space or `.` or `..` segment, and the key must be a valid header value; both are
 checked here, before any request. The client reads no file: finding the server started on this machine (its data
 directory and the address it records there) is the CLI's job (`npx @parcha/agentrun`), not this package's. It reads no

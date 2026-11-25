@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import test from "node:test";
+import test, { describe, it } from "node:test";
 import { checkUiAct, chordKeys, conformanceCases, findNodes, formatReport, refusedStep, runConformance, SET_HOLD_MS, UiSession } from "../dist/index.js";
 import { connectUi, FakeUiDriver, fakeUiConnection, fakeUiProvider, NEXT_ANIMATE_MS, NEXT_MS, UI_FIXTURE } from "../dist/fake-ui-driver.js";
 
@@ -15,25 +15,49 @@ const statuses = (report) => Object.fromEntries(report.results.map((r) => [r.id,
 const reasonOf = (report, id) => report.results.find((r) => r.id === id)?.reason ?? "";
 const run = (provider, ids = UI_CASES) => runConformance(provider, { image: "fake-ui", patience: 5000, cases: conformanceCases.filter((c) => ids.includes(c.id)) });
 
-test("the ui cases pass on a fake desktop: ui.nav off, refused with its sentence", { timeout: 60_000 }, async () => {
-	const provider = fakeUiProvider();
-	const report = await run(provider);
-	for (const id of UI_CASES) assert.equal(statuses(report)[id], "pass", `${id}: ${reasonOf(report, id)}\n${formatReport(report)}`);
-	assert.deepEqual(report.cleanup.left, []);
-	assert.equal(provider.drivers.size, 0, "every computer the run made is released");
-});
+// Each of these runs the ui cases on a fake of its own, in this process: the cases' time is the fakes' timers (settles,
+// transitions, holds), almost none of it work, so the runs go side by side.
+describe("the ui cases on fakes of their own, side by side", { concurrency: true }, () => {
+	it("the ui cases pass on a fake desktop: ui.nav off, refused with its sentence", { timeout: 60_000 }, async () => {
+		const provider = fakeUiProvider();
+		const report = await run(provider);
+		for (const id of UI_CASES) assert.equal(statuses(report)[id], "pass", `${id}: ${reasonOf(report, id)}\n${formatReport(report)}`);
+		assert.deepEqual(report.cleanup.left, []);
+		assert.equal(provider.drivers.size, 0, "every computer the run made is released");
+	});
 
-test("the ui cases pass on a fake phone: ui.nav on, apps.background off and refused with its sentence", { timeout: 60_000 }, async () => {
-	const report = await run(fakeUiProvider({ os: "android", kind: "android" }));
-	for (const id of UI_CASES) assert.equal(statuses(report)[id], "pass", `${id}: ${reasonOf(report, id)}`);
-});
+	it("the ui cases pass on a fake phone: ui.nav on, apps.background off and refused with its sentence", { timeout: 60_000 }, async () => {
+		const report = await run(fakeUiProvider({ os: "android", kind: "android" }));
+		for (const id of UI_CASES) assert.equal(statuses(report)[id], "pass", `${id}: ${reasonOf(report, id)}`);
+	});
 
-test("with ui.image and ui.foreground off, both are refused with their sentences, and the foreground route skips in words", { timeout: 60_000 }, async () => {
-	const features = { "ui.image": { off: "this build reads no pixels" }, "ui.foreground": { off: "the user's pointer is theirs" } };
-	const report = await run(fakeUiProvider({ features }));
-	for (const id of UI_CASES.filter((id) => id !== "ui.route-reported")) assert.equal(statuses(report)[id], "pass", `${id}: ${reasonOf(report, id)}`);
-	assert.equal(statuses(report)["ui.route-reported"], "skip");
-	assert.match(reasonOf(report, "ui.route-reported"), /the foreground route is not tested: ui.foreground is off here: the user's pointer is theirs/);
+	it("with ui.image and ui.foreground off, both are refused with their sentences, and the foreground route skips in words", { timeout: 60_000 }, async () => {
+		const features = { "ui.image": { off: "this build reads no pixels" }, "ui.foreground": { off: "the user's pointer is theirs" } };
+		const report = await run(fakeUiProvider({ features }));
+		for (const id of UI_CASES.filter((id) => id !== "ui.route-reported")) assert.equal(statuses(report)[id], "pass", `${id}: ${reasonOf(report, id)}`);
+		assert.equal(statuses(report)["ui.route-reported"], "skip");
+		assert.match(reasonOf(report, "ui.route-reported"), /the foreground route is not tested: ui.foreground is off here: the user's pointer is theirs/);
+	});
+
+	it("the fixture's ui cases pass on a driver whose only input is the foreground route", { timeout: 60_000 }, async () => {
+		const report = await run(fakeUiProvider({ os: "android", kind: "android", features: { "ui.background": { off: "a phone has no posted input" } } }));
+		for (const id of UI_CASES) assert.equal(statuses(report)[id], "pass", `${id}: ${reasonOf(report, id)}`);
+	});
+
+	it("a driver whose refs do not survive a change fails ui.refs-stable", { timeout: 60_000 }, async () => {
+		let looks = 0;
+		class Forgetful extends FakeUiDriver {
+			async look(target, signal) {
+				const looked = await super.look(target, signal);
+				if (!looked.ok) return looked;
+				const era = looks++;
+				const rename = (key) => (key === undefined ? undefined : `${key}#${era}`);
+				return { ok: true, value: { ...looked.value, elements: looked.value.elements.map((e) => ({ ...e, key: rename(e.key), parent: rename(e.parent) })) } };
+			}
+		}
+		const report = await run(fakeUiProvider({}, (options) => new Forgetful(options)), ["ui.refs-stable"]);
+		assert.equal(statuses(report)["ui.refs-stable"], "fail", reasonOf(report, "ui.refs-stable"));
+	});
 });
 
 test("with ui.tree off, observe answers the image and the reason with no nodes, an expect is refused, and the fixture's cases skip in words", { timeout: 60_000 }, async () => {
@@ -440,11 +464,6 @@ test("a scripted switch's checked flag is where its state starts: it shows check
 	await c.close();
 });
 
-test("the fixture's ui cases pass on a driver whose only input is the foreground route", { timeout: 60_000 }, async () => {
-	const report = await run(fakeUiProvider({ os: "android", kind: "android", features: { "ui.background": { off: "a phone has no posted input" } } }));
-	for (const id of UI_CASES) assert.equal(statuses(report)[id], "pass", `${id}: ${reasonOf(report, id)}`);
-});
-
 test("a step that took a route the features or the call do not allow fails the case it ran in", { timeout: 60_000 }, async () => {
 	class Rogue extends FakeUiDriver {
 		async run(step, context) {
@@ -471,21 +490,6 @@ test("a feature refused without its declared sentence fails ui.features-off-refu
 	const report = await run(fakeUiProvider({ os: "android", kind: "android" }, (options) => new Mumbling(options)), ["ui.features-off-refused"]);
 	assert.equal(statuses(report)["ui.features-off-refused"], "fail");
 	assert.match(reasonOf(report, "ui.features-off-refused"), /carries its sentence "an app a phone opens comes to the front": no/);
-});
-
-test("a driver whose refs do not survive a change fails ui.refs-stable", { timeout: 60_000 }, async () => {
-	let looks = 0;
-	class Forgetful extends FakeUiDriver {
-		async look(target, signal) {
-			const looked = await super.look(target, signal);
-			if (!looked.ok) return looked;
-			const era = looks++;
-			const rename = (key) => (key === undefined ? undefined : `${key}#${era}`);
-			return { ok: true, value: { ...looked.value, elements: looked.value.elements.map((e) => ({ ...e, key: rename(e.key), parent: rename(e.parent) })) } };
-		}
-	}
-	const report = await run(fakeUiProvider({}, (options) => new Forgetful(options)), ["ui.refs-stable"]);
-	assert.equal(statuses(report)["ui.refs-stable"], "fail", reasonOf(report, "ui.refs-stable"));
 });
 
 test("refs and states are each connection's own; the apps are the computer's", async () => {

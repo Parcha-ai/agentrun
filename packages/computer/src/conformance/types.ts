@@ -12,7 +12,7 @@ import type { KindVerdict } from "./kind.js";
 /** Core: what a computer of its kind must do. Full: an optional capability, tested only where it is declared. */
 export type Level = "core" | "full";
 /** The suite's own grouping of its cases, the first part of each case id; not the protocol's Group. */
-export type CaseGroup = "health" | "exec" | "files" | "process" | "provider" | "drift" | "isolation" | "mount" | "screen" | "input" | "touch" | "apps" | "ui" | "lifetime" | "browser" | "gpu";
+export type CaseGroup = "health" | "exec" | "files" | "process" | "provider" | "drift" | "isolation" | "mount" | "screen" | "input" | "touch" | "apps" | "ui" | "lifetime" | "browser" | "gpu" | "tti";
 
 /**
  * What a case needs: a group (declared by both the provider's capabilities().groups and the computer's hello), a
@@ -105,7 +105,7 @@ export interface CaseContext {
 	/** A connection of the case's own to that computer, after hello: computerd, or the provider itself (daemon none). */
 	readonly client: ComputerClient;
 	readonly hello: HelloResult;
-	/** The label every computer of this run carries. */
+	/** The labels every computer of this runner carries: the run's id (agentrun.conformance) and the runner's own. */
 	readonly runLabels: Record<string, string>;
 	/** How long a case waits on a program before it fails: a bound, never a claim about speed. */
 	readonly patience: number;
@@ -340,6 +340,13 @@ export interface ConformanceOptions {
 	 * computer, is refused, in words.
 	 */
 	kind?: ComputerSettingKind;
+	/**
+	 * The run's id, which every computer it makes carries as agentrun.conformance: the one the live sweep's --before
+	 * minted, so its --after deletes this run's computers and no other's (12 hex characters). Default a fresh one. Several
+	 * runners may share one: each also labels its computers with an id of its own (agentrun.conformance.runner), and its
+	 * end-of-run sweeps go by that too, so the first to end never deletes another's.
+	 */
+	run?: string;
 	signal?: AbortSignal;
 	/** The cases to run; default casesFor the provider's machine kind: a browser's own cases, else every case of the suite. */
 	cases?: Case[];

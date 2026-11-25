@@ -1,6 +1,7 @@
 package x11
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"image"
@@ -34,7 +35,7 @@ func (c *Conn) InitDamage() error {
 	}
 	body := le.AppendUint32(nil, 1)
 	body = le.AppendUint32(body, 1)
-	r, err := c.call(ext.Major, damageQueryVersion, body, smallReply)
+	r, err := c.call(context.Background(), ext.Major, damageQueryVersion, body, smallReply)
 	if err != nil {
 		return fmt.Errorf("DAMAGE's QueryVersion: %w", err)
 	}

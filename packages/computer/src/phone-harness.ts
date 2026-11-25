@@ -16,9 +16,11 @@ import { createConnection } from "node:net";
 import type { Duplex } from "node:stream";
 import { basename, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
+import { adbEnv } from "./child-env.js";
 import { DaemonClient } from "./client.js";
 import { CreateRequests, endedWords, labelsDiffer, otherSpecWords } from "./create-requests.js";
 import { PHONE_GROUPS, PHONE_HARNESS } from "./descriptors/phone-harness.js";
+import { httpsBase } from "./hosted/rest.js";
 import { type ComputerClient, type DaemonMethod, type DaemonMethods, type HelloResult, PROTOCOL_VERSION } from "./protocol.js";
 import {
 	type AttachedComputer,
@@ -235,25 +237,23 @@ type AdbRun = (args: string[], options?: { timeoutMs?: number; signal?: AbortSig
 /** The adb server's port when none is given: adb's own default. */
 export const ADB_SERVER_PORT = 5037;
 
-/** The environment variables adb reads to find its server or its device: every one is dropped from a spawned adb's. */
-const ADB_ENV = /^(ADB_|ANDROID_ADB_|ANDROID_SERIAL$)/;
-
 /**
  * The adb CLI (Android platform-tools) at path, by execFile, never a shell, and the adb server it starts, on the
  * loopback at port (adb's own default), spoken to by its socket protocol.
  *
- * env is the environment a spawned adb starts from, with every adb variable dropped from it (ADB_SERVER_SOCKET,
- * ANDROID_ADB_SERVER_SOCKET, ANDROID_ADB_SERVER_ADDRESS, ANDROID_SERIAL, ...), so nothing in it points the CLI at
- * another server than its socket requests reach. The library reads no environment of its own: a caller passes it (the
- * conformance module passes process.env). Without env, a spawned adb inherits the process's environment as it is.
+ * env is the environment the host passes: a spawned adb, and the adb server it starts, hold its ADB_ENV_NAMES alone
+ * (adbEnv), never a key, and none of the variables that point adb at another server or device (ADB_SERVER_SOCKET,
+ * ANDROID_ADB_SERVER_ADDRESS, ANDROID_SERIAL, ...) than its socket requests reach. The library reads no environment of
+ * its own: the provider passes its env, the conformance module process.env. Without env, adb starts with none, and a
+ * bare "adb" is found only on the default path: pass env, or adb's absolute path.
  */
 export function adbCli(path = "adb", { port = ADB_SERVER_PORT, env }: { port?: number; env?: Readonly<Record<string, string | undefined>> } = {}): AdbTransport {
 	// Every spawned adb names the server the socket requests go to: without -P it would take its own default, 5037 or
 	// ANDROID_ADB_SERVER_PORT, and start or ask another server.
-	const spawnEnv = env === undefined ? undefined : Object.fromEntries(Object.entries(env).filter(([name, value]) => value !== undefined && !ADB_ENV.test(name)));
+	const spawnEnv = adbEnv(env);
 	const run: AdbTransport["run"] = (args, { timeoutMs, signal, input }) =>
 		new Promise((resolve) => {
-			const child = execFile(path, ["-P", String(port), ...args], { encoding: "buffer", ...(spawnEnv ? { env: spawnEnv } : {}), timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024, ...(signal ? { signal } : {}) }, (error, stdout, stderr) => {
+			const child = execFile(path, ["-P", String(port), ...args], { encoding: "buffer", env: spawnEnv, timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024, ...(signal ? { signal } : {}) }, (error, stdout, stderr) => {
 				const code = (error as NodeJS.ErrnoException | null)?.code;
 				if (code === "ENOENT") {
 					return resolve(fail("not_found", `the phone provider needs adb (Android platform-tools) on this machine: ${path} is not there; install platform-tools or give the provider's adb option`));
@@ -401,7 +401,7 @@ export interface PhoneProviderOptions {
 	apiKey: string;
 	/** Which phone: "android", a temporary cloud emulator (the default). "ios" is refused until it is built. */
 	platform?: "android" | "ios";
-	/** The API's base URL; default PHONE_HARNESS_URL. */
+	/** The API's base URL, https alone; default PHONE_HARNESS_URL. */
 	baseUrl?: string;
 	/** fetch; default the global one. Tests give a fake. */
 	fetch?: typeof globalThis.fetch;
@@ -433,7 +433,8 @@ export interface PhoneProviderOptions {
 	 * PHONE_HARNESS_APKS, else none. A connect that cannot install one fails in words.
 	 */
 	apks?: readonly PinnedApk[];
-	/** The host's own variables its descriptor declares (hostEnv): PHONE_HARNESS_APKS alone, the server's apks. */
+	/** The host's own variables its descriptor declares (hostEnv): PHONE_HARNESS_APKS, the server's apks, and what adb
+	 *  reads (ADB_ENV_NAMES), the only environment an adb this provider runs starts with. */
 	env?: Readonly<Record<string, string | undefined>>;
 }
 
@@ -530,7 +531,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		if (platform === "ios") throw new Error('platform "ios" is not offered yet: the phone-harness provider rents a cloud Android; an iPhone is a later change');
 		if (platform !== "android") throw new Error(`platform ${show(platform)} is not one of android, ios`);
 		this.#apiKey = apiKey;
-		this.#baseUrl = (options.baseUrl ?? PHONE_HARNESS_URL).replace(/\/+$/, "");
+		this.#baseUrl = httpsBase(options.baseUrl ?? PHONE_HARNESS_URL, "the phone harness URL");
 		this.#fetch = options.fetch ?? globalThis.fetch;
 		const adb = options.adb;
 		if (adb !== undefined && typeof adb !== "string" && !(typeof adb?.run === "function" && typeof adb?.server === "function" && typeof adb?.open === "function")) {
@@ -540,7 +541,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		const apks = options.apks ?? apksOf(options.env?.PHONE_HARNESS_APKS);
 		if (!Array.isArray(apks) || !apks.every(pinned)) throw new Error(`options.apks ${show(options.apks)} is not a list of { path, sha256 }: an APK file's absolute path and its sha256, 64 lowercase hex digits`);
 		this.#apks = apks.map(({ path, sha256 }) => ({ path, sha256 }));
-		this.#adb = adb === undefined || typeof adb === "string" ? adbCli(adb ?? "adb") : adb;
+		this.#adb = adb === undefined || typeof adb === "string" ? adbCli(adb ?? "adb", { env: options.env ?? {} }) : adb;
 		this.#ledger = guardedLedger(options.ledger ?? memoryLedger());
 		this.#maxLifetimeMs = options.maxLifetimeMs ?? DEFAULT_MAX_LIFETIME_MS;
 		if (!(Number.isSafeInteger(this.#maxLifetimeMs) && this.#maxLifetimeMs > 0)) throw new Error(`maxLifetimeMs ${show(options.maxLifetimeMs)} is not a whole number of milliseconds above 0`);
@@ -611,6 +612,8 @@ export class PhoneHarnessProvider implements ComputerProvider {
 				method,
 				headers: { Authorization: `Bearer ${this.#apiKey}`, Accept: "application/json", ...(body === undefined ? {} : { "Content-Type": "application/json" }), ...headers },
 				...(body === undefined ? {} : { body: JSON.stringify(body) }),
+				// Never followed: the key's header would go on to wherever a redirect points, as rest.ts's client refuses too.
+				redirect: "error",
 				signal: either,
 			});
 		} catch (error) {

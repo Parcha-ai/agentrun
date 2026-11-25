@@ -38,6 +38,11 @@ control plane on top of your favorite agent harness. Your agents become smarter,
 tokens with every run.
 
 <p align="center">
+  <a href="https://discord.gg/qj6AqruHEn"><img alt="Join our Discord" src="https://img.shields.io/badge/Join%20our%20Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white"></a>
+  <br>Show what you’re building, swap workflows, and get help debugging a run.
+</p>
+
+<p align="center">
   <a href="https://agentrun.ai"><img alt="An agent's Learning tab in the AgentRun console: since it learned, answers take 2 seconds instead of 10 and a run costs $0.0077 instead of $0.05, with the two notes it kept" src="docs/assets/readme/learning.png" width="100%"></a>
   <br><sub>An agent's Learning tab: what it kept, and what changed since. Demo data from the console's recorded fixtures.</sub>
 </p>
@@ -86,6 +91,9 @@ Prefer your own machine or infrastructure? Have your coding agent set it up belo
 [getting-started guide](docs/getting-started.md) explains the three options. Wherever it runs, AgentRun counts itself
 anonymously; `AGENTRUN_TELEMETRY=0` or `DO_NOT_TRACK=1` turns that off ([anonymous usage counts](docs/telemetry.md)).
 
+Ready-made agent templates are at [marketplace.agentrun.ai](https://marketplace.agentrun.ai). Pick one and run it on
+your own AgentRun server.
+
 <a id="start-in-three-steps"></a>
 <a id="run-locally-in-three-steps"></a>
 
@@ -117,7 +125,8 @@ start a new agent from a template.
    npx @parcha/agentrun
    ```
 
-   It starts the server and one runner on port 7340 (or the next free one), keeps everything in `~/.agentrun`, and
+   It starts the server and one runner on port 7340 (or the next free one), keeps everything in `~/.agentrun` (not the
+   folder you run it in: `--data DIR` names another, and a new folder alone is not a new install), and
    opens the console in your browser. It runs in that terminal until you press Ctrl-C there, which stops it.
 
 2. **Continue with ChatGPT, or add a model key.** In the console, set a password, then press **Continue with ChatGPT**
@@ -607,8 +616,10 @@ your first agent. Or add a model key in the console, or in `.env` before `docker
 
 The port is published on this machine's loopback only; put a TLS proxy in front before you open it to anyone else.
 This compose file has no Docker socket, so its agents get file tools and `web_fetch` but no shell. For a Docker
-sandbox, use the single-server `compose.yaml` at the repository's root (Docker Engine 26 or later), run the server on
-the host.
+sandbox, use the single-server `compose.yaml` at the repository's root (Docker Engine 26 or later), which gives the
+server the host's Docker socket (that socket is root on the host: give it only where you would give AgentRun root), or
+run the server on the host with `npx @parcha/agentrun`. The start's `Boxes:` line
+and the agent editor's place say which one a container lacks: the socket, or its group (`DOCKER_GID`).
 
 </details>
 
@@ -649,6 +660,7 @@ The server counts itself anonymously (a random id, its version, its platform): n
 - [Deploying](deploy/README.md), [computers](packages/computer/README.md), [templates](packages/serve/templates/README.md)
 - [Give an agent tools](docs/connect-tools.md): Sentry, GitHub, Slack and other services as MCP servers, with no token in the box
 - [Connect Composio tools and triggers](docs/tutorials/composio.md)
+- [Send run traces to Sentry or any OpenTelemetry backend](docs/traces.md)
 - [The workflow language](packages/dsl/README.md), [authoring](docs/authoring.md), [the guide](docs/guide.md)
 - [Changelog](CHANGELOG.md) and [contributing](CONTRIBUTING.md)
 

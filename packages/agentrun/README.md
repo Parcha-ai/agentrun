@@ -26,10 +26,12 @@ It downloads a Node.js from nodejs.org: the newest release on the major line of 
 later security releases come with the next install. It checks the download against that release's `SHASUMS256.txt`
 and installs it and AgentRun under `~/.agentrun` (`node/`, `lib/`, `bin/agentrun`). Any other Node, nvm or Homebrew is
 left alone, and nothing needs sudo. When no line in your shell's startup file puts `~/.agentrun/bin` on `PATH`, it adds
-one and says so. Then it starts AgentRun as a service of your user, a LaunchAgent on macOS or a systemd user unit on
-Linux, which starts again at login and after a crash and logs to `~/.agentrun/logs/agentrun.log`. Where there is no
-service manager (a container, say), it starts AgentRun in the background, logging to the same file. It runs until the
-machine or container stops, and `agentrun stop` stops it (a SIGTERM, then a SIGKILL to the launcher and its server
+one and says so. Then it starts AgentRun. On a terminal it first asks whether to make it a service of your user, a
+LaunchAgent on macOS or a systemd user unit on Linux, which starts again at login and after a crash and logs to
+`~/.agentrun/logs/agentrun.log`. The answer is No unless you say yes, and then AgentRun runs in the background, logging
+to the same file. With no terminal to ask on, or its output captured (CI, a script, an agent's shell), it installs the
+service without asking; `--service` and `--no-service` choose without the question. Where there is no service manager (a
+container, say), it starts AgentRun in the background. In the background it runs until the machine or container stops, and `agentrun stop` stops it (a SIGTERM, then a SIGKILL to the launcher and its server
 after 45 seconds). Either way the installer returns once AgentRun answers, and prints its address. `sh -s -- --no-start`
 installs only, `--version V` installs another version, `--node-version V` installs that Node.js (at least the floor),
 and `--service` fails where there is no service manager. Running it again upgrades, or installs an older version, and
@@ -44,10 +46,12 @@ one when the last has run out) until the password is set, the console after. It 
 
 `agentrun service status` prints the console's address and its health. `start`, `stop`, `restart`, `logs [--follow]`,
 `upgrade [--version V]` (the installer again, then a restart) and `uninstall` (the data stays) do what they say, and
-`agentrun service install [--port N] [--data DIR] [--public-url URL]` installs the service after a `--no-start`. For a local model, such
-as Ollama's, `agentrun service install --env AGENT_MODEL_BASE_URL=<its /v1 address> --env AGENT_MODEL_GATEWAY_IDS=bare --env
-AGENT_MODEL=<tag> --env AGENT_MODEL_PRICE=0,0,0 --env AGENT_MODEL_API_KEY=none` writes those variables into the
-service and restarts it (`none` alone: without a key the server refuses each run, `model_key_required`). They stay through restarts, upgrades and later installs, and `--env KEY=` removes one. On a machine
+`agentrun service install [--port N] [--data DIR] [--public-url URL]` installs the service after a `--no-start`. The
+Ollama on this machine needs nothing here: the server lists its models itself. For an Ollama off its default address,
+`agentrun service install --env OLLAMA_HOST=<host:port>` writes it into the service and restarts it. `--env OLLAMA_CONTEXT_LENGTH=<tokens>` does the same for a lower context than 65,536. For a local model
+behind a gateway, `agentrun service install --env AGENT_MODEL_BASE_URL=<its /v1 address> --env AGENT_MODEL_GATEWAY_IDS=bare
+--env AGENT_MODEL=<tag> --env AGENT_MODEL_PRICE=0,0,0 --env AGENT_MODEL_API_KEY=none` does the same (`none` alone:
+without a key the server refuses each run, `model_key_required`). They stay through restarts, upgrades and later installs, and `--env KEY=` removes one. On a machine
 you alone use, `--env AGENTRUN_MCP_ALLOW_LOOPBACK=1 --env AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1` turns on the two start-time
 switches the same way (a switch takes `1` alone). `--env` takes the names `agentrun service install --help` lists, and
 no others: model keys go in the console, never in a service file. The service never sees the shell that installed it, so

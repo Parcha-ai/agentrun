@@ -18,14 +18,16 @@
 //
 // An ask has one way to wait, every tool's alike (the owner's ruling of 11-04): it PARKS. The runner's loop holds the
 // call and the run goes needs_input with the pending approval. On an answer the loop runs the approved call once, through
-// the journal, and the session goes on with its result. One call waits at a time: another asked meanwhile is refused.
+// the journal, and the session goes on with its result. A read the runner lost mid-call (its claim lapsed before the
+// call's end was recorded) may run again on its next claim; a call with a side effect never does: that claim answers it
+// interrupted (test/adapter-approved-call-lapse.test.mjs). One call waits at a time: another asked meanwhile is refused.
 //
 // The answer: POST /v2/runs/{id}/approvals/{approval_id} { decision: "allow" | "deny", note? } -> 204. The first answer
 // wins; the same answer again is 204, a conflicting one 409. Only the owner's password session answers (server.ts), never
 // a token. A cancel marks pending approvals canceled. Where no one can approve (accounts off), an ask is refused at once
 // in words, never parked.
 
-import { COMPUTER_OP_TOOL, computerToolDefs, defaultPermissionOf, SHELL_FAMILY, SHELL_WATCHERS, shellPermission, shellToolOf } from "@parcha/agentrun-kernel/kernel";
+import { COMPUTER_OP_TOOL, COMPUTER_TOOLS, computerToolDefs, defaultPermissionOf, hostToolDefs, SHELL_FAMILY, SHELL_WATCHERS, type ShellPlace, shellPermission, shellToolOf } from "@parcha/agentrun-kernel/kernel";
 import { type AdapterFacts, READ_SKILL_FILE } from "@parcha/agentrun-kernel";
 import { COMPUTER_ROOT } from "./workspace/paths.js";
 import type { Workspace } from "./workspace/workspace.js";
@@ -33,7 +35,7 @@ import { META_TOOLS } from "./meta-tool-names.js";
 import { DEFAULT_HARNESS } from "./harness.js";
 import { DECISION_PROVIDER_KEYS, KIND_KEYS, SERVE_OWN_TOOLS, type ToolSettingsRead } from "./tool-plane.js";
 import { asksByDefault, isTableTool, isToolRow, tableTools } from "./tool-list.js";
-import { CANT_BE_CALLED, DENIED_OPENING, deniedText, NOT_RUN, RAN_UNKNOWN, type SettingFrom } from "./refusal-words.js";
+import { CANT_BE_CALLED, computerOffText, computerOffWords, DENIED_OPENING, deniedText, NOT_RUN, RAN_UNKNOWN, type SettingFrom } from "./refusal-words.js";
 import { type Approvals, approvalsOf } from "./approvals.js";
 import { settingOfDefinition } from "./computer-setting.js";
 import { BASH_POLICIES, readOnlyReason, readOnlyText } from "./bash-read-only.js";
@@ -103,6 +105,15 @@ export function heldAs(name: string, args: unknown): { readonly tool: string; re
   const fields = (given !== null && typeof given === "object" ? given : {}) as Record<string, unknown>;
   return { tool, args: SHELL_OPS.has(op as string) ? { command: fields.command, ...(fields.cwd !== undefined ? { cwd: fields.cwd } : {}) } : { path: fields.path } };
 }
+/** The path a computer_screenshot call saves the screen to in the run's folder (its `save_as`), held to write's setting
+ *  as a file the write tool writes is; undefined for any other call, a screenshot with no save_as included. */
+function savedAs(name: string, args: unknown): { readonly path: unknown } | undefined {
+  if (name !== "computer_screenshot" || args === null || typeof args !== "object") return undefined;
+  const path = (args as { save_as?: unknown }).save_as;
+  return path === undefined ? undefined : { path };
+}
+/** What a screenshot's refusal for write's setting adds to write's own words: why write's setting holds it. */
+const SAVED_AS_WORDS = "computer_screenshot with save_as writes a file into the run's files, so write's setting holds it; a screenshot without save_as is not held to it.";
 const STRICTNESS: Readonly<Record<Permission, number>> = { allow: 0, ask: 1, deny: 2 };
 /** A session's `{name -> settings key}` map (nameMapOf). */
 export type NameMap = ReadonlyMap<string, string>;
@@ -347,8 +358,8 @@ export const permissionOf = (name: string, server: PermissionSettings, agent: Pe
 
 /** An approval's price for the person who answers it: USD where the tool declares one (booked through the spend cap's
  *  paidCall), else "not metered" (an unpriced MCP call, the owner's ruling of 11-04), or "priced by usage" for a monid
- *  endpoint priced by usage: monid estimates its cost only when the call runs, after the person's allow, and its charge
- *  can pass that estimate (runner/monid-run.ts). */
+ *  endpoint priced by usage or a fal job: each is priced only when the call runs, after the person's allow, and its
+ *  charge can pass that estimate (runner/monid-run.ts, fal-price.ts). */
 export type ApprovalPrice = number | "not metered" | "priced by usage";
 
 /** One pending approval, as the run's view shows it (`pending`) and the console's approval card reads it. */
@@ -409,6 +420,29 @@ export function runGate(where: { root: string; work: string; computer?: boolean;
   return new RunGate({ root: where.root, work: where.work, runId, harness: revision.body.harness ?? DEFAULT_HARNESS, ...(where.computer === undefined ? {} : { computer: where.computer }), ...(kind !== undefined ? { kind } : {}), ...(where.effectOf ? { effectOf: where.effectOf } : {}), ...(where.argumentsOf ? { argumentsOf: where.argumentsOf } : {}), facts: where.facts }, serverSettings, (revision.body.toolSettings ?? {}) as PermissionSettings, approvers, approvalsOf(revision.body.approvals));
 }
 
+/** The host tools that run on a computer that holds the run's shell (the kernel registry's, for shell "computer"). */
+const ON_COMPUTER: ReadonlySet<string> = new Set(hostToolDefs({ maxExecS: 600, shell: "computer" }).map((def) => def.name));
+
+/** The tools a run's computer of `kind` serves, by the names its gate decides them by: a desktop's or a phone's own
+ *  (COMPUTER_TOOLS, held to its kind's key), a browser's (its key), and, where the run's shell is on the computer
+ *  (`shell` "computer": a sandbox, a desktop that mounts the run's folder), each host tool the agent grants. */
+export function computerToolsOf(kind: string, granted: readonly string[], shell: ShellPlace): readonly string[] {
+  const own = kind === "desktop" || kind === "phone" ? [...COMPUTER_TOOLS] : kind === "browser" ? ["browser"] : [];
+  return [...own, ...(shell === "computer" ? granted.filter((name) => ON_COMPUTER.has(name)) : [])];
+}
+
+/** The kind of the agent's computer when every tool it serves (computerToolsOf) is set to deny for `revision` under the
+ *  server's `server` settings, as its run's gate reads them: a run of it never starts that computer. Undefined for an agent
+ *  with no computer, one whose computer serves none of its tools, or one any of them is allowed or asked of. `shell`: where
+ *  a run of it has its shell (resolve-computer.ts runShellOf). Settings that do not read deny nothing (the gate asks). */
+export function computerDenied(revision: { kind: string; body: { tools?: readonly string[]; toolSettings?: unknown; harness?: string; approvals?: Approvals; computer?: unknown; place?: unknown } }, shell: ShellPlace, server: ToolSettingsRead): string | undefined {
+  const kind = settingOfDefinition(revision.body)?.computer.kind;
+  if (kind === undefined || kind === "none") return undefined;
+  const tools = computerToolsOf(kind, revision.body.tools ?? [], shell);
+  const gate = runGate({ root: COMPUTER_ROOT, work: COMPUTER_ROOT, computer: shell === "computer", facts: undefined }, "", revision, () => server, true);
+  return tools.length > 0 && tools.every((tool) => gate.policy(tool) === "deny") ? kind : undefined;
+}
+
 /** The top-level arguments the listing of the MCP tool `name` (`mcp:<server>/<tool>`) in the run's pin declares under
  *  its inputSchema's `properties`, the snapshot the run offers the model, never a live listing; undefined for a listing
  *  with no `properties` object (nothing to close a pinned call to) and for any other tool. */
@@ -454,19 +488,70 @@ export class RunGate {
     // call, decided as on a computer, where it runs: a desktop that mounts no folder has a computer to run a command on,
     // so shell.run and processes.start follow bash's one setting alike, as the run's own tools on a computer do. It is a
     // computer tool too: the kind's deny (desktop or phone set to deny) refuses it first, in the kind's words, below.
+    const ran = options.replayed ? "unknown" : "no";
+    // The run's computer once a call of its own tools was refused for a deny is off for the rest of the run: a later call
+    // of them is refused here, short, with no setting read and nothing sent to it (a setting changed since included).
+    const off = this.offRefusal(name, options);
+    if (off) return off;
+    const own = this.computerOwns(name);
     const held = heldAs(name, args);
     if (held && this.policy(name) !== "deny") return this.onComputer().decide(held.tool, held.args, options);
     const key = this.keyOf(name) ?? name;
     const tool = this.askedAs(name);
-    const ran = options.replayed ? "unknown" : "no";
     const verdict = this.policy(name);
-    if (verdict === "deny") return { deny: deniedText(tool, key, this.denyFrom(name), ran) };
+    if (verdict === "deny") {
+      const text = deniedText(tool, key, this.denyFrom(name), ran);
+      if (!own) return { deny: text };
+      // The first such deny says so, once, in its refusal.
+      this.off = true;
+      return { deny: `${text} ${computerOffWords(own)}` };
+    }
     const pinned = this.pinned(key, args, ran);
     if (pinned) return { deny: pinned.text };
     const policed = this.policyRefusal(key, name, args);
     if (policed) return { deny: policed };
+    // A screenshot saved into the run's files (save_as) is a file written as write writes one: write's setting holds it
+    // too, after the kind's deny, and the stricter decides (write's deny refuses it before the computer is asked, write's
+    // ask puts it to a person, as the kind's does).
+    const saved = savedAs(name, args);
+    if (saved) {
+      const write = await this.decide("write", saved, options);
+      if (typeof write === "object") return { deny: `${write.deny} ${SAVED_AS_WORDS}` };
+      if (write === "ask") return "ask";
+    }
     if (verdict === "allow") return "allow";
     return this.approvers ? "ask" : { deny: noApproverText(tool, ran) };
+  }
+
+  /** The refusal of a call of the run's computer's own tools (computerOwns) once that computer is off for the rest of the
+   *  run (computerOff): short, decided with no setting read and nothing sent to it, a setting changed since included.
+   *  Undefined for any other call, or while the computer is on. */
+  offRefusal(name: string, options: { readonly replayed?: boolean } = {}): { deny: string } | undefined {
+    const own = this.off ? this.computerOwns(name) : undefined;
+    return own ? { deny: computerOffText(own, options.replayed ? "unknown" : "no") } : undefined;
+  }
+
+  /** The run's computer's kind once it is off for the rest of the run: by the first deny of a call of its own tools
+   *  (decide, whose refusal says so once), or from a claim's start (turnOff). Undefined while it is on. */
+  get computerOff(): string | undefined {
+    return this.off ? this.where.kind : undefined;
+  }
+
+  /** The run's computer off from this claim's start: an earlier claim's deny turned it off for the run
+   *  (computer-journal.ts computerTurnedOff), so each call of its tools is refused short, never said off again. */
+  turnOff(): void {
+    this.off = true;
+  }
+
+  /** Set by the first deny of a call of the run's computer's own tools (computerOwns), or by turnOff. */
+  private off = false;
+  /** The run's computer kind (where.kind) when `name` is one of that computer's own tools: a desktop's or a phone's
+   *  (KIND_TOOLS), a browser's (held to the browser key). Undefined for any other call, a shell or file tool the computer
+   *  runs included: a deny of one of those leaves the computer's own tools as they are. */
+  private computerOwns(name: string): string | undefined {
+    const kind = this.where.kind;
+    if (kind === "desktop" || kind === "phone") return KIND_TOOLS.has(name) ? kind : undefined;
+    return kind === "browser" && !KIND_TOOLS.has(name) && this.keyOf(name) === "browser" ? kind : undefined;
   }
 
   /** The settings key a call of `name` is held to, the one its refusal and its ask name: a computer tool's is the kind

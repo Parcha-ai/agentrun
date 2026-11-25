@@ -11,7 +11,7 @@ import { extname, join, sep } from "node:path";
 import type { Owner } from "./owner.js";
 import { fileURLToPath } from "node:url";
 import { ApiError } from "./errors.js";
-import { hostRefusedPage, movedPage } from "./host-check.js";
+import { hostPort, hostRefusedPage, movedPage } from "./host-check.js";
 
 // img-src names Google's favicon service and the four hosts it redirects to: the console's Keys page shows a provider's
 // icon from it (apps/console/src/components/ProviderIcon.tsx), sent with no referrer. Everything else is this origin's.
@@ -69,19 +69,36 @@ export class ConsoleSessions {
     return this.ids.has(digest(value).toString("hex"));
   }
 }
-/** One name per port: cookies are kept per host, not per port, and another server on this machine has another token. */
-const cookieName = (req: IncomingMessage) => `agentrun-${req.socket.localPort}`;
+/** One name per port the browser opened: cookies are kept per host, not per port, and another server on this machine has
+ *  another token. The port is the Host header's, the browser's: a server in a container sees its own port on its socket
+ *  (7340, published at 7350), and so does another beside it. A Host with no port keeps the socket's. */
+const browserPort = (req: IncomingMessage) => hostPort(req.headers.host) ?? req.socket.localPort;
+const cookieName = (req: IncomingMessage) => `agentrun-${browserPort(req)}`;
 export const cookiesOf = (req: IncomingMessage, name: string) =>
   String(req.headers.cookie ?? "").split(";").map((part) => part.trim()).filter((part) => part.startsWith(`${name}=`)).map((part) => part.slice(name.length + 1));
-export const overHttps = (req: IncomingMessage) => String(req.headers["x-forwarded-proto"] ?? "").split(",")[0]!.trim().toLowerCase() === "https";
+/** Whether the browser reached this server over TLS, as the proxy in front says (X-Forwarded-Proto): `https`, or `wss`,
+ *  which some proxies (Traefik) send on a WebSocket upgrade. Both are the page's https origin and its `__Host-` cookie. */
+export const overHttps = (req: IncomingMessage) => ["https", "wss"].includes(String(req.headers["x-forwarded-proto"] ?? "").split(",")[0]!.trim().toLowerCase());
 export const ownOrigin = (req: IncomingMessage) => `${overHttps(req) ? "https" : "http"}://${String(req.headers.host ?? "").toLowerCase()}`;
 export const isJson = (req: IncomingMessage) => String(req.headers["content-type"] ?? "").split(";")[0]!.trim().toLowerCase() === "application/json";
 
-/** The owner's session cookie: `__Host-` on https, so no other host or path can set it; else one per port. */
-export const ownerCookieName = (req: IncomingMessage) => (overHttps(req) ? "__Host-agentrun-session" : `agentrun-${req.socket.localPort}-session`);
-/** A Set-Cookie line for the owner's session: `value`, or an empty one that ends it (`maxAgeS` 0). */
-export const ownerCookie = (req: IncomingMessage, value: string, maxAgeS: number) =>
-  `${ownerCookieName(req)}=${value}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAgeS}${overHttps(req) ? "; Secure" : ""}`;
+/** The owner's session cookie: `__Host-` on https, so no other host or path can set it; else one per port the browser opened. */
+export const ownerCookieName = (req: IncomingMessage) => (overHttps(req) ? "__Host-agentrun-session" : `agentrun-${browserPort(req)}-session`);
+/** A Set-Cookie line for the owner's session: `value`, or an empty one that ends it (`maxAgeS` 0); under `name`, this
+ *  request's own unless another is given. */
+export const ownerCookie = (req: IncomingMessage, value: string, maxAgeS: number, name = ownerCookieName(req)) =>
+  `${name}=${value}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAgeS}${overHttps(req) ? "; Secure" : ""}`;
+/** The owner's session cookies the request holds under this request's name and under any port's (`agentrun-<port>-session`),
+ *  each with its name, valid or not: a browser sends a host's cookies to every port of it, so one signed in at 7340 and
+ *  again through a tunnel at 8080 sends both to either. Which are this server's is the owner's to say (Owner.valid). */
+export const sessionsAtEveryPort = (req: IncomingMessage): Array<{ name: string; value: string }> => {
+  const own = ownerCookieName(req);
+  return String(req.headers.cookie ?? "").split(";").flatMap((part) => {
+    const at = part.indexOf("=");
+    const name = part.slice(0, at).trim();
+    return at > 0 && (name === own || /^agentrun-\d{1,5}-session$/.test(name)) ? [{ name, value: part.slice(at + 1).trim() }] : [];
+  });
+};
 /** The owner's session cookies the request holds, valid or not. */
 export const heldSessions = (req: IncomingMessage) => cookiesOf(req, ownerCookieName(req));
 /** Whether the request holds a session the owner signed in. */

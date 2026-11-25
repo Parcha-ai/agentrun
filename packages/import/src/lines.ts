@@ -2,15 +2,15 @@
 // into a Session, a line that is not JSON, or not a record its source knows, passed over. A read goes on from a cursor:
 // the file's identity (device, inode), the byte after the last whole line read, and the read's state, so a later read
 // takes only the bytes written since.
-import { createReadStream } from "node:fs";
 import { type FileHandle, open } from "node:fs/promises";
+import { addRequest, type Counts, counts, trimmed } from "./counts.js";
 import { type Env, type Locator, type Reader, type ReadOptions, type ReadResult, rememberUser } from "./reader.js";
 import { isObject, mostEffortOf, timeOf } from "./text.js";
 import { ACTIVE_GAP_MS, type Answer, type SessionOf, type Turn } from "./types.js";
 
 /** One file's read so far, all of it plain data (no function, Maps and Sets allowed), so a cursor can carry it and
  *  structuredClone or v8.serialize can copy it. `answers` holds every request read, whether turns are kept or not: what
- *  a total counts. `own` is the source's own (LineSource.start). A turns: true read's holds the session's text (its
+ *  a total counts; a totals read's are in `counts` instead, each its model, usage and time alone. `own` is the source's own (LineSource.start). A turns: true read's holds the session's text (its
  *  turns, prompts, titles, tool output, working directory); a turns: false read's cursor holds none of it, only counts,
  *  ids and the like (see LineSource.forget). */
 export type ReadState<O = unknown> = {
@@ -27,6 +27,8 @@ export type ReadState<O = unknown> = {
   last?: number;
   activeMs: number;
   own: O;
+  /** A totals read's requests (ReadOptions.totals), in place of `answers`. */
+  counts?: Counts;
   /** The records seen, when the caller shares none across files. */
   seen?: Set<string>;
 };
@@ -57,7 +59,22 @@ export type LineSource<S extends string, O> = Pick<Reader<S>, "source" | "name" 
   idOf: (file: string) => string;
   /** `own` without the session's text (prompts, titles, tool output), for the cursor of a turns: false read. */
   forget?: (own: O) => O;
+  /** true when a totals read (ReadOptions.totals) may keep each request's model, usage and time alone, as it is
+   *  added: the source sets no turn's model, usage or time after adding it, or keeps its requests in `counts` itself. Without it a totals
+   *  read is a turns: false read, its requests whole. */
+  totals?: true;
 };
+
+/** The bytes a read takes from its file at once. */
+const CHUNK = 1 << 20;
+
+/** A line longer than the read's maxLine (ReadOptions): the read ends before decoding it. */
+export class LineTooLong extends Error {
+  constructor(readonly file: string, readonly offset: number, readonly bytes: number, readonly maxLine: number) {
+    super(`${file}: a line at byte ${offset} is longer than ${maxLine} bytes (${bytes} so far)`);
+    this.name = "LineTooLong";
+  }
+}
 
 /** What a listing reads from the session's text: a turns: false cursor keeps none of it, and a read resumed from one
  *  gives none (it would describe only what was written since). */
@@ -78,8 +95,9 @@ export type FileCursor = {
   /** The last bytes before `offset` (up to 64, base64): a file rewritten in place to at least the same length no longer
    *  has them there, and is read from its start. */
   mark: string;
-  /** Whether the read kept turns: a cursor of the other kind is no place to go on from. */
+  /** Whether the read kept turns, and whether it was a totals read: a cursor of another kind is no place to go on from. */
   keep: boolean;
+  totals?: boolean;
   state: ReadState;
 };
 
@@ -94,18 +112,21 @@ async function markOf(handle: FileHandle, offset: number): Promise<string> {
 
 /** Whether a read from `cursor` of the open file goes on from it: the same source and kind of read, the same file (device
  *  and inode), no shorter, and the bytes before its offset as they were. Else it reads the file from its start. */
-async function goesOn(source: string, keep: boolean, cursor: FileCursor, handle: FileHandle, stats: { dev: number; ino: number; size: number }): Promise<boolean> {
-  return cursor.source === source && cursor.keep === keep && cursor.dev === stats.dev && cursor.ino === stats.ino && stats.size >= cursor.offset && (await markOf(handle, cursor.offset)) === cursor.mark;
+async function goesOn(source: string, keep: boolean, totals: boolean, cursor: FileCursor, handle: FileHandle, stats: { dev: number; ino: number; size: number }): Promise<boolean> {
+  return cursor.source === source && cursor.keep === keep && (cursor.totals ?? false) === totals && cursor.dev === stats.dev && cursor.ino === stats.ino && stats.size >= cursor.offset && (await markOf(handle, cursor.offset)) === cursor.mark;
 }
 
-/** Whether `source`'s line reader would go on from `cursor` in `file` now (a turns: `keep` read), as it decides when it
+/** Whether a read with these options is a totals read: asked for, with no turns kept, from a source that has one. */
+const totalsRead = <S extends string, O>(spec: LineSource<S, O>, keep: boolean, asked: boolean): boolean => asked && !keep && spec.totals === true;
+
+/** Whether `spec`'s line reader would go on from `cursor` in `file` now (a read with `options`), as it decides when it
  *  reads: so a reader built on it can choose how to read before reading. A file it cannot open is no place to go on. */
-export async function resumes(source: string, file: string, cursor: FileCursor | undefined, keep = true): Promise<boolean> {
+export async function resumes<S extends string, O>(spec: LineSource<S, O>, file: string, cursor: FileCursor | undefined, { turns: keep = true, totals: asked = false }: ReadOptions = {}): Promise<boolean> {
   if (cursor === undefined) return false;
   const handle = await open(file, "r").catch(() => undefined);
   if (!handle) return false;
   try {
-    return await goesOn(source, keep, cursor, handle, await handle.stat());
+    return await goesOn(spec.source, keep, totalsRead(spec, keep, asked), cursor, handle, await handle.stat());
   } finally {
     await handle.close();
   }
@@ -118,17 +139,18 @@ const overlay = (base: Set<string>): Set<string> => {
 };
 
 /** One session file of `spec`'s source, read from its start or from `cursor`. */
-async function readLines<S extends string, O>(spec: LineSource<S, O>, file: string, cursor: FileCursor | undefined, { turns: keep = true, seen, keepsCursor = true }: ReadOptions = {}): Promise<ReadResult<S, FileCursor>> {
+async function readLines<S extends string, O>(spec: LineSource<S, O>, file: string, cursor: FileCursor | undefined, { turns: keep = true, totals: asked = false, seen, keepsCursor = true, maxLine = Infinity }: ReadOptions = {}): Promise<ReadResult<S, FileCursor>> {
   const { source } = spec;
+  const totals = totalsRead(spec, keep, asked);
   const handle = await open(file, "r");
   try {
     const stats = await handle.stat();
     // The cursor's presence checked here, so `resumed` narrows it where its state and offset are read.
-    const resumed = cursor !== undefined && (await goesOn(source, keep, cursor, handle, stats));
+    const resumed = cursor !== undefined && (await goesOn(source, keep, totals, cursor, handle, stats));
     const state = (
       resumed
         ? structuredClone(cursor.state)
-        : { session: { source, id: "", file, state: "completed", child: false, turns: [], users: 0, activeMs: 0, copies: 0 }, turns: [], answers: [], names: new Map(), priced: { sum: 0, unknown: false }, activeMs: 0, own: spec.start(), ...(seen ? {} : { seen: new Set<string>() }) }
+        : { session: { source, id: "", file, state: "completed", child: false, turns: [], users: 0, activeMs: 0, copies: 0 }, turns: [], answers: [], names: new Map(), priced: { sum: 0, unknown: false }, activeMs: 0, own: spec.start(), ...(totals ? { counts: counts() } : {}), ...(seen ? {} : { seen: new Set<string>() }) }
     ) as ReadState<O>;
     const context: ReadContext<O> = {
       state,
@@ -137,7 +159,9 @@ async function readLines<S extends string, O>(spec: LineSource<S, O>, file: stri
       add: (turn: Turn) => {
         rememberUser(state.session, turn);
         if (keep) state.turns.push(turn);
-        if (turn.role === "assistant") state.answers.push(turn);
+        if (turn.role !== "assistant") return;
+        if (state.counts) addRequest(state.counts, turn.model, turn.usage, turn.at);
+        else state.answers.push(turn);
       },
     };
     const line = (text: string) => {
@@ -165,19 +189,36 @@ async function readLines<S extends string, O>(spec: LineSource<S, O>, file: stri
     let offset = start;
     let read = 0;
     let rest: Buffer[] = [];
+    let restBytes = 0;
+    const tooLong = (bytes: number) => {
+      if (bytes > maxLine) throw new LineTooLong(file, offset, bytes, maxLine);
+    };
     if (stats.size > start) {
-      // The open handle's descriptor, so the bytes streamed are the file stat described, whatever the path names now.
-      for await (const chunk of createReadStream(file, { fd: handle.fd, start, autoClose: false, highWaterMark: 1 << 20 }) as AsyncIterable<Buffer>) {
+      // The open handle, so the bytes read are the file stat described, whatever the path names now. One buffer for the
+      // whole read: a new one a chunk leaves freed native memory behind on every thread that reads (the read pool's).
+      const buffer = Buffer.allocUnsafeSlow(CHUNK);
+      for (let at = start; ; ) {
+        const { bytesRead } = await handle.read(buffer, 0, CHUNK, at);
+        if (!bytesRead) break;
+        at += bytesRead;
+        const chunk = buffer.subarray(0, bytesRead);
         read += chunk.length;
         let from = 0;
         for (let nl = chunk.indexOf(10); nl !== -1; nl = chunk.indexOf(10, from)) {
+          tooLong(restBytes + nl - from);
           const whole = rest.length ? Buffer.concat([...rest, chunk.subarray(from, nl)]) : chunk.subarray(from, nl);
           rest = [];
+          restBytes = 0;
           line(whole.toString("utf8", 0, whole.length && whole[whole.length - 1] === 13 ? whole.length - 1 : whole.length));
           offset += whole.length + 1;
           from = nl + 1;
         }
-        if (from < chunk.length) rest.push(chunk.subarray(from));
+        // The buffer is read into again: a line's start is kept as a copy.
+        if (from < chunk.length) {
+          restBytes += chunk.length - from;
+          tooLong(restBytes);
+          rest.push(Buffer.from(chunk.subarray(from)));
+        }
       }
     }
     // A last line with no newline yet may be a record still being written: read into this result when it is whole JSON,
@@ -192,10 +233,10 @@ async function readLines<S extends string, O>(spec: LineSource<S, O>, file: stri
     const mark = await markOf(handle, offset);
     let session = finish(spec, file, state, context);
     if (!keep) {
-      kept = { ...kept, session: withoutText(kept.session), own: spec.forget ? spec.forget(kept.own) : kept.own };
+      kept = { ...kept, session: withoutText(kept.session), own: spec.forget ? spec.forget(kept.own) : kept.own, ...(kept.counts ? { counts: trimmed(kept.counts) } : {}) };
       if (resumed) session = withoutText(session);
     }
-    return { sessions: [{ locator: { file }, session, requests: state.answers }], cursor: { source, dev: stats.dev, ino: stats.ino, offset, mark, keep, state: kept as ReadState }, read, resumed };
+    return { sessions: [{ locator: { file }, session, requests: state.answers, ...(state.counts ? { counts: state.counts } : {}) }], cursor: { source, dev: stats.dev, ino: stats.ino, offset, mark, keep, ...(totals ? { totals } : {}), state: kept as ReadState }, read, resumed };
   } finally {
     await handle.close();
   }

@@ -13,7 +13,7 @@ import test from "node:test";
 import { modalClient } from "../dist/modal.js";
 
 const DEFAULT_SERVER = "https://api.modal.com:443";
-const SERVER = "https://modal-server.example.invalid:443";
+const SERVER = "https://modal-server.example.invalid:8443";
 const TOKEN = { tokenId: "ak-server-url-test", tokenSecret: "as-server-url-test" };
 
 /** The server the client modalClient builds with ModalClient holds, read after modalClient returned. */

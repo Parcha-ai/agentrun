@@ -413,14 +413,14 @@ test("a key saved is read by name with no restart: capabilities lose the tool's 
   // The plane keeps its own value (a run's meta stores it); only the words a person reads name Settings first.
   const STORED_NO_BROWSER_KEY = "unavailable: no browser key: set or save Browserbase's (BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID) or Kernel's (KERNEL_API_KEY)";
   const reason = "it needs a Browserbase key: save one in Settings → API Keys (or set BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID where the server starts), or a Kernel key: save one in Settings → API Keys (or set KERNEL_API_KEY where the server starts)";
-  const unset = { name: "browser", nodes: false, calls: false, available: false, reason, harnesses: ["pi"], provider: "auto", default_provider: "auto", permission: "allow", default_permission: "allow", permissions: ["allow", "deny"], resolves: STORED_NO_BROWSER_KEY, key: "browserbase" };
+  const unset = { name: "browser", nodes: false, calls: false, runner_only: true, available: false, reason, harnesses: ["pi"], provider: "auto", default_provider: "auto", permission: "allow", default_permission: "allow", permissions: ["allow", "deny"], resolves: STORED_NO_BROWSER_KEY, key: "browserbase" };
   assert.deepEqual(await browser(), unset);
   assert.deepEqual((await api("GET", "/capabilities")).body.tools.filter((tool) => tool.key).map((tool) => [tool.name, tool.key]), [["web_fetch", "parallel"], ["web_search", "parallel"], ["browser", "browserbase"]], "only a tool a key unlocks names one");
   assert.equal((await api("POST", "/agents", { definition: { id: "browse", name: "browse", instructions: "Browse.", tools: ["browser"] } })).status, 201);
   assert.deepEqual(await refused(), [409, "agent_not_runnable", {}]);
 
   assert.equal((await api("PUT", "/settings/tool-keys/browserbase", { values })).status, 204);
-  assert.deepEqual(await browser(), { name: "browser", nodes: false, calls: false, available: true, harnesses: ["pi"], provider: "auto", default_provider: "auto", permission: "allow", default_permission: "allow", permissions: ["allow", "deny"], resolves: "browserbase", key: "browserbase" }, "no restart");
+  assert.deepEqual(await browser(), { name: "browser", nodes: false, calls: false, runner_only: true, available: true, harnesses: ["pi"], provider: "auto", default_provider: "auto", permission: "allow", default_permission: "allow", permissions: ["allow", "deny"], resolves: "browserbase", key: "browserbase" }, "no restart");
   const started = await api("POST", "/agents/browse/runs", { input: { content: "Browse the example page." } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   await follow(api, started.body.run_id, ["completed"]);
@@ -587,7 +587,7 @@ test("a key a harness reads, saved later, makes the harness available with no re
   assert.deepEqual([(await claude()).available, (await claude()).reason], [false, "claude-agent needs ANTHROPIC_API_KEY or OPENROUTER_API_KEY."]);
   saved = ["not-a-secret", "anthropic"].join("-");
   // How many fit at once is this host's memory (admission.test.mjs).
-  const { max_concurrent_runs, models: _models, free_models: _free, label: _label, promises: _promises, ...offer } = await claude();
+  const { max_concurrent_runs, models: _models, ready_models: _ready, free_models: _free, label: _label, promises: _promises, ...offer } = await claude();
   assert.deepEqual(offer, { id: "claude-agent", available: true, steer: true, default_model: "anthropic/claude-sonnet-5-5", run_memory_mib: 288 }, "saved: offered, on the key's default model");
   saved = undefined;
   assert.equal((await claude()).available, false, "deleted: not offered");

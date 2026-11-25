@@ -219,7 +219,7 @@ export function networkOf(inspected: DockerInspect | null | undefined, proxy?: D
 	if (!egressShaped(inspected)) {
 		if (none) return "none";
 		// Open goes through the egress proxy: a computer on a network of Docker's is one this provider never makes.
-		return { other: where };
+		return { other: `${where}, which this provider never makes` };
 	}
 	if (!none) return { other: `${where}, with an egress volume or relay, which this provider never makes` };
 	const name = (inspected?.Name ?? "").replace(/^\//, "");

@@ -26,6 +26,7 @@ import { BrowserFailureError, browserFailure, cdpCall, type CdpSession } from "@
 import { BROWSER_IMAGE, type BrowserSpec, type ComputerProvider, isBrowserProvider, PROVIDERS, providerFor, releaseOlder, runLabels } from "@parcha/agentrun-computer";
 import { KEY_TABLE, providerOptions } from "./computer-keys.js";
 import { claimBrowser } from "./workspace/computer-for-claim.js";
+import { hostEnvOf } from "./workspace/computer-providers.js";
 import type { ClaimBrowser } from "./workspace/resolve-computer.js";
 
 /** Custody's own refusal of a second saver, in its words: no session was started. */
@@ -253,7 +254,7 @@ export async function planeComputer(vendor: string, env: NodeJS.ProcessEnv): Pro
   // the vendor through), as the claim's providers get them (workspace/computer-deps.ts): the key checks and the sign-in
   // creation already go through that gateway, so the browser's sessions do too.
   const names = PROVIDERS.find((one) => one.id === vendor)?.hostEnv;
-  const hostEnv = names ? { env: Object.fromEntries(names.flatMap((name) => (env[name] === undefined ? [] : [[name, String(env[name])]]))) } : {};
+  const hostEnv = names ? { env: hostEnvOf(env, names) } : {};
   return providerFor(vendor as never, { ...(options.options as object), ...hostEnv } as never);
 }
 

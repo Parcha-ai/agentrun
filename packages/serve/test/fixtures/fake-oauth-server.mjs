@@ -23,6 +23,7 @@ export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3
   const spent = new Set();
   const issued = [];
   let hanging = false;
+  let dropping = false;
   let failing = 0;
   let grantedUnanswered = false;
   /** The next `/token` request's hold (holdNext): granted at once, its answer sent when the test lets it go. */
@@ -93,6 +94,7 @@ export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3
     }
     if (url.pathname === "/token" && req.method === "POST") {
       if (hanging) return; // never answered: its client's own timeout ends it
+      if (dropping) return void req.socket.destroy(); // read, then its connection closed with no answer
       if (failing) return void res.writeHead(failing, { "content-type": "text/plain" }).end("the token service is down");
       // The next one is granted (a refresh token rotated) but its answer never sent.
       const hold = holding;
@@ -151,10 +153,13 @@ export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3
     revoke: () => (refresh.clear(), access.clear()),
     /** From now on `/token` never answers, as an authorization server that hangs. */
     hang: () => void (hanging = true),
+    /** From now on `/token` reads each request, then closes its connection with no answer: the request left and its
+     *  answer was lost on the wire, which its client meets at once, on no timer. */
+    drop: () => void (dropping = true),
     /** From now on `/token` answers `status` (a 503, say) and grants nothing, as an authorization server that is down. */
     fail: (status) => void (failing = status),
-    /** Answering again: no hang, no failure. */
-    heal: () => void ((hanging = false), (failing = 0)),
+    /** Answering again: no hang, no drop, no failure. */
+    heal: () => void ((hanging = false), (dropping = false), (failing = 0)),
     /** The next `/token` request is granted (a refresh token is spent) but never answered. */
     grantUnanswered: () => void (grantedUnanswered = true),
     /** The next `/token` request is granted at once (a refresh token is spent) and its answer held: `granted` resolves
