@@ -95,7 +95,8 @@ export interface RecipeEntryOptions extends AcpEntryHost {
    *  (ModuleLaunch.fetch), undefined for the network. Whatever it returns is what the proxy forwards with, so a check
    *  runs the hop a server's run takes. */
   readonly record?: (next: typeof fetch | undefined) => typeof fetch;
-  missing?(env: NodeJS.ProcessEnv): Promise<string | undefined>;
+  /** `held`: a held run its model kept from running (harness-table.ts AcpPlanEntryOptions.missing), asked for no key. */
+  missing?(env: NodeJS.ProcessEnv, launch?: { readonly held: boolean }): Promise<string | undefined>;
   hidden?(env: NodeJS.ProcessEnv): string | undefined;
 }
 
@@ -160,14 +161,18 @@ export function recipeServerEntry(loaded: ReturnType<typeof loadRecipe>, data: s
   const route = (env: NodeJS.ProcessEnv) => serverRoute(recipe, loaded.file, data, env, { signIn, saved: harnessKeysSavedHere(data, recipe.id) });
   const start = (env: NodeJS.ProcessEnv) => serverRoute(recipe, loaded.file, data, env, { signIn });
   /** Why it cannot run on `env`, in words that end with the command that fixes it; undefined when it can. Nothing is
-   *  digested here (each start is, beforeStart): the tree pin and the check's note are compared. */
-  const why = (env: NodeJS.ProcessEnv): string | undefined => {
+   *  digested here (each start is, beforeStart): the tree pin and the check's note are compared. Where `held` (a held
+   *  run its model kept from running, whose agent never starts and whose claim laid no key), its install and check
+   *  alone: no route is asked, so neither a key nor a sign-in is, and a run's own process, which holds no server's
+   *  record of the keys saved here (harnessKeysSavedHere), holds its computer as a runner's claim does. */
+  const why = (env: NodeJS.ProcessEnv, held = false): string | undefined => {
     const install = recipeInstall(data, recipe, loaded.file, env, platform);
     if ("code" in install) return `${install.code}: ${install.message}`;
     const checked = checkedOf(data, recipe.id);
     if (!checked || checked.recipe !== loaded.sha256 || checked.tree !== install.tree.sha256 || checked.platform !== platform) {
       return `${HARNESS_NOT_CHECKED}: ${recipe.label} runs on this server once harness-check passes for this recipe and this install${checked ? " (the recipe or its install changed since the last check that passed)" : ""}. Check it with: ${recipeCheckLine(loaded.file, data, env)}`;
     }
+    if (held) return undefined;
     const on = route(env);
     return "refused" in on ? `${on.refused}: ${on.message}` : undefined;
   };
@@ -197,8 +202,8 @@ export function recipeServerEntry(loaded: ReturnType<typeof loadRecipe>, data: s
       const off = "code" in install ? install : await installHolds(install);
       if (off) throw new Error(`${off.code}: ${command} does not start: ${off.message}`);
     },
-    missing: async (env) => {
-      const lacks = why(env);
+    missing: async (env, launch) => {
+      const lacks = why(env, launch?.held === true);
       if (lacks) return lacks;
       // A start that failed is tried again at the next run, never kept.
       egress ??= egressProxy(hosts, { record: false, unref: true }).catch((error: unknown) => {
@@ -208,6 +213,6 @@ export function recipeServerEntry(loaded: ReturnType<typeof loadRecipe>, data: s
       egressUrl ??= (await egress).url;
       return undefined;
     },
-    hidden: why,
+    hidden: (env) => why(env),
   });
 }

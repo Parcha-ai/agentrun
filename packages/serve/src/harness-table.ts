@@ -389,6 +389,9 @@ export type PlanLaunch = Omit<ModuleLaunch, "provider" | "price" | "skills"> & {
  *  HarnessUnavailable of its own, which keeps the fix (install, pins) it names; `recipe` may throw one too (a key unset). */
 export interface AcpPlanEntryOptions extends ModuleChecks, Pick<HarnessEntry, "ownKeys" | "card" | "hidden"> {
   readonly facts: AdapterFacts;
+  /** As ModuleChecks.missing. `held`: the run is held, its model kept from running (AdapterNeeds.heldRefusal), so its
+   *  agent never starts and its claim laid no key: what only a key or a sign-in fixes is not asked, its install still is. */
+  missing?(env: NodeJS.ProcessEnv, launch?: { readonly held: boolean }): string | undefined | Promise<string | undefined>;
   recipe(launch: PlanLaunch): AcpRecipe | Promise<AcpRecipe>;
   beforeStart?(command: string): Promise<void>;
 }
@@ -408,17 +411,17 @@ function acpPlanEntryOf(options: AcpPlanEntryOptions, host: AcpEntryHost = {}): 
   const prefix = `${id}/`;
   const make = async (env: NodeJS.ProcessEnv, needs: AdapterNeeds, probe = false): Promise<AgentAdapter> => {
     const { fixOf, harnessLog } = await import("./adapters.js");
+    // A held run its model kept from running never starts its agent: it is asked for no key or sign-in (`missing`), its
+    // route reads no key (PlanLaunch.held), its recipe names none (no keys, and no keyEnv naming one, which the adapter
+    // refuses), and its start is refused in its create's words.
+    const held = needs.heldRefusal;
     // What no key fixes is said first, as for the built-in harnesses' binaries.
-    const lacks = await options.missing?.(env);
+    const lacks = await options.missing?.(env, { held: held !== undefined });
     if (lacks) throw new HarnessUnavailable(lacks);
     const acp = acpPackage();
     if (!acp) throw new HarnessUnavailable(`${label} needs the ACP adapter (${ACP_PACKAGE}) beside this server`);
     if (needs.model.provider !== id) throw new HarnessUnavailable(`${label} runs ${label}'s models, named ${prefix}<model-id>; the run's model is ${needs.model.provider}/${needs.model.modelId}.`);
     const log = host.log ?? harnessLog(id, env);
-    // A held run its model kept from running never starts its agent: its route reads no key (PlanLaunch.held), its recipe
-    // names none (no keys, and no keyEnv naming one, which the adapter refuses), and its start is refused in its
-    // create's words.
-    const held = needs.heldRefusal;
     try {
       const recipe = await ownKeysOnly(facts, await options.recipe({ model: needs.model.modelId, log, ...(needs.confine ? { confine: needs.confine } : {}), env, ...(probe ? { probe } : {}), ...(held !== undefined ? { held: true } : {}) }));
       const beforeStart = held !== undefined ? async () => { throw new HarnessUnavailable(held); } : options.beforeStart;
