@@ -90,11 +90,13 @@ const TWO_REQUESTS = [
   { model: "openai/gpt-5", usage: portUsage(OPENAI, 0.02), ended: { end: "answered", usd: 0.02 } },
 ];
 
-/** The run's route as its spec's trace names it: its own model, and the route the second request's model is its own on. */
-const TRACE = { provider: "openrouter", serverAddress: "openrouter.ai", model: "anthropic/claude-sonnet-4.5", routes: new Map([["second", { model: "openai/gpt-5" }]]) };
+/** The run's route as its spec's trace names it: its own model, and the route the second request's model is its own on;
+ *  and its agent, as the spec reads it from the store (stores() makes agent-1, "Agent one"). */
+const TRACE = { provider: "openrouter", serverAddress: "openrouter.ai", model: "anthropic/claude-sonnet-4.5", routes: new Map([["second", { model: "openai/gpt-5" }]]), agent: { id: "agent-1", name: "Agent one" } };
 
-/** One run of the stand-in, traced into memory: its spans, the run's row, and the trace's log lines. `redact`: the
- *  runner's redactor; `extra`: more events of its turn (standIn). */
+/** One run of the stand-in, traced into memory: its spans, the run's row, and the trace's log lines after the one its
+ *  start says (`[otel] tracing is on`, asserted in otel-agent-name.test.mjs). `redact`: the runner's redactor; `extra`:
+ *  more events of its turn (standIn). */
 async function tracedRun(t, { requests = TWO_REQUESTS, extra, redact, facts, exporter = new InMemorySpanExporter(), env = ON, trace = TRACE, runCap = { capUsd: () => undefined, modelOf: () => undefined } } = {}) {
   const lines = [];
   // The claim's trace, told when it ends: its end() is the last thing the claim does (adapter-loop.ts traced).
@@ -132,8 +134,11 @@ async function tracedRun(t, { requests = TWO_REQUESTS, extra, redact, facts, exp
   // The run's end commits before its trace ends: the loop's last patch lands the run ended and released, and only then
   // does the claim's trace end, its open spans and its invoke_agent span with it. Read the spans once it has.
   if (await tracing) await until(() => traceEnded, "the claim's trace ended", 5_000);
-  return { spans: exporter.getFinishedSpans?.() ?? [], row, lines };
+  return { spans: exporter.getFinishedSpans?.() ?? [], row, lines: lines.filter((line) => !line.startsWith("[otel] tracing is on: ")) };
 }
+
+/** The first line a failed export says, as a pattern: the endpoint's origin, the time, then `why` (a pattern's source). */
+const failedLine = (why) => new RegExp(`^\\[otel\\] a trace export to http://otlp\\.invalid:4318 failed at \\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d\\.\\d{3}Z; its spans were dropped: ${why}$`);
 
 const KINDS = ["INTERNAL", "SERVER", "CLIENT", "PRODUCER", "CONSUMER"];
 /** A trace as a tree of names, kinds, statuses and attributes: children in start order, no ids or times. */
@@ -209,7 +214,7 @@ test("an exporter that throws never fails the run: it ends ok, and the failure i
   const { row, lines } = await tracedRun(t, { exporter: throwing });
   assert.equal(row.state, "ended", `the run ended ok: ${JSON.stringify(row)}`);
   assert.equal(lines.length, 1, `one line for every span it dropped: ${JSON.stringify(lines)}`);
-  assert.match(lines[0], /^\[otel\] a trace export failed; its spans were dropped: collector down$/);
+  assert.match(lines[0], failedLine("collector down"));
 });
 
 test("a name the model wrote reaches no span uncut: a refused tool is execute_tool with error.type=tool_refused, a body's unknown model is the route's, and a held value is on no span", async (t) => {
@@ -417,7 +422,7 @@ test("a run's process posts no held value onto a span: its provider, host, call 
   const [lost, refused] = chatSpans(spans);
   assert.equal(lost.attributes["error.type"], undefined, "an end the runner does not know is read as none");
   assert.equal(refused.attributes["error.type"], "refused", "a known end keeps its label");
-  assert.equal(spans.find((span) => span.name === "invoke_agent pi").attributes["error.type"], "run-error", "a failure that is not a code is the runner's");
+  assert.equal(spans.find((span) => span.name === "invoke_agent" && span.attributes["agentrun.harness"] === "pi").attributes["error.type"], "run-error", "a failure that is not a code is the runner's");
   assert.equal(spans.find((span) => span.attributes["agentrun.run.id"] === "run-plan" && span.attributes["gen_ai.operation.name"] === "chat").attributes["error.type"], "failed", "a turn status it does not know is failed");
 });
 
@@ -449,7 +454,7 @@ test("a runner error line holds no OTLP header value: each one is a held secret,
   assert.equal(row.state, "ended");
   assert.equal(lines.length, 1, JSON.stringify(lines));
   assert.equal(lines[0].includes(key), false, `the tracer's line holds no header value: ${lines[0]}`);
-  assert.match(lines[0], /^\[otel\] a trace export failed; its spans were dropped: 401: Authorization: (Bearer )?\[redacted\]$/);
+  assert.match(lines[0], failedLine("401: Authorization: (Bearer )?\\[redacted\\]"));
 });
 
 test("an OTLP header value of 8 or more is held but a standard one's, under any name; a shorter one is on no held list, and the tracer's cut still takes it", () => {
@@ -546,7 +551,7 @@ test("a short OTLP header value is cut from the tracer's own error text, at any 
   assert.equal(row.state, "ended");
   assert.equal(lines.length, 1, JSON.stringify(lines));
   assert.equal(lines[0].includes(short), false, `the tracer's line holds no header value: ${lines[0]}`);
-  assert.equal(lines[0], "[otel] a trace export failed; its spans were dropped: 401 for x-honeycomb-team: [redacted] (x-team=[redacted]), Content-Type: application/json");
+  assert.match(lines[0], failedLine("401 for x-honeycomb-team: \\[redacted\\] \\(x-team=\\[redacted\\]\\), Content-Type: application/json"));
 });
 
 test("no span carries content, even with OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT=true: no message, prompt, argument or result", async (t) => {
@@ -586,6 +591,7 @@ test("off by default: a whole run with no OTEL_* set loads no @opentelemetry mod
   const said = JSON.parse(child.stdout.trim().split("\n").at(-1));
   assert.equal(said.state, "ended", "the run ended");
   assert.deepEqual(said.loaded, [], "no @opentelemetry module was loaded");
+  assert.doesNotMatch(`${child.stdout}\n${child.stderr}`, /\[otel\]/, "off, the runner's start says nothing of tracing");
   // The same probe sees them once tracing is on: its silence above is no blind spot.
   assert.ok(said.loadedOn.includes("@opentelemetry/resources"), `on, the SDK's modules load: ${JSON.stringify(said.loadedOn)}`);
 });
@@ -678,7 +684,7 @@ test("a claim's end never waits on the collector: with an exporter that never an
   void trace.end().then(() => (ended = true));
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(ended, true, "the claim's end did not wait for the export");
-  assert.ok(hanging.exported.some((span) => span.name === "invoke_agent pi"), "its spans were handed to the exporter, unanswered");
+  assert.ok(hanging.exported.some((span) => span.name === "invoke_agent"), "its spans were handed to the exporter, unanswered");
   assert.equal(hanging.flushes, 0, "no flush was asked");
 });
 
@@ -735,7 +741,7 @@ test("a run whose root span failed to start leaves its trace id to no later span
   const spans = exporter.getFinishedSpans();
   const ids = spans.map((span) => [span.name, span.spanContext().traceId]);
   assert.ok(!ids.some(([, id]) => id === traceIdOf("run-a")), `run-a's id is on no span: ${JSON.stringify(ids)}`);
-  assert.equal(spans.find((span) => span.name === "invoke_agent pi").spanContext().traceId, traceIdOf("run-b"));
+  assert.equal(spans.find((span) => span.name === "invoke_agent").spanContext().traceId, traceIdOf("run-b"));
 });
 
 test("a turn that did not complete cuts its own calls, never one an earlier turn left going", async () => {

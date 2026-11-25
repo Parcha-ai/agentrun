@@ -96,7 +96,7 @@ import { monidForClaim, withMonid } from "./monid-run.js";
 import { verifyPlacedProject, movedSkillFiles } from "../source-sync/claim.js";
 import { projectCheckpointForRun } from "./project-checkpoint.js";
 import { sourceAuxiliaryAdmitter } from "../source-sync/auxiliary.js";
-import { routeTrace } from "../otel/genai.js";
+import { agentOfRun, routeTrace } from "../otel/genai.js";
 
 /** The shared claim-time computer types live on the base spec (adapter-run-spec.ts), re-exported for this module's API. */
 export type { ClaimComputer, ClaimDeps, ClaimLaunch, ComputerForClaim } from "./adapter-run-spec.js";
@@ -840,8 +840,9 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     // The answer's schema: a miss is asked again once (adapter-loop.ts, the output contract's retry), as on pi.
     ...(body.outputSchema !== undefined ? { outputSchema: body.outputSchema } : {}),
     ...(cap ? { cap } : {}),
-    // Its model, as its GenAI trace names it (otel/genai.ts); its requests' host is its CLI's own to choose.
-    trace: routeTrace({ named: `${chosen.model.provider}/${chosen.model.modelId}`, model: chosen.model.modelId }),
+    // Its model, as its GenAI trace names it (otel/genai.ts); its requests' host is its CLI's own to choose. And the agent
+    // the run is of (its id and name; the loop cuts them).
+    trace: { ...routeTrace({ named: `${chosen.model.provider}/${chosen.model.modelId}`, model: chosen.model.modelId }), agent: await agentOfRun(deps.store.agents, runRow.agentId) },
     // The run's MCP for a harness with its own client (mcp-run.ts), with its monid endpoints beside it (monid-run.ts):
     // the catalog tools the session mounts; absent when none.
     ...(catalog ? { mcp: catalog } : {}),
