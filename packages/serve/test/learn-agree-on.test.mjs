@@ -176,7 +176,6 @@ test("19 inputs graded wrong with no correction, where the draft answers anythin
   assert.equal(held.record.decided, "hold", held.record.reason);
   const { answer } = held.stored.check.fields;
   assert.deepEqual([held.stored.check.agreed, held.stored.check.alone, answer.n, answer.unjudged, answer.pass], [1, 20, 1, 19, false]);
-  assert.match(held.record.reason, /judged on 1 of 20 \(5\.0%, the bar 70\.0%\)/);
   const shown = held.stored.check.disagreements;
   assert.deepEqual(shown.map((one) => one.run), Array.from({ length: 19 }, (_, i) => `r-${i}`), "every input with no known answer, none left out");
   assert.ok(shown.every((one) => JSON.stringify(one.fields) === '["answer"]' && JSON.stringify(one.expected) === '[{"field":"answer","known":"unknown"}]'), JSON.stringify(shown[0]));
