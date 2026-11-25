@@ -96,14 +96,10 @@ export function AgentFactoryBoard({ cards, review, loading, refreshing, error, u
 
   return (
     // The page's frame is every list page's (Mission Control, Runs, Triggers): a bar with the place's icon and name in
-    // caps and, at the right, how its sessions are laid out and its action; then the content.
+    // caps, then the content. Its controls sit with the sessions they act on, at the end of the totals' row.
     <section className="flex min-h-full flex-col" aria-label="Agent Factory">
-      <header className={cn(pageToolbarClass, "flex-wrap justify-between gap-2 px-5 md:px-6")}>
+      <header className={cn(pageToolbarClass, "px-5 md:px-6")}>
         <h1 className={pageTitleClass}><Factory className="size-4" aria-hidden />Agent Factory</h1>
-        <div className="ml-auto flex items-center gap-2">
-          <Segmented size="sm" name="factory-view" label="View" value={view} onChange={onView} options={VIEWS} />
-          <Button size="icon" aria-label="Refresh Agent Factory" disabled={busy} aria-busy={busy} onClick={onRefresh}><RefreshCw className="size-4" aria-hidden /></Button>
-        </div>
       </header>
       <div className="mx-auto w-full max-w-page-wide space-y-6 p-5 md:p-8">
 
@@ -117,16 +113,23 @@ export function AgentFactoryBoard({ cards, review, loading, refreshing, error, u
 
       {available && <>
         {/* The loaded sessions counted once, on one row: each lane's own header counts the cards a filter leaves in it.
-            While a filter narrows the cards, how many of them match is said at the row's end, on the same baseline. */}
-        <section aria-label="Loaded active session totals" className="flex flex-wrap items-baseline gap-x-8 gap-y-2 border-b pb-4">
-          <p className="font-mono text-body"><strong className="text-figure font-semibold">{cards.length}</strong> active sessions loaded</p>
-          <dl className="flex flex-wrap items-baseline gap-x-6 gap-y-1">
-            {LANES.map((lane) => <div key={lane.id} className="flex items-baseline gap-2">
-              <dt className="text-small text-muted-foreground">{lane.label}</dt>
-              <dd className="order-first font-mono text-lg">{cards.filter((card) => card.lane === lane.id).length}</dd>
-            </div>)}
-          </dl>
-        </section>
+            The row ends with how the sessions are laid out, then Refresh: they keep the first line's right end, and
+            in a narrow row the totals wrap beside them. */}
+        <div className="flex items-start gap-x-8 border-b pb-4">
+          <section aria-label="Loaded active session totals" className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-8 gap-y-2">
+            <p className="font-mono text-body"><strong className="text-figure font-semibold">{cards.length}</strong> active sessions loaded</p>
+            <dl className="flex flex-wrap items-baseline gap-x-6 gap-y-1">
+              {LANES.map((lane) => <div key={lane.id} className="flex items-baseline gap-2">
+                <dt className="text-small text-muted-foreground">{lane.label}</dt>
+                <dd className="order-first font-mono text-lg">{cards.filter((card) => card.lane === lane.id).length}</dd>
+              </div>)}
+            </dl>
+          </section>
+          <div className="ml-auto flex shrink-0 items-center gap-2">
+            <Segmented size="sm" name="factory-view" label="View" value={view} onChange={onView} options={VIEWS} />
+            <Button size="icon" aria-label="Refresh Agent Factory" disabled={busy} aria-busy={busy} onClick={onRefresh}><RefreshCw className="size-4" aria-hidden /></Button>
+          </div>
+        </div>
 
         {hasMore && <Banner tone="info" title="Partial coverage">More sessions may be available. Counts and filters cover only the sessions loaded so far.</Banner>}
 

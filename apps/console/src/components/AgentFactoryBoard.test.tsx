@@ -32,13 +32,13 @@ function mount(over: Partial<AgentFactoryBoardProps> = {}) {
   render();
   const button = (text: string) => [...host.querySelectorAll("button")].find((b) => b.textContent?.trim() === text)!;
   const lane = (name: string) => host.querySelector(`[data-factory-lane="${name}"]`)!;
-  /** The top bar's Refresh: an icon, named for a screen reader. */
-  const refresh = () => host.querySelector<HTMLButtonElement>('header button[aria-label="Refresh Agent Factory"]')!;
+  /** Refresh: an icon, named for a screen reader. */
+  const refresh = () => host.querySelector<HTMLButtonElement>('button[aria-label="Refresh Agent Factory"]')!;
   return { host, props, render, button, lane, refresh };
 }
 
 describe("Agent Factory board", () => {
-  it("frames the page as the console's other pages do: its name in the top bar after its icon, and Refresh as the bar's action", () => {
+  it("frames the page as the console's other pages do: its name in the top bar after its icon; the view switch and Refresh end the totals' row", () => {
     const { host, refresh } = mount();
     const bar = host.querySelector("header")!;
     for (const name of pageToolbarClass.split(" ")) expect(bar.classList.contains(name), name).toBe(true);
@@ -47,11 +47,20 @@ describe("Agent Factory board", () => {
     for (const name of pageTitleClass.split(" ")) expect(title.classList.contains(name), name).toBe(true);
     expect(title.querySelector("svg[aria-hidden]")).not.toBeNull();
     expect(host.querySelectorAll("h1")).toHaveLength(1);
-    expect(bar.contains(refresh())).toBe(true);
-    expect(refresh().textContent).toBe("");
+    // The bar is the place's name alone: the page's controls sit with the sessions they act on.
+    expect(bar.querySelectorAll("button, input")).toHaveLength(0);
     // No sentence under the bar: the totals are the page's first line, as a list is on the other pages.
     expect(host.textContent).not.toContain("Sessions reported to this AgentRun server");
-    expect(host.querySelector("header + div")?.firstElementChild?.getAttribute("aria-label")).toBe("Loaded active session totals");
+    const row = host.querySelector("header + div")!.firstElementChild!;
+    expect(row.children).toHaveLength(2);
+    expect(row.firstElementChild!.getAttribute("aria-label")).toBe("Loaded active session totals");
+    // The row's right end: how the sessions are laid out, then Refresh.
+    const controls = row.lastElementChild!;
+    expect(controls.classList.contains("ml-auto")).toBe(true);
+    expect(controls.firstElementChild?.getAttribute("role")).toBe("radiogroup");
+    expect(controls.firstElementChild?.getAttribute("aria-label")).toBe("View");
+    expect(controls.lastElementChild).toBe(refresh());
+    expect(refresh().textContent).toBe("");
   });
 
   it("shows every supplied active session in its reported lane and keeps terminal review separate", () => {
@@ -117,9 +126,9 @@ describe("Agent Factory board", () => {
     expect(host.querySelector('[aria-label="Loaded active session totals"] [aria-label="Matching sessions"]')).toBeNull();
   });
 
-  it("offers the sessions as a list or as cards in lanes: one View group of two icon segments in the top bar, on Cards until List is picked", () => {
+  it("offers the sessions as a list or as cards in lanes: one View group of two icon segments, on Cards until List is picked", () => {
     const { host, props } = mount();
-    const group = host.querySelector('header [role="radiogroup"][aria-label="View"]')!;
+    const group = host.querySelector('[role="radiogroup"][aria-label="View"]')!;
     const radios = [...group.querySelectorAll<HTMLInputElement>('input[type="radio"]')];
     expect(radios.map((radio) => radio.value)).toEqual(["list", "cards"]);
     // Each segment is an icon: its word is kept for a screen reader and for a pointer's hover, and is not drawn.
