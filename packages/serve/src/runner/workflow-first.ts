@@ -103,9 +103,17 @@ const meanOf = (costs: readonly number[]): Mean | null => (costs.length ? { runs
 
 /** The calls a run's all-in is charged to, of those its record keeps (`metrics.workflow_calls`, learning-cost.ts
  *  workflowCallsIn) that ran (one refused before any node ran ran nothing): the platform's, when it served the run first
- *  (the run is that workflow's alone, whatever the agent called after it handed back), else each the agent called. */
-const chargedCallsIn = (metrics: unknown) => {
-  const ran = workflowCallsIn(metrics).filter((call) => call.outcome !== "refused");
+ *  (the run is that workflow's alone, whatever the agent called after it handed back), else each the agent called. A
+ *  record that keeps no calls (a run that ended before they were kept) is charged as its path says, the rule calls
+ *  replaced: the workflow and digest it names when its path is one a workflow served (`workflow`, `handed_back`), so a
+ *  stop made on those runs stays made. */
+const chargedCallsIn = (metrics: unknown): WorkflowCall[] => {
+  const calls = workflowCallsIn(metrics);
+  if (!calls.length) {
+    const { path, workflow, workflow_digest: digest } = (metrics ?? {}) as { path?: unknown; workflow?: unknown; workflow_digest?: unknown };
+    return SERVED_PATHS.includes(path as RunPath) && typeof workflow === "string" && typeof digest === "string" ? [{ workflow, digest, caller: "platform", outcome: path === "workflow" ? "answered" : "handed_back", usd: null }] : [];
+  }
+  const ran = calls.filter((call) => call.outcome !== "refused");
   const first = ran.filter((call) => call.caller === "platform");
   return first.length ? first : ran;
 };

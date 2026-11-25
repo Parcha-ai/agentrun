@@ -201,14 +201,14 @@ test("the ledger row keeps the run's calls, and the money rule counts a run whos
     runs: [
       { metrics: { path: "handed_back", workflow: "a", workflow_calls: [call] }, allInUsd: 1.5, startedAt: 3 },
       { metrics: { path: "workflow", workflow: "a", workflow_digest: D, workflow_calls: [{ ...call, caller: "platform", outcome: "answered" }] }, allInUsd: 0.5, startedAt: 2 },
-      // A run that named the workflow but kept no call of it counts nothing.
+      // A run that named the workflow but kept no calls (one from before calls were kept) counts as its path says.
       { metrics: { path: "handed_back", workflow: "a", workflow_digest: D }, allInUsd: 9, startedAt: 1 },
     ],
     by_hand: { runs: 1, mean_usd: 1 },
     by_hand_unknown: 0,
   };
-  assert.deepEqual(costLineOf(past, "a", D).served, { runs: 2, mean_usd: 1 });
-  assert.deepEqual(workflowCostsOf(past).map(({ workflow, digest, served }) => ({ workflow, digest, served })), [{ workflow: "a", digest: D, served: { runs: 2, mean_usd: 1 } }]);
+  assert.deepEqual(costLineOf(past, "a", D).served, { runs: 3, mean_usd: 3.666667 });
+  assert.deepEqual(workflowCostsOf(past).map(({ workflow, digest, served }) => ({ workflow, digest, served })), [{ workflow: "a", digest: D, served: { runs: 3, mean_usd: 3.666667 } }]);
 });
 
 // The tool's record, on a stand-in model: a one-node workflow whose node submits its answer at once.
