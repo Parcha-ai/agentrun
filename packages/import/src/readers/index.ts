@@ -4,6 +4,7 @@ import type { Reader } from "../reader.js";
 import { claudeCode } from "./claude-code.js";
 import { codex } from "./codex.js";
 import { opencode } from "./opencode.js";
+import { copilot } from "./copilot.js";
 import { pi } from "./pi.js";
 
 export const READERS = {
@@ -11,6 +12,7 @@ export const READERS = {
   codex,
   pi,
   opencode,
+  copilot,
 } as const satisfies Record<string, Reader<string, any>>;
 
 export type Source = keyof typeof READERS;

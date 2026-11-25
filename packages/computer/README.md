@@ -1411,12 +1411,15 @@ declares no stop), and the Full `provider.janitor` case is skipped (`lifetime:ja
 A live run is wrapped in the one sweep, with the same settings (it needs no live switch, since it makes nothing):
 
 ```sh
-node packages/computer/dist/conformance/sweep.js --provider modal --before /tmp/modal-before.json
-AGENTRUN_COMPUTER_LIVE_MODAL=1 npm run test:modal -w @parcha/agentrun-computer
-node packages/computer/dist/conformance/sweep.js --provider modal --after /tmp/modal-before.json
+before="$(mktemp -d)/before.json"   # each run its own: --before refuses a file that is already there
+node packages/computer/dist/conformance/sweep.js --provider modal --before "$before"
+AGENTRUN_COMPUTER_LIVE_MODAL=1 npm run conformance -w @parcha/agentrun-computer -- --provider modal --run "$(node -p 'require(process.argv[1]).run' "$before")"
+node packages/computer/dist/conformance/sweep.js --provider modal --after "$before"
 ```
 
-Its output is `{"swept":n,"gone":m,"stillThere":[ids],"leftAlone":k}`, as for every provider on the adapter. The before
+`--after` deletes only the computers of the run the before file minted, the one `--run` names ([PROVIDERS.md](PROVIDERS.md),
+"The live sweep"). `npm run test:modal` runs the suite under its own run id, so it is no run this sweep wraps: its
+runner and its after hook delete what it made. Its output is `{"swept":n,"gone":m,"stillThere":[ids],"leftAlone":k}`, as for every provider on the adapter. The before
 file records where it listed, the app and the server (`sweepScope`), and `--after` refuses, exit 2, before it lists
 anything, a file of another app or server, or one that names none: every computer there would read as new.
 
@@ -1704,11 +1707,14 @@ The live sweep is the shared one, `dist/conformance/sweep.js --provider daytona 
 `COMPUTER_DAYTONA_API_URL` through the conformance module's `createHost`, with no live switch:
 
 ```sh
-node packages/computer/dist/conformance/sweep.js --provider daytona --before /tmp/daytona-before.json   # before the run
-node packages/computer/dist/conformance/sweep.js --provider daytona --after /tmp/daytona-before.json    # after it
+before="$(mktemp -d)/before.json"   # each run its own: --before refuses a file that is already there
+node packages/computer/dist/conformance/sweep.js --provider daytona --before "$before"   # before the run
+npm run conformance -w @parcha/agentrun-computer -- --provider daytona --run "$(node -p 'require(process.argv[1]).run' "$before")"
+node packages/computer/dist/conformance/sweep.js --provider daytona --after "$before"    # after it
 ```
 
-It prints `{"swept":n,"gone":m,"stillThere":[ids],"leftAlone":k}` (`gone` was `notFound`). A conformance run of
+`--after` deletes only the computers of the run `--run` names, the id `--before` minted, so another run on the same
+account keeps its computers. It prints `{"swept":n,"gone":m,"stillThere":[ids],"leftAlone":k}` (`gone` was `notFound`). A conformance run of
 Daytona also sweeps its own label through the host at its end (the report's `cleanup.sweep`).
 
 ### Daytona on dial
@@ -1727,9 +1733,13 @@ launch line E2B's dial runs (`dialLaunch`), with no rootOnly paths here. The URL
 env, which the command inherits, and is on no command line. A session Daytona refuses fails create in its words, and
 the sandbox is deleted. So the snapshot's entrypoint is not relied on: a box snapshot registered without one (name,
 image and resources alone) dials too, and one whose entrypoint is the box CMD sleeps, with no `AGENTRUN_ATTACH_URL` in
-its env, so `agentrun-dial` never runs twice. A machine that does not dial within `createMs` fails with that command's
-log, read once by the id its start returned, its last 10 lines within 800 characters (`dialLog`; the adapter replaces
-every machine token in it by `<token>`), or "agentrun-dial never started" when create started none. No Archil mount, no GPU, and not `image: "default"` (Daytona's default snapshot holds
+its env, so `agentrun-dial` never runs twice on its own. While create waits for the socket, it reads that command's
+exit (`dialExit`, the session's command of the id its start returned): an `agentrun-dial` that exited fails create at
+once, and an exit of 3 (its daemon fetch failed, after its own retries) or 5 (its init never listened, and was ended)
+starts it once more, by the same line, in a session of its own, `agentrun-dial-2` (`redial`), with a create note. One
+that runs and keeps writing is waited for past `createMs`, up to twice it. A machine that does not dial fails with that
+command's log first, its last 10 lines within 800 characters (`dialLog`; the adapter replaces every machine token in it
+by `<token>`), or "agentrun-dial never started" when create started none. No Archil mount, no GPU, and not `image: "default"` (Daytona's default snapshot holds
 no `agentrun-dial`): `check()` refuses each in words. Labels as on exec. A dial sandbox may be a desktop
 (`kind: "desktop"`): the box snapshot's X server, started over the socket it dialed, and xfwm4, which computerd starts
 (init's `--window-manager`), at the snapshot's 2 CPUs and 4 GiB, with no GPU. On exec a Daytona computer is kind
@@ -1784,7 +1794,9 @@ What each part of a dial sandbox rests on:
   `attachEgress` (`DAYTONA_ATTACH_EGRESS` in Settings), `<IPv4 relay>:<port>`, checked at construction: create puts it
   in the boot env as `AGENTRUN_ATTACH_EGRESS`, and `agentrun-dial`'s daemon fetch (curl `--connect-to`) and
   `computerd attach` both open TCP to it and speak TLS and HTTP to the public host through it, so the SNI, the
-  certificate checked and `Host` stay the public host's and TLS is end to end. Unset, nothing changes.
+  certificate checked and `Host` stay the public host's and TLS is end to end. Unset, nothing changes. A relay that
+  closes a connection during TLS (curl exit 35) or resets it (56) costs a retry: the fetch is tried again after 1, 2, 4
+  then 8 s, for at most 45 s, on any failed connection or HTTP 5xx, and never on a 4xx (exit 7).
 - **No GPU on dial**, refused in words: `daytona-gpu` holds no `agentrun-dial`, and Daytona runs a GPU sandbox
   unprivileged (`Privileged: gpuIndex == nil`,
   [runner container_configs.go:205](https://github.com/daytonaio/daytona/blob/b5a5d9e7/apps/runner/pkg/docker/container_configs.go#L205)),
@@ -2742,11 +2754,13 @@ the API's control URL) is a later change: `platform: "ios"` is refused in words.
   the `adb` CLI (Android platform-tools; default `adb` on PATH, which the phone's descriptor names as its
   `hostCommand`, so a server says it is missing before any phone is rented), whose server it starts and speaks to on
   the loopback (port 5037, adb's own, or `adbCli(path, { port })`). Every spawned adb names that port with `-P`, so the CLI and the
-  socket requests reach one server. `adbCli(path, { env })` spawns adb from the environment given, with every
-  `ADB_*`, `ANDROID_ADB_*` and `ANDROID_SERIAL` variable dropped, so nothing in it points the CLI at another server or
-  device. The library reads no environment of its own: the conformance module passes its own, minus its
-  `COMPUTER_PHONE_HARNESS_*` names (the key never reaches adb), and serve should pass one too. Without `env`, a spawned
-  adb inherits the process's environment as it is. Without adb, connect says so in words.
+  socket requests reach one server. `adbCli(path, { env })` spawns adb with only the names in `ADB_ENV_NAMES`
+  taken from the environment given (`adbEnv(env)`): the base names (`PATH`, `HOME`, `TMPDIR`, locale) and the SDK's
+  `ANDROID_HOME`, `ANDROID_SDK_ROOT`, `ANDROID_USER_HOME`, `ANDROID_SDK_HOME`. Nothing else reaches adb or the server it
+  starts: no `ADB_*`, `ANDROID_ADB_*` or `ANDROID_SERIAL` that would point it at another server or device, no proxy, no
+  key. The library reads no environment of its own, so a caller must pass `env`: the conformance module passes its own,
+  and serve passes the phone's `hostEnv`. Without `env`, adb starts with no environment at all, and a bare `adb` is
+  found only on the default path (`/usr/bin:/bin`): pass `env`, or give adb's absolute path. Without adb, connect says so in words.
 - **testConnection** is list(): one `GET /sessions` joined to the ledger, and a GET of any phone the listing leaves out.
   It rents nothing and reaches no phone: ok with the
   count of this provider's phones, `unauthorized` for a refused key, `unreachable` when the phone harness is not
@@ -2887,9 +2901,12 @@ alone (see [Init, the socket and the bridge](#init-the-socket-and-the-bridge)): 
 ### Conformance on boxd
 
 ```sh
-AGENTRUN_COMPUTER_LIVE_BOXD=1 COMPUTER_BOXD_API_KEY=... npm run conformance -w @parcha/agentrun-computer -- --provider boxd
-AGENTRUN_COMPUTER_LIVE_BOXD=1 COMPUTER_BOXD_API_KEY=... npm run test:boxd -w @parcha/agentrun-computer
-node packages/computer/dist/conformance/sweep.js --provider boxd --before /tmp/boxd-before.json   # then --after
+export COMPUTER_BOXD_API_KEY=...
+before="$(mktemp -d)/before.json"   # each run its own: --before refuses a file that is already there
+node packages/computer/dist/conformance/sweep.js --provider boxd --before "$before"
+AGENTRUN_COMPUTER_LIVE_BOXD=1 npm run conformance -w @parcha/agentrun-computer -- --provider boxd --run "$(node -p 'require(process.argv[1]).run' "$before")"
+node packages/computer/dist/conformance/sweep.js --provider boxd --after "$before"
+AGENTRUN_COMPUTER_LIVE_BOXD=1 npm run test:boxd -w @parcha/agentrun-computer   # its own run id: it deletes what it made
 ```
 
 The conformance module, `dist/conformance/boxd.js`, checks `AGENTRUN_COMPUTER_LIVE_BOXD=1` before it reads anything
@@ -2956,9 +2973,12 @@ What smol cloud refuses or this host works around:
 ### Conformance on smol cloud
 
 ```sh
-AGENTRUN_COMPUTER_LIVE_SMOLCLOUD=1 COMPUTER_SMOLCLOUD_API_KEY=... \
-  npm run conformance -w @parcha/agentrun-computer -- --provider smolcloud --long --concurrency 4
-node packages/computer/dist/conformance/sweep.js --provider smolcloud --before /tmp/smolcloud-before.json   # then --after
+export COMPUTER_SMOLCLOUD_API_KEY=...
+before="$(mktemp -d)/before.json"   # each run its own: --before refuses a file that is already there
+node packages/computer/dist/conformance/sweep.js --provider smolcloud --before "$before"
+AGENTRUN_COMPUTER_LIVE_SMOLCLOUD=1 npm run conformance -w @parcha/agentrun-computer -- --provider smolcloud --long --concurrency 4 \
+  --run "$(node -p 'require(process.argv[1]).run' "$before")"
+node packages/computer/dist/conformance/sweep.js --provider smolcloud --after "$before"
 ```
 
 The conformance module, `dist/conformance/smolcloud.js`, checks `AGENTRUN_COMPUTER_LIVE_SMOLCLOUD=1` first, then reads
@@ -3057,12 +3077,19 @@ What Groundbox refuses or this host works around:
 ### Conformance on Groundbox
 
 ```sh
-AGENTRUN_COMPUTER_LIVE_GROUNDBOX=1 COMPUTER_GROUNDBOX_API_KEY=... \
-  npm run conformance -w @parcha/agentrun-computer -- --provider groundbox --long
-AGENTRUN_COMPUTER_LIVE_GROUNDBOX=1 COMPUTER_GROUNDBOX_API_KEY=... COMPUTER_GROUNDBOX_KIND=desktop \
-  npm run conformance -w @parcha/agentrun-computer -- --provider groundbox --kind desktop --long --fixture <computerd-fixture for linux/amd64>
-node packages/computer/dist/conformance/sweep.js --provider groundbox --before /tmp/groundbox-before.json   # then --after
+export COMPUTER_GROUNDBOX_API_KEY=...
+before="$(mktemp -d)/before.json"   # each run its own: --before refuses a file that is already there
+node packages/computer/dist/conformance/sweep.js --provider groundbox --before "$before"
+run="$(node -p 'require(process.argv[1]).run' "$before")"
+AGENTRUN_COMPUTER_LIVE_GROUNDBOX=1 \
+  npm run conformance -w @parcha/agentrun-computer -- --provider groundbox --long --run "$run"
+AGENTRUN_COMPUTER_LIVE_GROUNDBOX=1 COMPUTER_GROUNDBOX_KIND=desktop \
+  npm run conformance -w @parcha/agentrun-computer -- --provider groundbox --kind desktop --long --fixture <computerd-fixture for linux/amd64> --run "$run"
+node packages/computer/dist/conformance/sweep.js --provider groundbox --after "$before"
 ```
+
+Both runs share the before file's `--run`, at once or one after the other: each run's own end-of-run sweep deletes only
+its own computers ([PROVIDERS.md](PROVIDERS.md), "The live sweep").
 
 The conformance module, `dist/conformance/groundbox.js`, checks `AGENTRUN_COMPUTER_LIVE_GROUNDBOX=1` first, then reads
 `COMPUTER_GROUNDBOX_API_KEY` (`apiKey`, required), `COMPUTER_GROUNDBOX_API_URL` (`apiUrl`), `COMPUTER_GROUNDBOX_IMAGE`
@@ -3099,8 +3126,14 @@ A provider for another vendor passes the same suite as Docker's, with one comman
 
 ```sh
 npm run conformance -w @parcha/agentrun-computer -- --provider docker            # or modal, daytona: any registry id
-npm run conformance -w @parcha/agentrun-computer -- --provider ./my-provider.js [--image debian:bookworm-slim] [--only exec,files] [--fixture <path>] [--long] [--concurrency <n>] [--json]
+npm run conformance -w @parcha/agentrun-computer -- --provider ./my-provider.js [--image debian:bookworm-slim] [--only exec,files] [--fixture <path>] [--long] [--concurrency <n>] [--run <id>] [--json]
 ```
+
+`--run <id>` (`run` in `runConformance`'s options) is the run's id, which every computer it makes carries as
+`agentrun.conformance`: the one the live sweep's `--before` printed, so its `--after` deletes this run's computers and no
+other's ([PROVIDERS.md](PROVIDERS.md), "The live sweep"). Without it, the run mints a fresh one. Every computer also
+carries `agentrun.conformance.runner`, an id each run mints for itself, and the run's own end-of-run sweep and list go
+by both labels, so two processes given one `--run` never delete each other's computers.
 
 ```text
 computer conformance · docker · linux, daemon pid1 · computerd 0.1.0-beta.30 linux/amd64

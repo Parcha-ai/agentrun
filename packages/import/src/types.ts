@@ -19,8 +19,10 @@ export type Mirror = { source: string; sessionId: string };
 /** An assistant turn is one model request: `model` the one it ran on ("provider/model"), `effort` the effort or
  *  thinking level it ran at, `usage` its tokens, each absent when the source does not say; `key`, the source's own id of
  *  the request (Claude Code's message id with its request id, Codex's response id); `error`, why it failed; `mirrors`, the
- *  other source's session that holds the same request (Mirror). A note is a
- *  line the harness itself wrote in the conversation: no request, nor the person's. */
+ *  other source's session that holds the same request (Mirror). `folded`: its usage
+ *  (zeros) is counted in a later request of the same session, where its source wrote a total, not each request's own
+ *  (Droid): its zeros are no unknown. A note is a line the harness itself wrote in the conversation: no request, nor the
+ *  person's. */
 export type Turn = (
   | { role: "user"; text: string; at: number }
   | { role: "note"; author: string; text: string; at: number }
@@ -31,10 +33,14 @@ export type Turn = (
       at: number;
       costUsd?: number;
       key?: string;
+      /** The source's own ids of the request's later parts, each a key of its own (Copilot's later chunks of a split
+       *  response, each a message with its own messageId): a later import counts them once too. */
+      keys?: string[];
       model?: string;
       effort?: string;
       usage?: Usage;
       error?: string;
+      folded?: true;
       mirrors?: Mirror;
     }
   | {
