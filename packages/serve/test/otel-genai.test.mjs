@@ -279,14 +279,32 @@ test("the runner's side of a run's posts keeps at most OPEN_MAX requests open by
   const posts = tracePosts({ open: () => trace, flush: async () => {} }, "run-bound", keepText);
   posts.post("open", [Date.now()]);
   posts.post("known", [{ runId: "run-bound", harness: "pi", model: "m" }]);
-  // OPEN_MAX + 3 started and never ended, one of them again under an id still open; then one ended frees its place.
+  // OPEN_MAX + 3 started and never ended, then id 0 again, which the bound refuses before the open-id check is reached
+  // (the next test pins that check); then one ended frees its place.
   for (let i = 0; i < OPEN_MAX + 3; i++) posts.post("request", [i, "m", undefined]);
   posts.post("request", [0, "m", undefined]);
-  assert.equal(asked, OPEN_MAX, "OPEN_MAX requests opened, none past that and none again under an open id");
+  assert.equal(asked, OPEN_MAX, "OPEN_MAX requests opened, none past that");
   posts.post("ended", [0, { input: 1, output: 1, usd: 0 }, { end: "answered", usd: 0 }]);
   posts.post("request", [OPEN_MAX + 10, "m", undefined]);
   posts.post("request", [OPEN_MAX + 11, "m", undefined]);
   assert.equal(asked, OPEN_MAX + 1, "one more once one ended, and no more past that");
+});
+
+test("the runner's side of a run's posts opens no second request under an id still open, so the first one's end still ends it", () => {
+  // Far below OPEN_MAX, so only the open-id check can refuse the repeat.
+  const opened = [];
+  const trace = { known: () => {}, request: () => { const request = { ends: 0 }; opened.push(request); return () => { request.ends += 1; }; }, event: () => {}, end: async () => {} };
+  const posts = tracePosts({ open: () => trace, flush: async () => {} }, "run-repeat", keepText);
+  posts.post("open", [Date.now()]);
+  posts.post("known", [{ runId: "run-repeat", harness: "pi", model: "m" }]);
+  posts.post("request", [0, "m", undefined]);
+  posts.post("request", [1, "m", undefined]);
+  posts.post("request", [0, "m", undefined]);
+  assert.equal(opened.length, 2, "an id posted again while open opens nothing");
+  posts.post("ended", [0, { input: 1, output: 1, usd: 0 }, { end: "answered", usd: 0 }]);
+  assert.deepEqual(opened.map((request) => request.ends), [1, 0], "id 0's end ends the request it first opened");
+  posts.post("request", [0, "m", undefined]);
+  assert.equal(opened.length, 3, "once ended, the id opens a request again");
 });
 
 test("the model rule: a known model as asked; an unknown one by its route's model; with none, through the redactor and capped", () => {
@@ -435,6 +453,25 @@ test("an OTLP endpoint's query parameter is held when a whole word of its name s
   const values = runnerSecrets({ OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: endpoint });
   for (const [what, value] of [["access_token", access], ["X-Amz-Signature", signature], ["apiKey", camel]]) assert.ok(values.includes(value), `${what}'s value is held`);
   for (const [what, value] of [["authority", "collector-east-7"], ["keyspace", "spans-main"]]) assert.equal(values.includes(value), false, `${what}'s value is not held`);
+});
+
+test("an OTLP endpoint's query parameter whose name is one lowercase word ending in a credential word is held; authority and keyspace still are not", () => {
+  const names = ["accesstoken", "authtoken", "apitoken", "writekey", "accesskey", "clientsecret"];
+  const value = (name) => `${name}-${"dummy"}-value-4747`;
+  const endpoint = `https://collector.invalid/v1/traces?authority=collector-east-7&keyspace=spans-main&${names.map((name) => `${name}=${value(name)}`).join("&")}`;
+  const values = runnerSecrets({ OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: endpoint });
+  for (const name of names) assert.ok(values.includes(value(name)), `${name}'s value is held`);
+  for (const [what, held] of [["authority", "collector-east-7"], ["keyspace", "spans-main"]]) assert.equal(values.includes(held), false, `${what}'s value is still not held`);
+});
+
+test("the tracer's [otel] lines cut an unknown header's tail after any first word, which the held lists still hold only whole", () => {
+  const cred = `custom-${"dummy"}-cred-9090`;
+  const env = { ...ON, OTEL_EXPORTER_OTLP_HEADERS: `X-Custom=Custom ${cred}` };
+  for (const [list, values] of [["runnerSecrets", runnerSecrets(env)], ["hostSecrets", hostSecrets(env)]]) {
+    assert.ok(values.includes(`Custom ${cred}`), `the value is held whole (${list})`);
+    assert.equal(values.includes(cred), false, `its tail alone is not held (${list})`);
+  }
+  assert.equal(otlpHeaderCut(env)(`401: bad credential ${cred}`), "401: bad credential [redacted]", "an [otel] line quoting the tail alone is cut");
 });
 
 test("a short OTLP header value is cut from the tracer's own error text, at any length; a standard header's value is left as it is", async (t) => {
