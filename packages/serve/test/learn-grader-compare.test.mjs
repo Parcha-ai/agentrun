@@ -356,7 +356,7 @@ test("(10) a partial grade ({answer: 42} of the agent's {answer, sure, why}): ea
   const corrected = JSON.stringify({ answer: 42, sure: true, why: "six times seven is forty-two" });
   const users = w.graderRequests().map((request) => JSON.stringify(request.body));
   assert.equal(users.length, 3, "one grader request per replay");
-  assert.ok(users.every((one) => one.includes(JSON.stringify(`The agent's answer:\n<<<\n${corrected}\n>>>`).slice(1, -1))), `each asks against the corrected answer: ${users[0]}`);
+  assert.ok(users.every((one) => one.includes(JSON.stringify(`The known answer:\n<<<\n${corrected}\n>>>`).slice(1, -1))), `each asks against the corrected answer: ${users[0]}`);
 });
 
 test("(11) a grade given between the replays' end and the check's settle: each input is judged on what its fast model was asked (no grade then), so the verdict stands and the revision promotes; the grade counts from the next check", { timeout: 300_000 }, async (t) => {
