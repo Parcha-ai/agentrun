@@ -2323,6 +2323,36 @@ test("a run whose refresh finds a later hand-over each time it has waited for on
   assert.deepEqual(whys, ["turn", "turn", "turn"], "each wait was logged as one for a turn's making of the offers");
 });
 
+// A refresh's making of the offers can be overtaken with no later hand-over too: a model key saved meanwhile starts a
+// probe of its own (the key is one of the offers' inputs), and the refresh's is dropped as it lands. The hand-over the
+// refresh waited for is then still the latest and did not fail, yet where the key's probe fails (or is still out) the
+// offers held are the ones made before both, from the login as it was. The request must not go on by them: it makes
+// the offers from the login held itself (or waits for the probe out). Here the run's own refresh finds the folder
+// mended and its probe is held; the key's save comes meanwhile, its probe held too and failing, and only then is the
+// refresh's probe let go.
+const OVERTAKEN_BY_KEY_WHY = "a run whose refresh's making of the offers was overtaken by a key save's, which failed, checked the offers made before both";
+test("a run whose refresh's making of the offers is overtaken by a key save's that then fails makes the offers from the login held: it is not refused for a key, and claude-agent is offered", { skip: process.platform === "win32" ? "no modes" : process.geteuid() === 0 ? "root may write anywhere" : false, timeout: 120_000 }, async (t) => {
+  const { api, folder, start } = await mendedLater(t);
+  chmodSync(folder, 0o700);
+  const refreshing = held.hold((env) => claudeLoginOf(env) !== undefined && env.OPENAI_API_KEY === undefined);
+  t.after(() => refreshing.release());
+  const running = start();
+  await refreshing.reached;
+  const saveProbe = held.hold((env) => env.OPENAI_API_KEY !== undefined, new Error("the probe of the offers failed"));
+  t.after(() => saveProbe.release());
+  const saving = api("PUT", "/settings/tool-keys/openai", { values: { OPENAI_API_KEY: "fake-test-key" } });
+  await saveProbe.reached;
+  saveProbe.release();
+  const saved = await saving;
+  assert.equal(saved.status, 500, `the key save's probe failed, so the save fails: ${JSON.stringify(saved.body)}`);
+  refreshing.release();
+  const run = await running;
+  assert.equal(run.status, 202, `${OVERTAKEN_BY_KEY_WHY}: ${JSON.stringify(run.body)}`);
+  assert.equal((await api("POST", `/runs/${run.body.run_id}/cancel`)).status < 300, true);
+  const offer = await offerOf(api);
+  assert.equal(offer.available, true, `claude-agent is offered once the run made the offers from the login held: ${JSON.stringify(offer)}`);
+});
+
 // A template's plan and its apply pick the package's harness by the offers (the first of its list offered here, as a
 // model choice's is checked against them), as a run's check reads them. Right after a chmod mends the login's folder,
 // or refuses it again, they must look at the folders first, as a run, a save and capabilities do, not pick by the
