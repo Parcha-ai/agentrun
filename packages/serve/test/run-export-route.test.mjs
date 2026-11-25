@@ -122,9 +122,13 @@ test("GET /runs/{id}/export: an ended run's bundle, cut of every planted value; 
     const file = doc.files.find((each) => each.path === "inputs/notes.txt");
     assert.ok(file, JSON.stringify(doc.files.map((each) => each.path)));
     assert.match(file.content, /^The notes: Connect with PGPASSWORD=\[redacted:secret-assign\]/);
-    assert.ok(file.content.includes("[redacted:held-value]"), "the held value in the file, which the server serves uncut, is cut as held");
+    // The file is cut as the server's own cut read cuts it (?cut=run: the held value and the key's shape "[redacted]"),
+    // then by the scrubber (the label and personal cuts recorded).
+    const served = await get(s, `/runs/${runId}/files/inputs/notes.txt?cut=run`);
+    assert.ok(served.text.includes("key [redacted]; token [redacted];"), served.text);
+    assert.ok(file.content.includes("key [redacted]; token [redacted];"), file.content);
     const kinds = new Set(doc.cuts.map((cut) => cut.kind));
-    for (const kind of ["format", "held", "label", "personal"]) assert.ok(kinds.has(kind), `a ${kind} cut: ${[...kinds]}`);
+    for (const kind of ["label", "personal"]) assert.ok(kinds.has(kind), `a ${kind} cut: ${[...kinds]}`);
     assert.ok(doc.omitted.some((each) => each.what === "recordings"));
   });
 
@@ -135,7 +139,7 @@ test("GET /runs/{id}/export: an ended run's bundle, cut of every planted value; 
     assert.ok(one.bytes.equals(two.bytes), "the same bytes");
   });
 
-  await t.test("restore: a label cut comes back in place and moves to restored; a format, held, unknown or malformed id is a 400 that names no value", async () => {
+  await t.test("restore: a label cut comes back in place and moves to restored; an unknown or malformed id is a 400 that names no value", async () => {
     const doc = JSON.parse((await get(s, `/runs/${runId}/export`)).text);
     const label = doc.cuts.find((cut) => cut.kind === "label" && cut.at === "/files/0/content");
     assert.ok(label, JSON.stringify(doc.cuts.map((cut) => [cut.at, cut.rule])));
@@ -148,14 +152,10 @@ test("GET /runs/{id}/export: an ended run's bundle, cut of every planted value; 
     assert.equal(content.slice(back.restored[0].start, back.restored[0].end), p.pg, "the value is back at its span");
     holdsNoPlant(restored.text, p, "the restored bundle", ["pg"]);
     assert.equal(restored.text.split(p.pg).length - 1, 1, "back in that one place alone");
-    for (const kind of ["format", "held"]) {
-      const cut = doc.cuts.find((each) => each.kind === kind);
-      assert.ok(cut, kind);
-      const refused = await get(s, `/runs/${runId}/export?restore=${label.id},${cut.id}`);
-      assert.equal(refused.status, 400, `${kind}: ${refused.text}`);
-      assert.match(JSON.parse(refused.text).error.message, /not restorable/);
-      holdsNoPlant(refused.text, p, `the ${kind} refusal`);
-    }
+    // Every value no restore may bring back (a held value, a key's shape) reaches the scrubber already "[redacted]" by the
+    // served reads and the file cut: this bundle holds no cut of one to name. The unit tests pin a format, held or dump
+    // cut's id as a 400.
+    assert.ok(doc.cuts.every((cut) => cut.restorable), JSON.stringify(doc.cuts.map((cut) => [cut.kind, cut.restorable])));
     for (const id of ["c_0123456789abcdef", "c_nothex", encodeURIComponent(p.pg)]) {
       const refused = await get(s, `/runs/${runId}/export?restore=${id}`);
       assert.equal(refused.status, 400, `${id}: ${refused.text}`);

@@ -53,7 +53,8 @@ function rowsOf(p = PLANTED) {
     row(1, "message", `Connect with PGPASSWORD=${p.pg} psql -h db, then mail ${p.email}`),
     row(2, "text_block", `Set OPENAI_API_KEY=${p.sk} and GITHUB_TOKEN=${p.ghp}; the AWS id ${p.aws}.`),
     row(3, "tool_result", ["$ env", `HOME=${unixHome(p.user)}`, "PATH=/usr/bin", `SECRET_THING=${p.envValue}`, "SHELL=/bin/sh", "$ echo done"].join("\n")),
-    row(4, "text_block", `The host ${p.ip} answered from ${unixHome(p.user)}/work.`),
+    // A value saved after these rows were served (the cut only grows, and is read last): the scrubber cuts it as held.
+    row(4, "text_block", `The host ${p.ip} answered from ${unixHome(p.user)}/work with the key saved since, ${p.held}.`),
     row(5, "final_answer", `Done. Mail ${p.email} about ${unixHome(p.user)}/work; key ${p.sk}.`),
   ];
 }
@@ -179,7 +180,8 @@ test("files: UTF-8 text within the caps is carried with its bytes and sha256 as 
     const digest = createHash("sha256").update(file.path).update(Buffer.from([0])).update(file.content).update(Buffer.from([0])).digest("hex");
     assert.equal(file.sha256, digest, "packageSha256 of the file as carried");
   }
-  assert.match(doc.files[0].content, /held again: \[redacted:held-value\]/);
+  // A file is cut as the served cut read cuts it (cutFileText) before the scrubber reads it: its held value is "[redacted]".
+  assert.match(doc.files[0].content, /held again: \[redacted\]\n/);
   assert.deepEqual(doc.omitted, [{ what: "file", path: "out/shot.png", why: "binary" }, { what: "recordings", why: "never" }]);
 
   const caps = { fileBytes: 64, filesBytes: 100, files: 3 };
