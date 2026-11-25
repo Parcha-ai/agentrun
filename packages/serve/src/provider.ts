@@ -10,14 +10,14 @@
 //     as model.ts chose it; OpenAI with its key, OpenAI's id; or OpenRouter's Responses API (openRouterOnly, or a model
 //     the run names on it, `openrouter/openai/<model-id>`), the model's whole id. Each key goes as a bearer token.
 //   any wire the runner's model route translates a model's provider onto (wires.ts routed: an Ollama model of this
-//     machine on Anthropic's Messages): the route's own origin and fetch (runner/model-route.ts routeOf), no key, at the
-//     model's catalog price; for every harness on that wire alike.
+//     machine on Anthropic's Messages or OpenAI's Responses): the route's own origin and fetch (runner/model-route.ts
+//     routeOf), no key, at the model's catalog price; for every harness on that wire alike.
 //   claude-agent on Claude Code's login on this machine (claude-login.ts), when the owner turned it on: an Anthropic
 //     model goes on the person's plan, from the CLI itself, with no key of ours and no proxy (`login`).
 import type { HarnessWire as Wire, Wire as ModelWire } from "@parcha/agentrun-kernel";
 import { CredentialUnavailable, ROUTE_ORIGIN } from "@parcha/agentrun-kernel/host";
 import { CLAUDE_LOGIN_PROVIDER, onClaudeLogin, claudeLoginOf, loginServes, type RunLogin } from "./claude-login.js";
-import { chooseModel, FAUX_ENV, hostModel, MODEL_PROVIDER, type ModelNeeds, type ModelRef, ollamaWouldRun, START_OLLAMA } from "./model.js";
+import { chooseModel, FAUX_ENV, harnessRuns, hostModel, MODEL_PROVIDER, type ModelNeeds, type ModelRef, ollamaWouldRun, START_OLLAMA } from "./model.js";
 import { modelWire, routed, routedId, translatesOnto, WIRES, wireOf } from "./wires.js";
 import { modelFormWhy } from "./model-form.js";
 import { gatewayHeadersOf } from "./request-metadata.js";
@@ -210,8 +210,14 @@ export function providerFor(wire: Wire, env: NodeJS.ProcessEnv, model: ModelRef,
   const named = `${model.provider}/${model.modelId}`;
   // A harness on its own plan (Cursor's) calls its vendor itself, on its owner's key: no route of ours is its.
   if (!modelWire(wire)) throw new HarnessUnavailable(`${who} runs its model on its own plan, never through a model route of AgentRun's; ${named} is not one to proxy.`);
-  // A model the route translates onto this wire, for any harness on it; never behind serve's gateway, whose models are its.
-  if (routed(wire, model) && !env.AGENT_MODEL_BASE_URL) return routedProvider(env, wire, model);
+  // A model the route translates onto this wire, for a harness on it that runs it (harnessRuns: one whose proxy forwards
+  // with the route's fetch); never behind serve's gateway, whose models are its.
+  if (routed(wire, model) && !env.AGENT_MODEL_BASE_URL) {
+    if (harnessRuns(env, named, who)) return routedProvider(env, wire, model);
+    // One that does not say it forwards the route (a module without forwardsRoute): its requests would never reach the
+    // route, and no key would change that, so its words name what its module must do.
+    throw new HarnessUnavailable(`${who} doesn't forward AgentRun's model route, so it can't run ${named}. To run it, its module must forward its model requests with the fetch its launch hands it (ModuleLaunch.fetch, given to startModelProxy's fetch) and set forwardsRoute: true in its facts.`);
+  }
   if (wire === "anthropic-messages") {
     // A model of serve's gateway that the gateway takes on Messages (a Claude model, model.ts gatewayWire): the gateway's
     // own route, as on Responses. No harness of this wire chooses one (claude-agent's model is never the gateway's).

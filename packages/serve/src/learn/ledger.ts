@@ -3,7 +3,8 @@
 // transaction (store/sqlite/run-patch.ts); summarize() is the one reading of them, which GET /agents/{id}/learning/cost,
 // GET /runs/{id}'s cost and the money rule (runner/workflow-first.ts costLineOf, over RunFigures) all take. Pure: no
 // store, no clock.
-import { amortize, type Bill, billOf, costSummary, type CostRun, type CostSummary, JOB_PATHS, NOT_SERVED, type NotServed, noiseOff, type RevisionSpend, RUN_PATHS, type RunPath, SERVED_PATHS, tookOverOf } from "../learning-cost.js";
+import { amortize, type Bill, billOf, costSummary, type CostRun, type CostSummary, JOB_PATHS, NOT_SERVED, type NotServed, noiseOff, type RevisionSpend, RUN_PATHS, type RunPath, SERVED_PATHS, tookOverOf, type WorkflowCall, workflowCallsIn } from "../learning-cost.js";
+import { FINAL_STATES, type RunRow } from "../store/store.js";
 
 /** A run's own cost as its row stores it: `known`, an exact figure; `unknown`, none; `at_most`, only a bound (a request
  *  cut at its cap hold), never shown as a cost. */
@@ -13,7 +14,9 @@ export type CostState = (typeof COST_STATES)[number];
 /** One ended run: who answered it (`path`, null when its end named none), the learned workflow revision that ran it
  *  (`workflow` at `digest`; for an audit's shadow, the revision it audits), why that workflow did not serve it alone,
  *  the job's own $ (`jobUsd`: what it had cost when its answer was final, its look-back left out) and everything its
- *  rounds looked back for (`lookBackUsd`: its compile turns and its follow-up rounds' turns); each null when unknown. */
+ *  rounds looked back for (`lookBackUsd`: its compile turns and its follow-up rounds' turns); each null when unknown; and
+ *  every learned workflow call it made (`workflowCalls`: its metrics' `workflow_calls`, the platform's and the agent's,
+ *  each with its digest, caller, outcome and booked $), none for a run that made none. */
 export type LedgerRow = {
   readonly runId: string;
   readonly agentId: string;
@@ -25,6 +28,7 @@ export type LedgerRow = {
   readonly jobUsd: number | null;
   readonly lookBackUsd: number | null;
   readonly cost: CostState;
+  readonly workflowCalls: readonly WorkflowCall[];
 };
 
 /** What a spend row paid for: a compile turn that drafted a revision (`compile`), a replay run checking one (`check`), or
@@ -47,7 +51,9 @@ export type SpendRow = {
 };
 
 /** What record() reads of an ended run: its row (its cost, the bound beside it, its metrics: the run-end classifier's
- *  path, workflow and digest, runner/workflow-first.ts pathMetrics) and every round its learning kept (learning_proposals). */
+ *  path, workflow and digest, runner/workflow-first.ts pathMetrics), every round its learning kept (learning_proposals)
+ *  and, for an audit's shadow run, the run its launch audits (`auditOf`: its end may name no audit, when it failed first).
+ *  `learns`: whether its launch learns (learnsOfLaunch); false, an end that named no path is the agent's. */
 export type RunEnd = {
   readonly id: string;
   readonly agentId: string;
@@ -56,11 +62,21 @@ export type RunEnd = {
   readonly costAtMostUsd: number | null;
   readonly metrics: unknown;
   readonly rounds: readonly { readonly round: number; readonly proposal: unknown }[];
+  readonly auditOf?: string | null;
+  readonly learns?: boolean;
 };
 
 const usdOrNull = (value: unknown): number | null => (typeof value === "number" && Number.isFinite(value) ? value : null);
 const textOrNull = (value: unknown): string | null => (typeof value === "string" ? value : null);
 const objectOf = (value: unknown): Record<string, unknown> => (value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {});
+
+/** RunEnd.auditOf of run `runId` from its stored launch body (`body`, undefined with none): the run its launch audits
+ *  (null when it names none) for an audit's shadow run (learn/audit.ts SHADOW_PREFIX "audit."), undefined for any other. */
+export const auditOfLaunch = (runId: string, body: unknown): string | null | undefined =>
+  runId.startsWith("audit.") ? textOrNull(objectOf(objectOf(body).audit).of) : undefined;
+/** RunEnd.learns from a run's stored launch body (`body`, undefined with none): whether it holds a learning start, as
+ *  run-launch.ts learningStartOfStored reads one. No launch reads as a run that does not learn. */
+export const learnsOfLaunch = (body: unknown): boolean => objectOf(body).learning !== undefined;
 /** A sum of parts, null once one is unknown; 0 for none. */
 const sumOf = (parts: readonly (number | null)[]): number | null => (parts.some((one) => one === null) ? null : noiseOff(parts.reduce<number>((total, one) => total + one!, 0)));
 
@@ -138,9 +154,13 @@ export function record(end: RunEnd): { row: LedgerRow; spend: SpendRow[] } {
   // What the row holds past the answer and its look-back is a later turn's spend, unknown once the row's cost is; with the
   // look-back's cost unknown the two can't be told apart, and the job is what it had cost when it answered.
   const job = !looked || asAnswered === null || back === null ? asAnswered : rowUsd === null ? null : Math.max(asAnswered, rowUsd - back);
-  const path = RUN_PATHS.includes(metrics.path as RunPath) ? (metrics.path as RunPath) : null;
+  const audited = metrics.path === "audit" || end.auditOf !== undefined;
+  // The one by-hand rule (the window's read and Learning.byHandBefore read the row's path, each leaving a workflow
+  // revision's runs out): a run whose end named no path is the agent's when its launch does not learn; one that learns
+  // and named none is unknown (null).
+  const named = RUN_PATHS.includes(metrics.path as RunPath) ? (metrics.path as RunPath) : null;
+  const path = audited ? "audit" : named ?? (end.learns === false ? "agent" : null);
   const audit = objectOf(metrics.audit);
-  const audited = path === "audit";
   const workflow = textOrNull(audited ? audit.workflow : metrics.workflow);
   const digest = textOrNull(audited ? audit.digest : metrics.workflow_digest);
   // A hand-back a restart cut (pathMetrics workflow_cut) is `cut`, never the workflow's own `back`.
@@ -148,36 +168,20 @@ export function record(end: RunEnd): { row: LedgerRow; spend: SpendRow[] } {
   const notServed = cut ? "cut" : NOT_SERVED.includes(metrics.not_served as NotServed) ? (metrics.not_served as NotServed) : null;
   const row: LedgerRow = {
     runId: end.id, agentId: end.agentId, startedAt: end.startedAt, path, workflow, digest, notServed,
-    jobUsd: job === null ? null : noiseOff(job), lookBackUsd: back === null ? null : noiseOff(back), cost,
+    jobUsd: job === null ? null : noiseOff(job), lookBackUsd: back === null ? null : noiseOff(back), cost, workflowCalls: workflowCallsIn(metrics),
   };
   const base = { runId: end.id, agentId: end.agentId };
   const spend: SpendRow[] = compilesIn(rounds).map((one) => ({ ...base, round: one.round, kind: "compile", ofRun: null, workflow: one.workflow, digest: one.digest, usd: one.usd }));
   if (path === "replay") spend.push({ ...base, round: 0, kind: "check", ofRun: null, workflow, digest, usd: rowUsd });
-  if (audited) spend.push({ ...base, round: 0, kind: "audit", ofRun: textOrNull(audit.of), workflow, digest, usd: rowUsd });
+  if (audited) spend.push({ ...base, round: 0, kind: "audit", ofRun: textOrNull(audit.of) ?? end.auditOf ?? null, workflow, digest, usd: rowUsd });
   return { row, spend };
-}
-
-/** The audit spend row of shadow run `shadow` of run `ofRun`, from its row alone: for a shadow whose end named no audit
- *  (it failed before its end wrote its metrics), found by its id (learn/audit.ts shadowRunId). Its cost is the row's,
- *  null when unknown or only a bound. */
-export function shadowSpend(shadow: Pick<RunEnd, "id" | "agentId" | "costUsd" | "costAtMostUsd">, ofRun: string): SpendRow {
-  const usd = typeof shadow.costAtMostUsd === "number" ? null : shadow.costUsd;
-  return { runId: shadow.id, agentId: shadow.agentId, round: 0, kind: "audit", ofRun, workflow: null, digest: null, usd };
 }
 
 /** An audit's shadow run of a run, as the reader finds it: `open` while it is queued or running (its cost not known yet),
  *  `ended` once it ended, stopped or failed. A run with none has no entry. */
 export type Shadow = "open" | "ended";
 
-/** A run's figures, every one null when unknown, never $0 for unknown:
- *  - `usd`: the job's own $ (GET /runs/{id} `cost.usd`, the series' `cost_usd`);
- *  - `compile_usd`, `followup_usd`, `shadow_usd`: its own compile turns, the rest of its look-back (its follow-up rounds'
- *    turns) and its audit's shadow run;
- *  - `share_usd`: its share of its revision's compile and check (amortize), 0 for a run that carries none;
- *  - `series_learning_usd` and `series_total_usd`: the cost series' `learning_usd` (its whole look-back and its shadow)
- *    and `total_usd`, the all-in both sides of the money rule read;
- *  - `learning_usd` and `all_in_usd`: GET /runs/{id}'s (its follow-ups, its shadow and its share: its compile turns are
- *    its revision's), 0 for a replay or a shadow run, whose spend is on the runs it serves. */
+/** A run's figures (figuresOf), null when unknown: `series_*` are the cost series', the rest GET /runs/{id}'s. */
 export type RunFigures = {
   readonly usd: number | null;
   readonly compile_usd: number | null;
@@ -218,30 +222,31 @@ export function spendByRun(spend: readonly SpendRow[]): { compile: Map<string, n
   return { compile, audit };
 }
 
-/** A run's shadow cost: 0 with none; unknown while it is at work, or once it ended with no spend row; its spend row's
- *  once it has one. */
+/** An audit's shadow run as its cost reads: `ended` once it is final (FINAL_STATES), `usd` its cost (null while unknown
+ *  or only a bound). */
+export type ShadowCost = { readonly ended: boolean; readonly usd: number | null };
+
+/** A shadow run's row as a ShadowCost. */
+export const shadowOfRun = (run: Pick<RunRow, "state" | "costUsd" | "costAtMostUsd">): ShadowCost =>
+  ({ ended: FINAL_STATES.includes(run.state), usd: typeof run.costAtMostUsd === "number" ? null : run.costUsd });
+
+/** A run's shadow cost, the one rule the ledger, GET /stats and analytics read: 0 with no shadow (undefined); unknown
+ *  (null) while it is queued or running, or once it ended at an unknown cost, never $0; its cost once known. */
+export const shadowUsdOf = (shadow: ShadowCost | undefined): number | null => (shadow === undefined ? 0 : shadow.ended ? shadow.usd : null);
+
+/** A run's shadow cost (shadowUsdOf) from the reader's shadows and the audit spend rows: an ended shadow costs its
+ *  spend row's, unknown with none. */
 export function shadowCostOf(runId: string, audit: ReadonlyMap<string, number | null>, shadows: ReadonlyMap<string, Shadow>): number | null {
   const state = shadows.get(runId);
-  if (state === "open") return null;
-  if (audit.has(runId)) return audit.get(runId)!;
-  return state === "ended" ? null : 0;
+  if (state === undefined && !audit.has(runId)) return 0;
+  return shadowUsdOf({ ended: state !== "open", usd: audit.has(runId) ? audit.get(runId)! : null });
 }
 
 /** A revision of a learned workflow as its records say it now (store-reads/learning.ts revisionsOf): the served runs its
  *  spend is spread over (`k`, its check's compile_after) and where it stands. Order is the records'. */
 export type RevisionAt = { readonly workflow: string; readonly digest: string; readonly k: number; readonly state: RevisionSpend["state"] };
 
-/** What summarize reads:
- *  - `rows`, the runs of the series (ended, neither imported nor archived nor purged, no workflow revision's run, no
- *    shadow), any order, each with its path (null: its end named none);
- *  - `spend`, the agent's spend rows: a compile or a check of a run `rows` leaves out is left out as its run is, an
- *    audit's by the run it audits;
- *  - `shadows`, each run's audit shadow by the run it audits;
- *  - `learning`, the runs of `rows` whose spend and service make up a revision's (on no named disk: one on a named disk
- *    learns nothing and serves nothing, learn/learning-of.ts); absent, every one;
- *  - `revisions`, as the records say them; `compileAfter`, the K of a revision no record names;
- *  - `named`, the workflow name a run's series row shows (its row's when absent).
- *  The summary's `replay` is the records' (store-reads/learning.ts servingReplayOf), null here. */
+/** What summarize reads: the series' rows and spend, shadows by audited run, learning runs (absent: all), revisions. */
 export type LedgerRead = {
   readonly rows: readonly LedgerRow[];
   readonly spend: readonly SpendRow[];

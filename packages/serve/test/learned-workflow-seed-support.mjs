@@ -17,7 +17,7 @@ const { workflowDigest } = await import("../dist/runner/workflow-first.js");
  *  it on it is never promoted (it stops). What a test of serving starts from. */
 export const checkedOf = (flows) => flows.map(({ name, workflow }) => ({
   workflow: name, digest: workflowDigest({ workflow: JSON.stringify(workflow) }), at: new Date(0).toISOString(), decided: "promote", source: "check",
-  reason: "checked on 1 of the agent's inputs: promoted", check: { compile_after: 20, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 1, agreed: 1, alone: 1, of: [] },
+  reason: "checked on 1 of the agent's inputs: promoted", check: { compile_after: 20, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 1, agreed: 1, alone: 1, agent_agreed: 1, joint: true, of: [] },
 }));
 
 /** Records `flows` promoted by their checks (checkedOf) in `settings`, agent `agentId`'s promotion records. */

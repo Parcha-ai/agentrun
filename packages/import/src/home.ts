@@ -1,6 +1,8 @@
 // Every session under a home, as totals: what each used, its subagents' requests with it, and what it cost. A session is
 // one per source and id, however many files write it (a Codex thread resumed in a new file, a Claude Code session copied
-// into a resumed one's); a subagent's is no session of its own but its parent's.
+// into a resumed one's); a subagent's is no session of its own but its parent's. A request another source's session also
+// holds (an OpenCode claude-agent request, which Claude Code writes too: its `mirrors`) is that session's, when the same
+// call reads it, and counts once there.
 import { createHash } from "node:crypto";
 import type { Stats } from "node:fs";
 import { stat } from "node:fs/promises";
@@ -10,11 +12,12 @@ import { type CalculateCost, type Catalog, builtinCatalog, loadCalculateCost, pr
 import { childrenOf, inOrder, type Readers, readerOf, sessionLocators } from "./read.js";
 import { type Env, type Locator, locatorKey, type SessionRead } from "./reader.js";
 import { READERS, SOURCES, type Source } from "./readers/index.js";
-import { AT, HAS_LONG, HAS_REASONING, HAS_USAGE, STRIDE, USAGE_FIELDS } from "./counts.js";
+import { addRequest, atOf, type Counts, counts as noCounts, HAS_LONG, HAS_REASONING, HAS_USAGE, STRIDE, trimmed } from "./counts.js";
 import { OLD_MB, type PoolRead, ReadPool, readAheadBytes } from "./pool.js";
 import { addAll, addRecord, dropOwner, locatorNumber, ownAll, ownerOf, type RecordIndex, recordIndex, someRecord } from "./record-index.js";
 import { type Packed, packed, packInto } from "./record-key.js";
-import type { Usage } from "./types.js";
+import { mirroredIn, sessionKey } from "./mirror.js";
+import type { Mirror, Usage } from "./types.js";
 import { addTokens, noTokens, type Tokens } from "./usage.js";
 
 export type SessionTotals = {
@@ -126,14 +129,12 @@ const keyOf = (home: string, { file, id }: Locator): { key: string; file: string
 type Meta = Pick<SessionRead["session"], "id" | "child" | "parent" | "users" | "copies" | "costUsd" | "model">;
 type Unpriced = {
   session: Meta;
-  /** Each request's model (its own, else the session's), as its index in the pass's Models; -1 for none. */
-  models: Int32Array;
-  /** Each request's tokens, USAGE_FIELDS numbers a request, in order; HAS_* says which it has. */
-  usage: Float64Array;
-  /** Each request's HAS_* bits. */
-  has: Uint8Array;
-  /** Each request's time (ms), for the requests sink. */
-  at: Float64Array;
+  /** Its requests as a totals read counts them (Counts: each one's model, usage and time, in Counts' stride), trimmed to
+   *  them. A request names no model of its own when counts.model[i] is -1: it is the session's. */
+  counts: Counts;
+  /** Only where a request names another source's session that holds it too (OpenCode's claude-agent turns): each
+   *  request's Mirror, and the cost it wrote (NaN for none), so the totals can leave the mirrored ones out (mirror.ts). */
+  mirrors?: { of: (Mirror | undefined)[]; cost: Float64Array };
 };
 
 /** A part once its requests are priced, as they are read when the prices are in hand: their tokens summed (exact: whole
@@ -152,7 +153,7 @@ type Counted = {
 };
 
 type Compact = Unpriced | Counted;
-const requestsOf = (read: Compact): number => ("n" in read ? read.n : read.models.length);
+const requestsOf = (read: Compact): number => ("n" in read ? read.n : read.counts.n);
 
 /** The prices requests are taken at, loaded once one is needed, as the totals would: the catalog, and pi-ai's
  *  calculateCost when the catalog is there. `ready` once both are as they will be. */
@@ -169,96 +170,45 @@ const MAX_THREADS = 8;
  *  the time anyway. More is refused before any worker starts. */
 export const MOST_THREADS = 64;
 
-/** Each model string once, by index: a request names its model as an index into it. */
-type Models = { names: string[]; index: Map<string, number> };
-
-/** `read` as a total takes it (Compact), each request's model the one totalsOf prices it at. */
-function compact(read: SessionRead, models: Models): Unpriced {
+/** `read` as a total takes it (Unpriced): its session's counts and ids, and its requests as Counts. A totals read's
+ *  counts are kept as read; a reader with no totals read gives its requests whole, and they are counted the same way. */
+function compact(read: SessionRead): Unpriced {
   const { id, child, parent, users, copies, costUsd, model } = read.session;
-  const { counts } = read;
-  if (counts) {
-    // A totals read's requests, as read: each one's model mapped to the pass's (its own, else the session's).
-    const intern = (name: string | undefined): number => {
-      if (name === undefined) return -1;
-      let at = models.index.get(name);
-      if (at === undefined) models.index.set(name, (at = models.names.push(name) - 1));
-      return at;
-    };
-    const names = counts.models.map(intern);
-    const fallback = intern(model);
-    // Each request's usage numbers, and apart from them its time (counts' stride is STRIDE, the time at AT).
-    const usage = new Float64Array(counts.n * USAGE_FIELDS);
-    const at = new Float64Array(counts.n);
-    for (let i = 0; i < counts.n; i += 1) {
-      usage.set(counts.values.subarray(i * STRIDE, i * STRIDE + USAGE_FIELDS), i * USAGE_FIELDS);
-      at[i] = counts.values[i * STRIDE + AT]!;
-    }
-    return {
-      session: { id, child, users, copies, ...(parent !== undefined ? { parent } : {}), ...(costUsd !== undefined ? { costUsd } : {}), ...(model !== undefined ? { model } : {}) },
-      models: counts.model.slice(0, counts.n).map((at) => (at === -1 ? fallback : names[at]!)),
-      usage,
-      has: counts.has.slice(0, counts.n),
-      at,
-    };
-  }
-  const n = read.requests.length;
-  const out: Unpriced = { session: { id, child, users, copies, ...(parent !== undefined ? { parent } : {}), ...(costUsd !== undefined ? { costUsd } : {}), ...(model !== undefined ? { model } : {}) }, models: new Int32Array(n), usage: new Float64Array(n * USAGE_FIELDS), has: new Uint8Array(n), at: new Float64Array(n) };
-  for (let i = 0; i < n; i += 1) {
-    const request = read.requests[i]!;
-    out.at[i] = request.at;
-    const name = request.model ?? model;
-    let at = -1;
-    if (name !== undefined) {
-      at = models.index.get(name) ?? -1;
-      if (at === -1) models.index.set(name, (at = models.names.push(name) - 1));
-    }
-    out.models[i] = at;
-    const { usage } = request;
-    if (!usage) continue;
-    const o = i * USAGE_FIELDS;
-    out.usage[o] = usage.input;
-    out.usage[o + 1] = usage.output;
-    out.usage[o + 2] = usage.cacheRead;
-    out.usage[o + 3] = usage.cacheWrite;
-    let has = HAS_USAGE;
-    if (usage.cacheWrite1h !== undefined) {
-      out.usage[o + 4] = usage.cacheWrite1h;
-      has |= HAS_LONG;
-    }
-    if (usage.reasoning !== undefined) {
-      out.usage[o + 5] = usage.reasoning;
-      has |= HAS_REASONING;
-    }
-    out.has[i] = has;
-  }
+  const session: Meta = { id, child, users, copies, ...(parent !== undefined ? { parent } : {}), ...(costUsd !== undefined ? { costUsd } : {}), ...(model !== undefined ? { model } : {}) };
+  if (read.counts) return { session, counts: trimmed(read.counts) };
+  const counts = noCounts();
+  for (const request of read.requests) addRequest(counts, request.model, request.usage, request.at);
+  const out: Unpriced = { session, counts: trimmed(counts) };
+  if (read.requests.some((request) => request.mirrors !== undefined)) out.mirrors = { of: read.requests.map((request) => request.mirrors), cost: Float64Array.from(read.requests, (request) => request.costUsd ?? Number.NaN) };
   return out;
 }
 
 /** The i-th request of `read` as priceRequests and the requests sink take it. */
-function requestAt(read: Unpriced, i: number, models: Models): SessionRequest {
-  const index = read.models[i]!;
-  const model = index === -1 ? undefined : models.names[index];
-  const request: SessionRequest = { at: read.at[i]!, ...(model !== undefined ? { model } : {}) };
-  const has = read.has[i]!;
+function requestAt({ session, counts }: Unpriced, i: number): SessionRequest {
+  // Its own model, else the session's.
+  const model = counts.models[counts.model[i]!] ?? session.model;
+  const request: SessionRequest = { at: atOf(counts, i), ...(model !== undefined ? { model } : {}) };
+  const has = counts.has[i]!;
   if (!(has & HAS_USAGE)) return request;
-  const o = i * USAGE_FIELDS;
-  const usage: Usage = { input: read.usage[o]!, output: read.usage[o + 1]!, cacheRead: read.usage[o + 2]!, cacheWrite: read.usage[o + 3]! };
-  if (has & HAS_LONG) usage.cacheWrite1h = read.usage[o + 4]!;
-  if (has & HAS_REASONING) usage.reasoning = read.usage[o + 5]!;
+  const { values } = counts;
+  const o = i * STRIDE;
+  const usage: Usage = { input: values[o]!, output: values[o + 1]!, cacheRead: values[o + 2]!, cacheWrite: values[o + 3]! };
+  if (has & HAS_LONG) usage.cacheWrite1h = values[o + 4]!;
+  if (has & HAS_REASONING) usage.reasoning = values[o + 5]!;
   return { ...request, usage };
 }
 
 const TOKEN_FIELDS = 6;
 
 /** `read` priced (Counted), its tokens added to `sums` (the source's so far). */
-function counted(read: Unpriced, models: Models, pricer: Pricer, sums: Float64Array): Counted {
-  const n = read.models.length;
+function counted(read: Unpriced, pricer: Pricer, sums: Float64Array): Counted {
+  const { n } = read.counts;
   const tokens = new Float64Array(TOKEN_FIELDS);
   const { catalog, calculate } = pricer;
   const costs = catalog && calculate ? new Float64Array(n) : undefined;
   let unpriceable = false;
   for (let i = 0; i < n; i += 1) {
-    const request = requestAt(read, i, models);
+    const request = requestAt(read, i);
     const { usage } = request;
     if (usage) {
       const counts = [usage.input, usage.output, usage.cacheRead, usage.cacheWrite, usage.cacheWrite1h ?? 0, usage.reasoning ?? 0];
@@ -280,6 +230,39 @@ function counted(read: Unpriced, models: Models, pricer: Pricer, sums: Float64Ar
 
 type Part = { locator: Locator; read: Compact };
 
+/** A session's cost with its subagents': Claude Code's written cost holds its subagents' already (its cost-state), so it
+ *  stays as it is; every other source writes a subagent's cost on the subagent's own session, so each is added. Unknown
+ *  when the session's is, or when one it adds is: never a subagent counted at 0. parseHome's totals and serve's import. */
+export function withSubagentCosts(source: string, cost: number | undefined, subagents: readonly (number | undefined)[]): number | undefined {
+  if (source === "claude-code" || cost === undefined) return cost;
+  return subagents.reduce<number | undefined>((sum, usd) => (sum === undefined || usd === undefined ? undefined : sum + usd), cost);
+}
+
+/** A part with its own requests alone (none another session of the call holds) and the cost it wrote of them: its own
+ *  when it holds none of another's, else its own requests' when each that used tokens is priced (mirror.ts ownRequests,
+ *  over the packed requests). Counted when `unpriced` is false and the prices are in hand (a part whose requests mirror
+ *  another's is kept Unpriced until the call knows which sessions it read). */
+function ownPart(read: Compact, mirrored: (request: { mirrors?: Mirror }) => boolean, pricer: Pricer, unpriced: boolean): Compact {
+  if ("n" in read || !read.mirrors) return read;
+  const marks = read.mirrors;
+  const { counts } = read;
+  const at = Array.from({ length: counts.n }, (_, i) => i).filter((i) => !mirrored({ mirrors: marks.of[i] }));
+  let own: Unpriced = read;
+  if (at.length !== counts.n) {
+    const priced = at.every((i) => !Number.isNaN(marks.cost[i]!) || !(counts.has[i]! & HAS_USAGE));
+    const costUsd = priced ? at.reduce((n, i) => n + (Number.isNaN(marks.cost[i]!) ? 0 : marks.cost[i]!), 0) : undefined;
+    const { costUsd: _, ...session } = read.session;
+    // Its own requests' rows of Counts (each STRIDE numbers: usage and time), their model indexes and HAS_* bits.
+    const values = new Float64Array(at.length * STRIDE);
+    for (const [k, i] of at.entries()) values.set(counts.values.subarray(i * STRIDE, (i + 1) * STRIDE), k * STRIDE);
+    own = {
+      session: { ...session, ...(costUsd !== undefined ? { costUsd } : {}) },
+      counts: { n: at.length, models: counts.models, model: Int32Array.from(at, (i) => counts.model[i]!), values, has: Uint8Array.from(at, (i) => counts.has[i]!) },
+    };
+  }
+  return unpriced || !pricer.ready ? own : counted(own, pricer, new Float64Array(TOKEN_FIELDS));
+}
+
 /** Every session of `sources` under `home`, as totals, sorted by key. */
 export async function parseHome(home: string, { sources = SOURCES, readers = READERS, state, catalog, calculateCost, env, failures, requests, threads = Math.min(availableParallelism(), MAX_THREADS), readAhead = readAheadBytes(), workerOldMb = OLD_MB }: ParseOptions = {}): Promise<SessionTotals[]> {
   if (!Number.isSafeInteger(threads) || threads < 1 || threads > MOST_THREADS) throw new RangeError(`threads: a whole number from 1 to ${MOST_THREADS}, not ${threads}`);
@@ -298,6 +281,8 @@ export async function parseHome(home: string, { sources = SOURCES, readers = REA
     }
     state.read = 0;
   }
+  // What readers look up once for this import (a Codex fork's parent anywhere in its sessions), shared by its files.
+  const lookups = new Map<string, unknown>();
   // Requests are priced as they are read once the prices are in hand: at once when the caller handed them in (or none),
   // else loaded when a session is read that the totals will price, as they would load them. A requests sink takes each
   // request with its time, so with one every part keeps its requests (Unpriced) to the totals.
@@ -326,22 +311,48 @@ export async function parseHome(home: string, { sources = SOURCES, readers = REA
       listing.reads = listing.ids.map((id) => () => pool.take(id));
     }
   }
+  // Every session this call read, by source and id, and the sources held to be totalled after the rest.
+  const readKeys = new Set<string>();
+  const mirroring: { source: string; read: { tops: Part[]; children: (Part & { of: Locator })[] } }[] = [];
   for (const source of sources) {
-    const models: Models = { names: [], index: new Map() };
     let read;
     try {
-      read = await readSource(home, source, readers, env, state, models, pricer, whole, ahead.get(source));
+      read = await readSource(home, source, readers, env, state, lookups, pricer, whole, ahead.get(source));
     } catch (error) {
       if (!(error instanceof Inexact)) throw error;
       // Tokens that cannot be summed as read: the source again, each request's tokens kept to the totals.
       if (state) (state.sources ??= {})[source] = undefined;
       // The pool's reads of this source left untaken would hold the read-ahead for nothing.
       pool?.drop(ahead.get(source)?.ids ?? []);
-      read = await readSource(home, source, readers, env, state, models, pricer, true);
+      read = await readSource(home, source, readers, env, state, lookups, pricer, true);
     }
     const { tops, children, unread } = read;
-    out.push(...(await totalsOf(home, source, tops, children, models, pricer, priceWith, calculateCost, requests)));
+    for (const part of [...tops, ...children]) readKeys.add(sessionKey(source, part.read.session.id));
+    // A source whose requests mirror another's (OpenCode's claude-agent ones) is totalled once every source is read: a
+    // mirrored request counts in the session it mirrors when this call reads that one too.
+    if ([...tops, ...children].some(({ read }) => "mirrors" in read && read.mirrors)) mirroring.push({ source, read });
+    else out.push(...(await totalsOf(home, source, tops, children, pricer, priceWith, calculateCost, requests)));
     failed.push(...unread.map(({ locator, error }) => ({ key: keyOf(home, locator).key, file: locator.file, source, error })));
+  }
+  // A request that mirrors a session this call read is counted in it, not again: each part keeps its own requests alone.
+  const mirrored = mirroredIn(readKeys);
+  for (const held of mirroring) {
+    const { source } = held;
+    let { read } = held;
+    const own = (all: boolean) => {
+      for (const part of [...read.tops, ...read.children]) part.read = ownPart(part.read, mirrored, pricer, all);
+    };
+    try {
+      // Priced as the source's other parts are: Counted when one is (the prices came in while it was read), else Unpriced.
+      own(whole || ![...read.tops, ...read.children].some((part) => "n" in part.read));
+    } catch (error) {
+      if (!(error instanceof Inexact)) throw error;
+      // As a source read above: again, each request's tokens kept to the totals.
+      if (state) (state.sources ??= {})[source] = undefined;
+      read = await readSource(home, source, readers, env, state, lookups, pricer, true);
+      own(true);
+    }
+    out.push(...(await totalsOf(home, source, read.tops, read.children, pricer, priceWith, calculateCost, requests)));
   }
   if (failed.length && !failures) throw new ReadFailures(failed);
   failures?.push(...failed);
@@ -367,7 +378,7 @@ async function listSource(home: string, source: string, readers: Readers, env: E
   return { listed, childList };
 }
 
-async function readSource(home: string, source: string, readers: Readers, env: Env | undefined, state: HomeState | undefined, models: Models, pricer: Pricer, whole: boolean, listing?: Listing): Promise<{ tops: Part[]; children: (Part & { of: Locator })[]; unread: { locator: Locator; error: unknown }[] }> {
+async function readSource(home: string, source: string, readers: Readers, env: Env | undefined, state: HomeState | undefined, lookups: Map<string, unknown>, pricer: Pricer, whole: boolean, listing?: Listing): Promise<{ tops: Part[]; children: (Part & { of: Locator })[]; unread: { locator: Locator; error: unknown }[] }> {
   const reader = readerOf(source, readers);
   // The pool's listing, when parseHome read this source ahead (pool.ts); each read is taken below in order, or made again.
   const { listed, childList, reads: ahead } = listing ?? (await listSource(home, source, readers, env));
@@ -422,7 +433,7 @@ async function readSource(home: string, source: string, readers: Readers, env: E
           return made.sessions;
         }
       }
-      const result = await reader.read(locator, cursor, { turns: false, totals: true, seen }).catch((error: unknown) => void unread.push({ locator, error }));
+      const result = await reader.read(locator, cursor, { turns: false, totals: true, seen, lookups }).catch((error: unknown) => void unread.push({ locator, error }));
       if (!result) {
         // A locator read before that cannot be read now gives up its cursor and the records it held, as a fresh pass
         // would hold none of them: the next pass reads it from its start. A locator that found them already read (a
@@ -451,14 +462,15 @@ async function readSource(home: string, source: string, readers: Readers, env: E
     // sink each part is priced once the prices are in hand. A session's own file that wrote no cost and is no file of
     // copies alone is one the totals price: the prices are loaded then, and the parts read so far priced.
     const pack = async (session: SessionRead, top: boolean): Promise<Compact> => {
-      const unpriced = compact(session, models);
-      if (whole) return unpriced;
+      const unpriced = compact(session);
+      // A part whose requests mirror another's stays Unpriced: its own are known once every source is read (ownPart).
+      if (whole || unpriced.mirrors) return unpriced;
       const { child, parent, costUsd, copies, users } = session.session;
       if (!pricer.ready && fresh && top && !(child && parent) && costUsd === undefined && !(copies > 0 && users === 0 && (session.counts?.n ?? session.requests.length) === 0)) {
         await pricer.load();
-        for (const part of [...tops, ...children]) if (!("n" in part.read)) part.read = counted(part.read, models, pricer, sums);
+        for (const part of [...tops, ...children]) if (!("n" in part.read) && !part.read.mirrors) part.read = counted(part.read, pricer, sums);
       }
-      return pricer.ready ? counted(unpriced, models, pricer, sums) : unpriced;
+      return pricer.ready ? counted(unpriced, pricer, sums) : unpriced;
     };
     for (const [i, { locator }] of listed.entries()) for (const session of await read(locator, pass === 0 ? ahead?.[i] : undefined)) tops.push({ locator: session.locator, read: await pack(session, true) });
     for (const [i, { locator, of }] of childList.entries()) for (const session of await read(locator, pass === 0 ? ahead?.[listed.length + i] : undefined)) children.push({ locator: session.locator, read: await pack(session, false), of });
@@ -469,7 +481,7 @@ async function readSource(home: string, source: string, readers: Readers, env: E
   }
 }
 
-async function totalsOf(home: string, source: string, tops: Part[], children: (Part & { of: Locator })[], models: Models, pricer: Pricer, priceWith: () => Promise<Catalog | undefined>, calculateCost: CalculateCost | undefined, sink?: ParseOptions["requests"]): Promise<SessionTotals[]> {
+async function totalsOf(home: string, source: string, tops: Part[], children: (Part & { of: Locator })[], pricer: Pricer, priceWith: () => Promise<Catalog | undefined>, calculateCost: CalculateCost | undefined, sink?: ParseOptions["requests"]): Promise<SessionTotals[]> {
   // Sessions by id, their locators in the import's order; one naming its parent (a Codex subagent's thread) is the
   // parent's, as is each one beside a session's (Claude Code's subagents).
   const sessions = new Map<string, { parts: Part[]; children: Part[]; untied?: true }>();
@@ -532,7 +544,7 @@ async function totalsOf(home: string, source: string, tops: Part[], children: (P
         reasoning += read.tokens[5]!;
       }
     } else {
-      for (const read of all as Unpriced[]) for (let i = 0; i < read.models.length; i += 1) requests.push(requestAt(read, i, models));
+      for (const read of all as Unpriced[]) for (let i = 0; i < read.counts.n; i += 1) requests.push(requestAt(read, i));
       for (const { usage } of requests) {
         calls += 1;
         if (!usage) continue;
@@ -540,10 +552,12 @@ async function totalsOf(home: string, source: string, tops: Part[], children: (P
         reasoning += usage.reasoning ?? 0;
       }
     }
-    // The source's own cost, when each of its files wrote one: Claude Code writes the session's running total (a moved
-    // session's copy goes on from the original's), so the highest; another source prices each request, so their sum.
-    const written = parts.flatMap(({ read }) => (read.session.costUsd !== undefined ? [read.session.costUsd] : []));
-    let cost: number | undefined = written.length === parts.length ? (source === "claude-code" ? Math.max(...written) : written.reduce((n, usd) => n + usd, 0)) : undefined;
+    // The source's own cost, when each of its files wrote one: Claude Code writes the session's running total, its
+    // subagents' with it (a moved session's copy goes on from the original's), so the highest; another source prices each
+    // request, so the sum of its files' and its subagents' (OpenCode's subagent is a session of its own).
+    const written = parts.map(({ read }) => read.session.costUsd);
+    const files = written.some((usd) => usd === undefined) ? undefined : source === "claude-code" ? Math.max(...(written as number[])) : (written as number[]).reduce((n, usd) => n + usd, 0);
+    let cost = withSubagentCosts(source, files, subagents.map(({ read }) => read.session.costUsd));
     if (cost === undefined && priced.length) {
       // Each request's cost as priced when read, summed in the order priceRequests sums them.
       if (pricer.catalog && pricer.calculate && !priced.some(({ unpriceable }) => unpriceable)) {
@@ -572,8 +586,15 @@ async function totalsOf(home: string, source: string, tops: Part[], children: (P
     };
     out.push(totals);
     if (sink) {
-      const times = parts.flatMap(({ read }) => Array.from((read as Unpriced).at)).filter(Number.isFinite);
-      sink(totals, requests, times.reduce<number | undefined>((least, at) => (least === undefined || at < least ? at : least), undefined));
+      // The session's first time: the least finite one of its own files' requests (Unpriced, as every part is with a
+      // sink), read where they are held.
+      let started: number | undefined;
+      for (const { read } of parts as { read: Unpriced }[])
+        for (let i = 0; i < read.counts.n; i += 1) {
+          const at = atOf(read.counts, i);
+          if (Number.isFinite(at) && (started === undefined || at < started)) started = at;
+        }
+      sink(totals, requests, started);
     }
   }
   return out;

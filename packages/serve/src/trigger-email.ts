@@ -9,11 +9,14 @@
 // watches from then; one that couldn't check until a later poll says so then. A UIDVALIDITY the server changed starts
 // over the same, as does another account saved in its place (PUT /v2/settings/email). A message's key is its Message-ID (else UIDVALIDITY:UID), so
 // one seen twice fires once; its attrs say where it was found (mailbox, UIDVALIDITY, UID), which a run's thread is read
-// from (email/tools.ts). At most POLL_TAKES messages a poll, oldest first. A
+// from (email/tools.ts), and `dmarc: "pass"` when the receiving server's own Authentication-Results says DMARC passed
+// for its From's domain (email/authentication.ts, read from the message this poll fetched, no other read): only then is
+// the run's starter spared email_send's new-address ask. At most POLL_TAKES messages a poll, oldest first. A
 // message this server sent (X-AgentRun-Sent, email/tools.ts email_send) is left, and said. An unreachable server is said
 // on the trigger and tried at the next time; a refused sign-in counts (the engine turns the trigger off at the third).
-import { DEFAULT_ACCOUNT, NO_ACCOUNT, type OpenedAccount } from "./email/account.js";
+import { authservIdOf, DEFAULT_ACCOUNT, NO_ACCOUNT, type OpenedAccount } from "./email/account.js";
 import { fittedPayload } from "./email/answer.js";
+import { dmarcPassed } from "./email/authentication.js";
 import { messages } from "./email/names.js";
 import type { ImapSession, MailMessage } from "./email/mail.js";
 import { ACCEPT_SCHEMA, acceptOf, acceptRefusal, type Rule } from "./trigger-accept.js";
@@ -66,13 +69,16 @@ function cursorOf(text: string | undefined): Cursor | undefined {
 const kept = (cursor: Cursor) => ({ [CURSOR]: JSON.stringify(cursor) });
 
 /** A message as the event its trigger fires: its payload (JSON, untrusted, whole within the engine's bound), its attrs
- *  (who, what, and where it was found: the run's thread is read from there), keyed by its Message-ID. */
-function eventOf(m: MailMessage, cursor: Cursor, payloadOf: (m: MailMessage) => Record<string, unknown>): PolledEvent {
+ *  (who, what, and where it was found: the run's thread is read from there; `dmarc: "pass"` when the receiving server's
+ *  own Authentication-Results, under `authservId`, says DMARC passed for its From's domain: email/authentication.ts),
+ *  keyed by its Message-ID. */
+function eventOf(m: MailMessage, cursor: Cursor, payloadOf: (m: MailMessage) => Record<string, unknown>, authservId: string | undefined): PolledEvent {
   const payload = fittedPayload(payloadOf(m), PAYLOAD_KEPT_BYTES);
+  const dmarc = dmarcPassed(m.authentication.results, m.authentication.from, authservId);
   return {
     key: m.message_id ?? `${cursor.uidvalidity}:${m.uid}`,
     text: JSON.stringify(payload),
-    attrs: { from: m.from, subject: m.subject, ...(m.message_id ? { message_id: m.message_id } : {}), mailbox: cursor.mailbox, uidvalidity: cursor.uidvalidity, uid: String(m.uid) },
+    attrs: { from: m.from, subject: m.subject, ...(m.message_id ? { message_id: m.message_id } : {}), mailbox: cursor.mailbox, uidvalidity: cursor.uidvalidity, uid: String(m.uid), ...(dmarc ? { dmarc: "pass" } : {}) },
     event: EVENT,
     body: payload,
     cursor: kept(cursor),
@@ -126,7 +132,7 @@ async function poll(source: EmailSource, account: OpenedAccount, cursor: Cursor 
     const fresh = (await session.uids({ uid: `${cursor.uid + 1}:*` })).filter((uid) => uid > cursor.uid);
     const taken = fresh.slice(0, POLL_TAKES);
     const read = await session.fetch(path, taken, READ_BYTES);
-    const events = read.map((m) => eventOf(m, { ...cursor, uid: m.uid }, payloadOf));
+    const events = read.map((m) => eventOf(m, { ...cursor, uid: m.uid }, payloadOf, authservIdOf(account)));
     const last = taken.at(-1) ?? cursor.uid;
     const more = fresh.length - taken.length;
     return { check: { ok: true, message: `Read ${source.mailbox}: ${messages(events.length)} new${more > 0 ? `, ${more} more at the next check` : ""}.` }, events, cursor: kept({ ...cursor, uid: last }) };

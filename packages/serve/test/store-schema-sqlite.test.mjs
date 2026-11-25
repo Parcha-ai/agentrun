@@ -40,7 +40,7 @@ for (const need of SQLITE_RUNNER_NEEDS) {
         if (db.prepare(`SELECT 1 FROM pragma_index_info('${name}') WHERE name = ?`).get(column) && !name.startsWith("sqlite_autoindex")) db.exec(`DROP INDEX "${name}"`);
       }
       // A trigger that names the column came with it (schema.ts RUN_LAUNCH_CENSUS_ERASED): an earlier build had none.
-      for (const { name } of db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ? AND sql LIKE ?").all(need.table, `%${column}%`)) db.exec(`DROP TRIGGER "${name}"`);
+      for (const { name } of db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = 'run_launch_census_erased' AND tbl_name = ? AND sql LIKE ?").all(need.table, `%${column}%`)) db.exec(`DROP TRIGGER "${name}"`);
       db.exec(`ALTER TABLE ${need.table} DROP COLUMN ${column}`);
     }
     db.close();
@@ -65,14 +65,14 @@ test("every wait the SQLite runner's open says for a column is on SQLITE_RUNNER_
   assert.deepEqual(said.filter((why) => !listed.has(why)), [], "each is listed");
 });
 
-test("on SQLite, a runner waits only for a version its server upgrades in place (11-14); any other earlier one, and a later one, is refused", () => {
+test("on SQLite, a runner waits only for a version its server upgrades in place (11-15); any other earlier one, and a later one, is refused", () => {
   const target = { kind: "sqlite", dataDir: "/data" };
   const verdict = (version) => {
     const report = storeSchemaReport(target, { version, runnerFloor: version }, SCHEMA_VERSION);
     return [report.server, report.runner];
   };
   assert.deepEqual(verdict(10), ["refuses", "refused"], "10: no in-place upgrade, so neither waits on it");
-  for (const version of [11, 12, 13, 14]) assert.deepEqual(verdict(version), ["migrates", "waits"], String(version));
+  for (const version of [11, 12, 13, 14, 15]) assert.deepEqual(verdict(version), ["migrates", "waits"], String(version));
   assert.deepEqual(verdict(SCHEMA_VERSION), ["opens", "opens"]);
   assert.deepEqual(verdict(SCHEMA_VERSION + 1), ["refuses", "refused"], "a later server's file");
   assert.deepEqual(verdict(null), ["sets up", "refused"]);

@@ -88,7 +88,8 @@ const KIND_TOOLS: ReadonlyMap<string, readonly string[]> = (() => {
 })();
 /** A script's computer op (computer_op's `op`) that runs on the computer what one of the run's own tools runs, held to
  *  that tool's setting: the shell is bash's, a program started to run on (processes.start) bash_background's (bash's
- *  setting, and a read-only bash policy refuses it), a file's write is write's, a file's read, listing or stat is
+ *  setting, and a read-only bash policy refuses it), a file's write is write's (and needs write among the agent's tools,
+ *  writeBar), a file's read, listing or stat is
  *  read's. The other ops (apps, raw input) are the computer kind's, computer_op's own key (KIND_TOOLS). */
 const OP_HELD_AS: Readonly<Record<string, string>> = Object.freeze({ "shell.run": "bash", "processes.start": "bash_background", "files.write": "write", "files.read": "read", "files.list": "read", "files.stat": "read" });
 /** The ops whose command runs in the computer's shell. */
@@ -105,6 +106,28 @@ export function heldAs(name: string, args: unknown): { readonly tool: string; re
   const fields = (given !== null && typeof given === "object" ? given : {}) as Record<string, unknown>;
   return { tool, args: SHELL_OPS.has(op as string) ? { command: fields.command, ...(fields.cwd !== undefined ? { cwd: fields.cwd } : {}) } : { path: fields.path } };
 }
+/** The path a computer_screenshot call saves the screen to in the run's folder (its `save_as`), held to write's setting
+ *  as a file the write tool writes is; undefined for any other call, a screenshot with no save_as included. */
+function savedAs(name: string, args: unknown): { readonly path: unknown } | undefined {
+  if (name !== "computer_screenshot" || args === null || typeof args !== "object") return undefined;
+  const path = (args as { save_as?: unknown }).save_as;
+  return path === undefined ? undefined : { path };
+}
+/** What a screenshot's refusal for write's setting adds to write's own words: why write's setting holds it. */
+const SAVED_AS_WORDS = "computer_screenshot with save_as writes a file into the run's files, so write's setting holds it; a screenshot without save_as is not held to it.";
+/** Why a run can't write a file (a screenshot's save_as, a script's op held as write), or undefined where it can: "not
+ *  given", write is not among the agent's `tools` (none given, none: leaving write out is how its owner keeps it from
+ *  writing, whatever write's setting says); "denied", write's `permission` is deny; "no approver", it asks and no one can
+ *  approve (`approvers` false). The one answer the run's gate refuses by and its files note and bound tools offer by. */
+export type WriteBar = "not given" | "denied" | "no approver";
+export const writeBar = (tools: readonly string[] | undefined, permission: Permission, approvers: boolean): WriteBar | undefined =>
+  !tools?.includes("write") ? "not given" : permission === "deny" ? "denied" : permission === "ask" && !approvers ? "no approver" : undefined;
+/** The refusal of a call that writes a file (`writes`: what it does, in words; `instead`: what to do, or "") for an agent
+ *  whose tools leave write out (writeBar's "not given"). */
+const notGivenWriteText = (writes: string, instead: string, ran: "no" | "unknown"): string =>
+  `${DENIED_OPENING}${writes}, and this agent is not given write, so it can't write one.${instead ? ` ${instead}` : ""} ${ran === "no" ? NOT_RUN : RAN_UNKNOWN}`;
+/** What a screenshot's save_as does, and what to do instead, in a not-given refusal. */
+const SAVED_AS_WRITES = ["computer_screenshot with save_as writes a file into the run's files", "Take the screenshot without save_as."] as const;
 const STRICTNESS: Readonly<Record<Permission, number>> = { allow: 0, ask: 1, deny: 2 };
 /** A session's `{name -> settings key}` map (nameMapOf). */
 export type NameMap = ReadonlyMap<string, string>;
@@ -405,10 +428,10 @@ export function previewOf(text: string): string {
  *  settings as the runner read them from the one store at the claim (tool-plane.ts loadToolSettings), read at each call as
  *  the gate reads them. `approvers`: whether anyone can answer an ask here, the store's (server-approvers.ts, read at each
  *  claim). The gate reads nothing of the run's own files: they are the agent's to write. */
-export function runGate(where: { root: string; work: string; computer?: boolean; effectOf?: (name: string) => ToolEffect | undefined; argumentsOf?: ArgumentsOf; facts: AdapterFacts | undefined }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals; computer?: unknown; place?: unknown } }, serverSettings: () => ToolSettingsRead, approvers: boolean): RunGate {
+export function runGate(where: { root: string; work: string; computer?: boolean; effectOf?: (name: string) => ToolEffect | undefined; argumentsOf?: ArgumentsOf; facts: AdapterFacts | undefined }, runId: string, revision: { kind: string; body: { tools?: readonly string[]; toolSettings?: unknown; harness?: string; approvals?: Approvals; computer?: unknown; place?: unknown } }, serverSettings: () => ToolSettingsRead, approvers: boolean): RunGate {
   // The run's computer kind, from its revision's setting (as the claim starts it): a computer tool's words name it.
   const kind = settingOfDefinition(revision.body)?.computer.kind;
-  return new RunGate({ root: where.root, work: where.work, runId, harness: revision.body.harness ?? DEFAULT_HARNESS, ...(where.computer === undefined ? {} : { computer: where.computer }), ...(kind !== undefined ? { kind } : {}), ...(where.effectOf ? { effectOf: where.effectOf } : {}), ...(where.argumentsOf ? { argumentsOf: where.argumentsOf } : {}), facts: where.facts }, serverSettings, (revision.body.toolSettings ?? {}) as PermissionSettings, approvers, approvalsOf(revision.body.approvals));
+  return new RunGate({ root: where.root, work: where.work, runId, harness: revision.body.harness ?? DEFAULT_HARNESS, tools: revision.body.tools ?? [], ...(where.computer === undefined ? {} : { computer: where.computer }), ...(kind !== undefined ? { kind } : {}), ...(where.effectOf ? { effectOf: where.effectOf } : {}), ...(where.argumentsOf ? { argumentsOf: where.argumentsOf } : {}), facts: where.facts }, serverSettings, (revision.body.toolSettings ?? {}) as PermissionSettings, approvers, approvalsOf(revision.body.approvals));
 }
 
 /** The host tools that run on a computer that holds the run's shell (the kernel registry's, for shell "computer"). */
@@ -451,12 +474,17 @@ export class RunGate {
    *  pinned revision's (definition.approvals): "never" runs the agent unattended, an ask allowed (permissionFrom). */
   /** `where.effectOf`: an MCP tool's effect as the run's pin marks it (ClaimMcp.effectOf), what "allow reads" reads;
    *  never a live listing, so a server can't widen a run's access mid-run. */
-  constructor(private readonly where: { root: string; work: string; runId: string; harness?: string; computer?: boolean; /** The run's computer kind (its revision's setting): the key a computer tool's refusal and ask name on a tie (kindSetting). */ kind?: string; effectOf?: (name: string) => ToolEffect | undefined; /** The arguments each MCP tool's listing in the run's pin declares (ClaimMcp.argumentsOf), for a pinned tool's closure (pinRefusal). */ argumentsOf?: ArgumentsOf; /** The harness's adapter facts on the owner's table (its native tools' names, nameMapOf); undefined for one with none. */ facts: AdapterFacts | undefined }, private readonly readServerSettings: () => ToolSettingsRead, private readonly overrides: PermissionSettings = {}, private readonly approvers = true, private readonly approvals: Approvals = "ask") {}
+  constructor(private readonly where: { root: string; work: string; runId: string; harness?: string; computer?: boolean; /** The run's computer kind (its revision's setting): the key a computer tool's refusal and ask name on a tie (kindSetting). */ kind?: string; /** The tools the agent is given (its revision's `tools`): a screenshot's save_as and a script's op held as write are refused unless write is among them; none given, none (writeBar). */ tools?: readonly string[]; effectOf?: (name: string) => ToolEffect | undefined; /** The arguments each MCP tool's listing in the run's pin declares (ClaimMcp.argumentsOf), for a pinned tool's closure (pinRefusal). */ argumentsOf?: ArgumentsOf; /** The harness's adapter facts on the owner's table (its native tools' names, nameMapOf); undefined for one with none. */ facts: AdapterFacts | undefined }, private readonly readServerSettings: () => ToolSettingsRead, private readonly overrides: PermissionSettings = {}, private readonly approvers = true, private readonly approvals: Approvals = "ask") {}
   private names?: NameMap;
 
   /** A tool's permission now (permissionOf): the revision's own over the server's setting, read at each call, so a change
    *  reaches a live run at its next call; under approvals "never", an ask is an allow. */
   readonly policy = (tool: string): Permission => this.setting(tool).permission;
+
+  /** Why this run can't write a file now (writeBar over its agent's tools, write's permission and whether anyone can
+   *  approve), or undefined where it can: what decide refuses a save_as or a script's write by, and what the run's files
+   *  note and computer_screenshot's save_as are offered by. */
+  readonly writeBar = (): WriteBar | undefined => writeBar(this.where.tools, this.policy("write"), this.approvers);
 
   /** The gate's answer for one call before its intent, for a loop that parks and answers asks itself (the runner's adapter
    *  loops, pi's and the CLI harnesses'): run it, ask a person, or refuse it with the words the model reads. The order:
@@ -486,7 +514,12 @@ export class RunGate {
     if (off) return off;
     const own = this.computerOwns(name);
     const held = heldAs(name, args);
-    if (held && this.policy(name) !== "deny") return this.onComputer().decide(held.tool, held.args, options);
+    if (held && this.policy(name) !== "deny") {
+      // An op held as write (files.write) writes a file, into the run's files on a desktop that mounts them, as save_as
+      // does: an agent not given write is refused it first, whatever write's setting says (writeBar).
+      if (held.tool === "write" && this.writeBar() === "not given") return { deny: notGivenWriteText(`computer_op ${(args as { op: string }).op} writes a file`, "", ran) };
+      return this.onComputer().decide(held.tool, held.args, options);
+    }
     const key = this.keyOf(name) ?? name;
     const tool = this.askedAs(name);
     const verdict = this.policy(name);
@@ -501,6 +534,17 @@ export class RunGate {
     if (pinned) return { deny: pinned.text };
     const policed = this.policyRefusal(key, name, args);
     if (policed) return { deny: policed };
+    // A screenshot saved into the run's files (save_as) is a file written as write writes one: write's setting holds it
+    // too, after the kind's deny, and the stricter decides (write's deny refuses it before the computer is asked, write's
+    // ask puts it to a person, as the kind's does). An agent whose tools leave write out is refused it first: no setting
+    // offers a tool the agent was not given (write's default is allow).
+    const saved = savedAs(name, args);
+    if (saved) {
+      if (this.writeBar() === "not given") return { deny: notGivenWriteText(...SAVED_AS_WRITES, ran) };
+      const write = await this.decide("write", saved, options);
+      if (typeof write === "object") return { deny: `${write.deny} ${SAVED_AS_WORDS}` };
+      if (write === "ask") return "ask";
+    }
     if (verdict === "allow") return "allow";
     return this.approvers ? "ask" : { deny: noApproverText(tool, ran) };
   }

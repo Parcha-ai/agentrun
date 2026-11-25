@@ -1,12 +1,10 @@
 // Local Chrome for the conformance CLI: `npm run conformance -w @parcha/agentrun-computer -- --provider local-chrome`.
-// It starts a real Chrome on this machine (nothing billed, no key), so it runs only with
-// AGENTRUN_COMPUTER_LIVE_LOCAL_CHROME=1. The provider reads no environment: this module reads its own
-// COMPUTER_LOCAL_CHROME_* names, and PATH to find a Chrome, and passes each to create() as its option.
+// It starts a real Chrome on this machine (nothing billed, no key).
 import { BROWSER_IMAGE } from "../descriptors/shared.js";
 import { CHROME_ENV_NAMES, childEnv } from "../child-env.js";
 import { create, type LocalBrowserOptions, type LocalBrowserProvider } from "../local-chrome.js";
+import { type Env, requireLive, setOptions } from "./module-kit.js";
 
-/** The environment this module reads, by name, each for the option its comment names, and the live switch. */
 export const LOCAL_ENV = {
 	live: "AGENTRUN_COMPUTER_LIVE_LOCAL_CHROME",
 	/** executablePath: the Chrome or Chromium to run; default the first on PATH, then the usual install places. */
@@ -15,27 +13,23 @@ export const LOCAL_ENV = {
 	headed: "COMPUTER_LOCAL_CHROME_HEADED",
 } as const;
 
-/** The names this module reads, under the conformance modules' common name (ConformanceModule.ENV). */
 export const ENV = LOCAL_ENV;
 
 export type LocalSettings = Pick<LocalBrowserOptions, "executablePath" | "headed" | "env">;
 
 /** The provider's options this module reads from env, each only when its name is set; the names Chrome reads go in as the
  *  provider's env (CHROME_ENV_NAMES: PATH, to find a Chrome on it, HOME, the display, locale and fonts), and no other. */
-export function settingsFromEnv(env: Record<string, string | undefined> = process.env): LocalSettings {
-	const executablePath = env[LOCAL_ENV.chrome] || undefined;
+export function settingsFromEnv(env: Env = process.env): LocalSettings {
 	const headed = env[LOCAL_ENV.headed] === "1";
-	return { ...(executablePath === undefined ? {} : { executablePath }), ...(headed ? { headed } : {}), env: childEnv(env, CHROME_ENV_NAMES) };
+	return { ...setOptions(env, { executablePath: LOCAL_ENV.chrome }), ...(headed ? { headed } : {}), env: childEnv(env, CHROME_ENV_NAMES) };
 }
 
-/** For the run's report: what this configuration means for the suite. */
 export const conformanceNotes: string[] = [
 	"local-chrome: this machine's Chrome, one browser for the whole run, deleted by its last case and again at the run's end. Its supervisor ends it at its deadline, which list reads.",
 ];
 
 export interface LocalModuleOptions {
-	/** Where the settings are read; default process.env. */
-	env?: Record<string, string | undefined>;
+	env?: Env;
 }
 
 /** The image every computer of the run asks for: this machine's Chrome. */
@@ -45,6 +39,6 @@ export function conformanceImage(): string {
 
 /** The provider the CLI runs; throws in words without the live switch. */
 export async function createProvider({ env = process.env }: LocalModuleOptions = {}): Promise<LocalBrowserProvider> {
-	if (env[LOCAL_ENV.live] !== "1") throw new Error(`the Local Chrome conformance module starts a real Chrome on this machine: set ${LOCAL_ENV.live}=1 to run it`);
+	requireLive(env, LOCAL_ENV.live, "the Local Chrome conformance module starts a real Chrome on this machine");
 	return create(settingsFromEnv(env));
 }

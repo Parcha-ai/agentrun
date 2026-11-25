@@ -14,6 +14,10 @@ export type PoolAsk = { id: number; source: string; locator: Locator };
 /** The longest line this worker decodes (pool.ts sets it from the heap cap): a file with a longer one is handed back. */
 const { maxLine } = workerData as { maxLine: number };
 
+/** What readers look up once, shared by this worker's reads (ReadOptions.lookups): a pool lives for one parseHome, so
+ *  this is one import's, and each worker looks up at most once what the import's own thread looks up once. */
+const lookups = new Map<string, unknown>();
+
 const buffers = (index: ReturnType<typeof recordIndex>): ArrayBuffer[] =>
   [index.uuids.slots, index.uuids.owners, index.uuids.words, index.others.slots, index.others.owners, index.others.ends, index.others.bytes].map((a) => a.buffer as ArrayBuffer);
 
@@ -51,7 +55,7 @@ parentPort!.on("message", async ({ id, source, locator }: PoolAsk) => {
     },
   } as unknown as Set<string>;
   try {
-    const result = await reader.read(locator, undefined, { turns: false, totals: true, seen, maxLine });
+    const result = await reader.read(locator, undefined, { turns: false, totals: true, seen, maxLine, lookups });
     settle();
     const counts = result.sessions.flatMap(({ counts }) => (counts ? [counts.model.buffer, counts.values.buffer, counts.has.buffer] : [])) as ArrayBuffer[];
     parentPort!.postMessage({ id, ok: true, sessions: result.sessions, mine, missed }, [...new Set([...buffers(mine), ...buffers(missed), ...counts])]);

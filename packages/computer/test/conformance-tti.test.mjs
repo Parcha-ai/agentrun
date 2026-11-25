@@ -175,6 +175,15 @@ test("the CLI's --tti and --burst run the TTI mode through the provider module, 
 	assert.match(broken.text(), /^came up: no: create was refused: no capacity in this region$/m);
 });
 
+test("a TTI run under --run (the live sweep's --before id) labels every computer it makes with that id, so --after finds them", async () => {
+	const { made } = await import(new URL("./fixtures/labels-provider.mjs", import.meta.url).href);
+	const out = sink();
+	const code = await main(["--provider", "./fixtures/labels-provider.mjs", "--tti", "2", "--burst", "2", "--run", "0123456789ab"], { stdout: out, cwd: HERE, clock: fakeClock() });
+	assert.equal(code, 0, out.text());
+	assert.equal(made.length, 4, "two serial computers and two at once");
+	for (const { labels } of made) assert.equal(labels["agentrun.conformance"], "0123456789ab");
+});
+
 test("the CLI refuses --tti and --burst with a flag of the suite's, or a count that is not a whole number of 1 or more", async () => {
 	for (const [argv, words] of [
 		[["--tti", "0"], /--tti: "0" is not a whole number of computers, 1 or more/],

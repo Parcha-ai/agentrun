@@ -2,6 +2,7 @@
 // behaviour each. "Fetch <url> once." calls web_fetch on the url once. pi's model then answers "Saw: " and the whole of
 // the last thing it was told (the tool's result, or the message that resumed it), so a test reads what it saw; the faux
 // harness says "Fetched once.". A workflow's model node told "Fetch <url> once." fetches it, then submits what it read.
+import { appendFileSync } from "node:fs";
 import { access } from "node:fs/promises";
 import { noteRequest } from "./faux-requests.mjs";
 
@@ -11,11 +12,15 @@ const urlOf = (text) => /Fetch (\S+) once\./.exec(text)?.[1];
  *  call alone), or an empty one, after it never makes the answer a bare "Saw:" (F39, F40). */
 const toldOf = (context) => textOf(context.messages.findLast((m) => (m.role === "user" || m.role === "toolResult") && textOf(m) !== ""));
 
-/** Answers `text` after `ms`, or as an aborted reply as soon as the turn is stopped. */
-const slow = (faux, ms, text) =>
+/** Answers `text` after `ms`, or as an aborted reply as soon as the turn is stopped. Its start and how it ended go on
+ *  lines of FAUX_GATE_LOG when that is set ("started <url>", then "answered <url>" or "aborted <url>"), so a test reads
+ *  that the turn runs, and that it was cut the moment it was, never by waiting out `ms`. */
+const slow = (faux, ms, text, url) =>
   new Promise((resolve) => {
-    const timer = setTimeout(() => resolve(faux.message(text)), ms);
-    faux.signal?.addEventListener("abort", () => (clearTimeout(timer), resolve(faux.message("", { stopReason: "aborted" }))), { once: true });
+    const said = (how) => process.env.FAUX_GATE_LOG && appendFileSync(process.env.FAUX_GATE_LOG, `${how} ${url}\n`);
+    said("started");
+    const timer = setTimeout(() => (said("answered"), resolve(faux.message(text))), ms);
+    faux.signal?.addEventListener("abort", () => (clearTimeout(timer), said("aborted"), resolve(faux.message("", { stopReason: "aborted" }))), { once: true });
   });
 
 /** Waits until `file` exists: true then, false as soon as the turn is stopped (its signal aborted), so a test that ended
@@ -71,7 +76,7 @@ export default function reply(context, faux) {
   const url = urlOf(textOf(context.messages.find((m) => m.role === "user")));
   if (!url) return faux.message("Nothing to do.");
   // "Slowly, please." as the last message: a turn that streams for 8 s, unless it is stopped.
-  if (textOf(context.messages.at(-1)).endsWith("Slowly, please.")) return slow(faux, 8_000, "Done slowly.");
+  if (textOf(context.messages.at(-1)).endsWith("Slowly, please.")) return slow(faux, 8_000, "Done slowly.", url);
   if (!context.messages.some((m) => m.role === "toolResult")) return faux.message(faux.toolCall("web_fetch", { url }), { stopReason: "toolUse" });
   return faux.message(`Saw: ${toldOf(context)}`);
 }
