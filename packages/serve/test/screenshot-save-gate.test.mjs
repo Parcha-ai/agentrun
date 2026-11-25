@@ -1,7 +1,8 @@
 // computer_screenshot's save_as writes a file into the run's files, as the write tool writes one, so the run's gate holds
 // it to write's setting too: after the computer kind's deny, the stricter of the two decides. Write's deny refuses it in
 // words before the computer is asked; write's ask puts it to a person; where no one can approve, write's ask is refused.
-// A screenshot with no save_as is held to the kind's setting alone, as it always was.
+// A screenshot with no save_as is held to the kind's setting alone, as it always was. An agent whose tools leave write
+// out is refused every save_as, whatever write's setting says: leaving write out is how its owner keeps it from writing.
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,11 +14,23 @@ const { adapterRunGate } = await import("../dist/runner/adapter-run-spec.js");
 const root = () => mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "screenshot-save-gate-"));
 const saved = { callId: "c-saved", tool: "computer_screenshot", args: { save_as: "shots/home.png" } };
 const plain = { callId: "c-plain", tool: "computer_screenshot", args: {} };
-const gateOf = async (toolSettings, { approvers = true } = {}) => {
+const gateOf = async (toolSettings, { approvers = true, tools = ["read", "write"] } = {}) => {
   const { server, runners } = await stores({ runners: 1 });
   if (!approvers) await server.settings.put("approvers", { approvers: false });
-  return adapterRunGate(runners[0], { runId: "run-1" }, { kind: "agentic", body: { approvals: "ask", computer: { kind: "desktop", provider: "faux-desktop" }, toolSettings } }, root(), "none", { facts: undefined });
+  return adapterRunGate(runners[0], { runId: "run-1" }, { kind: "agentic", body: { approvals: "ask", computer: { kind: "desktop", provider: "faux-desktop" }, tools, toolSettings } }, root(), "none", { facts: undefined });
 };
+
+test("an agent not given write is refused a screenshot with save_as, write's setting allow or unset, saying why; one with no save_as runs", async () => {
+  for (const toolSettings of [{ desktop: { permission: "allow" } }, { desktop: { permission: "allow" }, write: { permission: "allow" } }]) {
+    const gate = await gateOf(toolSettings, { tools: ["read"] });
+    const decision = await gate(saved);
+    assert.equal(typeof decision, "object", `refused: ${JSON.stringify(toolSettings)}`);
+    assert.match(decision.deny, /not given write/, decision.deny);
+    assert.match(decision.deny, /save_as/, decision.deny);
+    assert.match(decision.deny, /It was not run/, decision.deny);
+    assert.equal(await gate(plain), "allow", "no save_as: the desktop's allow alone");
+  }
+});
 
 test("write set to deny refuses a screenshot with save_as in write's words, saying why; one with no save_as runs", async () => {
   const gate = await gateOf({ desktop: { permission: "allow" }, write: { permission: "deny" } });

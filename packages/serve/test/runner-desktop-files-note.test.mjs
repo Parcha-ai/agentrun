@@ -1,7 +1,8 @@
 // A desktop that holds none of the run's files (its provider mounts no folder, as --faux's desktop and a desktop with
 // exec off): the model is told so once in the run, as the server's note (the model proxy's, as the replaced computer's
 // note is told), so it never takes a file it saved on the desktop for one the user gets; and computer_screenshot's
-// save_as puts the screen in the run's files. Through the runner, the pi spec and the adapter loop as they really run.
+// save_as puts the screen in the run's files, for an agent given write alone. Through the runner, the pi spec and the
+// adapter loop as they really run.
 // A resumed claim (a park on a tool's approval, then the approval) never tells the files note again.
 //
 // The desktop is --faux's (faux-computers.ts): nothing is rented.
@@ -59,7 +60,7 @@ const FAUX_DEPS = { kinds: FAUX.kinds, keyTable: FAUX.keyTable, launch: FAUX.lau
 
 /** run-1 on --faux's desktop, run by a runner on the pi spec with `script` as its model, or with `cli` (`{ env }`) on
  *  opencode's CLI spec; `body`, the agent's. Each pi request's body is kept in `requests`. */
-async function desktopRun(t, { script = [], body = { tools: ["read"] }, approvers = false, cli }) {
+async function desktopRun(t, { script = [], body = { tools: ["read", "write"] }, approvers = false, cli }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-desktop-files-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -123,10 +124,28 @@ test("with the desktop allowed and write set to deny, a screenshot with save_as 
   assert.ok(!existsSync(join(runFolder(one.dir, "agent-1", RUN), "shots/desktop.png")), "nothing in the run's files");
 });
 
+test("an agent not given write: computer_screenshot offers no save_as, and a screenshot with save_as anyway is refused and nothing is written to the run's files", { timeout: 120_000 }, async (t) => {
+  const one = await desktopRun(t, {
+    script: [{ call: "computer_screenshot", args: { save_as: "shots/desktop.png" } }, { say: "done" }],
+    body: { tools: ["read"], toolSettings: { desktop: { permission: "allow" } } },
+  });
+  const row = await rests(one, ["ended"]);
+  assert.equal(row.state, "ended", JSON.stringify(row));
+  const offered = one.requests[0].tools.find((tool) => tool.name === "computer_screenshot");
+  assert.ok(offered, `computer_screenshot is offered: ${JSON.stringify(one.requests[0].tools.map((tool) => tool.name))}`);
+  assert.ok(!("save_as" in offered.input_schema.properties), `no save_as offered: ${JSON.stringify(offered.input_schema)}`);
+  assert.doesNotMatch(offered.description, /save_as/, "nor named in its words");
+  assert.equal(one.requests.length, 2, "the refused screenshot, then the answer");
+  const answered = JSON.stringify(one.requests[1]);
+  assert.match(answered, /not given write/, "the model reads why");
+  assert.doesNotMatch(answered, /saved as shots/, "nothing says it was saved");
+  assert.ok(!existsSync(join(runFolder(one.dir, "agent-1", RUN), "shots/desktop.png")), "nothing in the run's files");
+});
+
 test("the files note is told once a run: the claim that resumes it after a park never tells it again", { timeout: 120_000 }, async (t) => {
   const one = await desktopRun(t, {
     script: [{ call: "computer_screenshot", args: {} }, { say: "done" }],
-    body: { tools: ["read"], toolSettings: { desktop: { permission: "ask" } } },
+    body: { tools: ["read", "write"], toolSettings: { desktop: { permission: "ask" } } },
     approvers: true,
   });
   const parked = await rests(one, ["ended", "parked"]);
@@ -163,7 +182,7 @@ test("a CLI harness (opencode) on a desktop that mounts no folder: its first mai
   await new Promise((resolve) => gw.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => gw.close(resolve)));
   const env = { AGENT_MODEL_BASE_URL: `http://127.0.0.1:${gw.address().port}`, AGENT_MODEL_API_KEY: "not-a-secret", [OPENCODE_STANDIN_ENV]: JSON.stringify({ command: process.execPath, args: [STAND_IN] }), PATH: process.env.PATH };
-  const one = await desktopRun(t, { body: { harness: "opencode", tools: ["read"] }, cli: { env } });
+  const one = await desktopRun(t, { body: { harness: "opencode", tools: ["read", "write"] }, cli: { env } });
   const row = await rests(one, ["ended"]);
   assert.equal(row.state, "ended", JSON.stringify(row));
   assert.ok(bodies.length >= 1, "a request was sent");
