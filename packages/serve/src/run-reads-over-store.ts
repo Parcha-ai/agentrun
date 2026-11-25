@@ -67,8 +67,14 @@ export interface RunReadsDeps {
 }
 
 /** A run's files, through its Workspace (listRunFiles): every file, path-sorted, cut at the cap. A run with no folder lists
- *  none; a run whose output is withheld refuses (403), as its graph does. The same shape the route answered. */
-export async function listRunFiles(store: RunReadsStore, runId: string, deps: RunReadsDeps): Promise<{ run_id: string; files: FileView[]; complete: true; truncated: boolean }> {
+ *  none; a run whose output is withheld refuses (403), as its graph does. The same shape the route answered. With `cut`
+ *  `run`, each file also has its `name`: its path under the run's own cut, as a cut read cuts a file's text (redactSecrets
+ *  of deps.cutValues' values, read again after the names are cut: underCut), so a run that named a file by a held value
+ *  (a cache keyed by a key) can be listed to a model by its names alone. Every file is named, whatever its type: a file a
+ *  cut read doesn't answer (audio, an image) is one a grader is told of by its name. A run whose cut is its census's (its
+ *  end erased what its caller handed it) names none. */
+export async function listRunFiles(store: RunReadsStore, runId: string, deps: RunReadsDeps, cut: string | null = null): Promise<{ run_id: string; files: (FileView & { name?: string })[]; complete: true; truncated: boolean }> {
+  if (cut !== null && cut !== "run") throw new ApiError("bad_request", `cut must be "run", not ${JSON.stringify(cut)}`);
   // Withheld (its browser sign-in this server can't read) refuses its files too, before any is read: a page it saved signed
   // in is what it saw (store-view's `unshown`), as the graph refuses and the base's filesShown did.
   if (await deps.withheld(store, runId)) throw new ApiError("forbidden", WITHHELD_SIGN_IN);
@@ -76,7 +82,15 @@ export async function listRunFiles(store: RunReadsStore, runId: string, deps: Ru
   // A folder the run made named recordings is not listed: the route's recordings/ is the run's recordings.
   const { files, deep } = workspace ? await listFiles(workspace, FILE_LIST_CAP, { owned: (name) => name === RECORDINGS }) : { files: [] as FileView[], deep: false };
   files.sort((a, b) => a.path.localeCompare(b.path));
-  return { run_id: runId, files: files.slice(0, FILE_LIST_CAP), complete: true, truncated: deep || files.length > FILE_LIST_CAP };
+  const listed = files.slice(0, FILE_LIST_CAP);
+  const truncated = deep || files.length > FILE_LIST_CAP;
+  if (cut === null) return { run_id: runId, files: listed, complete: true, truncated };
+  // Once the run's end erased what its caller handed it (censusDigest), its cut no longer holds those values: its census
+  // says where they sat in each file's text, never in a name, so no file is named (a grader counts them, as from a server
+  // that doesn't know `cut`).
+  const named = await underCut(() => deps.cutValues(store, runId), async (held) => (held === "unreadable" ? undefined : held.censusDigest !== undefined ? listed : listed.map((file) => ({ ...file, name: redactSecrets(file.path, held.values, Buffer.byteLength(file.path)) }))));
+  if (named === undefined) throw new ApiError("forbidden", WITHHELD_SIGN_IN);
+  return { run_id: runId, files: named, complete: true, truncated };
 }
 
 

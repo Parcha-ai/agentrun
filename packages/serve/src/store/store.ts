@@ -676,7 +676,8 @@ export interface Firing {
 
 export type FiringStatus = "due" | "started" | "sent" | "skipped" | "failed" | "missed" | "ignored";
 /** A trigger's firing as its row keeps it. `shown`: in the trigger's history (the newest HISTORY_KEPT); false, kept only
- *  for its key's day. `retryAt`: a due firing's next try; `waitsOn`: the run whose turn end wakes a due firing.
+ *  for its key's day. `retryAt`: a due firing's next try; `waitsOn`: what a due firing waits behind for its trigger's
+ *  room, a run's id, or a firing's key while the trigger has no run yet (triggers.ts busy).
  *  `startBy`: a firing its launch hook's host took with no run (sent), the time until which the host may still start
  *  its run (triggers.ts handedStart); null on any other. */
 export interface FiringRow {
@@ -759,6 +760,18 @@ export interface FiringChange {
   /** Written only while the firing's status is this one, read in the settle's own transaction: a firing whose host's run
    *  started it meanwhile (triggers.ts handedRan) is left as it is, and nothing is written. */
   readonly from?: FiringStatus;
+  /** Written only while the firing holds its trigger's room at this time (the triggers' clock): sent with no run, its
+   *  startBy not passed. Read in the settle's own transaction: a host start that pushes a startBy out (triggers.ts
+   *  handedStart) leaves a firing whose window closed, or whose run started, meanwhile as it is. */
+  readonly holdsAt?: number;
+  /** Written only while the firing is sent with no run and its startBy is still this one, read in the settle's own
+   *  transaction: a host start that pushed a startBy out and wrote no run puts it back (triggers.ts handedStart), unless
+   *  its run started, or another start moved it, meanwhile. */
+  readonly startByWas?: number;
+  /** Written only while the firing has no run, read in the settle's own transaction (with `from`, a firing's start by a
+   *  run written apart from it, triggers.ts handedRan): one a release failed, or another run started, meanwhile is left
+   *  as it is. */
+  readonly noRun?: true;
 }
 /** What a settle does to the firing's trigger besides: `reset` its failure streak (a run started, a message sent), or
  *  count a `failure` toward it, turning it off at `pauseAt` in a row (auto-pause, the firing marked paused). */
@@ -941,14 +954,15 @@ export interface Triggers {
    *  message (RunFinal, as command()), and nothing is written. */
   message(firing: { triggerId: string; key: string }, runId: string, command: { kind: string; body: unknown }, bound: { max: number; reason: string }): Promise<{ sent: true; commandId: number } | { skipped: string } | undefined>;
   /** Every due firing waiting for its trigger's room (waits_on), oldest first, each with whether the room is there at
-   *  `now` (the triggers' clock): fewer of its trigger's runs in progress (activeRuns) than its max_active_runs. One read
-   *  for all of them. */
+   *  `now` (the triggers' clock): fewer of its trigger's runs in progress (activeKeys) than its max_active_runs, or no
+   *  max_active_runs (cleared while the firing waited: the engine's own check decides). One read for all of them. */
   waiting(now: number): Promise<(FiringRow & { readonly free: boolean })[]>;
   /** The soonest next time of an enabled trigger, or null. */
   soonest(): Promise<number | null>;
-  /** How many of the trigger's runs are in progress at `now` (the triggers' clock): started with a run not ended (a run
-   *  reopened later does not count), or held, a firing its launch hook's host took with no run yet up to its startBy. */
-  activeRuns(triggerId: string, now: number): Promise<number>;
+  /** The keys of the trigger's firings in progress at `now` (the triggers' clock), in no order: started with a run not
+   *  ended (a run reopened later does not count), or held, a firing its launch hook's host took with no run yet up to its
+   *  startBy. max_active_runs counts them. */
+  activeKeys(triggerId: string, now: number): Promise<string[]>;
   /** The newest of the trigger's firings that hold its room at `now` (taken by its launch hook's host with no run yet, its
    *  startBy not passed): its key, or undefined. */
   held(triggerId: string, now: number): Promise<string | undefined>;
@@ -968,9 +982,12 @@ export interface Runs {
    *  `expectedCurrent` checks the agent's current revision under its lock (RevisionMoved on mismatch); this is separate
    *  from the pinned revisionId. Settings guards are locked before the agent. Refusal writes no run, origin or launch.
    *  `startedAt` (ms) is when the run began, for one reported after it began elsewhere (a backend SDK run's
-   *  `started_at`); absent, now. */
+   *  `started_at`); absent, now. With `firing` (a launch hook's host starting the firing it was handed), that firing is
+   *  started with the run in the same transaction, its trigger's last run and failure streak as a started firing's
+   *  are, only while it has no run and is still due or sent with a start_by: any other (released, failed, settled) is
+   *  refused (FiringMoved), and nothing is written. */
   create(run:{ id: string; agentId: string; revisionId: string; origin?: RunOrigin; labels?: RunLabels;
-    expectedCurrent?: string | null; settingsGuards?: readonly SettingsGuard[]; startedAt?: number }, launch?: RunLaunchInput): Promise<RunRow>;
+    expectedCurrent?: string | null; settingsGuards?: readonly SettingsGuard[]; startedAt?: number; firing?: { triggerId: string; key: string } }, launch?: RunLaunchInput): Promise<RunRow>;
   /** A run whose agent is given inline and mapped to a source system by `agent.ref` and `revision.version`. In one
    *  transaction: the agent (one per `ref`, written on its first run, its name and description brought up to the version
    *  whose first use this is) and the revision (one per `version`, made current on its first use) are written or read, then
@@ -1109,8 +1126,9 @@ export interface Runs {
   failUnclaimed(summary: string): Promise<string[]>;
   /** The runs a runner may claim, oldest first: queued; parked with an untaken command or its wake_at passed; running with
    *  no runner (released at a runner's shutdown: it stays running, a run that started keeps that fact) or its claim run
-   *  out. */
-  claimable(options?: { limit?: number }): Promise<string[]>;
+   *  out. A parked run whose computer is kept for another runner that is still there (its pin, KEPT_PREFIX) is that
+   *  runner's alone: with `runner`, the claimer, such a run is left out; without it every run is counted. */
+  claimable(options?: { limit?: number; runner?: string }): Promise<string[]>;
   /** The epoch a runner's claim holds run `runId` at now, judged by the store's own clock (the one claims are stamped
    *  and fenced by), never a reader's; undefined when no claim holds it (none, released, or run out) or there is no
    *  such run. */
@@ -1602,6 +1620,15 @@ export interface RunCapacity {
 /** How long a runner's row is kept once it stopped saying it is there (a runner that died without its close): its next
  *  put removes every row older than this. */
 export const RUNNER_ROWS_KEPT_MS = 24 * 60 * 60_000;
+
+/** How old a runner's row can be and still count as there, on the store's clock (runner/presence.ts PRESENCE_STALE_MS:
+ *  three renewals missed). The claim rule reads it for a kept computer's pin. */
+export const RUNNER_STALE_MS = 30_000;
+
+/** The settings key prefix of the computers kept at a run's park, one row per run (workspace/computer-kept.ts). A row
+ *  whose computer is pinned to the runner that kept it (its `runner` and `incarnation`) holds the run for that runner in
+ *  the claim rule, while that runner is there under that incarnation and the keep lasts. */
+export const KEPT_PREFIX = "computer_kept:";
 
 /** Every runner's word that it is there (runner/presence.ts). */
 export interface Runners {
@@ -2151,6 +2178,14 @@ export class RunsMadeFromLeft extends StoreConstraint {
   constructor(readonly runId: string, readonly runs: readonly string[]) {
     super(`run ${runId} has runs made from it not purged (${runs.join(", ")}): each is purged first`);
     this.name = "RunsMadeFromLeft";
+  }
+}
+
+/** A run's firing (Runs.create `firing`) that no longer takes it: no longer due or sent with a start_by, or it has a run. */
+export class FiringMoved extends Error {
+  constructor(readonly triggerId: string, readonly key: string) {
+    super(`firing ${key} of trigger ${triggerId} no longer takes a run: nothing was written`);
+    this.name = "FiringMoved";
   }
 }
 

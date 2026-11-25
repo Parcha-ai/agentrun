@@ -8,8 +8,10 @@
 // does. Read raw, a file of a run that is shown is the bytes as written. The model gateway is a loopback stand-in (fixtures/faux-gateway.mjs) behind a front that holds
 // the run's first model call, so the test acts while the run is live.
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { mkdir, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
@@ -17,6 +19,8 @@ import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 import { WITHHELD_TITLE } from "../dist/run-view.js";
 import { raw } from "./store-target.mjs";
 import { agent, follow, runDir, serve, withEnv } from "./support.mjs";
+
+const { Webhook } = createRequire(import.meta.url)("standardwebhooks");
 
 const KEY = `not-a-secret-${"handed-cut-model-key"}-5e09b7`;
 const KEY_TWO = `not-a-secret-${"handed-cut-message-key"}-0d2f91`;
@@ -66,13 +70,13 @@ async function heldFront(t, gw) {
 
 /** A run started with `start` (extra start fields) on a server whose model gateway answers `text`, held at its first model
  *  call: the server, the run, its work folder, and `release` to let its turn go on. `serverKey`: the server's own key.
- *  `setup`: what to do on the server before the run starts. */
-async function liveRun(t, { start = {}, serverKey, text = "Answered.", setup } = {}) {
+ *  `setup`: what to do on the server before the run starts. `options`: the server's own, a test's seams among them. */
+async function liveRun(t, { start = {}, serverKey, text = "Answered.", setup, options = {} } = {}) {
   const gw = await startFauxGateway({ text });
   t.after(() => gw.close());
   const front = await heldFront(t, gw);
   withEnv(t, { AGENT_MODEL_BASE_URL: front.url, AGENT_MODEL: "claude-sonnet-5-5", ...(serverKey ? { AGENT_MODEL_API_KEY: serverKey } : {}) }, NAMES);
-  const server = await serve(t, { faux: undefined });
+  const server = await serve(t, { faux: undefined, ...options });
   if (setup) await setup(server);
   assert.equal((await server.api("POST", "/agents", agent("handed"))).status, 201);
   const started = await server.api("POST", "/agents/handed/runs", { input: { content: "Answer." }, ...start });
@@ -113,6 +117,14 @@ const setCensus = (data, runId, census) => write(data, "UPDATE run_launch SET ce
 /** Run `runId`'s launch sealed part replaced by bytes that don't open under any key. */
 const damageSeal = (data, runId) => write(data, "UPDATE run_launch SET sealed = ? WHERE run_id = ?", new Uint8Array(64).fill(9), runId);
 
+/** `body` posted to trigger `triggerId`'s webhook, signed with its `secret` (Standard Webhooks): its status and answer. */
+async function hook(baseUrl, triggerId, body, secret) {
+  const id = `msg_${randomBytes(8).toString("hex")}`;
+  const at = Math.floor(Date.now() / 1000);
+  const res = await fetch(`${baseUrl}/hooks/${triggerId}`, { method: "POST", headers: { "webhook-id": id, "webhook-timestamp": String(at), "webhook-signature": new Webhook(secret).sign(id, new Date(at * 1000), body) }, body });
+  return { status: res.status, body: await res.json().catch(() => null) };
+}
+
 test("a run's own model_key is cut from its files by a cut read while it runs, and after its end by its census; a file edited or written after the end is withheld; read raw, the bytes as written", { timeout: 180_000 }, async (t) => {
   // The model's answer says the key too: what the runner keeps of the run (its view, its list row) is cut as it is written.
   const run = await liveRun(t, { start: { model_key: KEY }, text: `Done, with ${KEY}.` });
@@ -121,15 +133,18 @@ test("a run's own model_key is cut from its files by a cut read while it runs, a
   await writeFile(join(run.work, "notes.txt"), notes);
   await writeFile(join(run.work, "out", "deep.md"), deep);
   await writeFile(join(run.work, "clean.txt"), "nothing held here\n");
+  // A file the run named by its key: the census names each file by a MAC of its path, so the key stays out of it.
+  await writeFile(join(run.work, `cache-${KEY}.txt`), "cached\n");
 
   assert.deepEqual(await cutRead(run, "notes.txt"), [200, "key=[redacted]\nthe rest stays.\n"], "live: cut by the value its launch holds");
   assert.deepEqual(await cutRead(run, "out/deep.md"), [200, "# ñandú\n\n→ [redacted] ✓\n"]);
 
   await run.ended();
   const launch = await run.store.runs.launch(run.runId);
-  assert.ok(launch.census && JSON.parse(launch.census).files["notes.txt"], `its census in the erased key's place: ${launch.census}`);
+  assert.equal(launch.census && Object.keys(JSON.parse(launch.census).files).length, 5, `its census in the erased key's place, each of its 5 files counted (inputs/message.md too): ${launch.census}`);
   assert.equal(launch.census.includes(KEY), false, "the census holds no key");
   assert.deepEqual(await cutRead(run, "notes.txt"), [200, "key=[redacted]\nthe rest stays.\n"], "ended: cut by its census");
+  assert.deepEqual(await cutRead(run, `cache-${KEY}.txt`), [200, "cached\n"], "ended: the file named by the key found by its path");
   assert.deepEqual(await cutRead(run, "out/deep.md"), [200, "# ñandú\n\n→ [redacted] ✓\n"], "a file in a folder, past multibyte text");
   assert.deepEqual(await cutRead(run, "clean.txt"), [200, "nothing held here\n"], "a file that held none reads whole");
   const rawNotes = await get(run.baseUrl, run.token, `/runs/${run.runId}/files/notes.txt`);
@@ -219,6 +234,54 @@ test("a message's text is cut of the key it hands and of the one the run held, s
   const commands = (await run.store.commands(run.runId, 0)).map((command) => command.body);
   assert.equal(held(JSON.stringify(commands)), false, "not in the message's stored command row");
   assert.match(JSON.stringify(commands), /Again: \[redacted\], not \[redacted\]\./, "cut in place");
+});
+
+test("a trigger's message to a run that says the key the run was handed is cut of it where it is written, as a person's message is", { timeout: 180_000 }, async (t) => {
+  const run = await liveRun(t, { start: { model_key: KEY, max_cost_usd: 1 } });
+  const made = await run.api("POST", "/triggers", { name: "inbox", source: { kind: "webhook" }, target: { kind: "message_run", run_id: run.runId, input: { content: `Use ${KEY} again.` } } });
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const fired = await hook(run.baseUrl, made.body.id, "{}", made.body.signing_secret);
+  assert.equal(fired.status, 202, JSON.stringify(fired.body));
+  const bodies = async () => (await run.store.commands(run.runId, 0)).map((command) => command.body);
+  await until(async () => (await bodies()).some((body) => body?.answers === false), "the firing's message row");
+  const commands = JSON.stringify(await bodies());
+  assert.equal(commands.includes(KEY), false, `not in the firing's stored command row: ${commands}`);
+  assert.match(commands, /Use \[redacted\] again\./, "cut in place");
+  assert.equal((await served(run)).text.includes(KEY), false, "not in its view, list row or timeline");
+  run.release();
+});
+
+test("two messages at once, one that hands a new model_key and one that says that key without handing it: the second, written after the first, is cut of it, so it never shows after the run's end", { timeout: 180_000 }, async (t) => {
+  // The first message is held at its door (beforeSubmit), inside its agent's turn, before its seal is written; the second
+  // is sent then, and the first let go once the second waits behind it for that turn (deleteTurnQueued).
+  let reached;
+  const atDoor = new Promise((resolve) => (reached = resolve));
+  let open;
+  const door = new Promise((resolve) => (open = resolve));
+  let behind;
+  const waiting = new Promise((resolve) => (behind = resolve));
+  const options = {
+    beforeSubmit: async (_runId, content) => {
+      if (content !== "First.") return;
+      reached();
+      await door;
+    },
+    deleteTurnQueued: () => behind(),
+  };
+  const run = await liveRun(t, { start: { model_key: KEY }, options });
+  const first = run.api("POST", `/runs/${run.runId}/messages`, { content: "First.", model_key: KEY_TWO });
+  await atDoor;
+  const second = run.api("POST", `/runs/${run.runId}/messages`, { content: `Second: ${KEY_TWO}.` });
+  await waiting;
+  open();
+  const [one, two] = await Promise.all([first, second]);
+  assert.equal(one.status, 202, JSON.stringify(one.body));
+  assert.equal(two.status, 202, JSON.stringify(two.body));
+  const commands = JSON.stringify((await run.store.commands(run.runId, 0)).map((command) => command.body));
+  assert.equal(commands.includes(KEY_TWO), false, `not in the second message's stored command row: ${commands}`);
+  assert.match(commands, /Second: \[redacted\]\./, "cut in place");
+  await run.ended();
+  assert.equal((await served(run)).text.includes(KEY_TWO), false, "after the end erased it: not in its view, list row or timeline");
 });
 
 test("a message that hands a new model_key mid-turn keeps the one it replaced cut from the run's files, live and after its end by its census", { timeout: 180_000 }, async (t) => {

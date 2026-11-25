@@ -91,8 +91,9 @@ const freeName = (base: string, exists: (path: string) => boolean): string => {
 };
 
 /**
- * A start `npx @parcha/agentrun` made (NPX_PACKAGE_ENV) that a data directory refused because an earlier version wrote it
- * (store.ts StoreFromEarlierVersion, or SchemaVersionUnknown on an earlier release's store): the refusal's own first line,
+ * A start the agentrun launcher made (NPX_PACKAGE_ENV: by npx, or by the installer's bin/agentrun and its service, the
+ * same launcher) that a data directory refused because an earlier version wrote it (store.ts StoreFromEarlierVersion,
+ * or SchemaVersionUnknown on an earlier release's store): the refusal's own first line,
  * then the two ways on as commands to paste. That command keeps its data in ~/.agentrun wherever it is run, so a new
  * folder alone is not a new AgentRun. First, the old folder moved aside whole, so the same command starts this version
  * where it was, and the earlier version still opens what it holds; then this version on a new, empty folder: the same
@@ -115,7 +116,9 @@ export function earlierDataRefusal(error: unknown, data: string, env: NodeJS.Pro
   const again = `${command}${dir === launcherData ? "" : ` --data ${shellWord(dir)}`}${flags}`;
   const fresh = freeName(`${dir}-new`, exists);
   const aside = freeName(`${dir}-earlier`, exists);
-  const installed = exists(join(dir, "bin", "agentrun")) ? " Its bin/agentrun (the earlier installer's command) moves with it: run the installer again for this version's." : "";
+  // install.sh keeps its Node, its packages and the command in the folder beside the data (node/, lib/, bin/agentrun):
+  // that command, or the service that runs it, may be what started this. Moved, they go too, whichever version they are.
+  const installed = exists(join(dir, "bin", "agentrun")) ? " That takes the agentrun the installer put there with it (its Node in node/, lib/ and bin/agentrun): run the installer again to put this version's back." : "";
   return [
     refused.message.split("\n")[0],
     // Moved aside first: every later command (doctor, the harness commands, the service) then finds this version where it
@@ -369,6 +372,9 @@ export async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load
     // (providerFor's modelId); the key goes as the endpoint takes it, and the run is priced by the catalog entry of
     // whoever bills it (its priceModel).
     const endpoint = provider ? { origin: provider.origin, credential: provider.credential, auth: provider.auth, ...(provider.headers ? { headers: provider.headers } : {}) } : { origin: "", credential: () => "" };
+    // A model the route translates onto the wire (an Ollama model): its proxy forwards with the route's own fetch, and the
+    // provider's own web search (nativeOptions), which the translation cannot run, is not offered.
+    const forward = provider?.fetch ? { fetch: provider.fetch } : {};
     const priced = provider ? { ...needs, model: provider.priceModel } : native;
     // Its CLI checked off the event loop first (hashed and run as a child), so the server goes on answering: a pass is
     // kept, and the adapter's own check answers from it. A CLI that fails its pins is the adapter's to report, in its
@@ -378,7 +384,7 @@ export async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load
     // On Claude Code's login on this machine: the login's directories in place of a provider, billed to the plan, never
     // priced here.
     const source = provider?.login ? { login: provider.login, price: () => null } : { provider: endpoint, price: priceOf(priced) };
-    adapter = claude.claudeAgentAdapter({ model: { default: provider?.modelId ?? native.model.modelId }, ...source, log: harnessLog(claudeFacts.id, env), sdk: sdk.sdk, sdkVersion: sdk.sdkVersion, cliPath: sdk.cliPath, mcp: sdk.mcp, ...(needs.confine ? { confine: needs.confine } : {}), ...(needs.skills?.length ? { skills: needs.skills } : {}), ...(needs.now ? { now: needs.now } : {}), ...(needs.zone ? { zone: needs.zone } : {}), ...nativeOptions(claudeFacts, env) });
+    adapter = claude.claudeAgentAdapter({ model: { default: provider?.modelId ?? native.model.modelId }, ...source, log: harnessLog(claudeFacts.id, env), sdk: sdk.sdk, sdkVersion: sdk.sdkVersion, cliPath: sdk.cliPath, mcp: sdk.mcp, ...(needs.confine ? { confine: needs.confine } : {}), ...(needs.skills?.length ? { skills: needs.skills } : {}), ...(needs.now ? { now: needs.now } : {}), ...(needs.zone ? { zone: needs.zone } : {}), ...(provider?.fetch ? forward : nativeOptions(claudeFacts, env)) });
   } catch (error) {
     // The adapter's own install line is a project's; here Claude Code is installed into the data's harnesses directory.
     const message = (error as Error).message.split(claude.CLAUDE_AGENT_SDK_INSTALL).join(line);

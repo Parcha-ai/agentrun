@@ -29,15 +29,17 @@ test("an answer of about 1 MB of JWT-shaped runs whose first part repeats eyJ is
   assert.ok(took < 500, `took ${Math.round(took)} ms`);
 });
 
-// The shapes as secrets.ts had them before its JWT and private key header were bounded, read the way it did before:
-// from every character after each match. The texts hold no private key header, so its old shape is never slow here.
+// The shapes as secrets.ts has them (bounded; the JWT from the first "eyJ" of a run), read the way it did before: from
+// every character after each match. The texts hold no private key header.
 const SHAPES = [
-  /(?:AKIA|ASIA)[0-9A-Z]{16}/, /AIza[0-9A-Za-z_-]{35}/, /-----BEGIN[ A-Z0-9]*PRIVATE KEY[ A-Z0-9]*-----/,
-  /gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}/, /(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{20,}/,
-  /xox[abposre]-[A-Za-z0-9-]{10,}|xapp-[A-Za-z0-9-]{10,}/, /eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/,
-  /:\/\/[^\s/?#@:]+:[^\s/?#@]*@/,
-  /(?<=\bBearer\s{1,3})(?=[A-Za-z._~+/-]*\d)[A-Za-z0-9._~+/-]{20,}={0,2}/i,
-  /(?<=[?&](?:api[_-]?key|access[_-]?token|auth[_-]?token|id[_-]?token|refresh[_-]?token|client[_-]?secret|x-amz-signature|x-amz-security-token|x-goog-signature|token|secret|password|passwd|signature|sig)=)[^\s&#"'`<>\\[\]]{16,}/i,
+  /(?:AKIA|ASIA)[0-9A-Z]{16}/, /AIza[0-9A-Za-z_-]{35}/, /-----BEGIN[ A-Z0-9]{0,64}PRIVATE KEY[ A-Z0-9]{0,64}-----/,
+  /gh[pousr]_[A-Za-z0-9]{30,16384}|github_pat_[A-Za-z0-9_]{20,16384}/, /(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{20,16384}/,
+  /xox[abposre]-[A-Za-z0-9-]{10,16384}|xapp-[A-Za-z0-9-]{10,16384}/,
+  /eyJ(?<!eyJ[A-Za-z0-9_-]{0,16384}?eyJ)[A-Za-z0-9_-]{8,16384}\.eyJ[A-Za-z0-9_-]{8,16384}\.[A-Za-z0-9_-]{8,16384}/,
+  /whsec_[A-Za-z0-9+/]{24,16384}={0,2}/,
+  /:\/\/[^\s/?#@:]{1,256}:[^\s/?#@]{0,1024}@/,
+  /(?<=\bBearer\s{1,3})(?=[A-Za-z._~+/-]{0,16384}\d)[A-Za-z0-9._~+/-]{20,16384}={0,2}/i,
+  /(?<=[?&](?:api[_-]?key|access[_-]?token|auth[_-]?token|id[_-]?token|refresh[_-]?token|client[_-]?secret|x-amz-signature|x-amz-security-token|x-goog-signature|token|secret|password|passwd|signature|sig)=)[^\s&#"'`<>\\[\]]{16,16384}/i,
 ];
 function reference(text) {
   const found = SHAPES.flatMap((pattern) => {
@@ -73,6 +75,14 @@ test("over 3,000 random texts of the shapes' own pieces, what is redacted is wha
     const text = Array.from({ length: 4 + Math.floor(random() * 60) }, () => PIECES[Math.floor(random() * PIECES.length)]).join("");
     assert.equal(redactSecrets(text, [], 1 << 20), reference(text), JSON.stringify(text));
   }
+});
+
+test("a JWT whose parts are near the 16384 bound is redacted whole, not only its first 4096 characters", () => {
+  const part = (c) => c.repeat(16_380);
+  const jwt = `eyJ${part("A")}.eyJ${part("B")}.${part("C")}`;
+  assert.equal(redactSecrets(`t ${jwt} u`, [], 1 << 20), "t [redacted] u");
+  assert.equal(redactedAnswer(`t ${jwt} u`, [KEY]), "t [redacted] u");
+  assert.equal(redactSecrets(`t ${jwt} u`, [], 1 << 20), reference(`t ${jwt} u`));
 });
 
 test("over 3,000 random texts of a JWT's pieces, glued to a word's characters, what is redacted is what reading from every character redacts", () => {

@@ -69,6 +69,42 @@ test("listRunFiles refuses a withheld run (403) before reading any file", async 
   assert.equal(read, false, "a withheld run's folder is never opened");
 });
 
+test("listRunFiles with cut run names each file under the run's cut, read again after the names are cut; an unreadable cut is 403; another cut 400", async () => {
+  const store = await freshStore();
+  await store.runs.create({ id: "run-1", agentId: "a1", revisionId: "r1" });
+  const work = tempDir("agentrun-ws-cut-");
+  mkdirSync(join(work, "cache"));
+  writeFileSync(join(work, "cache", "held-one.json"), "{}");
+  writeFileSync(join(work, "held-two.mp3"), "ID3");
+  writeFileSync(join(work, "plain.txt"), "plain");
+  // The cut grows while the names are cut (a value saved meanwhile): the names are cut again under the cut after it.
+  const cuts = [{ values: ["held-one"] }, { values: ["held-one", "held-two"] }, { values: ["held-one", "held-two"] }];
+  let reads = 0;
+  const cutValues = async () => cuts[Math.min(reads++, cuts.length - 1)];
+  const answer = await listRunFiles(store, "run-1", deps({ runWorkspace: async () => localWorkspace(work), cutValues }), "run");
+  assert.deepEqual(answer.files.map((f) => [f.path, f.name]), [["cache/held-one.json", "cache/[redacted].json"], ["held-two.mp3", "[redacted].mp3"], ["plain.txt", "plain.txt"]]);
+  assert.ok(reads >= 3, `the cut read again after the names were cut (${reads} reads)`);
+  // Without the cut, no name and no cut read.
+  let read = false;
+  const plain = await listRunFiles(store, "run-1", deps({ runWorkspace: async () => localWorkspace(work), cutValues: async () => { read = true; return { values: [] }; } }));
+  assert.ok(plain.files.every((f) => !("name" in f)) && !read);
+  await assert.rejects(() => listRunFiles(store, "run-1", deps({ runWorkspace: async () => localWorkspace(work), cutValues: async () => "unreadable" }), "run"), (e) => e.code === "forbidden");
+  await assert.rejects(() => listRunFiles(store, "run-1", deps({ runWorkspace: async () => localWorkspace(work) }), "whole"), (e) => e.code === "bad_request");
+});
+
+test("listRunFiles with cut run names no file once the run's cut is its census's: a census counts where a value sits in a file's text, never in its name", async () => {
+  const store = await freshStore();
+  await store.runs.create({ id: "run-1", agentId: "a1", revisionId: "r1" });
+  const work = tempDir("agentrun-ws-census-");
+  // The run named a file by the key its caller handed it; its end erased the key, so the cut no longer holds it.
+  writeFileSync(join(work, "handed-key.json"), "{}");
+  writeFileSync(join(work, "plain.txt"), "plain");
+  const cutValues = async () => ({ values: ["server-key"], censusDigest: "d".repeat(64) });
+  const answer = await listRunFiles(store, "run-1", deps({ runWorkspace: async () => localWorkspace(work), cutValues }), "run");
+  assert.deepEqual(answer.files.map((f) => [f.path, "name" in f]), [["handed-key.json", false], ["plain.txt", false]]);
+  assert.equal(answer.truncated, false);
+});
+
 // ---- readRunFile ----------------------------------------------------------------------------------------------------
 
 test("readRunFile is 404 for a run with no folder", async () => {

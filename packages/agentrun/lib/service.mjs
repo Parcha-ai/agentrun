@@ -117,7 +117,8 @@ export const unitEnv = (text) =>
  *  - A local model's (AGENT_MODEL_BASE_URL in front of a gateway such as Ollama's), and its key at `none`: a server that
  *    holds no key for its gateway refuses each run that brings none (run-model-key.ts, model_key_required).
  *  - Where Ollama listens (OLLAMA_HOST, read as the ollama CLI reads it), for an Ollama off its default address: the
- *    server lists its models itself (serve's ollama-provider.ts).
+ *    server lists its models itself (serve's ollama-provider.ts). OLLAMA_CONTEXT_LENGTH, Ollama's own too: a person's
+ *    lower context, which caps each request's num_ctx below 65,536 as it caps Ollama's.
  *  - The start-time switches (the server's start-switches.ts), on at `1` alone, for a machine its owner alone uses. A
  *    server reads them at its start, so the service restarts.
  *  - The usage counts' switches (docs/telemetry.md). A service never sees the shell that installed it, so install writes
@@ -129,6 +130,7 @@ export const SERVICE_ENV = {
   AGENT_MODEL_PRICE: null,
   AGENT_MODEL_API_KEY: ["none"],
   OLLAMA_HOST: null,
+  OLLAMA_CONTEXT_LENGTH: null,
   AGENTRUN_MCP_ALLOW_LOOPBACK: ["1"],
   AGENTRUN_WEBHOOK_PRIVATE_TARGETS: ["1"],
   AGENTRUN_TELEMETRY: null,

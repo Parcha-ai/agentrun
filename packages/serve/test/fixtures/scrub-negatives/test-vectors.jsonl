@@ -1,0 +1,24 @@
+{"id":"md5-empty","text":"MD5(\"\") = d41d8cd98f00b204e9800998ecf8427e"}
+{"id":"md5-abc","text":"MD5(\"abc\") = 900150983cd24fb0d6963f7d28e17f72"}
+{"id":"sha1-empty","text":"SHA1(\"\") = da39a3ee5e6b4b0d3255bfef95601890afd80709"}
+{"id":"sha1-abc","text":"SHA1(\"abc\") = a9993e364706816aba3e25717850c26c9cd0d89d"}
+{"id":"sha256-empty","text":"SHA256(\"\") = e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+{"id":"sha256-abc","text":"SHA256(\"abc\") = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}
+{"id":"sha512-empty","text":"SHA512(\"\") = cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e"}
+{"id":"sha512-abc","text":"SHA512(\"abc\") = ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f"}
+{"id":"sha256-abc-test","text":"assert.equal(createHash(\"sha256\").update(\"abc\").digest(\"hex\"), \"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\");"}
+{"id":"sha256-fox-py","text":"assert hashlib.sha256(b\"The quick brown fox jumps over the lazy dog\").hexdigest() == \"d7a8fbb307d7809469ca9abcb0082e4f8d5651e46d3cdb762d02d0bf37c9e592\""}
+{"id":"sha1-fox-go","text":"if got := fmt.Sprintf(\"%x\", sha1.Sum([]byte(\"The quick brown fox jumps over the lazy dog\"))); got != \"2fd4e1c67a2d28fced849ee1bb76e7391b93eb12\" {"}
+{"id":"sha3-256-empty","text":"SHA3-256(\"\") = a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a"}
+{"id":"blake2b-abc","text":"BLAKE2b-512(\"abc\") = ba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d17d87c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923"}
+{"id":"rfc4231-tc1","text":"Test Case 1 (RFC 4231)\nKey  = 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b (20 bytes)\nData = 4869205468657265 (\"Hi There\")\nHMAC-SHA-256 = b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"}
+{"id":"rfc4231-tc2","text":"Key  = 4a656665 (\"Jefe\")\nData = 7768617420646f2079612077616e7420666f72206e6f7468696e673f (\"what do ya want for nothing?\")\nHMAC-SHA-512 = 164b7a7bfcf819e2e395fbe73b56e0a387bd64222e831fd610270cd7ea2505549758bf75c05a994a6d034f65f8f0e6fdcaeab1a34d4a6b4b636e070a38bce737"}
+{"id":"sha256-empty-b64","text":"sha256 of the empty string, base64: 47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU="}
+{"id":"crc32-check","text":"CRC-32/ISO-HDLC check value for \"123456789\" is 0xCBF43926"}
+{"id":"aes-fips197","text":"FIPS-197 C.1 AES-128\nPLAINTEXT: 00112233445566778899aabbccddeeff\nKEY:       000102030405060708090a0b0c0d0e0f\nOUTPUT:    69c4e0d86a7b0430d8cdb78070b4c55a"}
+{"id":"ed25519-rfc8032-pub","text":"RFC 8032 7.1 TEST 1\nPUBLIC KEY: d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a\nMESSAGE (length 0 bytes):"}
+{"id":"pbkdf2-rfc6070","text":"PBKDF2-HMAC-SHA1 (RFC 6070)\n  P = \"password\" (8 octets)\n  S = \"salt\" (4 octets)\n  c = 1\n  dkLen = 20\n  DK = 0c 60 c8 0f 96 1f 0e 71 f3 a9 b5 24 af 60 12 06 2f e0 37 a6"}
+{"id":"uuid-v5-dns","text":"uuid.uuid5(uuid.NAMESPACE_DNS, \"python.org\") == UUID(\"886313e1-3b8a-5372-9b90-0c9aee199e5d\")"}
+{"id":"base64-rfc4648","text":"BASE64(\"foobar\") = \"Zm9vYmFy\"\nBASE32(\"foobar\") = \"MZXW6YTBOI======\"\nBASE16(\"foobar\") = \"666F6F626172\""}
+{"id":"bitcoin-genesis","text":"Genesis block hash: 000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f"}
+{"id":"git-empty-tree","text":"git's empty tree is 4b825dc642cb6eb9a060e54bf8d69288fbee4904, and the empty blob is e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"}
