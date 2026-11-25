@@ -925,8 +925,10 @@ export function listedItem(listing: KeptListing, origin: string, archivedAt: num
   return listing.cut === secretsDigest(serverSecrets) ? item : (redactedOutput(item, [...serverSecrets]) as Record<string, unknown>);
 }
 
-/** A set of secrets' digest, the same for the same set in any order: what a listing was cut of. */
-const secretsDigest = (values: readonly string[]): string => createHash("sha256").update([...new Set(values)].sort().join("\0")).digest("hex");
+/** A set of secrets' digest, the same for the same set in any order: what a listing was cut of. Of the sorted values'
+ *  JSON, which escapes a lone surrogate and a NUL as written, so no two sets share it: as UTF-8 every lone surrogate is
+ *  the one replacement character, and values joined by a NUL read as one value that holds it. */
+const secretsDigest = (values: readonly string[]): string => createHash("sha256").update(JSON.stringify([...new Set(values)].sort())).digest("hex");
 
 /** A run's facts as its view states them, and none of its words: its kind, revision, agent, status and times, and whether
  *  its output is withheld (`unshown`). What a read that serves its own parts (the graph) needs of the run: read off the
