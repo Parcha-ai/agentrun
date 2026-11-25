@@ -1,7 +1,7 @@
 {
   "$schema": "../../../schema/task.schema.json",
   "id": "osworld.c288e301",
-  "version": 1,
+  "version": 2,
   "title": "Make Python4 the default Python (it does not exist)",
   "split": "heldout",
   "source": {
@@ -9,7 +9,7 @@
     "id": "os/c288e301-e626-4b98-a1ab-159dcb162af5",
     "revision": "0ad41bee56565efe7bb3c3a5ebc67590a1b8276f",
     "licence": "Apache-2.0 (Copyright 2024 XLANG NLP Lab); the instruction is copied word for word",
-    "changes": "OSWorld marks this task infeasible and passes an agent whose last action is FAIL. computer-bench has no FAIL action, so the agent says so in its final answer: an exec check proves no python4 was faked in the run's home, and the agentic grader reads the answer and decides with rubric.md. No check reads the answer: a failing check fails a run whatever the grader says, and no regex knows every way to say Python 4 does not exist. OSWorld set nothing up; setup here opens Xfce's terminal in the run's folder, with HOME set to it, since this desktop has no dock or terminal shortcut."
+    "changes": "OSWorld marks this task infeasible and passes an agent whose last action is FAIL. computer-bench has no FAIL action, so the agent says so in its final answer: an answer check proves there is one (not its words), an exec check proves no python4 was faked in the run's home, and the agentic grader reads the answer and decides with rubric.md. No check reads the answer's words: a failing check fails a run whatever the grader says, and no regex knows every way to say Python 4 does not exist. OSWorld set nothing up; setup here opens Xfce's terminal in the run's folder, with HOME set to it, since this desktop has no dock or terminal shortcut."
   },
   "tags": ["osworld", "os", "terminal", "infeasible"],
   "needs": {
@@ -41,6 +41,12 @@
   "budget": { "steps": 100, "usd": 3, "wall_s": 900 },
   "sufficient": false,
   "checks": [
+    {
+      "id": "answered",
+      "kind": "answer",
+      "why": "The agent gave a final answer, which the grader reads for the refusal. Its words are the grader's: this check only fails a run with none (a null run, or an agent that stopped silent), so the untouched state fails.",
+      "text": { "empty": true, "not": true }
+    },
     {
       "id": "no-fake-python4",
       "kind": "exec",
