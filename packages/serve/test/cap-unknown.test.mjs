@@ -368,9 +368,9 @@ test("QA 7.4: a pi run under a $1 cap, stopped while its clamped request is out,
   assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "go on" })).body.mode, "follow_up");
   const run = await finished(api, runId);
   // Told what is left with its request (the faux model quotes the last message, the cap's note appended to it): $1 less
-  // the stop's $0.1024, about $0.90, never the cap spent on a hold. The figure is what this pins, not the note's words.
-  assert.deepEqual([run.status, run.error?.code ?? null], ["completed", null], `the follow-up runs: ${JSON.stringify(run.error)}`);
-  assert.match(run.result?.final_answer ?? "", /\$0\.90\b/, `the follow-up is told about $0.90 is left: ${run.result?.final_answer}`);
+  // the stop's $0.1024, about $0.90, never the cap spent on a hold.
+  const told = "<system-reminder>AgentRun server note: This run's budget is about $0.90, enough for little work: answer as soon as you can.</system-reminder>";
+  assert.deepEqual([run.status, run.error?.code ?? null, run.result?.final_answer], ["completed", null, `On go on${told}: done.`], `the follow-up runs: ${JSON.stringify(run.error)}`);
   const stops = await stopsOf(store, runId);
   assert.equal(stops.length, 1, `one stopped request: ${JSON.stringify(stops)}`);
   assert.ok(Math.abs(stops[0].bookedUsd - 1_024 * 100 / 1e6) < 1e-12, `the stopped request's booking says what the cap counts it at: ${JSON.stringify(stops[0])}`);
