@@ -192,6 +192,12 @@ for (const [blank, said] of [[" ", "a space"], ["", "empty"]]) {
   });
 }
 
+// A server saved with auth_config_id stands on that config: its MCP server serves only the accounts under it, so its
+// triggers run as one of those, and its connect link is made under it. The user here has a GitHub account under the
+// managed config too, which that server never serves.
+const BOTH_CONFIGS = { github: [{ id: "ac_managed", is_composio_managed: true }, { id: "ac_custom", is_composio_managed: false }] };
+const upsertedAs = (composio) => composio.calls.filter((call) => call.method === "POST" && call.path.endsWith("/upsert")).map((call) => call.body.connected_account_id);
+
 test("a server saved with auth_config_id: its trigger runs as the account under that config, though the user has one under the managed config too", async (t) => {
   const accounts = { github: [{ id: "ca_managed_github", status: "ACTIVE", auth_config: "ac_managed", created_at: "2026-11-10T08:00:00.000Z" }, { id: "ca_custom_github", status: "ACTIVE", auth_config: "ac_custom", created_at: "2026-11-11T08:00:00.000Z" }] };
   const s = await setup(t, { connected: false, composio: { authConfigs: BOTH_CONFIGS, accounts }, saveWith: { auth_config_id: "ac_custom" } });
