@@ -1791,14 +1791,6 @@ class SqliteStore implements Store {
      *  writes or removes the row, so an owner's save, which drops the mark in the transaction that writes its row
      *  (dropTokensMark), never lands in between. */
     const recordJson = readableJson(d, "settings.value");
-    /** The latest created_at of each server name's rows this store wrote or read. A row the name is given next is made past
-     *  it, even within its millisecond or on a clock stepped back: created_at is the row's identity (the `of` its records
-     *  name, mcp-sources.ts), so a record the removal of an earlier row read is never byte for byte a later row's. */
-    const madeAt = new Map<string, number>();
-    const noteMade = <T extends McpServerRow | undefined>(row: T): T => {
-      if (row) madeAt.set(row.name, Math.max(row.createdAt, madeAt.get(row.name) ?? row.createdAt));
-      return row;
-    };
     const tokensMarked = `EXISTS (SELECT 1 FROM settings WHERE settings.key = ? AND ${d.jsonText(recordJson, ["by"])} = 'token' AND ${d.jsonValue(recordJson, ["of"])} = CAST(mcp_servers.created_at AS TEXT))`;
 
     /** A write of the saved server `name` that the token's mark decides (McpTokensMark, McpOwnersMark): one transaction that
@@ -1862,10 +1854,10 @@ class SqliteStore implements Store {
               prices = excluded.prices, server_info = excluded.server_info, instructions = excluded.instructions, sealed = excluded.sealed, refresh_holder = NULL, refresh_until = NULL, updated_at = ${lastEdit(updatedAt, "excluded.updated_at")}, listed_at = excluded.listed_at, credential_changed_at = excluded.credential_changed_at, token_until = excluded.token_until
               ${expected === null ? "WHERE 1 = 0" : ""}
             RETURNING ${mcpServerColumnsAt(stamp)}`,
-          params: [name, ...values, Math.max(at, (madeAt.get(name) ?? at - 1) + 1), updated, listed, credentialAt, ...stamp.params, left, ...stamp.params],
+          params: [name, ...values, at, updated, listed, credentialAt, ...stamp.params, left, ...stamp.params],
         };
       const written = await writeMcpRow(name, statement, tokens, owns);
-      return noteMade(written && mcpServerOf(written));
+      return written && mcpServerOf(written);
     };
 
     /** A server row's updated_at as a write sets it to `value` (SQL): kept as given when the caller passes the one it read
@@ -1892,7 +1884,7 @@ class SqliteStore implements Store {
     const server = async (executor: Pick<SqliteExecutor, "get">, name: string) => {
       const at = clock();
       const row = await executor.get<McpServerRecord>(`SELECT ${mcpServerColumnsAt(at)} FROM mcp_servers WHERE name = ?`, ...at.params, name);
-      return noteMade(row && mcpServerOf(row));
+      return row && mcpServerOf(row);
     };
     this.mcp = {
       put: async (row) => (await putServer(row, undefined))!,
