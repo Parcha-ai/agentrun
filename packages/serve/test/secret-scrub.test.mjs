@@ -1675,6 +1675,30 @@ test("LVI: the command a text is the output of is its context: a read of a crede
   }
 });
 
+test("LVI: an env command among others on its line is the output's context, and a failed call's one-line summary is read after its head", async () => {
+  const pw = "Copper8lumen80";
+  const env = `APP_REGION=north\nAPP_SEED=${pw}`;
+  // The env command is one of the line's commands (`;`, `&&`, `||`, `&`): its output is still a dump.
+  for (const command of ["env; sleep 5", "env && exit 1", "cd /srv/app && env | sort", "false || printenv", "env & wait", "printenv APP_SEED; false"]) {
+    const text = command.startsWith("printenv APP_SEED") ? pw : env;
+    const out = await gone(text, [pw], { command });
+    assert.deepEqual(out.cuts.map((cut) => [cut.rule, cut.kind, cut.restorable]), [["env-dump", "dump", false]], `${command}: ${JSON.stringify(out.cuts)}`);
+  }
+  // A failed call's summary is one line, `<label> failed: <its output's first line>`: what follows the head is read with
+  // the call's command before it, so a variable with no key-shaped name and no format is cut too; the head is kept.
+  const region = "basin-orchard-41";
+  for (const [summary, command] of [[`Bash failed: APP_REGION=${region}`, "env; sleep 5"], [`Bash failed: APP_REGION=${region}`, "env"], [`shell: APP_REGION=${region}`, "env && exit 1"]]) {
+    const out = await gone(summary, [region], { command });
+    assert.deepEqual(out.cuts.map((cut) => [cut.rule, cut.kind]), [["env-dump", "dump"]], `${command}: ${JSON.stringify(out.cuts)}`);
+    assert.equal(out.text, `${summary.slice(0, summary.indexOf(": ") + 2)}[redacted:env-dump 1 lines]`, command);
+  }
+  // No env command among them, or one only inside a quoted word: NAME=value lines and a summary are no dump.
+  for (const [text, command] of [[env.replace(pw, "gold"), "make; ls"], [env.replace(pw, "gold"), "export APP_REGION=north && npm test"], [`Bash failed: APP_REGION=${region}`, "ls; false"], [env.replace(pw, "gold"), 'echo "a; env"'], [env.replace(pw, "gold"), "set -e; make"]]) {
+    const out = await scrub(text, { mode: "count", command });
+    assert.deepEqual(out.cuts, [], `${command}: ${JSON.stringify(out.cuts)}`);
+  }
+});
+
 test("LIX: a dotted name is no code evidence alone; a self./this./cls. root, a trailing `;` or an environment root is", async () => {
   const wrappers = [
     (s) => s,

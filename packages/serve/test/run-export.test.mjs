@@ -436,6 +436,20 @@ test("LVI: a failed call's summary, the first line of its output, is cut with th
   assertNoPlanted(body, { pw: CTX_PW });
 });
 
+test("LVI: a failed env call's summary (`env; sleep 5`, timed out) is cut with its call's context: a plain variable's value is not carried", async () => {
+  // Its first line is a variable with no key-shaped name and no format: only the env command's context cuts it.
+  const region = `basin${hex("ctx-region", 10)}`;
+  const output = `APP_REGION=${region}\nAPP_SEED=${CTX_PW}\nCommand timed out after 5s`;
+  const { rows, calls } = callRows("Bash", { command: "env; sleep 5" }, output);
+  const failed = (row) => (row.kind === "tool_result" ? { ...row, tool_status: "failed", summary: `Bash failed: APP_REGION=${region}` } : row);
+  const { doc, body } = await exported(readsOf({ rows: rows.map(failed), calls: calls.map(failed) }));
+  assert.deepEqual(cutsAt(doc, "/rows/1/tool_result_preview").map((cut) => [cut.kind, cut.rule]), [["dump", "env-dump"]], JSON.stringify(doc.cuts));
+  assert.deepEqual(cutsAt(doc, "/rows/1/summary").map((cut) => [cut.kind, cut.rule]), [["dump", "env-dump"]], JSON.stringify(doc.cuts));
+  assert.equal(valueAt(doc, "/rows/1/summary"), "Bash failed: [redacted:env-dump 1 lines]");
+  assert.ok(!body.includes(region), "the variable's value is not carried");
+  assertNoPlanted(body, { pw: CTX_PW });
+});
+
 test("LVI: a read of an unrelated file, or a command that is no read or dump, is cut as it was: its prose kept as is", async () => {
   for (const [name, tool, input, output] of [
     ["Read notes.txt, prose", "Read", { file_path: "notes.txt" }, "The notes say: meet at noon by the north door."],
