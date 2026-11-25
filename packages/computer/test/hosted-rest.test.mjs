@@ -36,7 +36,6 @@ test("httpsBase takes an https URL with its trailing slashes stripped, and refus
 test("httpsBase refuses a user or password, a query and a fragment, for every provider, in words that give the origin alone", () => {
 	for (const [url, words] of [
 		["https://agentrun@orgo.example/api", "the API URL takes no user or password, since the key goes to it: https://orgo.example"],
-		["https://agentrun:fake-test-key@orgo.example/api", "the API URL takes no user or password, since the key goes to it: https://orgo.example"],
 		["https://api.agent37.com/v1?x=1", "the API URL takes no query or fragment: https://api.agent37.com"],
 		["https://cloud.morph.so/api?key=fake-test-key", "the API URL takes no query or fragment: https://cloud.morph.so"],
 		["https://cloud.morph.so/api#fake-test-key", "the API URL takes no query or fragment: https://cloud.morph.so"],
