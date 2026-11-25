@@ -50,7 +50,7 @@ Runs and harnesses
 
 Models and sign-in
 
-- More follow-ups to Claude Code's login on this machine, and to the server's probe of the harness offers. (#3691) <!-- changes/claude-sign-in-followups-2.md -->
+- More follow-ups to the Claude login on this machine (Settings → Model keys), and to the server's probe of the harness offers. (#3691) <!-- changes/claude-sign-in-followups-2.md -->
   - A tool key's save or delete while the offers held are behind the inputs, and the probe out was made from the inputs read now (a turn-on of the login, say), waits for that probe's turn and starts no probe of its own while it lands. The turn ends when the probe lands or fails, or when a later probe overtakes it; the change then reads the inputs again: landed, it composes the capabilities; failed, it probes for itself; overtaken, it goes by the later probe. So it never answers `500` for another request's failed probe once its key is stored, never waits on a dropped probe, and its key always shows in the capabilities it answers after. Before, it started a probe that dropped the one out, so the save answered only after a whole probe of its own. The server logs `harness_offers_wait` as it waits.
   - A probe of the offers that fails leaves no probe out when it was the latest one, so a later change back to the inputs the offers held were made from reuses them. Before, that change probed again.
   - The Playground's "No model yet" bar is gone while the login is on and reads signed in, no agent is picked (no agents yet, or the agents still being read), and the server's default place is the runner, where a first agent on Claude Agent runs on the login. The bar's ChatGPT and key offer goes with it, whatever harness the first agent will use. On a server whose default place is a box, or before its places are read, the bar stays: a first agent there runs in the box on the model keys. Before, a Playground with no agents offered ChatGPT or a key though an agent on Claude Agent would run on the login.
@@ -87,9 +87,9 @@ Console
 - The agent editor's tools step, with no MCP server saved, links to Settings → MCP servers instead of only naming it. On a server that sends its models to a gateway, unless its own default model is one of the plan's (`AGENT_MODEL=chatgpt/…`), the ChatGPT plan row and the first screen's sign-in no longer say Codex and pi agents run on the plan: there an agent with no model named runs on the gateway, and the plan runs only an agent that names one of its models (`chatgpt/…`). (#3645) <!-- changes/console-tools-link-gateway-plan.md -->
 - A race's lanes are the console's own agents, no longer inline runs on external agents the Agents list could only read. Each lane makes an agent `race-<label>-<n>-<pick>` (POST /v2/agents) and starts its run, labeled and capped as before, on that agent's first revision (POST /v2/agents/{id}/runs), so a resend after a lost answer never runs an edited agent. A lane picked again after a refusal archives the agent it had. A refused last lane can be removed (its agent archived), and the race opens once every lane left has a run. (#3725) <!-- changes/race-lanes-console-agents.md -->
 
-Internal
+Internals
 
-- No change in behaviour: the DSL reads a record through one guard and keeps two unused exports private (#3683), and the server reads its MCP origin list once per call check, keeps one local-token rule and withholds web calls in one place (#3718).
+- The DSL reads a record through one guard and keeps two unused exports private (#3683). The server reads its MCP origin list once per call check and withholds web calls in one place, and every CLI command and `agentrun doctor` read a local server's token by one rule (#3718).
 
 ## 0.1.0-beta.57 (2026-11-24)
 
