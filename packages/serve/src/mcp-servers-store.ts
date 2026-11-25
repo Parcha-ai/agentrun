@@ -840,9 +840,11 @@ export class McpServersOverStore {
     const config = recordedMade(recorded, row.createdAt)?.auth_config?.id;
     // Only an address with no user_id at all is the default user's: an empty one is a blank user, refused below.
     const user = new URL(row.url).searchParams.get("user_id") ?? COMPOSIO_USER;
-    // A user that is no Composio user id (a blank one Composio may read as every user) is refused before Composio is asked
-    // anything: no account read, no connect link made for it.
-    if (!COMPOSIO_USER_ID.test(user)) throw refuse(`${name}'s saved Composio user ${JSON.stringify(user)} is no Composio user id: save the server again with its user.`);
+    // A user that is no Composio user id (a blank one Composio may read as every user) is refused for a trigger's own steps
+    // (`field`) before Composio is asked anything: a create sends the user (its account read, its connect link, its
+    // instance's upsert). A route sends none: its events, its triggers and the project's subscription are read by the key,
+    // and a delete or a save takes the project's turn by it, so a server with a blank user keeps its routes and that turn.
+    if (refusal === "field" && !COMPOSIO_USER_ID.test(user)) throw refuse(`${name}'s saved Composio user ${JSON.stringify(user)} is no Composio user id: save the server again with its user.`);
     return { key, user, toolkit, ...(config ? { auth_config: config } : {}) };
   }
 
