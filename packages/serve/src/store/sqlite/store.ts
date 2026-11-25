@@ -46,6 +46,7 @@ import { Connection, DEFAULT_BUSY_TIMEOUT_MS, type SqliteExecutor, type SqliteVa
 import { applyRunPatch, backfillLedger, BY_HAND_BEFORE, EXACT_COST_USD, NOT_A_LEARNING_RUN, recordLedger, refuseLeftovers, REOPEN_SET, reopenableWhere, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
 import { launchDiskOf, readableJson,readLaunch, readLearningStarts, readSeededBefore, readUsageMetadata, writeLaunch, writeLaunchSealed } from "./run-launch.js";
 import { canonical } from "../agent-body.js";
+import { mcpRecordKeys } from "../mcp-record-keys.js";
 import type { LedgerRow, SpendRow } from "../../learn/ledger.js";
 import { workflowCallsIn } from "../../learning-cost.js";
 import { readProjectCheckpoints } from "./project-checkpoints.js";
@@ -203,8 +204,9 @@ const claimableIn = (d: Dialect, n: StoreNow, claimer?: string): { sql: string; 
   };
 };
 /** The run's computer is kept at its park (its KEPT_PREFIX row) pinned to a runner other than `claimer` that is still
- *  there under the incarnation the row names, at the deadlines' clock `n`: its runners row seen within RUNNER_STALE_MS,
- *  claiming (refused NULL); the keep neither ending nor ended, and its `until` ahead. That runner's Docker engine or
+ *  there (KEPT_PREFIX says what that means: its runners row seen within RUNNER_STALE_MS at the deadlines' clock `n`,
+ *  under the incarnation the row names) and claiming (refused NULL); the keep neither ending nor ended, and its `until`
+ *  ahead, on the same clock it was stamped on. That runner's Docker engine or
  *  attach hub holds the machine, so only it can take it back (workspace/computer-kept.ts pinnedOf); once any of these
  *  stops holding, any runner claims the run. Read in the claim's own statement, so no check-then-act gap. A row with no
  *  runner (a computer any runner reaches: an exec vendor's, a phone; or one an earlier build kept) pins nothing. */
@@ -1814,6 +1816,10 @@ class SqliteStore implements Store {
      *  writes or removes the row, so an owner's save, which drops the mark in the transaction that writes its row
      *  (dropTokensMark), never lands in between. */
     const recordJson = readableJson(d, "settings.value");
+    /** A new row's created_at, its two `?` now and three the name's record keys (mcpRecordKeys) then now again: now, or past
+     *  every `of` the name's records still hold, even within its millisecond or on a clock stepped back. created_at is the
+     *  row's identity (the `of` its records name): a record about an earlier row of the name is never a later row's. */
+    const madeAfterRecords = `${d.greatest}(${d.bigintParam}, COALESCE((SELECT MAX(${d.jsonNumber(recordJson, ["of"])}) FROM settings WHERE settings.key IN (?, ?, ?)), ${d.bigintParam} - 1) + 1)`;
     const tokensMarked = `EXISTS (SELECT 1 FROM settings WHERE settings.key = ? AND ${d.jsonText(recordJson, ["by"])} = 'token' AND ${d.jsonValue(recordJson, ["of"])} = CAST(mcp_servers.created_at AS TEXT))`;
 
     /** A write of the saved server `name` that the token's mark decides (McpTokensMark, McpOwnersMark): one transaction that
@@ -1872,12 +1878,12 @@ class SqliteStore implements Store {
           params: [...values, updated, listed, credentialAt, ...stamp.params, left, name, expected.auth, ...(expected.changedAt === null ? [] : [expected.changedAt]), ...(tokens ? [tokens.record] : []), ...stamp.params],
         }
         : {
-          sql: `INSERT INTO mcp_servers (name, url, auth, protocol, tools, prices, server_info, instructions, sealed, created_at, updated_at, listed_at, credential_changed_at, token_until) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${stamp.sql} + ${d.bigintParam})
+          sql: `INSERT INTO mcp_servers (name, url, auth, protocol, tools, prices, server_info, instructions, sealed, created_at, updated_at, listed_at, credential_changed_at, token_until) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ${madeAfterRecords}, ?, ?, ?, ${stamp.sql} + ${d.bigintParam})
             ON CONFLICT (name) DO UPDATE SET url = excluded.url, auth = excluded.auth, protocol = excluded.protocol, tools = excluded.tools,
               prices = excluded.prices, server_info = excluded.server_info, instructions = excluded.instructions, sealed = excluded.sealed, refresh_holder = NULL, refresh_until = NULL, updated_at = ${lastEdit(updatedAt, "excluded.updated_at")}, listed_at = excluded.listed_at, credential_changed_at = excluded.credential_changed_at, token_until = excluded.token_until
               ${expected === null ? "WHERE 1 = 0" : ""}
             RETURNING ${mcpServerColumnsAt(stamp)}`,
-          params: [name, ...values, at, updated, listed, credentialAt, ...stamp.params, left, ...stamp.params],
+          params: [name, ...values, at, ...mcpRecordKeys(name), at, updated, listed, credentialAt, ...stamp.params, left, ...stamp.params],
         };
       const written = await writeMcpRow(name, statement, tokens, owns);
       return written && mcpServerOf(written);
@@ -2164,7 +2170,7 @@ class SqliteStore implements Store {
         const encoded=json(value);
         await db.write([{ sql: "INSERT INTO settings (key, value, connector_id, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value, connector_id = excluded.connector_id, updated_at = excluded.updated_at", params: [key, encoded, nativeCommandOwner(key,encoded), now()] }]);
       },
-      putIfAbsent: async (key, value, capacity) => {
+      putIfAbsent: async (key, value, capacity, claim) => {
         const encoded=json(value);
         if (capacity !== undefined) {
           if (typeof capacity.prefix !== "string" || !capacity.prefix || capacity.prefix.includes("\0") || !key.startsWith(capacity.prefix) || !Number.isSafeInteger(capacity.limit) || capacity.limit < 1)
@@ -2173,6 +2179,8 @@ class SqliteStore implements Store {
             // SQLite holds its writer lock already; Postgres holds this schema's prefix lock until commit. The count
             // and insertion cannot interleave with another bounded insertion, even through an independent store handle.
             await d.lockKey(tx, `settings.capacity:${capacity.prefix}`);
+            // Settings precede the run's claim lock, as in replaceIf.
+            if (claim) await underClaim(tx, claim, now);
             const existing = await tx.get<{ value: string }>("SELECT value FROM settings WHERE key = ?", key);
             if (existing !== undefined) return JSON.parse(existing.value);
             // Match Settings.all's literal prefix range: use the key index and never parse values or treat _/% as LIKE.
@@ -2192,6 +2200,13 @@ class SqliteStore implements Store {
             return saved === undefined ? undefined : JSON.parse(saved.value);
           });
         }
+        // Under a claim: the claim's fence and the insert in one transaction, so a claim that lost the run writes nothing.
+        if (claim) return db.transaction(async (tx) => {
+          const at = await underClaim(tx, claim, now);
+          await tx.run("INSERT INTO settings (key, value, connector_id, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (key) DO NOTHING", key, encoded, nativeCommandOwner(key, encoded), at);
+          const saved = await tx.get<{ value: string }>("SELECT value FROM settings WHERE key = ?", key);
+          return saved === undefined ? undefined : JSON.parse(saved.value);
+        });
         await db.write([{ sql: "INSERT INTO settings (key, value, connector_id, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (key) DO NOTHING", params: [key, encoded, nativeCommandOwner(key,encoded), now()] }]);
         const row = await db.get<{ value: string }>("SELECT value FROM settings WHERE key = ?", key);
         return row === undefined ? undefined : JSON.parse(row.value);

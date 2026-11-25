@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // The known answer for a home: one JSONL line per session, sorted by key, numbers only (no content, title, directory or
 // path), so two readers of the same home can be compared line for line.
-//   node dist/cli.js <home> [--sources claude-code,codex,pi,opencode] [--threads N] [--read-ahead BYTES] --known-answer
+//   node dist/cli.js <home> [--sources claude-code,codex,pi,opencode,copilot] [--threads N] [--read-ahead BYTES] --known-answer
 // A line: {key, source, tokens: {input, output, cacheRead, cacheWrite, cacheWrite1h}, cost, turns, calls}. key is the
 // sha256 of the session file's path relative to <home>, with "#<session id>" after it for a file of many sessions (an
 // OpenCode database); turns, the person's user messages; calls, model requests (its subagents' with them); cost, USD,
@@ -57,7 +57,8 @@ async function main(): Promise<void> {
   }
   if (positionals.length !== 1) usage("one home directory, please");
   if (!values["known-answer"]) usage("--known-answer is the one output there is");
-  const sources = values.sources === undefined ? SOURCES : values.sources.split(",").map((name) => name.trim());
+  // A source named twice is read once: a repeat would print its every session twice.
+  const sources = values.sources === undefined ? SOURCES : [...new Set(values.sources.split(",").map((name) => name.trim()))];
   const unknown = sources.filter((name) => !(SOURCES as readonly string[]).includes(name));
   if (unknown.length || !sources.length) usage(`unknown source: ${unknown.join(", ") || "(none)"}`);
   const threads = values.threads === undefined ? undefined : wholeOf("--threads", values.threads, 1, false, MOST_THREADS);

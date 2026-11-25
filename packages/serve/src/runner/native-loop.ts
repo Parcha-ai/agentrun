@@ -30,7 +30,7 @@ import { HOST_PHASE } from '../timeline/index.js';
 import { KINDS } from './journal-kinds.js';
 import { bookedSpend, cliRunMetrics } from './metrics.js';
 import { stopEnd, type AlsoRow, type Claim, type LoopFactory, type StopReason } from './loop-contract.js';
-import { END_PATCH_MS, END_PATCH_UNKNOWN } from './loop.js';
+import { END_PATCH_MS, END_PATCH_UNKNOWN, REAL_TIMER } from './loop.js';
 import { storeSecrets } from './store-secrets.js';
 import { runnerSecrets, heldRedactor, processSecretRedactor } from './redact.js';
 import { secretRedactor } from './redact.js';
@@ -131,8 +131,8 @@ export function createNativeLoop(launch:RunLaunch,host:AdapterSpecDeps):LoopFact
    let endPatch:Pick<RunPatch,'costUsd'|'metrics'>|undefined;
    const readEndPatch=async(model:string,runtime?:string,usage?:NativeUsage)=>{
     if(endPatch!==undefined)return endPatch;
-    let timer:NodeJS.Timeout|undefined;
-    const late=new Promise<typeof END_PATCH_UNKNOWN>(resolve=>{timer=setTimeout(()=>resolve(END_PATCH_UNKNOWN),END_PATCH_MS);});
+    const bound=host.endPatchTimer??REAL_TIMER;let timer:unknown;
+    const late=new Promise<typeof END_PATCH_UNKNOWN>(resolve=>{timer=bound.setTimeout(()=>resolve(END_PATCH_UNKNOWN),END_PATCH_MS);});
     try{
      // Only reads race the deadline. A late result never writes a patch or changes the chosen end.
      const read=async()=>{
@@ -142,7 +142,7 @@ export function createNativeLoop(launch:RunLaunch,host:AdapterSpecDeps):LoopFact
       return {costUsd:spend.usd,metrics:{...nativeMetrics(entries,spend,model,turn,path,runtime),native_session_id:nativeSessionId,...(usage?{native_usage:usage}:{})}};
      };
      endPatch=await Promise.race([read(),late]);
-    }catch{endPatch=END_PATCH_UNKNOWN;}finally{clearTimeout(timer);}
+    }catch{endPatch=END_PATCH_UNKNOWN;}finally{bound.clearTimeout(timer);}
     return endPatch;
    };
    try{

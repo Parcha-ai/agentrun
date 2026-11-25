@@ -5,7 +5,7 @@
 // deny turned off before the park is let go at it, never said to be kept.
 //
 // The desktop is --faux's machine (faux-computers.ts) behind a loopback vendor that keeps its computers across claims,
-// as a vendor's account does: nothing is rented. The clock the keep is read by is the test's.
+// as a vendor's account does: nothing is rented. The clock the keep is read by is the test's, the stores' and the runner's alike.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -103,8 +103,11 @@ function fauxVendor() {
  *  claim's spec was built and its desktop started. */
 async function parkedRun(t, { asks, views, turnOff } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-park-keeps-"));
-  const server = await openSqliteStore({ dataDir: dir, role: "server" });
-  const store = await openSqliteStore({ dataDir: dir, role: "runner" });
+  // The keep's end is stamped and judged on the store's clock, so the test moves the stores' clock and the runner's together.
+  const clock = { offset: 0 };
+  const now = () => Date.now() + clock.offset;
+  const server = await openSqliteStore({ dataDir: dir, role: "server", now });
+  const store = await openSqliteStore({ dataDir: dir, role: "runner", now });
   let runner;
   t.after(async () => {
     await runner?.close().catch(() => {});
@@ -131,8 +134,7 @@ async function parkedRun(t, { asks, views, turnOff } = {}) {
   };
   const route = { model: "faux-1", provider: { api: "anthropic-messages", origin: "https://route.invalid", credential: () => "not-a-secret" }, fetch, price: () => 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 100 };
   const vendor = fauxVendor();
-  const clock = { offset: 0 };
-  const computerDeps = { kinds: FAUX.kinds, keyTable: FAUX.keyTable, providers: { "faux-desktop": () => vendor.provider }, spec: () => ({ image: "faux", lifetimeMs: 600_000, network: "open" }), check: { readBackOf }, now: () => Date.now() + clock.offset, ...(views ? { openComputerView: async () => { const closes = []; views.push(closes); return { ok: true, view: { close: (why) => void closes.push(why) } }; } } : {}) };
+  const computerDeps = { kinds: FAUX.kinds, keyTable: FAUX.keyTable, providers: { "faux-desktop": () => vendor.provider }, spec: () => ({ image: "faux", lifetimeMs: 600_000, network: "open" }), check: { readBackOf }, now,...(views ? { openComputerView: async () => { const closes = []; views.push(closes); return { ok: true, view: { close: (why) => void closes.push(why) } }; } } : {}) };
   const deps = { env: {}, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim, computerDeps };
   runner = startRunner({
     store, name: "runner-a", ...CONFORMANCE_TIMING, leaseMs: 30_000, stopMarginMs: 5_000,

@@ -58,7 +58,10 @@ async function ran(api, data, store, id, harness, { fields = {}, ask = ASK, ends
   const started = await api("POST", `/agents/${id}/runs`, { input: { content: ask }, ...fields });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   const runId = started.body.run_id;
-  const { rows } = await follow(api, runId, ends, { deadlineMs: 90_000 });
+  // A run paused at its cap is not final: the cap's pause lands before the harness hears its refusal (adapter-loop.ts
+  // pauseAt), so its page may say input_required before the refused node's result row is written. follow reads on until
+  // that row is in (a terminal run's last page holds every row already).
+  const { rows } = await follow(api, runId, ends, { deadlineMs: 90_000, done: (rows, page) => page.status !== "input_required" || learnedResult(rows) !== undefined });
   return { runId, rows, view: (await api("GET", `/runs/${runId}`)).body };
 }
 const learnedResult = (rows) => rows.find((row) => row.kind === "tool_result" && row.tool_name === LEARNED_WORKFLOW_TOOL);

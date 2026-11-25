@@ -246,7 +246,7 @@ test("a new digest is checked before it serves: the agent takes the run meanwhil
   const records = await promotionsOf(server.settings, "agent-1");
   assert.deepEqual(records.map(({ decided }) => [decided]), [["replaying"], ["promote"]]);
   const { fields, ...check } = records[1].check;
-  assert.deepEqual({ ...check, of: [...check.of].sort() }, { compile_after: 20, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 6, agreed: 6, alone: 6, agent_agreed: 6, of: PRIORS, cost_usd: check.cost_usd, outcomes: { answered: 6, handed_back: 0, failed: 0, skipped_write: 0 } });
+  assert.deepEqual({ ...check, of: [...check.of].sort() }, { compile_after: 20, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 6, agreed: 6, alone: 6, agent_agreed: 6, joint: true, of: PRIORS, cost_usd: check.cost_usd, outcomes: { answered: 6, handed_back: 0, failed: 0, skipped_write: 0 } });
   assert.ok(check.cost_usd > 0, "what the check cost is on its record");
   assert.deepEqual(Object.entries(fields).map(([name, one]) => [name, one.n, one.workflow_right, one.known, one.pass]), [["answer", 6, 6, "agent", true]], "the whole answer, judged against the agent's own");
   assert.equal(records[1].digest, DIGEST);

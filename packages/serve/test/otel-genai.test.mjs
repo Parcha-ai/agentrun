@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { after, test } from "node:test";
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 import { InMemorySpanExporter } from "@opentelemetry/sdk-trace";
@@ -13,17 +14,18 @@ import { normalizeUsage } from "@parcha/agentrun-import";
 import { ROUTE_ORIGIN } from "@parcha/agentrun-kernel/host";
 import { closeOpenSessions, MODEL, scriptedOrigin } from "./conformance-pi-adapter.mjs";
 import { queue, stores, until } from "./runner-support.mjs";
+import { agent, follow, serve, whenFree, withEnv } from "./support.mjs";
 
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
-const { genAiTracing, otelOn, traceIdOf } = await import("../dist/otel/tracer.js");
-const { chatAttributes, routeTrace, toolAttributes, USAGE_ATTRIBUTES } = await import("../dist/otel/genai.js");
+const { genAiTracing, OPEN_MAX, otelOn, traceIdOf, tracePosts } = await import("../dist/otel/tracer.js");
+const { chatAttributes, routeTrace, toolAttributes, tracedModel, USAGE_ATTRIBUTES, WRITTEN_MAX } = await import("../dist/otel/genai.js");
+const { keepText, runnerSecrets, secretRedactor } = await import("../dist/runner/redact.js");
+const { hostSecrets, otlpHeaderCut } = await import("../dist/secrets.js");
 const { piAdapter } = await import("../dist/runner/adapters/pi.js");
-const { exporterConfig, FLUSH_MS } = await import("../dist/otel/tracer.js");
+const { exporterConfig } = await import("../dist/otel/tracer.js");
 const { runEnv } = await import("../dist/runner/main.js");
 const { cliRunEnv } = await import("../dist/runner/cli-run-spec.js");
-const { otelPair } = await import("../dist/runner/run-child-host.js");
-const { encode } = await import("../dist/secrets.js");
 const { routeOf } = await import("../dist/runner/model-route.js");
 const { traceOfRoute } = await import("../dist/runner/adapter-run-spec.js");
 after(closeOpenSessions);
@@ -39,10 +41,10 @@ const ANTHROPIC = normalizeUsage("anthropic", { input_tokens: 100, output_tokens
 const OPENAI = normalizeUsage("openai", { input_tokens: 1500, cached_input_tokens: 1200, output_tokens: 400, reasoning_output_tokens: 250 });
 const portUsage = ({ input, output, cacheRead, cacheWrite }, usd, extra = {}) => ({ input, output, cacheRead, cacheWrite, usd, ...extra });
 
-/** A CLI stand-in whose one turn: asks the model (`requests[0]`), calls `write`, asks again (`requests[1]`), ends. Each
- *  request is `{ model, usage, ended }`, through the session's model port as its proxy would; `turnEvents`: a plan
- *  harness's turn, whose requests never reach the host. */
-function standIn(requests) {
+/** A CLI stand-in whose one turn: asks the model (`requests[0]`), calls `write`, asks again (`requests[1]`), says
+ *  `extra` (more events of the turn), ends. Each request is `{ model, usage, ended }`, through the session's model port
+ *  as its proxy would. */
+function standIn(requests, extra = []) {
   return {
     id: "stand-in-cli",
     check: () => [],
@@ -68,6 +70,7 @@ function standIn(requests) {
             const result = await host.call(call.args, { callId: call.callId, signal: io.signal });
             io.onEvent({ type: "tool_end", callId: call.callId, name: "write", isError: Boolean(result.isError), result: result.text });
             if (requests[1]) await ask(requests[1]);
+            for (const event of extra) io.onEvent(event);
             io.onEvent({ type: "turn_end", status: "completed" });
             return { status: "completed" };
           })();
@@ -87,8 +90,12 @@ const TWO_REQUESTS = [
   { model: "openai/gpt-5", usage: portUsage(OPENAI, 0.02), ended: { end: "answered", usd: 0.02 } },
 ];
 
-/** One run of the stand-in, traced into memory: its spans, the run's row, and the trace's log lines. */
-async function tracedRun(t, { requests = TWO_REQUESTS, facts, exporter = new InMemorySpanExporter(), env = ON, trace = { provider: "openrouter", serverAddress: "openrouter.ai", model: "anthropic/claude-sonnet-4.5" } } = {}) {
+/** The run's route as its spec's trace names it: its own model, and the route the second request's model is its own on. */
+const TRACE = { provider: "openrouter", serverAddress: "openrouter.ai", model: "anthropic/claude-sonnet-4.5", routes: new Map([["second", { model: "openai/gpt-5" }]]) };
+
+/** One run of the stand-in, traced into memory: its spans, the run's row, and the trace's log lines. `redact`: the
+ *  runner's redactor; `extra`: more events of its turn (standIn). */
+async function tracedRun(t, { requests = TWO_REQUESTS, extra, redact, facts, exporter = new InMemorySpanExporter(), env = ON, trace = TRACE, runCap = { capUsd: () => undefined, modelOf: () => undefined } } = {}) {
   const lines = [];
   // The claim's trace, told when it ends: its end() is the last thing the claim does (adapter-loop.ts traced).
   let traceEnded = false;
@@ -104,11 +111,11 @@ async function tracedRun(t, { requests = TWO_REQUESTS, facts, exporter = new InM
   const write = { name: "write", description: "Write a line.", inputSchema: { type: "object" }, replay: "never", call: async (args) => ({ text: `wrote ${args.line}` }) };
   const createLoop = createAdapterLoop(
     () => ({
-      adapter: standIn(requests),
+      adapter: standIn(requests, extra),
       facts,
       session: { key: "root", label: "root", system: [], tools: [write], context: "fresh" },
       input: SECRET_WORDS,
-      runCap: { capUsd: () => undefined, modelOf: () => undefined },
+      runCap,
       record: "loop",
       hooks: quiet,
       gate: () => "allow",
@@ -116,7 +123,7 @@ async function tracedRun(t, { requests = TWO_REQUESTS, facts, exporter = new InM
     }),
     { tracing },
   );
-  const runner = startRunner({ store: opened.runners[0], createLoop, name: "runner-a", ...TIMING });
+  const runner = startRunner({ store: opened.runners[0], createLoop, name: "runner-a", ...TIMING, ...(redact ? { redact } : {}) });
   t.after(() => runner.close());
   const row = await until(async () => {
     const now = await opened.server.runs.get("run-1");
@@ -203,6 +210,343 @@ test("an exporter that throws never fails the run: it ends ok, and the failure i
   assert.equal(row.state, "ended", `the run ended ok: ${JSON.stringify(row)}`);
   assert.equal(lines.length, 1, `one line for every span it dropped: ${JSON.stringify(lines)}`);
   assert.match(lines[0], /^\[otel\] a trace export failed; its spans were dropped: collector down$/);
+});
+
+test("a name the model wrote reaches no span uncut: a refused tool is execute_tool with error.type=tool_refused, a body's unknown model is the route's, and a held value is on no span", async (t) => {
+  const held = `held-${"secret"}-value-0451`;
+  const asked = [{ ...TWO_REQUESTS[0], model: `${held}-model` }, TWO_REQUESTS[1]];
+  const extra = [
+    // A tool the session does not have, which the harness refused itself (claude-agent's tool_refused), by the model's name.
+    { type: "tool_start", callId: "refused-1", name: `${held}_tool`, args: {}, refused: true },
+    { type: "tool_end", callId: "refused-1", name: `${held}_tool`, isError: true },
+    // A tool the harness ran under a name the model wrote (a native tool's): through the runner's redactor, and capped.
+    { type: "tool_start", callId: "named-1", name: `run_${held}_${"x".repeat(100)}`, args: {} },
+    { type: "tool_end", callId: "named-1", name: "run", isError: false },
+  ];
+  const { spans, row } = await tracedRun(t, { requests: asked, extra, redact: secretRedactor([held]) });
+  assert.equal(row.state, "ended", `the run ended: ${JSON.stringify(row)}`);
+  const holding = spans.filter((span) => [span.name, ...Object.values(span.attributes)].some((value) => String(value).includes(held)));
+  assert.deepEqual(holding.map((span) => span.name), [], "no span holds the held value");
+  const refused = spans.find((span) => span.attributes["gen_ai.tool.call.id"] === "refused-1");
+  assert.equal(refused.name, "execute_tool", "a refused call is never named");
+  assert.equal(refused.attributes["gen_ai.tool.name"], undefined);
+  assert.equal(refused.attributes["error.type"], "tool_refused", "its end keeps why it failed");
+  assert.equal(refused.status.code, 2);
+  const named = spans.find((span) => span.attributes["gen_ai.tool.call.id"] === "named-1");
+  assert.ok(named.attributes["gen_ai.tool.name"].length <= WRITTEN_MAX, `capped: ${named.attributes["gen_ai.tool.name"]}`);
+  const [first] = chatSpans(spans);
+  assert.equal(first.name, "chat anthropic/claude-sonnet-4.5", "the model the run does not know is named by its route's");
+  assert.equal(first.attributes["gen_ai.request.model"], "anthropic/claude-sonnet-4.5");
+});
+
+test("a run's process's posts are data to its runner: a refused call is unnamed, every name it gives is cut and capped, and its run id is the runner's", async () => {
+  const held = `held-${"secret"}-value-0451`;
+  const exporter = new InMemorySpanExporter();
+  const posts = tracePosts(await genAiTracing(ON, { exporter }), "run-own", secretRedactor([held]));
+  posts.post("open", [Date.now()]);
+  posts.post("known", [{ runId: "run-other", harness: "pi", model: `${held}-m` }]);
+  posts.post("request", [0, `${held}-asked`, undefined]);
+  posts.post("ended", [0, { input: 1, output: 1, usd: 0 }, { end: "answered", usd: 0 }]);
+  posts.post("event", [{ type: "tool_start", callId: "r1", name: `${held}_tool`, refused: true }]);
+  posts.post("event", [{ type: "tool_end", callId: "r1", isError: true }]);
+  posts.post("event", [{ type: "tool_start", callId: "n1", name: `${held}_${"z".repeat(100)}` }]);
+  posts.post("event", [{ type: "tool_end", callId: "n1", isError: false }]);
+  posts.post("end", [undefined]);
+  const spans = exporter.getFinishedSpans();
+  assert.equal(spans.length, 4, spans.map((span) => span.name).join());
+  assert.ok(spans.every((span) => [span.name, ...Object.values(span.attributes)].every((value) => !String(value).includes(held))), "no span holds the held value");
+  assert.ok(spans.every((span) => span.attributes["agentrun.run.id"] === "run-own"));
+  assert.equal(spans.find((span) => span.attributes["gen_ai.tool.call.id"] === "r1").attributes["error.type"], "tool_refused");
+  assert.ok(spans.every((span) => span.name.length <= "execute_tool ".length + WRITTEN_MAX), "every name capped");
+});
+
+test("a run's process holds at most OPEN_MAX requests and OPEN_MAX tool calls open in its runner's trace: one started past that has no span", async () => {
+  const exporter = new InMemorySpanExporter();
+  const posts = tracePosts(await genAiTracing(ON, { exporter }), "run-open", keepText);
+  posts.post("open", [Date.now()]);
+  posts.post("known", [{ runId: "run-open", harness: "pi", model: "m" }]);
+  // Each started and never ended, OPEN_MAX + 3 times; then one ended, which frees its place for one more.
+  for (let i = 0; i < OPEN_MAX + 3; i++) {
+    posts.post("request", [i, "m", undefined]);
+    posts.post("event", [{ type: "tool_start", callId: `call-${i}`, name: "bash" }]);
+  }
+  posts.post("request", [0, "m", undefined]);
+  posts.post("ended", [0, { input: 1, output: 1, usd: 0 }, { end: "answered", usd: 0 }]);
+  posts.post("event", [{ type: "tool_end", callId: "call-0", isError: false }]);
+  posts.post("request", [OPEN_MAX + 10, "m", undefined]);
+  posts.post("event", [{ type: "tool_start", callId: "call-late", name: "bash" }]);
+  posts.post("end", [undefined]);
+  const spans = exporter.getFinishedSpans();
+  assert.equal(chatSpans(spans).length, OPEN_MAX + 1, "OPEN_MAX open requests, and one more once one ended");
+  const tools = spans.filter((span) => span.attributes["gen_ai.operation.name"] === "execute_tool");
+  assert.equal(tools.length, OPEN_MAX + 1, "OPEN_MAX open calls, and one more once one ended");
+  assert.ok(tools.some((span) => span.attributes["gen_ai.tool.call.id"] === "call-late"), "the call after an end has its span");
+  assert.equal(tools.some((span) => span.attributes["gen_ai.tool.call.id"] === `call-${OPEN_MAX}`), false, "a call past OPEN_MAX has none");
+});
+
+test("the runner's side of a run's posts keeps at most OPEN_MAX requests open by itself, whatever its tracing does with them", () => {
+  // A tracing that opens every request it is asked for and never refuses one: only tracePosts' own bound is left.
+  let asked = 0;
+  const trace = { known: () => {}, request: () => { asked += 1; return () => {}; }, event: () => {}, end: async () => {} };
+  const posts = tracePosts({ open: () => trace, flush: async () => {} }, "run-bound", keepText);
+  posts.post("open", [Date.now()]);
+  posts.post("known", [{ runId: "run-bound", harness: "pi", model: "m" }]);
+  // OPEN_MAX + 3 started and never ended, then id 0 again, which the bound refuses before the open-id check is reached
+  // (the next test pins that check); then one ended frees its place.
+  for (let i = 0; i < OPEN_MAX + 3; i++) posts.post("request", [i, "m", undefined]);
+  posts.post("request", [0, "m", undefined]);
+  assert.equal(asked, OPEN_MAX, "OPEN_MAX requests opened, none past that");
+  posts.post("ended", [0, { input: 1, output: 1, usd: 0 }, { end: "answered", usd: 0 }]);
+  posts.post("request", [OPEN_MAX + 10, "m", undefined]);
+  posts.post("request", [OPEN_MAX + 11, "m", undefined]);
+  assert.equal(asked, OPEN_MAX + 1, "one more once one ended, and no more past that");
+});
+
+test("the runner's side of a run's posts opens no second request under an id still open, so the first one's end still ends it", () => {
+  // Far below OPEN_MAX, so only the open-id check can refuse the repeat.
+  const opened = [];
+  const trace = { known: () => {}, request: () => { const request = { ends: 0 }; opened.push(request); return () => { request.ends += 1; }; }, event: () => {}, end: async () => {} };
+  const posts = tracePosts({ open: () => trace, flush: async () => {} }, "run-repeat", keepText);
+  posts.post("open", [Date.now()]);
+  posts.post("known", [{ runId: "run-repeat", harness: "pi", model: "m" }]);
+  posts.post("request", [0, "m", undefined]);
+  posts.post("request", [1, "m", undefined]);
+  posts.post("request", [0, "m", undefined]);
+  assert.equal(opened.length, 2, "an id posted again while open opens nothing");
+  posts.post("ended", [0, { input: 1, output: 1, usd: 0 }, { end: "answered", usd: 0 }]);
+  assert.deepEqual(opened.map((request) => request.ends), [1, 0], "id 0's end ends the request it first opened");
+  posts.post("request", [0, "m", undefined]);
+  assert.equal(opened.length, 3, "once ended, the id opens a request again");
+});
+
+test("the runner keeps a call's id, its parent's and a route's name a run's process posts at 128 characters or fewer, and a long one still pairs a call's start with its end and its children", async () => {
+  // The channel takes a message of megabytes: an id the runner keeps per open call, or per claim, is cut to a fixed size,
+  // the same one for every post of it, and two long ids that differ only at their end are still two.
+  const huge = (tail) => `${"x".repeat(1024 * 1024)}${tail}`;
+  const [one, two] = [huge("a"), huge("b")];
+  const events = [];
+  const asked = [];
+  let known;
+  const trace = { known: (run) => { known = run; }, request: (_model, route) => { asked.push(route); return () => {}; }, event: (event) => events.push(event), end: async () => {} };
+  const posts = tracePosts({ open: () => trace, flush: async () => {} }, "run-ids", keepText);
+  posts.post("open", [Date.now()]);
+  posts.post("known", [{ runId: "run-ids", harness: "pi", model: "m", routes: new Map([[one, { model: "long" }], ["tier", { model: "t" }]]) }]);
+  posts.post("request", [0, "m", one]);
+  posts.post("request", [1, "m", "tier"]);
+  posts.post("event", [{ type: "tool_start", callId: one, name: "bash" }]);
+  posts.post("event", [{ type: "tool_start", callId: two, name: "bash", parent: one }]);
+  posts.post("event", [{ type: "tool_start", callId: "toolu_01", name: "bash", parent: one }]);
+  posts.post("event", [{ type: "tool_end", callId: two, isError: false }]);
+  posts.post("event", [{ type: "tool_end", callId: one, isError: false }]);
+  const ids = events.flatMap((event) => [event.callId, event.parent].filter((id) => id !== undefined));
+  assert.ok(ids.every((id) => id.length <= 128), `every call id and parent handed on is 128 characters or fewer (lengths ${ids.map((id) => id.length).join()})`);
+  const keys = [...known.routes.keys()];
+  assert.ok(keys.every((key) => key.length <= 128) && asked.every((route) => route.length <= 128), "every route name kept is 128 characters or fewer");
+  const [start, child, short, childEnd, end] = events;
+  assert.equal(end.callId, start.callId, "a long call's end pairs with its start");
+  assert.equal(child.parent, start.callId, "a long parent pairs with its call");
+  assert.equal(short.parent, start.callId, "every child of a long call names the same parent");
+  assert.equal(childEnd.callId, child.callId, "the child's end pairs with its start");
+  assert.notEqual(child.callId, start.callId, "two long ids that differ only at their end are two calls");
+  assert.equal(short.callId, "toolu_01", "a short id is handed on as given");
+  assert.ok(asked[0] !== "tier" && known.routes.get(asked[0])?.model === "long", "a long route name still finds its route");
+  assert.equal(asked[1], "tier", "a short route name is as given");
+  // A short id posted in the very shape a long one is kept as is never taken for that long one.
+  posts.post("event", [{ type: "tool_start", callId: start.callId, name: "bash" }]);
+  assert.notEqual(events.at(-1).callId, start.callId, "an id shaped like a kept long one is kept as another");
+
+  // Through the tracer itself: the long call and its child each end by their own end, the child under its parent.
+  const exporter = new InMemorySpanExporter();
+  const real = tracePosts(await genAiTracing(ON, { exporter }), "run-ids", keepText);
+  real.post("open", [Date.now()]);
+  real.post("known", [{ runId: "run-ids", harness: "pi", model: "m" }]);
+  real.post("event", [{ type: "tool_start", callId: one, name: "bash" }]);
+  real.post("event", [{ type: "tool_start", callId: two, name: "bash", parent: one }]);
+  real.post("event", [{ type: "tool_end", callId: two, isError: false }]);
+  real.post("event", [{ type: "tool_end", callId: one, isError: false }]);
+  const tools = exporter.getFinishedSpans().filter((span) => span.attributes["gen_ai.operation.name"] === "execute_tool");
+  assert.equal(tools.length, 2, "both calls ended by their own ends, before the claim's");
+  assert.equal(tools[0].parentSpanContext?.spanId, tools[1].spanContext().spanId, "the child's span is under its long parent's");
+  await real.end("run-error");
+});
+
+test("the model rule: a known model as asked; an unknown one by its route's model; with none, through the redactor and capped", () => {
+  const known = (model) => model === "claude-sonnet-4.5";
+  assert.equal(tracedModel("claude-sonnet-4.5", { known, routed: "other" }), "claude-sonnet-4.5");
+  assert.equal(tracedModel("made-up", { known, routed: "claude-sonnet-4.5" }), "claude-sonnet-4.5");
+  assert.equal(tracedModel(undefined, { known }), undefined);
+  const cut = tracedModel(`a-held-value-xyz-${"y".repeat(100)}`, { known, redact: secretRedactor(["a-held-value-xyz"]) });
+  assert.ok(!cut.includes("a-held-value-xyz") && cut.length <= WRITTEN_MAX, cut);
+});
+
+test("a run's process posts no held value onto a span: its provider, host, call ids, request ends, turn status and failure are the runner's to clean", async () => {
+  const held = `held-${"secret"}-value-0451`;
+  const exporter = new InMemorySpanExporter();
+  const posts = tracePosts(await genAiTracing(ON, { exporter }), "run-own", secretRedactor([held]));
+  posts.post("open", [Date.now()]);
+  posts.post("known", [{ runId: "run-own", harness: "pi", provider: `${held}-provider`, serverAddress: `${held}.example.com`, model: "m", routes: new Map([["tier", { provider: held, serverAddress: held, model: "m2" }]]) }]);
+  posts.post("request", [0, "m", undefined]);
+  posts.post("ended", [0, { input: 1, output: 1, usd: 0 }, { end: "lost", label: `${held}-label` }]);
+  posts.post("request", [1, "m2", "tier"]);
+  posts.post("ended", [1, { input: 1, output: 1, usd: 0, billing: held, cut: held }, { end: "nothing", label: "refused", reason: held }]);
+  // A call's raw id matches its end; its span shows it cut. A usual id shows as given.
+  posts.post("event", [{ type: "tool_start", callId: `${held}-call`, name: "bash" }]);
+  posts.post("event", [{ type: "tool_start", callId: "toolu_01usual", name: "bash", parent: `${held}-call` }]);
+  posts.post("event", [{ type: "tool_start", callId: `c${"c".repeat(100)}`, name: "bash" }]);
+  posts.post("event", [{ type: "tool_end", callId: "toolu_01usual", isError: false }]);
+  posts.post("event", [{ type: "tool_end", callId: `${held}-call`, isError: false }]);
+  posts.post("event", [{ type: "tool_end", callId: `c${"c".repeat(100)}`, isError: false }]);
+  posts.post("end", [`${held}-why`]);
+  // A plan harness's turn, whose status is its span's error.type.
+  const planned = tracePosts(await genAiTracing(ON, { exporter }), "run-plan", secretRedactor([held]));
+  planned.post("open", [Date.now()]);
+  planned.post("known", [{ runId: "run-plan", harness: "plan-cli", plan: true, model: "auto" }]);
+  planned.post("event", [{ type: "turn_end", status: `${held}-status` }]);
+  planned.post("end", [undefined]);
+  const spans = exporter.getFinishedSpans();
+  const leaks = spans.flatMap((span) => [["name", span.name], ...Object.entries(span.attributes)].filter(([, value]) => String(value).includes(held)).map(([key, value]) => `${key}=${value}`));
+  assert.deepEqual(leaks, [], "no exported attribute or name holds the held value");
+  const tools = spans.filter((span) => span.attributes["gen_ai.operation.name"] === "execute_tool");
+  assert.equal(tools.length, 3, tools.map((span) => span.name).join());
+  assert.ok(tools.every((span) => span.status.code === 0 && span.attributes["error.type"] === undefined), "each call's end found its start by its raw id");
+  assert.ok(tools.some((span) => span.attributes["gen_ai.tool.call.id"] === "toolu_01usual"), "a usual id shows as given");
+  assert.ok(tools.every((span) => span.attributes["gen_ai.tool.call.id"].length <= WRITTEN_MAX), "every shown id is capped");
+  const usual = tools.find((span) => span.attributes["gen_ai.tool.call.id"] === "toolu_01usual");
+  const parent = tools.find((span) => span.spanContext().spanId === usual.parentSpanContext?.spanId);
+  assert.ok(parent, "a child call finds its parent by the parent's raw id");
+  const [lost, refused] = chatSpans(spans);
+  assert.equal(lost.attributes["error.type"], undefined, "an end the runner does not know is read as none");
+  assert.equal(refused.attributes["error.type"], "refused", "a known end keeps its label");
+  assert.equal(spans.find((span) => span.name === "invoke_agent pi").attributes["error.type"], "run-error", "a failure that is not a code is the runner's");
+  assert.equal(spans.find((span) => span.attributes["agentrun.run.id"] === "run-plan" && span.attributes["gen_ai.operation.name"] === "chat").attributes["error.type"], "failed", "a turn status it does not know is failed");
+});
+
+test("a body's model is known only by its own id: under a CLI spec's catch-all price (every id priced as the session's model), an invented name is its route's, and a known one is cut too", async (t) => {
+  const held = `held-${"secret"}-value-0451`;
+  const long = `route-model-${"r".repeat(80)}`;
+  // A CLI run's runCap.modelOf (cli-run-spec.ts): with no route named, every id is the session's model.
+  const sessionModel = { id: "cap-model", api: "anthropic-messages", price: null, outputCeiling: null };
+  const runCap = { capUsd: () => undefined, modelOf: (_id, by) => (by === undefined ? sessionModel : undefined) };
+  const asked = [{ ...TWO_REQUESTS[0], model: `${held}-invented` }, { ...TWO_REQUESTS[1], model: long }];
+  const { spans, row } = await tracedRun(t, { requests: asked, runCap, redact: secretRedactor([held]), trace: { ...TRACE, model: long } });
+  assert.equal(row.state, "ended", `the run ended: ${JSON.stringify(row)}`);
+  const [invented, known] = chatSpans(spans);
+  assert.equal(invented.attributes["gen_ai.request.model"], long.slice(0, WRITTEN_MAX), "an invented name is its route's model, whatever the catch-all prices it as");
+  assert.equal(known.attributes["gen_ai.request.model"].length, WRITTEN_MAX, `a known name is cut too: ${known.name}`);
+  assert.ok(spans.every((span) => !span.name.includes(held)), "no span name holds the held value");
+});
+
+test("a runner error line holds no OTLP header value: each one is a held secret, and the tracer's [otel] lines are cut", async (t) => {
+  const key = `otlp-${"dummy"}-header-key-7781`;
+  const team = `team-${"dummy"}-header-9925`;
+  const env = { ...ON, OTEL_EXPORTER_OTLP_HEADERS: `Authorization=Bearer%20${key}`, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `x-team=${team}` };
+  const values = runnerSecrets(env);
+  for (const value of [key, team]) assert.ok(values.includes(value), `${value} is held`);
+  assert.equal(secretRedactor(values)(`POST failed: 401 for Bearer ${key} (${team})`).includes(key), false, "a runner line cut of it");
+  // The tracer's own line, from an exporter whose error quotes the header it sent.
+  const quoting = { export: () => { throw new Error(`401: Authorization: Bearer ${key}`); }, shutdown: async () => {}, forceFlush: async () => {} };
+  const { row, lines } = await tracedRun(t, { exporter: quoting, env });
+  assert.equal(row.state, "ended");
+  assert.equal(lines.length, 1, JSON.stringify(lines));
+  assert.equal(lines[0].includes(key), false, `the tracer's line holds no header value: ${lines[0]}`);
+  assert.match(lines[0], /^\[otel\] a trace export failed; its spans were dropped: 401: Authorization: (Bearer )?\[redacted\]$/);
+});
+
+test("an OTLP header value of 8 or more is held but a standard one's, under any name; a shorter one is on no held list, and the tracer's cut still takes it", () => {
+  const short = `hc${"7"}x1`;
+  const long = `honeycomb-${"dummy"}-team-3310`;
+  const env = { ...ON, OTEL_EXPORTER_OTLP_HEADERS: `x-honeycomb-team=${short},Content-Type=application/json`, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Honeycomb-Team=${long},accept=application/x-protobuf,User-Agent=agentrun-otel,content-encoding=gzip` };
+  for (const [list, values] of [["runnerSecrets", runnerSecrets(env)], ["hostSecrets", hostSecrets(env)]]) {
+    assert.ok(values.includes(long), `${long} (under X-Honeycomb-Team) is held (${list})`);
+    // A held list's every reader is not floored at 8 (a number's equality, a source capture's substring match).
+    assert.equal(values.includes(short), false, `${short} (under 8 characters) is on no held list (${list})`);
+    for (const value of ["application/json", "application/x-protobuf", "agentrun-otel", "gzip"]) assert.equal(values.includes(value), false, `${value} (a standard header's) is not held (${list})`);
+  }
+  assert.equal(otlpHeaderCut(env)(`401 for x-honeycomb-team: ${short}`), "401 for x-honeycomb-team: [redacted]", "the tracer's cut takes a short value");
+});
+
+test("an OTLP credential is held as an error may quote it: a scheme's credential alone, the SDK's own reading of a value, an endpoint's user, password and key parameter", () => {
+  const basic = Buffer.from(`otlp-user:${"dummy"}-pass-5521`).toString("base64");
+  const apiKey = `api-${"dummy"}-key-6634`;
+  const sentry = `sentry-${"dummy"}-key-2207`;
+  // A value with a `;` that ours can't decode: the SDK still sends what comes before the `;` (core parseKeyPairsIntoRecord).
+  const property = `team-${"dummy"}-value-7710`;
+  const [user, password, query] = [`user-${"dummy"}-4410`, `pass-${"dummy"}-8812`, `query-${"dummy"}-key-9931`];
+  // The userinfo is joined apart from the URL, so no line here reads as a URL with a password in it to the source export's
+  // credential scan (scripts/export-source.mjs credential_url).
+  const userinfo = (name, secret) => [name, secret].join(":");
+  const endpoint = `https://${userinfo(user, password)}@collector.invalid/v1/traces?region=us-east-1&api_key=${query}`;
+  const env = {
+    OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: endpoint,
+    OTEL_EXPORTER_OTLP_HEADERS: `Authorization=Basic%20${basic},X-Api=Api-Key ${apiKey},x-sentry-auth=sentry sentry_key=${sentry},x-team=${property};%ZZ`,
+  };
+  const values = runnerSecrets(env);
+  for (const [what, value] of [["Basic's credential", basic], ["Api-Key's credential", apiKey], ["the sentry scheme's credential", `sentry_key=${sentry}`], ["the SDK's reading", property], ["the endpoint's user", user], ["its password", password], ["its api_key", query]]) {
+    assert.ok(values.includes(value), `${what} is held`);
+  }
+  assert.equal(values.includes("us-east-1"), false, "a parameter named like no credential is not held");
+  const said = otlpHeaderCut(env)(`401 from ${endpoint}: bad credential ${basic}, ${apiKey}, ${property}`);
+  assert.equal(said, `401 from https://${userinfo("[redacted]", "[redacted]")}@collector.invalid/v1/traces?region=us-east-1&api_key=[redacted]: bad credential [redacted], [redacted], [redacted]`);
+});
+
+test("a dataset or tenant OTLP header (x-honeycomb-dataset, x-axiom-dataset, x-scope-orgid) is on no held list at any length, and the tracer's cut still takes it", () => {
+  const env = { ...ON, OTEL_EXPORTER_OTLP_HEADERS: "x-honeycomb-dataset=production,X-Axiom-Dataset=agentrun production", OTEL_EXPORTER_OTLP_TRACES_HEADERS: "X-Scope-OrgID=tenant-production-7" };
+  for (const [list, values] of [["runnerSecrets", runnerSecrets(env)], ["hostSecrets", hostSecrets(env)]]) {
+    for (const value of ["production", "agentrun production", "tenant-production-7"]) assert.equal(values.includes(value), false, `${value} (a dataset or tenant header's) is not held (${list})`);
+  }
+  assert.equal(otlpHeaderCut(env)("404 for dataset production (agentrun production), org tenant-production-7"), "404 for dataset [redacted] ([redacted]), org [redacted]", "the tracer's cut takes each");
+});
+
+test("an unknown OTLP header's spaced value is held whole, never its tail alone; a credential-named header's, or a known auth scheme's, credential is held without its first word too", () => {
+  const env = { ...ON, OTEL_EXPORTER_OTLP_HEADERS: "X-Tenant=acme production-cluster" };
+  for (const [list, values] of [["runnerSecrets", runnerSecrets(env)], ["hostSecrets", hostSecrets(env)]]) {
+    assert.ok(values.includes("acme production-cluster"), `an unknown header's value is held whole (${list})`);
+    assert.equal(values.includes("production-cluster"), false, `an unknown header's tail alone is not held (${list})`);
+  }
+  const [custom, splunk, genie, token] = [`custom-${"dummy"}-cred-5150`, `splunk-${"dummy"}-token-6261`, `genie-${"dummy"}-key-7372`, `token-${"dummy"}-value-8483`];
+  const values = runnerSecrets({ OTEL_EXPORTER_OTLP_HEADERS: `X-Vendor-Auth=Custom ${custom},X-Splunk=Splunk ${splunk},X-Ops=GenieKey%20${genie},X-Custom=token ${token}` });
+  for (const [what, value] of [["a credential-named header's", custom], ["Splunk's", splunk], ["GenieKey's", genie], ["Token's", token]]) {
+    assert.ok(values.includes(value), `${what} credential alone is held`);
+  }
+});
+
+test("an OTLP endpoint's query parameter is held when a whole word of its name says credential, never for a word that only starts like one", () => {
+  const [access, signature, camel] = [`access-${"dummy"}-token-1212`, `sig-${"dummy"}-value-3434`, `camel-${"dummy"}-key-5656`];
+  const endpoint = `https://collector.invalid/v1/traces?authority=collector-east-7&keyspace=spans-main&access_token=${access}&X-Amz-Signature=${signature}&apiKey=${camel}`;
+  const values = runnerSecrets({ OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: endpoint });
+  for (const [what, value] of [["access_token", access], ["X-Amz-Signature", signature], ["apiKey", camel]]) assert.ok(values.includes(value), `${what}'s value is held`);
+  for (const [what, value] of [["authority", "collector-east-7"], ["keyspace", "spans-main"]]) assert.equal(values.includes(value), false, `${what}'s value is not held`);
+});
+
+test("an OTLP endpoint's query parameter whose name is one lowercase word ending in a credential word is held; authority and keyspace still are not", () => {
+  const names = ["accesstoken", "authtoken", "apitoken", "writekey", "accesskey", "clientsecret"];
+  const value = (name) => `${name}-${"dummy"}-value-4747`;
+  const endpoint = `https://collector.invalid/v1/traces?authority=collector-east-7&keyspace=spans-main&${names.map((name) => `${name}=${value(name)}`).join("&")}`;
+  const values = runnerSecrets({ OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: endpoint });
+  for (const name of names) assert.ok(values.includes(value(name)), `${name}'s value is held`);
+  for (const [what, held] of [["authority", "collector-east-7"], ["keyspace", "spans-main"]]) assert.equal(values.includes(held), false, `${what}'s value is still not held`);
+});
+
+test("the tracer's [otel] lines cut an unknown header's tail after any first word, which the held lists still hold only whole", () => {
+  const cred = `custom-${"dummy"}-cred-9090`;
+  const env = { ...ON, OTEL_EXPORTER_OTLP_HEADERS: `X-Custom=Custom ${cred}` };
+  for (const [list, values] of [["runnerSecrets", runnerSecrets(env)], ["hostSecrets", hostSecrets(env)]]) {
+    assert.ok(values.includes(`Custom ${cred}`), `the value is held whole (${list})`);
+    assert.equal(values.includes(cred), false, `its tail alone is not held (${list})`);
+  }
+  assert.equal(otlpHeaderCut(env)(`401: bad credential ${cred}`), "401: bad credential [redacted]", "an [otel] line quoting the tail alone is cut");
+});
+
+test("a short OTLP header value is cut from the tracer's own error text, at any length; a standard header's value is left as it is", async (t) => {
+  const short = `hc${"7"}x1`;
+  const env = { ...ON, OTEL_EXPORTER_OTLP_HEADERS: `x-honeycomb-team=${short},Content-Type=application/json`, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `x-team=${short}` };
+  // An exporter whose error quotes every header it sent, as a collector's 401 may.
+  const quoting = { export: () => { throw new Error(`401 for x-honeycomb-team: ${short} (x-team=${short}), Content-Type: application/json`); }, shutdown: async () => {}, forceFlush: async () => {} };
+  const { row, lines } = await tracedRun(t, { exporter: quoting, env });
+  assert.equal(row.state, "ended");
+  assert.equal(lines.length, 1, JSON.stringify(lines));
+  assert.equal(lines[0].includes(short), false, `the tracer's line holds no header value: ${lines[0]}`);
+  assert.equal(lines[0], "[otel] a trace export failed; its spans were dropped: 401 for x-honeycomb-team: [redacted] (x-team=[redacted]), Content-Type: application/json");
 });
 
 test("no span carries content, even with OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT=true: no message, prompt, argument or result", async (t) => {
@@ -315,22 +659,64 @@ test("a plan harness's turn whose only event is its turn_end (no text, no tool) 
   assert.equal(chats[0].status.code, 0, "it ended as its turn did, not interrupted");
 });
 
-test("a claim's end never waits on the collector: with an exporter that never answers, it ends at once; the closing flush is bounded", async (t) => {
-  const hanging = { export: () => {}, shutdown: async () => {}, forceFlush: () => new Promise(() => {}) };
+/** An exporter that never answers: each span it was handed (the export's answer never given), and each flush asked of
+ *  it (never resolved). */
+function hangingExporter() {
+  const exporter = { exported: [], flushes: 0, export: (spans) => void exporter.exported.push(...spans), shutdown: async () => {}, forceFlush: () => ((exporter.flushes += 1), new Promise(() => {})) };
+  return exporter;
+}
+
+test("a claim's end never waits on the collector: with an exporter that never answers, it has ended by the next turn of the event loop, and asked no flush", async () => {
+  const hanging = hangingExporter();
   const tracing = await genAiTracing(ON, { exporter: hanging });
   const trace = tracing.open({ startedAt: Date.now() });
   trace.known({ runId: "run-1", harness: "pi", provider: "anthropic" });
   trace.request("claude-sonnet-4.5")({ input: 1, output: 1, usd: 0 }, { end: "answered", usd: 0 });
   trace.event({ type: "tool_start", callId: "c1", name: "bash", args: {} });
   trace.event({ type: "tool_end", callId: "c1", name: "bash", isError: false });
-  let timer;
-  t.after(() => clearTimeout(timer));
-  const bound = new Promise((resolve) => (timer = setTimeout(() => resolve("waited"), 250)));
-  assert.equal(await Promise.race([trace.end().then(() => "ended"), bound]), "ended", "the claim's end did not wait for the export");
-  clearTimeout(timer);
-  // The process's closing flush waits for it, but never past FLUSH_MS.
-  const flushBound = new Promise((resolve) => (timer = setTimeout(() => resolve("hung"), FLUSH_MS + 1_000)));
-  assert.equal(await Promise.race([tracing.flush().then(() => "flushed"), flushBound]), "flushed");
+  let ended = false;
+  void trace.end().then(() => (ended = true));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(ended, true, "the claim's end did not wait for the export");
+  assert.ok(hanging.exported.some((span) => span.name === "invoke_agent pi"), "its spans were handed to the exporter, unanswered");
+  assert.equal(hanging.flushes, 0, "no flush was asked");
+});
+
+test("under the runner subcommand (each run a process of its own), a run's release waits on no collector: its process sends nothing, its runner's exporter takes its spans, and no flush comes before the release", { timeout: 120_000 }, async (t) => {
+  // A collector that takes a request and never answers: what a run's process would wait on if it sent its own spans.
+  // Only a POST is an export: a GET or HEAD is a prober finding the port, never a span.
+  const asked = [];
+  const collector = createServer((req) => void asked.push(`${req.method} ${req.url}`));
+  await new Promise((resolve) => collector.listen(0, "127.0.0.1", resolve));
+  t.after(() => {
+    collector.closeAllConnections();
+    collector.close();
+  });
+  withEnv(t, { OTEL_EXPORTER_OTLP_ENDPOINT: `http://127.0.0.1:${collector.address().port}` });
+  const hanging = hangingExporter();
+  // The runner's tracing, its flush a spy that never answers: a release that waited on it would never come. It takes the
+  // run's end 300 ms late, as a post the runner handles after the run's release does (a slow runner, CI's Postgres).
+  let flushed = 0;
+  const late = (trace) => {
+    const end = trace.end;
+    trace.end = (...args) => new Promise((resolve) => setTimeout(resolve, 300)).then(() => end.apply(trace, args));
+    return trace;
+  };
+  const tracing = genAiTracing(ON, { exporter: hanging, log: () => {} }).then((made) => ({ open: (...args) => late(made.open(...args)), flush: () => ((flushed += 1), new Promise(() => {})) }));
+  const server = await serve(t, { childRuns: { tracing } });
+  const made = await whenFree(() => server.api("POST", "/agents", agent("traced")));
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const run = await whenFree(() => server.api("POST", "/agents/traced/runs", { input: { content: "Hello." } }));
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  const { last } = await follow(server.api, run.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
+  assert.equal(last.status, "completed");
+  await until(async () => (await server.store.runs.get(run.body.run_id)).runner === null, "the run's claim was released", 20_000);
+  assert.deepEqual(asked.filter((request) => request.startsWith("POST ")), [], `the run's process sent no span to the collector itself (all it was asked: ${JSON.stringify(asked)})`);
+  // The run's process posts its root span's end to the runner and releases its claim without waiting for it (by design),
+  // so the release can be seen before the runner has taken the post: the span comes, the order of the two is not ours.
+  await until(() => hanging.exported.some((span) => span.name.startsWith("invoke_agent ")), "the runner's exporter took the run's root span", 10_000);
+  assert.equal(flushed, 0, "no flush of the runner's tracing before the run's release");
+  assert.equal(hanging.flushes, 0, "no flush of the exporter before the run's release");
 });
 
 test("a run whose root span failed to start leaves its trace id to no later span", async () => {
@@ -367,25 +753,14 @@ test("a turn that did not complete cuts its own calls, never one an earlier turn
   assert.equal(byCall.outlived.attributes["error.type"], undefined);
 });
 
-test("no OTEL_* setting reaches a run: the run environment and a CLI's have none, and a run's process gets them on its pipe alone", () => {
+test("no OTEL_* setting reaches a run: the run environment and a CLI's have none, and the runner's exporter is configured from its own", () => {
   const server = { PATH: "/usr/bin:/bin", OTEL_EXPORTER_OTLP_ENDPOINT: "http://collector.invalid:4318/", OTEL_EXPORTER_OTLP_HEADERS: "Authorization=Bearer%20dummy-otlp-key,x-team=jobs", OTEL_SERVICE_NAME: "agentrun-prod" };
   const runs = runEnv(server);
   assert.deepEqual(Object.getOwnPropertyNames(runs).filter((name) => name.startsWith("OTEL_")), [], "the run environment has no OTEL_* at all");
   assert.equal(runs.OTEL_EXPORTER_OTLP_HEADERS, undefined, "not even by name");
   const cli = cliRunEnv(runs, "/data");
   assert.deepEqual(Object.getOwnPropertyNames(cli).filter((name) => name.startsWith("OTEL_")), [], "a CLI harness's environment has none");
-  // A run's own process: on its pipe, read back as that process reads it, and the exporter configured from it.
-  const pipe = encode(otelPair(server));
-  const tracerUrl = JSON.stringify(new URL("../dist/otel/tracer.js", import.meta.url).href);
-  const read = `const { otelEnv, exporterConfig } = await import(${tracerUrl}); process.stdout.write(JSON.stringify({ env: Object.keys(process.env).filter((n) => n.startsWith('OTEL_')), config: exporterConfig(otelEnv()) }));`;
-  const child = spawnSync(process.execPath, ["--import", new URL("../dist/secrets.js", import.meta.url).pathname, "--input-type=module", "-e", read], {
-    input: pipe, encoding: "utf8", timeout: 30_000,
-    env: { PATH: process.env.PATH, AGENTRUN_SECRETS_FD: "0", AGENTRUN_SECRETS_LEN: String(pipe.length), AGENTRUN_TELEMETRY: "0" },
-  });
-  assert.equal(child.status, 0, child.stderr);
-  const said = JSON.parse(child.stdout);
-  assert.deepEqual(said.env, [], "the run's process has no OTEL_* in its environment");
-  assert.deepEqual(said.config, { url: "http://collector.invalid:4318/v1/traces", headers: { Authorization: "Bearer dummy-otlp-key", "x-team": "jobs" } });
+  assert.deepEqual(exporterConfig(server), { url: "http://collector.invalid:4318/v1/traces", headers: { Authorization: "Bearer dummy-otlp-key", "x-team": "jobs" } });
   assert.deepEqual(exporterConfig({ OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "http://c/traces", OTEL_EXPORTER_OTLP_TIMEOUT: "500" }), { url: "http://c/traces", headers: {}, timeoutMillis: 500 });
 });
 

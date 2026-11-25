@@ -98,6 +98,21 @@ export interface MachineHost {
 	 */
 	dialLog?(id: string, ctx: HostCall): Promise<string | undefined>;
 	/**
+	 * agentrun-dial's exit code in a dial machine once it has exited; undefined while it runs, or where it never started.
+	 * A host that started agentrun-dial itself and can read its exit has it (Daytona's: its session command's). The
+	 * adapter reads it while it waits for the machine to dial: one that exited never dials, so create stops then, in
+	 * dialLog's words, instead of at createMs, and while it runs and writes, the wait may go past createMs. A read that
+	 * fails throws, and the wait goes on.
+	 */
+	dialExit?(id: string, ctx: HostCall): Promise<number | undefined>;
+	/**
+	 * Starts agentrun-dial once more in a dial machine whose agentrun-dial exited, as create started it: the same env and
+	 * token, so the same machine dials. The adapter calls it at most once per machine, for an exit that leaves nothing of
+	 * agentrun-dial running (its fetch failed, 3, or its init never listened and was ended, 5); after the start, dialLog
+	 * and dialExit read the new one. A start the vendor refuses throws, and create fails in the first exit's words.
+	 */
+	redial?(id: string, ctx: HostCall): Promise<void>;
+	/**
 	 * The code of an error the vendor's client threw: one of ComputerErrorCode. Optional: the adapter reads a HostError's
 	 * own code, an AbortError as "aborted" and a TimeoutError as "timeout" itself, and anything else a host does not map
 	 * is "vendor".

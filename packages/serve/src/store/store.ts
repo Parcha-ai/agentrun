@@ -1373,8 +1373,10 @@ export interface Settings {
   /** Saves `value` under `key` only when the key has no row yet; the value saved after (this one, or the one there before).
    *  With `capacity`, count and insert share a namespace lock and transaction across store handles. Every raw key under
    *  the exact prefix counts, without decoding values. An existing key wins even at capacity; undefined means a new key
-   *  was refused. The nonempty prefix must contain the key, and limit must be a positive safe integer. */
-  putIfAbsent(key: string, value: unknown, capacity?: { readonly prefix: string; readonly limit: number }): Promise<unknown>;
+   *  was refused. The nonempty prefix must contain the key, and limit must be a positive safe integer. With `claim`,
+   *  holds the run's shared row lock and checks its epoch/lease in the same transaction as the insert, as replaceIf
+   *  does: a stale claim throws Fenced and nothing is written. */
+  putIfAbsent(key: string, value: unknown, capacity?: { readonly prefix: string; readonly limit: number }, claim?: Claim): Promise<unknown>;
   /** Saves `value` under `key` only while its row still holds `was` (as get read it), in one statement: a compare-and-set,
    *  so of two writers that read one row only one replaces it. True when it was replaced; false, with nothing written,
    *  when the row changed since or is gone. With `claim`, holds the run's shared row lock and checks its epoch/lease in
@@ -1642,13 +1644,22 @@ export interface RunCapacity {
  *  put removes every row older than this. */
 export const RUNNER_ROWS_KEPT_MS = 24 * 60 * 60_000;
 
-/** How old a runner's row can be and still count as there, on the store's clock (runner/presence.ts PRESENCE_STALE_MS:
- *  three renewals missed). The claim rule reads it for a kept computer's pin. */
+/** How old a runner's row can be and still count as there, on the store's clock: three of its renewals missed
+ *  (runner/presence.ts PRESENCE_RENEW_MS). Every reader of who is there uses it, the claim rule's kept computer pin
+ *  included. */
 export const RUNNER_STALE_MS = 30_000;
 
 /** The settings key prefix of the computers kept at a run's park, one row per run (workspace/computer-kept.ts). A row
  *  whose computer is pinned to the runner that kept it (its `runner` and `incarnation`) holds the run for that runner in
- *  the claim rule, while that runner is there under that incarnation and the keep lasts. */
+ *  the claim rule, while that runner is there under that incarnation and the keep lasts.
+ *
+ *  "There", for a pinned row's runner, means one thing everywhere: its runners row seen within RUNNER_STALE_MS on the
+ *  store's clock, under the incarnation the row names, refusing claims or not. That runner holds the machine: no other
+ *  runner's janitor ends its row (computer-kept.ts heldElsewhere, in sweepKept), and a claim that took the row and could
+ *  not reach the machine puts the row back (computer-for-claim.ts reattach), so that runner's own end finds it.
+ *  The claim rule (sqlite/store.ts keptElsewhere) alone asks one thing more, that it is claiming (`refused` null): a
+ *  refusing runner would make the answer wait the whole keep for nothing, and its row is given back marked ending, so it
+ *  still ends its machine. */
 export const KEPT_PREFIX = "computer_kept:";
 
 /** Every runner's word that it is there (runner/presence.ts). */

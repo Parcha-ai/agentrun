@@ -19,8 +19,8 @@ import type { Socket } from "node:net";
 import type { Duplex } from "node:stream";
 import { dirname, join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { encode, OTEL_PAIR, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, withoutSecrets } from "../secrets.js";
-import { otelSettings } from "../otel/tracer.js";
+import { encode, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, withoutSecrets } from "../secrets.js";
+import { genAiTracing, type GenAiTracing, tracePosts } from "../otel/tracer.js";
 import { putLiveViewer, dropLiveViewer } from "../browser-live.js";
 import { CALENDAR_EVENTS } from "../calendar/names.js";
 import { openCalendar } from "../calendar/address.js";
@@ -74,7 +74,8 @@ import { refuseRecipeTriggerRun, resolveRunnerLoop, withSavedGatewayDeps } from 
 import { isWorkflowRevision } from "./workflow-loop.js";
 import type { ClaudeAgentLogin } from "@parcha/agentrun-harness-claude";
 import { loginForRun } from "../claude-login.js";
-import { agentRunLogin, LOGIN_NOT_HANDED, loginRunnerInProcess, loginTokensFor } from "../claude-login-token.js";
+import { harnessOfBody } from "../harness.js";
+import { agentRunLogin, LOGIN_CHANGED_SINCE_CLAIM, loginRunnerInProcess, loginTokensFor } from "../claude-login-token.js";
 import { logLine } from "../print.js";
 import type { Held, HeldComputerAsk } from "./held.js";
 import { heardComputerHold } from "./computer-journal.js";
@@ -93,7 +94,7 @@ import { sourceAuxiliaryAdmitter } from "../source-sync/auxiliary.js";
 import { beginSourceIO, type SourceIOReceipt } from "../source-sync/io.js";
 import type { ProjectCheckpoint, ProjectUncertain } from "../source-sync/checkpoints.js";
 import type { ClaimComputer } from "../workspace/computer-for-claim.js";
-import { runTools, type RunTools } from "../workspace/run-tools.js";
+import { attachedIn, type RunComputer, runTools, type RunTools } from "../workspace/run-tools.js";
 import { ProjectHostGate } from "./project-host.js";
 import { runProjectCheckpoint } from "./project-checkpoint.js";
 
@@ -424,13 +425,17 @@ const always: Check = () => true;
  *  its Archil settings (no credential), its MCP hosts and server names, its Claude-login mode and its approvers. */
 const SHARED_SETTINGS: ReadonlySet<string> = new Set(["tool-settings", "archil", "mcp.private_oauth_hosts", "mcp.server_own", "claude_login", "approvers"]);
 
-/** The rows of the claim's own run that its process writes, and removes, itself: its browser's wait that ended
- *  (browser-wait-ended.ts) and its browser's take (browser-hold.ts), each the run's process's report of its own browser
- *  to the server's reads. No other row is its to write. */
-const ownWrittenSettings = (bound: Bound): ReadonlySet<string> => new Set([
-  waitEndedKey(bound.claim.runId),
-  browserHoldKey(bound.claim.runId),
+/** The rows of the claim's own run that its process writes, and removes, itself, each with its string fields (beside the
+ *  claim's epoch): its browser's wait that ended (browser-wait-ended.ts) and its browser's take (browser-hold.ts), each
+ *  the run's process's report of its own browser to the server's reads. No other row is its to write. */
+const ownWrittenSettings = (bound: Bound): ReadonlyMap<string, readonly string[]> => new Map([
+  [waitEndedKey(bound.claim.runId), ["at", "why"]],
+  [browserHoldKey(bound.claim.runId), ["session", "at"]],
 ]);
+
+/** The most one of those rows may take, as JSON bytes: a session's tag, a time and a timeline row's words fit many times
+ *  over, and the server parses the row on every read of the run and every Screen poll. */
+const OWN_ROW_MAX_BYTES = 4096;
 
 /** The settings of the claim's own run and agent a run's process may read: its run's Archil disk, SDK record, kept
  *  computer, browser wait and browser take, and its agent's Archil disk and promotions. Every other row (another run's
@@ -439,7 +444,7 @@ const ownSettings = (bound: Bound): ReadonlySet<string> => new Set([
   `archil.run.${bound.claim.runId}`,
   `sdk-run:${bound.claim.runId}`,
   keptKeyOf(bound.claim.runId),
-  ...ownWrittenSettings(bound),
+  ...ownWrittenSettings(bound).keys(),
   `archil.agent.${bound.agentId}`,
   `learning.promotions.${bound.agentId}`,
 ]);
@@ -447,8 +452,18 @@ const ownSettings = (bound: Bound): ReadonlySet<string> => new Set([
 /** Whether a run's process may read setting `key`. */
 export const settingReadable = (key: unknown, bound: Bound): boolean => typeof key === "string" && (SHARED_SETTINGS.has(key) || ownSettings(bound).has(key));
 const readableSetting: Check = (args, bound) => settingReadable(args[0], bound);
-/** Whether a run's process may write or remove setting `key`: only its own run's browser rows (ownWrittenSettings). */
-const writableSetting: Check = (args, bound) => typeof args[0] === "string" && ownWrittenSettings(bound).has(args[0]);
+/** Whether a run's process may remove setting `key`: only its own run's browser rows (ownWrittenSettings). */
+const removableSetting: Check = (args, bound) => typeof args[0] === "string" && ownWrittenSettings(bound).has(args[0]);
+/** Whether a run's process may write `value` to setting `key`: one of its own run's browser rows, with that row's fields
+ *  alone, each a string, the claim's own epoch, and at most OWN_ROW_MAX_BYTES. A row with a later epoch would be kept by
+ *  every clear of this claim (browser-hold.ts), so a later claim would read a take nobody holds. */
+const writableSetting: Check = ([key, value], bound) => {
+  const fields = typeof key === "string" ? ownWrittenSettings(bound).get(key) : undefined;
+  if (!fields || typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  return Object.keys(row).length === fields.length + 1 && row.epoch === bound.claim.epoch && fields.every((field) => typeof row[field] === "string")
+    && Buffer.byteLength(JSON.stringify(row)) <= OWN_ROW_MAX_BYTES;
+};
 
 /** The store's methods a run's loop calls, each with what binds it to the claim. A method not here is refused, and the
  *  refusal is said on the runner's log. Reads of the claim's run, its launch, its commands and its agent's revisions;
@@ -473,7 +488,7 @@ const STORE_CALLS: ReadonlyMap<string, Check> = new Map<string, Check>([
   ["agents.revisions", ownAgent],
   ["settings.get", readableSetting],
   ["settings.put", writableSetting],
-  ["settings.remove", writableSetting],
+  ["settings.remove", removableSetting],
   // Its rows filtered to the readable ones (storeCall).
   ["settings.all", always],
   ["mcp.pin", ownRun],
@@ -612,8 +627,9 @@ interface ClaimReads {
   readonly signal?: AbortSignal;
   /** The runner's presence incarnation (LoopDeps.incarnation): with the claim's runner, who keeps a computer a park pins. */
   readonly incarnation?: string;
-  /** The Claude login the claim read for this run (staysInRunner), handed down as it was read: the run's one read of the
-   *  login's setting, so a turn-on after its claim never moves it onto a login its claim did not check. */
+  /** The Claude login the claim read for this run (staysInRunner), handed down as it was read: none, and a turn-on after
+   *  its claim never moves it onto a login its claim did not check; one, and the runner reads the setting again at the
+   *  run's start (claudeLogin), handing it only when both reads name the same folder. */
   readonly login: ClaudeAgentLogin | undefined;
 }
 
@@ -676,6 +692,8 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
   };
   const fromGitHub = launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github";
   const github = () => githubAppAccess(store, sealKey, launch.input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) });
+  /** The run's folder as the computer this claim made mounts it (Mode 2), where the claim's MCP files once it is made. */
+  let mountedFolder: Workspace | undefined;
   /** Mode 2's Archil claim, made once for the claim on the runner, its folder the run's. */
   let archil: Promise<Awaited<ReturnType<typeof archilClaim>> | undefined> | undefined;
   const archilOf = () =>
@@ -690,8 +708,9 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
    *  handed none of the server's (claim-secrets.ts keyedAtClaim, held here for the runner's answers). */
   const runKeyed = async () => (await openRunModelKey(keys, claim.runId)) !== undefined;
   /** Whether the claim's run is held, its model kept from running at its create (hold.refused): it routes no model, so
-   *  whatever its process asks, the runner hands it no model key, answers it keyless and refuses it a learning step (its
-   *  learned workflows and its end-of-run step), as its spec asks for none of them (adapter-run-spec.ts, cli-run-spec.ts). */
+   *  whatever its process asks, the runner hands it no model key, answers it keyless, opens it no harness key and no MCP,
+   *  and refuses it a learning step (its learned workflows and its end-of-run step), as its spec asks for none of them
+   *  (adapter-run-spec.ts, cli-run-spec.ts). */
   const modelRefused = launch.hold?.refused !== undefined;
   const refusedSpend = (): ClaimRefused => new ClaimRefused("a held run its model kept from running asks its runner for no model spend: it routes no model and takes no learning step");
   const learningFolder = async () => {
@@ -760,16 +779,23 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     // or refused); never its folder or its refresh token. Each token is carried into the runner's redactor for this run
     // (redact.ts carry) before it is handed, a renewed one too: model text that repeats it is cut from the run's journal
     // as the runner writes it (runner.ts fenced), from what it stages and from its rows, as the run's own tool keys are.
-    // This answer is the claim's one decision whether it goes on the login: none, it does not. A login other than
-    // AgentRun's own folder was refused at the claim (staysInRunner, LOGIN_MACHINE_NEEDS_SERVER_USER); one handed here by
-    // a claim read that check did not make is refused again in LOGIN_NOT_HANDED's words, never left to a model key. The
-    // process reads no setting or machine id.
+    // This answer is the one decision whether the run goes on the login: none, it does not. Its claim read the setting
+    // (staysInRunner); a claim that read it off is never put on it, whatever the setting says now. A claim that read it on
+    // has it read again here, at the start, with the claim's settings, data folder, harness and place. Its environment is
+    // the claim's (the process's, when the runner was given none) with a saved gateway laid over it (withSavedGatewayDeps),
+    // not always the very one the claim read with; that
+    // difference can only refuse the start, never hand another folder, since the login is handed only when both reads name
+    // the same folder: a turn-off, or a move to another folder,
+    // between the claim and the start refuses the start in LOGIN_CHANGED_SINCE_CLAIM's fixed words (no folder in them),
+    // never a start on a login the setting no longer names nor a fall to a model key the run was not claimed on. Nothing
+    // else of the claim is read again. A run with a model key of its own, and a login other than AgentRun's own folder,
+    // were each decided at the claim (staysInRunner: no login read for the one, LOGIN_MACHINE_NEEDS_SERVER_USER for the
+    // other), so neither reaches here on a login. The process reads no setting or machine id.
     claudeLogin: async () => {
-      if (await runKeyed()) return undefined;
-      // The login its claim read (staysInRunner), never a second read of the setting.
       const at = reads.login;
       if (!at) return undefined;
-      if (!agentRunLogin(at, deps.data)) throw new ClaimRefused(LOGIN_NOT_HANDED);
+      const now = await loginForRun(store.settings, deps.data, deps.env ?? {}, harnessOfBody(launch), launch.place);
+      if (now?.dir !== at.dir) throw new ClaimRefused(LOGIN_CHANGED_SINCE_CLAIM);
       const carry = cut.carry;
       if (!carry) throw new ClaimRefused("This runner has no redactor that can cut the login's token from what its run writes, so it hands none.");
       // Each renewal's outcome on the runner's log, in the server's line (print.ts logLine) under event claude_login:
@@ -790,10 +816,20 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       return runSignIn(store, sealKey, claim, String(resolution), { vendors: vendorsOver(() => claimed, vendorFetch), log });
     },
     verifySignIn: (kept, at) => verifyRunSignIn(store, sealKey, claim, kept, Number(at)),
+    // None for a held run its model kept from running: nothing can call it, so no credential of it is opened.
     mcp: (ask) => projectCall(async () => {
+      if (modelRefused) return undefined;
       const reach = await mcpReachOf(deps);
       const harness = { commit: (change: (tx: unknown) => Promise<unknown>) => change({ appendEntry: async (_conversation: number, entry: unknown) => void (await ask.appendRoot(dataOnly(entry))) }) };
-      const made = await mcpForClaim({ claim, store, sealKey, grants: granted, harness: harness as never, work: () => runFolder(deps.data, run.agentId, claim.runId), launchInput: launch.input, githubAppAccess: () => github(), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, ...claimMetering(deps, undefined, launch) });
+      // What the gateway files goes in the run's own files. In Mode 1 that is the run's folder on this machine. In Mode 2
+      // it is the run's disk: through the computer this claim made once it mounts the folder (mountedFolder, the computer
+      // answer's), since the mount holds the disk's write delegation; over the disk's file API (opened here, as the archil
+      // answer opens it, let go at the claim's release) when no computer mounts it. work() is read only when a call is
+      // answered (mcp-gateway.ts textOf, fileResults).
+      const disk = await archilOf();
+      const ws = disk === undefined ? undefined : await openRunWorkspace({ mode: 2, agentId: run.agentId, runId: claim.runId, archil: disk, log });
+      if (ws) releases.push(() => ws.end());
+      const made = await mcpForClaim({ claim, store, sealKey, grants: granted, harness: harness as never, work: () => (ws === undefined ? runFolder(deps.data, run.agentId, claim.runId) : mountedFolder ?? ws.workspace), launchInput: launch.input, githubAppAccess: () => github(), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, ...claimMetering(deps, undefined, launch) });
       if (!made) return undefined;
       releases.push(() => made.release());
       const exposed = heldMcpOf(made, cut);
@@ -866,9 +902,10 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     // harness is a plan-billed recipe on this runner's table, and never another harness's. Opened for the recipe file
     // the process loaded (`digest`), never the one this runner's table read at its start: a file swapped for another
     // vendor's under the same id since then runs its own binary, and a key bound to the first file never opens for it.
+    // None for a held run its model kept from running: its agent never starts.
     harnessKeys: async (digest) => {
       const harness = launch.harness ?? (revision.body as { harness?: string }).harness;
-      const recipe = harness === undefined ? undefined : planRecipeOf(deps.env, harness);
+      const recipe = harness === undefined || modelRefused ? undefined : planRecipeOf(deps.env, harness);
       return recipe?.keys.length && typeof digest === "string" ? openHarnessKeys(store, sealKey, { ...recipe, digest }) : {};
     },
     liveViewerPut: (handover) => putLiveViewer(store, sealKey, claim, handover),
@@ -912,7 +949,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
           hadComputer: async () => (await ask.hadComputer()) === true,
           ...(typeof ask.turnedOff === "string" ? { turnedOff: ask.turnedOff } : {}),
           ...(ask.signal instanceof AbortSignal ? { signal: ask.signal } : {}),
-          ...(made ? { revokeMount: () => made.revoke(), inheritMount: () => made.inherit() } : {}),
+          ...(made ? { revokeMount: () => made.revoke(), inheritMount: () => made.inherit(), mountDisk: () => made.disk.id } : {}),
           ...(typeof ask.onImageWait === "function" ? { onImageWait: ask.onImageWait } : {}),
           ...(typeof ask.onStarting === "function" ? { onStarting: ask.onStarting } : {}),
           ...(typeof ask.onConnected === "function" ? { onConnected: ask.onConnected } : {}),
@@ -920,6 +957,13 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
         } as never,
       );
       releases.push(() => ws.end());
+      // A Mode 2 computer that mounts the run's folder holds the disk's write delegation: what the claim's MCP files then
+      // goes through it, attached here as the run's process attaches it. A failed attach leaves the MCP on the disk's file
+      // API, which says in its answer that the file could not be saved.
+      if (mode === 2) mountedFolder = await attachedIn(ws.workspace, (got as { computer?: RunComputer } | undefined)?.computer).catch((error: unknown) => {
+        log(`the run's folder could not be attached for the MCP's files: ${(error as Error)?.message ?? String(error)}`);
+        return undefined;
+      });
       // The computer let go by this runner at the claim's release too, before its folder: a process that crashed or broke
       // its channel never calls its release. Idempotent with the process's own release and with its park (which keeps it).
       const claimed = got as { release?: (why?: "ended") => Promise<void> } | undefined;
@@ -929,7 +973,10 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
         const { syncProject: _sync, ...exposed } = got as ClaimComputer;
         return { ...exposed, ...(exposed.computer ? { computer: projectGate.capability(exposed.computer) } : {}),
           release: (...args: Parameters<ClaimComputer["release"]>) => cleanProject(() => exposed.release(...args)),
-          ...(exposed.park ? { park: (...args: Parameters<NonNullable<ClaimComputer["park"]>>) => cleanProject(() => exposed.park!(...args)) } : {}) };
+          ...(exposed.park ? { park: (...args: Parameters<NonNullable<ClaimComputer["park"]>>) => cleanProject(() => exposed.park!(...args)) } : {}),
+          // The park's keep written ahead of it lands the folder's delta first, so it waits for the project's work as the
+          // park does.
+          ...(exposed.keepRow ? { keepRow: () => cleanProject(() => exposed.keepRow!()) } : {}) };
       }
       return got;
     }),
@@ -1102,6 +1149,9 @@ export interface ChildLoopsOptions {
   readonly log: (line: string) => void;
   /** The program a run's process starts with (default this Node and dist/runner/run-child.js under dist/secrets.js). */
   readonly argv?: readonly string[];
+  /** The runs' GenAI tracing: this runner's (otel/tracer.ts), from its OTEL_* env, by default. A run's process posts its
+   *  trace's calls here (tracePosts) and exports nothing itself. A test gives its own, over an in-memory exporter. */
+  readonly tracing?: Promise<GenAiTracing | undefined>;
 }
 
 /** The node and module a run's process starts with. */
@@ -1137,9 +1187,10 @@ export { RECIPE_SIGN_IN_PERSON_ONLY } from "./harness-loops.js";
  *  never the folder; it is refused at its claim (ClaimRefused, in words) on this machine's own login (machineFolder), and
  *  while a `process` runner on the same data folder is live (its CLI renews the folder's login itself). A run its caller
  *  handed a model key (model_key) runs on that key and never on the login (cli-run-spec.ts), so it is a process of its
- *  own like any other. A run that is a process of its own is handed the login this claim read (`login`, ClaimReads):
- *  the one read of the login's setting for its start, so a turn-on landing after it never puts the run on a login whose
- *  refusals here it was never checked against. */
+ *  own like any other. A run that is a process of its own is handed the login this claim read (`login`, ClaimReads): a
+ *  claim that read it off is never put on it, so a turn-on landing after it never puts the run on a login whose refusals
+ *  here it was never checked against; a claim that read it on has its runner read the setting again at the start
+ *  (heldFor claudeLogin), and is refused there, in fixed words, when that read names none or another folder. */
 export type ClaimPlace = { readonly stays: true } | { readonly stays: false; readonly login: ClaudeAgentLogin | undefined };
 export async function staysInRunner(deps: Pick<AdapterSpecDeps, "store" | "data" | "env" | "sealKey">, harness: string, launch: RunLaunch, runId: string, isolation: RunIsolation): Promise<ClaimPlace> {
   // A recipe's harness reads its install, its check's note and its owner's sign-in, each the server user's alone: never
@@ -1193,13 +1244,6 @@ function withGatewayKey(claimed: NodeJS.ProcessEnv, key: string): NodeJS.Process
   Object.defineProperty(out, GATEWAY_KEY_ENV, { value: key, enumerable: false, writable: false, configurable: false });
   return out;
 }
-
-/** The pair a run's process is handed this runner's OpenTelemetry settings in (secrets.ts OTEL_PAIR): none when it has
- *  none. */
-export const otelPair = (env: NodeJS.ProcessEnv = process.env): (readonly [string, string])[] => {
-  const settings = otelSettings(env);
-  return Object.keys(settings).length ? [[OTEL_PAIR, JSON.stringify(settings)] as const] : [];
-};
 
 /** The environment a run's process starts with: the runner's run environment's plain values (runEnv: its secrets are
  *  not enumerable, so none is here), no key-shaped name, and where its keys come from. */
@@ -1313,15 +1357,10 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
         // held run its model kept from running, which routes no model.
         const gatewayKey = savedGateway && !launch.hold?.refused ? (keyed ? {} : await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: claimEnv }))[GATEWAY_KEY_ENV] || undefined : undefined;
         const handed = (name: string): string | undefined => (name === GATEWAY_KEY_ENV && savedGateway ? gatewayKey : toProcess.map((from) => from[name]).find((value): value is string => typeof value === "string" && value !== ""));
-        const keys = encode([
-          ...SECRET_NAMES.flatMap((name) => {
-            const value = handed(name);
-            return value === undefined ? [] : [[name, value] as const];
-          }),
-          // The runner's OpenTelemetry settings, so the run's process exports its trace as this one would: on the pipe,
-          // since no run's environment has them (runEnv), never in the process's environment.
-          ...otelPair(),
-        ]);
+        const keys = encode(SECRET_NAMES.flatMap((name) => {
+          const value = handed(name);
+          return value === undefined ? [] : [[name, value] as const];
+        }));
         const slot = await slots?.take();
         if (slots && slot === undefined) {
           // Every free slot of this runner is held by another runner on the data directory (ranges that overlap): the run
@@ -1343,6 +1382,11 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
         // The run's pieced writes (big-writes.ts): let go when its channel ends, or at the claim's release.
         const bigs = runBigWrites();
         const heldSide = heldFor({ ...deps, env: claimEnv }, { claim, run: runRow, launch, revision, claimed: gatewayKey ? withGatewayKey(claimed, gatewayKey) : claimed, signal: loopDeps.signal, login, ...(loopDeps.incarnation ? { incarnation: loopDeps.incarnation } : {}) }, cut, log, bigs);
+        // The run's trace: its process posts each call of it (tracer.ts postedTracing), and this runner's tracing makes the
+        // spans and exports them in the background. No exporter, flush or OTLP setting is ever the process's, so neither
+        // its exit nor this claim's release waits on a collector.
+        const tracing = await (options.tracing ?? genAiTracing()).catch(() => undefined);
+        const traced = tracing ? tracePosts(tracing, claim.runId, cut) : undefined;
         try {
           let extra: Record<string, string> = {};
           let argv = [...(options.argv ?? childArgv())];
@@ -1381,6 +1425,7 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
           const bound: Bound = { claim, agentId: runRow.agentId, revisionId: runRow.revisionId };
           channel.expose("store", (method, args) => storeCall(deps.store, method, args, bound, log));
           channel.expose("journal", journalTarget(loopDeps.journal(claim), cut));
+          if (traced) channel.expose("trace", (method, args) => traced.post(method, args));
           channel.expose("held", (method, args) => {
             // Its own members alone: a name of Object's prototype (constructor, toString) is no call of Held.
             const fn = Object.hasOwn(heldSide.held, method) ? (heldSide.held as unknown as Record<string, (...a: unknown[]) => unknown>)[method] : undefined;
@@ -1408,7 +1453,7 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
           loopDeps.live?.(() => latest);
           const reach = await mcpReachOf(deps);
           const init = {
-            claim, data: deps.data, signal: loopDeps.signal, where: deps.store.where,
+            claim, data: deps.data, signal: loopDeps.signal, where: deps.store.where, ...(traced ? { traced: true } : {}),
             ...(reach.loopback ? { mcpLoopback: true, mcpOwn: reach.own ?? [] } : {}),
             ...(deps.githubApi ? { githubApi: deps.githubApi } : {}),
             ...(deps.githubWeb ? { githubWeb: deps.githubWeb } : {}),
@@ -1432,6 +1477,8 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
           }
         } finally {
           ready();
+          // A process gone before it ended its trace: its spans end with the claim (after its own end, a no-op).
+          await traced?.end("run-error");
           await heldSide.projectEnd?.();
           const reaped = await end(slot, tops).catch((error: unknown) => {
             log(`run ${claim.runId}: its process's end failed: ${(error as Error)?.message ?? error}`);

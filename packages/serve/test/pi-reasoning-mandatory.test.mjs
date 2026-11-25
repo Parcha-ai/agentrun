@@ -4,10 +4,9 @@
 // (a 400 on every request) never happens. A model that can stop (Claude Haiku 5.5) keeps off. The mirror of #2890 (sol
 // refusing reasoning "none"). Loopback only (fixtures/faux-gateway.mjs, OpenRouter's /api/v1 shape), dummy keys.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { createServer } from "node:net";
 import { test } from "node:test";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
+import { freePort } from "./fixtures/ports.mjs";
 import { agent, follow, serve, withEnv } from "./support.mjs";
 
 const NAMES = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_API_KEY", "AGENT_MODEL_PRICE", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "AGENT_MODEL_GATEWAY_IDS", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY", "OPENROUTER_API_KEY"];
@@ -15,26 +14,6 @@ const NAMES = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_API_KEY", "AG
 const GATEWAY_KEY = `not-a-secret-${"gateway"}`;
 /** OpenRouter's words for a request that turns reasoning off on a model that requires it. */
 const MANDATORY = "Reasoning is mandatory for this endpoint and cannot be disabled.";
-
-/** A port free on 127.0.0.1 now, below the kernel's ephemeral range (no listen(0) or outbound connection is handed it). */
-async function freePort() {
-  let low = 32768;
-  try {
-    low = Number(readFileSync("/proc/sys/net/ipv4/ip_local_port_range", "utf8").trim().split(/\s+/)[0]) || 32768;
-  } catch {}
-  const to = Math.min(low, 32768);
-  const from = Math.max(1024, Math.min(20000, to - 1000));
-  for (let tries = 0; tries < 200; tries++) {
-    const port = from + Math.floor(Math.random() * (to - from));
-    const free = await new Promise((resolve) => {
-      const probe = createServer();
-      probe.once("error", () => resolve(false));
-      probe.listen(port, "127.0.0.1", () => probe.close(() => resolve(true)));
-    });
-    if (free) return port;
-  }
-  throw new Error(`no free port in ${from}-${to - 1}`);
-}
 
 /** Whether a Messages body asks the model to reason: a thinking block that is on (enabled or adaptive). */
 const reasons = (body) => body?.thinking?.type === "enabled" || body?.thinking?.type === "adaptive";

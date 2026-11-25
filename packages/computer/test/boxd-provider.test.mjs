@@ -3,13 +3,16 @@
 // the bridge, the probe, idempotent create, late-create cleanup, extend, release) is tested once, against its one fake
 // host (hosted-provider.test.mjs); boxd's own is proven live (test/boxd). No SDK is loaded and nothing reaches the network.
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { BOXD, kindRefusals } from "../dist/index.js";
 import { providerFor } from "../dist/providers.js";
 import { refusesHttp } from "./https-refusal.mjs";
 
 const { BoxdProvider, boxdDesktopSnapshot, create } = await import("../dist/boxd.js");
-const { BOXD_ENV, settingsFromEnv, conformanceImage, createProvider, createHost, sweepScope } = await import("../dist/conformance/boxd.js");
+const { BOXD_ENV, settingsFromEnv, conformanceImage, createProvider, createDriftedProvider, createHost, sweepScope } = await import("../dist/conformance/boxd.js");
 
 const KEY = "bxd_fake_computer_key_0123456789";
 const NAME = "agentrun.computer.name";
@@ -20,6 +23,13 @@ const LINUX_GROUPS = ["exec", "files", "processes"];
 const DESKTOP_GROUPS = [...LINUX_GROUPS, "screen", "input.pointer", "input.keys", "apps"];
 const TIMEOUTS = { requestMs: 2_000, createMs: 3_000 };
 const HOUR = 3_600_000;
+
+// The provider's create reads the daemon before it calls the recorder, which takes any bytes: a stand-in, so these
+// tests hold on a checkout with no computerd built.
+const dir = mkdtempSync(join(tmpdir(), "computer-boxd-"));
+test.after(() => rmSync(dir, { recursive: true, force: true }));
+const DAEMON = join(dir, "computerd");
+writeFileSync(DAEMON, Buffer.from("a stand-in for computerd, linux/amd64\n"));
 
 const named = (name, extra = {}) => Object.assign(new Error(name), { name, ...extra });
 
@@ -69,7 +79,7 @@ function recorder(answers = {}) {
 
 function setup(options = {}, answers = {}) {
 	const rec = recorder(answers);
-	const provider = new BoxdProvider({ apiKey: KEY, Boxd: rec.Boxd, org: "acme", timeouts: TIMEOUTS, ...options });
+	const provider = new BoxdProvider({ apiKey: KEY, Boxd: rec.Boxd, org: "acme", timeouts: TIMEOUTS, daemonPath: DAEMON, ...options });
 	return { rec, provider, host: provider.host };
 }
 const ctx = { timeoutMs: 1_234 };
@@ -553,4 +563,38 @@ test("the sweep's scope names the org, the region and the key by its sha256 pref
 	assert.notEqual(sweepScope({ env: { ...env, [BOXD_ENV.region]: "nyc" } }), scope, "another region is another place");
 	assert.notEqual(sweepScope({ env: { [BOXD_ENV.key]: KEY } }), scope, "the key's own org and home region are another place");
 	assert.throws(() => sweepScope({ env: {} }), /COMPUTER_BOXD_API_KEY/);
+});
+
+test("the conformance module hands the caller's onNote to the provider: a release whose run folder was not let go cleanly is said through it", async () => {
+	// A running Archil computer: release lets go of its folder first, through an exec that cannot start here.
+	const labels = { "agentrun.computer": "1", [NAME]: "computer-0123456789ab", "agentrun.run": "r1", "agentrun.mount": JSON.stringify({ kind: "archil", disk: "dsk-00000000000baf76", region: "aws-us-east-1", agent: "a1" }) };
+	let deleted = false;
+	const { Boxd } = recorder({
+		get: () => (deleted ? Promise.reject(named("NotFoundError")) : machine({ labels })),
+		delete: () => {
+			deleted = true;
+		},
+		streamExec: () => {
+			throw new Error("no exec here");
+		},
+	});
+	const notes = [];
+	const provider = await createProvider({ env: { [BOXD_ENV.live]: "1", [BOXD_ENV.key]: KEY }, Boxd, timeouts: { ...TIMEOUTS, pollMs: 1 }, onNote: (note) => notes.push(note) });
+	const released = await provider.release({ id: "m-1", name: "computer-0123456789ab" }, "delete");
+	assert.equal(released.ok, true, JSON.stringify(released));
+	assert.equal(deleted, true);
+	assert.equal(notes.length, 1, JSON.stringify(notes));
+	assert.equal(notes[0].computer, "computer-0123456789ab");
+	assert.match(notes[0].note, /was deleted, and the run's folder was not let go cleanly/);
+});
+
+test("the conformance module's daemon: an option's path over COMPUTER_BOXD_DAEMON, and the drifted twin uploads the one it built", async () => {
+	const env = { [BOXD_ENV.live]: "1", [BOXD_ENV.key]: KEY, [BOXD_ENV.daemon]: "/nonexistent/untangle-env/computerd" };
+	const options = { env, timeouts: TIMEOUTS, daemonPath: "/nonexistent/untangle-option/computerd", buildDaemon: async () => "/nonexistent/untangle-drift/computerd" };
+	const made = await (await createProvider({ ...options, Boxd: recorder({ list: [] }).Boxd })).create(SPEC, { requestId: "req-untangle-boxd-1" });
+	assert.equal(made.ok, false);
+	assert.match(made.error.message, /no daemon binary at \/nonexistent\/untangle-option\/computerd/);
+	const drifted = await (await createDriftedProvider({ ...options, Boxd: recorder({ list: [] }).Boxd })).create(SPEC, { requestId: "req-untangle-boxd-2" });
+	assert.equal(drifted.ok, false);
+	assert.match(drifted.error.message, /no daemon binary at \/nonexistent\/untangle-drift\/computerd/);
 });

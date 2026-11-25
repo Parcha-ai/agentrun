@@ -497,7 +497,9 @@ test("a closed database OpenCode opens or writes while it is read (its -wal made
   });
   const changes = {
     "its -wal made": { at: 2, made: () => writeFile(`${db}-wal`, "") },
-    "its time moved": { at: 1, made: () => utimes(db, new Date(), new Date(Date.now() + 60_000)) },
+    // A minute past the database's own time, not the clock's: two cases in one millisecond would set the same time, and
+    // the second would move nothing.
+    "its time moved": { at: 1, made: async () => utimes(db, new Date(), new Date((await stat(db)).mtimeMs + 60_000)) },
   };
   for (const [how, made] of Object.entries(changes)) {
     for (const [what, run] of [

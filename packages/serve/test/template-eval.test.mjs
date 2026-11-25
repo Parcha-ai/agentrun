@@ -4,7 +4,7 @@
 // shipped package's cases are read and their fakes served here too, so a broken case fails CI, never the paid run.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
@@ -13,13 +13,14 @@ import { CaseError, CLAIM_READ_TIMEOUT_MS, callsOf, evalTemplate, exitCodeOf, fa
 import { lastJsonBlock, structuredAnswer } from "../dist/answer-json.js";
 import { MAX_EVAL_FILE_BYTES, MAX_FILE_BYTES, MAX_PACKAGE_BYTES, PackageError, readPackage, readPackages, TEMPLATES_DIR } from "../dist/templates.js";
 import { scratch, serve, withEnv } from "./support.mjs";
-import { ran, started } from "./fixtures/started.mjs";
+import { ran, started, within } from "./fixtures/started.mjs";
 import { calls as fauxMonidCalls, KEY as FAUX_MONID_KEY } from "./fixtures/faux-monid.mjs";
 
 const FIXTURES = new URL("./fixtures/templates-eval/", import.meta.url).pathname;
 const PKG = join(FIXTURES, "evalpkg");
 const FAUX = new URL("./fixtures/faux-template-eval.mjs", import.meta.url).pathname;
 const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
+const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 
 // The faux's state, in this file's process (each test file runs in a process of its own), which the runs' processes
 // inherit: the flaky case's count, and every input a grader run was given.
@@ -234,7 +235,46 @@ test("tool_used's at_least passes on that many matching calls or more, its args 
   grader("zero.md", "at_least: 0");
   grader("none.md", "expect: not_called\nat_least: 2");
   assert.throws(() => readCases(dir, ["graded"]), (e) => {
-    for (const said of [/graders\/both\.md: count is an exact number of calls and at_least a least one: give one, not both/, /graders\/zero\.md: at_least is a whole number of calls, 1 or more/, /graders\/none\.md: expect not_called and at_least 2 say different things/]) assert.match(e.message, said);
+    for (const said of [/graders\/both\.md: count is an exact number of calls and at_least a lower bound: give one, not both/, /graders\/zero\.md: at_least is a whole number of calls, 1 or more/, /graders\/none\.md: expect not_called and at_least 2 say different things/]) assert.match(e.message, said);
+    return true;
+  });
+});
+
+test("tool_used's at_most passes on at least one and at most that many matching calls, between at_least and it when both are given; it is never beside count or expect: not_called", async (t) => {
+  const search = (query) => ({ tool: "web_search", arguments: { query }, status: "success", result: "{}" });
+  const runOf = (n) => ({ answer: "", calls: [...Array.from({ length: n }, () => search("robots")), search("other")], mcpCalls: [], files: [] });
+  const grade = (n, fields) => gradeDeterministic({ file: "s.md", type: "tool_used", tools: ["web_search"], expect: "called", args: { query: "robots" }, ...fields }, runOf(n), []);
+  const what = `web_search with {"query":"robots"}`;
+  assert.deepEqual(grade(2, { atMost: 3 }), { pass: true, reason: `2 calls of ${what}; the grader expects at least one and at most 3` }, "two calls pass at most 3");
+  assert.deepEqual(grade(4, { atMost: 3 }), { pass: false, reason: `4 calls of ${what}; the grader expects at least one and at most 3` }, "four calls fail at most 3");
+  assert.equal(grade(0, { atMost: 3 }).pass, false, "at_most implies expect: called, so no call fails it");
+  for (const [n, pass] of [[2, false], [3, true], [4, true], [5, false]]) {
+    assert.deepEqual(grade(n, { atLeast: 3, atMost: 4 }), { pass, reason: `${n} calls of ${what}; the grader expects at least 3 and at most 4` }, `${n} calls against at least 3 and at most 4`);
+  }
+  // Read from a grader's front matter: at_most, a whole number of calls of 1 or more, at or above at_least, never beside
+  // count or expect: not_called.
+  const dir = await webPackage(t, "graded", "unavailable", [["web_search", { query: "x" }]]);
+  const grader = (name, front) => writeFileSync(join(dir, "evals", "graded", "graders", name), `---\ntype: tool_used\ntool: web_search\n${front}\n---\n`);
+  grader("range.md", "at_least: 3\nat_most: 4");
+  grader("cap.md", "at_most: 3");
+  const read = readCases(dir, ["graded"]).cases[0].graders;
+  assert.deepEqual(read.find((g) => g.file === "range.md"), { file: "range.md", type: "tool_used", tools: ["web_search"], expect: "called", atLeast: 3, atMost: 4 });
+  assert.deepEqual(read.find((g) => g.file === "cap.md"), { file: "cap.md", type: "tool_used", tools: ["web_search"], expect: "called", atMost: 3 });
+  grader("none.md", "expect: not_called\nat_most: 2");
+  grader("exact.md", "count: 2\nat_most: 3");
+  grader("inverted.md", "at_least: 5\nat_most: 4");
+  grader("negative.md", "at_most: -1");
+  grader("half.md", "at_most: 2.5");
+  grader("zero.md", "at_most: 0");
+  assert.throws(() => readCases(dir, ["graded"]), (e) => {
+    for (const said of [
+      /graders\/none\.md: expect not_called and at_most 2 say different things/,
+      /graders\/exact\.md: count is an exact number of calls and at_most an upper bound: give one, not both/,
+      /graders\/inverted\.md: at_least 5 and at_most 4 leave no number of calls to pass/,
+      /graders\/negative\.md: at_most is a whole number of calls, 1 or more \(for none, say expect: not_called\)/,
+      /graders\/half\.md: at_most is a whole number of calls, 1 or more \(for none, say expect: not_called\)/,
+      /graders\/zero\.md: at_most is a whole number of calls, 1 or more \(for none, say expect: not_called\)/,
+    ]) assert.match(e.message, said);
     return true;
   });
 });
@@ -1218,6 +1258,65 @@ test("code-review's cases hold the answer's head_sha to the head the prompt name
     assert.equal(gradeDeterministic(grader, answer("0".repeat(40)), []).pass, false, `${one.name}: another sha fails`);
     const other = /last_reviewed_sha was ([0-9a-f]{40})/.exec(one.input)?.[1];
     if (other) assert.equal(gradeDeterministic(grader, answer(other), []).pass, false, `${one.name}: the last reviewed sha fails`);
+  }
+});
+
+test("agentrun-serve eval-template: exit 0 when every case passes, 1 when one fails, 2 when nothing ran; the report as JSON", { timeout: 300_000 }, async (t) => {
+  const dir = await scratch(t);
+  // Each command in a process group of its own, its wait bounded (fixtures/started.mjs).
+  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => name !== "AGENTRUN_API_KEY" && name !== "AGENTRUN_TOKEN")), AGENTRUN_BOXES: "none" };
+  const run = async (args) => {
+    const { status, out, err } = await ran(t, CLI, ["eval-template", ...args], env, 120_000);
+    return { code: status, out, err };
+  };
+  const passed = await run([PKG, "--case", "learned", "--faux", FAUX, "--report", join(dir, "pass.json")]);
+  assert.equal(passed.code, 0, passed.err);
+  assert.match(passed.out, /^# Evals: evalpkg 0\.1\.0\n\n1 of 1 case passed\./);
+  assert.match(passed.err, /case learned run 1: completed, pass/);
+  const report = JSON.parse(readFileSync(join(dir, "pass.json"), "utf8"));
+  assert.deepEqual([report.pass, report.cases.map((c) => c.name), report.server], [true, ["learned"], { kind: "in_process" }]);
+  // Each run keeps its metrics as its end wrote them (GET /stats over its own agent): its requests, tokens and tool calls.
+  const { metrics } = report.cases[0].runs[0];
+  assert.ok(metrics && metrics.requests > 0 && metrics.input + metrics.cache_read + metrics.cache_write > 0 && metrics.output > 0, JSON.stringify(metrics));
+  assert.equal(metrics.tool_calls, Object.values(metrics.tools).reduce((sum, t) => sum + t.calls, 0));
+
+  // One failing case proves exit 1 and the report; a passing one beside it adds a real run and nothing more.
+  const failed = await run([PKG, "--case", "mcp-mismatch", "--runs", "1", "--faux", FAUX, "--report", join(dir, "fail.json")]);
+  assert.equal(failed.code, 1, failed.err);
+  assert.match(failed.out, /\| mcp-mismatch \| 0\/1 \| \*\*fail\*\* \|/);
+  assert.equal(JSON.parse(readFileSync(join(dir, "fail.json"), "utf8")).passed, 0);
+
+  // A Ctrl-C while the held run is in its turn (the file its faux writes says so) cancels it, cleans up and exits 130
+  // with no report.
+  const holding = join(dir, "holding");
+  const { child: held, seen, closed } = started(t, CLI, ["eval-template", PKG, "--case", "held", "--faux", FAUX, "--report", join(dir, "stopped.json")], { ...process.env, AGENTRUN_BOXES: "none", AGENTRUN_TEST_EVAL_HOLD: holding });
+  await within(untilFile(holding, closed), 120_000, "the held run reaching its turn", seen);
+  assert.ok(existsSync(holding), `the held run reached its turn: ${seen.err}`);
+  held.kill("SIGINT");
+  const code = await within(closed, 60_000, "eval-template after its SIGINT", seen);
+  assert.equal(code, 130, seen.err);
+  assert.match(seen.err, /stopping: cancelling the run in progress[\s\S]*stopped; no report\./);
+  assert.throws(() => readFileSync(join(dir, "stopped.json")), { code: "ENOENT" });
+
+  // A report path that exists and can't be written: refused before anything runs.
+  const readOnly = join(dir, "read-only.json");
+  writeFileSync(readOnly, "{}");
+  chmodSync(readOnly, 0o444);
+  for (const [args, said] of [
+    [[PKG, "--case", "nope", "--faux", FAUX], /evals\/nope: no such case \(the package's are all-fail, all-pass, asks, flaky, held, learned, mcp-filed, mcp-match, mcp-mismatch\)/],
+    [[PKG, "--runs", "0"], /--runs takes a whole number/],
+    [[PKG, "--server", "https://agentrun.invalid", "--faux", FAUX], /--faux is the model of the server it starts itself/],
+    [[PKG, "--server", "https://agentrun.invalid"], /--server needs that server's token in AGENTRUN_API_KEY/],
+    [[PKG, "--grader-model", "nomodel", "--faux", FAUX], /--grader-model is "provider\/model-id"/],
+    [[join(PKG, "evals")], /is not a valid package/],
+    [[], /it takes one package folder/],
+    [[PKG, "--faux", FAUX, "--report", join(dir, "no-such-folder", "report.json")], /--report's folder .*no-such-folder is not a folder this command can write in/],
+    [[PKG, "--faux", FAUX, "--report", readOnly], /--report's folder .* or a file it can't write/],
+  ]) {
+    const refused = await run(args);
+    assert.equal(refused.code, 2, `${args.join(" ")}: ${refused.err}`);
+    assert.match(refused.err, said);
+    assert.equal(refused.out, "");
   }
 });
 

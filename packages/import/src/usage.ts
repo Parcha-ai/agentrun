@@ -13,11 +13,14 @@
 //              held the reasoning already: a session's `version` older than 1.3.16 keeps output as it is. Where a step
 //              records its `total`, output is what the total leaves after the input and the cache, when that is at
 //              least the output, whatever the version. All nought is no usage: a request cut before its usage came.
+//   copilot    GitHub Copilot CLI's {inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, reasoningTokens}:
+//              inputTokens holds the cache read and write (github/copilot-sdk docs/features/usage-and-billing.md),
+//              subtracted; reasoningTokens is part of outputTokens, kept as `reasoning` beside it.
 // A trace exporter's figure is otelUsage's: the same counts, its input inclusive of the cache.
 import { isObject } from "./text.js";
 import type { Usage } from "./types.js";
 
-export type UsageFormat = "anthropic" | "openai" | "pi" | "openrouter" | "opencode";
+export type UsageFormat = "anthropic" | "openai" | "pi" | "openrouter" | "opencode" | "copilot";
 /** What a format's reading may need beyond the counts: the version of the program that wrote them (OpenCode's). */
 export type UsageOptions = { version?: string };
 
@@ -41,6 +44,7 @@ const NAMES: Record<Exclude<UsageFormat, "opencode">, { input: string; cacheRead
   openai: { input: "input_tokens", cacheRead: "cached_input_tokens", cacheWrite: "cache_write_input_tokens", output: "output_tokens", reasoning: "reasoning_output_tokens", cachedIn: true },
   pi: { input: "input", cacheRead: "cacheRead", cacheWrite: "cacheWrite", output: "output", cachedIn: false },
   openrouter: { input: "prompt_tokens", cacheRead: "prompt_tokens_details.cached_tokens", cacheWrite: "prompt_tokens_details.cache_write_tokens", output: "completion_tokens", reasoning: "completion_tokens_details.reasoning_tokens", cachedIn: true },
+  copilot: { input: "inputTokens", cacheRead: "cacheReadTokens", cacheWrite: "cacheWriteTokens", output: "outputTokens", reasoning: "reasoningTokens", cachedIn: true },
 };
 
 const count = (value: unknown): number | undefined => (Number.isSafeInteger(value) && (value as number) >= 0 ? (value as number) : undefined);

@@ -13,9 +13,9 @@
 // for a server one person runs: it is refused where more than one person can start runs, `on` included, and the owner
 // confirms they alone run agents here. It runs only in a runner place, on the machine the owner turned it on for.
 import { createHash, randomBytes } from "node:crypto";
-import { accessSync, chmodSync, closeSync, constants, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, closeSync, constants, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
-import { delimiter, isAbsolute, join } from "node:path";
+import { delimiter, dirname, isAbsolute, join } from "node:path";
 import type { ClaudeAgentLogin, ClaudeLoginStatus, ClaudeLoginToken } from "@parcha/agentrun-harness-claude";
 import { facts as claudeFacts } from "@parcha/agentrun-harness-claude/facts";
 import { registerSecretWrite } from "./secret-writes.js";
@@ -115,63 +115,253 @@ export function machineId(data: string): string {
  *  read it against a working directory this server does not share. `source` says which rule gave the folder.
  *  `credentials`: the server's `CLAUDE_SECURESTORAGE_CONFIG_DIR` when it sets one the CLI takes as it is (an absolute
  *  path, or empty: `~/.claude`, and on macOS the Keychain item with no suffix), where the CLI keeps the tokens apart
- *  from the folder; a relative one is not taken, as above. */
-export function machineFolder(env: Readonly<Record<string, string | undefined>> = process.env): { folder: string; source: "CLAUDE_CONFIG_DIR" | "default"; credentials?: string } {
+ *  from the folder; a relative one is not taken, as above. `uid`: the server's user, whose home (homeOf) holds the
+ *  default folder. For the view alone: the folder is the real path this machine's login has (loginAt) where its user may
+ *  use it, else the folder as the env names it (givenFolder). Nothing a CLI is handed comes from here. */
+export function machineFolder(env: Readonly<Record<string, string | undefined>> = process.env, uid: number | undefined = process.geteuid?.()): { folder: string; source: "CLAUDE_CONFIG_DIR" | "default"; credentials?: string } {
   const secure = env.CLAUDE_SECURESTORAGE_CONFIG_DIR;
   const credentials = secure === "" || (secure && isAbsolute(secure)) ? { credentials: secure } : {};
-  if (env.CLAUDE_CONFIG_DIR && isAbsolute(env.CLAUDE_CONFIG_DIR)) return { folder: env.CLAUDE_CONFIG_DIR, source: "CLAUDE_CONFIG_DIR", ...credentials };
-  return { folder: join(homeOf(env).home, ".claude"), source: "default", ...credentials };
+  const folder = loginAt("machine", "", env, uid).login?.dir ?? givenFolder("machine", "", env);
+  return { folder, source: absolute(env, "CLAUDE_CONFIG_DIR") ? "CLAUDE_CONFIG_DIR" : "default", ...credentials };
+}
+
+/** AgentRun's own login directory in the data folder `data`. */
+export const agentRunLoginDir = (data: string): string => join(data, "claude-login");
+
+/** The login's folder at `place` as the env names it, for the view to show where the login is refused: AgentRun's own
+ *  in `data`, or this machine's `CLAUDE_CONFIG_DIR`, else `~/.claude` in the env's HOME. Never handed to a CLI. */
+const givenFolder = (place: LoginPlace, data: string, env: Readonly<Record<string, string | undefined>>): string => (place === "agentrun" ? agentRunLoginDir(data) : (absolute(env, "CLAUDE_CONFIG_DIR") ?? join(absolute(env, "HOME") ?? homedir(), ".claude")));
+
+/** The env's `name` when it is an absolute path, else undefined. */
+const absolute = (env: Readonly<Record<string, string | undefined>>, name: string): string | undefined => {
+  const value = env[name];
+  return value && isAbsolute(value) ? value : undefined;
+};
+
+/** The most links one path may pass through, as Linux's own limit (past it, ELOOP). */
+const MAX_LINKS = 40;
+/** A folder's mode bits that let its group or anyone write in it, and the sticky bit, which keeps each entry in such a
+ *  folder its maker's (/tmp, say). */
+const GROUP_OR_OTHER_WRITE = 0o022;
+const STICKY = 0o1000;
+
+/** `dir` (absolute) walked one name at a time from the root, as the system walks it: an empty name (a trailing or
+ *  doubled slash) and `.` name nothing, `..` goes to the folder above the real one reached so far, and each link is followed where it is met, and must be one user `uid` or root made, as must each
+ *  link in the chain it leads through (another user's could be pointed elsewhere once this has looked). Gives the real
+ *  folder the walk ends in (`real`: no link on its way) and the names still to make in it (`missing`, none where `dir`
+ *  is there), or undefined where a link fails, a name past one still to make is `..` (from a link), or there is no way
+ *  to look. */
+function followLinks(uid: number, dir: string): { real: string; missing: string[] } | undefined {
+  try {
+    const names = dir.split("/");
+    let real = "/";
+    let links = 0;
+    for (let name = names.shift(); name !== undefined; name = names.shift()) {
+      if (name === "" || name === ".") continue;
+      if (name === "..") {
+        real = dirname(real);
+        continue;
+      }
+      const next = join(real, name);
+      const entry = lstatSync(next, { throwIfNoEntry: false });
+      if (entry === undefined) {
+        const missing = [name, ...names].filter((left) => left !== "" && left !== ".");
+        return missing.includes("..") ? undefined : { real, missing };
+      }
+      if (!entry.isSymbolicLink()) {
+        real = next;
+        continue;
+      }
+      if ((entry.uid !== uid && entry.uid !== 0) || ++links > MAX_LINKS) return undefined;
+      const target = readlinkSync(next);
+      if (isAbsolute(target)) real = "/";
+      names.unshift(...target.split("/"));
+    }
+    return { real, missing: [] };
+  } catch {
+    // A file where a folder should be, or no way to look.
+    return undefined;
+  }
+}
+
+/** Why a folder is not the login's (ownedFolder): `owned`, it is not the user's own (another user's, through another
+ *  user's link or folder, or no way to look); `open`, `at` (a folder on its way, the folder itself, or the one it is to
+ *  be made in) has `mode`, which its group or anyone may write in, so a chmod of `at` mends it. Only the mode bits are
+ *  read: an ACL that grants another user writes and leaves them alone (macOS's `chmod +a`) is not seen, and a FUSE
+ *  mount another user may let others into (`allow_other`) says what owner and mode it likes. */
+type NotHeld = { not: "owned" } | { not: "open"; at: string; mode: number };
+
+/** Undefined where no user but `uid` and root can change what `real` (a real path, followLinks') leads to: each folder
+ *  above it, from the root down, is a folder (no link) of that user's or root's that neither its group nor anyone else
+ *  may write in, unless the sticky bit keeps each entry there its maker's. Else why not: a folder not theirs first, as
+ *  a chmod mends no such folder, else the nearest open one. */
+function wayHeld(uid: number, real: string): NotHeld | undefined {
+  try {
+    let open: NotHeld | undefined;
+    for (let at = dirname(real), last = real; at !== last; last = at, at = dirname(at)) {
+      const folder = lstatSync(at);
+      if (!folder.isDirectory() || (folder.uid !== uid && folder.uid !== 0)) return { not: "owned" };
+      if ((folder.mode & GROUP_OR_OTHER_WRITE) !== 0 && (folder.mode & STICKY) === 0) open ??= { not: "open", at, mode: folder.mode };
+    }
+    return open;
+  } catch {
+    return { not: "owned" };
+  }
+}
+
+/** Undefined where `real` is a folder (no link) of user `uid`'s that neither its group nor anyone else may write in,
+ *  sticky or not: they could put files of theirs in it, or, where the CLI makes a folder in it, make that folder first.
+ *  Else why not. */
+function heldFolder(uid: number, real: string): NotHeld | undefined {
+  try {
+    const folder = lstatSync(real);
+    if (!folder.isDirectory() || folder.uid !== uid) return { not: "owned" };
+    return (folder.mode & GROUP_OR_OTHER_WRITE) === 0 ? undefined : { not: "open", at: real, mode: folder.mode };
+  } catch {
+    return { not: "owned" };
+  }
+}
+
+/** The end of the words a folder open to others' writes (NotHeld's `open`) is refused in: which folder, its mode, and
+ *  the chmod that closes it. */
+const openWords = (open: { at: string; mode: number }): string =>
+  `is open to writes by others than its owner: ${open.at} has mode ${(open.mode & 0o7777).toString(8).padStart(4, "0")}, which its group or anyone may write in. Make it writable by its owner alone (chmod g-w,o-w ${open.at}): a umask of 002 makes new folders so.`;
+
+/** The folder `dir` names, as the CLI is to get it, where it is one user `uid` owns; else why not. `dir` is walked as
+ *  the system walks it, one name at a time (followLinks: a trailing slash or `.` names nothing, and a `..` goes up from
+ *  the real folder reached so far, past any link, never from the text), so no slash hides a link and the folder is the
+ *  one the CLI given `dir` would reach. Every link on its way is judged and followed, every folder above the real folder it leads to is held (wayHeld), and that folder
+ *  is the user's own (heldFolder). `make`: where `dir` is not there yet, the nearest folder above it that is must be the
+ *  user's own (heldFolder), since the CLI, run as that user, makes the rest there. The answer is the real path (no link
+ *  left on it, plus the names still to make), which is what the login hands the CLI, so a link changed after this has
+ *  looked redirects nothing, and no other user can change a folder on the way. This is the one ownership rule for the
+ *  login's folders, the home's (homeOf) and those the env gives it (loginAt). `missing`: some of the folder is still to
+ *  make. Else why not (NotHeld). */
+function ownedFolder(uid: number, dir: string, make: boolean): { real: string; missing: boolean; not?: undefined } | NotHeld {
+  if (!isAbsolute(dir)) return { not: "owned" };
+  const walked = followLinks(uid, dir);
+  if (walked === undefined || (walked.missing.length > 0 && !make)) return { not: "owned" };
+  // A folder that is not the user's first, as a chmod mends no such folder; else the open one.
+  const way = wayHeld(uid, walked.real);
+  const folder = heldFolder(uid, walked.real);
+  const notHeld = way?.not === "owned" ? way : folder?.not === "owned" ? folder : (way ?? folder);
+  if (notHeld) return notHeld;
+  return walked.missing.length > 0 ? { real: join(walked.real, ...walked.missing), missing: true } : { real: walked.real, missing: false };
+}
+
+/** The user `uid` as a refusal names it: its uid, and its name where this process runs as it. */
+function userWords(uid: number): string {
+  try {
+    const user = userInfo();
+    if (user.uid === uid && user.username) return `uid ${uid} (${user.username})`;
+  } catch {
+    // No entry for this user on this system.
+  }
+  return `uid ${uid}`;
 }
 
 /** The person's home: the home of the user this server runs as (`uid`, its effective uid), whose files the login's CLI
- *  writes. The env's `HOME` when it is an absolute path to a folder that user owns, else that user's own home as the
- *  system has it (`os.userInfo()`), when it owns that. So a server under a sudo that keeps `HOME` (root, with the
- *  person's) keeps its login in root's home, never root-owned files in the person's, and a service account that
- *  inherited someone's `HOME` reads its own. Neither: `refused` says why in words, and `home` is only what the view
- *  shows (nothing is written there). Where there is no uid (Windows), the env's `HOME` when absolute, else
- *  `os.homedir()`. */
-export function homeOf(env: Readonly<Record<string, string | undefined>>, uid: number | undefined = process.geteuid?.()): { home: string; refused?: string } {
-  const given = env.HOME && isAbsolute(env.HOME) ? env.HOME : undefined;
+ *  writes. The env's `HOME` when it is an absolute path to a folder that user owns (ownedFolder), else that user's own
+ *  home as the system has it (`os.userInfo()`), when it owns that; either as its real path (ownedFolder's), which the
+ *  CLI is handed. So a server under a sudo that keeps `HOME` (root, with the person's) keeps its login in root's home,
+ *  never root-owned files in the person's, and a service account that inherited someone's `HOME` reads its own. `apart`:
+ *  the env gave a `HOME` and it was not that user's, so a terminal with that env's `HOME` is not in this home either,
+ *  and the line the view shows carries it (the harness's loginCommand). Neither: `refused` says why in words, and there
+ *  is no home. Each folder is walked once here (ownedFolder), and the home given is the walk's real path. Where there
+ *  is no uid (Windows), the env's `HOME` when absolute, else `os.homedir()`. */
+export function homeOf(env: Readonly<Record<string, string | undefined>>, uid: number | undefined = process.geteuid?.()): { home: string; apart?: true; refused?: undefined } | { home?: undefined; refused: string } {
+  const given = absolute(env, "HOME");
   if (uid === undefined) return { home: given ?? homedir() };
-  const owned = (dir: string | undefined): dir is string => {
-    if (!dir) return false;
-    try {
-      const stat = statSync(dir);
-      return stat.isDirectory() && stat.uid === uid;
-    } catch {
-      return false;
-    }
-  };
-  if (owned(given)) return { home: given };
+  const fromEnv = given === undefined ? undefined : ownedFolder(uid, given, false);
+  if (fromEnv && fromEnv.not === undefined) return { home: fromEnv.real };
   let own: string | undefined;
   try {
     own = userInfo().homedir || undefined;
   } catch {
     // No entry for this user on this system.
   }
-  if (owned(own)) return { home: own };
+  const fromOwn = own === undefined ? undefined : ownedFolder(uid, own, false);
+  if (fromOwn && fromOwn.not === undefined) return { home: fromOwn.real, ...(given ? { apart: true as const } : {}) };
+  // A home that is the user's but open to others' writes says so, and how to close it: the env's HOME first.
+  const open = fromEnv?.not === "open" ? { which: "its HOME", home: given, ...fromEnv } : fromOwn?.not === "open" ? { which: "that user's own home", home: own, ...fromOwn } : undefined;
+  if (open) return { refused: `Claude Code's login on this machine needs a home only this server's user may write in: it runs as ${userWords(uid)}, and ${open.which} (${open.home}) ${openWords(open)}` };
   return {
-    home: own ?? given ?? homedir(),
-    refused: `Claude Code's login on this machine needs a home this server's user owns: it runs as uid ${uid}, and neither its HOME (${env.HOME || "unset"}) nor that user's own home (${own ?? "none on this system"}) is a folder it owns. Start the server as the person whose Claude plan it is.`,
+    refused: `Claude Code's login on this machine needs a home this server's user owns: it runs as ${userWords(uid)}, and neither its HOME (${env.HOME || "unset"}) nor that user's own home (${own ?? "none on this system"}) is a folder it owns. Start the server as the person whose Claude plan it is.`,
   };
 }
 
-/** The directories of a login at `place`: AgentRun's in `data`, or this machine's (machineFolder, and the Anthropic
- *  profiles where the CLI looks for them: `ANTHROPIC_CONFIG_DIR`, else `$XDG_CONFIG_HOME/anthropic`, else
- *  `~/.config/anthropic`). This machine's on the CLI's default folder carries the person's home too, so the harness
- *  points the CLI at it as their own CLI runs, with no folder variable (the harness's signInEnv and loginEnv). This
- *  machine's with a credentials dir in the server's env (machineFolder's `credentials`) carries it as `secure`, absolute
- *  (empty: `~/.claude`, `unsuffixed`), so the CLI keeps the tokens where the person's own CLI with it does. A status
- *  check at either place runs on a copy of the account file (the harness's claudeLoginStatus). Every login carries the
- *  person's home as `userHome`, read here once (homeOf), so the status check, the sign-in and a run on macOS all run in
- *  that one home whatever reads it later (the harness's personHome). */
-export function loginAt(place: LoginPlace, data: string, env: Readonly<Record<string, string | undefined>> = process.env): ClaudeAgentLogin {
-  const { home } = homeOf(env);
-  if (place === "agentrun") return { dir: join(data, "claude-login"), profiles: join(data, "claude-login", "anthropic"), userHome: home };
-  const config = env.XDG_CONFIG_HOME && isAbsolute(env.XDG_CONFIG_HOME) ? env.XDG_CONFIG_HOME : join(home, ".config");
-  const { folder, source, credentials } = machineFolder(env);
-  const secure = credentials === undefined ? {} : credentials === "" ? { secure: join(home, ".claude"), unsuffixed: true } : { secure: credentials };
-  return { dir: folder, profiles: env.ANTHROPIC_CONFIG_DIR && isAbsolute(env.ANTHROPIC_CONFIG_DIR) ? env.ANTHROPIC_CONFIG_DIR : join(config, "anthropic"), ...(source === "default" ? { home } : {}), ...secure, userHome: home };
+/** The folders the server's env gives this machine's login (loginAt), each with the variable that gives it: its config
+ *  dir (`CLAUDE_CONFIG_DIR`), its credentials dir (`CLAUDE_SECURESTORAGE_CONFIG_DIR`, when absolute) and its profiles
+ *  (`ANTHROPIC_CONFIG_DIR`, else `XDG_CONFIG_HOME`'s `anthropic`). Those the CLI takes from the home are not here: the
+ *  home is homeOf's. */
+function envFolders(env: Readonly<Record<string, string | undefined>>): Array<readonly [name: string, folder: string]> {
+  const folders: Array<readonly [string, string]> = [];
+  const config = absolute(env, "CLAUDE_CONFIG_DIR");
+  if (config) folders.push(["CLAUDE_CONFIG_DIR", config]);
+  const secure = absolute(env, "CLAUDE_SECURESTORAGE_CONFIG_DIR");
+  if (secure) folders.push(["CLAUDE_SECURESTORAGE_CONFIG_DIR", secure]);
+  const profiles = absolute(env, "ANTHROPIC_CONFIG_DIR");
+  const xdg = absolute(env, "XDG_CONFIG_HOME");
+  if (profiles) folders.push(["ANTHROPIC_CONFIG_DIR", profiles]);
+  else if (xdg) folders.push(["XDG_CONFIG_HOME", join(xdg, "anthropic")]);
+  return folders;
+}
+
+/** Why a login at `place` may not be used by this server's user (`uid`, its effective uid), in words; undefined when it
+ *  may: loginAt's `refused`. `place` undefined (not known yet) asks the home alone, as AgentRun's own login does. A
+ *  decision that hands a CLI a login takes it from loginAt itself, never from this and a second look. */
+export function loginRefused(place: LoginPlace | undefined, env: Readonly<Record<string, string | undefined>>, uid: number | undefined = process.geteuid?.()): string | undefined {
+  return loginAt(place ?? "agentrun", "", env, uid).refused;
+}
+
+/** A login at a place as its check gives it (loginAt): the login, or why its server's user may not use it. `toMake`:
+ *  the folders the env gives the login that are still to make, at their real paths, each in a folder that user owns. */
+export type LoginAt = { login: ClaudeAgentLogin; toMake: readonly string[]; refused?: undefined } | { login?: undefined; toMake?: undefined; refused: string };
+
+/** The login at `place` and the check of its folders, from one look at each (one walk, ownedFolder), so what a caller
+ *  hands a CLI is what was checked: the login, or `refused`, why the server's user (`uid`, its effective uid unless
+ *  given) may not use it, in words, and then no login at all, never one on the paths as given. The home first (homeOf).
+ *  Then, for this machine's login, each folder the env gives it (envFolders): one the user owns, or would make in a
+ *  folder it owns, on a way no other user can change (ownedFolder), else the CLI run as that user (root under a sudo
+ *  that keeps the env, say) leaves its files in another user's folder, or in one another user can swap for theirs.
+ *  AgentRun's own login keeps its folders in its data. Where there is no uid (Windows), nothing is refused, and the
+ *  folders are as given.
+ *
+ *  The directories: AgentRun's in `data`, or this machine's (machineFolder's rule, and the Anthropic profiles where the
+ *  CLI looks for them: `ANTHROPIC_CONFIG_DIR`, else `$XDG_CONFIG_HOME/anthropic`, else `~/.config/anthropic`). This
+ *  machine's on the CLI's default folder carries the person's home too, so the harness points the CLI at it as their
+ *  own CLI runs, with no folder variable (the harness's signInEnv and loginEnv). This machine's with a credentials dir
+ *  in the server's env (machineFolder's `credentials`) carries it as `secure`, absolute (empty: `~/.claude`,
+ *  `unsuffixed`), so the CLI keeps the tokens where the person's own CLI with it does. A status check at either place
+ *  runs on a copy of the account file (the harness's claudeLoginStatus). Every login carries the person's home as
+ *  `userHome`, read here once (homeOf), so the status check, the sign-in and a run on macOS all run in that one home
+ *  whatever reads it later (the harness's personHome), and `homeApart` where the env's HOME was not that home (homeOf's
+ *  `apart`). The home and the folders the env gives are the real paths the walk ended in. */
+export function loginAt(place: LoginPlace, data: string, env: Readonly<Record<string, string | undefined>> = process.env, uid: number | undefined = process.geteuid?.()): LoginAt {
+  const checked = homeOf(env, uid);
+  if (checked.refused !== undefined) return { refused: checked.refused };
+  const { home, apart } = checked;
+  const homeAt = { userHome: home, ...(apart ? { homeApart: true } : {}) };
+  if (place === "agentrun") return { login: { dir: agentRunLoginDir(data), profiles: join(agentRunLoginDir(data), "anthropic"), ...homeAt }, toMake: [] };
+  const real = new Map<string, string>();
+  const toMake: string[] = [];
+  for (const [name, folder] of envFolders(env)) {
+    if (uid === undefined) {
+      real.set(name, folder);
+      continue;
+    }
+    const owned = ownedFolder(uid, folder, true);
+    const refused = `Claude Code's login on this machine needs its folders to be this server's user's own: it runs as ${userWords(uid)}, and ${folder}, the folder ${name} gives it,`;
+    if (owned.not === "open") return { refused: `${refused} ${openWords(owned)}` };
+    if (owned.not === "owned") return { refused: `${refused} is not a folder it owns, nor one it would make in a folder it owns. Start the server as the person whose Claude plan it is.` };
+    real.set(name, owned.real);
+    if (owned.missing) toMake.push(owned.real);
+  }
+  const config = real.get("CLAUDE_CONFIG_DIR");
+  const credentials = env.CLAUDE_SECURESTORAGE_CONFIG_DIR === "" ? join(home, ".claude") : real.get("CLAUDE_SECURESTORAGE_CONFIG_DIR");
+  const secure = credentials === undefined ? {} : { secure: credentials, ...(env.CLAUDE_SECURESTORAGE_CONFIG_DIR === "" ? { unsuffixed: true } : {}) };
+  const profiles = real.get("ANTHROPIC_CONFIG_DIR") ?? real.get("XDG_CONFIG_HOME") ?? join(home, ".config", "anthropic");
+  return { login: { dir: config ?? join(home, ".claude"), profiles, ...(config === undefined ? { home } : {}), ...secure, ...homeAt }, toMake };
 }
 
 /** The setting as saved, or undefined when the mode is not on (or the row is not one this reads). */
@@ -185,10 +375,11 @@ export async function claudeLoginSetting(settings: Pick<Settings, "get">): Promi
 const thisMachine = (setting: Setting, data: string): boolean => setting.machine === machineId(data);
 
 /** The login a run here goes on: the setting's, when the switch is not off, this is the machine it was turned on for,
- *  and the server's user owns a home for it (homeOf). */
-export function loginOf(setting: Setting | undefined, data: string, env: Readonly<Record<string, string | undefined>>): ClaudeAgentLogin | undefined {
-  if (!setting || claudeLoginOff(env) || !thisMachine(setting, data) || homeOf(env).refused) return undefined;
-  return loginAt(setting.place, data, env);
+ *  and the server's user (`uid`, its effective uid unless given) may use its folders: loginAt's login, from its one look
+ *  at them. */
+export function loginOf(setting: Setting | undefined, data: string, env: Readonly<Record<string, string | undefined>>, uid: number | undefined = process.geteuid?.()): ClaudeAgentLogin | undefined {
+  if (!setting || claudeLoginOff(env) || !thisMachine(setting, data)) return undefined;
+  return loginAt(setting.place, data, env, uid).login;
 }
 
 const LOGIN = Symbol.for("agentrun.claude-login");
@@ -274,12 +465,13 @@ export function whyNotOneOwner(facts: { apiOnly: boolean; tokens: number; keys?:
 /** Why a server with Claude Code's login on makes no API key for an app, in one line: the same rule from the other side. */
 export const LOGIN_REFUSES_API_KEYS = "Claude Code's login on this machine is on, and a Claude plan is one person's: an API key would let an app start runs on it. Turn the login off under Settings → Model keys first.";
 
-/** GET /settings/claude-login. `state`: `off` (not turned on), `other_machine` (turned on for another machine), else
- *  what the CLI says: `signed_in`, `signed_out`, or `no_cli` (no CLI here to ask yet: claude-agent's first run installs
- *  the pinned one), `unknown` (it gave no answer). Never a token: an account's email, organization and plan only when
- *  the CLI says them. */
+/** GET /settings/claude-login. `state`: `off` (not turned on), `other_machine` (turned on for another machine),
+ *  `refused` (turned on for this machine and kept, but its folders are ones this server's user may not use: `refused`
+ *  says why, nothing runs on it, and a turn-off removes it as it does any other), else what the CLI says: `signed_in`,
+ *  `signed_out`, or `no_cli` (no CLI here to ask yet: claude-agent's first run installs the pinned one), `unknown` (it
+ *  gave no answer). Never a token: an account's email, organization and plan only when the CLI says them. */
 export type ClaudeLoginView = {
-  state: "off" | "other_machine" | "signed_in" | "signed_out" | "no_cli" | "unknown";
+  state: "off" | "other_machine" | "refused" | "signed_in" | "signed_out" | "no_cli" | "unknown";
   place: LoginPlace;
   /** The line that signs the CLI in at the login's place, for a terminal on this machine. */
   command: string;
@@ -311,20 +503,25 @@ export function turnOnBody(body: unknown): { place: LoginPlace } | { problem: st
 /** The setting a turn-on saves, for this machine (machineId). AgentRun's own login directory is made (0700) so the CLI
  *  can keep its login there; nothing in it is read. */
 export function settingFor(place: LoginPlace, data: string): Setting {
-  if (place === "agentrun") mkdirSync(join(data, "claude-login"), { recursive: true, mode: 0o700 });
+  if (place === "agentrun") mkdirSync(agentRunLoginDir(data), { recursive: true, mode: 0o700 });
   return { v: 1, place, machine: machineId(data), only_me: true };
 }
 
 /** The login a run of `harness` on this runner goes on: the saved setting's, read now, when the switch is not off, the
  *  harness runs on it, the run is in a runner place (`place`), and this is the machine it was turned on for; else none,
- *  and the run goes on the model keys. */
-export async function loginForRun(settings: Pick<Settings, "get">, data: string, env: Readonly<Record<string, string | undefined>>, harness: string | undefined, place: { readonly mode: string }): Promise<ClaudeAgentLogin | undefined> {
+ *  and the run goes on the model keys. `uid`: as loginOf's. */
+export async function loginForRun(settings: Pick<Settings, "get">, data: string, env: Readonly<Record<string, string | undefined>>, harness: string | undefined, place: { readonly mode: string }, uid: number | undefined = process.geteuid?.()): Promise<ClaudeAgentLogin | undefined> {
   if (harness === undefined || !LOGIN_HARNESSES.includes(harness) || claudeLoginOff(env) || place.mode !== "runner") return undefined;
-  return loginOf(await claudeLoginSetting(settings), data, env);
+  return loginOf(await claudeLoginSetting(settings), data, env, uid);
 }
 
 /** The routes here (server.ts): every one answers 404, by its name, while the mode is off (`why`). */
 export const CLAUDE_LOGIN_ROUTES: ReadonlySet<string> = new Set(["getClaudeLogin", "turnOnClaudeLogin", "turnOffClaudeLogin", "startClaudeLogin"]);
+/** Whether the claude-login routes answer here, the one rule the routes and capabilities' `features.claude_login` both
+ *  read: none while the mode is switched off (`off`, claudeLoginSwitchedOff's reason), and on an API-only server
+ *  (`apiOnlyRoutes`, the routes it serves) only if it serves them all. */
+export const claudeLoginServed = (off: string | undefined, apiOnlyRoutes: ReadonlySet<string> | undefined): boolean =>
+  !off && (!apiOnlyRoutes || [...CLAUDE_LOGIN_ROUTES].every((name) => apiOnlyRoutes.has(name)));
 export const claudeLoginRouteOff = (name: string, why: string): string => `${name}: Claude Code's login on this machine is off on this server: ${why}.`;
 
 /** What the routes need of the server. `pinned`: the pinned CLI's path when installed. `refused`: whyNotOneOwner of this
@@ -354,8 +551,9 @@ export type ClaudeLoginDeps = {
   uid?: number;
 };
 
-/** Why the routes may not turn the mode on or sign in now: the server's own refusal, else no home its user owns. */
-const refusedHere = (deps: ClaudeLoginDeps): string | undefined => deps.refused() ?? homeOf(deps.env, deps.uid).refused;
+/** Why the routes may not turn the mode on at `place`, or sign in there, now: the server's own refusal, else folders of
+ *  the login its user may not use (loginRefused; `place` undefined, not known yet: the home alone). */
+const refusedHere = (deps: ClaudeLoginDeps, place: LoginPlace | undefined): string | undefined => deps.refused() ?? loginRefused(place, deps.env, deps.uid);
 
 /** A server's API keys as the login needs them (api-keys.ts ApiKeys): how many there are now, and their turn. */
 export type KeysForLogin = { readonly count: number; inTurn<T>(work: () => Promise<T>): Promise<T> };
@@ -367,6 +565,25 @@ export const oneOwnerDeps = (facts: { apiOnly: boolean; tokens: number; keysDorm
   refused: () => whyNotOneOwner({ ...facts, keys: keys.count }),
   turn: (work) => keys.inTurn(work),
 });
+
+/** The login `at` (loginAt's, at `place`, not refused) with its folders still to make made by AgentRun, 0700 whatever
+ *  the umask, in the folders its check found the server's user's own (no other user can make them first there), and
+ *  then checked again: the CLI is handed that check's login, or the route refuses in its words. Made so, a folder the
+ *  CLI would make under a umask of 002 (0775, open to its group) is not refused once the CLI has signed in there, and the
+ *  CLI, finding it made, leaves its mode. A folder that can't be made is left to the check again, and to the CLI. */
+function madeLogin(at: Extract<LoginAt, { refused?: undefined }>, place: LoginPlace, deps: ClaudeLoginDeps): ClaudeAgentLogin {
+  if (at.toMake.length === 0) return at.login;
+  for (const folder of at.toMake) {
+    try {
+      mkdirSync(folder, { recursive: true, mode: 0o700 });
+    } catch {
+      // Left to the check again.
+    }
+  }
+  const again = loginAt(place, deps.data, deps.env, deps.uid);
+  if (again.refused !== undefined) throw new ClaudeLoginRefused("forbidden", again.refused);
+  return again.login;
+}
 
 /** A route's refusal in words, answered as its `code` (server.ts makes it an ApiError). */
 export class ClaudeLoginRefused extends Error {
@@ -382,16 +599,20 @@ export class ClaudeLoginRefused extends Error {
 export async function claudeLoginView(deps: ClaudeLoginDeps): Promise<ClaudeLoginView> {
   const setting = await claudeLoginSetting(deps.settings);
   const place = setting?.place ?? "agentrun";
-  const login = loginAt(place, deps.data, deps.env);
+  // One look at the login's folders decides the line, the folder shown and the status check (loginAt). Where they are
+  // refused there is no login: no line (it would sign in on folders the server's user may not use), and the folder is
+  // shown as the env names it.
+  const { login, refused: unusable } = loginAt(place, deps.data, deps.env, deps.uid);
   const cli = loginCli(await deps.pinned(), deps.env);
   const signIn = deps.signIns.view();
-  const homeless = homeOf(deps.env, deps.uid).refused;
-  const refused = deps.refused() ?? homeless;
-  const base = { place, command: (await deps.claude()).claudeLoginCommand(login, cli ?? "claude"), can_start: deps.sameMachine && cli !== undefined && refused === undefined, ...(refused ? { refused } : {}), folder: login.dir, machine: machineFolder(deps.env), ...(signIn ? { sign_in: signIn } : {}) };
+  const refused = deps.refused() ?? unusable;
+  const base = { place, command: login ? (await deps.claude()).claudeLoginCommand(login, cli ?? "claude") : "", can_start: deps.sameMachine && cli !== undefined && refused === undefined, ...(refused ? { refused } : {}), folder: login?.dir ?? givenFolder(place, deps.data, deps.env), machine: machineFolder(deps.env, deps.uid), ...(signIn ? { sign_in: signIn } : {}) };
   if (!setting) return { state: "off", ...base };
   if (!thisMachine(setting, deps.data)) return { state: "other_machine", ...base, can_start: false };
-  // No home the server's user owns: no login here (loginOf), and the CLI is not asked, since its check runs in that home.
-  if (homeless) return { state: "off", ...base };
+  // Folders the server's user may not use: no login here (loginOf), and the CLI is not asked, since its check runs in
+  // that home, on those folders. Still turned on (dropRefusedLogin keeps it), so the view says so with why, and the
+  // owner can turn it off.
+  if (!login) return { state: "refused", ...base };
   if (!cli) return { state: "no_cli", ...base };
   try {
     // Asked once: a person waits on this read. Its answer is a run's too (loginBeforeRun), so one who just saw the
@@ -415,23 +636,30 @@ export async function turnOnClaudeLogin(deps: ClaudeLoginDeps, body: unknown): P
   // is written, and the person starts the sign-in again once the key is revoked. The sign-in's stop and
   // what follows the write (the reading again, the CLI's status) are outside the keys' turn, so a key's revocation never
   // waits on the CLI.
-  const refusal = () => {
-    const refused = refusedHere(deps);
+  const refusal = (place: LoginPlace | undefined) => {
+    const refused = refusedHere(deps, place);
     if (refused) throw new ClaudeLoginRefused("forbidden", refused);
   };
   const asked = await deps.turn(async () => {
-    refusal();
+    refusal(undefined);
     const asked = turnOnBody(body);
     if ("problem" in asked) throw new ClaudeLoginRefused("input_invalid", asked.problem);
+    refusal(asked.place);
     return asked;
   });
   await deps.signIns.serial(async (turn) => {
     if ((await claudeLoginSetting(deps.settings))?.place !== asked.place) await turn.stop();
     await deps.turn(async () => {
-      refusal();
+      // The refusal and the login the server is handed are one look at the folders (loginAt).
+      const refused = deps.refused();
+      if (refused) throw new ClaudeLoginRefused("forbidden", refused);
+      const at = loginAt(asked.place, deps.data, deps.env, deps.uid);
+      if (at.refused !== undefined) throw new ClaudeLoginRefused("forbidden", at.refused);
+      // Its folders still to make are made here (madeLogin), so a sign-in from the line shown finds them made 0700.
+      const login = madeLogin(at, asked.place, deps);
       const setting = settingFor(asked.place, deps.data);
       await deps.settings.put(CLAUDE_LOGIN_SETTING, setting);
-      deps.saved(loginOf(setting, deps.data, deps.env));
+      deps.saved(claudeLoginOff(deps.env) ? undefined : login);
     });
   });
   await deps.changed();
@@ -455,32 +683,44 @@ export async function turnOffClaudeLogin(deps: ClaudeLoginDeps): Promise<ClaudeL
  *  still waits is ended first (deps.signIns). The browser code goes to the CLI, never here; the answer is the view as it
  *  is when the sign-in starts, its `sign_in` waiting. The setting is read, and the CLI started on it, in one turn. */
 export async function startLoginHere(deps: ClaudeLoginDeps): Promise<ClaudeLoginView> {
-  const refused = refusedHere(deps);
+  const refused = refusedHere(deps, undefined);
   if (refused) throw new ClaudeLoginRefused("forbidden", refused);
   await deps.signIns.serial(async (signIn) => {
     const setting = await claudeLoginSetting(deps.settings);
     if (!setting) throw new ClaudeLoginRefused("agent_not_runnable", "Turn on Claude Code's login on this machine first.");
+    // The refusal and the login the CLI is started on are one look at the folders (loginAt).
+    const at = loginAt(setting.place, deps.data, deps.env, deps.uid);
+    if (at.refused !== undefined) throw new ClaudeLoginRefused("forbidden", at.refused);
     if (!thisMachine(setting, deps.data)) throw new ClaudeLoginRefused("agent_not_runnable", "It was turned on for another machine: sign in there.");
     if (!deps.sameMachine) throw new ClaudeLoginRefused("forbidden", "The CLI's sign-in opens a browser on the server's machine: run the command shown in a terminal there.");
     const cli = loginCli(await deps.pinned(), deps.env);
     if (!cli) throw new ClaudeLoginRefused("agent_not_runnable", "No Claude Code CLI here yet: claude-agent's first run installs it, or run the command shown.");
     // The person's home (the login's `userHome`) and desktop, so the CLI can open their browser.
     const claude = await deps.claude();
-    const login = loginAt(setting.place, deps.data, deps.env);
+    // Its folders still to make are made first, and checked again (madeLogin): the CLI signs in on that check's login.
+    const login = madeLogin(at, setting.place, deps);
     await signIn.start((timeoutMs) => claude.startClaudeLogin(cli, login, { ...pathOf(deps.env), display: deps.env, timeoutMs }));
   });
   return claudeLoginView(deps);
 }
 
 /** At the server's start: a setting saved where the mode is now off or refused (`why`: the switch, a listen address past
- *  loopback, a second token, the API-only profile, no home the server's user owns) goes, so no runner, in this process or another, runs on it; the reason
- *  is logged. A turn on `signIns`' queue, as every change of the setting is. */
-export async function dropRefusedLogin(signIns: Pick<ClaudeSignIns, "serial">, settings: Pick<Settings, "get" | "remove">, why: string | undefined, log: (line: string) => void): Promise<void> {
-  if (!why) return;
+ *  loopback, a second token, the API-only profile) goes, so no runner, in this process or another, runs on it; the
+ *  reason is logged. One whose folders the server's user may not use (loginRefused with `env`, for the setting's place)
+ *  stays, and the reason is logged: every read refuses it in words while they are so (no run, no sign-in, the view's
+ *  `refused`), and the person mends that with a chmod or by starting the server as the right user, which a deleted
+ *  setting would have turned off for good, or turns it off (the view's `refused` state). A turn on `signIns`' queue, as
+ *  every change of the setting is. */
+export async function dropRefusedLogin(signIns: Pick<ClaudeSignIns, "serial">, settings: Pick<Settings, "get" | "remove">, why: string | undefined, env: Readonly<Record<string, string | undefined>>, log: (line: string) => void): Promise<void> {
   await signIns.serial(async () => {
-    if (!(await claudeLoginSetting(settings))) return;
-    await settings.remove(CLAUDE_LOGIN_SETTING);
-    log(`Claude Code's login on this machine turned off: ${why}`);
+    const setting = await claudeLoginSetting(settings);
+    if (!setting) return;
+    if (why) {
+      await settings.remove(CLAUDE_LOGIN_SETTING);
+      return log(`Claude Code's login on this machine turned off: ${why}`);
+    }
+    const refused = loginRefused(setting.place, env);
+    if (refused) log(`Claude Code's login on this machine is kept, and not used while it is refused: ${refused}`);
   });
 }
 

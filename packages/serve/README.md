@@ -234,6 +234,11 @@ A request's path has no query. `auth_failed` names the route and why (`no_creden
 `wrong_launch_code`, `wrong_password`, `sign_in_table_full`), never the token given nor any part of it. `AGENTRUN_LOG=quiet` leaves out the request lines; the
 run and `auth_failed` lines stay. A run whose process failed at its start says why in its `error.message`, in words.
 One line at start, `event=boxes`, says which boxes this server has ([Sandbox](#sandbox)); quiet keeps it too.
+`AGENTRUN_LOG=debug` keeps every line and also writes into a run's log one line per call an ACP agent announces, when
+its recipe declares `announces`: `acp: the agent announced a call`, with the call's `toolCallId`, its `kind`, the tool
+name the recipe's field holds when it names an AgentRun tool (at most 200 characters; `native` for any other call,
+since a recipe's field may sit inside the call's input) and the AgentRun tool it named, never the call's input. A call
+announced with no name (Cursor's) gets the line again when a later update names it.
 `event=harness_offers why=start ms=<n>` says how long the server took to check what each harness offers (each CLI's
 package and pins; [harnesses](#harnesses)), the bulk of its start; quiet keeps it too. It is made at the start only: a
 PUT of `/settings/tools` and a save or delete of a tool key change no harness's offer, so they remake capabilities at
@@ -250,7 +255,10 @@ exports a GenAI trace over OTLP/HTTP to any backend that takes one, with the off
 `invoke_agent {harness}` span per claim of the run, under it a `chat {model}` span per model request (provider, model,
 `server.address` (the host the request goes to, OpenRouter's for a model reached through it; none where not known),
 and tokens with the cache: `gen_ai.usage.input_tokens` includes the cache read and write, which are also given on their
-own) and an `execute_tool {tool}` span per tool call. A run is one trace, sampled whole or not at
+own) and an `execute_tool {tool}` span per tool call. A name the model wrote is never sent as written: a call the
+harness refused (a tool the session does not have) is `execute_tool` with `error.type=tool_refused` and no tool name, a
+model the run does not know is named by its route's model, and any other name is cut of every secret the runner holds
+and at 64 characters. A run is one trace, sampled whole or not at
 all (`OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG`). A request billed to a plan, and every turn of a plan harness,
 has `agentrun.billing=plan` and no token counts. No span holds content (a prompt, a message, a tool's arguments or
 result), whatever `OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT` says; content capture comes later. Reasoning tokens are
@@ -258,10 +266,32 @@ not on chat spans yet: the usage a run's requests are booked with does not count
 `gen_ai.response.model`: the model asked for is `gen_ai.request.model`. The exporter takes the standard
 `OTEL_EXPORTER_OTLP_HEADERS` and `OTEL_EXPORTER_OTLP_TIMEOUT`, and the resource `OTEL_SERVICE_NAME` and
 `OTEL_RESOURCE_ATTRIBUTES` (put `deployment.environment.name` there); `service.name` is `agentrun` unless set. Runs never
-receive these settings: no `OTEL_*` variable reaches a run's harness, tools or computer, and a run's own process is
-handed them apart from its environment. Spans are sent in the background, so a run's end never waits on the collector;
-a server or runner that stops waits at most 3 s to send what is left, and a collector that is down costs one log line
-and the dropped spans. Unset, or with `OTEL_SDK_DISABLED=true`, no OpenTelemetry code loads and nothing is sent.
+receive these settings: no `OTEL_*` variable reaches a run's harness, tools or computer, and a run in a process of its
+own (under `agentrun-serve runner`) sends its trace to its runner, which exports it. The runner reads what that process
+sends as untrusted: every string is cut as a name the model wrote, a provider or host that loses its shape is dropped,
+and a request's or turn's end takes only a value the runner knows. Every OTLP header value of 8 characters or more is a
+secret the server and the runner hold, under any name, an unknown one too, but the value of a `Content-Type`, `Accept`,
+`Content-Encoding` or `User-Agent` header, and of a dataset or tenant header (`x-honeycomb-dataset`, `x-axiom-dataset`,
+`x-scope-orgid`), which is only cut from the `[otel]` lines below. A value is held as written and decoded. What follows
+its first word is held too when that word is a known auth scheme (`Bearer`, `Basic`, `Api-Key`, `Api-Token`, `Token`,
+`sentry`, `Splunk`, `GenieKey`) or the header is named like a credential (`authorization`, `x-sentry-auth`,
+`x-api-key`); any other header's value is held whole, never its tail alone. So are an OTLP endpoint's user, password
+and any query parameter named like a credential. A header's or a parameter's name is split into words at punctuation
+and at each lower-to-upper case change, and it is named like a credential when a word is authorization, auth, key,
+apikey, token, secret, password, passwd, pwd, sig, signature, credential or credentials, or ends in key, token,
+secret, password, auth, sig, signature, credential or credentials (`api_key`, `access_token`, `apiKey`, `accesstoken`
+and `writekey` are; `authority` and `keyspace` are not). Commas split the header variables, so write a comma inside a
+value as `%2C`. The tracer's own `[otel]` lines, where an exporter's error may quote a header it sent or the URL it
+posted to, are cut of every such value at any length, a short one too, and of what follows any header value's first
+word, whatever the word and the header's name. A run's process can hold at most 512
+model requests and 512 tool calls open in its runner's trace at once; one started past that has no span. No OpenTelemetry diag logger is set, since the
+SDK's diag writes can quote a header value as sent, and a test fails if a source sets one or `OTEL_LOG_LEVEL`. Everywhere else, the runner's logs and what a run
+writes, a held value is cut at 8 characters or more, a header value's as any other's, and a shorter header value is on
+no held list: that floor is kept on purpose, since a needle of a few characters would cut ordinary text, turn a served
+number such as `1` into `[redacted]`, or refuse a source capture of any project that holds it. Spans are sent in the background, so a run's end never waits on
+the collector; a server or runner that stops waits at most 3 s to send what is left, and a collector that is down
+costs one log line and the dropped spans. Unset, or with `OTEL_SDK_DISABLED=true`, no OpenTelemetry code loads and
+nothing is sent.
 
 To send traces to Sentry (two variables: its OTLP endpoint and its `x-sentry-auth` header) or to any other backend
 through an OpenTelemetry Collector, and for what Sentry's Agents view shows of a run, see
@@ -489,14 +519,8 @@ claim lapses another runner claims the run and resumes it from its journal. A ru
 runner loss, a crash, a server stop or a park (the claim that resumes the run starts a new one, and says so on the
 timeline and, once, to the model as an "AgentRun server note"), and the agent's own computer, a persistent setting, does.
 The exception is a park's keep: a desktop, phone or sandbox a park keeps for 10 minutes comes back to the run's resume.
-One that only the runner that kept it can reach again (a Docker container, a machine that dials the server) holds the
-parked run for that runner while it is there under the same process (its word in the last 30 s, not refusing) and the
-keep lasts: no other runner claims the run to resume it, so a runner whose loops are full makes an answer wait until
-then. A stop or a cancel never waits: any runner claims the run at once and ends it without taking the kept machine
-(also when the kept row can't be read then), which the runner that kept it ends at its time, or sooner at its janitor's
-next pass once the run is over; another runner's janitor leaves both the row and the machine. Once that runner
-is gone, any runner claims it, starts a new one, and the timeline says `The desktop wasn't kept: the runner that kept it
-is gone.` `agentrun-serve runner --check --data DIR --name N`
+One that only its runner can reach (a Docker container, a machine that dials the server) brings the run back to that
+runner while it is up; a stop or cancel never waits for it, and the run's end deletes the machine. `agentrun-serve runner --check --data DIR --name N`
 (or `AGENTRUN_RUNNER_NAME=N` in place of `--name`) checks the runner's environment by name (its store, its seal key,
 every run-facing name its server holds, a forwarder on loopback) and whether the runner named `N` has a fresh
 heartbeat: it exits 0 when both hold, 1 when either does not, and 2 when no name is given. `--check --env` checks the
@@ -526,11 +550,16 @@ one off.
 ## Sandbox
 
 A sandbox agent's `bash` runs in a box, a machine apart from this server. Docker is the default box and the only one offered
-with no setup: a Docker container made for each run, which binds the run's `work/` and nothing else. A Daytona or Modal box
-runs on a computer from that provider, offered once `AGENTRUN_BOXES` lists it and the keys its computer provider needs are
-set (the environment, or Settings → Computers). No box holds a key. A Docker box on Linux reaches the package registries
-and GitHub through a proxy, and nothing else; so does a Daytona or Modal box, through the egress proxy its computer's
-init starts, and capabilities say so in its `places.boxes` entry. Its `read`, `write` and `edit` work on that same `work/`: on this server, where the box binds it and this server
+with no setup: a Docker container made for each run, which binds the run's `work/` and nothing else. Every other provider
+whose sandbox can hold the run's folder is a box too: `daytona`, `modal`, `e2b`, `agent37`, `morph`, `cloudflare`, `fly`,
+`boxd` and `groundbox`. Such a box runs on a sandbox computer from that provider, offered once `AGENTRUN_BOXES` lists it
+and the keys its computer provider needs are set (the environment, or Settings → Computers): `AGENTRUN_BOXES=docker,e2b`
+with `E2B_API_KEY` set offers both. A box is a provider that serves a sandbox, takes the run's folder (a bind, an Archil
+mount or a synced folder), starts with no image named and keeps to the allow-list or has no network; Orgo (desktops), the
+phone, the hosted browsers and smol cloud (whose disk sits where the folder would) are not. No box holds a key. A Docker
+box on Linux reaches the package registries and GitHub through a proxy, and nothing else; so does a vendor's box, through
+the egress proxy its computer's init starts, and capabilities say so in its `places.boxes` entry (`none` for boxd, whose
+computers have no network). Its `read`, `write` and `edit` work on that same `work/`: on this server, where the box binds it and this server
 holds directory handles (Docker on Linux), else in the box. The agent's loop, its log, its model calls and every key stay
 on the server. An agent says so in its [place](#place); the server says which boxes it has (`places.boxes` in its capabilities); [a run in a Docker
 box](#a-run-in-a-docker-box) is what the container gets; [the box's image](#the-boxs-image) is what it starts from.
@@ -926,6 +955,19 @@ of a computer tool answers the tool's value. Codex's code mode takes no binding 
 `computer_op` beside the computer's tools and its scripts call them as nested calls, each answering the tool's value as
 JSON. A run whose `codemode` is set to deny lists them the same way, so its computer stays in reach. `computerMcp` (`src/workspace/computer-mcp.ts`) serves the same tools to an MCP
 client, each answer with its value as `structuredContent`.
+
+A desktop's or a phone's own disk is not the run's files: only the run's folder is collected, and the computer goes at
+the run's end with what is on it. `computer_screenshot`'s `save_as` (a path relative to the run's folder, ending `.png`)
+saves the screenshot into the run's files through the run's own file writer, on any computer; a path outside the folder
+is refused in words before the computer is asked. A screenshot with `save_as` is a file written, so `write`'s setting holds
+it too, after the kind's deny: the stricter decides (`write` set to deny refuses it before the computer is asked, set to
+ask puts it to a person); one with no `save_as` is held to the kind's setting alone. `save_as` needs `write` among the
+agent's tools: an agent not given `write` is not offered it, and the gate refuses one anyway whatever `write`'s setting
+says. A script's `computer.files.write` needs `write` among the agent's tools the same way. `save_as` is offered only
+where the gate would let a save through: not with `write` set to deny, nor set to ask on a server where no one can
+approve. On a desktop or a phone the run's folder is not mounted in (one with `exec: false`, or a provider that mounts
+none), the model is told this once in the run, as the server's note, after a due cap wrap-up; a run whose saves the
+gate would refuse is told instead that screenshots can't be saved to the run's files.
 
 A kind with no provider, a provider that does not serve the kind, or a provider whose required keys are not saved is
 refused before anything starts, in words that name the fix in Settings → Computers. A Docker computer needs a Docker
@@ -1645,12 +1687,24 @@ has the row **Use Claude Code's login on this machine**, over these routes:
   for by an id the server makes once in its data folder (`machine-id`, 0600) and reads back on every later start,
   never by the hostname, which on a laptop changes with the network. Two data folders are two machines. A setting
   saved before the id reads as `other_machine` until it is turned on again.
+  The login's folders must be the server's user's own: at either place its home, and on `machine` each folder the
+  server's environment gives it (`CLAUDE_CONFIG_DIR`, `CLAUDE_SECURESTORAGE_CONFIG_DIR`, and `ANTHROPIC_CONFIG_DIR`
+  or else `XDG_CONFIG_HOME`'s `anthropic`). Each is a folder that user owns, or one still to make in a folder it owns,
+  reached through no other user's link or folder, and writable by its owner alone; a folder on the way may be open to
+  all where the sticky bit is set, as on `/tmp`. Else the turn-on and the sign-in answer `403` in words, no run goes
+  on the login, and a setting saved before is kept but not used, the start logging why. A folder its group may write
+  in is refused in words that name it, its mode and the `chmod g-w,o-w` that closes it. A umask of 002, which some
+  distributions (Ubuntu's user-private groups among them) give each user, makes new folders so. A folder of the login
+  still to make is made by AgentRun at the turn-on and before the CLI's sign-in, 0700 whatever the umask, so the login
+  the CLI signs in there is not refused after.
 - `GET /v2/settings/claude-login` says `state`: `off`, `signed_in` (with the `account` the CLI names: method, email,
-  organization, plan), `signed_out`, `no_cli` (claude-agent's first run installs the pinned CLI), `unknown`, or
-  `other_machine`. `folder` is the folder whose login the CLI is asked about, and `machine` is this machine's own
+  organization, plan), `signed_out`, `no_cli` (claude-agent's first run installs the pinned CLI), `unknown`,
+  `other_machine`, or `refused` (turned on and kept, but its folders or the home are refused, `refused` saying why;
+  `DELETE` turns it off, and an API key is made only after that). `folder` is the folder whose login the CLI is asked about, and `machine` is this machine's own
   login folder (`machine.source`: `CLAUDE_CONFIG_DIR` or `default`; `machine.credentials`: the server's
   `CLAUDE_SECURESTORAGE_CONFIG_DIR`, when it sets one). `command` is the line that signs the CLI in at
-  the login's place, for a terminal on the server's machine. Where the console is on that machine (a server on loopback
+  the login's place, for a terminal on the server's machine; it is empty where the login's folders are refused, and
+  `folder` is then the folder as the environment names it. Where the console is on that machine (a server on loopback
   with no public address), `can_start` is true and `POST /v2/settings/claude-login/login` starts the pinned CLI's own
   `auth login`, which opens a browser there. It runs with the same variables as `command`, so it signs in at `folder`,
   and the status is read there too, since `auth login` writes the account it signed in to its config dir. On
@@ -1742,10 +1796,12 @@ gateway and no restart: `GET /api/tags` for the tags, `POST /api/show` for each 
 is `ollama/<tag>` in `harnesses[].models` and `harnesses[].free_models` for pi and for every harness on a wire the
 route translates, and the console names it
 `<tag> · local (Ollama)`, on a run's page too (from the run's `tokens` usage line, `provider` `ollama` and `model` the
-tag), so a run on the default says which model it ran on. An embedding model is left out. A model pulled or an Ollama started after the server shows in capabilities
+tag), so a run on the default says which model it ran on. An embedding model is left out. A model pulled after the server shows in capabilities
 within half a minute (the listing is kept that long, and asked again behind the next answer). A down or stuck Ollama
-lists no models and slows nothing: the listing has 2 seconds in all, follows no redirect, and keeps the models shown
-before its deadline. A run never waits on the listing: one on `ollama/<tag>` asks that model's `/api/show` alone (10
+slows nothing: the listing has 2 seconds in all and follows no redirect. A listing that fails is never kept as one:
+past its deadline or with an answer of the wrong shape, the models listed before it stay; refused (Ollama is not
+running), none do. Either way Ollama is asked again behind the next answer, so an Ollama that comes back or starts
+after the server shows in the answer after that. A run never waits on the listing: one on `ollama/<tag>` asks that model's `/api/show` alone (10
 seconds), and a run on any other model, a key's default included, never asks Ollama.
 
 - Where: `OLLAMA_HOST`, read as the ollama CLI reads it. Unset, 127.0.0.1:11434, but only on one owner's own server
@@ -2514,8 +2570,9 @@ lists. Composio's server can leave out an action it was allowed (it did for `HAC
 A refresh of a saved Composio server also reads its account at Composio, and every read of the server then says it as
 `composio_account: {state, labels?, checked_at}`: `connected` with each account's label (its alias, else the name
 Composio shows, else its word id; never its id or a token), `pending` while its connect link is unfinished, `expired`,
-`none`, or `unknown` when Composio didn't answer. An account Composio answers as another user's is never the server's,
-and only one it names as the server's user's gives a label. A per-run server has none; an empty recorded user reads
+`none`, or `unknown` when Composio didn't answer. Only an account Composio names as the server's user's is the server's,
+for its state, its label, a save and a trigger alike: one answered as another user's, or with no user at all, never is,
+and the user connects one again. A per-run server has none; an empty recorded user reads
 `unknown`. The API token sees `composio_account` too, in a server's full read: its label may be the account's email.
 
 A saved Composio server is gated, approved and shown on the Timeline as any MCP server's tools are, "not metered" until
@@ -2552,7 +2609,9 @@ runs as one account. A server saved for one user before this mode keeps calling 
 
 With `user_id: "per_run"`, whoever can start a run chooses its Composio user, so the host owns which user each run
 binds: it binds each run to its own person and never takes the ids from that person. Only `agentrun` is
-refused, so a host must not bind a per-run server to a `user_id` that a single-user server calls as.
+refused, so a host must not bind a per-run server to a `user_id` that a single-user server calls as. On an API-only
+server a run's user is none the owner calls as here (the preset's default and tool-listing users, and every user a
+server the owner saved stands on), and a named account one Composio lists under it (see [API only](#api-only)).
 
 What can go wrong, told apart:
 
@@ -3641,7 +3700,49 @@ serves these routes alone:
     One saved any other way (by the owner, sealing a credential or not) is `403` to both, it stays as it was, and
     nothing is sent to Composio. An owner's save over a server the token saved makes it the owner's once it lands (one
     refused with `412` leaves it the token's), and one that lands while the token's is under way wins: the token's is
-    `412`.
+    `412`;
+  - the token's Composio save never uses an auth config a server the owner saved uses: an `auth_config_id` naming one
+    is `403`, and so is the save when the toolkit's own auth config, as Composio answers it, is that one, before
+    anything is made at Composio; both say so in the same words. An `auth_config_id` Composio answers under another id
+    (another letter case, say) is `422` under it, for any save. An `auth_config_id` naming one that another server the
+    token saved made is used, and that server's record still says it made it, so only its delete removes the auth
+    config at Composio, or, while this server still uses it, hands it to this one, whose delete then removes it;
+  - the token's Composio user has a namespace of its own: a save that is not `per_run` reaches Composio, and its server
+    calls, as `agentrun.token.<user_id>` (no `user_id`: `agentrun.token.agentrun`), a user that, through this install,
+    only the token's own connect link connects (the Composio dashboard, or another client of the same Composio project,
+    can connect any user id), so its `user_id` is at most 113 characters. No save names a `user_id` starting
+    `agentrun.token.` in any letter case, the owner's included: `422` under `user_id`, before anything is sent;
+  - nor does the token's save stand on a connected account it did not connect: when Composio already has ACTIVE
+    accounts for that user under its auth config, the save is `403` before anything is made, unless a server the token
+    saved holds each of them as one it made (connected through the token's own link). The lookup reads 50 accounts a
+    page, at most 10 pages (500 for that user and auth config): past that the token's save is `403`, since it can't
+    check them all, and an owner's save goes on with the ones it read. That check sees the accounts there when the token
+    saves; the namespace is what keeps the user the token's after it, since no save here names it;
+  - a run's binding of a per-run Composio server (`mcp_auth.<server>`, `{composio_user_id, connected_account_id?}`)
+    never calls as a user the owner calls as here, since every caller here is the token: its `composio_user_id`, in any
+    letter case, is not the preset's default user (`agentrun`), its tool-listing user, or any user a server the owner
+    saved (no token's mark on its record) stands on, by its preset record, the account its refresh kept or its address,
+    else `422` `not_allowed` under it, before any account is looked up. Any other user is the caller's: a backend's
+    own bare user id or one in the token's namespace alike. A `connected_account_id` it names is
+    one Composio lists under that user for the server's toolkit, read at the start or the message that hands it with the
+    server's key, 50 a page and at most 10 pages, as the save's lookup reads; one Composio answers under another user,
+    or with no `user_id`, never counts. An account it doesn't list there is `422` `not_allowed` under `connected_account_id`, and so is one
+    past those 10 pages, in words of its own, since it can't be checked. Composio not answering that read is `424`
+    (`upstream_failed`): a run's account is never taken unchecked. Each refusal says which check refused it, nothing is
+    started, and none quotes what was sent. A run's claim reads the same check again (one sealed before it, or before
+    the owner's server was saved), its calls refused unsent. What it can't see: the per-run server lends this install's
+    Composio key, so a binding may name a user the owner connected only at Composio (its dashboard, or another client of
+    the same Composio project) with no record here, and call as that user. Save a per-run Composio server only with a
+    Composio project whose users are all the token's backend's. On the full server the owner's runs bind as before;
+  - a server the token saved before the namespace (0.1.0-beta.56 and earlier) calls as a user outside it, which may be
+    the owner's: every run's claim of it is refused unsent, in words that say to delete it, and the start names each such
+    server in one log line (`api_only_composio_outside_namespace`), never its user or address. Delete it, then save it
+    again: the new save is namespaced and returns a connect link for it. Where a server the owner saved stands on its
+    auth config, which is the case a takeover leaves, a save over it is `403` (the auth config rule above), so it can only
+    be deleted, and the refusal says so. Where none does, a save over it moves it to the namespaced user and returns a
+    connect link; that save deletes at Composio every account the server's record holds as made here under the bare user
+    (the one its own link connected, or one handed to it), unless another saved server stands on it (that one then owns
+    it), and keeps an account it found there, which was never its own.
 
   The names route above is the listing: there is no list or read of a server's address, auth or tools here. The
   generic save (`PUT /settings/mcp-servers/{name}`) is a `404` unless the operator names the MCP origins it may save at,
@@ -3652,8 +3753,9 @@ serves these routes alone:
   http(s) origins (`https://mcp.example.com`), a plain setting. With it, the token's `PUT /settings/mcp-servers/{name}`
   saves `"auth": {"type": "per_run"}` at a listed origin, and each run hands its own credential in `mcp_auth`. A body
   that carries a credential, or a save over a server the token did not save or one that seals a credential, is `403`;
-  any other origin or auth type, or a Composio server's name, is `404`. A wildcard or an entry that is not an http(s)
-  origin alone stops the start, and a loopback origin also needs `AGENTRUN_MCP_ALLOW_LOOPBACK=1`. The list holds past
+  any other origin or auth type, or a Composio server's name, is `404`. A wildcard, an entry that is not an http(s)
+  origin alone, or plain http to a host other than a loopback one (127.0.0.0/8, ::1, localhost) stops the start, and a
+  loopback origin also needs `AGENTRUN_MCP_ALLOW_LOOPBACK=1`. The list holds past
   the save: a per_run server the token saved at an origin not listed is refused, and nothing is sent to it. Unset, the
   list is empty, so on an upgrade list each such server's origin first, or re-save it from the owner's signed-in
   session with API-only off; the start names the servers off the list in one log line (`api_only_mcp_off_list`), never
@@ -4311,20 +4413,20 @@ Never bypass the store lock. This local-store operation has no server endpoint t
 machine; importing into a different local store does not populate a remote console. Build, edit, run, query and
 connection handoffs use the shared coding-agent selector and target this server's matching skill, MCP endpoint and API.
 
-`agentrun-serve import --data DIR` reads the Claude Code, Codex, pi and OpenCode sessions in your own home
-(`~/.claude/projects`, `~/.codex/sessions`, `~/.pi/agent/sessions`, `~/.local/share/opencode`) into the data directory,
+`agentrun-serve import --data DIR` reads the Claude Code, Codex, pi, OpenCode and Copilot CLI sessions in your own home
+(`~/.claude/projects`, `~/.codex/sessions`, `~/.pi/agent/sessions`, `~/.local/share/opencode`, `~/.copilot/session-state`) into the data directory,
 once. Each project folder becomes an agent, with its
 CLAUDE.md or AGENTS.md and its skill folders, and each session becomes a run you can read but not continue. Nothing leaves
 this machine, and the values of key-shaped environment variables are cut out of what it writes. Run it again and it takes
 only what it has not taken already. Sessions written in the last 10 minutes wait for the next import.
 
-A run's cost is what its source recorded (Claude Code's, pi's and OpenCode's). A session its source did not price, such as a Codex
+A run's cost is what its source recorded (Claude Code's, pi's and OpenCode's). A session its source did not price, such as a Codex or Copilot CLI
 session, keeps the model catalog's estimate for its tokens beside an unknown cost, and every place that shows a run's
 cost reads that estimate, as an estimate: the run (`cost.usd`, basis `estimate`), its usage row, `GET /stats` and its
 analytics, and `GET /usage`. A session on a model the catalog does not price stays unknown.
 
 - `--dry-run` lists what it would import and writes nothing.
-- `--from claude-code,codex,pi,opencode` picks the sources.
+- `--from claude-code,codex,pi,opencode,copilot` picks the sources.
 - `--include-deleted` also imports the sessions of project folders that no longer exist, such as a git worktree you
   deleted. Each such folder is still its own agent, with no instructions or skills to read.
 - `--all` keeps those too, as well as sessions of temporary folders and sessions with no message of yours.
@@ -4428,7 +4530,7 @@ The agent's Learning tab and Learning Dojo show missing setup for that agent's a
 `ready` means the route and credentials are configured, not that quota or provider availability has been verified.
 These reads make no paid request, and saving a matching key refreshes the setup guidance.
 
-Importing Claude Code, Codex or pi session history does not replay learning or connect a live learning stream.
+Importing Claude Code, Codex, pi or Copilot CLI session history does not replay learning or connect a live learning stream.
 Before/after cost and duration are observations, not an accuracy evaluation.
 
 **Existing CLI capture.** A project enrolled with `cli_learning` keeps running in its original Codex CLI or Claude
@@ -5027,16 +5129,16 @@ step is sent only when the run's spend plus that step's least (its whole input b
 1,024-token answer) fits. So a small cap pauses a run well before it has spent it. Measured on a pi desktop run on Sonnet
 ($3 / $15, cache write $3.75, cache read $0.30 a million) through the dispatch's own system prompt and tools (read,
 write, edit, the desktop's and `codemode`, with the desktop skill named in the system prompt), five requests (four
-screenshots, then the answer), spending about $0.04 in all. Through a gateway the first request's byte bound is 9,772
-tokens, so it needs $0.052; each later request is bounded by the last one's bill and the bytes it adds, so the whole run
+screenshots, then the answer), spending about $0.04 in all. Through a gateway the first request's byte bound is 10,445
+tokens, the server's note that the desktop's disk is not the run's files among them, so it needs $0.055; each later request is bounded by the last one's bill and the bytes it adds, so the whole run
 needs $0.082;
-straight to Anthropic the count is one recorded from a real desktop run on Sonnet (3,146 tokens at first), so it needs
-$0.030 and $0.083:
+straight to Anthropic the count is one recorded from a real desktop run on Sonnet (3,146 tokens at first), and the note,
+placed after the count, adds its byte bound (371 tokens), so it needs $0.031 and $0.083:
 
 | Route | First request needs | Five-step run needs | Each further step |
 | --- | --- | --- | --- |
 | Through a gateway (OpenRouter): the byte bound, then the last bill | $0.06 | $0.09 | about $0.012 |
-| Straight to Anthropic: Anthropic's count | $0.03 | $0.09 | about $0.012 |
+| Straight to Anthropic: Anthropic's count | $0.04 | $0.09 | about $0.012 |
 
 A claude-agent run's first request is of the same size (the pinned
 CLI's measured 6,926 bytes with five tools: $0.04 for its first request through a gateway). A cap below these pauses at
