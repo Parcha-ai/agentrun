@@ -214,7 +214,7 @@ check's replay skips writes by (`auditWriterOf`: an MCP tool by its pinned `read
 computer's tools among them): an agent that can call a write is never audited, and the promotions read says why
 (`audits_off`, "audits off: <tool> can write"), since a shadow would do that write a second time. A drawn run, at its
 end (`runner/audit.ts` withAudit, before the end commits, the workflow read from its journal), first appends a started
-line to `audits.jsonl` (`{source: "started", run, shadow_run, workflow, digest, promoted_at, turn, at}`, `turn` the id
+record to the audit ledger (`{source: "started", run, shadow_run, workflow, digest, promoted_at, turn, at}`, `turn` the id
 of the run's newest answer row then: the answer audited), then starts its shadow run (startAudit). A capped run's shadow is capped at what the served run's cap left: its cap now, less what it
 spent under it (`runner/learning-end.ts` auditRoomOf), so the two never spend past the
 served run's cap; the served run's later gates count the shadow beside it (shadowBesideOf: its cost once it ended, its cap

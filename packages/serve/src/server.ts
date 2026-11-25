@@ -6218,7 +6218,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       case "listLearningAudits": {
         await needAgent(id);
-        // The audit ledger (learn/audit.ts audits.jsonl), oldest first: each workflow's name and every other text cut as the
+        // The audit ledger (the agent's audit records, learn/audit.ts), oldest first: each workflow's name and every other text cut as the
         // promotions read cuts its own.
         const shown = await learningShown(id);
         const rows = await auditsOfAgent(id);

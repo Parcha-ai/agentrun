@@ -1,6 +1,6 @@
 // The shadow audit of a serving learned workflow, at a run's claim and its end (learn/audit.ts keeps the ledger).
 //   startAudit (withAudit: at the served run's end, before the end commits): a run the promoted workflow answered (path
-//     `workflow`; a run it handed back is never drawn and never counts as served) is drawn at 1 in k (auditDrawn, from its id), and a drawn one appends a `started` line to audits.jsonl (with the
+//     `workflow`; a run it handed back is never drawn and never counts as served) is drawn at 1 in k (auditDrawn, from its id), and a drawn one adds a `started` audit record (with the
 //     promotion serving it and the answer it audits, `turn`: the id of the run's newest answer row now), then starts its
 //     shadow run: the same agent and revision on the same input with learning off (no seed, no compile turn), marked as the
 //     audit of the served run (launch.audit), no row of the run list, billed to the agent as learning cost. Its cap is

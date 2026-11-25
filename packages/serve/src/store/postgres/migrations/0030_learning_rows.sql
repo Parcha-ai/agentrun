@@ -1,5 +1,5 @@
--- The store's schema on Postgres, version 29: each agent's learning as versioned rows, as store/schema.ts keeps it on
--- SQLite (LEARNING_ROWS). Applied once, after 0028, inside the transaction migrate.ts opens. Never edit this file once
+-- The store's schema on Postgres, version 30: each agent's learning as versioned rows, as store/schema.ts keeps it on
+-- SQLite (LEARNING_ROWS). Applied once, after 0029, inside the transaction migrate.ts opens. Never edit this file once
 -- applied: a change is a new file. Additive: no table or column an earlier build reads changes.
 --
 -- learning_saves: each save of an agent's learning, one version, its random id (what a run's seed and the log name),
@@ -59,4 +59,4 @@ CREATE TABLE IF NOT EXISTS learning_records (
 );
 CREATE INDEX IF NOT EXISTS learning_records_run ON learning_records (run_id);
 
-UPDATE store_meta SET schema_version = 29 WHERE singleton = 1;
+UPDATE store_meta SET schema_version = 30 WHERE singleton = 1;
