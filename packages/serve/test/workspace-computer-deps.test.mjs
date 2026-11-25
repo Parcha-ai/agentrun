@@ -526,7 +526,7 @@ test("the Docker provider is built with what the docker CLI reads of the server'
 test("the phone's provider is built with the server's PHONE_HARNESS_APKS, the APKs every phone installs, and what its adb reads, and no other variable", async () => {
   const built = [];
   const apks = `/srv/apks/wikipedia.apk@sha256:${"a".repeat(64)}`;
-  const env = { PHONE_HARNESS_APKS: apks, PATH: "/opt/bin:/usr/bin", ANDROID_HOME: "/opt/android-sdk", ADB_SERVER_SOCKET: "tcp:203.0.113.7:5037", PHONE_HARNESS_API_KEY: mark("phone-key"), AGENTRUN_UNLISTED_SETTING: "plain" };
+  const env = { PHONE_HARNESS_APKS: apks, PATH: "/opt/bin:/usr/bin", ANDROID_HOME: "/opt/android-sdk", ADB_SERVER_SOCKET: "tcp:adb.invalid:5037", PHONE_HARNESS_API_KEY: mark("phone-key"), AGENTRUN_UNLISTED_SETTING: "plain" };
   const { computerDeps, factories } = computerDepsFrom({ env, store: memoryStore(), sealKey: undefined, kinds: KINDS, load: async (id, options) => (built.push([id, options]), {}) });
   await computerDeps.providers["phone-harness"]({}, { ledger: {} });
   await factories["phone-harness"]({});
