@@ -938,7 +938,7 @@ test("an archive is pinned by exactly one digest, its sha256 or its sha512 (as G
   assert.equal(refusalOf(pinned({ sha512: SHA512 })).code, RECIPE_CODES.binary);
 });
 
-// The Antigravity example (examples/harness-recipe/antigravity.json): Google's agy CLI 1.5.14 as its release manifests
+// The Antigravity recipe AgentRun ships (@parcha/agentrun-harness-acp's recipes/bundled/antigravity.json): Google's agy CLI 1.5.14 as its release manifests
 // list it (https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/<target>.json), each archive
 // pinned by the manifest's sha512, as T3 Code installs it. It runs on its owner's own sign-in, or a key saved for it alone.
 // The digests are the manifests' own and are read again at each bump; offline, the test holds the file to what a bump must
@@ -951,8 +951,8 @@ const agyTarget = (platform) => {
   return `${os}-${x64 ? "x64" : "arm"}/cli_${os === "darwin" ? "mac" : os}_${x64 ? "x64" : "arm64"}.tar.gz`;
 };
 
-test("the Antigravity example recipe loads under the five rules: agy CLI 1.5.14, each platform's archive of one build pinned by its own sha512, `agy acp`, the agent's own --login with --gemini-dir, and a key handed as GEMINI_API_KEY with gemini-api-key", () => {
-  const file = new URL("../../../examples/harness-recipe/antigravity.json", import.meta.url).pathname;
+test("the Antigravity recipe loads under the five rules: agy CLI 1.5.14, each platform's archive of one build pinned by its own sha512, `agy acp`, the agent's own --login with --gemini-dir, and a key handed as GEMINI_API_KEY with gemini-api-key", () => {
+  const file = new URL("../../run-adapters-acp/recipes/bundled/antigravity.json", import.meta.url).pathname;
   const { recipe } = loadRecipe(file);
   assert.equal(recipe.id, "antigravity");
   assert.equal(recipe.release.registry, undefined, "the agy CLI is not in the ACP registry");
