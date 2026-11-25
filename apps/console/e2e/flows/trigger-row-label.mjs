@@ -22,7 +22,7 @@ export default {
   server: () => ({ env: { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") } }),
   async run({ page, base, api, server }) {
     const name = `e2e-hook-${randomBytes(3).toString("hex")}`;
-    const agent = await api("POST", "/agents", { definition: { id: "hello", name: "hello", instructions: "Say hello." } });
+    const agent = await api("POST", "/agents", { definition: { id: "hello", name: "hello", instructions: "Say hello.", tools: [] } });
     check(agent.status === 201, `creating the agent answered ${agent.status}`);
     const made = await api("POST", "/triggers", { name, source: { kind: "webhook" }, target: { kind: "start_run", agent_id: "hello", input: { content: "Say hello." }, max_cost_usd: 0.5 } });
     check(made.status === 201, `making the trigger answered ${made.status}: ${JSON.stringify(made.body)}`);

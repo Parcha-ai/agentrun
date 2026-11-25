@@ -14,6 +14,9 @@ import { setImmediate as macrotask } from "node:timers/promises";
 import { takeServerLock } from "../dist/server-lock.js";
 import { jsonLines, scratch, serve, withEnv } from "./support.mjs";
 
+/** Why a new agent that names no place, computer or tools is refused where Docker is not offered (and no other box is). */
+const NAME_A_BOX = "name a box: this server has no Docker box for a new agent. Set place to {mode: sandbox, box: <none is set up>}, or to {mode: runner} to run without a shell.";
+
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAKE = new URL("./fixtures/fake-docker.mjs", import.meta.url).pathname;
 const IMAGE = "debian:bookworm-slim";
@@ -122,7 +125,7 @@ test("the server in a container that this Docker does not have, its data not on 
 // daemon would be mounted by paths the host's Docker doesn't have): the words above refuse a run that names one at its
 // start, never at its create, and an agent with no computer falls back as on a machine with no Docker, to the runner,
 // with the file tools and no shell.
-test("the server in a container with no named data volume: a run naming a Docker computer is refused at its start in those words, and a new agent gets the runner", { timeout: 120_000 }, async (t) => {
+test("the server in a container with no named data volume: a run naming a Docker computer is refused at its start in those words, and a new agent names its place", { timeout: 120_000 }, async (t) => {
   const data = await dataDir(t);
   const fake = await containerDocker(t, { mounts: [{ Type: "bind", Source: "/opt/agentrun-data", Destination: data, RW: true }] });
   withEnv(t, { AGENTRUN_SERVE_FAUX_MOUNTINFO: fake.mountinfo });
@@ -138,8 +141,12 @@ test("the server in a container with no named data volume: a run naming a Docker
   const field = started.body.error.fields.find((one) => one.field === "definition.computer");
   assert.equal(field?.message, `This agent's computer is a Docker sandbox, and this server cannot run it: ${IN_COMPOSE}.`, JSON.stringify(started.body));
 
-  // An agent that names no place or computer: the runner, as where there is no Docker, with no default tools (no shell).
-  const plain = await api("POST", "/agents", { definition: { id: "plain", name: "plain", instructions: "Answer." } });
+  // An agent that names no place, computer or tools is refused, as where there is no Docker: it names a box or the runner.
+  const unplaced = await api("POST", "/agents", { definition: { id: "plain", name: "plain", instructions: "Answer." } });
+  assert.equal(unplaced.status, 422, JSON.stringify(unplaced.body));
+  assert.equal(unplaced.body.error.message, NAME_A_BOX);
+  // One that names its tools, none a shell: the runner, with no default tools.
+  const plain = await api("POST", "/agents", { definition: { id: "plain", name: "plain", instructions: "Answer.", tools: [] } });
   assert.equal(plain.status, 201, JSON.stringify(plain.body));
   const read = await api("GET", "/agents/plain");
   assert.equal(read.body.place?.mode ?? "runner", "runner", JSON.stringify(read.body));
@@ -484,7 +491,8 @@ test("a server with no computerd build for its Docker's architecture: Docker isn
   const inBox = await api("POST", "/agents/boxed-place/runs", { input: { content: "Probe." } });
   assert.equal(inBox.status, 409, JSON.stringify(inBox.body));
   assert.ok(JSON.stringify(inBox.body.error).includes(NO_DAEMON(builds)), JSON.stringify(inBox.body));
-  const plain = await api("POST", "/agents", { definition: { id: "plain", name: "plain", instructions: "Answer." } });
+  assert.equal((await api("POST", "/agents", { definition: { id: "plain", name: "plain", instructions: "Answer." } })).body.error?.message, NAME_A_BOX);
+  const plain = await api("POST", "/agents", { definition: { id: "plain", name: "plain", instructions: "Answer.", tools: [] } });
   assert.equal(plain.status, 201, JSON.stringify(plain.body));
   assert.equal((await api("GET", "/agents/plain")).body.place?.mode ?? "runner", "runner");
   assert.deepEqual(fake.runs(), [], "no box or computer is made");

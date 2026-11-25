@@ -431,6 +431,19 @@ test("Mode 2: a background tool on the runner is still refused, 422: Archil's se
   assert.match(said.made.body.error.fields[0].message, /^bash_background runs only in a box, and this agent's place is the runner, whose shell here runs bash alone \(bash_background needs a sandbox computer\), /);
 });
 
+test("Mode 2 with no Docker: a new agent with no place that names bash alone saves, the runner's exec running it; one that names no tools, or a shell tool the exec does not run, is refused, naming a box", async (t) => {
+  const api = await server(t, { archil: true });
+  const named = { field: "definition.place", reason: "missing", message: "name a box: this server has no Docker box for a new agent. Set place to {mode: sandbox, box: <none is set up>}, or to {mode: runner} to run without a shell.", fix: "Set place to {mode: sandbox, box: <none is set up>}, or to {mode: runner} to run without a shell." };
+  const shell = await api("POST", "/agents", { definition: { id: "exec-bash", name: "exec-bash", instructions: "Answer.", tools: ["read", "bash"] } });
+  assert.equal(shell.status, 201, JSON.stringify(shell.body));
+  assert.equal("place" in shell.body.definition, false);
+  for (const [id, tools] of [["no-tools", undefined], ["exec-background", ["bash", "bash_background"]]]) {
+    const refused = await api("POST", "/agents", { definition: { id, name: id, instructions: "Answer.", ...(tools ? { tools } : {}) } });
+    assert.equal(refused.status, 422, JSON.stringify(refused.body));
+    assert.deepEqual(refused.body.error.fields, [named], id);
+  }
+});
+
 test("Mode 1 with no Docker: an agent with no computer and bash is refused, 422, in the words it always had", async (t) => {
   const api = await server(t, { archil: false, docker: false });
   const said = await saveWithTools(api, "no-shell", { computer: { kind: "none" } }, ["read", "bash"]);

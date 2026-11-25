@@ -113,6 +113,8 @@ test("with AGENTRUN_BOXES not set and no docker command on PATH, a new agent tha
   const refused = await server.api("POST", "/agents", fresh("plain"));
   assert.equal(refused.status, 422, JSON.stringify(refused.body));
   assert.equal(refused.body.error.message, NAME_A_BOX);
+  const made = await server.api("POST", "/agents", { definition: { ...fresh("plain").definition, tools: [] } });
+  assert.equal(made.status, 201, JSON.stringify(made.body));
   assert.equal("place" in made.body.definition, false);
   assert.deepEqual(made.body.definition.tools, []);
 });

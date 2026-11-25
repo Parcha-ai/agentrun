@@ -33,7 +33,7 @@ test("a data directory with beta.26 agent homes is refused at start, each home n
 
 test("a volume already started on this version starts again on its own data, and is refused once an old home is in it", async (t) => {
   const { api, data, close } = await serve(t);
-  assert.equal((await api("POST", "/agents", { definition: { id: "kept", name: "kept", instructions: "Answer." } })).status, 201);
+  assert.equal((await api("POST", "/agents", { definition: { id: "kept", name: "kept", instructions: "Answer.", tools: [] } })).status, 201);
   await close();
   assert.ok(existsSync(join(data, "store.sqlite")));
   const again = await startServe({ data, port: 0, faux: FAUX });
