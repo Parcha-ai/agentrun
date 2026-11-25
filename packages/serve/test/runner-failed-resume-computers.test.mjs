@@ -509,7 +509,9 @@ test("a stopped run's end that comes after a follow-up's claim took the kept mac
 
 // The end reads the run twice, before its mark and after it, and only those reads tell it a later claim has the run: the
 // machine a follow-up took back still carries its maker's label, at or below the ending claim's. A read that fails, or
-// finds no run, tells it nothing, so the end lets nothing go. Rows: which read fails ("throws", or "none": no run found),
+// finds no run, tells it nothing, so the end lets nothing go. Its line names the providers whose vendor ends its own
+// machines (capabilities().lifetime "vendor"), whose machines no janitor sweep ends unless a park kept them, so a lost
+// claim's machine there runs until the vendor's lifetime ends it. Rows: which read fails ("throws", or "none": no run found),
 // and when the follow-up comes: "between" the two reads (it claims the run and takes the kept machine back, the row
 // gone), or "claimed" before the end, taking the machine back only after it.
 test("a stopped run's end whose read of the run fails, or finds no run, lets nothing go: a follow-up's claim that took the kept machine back between its two reads, or that claimed the run before it and takes the machine after, keeps it", { timeout: 60_000 }, async (t) => {
@@ -571,7 +573,7 @@ test("a stopped run's end whose read of the run fails, or finds no run, lets not
     assert.equal(reached.ok, true, `${words}: the follow-up's turn still reaches it`);
     assert.equal((await reached.value.client.call("files.write", { path: "/workspace/still.txt", data: Buffer.from("here").toString("base64") })).ok, true, `${words}: and works on it`);
     assert.equal(await readKept(run.server.settings, RUN), undefined, `${words}: no row of the end's is left where the follow-up took its machine`);
-    assert.deepEqual(logged, [`run ${RUN}'s end at claim ${stop.epoch} lets no computer go: the run could not be read (${why}) to tell whether a later claim holds one of them, so they are left for that claim, the run's next end or the computer janitor's sweep`], `${words}: said once`);
+    assert.deepEqual(logged, [`run ${RUN}'s end at claim ${stop.epoch} lets no computer go: the run could not be read (${why}) to tell whether a later claim holds one of them, so they are left for that claim, the run's next end or the computer janitor (on E2B, Daytona, Modal, Morph, Browserbase, Kernel or the phone harness it ends only a machine a park kept: any other there runs until the vendor's own lifetime ends it)`], `${words}: said once`);
   }
 });
 
