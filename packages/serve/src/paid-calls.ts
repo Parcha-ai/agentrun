@@ -90,9 +90,9 @@ const billed = (status: number) => (status >= 200 && status < 300) || status ===
 /** `send`, one request to a paid provider at `fee`, on the run's one ledger under the call it runs in (Ledger.paid):
  *  admitted at the fee's price, then sent, then settled at what it may have charged (its price on a 2xx, a 408 or a 5xx
  *  or when it threw after it was sent, or what `charged` says it cost, never above its price; $0 on another 4xx); a
- *  settle that cannot be written leaves it at its hold, never less. It throws PaidRefused, in the cap's words, when the cap does not hold its price, when its hold could not be kept,
+ *  settle that cannot be written leaves it at its hold, never less, and `settled` hears which. It throws PaidRefused, in the cap's words, when the cap does not hold its price, when its hold could not be kept,
  *  or when the call has no run's ledger, and then nothing is sent. A request that throws throws, settled at its price. */
-export async function paidRequest(fee: Fee, send: () => Promise<Response>, charged?: () => number): Promise<Response> {
+export async function paidRequest(fee: Fee, send: () => Promise<Response>, charged?: () => number, settled?: (booked: boolean) => void): Promise<Response> {
   const ledger = ledgers.getStore();
   if (!ledger?.paid) throw new PaidRefused(unbookedRefusal(fee.name));
   const said = (): number => {
@@ -103,6 +103,7 @@ export async function paidRequest(fee: Fee, send: () => Promise<Response>, charg
   };
   const stepped = await paidStep(ledger.paid, ledger.call, { name: fee.name, holdUsd: fee.usd, basis: fee.basis, by: fee.by }, send, (outcome) => ("thrown" in outcome ? fee.usd : billed(outcome.result.status) ? said() : 0));
   if ("refused" in stepped) throw new PaidRefused(stepped.refused);
+  settled?.(stepped.unsettled !== true);
   return stepped.result;
 }
 
@@ -158,8 +159,9 @@ export const stopRunWith = (pause: NonNullable<Ledger["pause"]>) => async (words
  *  or why its hold could not be kept), then `run`, then settled at `chargeOf` its outcome (null: at its hold; GIVEN_BACK:
  *  given back, nothing charged, as a hold-only step's: a request its provider refused unrun leaves no charge row). One refused
  *  for room pauses the run through `pause`, else through the ledger of the call it runs in (bookedIn's), as main's
- *  paidCall pauses: a step outside any host tool call (a pi-native tool's, the browser's) passes the run's own. */
-export async function paidStep<T>(paid: PaidBooking, call: string | undefined, fee: { name: string; holdUsd: number; basis: string; by: string; tool?: string; tag?: string; owed?: true; hold?: true; ref?: string; reported?: true }, run: () => Promise<T>, chargeOf: (outcome: { result: T } | { thrown: unknown }) => number | null | typeof GIVEN_BACK, pause?: Ledger["pause"]): Promise<{ refused: string } | { result: T }> {
+ *  paidCall pauses: a step outside any host tool call (a pi-native tool's, the browser's) passes the run's own. A settle
+ *  that could not be written leaves the step at its hold, and its result says so (`unsettled`). */
+export async function paidStep<T>(paid: PaidBooking, call: string | undefined, fee: { name: string; holdUsd: number; basis: string; by: string; tool?: string; tag?: string; owed?: true; hold?: true; ref?: string; reported?: true }, run: () => Promise<T>, chargeOf: (outcome: { result: T } | { thrown: unknown }) => number | null | typeof GIVEN_BACK, pause?: Ledger["pause"]): Promise<{ refused: string } | { result: T; unsettled?: true }> {
   const id = `${call ?? fee.ref ?? fee.name}#${(paidSeq += 1)}`;
   let admitted: unknown;
   try {
@@ -178,7 +180,7 @@ export async function paidStep<T>(paid: PaidBooking, call: string | undefined, f
   }
   // A hold-only step (`hold`) is given back, never a charge: its money is booked by its own charges' steps.
   const charge = fee.hold ? GIVEN_BACK : chargeOf(outcome);
-  await (charge === GIVEN_BACK ? paid.settle(id, 0, { givenBack: true }) : paid.settle(id, charge)).catch(() => undefined);
+  const landed = await (charge === GIVEN_BACK ? paid.settle(id, 0, { givenBack: true }) : paid.settle(id, charge)).then(() => true, () => false);
   if ("thrown" in outcome) throw outcome.thrown;
-  return outcome;
+  return landed ? outcome : { ...outcome, unsettled: true as const };
 }

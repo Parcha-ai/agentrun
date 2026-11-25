@@ -53,27 +53,31 @@ const chargedLine = (fee: Fee, cost: Cost | undefined): Fee => {
 
 /** `pay` as a decider's: each request's fee goes on `lines` once it is sent; one answered is charged at the cost its
  *  answer reports (`costOf`), capped at its hold, or at the hold when it reports none, as Pay's `charged` tells the
- *  cap, and its line becomes that charge (chargedLine), so the receipt says what the cap booked; one refused unbilled
- *  settles at $0 (answered as a 4xx, which a cap books at nothing) with a $0 line. */
+ *  cap; one refused unbilled settles at $0 (answered as a 4xx, which a cap books at nothing). Its line becomes that
+ *  charge (chargedLine; a $0 line) only once the cap's settle is written, so the receipt says what the cap booked: a
+ *  settle that failed (Pay's `settled`) leaves the line at the hold, as the cap keeps it. */
 export const decisionPay = (pay: Pay, lines: Fee[]): DecisionPay => async <T>(fee: Fee, send: () => Promise<T>, costOf?: (answer: T) => Cost): Promise<T> => {
   let done: { value: T } | undefined;
   let failed: { error: unknown } | undefined;
   let charge = fee.usd;
+  let at = -1;
+  let line: Fee | undefined;
+  let booked = true;
   await pay(fee, async () => {
-    const at = lines.push(fee) - 1;
+    at = lines.push(fee) - 1;
     try {
       done = { value: await send() };
-      const line = chargedLine(fee, costOf?.(done.value));
+      line = chargedLine(fee, costOf?.(done.value));
       charge = line.usd;
-      lines[at] = line;
       return new Response(null, { status: 200 });
     } catch (error) {
       if (!unbilled(error)) throw error;
       failed = { error };
-      lines[at] = { ...fee, usd: 0, basis: `not billed (${codeOf(error)})` };
+      line = { ...fee, usd: 0, basis: `not billed (${codeOf(error)})` };
       return new Response(null, { status: 400 });
     }
-  }, () => charge);
+  }, () => charge, (landed) => { booked = landed; });
+  if (line) lines[at] = booked ? line : { ...fee, basis: `${fee.basis}; its settle failed, so the hold stands, not $${line.usd} (${line.basis})` };
   if (done) return done.value;
   throw failed ? failed.error : new PaidRefused(`${fee.name} was not sent`);
 };

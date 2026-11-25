@@ -107,3 +107,27 @@ test("a decision request's receipt line is what it was charged: the cost reporte
   assert.match(none.lines[0].basis, /^the most a request of \d+ bytes may cost at jev's price$/, "with the hold's own basis");
   assert.deepEqual(none.lines.map((line) => line.usd), none.charged);
 });
+
+test("decisionPay moves a line to its charge only once the cap's settle is written; one that failed keeps the hold, a $0 unbilled line too", async () => {
+  const fee = { name: "jev's decision", by: "jev", usd: 0.0002, basis: "the most a request may cost at jev's price" };
+  /** A Pay that sends, then tells decisionPay its settle landed (`booked`), or never tells it (undefined: unmetered's). */
+  const payThat = (booked) => async (_fee, send, _charged, settled) => {
+    const response = await send();
+    if (booked !== undefined) settled?.(booked);
+    return response;
+  };
+  const answered = () => Promise.resolve("an answer");
+  const reported = () => ({ usd: 0.00004, basis: "reported" });
+  const refused = () => Promise.reject(Object.assign(new Error("bad request"), { code: "invalid_request" }));
+  const lineOf = async (pay, send) => {
+    const lines = [];
+    await web.decisionPay(pay, lines)(fee, send, reported).catch(() => undefined);
+    assert.equal(lines.length, 1, `one line: ${JSON.stringify(lines)}`);
+    return { usd: lines[0].usd, basis: lines[0].basis };
+  };
+  assert.deepEqual(await lineOf(payThat(true), answered), { usd: 0.00004, basis: "the cost jev reported" }, "a settle written: the charge");
+  assert.deepEqual(await lineOf(payThat(false), answered), { usd: 0.0002, basis: "the most a request may cost at jev's price; its settle failed, so the hold stands, not $0.00004 (the cost jev reported)" }, "a settle that failed: the hold, as the cap keeps it");
+  assert.deepEqual(await lineOf(payThat(true), refused), { usd: 0, basis: "not billed (invalid_request)" }, "unbilled, its settle written: $0");
+  assert.deepEqual(await lineOf(payThat(false), refused), { usd: 0.0002, basis: "the most a request may cost at jev's price; its settle failed, so the hold stands, not $0 (not billed (invalid_request))" }, "unbilled, its settle failed: the hold");
+  assert.deepEqual(await lineOf(web.unmetered, answered), { usd: 0.00004, basis: "the cost jev reported" }, "no cap (unmetered, which never calls settled): the charge, as before");
+});
