@@ -14,7 +14,7 @@ import { after, test } from "node:test";
 import { AttachHub, readBackOf } from "@parcha/agentrun-computer";
 import { FakeUiDriver, serveUiSocket } from "@parcha/agentrun-computer/fake-ui-driver";
 import { getSealedKey, putSealedKey } from "../dist/server-keys.js";
-import { archilWorkspace, computerForClaim, localWorkspace, runKey } from "../dist/workspace/index.js";
+import { archilClaim, archilWorkspace, computerForClaim, localWorkspace, runKey } from "../dist/workspace/index.js";
 import { FakeArchilDisk, FakeDiskError } from "./fixtures/archil-fake.mjs";
 import { pairedOf } from "../dist/workspace/attached-computers.js";
 import { fauxComputers } from "../dist/faux-computers.js";
@@ -400,6 +400,46 @@ test("a kept desktop whose folder is not on Archil: the janitor ends it with no 
   const swept = await one.janitor();
   assert.deepEqual([swept.ended, swept.failed], [["c1"], []]);
   assert.deepEqual(archil.requests, []);
+});
+
+test("Mode 2, the parking runner's own timer deletes the kept desktop and Archil refuses its mount credential's remove: the row is left ending and said, and the janitor's next pass removes the credential", async (t) => {
+  let refuse = true;
+  const archil = archilControlFetch({ answer: ({ method }) => (refuse && method === "DELETE" ? { status: 500, body: { error: "Archil is down" } } : undefined) });
+  const one = await server({ mode: 2, archil });
+  // The parking claim's own Archil step, as archil-claim.ts makes it, over the fake: its mount credential minted at epoch 3.
+  const mount = await archilClaim({
+    settings: { region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" },
+    keys: one.store.sealedKeys,
+    sealKey: one.sealKey,
+    signal: new AbortController().signal,
+    mount: { runId: "run-1", epoch: 3, ttlMs: 86_400_000 },
+    control: { baseUrl: archil.baseUrl, fetch: archil.fetch },
+    run: { agentId: "agent-1", store: one.store },
+    makeDisk: (options) => ({ id: options.disk }),
+  });
+  await mount.token();
+  assert.deepEqual(nicknames(archil), ["agentrun:run-1:3"]);
+  // The timer's revoke, settled: what the timer does after it is the store's in memory, done within a few turns.
+  let revoked;
+  const logged = [];
+  const first = await one.claim(3, { revokeMount: () => (revoked = mount.revoke()), inheritMount: () => mount.inherit(), log: (line) => void logged.push(line) });
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    assert.equal(await first.park("approval"), true, "kept");
+    t.mock.timers.tick(KEEP_MS);
+  } finally {
+    t.mock.timers.reset();
+  }
+  await revoked?.catch(() => undefined);
+  for (let turn = 0; turn < 10; turn += 1) await new Promise((done) => setImmediate(done));
+  assert.deepEqual(deletes(one.account), ["c1"], "the timer deleted it");
+  refuse = false;
+  one.clock.now = T0 + KEEP_MS;
+  const swept = await one.janitor();
+  assert.deepEqual(nicknames(archil), [], "the parking claim's credential removed by the janitor's pass, not left for its 24-hour ttl");
+  assert.deepEqual([swept.ended, swept.failed], [["c1"], []]);
+  assert.equal((await readKept(one.store.settings, "run-1"))?.ended, true);
+  assert.equal(logged.filter((line) => line.includes("Archil is down")).length, 1, `the timer's failure said: ${JSON.stringify(logged)}`);
 });
 
 test("a desktop resumed after 10 minutes is a new one: the kept one let go, said once with why", async () => {
