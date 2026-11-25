@@ -1,4 +1,5 @@
 // Docker's descriptor: computers on this machine's Docker, a sandbox or a desktop; no key, no meter.
+import { DOCKER_ENV_NAMES } from "./env-names.js";
 import { defineProvider } from "../descriptor.js";
 import { LINUX_DESKTOP, SANDBOX } from "./shared.js";
 
@@ -16,5 +17,7 @@ export const DOCKER = defineProvider({
 	// No default image: the server makes one from the provider's recipe (prepareImage) before the first create.
 	prepareImage: true,
 	local: true,
+	// What the docker CLI reads (env-names.ts DOCKER_ENV_NAMES): the server's own values of these, and no other.
+	hostEnv: DOCKER_ENV_NAMES,
 	load: () => import("../docker.js"),
 });

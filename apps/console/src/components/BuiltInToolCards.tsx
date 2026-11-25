@@ -27,10 +27,14 @@ export function BuiltInToolCards({ shown, offers, tools, harness, place, places,
     const pickedOver = !!choice && ownPick !== undefined && ownPick !== choice.provider;
     // With no place, ticking a shell tool is what moves the agent to the box: read the place with it ticked.
     const sandbox = sandboxReason(t, place ?? defaultPlaceOf(workflow, [...tools, t.name], places));
-    const why = serverDenies(t.name, gates, granted) ? SERVER_DENY : t.call_only && !workflow ? "Workflow-only: a workflow's call node runs it, not an agent" : !runs ? notOn(harness, t.name, offers) : sandbox ?? (!t.available && !pickedOver ? (choice?.reason ?? t.reason ?? `Needs ${(t.missing ?? []).join(", ")}`) : undefined);
-    // The state, as a one-line tag: "Workflow only" or "Sandbox-only" for those two, else the reason itself (cut to one
-    // line); the reason in full is its title, and in Details.
-    const tag = !why ? undefined : t.call_only && !workflow ? "Workflow only" : sandbox && runs && why === sandbox ? "Sandbox-only" : why;
+    const unavailable = !t.available && !pickedOver ? (choice?.reason ?? t.reason ?? `Needs ${(t.missing ?? []).join(", ")}`) : undefined;
+    // Every rule that keeps it off here, together (QA: the browser runs only on pi and only on the server, and the card
+    // said one rule at a time): the harnesses that run it, where it runs, and what it lacks.
+    const rules = [!runs ? notOn(harness, t.name, offers) : undefined, sandbox, unavailable].filter((rule): rule is string => !!rule);
+    const why = serverDenies(t.name, gates, granted) ? SERVER_DENY : t.call_only && !workflow ? "Workflow-only: a workflow's call node runs it, not an agent" : rules.length ? rules.join("; ") : undefined;
+    // The state, as a one-line tag: "Workflow only", "Sandbox-only" or "Server-only" for those, else the reason itself (cut
+    // to one line); the reason in full is its title, and in Details.
+    const tag = !why ? undefined : t.call_only && !workflow ? "Workflow only" : sandbox && why === sandbox ? (t.sandbox_only ? "Sandbox-only" : "Server-only") : why;
     return (
       <li key={t.name} className="min-w-0"><ToolCard value={t.name} name={t.name} blurb={t.blurb} description={t.summary} why={why} tag={tag} on={on} disabled={!!why && !on}
         onToggle={() => onChange(on ? tools.filter((x) => x !== t.name) : [...tools, t.name])} /></li>
